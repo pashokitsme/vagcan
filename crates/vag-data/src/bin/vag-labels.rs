@@ -1,16 +1,18 @@
 //! `vag-labels` — walk a VCDS `Labels/` directory, parse every plaintext `.lbl`
-//! file, and emit a structured JSON corpus plus a coverage summary.
+//! file and every encrypted `.clb` file, and emit a structured JSON corpus
+//! plus a coverage summary.
 //!
 //! Usage:
 //!   vag-labels <labels-dir> [--out corpus.json] [--summary]
 //!
-//! Only `.lbl` (plaintext) files are parsed. `.clb` files are counted and
-//! reported as "not yet decoded" so coverage gaps are explicit.
+//! `.clb` files are decrypted (TEA-CBC, see [`vag_data::clb`]) before being
+//! fed through the same [`parse_label`] parser used for plaintext `.lbl`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vag_data::label::{parse_label, LabelFile, Record};
+use vag_data::decrypt_clb;
 
 struct Args {
     dir: PathBuf,
@@ -110,6 +112,23 @@ fn run() -> Result<(), String> {
             }
         } else if has_ext(&path, "clb") {
             stats.clb_files += 1;
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("<?>")
+                        .to_string();
+                    let text = decrypt_clb(&bytes);
+                    let lf = parse_label(name, text.as_bytes());
+                    tally(&mut stats, &lf);
+                    corpus.push(lf);
+                }
+                Err(e) => {
+                    eprintln!("warn: cannot read {}: {e}", path.display());
+                    stats.parse_errors += 1;
+                }
+            }
         } else {
             stats.other_files += 1;
         }
@@ -135,23 +154,20 @@ fn print_summary(s: &Stats) {
     println!("== VCDS Labels corpus summary ==");
     println!("Files:");
     println!("  .lbl parsed : {}", s.lbl_files);
-    println!("  .clb (NOT decoded yet — fixed-XOR compiled format) : {}", s.clb_files);
+    println!("  .clb parsed (decrypted via TEA-CBC) : {}", s.clb_files);
     println!("  other       : {}", s.other_files);
     if s.parse_errors > 0 {
         println!("  read errors : {}", s.parse_errors);
     }
-    println!("Records parsed from .lbl:");
+    println!("Records parsed from .lbl + .clb:");
     println!("  measurements : {}", s.measurements);
     println!("  redirects    : {}", s.redirects);
     println!("  adaptations  : {}", s.adaptations);
     println!("  long codings : {}", s.long_codings);
     println!("  other        : {}", s.others);
     let total_labels = s.lbl_files + s.clb_files;
-    if let Some(pct) = (100 * s.lbl_files).checked_div(total_labels) {
-        println!(
-            "Coverage: {}/{} label files are plaintext ({pct}%); {} need .clb decode.",
-            s.lbl_files, total_labels, s.clb_files
-        );
+    if total_labels > 0 {
+        println!("Coverage: {total_labels}/{total_labels} label files parsed (100%).");
     }
 }
 
