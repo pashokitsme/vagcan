@@ -86,8 +86,19 @@ impl<T: RawCanTransport> IsoTpTransport for SoftwareIsoTp<T> {
             }
             1 => {
                 // First Frame: 12-bit length, 6 data bytes here.
-                let len = (((pci & 0x0F) as usize) << 8) | (frame.data[1] as usize);
-                let mut out: Vec<u8> = frame.data[2..8].to_vec();
+                let len_low = *frame
+                    .data
+                    .get(1)
+                    .ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?;
+                let len = (((pci & 0x0F) as usize) << 8) | (len_low as usize);
+                if len <= 7 {
+                    return Err(TransportError::Protocol("first frame with length <= 7".into()));
+                }
+                let mut out: Vec<u8> = frame
+                    .data
+                    .get(2..8)
+                    .ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?
+                    .to_vec();
 
                 // Send Flow Control: ContinueToSend, block size 0, STmin 0.
                 let fc = CanFrame::new(self.tx, Self::pad8(vec![0x30, 0x00, 0x00]));
@@ -113,7 +124,10 @@ impl<T: RawCanTransport> IsoTpTransport for SoftwareIsoTp<T> {
                     }
                     let remaining = len - out.len();
                     let take = remaining.min(7);
-                    out.extend_from_slice(&cf.data[1..1 + take]);
+                    let payload = cf.data.get(1..1 + take).ok_or_else(|| {
+                        TransportError::Protocol("malformed consecutive frame".into())
+                    })?;
+                    out.extend_from_slice(payload);
                     expected_seq = (expected_seq + 1) & 0x0F;
                 }
                 Ok(out)
@@ -181,5 +195,15 @@ mod tests {
         let mut iso = SoftwareIsoTp::new(can, TX, RX);
         let got = iso.recv(Duration::from_millis(50)).unwrap();
         assert_eq!(got, vec![0x50, 0x03, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn truncated_first_frame_errors_instead_of_panicking() {
+        // Claims length 10 (0x0A) but only carries 1 payload byte instead of 6.
+        let ff = CanFrame::new(RX, vec![0x10, 0x0A, 0x50]);
+        let can = ScriptedCan::new(vec![ScriptStep::Reply(ff)]);
+        let mut iso = SoftwareIsoTp::new(can, TX, RX);
+        let err = iso.recv(Duration::from_millis(10)).unwrap_err();
+        assert!(matches!(err, TransportError::Protocol(_)));
     }
 }
