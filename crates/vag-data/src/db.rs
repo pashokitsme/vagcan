@@ -312,6 +312,54 @@ mod tests {
     }
 
     #[test]
+    fn same_length_selectors_tiebreak_by_wildcard_count() {
+        // Both selectors are 13 chars and both match "022-906-032-C", so
+        // `pick_most_specific`'s wildcard-count tiebreak (not length
+        // filtering) is what has to pick EXACT over WILD here.
+        let index = parse_label(
+            "INDEX.LBL",
+            b"REDIRECT,EXACT.LBL,022-906-032-C\nREDIRECT,WILD.LBL,022-906-0??-C",
+        );
+        let exact = parse_label("EXACT.LBL", b"001,1,FromExact,,");
+        let wild = parse_label("WILD.LBL", b"001,1,FromWild,,");
+        let db = LabelDb::new(vec![index, exact, wild]);
+
+        assert_eq!("022-906-032-C".len(), "022-906-0??-C".len());
+
+        let resolved = db.resolve("022-906-032-C").expect("should resolve");
+        assert_eq!(resolved.source, "EXACT.LBL");
+
+        let ms = db.measurements("022-906-032-C");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].name, "FromExact");
+    }
+
+    #[test]
+    fn same_length_same_wildcard_count_tiebreak_by_literal_prefix_length() {
+        // Both selectors are 13 chars, both have exactly one `?`, and both
+        // match "022-906-032-C" -- so the only thing that can distinguish
+        // them is the literal-prefix-length tiebreak (longer prefix wins).
+        let index = parse_label(
+            "INDEX.LBL",
+            b"REDIRECT,LONGPREFIX.LBL,022-906-0?2-C\nREDIRECT,SHORTPREFIX.LBL,02?-906-032-C",
+        );
+        let long_prefix = parse_label("LONGPREFIX.LBL", b"001,1,FromLongPrefix,,");
+        let short_prefix = parse_label("SHORTPREFIX.LBL", b"001,1,FromShortPrefix,,");
+        let db = LabelDb::new(vec![index, long_prefix, short_prefix]);
+
+        assert_eq!(wildcard_count("022-906-0?2-C"), 1);
+        assert_eq!(wildcard_count("02?-906-032-C"), 1);
+        assert!(literal_prefix_len("022-906-0?2-C") > literal_prefix_len("02?-906-032-C"));
+
+        let resolved = db.resolve("022-906-032-C").expect("should resolve");
+        assert_eq!(resolved.source, "LONGPREFIX.LBL");
+
+        let ms = db.measurements("022-906-032-C");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].name, "FromLongPrefix");
+    }
+
+    #[test]
     fn wildcard_selector_matches_same_length_part_number() {
         let index = parse_label(
             "INDEX.LBL",
