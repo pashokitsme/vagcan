@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 vag-transport = { path = "../vag-transport" }
+thiserror.workspace = true
 
 [dev-dependencies]
 vag-transport = { path = "../vag-transport" }
