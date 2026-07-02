@@ -59,6 +59,29 @@ impl<C: IsoTpTransport> UdsClient<C> {
         }
         Err(UdsError::Malformed("too many responsePending replies".into()))
     }
+
+    pub fn read_data_by_identifier(&mut self, did: u16) -> Result<Vec<u8>, UdsError> {
+        let resp = self.request(0x22, &[(did >> 8) as u8, (did & 0xFF) as u8])?;
+        let echoed = resp
+            .get(0..2)
+            .ok_or_else(|| UdsError::Malformed("RDBI response missing DID echo".into()))?;
+        if echoed != [(did >> 8) as u8, (did & 0xFF) as u8] {
+            return Err(UdsError::Malformed(format!(
+                "RDBI DID echo mismatch: got {echoed:02X?}, want 0x{did:04X}"
+            )));
+        }
+        Ok(resp[2..].to_vec())
+    }
+
+    pub fn tester_present(&mut self) -> Result<(), UdsError> {
+        self.request(0x3E, &[0x00])?;
+        Ok(())
+    }
+
+    pub fn start_session(&mut self, session: u8) -> Result<(), UdsError> {
+        self.request(0x10, &[session])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -120,5 +143,36 @@ mod tests {
         let mut uds = UdsClient::new(ch);
         let err = uds.request(0x2E, &[0xF1, 0x90, 0x01]).unwrap_err();
         assert!(matches!(err, UdsError::Forbidden(0x2E)));
+    }
+
+    #[test]
+    fn rdbi_validates_did_echo_and_returns_payload() {
+        // Request DID 0xF190; response 0x62 F1 90 <data...>
+        let ch = MockChannel::new(vec![vec![0x62, 0xF1, 0x90, b'W', b'V', b'W']]);
+        let mut uds = UdsClient::new(ch);
+        let data = uds.read_data_by_identifier(0xF190).unwrap();
+        assert_eq!(data, vec![b'W', b'V', b'W']);
+    }
+
+    #[test]
+    fn rdbi_rejects_wrong_did_echo() {
+        let ch = MockChannel::new(vec![vec![0x62, 0xF1, 0x91, 0x00]]); // wrong DID echoed
+        let mut uds = UdsClient::new(ch);
+        let err = uds.read_data_by_identifier(0xF190).unwrap_err();
+        assert!(matches!(err, UdsError::Malformed(_)));
+    }
+
+    #[test]
+    fn tester_present_ok() {
+        let ch = MockChannel::new(vec![vec![0x7E, 0x00]]);
+        let mut uds = UdsClient::new(ch);
+        uds.tester_present().unwrap();
+    }
+
+    #[test]
+    fn start_session_ok() {
+        let ch = MockChannel::new(vec![vec![0x50, 0x03, 0, 0x32, 0x01, 0xF4]]);
+        let mut uds = UdsClient::new(ch);
+        uds.start_session(0x03).unwrap();
     }
 }
