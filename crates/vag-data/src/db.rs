@@ -136,14 +136,15 @@ impl LabelDb {
     }
 
     /// All measurements for a part number (from its resolved file). Empty if
-    /// unresolved.
+    /// unresolved. Empty-name placeholder records (`name.trim().is_empty()`)
+    /// are skipped — they're pure filler, not real measurements.
     pub fn measurements(&self, part_no: &str) -> Vec<&Measurement> {
         match self.resolve(part_no) {
             Some(file) => file
                 .records
                 .iter()
                 .filter_map(|r| match r {
-                    Record::Measurement(m) => Some(m),
+                    Record::Measurement(m) if !m.name.trim().is_empty() => Some(m),
                     _ => None,
                 })
                 .collect(),
@@ -151,7 +152,9 @@ impl LabelDb {
         }
     }
 
-    /// A single measurement by (part_no, block, field).
+    /// A single measurement by (part_no, block, field). Empty-name placeholder
+    /// records are skipped (returns `None`), since an empty slot isn't a real
+    /// measurement for lookup purposes.
     pub fn measurement(&self, part_no: &str, block: u16, field: u8) -> Option<&Measurement> {
         self.measurements(part_no)
             .into_iter()
@@ -410,6 +413,25 @@ mod tests {
         assert!(db.resolve("999-999-999-Z").is_none());
         assert!(db.measurements("999-999-999-Z").is_empty());
         assert!(db.measurement("999-999-999-Z", 1, 1).is_none());
+    }
+
+    #[test]
+    fn empty_name_placeholder_measurements_are_filtered_from_lookup() {
+        let file = parse_label(
+            "022-906-032-C.LBL",
+            b"003,1,Vehicle Speed,,Range: 0...300 km/h\n012,1,,,",
+        );
+        let db = LabelDb::new(vec![file]);
+
+        let ms = db.measurements("022-906-032-C");
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].name, "Vehicle Speed");
+
+        assert!(db.measurement("022-906-032-C", 12, 1).is_none());
+        let real = db
+            .measurement("022-906-032-C", 3, 1)
+            .expect("real measurement should be found");
+        assert_eq!(real.name, "Vehicle Speed");
     }
 
     #[test]
