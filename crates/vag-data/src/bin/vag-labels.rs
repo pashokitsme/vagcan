@@ -12,11 +12,11 @@
 //! (following any `REDIRECT` chain, see [`vag_data::db`]) and prints the
 //! resolved label file plus its measurements.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use vag_data::label::{parse_label, LabelFile, Record};
-use vag_data::{decrypt_clb, LabelDb};
+use vag_data::label::{LabelFile, Record};
+use vag_data::{load_corpus, LabelDb};
 
 struct Args {
     dir: PathBuf,
@@ -54,13 +54,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-fn has_ext(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case(ext))
-        .unwrap_or(false)
-}
-
 #[derive(Default)]
 struct Stats {
     lbl_files: usize,
@@ -88,58 +81,19 @@ fn tally(stats: &mut Stats, lf: &LabelFile) {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let entries = std::fs::read_dir(&args.dir)
+    let load = load_corpus(&args.dir)
         .map_err(|e| format!("cannot read dir {}: {e}", args.dir.display()))?;
 
-    let mut stats = Stats::default();
-    let mut corpus: Vec<LabelFile> = Vec::new();
-
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("dir entry error: {e}"))?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if has_ext(&path, "lbl") {
-            stats.lbl_files += 1;
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("<?>")
-                        .to_string();
-                    let lf = parse_label(name, &bytes);
-                    tally(&mut stats, &lf);
-                    corpus.push(lf);
-                }
-                Err(e) => {
-                    eprintln!("warn: cannot read {}: {e}", path.display());
-                    stats.parse_errors += 1;
-                }
-            }
-        } else if has_ext(&path, "clb") {
-            stats.clb_files += 1;
-            match std::fs::read(&path) {
-                Ok(bytes) => {
-                    let name = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("<?>")
-                        .to_string();
-                    let decoded = decrypt_clb(&bytes);
-                    let lf = parse_label(name, &decoded);
-                    tally(&mut stats, &lf);
-                    corpus.push(lf);
-                }
-                Err(e) => {
-                    eprintln!("warn: cannot read {}: {e}", path.display());
-                    stats.parse_errors += 1;
-                }
-            }
-        } else {
-            stats.other_files += 1;
-        }
+    let mut stats = Stats {
+        lbl_files: load.lbl_count,
+        clb_files: load.clb_count,
+        other_files: load.other_count,
+        parse_errors: load.read_errors,
+        ..Default::default()
+    };
+    let mut corpus: Vec<LabelFile> = load.files;
+    for lf in &corpus {
+        tally(&mut stats, lf);
     }
 
     // Deterministic output ordering.

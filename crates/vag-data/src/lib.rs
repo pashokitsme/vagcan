@@ -6,9 +6,11 @@
 //! textual format `label::parse_label` understands.
 
 pub mod clb;
+pub mod corpus;
 pub mod db;
 pub mod label;
 
 pub use clb::decrypt_clb;
+pub use corpus::{load_corpus, CorpusLoad};
 pub use db::LabelDb;
 pub use label::{parse_label, LabelFile, Measurement, Record};
