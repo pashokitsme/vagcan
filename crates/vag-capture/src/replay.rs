@@ -46,14 +46,14 @@ impl RawCanTransport for ReplayCan {
     }
 
     fn recv_frame(&mut self, _timeout: Duration) -> Result<CanFrame, TransportError> {
-        // Skip any leading Tx records that were not consumed (defensive), then take next Rx.
-        while let Some(rec) = self.queue.front() {
+        // Return the next frame if the front record is an Rx frame; a leading
+        // Tx record (or an empty queue) means there is nothing to receive yet.
+        if let Some(rec) = self.queue.front() {
             if rec.dir == Direction::Rx {
                 let frame = as_frame(rec);
                 self.queue.pop_front();
                 return Ok(frame);
             }
-            break;
         }
         Err(TransportError::Timeout)
     }
