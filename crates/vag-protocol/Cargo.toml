@@ -1,0 +1,11 @@
+[package]
+name = "vag-protocol"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vag-transport = { path = "../vag-transport" }
+
+[dev-dependencies]
+vag-transport = { path = "../vag-transport" }
