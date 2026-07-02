@@ -250,3 +250,47 @@ parallel, so RE risk cannot block everything else.
 - HEX cable proprietary-protocol confirmation: <https://www.ross-tech.com/vcds/hex-v2.php>,
   <https://www.hex.co.za/clones/>
 - CAN ID collections: <https://github.com/iDoka/awesome-automotive-can-id>
+
+---
+
+## 12. Feature: Run logger / drag mode (added 2026-07-02, deferred to later phase)
+
+A performance-run logger, similar in spirit to a Dragy/track-day logger but driven
+entirely off CAN diagnostic data. **Not part of P0** — it sits above live monitoring and
+the data DB, so it belongs to a dedicated later phase with its own plan (and likely its own
+short brainstorm for the metric/UX details).
+
+### What it does
+
+- **High-rate capture of all live parameters during a run:** vehicle speed, boost pressure,
+  engine RPM, selected gear, kickdown flag, ignition timing, throttle position, temperatures,
+  odometer/mileage, and any other monitored DID. One timestamped sample row per poll cycle.
+- **Derived metrics computed from the sample stream:**
+  - acceleration (numerical derivative of speed over time),
+  - interval times (e.g. 0–100 km/h, and other configurable speed/distance splits),
+  - total elapsed run time,
+  - distance (integrated from speed, since there is no GPS).
+- **Persistence:** each run is saved as its own log/record file (reuse the `vag-capture`
+  JSON-lines idea or a dedicated `runs/` store), so runs are replayable and diffable.
+- **Reset control:** a key/button starts a fresh run (clears the current buffer, begins a new
+  record).
+- **Comparison vs previous run:** show the delta between the current run and the previous one
+  — interval-time differences and a speed/parameter trace comparison — in the TUI.
+
+### Dependencies & placement
+
+- Requires: live multi-DID monitoring (`vag-core` poll scheduler), the `vag-data` scaling DB
+  (so raw bytes → km/h, bar, °C, gear), and the TUI (`vag-cli`). Therefore it is a
+  post-P3 feature.
+- New surface it will add: a run-record storage format, derived-metric computations, a
+  run-comparison view, and a `vag run` (or in-`monitor`) mode with start/reset/compare
+  controls.
+
+### Open questions for its future brainstorm/plan
+
+- Achievable sample rate over single-bus sequential polling — is it fast enough for
+  meaningful acceleration/interval timing, or do we need to narrow the DID set during a run?
+- Interval-timing triggers: start on throttle/speed threshold vs manual; how to detect
+  0-km/h start cleanly.
+- Acceleration source: derivative of reported vehicle speed vs a dedicated wheel-speed DID.
+- Run store layout and how "previous run" is selected for the diff.
