@@ -9,4 +9,5 @@ vag-transport = { path = "../vag-transport" }
 thiserror.workspace = true
 
 [dev-dependencies]
-vag-transport = { path = "../vag-transport" }
+vag-capture = { path = "../vag-capture" }
+vag-transport = { path = "../vag-transport", features = ["serde"] }
