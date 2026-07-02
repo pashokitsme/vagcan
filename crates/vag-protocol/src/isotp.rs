@@ -1,7 +1,6 @@
 use std::time::Duration;
 use vag_transport::{CanFrame, CanId, IsoTpTransport, RawCanTransport, TransportError};
 
-#[allow(dead_code)]
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Software ISO-TP (ISO 15765-2) over a raw CAN transport, one ECU channel.
@@ -77,8 +76,7 @@ impl<T: RawCanTransport> IsoTpTransport for SoftwareIsoTp<T> {
             )));
         }
         let pci = *frame.data.first().ok_or_else(|| TransportError::Protocol("empty frame".into()))?;
-        let kind = pci >> 4;
-        match kind {
+        match pci >> 4 {
             0 => {
                 let len = (pci & 0x0F) as usize;
                 let body = frame.data.get(1..1 + len).ok_or_else(|| {
@@ -86,7 +84,41 @@ impl<T: RawCanTransport> IsoTpTransport for SoftwareIsoTp<T> {
                 })?;
                 Ok(body.to_vec())
             }
-            _ => Err(TransportError::Unsupported("multi-frame recv not yet implemented")),
+            1 => {
+                // First Frame: 12-bit length, 6 data bytes here.
+                let len = (((pci & 0x0F) as usize) << 8) | (frame.data[1] as usize);
+                let mut out: Vec<u8> = frame.data[2..8].to_vec();
+
+                // Send Flow Control: ContinueToSend, block size 0, STmin 0.
+                let fc = CanFrame::new(self.tx, Self::pad8(vec![0x30, 0x00, 0x00]));
+                self.inner.send_frame(&fc)?;
+
+                // Collect Consecutive Frames.
+                let mut expected_seq: u8 = 1;
+                while out.len() < len {
+                    let cf = self.inner.recv_frame(timeout)?;
+                    if cf.id != self.rx {
+                        return Err(TransportError::Protocol("CF from unexpected id".into()));
+                    }
+                    let cf_pci = *cf.data.first().ok_or_else(|| TransportError::Protocol("empty CF".into()))?;
+                    if cf_pci >> 4 != 0x2 {
+                        return Err(TransportError::Protocol("expected consecutive frame".into()));
+                    }
+                    if cf_pci & 0x0F != expected_seq {
+                        return Err(TransportError::Protocol(format!(
+                            "CF sequence mismatch: got {}, want {}",
+                            cf_pci & 0x0F,
+                            expected_seq
+                        )));
+                    }
+                    let remaining = len - out.len();
+                    let take = remaining.min(7);
+                    out.extend_from_slice(&cf.data[1..1 + take]);
+                    expected_seq = (expected_seq + 1) & 0x0F;
+                }
+                Ok(out)
+            }
+            _ => Err(TransportError::Protocol("unexpected PCI in first frame position".into())),
         }
     }
 }
@@ -132,5 +164,22 @@ mod tests {
         ]);
         let mut iso = SoftwareIsoTp::new(can, TX, RX);
         iso.send(&payload).unwrap();
+    }
+
+    #[test]
+    fn receives_multi_frame_sends_flow_control() {
+        // 10-byte response: FF (len=10, 6 bytes) then CF with remaining 4 bytes.
+        let ff = CanFrame::new(RX, vec![0x10, 0x0A, 0x50, 0x03, 1, 2, 3, 4]);
+        let fc = CanFrame::new(TX, vec![0x30, 0x00, 0x00, 0, 0, 0, 0, 0]);
+        let cf = CanFrame::new(RX, vec![0x21, 5, 6, 7, 8, 0, 0, 0]);
+
+        let can = ScriptedCan::new(vec![
+            ScriptStep::Reply(ff),
+            ScriptStep::ExpectSend(fc),
+            ScriptStep::Reply(cf),
+        ]);
+        let mut iso = SoftwareIsoTp::new(can, TX, RX);
+        let got = iso.recv(Duration::from_millis(50)).unwrap();
+        assert_eq!(got, vec![0x50, 0x03, 1, 2, 3, 4, 5, 6, 7, 8]);
     }
 }
