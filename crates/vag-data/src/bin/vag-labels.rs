@@ -3,32 +3,39 @@
 //! plus a coverage summary.
 //!
 //! Usage:
-//!   vag-labels <labels-dir> [--out corpus.json] [--summary]
+//!   vag-labels <labels-dir> [--out corpus.json] [--summary] [--lookup <PART_NO>]
 //!
 //! `.clb` files are decrypted (TEA-CBC, see [`vag_data::clb`]) before being
 //! fed through the same [`parse_label`] parser used for plaintext `.lbl`.
+//!
+//! `--lookup <PART_NO>` resolves an ECU part number against the parsed corpus
+//! (following any `REDIRECT` chain, see [`vag_data::db`]) and prints the
+//! resolved label file plus its measurements.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vag_data::label::{parse_label, LabelFile, Record};
-use vag_data::decrypt_clb;
+use vag_data::{decrypt_clb, LabelDb};
 
 struct Args {
     dir: PathBuf,
     out: Option<PathBuf>,
     summary: bool,
+    lookup: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut dir = None;
     let mut out = None;
     let mut summary = false;
+    let mut lookup = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => out = Some(PathBuf::from(it.next().ok_or("--out needs a path")?)),
             "--summary" => summary = true,
+            "--lookup" => lookup = Some(it.next().ok_or("--lookup needs a part number")?),
             "-h" | "--help" => return Err("help".into()),
             s if s.starts_with('-') => return Err(format!("unknown flag: {s}")),
             s => {
@@ -43,6 +50,7 @@ fn parse_args() -> Result<Args, String> {
         dir: dir.ok_or("missing <labels-dir> argument")?,
         out,
         summary,
+        lookup,
     })
 }
 
@@ -147,7 +155,35 @@ fn run() -> Result<(), String> {
     if args.summary || args.out.is_none() {
         print_summary(&stats);
     }
+
+    if let Some(part_no) = &args.lookup {
+        // Consumes `corpus`; must be the last use of it.
+        print_lookup(LabelDb::new(corpus), part_no);
+    }
     Ok(())
+}
+
+fn print_lookup(db: LabelDb, part_no: &str) {
+    match db.resolve(part_no) {
+        Some(file) => {
+            println!("== Lookup {part_no} ==");
+            println!("Resolved file: {}", file.source);
+            let measurements = db.measurements(part_no);
+            if measurements.is_empty() {
+                println!("(no measurements in resolved file)");
+            } else {
+                println!("Measurements:");
+                for m in measurements {
+                    let unit = m.unit.as_deref().unwrap_or("");
+                    println!("  {:>4}.{:<3} {}  [{}]", m.block, m.field, m.name, unit);
+                }
+            }
+        }
+        None => {
+            println!("== Lookup {part_no} ==");
+            println!("no match found in corpus of {} file(s)", db.len());
+        }
+    }
 }
 
 fn print_summary(s: &Stats) {
@@ -175,7 +211,9 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e == "help" => {
-            eprintln!("usage: vag-labels <labels-dir> [--out corpus.json] [--summary]");
+            eprintln!(
+                "usage: vag-labels <labels-dir> [--out corpus.json] [--summary] [--lookup <PART_NO>]"
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
