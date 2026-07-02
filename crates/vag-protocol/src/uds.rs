@@ -1,5 +1,6 @@
 use std::time::Duration;
 use vag_transport::{IsoTpTransport, TransportError};
+use crate::dtc::RawDtc;
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
 const MAX_PENDING: usize = 30;
@@ -82,12 +83,31 @@ impl<C: IsoTpTransport> UdsClient<C> {
         self.request(0x10, &[session])?;
         Ok(())
     }
+
+    pub fn read_dtcs_by_status_mask(&mut self, mask: u8) -> Result<Vec<RawDtc>, UdsError> {
+        // request: 0x19 0x02 <mask>; response after SID strip: 0x02 <avail> [dtc(3) status(1)]*
+        let resp = self.request(0x19, &[0x02, mask])?;
+        // resp[0] = subfunction echo (0x02), resp[1] = availability mask, then entries.
+        if resp.len() < 2 || resp[0] != 0x02 {
+            return Err(UdsError::Malformed("bad ReadDTCInformation 0x02 response".into()));
+        }
+        let entries = &resp[2..];
+        if entries.len() % 4 != 0 {
+            return Err(UdsError::Malformed("DTC entries not a multiple of 4 bytes".into()));
+        }
+        let mut out = Vec::with_capacity(entries.len() / 4);
+        for chunk in entries.chunks_exact(4) {
+            out.push(RawDtc { code: [chunk[0], chunk[1], chunk[2]], status: chunk[3] });
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use crate::dtc::RawDtc;
 
     /// Mock IsoTp channel: canned responses, records sent PDUs.
     struct MockChannel {
@@ -174,5 +194,29 @@ mod tests {
         let ch = MockChannel::new(vec![vec![0x50, 0x03, 0, 0x32, 0x01, 0xF4]]);
         let mut uds = UdsClient::new(ch);
         uds.start_session(0x03).unwrap();
+    }
+
+    #[test]
+    fn read_dtcs_parses_entries() {
+        // 0x59 0x02 <avail=0xFF> then two DTCs: [11 22 33 status 0x08], [44 55 66 status 0x2F]
+        let ch = MockChannel::new(vec![vec![
+            0x59, 0x02, 0xFF,
+            0x11, 0x22, 0x33, 0x08,
+            0x44, 0x55, 0x66, 0x2F,
+        ]]);
+        let mut uds = UdsClient::new(ch);
+        let dtcs = uds.read_dtcs_by_status_mask(0xFF).unwrap();
+        assert_eq!(dtcs, vec![
+            RawDtc { code: [0x11, 0x22, 0x33], status: 0x08 },
+            RawDtc { code: [0x44, 0x55, 0x66], status: 0x2F },
+        ]);
+    }
+
+    #[test]
+    fn read_dtcs_empty_list() {
+        let ch = MockChannel::new(vec![vec![0x59, 0x02, 0xFF]]);
+        let mut uds = UdsClient::new(ch);
+        let dtcs = uds.read_dtcs_by_status_mask(0xFF).unwrap();
+        assert!(dtcs.is_empty());
     }
 }
