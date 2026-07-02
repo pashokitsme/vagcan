@@ -150,20 +150,31 @@ fn score_printable(bytes: &[u8]) -> u32 {
 /// plaintext bytes. Ties resolve to the lowest `w7` (candidates are tried in
 /// ascending order and only strictly-greater scores replace the winner).
 fn recover_w7(records: &[RawRecord]) -> u32 {
+    // The first-block TEA decrypt does not depend on the w7 candidate — w7
+    // only feeds into the IV, which is XOR'd in *after* decryption. Compute
+    // it once per record instead of once per (w7, record) pair (256x fewer
+    // TEA block decryptions).
+    let first_block_decs: Vec<(u32, u16, [u8; 8])> = records
+        .iter()
+        .filter_map(|rec| {
+            let RawRecord::Data { cipher, len, index } = rec else {
+                return None;
+            };
+            if cipher.len() < 8 {
+                return None;
+            }
+            let first_block: [u8; 8] = cipher[0..8].try_into().unwrap();
+            let dec = tea_decrypt_block(first_block, &KEY_CLB);
+            Some((*index, *len, dec))
+        })
+        .collect();
+
     let mut best_w7 = 0u32;
     let mut best_score: i64 = -1;
     for w7 in 0..=255u32 {
         let mut score = 0u32;
-        for rec in records {
-            let RawRecord::Data { cipher, len, index } = rec else {
-                continue;
-            };
-            if cipher.len() < 8 {
-                continue;
-            }
+        for (index, len, dec) in &first_block_decs {
             let iv = clb_iv(w7, *index);
-            let first_block: [u8; 8] = cipher[0..8].try_into().unwrap();
-            let dec = tea_decrypt_block(first_block, &KEY_CLB);
             let mut plain = [0u8; 8];
             for i in 0..8 {
                 plain[i] = dec[i] ^ iv[i];
@@ -179,26 +190,33 @@ fn recover_w7(records: &[RawRecord]) -> u32 {
     best_w7
 }
 
-/// Decrypt a `.clb` file's bytes into the decoded label text (the same
-/// format `label::parse_label` accepts). Latin-1 decoding is applied
-/// byte-for-byte, matching `label::parse_label`'s own decoding.
-pub fn decrypt_clb(data: &[u8]) -> String {
+/// Decrypt a `.clb` file's bytes into raw decoded label bytes (Latin-1
+/// encoded, one record per line, records joined by `\n`) — the same raw byte
+/// format `label::parse_label` accepts for plaintext `.lbl` files. Callers
+/// must NOT re-encode this as UTF-8 text before passing it to
+/// `parse_label`: `parse_label` performs its own Latin-1 decoding on raw
+/// bytes, and turning the Latin-1 bytes into a Rust `String` first (which is
+/// UTF-8) then re-decoding as Latin-1 double-encodes any non-ASCII byte, e.g.
+/// `0xB0` ('°') would come out as "Â°".
+pub fn decrypt_clb(data: &[u8]) -> Vec<u8> {
     let records = parse_container(data);
     let w7 = recover_w7(&records);
-    let mut lines = Vec::with_capacity(records.len());
-    for rec in &records {
+    let mut out = Vec::new();
+    for (i, rec) in records.iter().enumerate() {
+        if i > 0 {
+            out.push(b'\n');
+        }
         match rec {
-            RawRecord::Blank => lines.push(String::new()),
+            RawRecord::Blank => {}
             RawRecord::Data { cipher, len, index } => {
                 let iv = clb_iv(w7, *index);
                 let plain = tea_cbc_decrypt(cipher, &KEY_CLB, iv);
                 let take = (*len as usize).min(plain.len());
-                let text: String = plain[..take].iter().map(|&b| b as char).collect();
-                lines.push(text);
+                out.extend_from_slice(&plain[..take]);
             }
         }
     }
-    lines.join("\n")
+    out
 }
 
 #[cfg(test)]
@@ -219,10 +237,19 @@ mod tests {
             .collect()
     }
 
+    /// Decode raw Latin-1 bytes into a `String`, exactly like
+    /// `label::parse_label`'s internal `decode_latin1` does. Used by tests to
+    /// check `decrypt_clb`'s `Vec<u8>` output without re-introducing the
+    /// double-encoding bug (i.e. this must NOT go through `String::from_utf8`).
+    fn decode_latin1_for_test(bytes: &[u8]) -> String {
+        bytes.iter().map(|&b| b as char).collect()
+    }
+
     #[test]
     fn decrypts_fixture_to_expected_lines() {
         let data = hex_decode(FIXTURE_HEX);
-        let text = decrypt_clb(&data);
+        let decoded = decrypt_clb(&data);
+        let text = decode_latin1_for_test(&decoded);
         let lines: Vec<&str> = text.split('\n').collect();
         assert_eq!(lines, vec!["001,1,Engine Speed,,Range: 0..8000 /min", "001,2,Coolant,,Range: -48..143 C"]);
     }
@@ -237,8 +264,8 @@ mod tests {
     #[test]
     fn decrypted_fixture_parses_into_measurements() {
         let data = hex_decode(FIXTURE_HEX);
-        let text = decrypt_clb(&data);
-        let lf = parse_label("fixture.clb", text.as_bytes());
+        let decoded = decrypt_clb(&data);
+        let lf = parse_label("fixture.clb", &decoded);
         let measurements: Vec<_> = lf
             .records
             .iter()
@@ -256,37 +283,127 @@ mod tests {
         assert_eq!(measurements[1].name, "Coolant");
     }
 
+    /// Forward TEA block encryption: the "reverse" schedule (s starting at 0,
+    /// running forward, applying the inverse of the decrypt round). Shared by
+    /// the roundtrip sanity check and the non-ASCII regression test, which
+    /// both need to synthesize ciphertext from a chosen plaintext.
+    fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
+        let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
+        let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
+        let mut s = 0u32;
+        for _ in 0..32 {
+            s = s.wrapping_add(DELTA);
+            v0 = v0.wrapping_add(
+                (v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]),
+            );
+            v1 = v1.wrapping_add(
+                (v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]),
+            );
+        }
+        let mut out = [0u8; 8];
+        out[0..4].copy_from_slice(&v0.to_le_bytes());
+        out[4..8].copy_from_slice(&v1.to_le_bytes());
+        out
+    }
+
+    /// Forward TEA-CBC encryption, the inverse of `tea_cbc_decrypt`:
+    /// `C_i = TEA_enc(P_i XOR C_{i-1})`, with `C_{-1} = iv`. `plain.len()`
+    /// must be a multiple of 8 (callers pad short records with zero bytes;
+    /// only the first `len` decrypted bytes are ever read back out).
+    fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
+        assert_eq!(plain.len() % 8, 0);
+        let mut out = Vec::with_capacity(plain.len());
+        let mut prev = iv;
+        for block in plain.chunks_exact(8) {
+            let mut xored = [0u8; 8];
+            for i in 0..8 {
+                xored[i] = block[i] ^ prev[i];
+            }
+            let cipher = tea_encrypt_block(xored, key);
+            out.extend_from_slice(&cipher);
+            prev = cipher;
+        }
+        out
+    }
+
     #[test]
     fn tea_cbc_roundtrip_is_reversible_with_matching_encrypt() {
         // Sanity check independent of the fixture: TEA is a Feistel-style
-        // cipher, so encrypting with the "reverse" schedule (s starting at 0,
-        // running forward, applying the inverse of the decrypt round) and
-        // then decrypting must recover the original 8-byte block, using the
-        // fixture's own key.
-        fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
-            let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
-            let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
-            let mut s = 0u32;
-            for _ in 0..32 {
-                s = s.wrapping_add(DELTA);
-                v0 = v0.wrapping_add(
-                    (v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]),
-                );
-                v1 = v1.wrapping_add(
-                    (v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]),
-                );
-            }
-            let mut out = [0u8; 8];
-            out[0..4].copy_from_slice(&v0.to_le_bytes());
-            out[4..8].copy_from_slice(&v1.to_le_bytes());
-            out
-        }
-
+        // cipher, so encrypting and then decrypting must recover the
+        // original 8-byte block, using the fixture's own key.
         let plain: [u8; 8] = *b"ABCDEFGH";
         let key = KEY_CLB;
         let cipher = tea_encrypt_block(plain, &key);
         let decrypted = tea_decrypt_block(cipher, &key);
         assert_eq!(decrypted, plain);
+    }
+
+    /// Regression test for the double Latin-1->UTF-8->Latin-1 encoding bug:
+    /// a decrypted `.clb` record containing the non-ASCII byte `0xB0` ('°')
+    /// must come out of `decrypt_clb` + `parse_label` as a single '°'
+    /// (U+00B0), not the mis-decoded two-character "Â°". Synthesizes a
+    /// two-record container (an ordinary ASCII record plus the °C record) so
+    /// `recover_w7`'s printability scoring has enough signal across two
+    /// independent first blocks to reliably prefer the true `w7` over noise.
+    #[test]
+    fn non_ascii_degree_byte_is_not_double_encoded() {
+        let w7 = 42u32;
+        let lines: [Vec<u8>; 2] = [
+            b"001,1,Engine Speed,,Range: 0..8000 /min".to_vec(),
+            {
+                // "001,2,Coolant,,Range: -48...143 \xb0C" — built byte-by-byte
+                // since 0xB0 alone is not valid UTF-8 and can't sit in a &str
+                // literal.
+                let mut v = b"001,2,Coolant,,Range: -48...143 ".to_vec();
+                v.push(0xb0);
+                v.push(b'C');
+                v
+            },
+        ];
+
+        let mut data = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let len = line.len();
+            assert!(len < 0x8000, "test fixture line too long for 2-byte len header");
+            let clen = len.div_ceil(8) * 8;
+            let mut padded = line.clone();
+            padded.resize(clen, 0);
+            let iv = clb_iv(w7, index as u32);
+            let cipher = tea_cbc_encrypt(&padded, &KEY_CLB, iv);
+
+            data.push((len >> 8) as u8);
+            data.push((len & 0xff) as u8);
+            data.extend_from_slice(&cipher);
+            data.push(0x00);
+            data.push(0x0a);
+        }
+
+        // Confirm the fixture actually round-trips through w7 recovery
+        // before trusting the parse_label assertions below.
+        let records = parse_container(&data);
+        assert_eq!(recover_w7(&records), w7);
+
+        let decoded = decrypt_clb(&data);
+        let lf = parse_label("fixture_nonascii.clb", &decoded);
+        let measurements: Vec<_> = lf
+            .records
+            .iter()
+            .filter_map(|r| match r {
+                Record::Measurement(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(measurements.len(), 2);
+        let coolant = &measurements[1];
+        assert_eq!(coolant.name, "Coolant");
+        assert_eq!(coolant.description, "Range: -48...143 \u{b0}C");
+        assert!(
+            coolant.description.contains('\u{b0}') && !coolant.description.contains("Â°"),
+            "expected a single '°' (U+00B0), got: {:?}",
+            coolant.description
+        );
+        assert_eq!(coolant.unit.as_deref(), Some("\u{b0}C"));
+        assert_eq!(coolant.range, Some([-48.0, 143.0]));
     }
 
     #[test]

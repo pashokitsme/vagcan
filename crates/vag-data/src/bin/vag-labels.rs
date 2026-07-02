@@ -119,8 +119,8 @@ fn run() -> Result<(), String> {
                         .and_then(|n| n.to_str())
                         .unwrap_or("<?>")
                         .to_string();
-                    let text = decrypt_clb(&bytes);
-                    let lf = parse_label(name, text.as_bytes());
+                    let decoded = decrypt_clb(&bytes);
+                    let lf = parse_label(name, &decoded);
                     tally(&mut stats, &lf);
                     corpus.push(lf);
                 }
