@@ -144,26 +144,39 @@ fn extract_range_unit(description: &str) -> (Option<String>, Option<[f64; 2]>) {
     (unit, Some([min, max]))
 }
 
+/// The verbatim substring of `content` following the `n`-th comma (0-indexed:
+/// `n == 1` is everything after the first comma). Preserves free-text exactly,
+/// including embedded commas and internal spacing. Returns `""` if there are
+/// fewer than `n` commas.
+fn tail_after_comma(content: &str, n: usize) -> String {
+    let mut seen = 0;
+    for (i, b) in content.bytes().enumerate() {
+        if b == b',' {
+            seen += 1;
+            if seen == n {
+                return content[i + 1..].to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 /// Parse a single content line (comment already stripped) into a record.
 fn parse_record(content: &str, comment: Option<&str>) -> Record {
     let fields: Vec<String> = content.split(',').map(|f| f.trim().to_string()).collect();
     let tag = fields[0].clone();
     let get = |i: usize| fields.get(i).cloned().unwrap_or_default();
-    // Description rejoins trailing fields so commas inside a description survive.
-    let joined_from = |i: usize| {
-        if fields.len() > i {
-            fields[i..].join(",")
-        } else {
-            String::new()
-        }
-    };
+    // Free-text tails (description, coding meaning) are taken verbatim from the
+    // original line so embedded commas AND internal spacing survive exactly;
+    // the short structured fields before them are still trimmed.
+    let tail = |n: usize| tail_after_comma(content, n);
 
     if tag.chars().all(|c| c.is_ascii_digit()) && !tag.is_empty() {
         let block = tag.parse().unwrap_or(0);
         let field = get(1).parse().unwrap_or(0);
         let name = get(2);
         let location = get(3);
-        let description = joined_from(4);
+        let description = tail(4);
         let (unit, range) = extract_range_unit(&description);
         return Record::Measurement(Measurement {
             block,
@@ -186,7 +199,7 @@ fn parse_record(content: &str, comment: Option<&str>) -> Record {
             byte: get(1),
             bits: get(2),
             value: get(3),
-            meaning: joined_from(4),
+            meaning: tail(4),
         },
         // Adaptation channels: A followed by three digits.
         t if t.len() == 4
@@ -198,7 +211,7 @@ fn parse_record(content: &str, comment: Option<&str>) -> Record {
                 index: get(1),
                 name: get(2),
                 location: get(3),
-                description: joined_from(4),
+                description: tail(4),
             }
         }
         _ => Record::Other {
@@ -279,6 +292,17 @@ mod tests {
         assert_eq!(m.name, "Lever position");
         assert_eq!(m.location, "P/N");
         assert_eq!(m.description, "Back-up,T15");
+    }
+
+    #[test]
+    fn description_preserves_comma_space_and_internal_spacing() {
+        // Free-text tail is taken verbatim: an embedded ", " keeps its space,
+        // and leading space after the location comma is not trimmed away.
+        let lf = parse_label("t.lbl", b"010,1,Mode,, 0 = Off, 1 = On");
+        let m = measurements(&lf)[0];
+        assert_eq!(m.name, "Mode");
+        assert_eq!(m.location, "");
+        assert_eq!(m.description, " 0 = Off, 1 = On");
     }
 
     #[test]
