@@ -110,6 +110,18 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
     let mut stats = BuildStats::default();
     let tx = conn.transaction()?;
     {
+        // Idempotent rebuild: clear any existing rows before inserting, so
+        // running `build_db` twice against the same path overwrites cleanly
+        // instead of tripping the `label_file.name` UNIQUE constraint.
+        // Children first to respect the FK references to `label_file`.
+        tx.execute_batch(
+            "DELETE FROM measurement;\
+             DELETE FROM redirect;\
+             DELETE FROM adaptation;\
+             DELETE FROM long_coding;\
+             DELETE FROM label_file;",
+        )?;
+
         let mut insert_file = tx.prepare("INSERT INTO label_file (name) VALUES (?1)")?;
         let mut insert_measurement = tx.prepare(
             "INSERT INTO measurement \
@@ -325,13 +337,16 @@ mod tests {
         }
     }
 
-    /// Populate a temp labels dir with one `.lbl` (measurement + redirect)
-    /// and the shared `.clb` fixture (two measurements).
+    /// Populate a temp labels dir with one `.lbl` (measurement + redirect +
+    /// adaptation + long-coding) and the shared `.clb` fixture (two
+    /// measurements).
     fn write_fixture_labels(ws: &TempWorkspace) {
         std::fs::write(
             ws.labels_dir.join("index.lbl"),
             b"001,1,Engine Speed,(G28),Range: 0...6500 RPM\n\
-              REDIRECT,target.lbl,022-906-032-C  ; a comment that is not persisted",
+              REDIRECT,target.lbl,022-906-032-C  ; a comment that is not persisted\n\
+              A091,1,Some Channel,,desc\n\
+              LC,02,0~7,02,Manufacturer: Audi",
         )
         .unwrap();
         std::fs::write(
@@ -365,6 +380,20 @@ mod tests {
             .collect()
     }
 
+    fn adaptations_of(lf: &LabelFile) -> Vec<&Record> {
+        lf.records
+            .iter()
+            .filter(|r| matches!(r, Record::Adaptation { .. }))
+            .collect()
+    }
+
+    fn long_codings_of(lf: &LabelFile) -> Vec<&Record> {
+        lf.records
+            .iter()
+            .filter(|r| matches!(r, Record::LongCoding { .. }))
+            .collect()
+    }
+
     #[test]
     fn round_trip_reconstructs_same_measurements_and_redirects_as_load_corpus() {
         let ws = TempWorkspace::new("roundtrip");
@@ -377,6 +406,8 @@ mod tests {
         assert_eq!(stats.files, 3);
         assert_eq!(stats.measurements, 4); // 1 + 1 + 2 from the .clb fixture
         assert_eq!(stats.redirects, 1);
+        assert_eq!(stats.adaptations, 1);
+        assert_eq!(stats.long_codings, 1);
 
         let cached = load_files(&ws.db_path).expect("load_files should succeed");
         assert_eq!(cached.len(), live.files.len());
@@ -402,7 +433,72 @@ mod tests {
                 "redirects mismatch for {}",
                 live_file.source
             );
+
+            let live_a = adaptations_of(live_file);
+            let cached_a = adaptations_of(cached_file);
+            assert_eq!(
+                live_a, cached_a,
+                "adaptations mismatch for {}",
+                live_file.source
+            );
+
+            let live_lc = long_codings_of(live_file);
+            let cached_lc = long_codings_of(cached_file);
+            assert_eq!(
+                live_lc, cached_lc,
+                "long codings mismatch for {}",
+                live_file.source
+            );
         }
+
+        // index.lbl carries the one adaptation + one long-coding record;
+        // assert the reconstructed values round-trip exactly.
+        let index_cached = cached
+            .iter()
+            .find(|f| f.source == "index.lbl")
+            .expect("index.lbl present");
+        match adaptations_of(index_cached).as_slice() {
+            [Record::Adaptation { channel, index, name, location, description }] => {
+                assert_eq!(channel, "A091");
+                assert_eq!(index, "1");
+                assert_eq!(name, "Some Channel");
+                assert_eq!(location, "");
+                assert_eq!(description, "desc");
+            }
+            other => panic!("expected exactly one Adaptation, got {other:?}"),
+        }
+        match long_codings_of(index_cached).as_slice() {
+            [Record::LongCoding { byte, bits, value, meaning }] => {
+                assert_eq!(byte, "02");
+                assert_eq!(bits, "0~7");
+                assert_eq!(value, "02");
+                assert_eq!(meaning, "Manufacturer: Audi");
+            }
+            other => panic!("expected exactly one LongCoding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_db_is_idempotent_on_rebuild() {
+        let ws = TempWorkspace::new("rebuild");
+        write_fixture_labels(&ws);
+
+        let first = build_db(&ws.labels_dir, &ws.db_path).expect("first build_db should succeed");
+        let second =
+            build_db(&ws.labels_dir, &ws.db_path).expect("second build_db should succeed");
+
+        assert_eq!(first, second, "row counts must not double on rebuild");
+
+        let conn = Connection::open(&ws.db_path).unwrap();
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(count("label_file"), first.files as i64);
+        assert_eq!(count("measurement"), first.measurements as i64);
+        assert_eq!(count("redirect"), first.redirects as i64);
+        assert_eq!(count("adaptation"), first.adaptations as i64);
+        assert_eq!(count("long_coding"), first.long_codings as i64);
     }
 
     #[test]

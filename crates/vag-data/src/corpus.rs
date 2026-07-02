@@ -62,7 +62,10 @@ pub fn load_corpus(dir: &Path) -> io::Result<CorpusLoad> {
                     let name = file_name_or(&path, "<?>");
                     files.push(parse_label(name, &bytes));
                 }
-                Err(_) => read_errors += 1,
+                Err(e) => {
+                    eprintln!("warn: cannot read {}: {e}", path.display());
+                    read_errors += 1;
+                }
             }
         } else if has_ext(&path, "clb") {
             clb_count += 1;
@@ -72,7 +75,10 @@ pub fn load_corpus(dir: &Path) -> io::Result<CorpusLoad> {
                     let decoded = decrypt_clb(&bytes);
                     files.push(parse_label(name, &decoded));
                 }
-                Err(_) => read_errors += 1,
+                Err(e) => {
+                    eprintln!("warn: cannot read {}: {e}", path.display());
+                    read_errors += 1;
+                }
             }
         } else {
             other_count += 1;

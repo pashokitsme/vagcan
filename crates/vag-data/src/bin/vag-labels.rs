@@ -123,11 +123,20 @@ fn print_lookup(db: LabelDb, part_no: &str) {
             println!("== Lookup {part_no} ==");
             println!("Resolved file: {}", file.source);
             let measurements = db.measurements(part_no);
-            if measurements.is_empty() {
-                println!("(no measurements in resolved file)");
+            let total = measurements.len();
+            let named: Vec<_> = measurements
+                .into_iter()
+                .filter(|m| !m.name.trim().is_empty())
+                .collect();
+            if named.is_empty() {
+                if total == 0 {
+                    println!("(no measurements in resolved file)");
+                } else {
+                    println!("({total} measurements, all empty placeholders)");
+                }
             } else {
                 println!("Measurements:");
-                for m in measurements {
+                for m in named {
                     let unit = m.unit.as_deref().unwrap_or("");
                     println!("  {:>4}.{:<3} {}  [{}]", m.block, m.field, m.name, unit);
                 }
