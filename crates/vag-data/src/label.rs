@@ -5,9 +5,10 @@
 //! a numeric block id (a measuring-value label), `REDIRECT`, `A###` (adaptation
 //! channel), `LC` (long coding), or others we keep generically.
 //!
-//! The compiled/encrypted `.clb` sibling format is NOT handled here (see the crate
-//! README / follow-up notes): it is a fixed-keystream-XOR container that needs its
-//! own reverse-engineering pass. Most MQB-era labels ship only as `.clb`.
+//! The compiled/encrypted `.clb` sibling format is TEA-CBC encrypted and IS
+//! handled, but not here: see the [`crate::clb`] module (decryption) and the
+//! `vag-labels` binary (which feeds decrypted `.clb` bytes back through
+//! `parse_label`). Most MQB-era labels ship only as `.clb`.
 
 use serde::Serialize;
 
