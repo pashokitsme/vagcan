@@ -1,5 +1,12 @@
 # vagcan P0 — Protocol Stack on Mocks — Implementation Plan
 
+> **STATUS: COMPLETE — merged to master.** All 11 tasks implemented, reviewed
+> (per-task + whole-branch), and merged. `vag-transport`, `vag-capture`, and
+> `vag-protocol` are green (ISO-TP single/multi-frame, UDS client with read-only
+> allowlist, RDBI/DTC/TesterPresent/SessionControl, end-to-end replay test).
+> A malformed-frame panic and a clippy `never_loop` were caught in review and fixed.
+> This plan is kept for history; the code is the source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build and fully test the ISO-TP + UDS diagnostic protocol stack against mock/replay transports, with zero hardware, so later phases (cable RE, data DB, CLI) plug into a proven core.

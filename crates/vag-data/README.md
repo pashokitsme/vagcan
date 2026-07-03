@@ -1,43 +1,58 @@
 # vag-data
 
-Static VAG diagnostic data: parsers and tables that turn raw ECU bytes and
-Ross-Tech VCDS label files into human-meaningful names, units, and ranges.
+Static VAG diagnostic data: parsers, decoders, and lookup that turn Ross-Tech VCDS
+label files into human-meaningful measurement names, units, and ranges.
 
-## What P2 delivers
+## Modules
 
-- `label` module — parser for the **plaintext `.lbl`** VCDS label format
-  (ISO-8859-1, CRLF, `;`-comments). Handles measuring-value labels
-  (`block,field,name,location,description` with `Range:`/unit extraction),
-  `REDIRECT`, `A###` adaptation channels, `LC` long-coding, and keeps any other
-  record kind verbatim.
-- `vag-labels` binary — walks a VCDS `Labels/` directory, parses every `.lbl`
-  into a structured JSON corpus, and prints a coverage summary.
+- **`label`** — parser for the plaintext `.lbl` VCDS label format (ISO-8859-1, CRLF,
+  `;`-comments). Handles measuring-value labels
+  (`block,field,name,location,description` with `Range:`/unit extraction), `REDIRECT`,
+  `A###` adaptation channels, `LC` long-coding, and keeps any other record kind verbatim.
+- **`clb`** — decrypts the compiled `.clb` label format (**TEA-CBC**, key `KEY_CLB`,
+  per-record IV), then feeds the plaintext through the `label` parser. See "Ciphers" below.
+- **`rod`** — decodes the `.rod` UDS/ODX format (`UDS_EV/`): section framing
+  (`[CMP]/[ADP]/[MWB]/…`) + **TEA-CBC** (`KEY_ROD`, section-tag IV) + zlib inflate for the
+  compressed sections. `decode_rod(&[u8]) -> Vec<RodSection>`.
+- **`tea`** — shared TEA primitives used by `clb` and `rod`.
+- **`db`** — `LabelDb`: resolves an ECU part number to its label file through `REDIRECT`
+  chains (exact + `?`-wildcard, most-specific-wins, cycle-guarded) and looks up measurements
+  by `(part_no, block, field)`. Empty-placeholder measurements are filtered here.
+- **`corpus`** — `load_corpus(dir)`: walk a `Labels/` dir, parse `.lbl`, decrypt+parse
+  `.clb`, into a `Vec<LabelFile>`.
 
-Against the reference install (VCDS-RUS, 2884 files): **1202 `.lbl` files parse
-into 42,738 measurements, 9,168 adaptation labels, 4,795 long-coding labels,
-3,739 redirects.**
+## Binary
 
 ```
+# parse+decrypt a Labels dir into a JSON corpus + coverage summary
 cargo run -p vag-data --bin vag-labels -- /path/to/VCDS/Labels --out corpus.json --summary
+
+# resolve a part number to its measurements
+cargo run -p vag-data --bin vag-labels -- /path/to/VCDS/Labels --lookup 06F-906-056-AXW
 ```
 
-## Known gap: the `.clb` format (follow-up RE task)
+Against the reference install (~2884 files): **1202 `.lbl` + 1627 `.clb` all parse**;
+`.lbl` alone yields 42,738 measurements / 9,168 adaptations / 4,795 long-codings / 3,739
+redirects, and every `.clb` now decrypts through the same parser.
 
-1627 of the 2829 label files (57%) are **compiled/encrypted `.clb`**, not plaintext.
-Critically, **the MQB-era engine labels we need for the Octavia mk3 (04E, 06K, 8V0,
-5G0, 5Q0, …) ship ONLY as `.clb`** — none have a plaintext `.lbl`.
+## Ciphers (reverse-engineered for interoperability)
 
-Investigation so far:
-- `.clb` is a binary container. Byte 0 is `0x00`, byte 1 looks like a length/id.
-- XOR of two different `.clb` files zeros out their shared leading bytes and ~31%
-  of the whole file — i.e. it is a **fixed keystream XOR'd across all files**, not
-  per-file random encryption. That makes it recoverable via known-plaintext /
-  crib-dragging, but it is a dedicated reverse-engineering task (like the cable),
-  not a quick parse.
-- There is no clean known-plaintext pair in the corpus (only one part number
-  exists as both `.lbl` and `.clb`, and those two hold different content), so the
-  keystream must be recovered by crib-dragging common label text (`Range:`,
-  `Engine Speed`, `RPM`, the copyright header) against the ciphertext.
+The compiled formats are not documented by Ross-Tech; the algorithms below were recovered
+from an unpacked build of the VCDS binary to read the user's own vehicle's label data.
 
-This is tracked as a P2-follow-up; the plaintext parser above stands on its own and
-covers the older KWP-era ECUs today.
+- **`.clb` (modern)** — TEA (32-round, `DELTA=0x9E3779B9`), CBC, `KEY_CLB`, a per-record IV
+  derived from a file constant + record index. (Legacy pre-VCDS-11.3 `.clb` used a different
+  keystream cipher; our files are the modern one.)
+- **`.rod`** — same TEA in CBC with `KEY_ROD`; IV seeded from the section tag; compressed
+  sections (MWB/ADP/…) are zlib-deflated under the encryption.
+- The `KEY_ROD` IV also mixes two 256-byte tables (`rod_mt.bin`, `rod_ks.bin`) embedded in
+  the crate.
+
+### Known gap (documented, not built)
+`.rod` MWB rows are `<6-digit measurement id>,<code>` — the UDS/ODX measurement **index**.
+The human-readable names live in `TTTEXT.ROD` (same cipher) and require joining on those IDs.
+That TTText name-resolution layer, plus the per-record IV "product" term for the small subset
+of records that need it (one runtime memory dump), are future work — `.rod` is a standalone
+decoder here and is not ingested into `LabelDb`/the SQLite corpus. Readable measurement names
+for MQB engines already come from the cracked `.clb` files, so this gap is a bonus layer, not
+a blocker.

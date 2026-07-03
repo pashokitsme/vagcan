@@ -1,9 +1,40 @@
 # vagcan — VAG CAN-bus Diagnostics CLI (PRD / Design)
 
-**Date:** 2026-07-02
-**Status:** Approved design, pre-implementation
+**Date:** 2026-07-02 (progress updated 2026-07-03)
+**Status:** In progress — data layer done; transport (P1) blocked on hardware capture
 **Author:** Pavel Smirnov (with Claude)
-**Working name:** `vagcan` (subject to rename)
+**Working name:** `vagcan`
+
+---
+
+## 0. Current state (2026-07-03)
+
+Snapshot of what is actually built and merged to `master`. The code is the source of
+truth; the design sections below are kept for rationale.
+
+**Done & merged:**
+- **P0 — protocol stack** (`vag-transport`, `vag-capture`, `vag-protocol`): software
+  ISO-TP (ISO 15765-2) + UDS client (ISO 14229) with a hard read-only service allowlist,
+  RDBI / ReadDTCInformation / TesterPresent / SessionControl, tested against mocks + replay.
+- **Data layer** (`vag-data`): `.lbl` parser; `.clb` decrypt (TEA-CBC, reverse-engineered);
+  `.rod` decoder (TEA-CBC + zlib); `LabelDb` part-number→measurement lookup with `REDIRECT`
+  resolution; `load_corpus`.
+- **`vag-db`**: SQLite cache of the parsed corpus (`build` / `lookup` / `stats` / `rod`).
+- **Label ciphers cracked for interop** — recovered from an unpacked VCDS build to read the
+  user's own vehicle data: `.clb` (TEA-CBC / `KEY_CLB`), `.rod` (TEA-CBC / `KEY_ROD` + zlib).
+
+**Remaining:**
+- **P1 — cable reverse-engineering** (`vag-hex`): the only thing gating live reads. Blocked
+  on a USB capture of VCDS↔cable traffic (see §2). Not started.
+- **`vag-core` + CLI/TUI** (`monitor`, `dtc`, `sniff`) and the **run-logger** (§12): depend
+  on P1.
+- **`.rod` UDS names** (TTTEXT.ROD join + one runtime dump): parked, optional — readable
+  names already come from `.clb`.
+
+**Explicitly out of scope (boundary):** we do **not** reverse-engineer or patch the VCDS
+loader / its anti-clone protection. Our RE is label **file-format** interoperability (reading
+the owner's own car data) and reversing the **cable's own protocol** so `vagcan` drives it —
+never circumventing the commercial software's protection.
 
 ---
 
