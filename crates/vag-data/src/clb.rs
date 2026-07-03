@@ -8,56 +8,9 @@
 //! not stored in the file; it is recovered by brute force, scoring each
 //! candidate's decrypted output for printability.
 
-const DELTA: u32 = 0x9E37_79B9;
-/// Initial `sum` for decryption: `DELTA.wrapping_mul(32)`.
-const SUM0: u32 = 0xC6EF_3720;
+use crate::tea::{tea_cbc_decrypt, tea_decrypt_block};
+
 const KEY_CLB: [u32; 4] = [0xfa7e_14d0, 0x249b_910e, 0x2fdd_6ffc, 0x1583_4a78];
-
-/// Decrypt one 8-byte TEA block (32 rounds), before the CBC xor with the
-/// previous ciphertext block / IV.
-fn tea_decrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
-    let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
-    let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
-    let mut s = SUM0;
-    for _ in 0..32 {
-        v1 = v1.wrapping_sub(
-            (v0 << 4)
-                .wrapping_add(key[2])
-                ^ v0.wrapping_add(s)
-                ^ (v0 >> 5).wrapping_add(key[3]),
-        );
-        v0 = v0.wrapping_sub(
-            (v1 << 4)
-                .wrapping_add(key[0])
-                ^ v1.wrapping_add(s)
-                ^ (v1 >> 5).wrapping_add(key[1]),
-        );
-        s = s.wrapping_sub(DELTA);
-    }
-    let mut out = [0u8; 8];
-    out[0..4].copy_from_slice(&v0.to_le_bytes());
-    out[4..8].copy_from_slice(&v1.to_le_bytes());
-    out
-}
-
-/// TEA-CBC decrypt: `cipher` is processed in 8-byte blocks (any trailing
-/// partial block, which should not occur for well-formed records, is
-/// ignored). `P_i = TEA_dec(C_i) XOR C_{i-1}`, with `C_{-1} = iv`.
-fn tea_cbc_decrypt(cipher: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(cipher.len());
-    let mut prev = iv;
-    for block in cipher.chunks_exact(8) {
-        let block: [u8; 8] = block.try_into().unwrap();
-        let dec = tea_decrypt_block(block, key);
-        let mut plain = [0u8; 8];
-        for i in 0..8 {
-            plain[i] = dec[i] ^ prev[i];
-        }
-        out.extend_from_slice(&plain);
-        prev = block;
-    }
-    out
-}
 
 /// Per-record IV: a function of the file-constant `w7` and the record's
 /// index `w15`. All arithmetic is u32 wrapping.
@@ -223,6 +176,7 @@ pub fn decrypt_clb(data: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::label::{parse_label, Record};
+    use crate::tea::DELTA;
 
     /// Synthetic 80-byte `.clb` fixture (TEA-CBC-encrypted with `KEY_CLB`,
     /// `w7 = 7`) — no proprietary data, produced solely to exercise this

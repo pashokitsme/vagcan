@@ -9,6 +9,7 @@ pub mod clb;
 pub mod corpus;
 pub mod db;
 pub mod label;
+mod tea;
 
 pub use clb::decrypt_clb;
 pub use corpus::{load_corpus, CorpusLoad};
