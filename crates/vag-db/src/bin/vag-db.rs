@@ -4,13 +4,16 @@
 //!   vag-db build  <labels-dir> <out.sqlite>
 //!   vag-db lookup <db.sqlite>  <part-no>
 //!   vag-db stats  <db.sqlite>
+//!   vag-db rod    <file.rod>
 //!
 //! `build` walks `<labels-dir>` (parsing every `.lbl` and decrypting+parsing
 //! every `.clb`, see [`vag_data::load_corpus`]) and writes the parsed corpus
 //! to a SQLite file, overwriting any existing tables of the same name.
 //! `lookup` loads that cache into a [`vag_data::LabelDb`] and resolves a part
 //! number exactly like `vag-labels --lookup`. `stats` prints row counts per
-//! table.
+//! table. `rod` decodes a `.rod` (UDS/ODX) file's sections and prints each
+//! one's tag, decode status, and text (see [`vag_data::decode_rod`]); `.rod`
+//! is NOT part of the SQLite corpus.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -20,7 +23,8 @@ use vag_db::build_db;
 const USAGE: &str = "usage:\n  \
     vag-db build  <labels-dir> <out.sqlite>\n  \
     vag-db lookup <db.sqlite>  <part-no>\n  \
-    vag-db stats  <db.sqlite>";
+    vag-db stats  <db.sqlite>\n  \
+    vag-db rod    <file.rod>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -50,6 +54,10 @@ fn run() -> Result<(), String> {
         "stats" => {
             let db_path = PathBuf::from(args.next().ok_or("stats needs <db.sqlite>")?);
             print_stats(&db_path)
+        }
+        "rod" => {
+            let rod_path = PathBuf::from(args.next().ok_or("rod needs <file.rod>")?);
+            print_rod(&rod_path)
         }
         "-h" | "--help" => {
             eprintln!("{USAGE}");
@@ -96,6 +104,26 @@ fn print_stats(db_path: &std::path::Path) -> Result<(), String> {
     println!("  redirect    : {}", count("redirect")?);
     println!("  adaptation  : {}", count("adaptation")?);
     println!("  long_coding : {}", count("long_coding")?);
+    Ok(())
+}
+
+/// Decode a `.rod` file (see [`vag_data::decode_rod`]) and print each
+/// section's tag, decode status, and text (when decoded).
+fn print_rod(rod_path: &std::path::Path) -> Result<(), String> {
+    let data = std::fs::read(rod_path).map_err(|e| format!("read {}: {e}", rod_path.display()))?;
+    let sections = vag_data::decode_rod(&data);
+    println!("== {} ({} section(s)) ==", rod_path.display(), sections.len());
+    for section in &sections {
+        println!("[{}] status={:?}", section.tag, section.status);
+        match &section.text {
+            Some(text) => {
+                for line in text.lines() {
+                    println!("    {line}");
+                }
+            }
+            None => println!("    (undecoded)"),
+        }
+    }
     Ok(())
 }
 

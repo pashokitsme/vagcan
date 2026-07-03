@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+miniz_oxide = "0.7"
 
 [[bin]]
 name = "vag-labels"
