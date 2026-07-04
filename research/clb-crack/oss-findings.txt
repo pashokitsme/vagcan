@@ -1,0 +1,81 @@
+OSS / WEB SEARCH FOR MODERN VCDS .clb / .rod (UDS_EV) DECRYPTION
+Date: 2026-07-03
+Verdict: NOTHING USABLE for the MODERN cipher. Only the LEGACY cipher is public.
+================================================================================
+
+SUMMARY
+-------
+No open-source project, forum post, or blog publishes the MODERN VCDS label
+cipher (the 64-bit CBC block cipher used by MQB .clb and all .rod/UDS_EV files).
+Every public artifact only covers the LEGACY keystream cipher, which stopped
+working at VCDS 11.3. The community consensus (and the one active reimplementer)
+explicitly refuses to release modern key material. Confirmed across GitHub,
+Ross-Tech forums, VW Vortex, MHH Auto, CarTechnology, Digital-Kaos.
+
+KEY CORROBORATION OF OUR OWN FINDINGS
+-------------------------------------
+- Multiple forum threads independently state: CLB decode tools work only up to
+  VCDS 11.2; "from version 11.3 onwards it is no longer possible to decode CLB
+  files", and encryption "changed again" around 17.8+. This is exactly the
+  legacy->modern boundary we characterized. So our modern-cipher hypothesis is
+  correct and the legacy tools genuinely cannot touch our samples.
+
+SOURCES EXAMINED
+----------------
+1. SVCdec  https://github.com/isublimity/SVCdec  (file: SVCdec.php)
+   - LEGACY cipher only (the "How to Copy and Paste" keystream we already have
+     in ref/SVCdec.php). Issue #1 shows it FAILS (";!--CANT--" on every line)
+     on a modern .clb (03L-906-018-CFF.clb) — i.e. it cannot do modern files.
+   - No modern key/algorithm. Nothing new.
+
+2. VAG-Looker  https://github.com/klosik007/VAG-Looker
+   - JavaScript parser for .lbl/.clb *display*. Does NOT decrypt. README only
+     says: ".clb files only after decoding - some tools are provided - it's
+     googlable" (i.e. points back to SVCdec-class legacy tools). No key/algo.
+
+3. PyVCDS  https://github.com/baconwaifu/PyVCDS  (+ no useful forks found)
+   - README explicitly REFUSES: "I will *NEVER* support decryption of CLB
+     labels. I may document the *file format*, but key material and/or
+     decryptors will NEVER be released." Does not even name the cipher.
+
+4. VCHP ("VAG COM Helper Program") — forum-distributed label editor/creator
+   - Claimed to create/edit label files, but all evidence points to it working
+     with plaintext .lbl / legacy .clb, not the modern cipher. Closed-source,
+     forum-only binary, no published algorithm or key. Not usable as a source.
+     (cartechnology thread 31210 / mhhauto — pages 403 to WebFetch.)
+
+5. Ross-Tech forums / VW Vortex / MHH Auto / CarTechnology / Digital-Kaos
+   - All only restate: CLB = "Crypted Label File", offline decode blocked since
+     11.3, decrypted at runtime when connected. No cipher name, key, or IV.
+
+6. ODX/UDS tooling (mercedes-benz/odxtools, TUMFTM/uds-decoder, bri3d/a2l2xdf)
+   - Handle *standard, unencrypted* ODX/PDX. Ross-Tech's .rod is a proprietary
+     ENCRYPTED repackaging, so these do NOT decrypt .rod content. Only useful
+     later for interpreting plaintext once we have the key.
+
+CONCLUSION
+----------
+The cheaper alternative (find a published modern key in OSS) is EXHAUSTED and
+NEGATIVE. To finish the modern crack, the dynamic-RE path in FINDINGS.md §5
+(unpack VCDS.exe, breakpoint the .clb/.rod read, dump key+IV+round function)
+remains the only route. No public reuse material exists.
+
+7. drive2.ru blog (user-supplied) https://www.drive2.ru/b/468938136907415669/
+   - Russian how-to using a legacy tool "Converter 0.5" to turn .clb -> .lbl.
+     Explicitly notes it "перестал поддерживать ... в последних версиях VCDS и
+     Васи" (stopped working on recent VCDS / Vasya-Diagnost versions). Same
+     legacy-only story, no algorithm/key/IV. Tool link (legacy, unverified):
+     drive.google.com/file/d/0B8X7Y8fsENqMQU5vZnU0ZG1iTXc/view
+     NOT usable for the modern cipher.
+
+URLS
+----
+https://github.com/isublimity/SVCdec
+https://github.com/isublimity/SVCdec/issues/1
+https://github.com/klosik007/VAG-Looker
+https://github.com/baconwaifu/PyVCDS
+https://www.vwvortex.com/threads/how-to-read-clb-files.4424113/
+https://mhhauto.com/Thread-VCDS-label-files-lbl-clb
+https://cartechnology.co.uk/printthread.php?tid=4853
+https://cartechnology.co.uk/printthread.php?tid=31210   (VCHP)
+https://github.com/mercedes-benz/odxtools

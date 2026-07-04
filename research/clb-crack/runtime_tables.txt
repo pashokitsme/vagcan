@@ -1,0 +1,25 @@
+# Runtime BSS tables dumped from live VCDS.exe (ARM64) by user, 2026-07-03
+# module base 0x00007ff7e7570000 ; ImageBase 0x140000000
+# MT table @ ImageBase+0x552bb0  (256 bytes, L100)
+# NOTE: last 32 bytes are ASCII "Copyright(c) 2004, Ross-Tech LLC" (key-string source)
+MT_HEX = """
+5615 8fdb c52a 057d 19c8 e536 a4b6 915e
+4736 3652 1c73 1100 209d c959 8a7a 7663
+e77e 74b2 2bce e496 92b1 b73c e88d 252f
+6b4b 0cc0 9505 182d 0847 1c5f e190 293f
+699f 9838 805a 1b4d 3a81 39f7 b463 6ed0
+334e 4b76 1393 1f74 4562 6e38 91bb 2ac4
+e54e d1ba 00ab 3e8a 0628 93b2 f83d f26c
+3620 72f7 67ae 8fd5 19b8 cbaa 543f 7098
+c4d6 7c03 233e 1ac1 98bb bd6d bf6e 70f5
+4d57 073e 6ec6 42f6 72fa 1c97 5b10 f351
+d03c 5c36 628b 76d7 2252 38bb 0a47 7235
+36ae 6035 20ec 9476 5ed4 28c5 7b3a 5702
+1d80 a397 bd93 5358 b51d 9cb5 6288 78b6
+0ff2 3bc3 140a 1e84 35ff 544a 7b08 8181
+436f 7079 7269 6768 7428 6329 2032 3030
+342c 2052 6f73 732d 5465 6368 204c 4c43
+"""
+# = "Copyright(c) 2004, Ross-Tech LLC" at offset 0xE0
+# D dword @ ImageBase+0x552ba4 (L4) = 00 0a 00 00   (LE u32 = 0x00000a00; byte0 = 0x00)
+D_HEX = "000a0000"

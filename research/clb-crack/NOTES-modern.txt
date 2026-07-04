@@ -1,0 +1,230 @@
+================================================================================
+MODERN VCDS .clb / .rod CIPHER -- CRACKED
+target: bin/VCDS-arm64-unpacked.exe (PE32+ AArch64, ImageBase 0x140000000)
+================================================================================
+
+STATUS: CRACKED. The modern (MQB) block cipher, both keys, the mode, and the
+.clb per-record IV are all recovered and validated on real samples. Only the
+.rod first-block IV derivation is not fully reversed (minor; see gap below).
+
+--------------------------------------------------------------------------------
+ALGORITHM
+--------------------------------------------------------------------------------
+TEA (Tiny Encryption Algorithm), the classic 64-bit block cipher.
+  * 32 rounds, delta = 0x9E3779B9.
+  * Decrypt starts sum at 0xC6EF3720 (= delta*32) and does sum += 0x61C88647
+    (= -delta) each round.
+  * Block = two 32-bit words, LITTLE-ENDIAN.
+  * Round function (decrypt):
+        v1 -= ((v0<<4)+k2) ^ (v0+sum) ^ ((v0>>5)+k3)
+        v0 -= ((v1<<4)+k0) ^ (v1+sum) ^ ((v1>>5)+k1)
+Mode: CBC. The engine prepends an 8-byte per-record IV to the ciphertext,
+TEA-CBC-decrypts the whole thing, then discards the IV plaintext block.
+Because it is CBC, blocks 2..n depend ONLY on ciphertext, so they decrypt
+exactly even without the IV; only each record's first 8 bytes need the IV.
+
+--------------------------------------------------------------------------------
+KEYS (two, selected by an internal keysel argument w4)
+--------------------------------------------------------------------------------
+Key array order is k = [w23, w22, w21, w24] (as consumed by the round function).
+
+  KEY_CLB  (.clb label files;   keysel w4 == 2):
+      k0=0xfa7e14d0  k1=0x249b910e  k2=0x2fdd6ffc  k3=0x15834a78
+
+  KEY_ROD  (.rod UDS/ODX files;  keysel w4 == 0):
+      k0=0x029b76a4  k1=0xcb6db50a  k2=0x71395d29  k3=0x0dbc09c2
+
+--------------------------------------------------------------------------------
+WHERE IN THE BINARY (VMAs)
+--------------------------------------------------------------------------------
+TEA decrypt core function : 0x1400e0658   (round loop @ 0x1400e0720)
+    sum constant 0xC6EF3720           @ 0x1400e07ec
+    step constant 0x61C88647 (-delta) @ 0x1400e07e8
+    KEY_CLB four words                @ 0x1400e07c8 .. 0x1400e07d4
+    KEY_ROD four words                @ 0x1400e07d8 .. 0x1400e07e4
+LE 32-bit word load helper           : 0x1400e04a8
+CBC XOR-with-previous helper         : 0x1400e0500  (prev<-cipher memcpy @0x1400e0784)
+.clb record decode caller (keysel=2) : 0x1400651f4  (fn from ~0x140064fd8)
+.clb per-record IV derivation fn     : 0x140064fd8
+Comms (non-label) TEA users, ignore  : 0x140033b94 (keysel=0, runtime tables),
+                                        0x1400e19f8 (keysel=0, comms cluster)
+
+Note: CryptAcquireContextA / CryptGenRandom are imported but only for RNG /
+network session crypto -- NOT used for label decryption (no CryptDecrypt /
+CryptImportKey imported). The label cipher is the custom TEA above.
+
+--------------------------------------------------------------------------------
+CONTAINER FRAMING (unchanged from FINDINGS.md, with one .rod fix)
+--------------------------------------------------------------------------------
+.clb : sequence of records  [00 <len16>] <cipher, padded to x8> [00 0a].
+       <len16> = plaintext length. Decrypt cipher with KEY_CLB (CBC).
+.rod : plaintext-framed sections [TAG]\r\n ... \r\n[/TAG]. Encrypted sections
+       (CMP DTC INC GES SLV ...) use header  80 00 <cipherlen> 00 00  followed
+       by ONE plaintext-length byte, THEN the ciphertext:
+            payload[0:5] = 80 00 <clen> 00 00
+            payload[5]   = plaintext length
+            payload[6:6+clen] = ciphertext   <-- note: skip the length byte
+       (The old decoder.py::rod_cmp_cipher read payload[5:], off by one.)
+       Decrypt cipher with KEY_ROD (CBC). Some sections (ADP/IDN/MWB here) are
+       stored un-framed / plaintext.
+
+--------------------------------------------------------------------------------
+.clb PER-RECORD IV (fn @0x140064fd8) -- fully reversed
+--------------------------------------------------------------------------------
+IV = word24 || word23 (little-endian), derived from:
+  w15 = a per-line counter (record index; stored+incremented at [obj+0x24]).
+  w7  = a byte constant within a file (from context bytes + trailing chars of a
+        context string). Recovered per-file by a 256-way brute that maximises
+        first-block printability -- unambiguous; observed w7 == 233 (= 0xE9,
+        also the SVCdec "method 3" z constant).
+Formula (see decrypt_modern.py::clb_iv):
+  a   = (w7+2)*(w15+1)*(w15+3)
+  w24 = (w7+1)*(w15+2) + a
+  r   = w7 % (w15+1);  w8 = r if r!=0 else w15 % (w7+1)
+  w23 = (w7+3)*(w7+1)*(w15+2) + w8
+  if w24 < 0xffff: w24 = (w24<<16) + (w15+4)*(w7+3)*(w7+1)*(w15+2)
+  if w23 < 0xffff: w23 = (w23<<16) + (w15+1)*(w15+2)*(w15+3)
+  (all arithmetic mod 2^32)
+
+--------------------------------------------------------------------------------
+.rod SECTION FRAMING -- FULLY reversed (header parser @0x140033d58)
+--------------------------------------------------------------------------------
+Every encrypted section payload starts with a UNIFIED 6-byte header = two
+24-bit BIG-ENDIAN integers (read via getc @0x140033e88..0x140033ed0):
+      read1 = BE24(pl[0:3]);  flag = read1 & 0x800000;  storedlen = read1 & 0x7fffff
+      read2 = BE24(pl[3:6]);  plainlen (= plaintext len, or DECOMPRESSED size)
+      cipher = pl[6 : 6 + storedlen]
+Both kinds are TEA-CBC / KEY_ROD with the section-tag IV. The decryptor
+(@0x140033758) dispatches on bit 0x800000 (@0x1400337c8) AFTER decrypting:
+
+  flag  sections                              post-processing (@0x140033b98)
+  ----  -----------------------------------   ------------------------------------
+  0x80  CMP, INC, GES, SLV, small DTC         plaintext = TEA_dec(cipher)[:plainlen]
+        (byte0 & 0x80 set)                    (uncompressed)
+  0x00  MWB, ADP, DTC-large, XPL, SOT, IDN    plaintext = zlib.decompress(TEA_dec(cipher))
+        (byte0 == 0x00)                       (flag-clear path calls the zlib
+                                              inflater @0x1400ed390; the DLL is
+                                              zlib 1.2.11, id string "1.2.11.1-
+                                              motley" @0x140158270. read2 = the
+                                              decompressed byte count.)
+
+  => Earlier confusion: the flag-0x00 sections are NOT a separate stream cipher.
+     They are the SAME TEA-CBC/KEY_ROD with the tag IV, but the plaintext is a
+     zlib DEFLATE stream (starts 78 da). That is why the raw TEA output looked
+     like garbage -- it is compressed. Decompressing it yields readable records.
+     (The 0x14006f720 / 0x1400e9b94 functions are unrelated -- comms / a config
+     block; the MT usage in 0x140033a0c/0x140033aa8 is the tag-IV build, common
+     to both flag paths.)
+
+--------------------------------------------------------------------------------
+.rod FIRST-BLOCK IV -- SOLVED (uses the runtime-dumped MT/KS/D tables)
+--------------------------------------------------------------------------------
+The correct raw-.rod-FILE decryptor is fn @0x140033900 (Key B) -- NOT the ODX
+in-memory-table decryptor @0x1400e1400 (that one reads its ciphertext from the
+runtime table 0x14020d4c0, src = 0x14020d4c0 + w21*94 + 2, so it is a different
+data path). Fn @0x140033900 builds an 8-byte IV in x19[0:8], reads the .rod
+block ciphertext into x19[8:], and calls the shared TEA-CBC core 0x1400e0658
+(keysel 0 = KEY_ROD), dropping the IV plaintext block. Blocks 2..n are exact
+without the IV (CBC); only the first 8 plaintext bytes need it.
+
+IV construction (fn @0x140033814 .. 0x140033b94), validated on real samples:
+  key  = the SECTION TAG string (arg1 [x21]) -- "CMP","INC","GES","SLV",...
+         (built by the caller as CString(tag), e.g. 0x140027ba0 for CMP).
+         m = key[1]  (2nd char of the tag).
+  seed = key[0:3] || product_bytes[0:5]      (8 bytes)
+         key[0:3]         -> x19[0:3]  (first 3 chars of the tag, @0x140033824..54)
+         product_bytes    -> x19[3:8]  = the low 5 bytes of the 64-bit product
+                            of the chars of a per-record "record-string" x22
+                            (x25 *= char @0x140033970; stored @0x1400339b0).
+  additive (@0x140033a34..aa4):
+         s[i] = (seed[i] + KS[(m*(i+2)) & 0xff]) & 0xff        for i=0..7
+         (+D conditionally, but D = 0x00000a00 so D==0 mod 256 -> no effect)
+  multiply (@0x140033ab0..b34):
+         IV[i] = (s[i] * MT[OFF[i]]) & 0xff
+         OFF = [0x07,0xca,0x22,0x99,0x3e,0x88,0xc3,0x76]   (the .clb order)
+  (CMP-only XOR @0x140033b60 is gated by a BSS counter > 999999 -- a non-normal
+   path; skipped for standard decoding.)
+  Then plaintext_block0 = TEA_dec(C0, KEY_ROD) XOR IV.
+
+TABLES (all confirmed): MT = runtime_MT.bin (256 B, dumped @ImageBase+0x552bb0;
+its last 32 bytes are "Copyright(c) 2004, Ross-Tech LLC"); KS = rod_KS.bin
+(256 B, static @0x140171730 in the image); D low byte = 0 (@0x552ba4).
+
+RESULT:
+  * IV[0:3] (from the section tag) is EXACT for every record -- the first 3
+    plaintext bytes of every CMP/INC/GES/SLV record decode correctly (verified:
+    "776","518","000","003",... each record starts <6-digit-id>"," like .clb).
+  * When the record-string's product is 0 (its string is empty / contains a
+    NUL), IV[3:8] = fixed and the WHOLE first block decodes. This is the case
+    for e.g. EV_EPHBO18VW4810000_VW48.rod -- ALL its TEA sections fully decode:
+        CMP 776939,--_252.9864.HR0HCIJZ98RX,8944440RX,8.98
+        INC 518048,PW1IW1TUFAZU75751WN,21G / 524182,EB_AB_APRVU24BN5168888_Q6
+        GES 000537,K8 / 000290,S.       SLV 003574,3602
+  * For records whose product != 0 (e.g. CRFT1_ESP), IV[3:8] needs the true
+    char-product. The "record-string" x22 is built from arg3 (a 0x80-byte copy
+    of a per-record runtime buffer x27 = <singleton>+0x18, @0x140027b84), then
+    truncated at '.' (@0x140034a30). It is NOT the file bytes / cipher / header
+    (all tested -> product 0), so its exact value is the one thing not yet
+    pinned to the mmap'd file statically.
+
+decrypt_modern.py loads runtime_MT.bin + rod_KS.bin and applies this
+(product=0). It fully decodes product-0 records and always yields the exact
+first 3 bytes + exact blocks 2..n for every TEA section.
+
+.rod 0x00-flag sections (MWB/ADP/DTC-large/XPL/SOT/IDN) = TEA-CBC/KEY_ROD with
+the tag IV, then zlib.decompress (see FRAMING above). When the record's product
+is 0 the whole section decodes: e.g. EV_EPHBO18VW4810000_VW48.rod decodes MWB
+(305 records), ADP, XPL, SOT to readable "<id>,<code>" measurement/adaptation
+rows. When product != 0 the corrupted first block breaks the deflate stream
+(same product gap as the TEA sections) -- these are reported as "zlib-fail".
+
+--------------------------------------------------------------------------------
+VALIDATION (readable label text = success)
+--------------------------------------------------------------------------------
+decoded_1K0-937-08x-09.clb.txt  -- 385 lines, e.g.
+    001,1,Driver's Door,Key Switch,Range: Open / Closed / Not Operated / ...
+    002,0,Passenger Door
+  (164 "Range:" measurement clauses, matching the plaintext .lbl style.)
+decoded_3AE-919-475.clb.txt     -- coding labels, e.g.
+    LC,00,0~3,00,Trailer Hitch not installed
+    LC,02,0~7,02,Model: VW Passat Variant (365/VW472)
+decoded_02-01.clb.txt           -- REDIRECT tables (326 lines).
+decoded_EV_EPHBO18VW4810000_VW48.rod.txt / decoded_CRFT1_ESP.rod.txt /
+decoded_EV_EPHBO2CVW3100000.rod.txt -- .rod CMP/INC/GES/SLV/small-DTC blocks;
+    blocks 2..n EXACT, e.g. CMP "...-_252.9864.HR0HCIJZ98RX,8944440RX,8.98",
+    INC "...W1TUFAZU75751WN,21G / 524182,EB_AB_APRVU24BN5168888_Q6",
+    GES "000290,S.", SLV "602". EV_EPHBO18VW4810000_VW48.rod decodes FULLY,
+    all section kinds: CMP/INC/GES/SLV (TEA) AND MWB/ADP/XPL/SOT (TEA+zlib),
+    e.g. MWB "043439,4. / 043900,_5 / 095490,23 ..." (305 rows), ADP
+    "017834,.- / 001603,-1 ...". Flag-0x00 sections in files whose first-block
+    product != 0 report "zlib-fail" (deflate header corrupted by the block-0 IV).
+
+--------------------------------------------------------------------------------
+CONFIDENCE / REMAINING GAP
+--------------------------------------------------------------------------------
+Confidence HIGH on the WHOLE pipeline: algorithm (TEA), mode (CBC), both keys,
+.clb IV (complete), .rod cipher (KEY_ROD), the tag-based .rod IV[0:3], the
+unified section framing, AND the flag-0x00 zlib post-processing. .clb decodes
+completely; .rod decodes completely for files whose first-block product is 0
+(e.g. EV_EPHBO18VW4810000_VW48.rod -- every section kind, MWB included). For
+every other .rod, blocks 2..n are exact and IV[0:3] is exact.
+
+Remaining gap (ONE, shared by all .rod sections): the first-block IV product
+term (IV[3:8]). It is the low 5 bytes of the char-product of a per-record
+"record-string" (arg3 to fn 0x140033758). For flag-0x00 (zlib) sections a wrong
+IV[3:8] corrupts bytes 3..7 of the deflate stream -> zlib fails; for flag-0x80
+sections it only garbles the first 8 plaintext bytes. When that product is 0
+(common; whenever the record-string is empty/contains a NUL) everything decodes.
+The record-string's exact source is the only thing not yet pinned to file bytes
+statically. Single dynamic dump that closes it fully: break at ImageBase+0x33910
+and dump the C-string at register x22 (~32 bytes), or dump the 8-byte IV at x19
+just before ImageBase+0x33b94.
+
+--------------------------------------------------------------------------------
+DELIVERABLES
+--------------------------------------------------------------------------------
+decrypt_modern.py            -- TEA-CBC decryptor, both keys, .clb IV, container
+                                parsing; CLI: python3 decrypt_modern.py FILE...
+decoder.py                   -- block_decrypt() now wired to the real cipher;
+                                re-exports KEY_CLB / KEY_ROD.
+decoded_*.txt                -- decoded samples (above).

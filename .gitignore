@@ -4,4 +4,18 @@ Cargo.lock
 .DS_Store
 *.capture.local
 .superpowers/
-research/
+
+# --- research working dir: exclude junk + third-party/proprietary content ---
+# Regenerable tooling state
+research/**/.venv/
+research/**/__pycache__/
+research/**/*.pyc
+# Proprietary vendor binaries (Ross-Tech VCDS/loader/DLL) — not ours to redistribute
+research/clb-crack/bin/
+# Third-party reference source + proprietary label/rod DB inputs
+research/clb-crack/ref/
+research/clb-crack/samples/
+# Decoded proprietary label content (RE outputs, not for redistribution)
+research/clb-crack/decoded_*.txt
+# USB captures: large + contain private vehicle data
+research/*.pcapng
