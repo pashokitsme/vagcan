@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS long_coding (
 CREATE INDEX IF NOT EXISTS idx_measurement_lookup ON measurement(file_id, block, field);
 CREATE INDEX IF NOT EXISTS idx_redirect_selector  ON redirect(selector);
 CREATE INDEX IF NOT EXISTS idx_label_file_name    ON label_file(name);
+-- read_files() queries each child table `WHERE file_id = ?` once per label
+-- file; without these, redirect/adaptation/long_coding reloads are full
+-- table scans per file (O(files x rows) over the ~2900-file corpus).
+CREATE INDEX IF NOT EXISTS idx_redirect_file      ON redirect(file_id);
+CREATE INDEX IF NOT EXISTS idx_adaptation_file    ON adaptation(file_id);
+CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 "#;
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -499,6 +505,38 @@ mod tests {
         assert_eq!(count("redirect"), first.redirects as i64);
         assert_eq!(count("adaptation"), first.adaptations as i64);
         assert_eq!(count("long_coding"), first.long_codings as i64);
+    }
+
+    #[test]
+    fn schema_has_file_id_indices_for_fast_reload() {
+        // `read_files` runs `WHERE file_id = ?` once per label file per child
+        // table; without these indices that is a full table scan per file
+        // (O(files x rows) on the ~2900-file corpus). Assert they exist.
+        let ws = TempWorkspace::new("indices");
+        write_fixture_labels(&ws);
+        build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
+
+        let conn = Connection::open(&ws.db_path).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .unwrap();
+        let indices: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        for required in [
+            "idx_measurement_lookup",
+            "idx_redirect_file",
+            "idx_adaptation_file",
+            "idx_long_coding_file",
+        ] {
+            assert!(
+                indices.iter().any(|n| n == required),
+                "missing index {required}; present: {indices:?}"
+            );
+        }
     }
 
     #[test]
