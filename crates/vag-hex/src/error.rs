@@ -18,6 +18,9 @@ pub enum HexError {
     /// Cable envelope was malformed (bad length / checksum / escaping).
     #[error("framing error: {0}")]
     Framing(String),
+    /// FTDI D2XX driver/library failure (load, enumerate, open, or an `FT_*` call).
+    #[error("d2xx error: {0}")]
+    D2xx(String),
     /// A layer whose wire format is not yet recovered from the capture.
     #[error("not implemented until capture defines it: {0}")]
     Unspecified(&'static str),
@@ -31,6 +34,7 @@ impl From<HexError> for TransportError {
             HexError::Timeout => TransportError::Timeout,
             HexError::Io(s) => TransportError::Io(s),
             HexError::Handshake(s) | HexError::Framing(s) => TransportError::Protocol(s),
+            HexError::D2xx(s) => TransportError::Io(s),
             HexError::Unspecified(s) => TransportError::Protocol(s.to_string()),
         }
     }

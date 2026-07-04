@@ -4,7 +4,6 @@
 //! (the trace must start before VCDS launches to record this).
 
 use crate::error::HexError;
-use crate::usb::BytePipe;
 
 /// Identity recovered from the cable during init — surfaced by `vagcan doctor`.
 #[derive(Debug, Clone, Default)]
@@ -15,10 +14,11 @@ pub struct CableIdentity {
     pub raw: Vec<u8>,
 }
 
-/// Run the handshake over an open byte pipe, driving the cable to "ready".
+/// Run the open-time handshake, driving the cable to "ready".
 ///
-/// Stub: the handshake sequence is defined once the capture pins it. Returns
+/// Stub: the handshake sequence is defined once the capture pins it, and will
+/// run over the async [`crate::usb::Backend`] (a later task). Returns
 /// [`HexError::Unspecified`] until then.
-pub fn handshake(_pipe: &mut dyn BytePipe) -> Result<CableIdentity, HexError> {
+pub fn handshake() -> Result<CableIdentity, HexError> {
     Err(HexError::Unspecified("init handshake (needs capture: open-time exchange)"))
 }
