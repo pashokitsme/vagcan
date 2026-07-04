@@ -1,8 +1,13 @@
 # vag-hex — Cable Transport Design
 
-**Status:** design / pre-implementation. Blocked on the USB capture
-(`research/vag-hex-capture-guide.md`). Fields marked **[FROM CAPTURE]** are placeholders
-resolved from the trace before coding the affected layer.
+**Status:** capture done, framing implemented. Two USBPcap traces
+(`init-only`, `reading-ecus`) resolved the wire format — see
+`research/vag-hex-framing.md` (ground truth) and `research/SCOPE-BOUNDARY.md`
+(interop line). `frame.rs` now carries the real flat `S/M` frame (tested).
+Remaining unknowns are the FTDI backend wiring, the init handshake replay, and
+the encrypted diagnostic transport (per-channel link keystream). The old
+**[FROM CAPTURE]** placeholders below are annotated **[RESOLVED]** where the
+trace settled them.
 
 **Goal:** let `vagcan` talk to the physical clone HEX cable (VAG25.3) directly — open it,
 initialize it, and exchange UDS-over-ISO-TP with the car — with no VCDS and no loader in the
@@ -34,22 +39,32 @@ unknown — the cable's wire protocol.
 
 ---
 
-## 2. What the cable actually is (to be confirmed by capture)
+## 2. What the cable actually is — [RESOLVED] by capture
 
-Working hypothesis (VAG25.3 clones are near-universally FTDI-based):
+Confirmed from the traces (`research/vag-hex-framing.md`):
 
-- USB → **FTDI** bridge (FT232-class). Two access paths:
-  - **D2XX** (Ross-Tech's own path): open by FTDI device index/serial, raw bulk IN/OUT. The
-    repo already vendors `libftd2xx` for darwin-arm64, matching this path.
-  - **VCP** (virtual COM): OS serial port, `open("/dev/tty.usbserial-*")`.
-- On top of the byte pipe, the cable speaks a **cable-specific serial envelope** carrying UDS
-  payloads (length prefix + payload + checksum, exact form **[FROM CAPTURE]**).
-- The car side is **UDS (ISO 14229) over ISO-TP (ISO 15765-2)**. `vag-protocol` already does
-  ISO-TP + UDS; the open question is only what envelope the *cable* wraps around a UDS PDU and
-  whether the cable does ISO-TP itself or expects raw UDS PDUs and segments internally.
-
-**[FROM CAPTURE]** decides: D2XX vs VCP, exact VID/PID, and whether ISO-TP lives in the cable
-or must be done host-side (we already have the host-side ISO-TP if needed).
+- USB → **FTDI** bridge, accessed via **D2XX bulk** (OUT endpoint `0x02`,
+  IN endpoint `0x81`). VCP is not used on the wire. The repo vendors the FTDI
+  D2XX driver in `driver/` (darwin-arm64 dylib + win-arm64 `FTD2XX.dll`/
+  `FTDIBUS.sys`) — that is the byte pipe for `usb.rs`.
+- On top of the byte pipe, the cable speaks a **flat frame**:
+  `[marker][len][opcode][data..][xor]`, marker `0x53 'S'` host→cable / `0x4D 'M'`
+  cable→host, `len` = total length, `xor` = XOR of all preceding bytes. One
+  frame, not the nested layers the pre-capture static guess assumed. Implemented
+  in `frame.rs` (`frame_encode`/`frame_decode`/`take_frame`), confirmed on 3407
+  frames.
+- The car side is **UDS (ISO 14229) over ISO-TP (ISO 15765-2)**, and ISO-TP
+  framing lives **inside** the cable's diagnostic block (the recovered inner
+  layout has the ISO-TP PCI at block offset 6, UDS SID at 7). So we build
+  ISO-TP+UDS host-side (`vag-protocol` already does), encipher it, and wrap it in
+  a diagnostic frame.
+- **Catch — the diagnostic channel is encrypted.** UDS rides inside opcode
+  `0xb8` (request) / `0xb7` (response) frames as a 16-byte block XOR-enciphered
+  with a per-channel keystream. The cipher is recovered in research
+  (`research/clb-crack/link_cipher.py`, a position-dependent XOR keystream, same
+  family as `.clb`) but its 16-key schedule is not yet reversed, so the Rust port
+  is gated. This is a link/transport obfuscation, distinct from the anti-clone
+  auth challenge (out of scope) — see `SCOPE-BOUNDARY.md`.
 
 ---
 
@@ -60,14 +75,14 @@ crates/vag-hex/
   Cargo.toml
   src/
     lib.rs        public API + HexCable struct, error type
-    usb.rs        device open/close/read/write over the byte pipe (D2XX or serial backend)
-    frame.rs      cable serial envelope: encode/decode (length, checksum, escaping) [FROM CAPTURE]
-    init.rs       open-time handshake sequence (version query, baud/latency, "hello") [FROM CAPTURE]
+    usb.rs        device open/close/read/write over the byte pipe (D2XX bulk) [PENDING]
+    frame.rs      flat S/M frame: encode/decode + stream cutter [DONE, tested]
+    init.rs       open-time handshake sequence (02/09/04 identify, b0..b5 setup) [PENDING]
     transport.rs  impl of vag-transport trait(s): map cable frames <-> ISO-TP/UDS PDUs
 ```
 
-Each file has one responsibility; `frame.rs` and `init.rs` are the two carrying the reversed
-protocol and are the ones fully specified only after the capture.
+Each file has one responsibility. `frame.rs` is done (capture-confirmed). `usb.rs`,
+`init.rs`, and the encrypted diagnostic path in `transport.rs`/`frame.rs` remain.
 
 ## 4. Public API (stable regardless of wire details)
 
@@ -138,11 +153,18 @@ existing `ReplayCan`):
 Every automated test runs off captured fixtures — no car required in CI, same discipline as the
 existing replay tests.
 
-## 7. Open questions (all resolved by the capture)
+## 7. Open questions — capture answers
 
-- D2XX or VCP? VID/PID? → §2, enumeration.
-- Cable envelope: length width, checksum algorithm, escaping? → `frame.rs`.
-- Does the cable do ISO-TP, or do we segment host-side (we can)? → `transport.rs`.
-- Init handshake exact bytes + expected replies? → `init.rs`.
-- Does the cable expose CAN sniff/promiscuous mode (for the future `sniff` command)? → note if
-  visible in the trace; not required for P1.
+- D2XX or VCP? → **D2XX bulk** (OUT 0x02 / IN 0x81). [RESOLVED]
+- Cable envelope: length width, checksum, escaping? → flat `[marker][len][opcode]
+  [data][xor]`, 1-byte len, XOR checksum, no escaping. [RESOLVED, `frame.rs`]
+- Does the cable do ISO-TP, or do we segment host-side? → ISO-TP PCI lives inside
+  the diagnostic block; we build ISO-TP+UDS host-side and wrap it. [RESOLVED]
+- Init handshake exact bytes + replies? → open sequence `02` probe / `09` keyed /
+  `04` identify ("ROSSTECH") / `82` / `0d` / `b0..b5` setup burst (`fe`-acked);
+  exact `init.rs` replay still to code. [PARTIAL]
+- **New, unresolved:** the diagnostic UDS transport is **encrypted** (opcode
+  0xb8/0xb7, per-channel XOR keystream). Cipher recovered in research; the 16-key
+  schedule and the Rust port remain. This is the main blocker to end-to-end reads.
+- CAN sniff/promiscuous mode for a future `sniff` command? → not investigated;
+  not required for P1.

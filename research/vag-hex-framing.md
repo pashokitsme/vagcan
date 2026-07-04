@@ -242,7 +242,7 @@ cluster, but the value cannot be read without decrypting the block (out of scope
 | 3 nested layers (A CB / B line / C USB) | on the wire it is **one** frame: `S/M · len · opcode · [payload] · xor` |
 | `seq` at Layer-A +0 from `cable+0x1a8` | seq not directly visible (inside ciphertext); observable transport counter is at **payload offset 15** of `b8`/`b7` |
 | config = cmd `0x3B`, enable = `0x21` | open uses `02/09/04/82/0d` then `b0..b6`; no `0x3B`/`0x21` seen on wire |
-| encrypted variant = "16 rotating keys, unknown 128-bit block" | on the wire the diagnostic channel is encrypted in **8-byte (2×) blocks** for `b8`/`b7`; cipher NOT analyzed |
+| encrypted variant = "16 rotating keys, unknown 128-bit block" | diagnostic channel is a **position-dependent XOR keystream** over the 16-byte `b8`/`b7` block, NOT a block cipher — RECOVERED, decodes real UDS (see "Link cipher" section) |
 
 ---
 

@@ -1,5 +1,12 @@
 # `vag-hex` — USB Capture Guide
 
+> **DONE (2026-07-05).** Two captures were taken — `research/init-only.pcapng`
+> and `research/reading-ecus.pcapng` — and fully analyzed. Wire format recovered
+> and implemented (`crates/vag-hex/src/frame.rs`), link cipher reversed
+> (`research/clb-crack/link_cipher.py`). See `research/vag-hex-framing.md` for the
+> results. This guide is retained as the method record; the sections below
+> describe how the captures were produced.
+
 **Purpose.** Record the clone HEX cable (VAG25.3) talking to a *working* VCDS install, so we
 can model the cable's own USB/serial protocol and drive it directly from `vagcan` — no VCDS,
 no loader. This capture is the single input gating P1. Everything below runs on the Windows
