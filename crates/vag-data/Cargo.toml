@@ -9,6 +9,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 miniz_oxide = "0.7"
 
+[dev-dependencies]
+criterion = { workspace = true }
+
 [[bin]]
 name = "vag-labels"
 path = "src/bin/vag-labels.rs"
+
+[[bench]]
+name = "lookup"
+harness = false

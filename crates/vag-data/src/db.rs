@@ -6,6 +6,7 @@
 //! matching rules this module implements.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use crate::label::{LabelFile, Measurement, Record};
 
@@ -15,6 +16,22 @@ const MAX_DEPTH: usize = 16;
 /// A queryable index over a corpus of parsed label files.
 ///
 /// Owns the [`LabelFile`]s; all accessors return references into them.
+///
+/// Lookups are the hot path of `vagcan info` (part number -> label file ->
+/// measuring-block names), so everything is indexed at build time:
+///
+/// - exact (wildcard-free) corpus-wide redirect selectors live in a
+///   `HashMap` (O(1) hit; exact selectors always beat wildcards on the
+///   wildcard-count tiebreak, so a hit short-circuits),
+/// - wildcard selectors are pre-normalized with their specificity metrics
+///   precomputed, and grouped by selector byte length (a selector only ever
+///   matches a same-length part number), so a lookup scans just its own
+///   length bucket with zero allocations,
+/// - each file's redirects are pre-normalized per file for chain-following,
+/// - each file gets a `(block, field) -> record index` map so
+///   [`Self::measurement`] is O(1) after resolution,
+/// - resolved part numbers are memoized (`resolve_cache`), so repeated
+///   lookups against the same ECU skip redirect matching entirely.
 pub struct LabelDb {
     files: Vec<LabelFile>,
     /// Normalized (uppercased) file name -> index into `files`. Populated
@@ -23,33 +40,65 @@ pub struct LabelDb {
     /// files (which usually don't) both resolve. First file to claim a key
     /// wins ties.
     file_index: HashMap<String, usize>,
-    /// Every `Record::Redirect` with a selector, flattened across the whole
-    /// corpus in encounter order, for the corpus-wide initial match (spec
-    /// step 2). `order` preserves that encounter order for the "first
-    /// encountered" specificity tiebreak.
-    redirects: Vec<RedirectEntry>,
+    /// Corpus-wide exact (no `?`) redirect selectors, normalized. First
+    /// encountered entry wins duplicate selectors, matching the old
+    /// flattened-scan order tiebreak.
+    exact_redirects: HashMap<String, String>,
+    /// Corpus-wide wildcard redirect selectors, grouped by selector byte
+    /// length. Encounter order within each bucket is corpus order, so the
+    /// specificity tiebreak can use the entry's `order` field.
+    wildcard_redirects: HashMap<usize, Vec<PreparedRedirect>>,
+    /// Per-file prepared redirects (parallel to `files`), for chain-following
+    /// without re-scanning `records` or re-normalizing selectors.
+    file_redirects: Vec<Vec<PreparedRedirect>>,
+    /// Per-file `(block, field)` -> index into that file's `records` of the
+    /// first non-empty-name measurement (parallel to `files`).
+    measurement_index: Vec<HashMap<(u16, u8), usize>>,
+    /// Memoized [`Self::resolve`] results: normalized part number -> resolved
+    /// file index (`None` = known miss). Interior mutability keeps the
+    /// lookup API `&self`; `Mutex` keeps `LabelDb: Sync`.
+    resolve_cache: Mutex<HashMap<String, Option<usize>>>,
 }
 
-/// One `REDIRECT` row collected across the whole corpus, with enough
-/// context to match a selector and pick the most specific hit.
-struct RedirectEntry {
+/// One `REDIRECT` row with its selector pre-normalized and its specificity
+/// metrics precomputed, so matching a part number allocates nothing.
+#[derive(Clone)]
+struct PreparedRedirect {
+    /// Encounter order (corpus-wide for `wildcard_redirects`, per-file for
+    /// `file_redirects`) — the final "first encountered wins" tiebreak.
     order: usize,
+    /// Normalized redirect target (file name, usually with extension).
     target: String,
+    /// Normalized selector (uppercased, trimmed).
     selector: String,
+    /// Number of `?` wildcards in the selector (fewer = more specific).
+    wildcards: usize,
+    /// Length of the literal prefix before the first `?` (longer = more
+    /// specific).
+    literal_prefix: usize,
 }
 
-/// One candidate redirect target considered while resolving a part number.
-struct Candidate<'a> {
-    order: usize,
-    target: &'a str,
-    selector: &'a str,
+impl PreparedRedirect {
+    fn new(order: usize, target: &str, selector: &str) -> Self {
+        let selector = normalize(selector);
+        PreparedRedirect {
+            order,
+            target: normalize(target),
+            wildcards: wildcard_count(&selector),
+            literal_prefix: literal_prefix_len(&selector),
+            selector,
+        }
+    }
 }
 
 impl LabelDb {
     /// Build from all parsed label files (order irrelevant).
     pub fn new(files: Vec<LabelFile>) -> Self {
         let mut file_index = HashMap::new();
-        let mut redirects = Vec::new();
+        let mut exact_redirects: HashMap<String, String> = HashMap::new();
+        let mut wildcard_redirects: HashMap<usize, Vec<PreparedRedirect>> = HashMap::new();
+        let mut file_redirects = Vec::with_capacity(files.len());
+        let mut measurement_index = Vec::with_capacity(files.len());
         let mut order = 0usize;
         for (i, f) in files.iter().enumerate() {
             let full = normalize(&f.source);
@@ -58,26 +107,48 @@ impl LabelDb {
             if bare != full {
                 file_index.entry(bare).or_insert(i);
             }
-            for r in &f.records {
-                if let Record::Redirect {
-                    target,
-                    selector: Some(sel),
-                    ..
-                } = r
-                {
-                    redirects.push(RedirectEntry {
-                        order,
-                        target: target.clone(),
-                        selector: sel.clone(),
-                    });
-                    order += 1;
+            let mut prepared: Vec<PreparedRedirect> = Vec::new();
+            let mut m_index: HashMap<(u16, u8), usize> = HashMap::new();
+            for (ri, r) in f.records.iter().enumerate() {
+                match r {
+                    Record::Redirect {
+                        target,
+                        selector: Some(sel),
+                        ..
+                    } => {
+                        let mut entry = PreparedRedirect::new(order, target, sel);
+                        if entry.wildcards == 0 {
+                            exact_redirects
+                                .entry(entry.selector.clone())
+                                .or_insert_with(|| entry.target.clone());
+                        } else {
+                            wildcard_redirects
+                                .entry(entry.selector.len())
+                                .or_default()
+                                .push(entry.clone());
+                        }
+                        // Per-file list uses per-file encounter order.
+                        entry.order = ri;
+                        prepared.push(entry);
+                        order += 1;
+                    }
+                    Record::Measurement(m) if !m.name.trim().is_empty() => {
+                        m_index.entry((m.block, m.field)).or_insert(ri);
+                    }
+                    _ => {}
                 }
             }
+            file_redirects.push(prepared);
+            measurement_index.push(m_index);
         }
         LabelDb {
             files,
             file_index,
-            redirects,
+            exact_redirects,
+            wildcard_redirects,
+            file_redirects,
+            measurement_index,
+            resolve_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -93,54 +164,72 @@ impl LabelDb {
     /// The label file whose name matches `name` (case-insensitive; with or
     /// without extension - try exact, then basename without extension).
     pub fn file(&self, name: &str) -> Option<&LabelFile> {
-        let key = normalize(name);
-        self.file_index
-            .get(&key)
-            .copied()
-            .map(|i| &self.files[i])
+        self.file_idx(&normalize(name)).map(|i| &self.files[i])
+    }
+
+    /// Index of the file whose normalized name is `key`.
+    fn file_idx(&self, key: &str) -> Option<usize> {
+        self.file_index.get(key).copied()
     }
 
     /// Resolve an ECU part number to the terminal LabelFile that applies,
     /// following REDIRECT chains. Returns None if no selector matches and no
     /// file is named after the part number.
+    ///
+    /// O(1) for exact-selector and repeated (memoized) lookups; wildcard
+    /// matching scans only the same-length selector bucket.
     pub fn resolve(&self, part_no: &str) -> Option<&LabelFile> {
+        self.resolve_idx(part_no).map(|i| &self.files[i])
+    }
+
+    /// Memoizing front-end for [`Self::resolve_uncached`].
+    fn resolve_idx(&self, part_no: &str) -> Option<usize> {
         let pn = normalize(part_no);
-
-        // Step 2: pick the initial `current` name.
-        let mut current: String = match self.best_redirect_target(&pn) {
-            Some(target) => target.to_string(),
-            None => {
-                // Fall back to a part-number-named file.
-                self.file(&pn)?;
-                pn.clone()
-            }
-        };
-
-        // Step 3: follow the chain.
-        let mut depth = 0;
-        loop {
-            let file = self.file(&current)?;
-            // Only redirects within *this* file count for chain-following.
-            let next = Self::best_redirect_in(file, &pn);
-            match next {
-                Some(target) => {
-                    if depth >= MAX_DEPTH {
-                        return Some(file);
-                    }
-                    depth += 1;
-                    current = target.to_string();
-                }
-                None => return Some(file),
-            }
+        let cache = self
+            .resolve_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(&hit) = cache.get(&pn) {
+            return hit;
         }
+        drop(cache); // don't hold the lock across the actual resolution
+        let result = self.resolve_uncached(&pn);
+        self.resolve_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(pn, result);
+        result
+    }
+
+    /// The actual resolution: corpus-wide initial match (spec step 2), then
+    /// follow in-file redirect chains (step 3). `pn` is already normalized.
+    fn resolve_uncached(&self, pn: &str) -> Option<usize> {
+        // Step 2: pick the initial file.
+        let initial = match self.best_redirect_target(pn) {
+            Some(target) => target,
+            None => pn, // fall back to a part-number-named file
+        };
+        let mut current = self.file_idx(initial)?;
+
+        // Step 3: follow the chain. Only redirects within the current file
+        // count for chain-following.
+        let mut depth = 0;
+        while let Some(target) = Self::best_match(&self.file_redirects[current], pn) {
+            if depth >= MAX_DEPTH {
+                return Some(current);
+            }
+            depth += 1;
+            current = self.file_idx(target)?;
+        }
+        Some(current)
     }
 
     /// All measurements for a part number (from its resolved file). Empty if
     /// unresolved. Empty-name placeholder records (`name.trim().is_empty()`)
     /// are skipped — they're pure filler, not real measurements.
     pub fn measurements(&self, part_no: &str) -> Vec<&Measurement> {
-        match self.resolve(part_no) {
-            Some(file) => file
+        match self.resolve_idx(part_no) {
+            Some(i) => self.files[i]
                 .records
                 .iter()
                 .filter_map(|r| match r {
@@ -155,66 +244,43 @@ impl LabelDb {
     /// A single measurement by (part_no, block, field). Empty-name placeholder
     /// records are skipped (returns `None`), since an empty slot isn't a real
     /// measurement for lookup purposes.
+    ///
+    /// O(1) after part-number resolution (per-file `(block, field)` index).
     pub fn measurement(&self, part_no: &str, block: u16, field: u8) -> Option<&Measurement> {
-        self.measurements(part_no)
-            .into_iter()
-            .find(|m| m.block == block && m.field == field)
+        let i = self.resolve_idx(part_no)?;
+        let ri = *self.measurement_index[i].get(&(block, field))?;
+        match &self.files[i].records[ri] {
+            Record::Measurement(m) => Some(m),
+            _ => None, // unreachable: the index only stores Measurement rows
+        }
     }
 
     /// Find the most specific redirect target across the WHOLE corpus whose
-    /// selector matches `pn`, using the flattened index built in [`Self::new`].
-    /// Used only for the initial lookup (step 2).
+    /// selector matches `pn` (already normalized). Used only for the initial
+    /// lookup (step 2). An exact-selector hit wins outright: it has zero
+    /// wildcards, and the wildcard count is the primary specificity key.
     fn best_redirect_target(&self, pn: &str) -> Option<&str> {
-        let candidates = self
-            .redirects
-            .iter()
-            .filter(|r| selector_matches(&r.selector, pn))
-            .map(|r| Candidate {
-                order: r.order,
-                target: &r.target,
-                selector: &r.selector,
-            })
-            .collect();
-        Self::pick_most_specific(candidates).map(|c| c.target)
-    }
-
-    /// Find the most specific redirect target within a single file whose
-    /// selector matches `pn`. Used while following the chain (step 3).
-    fn best_redirect_in<'a>(file: &'a LabelFile, pn: &str) -> Option<&'a str> {
-        let mut order = 0usize;
-        let mut candidates: Vec<Candidate> = Vec::new();
-        for r in &file.records {
-            if let Record::Redirect {
-                target,
-                selector: Some(sel),
-                ..
-            } = r
-            {
-                if selector_matches(sel, pn) {
-                    candidates.push(Candidate {
-                        order,
-                        target,
-                        selector: sel,
-                    });
-                    order += 1;
-                }
-            }
+        if let Some(target) = self.exact_redirects.get(pn) {
+            return Some(target);
         }
-        Self::pick_most_specific(candidates).map(|c| c.target)
+        // Only same-length wildcard selectors can match.
+        Self::best_match(self.wildcard_redirects.get(&pn.len())?, pn)
     }
 
-    fn pick_most_specific<'a>(candidates: Vec<Candidate<'a>>) -> Option<Candidate<'a>> {
-        candidates.into_iter().min_by(|a, b| {
-            let wa = wildcard_count(a.selector);
-            let wb = wildcard_count(b.selector);
-            wa.cmp(&wb)
-                .then_with(|| {
-                    let pa = literal_prefix_len(a.selector);
-                    let pb = literal_prefix_len(b.selector);
-                    pb.cmp(&pa) // longer prefix wins -> smaller ordering value
-                })
-                .then_with(|| a.order.cmp(&b.order))
-        })
+    /// The most specific matching redirect target among `redirects` for `pn`
+    /// (already normalized): fewest wildcards, then longest literal prefix,
+    /// then first encountered.
+    fn best_match<'a>(redirects: &'a [PreparedRedirect], pn: &str) -> Option<&'a str> {
+        redirects
+            .iter()
+            .filter(|r| selector_matches_normalized(&r.selector, pn))
+            .min_by(|a, b| {
+                a.wildcards
+                    .cmp(&b.wildcards)
+                    .then_with(|| b.literal_prefix.cmp(&a.literal_prefix)) // longer prefix wins
+                    .then_with(|| a.order.cmp(&b.order))
+            })
+            .map(|r| r.target.as_str())
     }
 }
 
@@ -243,16 +309,15 @@ fn literal_prefix_len(selector: &str) -> usize {
     selector.chars().take_while(|&c| c != '?').count()
 }
 
-/// Whether `selector` (already the raw, un-normalized text from the record)
-/// matches `pn` (already normalized: uppercased + trimmed) per the spec:
-/// same length after uppercasing, and every char equal or the selector char
-/// is `?`.
-fn selector_matches(selector: &str, pn: &str) -> bool {
-    let sel = normalize(selector);
-    if sel.len() != pn.len() {
+/// Whether `selector` matches `pn` per the spec: same length and every char
+/// equal or the selector char is `?`. Both sides must already be normalized
+/// (uppercased + trimmed), so no allocation happens per comparison.
+fn selector_matches_normalized(selector: &str, pn: &str) -> bool {
+    if selector.len() != pn.len() {
         return false;
     }
-    sel.chars()
+    selector
+        .chars()
         .zip(pn.chars())
         .all(|(s, p)| s == '?' || s == p)
 }
@@ -432,6 +497,90 @@ mod tests {
             .measurement("022-906-032-C", 3, 1)
             .expect("real measurement should be found");
         assert_eq!(real.name, "Vehicle Speed");
+    }
+
+    /// Build a synthetic-but-realistic corpus: `n` target files, an index
+    /// file with one exact REDIRECT per target plus a handful of wildcard
+    /// redirects, and a two-hop chain. Part numbers follow the real
+    /// `XXX-XXX-XXX-XX` shape so wildcard matching is exercised for real.
+    fn generated_corpus(n: usize) -> Vec<LabelFile> {
+        let mut files = Vec::with_capacity(n + 3);
+        let mut index_src = String::new();
+        for i in 0..n {
+            // Exact selector for part number i -> its target file.
+            index_src.push_str(&format!("REDIRECT,T{i:04}.LBL,{:03}-906-{:03}-AB\n", i / 500, i % 500));
+            let body = format!(
+                "001,1,Engine Speed {i},,Range: 0...6500 RPM\n007,2,Coolant Temp {i},,Range: -48...143 C\n012,1,,,",
+            );
+            files.push(parse_label(format!("T{i:04}.LBL"), body.as_bytes()));
+        }
+        // Wildcard redirect: any 899-906-xxx-AB part number -> chain head.
+        index_src.push_str("REDIRECT,CHAIN.LBL,899-906-???-AB\n");
+        files.push(parse_label("INDEX.LBL", index_src.as_bytes()));
+        // Two-hop chain: CHAIN.LBL redirects (same selector shape) to FINAL.LBL.
+        files.push(parse_label(
+            "CHAIN.LBL",
+            b"REDIRECT,FINAL.LBL,899-906-???-AB\n",
+        ));
+        files.push(parse_label(
+            "FINAL.LBL",
+            b"003,1,Chain Terminal,,Range: 0...100 %\n",
+        ));
+        files
+    }
+
+    #[test]
+    fn bulk_lookups_over_generated_corpus_resolve_correctly() {
+        let n = 300;
+        let db = LabelDb::new(generated_corpus(n));
+
+        // Two passes: the second exercises any memoized path with identical results.
+        for _pass in 0..2 {
+            for i in 0..n {
+                let pn = format!("{:03}-906-{:03}-AB", i / 500, i % 500);
+                // REDIRECT case: part number resolves through INDEX.LBL.
+                let resolved = db.resolve(&pn).unwrap_or_else(|| panic!("{pn} must resolve"));
+                assert_eq!(resolved.source, format!("T{i:04}.LBL"));
+
+                // Measuring-block id -> human name.
+                let m = db
+                    .measurement(&pn, 7, 2)
+                    .unwrap_or_else(|| panic!("{pn} block 7 field 2 must exist"));
+                assert_eq!(m.name, format!("Coolant Temp {i}"));
+                assert_eq!(m.unit.as_deref(), Some("C"));
+
+                // Empty-name placeholder is never returned.
+                assert!(db.measurement(&pn, 12, 1).is_none());
+            }
+
+            // Wildcard REDIRECT + two-hop chain.
+            let resolved = db.resolve("899-906-123-AB").expect("wildcard chain resolves");
+            assert_eq!(resolved.source, "FINAL.LBL");
+            let m = db.measurement("899-906-456-AB", 3, 1).expect("chain measurement");
+            assert_eq!(m.name, "Chain Terminal");
+
+            // Misses stay misses (also on the repeat pass).
+            assert!(db.resolve("999-999-999-ZZ").is_none());
+            assert!(db.measurement("999-999-999-ZZ", 1, 1).is_none());
+        }
+    }
+
+    #[test]
+    fn exact_selector_beats_wildcard_in_generated_corpus() {
+        // Part number 000-906-042-AB has BOTH an exact redirect (to T0042)
+        // and matches the wildcard 0??-906-???-AB; exact must win.
+        let mut files = generated_corpus(50);
+        let index_extra = parse_label(
+            "EXTRA.LBL",
+            b"REDIRECT,WRONG.LBL,0??-906-???-AB\n",
+        );
+        let wrong = parse_label("WRONG.LBL", b"001,1,Wrong Target,,");
+        files.push(index_extra);
+        files.push(wrong);
+        let db = LabelDb::new(files);
+
+        let resolved = db.resolve("000-906-042-AB").expect("must resolve");
+        assert_eq!(resolved.source, "T0042.LBL");
     }
 
     #[test]

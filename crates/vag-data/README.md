@@ -18,6 +18,9 @@ label files into human-meaningful measurement names, units, and ranges.
 - **`db`** — `LabelDb`: resolves an ECU part number to its label file through `REDIRECT`
   chains (exact + `?`-wildcard, most-specific-wins, cycle-guarded) and looks up measurements
   by `(part_no, block, field)`. Empty-placeholder measurements are filtered here.
+  Lookups are indexed at build time (exact-selector `HashMap`, length-bucketed wildcards,
+  per-file `(block, field)` maps) and resolutions are memoized: ~30 ns memoized / ~0.6 µs
+  cold per lookup on a 2,900-file corpus (`cargo bench -p vag-data --bench lookup`).
 - **`corpus`** — `load_corpus(dir)`: walk a `Labels/` dir, parse `.lbl`, decrypt+parse
   `.clb`, into a `Vec<LabelFile>`.
 
