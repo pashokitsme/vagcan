@@ -8,5 +8,10 @@ rust-version.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [features]
 serde = ["dep:serde"]
+# Exposes MockAsyncTransport to downstream crates' tests (e.g. uds-async).
+test-util = []

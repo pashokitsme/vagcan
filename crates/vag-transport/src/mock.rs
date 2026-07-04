@@ -49,6 +49,82 @@ impl RawCanTransport for ScriptedCan {
     }
 }
 
+/// Deterministic async mock: scripted request→response PDU pairs, so upper
+/// layers (uds-async, cable-actor) can be tested with no hardware.
+///
+/// `send` must match the next scripted request (panics with a diff otherwise)
+/// and queues its paired response; `recv` returns the next queued response, or
+/// `TransportError::Timeout` when nothing is pending.
+#[cfg(any(test, feature = "test-util"))]
+pub struct MockAsyncTransport {
+    script: std::collections::VecDeque<(Vec<u8>, Vec<u8>)>,
+    pending: std::collections::VecDeque<Vec<u8>>,
+    sent: Vec<Vec<u8>>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl MockAsyncTransport {
+    /// `script`: ordered (expected request PDU, canned response PDU) pairs.
+    pub fn new(script: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        MockAsyncTransport { script: script.into(), pending: std::collections::VecDeque::new(), sent: Vec::new() }
+    }
+
+    /// Every PDU the code under test has sent, in order.
+    pub fn sent(&self) -> &[Vec<u8>] {
+        &self.sent
+    }
+
+    /// True when the whole script was consumed and no response is still pending.
+    pub fn is_exhausted(&self) -> bool {
+        self.script.is_empty() && self.pending.is_empty()
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl crate::traits::AsyncIsoTpTransport for MockAsyncTransport {
+    async fn send(&mut self, pdu: &[u8]) -> Result<(), TransportError> {
+        match self.script.pop_front() {
+            Some((expected, response)) => {
+                assert_eq!(pdu, expected.as_slice(), "unexpected PDU sent by code under test");
+                self.sent.push(pdu.to_vec());
+                self.pending.push_back(response);
+                Ok(())
+            }
+            None => panic!("send called but the script is exhausted (pdu: {pdu:02X?})"),
+        }
+    }
+
+    async fn recv(&mut self, _timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        self.pending.pop_front().ok_or(TransportError::Timeout)
+    }
+}
+
+#[cfg(test)]
+mod async_tests {
+    use super::*;
+    use crate::traits::AsyncIsoTpTransport;
+
+    #[tokio::test]
+    async fn mock_replays_scripted_request_response_pair() {
+        let req = vec![0x22, 0xF1, 0x90];
+        let resp = vec![0x62, 0xF1, 0x90, b'W', b'V', b'W'];
+        let mut t = MockAsyncTransport::new(vec![(req.clone(), resp.clone())]);
+
+        t.send(&req).await.unwrap();
+        let got = t.recv(Duration::from_millis(10)).await.unwrap();
+
+        assert_eq!(got, resp);
+        assert_eq!(t.sent(), &[req]);
+    }
+
+    #[tokio::test]
+    async fn recv_with_empty_script_times_out() {
+        let mut t = MockAsyncTransport::new(vec![]);
+        let err = t.recv(Duration::from_millis(5)).await.unwrap_err();
+        assert!(matches!(err, TransportError::Timeout), "got {err:?}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
