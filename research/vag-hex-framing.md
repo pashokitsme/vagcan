@@ -285,17 +285,43 @@ SID `0x3E` vs ReadDataByIdentifier SID `0x22` differ by `0x1C` at block offset 7
 and every request↔response pair differs by exactly `0x40` at offset 7 (the UDS
 positive-response bit) — across all 82 channels in the capture.
 
-### Keystream source — HIGH (mechanism) / MED (table origin)
-The keystream is **per logical channel**, not global. Each ECU conversation uses
-its own fixed 16-byte keystream, selected per-message. In the binary the selector
-is `(seq+1) & 0xF` (`0x140073150`), indexing one of **16 keys** via the dispatcher
-`0x140073160` → key-setup `0x14007b108` (memcpy 16-byte key) → XOR driver
-`0x14007afd0`. The raw 16×16 table at `0x140171d30` was extracted but does **not**
-map to the effective keystream under any simple transform (xor/add/`|0x80`/rotation
-/window), so the effective per-channel keystreams are recovered **empirically from
-UDS known-plaintext** here rather than lifted from the table. (The table may be a
-`.clb`/`.rod` red herring, or fed through an un-reversed key schedule.) Up to 16
-distinct keystreams exist; this capture exercised ~dozens of channels.
+### Keystream source / SCHEDULE — REVERSED (mechanism HIGH; session key OUT OF SCOPE)
+The keystream is **per logical channel**, not global, and there are exactly **16**
+of them. Reversed from `VCDS-arm64-unpacked.exe`:
+
+- **Channel selector** — `channel_id = (msg_type + 1) & 0xF` (caller `0x14006d0f4`
+  → selector `0x140073150`: `(w1+1)&0xf`). `msg_type` is the plaintext command
+  byte (prepended to the block as `msg_type|0xf0` pre-encryption). So only **16**
+  keystreams exist; the many distinct on-wire header groups are the same 16
+  keystreams over different plaintext.
+- **IV table** — `0x140171d30` is **16 rows × 16 bytes** (NOT 256, NOT a 16×16
+  key set): the dispatcher indexes `table + channel_id*16`. Each row is the
+  per-channel **IV**. (Embedded verbatim in `link_cipher.py` as `IV_TABLE`.)
+- **Cipher engine = AES-256.** The dispatch (encrypt `0x140073160` / decrypt
+  `0x1400730d0`) → key-setup `0x14007b108` (memcpy row → cipher-ctx IV at `+8`) →
+  driver `0x14007afd0`/`0x14007aeb0`. The engine is selected **by name** (`"aes"`
+  @`0x14017ad80`, `strcmp` in `0x14007b210`) and registered from a **static
+  descriptor at `0x140171e30`** (type 6, block 16, **key 32**, T-tables
+  @`0x1401742e0`, key-schedule `0x140077b50`, AES-encrypt block `0x1400780a8`,
+  AES-decrypt block `0x140078620`). Confirmed genuine AES from the T-table +
+  round-key structure of `0x1400780a8`.
+- **Effective schedule** — `KS_channel = AES_encrypt(IV = table_row[channel_id])`
+  under the session key, in a **keystream (CFB/OFB) mode**. This matches the wire:
+  a keystream mode XORs plaintext byte-for-byte, exactly the *byte-local XOR*
+  proven above, whereas AES-CBC/ECB would avalanche the whole 16-byte block (it
+  does not). This is **why every static table→keystream transform failed**
+  (xor/add/`|0x80`/rotation/`row_i^row_j`): the transform is AES, not a byte map.
+
+**Missing piece / why keystreams are still recovered empirically.** The 32-byte
+AES key is a **runtime session key**, handed to the cipher context via a
+polymorphic set-key call (`0x140072ec0` → parse `0x14007ce68`) during session
+setup — **not** a static literal at this locus. Its derivation is adjacent to the
+out-of-scope `0xb6` anti-clone AUTH and is deliberately **not analysed**
+(SCOPE-BOUNDARY.md). Without that key we cannot synthesise `KS = AES(row)` offline,
+so per-session keystreams are recovered from UDS known-plaintext (43 / 66 request
+channels in `reading-ecus.pcapng` reproduced + validated by `link_cipher.py`).
+Reproducing a *new* session's keystreams would require that session's key
+exchange, which is out of scope.
 
 Fully recovered keystream for the **primary channel** (header `f3 ?? 44 dd 7c/6c
 5f` — TesterPresent + a measuring poll), UDS-bearing region offsets 6–13:
@@ -342,6 +368,14 @@ gearbox SW-version (chan b3..eb0d..55): multiframe RDBI response (ISO-TP PCIs
 
 ### Confidence / what is NOT yet recovered
 - Algorithm = position XOR keystream: **HIGH**. Block off6–13 layout: **HIGH**.
+- Schedule = 16-row IV table (`0x140171d30`) + `cid=(msg_type+1)&0xf` selector +
+  AES-256 engine (`KS=AES(row)`): **HIGH for the components** (table extent, cid
+  formula, engine identity/addresses all verified statically). The exact keystream
+  *mode* (CFB vs OFB) is **MED** — inferred from the byte-local-XOR wire behaviour,
+  since the encrypt/decrypt drivers read as CBC but the wire is provably not CBC.
+- **Session AES key: NOT recovered (out of scope).** Runtime secret, auth-adjacent
+  — so `KS=AES(row)` cannot be synthesised offline; keystreams are recovered
+  per-session from known-plaintext (43/66 channels reproduced).
 - Primary-channel keystream: **HIGH** (round-trips TP + RDBI both directions).
 - Per-channel keystreams: **each needs its own known-plaintext crib**. Offsets 6,7
   (PCI, SID) and the padding tail are trivially recoverable per channel from UDS
