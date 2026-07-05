@@ -420,3 +420,96 @@ blob to `0x140072ec0`; that caller is reached only via a runtime-installed metho
 pointer (no static `bl`/pointer/`adrp+add` to `0x140072ec0` exists in the image),
 and producing that blob lives in the session-setup / `0xb6` handshake region.
 Tracing the caller to recover how the blob is built
+
+---
+
+## Session-key derivation — SOLVED: RSA key-transport (SUPERSEDES the (b) verdict above)
+
+> **2026-07-05.** The classification above (verdict (b): "per-session secret from the
+> `0xb6` handshake, don't trace") is now **superseded by mechanism**. The prior stop
+> was based on a *false premise* — that `0x140072ec0` had "no static caller" — which
+> was an artifact of a `capstone` bug (`md.disasm` halts at the first undecodable word,
+> so the earlier `.text` sweep saw ~422 of ~350k instructions). A robust word-by-word
+> sweep (`research/clb-crack/xref.py`, `disfn.py`) reveals the whole mechanism.
+
+**The link session key `K` is RSA key-transport, decrypted with a STATIC EMBEDDED
+RSA-1024 private key.** `b6`/`b7` are an orthogonal cable-auth handshake and do **not**
+feed `K`.
+
+```
+K (32B) = PKCS1_unpad( RSA1024_CRT_decrypt( privkey , wrapped_blob[3:] ) )
+KS_cid  = AES256(K).ecb_encrypt( IV_TABLE[cid] ),   cid = (msg_type+1)&0xf
+plain[i]= cipher[i] XOR KS_cid[i]
+```
+
+- **Static secret = embedded RSA-1024 private key**, DER `RSAPrivateKey` at VMA
+  `0x140171a30` (file off `0x170030`, 609 bytes, `30 82 02 5d 02 01 00 …`; n =
+  `0xd32e7bbce9bf8853…`, e = 65537, p·q = n verified). Extract with
+  `research/clb-crack/extract_rsa_key.py`. Parsed into bignum fields at `ctx+0x5cd8`
+  (n@+8, e@+0x20, d@+0x38, p@+0x50, q@+0x68, dP@+0x80, dQ@+0x98, qInv@+0xb0) by RSA-ctx
+  init `0x140073248` (called from the connection module `0x140069724`).
+- **Install path (sole AES-256 set-key path — VERIFIED):** dispatcher `0x14006d6c8`
+  → `0x140072ec0` → RSA-CRT decrypt `0x14007ce68`/`0x14007d010` → memcpy `K` into
+  `ctx+0x5da4` → AES schedule `0x14007b140` (round keys `ctx+0x5ea8`/`+0x5f30`), sets
+  active flag `ctx+0x5cd0=1`. `xref` confirms `0x14007b140` has exactly ONE caller
+  (`0x140072f78`, inside `0x140072ec0`) — so *every* AES-256 link session, USB/HID/TCP,
+  keys through this RSA decrypt. `0x14006d6c8` and `0x140069724` are indirectly
+  dispatched (transport-abstraction virtual methods), i.e. shared by all transports.
+- **Crypto is symmetric+RSA only:** registered primitives are `aes`/`sha256`/`sprng`
+  (no ECC/DH; RSA is LibTomCrypt `rsa_*`, not a named cipher). `sprng` = CryptGenRandom
+  (fills the `b6` nonce + PKCS#1 padding). `sha256` is only a hex-ID helper, not in the
+  key path.
+
+**Confidence.** Mechanism = **HIGH** (static, cross-checked by three independent
+sweeps + the sole-set-key xref). **End-to-end key reproduction = UNVERIFIED against the
+current captures:** the 128-byte RSA-wrapped blob does **not** appear in either USB
+pcap (swept every 128-B window of both directions + the `0x0b` block concatenation,
+RSA-decrypted with the recovered key → no `K` reproduces the known `KS_F3`). Either the
+session key was cached from a prior open, or the wrapped blob is delivered off the
+captured USB path / in a form these dumps don't expose.
+
+**What this unblocks (LIVE path).** We hold the private key and the exact algorithm.
+A live tool: drive the cable → capture the wrapped-key delivery → RSA-decrypt → `K` →
+synthesise all 16 keystreams `KS_cid = AES256(K).enc(IV_TABLE[cid])` → full encrypted
+UDS (VIN/DTC/measuring).
+
+### Refined mechanism (2026-07-05, static-definitive) — RSA-OAEP, CABLE-DRIVEN
+
+- **Algorithm = RSA-1024 + OAEP-SHA256 private-key decrypt** (LibTomCrypt
+  `rsa_decrypt_key_ex`). `0x14007ce68` enforces `inlen == modulus_size` (`cmp` at
+  `0x14007cec0`, else err 7) ⇒ **exactly 128-byte ciphertext**; core `0x14007d010` is
+  `rsa_exptmod(which=PRIVATE)` doing two CRT modexps over `p,q,dP,dQ,qInv` at
+  `key+0x50/0x68/0x80/0x98/0xb0`. `ctx+0x5da0` = the OAEP **hash** index (find "sha256"
+  `0x14017ad94` via `0x14007b270`), `ctx+0x61e8` = PRNG index ("sprng"). So the earlier
+  "symmetric cipher-id at ctx+0x5da0" reading was the OAEP hash id, not a cipher.
+- **Install message = exactly 131 bytes: 3-byte header + 128-byte OAEP-wrapped K.**
+  Dispatcher `0x14006d6c8` triggers the installer only on a 131-B inbound message
+  (header nibble `0xF0`, `block[0]==block[1]`, len≥0x12) while un-keyed (`ctx+0x5cd0==0`).
+- **CABLE-DRIVEN (decisive):** the only writer of `K` (`ctx+0x5da4`) is the RSA-decrypt
+  output (single instruction `0x140072f38`, whole-`.text` movz scan confirms). There is
+  **no app-side K generation.** Therefore the **cable generates the session key, OAEP-wraps
+  it with the app's embedded RSA PUBLIC key, and transmits the 128-B blob**; the app
+  recovers K with the embedded PRIVATE key. A live interop tool that holds the private key
+  (we do) recovers K identically — **we do not need the cable's secret, we ARE the app.**
+- **VERSION BREAK:** the pcaps (`init-only`/`reading-ecus`) are from the **OLD x86
+  VMProtect build**, whose link key used a *different* (b6/b7-derived) scheme — no 131-B
+  RSA-OAEP blob appears and no RSA/hash of captured b6/b7/09/0b bytes reproduces the old
+  `KS_F3` (verified negative on both dumps). **The new unprotected build REQUIRES the cable
+  to emit the RSA-OAEP wrapped key.** So an older-firmware cable that only speaks the old
+  scheme would never key the link on the new binary — a genuine protocol-version
+  incompatibility, independent of the genuineness signature check.
+
+### VCDS genuineness gate (for the patch route) — reference
+
+`0x1400732b0(ctx,mode)` parses cable-identify. Two rejects:
+- **Soft** (signature blocklist of one interface): `resp[0x36..0x3b]` vs literal
+  `0x140073568` = `01 00 00 c0 1e 00`; `b.ne 0x1400734ec` at `0x1400734e4`. Patch to always
+  skip the warning: file off `0x728ec`, `41 f9 ff 54` → `4e f9 ff 54` (B.NE→B.AL).
+- **Hard** (identify-header format, returns −1 at `0x140073550`): mode0 expects
+  `resp[1]==0x14` (`0x1400733a4`/`0x1400733b0`), mode1 `resp[1]==0xE2` (`0x14007347c`).
+Our cable's identify returns "ROSSTECH"+ver and passed on macOS, so it likely clears these.
+
+**Bottom line for the live path:** no crypto wall — we hold the key and the exact
+algorithm. The open question is now purely empirical: **does THIS cable's firmware speak
+the new RSA-OAEP key-transport?** Answerable only by driving the cable through the new
+build's OPEN sequence and watching for the 131-B wrapped-key frame.

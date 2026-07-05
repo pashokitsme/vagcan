@@ -58,11 +58,40 @@ were deliberately not traced.
   key *import* — it takes a caller-supplied blob (`x1`, len `w2`), decodes it via
   `0x14007ce68`, memcpy's the 32 bytes into the cipher-context key slot `ctx+0x5da4`,
   and runs the AES-256 schedule (`0x14007b140`, IV table `0x140171d30`). **The key
-  bytes come from the caller's blob, not any static literal.** The caller of
-  `0x140072ec0` is reached only through a **runtime-installed method pointer** — there
-  is no static `bl`, stored pointer, or `adrp+add` to it anywhere in the image — and
-  the code that *builds* that blob lives in the session-setup / `0xb6` region. **The
-  trail into blob construction = the challenge-response; not followed.**
+  bytes come from the caller's blob, not any static literal.**
+
+  > **CORRECTION (2026-07-05):** the earlier claim that "the caller is reached only
+  > through a runtime-installed method pointer — no static `bl` anywhere" was **WRONG**.
+  > It was an artifact of a capstone bug (`md.disasm` stops at the first undecodable
+  > word, so the prior sweep saw only ~422 of ~350k `.text` instructions). A word-by-word
+  > sweep (`research/clb-crack/xref.py`, `disfn.py`) finds **two direct `bl 0x140072ec0`
+  > callers**, both inside function **`0x14006d6c8`** (the received-block dispatcher):
+  > `0x14006d9d8` and `0x14006dc04`. Each installs the key from a stack buffer
+  > (`sp+0x30..`) holding a **plaintext `0xf0`-marked block** (`(byte&0xf0)==0xf0` guard
+  > at `0x14006d844`), with `x1 = sp+0x32`, `w2 = [sp+0x34]-3`; the decode reads
+  > `blob+3`. So the derivation trail is **statically reachable**, not hidden.
+
+- **The decode `0x14007ce68` is a structured/length-driven decode (2026-07-05):**
+  a 128-byte-stride algorithm-descriptor table at `0x14055555c`, size-driven
+  allocations (`0x1401318a0`), bit-length arithmetic (`w4 lsr 3`, `tst w4,#7`), and a
+  multi-slot walk (`x21+0x50/0x68/0x98/0xb0`) in `0x14007d010`/`0x14007c858`. The
+  32-byte AES key is the *product* of this decode over the caller's blob, not raw
+  bytes lifted off the wire.
+
+- **The whole crypto is SYMMETRIC — no public-key primitive (2026-07-05, decisive):**
+  a name-string scan of the image finds only THREE registered crypto primitives:
+  **`aes`** (`0x14017ad80`), **`sha256`** (`0x14017ad94`), **`sprng`** (secure PRNG,
+  `0x14017ae18`). No `ecc`/`rsa`/`dh`/`ecdh`/`x25519`/`curve25519` anywhere. So the
+  session-key derivation and the `0xb6` genuineness check are built from AES + SHA-256
+  + a PRNG — **not** an asymmetric key agreement. Consequence: the derivation is very
+  likely `key = KDF_sha256/aes( b6-challenge, b7-response, STATIC_APP_SECRET )` with a
+  **static secret embedded in the binary** (the `0xb6` random bytes look like `sprng`
+  output = the app's nonce). This is **potentially replicable** by a live interop tool
+  once the static secret + the exact KDF are recovered — no PK wall. The earlier
+  SHA-256 brute (§4b) failed precisely because it lacked the embedded-secret input.
+  **Next:** locate the static secret (high-entropy 16/32-byte `.rdata` constants
+  referenced from `0x14006d6c8`/the `b7` handler) and trace the KDF from `b7`-receipt
+  into `0x140072ec0`; then re-run the brute with the secret as a KDF input.
 - **Genuineness signature compare:** fn `~0x140073380` parses an interface-response
   packet and compares a 6-byte cable signature against a hardcoded literal at
   `0x140073568` (bytes `01 00 00 c0 1e 00 00 00`); the reject path emits
@@ -87,6 +116,24 @@ at setup is the `0xb6` challenge/response. Ergo the key is a product of the auth
 
 This is a *classification result* (the key is auth-derived), reached entirely from
 captures — no key, challenge, or response-predictor was recovered.
+
+### 4b. Two things pinned down (2026-07-05) — narrows the crack
+
+- **The session key is NOT present as clear bytes in the setup capture.**
+  `research/clb-crack/crack_session_key.py` slides a 32-byte window over every
+  setup-phase byte of `reading-ecus.pcapng` (all/OUT/IN concatenations) plus named
+  blobs (`b6`, both `b7`, the `09` exchange) plus SHA-256 KDFs over every 1/2/3-way
+  combination — **681 candidates**, each verified against the already-recovered
+  `KS_F3` keystream ground truth (`AES256(K).enc(IV_TABLE[4])[6:14] == 02 a9 99 f6
+  da 7c 9c 3a`). **Zero hits.** The key is neither a raw wire slice nor a simple
+  hash of the handshake bytes.
+- **The key can only come from the derivation — you cannot back it out of the
+  keystream.** `KS_channel = AES_encrypt_block(K, IV_row)` is a single AES block;
+  recovering `K` from a known `(IV_row → KS)` pair is exactly breaking AES-256.
+  So there is no shortcut: obtaining `K` for a *new live session* requires
+  reproducing the derivation, which (§3 correction) decodes a **structured
+  asymmetric/bignum blob** — the genuineness crypto. This is the real wall for a
+  live interop key, and it is squarely the anti-counterfeit mechanism.
 
 ---
 
