@@ -41,7 +41,7 @@ pub mod probe;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
-pub use drive::{AUTH39_BLOCK, DriveReport, drive_session};
+pub use drive::{AUTH39_BLOCK, DriveReport, drive_session, drive_session_sweep};
 pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
 pub use link::{
@@ -49,5 +49,5 @@ pub use link::{
     encode_request, f3_trailer, paired_off14, recover_keystream,
 };
 pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
-pub use probe::{BRINGUP, ProbeReport, TP_B8_BLOCK, VinReport, probe_open, session_probe, vin_read};
+pub use probe::{BRINGUP, ProbeReport, probe_open};
 pub use usb::{Backend, CableInfo, D2xxBackend, FTDI_VID, list_cables};

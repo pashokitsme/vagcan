@@ -184,8 +184,24 @@ pub async fn drive_session<B: Backend>(
         report.advanced
     ));
 
-    // 4) f3 TesterPresent. Derive off14 from any f3 counter we've seen, else the
-    //    capture's TP seed (0x00).
+    // 4-6) f3 TesterPresent → VIN.
+    try_f3_and_vin(backend, &mut buf, &mut received, &mut last_off14, &mut report, listen).await?;
+
+    report.received = received;
+    Ok(report)
+}
+
+/// After the cable has advanced past auth: send an `f3` TesterPresent, and on a
+/// `7E` positive, read the VIN. Shared by [`drive_session`] and
+/// [`drive_session_sweep`]. Updates `report` in place.
+async fn try_f3_and_vin<B: Backend>(
+    backend: &mut B,
+    buf: &mut Vec<u8>,
+    received: &mut Vec<Frame>,
+    last_off14: &mut HashMap<u8, u8>,
+    report: &mut DriveReport,
+    listen: Duration,
+) -> Result<(), HexError> {
     let tp_off14 = match last_off14.get(&CHAN_F3) {
         Some(&cnt) => paired_off14(cnt),
         None => 0x00,
@@ -194,9 +210,8 @@ pub async fn drive_session<B: Backend>(
     let tp_block = encode_f3_request(&[0x3E, 0x00], tp_off14).expect("TP PDU fits a single frame");
     let recv_before = received.len();
     send_b8(backend, &tp_block).await?;
-    collect(backend, &mut buf, &mut received, &mut last_off14, listen).await?;
+    collect(backend, buf, received, last_off14, listen).await?;
 
-    // 5) Decode the f3 responses; detect a TesterPresent positive (off7 == 0x7E).
     for f in &received[recv_before..] {
         if !is_f3_response(f) {
             continue;
@@ -213,7 +228,6 @@ pub async fn drive_session<B: Backend>(
         report.tp_positive
     ));
 
-    // 6) If TP came back positive, read the VIN on the same channel.
     if report.tp_positive {
         let vin_off14 = match last_off14.get(&CHAN_F3) {
             Some(&cnt) => paired_off14(cnt),
@@ -223,7 +237,7 @@ pub async fn drive_session<B: Backend>(
             encode_f3_request(&[0x22, 0xF1, 0x90], vin_off14).expect("VIN PDU fits a single frame");
         let recv_before = received.len();
         send_b8(backend, &vin_block).await?;
-        collect(backend, &mut buf, &mut received, &mut last_off14, listen).await?;
+        collect(backend, buf, received, last_off14, listen).await?;
 
         let mut reasm = IsoTpReassembler::new();
         for f in &received[recv_before..] {
@@ -243,7 +257,110 @@ pub async fn drive_session<B: Backend>(
                 break;
             }
         }
-        report.log.push(format!("VIN read: sent f3 b8 off14={vin_off14:#04x}; vin = {:?}", report.vin));
+        report.log.push(format!(
+            "VIN read: sent f3 b8 off14={vin_off14:#04x}; vin = {:?}",
+            report.vin
+        ));
+    }
+    Ok(())
+}
+
+/// Candidate auth-completion off14 values to try, given the cable's freshly
+/// observed `0x39` counter. Ordered by likelihood from the capture: the capture's
+/// host off14 (`0x38`) was `observed & 0xF8` (round down to the group-of-8 base),
+/// then simple relations, then the rest of the group.
+fn auth_off14_candidates(observed: u8) -> Vec<u8> {
+    let base = observed & 0xF8;
+    let mut c = vec![
+        base,
+        observed,
+        observed ^ 1,
+        observed.wrapping_sub(1),
+        observed.wrapping_sub(2),
+        observed.wrapping_sub(3),
+        observed.wrapping_add(1),
+        observed.wrapping_add(2),
+    ];
+    for k in 0..8 {
+        c.push(base + k);
+    }
+    c.dedup();
+    c
+}
+
+/// Like [`drive_session`] but **sweeps** candidate auth-completion off14 values
+/// until the cable advances past the `0x39` channel — the counter derivation the
+/// capture can't prove (it is host-initiated on `0x39`; the live cable is not).
+/// Each attempt re-reads the cable's current `0x39` counter (it free-runs) and
+/// tries [`auth_off14_candidates`] against it; on the first advance it proceeds to
+/// the `f3` TesterPresent → VIN. off14 is plaintext so trying values is safe.
+pub async fn drive_session_sweep<B: Backend>(
+    backend: &mut B,
+    listen: Duration,
+) -> Result<DriveReport, HexError> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut received: Vec<Frame> = Vec::new();
+    let mut last_off14: HashMap<u8, u8> = HashMap::new();
+    let mut report = DriveReport::default();
+
+    for &(opcode, payload) in BRINGUP {
+        backend
+            .write(&frame::frame_encode(MARKER_HOST, opcode, payload))
+            .await?;
+        collect(backend, &mut buf, &mut received, &mut last_off14, STEP_READ).await?;
+    }
+    collect(backend, &mut buf, &mut received, &mut last_off14, STEP_READ).await?;
+
+    // Sweep: for each candidate derived from the freshly-observed 0x39 counter,
+    // send the auth-completion and check whether the cable advances.
+    let attempt_window = Duration::from_millis(150);
+    let mut tried: Vec<u8> = Vec::new();
+    'sweep: for _round in 0..24 {
+        let observed = match last_off14.get(&CHAN_AUTH) {
+            Some(&c) => c,
+            None => AUTH39_SEED_OFF14,
+        };
+        for cand in auth_off14_candidates(observed) {
+            if tried.contains(&cand) {
+                continue;
+            }
+            tried.push(cand);
+            report.observed_auth_off14.push(observed);
+            let mut blk = AUTH39_BLOCK;
+            blk[14] = cand;
+            let before = received.len();
+            send_b8(backend, &blk).await?;
+            collect(backend, &mut buf, &mut received, &mut last_off14, attempt_window).await?;
+            let advanced = received[before..]
+                .iter()
+                .any(|f| matches!(diag_chan_and_off14(f), Some((chan, _)) if chan != CHAN_AUTH));
+            if advanced {
+                report.sent_auth_off14 = cand;
+                report.advanced = true;
+                report.log.push(format!(
+                    "SWEEP: off14={cand:#04x} (observed {observed:#04x}) advanced the cable"
+                ));
+                break 'sweep;
+            }
+        }
+    }
+    if !report.advanced {
+        report.log.push(format!(
+            "SWEEP: tried {} off14 candidates; cable never advanced past 0x39",
+            tried.len()
+        ));
+    }
+
+    if report.advanced {
+        try_f3_and_vin(
+            backend,
+            &mut buf,
+            &mut received,
+            &mut last_off14,
+            &mut report,
+            listen,
+        )
+        .await?;
     }
 
     report.received = received;
