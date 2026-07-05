@@ -1,10 +1,6 @@
-use std::time::Duration;
 use vag_transport::{IsoTpTransport, TransportError};
 use crate::dtc::RawDtc;
-
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
-const MAX_PENDING: usize = 30;
-const READ_ONLY_ALLOWLIST: &[u8] = &[0x10, 0x19, 0x22, 0x3E];
+use crate::pdu::{self, Classified, MAX_PENDING, RESPONSE_TIMEOUT};
 
 #[derive(thiserror::Error, Debug)]
 pub enum UdsError {
@@ -29,49 +25,22 @@ impl<C: IsoTpTransport> UdsClient<C> {
 
     /// Send a UDS request; return response bytes after the echoed SID.
     pub fn request(&mut self, sid: u8, payload: &[u8]) -> Result<Vec<u8>, UdsError> {
-        if !READ_ONLY_ALLOWLIST.contains(&sid) {
-            return Err(UdsError::Forbidden(sid));
-        }
-        let mut req = Vec::with_capacity(1 + payload.len());
-        req.push(sid);
-        req.extend_from_slice(payload);
+        let req = pdu::encode_request(sid, payload)?;
         self.channel.send(&req)?;
 
         for _ in 0..MAX_PENDING {
             let resp = self.channel.recv(RESPONSE_TIMEOUT)?;
-            let first = *resp.first().ok_or_else(|| UdsError::Malformed("empty response".into()))?;
-            if first == 0x7F {
-                // Negative: [0x7F, sid, nrc]
-                let nrc = *resp.get(2).ok_or_else(|| UdsError::Malformed("short negative response".into()))?;
-                if nrc == 0x78 {
-                    // responsePending: read again.
-                    continue;
-                }
-                let echoed = *resp.get(1).unwrap_or(&sid);
-                return Err(UdsError::NegativeResponse { sid: echoed, nrc });
+            match pdu::classify_response(sid, &resp)? {
+                Classified::Pending => continue, // responsePending: read again.
+                Classified::Data(data) => return Ok(data),
             }
-            if first != sid + 0x40 {
-                return Err(UdsError::Malformed(format!(
-                    "response SID 0x{first:02X} does not match request 0x{:02X}",
-                    sid + 0x40
-                )));
-            }
-            return Ok(resp[1..].to_vec());
         }
         Err(UdsError::Malformed("too many responsePending replies".into()))
     }
 
     pub fn read_data_by_identifier(&mut self, did: u16) -> Result<Vec<u8>, UdsError> {
-        let resp = self.request(0x22, &[(did >> 8) as u8, (did & 0xFF) as u8])?;
-        let echoed = resp
-            .get(0..2)
-            .ok_or_else(|| UdsError::Malformed("RDBI response missing DID echo".into()))?;
-        if echoed != [(did >> 8) as u8, (did & 0xFF) as u8] {
-            return Err(UdsError::Malformed(format!(
-                "RDBI DID echo mismatch: got {echoed:02X?}, want 0x{did:04X}"
-            )));
-        }
-        Ok(resp[2..].to_vec())
+        let resp = self.request(0x22, &pdu::did_bytes(did))?;
+        pdu::parse_rdbi_response(did, &resp)
     }
 
     pub fn tester_present(&mut self) -> Result<(), UdsError> {
@@ -87,19 +56,7 @@ impl<C: IsoTpTransport> UdsClient<C> {
     pub fn read_dtcs_by_status_mask(&mut self, mask: u8) -> Result<Vec<RawDtc>, UdsError> {
         // request: 0x19 0x02 <mask>; response after SID strip: 0x02 <avail> [dtc(3) status(1)]*
         let resp = self.request(0x19, &[0x02, mask])?;
-        // resp[0] = subfunction echo (0x02), resp[1] = availability mask, then entries.
-        if resp.len() < 2 || resp[0] != 0x02 {
-            return Err(UdsError::Malformed("bad ReadDTCInformation 0x02 response".into()));
-        }
-        let entries = &resp[2..];
-        if entries.len() % 4 != 0 {
-            return Err(UdsError::Malformed("DTC entries not a multiple of 4 bytes".into()));
-        }
-        let mut out = Vec::with_capacity(entries.len() / 4);
-        for chunk in entries.chunks_exact(4) {
-            out.push(RawDtc { code: [chunk[0], chunk[1], chunk[2]], status: chunk[3] });
-        }
-        Ok(out)
+        pdu::parse_dtc_response(&resp)
     }
 }
 
@@ -107,6 +64,7 @@ impl<C: IsoTpTransport> UdsClient<C> {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::time::Duration;
     use crate::dtc::RawDtc;
 
     /// Mock IsoTp channel: canned responses, records sent PDUs.
