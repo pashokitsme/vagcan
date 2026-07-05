@@ -38,12 +38,15 @@ pub const AUTH39_BLOCK: [u8; 16] = [
     0x39, 0xc7, 0x0a, 0x5d, 0xe7, 0x72, 0xcf, 0xa5, 0x6e, 0xfb, 0x41, 0xc6, 0x4c, 0xab, 0x38, 0xcd,
 ];
 
-/// Per-ECU open frames the host sends right after the `0x39` auth-completion
-/// (capture `research/reading-ecus.pcapng` seq 51–77): a keepalive `a0`, a
-/// `0x19 00` status read, the `0x0b` indexed-block burst (idx 00..07), and the
-/// keyed `0x09` triplet. These are plaintext opcode-frames (no block counter),
-/// replayed verbatim; they apply live under the same-session-key determinism the
-/// whole replay relies on. `(opcode, payload)`.
+/// Per-ECU open frames after the `0x39` auth-completion (capture
+/// `research/reading-ecus.pcapng` seq 51–77): keepalive `a0`, `0x19 00` status,
+/// the `0x0b` indexed-block burst (idx 00..07), the keyed `0x09` triplet. These
+/// are plaintext opcode-frames (no block counter), replayed verbatim.
+///
+/// NOTE: deliberately **stops before** the 2nd `b0..b5`+`b6` re-init burst. That
+/// full re-initialization mid-session wedged the clone's firmware off the USB bus
+/// (required a physical power-cycle). Reaching a diagnostic ECU epoch needs a
+/// gentler approach than replaying a second bring-up. `(opcode, payload)`.
 const POST_ADVANCE: &[(u8, &[u8])] = &[
     (0xA0, &[]),
     (0x19, &[0x00]),
