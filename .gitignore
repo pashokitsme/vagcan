@@ -4,6 +4,8 @@ Cargo.lock
 .DS_Store
 *.capture.local
 .superpowers/
+# Agent worktrees + local harness state
+.claude/
 
 # --- research working dir: exclude junk + third-party/proprietary content ---
 # Regenerable tooling state
