@@ -117,3 +117,43 @@ making that epoch's captured keystream apply live. Our failures were all *non-ex
 replays. This is the one remaining replay path; needs a complete-replay driver + a
 fresh-power-on **[CABLE]** session. If the cable state is truly random, this is also dead
 and only a live-oracle keystream recovery (or the cable secret) remains.
+
+---
+
+## UPDATE 2 (offline agent B, static RE): the static ceiling — and the 3 remaining paths
+
+- **RT-USB.dll** = verbatim stock FTDI FTD2XX (PDB `…d2xxdll…FTD2XX.pdb`, internal name
+  `FTD2XX.dll`, full FT_* export surface, only `VID_0403&PID_6001`). Zero cable-protocol
+  logic — the whole protocol is app-side in VCDS.exe. Dead end (confirmed).
+- **VCDS.exe / VCDSLoader.exe** = fully **VMProtect**-packed: every code section entropy
+  8.00, virtualized IAT (1 static import/DLL), 0 protocol/crypto strings, no unpacked
+  region. The OLD-scheme `0x09`/`b6`/`K_epoch` code is **NOT statically recoverable**.
+- **arm64 build** (analyzable proxy): command layer rides inside `0x04` data frames via
+  encoder `0x14006cef0` → chokepoint `0x14006b640` → replies at `[ctx+0x204]`. Selector
+  `(byte+1)&0xf` @0x140073150 → IV_TABLE @0x140171d30 (confirms the pcap link cipher; cmd
+  3→block 0xf3→row4 = KS_F3). Wire `0x09` is a **transport-layer** handshake (state machine
+  0x14006c6a4), NOT a command and NOT the key — corroborates agent A. Genuineness = cmd
+  `0x45` @0x140073df8 over a **static 128-byte table @0x140171730 + a session counter
+  @0x1405e8108** → matches "advancing state". `K` (new scheme) is RSA-OAEP only.
+- **OLD-scheme `K_epoch` = symmetric KDF over (advancing session counter + static embedded
+  table + b6/b7 nonce)** — best-supported model; sealed in VMProtect.
+
+### The three remaining paths to a live VIN (all offline-crack routes are now closed)
+1. **Exact-complete 1:1 replay from fresh power-on** [CABLE]. If the cable state is
+   deterministic-from-power-on (epoch-1's byte-for-byte reproduction says yes), replaying
+   the capture's ENTIRE OUT stream verbatim (every frame incl. all `0b` reads, exact order,
+   counters restamped) tracks the cable state through to the engine epoch (f3 @seq1045),
+   where the captured `KS_F3` applies → inject a crafted `22 F1 90` and decode. Big but
+   mechanical; one fresh-power-on session tests it. HIGHEST-probability path w/o unpacking.
+2. **VMProtect dynamic unpacking** of VCDS.exe to recover the symmetric KDF → compute
+   `K_epoch` offline. Substantial separate effort (emulation/dynamic); no cable needed to
+   crack, cable only to use it.
+3. **Bypass the clone's link entirely** — generic USB-CAN (slcan) adapter + the existing
+   `vag-can` crate: UDS-over-ISO-TP-over-CAN straight to the car. Sidesteps the whole
+   re-key problem; needs a ~cheap USB-CAN dongle. Pragmatic route to `vagcan info`.
+
+### Recommendation
+Try **path 1** first (one [CABLE] session, no new hardware, reuses everything built). If the
+cable state diverges (true randomness late in the session), fall back to **path 3** (generic
+CAN — the original designed fallback) for the actual `vagcan info` goal; keep **path 2** as
+the "crack the clone properly" long game.
