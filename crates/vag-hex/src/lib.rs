@@ -16,11 +16,15 @@
 //! ([`spawn`]). [`init`] drives the PLAINTEXT open handshake ([`handshake`] →
 //! [`CableIdentity`]: `0x02` probe + `0x04` identify → "ROSSTECH" + version);
 //! it stops at plaintext identify (the `0xb0..0xb6` auth burst is out of scope,
-//! see `research/SCOPE-BOUNDARY.md`). Still pending hardware/capture: the
-//! encrypted diagnostic UDS transport (`frame::encode`/`decode` — needs
-//! the per-channel link keystream schedule, reversed in research but not yet
-//! ported; see `research/clb-crack/link_cipher.py`), which lands as an
-//! `AsyncIsoTpTransport` impl on [`CableHandle`].
+//! see `research/SCOPE-BOUNDARY.md`). [`link`] carries the DECODE side of the
+//! `0xb8`/`0xb7` diagnostic link cipher: [`decrypt_block`] (per-channel XOR),
+//! [`recover_keystream`] from known-plaintext, and [`decode_diag_frame`] yielding
+//! the inner single-frame UDS PDU — decode only, using a per-session keystream
+//! recovered from the capture's UDS known-plaintext (the AES session key is
+//! auth-derived and out of scope; see `research/clb-crack/link_cipher.py`). Still
+//! pending hardware/capture: wiring this decode + multiframe ISO-TP reassembly
+//! into an `AsyncIsoTpTransport` impl on [`CableHandle`] (the `frame::encode`/
+//! `decode` seams stay gated until then).
 
 // Without the `d2xx` backend feature (and outside tests), the dedicated-thread
 // byte-pipe bridge has no caller and is deliberately dormant scaffolding — do
@@ -31,10 +35,12 @@ pub mod actor;
 pub mod error;
 pub mod frame;
 pub mod init;
+pub mod link;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
 pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
+pub use link::{UdsSlice, decode_diag_frame, decrypt_block, recover_keystream};
 pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
 pub use usb::{Backend, CableInfo, D2xxBackend, FTDI_VID, list_cables};
