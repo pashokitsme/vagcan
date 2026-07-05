@@ -13,8 +13,11 @@
 //! bridged to async by channels). [`actor`] carries the [`CableActor`] +
 //! cheap-clone [`CableHandle`]: one tokio task owns the byte pipe and
 //! multiplexes N concurrent plaintext frame requests over the single link
-//! ([`spawn`]). Still pending hardware/capture: [`init`] (open-time handshake)
-//! and the encrypted diagnostic UDS transport (`frame::encode`/`decode` — needs
+//! ([`spawn`]). [`init`] drives the PLAINTEXT open handshake ([`handshake`] →
+//! [`CableIdentity`]: `0x02` probe + `0x04` identify → "ROSSTECH" + version);
+//! it stops at plaintext identify (the `0xb0..0xb6` auth burst is out of scope,
+//! see `research/SCOPE-BOUNDARY.md`). Still pending hardware/capture: the
+//! encrypted diagnostic UDS transport (`frame::encode`/`decode` — needs
 //! the per-channel link keystream schedule, reversed in research but not yet
 //! ported; see `research/clb-crack/link_cipher.py`), which lands as an
 //! `AsyncIsoTpTransport` impl on [`CableHandle`].
@@ -33,5 +36,5 @@ pub mod usb;
 pub use actor::{CableActor, CableHandle, spawn};
 pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
-pub use init::CableIdentity;
+pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
 pub use usb::{Backend, CableInfo, D2xxBackend, FTDI_VID, list_cables};
