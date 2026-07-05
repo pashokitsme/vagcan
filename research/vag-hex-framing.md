@@ -562,9 +562,41 @@ Confirmed live on the M4 (via `vagcan probe`/`handshake`):
   is set by the `b3`/`b4` addressing burst that precedes each `b6`.
 - **`0x0b` EEPROM blocks carry NO plaintext VIN** — 40-byte encrypted blocks
   (high entropy, no ASCII); the safe post-auth `0b` read is not a VIN shortcut.
-- **Replaying a 2nd `b0..b5`+`b6` mid-session WEDGES the clone** — it drops off the
-  USB bus and needs a physical power-cycle. Almost certainly because the driver did
-  not consume the cable's response to the 2nd `b6` (the new-epoch key push) before
-  sending the next frame, desyncing the pipe. A safe per-ECU open must: drain the
-  cable's `b6` response fully, then proceed — and never stack a 2nd bring-up burst
-  blindly. This is the remaining gap between auth-advance and a live UDS read.
+- **Cable dropped off the USB bus BETWEEN runs (clean-close bug, FIXED).** The
+  drop happened after a *safe* run completed, before the next run started (the next
+  `FT_Open` got DEVICE_NOT_FOUND with the cable absent from `ioreg`). Root cause:
+  `D2xxBackend` spawned the D2XX worker thread **detached** and had no `Drop`, so a
+  CLI whose `main` returns right after use exited with the worker mid-flight and
+  **`FT_Close` never ran** — the FTDI endpoint stayed open and the clone's MCU stuck
+  mid-session, eventually resetting off the bus. Fixed: `D2xxBackend` now holds the
+  worker `JoinHandle` and, on drop, closes the command channel and **joins** the
+  worker so `FT_Close` always completes. (My earlier note blaming a 2nd `b0..b5`+`b6`
+  replay was wrong — that extended replay never actually executed; it hit
+  DEVICE_NOT_FOUND on its first invocation because the cable had already dropped.)
+
+## Safe ECU-open — offline RE (2026-07-05)
+
+Per-`b6` epochs partition the session; each new CAN target needs a `b0..b5` filter
+rewrite + a `b6`. Key findings for reaching a diagnostic ECU (e.g. to read VIN):
+
+- **`b6` is a fresh CSPRNG challenge (all 40 in the capture are distinct).** A
+  **stale/replayed** `b6` used to *re-key mid-session* is the suspected trigger for a
+  clone firmware fault (distinct from the clean-close drop above). The first `b6`
+  (bring-up, un-keyed cable) replays safely and deterministically; a *second* one
+  should use a **freshly generated nonce**, not a replayed capture nonce.
+- **`b0..b5` replay is safe** (deterministic config, no nonce; the capture issues 19
+  mid-session `b0..b5` bursts without incident).
+- **CAN-addressing map:** `b3` = acceptance mask (`ffe0>>5 = 0x7FF`, exact 11-bit);
+  `b4[idx]` = filter response IDs, **`ID = (16-bit value) >> 5`**. Engine ECU01 resp
+  `0x7E8` = `b4 …fd00`; gateway resp `0x77A` = `b4 …ef40` (permanently installed in
+  every burst). Engine `0x7E0`/`0x7E8` is the shortest safe route to VIN.
+- **Epoch caveat:** `KS_F3`/`F3_REQ_HEADER` in `link.rs` are **epoch-15-specific**
+  (keystream = `AES(K_epoch, IV)`; `K` rotates every `b6`). A fresh `b6` → a fresh
+  keystream, so those constants won't apply — the epoch's UDS-region keystream must be
+  recovered live from a known-plaintext crib (TesterPresent `02 3E 00`), and response
+  DATA is readable by two-time-pad (`resp_cipher ^ req_cipher`, request pad `0x00`).
+  **Open bootstrap problem:** encoding the *first* request on a fresh epoch needs that
+  keystream — closing this (a known cable/ECU push to crib against, or reversing the
+  old-scheme `b6/b7` → `K` derivation so `K` is computable) is the remaining gap.
+- **`0x0b` EEPROM blocks are NOT a VIN cache** — 40-byte AES-keystream blocks, each
+  read distinct (no repeated plaintext → no two-time-pad), not decodable offline.

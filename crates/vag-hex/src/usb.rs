@@ -183,10 +183,26 @@ fn serve_read(
 
 /// The physical HEX cable over FTDI D2XX.
 ///
-/// Cheap to move (holds only the command sender). Dropping it closes the
-/// channel, which lets the worker thread finish and close the FTDI handle.
+/// Holds the command sender plus the worker's [`JoinHandle`]. On drop it closes
+/// the command channel and **joins** the worker so the worker's `FT_Close` runs
+/// to completion before we return — otherwise a CLI whose `main` returns right
+/// after use would exit with the worker detached mid-flight, leaving the FTDI
+/// endpoint open and the cable stuck mid-session (observed: the clone then drops
+/// off the USB bus and needs a physical power-cycle).
 pub struct D2xxBackend {
-    cmd_tx: mpsc::Sender<Cmd>,
+    cmd_tx: Option<mpsc::Sender<Cmd>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for D2xxBackend {
+    fn drop(&mut self) {
+        // Drop the sender first so the worker's `rx.recv()` returns `None`, its
+        // loop exits, and it drops the device (running `FT_Close`).
+        self.cmd_tx = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl D2xxBackend {
@@ -220,18 +236,28 @@ impl D2xxBackend {
     /// real open and the in-memory tests share.
     pub(crate) fn from_raw_device(dev: Box<dyn RawDevice>, status_prefixed: bool) -> Self {
         let (cmd_tx, rx) = mpsc::channel(CMD_QUEUE);
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("vag-hex-d2xx".into())
             .spawn(move || worker_loop(dev, status_prefixed, rx))
             .expect("spawn vag-hex-d2xx worker thread");
-        Self { cmd_tx }
+        Self {
+            cmd_tx: Some(cmd_tx),
+            worker: Some(worker),
+        }
+    }
+
+    /// The command sender (always present until drop).
+    fn tx(&self) -> Result<&mpsc::Sender<Cmd>, HexError> {
+        self.cmd_tx
+            .as_ref()
+            .ok_or_else(|| HexError::Io("d2xx backend closed".into()))
     }
 }
 
 impl Backend for D2xxBackend {
     async fn write(&mut self, bytes: &[u8]) -> Result<(), HexError> {
         let (ack, ack_rx) = oneshot::channel();
-        self.cmd_tx
+        self.tx()?
             .send(Cmd::Write {
                 bytes: bytes.to_vec(),
                 ack,
@@ -248,7 +274,7 @@ impl Backend for D2xxBackend {
             return Ok(0);
         }
         let (reply, reply_rx) = oneshot::channel();
-        self.cmd_tx
+        self.tx()?
             .send(Cmd::Read {
                 max: buf.len(),
                 reply,
@@ -414,7 +440,7 @@ mod tests {
         let mut backend = D2xxBackend::from_raw_device(dev, false);
         let (reply, reply_rx) = oneshot::channel();
         drop(reply_rx); // simulate the cancelled read future
-        backend.cmd_tx.send(Cmd::Read { max: 16, reply }).await.unwrap();
+        backend.tx().unwrap().send(Cmd::Read { max: 16, reply }).await.unwrap();
         // The next (live) read must still see the full stream.
         let mut buf = [0u8; 8];
         let n = backend.read(&mut buf).await.unwrap();
