@@ -8,26 +8,27 @@ Reference vehicle: Škoda Octavia III facelift, 1.8 TSI, 2017 (MQB, CAN/UDS).
 
 Design/PRD: [`docs/superpowers/specs/2026-07-02-vagcan-cli-design.md`](docs/superpowers/specs/2026-07-02-vagcan-cli-design.md).
 
-## Status (2026-07-03)
+## Status (2026-07-06)
 
-Everything below is implemented, reviewed, and merged to `master` (13 test binaries green,
-`cargo clippy --workspace` clean).
+Everything below is implemented, reviewed, and merged to `master` (tests green,
+`cargo clippy --workspace` clean). See `todo/README.md` for the live roadmap.
 
 | Component | Crate | State |
 |---|---|---|
 | ISO-TP + UDS protocol stack (read-only) | `vag-protocol`, `vag-transport`, `vag-capture` | ✅ done |
-| `.lbl` label parser | `vag-data` | ✅ done |
-| `.clb` decrypt (TEA-CBC) | `vag-data` | ✅ done |
-| `.rod` decoder (TEA-CBC + zlib) | `vag-data` | ✅ done |
-| Part-number → measurement lookup (`REDIRECT` resolution) | `vag-data` (`LabelDb`) | ✅ done |
-| SQLite corpus cache | `vag-db` | ✅ done |
-| **Cable transport (reverse-engineer the clone HEX cable)** | `vag-hex` | 🔴 **not started — blocked on a USB capture** |
-| `monitor` / `dtc` / `sniff` commands + TUI | `vag-cli`, `vag-core` | ⬜ future (needs the transport) |
-| Run-logger / drag mode | — | ⬜ future ([spec §12](docs/superpowers/specs/2026-07-02-vagcan-cli-design.md)) |
+| `.lbl`/`.clb`/`.rod` label parse+decrypt, part-number→component lookup | `vag-data`, `vag-db` | ✅ done |
+| HEX-clone wire framing + link cipher decode/encode (b8/b7, off14/off15, ISO-TP) | `vag-hex` | ✅ done |
+| HEX-clone transport: cable opens & talks live on macOS (`FT_SetVIDPID`+FTDI init+clean-close) | `vag-hex` | ✅ done |
+| Live drive: `doctor` / `probe` / `handshake` (auth-advance past 0x39) | `vagcan` | ✅ done |
+| **Live UDS over the HEX-clone (session key `K_epoch`)** | — | 🔴 **blocked — VMProtect-sealed KDF; see `todo/README.md`** |
+| Generic USB-CAN bypass transport (slcan) | `vag-can` | 🟡 built, untested on hardware |
+| **`vagcan info` (VIN + car + equipment)** | `vagcan` | ⬜ next — via generic CAN (Track A) |
 
-**The one thing between here and reading the car** is the cable transport (P1): reverse-engineer
-the cable's own USB/serial protocol so `vagcan` can drive it. That needs a USB capture of
-VCDS↔cable traffic, taken on a working VCDS install. Nothing else is blocking.
+**Where it stands:** the clone's encrypted diagnostic link needs a per-ECU AES session key
+that the (VMProtect-packed) VCDS computes app-side — every offline route to it is exhausted
+(`research/DYNAMIC-attack-RESULTS.md`). The extensible path to `vagcan info` is the
+**generic USB-CAN bypass** (`vag-can`, ready) — talk UDS straight to the car, any ECU/DID.
+Cracking the clone itself (live VMProtect devirt) is a deferred "someday" track.
 
 ## Workspace
 
