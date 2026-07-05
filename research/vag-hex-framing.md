@@ -543,3 +543,28 @@ Our cable's identify returns "ROSSTECH"+ver and passed on macOS, so it likely cl
 algorithm. The open question is now purely empirical: **does THIS cable's firmware speak
 the new RSA-OAEP key-transport?** Answerable only by driving the cable through the new
 build's OPEN sequence and watching for the 131-B wrapped-key frame.
+
+---
+
+## Live drive findings (2026-07-05, on the owner's car)
+
+Confirmed live on the M4 (via `vagcan probe`/`handshake`):
+- **Determinism holds:** replaying `BRINGUP` (first `b6`) reproduces the capture's
+  first-epoch frames byte-for-byte — the live `0x39` block equals the capture's
+  `39 38 82 5d f7 7d f0 75 6e eb 41 c5 4d 2b <cnt> cd` (only off14 counter differs).
+- **Auth-advance rule:** the `0x39` auth-completion `b8` off14 = `observed & 0xF8`
+  (the group-of-8 base of the cable's pushed `0x39` counter). Confirmed advancing
+  the cable off `0x39` for observed `0x38→0x38`, `0x44→0x40`, `0xcc→0xc8`.
+- **Each ECU needs its own `b6` epoch.** Per-b6 map (capture): every `b6` opens
+  exactly ONE diagnostic channel — b6#1→0x39(auth), #2→0x9e, #3→0x43, #4→0x82,
+  #5→0x5c, … #15→0xf3. So a diagnostic channel's keystream is locked to its own
+  `b6` epoch; `KS_F3` (epoch #15) cannot decode a first-`b6` session. CAN target
+  is set by the `b3`/`b4` addressing burst that precedes each `b6`.
+- **`0x0b` EEPROM blocks carry NO plaintext VIN** — 40-byte encrypted blocks
+  (high entropy, no ASCII); the safe post-auth `0b` read is not a VIN shortcut.
+- **Replaying a 2nd `b0..b5`+`b6` mid-session WEDGES the clone** — it drops off the
+  USB bus and needs a physical power-cycle. Almost certainly because the driver did
+  not consume the cable's response to the 2nd `b6` (the new-epoch key push) before
+  sending the next frame, desyncing the pipe. A safe per-ECU open must: drain the
+  cable's `b6` response fully, then proceed — and never stack a 2nd bring-up burst
+  blindly. This is the remaining gap between auth-advance and a live UDS read.
