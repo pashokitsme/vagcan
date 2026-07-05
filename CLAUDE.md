@@ -44,5 +44,4 @@ todo/  done/     task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/
 ```
 
 Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
-[`research/SCOPE-BOUNDARY.md`](research/SCOPE-BOUNDARY.md),
 [`research/vag-hex-framing.md`](research/vag-hex-framing.md).
