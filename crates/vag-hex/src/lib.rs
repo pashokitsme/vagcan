@@ -36,6 +36,7 @@ pub mod error;
 pub mod frame;
 pub mod init;
 pub mod link;
+pub mod probe;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
@@ -43,4 +44,5 @@ pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
 pub use link::{UdsSlice, decode_diag_frame, decrypt_block, recover_keystream};
 pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
+pub use probe::{BRINGUP, ProbeReport, probe_open};
 pub use usb::{Backend, CableInfo, D2xxBackend, FTDI_VID, list_cables};

@@ -42,6 +42,20 @@ enum Command {
     /// known-plaintext; the AES session key is never derived (see
     /// `research/SCOPE-BOUNDARY.md`). A future revision reads captures from a file.
     Decode,
+    /// Live protocol probe: open the cable, replay the plaintext bring-up burst,
+    /// and report every frame the cable pushes back — flagging any RSA-OAEP
+    /// wrapped-key frame (the new-build key-transport signature).
+    ///
+    /// Read-only observation: no diagnostic/car traffic, no decryption. Tells us
+    /// whether this cable speaks the new RSA-OAEP protocol or the old scheme.
+    Probe {
+        /// FTDI serial of the cable to open (default: first FTDI device found).
+        #[arg(long)]
+        serial: Option<String>,
+        /// Seconds to listen for a cable-pushed frame after the bring-up.
+        #[arg(long, default_value_t = 3)]
+        listen: u64,
+    },
 }
 
 #[tokio::main]
@@ -52,7 +66,66 @@ async fn main() -> anyhow::Result<()> {
             print!("{}", render::render_decode_demo());
             Ok(())
         }
+        Command::Probe { serial, listen } => probe(serial.as_deref(), listen).await,
     }
+}
+
+/// Live protocol probe: replay the bring-up and report what the cable pushes.
+async fn probe(serial: Option<&str>, listen_secs: u64) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let mut backend = D2xxBackend::open(serial).map_err(|e| open_diagnostic(serial, e))?;
+    let report = vag_hex::probe_open(&mut backend, Duration::from_secs(listen_secs))
+        .await
+        .context("probe failed while driving the bring-up sequence")?;
+
+    println!(
+        "cable sent {} raw byte(s), {} parsed frame(s) after bring-up:",
+        report.raw_bytes.len(),
+        report.received.len()
+    );
+    if report.received.is_empty() && !report.raw_bytes.is_empty() {
+        println!(
+            "  raw (unframed): {}",
+            report.raw_bytes.iter().map(|b| format!("{b:02x} ")).collect::<String>().trim_end()
+        );
+    }
+    for f in &report.received {
+        let preview: String = f
+            .data
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x} "))
+            .collect();
+        let ell = if f.data.len() > 16 { "…" } else { "" };
+        println!(
+            "  op={:#04x} len={:3}  {}{}",
+            f.opcode,
+            f.data.len(),
+            preview.trim_end(),
+            ell
+        );
+    }
+
+    match &report.wrapped_key {
+        Some(wk) => {
+            println!(
+                "\n✅ NEW protocol: cable pushed a {}-byte wrapped-key frame (op={:#04x}).",
+                wk.data.len(),
+                wk.opcode
+            );
+            println!("   RSA-OAEP decrypt with the embedded key → session key → UDS is the path.");
+            println!("   wrapped blob (full hex):");
+            println!("   {}", wk.data.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        }
+        None => {
+            println!(
+                "\n❌ No wrapped-key frame (nothing ≥100 bytes). This cable likely speaks the OLD \
+                 b6/b7-derived scheme, not the new RSA-OAEP key transport."
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Live PoC #1: open the cable, run the plaintext handshake, print identity.

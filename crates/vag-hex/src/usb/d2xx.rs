@@ -53,6 +53,19 @@ type FnSetLatency = unsafe extern "C" fn(FtHandle, u8) -> FtStatus;
 type FnPurge = unsafe extern "C" fn(FtHandle, Dword) -> FtStatus;
 type FnSetTimeouts = unsafe extern "C" fn(FtHandle, Dword, Dword) -> FtStatus;
 type FnReset = unsafe extern "C" fn(FtHandle) -> FtStatus;
+/// `FT_SetVIDPID(dwVID, dwPID)` — macOS/Linux D2XX extension. On these platforms
+/// `libftd2xx` only enumerates devices in its built-in VID/PID table; a cable
+/// with a custom PID (Ross-Tech's `0xFA24`) is invisible until this registers it.
+type FnSetVidPid = unsafe extern "C" fn(Dword, Dword) -> FtStatus;
+/// `FT_SetDataCharacteristics(handle, wordLen, stopBits, parity)`.
+type FnSetData = unsafe extern "C" fn(FtHandle, u8, u8, u8) -> FtStatus;
+/// `FT_ClrDtr` / `FT_ClrRts` — drive the modem-control line low.
+type FnModem = unsafe extern "C" fn(FtHandle) -> FtStatus;
+
+/// Ross-Tech's FTDI VID/PID. The HEX cable ships FTDI's VID with a Ross-Tech
+/// custom PID, so D2XX must be told about the pair before it will find it.
+const ROSSTECH_VID: Dword = 0x0403;
+const ROSSTECH_PID: Dword = 0xFA24;
 
 /// The loaded driver: the `Library` handle plus every entry point we bind.
 /// `_lib` is kept alive so the copied function pointers stay valid.
@@ -70,6 +83,11 @@ struct Ftd2xx {
     purge: FnPurge,
     set_timeouts: FnSetTimeouts,
     reset: FnReset,
+    set_data: FnSetData,
+    clr_dtr: FnModem,
+    clr_rts: FnModem,
+    /// Optional: absent on Windows D2XX (where PnP handles VID/PID matching).
+    set_vid_pid: Option<FnSetVidPid>,
 }
 
 // SAFETY: the bound function pointers are position-independent code in the
@@ -111,6 +129,12 @@ impl Ftd2xx {
                 *s
             }};
         }
+        // Optional symbol: present on macOS/Linux D2XX, absent on Windows.
+        let set_vid_pid: Option<FnSetVidPid> = unsafe {
+            lib.get::<FnSetVidPid>(b"FT_SetVIDPID\0")
+                .ok()
+                .map(|s| *s)
+        };
         Ok(Self {
             create_info_list: sym!(b"FT_CreateDeviceInfoList\0", FnCreateInfoList),
             get_info_detail: sym!(b"FT_GetDeviceInfoDetail\0", FnGetInfoDetail),
@@ -124,8 +148,22 @@ impl Ftd2xx {
             purge: sym!(b"FT_Purge\0", FnPurge),
             set_timeouts: sym!(b"FT_SetTimeouts\0", FnSetTimeouts),
             reset: sym!(b"FT_ResetDevice\0", FnReset),
+            set_data: sym!(b"FT_SetDataCharacteristics\0", FnSetData),
+            clr_dtr: sym!(b"FT_ClrDtr\0", FnModem),
+            clr_rts: sym!(b"FT_ClrRts\0", FnModem),
+            set_vid_pid,
             _lib: lib,
         })
+    }
+
+    /// Register Ross-Tech's custom VID/PID so D2XX enumeration finds the cable.
+    /// No-op where `FT_SetVIDPID` is absent (Windows) — PnP matches there.
+    fn register_rosstech_pid(&self) {
+        if let Some(set) = self.set_vid_pid {
+            // Best-effort: a failure here just leaves the default table in place;
+            // the subsequent enumerate/open will surface any real problem.
+            let _ = unsafe { set(ROSSTECH_VID, ROSSTECH_PID) };
+        }
     }
 }
 
@@ -141,6 +179,7 @@ fn check(op: &str, status: FtStatus) -> Result<(), HexError> {
 /// Enumerate FTDI devices via `FT_CreateDeviceInfoList` + `FT_GetDeviceInfoDetail`.
 pub(crate) fn list_cables() -> Result<Vec<CableInfo>, HexError> {
     let drv = Ftd2xx::load()?;
+    drv.register_rosstech_pid();
     let mut num: Dword = 0;
     check("FT_CreateDeviceInfoList", unsafe {
         (drv.create_info_list)(&mut num)
@@ -193,6 +232,7 @@ pub(crate) fn open_device(serial: Option<&str>) -> Result<D2xxDevice, HexError> 
     use crate::usb::D2xxBackend;
 
     let drv = Arc::new(Ftd2xx::load()?);
+    drv.register_rosstech_pid();
     let mut handle: FtHandle = std::ptr::null_mut();
 
     match serial {
@@ -210,20 +250,30 @@ pub(crate) fn open_device(serial: Option<&str>) -> Result<D2xxDevice, HexError> 
         None => check("FT_Open", unsafe { (drv.open)(0, &mut handle) })?,
     }
 
-    // Program the params VCDS-style: reset, fixed baud, low latency, timeouts,
-    // then flush both directions before any framing runs.
+    // Program the params EXACTLY as the captured working session did (FTDI
+    // control transfers extracted from research/*.pcapng): reset + purge,
+    // latency 1 ms, 8N1 data characteristics, the 9600→19200→115200 baud dance,
+    // and DTR/RTS driven low (the cable gates its downstream MCU on these — without
+    // them the cable opens but never answers). See research/vag-hex-framing.md.
     check("FT_ResetDevice", unsafe { (drv.reset)(handle) })?;
-    check("FT_SetBaudRate", unsafe {
-        (drv.set_baud)(handle, D2xxBackend::BAUD_RATE)
+    check("FT_Purge", unsafe {
+        (drv.purge)(handle, FT_PURGE_RX | FT_PURGE_TX)
     })?;
     check("FT_SetLatencyTimer", unsafe {
         (drv.set_latency)(handle, D2xxBackend::LATENCY_TIMER_MS)
     })?;
+    // 8 data bits, 1 stop bit (0), no parity (0).
+    check("FT_SetDataCharacteristics", unsafe {
+        (drv.set_data)(handle, 8, 0, 0)
+    })?;
+    for baud in [9_600u32, 19_200, D2xxBackend::BAUD_RATE] {
+        check("FT_SetBaudRate", unsafe { (drv.set_baud)(handle, baud) })?;
+    }
+    // Modem control low (SIO_SET_DTR_LOW / SIO_SET_RTS_LOW in the capture).
+    check("FT_ClrDtr", unsafe { (drv.clr_dtr)(handle) })?;
+    check("FT_ClrRts", unsafe { (drv.clr_rts)(handle) })?;
     check("FT_SetTimeouts", unsafe {
         (drv.set_timeouts)(handle, D2xxBackend::TIMEOUT_MS, D2xxBackend::TIMEOUT_MS)
-    })?;
-    check("FT_Purge", unsafe {
-        (drv.purge)(handle, FT_PURGE_RX | FT_PURGE_TX)
     })?;
 
     Ok(D2xxDevice { drv, handle })

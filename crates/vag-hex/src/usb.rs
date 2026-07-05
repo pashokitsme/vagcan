@@ -194,8 +194,8 @@ impl D2xxBackend {
     /// defaults (the exact FTDI control setup VCDS uses is not in the capture
     /// yet — see `research/vag-hex-capture-guide.md`); adjust once captured.
     pub const BAUD_RATE: u32 = 115_200;
-    /// Latency timer in ms — low, for prompt reads (FTDI default is 16 ms).
-    pub const LATENCY_TIMER_MS: u8 = 2;
+    /// Latency timer in ms — matches the captured working session (1 ms).
+    pub const LATENCY_TIMER_MS: u8 = 1;
     /// Read/write timeout in ms programmed via `FT_SetTimeouts`.
     pub const TIMEOUT_MS: u32 = 1_000;
 
