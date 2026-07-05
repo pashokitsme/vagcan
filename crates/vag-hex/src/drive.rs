@@ -38,6 +38,29 @@ pub const AUTH39_BLOCK: [u8; 16] = [
     0x39, 0xc7, 0x0a, 0x5d, 0xe7, 0x72, 0xcf, 0xa5, 0x6e, 0xfb, 0x41, 0xc6, 0x4c, 0xab, 0x38, 0xcd,
 ];
 
+/// Per-ECU open frames the host sends right after the `0x39` auth-completion
+/// (capture `research/reading-ecus.pcapng` seq 51–77): a keepalive `a0`, a
+/// `0x19 00` status read, the `0x0b` indexed-block burst (idx 00..07), and the
+/// keyed `0x09` triplet. These are plaintext opcode-frames (no block counter),
+/// replayed verbatim; they apply live under the same-session-key determinism the
+/// whole replay relies on. `(opcode, payload)`.
+const POST_ADVANCE: &[(u8, &[u8])] = &[
+    (0xA0, &[]),
+    (0x19, &[0x00]),
+    (0x0B, &[0x00, 0x00]),
+    (0x0B, &[0x01, 0x00]),
+    (0x0B, &[0x02, 0x00]),
+    (0x0B, &[0x03, 0x00]),
+    (0x0B, &[0x04, 0x00]),
+    (0x0B, &[0x05, 0x00]),
+    (0x0B, &[0x06, 0x00]),
+    (0x0B, &[0x07, 0x00]),
+    (0x09, &[0x05, 0x00, 0x83, 0x80, 0x41, 0xbe, 0xe4, 0x44, 0x71]),
+    (0x09, &[0x02, 0x07, 0xe3, 0x2b, 0xde, 0xa5, 0x7b, 0x38, 0x64]),
+    (0x09, &[0x03, 0xb1, 0x77, 0xb1, 0xf2, 0x02, 0x5c, 0x6d, 0xc0]),
+    (0xA0, &[]),
+];
+
 /// Channel id (block off0) of the `0x39` auth channel.
 const CHAN_AUTH: u8 = 0x39;
 /// Channel id (block off0) of the `f3` engine channel.
@@ -352,6 +375,26 @@ pub async fn drive_session_sweep<B: Backend>(
     }
 
     if report.advanced {
+        // Continue the per-ECU open (plaintext opcode-frames, no counter) so the
+        // cable progresses off the 0x39/0x38 session-control channels toward a
+        // real diagnostic channel before we probe f3.
+        for &(opcode, payload) in POST_ADVANCE {
+            backend
+                .write(&frame::frame_encode(MARKER_HOST, opcode, payload))
+                .await?;
+            collect(backend, &mut buf, &mut received, &mut last_off14, STEP_READ).await?;
+        }
+        collect(backend, &mut buf, &mut received, &mut last_off14, listen).await?;
+        report.log.push(format!(
+            "post-advance: sent per-ECU open ({} frames); channels now {:?}",
+            POST_ADVANCE.len(),
+            {
+                let mut cs: Vec<u8> = last_off14.keys().copied().collect();
+                cs.sort_unstable();
+                cs
+            }
+        ));
+
         try_f3_and_vin(
             backend,
             &mut buf,

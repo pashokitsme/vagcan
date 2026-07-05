@@ -127,25 +127,47 @@ async fn handshake(serial: Option<&str>, listen_secs: u64) -> anyhow::Result<()>
         );
     }
 
+    // Channel (block off0) distribution across every diagnostic b7 the cable
+    // sent — shows which channel(s) we reached after leaving 0x39.
+    use std::collections::BTreeMap;
+    let mut chans: BTreeMap<u8, usize> = BTreeMap::new();
+    for f in &report.received {
+        if f.opcode == vag_hex::frame::OP_DIAG_RESP && f.data.len() >= 16 {
+            *chans.entry(f.data[0]).or_default() += 1;
+        }
+    }
+    println!(
+        "\nb7 channels seen (block off0 → count): {}",
+        chans
+            .iter()
+            .map(|(c, n)| format!("{c:#04x}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     if report.tp_positive {
         println!("✅ f3 TesterPresent POSITIVE (7E) decoded with the capture's KS_F3.");
+    } else if chans.keys().any(|&c| c == 0xF3) {
+        println!(
+            "⚠️  f3 blocks present but no 7E — KS_F3 may not match this session's f3 epoch. \
+             Decoded f3 blocks (off6..15):"
+        );
+        for (i, b) in report.f3_decoded_blocks.iter().enumerate() {
+            let region: String = b[6..].iter().map(|x| format!("{x:02x} ")).collect();
+            println!("  [{i:2}] {}", region.trim_end());
+        }
     } else {
-        println!("⚠️  No f3 7E. See the decoded f3 blocks below (off6..15):");
-    }
-    for (i, b) in report.f3_decoded_blocks.iter().enumerate() {
-        let region: String = b[6..].iter().map(|x| format!("{x:02x} ")).collect();
-        println!("  [{i:2}] {}", region.trim_end());
+        println!(
+            "ℹ️  Advanced past auth but the f3 (engine) channel is NOT open yet — it opens deep \
+             in VCDS's scan. We reached the channel(s) above; next we drive their per-ECU open \
+             toward a channel that answers ReadDataByIdentifier F1 90 (VIN)."
+        );
     }
 
     match &report.vin {
         Some(v) if v.len() == 17 => println!("\n✅ VIN: {v}"),
         Some(v) => println!("\n⚠️  VIN reassembled but length {} != 17: {v:?}", v.len()),
-        None if report.tp_positive => println!("\n⚠️  TP was positive but no VIN reassembled."),
-        None => println!(
-            "\nOPEN QUESTION: no 7E means the capture's KS_F3 likely does NOT decode a session \
-             bootstrapped from only the first b6 — the keystream probably rotates per b6 \
-             re-auth. Next step: replay the capture's b6 re-auth nonces in sequence."
-        ),
+        _ => {}
     }
     Ok(())
 }
