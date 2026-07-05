@@ -34,10 +34,13 @@ enum Command {
         #[arg(long)]
         serial: Option<String>,
     },
-    /// Decode a captured link-cipher log (NOT YET WIRED).
+    /// Decode the link-cipher DEMO: recover a channel keystream from a known
+    /// TesterPresent frame, then decode real captured `b8`/`b7` blocks to UDS.
     ///
-    /// Stub: the link-decode port lands in a parallel task; a follow-up wires
-    /// this subcommand to it. Always exits non-zero for now.
+    /// PoC #2: proves the decode pipeline on the owner's own captured car data
+    /// (`reading-ecus.pcapng`). Decode-only — keystreams come from UDS
+    /// known-plaintext; the AES session key is never derived (see
+    /// `research/SCOPE-BOUNDARY.md`). A future revision reads captures from a file.
     Decode,
 }
 
@@ -45,9 +48,10 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Doctor { serial } => doctor(serial.as_deref()).await,
-        Command::Decode => anyhow::bail!(
-            "decode: not yet wired — the link-decode port lands in a follow-up task"
-        ),
+        Command::Decode => {
+            print!("{}", render::render_decode_demo());
+            Ok(())
+        }
     }
 }
 
