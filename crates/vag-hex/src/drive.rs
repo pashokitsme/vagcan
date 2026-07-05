@@ -64,6 +64,68 @@ const POST_ADVANCE: &[(u8, &[u8])] = &[
     (0xA0, &[]),
 ];
 
+/// DEEP tail: the rest of the capture's OUT frames (seq 79–168) after
+/// [`POST_ADVANCE`], up to and including the **2nd `b6`** that (in the capture)
+/// opens the first diagnostic ECU channel `0x9e`. Includes a 2nd `b0..b5`
+/// bit-timing burst and the capture's 2nd `b6` nonce (replayed verbatim).
+///
+/// EXPERIMENTAL: replaying a stale mid-session `b6` may fault the clone off the
+/// USB bus (needs a physical replug). Gated behind `drive_session_deep` /
+/// `handshake --deep`, never on the default path. `(opcode, payload)`.
+const DEEP_TAIL: &[(u8, &[u8])] = &[
+    (0x0B, &[0x00, 0x00]),
+    (0x0B, &[0x01, 0x00]),
+    (0x0B, &[0x02, 0x00]),
+    (0x0B, &[0x03, 0x00]),
+    (0x0B, &[0x04, 0x00]),
+    (0x0B, &[0x05, 0x00]),
+    (0x0B, &[0x06, 0x00]),
+    (0x0B, &[0x07, 0x00]),
+    (0xD5, &[0x04]),
+    (0x08, &[]),
+    (0x02, &[]),
+    (0x09, &[0x01, 0xb8, 0x6e, 0x79, 0x71, 0xa7, 0x5d, 0x9e, 0xe5]),
+    (0x04, &[]),
+    (0x19, &[0x00]),
+    (0x0B, &[0x00, 0x00]),
+    (0x0B, &[0x01, 0x00]),
+    (0x0B, &[0x02, 0x00]),
+    (0x0B, &[0x03, 0x00]),
+    (0x0B, &[0x04, 0x00]),
+    (0x0B, &[0x05, 0x00]),
+    (0x0B, &[0x06, 0x00]),
+    (0x0B, &[0x07, 0x00]),
+    (0x09, &[0x05, 0x22, 0x29, 0x82, 0x0d, 0x00, 0xf8, 0xf8, 0x4c]),
+    (0x09, &[0x02, 0x72, 0xf2, 0x8a, 0x33, 0x0f, 0x59, 0xb1, 0x76]),
+    (0x09, &[0x03, 0xc8, 0x03, 0x34, 0x58, 0x8a, 0x2e, 0xff, 0x16]),
+    (0xA0, &[]),
+    (0x0B, &[0x00, 0x00]),
+    (0x0B, &[0x01, 0x00]),
+    (0x0B, &[0x02, 0x00]),
+    (0x0B, &[0x03, 0x00]),
+    (0x0B, &[0x04, 0x00]),
+    (0x0B, &[0x05, 0x00]),
+    (0x0B, &[0x06, 0x00]),
+    (0x0B, &[0x07, 0x00]),
+    (0xB0, &[]),
+    (0xB1, &[]),
+    (0xB2, &[0x00, 0xb8, 0x05]),
+    (0xB3, &[0x00, 0xff, 0xe0, 0xff, 0x00]),
+    (0xB3, &[0x01, 0xff, 0xe0, 0x00, 0x00]),
+    (0xB4, &[0x00, 0x43, 0xe0, 0x00, 0x00]),
+    (0xB4, &[0x01, 0x43, 0xe0, 0x00, 0x00]),
+    (0xB4, &[0x02, 0x60, 0x00, 0x00, 0x00]),
+    (0xB4, &[0x03, 0xfd, 0x00, 0x00, 0x00]),
+    (0xB4, &[0x04, 0x00, 0x00, 0x00, 0x00]),
+    (0xB4, &[0x05, 0xef, 0x40, 0x00, 0x00]),
+    (0xB5, &[0x00, 0x04]),
+    (0xB5, &[0x01, 0x00]),
+    (0xB6, &[
+        0x02, 0x86, 0x85, 0x34, 0x11, 0xf2, 0xd7, 0x91, 0xad, 0x84, 0x2c, 0x6b, 0x54, 0xb6, 0x7b,
+        0x00, 0xa4, 0x5b, 0x38, 0x51, 0x8c, 0x1f, 0xb3, 0x57, 0x52,
+    ]),
+];
+
 /// Channel id (block off0) of the `0x39` auth channel.
 const CHAN_AUTH: u8 = 0x39;
 /// Channel id (block off0) of the `f3` engine channel.
@@ -324,6 +386,25 @@ pub async fn drive_session_sweep<B: Backend>(
     backend: &mut B,
     listen: Duration,
 ) -> Result<DriveReport, HexError> {
+    sweep_impl(backend, listen, false).await
+}
+
+/// EXPERIMENTAL deep variant: after advancing past auth, also replay [`DEEP_TAIL`]
+/// (a 2nd `b0..b5`+`b6` re-init) to try to open the first diagnostic ECU channel
+/// (`0x9e`) via deterministic replay. May fault the clone off the USB bus (physical
+/// replug). Reports every channel the cable reaches after the deep replay.
+pub async fn drive_session_deep<B: Backend>(
+    backend: &mut B,
+    listen: Duration,
+) -> Result<DriveReport, HexError> {
+    sweep_impl(backend, listen, true).await
+}
+
+async fn sweep_impl<B: Backend>(
+    backend: &mut B,
+    listen: Duration,
+    deep: bool,
+) -> Result<DriveReport, HexError> {
     let mut buf: Vec<u8> = Vec::new();
     let mut received: Vec<Frame> = Vec::new();
     let mut last_off14: HashMap<u8, u8> = HashMap::new();
@@ -397,6 +478,24 @@ pub async fn drive_session_sweep<B: Backend>(
                 cs
             }
         ));
+
+        if deep {
+            // Replay the 2nd b0..b5 + b6 to (attempt to) open the 0x9e ECU epoch.
+            for &(opcode, payload) in DEEP_TAIL {
+                backend
+                    .write(&frame::frame_encode(MARKER_HOST, opcode, payload))
+                    .await?;
+                collect(backend, &mut buf, &mut received, &mut last_off14, STEP_READ).await?;
+            }
+            collect(backend, &mut buf, &mut received, &mut last_off14, listen).await?;
+            let mut cs: Vec<u8> = last_off14.keys().copied().collect();
+            cs.sort_unstable();
+            report.log.push(format!(
+                "DEEP: replayed 2nd b0..b5+b6 ({} frames); channels now {:02x?}",
+                DEEP_TAIL.len(),
+                cs
+            ));
+        }
 
         try_f3_and_vin(
             backend,

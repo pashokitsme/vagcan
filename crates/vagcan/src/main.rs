@@ -72,6 +72,11 @@ enum Command {
         /// Seconds for each post-send observation window.
         #[arg(long, default_value_t = 3)]
         listen: u64,
+        /// EXPERIMENTAL: after advancing past auth, also replay the 2nd
+        /// `b0..b5`+`b6` re-init to try to open the `0x9e` diagnostic ECU epoch.
+        /// May fault the clone off the USB bus (physical replug). Off by default.
+        #[arg(long)]
+        deep: bool,
     },
 }
 
@@ -84,19 +89,25 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Probe { serial, listen } => probe(serial.as_deref(), listen).await,
-        Command::Handshake { serial, listen } => handshake(serial.as_deref(), listen).await,
+        Command::Handshake { serial, listen, deep } => {
+            handshake(serial.as_deref(), listen, deep).await
+        }
     }
 }
 
 /// Dynamic session handshake: advance past the 0x39 auth-stall with a
 /// runtime-derived counter, then TesterPresent + VIN on the f3 channel.
-async fn handshake(serial: Option<&str>, listen_secs: u64) -> anyhow::Result<()> {
+async fn handshake(serial: Option<&str>, listen_secs: u64, deep: bool) -> anyhow::Result<()> {
     use std::time::Duration;
 
     let mut backend = D2xxBackend::open(serial).map_err(|e| open_diagnostic(serial, e))?;
-    let report = vag_hex::drive_session_sweep(&mut backend, Duration::from_secs(listen_secs))
-        .await
-        .context("session drive failed")?;
+    let dur = Duration::from_secs(listen_secs);
+    let report = if deep {
+        vag_hex::drive_session_deep(&mut backend, dur).await
+    } else {
+        vag_hex::drive_session_sweep(&mut backend, dur).await
+    }
+    .context("session drive failed")?;
 
     println!("--- session drive log ---");
     for line in &report.log {

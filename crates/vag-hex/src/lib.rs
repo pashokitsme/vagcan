@@ -41,7 +41,9 @@ pub mod probe;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
-pub use drive::{AUTH39_BLOCK, DriveReport, drive_session, drive_session_sweep};
+pub use drive::{
+    AUTH39_BLOCK, DriveReport, drive_session, drive_session_deep, drive_session_sweep,
+};
 pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
 pub use link::{
