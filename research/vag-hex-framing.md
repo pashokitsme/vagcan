@@ -389,3 +389,54 @@ gearbox SW-version (chan b3..eb0d..55): multiframe RDBI response (ISO-TP PCIs
   (e.g. the SW-version channel above). The static 16-key table→keystream schedule
   is the one un-reversed link between "recovered one channel" and "auto-derive all
   16" — reversing it (or scripting per-channel crib recovery) yields the rest.
+
+### Session-key derivation — CLASSIFICATION: **(b) auth-derived — OUT OF SCOPE, stopped**
+
+Task: classify whether the 32-byte AES-256 **session key** fed to the set-key path
+`0x140072ec0` → parse `0x14007ce68` (→ key-schedule `0x14007b140`, IV table
+`0x140171d30`) is **(a)** self-contained app-side key setup our tool may replicate
+for interop, or **(b)** derived from / part of the `0xb6` anti-clone AUTH.
+
+**Verdict: (b).** The session AES key is a **per-session secret** established by the
+crypto handshake, not an app-side constant. Decisive evidence:
+
+- **What `0x140072ec0` does (static, HIGH):** it is a generic descriptor-driven
+  *key-import*: it parses a caller-supplied blob (arg `x1`, at `+3`, length `w2`)
+  via `0x14007ce68` (which validates the blob length against the "aes" cipher
+  descriptor and decodes it, LibTomCrypt-style), `memcpy`s the decoded ≤0x100 bytes
+  into the cipher-context key slot `ctx+0x5da4`, selects the engine by name
+  (`strcmp "aes"` `0x14007b210`), then runs the AES-256 key schedule
+  (`0x14007b140`, IV rows `0x140171d30`). So the **key bytes come from the caller's
+  blob** `x1` — not from any static literal at this locus.
+- **The blob is per-session (decisive black-box oracle, HIGH):** recovering the same
+  *logical* channel's keystream from **two independent-session captures** shows the
+  same UDS plaintext under **different keystreams**. For the n=14 RDBI single-frame
+  poll (both decode to `03 22 .. .. 00 00 00 00`):
+  - `reading-ecus.pcapng`: `KS[6..13] = 99 97 .. .. 3c c4 c7 c2`
+  - `init-only.pcapng`   : `KS[6..13] = 05 ff .. .. 6f a8 97 e2`
+  Since `KS = AES_encrypt(IV_row, session_key)` with a **static** IV table and a
+  fixed `(msg_type+1)&0xf` selector, identical plaintext → different keystream can
+  only mean the **session key differs between the two sessions**. (All 16 logical
+  channels reproduce this: matching per-channel frame-count fingerprint
+  10/14/1/4/1/4/1 across both captures, wholesale-different ciphertext.)
+- **No app-side source exists:** the plaintext bring-up (Surfaces 1/3:
+  `02/09/04/82/0d/b0..b5`) carries no 32-byte key material and no key agreement we
+  are entitled to as the app. The only per-session secret negotiated at setup is the
+  `0xb6` anti-clone challenge/response (and the keyed `0x09` exchange) — §4 already
+  notes "Session key established here." A per-session key with no plaintext source is
+  therefore a product of that auth handshake.
+
+**Where the trail crossed into auth (stop point):** the key bytes are the caller's
+blob to `0x140072ec0`; that caller is reached only via a runtime-installed method
+pointer (no static `bl`/pointer/`adrp+add` to `0x140072ec0` exists in the image),
+and producing that blob lives in the session-setup / `0xb6` handshake region.
+Tracing the caller to recover how the blob is built = entering the anti-clone
+challenge-response. **STOP.** No key, no challenge, no response predictor recovered
+or reconstructed here; classification was done purely by passive capture oracle.
+
+**Recommendation:** **stop — use the generic-CAN fallback** for live diagnostics on
+a fresh session. The `b8`/`b7` live path is *not* viable offline on this cable: each
+session's AES key comes from the out-of-scope auth exchange, so we cannot synthesise
+`KS = AES(row)` for a new session. In-scope reading remains limited to per-session
+keystream recovery from captured UDS known-plaintext (already implemented in
+`link_cipher.py`).
