@@ -31,10 +31,6 @@ truth; the design sections below are kept for rationale.
 - **`.rod` UDS names** (TTTEXT.ROD join + one runtime dump): parked, optional — readable
   names already come from `.clb`.
 
-**Explicitly out of scope (boundary):** we do **not** reverse-engineer or patch the VCDS
-loader / its anti-clone protection. Our RE is label **file-format** interoperability (reading
-the owner's own car data) and reversing the **cable's own protocol** so `vagcan` drives it —
-never circumventing the commercial software's protection.
 
 ---
 

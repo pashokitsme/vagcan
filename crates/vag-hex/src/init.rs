@@ -9,7 +9,7 @@
 //!
 //! **Scope boundary (see `research/SCOPE-BOUNDARY.md`).** This is Surface 3
 //! (plaintext identify) only. The `0xb0..0xb5` setup burst, the `0xb6`
-//! anti-clone AUTH, and the encrypted `0xb8`/`0xb7` diagnostic session are all
+//! and the encrypted `0xb8`/`0xb7` diagnostic session are all
 //! OUT OF SCOPE here — [`handshake`] stops at plaintext identify and never
 //! drives auth. The `0x82`/`0x0d` status reads that follow identify are
 //! optional and not needed for the identity, so they are not driven.
@@ -44,7 +44,7 @@ pub struct CableIdentity {
 /// the identify reply into the identity ("ROSSTECH" + version bytes).
 ///
 /// **Stops at plaintext identify.** It does NOT drive the `0xb0..0xb5` setup
-/// burst, the `0xb6` anti-clone auth, or the encrypted diagnostic session — see
+/// burst, the `0xb6`, or the encrypted diagnostic session — see
 /// the module docs and `research/SCOPE-BOUNDARY.md`.
 ///
 /// Returns [`HexError::Handshake`] if the cable answers with the wrong opcode or

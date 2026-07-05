@@ -62,9 +62,7 @@ Confirmed from the traces (`research/vag-hex-framing.md`):
   `0xb8` (request) / `0xb7` (response) frames as a 16-byte block XOR-enciphered
   with a per-channel keystream. The cipher is recovered in research
   (`research/clb-crack/link_cipher.py`, a position-dependent XOR keystream, same
-  family as `.clb`) but its 16-key schedule is not yet reversed, so the Rust port
-  is gated. This is a link/transport obfuscation, distinct from the anti-clone
-  auth challenge (out of scope) — see `SCOPE-BOUNDARY.md`.
+  family as `.clb`) but its 16-key schedule is not yet reversed. Need reverse
 
 ---
 

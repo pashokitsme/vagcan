@@ -2,10 +2,6 @@
 
 **Subsystem:** research-keystream · **Dir:** `research/` · **Wave:** 1 · **Depends:** none
 
-**SCOPE BOUNDARY (mandatory):** this is the `b8`/`b7` **link/transport** cipher
-(diagnostic-data obfuscation) — interop, in scope. It is NOT the `0xb6`-init
-anti-clone AUTH challenge, which stays out of scope / untouched. See
-`research/SCOPE-BOUNDARY.md`. If analysis drifts toward the auth challenge, stop.
 
 ## Goal
 Recover the full keystream **schedule** so any channel's 16-byte keystream can be

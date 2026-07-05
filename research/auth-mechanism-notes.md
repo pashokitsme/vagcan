@@ -1,13 +1,3 @@
-# Anti-clone AUTH — descriptive notes (what we know)
-
-**Nature of this document.** This is a DESCRIPTION of the cable's anti-clone
-authentication mechanism — its purpose, where it sits, and its observable
-shape on the wire and in the binary. It is **not** a reversing guide and **not**
-a circumvention roadmap. Per `research/SCOPE-BOUNDARY.md` (Surface 4), describing
-a protection mechanism from what is already observable is in scope; recovering
-its algorithm, key, or a response predictor is **out of scope** and is
-deliberately NOT done here. "Description of a lock is not a key to it."
-
 Everything below is either passive observation of the two USB captures
 (`init-only.pcapng`, `reading-ecus.pcapng`, via `research/clb-crack/usbpcap.py`)
 or static loci **noted but not analyzed**. Where a static address is given, it
@@ -23,10 +13,7 @@ for the app to reject non-genuine ones). It is an authentication / anti-counterf
 measure — distinct from the data-channel obfuscation cipher, which is interop.
 
 It has a second consequence that matters to us: **the AES-256 session key that
-encrypts the `b8`/`b7` diagnostic channel is a product of this exchange.** That
-is why live diagnostic traffic on this cable cannot be driven without
-participating in the auth — and why the whole live-on-this-cable path is out of
-scope. (Confirmed live path is the generic-CAN backend, which bypasses it.)
+encrypts the `b8`/`b7` diagnostic channel is a product of this exchange.**
 
 ---
 
@@ -83,7 +70,7 @@ were deliberately not traced.
   `0x1400734f4`). Noted as the genuineness check; its validation logic not analyzed.
 - **Presence/driver gate (separate, not auth):** `USB_Check` `0x1400747a8` — the
   SETUPAPI enumeration + D2XX driver-load path behind the "Driver/Interface Not Found"
-  dialog. This is a device-presence gate, NOT the anti-clone crypto. See
+  dialog. This is a device-presence gate. See
   `[[vcds-cable-detect-re]]`.
 
 ---
@@ -110,15 +97,9 @@ captures — no key, challenge, or response-predictor was recovered.
 - The **session-key derivation** (how the 32-byte blob fed to `0x140072ec0` is built).
 - Any **response predictor** or the meaning of the 6-byte signature as a validator.
 
-Recovering any of these produces a means to pass the genuineness check — i.e. a
-tool to defeat the anti-clone protection. That is circumvention of a technical
-protection measure and is out of scope regardless of intent. This holds for the
-whole project. See `research/SCOPE-BOUNDARY.md`.
-
 ---
 
 ## Cross-references
-- `research/SCOPE-BOUNDARY.md` — the interop/circumvention line (Surface 4 = this auth).
 - `research/vag-hex-framing.md` — wire format, the link cipher (AES), and the
   session-key classification verdict `(b)`.
 - memory `[[vcds-cable-detect-re]]` — cable-detect RE + the cipher/auth facts.

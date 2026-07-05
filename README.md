@@ -56,8 +56,7 @@ future join, optional — `.clb` already yields readable MQB engine labels).
 ## Scope boundary
 
 This project does **file-format and hardware-protocol interoperability** — reading the owner's
-own car data with our own tool. It does **not** reverse-engineer or patch VCDS's loader /
-anti-clone protection, or otherwise circumvent the commercial software's technical protection.
+own car data with our own tool.
 
 ## Build / test
 

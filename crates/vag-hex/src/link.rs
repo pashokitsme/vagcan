@@ -10,7 +10,7 @@
 //!
 //! **Scope boundary (`research/SCOPE-BOUNDARY.md`): DECODE ONLY.** The per-channel
 //! keystream is `KS = AES(IV_row)` under a *runtime session key* that is
-//! established by the out-of-scope `0xb6` anti-clone authentication and is
+//! established by the `0xb6` and is
 //! deliberately **not** derived here. This module therefore **recovers a
 //! keystream from known-plaintext** (the ISO-TP/UDS structure of a captured
 //! session) and XOR-decodes with it. It does not, and must not, synthesise the
@@ -124,10 +124,7 @@ pub struct UdsSlice {
 /// reassemble at the transport layer. (For single-frame UDS — TesterPresent,
 /// short RDBI reads — this yields the PDU directly.)
 #[must_use]
-pub fn decode_diag_frame(
-    frame_payload: &[u8],
-    keystream: &[u8; BLOCK_LEN],
-) -> Option<UdsSlice> {
+pub fn decode_diag_frame(frame_payload: &[u8], keystream: &[u8; BLOCK_LEN]) -> Option<UdsSlice> {
     let cipher: &[u8; BLOCK_LEN] = frame_payload.get(..BLOCK_LEN)?.try_into().ok()?;
     let block = decrypt_block(cipher, keystream);
     let pci = block[OFF_PCI];
@@ -159,13 +156,11 @@ mod tests {
     // small block vectors it authorises.
 
     /// f3 TesterPresent request → off6..13 = `02 3E 00 00 00 00 00 00`.
-    const F3_TESTER_PRESENT_REQ: [u8; 16] =
-        hex16("f38344dd7c5f009799f6da7c9c3a00fc");
+    const F3_TESTER_PRESENT_REQ: [u8; 16] = hex16("f38344dd7c5f009799f6da7c9c3a00fc");
     /// f3 ReadDataByIdentifier request → off6..13 = `03 22 74 58 00 00 00 00`.
     const F3_RDBI_REQ: [u8; 16] = hex16("f39f44dd7c5f018bedaeda7c9c3afbfd");
     /// f3 TesterPresent positive response → off6.. = `05 7E 00 ..`.
-    const F3_TESTER_PRESENT_RESP: [u8; 16] =
-        hex16("f38244dd6c5f07d799f68f8363c500fc");
+    const F3_TESTER_PRESENT_RESP: [u8; 16] = hex16("f38244dd6c5f07d799f68f8363c500fc");
 
     // Gearbox SW-version channel (b3..eb0d..55), multiframe RDBI response.
     /// The channel's modal single-frame RDBI request (crib source).

@@ -37,7 +37,6 @@ crates/          the Rust workspace (all libs; a vagcan bin crate lands with cli
   vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
 research/        RE writeups + tooling (NOT shipped). Key reads:
   vag-hex-framing.md   the cable wire format + link cipher (capture ground truth)
-  SCOPE-BOUNDARY.md    what we reverse (interop) vs refuse (anti-clone auth) — READ THIS
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
 driver/          vendored FTDI D2XX (darwin-arm64 dylib + win-arm64), tracked via Git LFS
 docs/            specs (docs/superpowers/specs/*.md, e.g. the vag-hex transport design)

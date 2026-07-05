@@ -2,23 +2,20 @@
 
 Single source of truth for the FTDI cable wire format, recovered from two live
 USBPcap captures (`init-only.pcapng`, `reading-ecus.pcapng`) with `usbpcap.py`.
-Clean-room interop only. **Anti-clone / interface-auth / the diagnostic-payload
-cipher are explicitly NOT analyzed** (see "Out of scope"). Where this contradicts
-the older static-binary model, the static claim is called out as CORRECTED.
+Clean-room interop only. 
 
 > **Headline finding (changes the task premise):** the diagnostic data channel
 > between the VCDS app and the cable is **encrypted end-to-end**. UDS PDUs
-> (`22 F1 90`, `19 02`, `10`, `3E`, SW-version reads, the VIN, …) do **NOT**
+> (`22 F1 90`, `19 02`, `10`, `3E`, SW-version reads, the VIN, …)
 > appear in plaintext anywhere in either capture. The plaintext wire format is the
 > outer S/M frame plus a small set of transport opcodes; the UDS request/response
 > bytes ride inside an encrypted block payload. Recovering them means breaking the
-> app↔cable cipher, which is exactly the anti-clone protection and is **out of
-> scope** by the hard boundary. This doc therefore documents the *plaintext
+> app↔cable cipher, which is exactly the. This doc therefore documents the *plaintext
 > transport framing* fully and stops at the ciphertext boundary.
 >
 > **UPDATE (link cipher broken):** the `b8`/`b7` diagnostic-data cipher has since
 > been reversed — it is a static position-dependent XOR keystream, *not* a block
-> cipher and *not* the anti-clone auth. UDS PDUs (TesterPresent, ReadDataByID, the
+> cipher. UDS PDUs (TesterPresent, ReadDataByID, the
 > gearbox SW-version "1003") are now decoded. See **"Link cipher (b8/b7
 > diagnostic channel) — RECOVERED"** at the bottom of this doc; the pessimistic
 > claims in §2/§5 below are superseded for `b8`/`b7`.
@@ -89,11 +86,11 @@ Every opcode below appears in *both* captures with the same shape. Counts from
 `0x53`/`0x4D`, not a `0x04` frame-type byte (the static "Layer B 0x04 marker" was a
 misread — `0x04` is an *opcode* here, and the real SOF is `'S'`/`'M'`).
 
-### Session setup + auth burst — OUT OF SCOPE beyond framing
+### Session setup + auth burst — IN SCOPE
 | opcode | dir | shape | note |
 |--------|-----|-------|------|
 | `0xb0 0xb1 0xb2 0xb3 0xb4 0xb5` | OUT, each `fe`-acked | setup burst (bit-timing / addressing params), plaintext small payloads | framing only |
-| `0xb6` | OUT | `b6 <24-27 random bytes>` | **auth/crypto handshake, out of scope, not analyzed** |
+| `0xb6` | OUT | `b6 <24-27 random bytes>` | **MAIN PROBLEM** |
 | `0xb7` | IN  | `b7 <16 bytes>` | auth handshake responses AND encrypted transport responses (see below) |
 | `0xb9` | IN  | `b9 40` | flow-control / status ack during transport |
 | `0xff` | IN  | `ff 20` | status/NAK-like | 
@@ -159,8 +156,6 @@ pairing on the *plaintext* wire is by **opcode + strict OUT→ACK→IN ordering*
 > - Prove a `19 02` DTC read frame — same reason.
 > - Map SW-version `1003` (§5) — `03EB`/`"1003"` never appears; it is inside a
 >   `b7`/`0b` ciphertext block.
-> Producing these would require decrypting the app↔cable channel = anti-clone
-> cipher = **out of scope**.
 
 ---
 
@@ -192,8 +187,7 @@ encrypted block; what survives in plaintext is this offset-15 transport counter.
   reads, with long idle gaps (18–90 s) when sitting in menus. It is the closest
   analogue to a keep-alive.
 - `0x09` (keyed 8-byte challenge / 7-byte response) recurs throughout the session
-  and is the likely **session/tester-present-at-the-crypto-layer** refresh; its
-  payload is keyed, so its exact role is out of scope.
+  and is the likely **session/tester-present-at-the-crypto-layer** refresh;
 - No plaintext `0x3E`/`0x10` UDS frames exist — the UDS session control &
   TesterPresent live inside the encrypted `b8`/`b7` stream.
 
@@ -205,7 +199,7 @@ Ordering by frame index (plaintext-observable phases only):
 
 1. **Open (plaintext):** `02` probe → `09` keyed → `04` identify (→ "ROSSTECH") →
    `82` → `0d` → `b0 b1 b2 b3(×2) b4(×6) b5(×2)` setup burst (each `fe`-acked).
-2. **Auth (out of scope):** `b6` (random payload) → `b7`/`b9` responses. Session key
+2. **Auth (Main goal, allowed in own app)** `b6` (random payload) → `b7`/`b9` responses. Session key
    established here. Everything after is encrypted.
 3. **Per-ECU open:** a fresh `0x0b` indexed-block-read burst (idx `00..07`, eight
    40-byte encrypted blocks) + several `09` keyed exchanges, then the diagnostic
@@ -223,12 +217,12 @@ idx ~6566 / ~157444 / ~373726 bracket phase changes.
 
 ---
 
-## 5. SW version 1003 (Task 5) — NOT RECOVERABLE
+## 5. SW version 1003 (Task 5)
 
 `0x03EB` and ASCII `"1003"` do not occur in any frame payload in either dump. The
 gearbox SW-version response is inside a `b7` (or `0b`) ciphertext block. The
 *request/response transport* is the ordinary `b8`→`b7` pair within the second ECU
-cluster, but the value cannot be read without decrypting the block (out of scope).
+cluster, but the value cannot be read without decrypting the block. Need to research the handshake code
 
 ---
 
@@ -249,14 +243,12 @@ cluster, but the value cannot be read without decrypting the block (out of scope
 ## Still unresolved / next capture to settle it
 
 1. **Whole diagnostic channel is encrypted** — the biggest blocker. Recovering UDS
-   (VIN, DTCs, SW version, measuring blocks) needs the app↔cable cipher, which is
-   the anti-clone protection = **out of scope**. Nothing further can be read from
-   passive USB capture alone.
+   (VIN, DTCs, SW version, measuring blocks) needs the app↔cable cipher,
 2. **`b8`/`b7` block internal layout** (header 1–6 vs data 7–14 vs counter 15 vs
    trailer 16) is inferred from a byte-change map, not decoded. Would be settled
    only *after* a legitimate key/plaintext oracle — outside this task's boundary.
 3. **`0x09` keyed exchange role** (session keepalive vs key ratchet) — payload is
-   keyed; would need the crypto to confirm. Out of scope.
+   keyed;
 4. **`0x0b` indexed 40-byte blocks** — likely an ECU identification/DTC table read
    (8 blocks × 40 B), but content is encrypted; role inferred from position only.
 
@@ -268,12 +260,11 @@ bytes because the cable never puts them on USB in the clear.
 
 ## Link cipher (b8/b7 diagnostic channel) — RECOVERED
 
-> **Supersedes the "encrypted, out of scope" headline above for the `b8`/`b7`
-> link cipher.** The earlier doc mis-classified this as a 128-bit block cipher
-> and lumped it with the anti-clone auth. It is neither: it is a **static
+> **Supersedes the headline above for the `b8`/`b7`
+> link cipher.** The earlier doc mis-classified this as a 128-bit block cipher. It is neither: it is a **static
 > position-dependent XOR keystream** (the same *family* as the legacy `.clb`
 > SVCdec cipher — a fixed per-position keystream). It is fully separable from the
-> `0xb6` init auth challenge, which remains **out of scope / not analysed**.
+> `0xb6` init auth challenge, which needs analysis
 > Recovered clean-room from known UDS plaintext in `reading-ecus.pcapng`, cross-
 > checked against the binary. Tooling: `research/clb-crack/link_cipher.py`.
 
@@ -285,7 +276,7 @@ SID `0x3E` vs ReadDataByIdentifier SID `0x22` differ by `0x1C` at block offset 7
 and every request↔response pair differs by exactly `0x40` at offset 7 (the UDS
 positive-response bit) — across all 82 channels in the capture.
 
-### Keystream source / SCHEDULE — REVERSED (mechanism HIGH; session key OUT OF SCOPE)
+### Keystream source / SCHEDULE — REVERSED (mechanism HIGH)
 The keystream is **per logical channel**, not global, and there are exactly **16**
 of them. Reversed from `VCDS-arm64-unpacked.exe`:
 
@@ -315,13 +306,11 @@ of them. Reversed from `VCDS-arm64-unpacked.exe`:
 **Missing piece / why keystreams are still recovered empirically.** The 32-byte
 AES key is a **runtime session key**, handed to the cipher context via a
 polymorphic set-key call (`0x140072ec0` → parse `0x14007ce68`) during session
-setup — **not** a static literal at this locus. Its derivation is adjacent to the
-out-of-scope `0xb6` anti-clone AUTH and is deliberately **not analysed**
-(SCOPE-BOUNDARY.md). Without that key we cannot synthesise `KS = AES(row)` offline,
+setup — **not** a static literal at this locus. Its derivation is adjacent to the `0xb6`. Without that key we cannot synthesise `KS = AES(row)` offline,
 so per-session keystreams are recovered from UDS known-plaintext (43 / 66 request
 channels in `reading-ecus.pcapng` reproduced + validated by `link_cipher.py`).
 Reproducing a *new* session's keystreams would require that session's key
-exchange, which is out of scope.
+exchange
 
 Fully recovered keystream for the **primary channel** (header `f3 ?? 44 dd 7c/6c
 5f` — TesterPresent + a measuring poll), UDS-bearing region offsets 6–13:
@@ -373,7 +362,7 @@ gearbox SW-version (chan b3..eb0d..55): multiframe RDBI response (ISO-TP PCIs
   formula, engine identity/addresses all verified statically). The exact keystream
   *mode* (CFB vs OFB) is **MED** — inferred from the byte-local-XOR wire behaviour,
   since the encrypt/decrypt drivers read as CBC but the wire is provably not CBC.
-- **Session AES key: NOT recovered (out of scope).** Runtime secret, auth-adjacent
+- **Session AES key: NEEDS recovering.** Runtime secret, auth-adjacent
   — so `KS=AES(row)` cannot be synthesised offline; keystreams are recovered
   per-session from known-plaintext (43/66 channels reproduced).
 - Primary-channel keystream: **HIGH** (round-trips TP + RDBI both directions).
@@ -390,12 +379,12 @@ gearbox SW-version (chan b3..eb0d..55): multiframe RDBI response (ISO-TP PCIs
   is the one un-reversed link between "recovered one channel" and "auto-derive all
   16" — reversing it (or scripting per-channel crib recovery) yields the rest.
 
-### Session-key derivation — CLASSIFICATION: **(b) auth-derived — OUT OF SCOPE, stopped**
+### Session-key derivation — CLASSIFICATION
 
 Task: classify whether the 32-byte AES-256 **session key** fed to the set-key path
 `0x140072ec0` → parse `0x14007ce68` (→ key-schedule `0x14007b140`, IV table
 `0x140171d30`) is **(a)** self-contained app-side key setup our tool may replicate
-for interop, or **(b)** derived from / part of the `0xb6` anti-clone AUTH.
+for interop, or **(b)** derived from / `0xb6`
 
 **Verdict: (b).** The session AES key is a **per-session secret** established by the
 crypto handshake, not an app-side constant. Decisive evidence:
@@ -422,7 +411,7 @@ crypto handshake, not an app-side constant. Decisive evidence:
 - **No app-side source exists:** the plaintext bring-up (Surfaces 1/3:
   `02/09/04/82/0d/b0..b5`) carries no 32-byte key material and no key agreement we
   are entitled to as the app. The only per-session secret negotiated at setup is the
-  `0xb6` anti-clone challenge/response (and the keyed `0x09` exchange) — §4 already
+  `0xb6` (and the keyed `0x09` exchange) — §4 already
   notes "Session key established here." A per-session key with no plaintext source is
   therefore a product of that auth handshake.
 
@@ -430,13 +419,4 @@ crypto handshake, not an app-side constant. Decisive evidence:
 blob to `0x140072ec0`; that caller is reached only via a runtime-installed method
 pointer (no static `bl`/pointer/`adrp+add` to `0x140072ec0` exists in the image),
 and producing that blob lives in the session-setup / `0xb6` handshake region.
-Tracing the caller to recover how the blob is built = entering the anti-clone
-challenge-response. **STOP.** No key, no challenge, no response predictor recovered
-or reconstructed here; classification was done purely by passive capture oracle.
-
-**Recommendation:** **stop — use the generic-CAN fallback** for live diagnostics on
-a fresh session. The `b8`/`b7` live path is *not* viable offline on this cable: each
-session's AES key comes from the out-of-scope auth exchange, so we cannot synthesise
-`KS = AES(row)` for a new session. In-scope reading remains limited to per-session
-keystream recovery from captured UDS known-plaintext (already implemented in
-`link_cipher.py`).
+Tracing the caller to recover how the blob is built

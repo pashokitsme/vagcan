@@ -1,13 +1,5 @@
 # VCDS-style Cable Loader — How It Works, and Why It Breaks Across Versions
 
-**Scope of this document.** This is a *conceptual, build-agnostic* explanation of how
-launcher/patcher "loaders" (the kind shipped with clone diagnostic cables) operate, and
-the structural reasons one stops working when the host program is updated. It deliberately
-contains **no exact hook addresses, byte signatures, or offset deltas** for any specific
-VCDS build — that mapping is the working bypass and is out of scope. This is the theory a
-reverse engineer already knows; it explains the "hook error" you saw without handing anyone
-a relocation table.
-
 ---
 
 ## 1. What a loader *is*

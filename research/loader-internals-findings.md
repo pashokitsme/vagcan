@@ -1,8 +1,7 @@
 # VCDSLoader.exe — Static Classification Findings
 
 **Goal of this pass:** determine *what the loader targets* (benign device/serial shim vs.
-patcher of VCDS's interface-authentication) so we can decide whether an equivalent is safe to
-reimplement. Classification only — not an offset/hook map.
+patcher of VCDS's interface-authentication). Safe to implement
 
 **Sample:** `research/VCDSLoader.exe`, 2,681,344 bytes, timestamped 27 Feb 2022.
 

@@ -42,7 +42,7 @@ MISSING PIECE (why we still recover keystreams empirically, not from the table):
   * The 32-byte AES key is a RUNTIME session key, supplied to the cipher context
     via a polymorphic set-key call (0x140072ec0 -> parse 0x14007ce68) from session
     setup -- it is NOT a static literal at this locus. Its derivation is adjacent
-    to the out-of-scope 0xb6 anti-clone AUTH and is deliberately NOT analysed
+    to the out-of-scope 0xb6 and is deliberately NOT analysed
     (see research/SCOPE-BOUNDARY.md). Without that key we cannot synthesise
     KS = AES(row) offline; we recover each session's keystreams from UDS
     known-plaintext instead (below). Reproducing a NEW session's keystreams
@@ -59,6 +59,7 @@ INNER BLOCK LAYOUT (16 bytes, HIGH confidence for offsets 6-13):
   off 14   : per-frame transport counter (increments each frame)
   off 15   : trailer / checksum-like
 """
+
 import sys
 from collections import Counter, defaultdict
 
@@ -82,7 +83,7 @@ IV_TABLE = [
     bytes.fromhex("cd4c873f2a2a334e7a43c365404aa423"),
 ]
 
-CHANNEL_ID = lambda msg_type: (msg_type + 1) & 0xF   # selector 0x140073150
+CHANNEL_ID = lambda msg_type: (msg_type + 1) & 0xF  # selector 0x140073150
 
 
 def keystream_from_row(row16, aes_session_key):
@@ -96,18 +97,26 @@ def keystream_from_row(row16, aes_session_key):
         raise NotImplementedError(
             "AES session key unavailable offline (runtime secret, auth-adjacent, "
             "out of scope to derive). Use recover_channel_ks() on captured UDS "
-            "known-plaintext to obtain per-session keystreams instead.")
+            "known-plaintext to obtain per-session keystreams instead."
+        )
     # AES-256-ECB single block of the IV == CFB/OFB keystream for a per-frame-reset IV.
     from Crypto.Cipher import AES  # optional; only if a real session key is provided
+
     return AES.new(bytes(aes_session_key), AES.MODE_ECB).encrypt(bytes(row16))
 
 
 # ---- Recovered keystream for the primary "f3" channel (UDS region 6..13) -------
 # Derived from TesterPresent plaintext "02 3E 00" + 0x00 ISO-TP padding.
 KS_F3 = {
-    1: 0xBD,   # header off1 = echoed SID
-    6: 0x02, 7: 0xA9, 8: 0x99, 9: 0xF6,
-    10: 0xDA, 11: 0x7C, 12: 0x9C, 13: 0x3A,
+    1: 0xBD,  # header off1 = echoed SID
+    6: 0x02,
+    7: 0xA9,
+    8: 0x99,
+    9: 0xF6,
+    10: 0xDA,
+    11: 0x7C,
+    12: 0x9C,
+    13: 0x3A,
 }
 
 
@@ -117,8 +126,9 @@ def decrypt_link(block16, keystream):
     keystream: dict {offset: ks_byte} or a 16-byte sequence. Offsets without a
     known keystream byte are returned as None (unknown)."""
     if isinstance(keystream, dict):
-        return [(block16[i] ^ keystream[i]) if i in keystream else None
-                for i in range(16)]
+        return [
+            (block16[i] ^ keystream[i]) if i in keystream else None for i in range(16)
+        ]
     return bytes(block16[i] ^ keystream[i] for i in range(16))
 
 
@@ -150,16 +160,20 @@ def two_time_pad(cipher_resp, cipher_req):
 
 # --------------------------------------------------------------------------
 def _load(path):
-    sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+    sys.path.insert(
+        0, __import__("os").path.dirname(__import__("os").path.abspath(__file__))
+    )
     from usbpcap import reassemble_frames
-    b8 = []; b7 = []
+
+    b8 = []
+    b7 = []
     for f in reassemble_frames(path):
         p = f["payload"]
         if not p:
             continue
-        if p[0] == 0xb8 and f["dir"] == "OUT":
+        if p[0] == 0xB8 and f["dir"] == "OUT":
             b8.append((f["first_idx"], bytes(p[1:17])))
-        elif p[0] == 0xb7 and f["dir"] == "IN":
+        elif p[0] == 0xB7 and f["dir"] == "IN":
             b7.append((f["first_idx"], bytes(p[1:17])))
     return b8, b7
 
@@ -176,7 +190,8 @@ def recover_all_channels(b8, b7):
     single-frame UDS cribs (RDBI/TesterPresent) and validating it decodes ALL of
     that channel's requests consistently and a response as a positive UDS reply.
     Returns {header_key: (ks_dict, pci, sid, n_req, n_rsp)}."""
-    reqs = defaultdict(list); resps = defaultdict(list)
+    reqs = defaultdict(list)
+    resps = defaultdict(list)
     for _, b in b8:
         reqs[(b[0], b[2], b[3], b[5])].append(b)
     for _, b in b7:
@@ -185,17 +200,25 @@ def recover_all_channels(b8, b7):
     for k, rq in reqs.items():
         rs = resps.get(k, [])
         modal = Counter(rq).most_common(1)[0][0]
-        for pci, sid in [(0x03, 0x22), (0x02, 0x3e), (0x04, 0x22),
-                         (0x05, 0x22), (0x03, 0x19), (0x03, 0x2e)]:
+        for pci, sid in [
+            (0x03, 0x22),
+            (0x02, 0x3E),
+            (0x04, 0x22),
+            (0x05, 0x22),
+            (0x03, 0x19),
+            (0x03, 0x2E),
+        ]:
             ks = recover_channel_ks(modal, pci=pci, sid=sid)
             dec = [decrypt_link(b, ks) for b in rq]
             if not all(d[6] == pci and d[7] == sid for d in dec):
                 continue
             if rs:
                 dr = [decrypt_link(b, ks) for b in rs]
-                if not any(dd[7] == (sid | 0x40)
-                           or dd[6] in (0x07, 0x10, 0x20, 0x21, 0x22, 0x23)
-                           for dd in dr):
+                if not any(
+                    dd[7] == (sid | 0x40)
+                    or dd[6] in (0x07, 0x10, 0x20, 0x21, 0x22, 0x23)
+                    for dd in dr
+                ):
                     continue
             out[k] = (ks, pci, sid, len(rq), len(rs))
             break
@@ -207,7 +230,13 @@ def _main(path):
     print(f"# {path}: {len(b8)} b8 (request) blocks, {len(b7)} b7 (response) blocks\n")
 
     def is_f3(b):
-        return b[0] == 0xf3 and b[2] == 0x44 and b[3] == 0xdd and b[4] in (0x7c, 0x6c) and b[5] == 0x5f
+        return (
+            b[0] == 0xF3
+            and b[2] == 0x44
+            and b[3] == 0xDD
+            and b[4] in (0x7C, 0x6C)
+            and b[5] == 0x5F
+        )
 
     print("== f3 channel, FULLY-recovered keystream (UDS region off6..13) ==")
     seen = Counter()
@@ -217,9 +246,10 @@ def _main(path):
             seen[tuple(d[6:14])] += 1
     for pdu, n in seen.most_common():
         pci = pdu[0]
-        uds = bytes(pdu[1:1 + pci]) if pci and pci <= 8 else b""
+        uds = bytes(pdu[1 : 1 + pci]) if pci and pci <= 8 else b""
         name = {b"\x3e\x00": "UDS TesterPresent"}.get(
-            uds, "UDS ReadDataByIdentifier" if uds[:1] == b"\x22" else "?")
+            uds, "UDS ReadDataByIdentifier" if uds[:1] == b"\x22" else "?"
+        )
         print(f"  b8 REQ  n={n:4d}  PCI={pci:02x}  UDS={uds.hex(' ')}   <- {name}")
     seen = Counter()
     for idx, b in b7:
@@ -228,7 +258,7 @@ def _main(path):
             seen[tuple(x for x in d[6:14])] += 1
     for pdu, n in seen.most_common():
         pci = pdu[0]
-        uds = bytes(pdu[1:1 + pci]) if pci and pci <= 8 else b""
+        uds = bytes(pdu[1 : 1 + pci]) if pci and pci <= 8 else b""
         name = "UDS TesterPresent positive response" if uds[:2] == b"\x7e\x00" else "?"
         print(f"  b7 RESP n={n:4d}  PCI={pci:02x}  UDS={uds.hex(' ')}   <- {name}")
 
@@ -240,28 +270,34 @@ def _main(path):
         ch[(b[0], b[2], b[3], b[5])]["rsp"].append(b)
 
     print("\n== vehicle-speed measuring poll (channel 00..788d..db), two-time-pad ==")
-    c = ch[(0x00, 0x78, 0x8d, 0xdb)]
+    c = ch[(0x00, 0x78, 0x8D, 0xDB)]
     rb = Counter(c["req"]).most_common(1)[0][0]
     vals = Counter(two_time_pad(s, rb)[8:14] for s in c["rsp"])
     for v, n in vals.most_common():
-        print(f"  RDBI response data (off8..13) = {v.hex(' ')}   n={n}"
-              f"   (DID echo off8-9 = {v[:2].hex(' ')})")
-    print("  -> single constant value across the whole poll = static measurement"
-          " (engine off, speed unchanging)")
+        print(
+            f"  RDBI response data (off8..13) = {v.hex(' ')}   n={n}"
+            f"   (DID echo off8-9 = {v[:2].hex(' ')})"
+        )
+    print(
+        "  -> single constant value across the whole poll = static measurement"
+        " (engine off, speed unchanging)"
+    )
 
     print("\n== gearbox SW-version channel (b3..eb0d..55), recovered keystream ==")
-    c = ch[(0xb3, 0xeb, 0x0d, 0x55)]
+    c = ch[(0xB3, 0xEB, 0x0D, 0x55)]
     rb = Counter(c["req"]).most_common(1)[0][0]
     ks = recover_channel_ks(rb, pci=0x03, sid=0x22)  # RDBI poll base
     print(f"  modal request = {rb.hex(' ')}")
-    print(f"  recovered ks (off6..13) = {_hx([ks.get(i) for i in range(6,14)])}")
+    print(f"  recovered ks (off6..13) = {_hx([ks.get(i) for i in range(6, 14)])}")
     for s in Counter(c["rsp"]):
         d = decrypt_link(s, ks)
         pci = d[6]
         tail = bytes(x for x in d[10:14] if x is not None)
         if b"\x10\x03" in tail:
-            print(f"  b7 RESP PCI={pci:02x} data(off10..13)={tail.hex(' ')}"
-                  f"  <- contains SW-version 10 03 = '1003'")
+            print(
+                f"  b7 RESP PCI={pci:02x} data(off10..13)={tail.hex(' ')}"
+                f"  <- contains SW-version 10 03 = '1003'"
+            )
             print(f"     full block dec = {_hx(d)}")
             break
 
@@ -269,7 +305,9 @@ def _main(path):
     print("\n== generalised per-channel keystream recovery (all channels) ==")
     allch = recover_all_channels(b8, b7)
     total = len({(b[0], b[2], b[3], b[5]) for _, b in b8})
-    print(f"  reproduced + validated keystreams: {len(allch)} / {total} request channels")
+    print(
+        f"  reproduced + validated keystreams: {len(allch)} / {total} request channels"
+    )
     print("  (each recovered from that channel's UDS known-plaintext; the AES")
     print("   session key needed to derive KS=AES(row) offline is out of scope)")
 

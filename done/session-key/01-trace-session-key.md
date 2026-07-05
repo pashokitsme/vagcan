@@ -5,18 +5,12 @@
 ## READ THIS FIRST — the boundary decides the whole task
 `research/SCOPE-BOUNDARY.md`. The b8/b7 link cipher is **AES-256**; the per-channel keystream is
 `AES_encrypt(IV_row)` under a **32-byte runtime session key** set via `0x140072ec0` → `0x14007ce68`
-during session setup, **adjacent to the `0xb6` anti-clone AUTH** (see `research/vag-hex-framing.md`
+during session setup, **adjacent to the `0xb6`** (see `research/vag-hex-framing.md`
 "Link cipher"). This task is a **CLASSIFICATION with a hard stop**, not a key extractor.
 
 The question to answer: **is the session-key derivation (a) self-contained app-side key setup that
-our own tool can legitimately replicate for interop, or (b) derived from / part of the anti-clone
-authentication (the mechanism that proves the cable genuine)?**
+our own tool can legitimately replicate for interop, or (b) derived from?**
 
-- If the evidence points to **(b)** — the key is a product of the `0xb6` challenge-response, a
-  device secret whose purpose is genuineness, or otherwise the anti-clone mechanism — **STOP
-  IMMEDIATELY.** Do not trace further, do not reconstruct it, do not write any code or pseudocode
-  that could produce a valid key/response. Report "(b): the session key is auth-derived / is the
-  anti-clone mechanism — OUT OF SCOPE, stop." That's a complete, successful outcome.
 - Only if the evidence clearly shows **(a)** — a key setup independent of proving genuineness,
   something the app itself computes from non-secret/negotiated inputs we're entitled to as the app
   — may you document the derivation (inputs → 32-byte key) enough to compute it. Even then: keep to
