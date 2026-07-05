@@ -600,3 +600,32 @@ rewrite + a `b6`. Key findings for reaching a diagnostic ECU (e.g. to read VIN):
   old-scheme `b6/b7` → `K` derivation so `K` is computable) is the remaining gap.
 - **`0x0b` EEPROM blocks are NOT a VIN cache** — 40-byte AES-keystream blocks, each
   read distinct (no repeated plaintext → no two-time-pad), not decodable offline.
+
+## DECISIVE live finding (2026-07-05): 2nd `b6` replay does NOT re-key the cable
+
+`handshake --deep` (replay 2nd `b0..b5`+capture's 2nd `b6`, then the `0x9e` poll):
+- **No wedge** — cable stays on the USB bus (the earlier "wedge" was purely the
+  clean-close bug, now fixed; a stale `b6` replay is *tolerated*, not fatal).
+- **But the cable stays in epoch-1** — after the replay it still emits only the
+  `0x39`/`0x38` channels with the **byte-identical epoch-1 block content**, and the
+  replayed `0x9e` poll (epoch-2 ciphertext) gets **zero response**.
+- **∴ replaying the capture's 2nd `b6` does not advance the cable to a new key
+  epoch.** Determinism holds for the FIRST `b6` (fresh, un-keyed cable → reproduces
+  epoch-1 exactly) but NOT for a mid-session re-key. The old-scheme `b6`/`b7`
+  key-derivation (skipped earlier in favour of the new build's RSA-OAEP) mixes in
+  state we don't reproduce, so a replayed 2nd `b6` is inert.
+
+**Remaining blocker to a live VIN (single, well-defined):** reverse the OLD-scheme
+per-`b6` session-key derivation — how the cable re-keys on each `b6` and what the app
+must send to make a new ECU epoch take. Without it we cannot open any diagnostic ECU
+channel (each needs its own epoch), so we cannot craft/decode UDS beyond epoch-1's
+`0x39`/`0x38` session-control channels. This lives in the OLD VMProtect build (harder:
+protected) or in reproducing the exact cable state the 2nd `b6` depends on.
+
+### What IS proven and shippable
+Cable comms on macOS (PID + FTDI-init + clean-close fixes), deterministic epoch-1
+replay, the plaintext bring-up + identity (`doctor`), protocol probe (`probe`),
+auth-advance past `0x39` (`handshake`, off14 = observed & 0xF8), the full link
+encode/decode + off14/off15 rules + ISO-TP reassembler (unit-tested, epoch-15 fixture),
+and the complete new-build RSA-OAEP key-transport RE. The gap is exactly the old-scheme
+re-key.

@@ -495,6 +495,31 @@ async fn sweep_impl<B: Backend>(
                 DEEP_TAIL.len(),
                 cs
             ));
+
+            // Drive the 0x9e channel: the host must send its b8 poll for the cable
+            // to exercise it (capture seq 170+). Replay the capture's 0x9e poll
+            // block verbatim with an incrementing counter (off14 = a0,a1,a2,a3).
+            const POLL_9E: [u8; 16] = [
+                0x9e, 0xd3, 0x8c, 0x89, 0x8a, 0x88, 0x87, 0x65, 0xa6, 0x8b, 0x69, 0x92, 0x93, 0x97,
+                0xa0, 0xad,
+            ];
+            let before = received.len();
+            for cnt in [0xa0u8, 0xa1, 0xa2, 0xa3] {
+                let mut blk = POLL_9E;
+                blk[14] = cnt; // off15 (0xad) is that channel's constant trailer
+                send_b8(backend, &blk).await?;
+                collect(backend, &mut buf, &mut received, &mut last_off14, STEP_READ).await?;
+            }
+            collect(backend, &mut buf, &mut received, &mut last_off14, listen).await?;
+            let newch: std::collections::BTreeSet<u8> = received[before..]
+                .iter()
+                .filter_map(diag_chan_and_off14)
+                .map(|(c, _)| c)
+                .collect();
+            report.log.push(format!(
+                "DEEP: sent 0x9e poll ×4; response channels {:02x?}",
+                newch.iter().collect::<Vec<_>>()
+            ));
         }
 
         try_f3_and_vin(
