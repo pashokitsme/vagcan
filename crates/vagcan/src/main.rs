@@ -82,6 +82,23 @@ enum Command {
         #[arg(long, default_value_t = 4)]
         listen: u64,
     },
+    /// Dynamic session handshake: bring-up → read the cable's live `0x39`
+    /// counter → send the auth-completion `b8` with a dynamically-derived off14 →
+    /// watch the cable advance past auth → `f3` TesterPresent → (if `7E`) VIN.
+    ///
+    /// Unlike `vin`, every transport counter (off14) is derived at runtime from
+    /// the cable's observed counter (`paired_off14` = flip bit0) — nothing is
+    /// hardcoded. Requires ignition on. Read-only UDS. This answers the open
+    /// question: does the capture's `KS_F3` decode a session we bootstrap with
+    /// only the first `b6`? A `7E` says yes; no `7E` means the key rotates per
+    /// `b6` re-auth.
+    Handshake {
+        #[arg(long)]
+        serial: Option<String>,
+        /// Seconds for each post-send observation window.
+        #[arg(long, default_value_t = 3)]
+        listen: u64,
+    },
 }
 
 #[tokio::main]
@@ -95,7 +112,65 @@ async fn main() -> anyhow::Result<()> {
         Command::Probe { serial, listen } => probe(serial.as_deref(), listen).await,
         Command::Session { serial, listen } => session(serial.as_deref(), listen).await,
         Command::Vin { serial, listen } => vin(serial.as_deref(), listen).await,
+        Command::Handshake { serial, listen } => handshake(serial.as_deref(), listen).await,
     }
+}
+
+/// Dynamic session handshake: advance past the 0x39 auth-stall with a
+/// runtime-derived counter, then TesterPresent + VIN on the f3 channel.
+async fn handshake(serial: Option<&str>, listen_secs: u64) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let mut backend = D2xxBackend::open(serial).map_err(|e| open_diagnostic(serial, e))?;
+    let report = vag_hex::drive_session(&mut backend, Duration::from_secs(listen_secs))
+        .await
+        .context("session drive failed")?;
+
+    println!("--- session drive log ---");
+    for line in &report.log {
+        println!("  {line}");
+    }
+    println!(
+        "\ncable sent {} frame(s) total. observed 0x39 counter(s): {:02x?}",
+        report.received.len(),
+        report.observed_auth_off14
+    );
+    println!(
+        "sent auth-completion b8 off14={:#04x}",
+        report.sent_auth_off14
+    );
+
+    if report.advanced {
+        println!("\n✅ ADVANCED: the cable emitted a non-0x39 channel after the auth-completion.");
+    } else {
+        println!(
+            "\n❌ STUCK: the cable kept repeating the 0x39 block (no other channel seen). \
+             The auth-completion off14 may be wrong, or this build needs the RSA-OAEP key \
+             push first (see `vagcan probe`)."
+        );
+    }
+
+    if report.tp_positive {
+        println!("✅ f3 TesterPresent POSITIVE (7E) decoded with the capture's KS_F3.");
+    } else {
+        println!("⚠️  No f3 7E. See the decoded f3 blocks below (off6..15):");
+    }
+    for (i, b) in report.f3_decoded_blocks.iter().enumerate() {
+        let region: String = b[6..].iter().map(|x| format!("{x:02x} ")).collect();
+        println!("  [{i:2}] {}", region.trim_end());
+    }
+
+    match &report.vin {
+        Some(v) if v.len() == 17 => println!("\n✅ VIN: {v}"),
+        Some(v) => println!("\n⚠️  VIN reassembled but length {} != 17: {v:?}", v.len()),
+        None if report.tp_positive => println!("\n⚠️  TP was positive but no VIN reassembled."),
+        None => println!(
+            "\nOPEN QUESTION: no 7E means the capture's KS_F3 likely does NOT decode a session \
+             bootstrapped from only the first b6 — the keystream probably rotates per b6 \
+             re-auth. Next step: replay the capture's b6 re-auth nonces in sequence."
+        ),
+    }
+    Ok(())
 }
 
 /// Live VIN read on the engine (f3) channel.

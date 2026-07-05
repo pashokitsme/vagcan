@@ -79,6 +79,35 @@ pub fn f3_trailer(off14: u8) -> u8 {
     }
 }
 
+/// Derive the counter (block off14) that **pairs** with an observed one.
+///
+/// **RE result (`research/clb-crack/off14_rule2.py`, `off14_rule3.py`).** off14 is
+/// a per-channel, free-running/session counter carried in **plaintext** (KS14 =
+/// 0, so the ciphertext byte *is* the counter). Its absolute value and its step
+/// are NOT deterministic run-to-run — observed live session starts `0x10` /
+/// `0x50` / `0x3a`, and the per-frame step is scrambled (consecutive OUT→OUT
+/// deltas spread over `01/ff/02/fe/03/06/…`). Hardcoding a captured value is
+/// therefore wrong for any session but the one it was captured in.
+///
+/// The ONE invariant that holds across the whole capture is the **request↔
+/// response pairing**: a `b7` response's off14 equals its `b8` request's off14
+/// with **bit0 flipped** (`resp = req ^ 1`) — 173 of 230 consecutive same-channel
+/// OUT→IN pairs, the dominant relation by a wide margin (next is `^3`, 20×). So
+/// bit0 is the intra-pair direction toggle; the upper 7 bits are the free-running
+/// counter epoch, copied unchanged within a pair. (Which absolute *parity* a
+/// request lands on is not fixed — the `f3` channel's requests are odd, the
+/// vehicle-speed channel's are even — so bit0 is NOT a global direction flag,
+/// only a within-pair toggle.)
+///
+/// To emit a host frame that continues the sequence the cable is currently
+/// running — e.g. to answer/advance a stream of cable-pushed `b7`s — stamp
+/// off14 = `paired_off14(last_cable_off14)`. This tracks the cable's counter
+/// epoch dynamically instead of pinning a value that only matched the capture.
+#[must_use]
+pub fn paired_off14(observed_off14: u8) -> u8 {
+    observed_off14 ^ 1
+}
+
 /// XOR-decode a 16-byte diagnostic block with a channel keystream.
 ///
 /// `plain[i] = cipher[i] ^ keystream[i]`. This is the whole cipher — a pure,
@@ -490,6 +519,23 @@ mod tests {
         assert_eq!(f3_trailer(0xA5), 0xFD);
         assert_eq!(f3_trailer(0xC0), 0xFC); // top3=6
         assert_eq!(f3_trailer(0x60), 0xFC); // top3=3
+    }
+
+    #[test]
+    fn paired_off14_flips_bit0_and_is_involutive() {
+        // resp = req ^ 1 (the dominant capture pairing). Verified against the f3
+        // reference blocks: RDBI req off14=0xfb, its response off14 would be 0xfa.
+        assert_eq!(paired_off14(0xfb), 0xfa);
+        assert_eq!(paired_off14(0x50), 0x51);
+        assert_eq!(paired_off14(0x00), 0x01);
+        // Involutive: pairing the pair returns the original (bit0 toggles back).
+        for c in 0u8..=255 {
+            assert_eq!(paired_off14(paired_off14(c)), c);
+        }
+        // Upper 7 bits (the counter epoch) are preserved.
+        for c in 0u8..=255 {
+            assert_eq!(paired_off14(c) & 0xFE, c & 0xFE);
+        }
     }
 
     #[test]

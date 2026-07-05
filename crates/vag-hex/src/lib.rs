@@ -32,6 +32,7 @@
 #![cfg_attr(not(any(feature = "d2xx", test)), allow(dead_code))]
 
 pub mod actor;
+pub mod drive;
 pub mod error;
 pub mod frame;
 pub mod init;
@@ -40,11 +41,12 @@ pub mod probe;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
+pub use drive::{AUTH39_BLOCK, DriveReport, drive_session};
 pub use error::HexError;
 pub use frame::{Frame, MARKER_CABLE, MARKER_HOST};
 pub use link::{
     IsoTpReassembler, KS_F3, UdsSlice, decode_diag_frame, decrypt_block, encode_f3_request,
-    encode_request, f3_trailer, recover_keystream,
+    encode_request, f3_trailer, paired_off14, recover_keystream,
 };
 pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
 pub use probe::{BRINGUP, ProbeReport, TP_B8_BLOCK, VinReport, probe_open, session_probe, vin_read};
