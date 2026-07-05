@@ -326,8 +326,9 @@ off 0..5  addressing/header  (off1 = echoed UDS SID; off4 = direction bit;
 off 6     ISO-TP PCI         (0x0N single-frame, 0x1N first-frame, 0x2N consec.)
 off 7     UDS SID            (request) / SID|0x40 (positive resp) / 0x7F (neg)
 off 8..13 UDS data bytes, then ISO-TP padding (req pad 0x00, resp pad 0x55/0xFF)
-off 14    per-frame transport counter (increments every frame)
-off 15    trailer / checksum-like
+off 14    per-frame transport counter (per channel, plaintext — KS14 = 0)
+off 15    trailer — a per-channel function of off14 (NOT a content checksum);
+          see "off15 (trailer) — RECOVERED" below.
 ```
 Request vs its response differ *only* at off1 (SID echo) and off4 (direction) in
 the header; the keystream is shared by both directions of a channel. No CAN
@@ -354,6 +355,35 @@ gearbox SW-version (chan b3..eb0d..55): multiframe RDBI response (ISO-TP PCIs
    07 single / 11 first / 20,23 consecutive all decode correctly); response data
    contains 10 03 = software version "1003" ✓
 ```
+
+### off15 (trailer) — RECOVERED (2026-07-05)
+
+> Supersedes the earlier "off15 = trailer/checksum-like" guess. off15 is **NOT a
+> content checksum** — it carries no information about the UDS PDU.
+
+**off15 is a per-channel function of the counter byte off14, determined entirely
+by off14's top 3 bits (`off14 & 0xE0`).** Verified across **66/66 `b8` request
+channels and 26/26 `b7` response channels** in `reading-ecus.pcapng` — within
+every `(channel, off14 & 0xE0)` bucket, off15 is constant (all 763 `b8` + 457
+`b7` frames). Disproof of the checksum hypothesis: identical PDU content yields
+different off15 (f3 TesterPresent shows both `0xFC` and `0xFD`), and off15 is not
+a function of the content bytes off6..13. Tooling:
+`research/clb-crack/{crack_off15.py,off15_final.py,off15_formula.py}`.
+
+- **Form:** `off15 = KS15_channel ^ H(off14 & 0xE0)`. For most channels off15 is
+  simply constant (their counter never crosses the bucket boundary that flips
+  it). The **primary `f3` channel** is the only one that exercises the full off14
+  range (218 frames, both directions): `off15 = 0xFD` when
+  `off14 & 0xE0 ∈ {0x80, 0xA0, 0xE0}` else `0xFC` — matches **218/218**.
+- **Interpretation:** off14/off15 are a **coupled per-channel sequence field**
+  (off14 = counter low byte with the direction in bit0 — the `b7` response's
+  off14 equals the `b8` request's off14 with bit0 cleared; off15 = a high-order
+  byte XOR-masked by a per-channel constant KS15), not counter + checksum. There
+  is no independent checksum to compute: off15 is reproducible from off14.
+- **Impact:** the ENCODE path is now unblocked. `crates/vag-hex/src/link.rs`
+  `encode_f3_request` builds a request block and stamps off15 via
+  `f3_trailer(off14)`; it reproduces the captured TesterPresent, ReadDataByID
+  and the VIN request block byte-for-byte.
 
 ### Confidence / what is NOT yet recovered
 - Algorithm = position XOR keystream: **HIGH**. Block off6–13 layout: **HIGH**.

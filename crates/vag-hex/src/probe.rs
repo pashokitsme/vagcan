@@ -60,6 +60,17 @@ pub const BRINGUP: &[(u8, &[u8])] = &[
     ]), // challenge (sprng nonce, replayed)
 ];
 
+/// The captured TesterPresent request block (ciphertext, primary `f3` channel):
+/// off6..13 XOR [`KS_F3`] = `02 3E 00 …` = UDS TesterPresent. Replayed verbatim to
+/// prove the live session key equals the capture's (see `session_probe`).
+pub const TP_B8_BLOCK: [u8; 16] = [
+    0xf3, 0x83, 0x44, 0xdd, 0x7c, 0x5f, 0x00, 0x97, 0x99, 0xf6, 0xda, 0x7c, 0x9c, 0x3a, 0x00, 0xfc,
+];
+
+/// Recovered primary-channel keystream — re-exported from [`crate::link`], the
+/// canonical location. (off1 + off6..13 recovered; rest 0.)
+pub use crate::link::KS_F3;
+
 /// Result of a bring-up probe.
 #[derive(Debug, Default)]
 pub struct ProbeReport {
@@ -155,6 +166,173 @@ pub async fn probe_open<B: Backend>(
     })
 }
 
+/// Drive the bring-up, then replay the captured TesterPresent `b8` block and
+/// collect the cable's `b7` responses.
+///
+/// If the live session key equals the capture's (the determinism we observed:
+/// replaying the capture's `b6` reproduced its `b7`/`09` byte-for-byte), then a
+/// `b7` response here decodes with [`KS_F3`] to a UDS TesterPresent positive
+/// reply (`7E 00`) — proving the recovered keystreams work live end-to-end.
+///
+/// Sends the TP block several times (the cable tracks a per-frame counter at
+/// off14; retrying tolerates a stale start value). Read-only diagnostic UDS
+/// (TesterPresent is a no-op keepalive — no car state changes).
+pub async fn session_probe<B: Backend>(
+    backend: &mut B,
+    listen: Duration,
+) -> Result<ProbeReport, HexError> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut received: Vec<Frame> = Vec::new();
+    let mut raw: Vec<u8> = Vec::new();
+
+    for &(opcode, payload) in BRINGUP {
+        backend
+            .write(&frame::frame_encode(MARKER_HOST, opcode, payload))
+            .await?;
+        collect_for(backend, &mut buf, &mut received, &mut raw, STEP_READ).await?;
+    }
+
+    // Replay TesterPresent (opcode 0xB8 diagnostic request) a few times.
+    let tp = frame::frame_encode(MARKER_HOST, crate::frame::OP_DIAG_REQ, &TP_B8_BLOCK);
+    for _ in 0..4 {
+        backend.write(&tp).await?;
+        collect_for(backend, &mut buf, &mut received, &mut raw, Duration::from_millis(300)).await?;
+    }
+    collect_for(backend, &mut buf, &mut received, &mut raw, listen).await?;
+
+    let wrapped_key = received.iter().find(|f| is_wrapped_key(f)).cloned();
+    Ok(ProbeReport {
+        received,
+        wrapped_key,
+        raw_bytes: raw,
+    })
+}
+
+/// The post-auth choreography that follows [`BRINGUP`], replayed verbatim from
+/// the capture (`research/reading-ecus.pcapng`, the OUT frames right after the
+/// `0xb6` challenge — see `research/clb-crack/choreo.py`). Per the RE, the cable
+/// will NOT accept an `0xf3` diagnostic `0xb8` until this runs: a `0x39`-channel
+/// exchange, an `a0` poll, a `0x19 00` read, the `0x0b` indexed-block burst
+/// (idx 00..07), and the keyed `0x09` challenge/response triplet. The `0x39` and
+/// `0x09` payloads are the captured session's bytes; they apply live because the
+/// cable is deterministic (same session key ⇒ same challenge ⇒ same response),
+/// the property this whole replay path relies on. `(opcode, payload)`.
+pub const POST_AUTH: &[(u8, &[u8])] = &[
+    (0xB8, &[
+        0x39, 0xc7, 0x0a, 0x5d, 0xe7, 0x72, 0xcf, 0xa5, 0x6e, 0xfb, 0x41, 0xc6, 0x4c, 0xab, 0x38,
+        0xcd,
+    ]),
+    (0xA0, &[]),
+    (0x19, &[0x00]),
+    (0x0B, &[0x00, 0x00]),
+    (0x0B, &[0x01, 0x00]),
+    (0x0B, &[0x02, 0x00]),
+    (0x0B, &[0x03, 0x00]),
+    (0x0B, &[0x04, 0x00]),
+    (0x0B, &[0x05, 0x00]),
+    (0x0B, &[0x06, 0x00]),
+    (0x0B, &[0x07, 0x00]),
+    (0x09, &[0x05, 0x00, 0x83, 0x80, 0x41, 0xbe, 0xe4, 0x44, 0x71]),
+    (0x09, &[0x02, 0x07, 0xe3, 0x2b, 0xde, 0xa5, 0x7b, 0x38, 0x64]),
+    (0x09, &[0x03, 0xb1, 0x77, 0xb1, 0xf2, 0x02, 0x5c, 0x6d, 0xc0]),
+    (0xA0, &[]),
+];
+
+/// Result of a VIN read attempt.
+#[derive(Debug, Default)]
+pub struct VinReport {
+    /// The decoded VIN (17 chars) if the multiframe response reassembled and
+    /// carried a `62 F1 90` ReadDataByIdentifier positive reply.
+    pub vin: Option<String>,
+    /// Every `f3` `b7` response block decoded to its inner ISO-TP bytes, for
+    /// inspection when the VIN did not come through.
+    pub decoded_blocks: Vec<[u8; 16]>,
+    /// Every frame the cable sent during the read (all opcodes), in order.
+    pub received: Vec<Frame>,
+}
+
+/// Drive a live VIN read on the `f3` (engine) channel.
+///
+/// Sequence: [`BRINGUP`] → [`POST_AUTH`] choreography → a TesterPresent (to
+/// confirm/keep the diagnostic session) → the encoded `ReadDataByIdentifier
+/// F1 90` request → collect `f3` `b7` responses and reassemble the ISO-TP
+/// multiframe into `62 F1 90 <17 ASCII>`.
+///
+/// The request block is crafted with [`crate::link::encode_f3_request`] and the
+/// counter/trailer are stamped by the recovered off15 rule ([`crate::link::
+/// f3_trailer`]). Read-only UDS: RDBI F1 90 reads the VIN, changes no car state.
+///
+/// This is the owner's hardware experiment: whether THIS cable's firmware keys
+/// the link (new RSA-OAEP build) and accepts the replayed choreography is
+/// verifiable only live. The report surfaces every decoded block so a partial
+/// or unexpected response is still diagnosable.
+pub async fn vin_read<B: Backend>(
+    backend: &mut B,
+    listen: Duration,
+) -> Result<VinReport, HexError> {
+    use crate::link::{IsoTpReassembler, KS_F3, decode_diag_frame, decrypt_block, encode_f3_request};
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut received: Vec<Frame> = Vec::new();
+    let mut raw: Vec<u8> = Vec::new();
+
+    // 1) Bring-up + post-auth choreography (verbatim replay).
+    for &(opcode, payload) in BRINGUP.iter().chain(POST_AUTH) {
+        backend
+            .write(&frame::frame_encode(MARKER_HOST, opcode, payload))
+            .await?;
+        collect_for(backend, &mut buf, &mut received, &mut raw, STEP_READ).await?;
+    }
+
+    // 2) TesterPresent on f3 to confirm the diagnostic session is live.
+    backend
+        .write(&frame::frame_encode(MARKER_HOST, frame::OP_DIAG_REQ, &TP_B8_BLOCK))
+        .await?;
+    collect_for(backend, &mut buf, &mut received, &mut raw, Duration::from_millis(300)).await?;
+
+    // 3) The VIN request: ReadDataByIdentifier DID F1 90 on the f3 channel.
+    //    off14 counter = 0x01 (the trailer is derived to match by f3_trailer).
+    let vin_block = encode_f3_request(&[0x22, 0xF1, 0x90], 0x01)
+        .expect("VIN PDU fits a single frame");
+    backend
+        .write(&frame::frame_encode(MARKER_HOST, frame::OP_DIAG_REQ, &vin_block))
+        .await?;
+
+    // 4) Collect + reassemble the multiframe f3 response.
+    collect_for(backend, &mut buf, &mut received, &mut raw, listen).await?;
+
+    let mut reasm = IsoTpReassembler::new();
+    let mut decoded_blocks = Vec::new();
+    let mut vin = None;
+    for f in &received {
+        if f.opcode != frame::OP_DIAG_RESP || f.data.len() < 16 {
+            continue;
+        }
+        let block: [u8; 16] = f.data[..16].try_into().unwrap();
+        // Only reassemble f3 responses (header off0=f3, off2=44, off3=dd).
+        if !(block[0] == 0xF3 && block[2] == 0x44 && block[3] == 0xDD) {
+            continue;
+        }
+        let dec = decrypt_block(&block, &KS_F3);
+        decoded_blocks.push(dec);
+        if let Some(pdu) = reasm.push_block(&dec) {
+            // Positive RDBI reply: 62 F1 90 <17 ASCII>.
+            if pdu.len() >= 3 && pdu[0] == 0x62 && pdu[1] == 0xF1 && pdu[2] == 0x90 {
+                vin = Some(String::from_utf8_lossy(&pdu[3..]).trim().to_string());
+                break;
+            }
+        }
+        // Single-frame path (short reads) also flows through decode_diag_frame.
+        let _ = decode_diag_frame(&block, &KS_F3);
+    }
+
+    Ok(VinReport {
+        vin,
+        decoded_blocks,
+        received,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +397,54 @@ mod tests {
 
         assert!(!report.looks_new_protocol(), "no wrapped key in old scheme");
         assert!(report.received.len() >= 2, "still collected the small frames");
+    }
+
+    #[tokio::test]
+    async fn vin_read_reassembles_multiframe_response() {
+        use crate::link::KS_F3;
+
+        // Encipher a plaintext f3 response block: cipher = plain ^ KS_F3, then
+        // stamp the f3 response header (off0/2/3) so vin_read's filter matches.
+        fn enc_resp(plain: [u8; 16]) -> [u8; 16] {
+            let mut c = [0u8; 16];
+            for i in 0..16 {
+                c[i] = plain[i] ^ KS_F3[i];
+            }
+            c[0] = 0xF3;
+            c[2] = 0x44;
+            c[3] = 0xDD;
+            c
+        }
+        fn iso(pci: u8, data: &[u8], at: usize) -> [u8; 16] {
+            let mut b = [0u8; 16];
+            b[6] = pci;
+            for (i, &d) in data.iter().enumerate() {
+                b[at + i] = d;
+            }
+            b
+        }
+
+        // VIN response 62 F1 90 + 17 ASCII = 20 bytes over FF + 2 CF.
+        let vin = b"WVWZZZ1KZ6W123456";
+        let mut pdu = vec![0x62u8, 0xF1, 0x90];
+        pdu.extend_from_slice(vin);
+
+        let mut ff = iso(0x10, &[pdu.len() as u8], 7);
+        for (i, &b) in pdu[..6].iter().enumerate() {
+            ff[8 + i] = b;
+        }
+        let cf1 = iso(0x21, &pdu[6..13], 7);
+        let cf2 = iso(0x22, &pdu[13..20], 7);
+
+        let mut inbound = Vec::new();
+        for blk in [ff, cf1, cf2] {
+            inbound.extend(frame_encode(MARKER_CABLE, crate::frame::OP_DIAG_RESP, &enc_resp(blk)));
+        }
+        let mut backend = ScriptBackend::new(inbound);
+
+        let report = vin_read(&mut backend, Duration::from_millis(200))
+            .await
+            .expect("vin_read runs");
+        assert_eq!(report.vin.as_deref(), Some("WVWZZZ1KZ6W123456"));
     }
 }

@@ -33,6 +33,51 @@ pub const BLOCK_LEN: usize = 16;
 pub const OFF_PCI: usize = 6;
 /// Block offset of the UDS service id (SID) byte.
 pub const OFF_SID: usize = 7;
+/// Block offset of the per-frame transport counter (keystream byte is 0, so the
+/// ciphertext byte here is the plaintext counter — see `crack_off15.py`).
+pub const OFF_COUNTER: usize = 14;
+/// Block offset of the trailer byte (off15). Reversed in research to be a pure
+/// function of the counter, NOT a content checksum — see [`f3_trailer`].
+pub const OFF_TRAILER: usize = 15;
+/// First block offset of the ISO-TP data region (single frame: SID..pad).
+pub const OFF_DATA: usize = 7;
+
+/// Full recovered keystream for the primary `f3` channel (engine ECU:
+/// TesterPresent + ReadDataByIdentifier). Offsets 1 and 6..=13 are recovered
+/// from UDS known-plaintext (`research/clb-crack/link_cipher.py`); off14 = 0
+/// (counter is plaintext) and the rest (header/trailer keystream) are 0 because
+/// they are not needed to encode/decode the UDS region. `plain[i] = cipher[i] ^
+/// KS_F3[i]`.
+pub const KS_F3: [u8; BLOCK_LEN] = [
+    0x00, 0xBD, 0x00, 0x00, 0x00, 0x00, 0x02, 0xA9, 0x99, 0xF6, 0xDA, 0x7C, 0x9C, 0x3A, 0x00, 0x00,
+];
+
+/// Constant CIPHER header bytes (off0,2,3,4,5) of a `f3` **request** (`0xb8`)
+/// block. off1 is `KS_F3[1] ^ SID`, computed per PDU, so index 1 is unused.
+pub const F3_REQ_HEADER: [u8; 6] = [0xF3, 0x00, 0x44, 0xDD, 0x7C, 0x5F];
+/// Constant CIPHER header bytes of a `f3` **response** (`0xb7`) block. Differs
+/// from the request only at off4 (direction bit: `0x6C` vs `0x7C`).
+pub const F3_RESP_HEADER: [u8; 6] = [0xF3, 0x00, 0x44, 0xDD, 0x6C, 0x5F];
+
+/// The `f3`-channel trailer (block off15) as a function of the counter off14.
+///
+/// **RE result (`research/clb-crack/off15_final.py`, `off15_formula.py`).** off15
+/// is NOT a content checksum: it is a per-channel field determined ENTIRELY by
+/// the counter byte off14 — specifically its top 3 bits (`off14 & 0xE0`). This
+/// was verified to hold across **66/66 `b8` request channels and 26/26 `b7`
+/// response channels** in the capture (every one of 763 + 457 frames). For the
+/// `f3` channel, which is the only one that exercises the full off14 range (218
+/// frames, both directions), off15 = `0xFD` when `off14 & 0xE0 ∈ {0x80,0xA0,
+/// 0xE0}` else `0xFC` — matching **218/218** frames. off14/off15 are therefore a
+/// coupled per-channel sequence field (off14 = counter low byte, off15 = a
+/// high-order byte XOR-masked by a per-channel constant), not counter+checksum.
+#[must_use]
+pub fn f3_trailer(off14: u8) -> u8 {
+    match off14 >> 5 {
+        4 | 5 | 7 => 0xFD,
+        _ => 0xFC,
+    }
+}
 
 /// XOR-decode a 16-byte diagnostic block with a channel keystream.
 ///
@@ -143,6 +188,148 @@ pub fn decode_diag_frame(frame_payload: &[u8], keystream: &[u8; BLOCK_LEN]) -> O
         pci,
         uds: block[OFF_SID..end].to_vec(),
     })
+}
+
+/// Build a single-frame `0xb8` request block for one diagnostic channel.
+///
+/// This is the ENCODE side of the link cipher (the inverse of
+/// [`decode_diag_frame`]): it lays out the plaintext inner block — header, ISO-TP
+/// single-frame PCI, SID, data, `0x00` padding, counter, trailer — then XOR-masks
+/// it with the channel keystream. Because the cipher is a pure byte-local XOR,
+/// `decode_diag_frame(encode_request(..), ks)` round-trips.
+///
+/// - `header` = the constant CIPHER header off0,2,3,4,5 (e.g. [`F3_REQ_HEADER`]);
+///   off1 is set to `keystream[1] ^ pdu[0]` (the echoed SID).
+/// - `keystream` = the channel keystream (e.g. [`KS_F3`]); off6..=13 must be
+///   correct, off14 must be 0 (counter rides in plaintext).
+/// - `pdu` = the UDS PDU (SID + data), at most 7 bytes (single frame only).
+/// - `off14` = the per-frame counter byte to stamp.
+/// - `trailer` = the off15 rule for this channel (e.g. [`f3_trailer`]).
+///
+/// Returns [`None`] if `pdu` is empty or longer than the 7-byte single-frame
+/// data region (`OFF_DATA..=13`). Multiframe requests are not emitted here (the
+/// captured diagnostic requests we replay are all single frame).
+#[must_use]
+pub fn encode_request(
+    header: &[u8; 6],
+    keystream: &[u8; BLOCK_LEN],
+    pdu: &[u8],
+    off14: u8,
+    trailer: fn(u8) -> u8,
+) -> Option<[u8; BLOCK_LEN]> {
+    // Single frame carries SID + data across off7..=13 (OFF_COUNTER - OFF_DATA).
+    if pdu.is_empty() || pdu.len() > OFF_COUNTER - OFF_DATA {
+        return None;
+    }
+    let mut blk = [0u8; BLOCK_LEN];
+    // Header off0,2,3,4,5 are constant cipher bytes; off1 = KS[1] ^ SID.
+    for i in [0usize, 2, 3, 4, 5] {
+        blk[i] = header[i];
+    }
+    blk[1] = keystream[1] ^ pdu[0];
+    // ISO-TP single-frame PCI: high nibble 0, low nibble = PDU length.
+    blk[OFF_PCI] = keystream[OFF_PCI] ^ (pdu.len() as u8);
+    // off7..=13: PDU bytes then 0x00 ISO-TP padding, each XOR the keystream.
+    for i in 0..(OFF_COUNTER - OFF_DATA) {
+        let plain = pdu.get(i).copied().unwrap_or(0x00);
+        blk[OFF_DATA + i] = keystream[OFF_DATA + i] ^ plain;
+    }
+    blk[OFF_COUNTER] = off14; // KS14 = 0 → cipher byte is the plaintext counter
+    blk[OFF_TRAILER] = trailer(off14);
+    Some(blk)
+}
+
+/// Convenience: encode a single-frame `f3`-channel (engine ECU) request.
+///
+/// Uses [`F3_REQ_HEADER`], [`KS_F3`] and [`f3_trailer`]. E.g. the VIN read
+/// `ReadDataByIdentifier F1 90` is `encode_f3_request(&[0x22, 0xF1, 0x90], cnt)`.
+#[must_use]
+pub fn encode_f3_request(pdu: &[u8], off14: u8) -> Option<[u8; BLOCK_LEN]> {
+    encode_request(&F3_REQ_HEADER, &KS_F3, pdu, off14, f3_trailer)
+}
+
+/// Reassembles a UDS PDU from a sequence of decoded ISO-TP diagnostic blocks.
+///
+/// The 16-byte block carries the ISO-TP PCI at [`OFF_PCI`] and a data region in
+/// off7..=13 (7 bytes). Frame kinds (PCI high nibble):
+/// - **single frame** `0x0N`: the whole PDU is `off7..(7+N)` — a complete PDU in
+///   one block (no reassembler needed, but accepted for uniformity).
+/// - **first frame** `0x1N`: `off7` is the total PDU length, `off8..=13` the
+///   first 6 data bytes (this cable puts the length in a single byte at off7 —
+///   see the SW-version multiframe in `research/clb-crack/isotp_mf.py`).
+/// - **consecutive frame** `0x2N`: `off7..=13` are the next 7 data bytes; `N` is
+///   the ISO-TP sequence number (0..15 wrapping), used only as a sanity check.
+///
+/// Feed decoded blocks with [`push_block`](IsoTpReassembler::push_block) until it
+/// returns `Some(pdu)`.
+#[derive(Debug, Default)]
+pub struct IsoTpReassembler {
+    buf: Vec<u8>,
+    total: Option<usize>,
+    next_seq: u8,
+}
+
+impl IsoTpReassembler {
+    /// A fresh reassembler with no frame seen yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one decoded (plaintext) 16-byte block. Returns `Some(pdu)` once the
+    /// PDU is complete (single frame, or the last consecutive frame that reaches
+    /// the declared length), else `None`. A malformed sequence (consecutive
+    /// frame before a first frame, or a wrong sequence number) resets the
+    /// reassembler and returns `None`.
+    pub fn push_block(&mut self, block: &[u8; BLOCK_LEN]) -> Option<Vec<u8>> {
+        let pci = block[OFF_PCI];
+        match pci >> 4 {
+            0x0 => {
+                // Single frame: complete PDU of `pci & 0x0F` bytes.
+                let len = (pci & 0x0F) as usize;
+                let end = OFF_DATA + len;
+                if end <= BLOCK_LEN {
+                    self.reset();
+                    return Some(block[OFF_DATA..end].to_vec());
+                }
+                None
+            }
+            0x1 => {
+                // First frame: total length at off7, first 6 data bytes off8..=13.
+                self.buf.clear();
+                self.total = Some(block[OFF_DATA] as usize);
+                self.buf.extend_from_slice(&block[OFF_DATA + 1..OFF_COUNTER]);
+                self.next_seq = 1;
+                self.maybe_finish()
+            }
+            0x2 => {
+                // Consecutive frame: 7 data bytes off7..=13. A CF with no
+                // preceding first frame has no length yet — ignore it.
+                self.total?;
+                self.buf.extend_from_slice(&block[OFF_DATA..OFF_COUNTER]);
+                self.next_seq = (self.next_seq + 1) & 0x0F;
+                self.maybe_finish()
+            }
+            _ => None, // flow-control / unknown — not expected inbound here
+        }
+    }
+
+    fn maybe_finish(&mut self) -> Option<Vec<u8>> {
+        let total = self.total?;
+        if self.buf.len() >= total {
+            let pdu = self.buf[..total].to_vec();
+            self.reset();
+            Some(pdu)
+        } else {
+            None
+        }
+    }
+
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.total = None;
+        self.next_seq = 0;
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +477,118 @@ mod tests {
         let mut cipher = [0u8; 16];
         cipher[OFF_PCI] = 0x11;
         assert!(decode_diag_frame(&cipher, &ks).is_none());
+    }
+
+    // ---- ENCODE: reproduce captured request blocks byte-for-byte ----
+
+    #[test]
+    fn f3_trailer_matches_capture_rule() {
+        // off15 = 0xFD when off14 top-3-bits ∈ {4,5,7} (0x80/0xA0/0xE0), else 0xFC.
+        assert_eq!(f3_trailer(0x00), 0xFC); // TP reference block off14=00
+        assert_eq!(f3_trailer(0xFB), 0xFD); // RDBI reference block off14=fb (top3=7)
+        assert_eq!(f3_trailer(0x80), 0xFD);
+        assert_eq!(f3_trailer(0xA5), 0xFD);
+        assert_eq!(f3_trailer(0xC0), 0xFC); // top3=6
+        assert_eq!(f3_trailer(0x60), 0xFC); // top3=3
+    }
+
+    #[test]
+    fn encode_reproduces_captured_tester_present() {
+        // TesterPresent (3E 00), counter off14 = 0x00 (as in the reference block).
+        let blk = encode_f3_request(&[0x3E, 0x00], 0x00).expect("fits single frame");
+        assert_eq!(blk, F3_TESTER_PRESENT_REQ);
+    }
+
+    #[test]
+    fn encode_reproduces_captured_rdbi() {
+        // ReadDataByIdentifier 22 74 58, counter off14 = 0xFB (reference block).
+        let blk = encode_f3_request(&[0x22, 0x74, 0x58], 0xFB).expect("fits single frame");
+        assert_eq!(blk, F3_RDBI_REQ);
+    }
+
+    #[test]
+    fn encode_vin_request_matches_expected_block() {
+        // VIN = ReadDataByIdentifier DID F1 90. The framing doc gives the f3 VIN
+        // request block (modulo counter+trailer):
+        //   f3 9f 44 dd 7c 5f 01 8b 68 66 da 7c 9c 3a <cnt> <cksum>
+        let blk = encode_f3_request(&[0x22, 0xF1, 0x90], 0x01).expect("fits");
+        let want = hex16("f39f44dd7c5f018b6866da7c9c3a01fc");
+        assert_eq!(blk, want);
+    }
+
+    #[test]
+    fn encode_decode_round_trips() {
+        for (pdu, cnt) in [
+            (vec![0x3E, 0x00], 0x00u8),
+            (vec![0x22, 0xF1, 0x90], 0x40),
+            (vec![0x22, 0x74, 0x58], 0xE0),
+        ] {
+            let blk = encode_f3_request(&pdu, cnt).expect("fits");
+            let dec = decode_diag_frame(&blk, &KS_F3).expect("single frame");
+            assert_eq!(dec.uds, pdu);
+            assert_eq!(dec.block[OFF_COUNTER], cnt);
+            assert_eq!(dec.block[OFF_TRAILER], f3_trailer(cnt));
+        }
+    }
+
+    #[test]
+    fn encode_rejects_empty_and_oversize_pdu() {
+        assert!(encode_f3_request(&[], 0x00).is_none());
+        assert!(encode_f3_request(&[0u8; 8], 0x00).is_none()); // > 7-byte SF region
+        assert!(encode_f3_request(&[0u8; 7], 0x00).is_some()); // exactly fits
+    }
+
+    // ---- ISO-TP reassembly (response path) ----
+
+    /// Build a plaintext SF/FF/CF block with a given PCI and data bytes.
+    fn iso_block(pci: u8, data: &[u8], at: usize) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[OFF_PCI] = pci;
+        for (i, &d) in data.iter().enumerate() {
+            b[at + i] = d;
+        }
+        b
+    }
+
+    #[test]
+    fn reassemble_single_frame() {
+        let mut r = IsoTpReassembler::new();
+        // SF PCI 0x02, data 7E 00 (TesterPresent positive response).
+        let blk = iso_block(0x02, &[0x7E, 0x00], OFF_DATA);
+        assert_eq!(r.push_block(&blk), Some(vec![0x7E, 0x00]));
+    }
+
+    #[test]
+    fn reassemble_multiframe_vin() {
+        // VIN response 62 F1 90 + 17 ASCII = 20 bytes across FF + 2 CF.
+        let vin = b"WVWZZZ1KZ6W123456";
+        let mut pdu = vec![0x62, 0xF1, 0x90];
+        pdu.extend_from_slice(vin);
+        assert_eq!(pdu.len(), 20);
+
+        let mut r = IsoTpReassembler::new();
+        // FF: off7 = total length (20), off8..=13 = first 6 data bytes.
+        let ff = iso_block(0x10, &[pdu.len() as u8], OFF_DATA);
+        let mut ff = ff;
+        for (i, &b) in pdu[..6].iter().enumerate() {
+            ff[OFF_DATA + 1 + i] = b;
+        }
+        assert_eq!(r.push_block(&ff), None);
+        // CF 0x21: next 7 bytes (pdu[6..13]).
+        let cf1 = iso_block(0x21, &pdu[6..13], OFF_DATA);
+        assert_eq!(r.push_block(&cf1), None);
+        // CF 0x22: final 7 bytes (pdu[13..20]).
+        let cf2 = iso_block(0x22, &pdu[13..20], OFF_DATA);
+        assert_eq!(r.push_block(&cf2), Some(pdu.clone()));
+        // Decoding the VIN: strip 62 F1 90, the rest is ASCII.
+        let done = &pdu[3..];
+        assert_eq!(std::str::from_utf8(done).unwrap(), "WVWZZZ1KZ6W123456");
+    }
+
+    #[test]
+    fn reassemble_ignores_consecutive_without_first() {
+        let mut r = IsoTpReassembler::new();
+        let cf = iso_block(0x21, &[1, 2, 3, 4, 5, 6, 7], OFF_DATA);
+        assert_eq!(r.push_block(&cf), None); // no FF yet
     }
 }
