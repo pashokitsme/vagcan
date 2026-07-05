@@ -20,3 +20,8 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 # Runtime loader for the vendored FTDI D2XX dylib (no build-time link dep).
 libloading = { version = "0.8", optional = true }
+
+[dev-dependencies]
+# `test-util` gives the actor's timeout tests a paused clock (deterministic,
+# no real wall-clock waits).
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }

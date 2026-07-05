@@ -36,15 +36,25 @@ pub const FTDI_VID: u16 = 0x0403;
 
 /// A bidirectional async byte channel to the cable.
 ///
-/// Native `async fn` in trait for static dispatch — no `async_trait`, no `dyn`.
-/// `Send` so the actor future can live on a multi-threaded runtime.
-#[allow(async_fn_in_trait)] // intentional: static-dispatch seam, callers are the actor
+/// Static dispatch — no `async_trait`, no `dyn`. The methods are declared as
+/// `-> impl Future + Send` (rather than bare `async fn`) so a *generic* actor
+/// (`CableActor<B: Backend>`) can be `tokio::spawn`ed on a multi-threaded
+/// runtime: the trait-level `Send` bound on the returned futures is what makes
+/// the actor's own future provably `Send`. Implementors may still write plain
+/// `async fn` bodies (that is an allowed refinement) as long as the future is
+/// `Send`.
+///
+/// ## Cancellation safety
+/// `read` futures may be dropped mid-flight (the actor `select!`s over reads
+/// and request arrivals, and wraps reads in `tokio::time::timeout`). A
+/// cancelled `read` MUST NOT lose stream bytes: any bytes already pulled from
+/// the device must be delivered by a subsequent `read` call.
 pub trait Backend: Send {
     /// Write all `bytes` to the cable, resolving once handed to the wire.
-    async fn write(&mut self, bytes: &[u8]) -> Result<(), HexError>;
+    fn write(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), HexError>> + Send;
     /// Read up to `buf.len()` bytes; returns the count read (0 = nothing within
     /// the device read timeout — the caller retries).
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, HexError>;
+    fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, HexError>> + Send;
 }
 
 /// One enumerated FTDI device.
@@ -118,13 +128,18 @@ fn worker_loop(mut dev: Box<dyn RawDevice>, status_prefixed: bool, mut rx: mpsc:
                 let _ = ack.send(write_all(dev.as_mut(), &bytes));
             }
             Cmd::Read { max, reply } => {
-                let _ = reply.send(serve_read(
-                    dev.as_mut(),
-                    status_prefixed,
-                    &mut pending,
-                    &mut scratch,
-                    max,
-                ));
+                let result = serve_read(dev.as_mut(), status_prefixed, &mut pending, &mut scratch, max);
+                // Cancellation safety: if the caller's `Backend::read` future was
+                // dropped (its `reply_rx` is gone), we must NOT lose the bytes we
+                // just drained — put them back at the front of `pending` for the
+                // next reader. The actor relies on this (it `select!`s over reads).
+                if let Err(returned) = reply.send(result)
+                    && let Ok(bytes) = returned
+                {
+                    for &b in bytes.iter().rev() {
+                        pending.push_front(b);
+                    }
+                }
             }
         }
     }
@@ -388,6 +403,22 @@ mod tests {
         let mut rest = [0u8; 16];
         let n2 = backend.read(&mut rest).await.unwrap();
         assert_eq!(&rest[..n2], &[3, 4, 5]);
+    }
+
+    #[tokio::test]
+    async fn worker_requeues_bytes_when_read_reply_receiver_dropped() {
+        // A `Backend::read` future can be cancelled (actor `select!`/timeout)
+        // after its Cmd::Read was queued. The worker must NOT lose the bytes it
+        // drained for that orphaned read — they belong to the next read.
+        let (dev, _) = fake(vec![1, 2, 3]);
+        let mut backend = D2xxBackend::from_raw_device(dev, false);
+        let (reply, reply_rx) = oneshot::channel();
+        drop(reply_rx); // simulate the cancelled read future
+        backend.cmd_tx.send(Cmd::Read { max: 16, reply }).await.unwrap();
+        // The next (live) read must still see the full stream.
+        let mut buf = [0u8; 8];
+        let n = backend.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], &[1, 2, 3]);
     }
 
     #[tokio::test]
