@@ -10,4 +10,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 vag-capture = { path = "../vag-capture" }
-vag-transport = { path = "../vag-transport", features = ["serde"] }
+vag-transport = { path = "../vag-transport", features = ["serde", "test-util"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
