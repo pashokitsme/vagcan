@@ -21,3 +21,4 @@ research/clb-crack/samples/
 research/clb-crack/decoded_*.txt
 # USB captures: large + contain private vehicle data
 research/*.pcapng
+research/dumps/
