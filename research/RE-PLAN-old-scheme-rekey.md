@@ -87,3 +87,33 @@ Evidence (from `reading-ecus.pcapng` / `init-only.pcapng`, both):
   `disfn.py`/`xref.py` (AArch64), `extract_rsa_key.py`.
 - Regenerate the `0x09` dump: reassemble frames, filter `payload[0]==0x09`, print
   `(seq, dir, payload.hex())`; group by the triplet boundaries.
+
+---
+
+## UPDATE 1 (offline agent A): `0x09` is NOT the re-key; cable has advancing state
+
+- **`0x09` killed as the re-key.** It fires at only **4 of 40** b6 epochs (#1,#8,#16,#23,
+  cadence ~7–8), bundled with the `0x0b` reads → a periodic **anti-clone attestation**,
+  not per-ECU. ~36/40 epochs re-key with no `0x09` near them. IN pos3 is a cable-chosen
+  per-burst tag independent of OUT; IN is keyed (non-linear) but embeds cable state, so
+  not a pure function of OUT; the tag does NOT correlate with K_epoch (verified — the
+  earlier "tag in keystream" was chance). Not crackable offline (needs the cable secret).
+- **KEY FINDING — the cable maintains ADVANCING internal crypto state.** The `0x0b`
+  EEPROM reads prove it: 8 fixed commands (`0b0000`…`0b0700`), yet every repeat returns a
+  **different 41-byte response, all bytes varying**. The cable freshly randomizes per read.
+- **This explains the replay results:** epoch-1 replayed byte-for-byte because a fresh
+  power-on RESETS the cable state; the 2nd-`b6` replay went inert because the cable's
+  internal state had already advanced past the point the capture's 2nd `b6` applied.
+- **Consequence:** replay-to-epoch via *shortcuts* (our `--deep`, sweep+partial POST_ADVANCE)
+  is dead — any divergence desyncs the cable's advancing state.
+
+### Surviving replay hypothesis (to weigh after agent B / static RE)
+If the cable's state is **deterministic from power-on** (a seeded counter/PRNG, not a true
+RNG) — which epoch-1's byte-for-byte reproduction suggests — then an **EXACT, COMPLETE
+1:1 replay** of the capture's entire OUT frame stream from a fresh power-on (every
+state-advancing frame incl. the `0b` reads, in order, counters restamped) could track the
+cable's state and reproduce a later epoch (e.g. engine epoch-3 @seq312, or f3 @seq1045),
+making that epoch's captured keystream apply live. Our failures were all *non-exact*
+replays. This is the one remaining replay path; needs a complete-replay driver + a
+fresh-power-on **[CABLE]** session. If the cable state is truly random, this is also dead
+and only a live-oracle keystream recovery (or the cable secret) remains.
