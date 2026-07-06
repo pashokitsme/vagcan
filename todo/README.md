@@ -87,16 +87,21 @@ Remaining tasks for `vagcan info` over Track A:
    mock-tested. Live run pending the dongle; confirm the F187-spaces / DQ200-session /
    coding-DID `0600` caveats against a real read.
 
-### Measurements (path B — chosen): `.rod` (ODX) DID + scaling
-Live measurement values (RPM, vehicle speed, turbo boost) need, per measurement, its UDS
-DID + the raw→engineering **scaling formula** + name. The plaintext `.clb`/`.lbl` model we
-parse gives only `(block,field)→name/unit/range` — **no DID, no scaling**. Those live in
-`.rod` (ODX), which `vag-data::rod` currently decodes only to raw text. **Feasibility spike
-running** → `research/rod-measurement-feasibility.md` (verdict GO / PARTIAL / NO-GO): can we
-recover DID + COMPU-METHOD scaling + TTTEXT name OFFLINE, or does the per-record `product`
-term (needs a runtime dump) block it? Build the `.rod`-driven measurement decoder only on a
-GO/PARTIAL verdict; a standard OBD-II Mode-01 fallback (PID 0x0C/0x0D/0x0B, fixed formulas,
-no labels) remains the escape hatch for exactly these three values.
+### Measurements (RPM / speed / turbo boost)
+Path B (`.rod` ODX) is **NO-GO offline** — feasibility spike `research/rod-measurement-feasibility.md`
+(commit `9e0fe5d`): `.rod` contains **neither DID nor scaling** (those live in `STRUC.ROD`,
+absent from our corpus), and the name table (`TTTEXT.ROD`) is crypto-blocked by the runtime-only
+`product` term. 0 of 3 useful fields recoverable offline — same wall class as the clone crypto.
+∴ label-driven named-measurement decode needs a runtime dump (IV @ `ImageBase+0x33910` for
+names/units) **plus** acquiring+RE-ing `STRUC.ROD` (for DID+scaling) — a separate, heavy effort.
+
+**Chosen path for the MVP three values → OBD-II Mode 01** (standard SAE J1979, fixed formulas,
+NO labels, works on MQB over the same CAN/ISO-TP):
+- `0x0C` engine RPM = ((A·256)+B)/4
+- `0x0D` vehicle speed = A km/h
+- `0x0B` intake-manifold absolute pressure (kPa); turbo boost (gauge) = MAP − baro (`0x33`)
+Small reader alongside the UDS client (service `0x01`, response `0x41`); functional id `0x7DF`
+or engine `0x7E0`. Hardware-free unit-testable like `info-identity`.
 
 **Validation oracle:** the owner's own full Auto-Scan is captured in
 `research/vcds-rus-crack-findings.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
