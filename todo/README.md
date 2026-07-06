@@ -88,5 +88,13 @@ Remaining tasks for `vagcan info` over Track A:
 part-number/coding/VCID) — golden fixtures for `vagcan info` regardless of transport.
 
 ## Hardware checkpoints (STOP, confirm on the real car)
-1. slcan dongle: raw CAN frame TX/RX with the car.
+
+Dongle chosen: **MKS CANable V2.0 Pro** (STM32G431 + ADM3050E isolated) — an exact fit for
+`vag-can`'s `SlcanBackend`, no new backend needed. Before first use: (a) ensure **slcan**
+firmware, not candleLight (candleLight = gs_usb = Linux-only, no serial port on macOS; reflash
+via BOOT jumper + DFU if needed) → it enumerates as `/dev/cu.usbmodem*`; (b) wire OBD2 pin
+6→H, 14→L, 4/5→G (power from USB-C, do NOT wire pin 16); (c) **TERM jumper OFF** (the car bus
+is already terminated). Open with `SlcanBackend::open("/dev/cu.usbmodem*", baud, Rate500k)`.
+
+1. slcan dongle: raw CAN frame TX/RX with the car (500 kbit/s).
 2. VIN read → `vagcan info` prints the real VIN (expect `XW8AD4NE9JH008917`).
