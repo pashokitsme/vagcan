@@ -1,0 +1,51 @@
+$$ hwbp_ivtable.windbg.txt -- Tier A (WinDbg variant of hwbp_ivtable.x64dbg.txt)
+$$ Target: OLD x86 VCDS.exe (VCDS-RUS) under WinDbg on a NATIVE x86-64 host.
+$$ RUN:    windbg -g VCDS.exe   (or -p <pid> to attach)   then:
+$$            $$><research\clb-crack\hwbp_ivtable.windbg.txt
+$$ Load MS symbols first so BCrypt* resolve:  .symfix ; .reload
+$$
+$$ Anchors (base 0x400000, no ASLR slide):
+$$   IV_TABLE  RVA 0x1384d0 ; IV_TABLE[4] (engine f3, cid=4) RVA 0x1384d0+0x40
+$$   static table RVA 0x1744b8
+$$ Rebase off the live module base (WinDbg resolves vcds+RVA automatically).
+
+.echo ==== rebasing off module 'vcds' ====
+r $t0 = vcds
+.printf "vcds base = %p\n", @$t0
+r $t1 = @$t0 + 0x1384d0        $$ IV_TABLE row 0
+r $t2 = @$t0 + 0x1384d0 + 0x40 $$ IV_TABLE[4] engine f3
+r $t3 = @$t0 + 0x1744b8        $$ static table (KDF input)
+.printf "IV_TABLE=%p  IV_TABLE[4]=%p  static=%p\n", @$t1, @$t2, @$t3
+
+.echo ==== VERIFY IV_TABLE[0] (expect 56 51 54 3b 24 45 15 21 ...) ====
+db @$t1 L10
+.echo ==== VERIFY IV_TABLE[4] (expect 4d 39 86 a3 de e2 ba 2a ...) ====
+db @$t2 L10
+
+$$ ---- Tier A2: break-on-access READ of the engine IV row --------------------
+$$ ba r<size> <addr> "<cmds>"  -- r = read/write access, size 4.
+$$ On hit: dump regs, a stack window, and disasm at EIP so you can classify
+$$ native-AES vs VM-dispatch, and locate the round-key / key pointer.
+ba r4 @$t2 "r; .echo --- IV_TABLE[4] read: inside the AES encrypt ---; u eip L20; dps esp L20; .echo (native AES: find 240-byte round-key ptr in a reg/stack -> first 32 bytes = K. VM loop: escalate to Tier B); g"
+.echo ba (read) armed on IV_TABLE[4]
+
+$$ ---- Tier A1: CNG / BCrypt breakpoints (raw K in the clear) -----------------
+$$ BCryptGenerateSymmetricKey(hAlg, phKey, pbKeyObj, cbKeyObj, pbSecret, cbSecret, dwFlags)
+$$ 32-bit stdcall args at [esp+4..]; pbSecret=[esp+0x14], cbSecret=[esp+0x18].
+bp bcryptprimitives!BCryptGenerateSymmetricKey ".echo === BCryptGenerateSymmetricKey: pbSecret = 32-byte K ===; dd poi(esp+0x18) L1; db poi(esp+0x14) L20; g"
+bp bcrypt!BCryptGenerateSymmetricKey ".echo === BCryptGenerateSymmetricKey (bcrypt): pbSecret ===; dd poi(esp+0x18) L1; db poi(esp+0x14) L20; g"
+$$ BCryptEncrypt(hKey, pbInput, cbInput, pPad, pbIV, cbIV, pbOutput, ...):
+$$ pbInput=[esp+8] (should == an IV_TABLE row), pbOutput=[esp+0x1C] (= keystream).
+bp bcrypt!BCryptEncrypt ".echo === BCryptEncrypt: pbInput (expect IV row) / pbOutput (keystream) ===; db poi(esp+8) L10; db poi(esp+0x1c) L10; g"
+.echo BCrypt breakpoints set.
+
+.echo ==============================================================
+.echo ARMED. In VCDS: open Engine 01 and trigger a read (SW-version /
+.echo measuring blocks). Then classify the hit and recover K:
+.echo   - BCryptGenerateSymmetricKey hit -> the 32 bytes dumped ARE K_epoch.
+.echo   - IV_TABLE[4] read in native AES -> dump the 240-byte round-key
+.echo     buffer (reg/stack ptr in the 'dps esp' window); first 32 bytes = K.
+.echo   - IV_TABLE[4] read in a VM dispatch loop -> AES virtualized -> Tier B.
+.echo Feed K to:  validate_k.py <dump>.dmp "<Khex>" --show   (see PATH2 doc S0)
+.echo ==============================================================
+g

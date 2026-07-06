@@ -1,0 +1,77 @@
+// hwbp_ivtable.x64dbg.txt  --  Tier A: HW-breakpoint the native AES keystream generator
+// Target: OLD x86 VCDS.exe (VCDS-RUS 24.7.1.0) under x32dbg on a NATIVE x86-64 host.
+// Goal:   catch the instant AES reads IV_TABLE[cid] as the plaintext block, so the
+//         AES key / round-key pointer is live -> recover the 32-byte K_epoch.
+//
+// PREREQ: ScyllaHide enabled (VMProtect profile) BEFORE the target runs.
+//         Load Microsoft symbols so BCrypt* names resolve (for the CNG breakpoints).
+// RUN:    scriptload research\clb-crack\hwbp_ivtable.x64dbg.txt   then   run this script.
+//
+// Anchors (base 0x400000, no ASLR slide):
+//   IV_TABLE  live VA 0x5384d0  = RVA 0x1384d0     (16 rows x 16 bytes)
+//   IV_TABLE[4] (engine 'f3', cid=4) = 0x538510    = RVA 0x1384d0 + 0x40
+//   static table live VA 0x5744b8 = RVA 0x1744b8
+// With ASLR the real addr = module_base + RVA; we rebase from mod.base() below.
+
+// ---- rebase off the actual module base -------------------------------------
+$modbase = mod.base(vcds.exe)
+log "vcds.exe base = {p:$modbase}"
+$iv       = $modbase + 0x1384d0          // IV_TABLE row 0
+$iv_f3    = $modbase + 0x1384d0 + 0x40   // IV_TABLE[4] = engine 'f3' channel
+$stattbl  = $modbase + 0x1744b8          // 128-byte genuineness/static table (KDF input)
+log "IV_TABLE       = {p:$iv}"
+log "IV_TABLE[4] f3 = {p:$iv_f3}"
+log "static table   = {p:$stattbl}"
+
+// ---- VERIFY we have the right address (row 0 must match link_cipher.py) -----
+// Expected IV_TABLE[0] = 56 51 54 3b 24 45 15 21 03 54 1a 34 54 82 10 4c
+log "IV_TABLE[0] dump (expect 56 51 54 3b 24 45 15 21 ...):"
+dump $iv
+// Expected IV_TABLE[4] = 4d 39 86 a3 de e2 ba 2a d0 4c 1c df 23 34 45 ee
+log "IV_TABLE[4] dump (expect 4d 39 86 a3 de e2 ba 2a ...):"
+dump $iv_f3
+
+// ---- Tier A2: HW read breakpoint on the engine IV row -----------------------
+// bphws addr, type[, size]   type: r = read/write access (x86 DR has no read-only)
+// Watch the first 4 bytes of row 4; the AES encrypt reads the row as its plaintext.
+bphws $iv_f3, r, 4
+log "HW read-bp armed on IV_TABLE[4] @ {p:$iv_f3} (fires inside the AES encrypt)"
+
+// Optional: also watch row 0 to catch WHATEVER channel encrypts first (diagnostic).
+// bphws $iv, r, 4
+
+// ---- Tier A1: CNG / BCrypt breakpoints (strongest: raw K in the clear) ------
+// If AES routes through Windows CNG, the key is imported in cleartext here.
+// These resolve only with symbols loaded for bcryptprimitives / bcrypt.
+bp bcryptprimitives.BCryptGenerateSymmetricKey
+bp bcrypt.BCryptGenerateSymmetricKey
+bp bcrypt.BCryptImportKey
+bp bcrypt.BCryptEncrypt
+log "BCrypt breakpoints set (BCryptGenerateSymmetricKey = raw 32-byte K in pbSecret)"
+
+// ---- what to do at each hit -------------------------------------------------
+log "=============================================================="
+log "ARMED. In VCDS: open Engine 01 and trigger a read (SW-version /"
+log "measuring blocks). Breakpoints will fire. At the hit:"
+log ""
+log "  IF it broke on IV_TABLE[4] read:"
+log "    - 'Follow EIP in Disassembler'. Native AES (sbox/T-table/xor/rol,"
+log "      a 240-byte round-key window via a reg/stack ptr) vs VM dispatch"
+log "      (fetch->jumptable->handler loop reading a bytecode ptr)."
+log "    - If NATIVE: the round-key ptr is a register or [esp+X]. Dump 240"
+log "      bytes there; the FIRST 32 bytes are the master K. Or set a 2nd"
+log "      read-bp on that buffer and grab K at schedule time."
+log "        e.g.:  dump eax     /   dump [esp+8]     (inspect regs first)"
+log "    - If VM DISPATCH loop: AES is virtualized -> go to Tier B."
+log ""
+log "  IF it broke on BCryptGenerateSymmetricKey:"
+log "    - Arg order (stdcall, 32-bit): [esp+4]=hAlgorithm [esp+8]=phKey"
+log "      [esp+0xC]=pbKeyObject [esp+0x10]=cbKeyObject [esp+0x14]=pbSecret"
+log "      [esp+0x18]=cbSecret. pbSecret (cbSecret=0x20) IS the 32-byte K."
+log "        dump [esp+0x14]      // -> 32 bytes = K_epoch. Copy to hex."
+log ""
+log "  IF it broke on BCryptEncrypt:"
+log "    - [esp+0xC]=pbInput (should equal an IV_TABLE row),"
+log "      [esp+0x14]=pbOutput (= the 16-byte keystream). Confirms the"
+log "      relation even without K; hKey=[esp+4] walks to the key object."
+log "=============================================================="
