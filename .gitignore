@@ -22,3 +22,6 @@ research/clb-crack/decoded_*.txt
 # USB captures: large + contain private vehicle data
 research/*.pcapng
 research/dumps/
+
+# VCDS install symlinks — proprietary Ross-Tech label/ODX data, never commit
+research/vcds-data/
