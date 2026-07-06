@@ -29,11 +29,15 @@ Everything else works and is transport-agnostic.
 | label-lookup | vag-db/vag-data | fast part-number/coding → component lookup |
 | generic-can | vag-can | `SlcanBackend` + `IsoTpCan` (the bypass transport — built, untested on hw) |
 | research-keystream / session-key | research | link cipher = AES-256 keystream; RSA-OAEP (new build) fully reversed |
-| cli-app | vagcan | `vagcan` bin: `doctor` / `decode` / `probe` / `handshake` |
+| **info-identity** | vag-protocol/vagcan | **`EcuIdentity` + `read_identity` (UDS RDBI F190/F187/F191/F189/F197/F18C/0600, per-DID tolerant, read-only) + `vagcan info --port` (Engine 01 + Gearbox 02 over one slcan channel); mock-tested against golden Auto-Scan values** |
+| cli-app | vagcan | `vagcan` bin: `doctor` / `decode` / `probe` / `handshake` / `replay-drive` / `info` |
 
-### Not done → `vagcan info` itself
-`vin-info` (VIN read + decode + equipment assembly) and wiring `info` — both gated on
-a working transport that delivers plaintext UDS. See the two tracks below.
+### `vagcan info` — MVP scope & status
+MVP = **VIN + Engine (01) + Gearbox (02) identification** (part no / HW / SW / component /
+serial / coding). **Identification logic is DONE** (`info-identity` above), transport-generic,
+mock-tested — it just needs the CANable to run live (checkpoint below). Remaining for the
+full goal: (a) the live hardware run, (b) live **measurements** (RPM / speed / turbo boost),
+which need the `.rod` (ODX) DID + scaling path — see "Measurements (path B)" below.
 
 ## HEX-clone: blocked offline — two LIVE probes staged
 
@@ -77,11 +81,22 @@ stack rides — talk UDS-over-ISO-TP-over-CAN straight to the car via a cheap sl
 USB-CAN dongle. Any ECU/DID, own logic, repeatable, no clone crypto.
 
 Remaining tasks for `vagcan info` over Track A:
-1. `generic-can` hardware bring-up: exercise `SlcanBackend` against a real slcan dongle
+1. `generic-can` hardware bring-up: exercise `SlcanBackend` against the real CANable dongle
    on macOS (open, bitrate, frame TX/RX), fix anything the mock hid.
-2. `vin-info`: read VIN `22 F1 90` from the gateway/engine, decode; assemble equipment
-   from part-number/coding lookups (label-lookup is ready).
-3. `cli-app`: wire `vagcan info` (JoinSet over ECUs), print VIN + car + equipment.
+2. ~~`vin-info` identification~~ — **DONE** (`info-identity`): VIN + Engine/Gearbox passport,
+   mock-tested. Live run pending the dongle; confirm the F187-spaces / DQ200-session /
+   coding-DID `0600` caveats against a real read.
+
+### Measurements (path B — chosen): `.rod` (ODX) DID + scaling
+Live measurement values (RPM, vehicle speed, turbo boost) need, per measurement, its UDS
+DID + the raw→engineering **scaling formula** + name. The plaintext `.clb`/`.lbl` model we
+parse gives only `(block,field)→name/unit/range` — **no DID, no scaling**. Those live in
+`.rod` (ODX), which `vag-data::rod` currently decodes only to raw text. **Feasibility spike
+running** → `research/rod-measurement-feasibility.md` (verdict GO / PARTIAL / NO-GO): can we
+recover DID + COMPU-METHOD scaling + TTTEXT name OFFLINE, or does the per-record `product`
+term (needs a runtime dump) block it? Build the `.rod`-driven measurement decoder only on a
+GO/PARTIAL verdict; a standard OBD-II Mode-01 fallback (PID 0x0C/0x0D/0x0B, fixed formulas,
+no labels) remains the escape hatch for exactly these three values.
 
 **Validation oracle:** the owner's own full Auto-Scan is captured in
 `research/vcds-rus-crack-findings.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
@@ -97,4 +112,12 @@ via BOOT jumper + DFU if needed) → it enumerates as `/dev/cu.usbmodem*`; (b) w
 is already terminated). Open with `SlcanBackend::open("/dev/cu.usbmodem*", baud, Rate500k)`.
 
 1. slcan dongle: raw CAN frame TX/RX with the car (500 kbit/s).
-2. VIN read → `vagcan info` prints the real VIN (expect `XW8AD4NE9JH008917`).
+2. `vagcan info --port <tty>` prints the real VIN (`XW8AD4NE9JH008917`) + Engine/Gearbox
+   identity (part no / HW / SW / component / coding). Confirm the F187-spaces, DQ200-session,
+   and coding-DID caveats here.
+
+## Parked (future, designed but not being implemented now)
+- **Cross-platform runtime (`no_std` core + `vag-runtime-*`)** — spec
+  `docs/superpowers/specs/2026-07-06-cross-platform-runtime-design.md`, M1 plan
+  `docs/superpowers/plans/2026-07-06-cross-platform-runtime-m1.md`. Unblocks desktop
+  tri-platform + ESP32-S3 (USB-host to CANable). Below-the-seam refactor; does not block MVP.

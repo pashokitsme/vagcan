@@ -23,7 +23,8 @@ Everything below is implemented, reviewed, and merged to `master` (tests green,
 | Session-replay reader: `replay-drive` (full ordered replay → f3 channel → VIN, + divergence report) | `vagcan` | ✅ done (untested on hw) |
 | **Live UDS over the HEX-clone (session key `K_epoch`)** | — | 🔴 **blocked — VMProtect-sealed KDF; two live probes staged, see `todo/README.md`** |
 | Generic USB-CAN bypass transport (slcan) | `vag-can` | 🟡 built, untested on hardware |
-| **`vagcan info` (VIN + car + equipment)** | `vagcan` | ⬜ next — via generic CAN (Track A) |
+| ECU identity reader + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | `vag-protocol`, `vagcan` | ✅ done (mock-tested; live run pends CANable) |
+| **`vagcan info` live + measurements (RPM/speed/boost via `.rod`)** | `vagcan`, `vag-data` | ⬜ next — CANable bring-up + `.rod` feasibility (Track A) |
 
 **Where it stands:** the clone's encrypted diagnostic link needs a per-ECU AES session key
 that the (VMProtect-packed) VCDS computes app-side — every *offline* route to it is exhausted
