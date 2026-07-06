@@ -6,7 +6,7 @@ import sys
 from collections import defaultdict
 import usbpcap
 
-PATH = sys.argv[1] if len(sys.argv) > 1 else "../reading-ecus.pcapng"
+PATH = sys.argv[1] if len(sys.argv) > 1 else "../captures/reading-ecus.pcapng"
 frames = list(usbpcap.reassemble_frames(PATH))
 def op(f): return f["payload"][0] if f["payload"] else None
 b6_idx = [i for i, f in enumerate(frames) if op(f) == 0xB6 and f["dir"] == "OUT"]

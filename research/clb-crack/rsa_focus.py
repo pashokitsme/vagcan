@@ -67,4 +67,4 @@ def main(path):
     else: print("# no hit on named handshake blobs")
 
 if __name__=="__main__":
-    main(sys.argv[1] if len(sys.argv)>1 else "../reading-ecus.pcapng")
+    main(sys.argv[1] if len(sys.argv)>1 else "../captures/reading-ecus.pcapng")

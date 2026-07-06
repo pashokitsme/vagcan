@@ -7,7 +7,7 @@ import sys
 from collections import defaultdict, Counter
 import usbpcap
 
-PATH = sys.argv[1] if len(sys.argv) > 1 else "../reading-ecus.pcapng"
+PATH = sys.argv[1] if len(sys.argv) > 1 else "../captures/reading-ecus.pcapng"
 frames = list(usbpcap.reassemble_frames(PATH))
 
 

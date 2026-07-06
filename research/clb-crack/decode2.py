@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 import usbpcap
 from link_cipher import decrypt_link, two_time_pad, recover_channel_ks
 
-PATH = "../reading-ecus.pcapng"
+PATH = "../captures/reading-ecus.pcapng"
 frames = list(usbpcap.reassemble_frames(PATH))
 def op(f): return f["payload"][0] if f["payload"] else None
 b6_idx = [i for i, f in enumerate(frames) if op(f) == 0xB6 and f["dir"] == "OUT"]

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import usbpcap, link_cipher
 from collections import defaultdict, Counter
 
-CAPS = [("reading-ecus", "../reading-ecus.pcapng"), ("init-only", "../init-only.pcapng")]
+CAPS = [("reading-ecus", "../captures/reading-ecus.pcapng"), ("init-only", "../captures/init-only.pcapng")]
 
 
 def op(f):

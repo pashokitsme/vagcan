@@ -10,8 +10,8 @@ import usbpcap
 from collections import defaultdict, Counter
 
 CAPS = [
-    ("reading-ecus", "../reading-ecus.pcapng"),
-    ("init-only", "../init-only.pcapng"),
+    ("reading-ecus", "../captures/reading-ecus.pcapng"),
+    ("init-only", "../captures/init-only.pcapng"),
 ]
 
 

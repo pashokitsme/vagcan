@@ -10,7 +10,7 @@ block needs an 8-byte IV whose bytes [3:8] carry a per-record `product` term
 (low 5 bytes of a 64-bit char-product of a runtime-only "record-string"). When
 `product != 0` the first block is corrupt and, for zlib sections like
 `TTTEXT.ROD [TXT]`, the whole inflate dies -- so the name table cannot be
-decoded OFFLINE (see research/rod-measurement-feasibility.md).
+decoded OFFLINE (see research/rod-labels.md).
 
 BUT a live VCDS-RUS process that has already resolved names keeps the DECODED
 name strings resident in the heap as an array of fixed 72-byte records. This
@@ -26,7 +26,7 @@ Record layout (empirically, VCDS-RUS x86; 72 bytes / record)
 The array sits right after a resident `TTTEXT-RUS\0` filename string in the
 heap. We locate every record by its constant tag dword, read the length, and
 decode the inline name. This recovered ~8.3k unique names from one dump and
-~11.5k unique across five (see research/rod-product-term-dump.md).
+~11.5k unique across five (see research/rod-labels.md Appendix B).
 
 Usage
 -----

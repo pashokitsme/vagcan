@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import usbpcap
 from collections import defaultdict, Counter
 
-CAPS = [("reading-ecus", "../reading-ecus.pcapng"), ("init-only", "../init-only.pcapng")]
+CAPS = [("reading-ecus", "../captures/reading-ecus.pcapng"), ("init-only", "../captures/init-only.pcapng")]
 
 
 def op(f):
@@ -52,7 +52,7 @@ for name, path in CAPS:
 
 # (B) channel-open map for reading-ecus
 print(f"\n{'='*72}\n(B) channel opened after each b6 (reading-ecus)\n{'='*72}")
-frames = list(usbpcap.reassemble_frames("../reading-ecus.pcapng"))
+frames = list(usbpcap.reassemble_frames("../captures/reading-ecus.pcapng"))
 b6 = [i for i, f in enumerate(frames) if op(f) == 0xB6 and f["dir"] == "OUT"]
 nine_b6 = {36, 544, 1379, 1850}
 bounds = b6 + [len(frames)]

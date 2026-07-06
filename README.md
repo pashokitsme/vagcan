@@ -28,11 +28,11 @@ Everything below is implemented, reviewed, and merged to `master` (tests green,
 
 **Where it stands:** the clone's encrypted diagnostic link needs a per-ECU AES session key
 that the (VMProtect-packed) VCDS computes app-side — every *offline* route to it is exhausted
-(`research/DYNAMIC-attack-RESULTS.md`). Two *live* probes are now staged for the owner to run:
+(`research/clone-crypto.md`). Two *live* probes are now staged for the owner to run:
 (1) **`vagcan replay-drive`** — a full ordered session replay from a cold cable power-on that
 tries to track the cable's state to the engine `f3` channel and read the VIN; if the cable's
 state is not deterministic-from-power-on it emits a precise divergence report instead. (2) a
-**VMProtect dynamic playbook** (`research/PATH2-vmprotect-dynamic-x86.md`) for a real x86 host —
+**VMProtect dynamic playbook** (`research/clone-crypto.md` §4.2) for a real x86 host —
 HW-breakpoint / BCrypt-hook the live key (Tier A) or Pin+Triton-devirt the KDF (Tier B). The
 extensible product path to `vagcan info` remains the **generic USB-CAN bypass** (`vag-can`,
 ready) — talk UDS straight to the car, any ECU/DID.

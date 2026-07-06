@@ -47,8 +47,7 @@ app is **VMProtect-packed**. Every *offline* route to `K_epoch`/the KDF is exhau
 static RE (sealed), replay-shortcut (cable keeps advancing state), memory-dump (custom AES
 never leaves 240 contiguous cleartext round-key bytes), and the crack DLL (`vcds_hook.dll` =
 pure FTD2XX proxy + license detour, no crypto). Full writeups:
-`research/{RE-PLAN-old-scheme-rekey, DYNAMIC-attack-RESULTS, vcds-rus-crack-findings,
-vag-hex-framing, auth-mechanism-notes}.md`.
+`research/{clone-crypto, vcds-rus-crack, vag-hex-framing}.md`.
 
 Two live experiments the owner can now run (each definitively resolves its hypothesis):
 
@@ -61,7 +60,7 @@ Two live experiments the owner can now run (each definitively resolves its hypot
   — a clean empirical verdict. Run: `cargo run -p vagcan -- replay-drive --stream
   research/dumps/replay-stream.jsonl` (fresh power-on first).
 
-- **Probe 2 — VMProtect dynamic on a real x86 host** (`research/PATH2-vmprotect-dynamic-x86.md`).
+- **Probe 2 — VMProtect dynamic on a real x86 host** (`research/clone-crypto.md` §4.2).
   NOT the owner's ARM x86-emulation VM (VMProtect detects both hypervisor and emulation) — a
   real x86 machine. *Tier 0:* unpack a clean x86 image (Scylla). *Tier A (cheap, first):* HW
   read-breakpoint on `IV_TABLE[4]` (`0x538510`) + CNG `BCryptGenerateSymmetricKey`/`BCryptEncrypt`
@@ -88,35 +87,32 @@ Remaining tasks for `vagcan info` over Track A:
    coding-DID `0600` caveats against a real read.
 
 ### Measurements (RPM / speed / turbo boost)
-Path B (`.rod` ODX) is **NO-GO offline** — feasibility spike `research/rod-measurement-feasibility.md`
-(commit `9e0fe5d`): `.rod` contains **neither DID nor scaling** (those live in `STRUC.ROD`,
-absent from our corpus), and the name table (`TTTEXT.ROD`) is crypto-blocked by the runtime-only
-`product` term. 0 of 3 useful fields recoverable offline — same wall class as the clone crypto.
-∴ label-driven named-measurement decode needs a runtime dump (IV @ `ImageBase+0x33910` for
-names/units) **plus** acquiring+RE-ing `STRUC.ROD` (for DID+scaling) — a separate, heavy effort.
+Path B (`.rod` ODX) is **PARTIAL — the crypto wall is gone** (full writeup:
+`research/rod-labels.md`). The earlier NO-GO is **superseded**: the per-record `product`/IV
+blocker is now **DEFEATED OFFLINE, no runtime dump** — a DEFLATE dynamic-Huffman-header oracle +
+Kraft pruning + full-inflate confirmation recovers the 5 IV bytes (multithreaded Rust cracker
+`research/clb-crack/rod_crack/`, ~1 min). `STRUC.rod` (the DID+scaling structure file, once
+believed absent) is now present in the owner's install (gitignored symlink under
+`research/vcds-data/`) and **fully inflates** (293,560 bytes, valid Adler-32); the same method
+unblocks `TTTEXT.ROD` and every engine `MWB`/`INC`/`DTC`.
 
-**Chosen path (owner, 2026-07-07): the heavy label path** — reconstruct the full
-named-measurement capability (any VW measurement, not just the three) via a runtime dump +
-`STRUC.ROD`. Two independent lines:
-1. **Names/units** — unblock the `TTTEXT.ROD` `product` term. Existing-dump spike =
-   **GOOD-but-partial** (`research/rod-product-term-dump.md`, commit `60cd0a0`): the `product`/IV
-   was NOT resident in the 5 dumps (VCDS was never mid-`TTTEXT`-decrypt), but 11,479 already-
-   resolved names WERE harvested from the heap (RU loc, partial, and with **no `id→name` map** —
-   loose names only). Full offline `TTTEXT` decrypt (with the id→name linkage) needs **one
-   targeted runtime dump**: break at `ImageBase+0x33b94`, dump 8 bytes at `[x19]` = the IV
-   (sanity `IV[0:3]==38 bc 58`); then `rod.rs` decodes the whole `[TXT]` section forever.
-   NOTE: the 5 minidumps were deleted externally (disk pressure); a fresh dump is needed anyway.
-2. **DID + scaling** — need `STRUC.ROD` (absent from our corpus; lives in the owner's VCDS-RUS
-   install). **Owner to provide:** `STRUC.ROD` + the `UDS_EV/`/`Labels/` data dir (incl. the
-   engine `06K 907 425` / `8V0 906 264` and DQ200 `.rod`). Then RE the `STRUC.ROD` format for
-   the DID + COMPU-METHOD scaling and join measurement-index → name(TTTEXT) → DID+scaling(STRUC).
+**Remaining is pure data-format RE — no crypto, no dump on the critical path.** The decoded
+`STRUC` payload is a **packed 14-glyph codec** (`NNNNNN,<encoded>`, 1221 structure-ids), not
+delimited `DID,factor,offset`. To finish (all offline):
+1. **DID + scaling** — reverse the `STRUC`-parser fn (binary `+0x33758` region) to turn the
+   14-glyph field codec into `read_id`/`raw`/`scale`/`unit`, and decode the engine-`MWB`
+   2-char-code → `STRUC`-id mapping.
+2. **Names** — crack `TTTEXT.ROD [TXT]` (same offline method as `STRUC`) for the text-id → name
+   join; decrypt-only, mechanical (a nicety). *(An earlier existing-dump spike also harvested
+   11,479 already-resolved RU names from the heap, but with no `id→name` linkage — see
+   `research/rod-labels.md` Appendix B; no longer on the critical path.)*
 
 Fallback still on the table if the heavy path stalls: **OBD-II Mode 01** (PID `0x0C` RPM,
 `0x0D` speed, `0x0B` MAP − `0x33` baro = boost) — fixed SAE J1979 formulas, no labels, gets
 exactly the three values quickly over service `0x01`.
 
 **Validation oracle:** the owner's own full Auto-Scan is captured in
-`research/vcds-rus-crack-findings.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
+`research/vcds-rus-crack.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
 part-number/coding/VCID) — golden fixtures for `vagcan info` regardless of transport.
 
 ## Hardware checkpoints (STOP, confirm on the real car)

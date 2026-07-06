@@ -4,7 +4,7 @@ the cable pushed right before the host's 0x39 auth-completion b8."""
 import sys
 from usbpcap import reassemble_frames
 
-PATH = "../reading-ecus.pcapng"
+PATH = "../captures/reading-ecus.pcapng"
 LO = int(sys.argv[1]) if len(sys.argv) > 1 else 3800
 HI = int(sys.argv[2]) if len(sys.argv) > 2 else 4600
 

@@ -4,7 +4,7 @@ import sys
 from collections import defaultdict
 from usbpcap import reassemble_frames
 
-PATH = sys.argv[1] if len(sys.argv) > 1 else "../reading-ecus.pcapng"
+PATH = sys.argv[1] if len(sys.argv) > 1 else "../captures/reading-ecus.pcapng"
 
 
 def chan_key(blk):

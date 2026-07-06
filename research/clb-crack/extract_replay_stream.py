@@ -38,7 +38,7 @@ KS_F3 = [0x00, 0xBD, 0x00, 0x00, 0x00, 0x00, 0x02, 0xA9,
 OFF_PCI = 6
 OFF_SID = 7
 
-DEFAULT_PCAP = os.path.join(os.path.dirname(__file__), "..", "reading-ecus.pcapng")
+DEFAULT_PCAP = os.path.join(os.path.dirname(__file__), "..", "captures", "reading-ecus.pcapng")
 DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "..", "dumps", "replay-stream.jsonl")
 
 

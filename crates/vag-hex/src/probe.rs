@@ -6,7 +6,7 @@
 //! burst completes, the cable *unconditionally pushes* a ~131-byte frame
 //! (`[b0][b0][len]` + 128-byte RSA-OAEP-SHA256-wrapped key), which the app
 //! decrypts with an embedded RSA-1024 private key (see
-//! `research/vag-hex-framing.md` "Session-key derivation" + `auth-mechanism-notes.md`).
+//! `research/vag-hex-framing.md` "Session-key derivation" + `research/clone-crypto.md`).
 //! The *old* VMProtect build used a different (`b6`/`b7`-derived) scheme and does
 //! **not** push such a frame.
 //!

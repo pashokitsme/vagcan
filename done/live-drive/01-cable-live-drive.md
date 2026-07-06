@@ -33,8 +33,8 @@ Each diagnostic ECU needs its own per-`b6` AES epoch key `K_epoch`, computed app
 the **VMProtect-packed** VCDS. All offline routes to it are exhausted (static / replay /
 memory-dump / the `vcds_hook.dll` crack). The clone cannot be driven end-to-end without
 defeating VMProtect. → product pivots to the generic USB-CAN bypass (`vag-can`); clone
-crack deferred (Track B). Full analysis: `research/DYNAMIC-attack-RESULTS.md`,
-`research/RE-PLAN-old-scheme-rekey.md`, `research/vcds-rus-crack-findings.md`.
+crack deferred (Track B). Full analysis: `research/clone-crypto.md`,
+`research/vcds-rus-crack.md`.
 
 ## Tests / quality
 vag-hex + vagcan unit tests green, `cargo clippy --all-targets -- -D warnings` clean.

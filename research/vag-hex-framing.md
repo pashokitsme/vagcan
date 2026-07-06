@@ -1,7 +1,8 @@
 # vag-hex wire format — CAPTURE GROUND TRUTH
 
 Single source of truth for the FTDI cable wire format, recovered from two live
-USBPcap captures (`init-only.pcapng`, `reading-ecus.pcapng`) with `usbpcap.py`.
+USBPcap captures (`research/captures/init-only.pcapng`,
+`research/captures/reading-ecus.pcapng`) with `usbpcap.py`.
 Clean-room interop only. 
 
 > **Headline finding (changes the task premise):** the diagnostic data channel
@@ -629,3 +630,87 @@ auth-advance past `0x39` (`handshake`, off14 = observed & 0xF8), the full link
 encode/decode + off14/off15 rules + ISO-TP reassembler (unit-tested, epoch-15 fixture),
 and the complete new-build RSA-OAEP key-transport RE. The gap is exactly the old-scheme
 re-key.
+
+---
+
+# Appendix — USB capture method (merged from `vag-hex-capture-guide.md`)
+
+> **DONE (2026-07-05).** Two captures were taken — `research/captures/init-only.pcapng`
+> and `research/captures/reading-ecus.pcapng` — and fully analyzed. The wire format
+> above was recovered from them and implemented (`crates/vag-hex/src/frame.rs`); the
+> link cipher was reversed (`research/clb-crack/link_cipher.py`). This appendix is the
+> retained method record — how the captures were produced (on the Windows box where the
+> clone HEX cable/VAG25.3 already works with a real VCDS install).
+
+**Purpose.** Record the clone cable talking to a *working* VCDS install so we can model
+the cable's own USB/serial protocol and drive it directly from `vagcan` — no VCDS, no
+loader. This capture was the single input gating P1.
+
+## What we set out to learn
+
+From one good trace, four things:
+1. **Enumeration** — how the cable presents on USB (FTDI VID/PID, D2XX vs virtual COM
+   port, bcdDevice, iProduct string).
+2. **Init handshake** — the fixed byte exchange VCDS does right after opening the cable,
+   before any car traffic (baud/latency setup, firmware/version query, "hello").
+3. **Framing** — how a UDS request (e.g. `22 F1 90` read VIN) is wrapped for the wire:
+   ISO-TP over the cable's own serial envelope, with whatever length/checksum bytes the
+   cable adds.
+4. **Request↔response pairing** — matched pairs to prove framing both directions.
+
+## Tools (Windows)
+- **Wireshark** (latest) — <https://www.wireshark.org/download.html>.
+- **USBPcap** — the USB capture driver; ships with the Wireshark installer (tick the
+  "USBPcap" checkbox during install; reboot if prompted).
+- (Optional CLI) **USBPcapCMD.exe**, under `C:\Program Files\USBPcap\`.
+
+## Identify the cable's USB bus
+1. Plug the cable in; let VCDS's driver bind (the working setup).
+2. Device Manager → find the cable. Under **Ports (COM & LPT)** as a USB Serial Port
+   (virtual COM) or under **Universal Serial Bus controllers** as an FTDI device. Note:
+   which it is (COM vs raw USB), the **VID/PID** (Properties → Details → *Hardware Ids*,
+   e.g. `USB\VID_0403&PID_6001`), and the **COM number** if a COM port.
+3. In Wireshark's capture list you'll see **USBPcap1, USBPcap2, …** — one per host
+   controller. The cable lives on one; if unsure, pick the one whose device tree contains
+   your FTDI VID/PID. (VID/PID + COM number are half the answer to "how does it enumerate.")
+
+## Capture procedure
+Aim for a clean, *short*, well-labelled trace (short beats long — isolated exchanges).
+1. **Close VCDS.** Start the Wireshark capture on the correct USBPcap interface **first**,
+   with the cable already plugged in.
+2. **Launch VCDS** — records the open + init handshake from the very first byte (critical).
+   Wait for VCDS to show the cable as ready / "test" OK.
+3. In VCDS, do these **slowly, one at a time** (~2 s apart so they're separable):
+   - **Interface test / "Test"** (Options → Test) — pure cable handshake, no car.
+   - **Auto-scan** *or* **Select → Engine (01)** — first car conversation.
+   - **Read the VIN** (block that shows VIN) — known plaintext `22 F1 90`.
+   - **Open Measuring Blocks**, watch **one** group ~5 s (e.g. RPM/coolant) — repeated
+     `22 <did>` polls, gold for framing.
+   - **Read fault codes** (DTCs) on engine — a `19 02 …` exchange.
+   - **Clear nothing.** Read-only actions only.
+4. **Stop VCDS**, then **stop the capture.**
+5. **Save as `.pcapng`.**
+
+If the cable is a **virtual COM port** and USBPcap traffic looks opaque/bulk-only, also
+grab a serial-level view if easy — but USBPcap alone is usually enough (FTDI bulk-IN/OUT
+carry the serial bytes directly).
+
+## Trim / annotate (optional)
+Apply a display filter to keep only the cable's device once you know its address:
+`usb.device_address == <N>` (find `<N>` in any packet's USB layer), then File → Export
+Specified Packets. Note the frame numbers where each action starts.
+
+## Sanity self-check
+- Trace starts **before** VCDS launched (captures the open handshake). ✔
+- A burst of small OUT/IN transfers right after launch (init). ✔
+- At least one exchange labellable as VIN / measuring / DTC. ✔
+- File is `.pcapng`, opens cleanly. ✔
+
+## Notes / gotchas
+- **Use the OLD, working VCDS** — version doesn't matter; we only need the cable's wire
+  behaviour, which the cable defines, not VCDS.
+- USBPcap captures **all** devices on a host controller. If noisy, filter by
+  `usb.device_address`, or use a USB port on a different controller from input devices.
+- FTDI transfers: the first 2 bytes of each FTDI bulk-IN packet are **modem/line status**,
+  not payload — stripped during analysis.
+- Keep it read-only. Measuring blocks and DTC reads are safe.

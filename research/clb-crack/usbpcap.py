@@ -186,7 +186,7 @@ def summary(path):
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "../init-only.pcapng"
+    path = sys.argv[1] if len(sys.argv) > 1 else "../captures/init-only.pcapng"
     mode = sys.argv[2] if len(sys.argv) > 2 else "summary"
     if mode == "summary":
         summary(path)
