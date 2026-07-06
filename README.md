@@ -20,15 +20,21 @@ Everything below is implemented, reviewed, and merged to `master` (tests green,
 | HEX-clone wire framing + link cipher decode/encode (b8/b7, off14/off15, ISO-TP) | `vag-hex` | ✅ done |
 | HEX-clone transport: cable opens & talks live on macOS (`FT_SetVIDPID`+FTDI init+clean-close) | `vag-hex` | ✅ done |
 | Live drive: `doctor` / `probe` / `handshake` (auth-advance past 0x39) | `vagcan` | ✅ done |
-| **Live UDS over the HEX-clone (session key `K_epoch`)** | — | 🔴 **blocked — VMProtect-sealed KDF; see `todo/README.md`** |
+| Session-replay reader: `replay-drive` (full ordered replay → f3 channel → VIN, + divergence report) | `vagcan` | ✅ done (untested on hw) |
+| **Live UDS over the HEX-clone (session key `K_epoch`)** | — | 🔴 **blocked — VMProtect-sealed KDF; two live probes staged, see `todo/README.md`** |
 | Generic USB-CAN bypass transport (slcan) | `vag-can` | 🟡 built, untested on hardware |
 | **`vagcan info` (VIN + car + equipment)** | `vagcan` | ⬜ next — via generic CAN (Track A) |
 
 **Where it stands:** the clone's encrypted diagnostic link needs a per-ECU AES session key
-that the (VMProtect-packed) VCDS computes app-side — every offline route to it is exhausted
-(`research/DYNAMIC-attack-RESULTS.md`). The extensible path to `vagcan info` is the
-**generic USB-CAN bypass** (`vag-can`, ready) — talk UDS straight to the car, any ECU/DID.
-Cracking the clone itself (live VMProtect devirt) is a deferred "someday" track.
+that the (VMProtect-packed) VCDS computes app-side — every *offline* route to it is exhausted
+(`research/DYNAMIC-attack-RESULTS.md`). Two *live* probes are now staged for the owner to run:
+(1) **`vagcan replay-drive`** — a full ordered session replay from a cold cable power-on that
+tries to track the cable's state to the engine `f3` channel and read the VIN; if the cable's
+state is not deterministic-from-power-on it emits a precise divergence report instead. (2) a
+**VMProtect dynamic playbook** (`research/PATH2-vmprotect-dynamic-x86.md`) for a real x86 host —
+HW-breakpoint / BCrypt-hook the live key (Tier A) or Pin+Triton-devirt the KDF (Tier B). The
+extensible product path to `vagcan info` remains the **generic USB-CAN bypass** (`vag-can`,
+ready) — talk UDS straight to the car, any ECU/DID.
 
 ## Workspace
 

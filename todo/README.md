@@ -24,6 +24,7 @@ Everything else works and is transport-agnostic.
 | link-decode | vag-hex | b8/b7 XOR decode + keystream recovery + ISO-TP |
 | **link-encode** | vag-hex | **b8 encode + off14 counter + off15 trailer rule; round-trips captured TP/RDBI** |
 | **live-drive** | vag-hex | **`probe` (protocol id) + `handshake` (auth-advance past 0x39, off14=observed&0xF8) + sweep + dynamic session driver** |
+| **replay-drive** | vag-hex/vagcan | **full ordered session-replay from cold power-on → f3 channel → own UDS read (VIN); exact divergence report if cable state desyncs. Extractor + `--dry-run` + 8 tests** |
 | uds-async | vag-protocol | async ISO-TP + UDS client |
 | label-lookup | vag-db/vag-data | fast part-number/coding → component lookup |
 | generic-can | vag-can | `SlcanBackend` + `IsoTpCan` (the bypass transport — built, untested on hw) |
@@ -34,20 +35,39 @@ Everything else works and is transport-agnostic.
 `vin-info` (VIN read + decode + equipment assembly) and wiring `info` — both gated on
 a working transport that delivers plaintext UDS. See the two tracks below.
 
-## HEX-clone: blocked (why, and the "someday" path)
+## HEX-clone: blocked offline — two LIVE probes staged
 
 The clone speaks the OLD scheme (not the new build's RSA-OAEP). Each diagnostic ECU
 needs a per-`b6` AES epoch key `K_epoch` that VCDS computes **app-side** — and that
-app is **VMProtect-packed**. Every offline route to `K_epoch`/the KDF is exhausted:
-static RE (sealed), replay (cable keeps advancing state), memory-dump (custom AES never
-leaves 240 contiguous cleartext round-key bytes), and the crack DLL (`vcds_hook.dll` =
+app is **VMProtect-packed**. Every *offline* route to `K_epoch`/the KDF is exhausted:
+static RE (sealed), replay-shortcut (cable keeps advancing state), memory-dump (custom AES
+never leaves 240 contiguous cleartext round-key bytes), and the crack DLL (`vcds_hook.dll` =
 pure FTD2XX proxy + license detour, no crypto). Full writeups:
 `research/{RE-PLAN-old-scheme-rekey, DYNAMIC-attack-RESULTS, vcds-rus-crack-findings,
 vag-hex-framing, auth-mechanism-notes}.md`.
 
-- **Track B (someday, "crack the clone"):** live VMProtect devirt / hardware-breakpoint
-  the AES in the running x86 VCDS to lift `K_epoch` and reverse the KDF → then our tool
-  drives the clone directly. Expert-level, fragile under ARM x86-emulation. Deferred.
+Two live experiments the owner can now run (each definitively resolves its hypothesis):
+
+- **Probe 1 — full ordered replay (`vagcan replay-drive`, no new hardware).** Replays the
+  *entire* recorded OUT-frame sequence verbatim from a **cold cable power-on** (all prior
+  attempts were partial-sequence shortcuts that desynced early). If the cable's crypto state
+  is deterministic-from-power-on, the replay tracks it to the engine `f3` channel (idx 1045,
+  epoch #15) where the recovered `KS_F3` applies → inject a UDS `22 F1 90` and read the VIN.
+  If the state is CSPRNG-fresh, it emits the **exact divergence index** (expected vs observed)
+  — a clean empirical verdict. Run: `cargo run -p vagcan -- replay-drive --stream
+  research/dumps/replay-stream.jsonl` (fresh power-on first).
+
+- **Probe 2 — VMProtect dynamic on a real x86 host** (`research/PATH2-vmprotect-dynamic-x86.md`).
+  NOT the owner's ARM x86-emulation VM (VMProtect detects both hypervisor and emulation) — a
+  real x86 machine. *Tier 0:* unpack a clean x86 image (Scylla). *Tier A (cheap, first):* HW
+  read-breakpoint on `IV_TABLE[4]` (`0x538510`) + CNG `BCryptGenerateSymmetricKey`/`BCryptEncrypt`
+  hooks to catch the native AES / raw `K` (~55–65%; a miss is itself the diagnosis that the
+  crypto is virtualized). *Tier B (heavy):* Pin+Triton-devirt the KDF (hackyboiz method) and
+  reimplement it in Rust. Every tier validates via `research/clb-crack/validate_k.py` →
+  VIN `XW8AD4NE9JH008917`. Helper scripts: `research/clb-crack/hwbp_ivtable.{x64dbg,windbg}.txt`,
+  `kdf_trace.pin.cpp`, `kdf_triton.py`.
+
+If both probes fail, the clone link stays sealed and the product goal rides Track A below.
 
 ## Track A (recommended — the extensible product path): generic USB-CAN
 
