@@ -15,7 +15,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use vag_hex::{D2xxBackend, HexError};
 
-use crate::render::render_identity;
+use crate::render::{render_identity, render_info};
 
 #[derive(Parser)]
 #[command(name = "vagcan", version, about = "VAG diagnostics over the HEX cable")]
@@ -109,6 +109,21 @@ enum Command {
         #[arg(long, default_value_t = 800)]
         recv_window_ms: u64,
     },
+    /// Read ECU IDENTIFICATION (VIN + Engine 01 and Gearbox 02 part/hw/sw
+    /// numbers, component, serial, coding) over UDS-on-ISO-TP-on-CAN.
+    ///
+    /// Read-only (UDS service 0x22 only): no measurements, no DTCs, no writes.
+    /// Needs a USB-CAN adapter on the OBD2 bus — pass `--port`. Without it, the
+    /// command prints the adapter wiring notice and exits 0 (the reader logic
+    /// itself is covered by unit tests, hardware-free).
+    Info {
+        /// Serial device of the slcan USB-CAN adapter (e.g. `/dev/tty.usbmodem…`).
+        #[arg(long)]
+        port: Option<String>,
+        /// Serial baud rate to the adapter (slcan is ASCII over serial).
+        #[arg(long, default_value_t = 115200)]
+        baud: u32,
+    },
 }
 
 #[tokio::main]
@@ -141,7 +156,50 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Command::Info { port, baud } => info(port.as_deref(), baud).await,
     }
+}
+
+/// Read the identification block from the Engine (01) and Gearbox (02) over a
+/// generic USB-CAN adapter and print the `vagcan info` report.
+///
+/// A serial port is a single channel and [`IsoTpCan`] owns the backend, so we
+/// read the Engine fully, recover the backend with `into_backend()`, then
+/// re-address it for the Gearbox — one port, two ECUs, no re-open.
+async fn info(port: Option<&str>, baud: u32) -> anyhow::Result<()> {
+    use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
+    use vag_protocol::{AsyncUdsClient, read_identity};
+
+    let Some(port) = port else {
+        println!(
+            "vagcan info reads ECU identification live over a USB-CAN adapter — none selected.\n\
+             \n\
+             To read your car:\n  \
+             - adapter: MKS CANable (or any slcan/LAWICEL USB-CAN), 500 kbit/s\n  \
+             - wiring:  OBD2 pin 6 → CAN-H, pin 14 → CAN-L, termination OFF\n  \
+             - then:    vagcan info --port <tty> [--baud {baud}]\n\
+             \n\
+             (The identity reader itself is covered by hardware-free unit tests.)"
+        );
+        return Ok(());
+    };
+
+    // Engine (ECU index 0 → tester 0x7E0 / ECU 0x7E8).
+    let backend = SlcanBackend::open(port, baud, SlcanBitrate::Rate500k)
+        .await
+        .with_context(|| format!("opening slcan adapter at {port:?} ({baud} baud)"))?;
+    let mut engine_uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, 0));
+    let engine = read_identity(&mut engine_uds).await;
+
+    // Recover the single serial channel and re-address it for the Gearbox
+    // (ECU index 1 → tester 0x7E1 / ECU 0x7E9).
+    let backend = engine_uds.into_transport().into_backend();
+    let mut gearbox_uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, 1));
+    let gearbox = read_identity(&mut gearbox_uds).await;
+
+    // VIN is a global identifier; take it from the Engine's F190.
+    println!("{}", render_info(engine.vin.as_deref(), &engine, &gearbox));
+    Ok(())
 }
 
 /// Session-replay diagnostic reader (see the `ReplayDrive` subcommand docs).

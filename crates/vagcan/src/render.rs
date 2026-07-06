@@ -2,6 +2,52 @@
 //! the output formatting is unit-tested with captured identify bytes.
 
 use vag_hex::CableIdentity;
+use vag_protocol::EcuIdentity;
+
+/// Placeholder for an identification field the ECU did not return.
+const MISSING: &str = "—";
+
+/// Render the full `vagcan info` report: the VIN once, then a labelled section
+/// each for the Engine (address 01) and Gearbox (address 02). Pure formatting —
+/// no I/O — so it is unit-tested against fixture identities.
+pub fn render_info(vin: Option<&str>, engine: &EcuIdentity, gearbox: &EcuIdentity) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("VIN: {}\n", vin.unwrap_or(MISSING)));
+    out.push('\n');
+    out.push_str(&render_ecu_section("Engine (01)", engine));
+    out.push('\n');
+    out.push_str(&render_ecu_section("Gearbox (02)", gearbox));
+    out
+}
+
+/// One ECU's identification block, e.g.
+/// ```text
+/// Engine (01):
+///   part number: 8V0906264H
+///   ...
+/// ```
+fn render_ecu_section(label: &str, id: &EcuIdentity) -> String {
+    let coding = id
+        .coding
+        .as_deref()
+        .map(|b| b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| MISSING.to_string());
+    format!(
+        "{label}:\n  \
+         part number: {}\n  \
+         hw number:   {}\n  \
+         sw version:  {}\n  \
+         component:   {}\n  \
+         serial:      {}\n  \
+         coding:      {}\n",
+        id.part_number.as_deref().unwrap_or(MISSING),
+        id.hw_number.as_deref().unwrap_or(MISSING),
+        id.sw_version.as_deref().unwrap_or(MISSING),
+        id.component.as_deref().unwrap_or(MISSING),
+        id.serial.as_deref().unwrap_or(MISSING),
+        coding,
+    )
+}
 
 /// Render a [`CableIdentity`] into the multi-line block `vagcan doctor`
 /// prints: the firmware string plus the raw identify payload as hex.
@@ -127,6 +173,50 @@ mod tests {
         assert!(
             out.contains("UDS 22 74 58  (ReadDataByIdentifier)"),
             "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn renders_info_report_with_two_sections() {
+        let engine = EcuIdentity {
+            vin: Some("XW8AD4NE9JH008917".into()),
+            part_number: Some("8V0906264H".into()),
+            hw_number: Some("8V0906264".into()),
+            sw_version: Some("0004".into()),
+            component: Some("R4 1.8l TFSI".into()),
+            serial: Some("VWZZZ7Z0K1234567".into()),
+            coding: Some(vec![0x01, 0x2A, 0x00, 0x04]),
+        };
+        // Gearbox partially answered: no serial, no coding.
+        let gearbox = EcuIdentity {
+            part_number: Some("0CW300043".into()),
+            hw_number: Some("0CW927769".into()),
+            sw_version: Some("6002".into()),
+            component: Some("DSG7 DQ200".into()),
+            ..Default::default()
+        };
+
+        let out = render_info(Some("XW8AD4NE9JH008917"), &engine, &gearbox);
+
+        assert_eq!(
+            out,
+            "VIN: XW8AD4NE9JH008917\n\
+             \n\
+             Engine (01):\n  \
+             part number: 8V0906264H\n  \
+             hw number:   8V0906264\n  \
+             sw version:  0004\n  \
+             component:   R4 1.8l TFSI\n  \
+             serial:      VWZZZ7Z0K1234567\n  \
+             coding:      01 2a 00 04\n\
+             \n\
+             Gearbox (02):\n  \
+             part number: 0CW300043\n  \
+             hw number:   0CW927769\n  \
+             sw version:  6002\n  \
+             component:   DSG7 DQ200\n  \
+             serial:      —\n  \
+             coding:      —\n"
         );
     }
 
