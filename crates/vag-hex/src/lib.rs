@@ -38,6 +38,7 @@ pub mod frame;
 pub mod init;
 pub mod link;
 pub mod probe;
+pub mod replay;
 pub mod usb;
 
 pub use actor::{CableActor, CableHandle, spawn};
@@ -52,4 +53,8 @@ pub use link::{
 };
 pub use init::{CableIdentity, HANDSHAKE_TIMEOUT, handshake};
 pub use probe::{BRINGUP, ProbeReport, probe_open};
+pub use replay::{
+    CableTransport, Dir, Divergence, DryRunPlan, FrameTransport, ReplayFrame, ReplayReport,
+    f3_channel_index, parse_hex, parse_stream, plan_dry_run, replay_drive,
+};
 pub use usb::{Backend, CableInfo, D2xxBackend, FTDI_VID, list_cables};

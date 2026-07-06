@@ -78,6 +78,37 @@ enum Command {
         #[arg(long)]
         deep: bool,
     },
+    /// Session-replay diagnostic reader: replay a recorded host→cable frame
+    /// sequence (from `extract_replay_stream.py`) in order to bring the cable's
+    /// session up to the engine ECU's `f3` channel, then issue a UDS read (VIN).
+    ///
+    /// The cable is session-oriented: the engine channel only comes up after the
+    /// WHOLE ordered setup sequence is replayed from a fresh power-on. Live: on
+    /// the first recorded IN that the cable does not match, it reports the exact
+    /// divergence index and stops. Read-only UDS. Use `--dry-run` (no hardware)
+    /// to validate the stream + encode path.
+    ReplayDrive {
+        /// Path to the JSONL replay stream from `extract_replay_stream.py`.
+        #[arg(long)]
+        stream: String,
+        /// Replay OUT frames up to and including this index (default: the
+        /// f3-channel index detected in the stream).
+        #[arg(long)]
+        target_index: Option<usize>,
+        /// UDS PDU (hex) to send on the engine channel once reached.
+        #[arg(long, default_value = "22F190")]
+        read: String,
+        /// Parse the stream + exercise the encode/decode path WITHOUT opening the
+        /// cable (the CI / no-hardware path).
+        #[arg(long)]
+        dry_run: bool,
+        /// FTDI serial of the cable to open (live only; default: first found).
+        #[arg(long)]
+        serial: Option<String>,
+        /// Per-frame receive window in ms for the live replay (default 800).
+        #[arg(long, default_value_t = 800)]
+        recv_window_ms: u64,
+    },
 }
 
 #[tokio::main]
@@ -92,7 +123,129 @@ async fn main() -> anyhow::Result<()> {
         Command::Handshake { serial, listen, deep } => {
             handshake(serial.as_deref(), listen, deep).await
         }
+        Command::ReplayDrive {
+            stream,
+            target_index,
+            read,
+            dry_run,
+            serial,
+            recv_window_ms,
+        } => {
+            replay_drive_cmd(
+                &stream,
+                target_index,
+                &read,
+                dry_run,
+                serial.as_deref(),
+                recv_window_ms,
+            )
+            .await
+        }
     }
+}
+
+/// Session-replay diagnostic reader (see the `ReplayDrive` subcommand docs).
+async fn replay_drive_cmd(
+    stream_path: &str,
+    target_index: Option<usize>,
+    read: &str,
+    dry_run: bool,
+    serial: Option<&str>,
+    recv_window_ms: u64,
+) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let text = std::fs::read_to_string(stream_path)
+        .with_context(|| format!("cannot read replay stream {stream_path:?}"))?;
+    let frames = vag_hex::parse_stream(&text).context("parsing replay stream")?;
+    let read_pdu = vag_hex::parse_hex(read).context("parsing --read PDU hex")?;
+
+    // Resolve the target index: the flag, else the detected f3-channel index.
+    let target = match target_index {
+        Some(n) => n,
+        None => vag_hex::f3_channel_index(&frames).context(
+            "no --target-index given and no f3 engine channel found in the stream (is this the \
+             right capture?)",
+        )?,
+    };
+
+    println!(
+        "replay stream {stream_path:?}: {} frames ({} OUT); target index {target}; read PDU {}",
+        frames.len(),
+        frames.iter().filter(|f| matches!(f.dir, vag_hex::Dir::Out)).count(),
+        read_pdu.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
+    );
+
+    if dry_run {
+        let plan = vag_hex::plan_dry_run(&frames, target, &read_pdu).context("dry-run plan")?;
+        println!("\n--- DRY RUN (no hardware) ---");
+        println!(
+            "  would re-send {} OUT frame(s) and compare {} IN frame(s) up to target idx {}",
+            plan.out_up_to_target, plan.in_up_to_target, plan.target_index
+        );
+        println!(
+            "  would send f3 read {} with off14={:#04x}",
+            plan.read_pdu.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
+            plan.read_off14
+        );
+        println!(
+            "  encoded f3 block: {}",
+            plan.encoded_read.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        println!(
+            "  encode→decode round-trip: {} (decoded {})",
+            if plan.round_trip_ok { "OK" } else { "FAILED" },
+            plan.decoded_read_pdu.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
+        );
+        anyhow::ensure!(plan.round_trip_ok, "read PDU did not round-trip through the f3 codec");
+        return Ok(());
+    }
+
+    // Live path: open the cable and drive the replay.
+    let mut backend = D2xxBackend::open(serial).map_err(|e| open_diagnostic(serial, e))?;
+    let mut transport =
+        vag_hex::CableTransport::new(&mut backend, Duration::from_millis(recv_window_ms));
+    let report = vag_hex::replay_drive(&mut transport, &frames, target, &read_pdu)
+        .await
+        .context("replay drive failed")?;
+
+    println!("\n--- replay drive log ---");
+    for line in &report.log {
+        println!("  {line}");
+    }
+    println!("\nre-sent {} OUT frame(s).", report.sent_out);
+
+    if let Some(d) = &report.divergence {
+        println!(
+            "\n❌ DIVERGENCE at idx {}: the live cable left the recording here.",
+            d.idx
+        );
+        println!("   expected: {}", d.expected.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!("   observed: {}", d.observed.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!(
+            "   (a verbatim replay only stays in sync if the cable reproduces the recorded \
+             responses byte-for-byte from a fresh power-on.)"
+        );
+        return Ok(());
+    }
+
+    println!(
+        "\n✅ reached target idx {} — sent f3 read off14={:#04x}.",
+        report.target_index, report.sent_read_off14
+    );
+    match &report.response_pdu {
+        Some(pdu) => println!(
+            "f3 response PDU: {}",
+            pdu.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+        ),
+        None => println!("no f3 response decoded (cable went quiet)."),
+    }
+    match &report.vin {
+        Some(v) if v.len() == 17 => println!("\n✅ VIN: {v}"),
+        Some(v) => println!("\n⚠️  VIN reassembled but length {} != 17: {v:?}", v.len()),
+        None => {}
+    }
+    Ok(())
 }
 
 /// Dynamic session handshake: advance past the 0x39 auth-stall with a
