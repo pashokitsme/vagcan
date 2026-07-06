@@ -98,9 +98,14 @@ names/units) **plus** acquiring+RE-ing `STRUC.ROD` (for DID+scaling) — a separ
 **Chosen path (owner, 2026-07-07): the heavy label path** — reconstruct the full
 named-measurement capability (any VW measurement, not just the three) via a runtime dump +
 `STRUC.ROD`. Two independent lines:
-1. **Names/units** — unblock the `TTTEXT.ROD` `product` term. Try the EXISTING minidumps
-   (`research/dumps/`, mid-scan) first: IV @ `ImageBase+0x33910` (dump `x22`). If present, no
-   new dump needed. (Spike running.)
+1. **Names/units** — unblock the `TTTEXT.ROD` `product` term. Existing-dump spike =
+   **GOOD-but-partial** (`research/rod-product-term-dump.md`, commit `60cd0a0`): the `product`/IV
+   was NOT resident in the 5 dumps (VCDS was never mid-`TTTEXT`-decrypt), but 11,479 already-
+   resolved names WERE harvested from the heap (RU loc, partial, and with **no `id→name` map** —
+   loose names only). Full offline `TTTEXT` decrypt (with the id→name linkage) needs **one
+   targeted runtime dump**: break at `ImageBase+0x33b94`, dump 8 bytes at `[x19]` = the IV
+   (sanity `IV[0:3]==38 bc 58`); then `rod.rs` decodes the whole `[TXT]` section forever.
+   NOTE: the 5 minidumps were deleted externally (disk pressure); a fresh dump is needed anyway.
 2. **DID + scaling** — need `STRUC.ROD` (absent from our corpus; lives in the owner's VCDS-RUS
    install). **Owner to provide:** `STRUC.ROD` + the `UDS_EV/`/`Labels/` data dir (incl. the
    engine `06K 907 425` / `8V0 906 264` and DQ200 `.rod`). Then RE the `STRUC.ROD` format for
