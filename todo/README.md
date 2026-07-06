@@ -95,13 +95,20 @@ absent from our corpus), and the name table (`TTTEXT.ROD`) is crypto-blocked by 
 ∴ label-driven named-measurement decode needs a runtime dump (IV @ `ImageBase+0x33910` for
 names/units) **plus** acquiring+RE-ing `STRUC.ROD` (for DID+scaling) — a separate, heavy effort.
 
-**Chosen path for the MVP three values → OBD-II Mode 01** (standard SAE J1979, fixed formulas,
-NO labels, works on MQB over the same CAN/ISO-TP):
-- `0x0C` engine RPM = ((A·256)+B)/4
-- `0x0D` vehicle speed = A km/h
-- `0x0B` intake-manifold absolute pressure (kPa); turbo boost (gauge) = MAP − baro (`0x33`)
-Small reader alongside the UDS client (service `0x01`, response `0x41`); functional id `0x7DF`
-or engine `0x7E0`. Hardware-free unit-testable like `info-identity`.
+**Chosen path (owner, 2026-07-07): the heavy label path** — reconstruct the full
+named-measurement capability (any VW measurement, not just the three) via a runtime dump +
+`STRUC.ROD`. Two independent lines:
+1. **Names/units** — unblock the `TTTEXT.ROD` `product` term. Try the EXISTING minidumps
+   (`research/dumps/`, mid-scan) first: IV @ `ImageBase+0x33910` (dump `x22`). If present, no
+   new dump needed. (Spike running.)
+2. **DID + scaling** — need `STRUC.ROD` (absent from our corpus; lives in the owner's VCDS-RUS
+   install). **Owner to provide:** `STRUC.ROD` + the `UDS_EV/`/`Labels/` data dir (incl. the
+   engine `06K 907 425` / `8V0 906 264` and DQ200 `.rod`). Then RE the `STRUC.ROD` format for
+   the DID + COMPU-METHOD scaling and join measurement-index → name(TTTEXT) → DID+scaling(STRUC).
+
+Fallback still on the table if the heavy path stalls: **OBD-II Mode 01** (PID `0x0C` RPM,
+`0x0D` speed, `0x0B` MAP − `0x33` baro = boost) — fixed SAE J1979 formulas, no labels, gets
+exactly the three values quickly over service `0x01`.
 
 **Validation oracle:** the owner's own full Auto-Scan is captured in
 `research/vcds-rus-crack-findings.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
