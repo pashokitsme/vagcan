@@ -123,14 +123,26 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
   runs `000001…001623` (**1,221 distinct ids**), 1–11 rows per id (mostly 1–3; a mode at 8).
   This id namespace is **small** and distinct from the 6-digit *text*-ids seen in `MWB` (which
   range up to ~152,526 and index `TTTEXT`).
-- Payload: comma-bearing strings over a **uniform 14-symbol alphabet** `[0-9,._-]` (each symbol
-  ~7% frequency). Field counts per payload are irregular (1–11), and rows for one id do not
-  align into clean fixed columns — a **packed/encoded structure record**, not a plain CSV of
-  `DID,factor,offset`. Treating `. , - _` as delimiters and reading the digit groups yields
-  **non-sane magnitudes** (e.g. `557268788888`, `853721282`) — so the punctuation is not simple
-  separators/signs and the digits are not literal values; it is a codec (very likely the same
-  digit-transform VCDS applies when it parses a STRUC record). The scaling/DID data is *in here*,
-  behind a field codec that still needs RE (reverse the STRUC-parser fn in the binary).
+- Payload: strings over a **14-symbol alphabet** `[0-9,._-]` (globally near-uniform ~7% each).
+  **The codec is now IDENTIFIED (disasm, `rizin`): it is base-14.** VCDS carries the literal
+  charset `"0123456789,.-_"` at `0x1401898b0` in `VCDS-arm64-unpacked.exe`, consumed by the
+  radix-conversion routine `fcn.1400e6f80` (which does `msub …, #0xe` = arithmetic **mod 14**
+  against that charset; a sibling path uses the `a-z` base-26 charset at `0x140189890`). Symbol
+  values: `'0'..'9'`→0..9, `','`→10, `'.'`→11, `'-'`→12, `'_'`→13. The alphabet string is
+  referenced from the record-fetch `fcn.1400e1400`, itself called by the comma-record parser
+  `fcn.1400276f8` (splits `NNNNNN,payload,…` and `sscanf`s each field). So the punctuation are
+  base-14 **digits**, not separators — which is why the earlier "digit groups → non-sane
+  magnitudes" reading failed. **Corroboration:** decoding a payload as one big-endian base-14
+  bignum yields, across the multiple rows of a single structure id, a **shared high-order prefix**
+  (the structure template) + a varying low-order tail (the per-channel field) — e.g. id 000147's
+  8 rows all begin `08 56 26 27 d2 03…`. Shipped as `vag_data::struc::{STRUC_BASE14_ALPHABET,
+  base14_value, StrucRecord::decode_base14_be}`.
+- **Still open (honest):** the **field segmentation** of that base-14 number — where each field
+  begins/ends and which is the read identifier (DID) / raw byte spec / scaling / unit ref / name
+  ref — is **not yet reversed**. So `decode_base14_be` returns the faithful packed value, not
+  decoded measurement fields; no validated `(DID, scale, unit)` row exists yet. Next step: reverse
+  the consumer that reads specific fields out of the decoded number (the code past `fcn.1400e1400`'s
+  base-conversion that indexes into the resulting bytes).
 - Sections decoding cleanly vs blocked, for `STRUC.rod`: **1 / 1** (the sole section, cracked).
   No residual `product`-blocked sections remain in this file.
 

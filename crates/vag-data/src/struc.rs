@@ -26,6 +26,24 @@
 
 use std::collections::BTreeMap;
 
+/// The `STRUC` payload alphabet, **proven from VCDS's own binary**: the literal
+/// charset string `"0123456789,.-_"` at `0x1401898b0` in
+/// `VCDS-arm64-unpacked.exe`, consumed by the radix-conversion routine
+/// `fcn.1400e6f80` (which does `msub …, #0xe` — arithmetic mod 14 — against
+/// this charset). So the packed payload is a **base-14** number whose symbol
+/// values are: `'0'..'9'` → 0..9, `','` → 10, `'.'` → 11, `'-'` → 12, `'_'` →
+/// 13.
+pub const STRUC_BASE14_ALPHABET: &[u8; 14] = b"0123456789,.-_";
+
+/// Map one payload symbol to its base-14 digit value (0..=13), or `None` if it
+/// is not one of the 14 alphabet symbols.
+pub fn base14_value(sym: u8) -> Option<u8> {
+    STRUC_BASE14_ALPHABET
+        .iter()
+        .position(|&c| c == sym)
+        .map(|v| v as u8)
+}
+
 /// One `STRUC` record: a structure id plus its still-encoded payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrucRecord {
@@ -34,6 +52,46 @@ pub struct StrucRecord {
     /// The packed 14-symbol payload (everything after the first comma), decoded
     /// only to bytes/text — the field codec is NOT applied (see module docs).
     pub encoded: String,
+}
+
+impl StrucRecord {
+    /// Decode the packed payload as a **big-endian base-14 big integer** into
+    /// its magnitude bytes (most-significant first), using
+    /// [`STRUC_BASE14_ALPHABET`]. Returns `None` if any payload byte is outside
+    /// the alphabet.
+    ///
+    /// ## Proven vs. not
+    /// The base-14 radix + charset are proven from VCDS's binary (see the
+    /// module / [`STRUC_BASE14_ALPHABET`] docs), and this decode is corroborated
+    /// empirically: the multiple rows of one structure id decode to a **shared
+    /// high-order prefix** (the structure template) plus a varying low-order
+    /// tail (the per-channel field). What is **NOT** proven is how this integer
+    /// segments into semantic fields — the boundaries and meaning of the DID /
+    /// raw byte spec / scaling / unit ref / name ref within it are not yet
+    /// reversed. So these bytes are the faithful packed value, **not** decoded
+    /// measurement fields; do not read scaling out of them.
+    pub fn decode_base14_be(&self) -> Option<Vec<u8>> {
+        // Accumulate the magnitude little-endian (base 256), then reverse.
+        let mut le: Vec<u8> = Vec::new();
+        for &sym in self.encoded.as_bytes() {
+            let d = base14_value(sym)?;
+            let mut carry = d as u16;
+            for b in le.iter_mut() {
+                let v = (*b as u16) * 14 + carry;
+                *b = (v & 0xff) as u8;
+                carry = v >> 8;
+            }
+            while carry > 0 {
+                le.push((carry & 0xff) as u8);
+                carry >>= 8;
+            }
+        }
+        if le.is_empty() {
+            le.push(0);
+        }
+        le.reverse();
+        Some(le)
+    }
 }
 
 /// An id-indexed table of `STRUC` records. Separate from [`crate::LabelDb`]
@@ -128,6 +186,70 @@ mod tests {
         assert_eq!(rows1, vec!["2667._-_____5_5", "23497_-_____7_5"]);
         assert_eq!(t.rows(3).count(), 1);
         assert_eq!(t.rows(999).count(), 0);
+    }
+
+    #[test]
+    fn base14_alphabet_maps_symbols_to_values() {
+        assert_eq!(base14_value(b'0'), Some(0));
+        assert_eq!(base14_value(b'9'), Some(9));
+        assert_eq!(base14_value(b','), Some(10));
+        assert_eq!(base14_value(b'.'), Some(11));
+        assert_eq!(base14_value(b'-'), Some(12));
+        assert_eq!(base14_value(b'_'), Some(13));
+        assert_eq!(base14_value(b'A'), None);
+        assert_eq!(base14_value(b' '), None);
+    }
+
+    #[test]
+    fn decode_base14_be_matches_hand_computed_values() {
+        let rec = |p: &str| StrucRecord {
+            id: 1,
+            encoded: p.to_string(),
+        };
+        // "10" = 1*14 + 0 = 14
+        assert_eq!(rec("10").decode_base14_be(), Some(vec![14]));
+        // "100" = 1*196 = 196
+        assert_eq!(rec("100").decode_base14_be(), Some(vec![196]));
+        // "_" = 13
+        assert_eq!(rec("_").decode_base14_be(), Some(vec![13]));
+        // ",." = 10*14 + 11 = 151
+        assert_eq!(rec(",.").decode_base14_be(), Some(vec![151]));
+        // "-_" = 12*14 + 13 = 181
+        assert_eq!(rec("-_").decode_base14_be(), Some(vec![181]));
+        // multi-byte: "111" = 1*196+1*14+1 = 211 (<256, one byte)
+        assert_eq!(rec("111").decode_base14_be(), Some(vec![211]));
+        // "1_0" = 196 + 13*14 + 0 = 378 = 0x017a -> [0x01,0x7a]
+        assert_eq!(rec("1_0").decode_base14_be(), Some(vec![0x01, 0x7a]));
+        // leading zeros contribute nothing
+        assert_eq!(rec("0010").decode_base14_be(), Some(vec![14]));
+        // empty payload -> zero
+        assert_eq!(rec("").decode_base14_be(), Some(vec![0]));
+        // out-of-alphabet symbol rejected
+        assert_eq!(rec("1A").decode_base14_be(), None);
+    }
+
+    #[test]
+    fn decode_base14_be_shares_high_order_prefix_across_structure_rows() {
+        // Rows of one id share a high-order template, differ in the low-order
+        // tail (the empirically-observed per-channel field). Uses the exact
+        // bytes from the owner's STRUC.rod id 000147 (first two of eight rows).
+        let a = StrucRecord {
+            id: 147,
+            encoded: ".348588888989808079..980".to_string(),
+        }
+        .decode_base14_be()
+        .unwrap();
+        let b = StrucRecord {
+            id: 147,
+            encoded: ".34858888898080807661,80".to_string(),
+        }
+        .decode_base14_be()
+        .unwrap();
+        assert_eq!(a.len(), b.len());
+        // Shared high-order prefix (structure template).
+        assert_eq!(&a[..6], &b[..6]);
+        // Divergent low-order tail (per-channel field).
+        assert_ne!(&a[6..], &b[6..]);
     }
 
     #[test]
