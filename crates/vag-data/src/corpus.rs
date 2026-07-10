@@ -94,6 +94,91 @@ pub fn load_corpus(dir: &Path) -> io::Result<CorpusLoad> {
     })
 }
 
+/// Outcome of a recursive scan (see [`scan_corpus`]).
+pub struct CorpusScan {
+    /// Parsed `.lbl` + decrypted-then-parsed `.clb` files, from the whole tree.
+    pub files: Vec<LabelFile>,
+    pub lbl_count: usize,
+    pub clb_count: usize,
+    /// `.rod` files found. NOT parsed (the ODX crypto/inflate pipeline lives
+    /// elsewhere) — counted only, so `vagcan labels` can report corpus size.
+    pub rod_count: usize,
+    pub other_count: usize,
+    pub read_errors: usize,
+}
+
+/// Recursively walk `root`, parsing every `.lbl` and decrypting+parsing every
+/// `.clb` into a corpus, and counting `.rod` files (parse not attempted).
+///
+/// Unlike [`load_corpus`] (single flat dir, `.lbl`/`.clb` only — kept as-is for
+/// `vag-db`), this descends the whole VCDS install tree so a caller can point at
+/// the install root and get `.lbl`/`.clb` (under `Labels/`) and `.rod` (under
+/// `UDS_EV/`) in one pass. Unreadable dirs/files are counted as errors, skipped,
+/// never fatal.
+pub fn scan_corpus(root: &Path) -> io::Result<CorpusScan> {
+    let mut scan = CorpusScan {
+        files: Vec::new(),
+        lbl_count: 0,
+        clb_count: 0,
+        rod_count: 0,
+        other_count: 0,
+        read_errors: 0,
+    };
+    scan_dir(root, &mut scan);
+    Ok(scan)
+}
+
+/// Walk one directory level, recursing into subdirectories. Errors reading a
+/// directory are counted and the subtree skipped (never fatal).
+fn scan_dir(dir: &Path, scan: &mut CorpusScan) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("warn: cannot read dir {}: {e}", dir.display());
+            scan.read_errors += 1;
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir(&path, scan);
+        } else if path.is_file() {
+            scan_file(&path, scan);
+        }
+    }
+}
+
+/// Classify + (for `.lbl`/`.clb`) parse one file into the scan.
+fn scan_file(path: &Path, scan: &mut CorpusScan) {
+    if has_ext(path, "lbl") {
+        scan.lbl_count += 1;
+        match std::fs::read(path) {
+            Ok(bytes) => scan.files.push(parse_label(file_name_or(path, "<?>"), &bytes)),
+            Err(e) => {
+                eprintln!("warn: cannot read {}: {e}", path.display());
+                scan.read_errors += 1;
+            }
+        }
+    } else if has_ext(path, "clb") {
+        scan.clb_count += 1;
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let decoded = decrypt_clb(&bytes);
+                scan.files.push(parse_label(file_name_or(path, "<?>"), &decoded));
+            }
+            Err(e) => {
+                eprintln!("warn: cannot read {}: {e}", path.display());
+                scan.read_errors += 1;
+            }
+        }
+    } else if has_ext(path, "rod") {
+        scan.rod_count += 1;
+    } else {
+        scan.other_count += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +253,39 @@ mod tests {
             .find(|f| f.source == "fixture.clb")
             .expect("fixture.clb present");
         assert_eq!(fixture.records.len(), 2);
+    }
+
+    #[test]
+    fn scan_corpus_recurses_and_counts_lbl_clb_rod() {
+        // Mirror the real install layout: .lbl/.clb under Labels/, .rod under
+        // UDS_EV/, a stray file at the root. scan_corpus must descend both.
+        let dir = TempDir::new("scan-test");
+        let labels = dir.0.join("Labels");
+        let uds = dir.0.join("UDS_EV");
+        std::fs::create_dir_all(&labels).unwrap();
+        std::fs::create_dir_all(&uds).unwrap();
+
+        std::fs::write(
+            labels.join("plain.lbl"),
+            b"001,1,Engine Speed,,Range: 0...6500 RPM",
+        )
+        .unwrap();
+        std::fs::write(labels.join("fixture.clb"), hex_decode(FIXTURE_HEX)).unwrap();
+        // .rod files are counted, not parsed — content is irrelevant here.
+        std::fs::write(uds.join("STRUC.rod"), b"\x00\x01\x02not-really-odx").unwrap();
+        std::fs::write(uds.join("TTTEXT.ROD"), b"\x00rod two").unwrap();
+        std::fs::write(dir.0.join("readme.txt"), b"stray").unwrap();
+
+        let scan = scan_corpus(&dir.0).expect("scan_corpus should succeed");
+
+        assert_eq!(scan.lbl_count, 1);
+        assert_eq!(scan.clb_count, 1);
+        assert_eq!(scan.rod_count, 2, ".ROD is matched case-insensitively");
+        assert_eq!(scan.other_count, 1);
+        assert_eq!(scan.read_errors, 0);
+        // Only .lbl + .clb are parsed into files; .rod is a bare count.
+        assert_eq!(scan.files.len(), 2);
+        assert!(scan.files.iter().any(|f| f.source == "plain.lbl"));
+        assert!(scan.files.iter().any(|f| f.source == "fixture.clb"));
     }
 }

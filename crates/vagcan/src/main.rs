@@ -9,6 +9,7 @@
 //! auth burst, never the encrypted diagnostic session. Read-only by
 //! construction: it opens + identifies, no diagnostic writes.
 
+mod labels;
 mod render;
 
 use anyhow::Context;
@@ -124,6 +125,25 @@ enum Command {
         #[arg(long, default_value_t = 115200)]
         baud: u32,
     },
+    /// Inventory a VCDS label/ODX directory tree and look measurements up.
+    ///
+    /// Recursively counts `.lbl` / `.clb` / `.rod` files under `<dir>`, then
+    /// optionally resolves a part number (`--part`) to its measurements, or
+    /// scans the whole corpus for a measuring block (`--block [--field]`).
+    /// Read-only, offline: no car, no hardware.
+    Labels {
+        /// VCDS install root (or any subtree) holding `Labels/` and `UDS_EV/`.
+        dir: String,
+        /// Resolve this ECU part number → its label file + measurements.
+        #[arg(long)]
+        part: Option<String>,
+        /// Cross-corpus: list every file that defines this measuring block.
+        #[arg(long)]
+        block: Option<u16>,
+        /// Narrow `--block` to a single field (requires `--block`).
+        #[arg(long, requires = "block")]
+        field: Option<u8>,
+    },
 }
 
 #[tokio::main]
@@ -157,6 +177,12 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Info { port, baud } => info(port.as_deref(), baud).await,
+        Command::Labels {
+            dir,
+            part,
+            block,
+            field,
+        } => labels::labels_cmd(&dir, part.as_deref(), block, field),
     }
 }
 

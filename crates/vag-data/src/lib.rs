@@ -13,7 +13,7 @@ pub mod rod;
 mod tea;
 
 pub use clb::decrypt_clb;
-pub use corpus::{load_corpus, CorpusLoad};
+pub use corpus::{load_corpus, scan_corpus, CorpusLoad, CorpusScan};
 pub use db::LabelDb;
 pub use label::{parse_label, LabelFile, Measurement, Record};
 pub use rod::{decode_rod, RodSection, RodStatus};

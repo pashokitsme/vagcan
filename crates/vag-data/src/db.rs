@@ -241,6 +241,39 @@ impl LabelDb {
         }
     }
 
+    /// Every measurement across the WHOLE corpus whose block id is `block`
+    /// (and, if `field` is `Some`, whose field matches too). Returns each hit
+    /// as `(file source name, measurement)`; empty-name placeholder records are
+    /// skipped. Results are sorted by `(source, field)` for deterministic output.
+    ///
+    /// This is the cross-corpus counterpart to [`Self::measurement`], which is
+    /// scoped to a single resolved part number. Used by `vagcan labels --block`
+    /// to answer "which label files define measuring block N, and what is it?".
+    pub fn measurements_by_block(
+        &self,
+        block: u16,
+        field: Option<u8>,
+    ) -> Vec<(&str, &Measurement)> {
+        let mut hits: Vec<(&str, &Measurement)> = self
+            .files
+            .iter()
+            .flat_map(|f| {
+                f.records.iter().filter_map(move |r| match r {
+                    Record::Measurement(m)
+                        if m.block == block
+                            && field.is_none_or(|wanted| m.field == wanted)
+                            && !m.name.trim().is_empty() =>
+                    {
+                        Some((f.source.as_str(), m))
+                    }
+                    _ => None,
+                })
+            })
+            .collect();
+        hits.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.field.cmp(&b.1.field)));
+        hits
+    }
+
     /// A single measurement by (part_no, block, field). Empty-name placeholder
     /// records are skipped (returns `None`), since an empty slot isn't a real
     /// measurement for lookup purposes.
@@ -581,6 +614,42 @@ mod tests {
 
         let resolved = db.resolve("000-906-042-AB").expect("must resolve");
         assert_eq!(resolved.source, "T0042.LBL");
+    }
+
+    #[test]
+    fn measurements_by_block_scans_the_whole_corpus() {
+        // Block 2 appears in two files (fields 1 and 2 in one, field 1 in the
+        // other); block 7 in one. An empty-name block-2 row must be skipped.
+        let a = parse_label(
+            "AAA.LBL",
+            b"002,1,Engine Speed,,Range: 0...6500 RPM\n002,2,Coolant,,Range: -48...143 C\n007,1,Boost,,Range: 0...2500 mbar",
+        );
+        let b = parse_label(
+            "BBB.LBL",
+            b"002,1,Vehicle Speed,,Range: 0...300 km/h\n002,3,,,",
+        );
+        let db = LabelDb::new(vec![a, b]);
+
+        // All fields of block 2 across the corpus (empty-name field 3 skipped).
+        let all = db.measurements_by_block(2, None);
+        assert_eq!(all.len(), 3);
+        // Sorted by (source, field): AAA(1), AAA(2), BBB(1).
+        assert_eq!((all[0].0, all[0].1.name.as_str()), ("AAA.LBL", "Engine Speed"));
+        assert_eq!((all[1].0, all[1].1.name.as_str()), ("AAA.LBL", "Coolant"));
+        assert_eq!((all[2].0, all[2].1.name.as_str()), ("BBB.LBL", "Vehicle Speed"));
+
+        // Field filter narrows to a single (block, field) across files.
+        let f1 = db.measurements_by_block(2, Some(1));
+        assert_eq!(f1.len(), 2);
+        assert!(f1.iter().all(|(_, m)| m.field == 1));
+
+        // A block present in only one file.
+        let b7 = db.measurements_by_block(7, None);
+        assert_eq!(b7.len(), 1);
+        assert_eq!(b7[0].1.name, "Boost");
+
+        // A block nobody defines → empty, not a panic.
+        assert!(db.measurements_by_block(99, None).is_empty());
     }
 
     #[test]
