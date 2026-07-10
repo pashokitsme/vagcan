@@ -192,6 +192,38 @@ brute-forced offline. It is on the path only in that every interesting section (
 `TTTEXT`, engine `MWB`) is `product`-blocked and must be cracked first. After cracking, the
 remaining obstacle is a **plaintext format** problem, not crypto and not a dump.
 
+### 3.1 The table graph + the `MWB` 2-char code (base-40 REFUTED)
+
+The UDS_EV corpus is a graph of base-14-packed tables, each keyed by a decimal id:
+
+| file/section | ids | rows | role (ODX) |
+|---|---|---|---|
+| `STRUC.rod [STRUC]` | 1–1623 (1221 distinct) | 8,853 | structure / byte layout |
+| `TTDOP.rod [DOP]` (cracked: IV `9d59b2e52a` → **2,722,454 B**) | 1–28,932 (17,636 distinct) | 127,433 | **DOP** = COMPU-METHOD (scaling/unit); rows are COMPU-SCALE-shaped, e.g. id 1 `5_5_3.33,_`, `2_2_-3-5._`, … (texttable/enum) |
+| `TTTEXT.ROD [TXT]` | up to ~152,526 | — | name strings |
+| engine `MWB` | text-id up to ~152,526 | ~200 | measurement list: `(text-id→TTTEXT name, 2-char code)` |
+
+`TTDOP` vs `MUX.rod` are loaded by `fcn.140028e28` (selects the path by arg1; the `#0x28`/`#0x24`
+= 40/36 there are **struct-field offsets, not a base-40 radix**).
+
+**`MWB` 2-char code → id: base-40 is REFUTED (not just unproven).** The code's character **set** is
+exactly the 40 symbols `0-9 A-Z , . - _` (proven), and base-40's ceiling 40²=1600 matches STRUC's
+1623 — but:
+- base-40 `code → STRUC-id` lands in-range only **~3σ above chance** (best ≈188/221 vs ≈168 expected
+  by the 0.75 STRUC-id density, across *every* alphabet order / endianness / offset); a real key
+  would be ~100%.
+- The mapped STRUC record does **not** echo the row's text-id (name pointer): **~0/180**.
+- Range rules out `code → DOP-id` entirely (DOP ids reach 28,932 ≫ 1600).
+- **No base-40 charset or `mod-40` arithmetic exists in the binary** for this purpose.
+So the `code → table-id` mapping is a **lookup or non-trivial scheme, not base-40 arithmetic**; it
+stays unproven. Shipped only the proven `MWB` row parse (`vag_data::mwb::{parse_mwb, MwbEntry,
+MWB_CODE_SYMBOLS}`) — **no** invented `code → id` function.
+
+**Net:** all four tables are located, decrypted, and inflated offline, and confirmed to share the
+base-14 codec; what blocks a validated `(name, DID, scale, unit)` row is (a) the unproven
+`code → id` link and (b) the unreversed base-14 **field segmentation** (§2) — two independent
+data-format unknowns, no crypto and no dump on the path.
+
 ---
 
 ## 4. The three MVP measurements (RPM / vehicle speed / boost)
