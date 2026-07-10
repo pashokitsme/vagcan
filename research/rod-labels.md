@@ -140,9 +140,23 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
 - **Still open (honest):** the **field segmentation** of that base-14 number — where each field
   begins/ends and which is the read identifier (DID) / raw byte spec / scaling / unit ref / name
   ref — is **not yet reversed**. So `decode_base14_be` returns the faithful packed value, not
-  decoded measurement fields; no validated `(DID, scale, unit)` row exists yet. Next step: reverse
-  the consumer that reads specific fields out of the decoded number (the code past `fcn.1400e1400`'s
-  base-conversion that indexes into the resulting bytes).
+  decoded measurement fields; no validated `(DID, scale, unit)` row exists yet.
+- **Segmentation hypotheses TESTED against the owner's real bytes and REFUTED** (documented so
+  they are not re-tried): (a) *fixed character-column fields with a per-channel index run* — of 62
+  equal-length structures with ≥3 rows, only **1** has a contiguous-range varying run (id 000005
+  `col7 = {2,3,4,5}`, almost certainly coincidence); (b) *per-byte index* — the varying bytes of a
+  structure (e.g. id 000147's 6 low bytes `ee.., cd.., f5.., df..`) are high-entropy, not a small
+  counter; (c) *decimal-digit-group index* — base-14 → decimal shares a high-order prefix but the
+  differing low decimal digits (~15 of them) are unstructured, not a clean field. The varying
+  per-channel field is therefore **high-entropy** (consistent with a name/TTTEXT pointer or an
+  encoded value, NOT a plain index). Do not invent a fixed layout on top of these.
+- **Disasm dead-end noted:** `fcn.1400e1400` (record-fetch, references the base-14 charset) turned
+  out to be a **generic number↔base-N/base-26 formatter** (its "descriptor tables" at `0x1405e8720`
+  are zeroed BSS runtime state), not the per-field STRUC slicer. The routine that decodes a payload
+  string into structure fields (string→value, i.e. a `×14`/charset-position loop, the inverse of
+  the `msub #0xe` encoder) has not been cleanly isolated. Next step remains reversing that consumer,
+  or a ground-truth cross-reference via a cracked engine `MWB` (blocked on the also-unproven 2-char
+  code → STRUC-id mapping — two unknowns, so not yet a validation path).
 - Sections decoding cleanly vs blocked, for `STRUC.rod`: **1 / 1** (the sole section, cracked).
   No residual `product`-blocked sections remain in this file.
 
