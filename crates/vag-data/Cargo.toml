@@ -12,9 +12,19 @@ miniz_oxide = "0.7"
 [dev-dependencies]
 criterion = { workspace = true }
 
+[features]
+# The `.rod` product/IV offline recovery (`rod::crack`) is always compiled; this
+# feature flag is retained as a no-op so callers can request it explicitly
+# (e.g. `cargo run --features rod-crack --bin vag-rod`).
+rod-crack = []
+
 [[bin]]
 name = "vag-labels"
 path = "src/bin/vag-labels.rs"
+
+[[bin]]
+name = "vag-rod"
+path = "src/bin/vag-rod.rs"
 
 [[bench]]
 name = "lookup"
