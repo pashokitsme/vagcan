@@ -228,6 +228,29 @@ data-format unknowns, no crypto and no dump on the path.
 
 ## 4. The three MVP measurements (RPM / vehicle speed / boost)
 
+### 4.0 Capture lever (runtime crib) — TRIED, EXHAUSTED for scaling
+
+Mined `research/captures/reading-ecus.pcapng` for a runtime `(DID → raw → value)` crib to
+sidestep STRUC/DOP (tool: `research/clb-crack/extract_uds.py`, built on the recovered `b8`/`b7`
+link cipher — `link_cipher.py`/`usbpcap.py`). Decoded fully: **763 request / 457 response** blocks
+over **66 channels**. Classification:
+- **43** channels are `TesterPresent` keep-alives (no data).
+- **1** channel (`f3…44dd…5f`) carries both TP and RDBI → fully decodable: engine measurement
+  **DID `0x7458`**, response `62 74 58 55` = a **static** value (the car was engine-OFF).
+- **22** non-TP channels are identity/security reads. Cross-checked to the Auto-Scan ground truth:
+  the **VIN** read (`eb…60…39…c9`) yields `XW8…NE9J…8917` = `XW8AD4NE9JH008917` ✓, and the gearbox
+  channels (`b3…eb0d…55`, `eb…40…39…c9`) carry SW-version **`10 03` = "1003"** ✓ (DQ200 `1003`).
+  These **confirm the decoder** but are identity, not scaling.
+
+**Verdict:** this capture is an engine-OFF **identification scan**. There is **no varying
+measurement data** (the one decodable measurement DID is static) and **no ordered measurement-read
+sequence** to align to the engine `MWB` list — so neither Priority-1 (empirical scaling) nor
+Priority-2 (`code ↔ DID`/STRUC crib) is obtainable from it. **The offline lever is exhausted;** a
+fresh **live-car capture** (engine running, VCDS polling measuring blocks) is required to observe
+`(DID → raw → engineering value)` for RPM/coolant/boost.
+
+### 4.1 Static-analysis status
+
 **Not yet provable as scaling formulas.** Getting `identifier + factor/offset + unit + sample
 conversion` requires reading them out of the `STRUC` payload (and mapping via the engine `MWB`
 code), which is blocked on the §2/§3 field codec, not on crypto. The pieces we can now place
