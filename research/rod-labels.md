@@ -249,6 +249,42 @@ Priority-2 (`code ↔ DID`/STRUC crib) is obtainable from it. **The offline leve
 fresh **live-car capture** (engine running, VCDS polling measuring blocks) is required to observe
 `(DID → raw → engineering value)` for RPM/coolant/boost.
 
+### 4.0a Engine-running capture — DONE, PARTIAL (one proven point; RPM/speed NOT fitted)
+
+The live capture above was taken (`research/dumps/capture-w-logs.pcapng`, 318 s, engine running,
++ VCDS ADVMB logs `logs-engine.CSV` / `logs-dsg.CSV`; **all gitignored, never committed**) and
+mined end-to-end: decode the link cipher → per-DID raw time-series → align to the logged
+engineering values by curve shape → least-squares fit. Tooling:
+`research/clb-crack/measure_{series,ttp,final}.py` (the last brute-forces every DID×interpretation×
+CSV-measurement fit); `usbpcap.py` gained per-frame timestamps (`with_time`, a `t` field).
+
+Decoded, per channel (link keystream verified — response padding decrypts to a constant `0xffff`):
+- **Engine ECU** (2 TP-crib channels `7434e9c3`, `d454d17f`): 8 single-frame RDBI DIDs
+  `7458, 82D4, A03B, A051, A058, A059, A05E, A05F`, ~575 responses.
+- **DSG-window channel** `d75061e7` (no TP crib): 3 RDBI DIDs recovered by a **request-padding
+  two-time-pad** — RDBI request data bytes are `0x00`, so `data = resp ⊕ modal_req` at the data
+  offsets, and clustering responses by the echoed-DID cipher `(off8,off9)` separates the DIDs
+  without ever knowing `ks[8..9]`.
+
+**PROVEN (shipped, `vag_data::measure`):** the **ignition-angle zero point** — DIDs
+`A058/A059/A05E/A05F` each return raw `0x5555` (BE `u16`) for a displayed **0.00°**, cross-validated
+four ways against the four constant ignition-angle channels VCDS logged (`IDE00155/156/157/158`,
+constant `0.00°`). Fixes the COMPU offset.
+
+**NOT fitted (no forced fits):**
+- *Ignition slope* — the one varying ignition DID `A051` ↔ `IDE00149` shape-matches only loosely
+  (`|r|≈0.86`, non-monotonic/bimodal raw→°, `R²≈0.73`); no clean `(factor,offset)`.
+- *RPM & vehicle speed* — **no DID tracks either with a proof-grade fit.** The engine-log session's
+  RPM/speed excursions are small and clock-jittered (best `R²≈0.6–0.7`); the DSG channel that spans
+  the 682→3800 rev does **not** linearly track RPM (its clusters give `R²≤0.64`, implausible negative
+  slopes; a `raw·0.25`-scaled RPM would need raw up to `0x3B60`, never observed). The DSG log's
+  RPM/speed are tagged `-ENG#####` (engine-sourced, gateway-mirrored) — their DID is not cleanly
+  isolated on the captured DSG channel. A capture of ONE ECU polled through a wide, sustained rev
+  with a tight-cadence log would settle RPM/speed.
+
+This establishes the crib direction `G### group / IDE-id ↔ DID` for the engine ignition block
+(`IDE00155/156/157/158 ↔ {A058,A059,A05E,A05F}` as a set), a foothold toward the MWB code→id map.
+
 ### 4.1 Static-analysis status
 
 **Not yet provable as scaling formulas.** Getting `identifier + factor/offset + unit + sample

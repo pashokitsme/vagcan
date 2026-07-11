@@ -31,6 +31,10 @@ def parse_records(path):
     """Yield dicts for every USB transfer record in the capture."""
     rdr = PcapNgReader(path)
     for idx, pkt in enumerate(pkt_iter(rdr)):
+        try:
+            t = float(pkt.time)
+        except Exception:
+            t = 0.0
         b = bytes(pkt)
         if len(b) < 28:
             continue
@@ -49,6 +53,7 @@ def parse_records(path):
         payload = b[hlen:]
         yield {
             "idx": idx,
+            "t": t,
             "irp": irp,
             "status": status,
             "func": func,
@@ -68,13 +73,16 @@ def pkt_iter(rdr):
         yield pkt
 
 
-def ftdi_bulk_stream(path, strip_status=True):
-    """Yield (idx, dir, bytes) for bulk transfers carrying real payload.
+def ftdi_bulk_stream(path, strip_status=True, with_time=False):
+    """Yield (idx, dir, bytes[, t]) for bulk transfers carrying real payload.
 
     dir is 'OUT' (host->cable) or 'IN' (cable->host). FTDI IN transfers carry a
     2-byte status prefix (modem+line status) on EACH 64-byte USB packet; with
     strip_status we drop the leading 2 bytes of each IN transfer (best-effort;
     multi-packet IN needs per-64B destatus -- flagged, see strip note).
+
+    with_time=True appends the capture timestamp (float epoch seconds) to each
+    yielded tuple (opt-in so existing 3-tuple callers are unaffected).
     """
     for r in parse_records(path):
         if r["tt"] != "bulk":
@@ -84,10 +92,12 @@ def ftdi_bulk_stream(path, strip_status=True):
             continue
         if r["dir_in"]:
             payload = strip_ftdi_in(data) if strip_status else data
-            if payload:
-                yield (r["idx"], "IN", payload)
+            if not payload:
+                continue
+            emit = (r["idx"], "IN", payload)
         else:
-            yield (r["idx"], "OUT", data)
+            emit = (r["idx"], "OUT", data)
+        yield (emit + (r["t"],)) if with_time else emit
 
 
 def strip_ftdi_in(data):
@@ -120,10 +130,12 @@ def reassemble_frames(path):
     """
     bufs = {"OUT": bytearray(), "IN": bytearray()}
     idxs = {"OUT": None, "IN": None}
-    for idx, d, data in ftdi_bulk_stream(path):
+    tss = {"OUT": None, "IN": None}
+    for idx, d, data, t in ftdi_bulk_stream(path, with_time=True):
         buf = bufs[d]
         if idxs[d] is None:
             idxs[d] = idx
+            tss[d] = t
         buf += data
         while True:
             frame = _cut_frame(buf, d)
@@ -137,9 +149,11 @@ def reassemble_frames(path):
                 "payload": bytes(payload),
                 "xor_ok": xor_cksum(raw[:-1]) == xor_byte,
                 "first_idx": idxs[d],
+                "t": tss[d],
                 "raw": bytes(raw),
             }
             idxs[d] = idx  # next frame's approx start
+            tss[d] = t
 
 
 def _cut_frame(buf, d):
