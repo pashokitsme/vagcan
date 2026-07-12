@@ -8,34 +8,35 @@ Reference vehicle: Škoda Octavia III facelift, 1.8 TSI, 2017 (MQB, CAN/UDS).
 
 Design/PRD: [`docs/superpowers/specs/2026-07-02-vagcan-cli-design.md`](docs/superpowers/specs/2026-07-02-vagcan-cli-design.md).
 
-## Status (2026-07-06)
+## Status (2026-07-13)
 
-Everything below is implemented, reviewed, and merged to `master` (tests green,
-`cargo clippy --workspace` clean). See `todo/README.md` for the live roadmap.
+Goal: read the **whole car over CAN**, with measurement definitions (name / read
+address / scaling / unit) sourced **from VW's own label files** (`.lbl`/`.clb`/`.rod`) —
+the way VCDS does — so any value a block exposes is selectable, no hardcoded addresses
+or formulas. Live product path = the **generic USB-CAN adapter** (`vag-can`, slcan);
+the HEX-clone is parked (its USB-side link crypto is a dead end for this goal).
 
-| Component | Crate | State |
+Milestones (see `todo/README.md` for the live task list):
+
+| M | Component | State |
 |---|---|---|
-| ISO-TP + UDS protocol stack (read-only) | `vag-protocol`, `vag-transport`, `vag-capture` | ✅ done |
-| `.lbl`/`.clb`/`.rod` label parse+decrypt, part-number→component lookup | `vag-data`, `vag-db` | ✅ done |
-| HEX-clone wire framing + link cipher decode/encode (b8/b7, off14/off15, ISO-TP) | `vag-hex` | ✅ done |
-| HEX-clone transport: cable opens & talks live on macOS (`FT_SetVIDPID`+FTDI init+clean-close) | `vag-hex` | ✅ done |
-| Live drive: `doctor` / `probe` / `handshake` (auth-advance past 0x39) | `vagcan` | ✅ done |
-| Session-replay reader: `replay-drive` (full ordered replay → f3 channel → VIN, + divergence report) | `vagcan` | ✅ done (untested on hw) |
-| **Live UDS over the HEX-clone (session key `K_epoch`)** | — | 🔴 **blocked — VMProtect-sealed KDF; two live probes staged, see `todo/README.md`** |
-| Generic USB-CAN bypass transport (slcan) | `vag-can` | 🟡 built, untested on hardware |
-| ECU identity reader + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | `vag-protocol`, `vagcan` | ✅ done (mock-tested; live run pends CANable) |
-| **`vagcan info` live + measurements (RPM/speed/boost via `.rod`)** | `vagcan`, `vag-data` | ⬜ next — CANable bring-up + `.rod` feasibility (Track A) |
+| M0 | ISO-TP + UDS + transport stack (read-only) | ✅ done |
+| M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | 🟡 built, **mock-tested only — NOT yet verified on the real car** |
+| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan labels` corpus tool | ✅ done |
+| **M3** | **Measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🔴 **current — blocked on the STRUC field segmentation** |
+| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | 🚚 dongle shipping; `vag-can` built, untested on hardware |
 
-**Where it stands:** the clone's encrypted diagnostic link needs a per-ECU AES session key
-that the (VMProtect-packed) VCDS computes app-side — every *offline* route to it is exhausted
-(`research/clone-crypto.md`). Two *live* probes are now staged for the owner to run:
-(1) **`vagcan replay-drive`** — a full ordered session replay from a cold cable power-on that
-tries to track the cable's state to the engine `f3` channel and read the VIN; if the cable's
-state is not deterministic-from-power-on it emits a precise divergence report instead. (2) a
-**VMProtect dynamic playbook** (`research/clone-crypto.md` §4.2) for a real x86 host —
-HW-breakpoint / BCrypt-hook the live key (Tier A) or Pin+Triton-devirt the KDF (Tier B). The
-extensible product path to `vagcan info` remains the **generic USB-CAN bypass** (`vag-can`,
-ready) — talk UDS straight to the car, any ECU/DID.
+**Where it stands (M3, the one wall):** every `.rod` label table is decrypted and
+inflated inside our own tool (`vag-data`, `vag-rod` bin) and the packed payload codec is
+proven to be **base-14** (disasm-verified). What is NOT reversed is the **STRUC field
+segmentation** — *where inside a `NNNNNN,<base-14>` record the read identifier (DID),
+raw spec, scaling, unit-ref and name-ref live*. Offline static + data-only RE is exhausted
+(5 passes; `research/rod-labels.md`). One empirical anchor is proven from an
+engine-running capture: ignition-angle raw `0x5555` = `0.00°`. The next lever is a
+**supervised attack**: the owner's own capture yields real valid engine DIDs + VCDS's
+displayed values (`research/dumps/`, gitignored) → locate those known DIDs inside the
+decoded STRUC records to reveal the field offsets. This finally crosses the crib with
+STRUC (never combined before).
 
 ## Workspace
 

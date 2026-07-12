@@ -1,136 +1,109 @@
-# vagcan — roadmap & status (`vagcan info`)
+# vagcan — roadmap & status
 
-Goal: `vagcan info` prints VIN, vehicle name/model, and equipment (engine, turbo?,
-gearbox kind+name, basic info) read live from the car. See `/CLAUDE.md` for the
-locked stack/architecture and `todo/GOAL.md` for the goal.
+**Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
+with every definition (name, read address, scaling, unit) taken **from VW's own label
+files** (`.lbl`/`.clb`/`.rod`) — exactly like VCDS — so any value a block exposes is
+selectable from config, with **no hardcoded addresses or formulas**. Live transport =
+the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md` for the locked
+stack and `todo/GOAL.md` for the goal statement.
 
-Task files live in `todo/<subsystem>/NN-<task>.md`; done ones move to
-`done/<subsystem>/NN-<task>.md`.
+## Status (2026-07-13)
 
-## Status (2026-07-06)
+The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
+built and merged. The one wall between here and the product is the **STRUC field
+segmentation** inside the `.rod` measurement structures.
 
-The whole software stack is built and the **HEX-clone cable talks live on macOS**.
-The one thing blocking a live read over the clone is its **encrypted link session
-key**, which is sealed inside a VMProtect-packed app (see "HEX-clone: blocked" below).
-Everything else works and is transport-agnostic.
+### Milestones
+| M | what | state |
+|---|------|-------|
+| M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
+| M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | 🟡 **mock-tested only — NOT verified on the real car** |
+| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
+| **M3** | measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🔴 **current — blocked on STRUC segmentation** |
+| HW | generic USB-CAN (MKS CANable) bring-up on the car | 🚚 dongle shipping next week |
 
 ### Done (merged to `master`, tests green, clippy clean)
 | subsystem | crate | what |
 |-----------|-------|------|
 | async-core | vag-transport | async transport trait(s) + mock, error model |
-| usb-backend | vag-hex | `Backend` + `D2xxBackend`; **`FT_SetVIDPID` + FTDI init + clean-close** → cable opens & talks live on macOS |
-| cable-actor | vag-hex | `CableActor<B>` + `CableHandle` multiplex |
-| init-handshake | vag-hex | plaintext open handshake (`doctor` → "ROSSTECH") |
-| link-decode | vag-hex | b8/b7 XOR decode + keystream recovery + ISO-TP |
-| **link-encode** | vag-hex | **b8 encode + off14 counter + off15 trailer rule; round-trips captured TP/RDBI** |
-| **live-drive** | vag-hex | **`probe` (protocol id) + `handshake` (auth-advance past 0x39, off14=observed&0xF8) + sweep + dynamic session driver** |
-| **replay-drive** | vag-hex/vagcan | **full ordered session-replay from cold power-on → f3 channel → own UDS read (VIN); exact divergence report if cable state desyncs. Extractor + `--dry-run` + 8 tests** |
-| uds-async | vag-protocol | async ISO-TP + UDS client |
-| label-lookup | vag-db/vag-data | fast part-number/coding → component lookup |
+| uds-async | vag-protocol | async ISO-TP (15765-2) + UDS client (14229), read-only allowlist |
 | generic-can | vag-can | `SlcanBackend` + `IsoTpCan` (the bypass transport — built, untested on hw) |
-| research-keystream / session-key | research | link cipher = AES-256 keystream; RSA-OAEP (new build) fully reversed |
-| **info-identity** | vag-protocol/vagcan | **`EcuIdentity` + `read_identity` (UDS RDBI F190/F187/F191/F189/F197/F18C/0600, per-DID tolerant, read-only) + `vagcan info --port` (Engine 01 + Gearbox 02 over one slcan channel); mock-tested against golden Auto-Scan values** |
-| cli-app | vagcan | `vagcan` bin: `doctor` / `decode` / `probe` / `handshake` / `replay-drive` / `info` |
+| info-identity | vag-protocol/vagcan | `EcuIdentity` + `read_identity` + `vagcan info` (Engine 01 + Gearbox 02). **Mock-tested; live run pends the CANable** |
+| label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
+| rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
+| struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
+| labels-cli | vagcan | `vagcan labels` — corpus inventory + `--part` / `--block` lookup |
+| cli-app | vagcan | `doctor` / `decode` / `probe` / `handshake` / `replay-drive` / `info` / `labels` |
 
-### `vagcan info` — MVP scope & status
-MVP = **VIN + Engine (01) + Gearbox (02) identification** (part no / HW / SW / component /
-serial / coding). **Identification logic is DONE** (`info-identity` above), transport-generic,
-mock-tested — it just needs the CANable to run live (checkpoint below). Remaining for the
-full goal: (a) the live hardware run, (b) live **measurements** (RPM / speed / turbo boost),
-which need the `.rod` (ODX) DID + scaling path — see "Measurements (path B)" below.
+## M3 — measurements from `.rod` (the current work)
 
-## HEX-clone: blocked offline — two LIVE probes staged
+### How VCDS reads measurements on this car (MQB / UDS), = our target
+The ECU's `.rod` (`EV_ECM…rod`) is the source of truth: each measuring value =
+`{ read DID, COMPU-method ref → DOP scaling, text-id → TTTEXT name }`. VCDS issues
+`UDS 22 <DID>`, applies the COMPU method, prints `name = value unit`. Groups (`G004…`)
+bundle DIDs. So the product needs the ECU `.rod` decoded into `(DID, scale, unit, name)`.
 
-The clone speaks the OLD scheme (not the new build's RSA-OAEP). Each diagnostic ECU
-needs a per-`b6` AES epoch key `K_epoch` that VCDS computes **app-side** — and that
-app is **VMProtect-packed**. Every *offline* route to `K_epoch`/the KDF is exhausted:
-static RE (sealed), replay-shortcut (cable keeps advancing state), memory-dump (custom AES
-never leaves 240 contiguous cleartext round-key bytes), and the crack DLL (`vcds_hook.dll` =
-pure FTD2XX proxy + license detour, no crypto). Full writeups:
-`research/{clone-crypto, vcds-rus-crack, vag-hex-framing}.md`.
+### What is done vs the wall
+- ✅ `.rod` TEA-CBC + zlib + the per-record `product`/IV blocker — **defeated offline**
+  (DEFLATE header oracle + Kraft pruning + inflate confirm); `STRUC.rod` inflates to
+  293,560 bytes in our own tool.
+- ✅ All four tables located + cracked: **STRUC** (1221 structure ids), **DOP/TTDOP**
+  (17,636 COMPU/scaling ids), **TTTEXT** (names), **MWB** (engine measuring rows).
+- ✅ Payload codec proven **base-14** over charset `0123456789,.-_` (disasm at
+  `0x1401898b0`, mod-14 arith `fcn.1400e6f80`).
+- 🔴 **NOT reversed: STRUC field segmentation** — where inside a `NNNNNN,<base-14>`
+  record the `read_id (DID)` / `raw-spec` / `scale` / `unit-ref` / `name-ref` live.
+  Offline static + data-only RE is exhausted (5 passes; base-40 `code→id`, fixed-column,
+  per-byte index all refuted — `research/rod-labels.md`).
 
-Two live experiments the owner can now run (each definitively resolves its hypothesis):
+### Next lever — supervised STRUC attack with the owner's capture (crib × STRUC)
+The prior passes never combined the two: the capture crib was only used to *fit RPM
+scaling* (failed — those values ride undecodable group reads), and STRUC was reversed
+*without* the crib. Cross them:
+1. Owner's engine-running captures (`research/dumps/`, gitignored) decode to **real valid
+   engine DIDs** (`A058/A059/A05E/A05F`,`A03B`,`A051`,`7410…7458`,`82D4`,`A0EF`) + VCDS's
+   displayed names/units/values (CSV logs). One anchor proven: `A058/9/E/F` raw `0x5555`
+   = `0.00°`.
+2. **Search the decoded STRUC / engine-`.rod` records for those known DID bytes** → reveals
+   the offset of the `read_id` field.
+3. Known scaling (`0x5555`→0°) + unit/name from CSV → pin the `scale` / `unit-ref` /
+   `name-ref` fields. Multiple anchors cross-confirm the layout.
+4. Once segmentation falls → decode all STRUC → the `MeasurementDef` catalog.
 
-- **Probe 1 — full ordered replay (`vagcan replay-drive`, no new hardware).** Replays the
-  *entire* recorded OUT-frame sequence verbatim from a **cold cable power-on** (all prior
-  attempts were partial-sequence shortcuts that desynced early). If the cable's crypto state
-  is deterministic-from-power-on, the replay tracks it to the engine `f3` channel (idx 1045,
-  epoch #15) where the recovered `KS_F3` applies → inject a UDS `22 F1 90` and read the VIN.
-  If the state is CSPRNG-fresh, it emits the **exact divergence index** (expected vs observed)
-  — a clean empirical verdict. Run: `cargo run -p vagcan -- replay-drive --stream
-  research/dumps/replay-stream.jsonl` (fresh power-on first).
+Requires the VCDS data volume mounted (`research/vcds-data/en/UDS_EV/STRUC.rod` +
+`EV_ECM…rod`).
 
-- **Probe 2 — VMProtect dynamic on a real x86 host** (`research/clone-crypto.md` §4.2).
-  NOT the owner's ARM x86-emulation VM (VMProtect detects both hypervisor and emulation) — a
-  real x86 machine. *Tier 0:* unpack a clean x86 image (Scylla). *Tier A (cheap, first):* HW
-  read-breakpoint on `IV_TABLE[4]` (`0x538510`) + CNG `BCryptGenerateSymmetricKey`/`BCryptEncrypt`
-  hooks to catch the native AES / raw `K` (~55–65%; a miss is itself the diagnosis that the
-  crypto is virtualized). *Tier B (heavy):* Pin+Triton-devirt the KDF (hackyboiz method) and
-  reimplement it in Rust. Every tier validates via `research/clb-crack/validate_k.py` →
-  VIN `XW8AD4NE9JH008917`. Helper scripts: `research/clb-crack/hwbp_ivtable.{x64dbg,windbg}.txt`,
-  `kdf_trace.pin.cpp`, `kdf_triton.py`.
-
-If both probes fail, the clone link stays sealed and the product goal rides Track A below.
-
-## Track A (recommended — the extensible product path): generic USB-CAN
-
-Bypass the clone's encrypted link entirely. The `vag-can` crate (`SlcanBackend` +
-`IsoTpCan`) already implements the same `vag_transport::AsyncIsoTpTransport` the whole
-stack rides — talk UDS-over-ISO-TP-over-CAN straight to the car via a cheap slcan
-USB-CAN dongle. Any ECU/DID, own logic, repeatable, no clone crypto.
-
-Remaining tasks for `vagcan info` over Track A:
-1. `generic-can` hardware bring-up: exercise `SlcanBackend` against the real CANable dongle
-   on macOS (open, bitrate, frame TX/RX), fix anything the mock hid.
-2. ~~`vin-info` identification~~ — **DONE** (`info-identity`): VIN + Engine/Gearbox passport,
-   mock-tested. Live run pending the dongle; confirm the F187-spaces / DQ200-session /
-   coding-DID `0600` caveats against a real read.
-
-### Measurements (RPM / speed / turbo boost)
-Path B (`.rod` ODX) is **PARTIAL — the crypto wall is gone** (full writeup:
-`research/rod-labels.md`). The earlier NO-GO is **superseded**: the per-record `product`/IV
-blocker is now **DEFEATED OFFLINE, no runtime dump** — a DEFLATE dynamic-Huffman-header oracle +
-Kraft pruning + full-inflate confirmation recovers the 5 IV bytes (multithreaded Rust cracker
-`research/clb-crack/rod_crack/`, ~1 min). `STRUC.rod` (the DID+scaling structure file, once
-believed absent) is now present in the owner's install (gitignored symlink under
-`research/vcds-data/`) and **fully inflates** (293,560 bytes, valid Adler-32); the same method
-unblocks `TTTEXT.ROD` and every engine `MWB`/`INC`/`DTC`.
-
-**Remaining is pure data-format RE — no crypto, no dump on the critical path.** The decoded
-`STRUC` payload is a **packed 14-glyph codec** (`NNNNNN,<encoded>`, 1221 structure-ids), not
-delimited `DID,factor,offset`. To finish (all offline):
-1. **DID + scaling** — reverse the `STRUC`-parser fn (binary `+0x33758` region) to turn the
-   14-glyph field codec into `read_id`/`raw`/`scale`/`unit`, and decode the engine-`MWB`
-   2-char-code → `STRUC`-id mapping.
-2. **Names** — crack `TTTEXT.ROD [TXT]` (same offline method as `STRUC`) for the text-id → name
-   join; decrypt-only, mechanical (a nicety). *(An earlier existing-dump spike also harvested
-   11,479 already-resolved RU names from the heap, but with no `id→name` linkage — see
-   `research/rod-labels.md` Appendix B; no longer on the critical path.)*
-
-Fallback still on the table if the heavy path stalls: **OBD-II Mode 01** (PID `0x0C` RPM,
-`0x0D` speed, `0x0B` MAP − `0x33` baro = boost) — fixed SAE J1979 formulas, no labels, gets
-exactly the three values quickly over service `0x01`.
-
-**Validation oracle:** the owner's own full Auto-Scan is captured in
-`research/vcds-rus-crack.md` (VIN `XW8AD4NE9JH008917`, Škoda NE-SK37, every ECU
-part-number/coding/VCID) — golden fixtures for `vagcan info` regardless of transport.
+### Then — the extensible foundation (architecture)
+```
+MeasurementDef { name, unit, address: Uds(did) | Group(g,field), raw_form, scale }
+MeasurementCatalog::load_from_rod(ecu_rod) -> Vec<MeasurementDef>   // data, not code
+read_measurement(&def, uds) -> (name, value, unit)                 // one generic path
+```
+Add a parameter = a data row / config selection, never new match-arms. Scaling comes
+from `.rod` (when STRUC is reversed) or empirically from a live crib — unified.
 
 ## Hardware checkpoints (STOP, confirm on the real car)
+Dongle: **MKS CANable V2.0 Pro** (STM32G431 + ADM3050E isolated) — fits `vag-can`'s
+`SlcanBackend`, no new backend. Before first use: (a) ensure **slcan** firmware not
+candleLight (candleLight = gs_usb = Linux-only, reflash via BOOT+DFU) → enumerates as
+`/dev/cu.usbmodem*`; (b) wire OBD2 pin 6→CAN-H, 14→CAN-L, 4/5→GND, **do NOT** wire pin 16;
+(c) **TERM jumper OFF**. Open with `SlcanBackend::open("/dev/cu.usbmodem*", baud, Rate500k)`.
 
-Dongle chosen: **MKS CANable V2.0 Pro** (STM32G431 + ADM3050E isolated) — an exact fit for
-`vag-can`'s `SlcanBackend`, no new backend needed. Before first use: (a) ensure **slcan**
-firmware, not candleLight (candleLight = gs_usb = Linux-only, no serial port on macOS; reflash
-via BOOT jumper + DFU if needed) → it enumerates as `/dev/cu.usbmodem*`; (b) wire OBD2 pin
-6→H, 14→L, 4/5→G (power from USB-C, do NOT wire pin 16); (c) **TERM jumper OFF** (the car bus
-is already terminated). Open with `SlcanBackend::open("/dev/cu.usbmodem*", baud, Rate500k)`.
+1. slcan dongle: raw CAN frame TX/RX with the car at 500 kbit/s.
+2. **`vagcan info --port <tty>` prints the real VIN + Engine/Gearbox identity** — this is
+   the M1 live-verification that is still outstanding. Confirm the F187-spaces,
+   DQ200-session, coding-DID caveats here.
+3. If STRUC is still stuck: a live-engine capture (engine polling measuring blocks) gives
+   more `(DID → raw → value)` anchors for the supervised attack.
 
-1. slcan dongle: raw CAN frame TX/RX with the car (500 kbit/s).
-2. `vagcan info --port <tty>` prints the real VIN (`XW8AD4NE9JH008917`) + Engine/Gearbox
-   identity (part no / HW / SW / component / coding). Confirm the F187-spaces, DQ200-session,
-   and coding-DID caveats here.
+**Validation oracle:** the owner's full Auto-Scan is in `research/vcds-rus-crack.md`
+(VIN `XW8AD4NE9JH008917`, every ECU part-number/coding/VCID) — golden fixtures.
 
-## Parked (future, designed but not being implemented now)
-- **Cross-platform runtime (`no_std` core + `vag-runtime-*`)** — spec
-  `docs/superpowers/specs/2026-07-06-cross-platform-runtime-design.md`, M1 plan
-  `docs/superpowers/plans/2026-07-06-cross-platform-runtime-m1.md`. Unblocks desktop
-  tri-platform + ESP32-S3 (USB-host to CANable). Below-the-seam refactor; does not block MVP.
+## Parked (designed, not being implemented now)
+- **HEX-clone live UDS** — blocked by a VMProtect-sealed session KDF; a dead end for the
+  multi-platform/CAN goal even if cracked (`research/clone-crypto.md`). The clone capture
+  decoder (`research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
+- **OBD-II Mode 01** — dropped. The product reads VW measuring blocks from label files,
+  not fixed SAE PIDs.
+- **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan under
+  `docs/superpowers/{specs,plans}/2026-07-06-cross-platform-*`. Below-the-seam refactor.
