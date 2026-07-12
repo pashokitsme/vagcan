@@ -253,6 +253,41 @@ mod tests {
     }
 
     #[test]
+    fn crib_dids_are_not_stored_as_u16_in_struc_records() {
+        // Supervised-crib result (see research/rod-labels.md §M3 attack): the
+        // owner's engine-running capture yields REAL valid measurement DIDs
+        // (the ignition-angle family 0xA058/0xA059/0xA05E/0xA05F, proven to
+        // return raw 0x5555 = 0.00°). If STRUC held the read DID, it would
+        // appear as a u16 (BE or LE) at some byte offset of the decoded record.
+        // These are the EXACT decoded STRUC payloads at the ids that a
+        // "STRUC-id == IDE-measurement-id" mapping would predict for those
+        // channels — and NONE of the crib DIDs appears in any of them. This
+        // pins the negative: the DID is not stored in STRUC.
+        let crib: [u16; 6] = [0xA058, 0xA059, 0xA05E, 0xA05F, 0xA051, 0xA03B];
+        // Real rows from the owner's decoded STRUC.rod (ids 155/156/157/25).
+        let payloads = [
+            "-5-----4-4-3-11091-8",       // id 155
+            "917765655555,5,5_5980_7052", // id 156
+            "185278777779797617146227.",  // id 157
+            "04000003090.02531_05",       // id 25
+        ];
+        for p in payloads {
+            let bytes = StrucRecord { id: 0, encoded: p.to_string() }
+                .decode_base14_be()
+                .unwrap();
+            for &did in &crib {
+                let (hi, lo) = ((did >> 8) as u8, (did & 0xff) as u8);
+                for w in bytes.windows(2) {
+                    assert!(
+                        !(w[0] == hi && w[1] == lo || w[0] == lo && w[1] == hi),
+                        "unexpected DID {did:#06X} found in STRUC payload {p:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn skips_malformed_lines() {
         let text = "garbage line\n000005,-0-----2-2\nno-comma-here\n\n007,X\n";
         let t = StrucTable::parse(text);

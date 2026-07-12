@@ -5,6 +5,7 @@
 //! encrypted compiled `.clb` format ([`clb`]), which decrypts to the same
 //! textual format `label::parse_label` understands.
 
+pub mod catalog;
 pub mod clb;
 pub mod corpus;
 pub mod db;
@@ -15,6 +16,7 @@ pub mod rod;
 pub mod struc;
 mod tea;
 
+pub use catalog::{MeasurementDef, ReadId, Scaling, IGNITION_ANGLE};
 pub use clb::decrypt_clb;
 pub use corpus::{load_corpus, scan_corpus, CorpusLoad, CorpusScan};
 pub use db::LabelDb;

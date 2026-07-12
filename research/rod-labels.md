@@ -326,6 +326,49 @@ fits). Net crib gain: the poll-set membership `{7410,7419,7444,7450,7458,A03B,A0
 349,405,583,1377}` (unordered) and the confirmation that `A03B/A0EF/7458` are additional `0x5555`-band
 angle-family DIDs.
 
+### 4.0c Supervised STRUC × crib attack — DONE, DID-in-STRUC REFUTED (the big negative)
+
+The M3 lever (`todo/README.md` §M3): cross the decoded `STRUC` table with the capture crib's **real
+valid DIDs** to locate the `read_id` field. Ran end-to-end; the result is a clean, multiply-confirmed
+**negative** — the read DID is **not stored in `STRUC` at all**:
+
+- **DID as u16 (BE/LE) at any byte offset of the base-14-decoded record — REFUTED.** Searched all 8,853
+  records × every offset for each of the 13 crib DIDs (`7410,7419,7444,7450,7458,82D4,A03B,A051,A058,
+  A059,A05E,A05F,A0EF`). No `(form,offset)` accumulates more than **5** hits across all 13 DIDs — pure
+  coincidence level for ~8.8k records × ~12 bytes. No `read_id` column exists.
+- **DID as a base-14 field (4- or 5-char window) at any char offset — REFUTED.** Same non-clustering
+  (≤5 hits at any offset). So the DID is not a packed base-14 sub-field either.
+- **`STRUC-id == IDE-measurement-id` — REFUTED.** VCDS's ADVMB `Loc. IDExxxxx` ids for the crib
+  channels include `IDE00149` and `IDE00158` (ignition-regulation and ignition-cyl-4), but `STRUC.rod`
+  has **zero records at ids 149 or 158**. So the STRUC id space is not the IDE measurement space, and
+  reading STRUC record `N` for `IDE00N` yields the wrong/empty record.
+- **`IDE-id == engine-MWB row index` — REFUTED.** The owner-family engine `MWB`
+  (`EV_ECM18TFS0208V0906264A.rod`, cracked here: IV `5a478e243d`, 11,979 B, **1,089 rows**, all
+  `<6-digit text-id>,<2-char code>`) has only 1,089 rows, but `IDE01377` is a logged measurement —
+  out of range. IDE is a global measurement id, not a per-ECU list position.
+- **DID as a literal decimal string anywhere (STRUC/`TTDOP`/`MWB`) — REFUTED.** The few substring hits
+  in the 2.7 MB `TTDOP` blob are chance-level.
+
+**What this fixes for the roadmap:** the §2/§3/§A.2 premise "the read identifier lives in `STRUC.ROD`"
+is now **falsified against ground truth**. Every measurement section across the corpus — `MWB`, `GES`,
+`SOT`, `XPL`, `ADP`, and `DOP` — is uniformly `<id>,<2-char-or-token code>` (confirmed on the
+product-0 reference `EV_EPHBO18…VW48` and the cracked owner `MWB`); **no section carries a 16-bit DID as
+text or as a locatable packed field.** So `read_id` is *not* recoverable from the decoded label bytes at
+the STRUC/DOP/MWB layer as currently understood. The remaining place it could hide is the still-unproven
+`code → table-id` **lookup** (not arithmetic — base-40 already refuted, §3.1) resolving into a record
+whose field codec is also unreversed — i.e. **two stacked unknowns**, and the crib does not collapse
+either. The name join (`text-id → TTTEXT`) that would let the crib label individual MWB rows needs
+`TTTEXT.ROD [TXT]` cracked (mechanical, §1; a full 2³⁶ sweep — left running, not on the critical path
+for this negative).
+
+**Shipped from this pass (`vag-data`):** the honest architectural foundation, seeded only with
+crib-proven data — a `catalog::MeasurementDef { name, unit, address: ReadId::Uds(did), raw_form,
+scaling }` type with a `Scaling::{Linear, Anchor}` enum (so a *partially* reversed measurement is
+representable without inventing the slope), plus `catalog::IGNITION_ANGLE` = the four proven DIDs
+(`A058/A059/A05E/A05F`, `U16Be`, `0x5555 → 0.00°`). Tests assert the zero point and that the crib DIDs
+do **not** appear in the real ignition-family STRUC records (regression-locking the negative). No STRUC
+field layout is invented.
+
 ### 4.1 Static-analysis status
 
 **Not yet provable as scaling formulas.** Getting `identifier + factor/offset + unit + sample
