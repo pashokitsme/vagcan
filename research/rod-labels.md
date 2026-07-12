@@ -285,6 +285,47 @@ constant `0.00°`). Fixes the COMPU offset.
 This establishes the crib direction `G### group / IDE-id ↔ DID` for the engine ignition block
 (`IDE00155/156/157/158 ↔ {A058,A059,A05E,A05F}` as a set), a foothold toward the MWB code→id map.
 
+### 4.0b Wide-rev single-ECU capture — DONE, the "cleaner capture" hypothesis REFUTED
+
+The §4.0a negative prescribed exactly this capture: **one ECU polled through a wide, sustained rev
+with a tight-cadence log**. It was taken — `research/dumps/coolant-rpm-speed.{pcapng,CSV}` (135 s USB
+trace + 77 s VCDS ADVMB log, **single ECU Engine 01 `8V0 906 264 H`**, gitignored, never committed) —
+and it delivers the wide rev: `IDE00405` (RPM) spans **784 → 3807 /min** (a genuine double-rev), speed
+`IDE00075` 0 → 14 km/h (a clean drive-away), coolant `IDE00025` 99 → 104 °C. Tooling:
+`research/clb-crack/measure_{coolant,fit,overlay,channels,probe}.py`.
+
+Decode (channel census `measure_channels.py`): the **two TP-crib channels carry exactly 7 frequently
+polled single-frame RDBI DIDs** `{7410,7419,7444,7450,7458,A03B,A0EF}` (~62–65 samples each) plus
+`82D4` (3 samples); **zero multi-frame responses; the 10 non-TP channels hold ≤64 frames and no
+recoverable DID cluster.** So these 7 DIDs are the entire ADVMB read set, matching the 7 logged IDE
+measurements 1:1 by count — but **not by value**:
+
+- **RPM is absent.** All 7 channels share one clock; the true capture→log lag is **≈ 52 s** (pinned
+  independently by the drive-away window: speed nonzero `t_csv∈[41,72]` ↔ `7458` active
+  `t_cap∈[91,123]`). At that single lag, RPM (`IDE00405`) correlates with **nothing** — `|r| < 0.5`
+  for every DID×{u8,u16be/le,i16be}. No DID's raw reaches the RPM band under any standard scaling
+  (`raw·0.25`→`0x0C40..0x3B7C`, `raw·0.5`, `raw`, `raw·2` all fall outside the observed high bytes).
+  The high per-pair `|r|` (e.g. `A0EF u16be r=-0.96`) occur only at *scattered, per-measurement* lags
+  (RPM's best fits land at lags 34.5 / 40.5 / 68 / 72 / 84 / 88 / 89.5 s — never the true 52 s) and on
+  **near-constant** DIDs — the textbook signature of spurious window-fishing plus overfit, not tracking.
+- **The 2-byte DIDs are angle-family, not RPM/speed.** `A03B` decodes `56 4x` (hi byte pinned `0x56`),
+  `A0EF` decodes `55 4x` (hi byte pinned `0x55`), `7458` idles at `0x55` and swings ± — all in the
+  proven ignition-angle **`0x5555`** band, i.e. engine-internal signed angle/throttle signals. Fitting
+  `7458→speed` needs **negative km/h** (`7458` dips below its `0x55` idle mid-drive); fitting
+  `A0EF→throttle-%` needs a **negative slope** and covers only the idle band — both rejected.
+- **Coolant is absent too.** `IDE00025` rises slowly 99 → 104 °C; the only slowly-drifting DID `7450`
+  *falls* `0xDE(222) → 0xC5(197)` and anti-correlates (`r ≈ −0.66`); `raw·0.75−48` maps it to 118 → 99 °C
+  (wrong direction/magnitude). `7450` is a different, cooling temperature — not the logged coolant.
+
+**Conclusion (refines §4.0a):** a wide rev range is *not* the missing ingredient. VCDS's ADVMB display
+values are computed from raw that the decodable RDBI channels **do not expose** — the polled DIDs on this
+ECU are developer/angle/throttle-internal quantities, while RPM/speed/coolant reach the display via
+group reads (`G004/G006/G009/G052/G067/G096/G138` in the CSV header) whose value-carrying traffic is not
+recoverable here. **No new `(DID, factor, offset)` proves out; none is shipped** (guardrail: no forced
+fits). Net crib gain: the poll-set membership `{7410,7419,7444,7450,7458,A03B,A0EF} ↔ {IDE00025,75,83,
+349,405,583,1377}` (unordered) and the confirmation that `A03B/A0EF/7458` are additional `0x5555`-band
+angle-family DIDs.
+
 ### 4.1 Static-analysis status
 
 **Not yet provable as scaling formulas.** Getting `identifier + factor/offset + unit + sample

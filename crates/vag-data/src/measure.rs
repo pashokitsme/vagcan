@@ -3,13 +3,15 @@
 //!
 //! ## Provenance — an engine-running capture, empirically
 //! The scaling constants here are derived **empirically**, by pairing decoded
-//! raw UDS with VCDS's own displayed values, from an ENGINE-RUNNING capture of
-//! the owner's Škoda Octavia 1.8 TSI (`research/dumps/`, all gitignored — the USB
-//! trace `capture-w-logs.pcapng` plus VCDS ADVMB logs `logs-engine.CSV` /
-//! `logs-dsg.CSV`). The link cipher is decoded per channel; each measurement
-//! DID's raw time-series is aligned to a logged measurement by curve shape
-//! (cross-correlation) and fitted by least squares. Tooling:
-//! `research/clb-crack/measure_{series,ttp,final}.py`.
+//! raw UDS with VCDS's own displayed values, from ENGINE-RUNNING captures of the
+//! owner's Škoda Octavia 1.8 TSI (`research/dumps/`, all gitignored — USB traces
+//! `capture-w-logs.pcapng` and `coolant-rpm-speed.pcapng` plus their VCDS ADVMB
+//! logs `logs-engine.CSV` / `logs-dsg.CSV` / `coolant-rpm-speed.CSV`). The link
+//! cipher is decoded per channel; each measurement DID's raw time-series is
+//! aligned to a logged measurement by curve shape (cross-correlation) and fitted
+//! by least squares. Tooling: `research/clb-crack/measure_{series,ttp,final}.py`
+//! (first capture) and `measure_{coolant,fit,overlay,channels,probe}.py` (the
+//! second, wide-rev capture).
 //!
 //! ## What is PROVEN (and shipped)
 //! The **ignition-angle zero point**: DIDs [`IGNITION_ANGLE_ZERO_DIDS`] each
@@ -25,13 +27,29 @@
 //!   varying ignition-angle DID (`0xA051` ↔ `IDE00149`) shape-matches only loosely
 //!   (best `|r| ≈ 0.86`, non-monotonic raw→° relation, `R² ≈ 0.73`) — not a clean
 //!   linear fit, so no `(factor, offset)` is asserted for it.
-//! - **RPM and vehicle speed.** No decodable DID in this capture tracks either
-//!   with a proof-grade fit: the engine-log session's RPM/speed excursions are
-//!   small and clock-jittered (best `R² ≈ 0.6–0.7`), and the DSG-session channel
-//!   that spans the 682→3800 rev does not linearly track RPM (its clusters give
-//!   `R² ≤ 0.64` with implausible negative slopes). A cleaner capture — a single
-//!   ECU polled through a wide rev range with a tight-cadence log — is needed.
-//!   See the research report / `research/rod-labels.md §4` for the full negative.
+//! - **RPM and vehicle speed.** No decodable DID in either engine-running capture
+//!   tracks either with a proof-grade fit. This was re-tested with the exact
+//!   capture the first pass prescribed — a **single ECU (Engine 01, `8V0 906 264 H`)
+//!   polled through a wide, sustained rev (`IDE00405` = 784 → 3807 /min) with a
+//!   tight ~1.4 s ADVMB log** (`research/dumps/coolant-rpm-speed.{pcapng,CSV}`,
+//!   gitignored). The wide rev is present in the log, yet **no polled DID carries
+//!   it**: at the single true capture→log lag (≈ 52 s, pinned by the drive-away
+//!   window), RPM correlates with *nothing* (`|r| < 0.5` for every DID×form). The
+//!   only decodable RDBI DIDs on the two TP-crib channels are
+//!   `{7410,7419,7444,7450,7458,82D4,A03B,A0EF}` — the 2-byte ones (`A03B`≈`0x56xx`,
+//!   `A0EF`≈`0x55xx`, `7458` idles at `0x55`) sit in the ignition-angle 0x5555 band
+//!   and are near-constant or bidirectional, i.e. engine-internal angle/throttle
+//!   signals, **not** the logged RPM/speed/coolant. High per-pair `|r|` shows up
+//!   only at *inconsistent, per-measurement* lags (RPM's best fits scatter across
+//!   lags 34–90 s) — the signature of spurious window-matching, not tracking. So
+//!   the ADVMB display values are computed from raw the decodable channels do not
+//!   expose; a further capture cannot settle this by rev range alone. See
+//!   `research/rod-labels.md §4` for the full negative.
+//! - **Coolant temp.** Same capture: `IDE00025` rises 99 → 104 °C (slow, monotonic);
+//!   the only slowly-drifting DID (`7450`) *falls* `0xDE → 0xC5` and anti-correlates
+//!   (`r ≈ −0.66`), and the standard `raw·0.75 − 48` maps it to 118 → 99 °C (wrong
+//!   direction and magnitude) — so `7450` is a different, cooling temperature, not
+//!   the logged coolant. No clean fit.
 //!
 //! [`LinearScale`] + [`RawForm`] are the reusable runtime machinery (mirroring
 //! the `MeasurementDef`/`Compu::Linear` model sketched in `research/rod-labels.md
