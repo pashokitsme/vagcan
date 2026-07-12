@@ -23,12 +23,16 @@
 //! as data rows — the extensible foundation the roadmap calls for (add a
 //! parameter = add a row, never a new match arm).
 
+use std::borrow::Cow;
+
+use serde::{Deserialize, Serialize};
+
 use crate::measure::{LinearScale, RawForm};
 
 /// How a measurement value is addressed on the ECU. Today only UDS
 /// `ReadDataByIdentifier` (service `0x22`, a 16-bit DID) is modelled; group
 /// reads (`RecordLocalId`) can be added as a sibling variant when needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadId {
     /// UDS `ReadDataByIdentifier` DID (the `62 <hi> <lo>` echo identifies it).
     Uds(u16),
@@ -38,7 +42,7 @@ pub enum ReadId {
 /// so a **partially** reversed measurement is representable without fabricating
 /// the missing part — the honest state for this car, where the ignition zero
 /// point is proven but the slope is not.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Scaling {
     /// A fully-proven linear COMPU method: `value = raw * factor + offset`.
     Linear(LinearScale),
@@ -55,14 +59,16 @@ pub enum Scaling {
 }
 
 /// One catalog row: a fully-described (or honestly partially-described)
-/// measurement. `'static` strings because the seeded rows are compile-time
-/// constants; a future `.rod`-driven loader would own `String`s instead.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// measurement. Strings are [`Cow`] so a compile-time-seeded row borrows a
+/// `&'static str` for free while a config- or crib-loaded row owns a `String` —
+/// the same type serves both the hand-proven constants and the future
+/// `.rod`/capture-driven catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeasurementDef {
     /// Human name (as VCDS displays it).
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     /// Engineering unit (`"°"`, `"/min"`, `"°C"`, …); empty if dimensionless.
-    pub unit: &'static str,
+    pub unit: Cow<'static, str>,
     /// How the value is read from the ECU.
     pub address: ReadId,
     /// How to extract the raw integer from the RDBI response data bytes.
@@ -95,25 +101,65 @@ impl MeasurementDef {
 /// `IDE00155/156/157/158` is **not individually determined** (all four read a
 /// constant `0.00°` over the capture), so the name is the family name, not a
 /// cylinder number, and the slope is left as an [`Scaling::Anchor`] (unproven).
-pub const IGNITION_ANGLE: &[MeasurementDef] = &[
-    ignition_def(0xA058),
-    ignition_def(0xA059),
-    ignition_def(0xA05E),
-    ignition_def(0xA05F),
-];
+pub fn ignition_angle() -> Vec<MeasurementDef> {
+    [0xA058u16, 0xA059, 0xA05E, 0xA05F]
+        .into_iter()
+        .map(ignition_def)
+        .collect()
+}
 
-/// Build a proven ignition-angle catalog row for one DID (const-fn so
-/// [`IGNITION_ANGLE`] is a compile-time constant).
-const fn ignition_def(did: u16) -> MeasurementDef {
+/// Build a proven ignition-angle catalog row for one DID.
+fn ignition_def(did: u16) -> MeasurementDef {
     MeasurementDef {
-        name: "Ignition angle",
-        unit: crate::measure::IGNITION_ANGLE_UNIT,
+        name: Cow::Borrowed("Ignition angle"),
+        unit: Cow::Borrowed(crate::measure::IGNITION_ANGLE_UNIT),
         address: ReadId::Uds(did),
         raw_form: RawForm::U16Be,
         scaling: Scaling::Anchor {
             raw: crate::measure::IGNITION_ANGLE_ZERO_RAW as i32,
             value: 0.0,
         },
+    }
+}
+
+/// A selectable set of measurement definitions — the user's chosen catalog.
+///
+/// Serializable so it round-trips to a config file (`load`/`save`): the user
+/// picks which measurements to read, and a crib-derived or `.rod`-derived
+/// catalog persists as data, never code.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MeasurementCatalog {
+    pub defs: Vec<MeasurementDef>,
+}
+
+impl MeasurementCatalog {
+    /// A catalog holding the given definitions.
+    pub fn new(defs: Vec<MeasurementDef>) -> Self {
+        MeasurementCatalog { defs }
+    }
+
+    /// The catalog seeded with everything proven so far (today: the ignition
+    /// family). This is the baseline a fresh install ships with.
+    pub fn seeded() -> Self {
+        MeasurementCatalog::new(ignition_angle())
+    }
+
+    pub fn len(&self) -> usize {
+        self.defs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.defs.is_empty()
+    }
+
+    /// Serialize the catalog to pretty JSON (the config format).
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Parse a catalog from JSON (a saved config).
+    pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
     }
 }
 
@@ -125,8 +171,8 @@ mod tests {
     fn linear_row_interprets_every_raw() {
         // The reusable machinery: a fully-known linear row converts any raw.
         let def = MeasurementDef {
-            name: "Coolant temp",
-            unit: "°C",
+            name: Cow::Borrowed("Coolant temp"),
+            unit: Cow::Borrowed("°C"),
             address: ReadId::Uds(0x1234),
             raw_form: RawForm::U8First,
             scaling: Scaling::Linear(LinearScale { factor: 0.75, offset: -48.0 }),
@@ -144,7 +190,8 @@ mod tests {
     fn anchor_row_only_converts_the_proven_point() {
         // Honest partial knowledge: the anchor row yields the proven value at
         // the proven raw, and refuses (None) elsewhere — no invented slope.
-        let def = IGNITION_ANGLE[0];
+        let defs = ignition_angle();
+        let def = &defs[0];
         // The exact captured data bytes after the `62 A0 58` echo.
         assert_eq!(def.interpret(&[0x55, 0x55]), Some(0.0));
         // Any other raw: slope unknown -> no guess.
@@ -156,7 +203,8 @@ mod tests {
     fn ignition_family_is_the_four_proven_dids_at_the_zero_point() {
         // Cross-check the catalog against the proven crib: exactly the four
         // ignition DIDs, each U16Be, each mapping raw 0x5555 -> 0.00°.
-        let dids: Vec<u16> = IGNITION_ANGLE
+        let defs = ignition_angle();
+        let dids: Vec<u16> = defs
             .iter()
             .map(|d| match d.address {
                 ReadId::Uds(did) => did,
@@ -164,11 +212,35 @@ mod tests {
             .collect();
         assert_eq!(dids, vec![0xA058, 0xA059, 0xA05E, 0xA05F]);
         assert_eq!(dids, crate::measure::IGNITION_ANGLE_ZERO_DIDS.to_vec());
-        for def in IGNITION_ANGLE {
+        for def in &defs {
             assert_eq!(def.unit, "°");
             assert_eq!(def.raw_form, RawForm::U16Be);
             // The captured raw 0x5555 -> displayed 0.00°.
             assert_eq!(def.interpret(&[0x55, 0x55]), Some(0.0));
         }
+    }
+
+    #[test]
+    fn catalog_round_trips_through_json_config() {
+        // The user-facing config: a catalog (mix of proven anchor + a fully
+        // linear row) survives save→load byte-for-byte, so config selection is
+        // pure data.
+        let mut cat = MeasurementCatalog::seeded();
+        cat.defs.push(MeasurementDef {
+            name: Cow::Owned("Engine RPM".to_string()),
+            unit: Cow::Owned("/min".to_string()),
+            address: ReadId::Uds(0xF40C),
+            raw_form: RawForm::U16Be,
+            scaling: Scaling::Linear(LinearScale { factor: 0.25, offset: 0.0 }),
+        });
+
+        let json = cat.to_json().expect("serialize");
+        let back = MeasurementCatalog::from_json(&json).expect("deserialize");
+
+        assert_eq!(back, cat);
+        assert_eq!(back.len(), 5); // 4 ignition + 1 RPM
+        // The linear row interprets a real raw after the round-trip.
+        let rpm = &back.defs[4];
+        assert_eq!(rpm.interpret(&[0x0B, 0x34]), Some(717.0)); // 0x0B34=2868 *0.25
     }
 }

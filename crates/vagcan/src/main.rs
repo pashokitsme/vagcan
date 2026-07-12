@@ -194,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
 /// re-address it for the Gearbox — one port, two ECUs, no re-open.
 async fn info(port: Option<&str>, baud: u32) -> anyhow::Result<()> {
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
-    use vag_protocol::{AsyncUdsClient, read_identity};
+    use vag_protocol::{AsyncUdsClient, UdsReadExt};
 
     let Some(port) = port else {
         println!(
@@ -215,13 +215,13 @@ async fn info(port: Option<&str>, baud: u32) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("opening slcan adapter at {port:?} ({baud} baud)"))?;
     let mut engine_uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, 0));
-    let engine = read_identity(&mut engine_uds).await;
+    let engine = engine_uds.read_identity().await;
 
     // Recover the single serial channel and re-address it for the Gearbox
     // (ECU index 1 → tester 0x7E1 / ECU 0x7E9).
     let backend = engine_uds.into_transport().into_backend();
     let mut gearbox_uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, 1));
-    let gearbox = read_identity(&mut gearbox_uds).await;
+    let gearbox = gearbox_uds.read_identity().await;
 
     // VIN is a global identifier; take it from the Engine's F190.
     println!("{}", render_info(engine.vin.as_deref(), &engine, &gearbox));

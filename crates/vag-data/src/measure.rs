@@ -58,7 +58,7 @@
 /// How to read an integer out of an RDBI response's data bytes (the bytes after
 /// the `62 <DID hi> <DID lo>` echo). VAG measurements are 1- or 2-byte; both byte
 /// orders occur, so the interpretation is part of each measurement's definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawForm {
     /// First data byte as unsigned 8-bit.
     U8First,
@@ -98,7 +98,7 @@ impl RawForm {
 /// A linear COMPU-METHOD: `engineering = raw * factor + offset`. This is the VAG
 /// default (RPM ≈ raw·0.25, speed ≈ raw·0.01, temp ≈ raw·0.75 − 48, …). Non-linear
 /// / table methods are not modelled yet (none is proven for this car).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearScale {
     /// Multiplier applied to the raw integer.
     pub factor: f64,

@@ -16,7 +16,7 @@ pub mod rod;
 pub mod struc;
 mod tea;
 
-pub use catalog::{MeasurementDef, ReadId, Scaling, IGNITION_ANGLE};
+pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
 pub use clb::decrypt_clb;
 pub use corpus::{load_corpus, scan_corpus, CorpusLoad, CorpusScan};
 pub use db::LabelDb;
