@@ -50,7 +50,14 @@ async fn main() {
                     match backend.recv_frame(Duration::from_millis(300)).await {
                         Ok((id, data)) => {
                             if seen < 3 {
-                                println!("  heard {id:03X}  {data:02X?}");
+                                // Bit 31 is the extended-id marker, not part of
+                                // the id — printing it raw invents a 0x9… id.
+                                let text = if id & vag_can::CAN_EFF_FLAG != 0 {
+                                    format!("{:08X}", id & vag_can::CAN_EFF_MASK)
+                                } else {
+                                    format!("{id:03X}")
+                                };
+                                println!("  heard {text}  {data:02X?}");
                             }
                             seen += 1;
                         }

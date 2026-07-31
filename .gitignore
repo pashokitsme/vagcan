@@ -25,3 +25,8 @@ research/dumps/
 
 # VCDS install symlinks — proprietary Ross-Tech label/ODX data, never commit
 research/vcds-data/
+
+# Capture artifacts written by `vagcan sniff` / `scan-dids`: bus traffic from a
+# real car, so they carry the VIN. Never committed.
+/*.jsonl
+research/dumps/

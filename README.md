@@ -21,10 +21,10 @@ Milestones (see `todo/README.md` for the live task list):
 | M | Component | State |
 |---|---|---|
 | M0 | ISO-TP + UDS + transport stack (read-only) | ✅ done |
-| M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | 🟡 built, **mock-tested only — NOT yet verified on the real car** |
+| M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | ✅ **verified on the real car 2026-08-01** (VIN + both passports match the Auto-Scan oracle) |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan labels` corpus tool | ✅ done |
 | **M3** | **Measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🔴 **current — the offline path is refuted; now needs a live crib** |
-| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | 🟡 bench-verified (slcan firmware, responsive); **not yet on the car** |
+| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | ✅ live on the car — reads and writes at 500 kbit/s |
 
 **Where it stands (M3):** every `.rod` label table is decrypted and inflated inside our own
 tool (`vag-data`, `vag-rod` bin) and the packed payload codec is proven to be **base-14**

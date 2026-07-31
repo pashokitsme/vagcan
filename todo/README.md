@@ -22,10 +22,10 @@ ship; both are hardware-ready and blocked only on a session in the car.
 | M | what | state |
 |---|------|-------|
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
-| M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | 🟡 **mock-tested only — NOT verified on the real car** |
+| M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
 | **M3** | measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🔴 **current — offline path refuted; now needs live crib** |
-| HW | generic USB-CAN (MKS CANable) bring-up on the car | 🟡 bench-verified; **not yet on the car** |
+| HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
 | subsystem | crate | what |
@@ -33,7 +33,8 @@ ship; both are hardware-ready and blocked only on a session in the car.
 | async-core | vag-transport | async transport trait(s) + mock, error model |
 | uds-async | vag-protocol | async ISO-TP (15765-2) + UDS client (14229), read-only allowlist |
 | generic-can | vag-can | `SlcanBackend` + `IsoTpCan` (the bypass transport — built, untested on hw) |
-| info-identity | vag-protocol/vagcan | `EcuIdentity` + `read_identity` + `vagcan info` (Engine 01 + Gearbox 02). **Mock-tested; live run pends the CANable** |
+| info-identity | vag-protocol/vagcan | `EcuIdentity` + `read_identity` + `vagcan info` (Engine 01 + Gearbox 02). **Live-verified on the car** |
+| can-sniff | vag-can/vagcan | `SlcanMode::Silent`, passive `IsoTpSniffer`, `vagcan sniff`, `vagcan scan-dids`, `bus_doctor` |
 | label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
@@ -112,13 +113,33 @@ Before touching the car: wire OBD2 pin 6→CAN-H, 14→CAN-L, 4/5→GND, **do NO
 resistor drags it to 40 Ω); leave **BOOT** open (DFU only).
 
 Risk climbs monotonically — stop and confirm at each step:
-1. **`vagcan sniff --port <tty>`, no VCDS.** Any broadcast traffic proves wiring, bitrate and
-   RX. Zero risk: listen-only cannot even ACK.
-2. **`vagcan sniff` + VCDS in parallel**, VCDS logging ADVMB to CSV, engine running, wide rev.
-   The trophy — see "Next lever" above.
-3. **`vagcan info --port <tty>`** — first transmission; closes the outstanding M1 live
-   verification. Confirm the F187-spaces, DQ200-session, coding-DID caveats here.
-4. **`vagcan scan-dids --port <tty> --ecu 0`** — the widest active read.
+1. ✅ **`vagcan sniff --port <tty>`, no VCDS.** Zero risk: listen-only cannot even ACK.
+2. 🔴 **`vagcan sniff` + VCDS in parallel**, VCDS logging ADVMB to CSV, engine running, wide
+   rev. The trophy — see "Next lever" above. **Next action.**
+3. ✅ **`vagcan info --port <tty>`** — done 2026-08-01, see below.
+4. 🔴 **`vagcan scan-dids --port <tty> --ecu 0`** — the widest active read.
+
+### First live session — 2026-08-01 (M1 CLOSED)
+`vagcan info` over the CANable read the car and matched the Auto-Scan oracle on four
+independent points: VIN `XW8AD4NE9JH008917`; Engine `8V0906264H` (the very part whose
+`EV_ECM18TFS0208V0906264H.rod` the label work is built on) / HW `06K907425B` (the
+`06K-907-425-V1/V2.clb` pair) / `1.8l R4 TFSI`; Gearbox `0CW300041G`, `GSG DQ200G2_M`,
+SW `1003` — the same `1003` the old USB capture crib yielded.
+
+What the bus actually looks like, measured rather than assumed:
+- **The OBD-II diagnostic line is nearly silent.** 8 s of listening yields ~46 frames, all
+  one periodic extended id `0x17F00010` (~6 Hz) from the gateway. So *silence is not
+  evidence of a fault* on this platform, and `bus_doctor`'s functional-address probe is the
+  test that discriminates.
+- **Physical addressing only.** `0x7E0/0x7E8` answers; the functional broadcast `0x7DF`
+  times out — the VAG gateway does not serve it on OBD.
+- Rates other than 500k produce nothing, as expected.
+
+Debugging note worth keeping: the adapter can enumerate on USB (correct VID/PID/serial in
+`system_profiler`) while macOS attaches **no** serial node — `/dev/cu.usbmodem*` simply is
+not there and every open fails with "No such file or directory". That is a USB-stack hang,
+not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
+`ls /dev/cu.usbmodem*` before believing any "the bus is dead" result.
 
 **Validation oracle:** the owner's full Auto-Scan is in `research/vcds-rus-crack.md`
 (VIN `XW8AD4NE9JH008917`, every ECU part-number/coding/VCID) — golden fixtures.
