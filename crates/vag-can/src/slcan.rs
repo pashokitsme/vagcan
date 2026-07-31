@@ -185,6 +185,72 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CanBackend for SlcanBackend<S> {
     }
 }
 
+/// A serial device that could be a CAN adapter.
+#[cfg(feature = "slcan")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterInfo {
+    /// Device path to open (e.g. `/dev/cu.usbmodem…`).
+    pub path: String,
+    /// Human description: product string, or the USB ids when there is none.
+    pub description: String,
+    /// True when the USB ids match an adapter we know speaks slcan.
+    pub known: bool,
+}
+
+/// USB ids of adapters known to run slcan firmware. Used only to *rank*
+/// candidates — an unknown device is still offered, since plenty of adapters
+/// speak slcan under other ids.
+#[cfg(feature = "slcan")]
+const KNOWN_ADAPTERS: &[(u16, u16, &str)] = &[
+    (0x16d0, 0x117e, "CANable 2.0 (slcan)"),
+    (0x16d0, 0x117f, "CANable (slcan)"),
+    (0xad50, 0x60c4, "CANable (slcan, older)"),
+];
+
+/// List serial devices that plausibly are CAN adapters, known ones first.
+///
+/// Bluetooth and console ports are filtered out: they are serial devices, but
+/// offering them as CAN adapters only invites picking one by mistake.
+#[cfg(feature = "slcan")]
+pub fn list_adapters() -> Result<Vec<AdapterInfo>, CanError> {
+    use tokio_serial::{SerialPortType, available_ports};
+
+    let ports = available_ports().map_err(|e| CanError::Io(e.to_string()))?;
+    let mut out = Vec::new();
+    for port in ports {
+        // macOS exposes both `tty.*` (blocking, for incoming calls) and `cu.*`
+        // (call-out) nodes for one device; `cu.*` is the one to open.
+        if port.port_name.contains("/tty.") {
+            continue;
+        }
+        // USB only. Bluetooth serial ports are also "serial ports" — a paired
+        // pair of headphones shows up as one — and offering those as CAN
+        // adapters just invites picking the wrong device. Filtering by port
+        // TYPE catches them all; filtering by name does not, since they are
+        // named after the peripheral.
+        let SerialPortType::UsbPort(usb) = &port.port_type else {
+            continue;
+        };
+        let known = KNOWN_ADAPTERS.iter().find(|(v, p, _)| *v == usb.vid && *p == usb.pid);
+        let description = match known {
+            Some((_, _, name)) => (*name).to_string(),
+            None => usb
+                .product
+                .clone()
+                .unwrap_or_else(|| format!("USB {:04x}:{:04x}", usb.vid, usb.pid)),
+        };
+        out.push(AdapterInfo { path: port.port_name, description, known: known.is_some() });
+    }
+    // Known adapters first, then alphabetically, so the default pick is stable.
+    out.sort_by(|a, b| b.known.cmp(&a.known).then_with(|| a.path.cmp(&b.path)));
+    Ok(out)
+}
+
+/// An slcan backend over a real serial port — the concrete type callers name
+/// without having to depend on `tokio-serial` themselves.
+#[cfg(feature = "slcan")]
+pub type SerialSlcan = SlcanBackend<tokio_serial::SerialStream>;
+
 /// Open a real slcan serial adapter and open its CAN channel.
 #[cfg(feature = "slcan")]
 impl SlcanBackend<tokio_serial::SerialStream> {

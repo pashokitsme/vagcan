@@ -10,6 +10,11 @@
 //! `pdu` would reject anything else anyway). Every DID is read independently —
 //! an ECU that does not implement one identifier simply leaves that field
 //! `None`; it never aborts the whole read.
+//!
+//! The identifier set and the padding behaviour were verified against the
+//! reference car on 2026-08-01 (see the golden tests): VW pads its text fields
+//! with a trailing space or NUL, part numbers carry no interior spaces, and the
+//! engine does not implement the serial-number identifier at all.
 
 use vag_transport::AsyncIsoTpTransport;
 
@@ -55,6 +60,21 @@ fn trim_ascii(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .trim_end_matches(|c: char| c == ' ' || c.is_control())
         .to_string()
+}
+
+impl EcuIdentity {
+    /// True when the control unit answered nothing at all — every field is
+    /// absent. Distinguishes "this ECU is not present / not reachable" from
+    /// "present, but sparse", which matters for what the CLI should print.
+    pub fn is_empty(&self) -> bool {
+        self.vin.is_none()
+            && self.part_number.is_none()
+            && self.hw_number.is_none()
+            && self.sw_version.is_none()
+            && self.component.is_none()
+            && self.serial.is_none()
+            && self.coding.is_none()
+    }
 }
 
 /// Read one ASCII-valued DID, mapping any failure (negative response, timeout,
@@ -114,18 +134,18 @@ mod tests {
     ];
 
     #[tokio::test]
-    async fn golden_identity_from_real_autoscan_values() {
-        // Owner's real Škoda Octavia Auto-Scan values (engine, address 01).
-        // NOTE: F187 is modelled here WITHOUT interior spaces (`8V0906264H`);
-        // whether the live wire pads it with spaces is an assumption to confirm
-        // against a real read (see the reader's module docs).
+    async fn golden_engine_identity_is_the_bytes_the_car_really_sends() {
+        // Captured off the reference car (Škoda Octavia III 1.8 TFSI, engine at
+        // address 01) on 2026-08-01 — these are the wire bytes, not a model of
+        // them. Note what the car actually does: F187 and F191 carry ONE
+        // trailing space and no interior spaces, F197 is "1.8l R4 TFSI" in that
+        // word order, and the engine does not implement F18C at all.
         let vin = b"XW8AD4NE9JH008917";
-        let part = b"8V0906264H";
-        let hw = b"8V0906264";
-        let sw = b"0004";
-        let component = b"R4 1.8l TFSI    "; // trailing pad → trimmed
-        let serial = b"VWZZZ7Z0K1234567";
-        let coding = [0x01, 0x2A, 0x00, 0x04];
+        let part = b"8V0906264H ";
+        let hw = b"06K907425B ";
+        let sw = b"0005";
+        let component = b"1.8l R4 TFSI ";
+        let coding = [0x0c, 0x25, 0x00, 0x12, 0x23, 0x24, 0x04, 0x0b, 0x00, 0x00];
 
         let script = vec![
             (req(ORDER[0]), resp(ORDER[0], vin)),
@@ -133,7 +153,8 @@ mod tests {
             (req(ORDER[2]), resp(ORDER[2], hw)),
             (req(ORDER[3]), resp(ORDER[3], sw)),
             (req(ORDER[4]), resp(ORDER[4], component)),
-            (req(ORDER[5]), resp(ORDER[5], serial)),
+            // The engine refuses the serial-number identifier.
+            (req(ORDER[5]), vec![0x7F, 0x22, 0x31]),
             (req(ORDER[6]), resp(ORDER[6], &coding)),
         ];
         let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
@@ -142,13 +163,53 @@ mod tests {
 
         assert_eq!(id.vin.as_deref(), Some("XW8AD4NE9JH008917"));
         assert_eq!(id.vin.as_deref().map(str::len), Some(17));
-        assert_eq!(id.part_number.as_deref(), Some("8V0906264H"));
-        assert_eq!(id.hw_number.as_deref(), Some("8V0906264"));
-        assert_eq!(id.sw_version.as_deref(), Some("0004"));
-        assert_eq!(id.component.as_deref(), Some("R4 1.8l TFSI"));
-        assert_eq!(id.serial.as_deref(), Some("VWZZZ7Z0K1234567"));
-        assert_eq!(id.coding.as_deref(), Some([0x01, 0x2A, 0x00, 0x04].as_slice()));
+        assert_eq!(id.part_number.as_deref(), Some("8V0906264H"), "trailing pad trimmed");
+        assert_eq!(id.hw_number.as_deref(), Some("06K907425B"));
+        assert_eq!(id.sw_version.as_deref(), Some("0005"));
+        assert_eq!(id.component.as_deref(), Some("1.8l R4 TFSI"));
+        assert_eq!(id.serial, None, "the engine does not implement F18C");
+        assert_eq!(id.coding.as_deref(), Some(coding.as_slice()));
+        assert!(!id.is_empty());
         assert!(uds.into_transport().is_exhausted(), "whole script consumed");
+    }
+
+    #[tokio::test]
+    async fn golden_gearbox_identity_is_the_bytes_the_car_really_sends() {
+        // Same session, gearbox at address 02 (DQ200). Unlike the engine it
+        // does answer F18C, and pads it with a NUL rather than a space — both
+        // paddings have to trim.
+        let script = vec![
+            (req(ORDER[0]), resp(ORDER[0], b"XW8AD4NE9JH008917")),
+            (req(ORDER[1]), resp(ORDER[1], b"0CW300041G ")),
+            (req(ORDER[2]), resp(ORDER[2], b"0AM927769E ")),
+            (req(ORDER[3]), resp(ORDER[3], b"1003")),
+            (req(ORDER[4]), resp(ORDER[4], b"GSG DQ200G2_M")),
+            (req(ORDER[5]), resp(ORDER[5], b"CU501702277773\0")),
+            (req(ORDER[6]), resp(ORDER[6], &[0x00, 0x14])),
+        ];
+        let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
+
+        let id = read_identity(&mut uds).await;
+
+        assert_eq!(id.part_number.as_deref(), Some("0CW300041G"));
+        assert_eq!(id.hw_number.as_deref(), Some("0AM927769E"));
+        assert_eq!(id.sw_version.as_deref(), Some("1003"));
+        assert_eq!(id.component.as_deref(), Some("GSG DQ200G2_M"), "no padding on this one");
+        assert_eq!(id.serial.as_deref(), Some("CU501702277773"), "NUL padding trimmed");
+        assert_eq!(id.coding.as_deref(), Some([0x00, 0x14].as_slice()));
+    }
+
+    #[tokio::test]
+    async fn an_ecu_that_answers_nothing_is_reported_as_empty() {
+        // Every identifier refused — the shape of reading an address the car
+        // does not have. Must be distinguishable from a sparse answer.
+        let script: Vec<(Vec<u8>, Vec<u8>)> =
+            ORDER.iter().map(|d| (req(*d), vec![0x7F, 0x22, 0x31])).collect();
+        let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
+
+        let id = read_identity(&mut uds).await;
+
+        assert!(id.is_empty(), "nothing answered → empty");
     }
 
     #[tokio::test]
@@ -161,9 +222,9 @@ mod tests {
             (req(did::PART_NUMBER), resp(did::PART_NUMBER, b"8V0906264H")),
             // Negative response: [0x7F, sid, nrc=0x31 requestOutOfRange].
             (req(did::HW_NUMBER), vec![0x7F, 0x22, 0x31]),
-            (req(did::SW_VERSION), resp(did::SW_VERSION, b"0004")),
+            (req(did::SW_VERSION), resp(did::SW_VERSION, b"0005")),
             (req(did::COMPONENT), resp(did::COMPONENT, b"R4 1.8l TFSI")),
-            (req(did::SERIAL), resp(did::SERIAL, b"VWZZZ7Z0K1234567")),
+            (req(did::SERIAL), resp(did::SERIAL, b"CU501702277773")),
             (req(did::CODING), resp(did::CODING, &[0x01, 0x2A])),
         ];
         let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
@@ -172,7 +233,7 @@ mod tests {
 
         assert_eq!(id.hw_number, None, "unsupported DID → None");
         assert_eq!(id.vin.as_deref(), Some("XW8AD4NE9JH008917"));
-        assert_eq!(id.sw_version.as_deref(), Some("0004"));
+        assert_eq!(id.sw_version.as_deref(), Some("0005"));
         assert_eq!(id.coding.as_deref(), Some([0x01, 0x2A].as_slice()));
     }
 
@@ -184,9 +245,9 @@ mod tests {
             (req(did::VIN), resp(did::VIN, b"XW8AD4NE9JH008917")),
             (req(did::PART_NUMBER), resp(did::PART_NUMBER, b"8V0906264H")),
             (req(did::HW_NUMBER), resp(did::HW_NUMBER, b"8V0906264")),
-            (req(did::SW_VERSION), resp(did::SW_VERSION, b"0004")),
+            (req(did::SW_VERSION), resp(did::SW_VERSION, b"0005")),
             (req(did::COMPONENT), resp(did::COMPONENT, b"R4 1.8l TFSI")),
-            (req(did::SERIAL), resp(did::SERIAL, b"VWZZZ7Z0K1234567")),
+            (req(did::SERIAL), resp(did::SERIAL, b"CU501702277773")),
             // Coding DID: an empty response PDU → Malformed → None.
             (req(did::CODING), vec![]),
         ];
@@ -195,7 +256,7 @@ mod tests {
         let id = read_identity(&mut uds).await;
 
         assert_eq!(id.coding, None);
-        assert_eq!(id.serial.as_deref(), Some("VWZZZ7Z0K1234567"));
+        assert_eq!(id.serial.as_deref(), Some("CU501702277773"));
     }
 
     #[test]

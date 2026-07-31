@@ -127,6 +127,82 @@ pub fn format_hit(hit: &DidHit) -> String {
     format!("{:04X}  {}{}", hit.did, hex.join(" "), text)
 }
 
+/// Sweep one control unit's identifiers against a real adapter (the `vagcan
+/// scan` command).
+pub async fn run(
+    device_path: &str,
+    baud: u32,
+    ecu: u8,
+    range: &str,
+    out: Option<&str>,
+    delay_ms: u64,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use std::io::Write;
+    use std::time::Instant;
+    use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
+
+    let ranges = parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
+    let total = total_dids(&ranges);
+
+    let mut sink: Option<std::io::BufWriter<std::fs::File>> = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .with_context(|| format!("creating results file {path:?}"))?;
+            Some(std::io::BufWriter::new(file))
+        }
+        None => None,
+    };
+
+    let backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
+        .await
+        .with_context(|| format!("opening the adapter at {device_path}"))?;
+    let mut uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, ecu));
+
+    println!("scanning control unit {:02} — {total} identifiers ({range})\n", ecu + 1);
+    let started = Instant::now();
+    let stats = scan_dids(
+        &mut uds,
+        &ranges,
+        Duration::from_millis(delay_ms),
+        // Roughly a keep-alive every couple of seconds at the default pace.
+        400,
+        |hit: &DidHit| {
+            println!("{}", format_hit(hit));
+            if let Some(w) = sink.as_mut() {
+                // JSON lines, so results join against a capture without a parser.
+                let line = serde_json::json!({
+                    "did": format!("{:04X}", hit.did),
+                    "data": hit.data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""),
+                });
+                writeln!(w, "{line}")?;
+            }
+            Ok(())
+        },
+    )
+    .await?;
+    if let Some(w) = sink.as_mut() {
+        w.flush()?;
+    }
+
+    println!(
+        "\n{} of {} identifiers answered ({} refused, {} unanswered) in {:.1}s",
+        stats.hits,
+        stats.asked,
+        stats.refused,
+        stats.failed,
+        started.elapsed().as_secs_f64()
+    );
+    if stats.failed == stats.asked && stats.asked > 0 {
+        println!(
+            "\nNothing answered at all. Check the ignition, the wiring (OBD-II pin 6 → CAN-H, \
+             pin 14 → CAN-L), the termination jumper being OFF, and that --ecu names a control \
+             unit this car has."
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

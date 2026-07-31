@@ -39,7 +39,7 @@ ship; both are hardware-ready and blocked only on a session in the car.
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
 | labels-cli | vagcan | `vagcan labels` — corpus inventory + `--part` / `--block` lookup |
-| cli-app | vagcan | `doctor` / `decode` / `probe` / `handshake` / `replay-drive` / `info` / `labels` |
+| cli-app | vagcan | `devices` / `info` / `properties` / `sniff` / `scan` / `labels` (HEX-clone commands removed) |
 
 ## M3 — measurements from `.rod` (the current work)
 
@@ -81,8 +81,9 @@ Tooling (built, `docs/superpowers/specs/2026-07-31-can-sniffer-design.md`):
   operator markers from stdin. The anchor exists because the capture↔CSV lag had to be
   *guessed* last time (~52 s), which is how several "correlations" turned out to be
   window-fishing.
-- `vagcan scan-dids --port <tty> --ecu 0` — read-only sweep of the RDBI space; finds what
-  the ECU exposes regardless of what any label file names.
+- `vagcan scan --ecu 01` — read-only sweep of the RDBI space; finds what the ECU exposes
+  regardless of what any label file names.
+- `vagcan properties --ecu 01` — the identification range, named.
 
 The pairing to collect: sniff + VCDS running ADVMB logging to CSV, engine running, a wide
 rev. That yields `(read address → raw bytes → displayed engineering value)` directly, with
@@ -113,11 +114,11 @@ Before touching the car: wire OBD2 pin 6→CAN-H, 14→CAN-L, 4/5→GND, **do NO
 resistor drags it to 40 Ω); leave **BOOT** open (DFU only).
 
 Risk climbs monotonically — stop and confirm at each step:
-1. ✅ **`vagcan sniff --port <tty>`, no VCDS.** Zero risk: listen-only cannot even ACK.
+1. ✅ **`vagcan sniff`, no VCDS.** Zero risk: listen-only cannot even ACK.
 2. 🔴 **`vagcan sniff` + VCDS in parallel**, VCDS logging ADVMB to CSV, engine running, wide
    rev. The trophy — see "Next lever" above. **Next action.**
-3. ✅ **`vagcan info --port <tty>`** — done 2026-08-01, see below.
-4. 🔴 **`vagcan scan-dids --port <tty> --ecu 0`** — the widest active read.
+3. ✅ **`vagcan info`** — done 2026-08-01, see below.
+4. ✅ **`vagcan scan`** — swept `F100-F1FF` on both units, 2026-08-01.
 
 ### First live session — 2026-08-01 (M1 CLOSED)
 `vagcan info` over the CANable read the car and matched the Auto-Scan oracle on four

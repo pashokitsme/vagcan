@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-vag-hex = { path = "../vag-hex" }
 vag-protocol = { path = "../vag-protocol" }
 vag-transport = { path = "../vag-transport", features = ["test-util"] }
 vag-can = { path = "../vag-can", features = ["slcan"] }

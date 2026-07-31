@@ -217,6 +217,129 @@ impl<W: Write> SniffSession<W> {
     }
 }
 
+/// Run a sniffing session against a real adapter (the `vagcan sniff` command).
+///
+/// The loop polls the adapter with a short receive window rather than awaiting
+/// frames inside a `select!`: Ctrl-C and marker input then reach us between
+/// whole frames, and no half-consumed serial read can be cancelled.
+pub async fn run(
+    device_path: &str,
+    baud: u32,
+    out: Option<&str>,
+    diag_only: bool,
+    seconds: Option<u64>,
+    active: bool,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant, SystemTime};
+    use vag_can::{CanBackend, CanError, SlcanBackend, SlcanBitrate, SlcanMode};
+
+    let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
+    let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, mode)
+        .await
+        .with_context(|| format!("opening the adapter at {device_path}"))?;
+
+    let capture: Option<Box<dyn Write>> = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .with_context(|| format!("creating capture file {path:?}"))?;
+            Some(Box::new(std::io::BufWriter::new(file)))
+        }
+        None => None,
+    };
+    let unix_us = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    let mut session = SniffSession::new(capture, unix_us, diag_only)?;
+
+    println!(
+        "listening at 500 kbit/s, {}{}{}",
+        if active { "NORMAL mode — the adapter will acknowledge frames" } else { "listen-only" },
+        match out {
+            Some(path) => format!(", writing {path}"),
+            None => String::new(),
+        },
+        if diag_only { ", diagnostic traffic only" } else { "" },
+    );
+    println!("type a note + Enter to mark the capture; Ctrl-C to stop\n");
+
+    // Ctrl-C and stdin are watched by their own tasks, so the receive loop is
+    // never interrupted mid-frame.
+    let stop = Arc::new(AtomicBool::new(false));
+    let signalled = stop.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signalled.store(true, Ordering::Relaxed);
+        }
+    });
+    let (notes_tx, mut notes_rx) = tokio::sync::mpsc::channel::<String>(16);
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt as _;
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if notes_tx.send(line).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let deadline = seconds.map(|s| started + Duration::from_secs(s));
+    while !stop.load(Ordering::Relaxed) {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            break;
+        }
+        let ts_us = started.elapsed().as_micros() as u64;
+        while let Ok(note) = notes_rx.try_recv() {
+            let note = if note.trim().is_empty() { "mark".to_string() } else { note };
+            session.on_marker(&note, ts_us)?;
+            println!("{:9.3}  -- {note}", ts_us as f64 / 1e6);
+        }
+
+        match backend.recv_frame(Duration::from_millis(200)).await {
+            Ok((id, data)) => {
+                let ts_us = started.elapsed().as_micros() as u64;
+                if let Some(line) = session.on_frame(id, &data, ts_us)? {
+                    println!("{line}");
+                }
+            }
+            // A quiet window is normal — the bus may simply be idle.
+            Err(CanError::Timeout) => {}
+            Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+            Err(e) => {
+                eprintln!("receive failed: {e}");
+                break;
+            }
+        }
+    }
+
+    let _ = backend.close_channel().await;
+    let stats = session.stats();
+    session.finish()?;
+    println!(
+        "\nstopped after {:.1}s: {} frames seen, {} written, {} messages reassembled, \
+         {} incomplete, {} markers",
+        started.elapsed().as_secs_f64(),
+        stats.frames_seen,
+        stats.frames_kept,
+        stats.pdus,
+        stats.dropped,
+        stats.markers
+    );
+    if stats.frames_seen == 0 {
+        println!(
+            "\nNo traffic at all. On this platform the diagnostic line is nearly silent when \
+             nothing is querying it, so that alone is not proof of a fault — but check the \
+             ignition, OBD-II pin 6 → CAN-H / pin 14 → CAN-L, and the termination jumper being \
+             OFF."
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
