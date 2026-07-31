@@ -449,6 +449,35 @@ would remove the caveat entirely. The remaining engine identifiers polled during
 session (`200A`, `200B`, `200D`, `2029`, `202A`, `293E`, `293F`) were either constant in
 the overlap window or not covered by the logged measurements.
 
+### 4.3a Second session — 18 measurements, and two more traps closed (2026-08-01)
+
+A 16-minute capture across engine, gearbox and instrument cluster, with five VCDS logs
+inside it, yields **18 proven scalings** (8 engine, 10 gearbox), most over ~100 matched
+points. Highlights: engine `2029`/`202A` = pressures ×0.001 bar, `F423` = ×10 kPa,
+`F40F`/`F446` = intake and ambient temperature `raw−40`; gearbox `380B` = output-shaft
+speed, `3804` = ×0.4 %, and a family of `38xx` ×0.01 rows (clutch positions in mm, duty in
+%). Catalogs are committed under `catalogs/`.
+
+Four `F4xx` rows reproduce **standard OBD-II PID formulas** (`05`, `0D`, `0F`, `46`)
+without being told them — the running validation that the pipeline is sound.
+
+**Trap 1 — identifiers are per-ECU.** `F40D` is one byte of km/h on the engine and two
+little-endian bytes ×0.01 on the gearbox. Series keyed by identifier alone merged the two.
+Now keyed by `(responding CAN id, identifier)`.
+
+**Trap 2 — proportional quantities fit each other.** Vehicle speed and gearbox
+output-shaft speed are proportional in a fixed gear, so each "proved" the other's
+identifier: the true pairs at `R² = 1.00000`, the crossed ones at `0.99915`. A quantity
+cannot be two measurements, so a fit is kept only when it is the best explanation for both
+its identifier *and* its measurement; the rest are demoted and shown separately. No
+threshold could have separated these.
+
+**Also fixed: half the car was invisible.** This vehicle uses two addressing conventions at
+once — ISO `0x7E0..0x7E7 → +8`, and VW's own block at **`+0x6A`** (`0x714 → 0x77E` for the
+instrument cluster, `0x710 → 0x77A` for the gateway). Supporting only the first hid every
+unit outside the powertrain; recognising both took the extracted identifier count from 61
+to 108 on the same capture.
+
 **Consequence for the roadmap:** scaling no longer depends on the `.rod` field codec at
 all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
 path for *values*; the corpus is still what supplies names and per-ECU measurement lists.

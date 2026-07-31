@@ -1,0 +1,144 @@
+{
+  "defs": [
+    {
+      "name": "IDE00022-ENG103074",
+      "unit": "/min",
+      "address": {
+        "Uds": 14346
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 1.0,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "IDE00023-ENG99005",
+      "unit": "/min",
+      "address": {
+        "Uds": 14347
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 1.0,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "IDE00075-ENG99967",
+      "unit": "km/h",
+      "address": {
+        "Uds": 62477
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.01,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "IDE00086-ENG98363",
+      "unit": "%",
+      "address": {
+        "Uds": 14340
+      },
+      "raw_form": "U8First",
+      "scaling": {
+        "Linear": {
+          "factor": 0.3999999999999998,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "IDE02794-ENG120857",
+      "unit": "%",
+      "address": {
+        "Uds": 14386
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.009998945695973696,
+          "offset": 0.0038801197338642623
+        }
+      }
+    },
+    {
+      "name": "IDE02803-ENG120861",
+      "unit": "%",
+      "address": {
+        "Uds": 14395
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.010004751165781603,
+          "offset": -0.03569948490709152
+        }
+      }
+    },
+    {
+      "name": "IDE06244-ENG120895",
+      "unit": "mm",
+      "address": {
+        "Uds": 14582
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.009995491743790665,
+          "offset": -0.0004230093944102009
+        }
+      }
+    },
+    {
+      "name": "IDE06247-ENG120898",
+      "unit": "mm",
+      "address": {
+        "Uds": 14585
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.010002395605588889,
+          "offset": 0.0016292634180663512
+        }
+      }
+    },
+    {
+      "name": "IDE06281-ENG120909",
+      "unit": "mm",
+      "address": {
+        "Uds": 14508
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.009999187506995003,
+          "offset": 0.0031862391601489293
+        }
+      }
+    },
+    {
+      "name": "IDE06282-ENG120910",
+      "unit": "mm",
+      "address": {
+        "Uds": 14509
+      },
+      "raw_form": "U16Le",
+      "scaling": {
+        "Linear": {
+          "factor": 0.010009579606920876,
+          "offset": -0.012680463173953882
+        }
+      }
+    }
+  ]
+}

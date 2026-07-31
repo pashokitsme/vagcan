@@ -37,9 +37,16 @@ pub struct RawSample {
     pub data: Vec<u8>,
 }
 
-/// Everything seen for one read identifier.
+/// Everything seen for one read identifier **on one control unit**.
+///
+/// The unit matters: identifiers are per-ECU, and this car reuses them. `F40D`
+/// is one byte of km/h on the engine and two little-endian bytes of a
+/// different quantity on the gearbox. Keying series by identifier alone merges
+/// the two and invites a fit that is right for neither.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawSeries {
+    /// CAN id the answers arrived on — identifies the control unit.
+    pub ecu: u32,
     pub did: u16,
     pub samples: Vec<RawSample>,
 }
@@ -47,6 +54,8 @@ pub struct RawSeries {
 /// A scaling that survived the checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fitted {
+    /// CAN id the answers arrived on.
+    pub ecu: u32,
     pub did: u16,
     pub form: RawForm,
     pub scale: LinearScale,
@@ -74,6 +83,10 @@ pub enum Rejected {
     ValueConstant { ide: String },
     /// A fit was computed but did not clear the threshold.
     PoorFit { did: u16, ide: String, form: RawForm, r2: f64 },
+    /// The fit cleared the bar but something else explained the same
+    /// identifier, or the same measurement, better — the signature of two
+    /// physically proportional quantities fitting each other.
+    Outranked { ecu: u32, did: u16, ide: String, r2: f64 },
 }
 
 impl Rejected {
@@ -84,6 +97,7 @@ impl Rejected {
     /// most informative one is kept.
     fn rank(&self) -> u8 {
         match self {
+            Rejected::Outranked { .. } => 5,
             Rejected::PoorFit { .. } => 4,
             Rejected::RawTooFewLevels { .. } => 3,
             Rejected::RawConstant { .. } => 2,
@@ -153,13 +167,44 @@ pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>
     Some(out)
 }
 
-/// True for the tester-side half of a diagnostic id pair.
-fn is_request_id(raw: u32) -> bool {
-    if raw & CAN_EFF_FLAG != 0 {
-        let id = raw & CAN_EFF_MASK;
-        return matches!(id >> 16, 0x18DA | 0x18DB) && (id & 0xFF) != 0xF1;
+/// The id a control unit answers a request on, if the request id is one we
+/// recognise.
+///
+/// This car uses **two** conventions at once, both observed in a real capture:
+///
+/// - ISO 15765-4 pairs `0x7E0..=0x7E7` with `+8` — engine `0x7E0 → 0x7E8`,
+///   gearbox `0x7E1 → 0x7E9`.
+/// - VW's own block answers at **`+0x6A`** — instrument cluster
+///   `0x714 → 0x77E`, gateway `0x710 → 0x77A`, and likewise `0x70C → 0x776`,
+///   `0x70E → 0x778`, `0x74B → 0x7B5`.
+///
+/// Assuming only the first convention makes every control unit outside the
+/// powertrain invisible, which is exactly what happened before this was
+/// measured.
+///
+/// Functional requests (`0x7DF`) are ignored: several units answer at once and
+/// the samples could not be attributed.
+fn response_id_for(request: u32) -> Option<u32> {
+    if request & CAN_EFF_FLAG != 0 {
+        // Normal fixed addressing: 0x18DA <target> <source>; the answer swaps
+        // the two, so a request to `tt` from the tester `F1` is answered on
+        // 0x18DA F1 tt.
+        let id = request & CAN_EFF_MASK;
+        if id >> 16 != 0x18DA {
+            return None;
+        }
+        let (target, source) = ((id >> 8) & 0xFF, id & 0xFF);
+        if source != 0xF1 {
+            return None;
+        }
+        return Some((0x18DA << 16 | source << 8 | target) | CAN_EFF_FLAG);
     }
-    raw == 0x7DF || (0x7E0..=0x7E7).contains(&raw)
+    match request {
+        0x7E0..=0x7E7 => Some(request + 8),
+        // The VW block. 0x7DF (functional) is deliberately excluded.
+        0x700..=0x7BF if request != 0x7DF => Some(request + 0x6A),
+        _ => None,
+    }
 }
 
 /// Pull per-identifier raw series out of a capture.
@@ -171,7 +216,7 @@ pub fn extract_series(records: &[CaptureRecord]) -> (Option<u64>, Vec<RawSeries>
     let mut sniffer = IsoTpSniffer::new();
     // Identifiers asked for on each request id, awaiting their answer.
     let mut pending: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
-    let mut series: BTreeMap<u16, Vec<RawSample>> = BTreeMap::new();
+    let mut series: BTreeMap<(u32, u16), Vec<RawSample>> = BTreeMap::new();
 
     for record in records {
         match &record.payload {
@@ -187,14 +232,16 @@ pub fn extract_series(records: &[CaptureRecord]) -> (Option<u64>, Vec<RawSeries>
                 };
                 match pdu.data.first() {
                     // A request: remember which identifiers it asked for.
-                    Some(0x22) if is_request_id(raw) => {
+                    Some(0x22) => {
+                        let Some(response_id) = response_id_for(raw) else {
+                            continue;
+                        };
                         let dids: Vec<u16> = pdu.data[1..]
                             .chunks_exact(2)
                             .map(|c| u16::from_be_bytes([c[0], c[1]]))
                             .collect();
                         if !dids.is_empty() {
-                            // The answer comes back on the request id + 8.
-                            pending.insert(raw.wrapping_add(8), dids);
+                            pending.insert(response_id, dids);
                         }
                     }
                     // The matching positive response.
@@ -207,7 +254,7 @@ pub fn extract_series(records: &[CaptureRecord]) -> (Option<u64>, Vec<RawSeries>
                         };
                         let t_s = record.ts_us as f64 / 1e6;
                         for (did, data) in records {
-                            series.entry(did).or_default().push(RawSample { t_s, data });
+                            series.entry((raw, did)).or_default().push(RawSample { t_s, data });
                         }
                     }
                     _ => {}
@@ -219,7 +266,7 @@ pub fn extract_series(records: &[CaptureRecord]) -> (Option<u64>, Vec<RawSeries>
 
     let series = series
         .into_iter()
-        .map(|(did, samples)| RawSeries { did, samples })
+        .map(|((ecu, did), samples)| RawSeries { ecu, did, samples })
         .collect();
     (anchor, series)
 }
@@ -241,7 +288,14 @@ pub fn fit_linear(pairs: &[(f64, f64)]) -> Option<(LinearScale, f64)> {
         return None;
     }
     let factor = sxy / sxx;
-    let offset = mean_y - factor * mean_x;
+    let mut offset = mean_y - factor * mean_x;
+    // A least-squares offset of ~1e-15 is floating-point noise, not a real
+    // shift; report the zero it is indistinguishable from. The factor is left
+    // exactly as fitted — rounding that to a "nicer" number would be inventing
+    // a value rather than measuring one.
+    if offset.abs() < 1e-9 * factor.abs().max(1.0) {
+        offset = 0.0;
+    }
 
     let ss_tot: f64 = pairs.iter().map(|(_, y)| (y - mean_y).powi(2)).sum();
     if ss_tot <= f64::EPSILON {
@@ -370,6 +424,7 @@ pub fn fit_all(
                     continue;
                 }
                 let candidate = Fitted {
+                    ecu: s.ecu,
                     did: s.did,
                     form,
                     scale,
@@ -394,10 +449,56 @@ pub fn fit_all(
             }
         }
     }
+    // Physically proportional quantities fit each other. On this car vehicle
+    // speed and gearbox output-shaft speed are proportional in a fixed gear,
+    // so each "fits" the other's identifier — the true pairs come out at
+    // R² = 1.00000 and the crossed ones at 0.99915. A quantity cannot be two
+    // measurements at once, so a fit is kept only when it is the best
+    // explanation for BOTH its identifier and its measurement; the rest are
+    // demoted rather than presented as proven.
+    let mut ambiguous = Vec::new();
+    accepted = {
+        let best_for_did = |ecu: u32, did: u16, list: &[Fitted]| -> f64 {
+            list.iter()
+                .filter(|f| f.ecu == ecu && f.did == did)
+                .map(|f| f.r2)
+                .fold(f64::MIN, f64::max)
+        };
+        let best_for_ide = |ide: &str, list: &[Fitted]| -> f64 {
+            list.iter().filter(|f| f.ide == ide).map(|f| f.r2).fold(f64::MIN, f64::max)
+        };
+        let all = accepted.clone();
+        let mut kept = Vec::new();
+        for fit in accepted {
+            let wins_did = fit.r2 >= best_for_did(fit.ecu, fit.did, &all);
+            let wins_ide = fit.r2 >= best_for_ide(&fit.ide, &all);
+            if wins_did && wins_ide {
+                kept.push(fit);
+            } else {
+                ambiguous.push(fit);
+            }
+        }
+        kept
+    };
+    for fit in ambiguous {
+        rejected.push(Rejected::Outranked {
+            ecu: fit.ecu,
+            did: fit.did,
+            ide: fit.ide,
+            r2: fit.r2,
+        });
+    }
+
     (accepted, rejected)
 }
 
 /// Turn accepted fits into catalog rows.
+///
+/// The row is named by the measurement's own `IDE` identifier, not by the
+/// string VCDS displayed. Two reasons: those strings are Ross-Tech's
+/// localised label text, which this project does not reproduce, and the
+/// architecture sources names from the label corpus anyway. What the car
+/// supplies is the scaling.
 pub fn to_catalog(fits: &[Fitted]) -> vag_data::catalog::MeasurementCatalog {
     use std::borrow::Cow;
     use vag_data::catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling};
@@ -405,7 +506,7 @@ pub fn to_catalog(fits: &[Fitted]) -> vag_data::catalog::MeasurementCatalog {
     MeasurementCatalog::new(
         fits.iter()
             .map(|f| MeasurementDef {
-                name: Cow::Owned(if f.name.is_empty() { f.ide.clone() } else { f.name.clone() }),
+                name: Cow::Owned(f.ide.clone()),
                 unit: Cow::Owned(f.unit.clone()),
                 address: ReadId::Uds(f.did),
                 raw_form: f.form,
@@ -499,6 +600,7 @@ pub fn run(
                 Rejected::RawTooFewLevels { .. } => "too few distinct raw values",
                 Rejected::ValueConstant { .. } => "the logged value never moved",
                 Rejected::PoorFit { .. } => "the fit was too poor",
+                Rejected::Outranked { .. } => "something explained it better",
             })
             .or_default() += 1;
         }
@@ -506,9 +608,14 @@ pub fn run(
         for (reason, count) in why {
             println!("  {count:4}  {reason}");
         }
-        if let Some(Rejected::TooFewPoints { points, .. }) =
-            rejected.iter().find(|r| matches!(r, Rejected::TooFewPoints { .. }))
-        {
+        let best_overlap = rejected
+            .iter()
+            .filter_map(|r| match r {
+                Rejected::TooFewPoints { points, .. } => Some(*points),
+                _ => None,
+            })
+            .max();
+        if let Some(points) = best_overlap {
             println!(
                 "\nThe best overlap was {points} samples. Either the log covers a shorter window \
                  than the capture, or the two barely overlap — check that both were recorded at \
@@ -519,9 +626,21 @@ pub fn run(
         println!("Proven scalings:\n");
         for f in &fits {
             println!(
-                "  {:04X}  {:?}  × {:.6} {:+.4}   → {} [{}]   R²={:.5} over {} points",
-                f.did, f.form, f.scale.factor, f.scale.offset, f.ide, f.unit, f.r2, f.points
+                "  {:03X}/{:04X}  {:?}  × {:.6} {:+.4}   → {} [{}]   R²={:.5} over {} points",
+                f.ecu, f.did, f.form, f.scale.factor, f.scale.offset, f.ide, f.unit, f.r2, f.points
             );
+        }
+    }
+
+    let outranked: Vec<&Rejected> =
+        rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).collect();
+    if !outranked.is_empty() {
+        println!("\nFitted but not kept — a better explanation exists for the same identifier");
+        println!("or the same measurement (proportional quantities fit each other):");
+        for r in &outranked {
+            if let Rejected::Outranked { ecu, did, ide, r2 } = r {
+                println!("  {ecu:03X}/{did:04X}  vs {ide}  R²={r2:.5}");
+            }
         }
     }
 
@@ -555,6 +674,7 @@ mod tests {
 
     fn series(did: u16, samples: &[(f64, u16)]) -> RawSeries {
         RawSeries {
+            ecu: 0x7E8,
             did,
             samples: samples
                 .iter()
@@ -570,6 +690,27 @@ mod tests {
             unit: "/min".to_string(),
             samples,
         }
+    }
+
+    #[test]
+    fn both_addressing_conventions_on_this_car_are_recognised() {
+        // Measured from a real capture; assuming only the ISO pairing hides
+        // every control unit outside the powertrain.
+        assert_eq!(response_id_for(0x7E0), Some(0x7E8), "engine");
+        assert_eq!(response_id_for(0x7E1), Some(0x7E9), "gearbox");
+        assert_eq!(response_id_for(0x714), Some(0x77E), "instrument cluster");
+        assert_eq!(response_id_for(0x710), Some(0x77A), "gateway");
+        assert_eq!(response_id_for(0x70C), Some(0x776));
+        assert_eq!(response_id_for(0x74B), Some(0x7B5));
+        // Functional requests are answered by several units at once.
+        assert_eq!(response_id_for(0x7DF), None);
+        // Normal fixed addressing swaps target and source.
+        assert_eq!(
+            response_id_for(0x18DA_10F1 | CAN_EFF_FLAG),
+            Some(0x18DA_F110 | CAN_EFF_FLAG)
+        );
+        // Not a diagnostic id at all.
+        assert_eq!(response_id_for(0x0FD), None);
     }
 
     #[test]
@@ -742,6 +883,7 @@ mod tests {
     #[test]
     fn accepted_fits_become_catalog_rows_the_reader_can_use() {
         let fit = Fitted {
+            ecu: 0x7E8,
             did: 0xF40C,
             form: RawForm::U16Be,
             scale: LinearScale { factor: 0.25, offset: 0.0 },

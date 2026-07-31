@@ -22,6 +22,7 @@ research/clb-crack/decoded_*.txt
 # USB captures: large + contain private vehicle data
 research/captures/*.pcapng
 research/dumps/
+research/logs/
 
 # VCDS install symlinks — proprietary Ross-Tech label/ODX data, never commit
 research/vcds-data/
@@ -30,3 +31,4 @@ research/vcds-data/
 # real car, so they carry the VIN. Never committed.
 /*.jsonl
 research/dumps/
+research/logs/
