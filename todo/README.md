@@ -7,7 +7,7 @@ selectable from config, with **no hardcoded addresses or formulas**. Live transp
 the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md` for the locked
 stack and `todo/GOAL.md` for the goal statement.
 
-## Status (2026-07-31)
+## Status (2026-08-01)
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
 built and merged. The offline path to measurements is **exhausted**: the STRUC field
@@ -15,8 +15,10 @@ segmentation is unreversed *and* the read DID is now proven not to live in STRUC
 (`research/rod-labels.md` §4.0c). M3 therefore no longer waits on the label corpus — it
 waits on **live evidence from the car**, and the tooling to collect it is now built.
 
-The dongle is here and bench-verified. `vagcan sniff` (listen-only) and `vagcan scan-dids`
-ship; both are hardware-ready and blocked only on a session in the car.
+The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, the identifier
+sweep runs over the whole 16-bit space in minutes, and the CLI has been rebuilt around the
+commands a person actually uses. What remains for M3 is one capture session with VCDS
+running in parallel, and the offline tool that turns it into scalings.
 
 ### Milestones
 | M | what | state |
@@ -34,7 +36,9 @@ ship; both are hardware-ready and blocked only on a session in the car.
 | uds-async | vag-protocol | async ISO-TP (15765-2) + UDS client (14229), read-only allowlist |
 | generic-can | vag-can | `SlcanBackend` + `IsoTpCan` (the bypass transport — built, untested on hw) |
 | info-identity | vag-protocol/vagcan | `EcuIdentity` + `read_identity` + `vagcan info` (Engine 01 + Gearbox 02). **Live-verified on the car** |
-| can-sniff | vag-can/vagcan | `SlcanMode::Silent`, passive `IsoTpSniffer`, `vagcan sniff`, `vagcan scan-dids`, `bus_doctor` |
+| can-sniff | vag-can/vagcan | `SlcanMode::Silent`, passive `IsoTpSniffer`, `vagcan sniff` |
+| scan | vagcan | `vagcan scan` — group-testing sweep of the identifier space; `vagcan properties` |
+| odx-link | vag-data/vagcan | `find_rod_by_odx_name` + `labels --from-car`: the unit names its own `.rod` (F19E) |
 | label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
@@ -89,6 +93,33 @@ The pairing to collect: sniff + VCDS running ADVMB logging to CSV, engine runnin
 rev. That yields `(read address → raw bytes → displayed engineering value)` directly, with
 no dependence on the `.rod` field codec.
 
+### The remaining work, in order
+
+**1. The capture session (blocked on nothing — both adapters now run together).**
+`vagcan sniff --out <file>` alongside VCDS, engine running, ADVMB logged to CSV, a wide
+sustained rev twice over, operator markers typed as it goes.
+
+**2. `vagcan analyse` — the offline tool that turns that capture into scalings.** To be
+written *before* the session, so the data can be checked while the car is still available.
+It must:
+- read the capture JSONL and the VCDS CSV, and align them by the **wall-clock anchor** —
+  arithmetic, not curve fitting. Fitting the offset is what produced the false correlations
+  in §4.0a/§4.0b;
+- reassemble ISO-TP, group by read identifier, and build a raw time series per identifier,
+  including the multi-frame group reads;
+- for each (identifier interpretation × logged measurement) pair, fit `factor`/`offset` by
+  least squares — and **reject** anything below a stated threshold rather than shipping a
+  forced fit. A refusal is a result;
+- emit accepted rows as `MeasurementDef` catalog entries (`vag_data::catalog`), which the
+  existing `UdsReadExt::read_catalog` can already read.
+
+**3. Names and the per-ECU measurement list from the `.rod`.** Scaling now comes from the
+car, but the label corpus still supplies what a value is *called* and which values an ECU
+exposes. `F19E` already resolves the right file (§ODX link above).
+
+**4. `vagcan watch`** — poll a catalog and print live values. The product UX; pointless
+until step 2 has proven scalings, so it stays last.
+
 ### Then — the extensible foundation (architecture)
 ```
 MeasurementDef { name, unit, address: Uds(did) | Group(g,field), raw_form, scale }
@@ -135,6 +166,24 @@ What the bus actually looks like, measured rather than assumed:
 - **Physical addressing only.** `0x7E0/0x7E8` answers; the functional broadcast `0x7DF`
   times out — the VAG gateway does not serve it on OBD.
 - Rates other than 500k produce nothing, as expected.
+
+### Sweeping is a group-testing problem, not 65,536 reads
+Measured on the reference car, and the reason a full sweep is minutes rather than hours:
+
+- A multi-identifier `0x22` request is answered with **only the identifiers the unit
+  supports** — asking for `F190` (supported) together with `0001` (not) returns just
+  `F190`. The unit refuses with `0x31` **exactly when it supports none** of them.
+- That makes one request a **presence test for a whole batch**: a refusal skips the batch
+  outright, a positive answer is halved until the responders are isolated and read singly.
+  On `F100-F1FF` this finds the same 22 identifiers in **118 requests instead of 256**; over
+  the sparse rest of the space the saving approaches the full batch factor.
+- **The per-request limit is between 8 and 12 identifiers** on this unit: 8 are answered, 12
+  are refused with `0x31`. Exceeding it is a *silent, total* failure — every batch looks
+  empty and the sweep cheerfully reports zero hits. It did exactly that at batch 16 before
+  the limit was found.
+- Therefore `scan` probes with a **full-size batch** (one known-good identifier padded with
+  impossible ones) before trusting group testing, and falls back to one-at-a-time when the
+  probe fails. A token two-identifier probe would have passed and hidden the bug.
 
 Debugging note worth keeping: the adapter can enumerate on USB (correct VID/PID/serial in
 `system_profiler`) while macOS attaches **no** serial node — `/dev/cu.usbmodem*` simply is

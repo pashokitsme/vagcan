@@ -113,6 +113,53 @@ fn render_measurement_row(m: &Measurement) -> String {
     format!("{:>4}.{:<3} {}  [{}]\n", m.block, m.field, m.name, unit)
 }
 
+/// Resolve the label file a control unit names for itself.
+///
+/// The unit's `F19E` identifier holds its ODX file name (e.g.
+/// `EV_ECM18TFS0208V0906264H`), so selecting the right description file stops
+/// being a part-number guess: the car answers the question. Reports what the
+/// file contains, marking sections whose payload did not decode rather than
+/// implying the whole file was read.
+pub fn resolve_odx(dir: &str, odx_name: &str) -> anyhow::Result<()> {
+    use vag_data::rod::{decode_rod, RodStatus};
+
+    let hits = vag_data::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
+    if hits.is_empty() {
+        println!(
+            "No label file named {odx_name:?} under {dir}.\n\n\
+             The control unit names this file itself, so the corpus is either incomplete or \
+             pointed at the wrong directory — pass the VCDS install root."
+        );
+        return Ok(());
+    }
+
+    for path in &hits {
+        println!("{}", path.display());
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("  cannot read: {e}");
+                continue;
+            }
+        };
+        let sections = decode_rod(&bytes);
+        if sections.is_empty() {
+            println!("  no sections found");
+            continue;
+        }
+        for section in &sections {
+            let state = match section.status {
+                RodStatus::Tea => "decrypted",
+                RodStatus::Zlib => "decrypted + inflated",
+                RodStatus::Undecodable => "NOT decoded",
+            };
+            let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
+            println!("  [{}]  {state}, {size} bytes", section.tag);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

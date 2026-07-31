@@ -110,6 +110,109 @@ where
     Ok(stats)
 }
 
+/// Identifiers per presence probe.
+///
+/// Measured on the reference car: 8 identifiers in one request are answered,
+/// 12 are refused outright with `0x31` — so the limit sits between, and asking
+/// for more than the unit accepts makes every batch look empty. That failure
+/// is silent and total, which is why [`probe_batching`] tests a full-size
+/// batch rather than a token pair.
+pub const BATCH: usize = 8;
+
+/// Sweep by group testing — the fast path.
+///
+/// Most of the identifier space is unimplemented, and this control unit family
+/// answers a multi-identifier request by returning only the identifiers it
+/// supports, refusing (`0x31`) exactly when it supports none of them. That
+/// makes one request a presence test for a whole batch: a refusal skips the
+/// whole batch at once, and a positive answer is halved until responders are
+/// isolated and read individually for their bytes.
+///
+/// Verified against the reference car before being relied on: a request mixing
+/// a supported and an unsupported identifier returns just the supported one.
+/// A control unit that refused the whole mixed request instead would make this
+/// unsound — hence [`probe_batching`], which the command runs first.
+pub async fn scan_dids_fast<T, F>(
+    uds: &mut AsyncUdsClient<T>,
+    ranges: &[RangeInclusive<u16>],
+    delay: Duration,
+    mut on_hit: F,
+) -> std::io::Result<ScanStats>
+where
+    T: AsyncIsoTpTransport,
+    F: FnMut(&DidHit) -> std::io::Result<()>,
+{
+    let mut stats = ScanStats::default();
+
+    // Work items are (first, last) inclusive spans, processed depth-first so a
+    // hit is isolated and reported before moving on.
+    let mut work: Vec<(u16, u16)> = Vec::new();
+    for range in ranges.iter().rev() {
+        let (start, end) = (*range.start(), *range.end());
+        let mut at = start;
+        loop {
+            let last = at.saturating_add(BATCH as u16 - 1).min(end);
+            work.push((at, last));
+            if last >= end {
+                break;
+            }
+            at = last + 1;
+        }
+    }
+    work.reverse();
+
+    while let Some((first, last)) = work.pop() {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        if first == last {
+            stats.asked += 1;
+            match uds.read_data_by_identifier(first).await {
+                Ok(data) => {
+                    stats.hits += 1;
+                    on_hit(&DidHit { did: first, data })?;
+                }
+                Err(UdsError::NegativeResponse { .. }) => stats.refused += 1,
+                Err(_) => stats.failed += 1,
+            }
+            continue;
+        }
+
+        let dids: Vec<u16> = (first..=last).collect();
+        stats.asked += 1;
+        match uds.read_data_by_identifiers(&dids).await {
+            // Something in this span answers — split and find out what.
+            Ok(_) => {
+                let mid = first + (last - first) / 2;
+                work.push((mid + 1, last));
+                work.push((first, mid));
+            }
+            // Nothing in the span is implemented: skip all of it.
+            Err(UdsError::NegativeResponse { .. }) => stats.refused += dids.len(),
+            Err(_) => stats.failed += dids.len(),
+        }
+    }
+    Ok(stats)
+}
+
+/// Check that group testing is sound on this control unit.
+///
+/// Asks for one identifier known to answer, padded out to a **full batch** with
+/// identifiers that cannot, and reports whether the unit returned the supported
+/// one anyway. Two failure modes are ruled out at once: a unit that refuses any
+/// mixed request, and a unit whose per-request limit is below [`BATCH`]. Either
+/// would make a refusal stop meaning "none supported", and the sweep would skip
+/// real identifiers while reporting success.
+pub async fn probe_batching<T: AsyncIsoTpTransport>(
+    uds: &mut AsyncUdsClient<T>,
+    known_good: u16,
+) -> bool {
+    let mut dids = vec![known_good];
+    // 0x0000.. are not valid data identifiers on these units.
+    dids.extend((0..BATCH as u16 - 1).map(|i| i + 1));
+    uds.read_data_by_identifiers(&dids).await.is_ok()
+}
+
 /// One report line for a hit: `A058  55 55` plus ASCII when the bytes look
 /// like text (part numbers and component names are the common case).
 pub fn format_hit(hit: &DidHit) -> String {
@@ -159,15 +262,22 @@ pub async fn run(
         .with_context(|| format!("opening the adapter at {device_path}"))?;
     let mut uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, ecu));
 
-    println!("scanning control unit {:02} — {total} identifiers ({range})\n", ecu + 1);
+    println!("scanning control unit {:02} — {total} identifiers ({range})", ecu + 1);
+
+    // Group testing is only valid if the unit answers a mixed request with the
+    // identifiers it does support. Establish that before relying on it.
+    let batched = probe_batching(&mut uds, 0xF190).await;
+    println!(
+        "{}\n",
+        if batched {
+            "probing in batches of 8"
+        } else {
+            "this unit refuses mixed requests — falling back to one at a time"
+        }
+    );
+
     let started = Instant::now();
-    let stats = scan_dids(
-        &mut uds,
-        &ranges,
-        Duration::from_millis(delay_ms),
-        // Roughly a keep-alive every couple of seconds at the default pace.
-        400,
-        |hit: &DidHit| {
+    let on_hit = |hit: &DidHit| {
             println!("{}", format_hit(hit));
             if let Some(w) = sink.as_mut() {
                 // JSON lines, so results join against a capture without a parser.
@@ -177,21 +287,25 @@ pub async fn run(
                 });
                 writeln!(w, "{line}")?;
             }
-            Ok(())
-        },
-    )
-    .await?;
+        Ok(())
+    };
+    let stats = if batched {
+        scan_dids_fast(&mut uds, &ranges, Duration::from_millis(delay_ms), on_hit).await?
+    } else {
+        scan_dids(&mut uds, &ranges, Duration::from_millis(delay_ms), 400, on_hit).await?
+    };
     if let Some(w) = sink.as_mut() {
         w.flush()?;
     }
 
     println!(
-        "\n{} of {} identifiers answered ({} refused, {} unanswered) in {:.1}s",
+        "\n{} of {} identifiers answered ({} refused, {} unanswered) in {:.1}s using {} requests",
         stats.hits,
-        stats.asked,
+        total,
         stats.refused,
         stats.failed,
-        started.elapsed().as_secs_f64()
+        started.elapsed().as_secs_f64(),
+        stats.asked
     );
     if stats.failed == stats.asked && stats.asked > 0 {
         println!(

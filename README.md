@@ -8,7 +8,7 @@ Reference vehicle: Škoda Octavia III facelift, 1.8 TSI, 2017 (MQB, CAN/UDS).
 
 Design/PRD: [`docs/superpowers/specs/2026-07-02-vagcan-cli-design.md`](docs/superpowers/specs/2026-07-02-vagcan-cli-design.md).
 
-## Status (2026-07-31)
+## Status (2026-08-01)
 
 Goal: read the **whole car over CAN**, with measurement definitions (name / read
 address / scaling / unit) sourced **from VW's own label files** (`.lbl`/`.clb`/`.rod`) —
@@ -50,11 +50,28 @@ One empirical anchor stands from the earlier captures: ignition-angle raw `0x555
 vag-transport   CAN frame + traits (RawCanTransport / IsoTpTransport) + scripted mock
 vag-capture     JSON-lines capture format + ReplayCan (record-once / replay-forever testing)
 vag-protocol    software ISO-TP (15765-2) + UDS client (14229), read-only allowlist
-vag-data        .lbl/.clb/.rod parsing+decrypt, TEA, LabelDb lookup, load_corpus
+vag-can         slcan USB-CAN backend, listen-only mode, passive ISO-TP reassembly
+vag-data        .lbl/.clb/.rod parsing+decrypt, TEA, LabelDb lookup, ODX file resolution
 vag-db          SQLite cache of the label corpus (rusqlite)
+vag-hex         the HEX-clone cable (parked research; not a product path)
 ```
 
-Binaries: `vag-labels` (parse a Labels dir → JSON / lookup), `vag-db` (`build`/`lookup`/`stats`/`rod`).
+Binaries: `vagcan` (the CLI), `vag-labels` (parse a Labels dir → JSON / lookup), `vag-db`
+(`build`/`lookup`/`stats`/`rod`).
+
+## The CLI
+
+```
+vagcan devices      list connected USB-CAN adapters
+vagcan info         VIN + engine and gearbox passports
+vagcan properties   everything a control unit says about itself, named
+vagcan sniff        listen-only bus capture (runs alongside VCDS)
+vagcan scan         every data identifier a control unit answers
+vagcan labels       label lookup; --from-car resolves the ODX file the unit names
+```
+
+`--device` is optional: a recognised adapter is selected automatically. Read-only
+throughout — the UDS allowlist admits no writes.
 
 ## Label ciphers (reverse-engineered for interoperability)
 

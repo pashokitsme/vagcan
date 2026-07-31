@@ -394,6 +394,23 @@ carries per-DID conversion constants.
 
 ---
 
+## 4.2 The control unit names its own label file (`F19E`) — solved, live
+
+Selecting *which* `.rod` describes an ECU was previously a part-number guess. It is not a
+guess: the unit answers it. Read on the reference car 2026-08-01 over CAN:
+
+| ECU | `F19E` value | file |
+|---|---|---|
+| Engine 01 (`8V0906264H`) | `EV_ECM18TFS0208V0906264H` | `EV_ECM18TFS0208V0906264H.rod` |
+| Gearbox 02 (`0CW300041G`) | `EV_TCMDQ200021` | `EV_TCMDQ200021.rod` |
+
+`F19E` is the standard ASAM ODX file identifier, and its value is exactly the `.rod` file
+stem. Shipped as `vag_data::find_rod_by_odx_name` plus
+`vagcan labels <dir> --from-car --ecu 01`, which reads the identifier off the car and
+resolves it against the corpus in one step. This removes the last piece of guesswork from
+the label path — it does **not** touch the STRUC field-codec problem, which is still what
+blocks reading measurement *values*.
+
 ## 5. Design proposal — how `vag-data` should consume this (TEXT ONLY)
 
 *(No crate is modified in this research; another workflow owns `crates/`.)*
@@ -426,7 +443,14 @@ carries per-DID conversion constants.
 5. **Still requiring work (all offline, no dump):** (a) reverse the `STRUC` 14-glyph field codec
    into `read_id`/`raw`/`scale`/`unit`; (b) decode the engine `MWB` 2-char code → `STRUC` id
    mapping; (c) crack `TTTEXT [TXT]` for names (mechanical, §1). **No runtime memory dump is on
-   the critical path any more.**
+   the critical path any more.** Item (4) of the original list — *which* file to open — is
+   solved and shipped (§4.2).
+
+**Superseding note (2026-08-01):** the offline route to `(DID, scale, unit)` is no longer the
+plan. §4.0c refuted the premise that the read identifier is recoverable from the label bytes,
+and the live path — sniffing VCDS on the bus with `vagcan sniff` — now supplies the same
+information empirically. The `.rod` work retains its value for **names**, **the measurement
+list per ECU**, and **file selection** (§4.2); the scaling comes from the car.
 
 ---
 

@@ -18,7 +18,7 @@ mod tea;
 
 pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
 pub use clb::decrypt_clb;
-pub use corpus::{load_corpus, scan_corpus, CorpusLoad, CorpusScan};
+pub use corpus::{find_rod_by_odx_name, load_corpus, scan_corpus, CorpusLoad, CorpusScan};
 pub use db::LabelDb;
 pub use label::{parse_label, LabelFile, Measurement, Record};
 pub use measure::{LinearScale, RawForm, IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW};

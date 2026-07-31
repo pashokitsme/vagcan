@@ -125,6 +125,20 @@ enum Command {
         /// Narrow --block to one field.
         #[arg(long, requires = "block", value_name = "N")]
         field: Option<u8>,
+        /// Resolve the ODX file a control unit names for itself, e.g.
+        /// `EV_ECM18TFS0208V0906264H` — the value of identifier F19E, which
+        /// `vagcan properties` reads off the car.
+        #[arg(long, value_name = "NAME")]
+        odx: Option<String>,
+        /// Read F19E from the car and resolve that, instead of passing --odx.
+        #[arg(long, conflicts_with = "odx")]
+        from_car: bool,
+        /// Control unit to ask when using --from-car.
+        #[arg(long, default_value = "01", value_name = "NN")]
+        ecu: String,
+        /// Adapter to use with --from-car.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
     },
 }
 
@@ -145,8 +159,16 @@ async fn main() -> Result<()> {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
         }
-        Command::Labels { dir, part, block, field } => {
-            labels::labels_cmd(&dir, part.as_deref(), block, field)
+        Command::Labels { dir, part, block, field, odx, from_car, ecu, device } => {
+            if from_car {
+                let name = odx_name_from_car(device.as_deref(), &ecu).await?;
+                println!("control unit {ecu} names its label file {name:?}\n");
+                labels::resolve_odx(&dir, &name)
+            } else if let Some(name) = odx {
+                labels::resolve_odx(&dir, &name)
+            } else {
+                labels::labels_cmd(&dir, part.as_deref(), block, field)
+            }
         }
     }
 }
@@ -194,6 +216,23 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
     }
     println!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
     Ok(())
+}
+
+/// Read the ODX label-file name a control unit reports for itself (F19E).
+async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<String> {
+    const ODX_FILE_NAME: u16 = 0xF19E;
+
+    let path = device::resolve(device_arg)?;
+    let mut uds = open_ecu(&path, parse_ecu(ecu_text)?).await?;
+    let data = uds
+        .read_data_by_identifier(ODX_FILE_NAME)
+        .await
+        .context("reading the ODX file name (F19E) from the control unit")?;
+    let name = String::from_utf8_lossy(&data).trim_end_matches(['\0', ' ']).to_string();
+    if name.is_empty() {
+        anyhow::bail!("the control unit returned an empty ODX file name");
+    }
+    Ok(name)
 }
 
 /// List a control unit's properties (see the `Properties` subcommand docs).

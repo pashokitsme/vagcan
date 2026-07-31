@@ -56,6 +56,22 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
         pdu::parse_rdbi_response(did, &resp)
     }
 
+    /// ReadDataByIdentifier for SEVERAL identifiers in one request.
+    ///
+    /// Returns the raw response bytes after the echoed SID — a concatenation of
+    /// `<did><data>` records whose individual lengths the server does not
+    /// state. Splitting them apart needs per-identifier length knowledge the
+    /// scanner does not have, so this is used as a **presence test**: which
+    /// identifiers a control unit acknowledges at all. Values are then read
+    /// singly.
+    pub async fn read_data_by_identifiers(&mut self, dids: &[u16]) -> Result<Vec<u8>, UdsError> {
+        let mut payload = Vec::with_capacity(dids.len() * 2);
+        for did in dids {
+            payload.extend_from_slice(&pdu::did_bytes(*did));
+        }
+        self.request(0x22, &payload).await
+    }
+
     /// TesterPresent (0x3E 0x00).
     pub async fn tester_present(&mut self) -> Result<(), UdsError> {
         self.request(0x3E, &[0x00]).await?;

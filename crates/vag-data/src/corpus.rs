@@ -6,7 +6,7 @@
 //! corpus is walked and parsed.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::clb::decrypt_clb;
 use crate::label::{parse_label, LabelFile};
@@ -105,6 +105,52 @@ pub struct CorpusScan {
     pub rod_count: usize,
     pub other_count: usize,
     pub read_errors: usize,
+}
+
+/// Find the `.rod` files whose name matches an ODX identifier.
+///
+/// Control units name their own description file: reading identifier `F19E`
+/// off the car yields e.g. `EV_ECM18TFS0208V0906264H`, and the corresponding
+/// file is `EV_ECM18TFS0208V0906264H.rod`. That turns label selection from a
+/// part-number guess into a lookup the car itself answers.
+///
+/// Matching ignores case and the extension, and tolerates the trailing NUL and
+/// space padding VW puts in the identifier value. Several hits are possible
+/// (localised corpora keep per-language copies), so all are returned, sorted.
+pub fn find_rod_by_odx_name(root: &Path, odx_name: &str) -> io::Result<Vec<PathBuf>> {
+    let wanted = odx_name.trim_end_matches(['\0', ' ']).to_ascii_uppercase();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hits = Vec::new();
+    collect_rod_matches(root, &wanted, &mut hits);
+    hits.sort();
+    Ok(hits)
+}
+
+fn collect_rod_matches(dir: &Path, wanted: &str, hits: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return; // unreadable subtree: skip, never fatal (as elsewhere here)
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rod_matches(&path, wanted, hits);
+            continue;
+        }
+        let is_rod = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("rod"));
+        if !is_rod {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if stem.to_ascii_uppercase() == wanted {
+                hits.push(path);
+            }
+        }
+    }
 }
 
 /// Recursively walk `root`, parsing every `.lbl` and decrypting+parsing every
@@ -287,5 +333,53 @@ mod tests {
         assert_eq!(scan.files.len(), 2);
         assert!(scan.files.iter().any(|f| f.source == "plain.lbl"));
         assert!(scan.files.iter().any(|f| f.source == "fixture.clb"));
+    }
+}
+
+#[cfg(test)]
+mod odx_lookup_tests {
+    use super::*;
+
+    /// Build a throwaway corpus tree under the OS temp dir.
+    fn corpus(files: &[&str]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("vagcan-odx-{}", files.join("_").len()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
+        for name in files {
+            std::fs::write(root.join("UDS_EV").join(name), b"x").unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_control_units_own_odx_name_finds_its_file() {
+        // The name is what F19E returns on the reference car, padding included.
+        let root = corpus(&["EV_ECM18TFS0208V0906264H.rod", "EV_TCMDQ200021.rod"]);
+        let hits = find_rod_by_odx_name(&root, "EV_ECM18TFS0208V0906264H\0").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].ends_with("EV_ECM18TFS0208V0906264H.rod"), "{hits:?}");
+    }
+
+    #[test]
+    fn case_and_extension_spelling_do_not_matter() {
+        // VCDS installs ship both `.rod` and `.ROD`.
+        let root = corpus(&["EV_TCMDQ200021.ROD"]);
+        let hits = find_rod_by_odx_name(&root, "ev_tcmdq200021").unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn a_name_the_corpus_does_not_have_finds_nothing() {
+        let root = corpus(&["EV_TCMDQ200021.rod"]);
+        assert!(find_rod_by_odx_name(&root, "EV_ECM_NOT_INSTALLED").unwrap().is_empty());
+        // An empty identifier must not match every file in the tree.
+        assert!(find_rod_by_odx_name(&root, "   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_prefix_is_not_a_match() {
+        // EV_TCMDQ200021 must not be answered by EV_TCMDQ2000210.
+        let root = corpus(&["EV_TCMDQ2000210.rod"]);
+        assert!(find_rod_by_odx_name(&root, "EV_TCMDQ200021").unwrap().is_empty());
     }
 }

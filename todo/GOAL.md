@@ -5,9 +5,17 @@ here. The MVP task breakdown lives in `todo/README.md`.
 
 ## Goal
 
-Ship **`vagcan info`** — prints VIN, vehicle name/model, and equipment (engine,
-turbo?, gearbox kind+name, other basic info) read live from the owner's own car
-via the owner's own FTDI HEX cable. Extensible foundation first; UI later.
+Read the **whole car over CAN** and show measurements by name/value/unit, with every
+definition sourced from VW's own label files rather than hardcoded. Extensible foundation
+first; UI later.
+
+**Done and verified on the car (2026-08-01):** `vagcan info` prints the VIN and the engine
+and gearbox passports, read live over a generic slcan USB-CAN adapter. The remaining work
+is measurement *scaling* — see `todo/README.md` M3.
+
+The original plan routed this through the owner's FTDI HEX cable. That path is parked: its
+session crypto is a dead end, and a generic USB-CAN adapter reaches the same bus with no
+crypto at all.
 
 ## Tech stack & architecture (locked)
 
@@ -19,10 +27,9 @@ via the owner's own FTDI HEX cable. Extensible foundation first; UI later.
   ISO-TP state + timeouts. Clients get concurrency (latency-hiding), not wire
   parallelism. Multiple cables later = actor-per-cable.
 - **Pluggable backend, static dispatch:** `trait Backend { async fn read/write }`
-  (native async-fn-in-trait, no `dyn`/`async-trait`); `CableActor<B: Backend>`;
-  runtime pick via `match config` at startup. **D2XX now** (blocking handle on a
-  DEDICATED std::thread bridged to async via mpsc — never `spawn_blocking` per
-  call, never in the reactor); **nusb seam for later.**
+  (native async-fn-in-trait, no `dyn`/`async-trait`). The live backend is `SlcanBackend`
+  over a serial port (`vag-can`); the D2XX/HEX backend remains behind the same seam but is
+  parked.
 - `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
   client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
   FAST** (indexed/prepared SQLite or preloaded map; benchmark it).
