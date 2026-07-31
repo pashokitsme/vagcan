@@ -11,6 +11,7 @@
 
 mod analyse;
 mod device;
+mod discover;
 mod labels;
 mod props;
 mod render;
@@ -181,6 +182,21 @@ enum Command {
         min_points: usize,
     },
 
+    /// Find which identifiers carry discrete state — gear, mode, a switch.
+    ///
+    /// Offline — no car. Reads a `vagcan watch --out` recording and sorts every
+    /// identifier by how it behaved: never moved, stepped between a few values,
+    /// or varied continuously. Gear and switches cannot be found by fitting a
+    /// line; they are found by noticing what changed when.
+    Discover {
+        /// Recording written by `vagcan watch --out`.
+        #[arg(long, value_name = "FILE")]
+        log: String,
+        /// Also list identifiers that changed at the same moments.
+        #[arg(long)]
+        pairs: bool,
+    },
+
     /// Look measurements up in a VCDS label directory. Offline — no car.
     Labels {
         /// VCDS install root, or any directory below it.
@@ -240,6 +256,24 @@ async fn main() -> Result<()> {
             out.as_deref(),
             analyse::Thresholds { min_r2, min_points, ..Default::default() },
         ),
+        Command::Discover { log, pairs } => {
+            let text = std::fs::read_to_string(&log)
+                .with_context(|| format!("reading the recording {log:?}"))?;
+            let columns = discover::classify(&text).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
+            print!("{}", discover::render(&columns));
+            if pairs {
+                let together = discover::co_changing(&columns, 0.5);
+                if together.is_empty() {
+                    println!("\nNo two candidates changed together.");
+                } else {
+                    println!("\nChanged at the same moments — probably one thing seen twice:");
+                    for (a, b, overlap) in together {
+                        println!("  {a} + {b}   {:.0}% of transitions coincide", overlap * 100.0);
+                    }
+                }
+            }
+            Ok(())
+        }
         Command::Labels { dir, part, block, field, odx, from_car, ecu, device } => {
             if from_car {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
