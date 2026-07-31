@@ -136,32 +136,36 @@ fn ignition_def(did: u16) -> MeasurementDef {
 /// the pipeline knows that formula, so recovering it from the data validates
 /// the alignment and the fitting end to end.
 pub fn proven_measurements() -> Vec<MeasurementDef> {
-    vec![
-        MeasurementDef {
-            name: Cow::Borrowed("Coolant temperature"),
-            unit: Cow::Borrowed("°C"),
-            address: ReadId::Uds(0xF405),
-            raw_form: RawForm::U8First,
-            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: -40.0 }),
-        },
-        MeasurementDef {
-            name: Cow::Borrowed("Engine speed"),
-            unit: Cow::Borrowed("/min"),
-            address: ReadId::Uds(0x206E),
-            raw_form: RawForm::U16Be,
-            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
-        },
-        MeasurementDef {
-            // Gearbox (address 02). Little-endian — verified byte by byte
-            // against the log, not inferred: raw `B2 02` = 690 /min, `CC 08` =
-            // 2252 /min. Big-endian would read 45570 and 52232.
-            name: Cow::Borrowed("Transmission input speed"),
-            unit: Cow::Borrowed("/min"),
-            address: ReadId::Uds(0x380A),
-            raw_form: RawForm::U16Le,
-            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
-        },
-    ]
+    proven_engine()
+}
+
+/// The shipped catalogs, embedded so the binary needs no data directory.
+///
+/// These are **files, not literals**: measurement definitions are data (see
+/// `catalogs/README.md`), and a new measurement is a new row there rather than
+/// a new branch here.
+const ENGINE_CATALOG: &str = include_str!("../../../catalogs/engine-01.json");
+const GEARBOX_CATALOG: &str = include_str!("../../../catalogs/gearbox-02.json");
+
+/// Engine (address 01) rows that are NOT part of the OBD-II standard set —
+/// VW's own identifiers, which only the capture crib could supply. Combine
+/// with [`crate::obd::PIDS`] for the standard parameters.
+pub fn proven_engine() -> Vec<MeasurementDef> {
+    MeasurementCatalog::from_json(ENGINE_CATALOG)
+        .expect("the shipped engine catalog is valid JSON")
+        .defs
+}
+
+/// Gearbox (address 02) rows.
+///
+/// Kept separate from the engine set on purpose: **`F40D` means different
+/// things on the two units** — one byte of km/h on the engine (the OBD-II
+/// mirror), two little-endian bytes at ×0.01 here. A single combined catalog
+/// could only be wrong for one of them.
+pub fn proven_gearbox() -> Vec<MeasurementDef> {
+    MeasurementCatalog::from_json(GEARBOX_CATALOG)
+        .expect("the shipped gearbox catalog is valid JSON")
+        .defs
 }
 
 /// A selectable set of measurement definitions — the user's chosen catalog.
@@ -180,10 +184,11 @@ impl MeasurementCatalog {
         MeasurementCatalog { defs }
     }
 
-    /// The catalog seeded with everything proven so far. This is the baseline
-    /// a fresh install ships with.
+    /// The catalog seeded with everything proven on the engine so far. This is
+    /// the baseline a fresh install ships with; the gearbox has its own set
+    /// (see [`proven_gearbox`]) because the two units disagree on `F40D`.
     pub fn seeded() -> Self {
-        let mut defs = proven_measurements();
+        let mut defs = proven_engine();
         defs.extend(ignition_angle());
         MeasurementCatalog::new(defs)
     }
@@ -265,25 +270,47 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_catalogs_are_loadable_data_not_code() {
+        // The definitions live in catalogs/*.json. If they ever moved back
+        // into Rust literals this test would still pass, so it also checks the
+        // count matches the files as shipped.
+        assert_eq!(proven_engine().len(), 3, "engine rows come from the file");
+        assert_eq!(proven_gearbox().len(), 10, "gearbox rows come from the file");
+    }
+
+    #[test]
     fn the_proven_rows_reproduce_the_values_the_car_displayed() {
         // Spot values lifted straight from the 2026-08-01 session, so the
         // catalog cannot drift away from the evidence that justified it.
-        let defs = proven_measurements();
-
-        let coolant = &defs[0];
-        // Raw 0x6D = 109 → 69 °C. This is the standard OBD-II PID 05 formula,
-        // recovered from the data rather than assumed.
-        assert_eq!(coolant.interpret(&[0x6D]), Some(69.0));
-        assert_eq!(coolant.unit, "°C");
-
-        let rpm = &defs[1];
+        let engine = proven_engine();
+        let rpm = &engine[0];
         assert_eq!(rpm.interpret(&[0x02, 0xBD]), Some(701.0));
 
+        // Boost came out at exactly ×0.001 bar over two big-endian bytes.
+        let boost = &engine[2];
+        assert_eq!(boost.interpret(&[0x03, 0xDF]), Some(0.991));
+        assert_eq!(boost.unit, "bar");
+
         // The gearbox reports little-endian: `B2 02` is 690 /min, not 45570.
-        let input = &defs[2];
+        let gearbox = proven_gearbox();
+        let input = &gearbox[0];
         assert_eq!(input.interpret(&[0xB2, 0x02]), Some(690.0));
         assert_eq!(input.interpret(&[0xCC, 0x08]), Some(2252.0));
         assert_eq!(input.interpret(&[0x7A, 0x0E]), Some(3706.0));
+    }
+
+    #[test]
+    fn the_two_units_disagree_about_f40d_and_the_catalogs_keep_them_apart() {
+        // On the engine F40D is the OBD-II mirror: one byte of km/h. On the
+        // gearbox it is two little-endian bytes at x0.01. Merging the sets
+        // would silently make one of them wrong.
+        assert!(!proven_engine().iter().any(|d| d.address == ReadId::Uds(0xF40D)));
+        let gearbox_speed = proven_gearbox()
+            .into_iter()
+            .find(|d| d.address == ReadId::Uds(0xF40D))
+            .expect("the gearbox set carries its own F40D");
+        assert_eq!(gearbox_speed.raw_form, RawForm::U16Le);
+        assert_eq!(gearbox_speed.interpret(&[0x0A, 0x1E]), Some(76.9)); // 0x1E0A = 7690
     }
 
     #[test]
@@ -304,7 +331,7 @@ mod tests {
         let back = MeasurementCatalog::from_json(&json).expect("deserialize");
 
         assert_eq!(back, cat);
-        assert_eq!(back.len(), 8); // 3 proven + 4 ignition + 1 RPM
+        assert_eq!(back.len(), 8); // 3 engine + 4 ignition + 1 RPM
         // The linear row interprets a real raw after the round-trip.
         let rpm = &back.defs[7];
         assert_eq!(rpm.interpret(&[0x0B, 0x34]), Some(717.0)); // 0x0B34=2868 *0.25

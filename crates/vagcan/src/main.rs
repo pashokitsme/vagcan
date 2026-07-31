@@ -17,6 +17,7 @@ mod render;
 mod scan;
 mod sniff;
 mod vcdslog;
+mod watch;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -107,6 +108,37 @@ enum Command {
         ecu: String,
     },
 
+    /// Watch a few values live, polled as fast as the bus allows.
+    ///
+    /// Made for values that move quickly — boost, throttle, rail pressure.
+    /// Reads are batched eight at a time, so a whole set costs one round trip.
+    Watch {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// A curated set: boost, engine, thermal, gearbox, clutches.
+        #[arg(long, value_name = "NAME")]
+        preset: Option<String>,
+        /// Identifiers to poll, hex, comma separated (e.g. `2029,202A`).
+        #[arg(long, value_name = "LIST", conflicts_with = "preset")]
+        did: Option<String>,
+        /// Control unit: 01 = engine, 02 = gearbox. Implied by --preset.
+        #[arg(long, value_name = "NN")]
+        ecu: Option<String>,
+        /// Target sample rate.
+        #[arg(long, default_value_t = 20.0, value_name = "HZ")]
+        hz: f64,
+        /// Stop after this many seconds. Default: until Ctrl-C.
+        #[arg(long, value_name = "N")]
+        seconds: Option<u64>,
+        /// Also write the samples to a CSV file.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// Catalog of known scalings, for engineering units.
+        #[arg(long, value_name = "FILE")]
+        catalog: Option<String>,
+    },
+
     /// Find every data identifier a control unit answers.
     Scan {
         /// Adapter to use. Omit it when only one is connected.
@@ -194,6 +226,10 @@ async fn main() -> Result<()> {
                 .await
         }
         Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
+        Command::Watch { device, preset, did, ecu, hz, seconds, out, catalog } => {
+            watch_cmd(device.as_deref(), preset.as_deref(), did.as_deref(), ecu.as_deref(), hz, seconds, out.as_deref(), catalog.as_deref())
+                .await
+        }
         Command::Scan { device, ecu, range, out, delay_ms } => {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
@@ -263,6 +299,70 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Watch values live (see the `Watch` subcommand docs).
+#[allow(clippy::too_many_arguments)]
+async fn watch_cmd(
+    device_arg: Option<&str>,
+    preset_name: Option<&str>,
+    did_spec: Option<&str>,
+    ecu_arg: Option<&str>,
+    hz: f64,
+    seconds: Option<u64>,
+    out: Option<&str>,
+    catalog_path: Option<&str>,
+) -> Result<()> {
+    use vag_data::catalog::MeasurementCatalog;
+
+    // A preset carries its own control unit; an explicit --ecu still wins.
+    let (dids_text, ecu_text) = match (preset_name, did_spec) {
+        (Some(name), _) => {
+            let (ecu, dids, what) = watch::preset(name).ok_or_else(|| {
+                let names: Vec<&str> = watch::PRESETS.iter().map(|(n, ..)| *n).collect();
+                anyhow::anyhow!("unknown preset {name:?}. Available: {}", names.join(", "))
+            })?;
+            println!("{name}: {what}");
+            (dids.to_string(), ecu_arg.map(str::to_string).unwrap_or(format!("{ecu:02}")))
+        }
+        (None, Some(spec)) => {
+            (spec.to_string(), ecu_arg.unwrap_or("01").to_string())
+        }
+        (None, None) => {
+            let names: Vec<&str> = watch::PRESETS.iter().map(|(n, ..)| *n).collect();
+            anyhow::bail!("say what to watch: --preset <{}> or --did <hex,hex>", names.join("|"))
+        }
+    };
+    let dids = watch::parse_dids(&dids_text)?;
+
+    // Known scalings: an explicit catalog, else the OBD-II standard set plus
+    // whatever this project has proven.
+    let catalog = match catalog_path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("reading the catalog {path:?}"))?;
+            MeasurementCatalog::from_json(&text)
+                .with_context(|| format!("parsing the catalog {path:?}"))?
+        }
+        // Per control unit, because the units disagree: F40D is the OBD-II
+        // km/h mirror on the engine and a different two-byte value on the
+        // gearbox. Loading both would make one of them wrong.
+        None => match parse_ecu(&ecu_text)? {
+            0 => {
+                let mut defs: Vec<_> = vag_data::obd::PIDS.iter().map(|p| p.to_def()).collect();
+                defs.extend(vag_data::catalog::proven_engine());
+                MeasurementCatalog::new(defs)
+            }
+            1 => MeasurementCatalog::new(vag_data::catalog::proven_gearbox()),
+            // Nothing is proven on the other units yet, so everything shows
+            // as raw rather than borrowing another unit's meanings.
+            _ => MeasurementCatalog::default(),
+        },
+    };
+
+    let path = device::resolve(device_arg)?;
+    let mut uds = open_ecu(&path, parse_ecu(&ecu_text)?).await?;
+    watch::run(&mut uds, &dids, &catalog, hz, seconds, out).await
+}
+
 /// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
 async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
     use vag_data::catalog::MeasurementCatalog;
@@ -285,7 +385,7 @@ async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
         match r.value {
             Some(v) => println!("  {:<width$}  {v:>10.2} {}", r.name, r.unit),
             // The identifier answered but the bytes did not fit the form.
-            None => println!("  {:<width$}  {:>10}  (raw {})", r.name, "?", hex(&r.raw)),
+            None => println!("  {:<width$}  {:>10} (raw)", r.name, hex(&r.raw)),
         }
     }
     println!("\n{} of {} standard sensors answered", readings.len(), catalog.len());

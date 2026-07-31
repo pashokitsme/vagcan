@@ -1,0 +1,46 @@
+{
+  "defs": [
+    {
+      "name": "Engine speed",
+      "unit": "/min",
+      "address": {
+        "Uds": 8302
+      },
+      "raw_form": "U16Be",
+      "scaling": {
+        "Linear": {
+          "factor": 1.0,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "Boost pressure, specified",
+      "unit": "bar",
+      "address": {
+        "Uds": 8233
+      },
+      "raw_form": "U16Be",
+      "scaling": {
+        "Linear": {
+          "factor": 0.001,
+          "offset": 0.0
+        }
+      }
+    },
+    {
+      "name": "Boost pressure, actual",
+      "unit": "bar",
+      "address": {
+        "Uds": 8234
+      },
+      "raw_form": "U16Be",
+      "scaling": {
+        "Linear": {
+          "factor": 0.001,
+          "offset": 0.0
+        }
+      }
+    }
+  ]
+}
