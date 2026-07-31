@@ -478,6 +478,29 @@ instrument cluster, `0x710 → 0x77A` for the gateway). Supporting only the firs
 unit outside the powertrain; recognising both took the extracted identifier count from 61
 to 108 on the same capture.
 
+### 4.3b The `F4xx` family is the OBD-II parameter set — no crib needed (2026-08-01)
+
+Five of the eight engine rows proven in §4.3/§4.3a are `F4xx`, and **every one matched the
+public SAE J1979 conversion exactly** — including `F423`, which is neither a temperature
+nor a single byte (`(256A+B) × 10` kPa). A VAG unit mirrors mode-01 PID `xx` at data
+identifier `0xF400 + xx`.
+
+That makes the whole family decodable **without any capture or VCDS log**: the conversions
+are standard, and five independent fits confirm this unit obeys them. The engine sweep
+found **42** such identifiers.
+
+Shipped as `vag_data::obd` (32 linear parameters; bitfields, enumerations and the
+multi-field lambda parameters are deliberately excluded rather than forced into a scale
+factor) and `vagcan sensors`. A test pins the table against the five fitted rows so it
+cannot drift from the evidence.
+
+**Live run on the car, engine just switched off:** 27 of 32 answered — coolant 101 °C,
+catalyst 292.6 °C, control-module voltage 12.75 V, fuel rail 21,910 kPa, engine and vehicle
+speed 0. Two of the readings cross-check against the VCDS log independently: fuel tank
+level **72.16 %** vs VCDS's 72.2 %, barometric pressure **99 kPa** vs 98–99. Both are
+measurements the fitting approach had to *reject* for being constant — the standard route
+decodes them anyway, because it needs no variation.
+
 **Consequence for the roadmap:** scaling no longer depends on the `.rod` field codec at
 all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
 path for *values*; the corpus is still what supplies names and per-ECU measurement lists.

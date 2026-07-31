@@ -26,7 +26,7 @@ running in parallel, and the offline tool that turns it into scalings.
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
-| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **18 scalings proven live across engine + gearbox (`catalogs/`); coverage is now the only limit** |
+| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **18 scalings proven by crib + the whole OBD-II parameter set decoded from the standard (`vagcan sensors`, 27 live)** |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)

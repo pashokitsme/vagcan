@@ -66,6 +66,7 @@ vagcan devices      list connected USB-CAN adapters
 vagcan info         VIN + engine and gearbox passports
 vagcan properties   everything a control unit says about itself, named
 vagcan sniff        listen-only bus capture (runs alongside VCDS)
+vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
 vagcan scan         every data identifier a control unit answers
 vagcan labels       label lookup; --from-car resolves the ODX file the unit names
 ```

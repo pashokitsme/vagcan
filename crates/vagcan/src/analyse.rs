@@ -632,6 +632,54 @@ pub fn run(
         }
     }
 
+    // What the log carried but the run could not explain. This is the list
+    // that tells you what to record next, so it is printed even on a
+    // successful run — a bare list of wins hides the gaps.
+    let unmatched: Vec<&crate::vcdslog::LoggedMeasurement> = log
+        .measurements
+        .iter()
+        .filter(|m| !fits.iter().any(|f| f.ide == m.ide))
+        .collect();
+    if !unmatched.is_empty() {
+        println!("\nLogged but not proven:");
+        for m in &unmatched {
+            let span = m
+                .samples
+                .iter()
+                .map(|(_, v)| *v)
+                .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            let levels = {
+                let mut v: Vec<String> =
+                    m.samples.iter().map(|(_, x)| format!("{x:.3}")).collect();
+                v.sort();
+                v.dedup();
+                v.len()
+            };
+            let why = if levels <= 1 {
+                "never moved".to_string()
+            } else if levels < limits.min_levels {
+                format!("only {levels} distinct values")
+            } else {
+                rejected
+                    .iter()
+                    .find_map(|r| match r {
+                        Rejected::PoorFit { ide, r2, .. } if *ide == m.ide => {
+                            Some(format!("best fit only R²={r2:.3}"))
+                        }
+                        Rejected::TooFewPoints { ide, points, .. } if *ide == m.ide => {
+                            Some(format!("only {points} overlapping samples"))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "no identifier explained it".to_string())
+            };
+            println!(
+                "  {:<22} {:>9.2}..{:<9.2} [{}]  — {why}",
+                m.ide, span.0, span.1, m.unit
+            );
+        }
+    }
+
     let outranked: Vec<&Rejected> =
         rejected.iter().filter(|r| matches!(r, Rejected::Outranked { .. })).collect();
     if !outranked.is_empty() {

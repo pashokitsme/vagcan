@@ -93,6 +93,20 @@ enum Command {
         active: bool,
     },
 
+    /// Read the standard OBD-II sensors a control unit exposes.
+    ///
+    /// These ride the legislated parameter set mirrored at `F400 + PID`, so
+    /// their conversions are public and need no reverse engineering — and five
+    /// of them were independently confirmed against this car.
+    Sensors {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// Control unit: 01 = engine, 02 = gearbox, and so on.
+        #[arg(long, default_value = "01", value_name = "NN")]
+        ecu: String,
+    },
+
     /// Find every data identifier a control unit answers.
     Scan {
         /// Adapter to use. Omit it when only one is connected.
@@ -179,6 +193,7 @@ async fn main() -> Result<()> {
             sniff::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, out.as_deref(), diag_only, seconds, active)
                 .await
         }
+        Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
         Command::Scan { device, ecu, range, out, delay_ms } => {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
@@ -246,6 +261,40 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
     }
     println!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
     Ok(())
+}
+
+/// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
+async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
+    use vag_data::catalog::MeasurementCatalog;
+    use vag_data::obd::PIDS;
+
+    let path = device::resolve(device_arg)?;
+    let mut uds = open_ecu(&path, parse_ecu(ecu_text)?).await?;
+
+    // Ask for every standard parameter; the unit refuses the ones it does not
+    // implement, and `read_catalog` skips those rather than failing the run.
+    let catalog = MeasurementCatalog::new(PIDS.iter().map(|p| p.to_def()).collect());
+    let readings = uds.read_catalog(&catalog).await;
+
+    if readings.is_empty() {
+        println!("{}", render::render_nothing_answered());
+        return Ok(());
+    }
+    let width = readings.iter().map(|r| r.name.len()).max().unwrap_or(0);
+    for r in &readings {
+        match r.value {
+            Some(v) => println!("  {:<width$}  {v:>10.2} {}", r.name, r.unit),
+            // The identifier answered but the bytes did not fit the form.
+            None => println!("  {:<width$}  {:>10}  (raw {})", r.name, "?", hex(&r.raw)),
+        }
+    }
+    println!("\n{} of {} standard sensors answered", readings.len(), catalog.len());
+    Ok(())
+}
+
+/// Hex for a raw response body.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
 /// Read the ODX label-file name a control unit reports for itself (F19E).
