@@ -15,6 +15,12 @@ tokio-serial = { version = "5.4", optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
 
+# The bench bring-up probe talks to a real serial port; without the feature it
+# would fail to build when the crate is tested on its own.
+[[example]]
+name = "slcan_probe"
+required-features = ["slcan"]
+
 [features]
 # Enables `SlcanBackend::open()` over a real serial port (LAWICEL USB-CAN
 # adapter). Off by default so the workspace builds with no serial dependency.
