@@ -11,6 +11,7 @@
 
 mod labels;
 mod render;
+mod sniff;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -125,6 +126,39 @@ enum Command {
         #[arg(long, default_value_t = 115200)]
         baud: u32,
     },
+    /// Watch the car's CAN bus. LISTEN-ONLY by default: the adapter receives
+    /// but never drives a bit, not even an acknowledge, so it cannot disturb a
+    /// bus another tester owns.
+    ///
+    /// The intended use is to run this **alongside VCDS** — CAN is multi-drop,
+    /// so both adapters sit on the same OBD-II bus — and record VCDS's whole
+    /// diagnostic conversation in the clear, including the multi-frame group
+    /// reads its measurement display is built from.
+    ///
+    /// Wiring: OBD2 pin 6 → CAN-H, pin 14 → CAN-L, and the adapter's
+    /// termination jumper OFF (the vehicle bus is already terminated).
+    Sniff {
+        /// Serial device of the slcan USB-CAN adapter (e.g. `/dev/cu.usbmodem…`).
+        #[arg(long)]
+        port: String,
+        /// Serial baud rate to the adapter (slcan is ASCII over serial).
+        #[arg(long, default_value_t = 115200)]
+        baud: u32,
+        /// Write every observed frame to this JSON-lines capture file.
+        #[arg(long)]
+        out: Option<String>,
+        /// Keep only diagnostic ids; drop broadcast traffic from the display
+        /// AND from the capture file.
+        #[arg(long)]
+        diag_only: bool,
+        /// Stop after this many seconds (default: run until Ctrl-C).
+        #[arg(long)]
+        seconds: Option<u64>,
+        /// Open the channel in NORMAL mode instead of listen-only. The adapter
+        /// will then acknowledge frames on the bus.
+        #[arg(long)]
+        active: bool,
+    },
     /// Inventory a VCDS label/ODX directory tree and look measurements up.
     ///
     /// Recursively counts `.lbl` / `.clb` / `.rod` files under `<dir>`, then
@@ -177,6 +211,14 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Info { port, baud } => info(port.as_deref(), baud).await,
+        Command::Sniff {
+            port,
+            baud,
+            out,
+            diag_only,
+            seconds,
+            active,
+        } => sniff_cmd(&port, baud, out.as_deref(), diag_only, seconds, active).await,
         Command::Labels {
             dir,
             part,
@@ -184,6 +226,125 @@ async fn main() -> anyhow::Result<()> {
             field,
         } => labels::labels_cmd(&dir, part.as_deref(), block, field),
     }
+}
+
+/// Watch the bus (see the `Sniff` subcommand docs).
+///
+/// The loop polls the adapter with a short receive window rather than awaiting
+/// frames inside a `select!`: the operator's Ctrl-C and marker input then reach
+/// us between whole frames, and no half-consumed serial read can be cancelled.
+async fn sniff_cmd(
+    port: &str,
+    baud: u32,
+    out: Option<&str>,
+    diag_only: bool,
+    seconds: Option<u64>,
+    active: bool,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant, SystemTime};
+    use vag_can::{CanBackend, CanError, SlcanBackend, SlcanBitrate, SlcanMode};
+
+    use crate::sniff::SniffSession;
+
+    let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
+    let mut backend = SlcanBackend::open_mode(port, baud, SlcanBitrate::Rate500k, mode)
+        .await
+        .with_context(|| format!("opening slcan adapter at {port:?} ({baud} baud)"))?;
+
+    let capture: Option<Box<dyn Write>> = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .with_context(|| format!("creating capture file {path:?}"))?;
+            Some(Box::new(std::io::BufWriter::new(file)))
+        }
+        None => None,
+    };
+    let unix_us = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    let mut session = SniffSession::new(capture, unix_us, diag_only)?;
+
+    println!(
+        "listening on {port} at 500 kbit/s in {} mode{}{}",
+        if active { "NORMAL (the adapter will ACK on the bus)" } else { "LISTEN-ONLY" },
+        match out {
+            Some(path) => format!(", writing {path}"),
+            None => String::new(),
+        },
+        if diag_only { ", diagnostic ids only" } else { "" },
+    );
+    println!("type a note + Enter to mark the capture; Ctrl-C to stop\n");
+
+    // Ctrl-C and stdin are watched by their own tasks, so the receive loop
+    // never has to be interrupted mid-frame.
+    let stop = Arc::new(AtomicBool::new(false));
+    let signalled = stop.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signalled.store(true, Ordering::Relaxed);
+        }
+    });
+    let (notes_tx, mut notes_rx) = tokio::sync::mpsc::channel::<String>(16);
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt as _;
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if notes_tx.send(line).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let deadline = seconds.map(|s| started + Duration::from_secs(s));
+    while !stop.load(Ordering::Relaxed) {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            break;
+        }
+        let ts_us = started.elapsed().as_micros() as u64;
+        while let Ok(note) = notes_rx.try_recv() {
+            let note = if note.trim().is_empty() { "mark".to_string() } else { note };
+            session.on_marker(&note, ts_us)?;
+            println!("{:9.3}  -- {note}", ts_us as f64 / 1e6);
+        }
+
+        match backend.recv_frame(Duration::from_millis(200)).await {
+            Ok((id, data)) => {
+                let ts_us = started.elapsed().as_micros() as u64;
+                if let Some(line) = session.on_frame(id, &data, ts_us)? {
+                    println!("{line}");
+                }
+            }
+            // A quiet window is normal — the bus may simply be idle.
+            Err(CanError::Timeout) => {}
+            Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+            Err(e) => {
+                eprintln!("receive failed: {e}");
+                break;
+            }
+        }
+    }
+
+    let _ = backend.close_channel().await;
+    let stats = session.stats();
+    session.finish()?;
+    let elapsed = started.elapsed().as_secs_f64();
+    println!(
+        "\nstopped after {elapsed:.1}s: {} frames seen, {} written, {} PDUs reassembled, \
+         {} incomplete, {} markers",
+        stats.frames_seen, stats.frames_kept, stats.pdus, stats.dropped, stats.markers
+    );
+    if stats.frames_seen == 0 {
+        println!(
+            "\nNo traffic at all. Check: ignition on; OBD2 pin 6 → CAN-H and pin 14 → CAN-L; \
+             the adapter's 120R termination jumper OFF; the bus really running at 500 kbit/s."
+        );
+    }
+    Ok(())
 }
 
 /// Read the identification block from the Engine (01) and Gearbox (02) over a
