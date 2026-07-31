@@ -99,19 +99,20 @@ no dependence on the `.rod` field codec.
 `vagcan sniff --out <file>` alongside VCDS, engine running, ADVMB logged to CSV, a wide
 sustained rev twice over, operator markers typed as it goes.
 
-**2. `vagcan analyse` — the offline tool that turns that capture into scalings.** To be
-written *before* the session, so the data can be checked while the car is still available.
-It must:
-- read the capture JSONL and the VCDS CSV, and align them by the **wall-clock anchor** —
-  arithmetic, not curve fitting. Fitting the offset is what produced the false correlations
-  in §4.0a/§4.0b;
-- reassemble ISO-TP, group by read identifier, and build a raw time series per identifier,
-  including the multi-frame group reads;
-- for each (identifier interpretation × logged measurement) pair, fit `factor`/`offset` by
-  least squares — and **reject** anything below a stated threshold rather than shipping a
-  forced fit. A refusal is a result;
-- emit accepted rows as `MeasurementDef` catalog entries (`vag_data::catalog`), which the
-  existing `UdsReadExt::read_catalog` can already read.
+**2. `vagcan analyse` — BUILT (2026-08-01).** The offline tool that turns a capture into
+scalings, written before the session so the data can be checked while the car is available.
+It:
+- reads the capture JSONL and the VCDS CSV (CP1251; each measurement carries its own time
+  column) and aligns them by the **wall-clock anchor** — a subtraction, never a search;
+- reassembles ISO-TP, pairs `0x22` requests with `0x62` responses, and splits
+  multi-identifier responses by the requested order, **skipping** any response it cannot
+  split unambiguously;
+- fits `factor`/`offset` by least squares over every raw interpretation, accepting only
+  `R² ≥ 0.995` over `≥ 20` points and reporting near misses as leads;
+- emits accepted rows as `MeasurementDef` catalog entries, which `UdsReadExt::read_catalog`
+  already reads.
+
+Still unexercised against real capture+log data — that happens in step 1.
 
 **3. Names and the per-ECU measurement list from the `.rod`.** Scaling now comes from the
 car, but the label corpus still supplies what a value is *called* and which values an ECU
@@ -149,7 +150,9 @@ Risk climbs monotonically — stop and confirm at each step:
 2. 🔴 **`vagcan sniff` + VCDS in parallel**, VCDS logging ADVMB to CSV, engine running, wide
    rev. The trophy — see "Next lever" above. **Next action.**
 3. ✅ **`vagcan info`** — done 2026-08-01, see below.
-4. ✅ **`vagcan scan`** — swept `F100-F1FF` on both units, 2026-08-01.
+4. ✅ **`vagcan scan`** — full `0000-FFFF` sweep of both units, 2026-08-01: the engine
+   answers **896** identifiers (191 s, 10,840 requests), the gearbox **541** (274 s, 9,406
+   requests). Results in `research/dumps/*-full.jsonl` (gitignored).
 
 ### First live session — 2026-08-01 (M1 CLOSED)
 `vagcan info` over the CANable read the car and matched the Auto-Scan oracle on four
