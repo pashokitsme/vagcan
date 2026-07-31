@@ -13,4 +13,4 @@ pub mod slcan;
 pub use backend::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, from_raw_id, to_raw_id};
 pub use error::CanError;
 pub use isotp::IsoTpCan;
-pub use slcan::{SlcanBackend, SlcanBitrate};
+pub use slcan::{SlcanBackend, SlcanBitrate, SlcanMode};

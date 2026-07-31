@@ -24,6 +24,20 @@ pub enum SlcanBitrate {
     Rate1m = 8,
 }
 
+/// How the adapter drives the bus once the channel opens (`Mn` command).
+///
+/// [`Silent`](SlcanMode::Silent) is listen-only: the controller receives but
+/// never writes a bit — not even an acknowledge — so it cannot disturb a bus
+/// another tester is using. That is the mode for sniffing a live VCDS session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SlcanMode {
+    /// Normal: receives, acknowledges, and may transmit.
+    #[default]
+    Normal = 0,
+    /// Listen-only ("silent"): receives only, never drives the bus.
+    Silent = 1,
+}
+
 /// Encode one classic CAN frame as an slcan ASCII line (with trailing CR).
 pub fn encode_frame(id: u32, data: &[u8]) -> Result<String, CanError> {
     if data.len() > 8 {
@@ -83,10 +97,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
         SlcanBackend { stream, buf: Vec::new() }
     }
 
-    /// Send the channel-open sequence: close, set bitrate, open.
-    /// Fire-and-forget: many adapters NAK a redundant `C`, so acks are not checked.
+    /// Send the channel-open sequence in [`SlcanMode::Normal`] — see
+    /// [`Self::open_channel_mode`].
     pub async fn open_channel(&mut self, bitrate: SlcanBitrate) -> Result<(), CanError> {
-        let cmd = format!("C\rS{}\rO\r", bitrate as u8);
+        self.open_channel_mode(bitrate, SlcanMode::Normal).await
+    }
+
+    /// Send the channel-open sequence: close, set bitrate, set the bus mode,
+    /// open. Fire-and-forget: many adapters NAK a redundant `C` (and the
+    /// CANable2 firmware acks nothing at all), so acks are not checked.
+    ///
+    /// **The mode command must precede `O`.** The controller only accepts mode
+    /// configuration while it is in init state; after the channel opens the
+    /// registers are locked and a later `M` is silently ignored.
+    ///
+    /// The mode is sent explicitly on *every* open, including
+    /// [`SlcanMode::Normal`]. The adapter keeps its silent flag across a
+    /// close/open cycle, so a normal open that omitted `M0` would inherit
+    /// listen-only from an earlier sniffing run and transmit nothing.
+    pub async fn open_channel_mode(
+        &mut self,
+        bitrate: SlcanBitrate,
+        mode: SlcanMode,
+    ) -> Result<(), CanError> {
+        let cmd = format!("C\rS{}\rM{}\rO\r", bitrate as u8, mode as u8);
         self.write_all(cmd.as_bytes()).await
     }
 
@@ -155,12 +189,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CanBackend for SlcanBackend<S> {
 #[cfg(feature = "slcan")]
 impl SlcanBackend<tokio_serial::SerialStream> {
     pub async fn open(path: &str, baud: u32, bitrate: SlcanBitrate) -> Result<Self, CanError> {
+        SlcanBackend::open_mode(path, baud, bitrate, SlcanMode::Normal).await
+    }
+
+    /// Open a real slcan serial adapter and open its CAN channel in `mode`.
+    /// [`SlcanMode::Silent`] is the safe way onto a bus somebody else is using.
+    pub async fn open_mode(
+        path: &str,
+        baud: u32,
+        bitrate: SlcanBitrate,
+        mode: SlcanMode,
+    ) -> Result<Self, CanError> {
         use tokio_serial::SerialPortBuilderExt;
         let stream = tokio_serial::new(path, baud)
             .open_native_async()
             .map_err(|e| CanError::Io(e.to_string()))?;
         let mut backend = SlcanBackend::new(stream);
-        backend.open_channel(bitrate).await?;
+        backend.open_channel_mode(bitrate, mode).await?;
         Ok(backend)
     }
 }
@@ -258,13 +303,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_channel_sends_close_bitrate_open() {
+    async fn open_channel_sends_close_bitrate_mode_open() {
+        // The default open is explicitly NORMAL mode: `M0` must be sent, or a
+        // channel left silent by an earlier sniff would stay listen-only.
         let (client, mut adapter) = tokio::io::duplex(256);
         let mut backend = SlcanBackend::new(client);
         backend.open_channel(SlcanBitrate::Rate500k).await.unwrap();
 
         let mut got = vec![0u8; 64];
         let n = adapter.read(&mut got).await.unwrap();
-        assert_eq!(&got[..n], b"C\rS6\rO\r");
+        assert_eq!(&got[..n], b"C\rS6\rM0\rO\r");
+    }
+
+    #[tokio::test]
+    async fn silent_mode_is_requested_before_the_channel_opens() {
+        // The controller latches its bus mode at open: `M1` after `O` would be
+        // ignored and we would ACK on a bus we promised only to listen to.
+        let (client, mut adapter) = tokio::io::duplex(256);
+        let mut backend = SlcanBackend::new(client);
+        backend
+            .open_channel_mode(SlcanBitrate::Rate500k, SlcanMode::Silent)
+            .await
+            .unwrap();
+
+        let mut got = vec![0u8; 64];
+        let n = adapter.read(&mut got).await.unwrap();
+        assert_eq!(&got[..n], b"C\rS6\rM1\rO\r");
+
+        let text = std::str::from_utf8(&got[..n]).unwrap();
+        assert!(
+            text.find("M1").unwrap() < text.find('O').unwrap(),
+            "mode must be set while the controller is still in init state: {text:?}"
+        );
     }
 }

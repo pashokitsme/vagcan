@@ -22,7 +22,9 @@ impl ReplayCan {
 fn as_frame(rec: &CaptureRecord) -> CanFrame {
     match &rec.payload {
         CapturePayload::CanFrame { id, data } => CanFrame::new(*id, data.clone()),
-        CapturePayload::CableBytes { .. } => unreachable!("filtered in new()"),
+        CapturePayload::CableBytes { .. } | CapturePayload::Marker { .. } => {
+            unreachable!("filtered in new()")
+        }
     }
 }
 
