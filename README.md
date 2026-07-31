@@ -8,7 +8,7 @@ Reference vehicle: Škoda Octavia III facelift, 1.8 TSI, 2017 (MQB, CAN/UDS).
 
 Design/PRD: [`docs/superpowers/specs/2026-07-02-vagcan-cli-design.md`](docs/superpowers/specs/2026-07-02-vagcan-cli-design.md).
 
-## Status (2026-07-13)
+## Status (2026-07-31)
 
 Goal: read the **whole car over CAN**, with measurement definitions (name / read
 address / scaling / unit) sourced **from VW's own label files** (`.lbl`/`.clb`/`.rod`) —
@@ -23,20 +23,26 @@ Milestones (see `todo/README.md` for the live task list):
 | M0 | ISO-TP + UDS + transport stack (read-only) | ✅ done |
 | M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | 🟡 built, **mock-tested only — NOT yet verified on the real car** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan labels` corpus tool | ✅ done |
-| **M3** | **Measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🔴 **current — blocked on the STRUC field segmentation** |
-| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | 🚚 dongle shipping; `vag-can` built, untested on hardware |
+| **M3** | **Measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🔴 **current — the offline path is refuted; now needs a live crib** |
+| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | 🟡 bench-verified (slcan firmware, responsive); **not yet on the car** |
 
-**Where it stands (M3, the one wall):** every `.rod` label table is decrypted and
-inflated inside our own tool (`vag-data`, `vag-rod` bin) and the packed payload codec is
-proven to be **base-14** (disasm-verified). What is NOT reversed is the **STRUC field
-segmentation** — *where inside a `NNNNNN,<base-14>` record the read identifier (DID),
-raw spec, scaling, unit-ref and name-ref live*. Offline static + data-only RE is exhausted
-(5 passes; `research/rod-labels.md`). One empirical anchor is proven from an
-engine-running capture: ignition-angle raw `0x5555` = `0.00°`. The next lever is a
-**supervised attack**: the owner's own capture yields real valid engine DIDs + VCDS's
-displayed values (`research/dumps/`, gitignored) → locate those known DIDs inside the
-decoded STRUC records to reveal the field offsets. This finally crosses the crib with
-STRUC (never combined before).
+**Where it stands (M3):** every `.rod` label table is decrypted and inflated inside our own
+tool (`vag-data`, `vag-rod` bin) and the packed payload codec is proven to be **base-14**
+(disasm-verified). What is NOT reversed is the **STRUC field segmentation** — and the
+supervised attack that was supposed to crack it instead proved the read DID is **not stored
+in STRUC at all** (`research/rod-labels.md` §4.0c). Offline RE is exhausted.
+
+So M3 no longer waits on the label corpus; it waits on **live evidence**. Prior cribs came
+from USB captures of the HEX clone, where the link cipher hides the payload and VCDS's
+multi-frame group reads — the source of RPM / speed / coolant — never decoded. CAN is
+multi-drop, so a second adapter listens on the same OBD-II bus while VCDS runs and records
+the whole conversation in the clear. That tooling now ships: `vagcan sniff` (listen-only
+capture with live ISO-TP reassembly and a wall-clock anchor) and `vagcan scan-dids`
+(read-only sweep of what an ECU actually exposes). Both are hardware-ready; see
+`docs/superpowers/specs/2026-07-31-can-sniffer-design.md` and the checkpoint order in
+`todo/README.md`.
+
+One empirical anchor stands from the earlier captures: ignition-angle raw `0x5555` = `0.00°`.
 
 ## Workspace
 
