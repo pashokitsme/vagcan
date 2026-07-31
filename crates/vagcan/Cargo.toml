@@ -13,4 +13,6 @@ vag-capture = { path = "../vag-capture" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+# Local-time conversion for aligning a capture against a VCDS log.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde_json.workspace = true

@@ -9,12 +9,14 @@
 //! cable whose session crypto is a dead end for this project; the research and
 //! the `vag-hex` crate remain, but they are not product commands.
 
+mod analyse;
 mod device;
 mod labels;
 mod props;
 mod render;
 mod scan;
 mod sniff;
+mod vcdslog;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -111,6 +113,28 @@ enum Command {
         delay_ms: u64,
     },
 
+    /// Cross a capture with a VCDS log to prove measurement scalings.
+    ///
+    /// Offline — no car. Aligns the two by their wall-clock stamps and fits
+    /// raw bytes to displayed values, reporting only what clears the bar.
+    Analyse {
+        /// Capture written by `vagcan sniff`.
+        #[arg(long, value_name = "FILE")]
+        capture: String,
+        /// VCDS measuring-blocks CSV export recorded at the same time.
+        #[arg(long, value_name = "FILE")]
+        log: String,
+        /// Write the proven scalings as a measurement catalog.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// Minimum R² for a fit to count.
+        #[arg(long, default_value_t = 0.995, value_name = "R2")]
+        min_r2: f64,
+        /// Minimum matched samples for a fit to count.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        min_points: usize,
+    },
+
     /// Look measurements up in a VCDS label directory. Offline — no car.
     Labels {
         /// VCDS install root, or any directory below it.
@@ -159,6 +183,12 @@ async fn main() -> Result<()> {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
         }
+        Command::Analyse { capture, log, out, min_r2, min_points } => analyse::run(
+            &capture,
+            &log,
+            out.as_deref(),
+            analyse::Thresholds { min_r2, min_points, ..Default::default() },
+        ),
         Command::Labels { dir, part, block, field, odx, from_car, ecu, device } => {
             if from_car {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
