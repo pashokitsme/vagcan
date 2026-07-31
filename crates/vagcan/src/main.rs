@@ -11,6 +11,7 @@
 
 mod labels;
 mod render;
+mod scan;
 mod sniff;
 
 use anyhow::Context;
@@ -159,6 +160,34 @@ enum Command {
         #[arg(long)]
         active: bool,
     },
+    /// Ask an ECU which data identifiers it actually implements: sweep the
+    /// `ReadDataByIdentifier` space and record everything that answers.
+    ///
+    /// Read-only (UDS service 0x22 only). VCDS reads only the identifiers its
+    /// label files name; this asks the ECU itself, so it surfaces values no
+    /// label mentions. Results stream to disk as they arrive — an interrupted
+    /// sweep keeps what it found.
+    ScanDids {
+        /// Serial device of the slcan USB-CAN adapter.
+        #[arg(long)]
+        port: String,
+        /// Serial baud rate to the adapter.
+        #[arg(long, default_value_t = 115200)]
+        baud: u32,
+        /// ECU index: 0 = Engine (0x7E0/0x7E8), 1 = Gearbox, and so on.
+        #[arg(long, default_value_t = 0)]
+        ecu: u8,
+        /// Comma-separated inclusive hex spans, e.g. `7400-7500,A000-A100`.
+        /// Use `0000-FFFF` for everything (65,536 reads — minutes).
+        #[arg(long, default_value = scan::DEFAULT_RANGES)]
+        range: String,
+        /// Write every answering identifier to this JSON-lines file.
+        #[arg(long)]
+        out: Option<String>,
+        /// Pause between reads, in milliseconds.
+        #[arg(long, default_value_t = 5)]
+        delay_ms: u64,
+    },
     /// Inventory a VCDS label/ODX directory tree and look measurements up.
     ///
     /// Recursively counts `.lbl` / `.clb` / `.rod` files under `<dir>`, then
@@ -219,6 +248,14 @@ async fn main() -> anyhow::Result<()> {
             seconds,
             active,
         } => sniff_cmd(&port, baud, out.as_deref(), diag_only, seconds, active).await,
+        Command::ScanDids {
+            port,
+            baud,
+            ecu,
+            range,
+            out,
+            delay_ms,
+        } => scan_dids_cmd(&port, baud, ecu, &range, out.as_deref(), delay_ms).await,
         Command::Labels {
             dir,
             part,
@@ -226,6 +263,84 @@ async fn main() -> anyhow::Result<()> {
             field,
         } => labels::labels_cmd(&dir, part.as_deref(), block, field),
     }
+}
+
+/// Sweep an ECU's data identifiers (see the `ScanDids` subcommand docs).
+async fn scan_dids_cmd(
+    port: &str,
+    baud: u32,
+    ecu: u8,
+    range: &str,
+    out: Option<&str>,
+    delay_ms: u64,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+    use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
+    use vag_protocol::AsyncUdsClient;
+
+    use crate::scan::{format_hit, parse_ranges, scan_dids, total_dids, DidHit};
+
+    let ranges = parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
+    let total = total_dids(&ranges);
+
+    let mut sink: Option<std::io::BufWriter<std::fs::File>> = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .with_context(|| format!("creating results file {path:?}"))?;
+            Some(std::io::BufWriter::new(file))
+        }
+        None => None,
+    };
+
+    let backend = SlcanBackend::open(port, baud, SlcanBitrate::Rate500k)
+        .await
+        .with_context(|| format!("opening slcan adapter at {port:?} ({baud} baud)"))?;
+    let mut uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, ecu));
+
+    println!("scanning ECU {ecu:02} for {total} identifiers ({range}), read-only\n");
+    let started = Instant::now();
+    let stats = scan_dids(
+        &mut uds,
+        &ranges,
+        Duration::from_millis(delay_ms),
+        // Roughly a keep-alive every couple of seconds at the default pace.
+        400,
+        |hit: &DidHit| {
+            println!("{}", format_hit(hit));
+            if let Some(w) = sink.as_mut() {
+                // The results file is JSON-lines so it can be joined against a
+                // capture without a parser.
+                let line = serde_json::json!({
+                    "did": format!("{:04X}", hit.did),
+                    "data": hit.data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""),
+                });
+                writeln!(w, "{line}")?;
+            }
+            Ok(())
+        },
+    )
+    .await?;
+    if let Some(w) = sink.as_mut() {
+        w.flush()?;
+    }
+
+    println!(
+        "\n{} of {} identifiers answered ({} refused, {} failed) in {:.1}s",
+        stats.hits,
+        stats.asked,
+        stats.refused,
+        stats.failed,
+        started.elapsed().as_secs_f64()
+    );
+    if stats.failed == stats.asked && stats.asked > 0 {
+        println!(
+            "\nEvery read failed — the ECU is not answering at all. Check the ignition, the \
+             wiring (OBD2 pin 6 → CAN-H, pin 14 → CAN-L), the 120R jumper being OFF, and that \
+             --ecu points at an ECU this car has."
+        );
+    }
+    Ok(())
 }
 
 /// Watch the bus (see the `Sniff` subcommand docs).
