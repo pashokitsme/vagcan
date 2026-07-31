@@ -154,8 +154,9 @@ pub fn render(columns: &[Column]) -> String {
             let shown: Vec<String> = c.values.iter().take(8).cloned().collect();
             let more = if c.values.len() > shown.len() { " …" } else { "" };
             out.push_str(&format!(
-                "  {:<10} {levels:>2} values, {changes:>4} changes   [{}{more}]\n",
+                "  {:<10} {levels:>2} values, {changes:>4} changes of {:>5} reads   [{}{more}]\n",
                 c.name,
+                c.samples,
                 shown.join(" "),
             ));
         }

@@ -149,15 +149,24 @@ pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>
         let end = match dids.get(i + 1) {
             Some(&next) => {
                 let next_head = head(next);
-                // The next record starts at the next occurrence of its own
-                // identifier; anything else means we cannot tell where this
-                // record ends.
-                payload
+                // The next record starts where its identifier appears — but
+                // only if it appears ONCE. A record's data can contain the
+                // next identifier's bytes by coincidence (little-endian
+                // gearbox values do it readily), and taking the first
+                // occurrence would cut the record short and hand its tail to
+                // the wrong identifier. An ambiguous boundary is not a
+                // boundary: refuse the whole response.
+                let mut found = payload
                     .windows(2)
                     .enumerate()
                     .skip(body)
-                    .find(|(_, w)| *w == next_head)
-                    .map(|(at, _)| at)?
+                    .filter(|(_, w)| *w == next_head)
+                    .map(|(at, _)| at);
+                let at = found.next()?;
+                if found.next().is_some() {
+                    return None;
+                }
+                at
             }
             None => payload.len(),
         };
@@ -318,19 +327,26 @@ fn pair_samples(
     tolerance_s: f64,
 ) -> Vec<(f64, f64)> {
     let mut pairs = Vec::new();
+    // Each captured sample may be used once. Without this, one bus observation
+    // pairs with every log point in a window and the point count — which the
+    // report presents as evidence — counts the same observation repeatedly.
+    let mut used = vec![false; series.samples.len()];
     for (t_log, value) in logged {
         let want = t_log + log_offset_s;
         let nearest = series
             .samples
             .iter()
-            .min_by(|a, b| {
+            .enumerate()
+            .filter(|(i, _)| !used[*i])
+            .min_by(|(_, a), (_, b)| {
                 (a.t_s - want).abs().partial_cmp(&(b.t_s - want).abs()).unwrap()
             });
-        let Some(sample) = nearest else { continue };
+        let Some((index, sample)) = nearest else { continue };
         if (sample.t_s - want).abs() > tolerance_s {
             continue;
         }
         let Some(raw) = form.read(&sample.data) else { continue };
+        used[index] = true;
         pairs.push((raw as f64, *value));
     }
     pairs
@@ -458,24 +474,28 @@ pub fn fit_all(
     // demoted rather than presented as proven.
     let mut ambiguous = Vec::new();
     accepted = {
-        let best_for_did = |ecu: u32, did: u16, list: &[Fitted]| -> f64 {
-            list.iter()
-                .filter(|f| f.ecu == ecu && f.did == did)
-                .map(|f| f.r2)
-                .fold(f64::MIN, f64::max)
-        };
-        let best_for_ide = |ide: &str, list: &[Fitted]| -> f64 {
-            list.iter().filter(|f| f.ide == ide).map(|f| f.r2).fold(f64::MIN, f64::max)
-        };
-        let all = accepted.clone();
+        let all = accepted;
+        // A fit must be the strictly best explanation for its identifier AND
+        // for its measurement, comparing against the OTHER fits by index — an
+        // exact tie means two explanations are equally good, which proves
+        // neither.
         let mut kept = Vec::new();
-        for fit in accepted {
-            let wins_did = fit.r2 >= best_for_did(fit.ecu, fit.did, &all);
-            let wins_ide = fit.r2 >= best_for_ide(&fit.ide, &all);
+        for (i, fit) in all.iter().enumerate() {
+            let best_other = |pick: &dyn Fn(&Fitted) -> bool| -> Option<f64> {
+                all.iter()
+                    .enumerate()
+                    .filter(|(j, f)| *j != i && pick(f))
+                    .map(|(_, f)| f.r2)
+                    .fold(None, |acc: Option<f64>, r| Some(acc.map_or(r, |a: f64| a.max(r))))
+            };
+            let same_did = |f: &Fitted| f.ecu == fit.ecu && f.did == fit.did;
+            let same_ide = |f: &Fitted| f.ide == fit.ide;
+            let wins_did = best_other(&same_did).is_none_or(|best| fit.r2 > best);
+            let wins_ide = best_other(&same_ide).is_none_or(|best| fit.r2 > best);
             if wins_did && wins_ide {
-                kept.push(fit);
+                kept.push(fit.clone());
             } else {
-                ambiguous.push(fit);
+                ambiguous.push(fit.clone());
             }
         }
         kept
@@ -522,21 +542,25 @@ pub fn to_catalog(fits: &[Fitted]) -> vag_data::catalog::MeasurementCatalog {
 /// epoch microseconds, the log with a local time of day. Converting the anchor
 /// to local time makes the difference a subtraction. Nothing is searched for —
 /// that is the whole point.
-pub fn log_offset_seconds(anchor_unix_us: u64, log_hms: (u32, u32, u32)) -> f64 {
+pub fn log_offset_seconds(anchor_unix_us: u64, log_hms: (u32, u32, u32)) -> Option<f64> {
     use chrono::{Local, TimeZone, Timelike};
 
-    let anchor = Local
-        .timestamp_micros(anchor_unix_us as i64)
-        .single()
-        .unwrap_or_else(Local::now);
-    let capture_secs =
-        anchor.hour() as f64 * 3600.0 + anchor.minute() as f64 * 60.0 + anchor.second() as f64;
+    // An anchor that does not map to a local time is a broken capture, not a
+    // reason to substitute the current time and print a confident offset.
+    let anchor = Local.timestamp_micros(anchor_unix_us as i64).single()?;
+    // Keep the sub-second part: the anchor has microsecond precision, and
+    // discarding it costs up to a second of skew against a 0.5 s pairing
+    // tolerance.
+    let capture_secs = anchor.hour() as f64 * 3600.0
+        + anchor.minute() as f64 * 60.0
+        + anchor.second() as f64
+        + anchor.timestamp_subsec_micros() as f64 / 1e6;
     let log_secs =
         log_hms.0 as f64 * 3600.0 + log_hms.1 as f64 * 60.0 + log_hms.2 as f64;
 
     // Both are times of day on the same date; a session crossing midnight
     // would need the date, which the log does not state in a parseable form.
-    log_secs - capture_secs
+    Some(log_secs - capture_secs)
 }
 
 /// `vagcan analyse` — cross a capture with a VCDS log.
@@ -565,7 +589,9 @@ pub fn run(
              what invalidated the earlier analyses."
         );
     };
-    let offset = log_offset_seconds(anchor, log.started_hms);
+    let offset = log_offset_seconds(anchor, log.started_hms).ok_or_else(|| {
+        anyhow::anyhow!("the capture's wall-clock anchor is not a valid local time")
+    })?;
 
     println!(
         "capture: {} identifiers, {} samples\nlog:     {} measurements from {}",

@@ -180,16 +180,25 @@ where
 
         let dids: Vec<u16> = (first..=last).collect();
         stats.asked += 1;
+        let split_span = |work: &mut Vec<(u16, u16)>| {
+            let mid = first + (last - first) / 2;
+            work.push((mid + 1, last));
+            work.push((first, mid));
+        };
         match uds.read_data_by_identifiers(&dids).await {
             // Something in this span answers — split and find out what.
-            Ok(_) => {
-                let mid = first + (last - first) / 2;
-                work.push((mid + 1, last));
-                work.push((first, mid));
-            }
-            // Nothing in the span is implemented: skip all of it.
-            Err(UdsError::NegativeResponse { .. }) => stats.refused += dids.len(),
-            Err(_) => stats.failed += dids.len(),
+            Ok(_) => split_span(&mut work),
+            // ONLY requestOutOfRange means "none of these is implemented".
+            // Any other refusal says something about the request, not about
+            // the identifiers — responseTooLong or busyRepeatRequest on a
+            // batch full of real values would otherwise write all of them off
+            // as unimplemented, silently, since a refusal is the expected
+            // answer. Fall back to probing the span in halves.
+            Err(UdsError::NegativeResponse { nrc: 0x31, .. }) => stats.refused += dids.len(),
+            Err(UdsError::NegativeResponse { .. }) => split_span(&mut work),
+            // A transport failure is not evidence either; the slow path loses
+            // one identifier to a timeout, so this must not lose eight.
+            Err(_) => split_span(&mut work),
         }
     }
     Ok(stats)

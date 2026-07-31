@@ -125,8 +125,17 @@ and rejected a two-level false positive, which is what the guards are for.
 car, but the label corpus still supplies what a value is *called* and which values an ECU
 exposes. `F19E` already resolves the right file (§ODX link above).
 
-**4. `vagcan watch`** — poll a catalog and print live values. The product UX; pointless
-until step 2 has proven scalings, so it stays last.
+**4. `vagcan watch` — BUILT.** Polls live at bus speed (46 Hz measured on the boost set)
+using batched reads. Presets carry their own control unit. Anything unproven prints its
+bytes tagged `(raw)` rather than a bare number.
+
+**5. Discrete state — `vagcan discover`, BUILT; identification in progress.** Gear,
+gearbox mode, switches and lamps cannot be fitted: a two-level value fits any line
+exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
+continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
+coincide. Still to do: confirm which candidate is the gear (cross against the
+input/output shaft speed ratio, both already proven), then the same for the cluster (17)
+and ABS (03), which have not been swept yet.
 
 ### Then — the extensible foundation (architecture)
 ```

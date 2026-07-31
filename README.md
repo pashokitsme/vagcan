@@ -67,6 +67,9 @@ vagcan info         VIN + engine and gearbox passports
 vagcan properties   everything a control unit says about itself, named
 vagcan sniff        listen-only bus capture (runs alongside VCDS)
 vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
+vagcan watch        live values, polled as fast as the bus allows (46 Hz measured)
+vagcan analyse      prove scalings from a capture + a VCDS log
+vagcan discover     find identifiers carrying discrete state (gear, mode, switches)
 vagcan scan         every data identifier a control unit answers
 vagcan labels       label lookup; --from-car resolves the ODX file the unit names
 ```
