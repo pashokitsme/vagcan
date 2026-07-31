@@ -26,7 +26,7 @@ running in parallel, and the offline tool that turns it into scalings.
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
-| **M3** | measurements from `.rod` → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🔴 **current — offline path refuted; now needs live crib** |
+| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **the method works — 3 scalings proven live (coolant, engine speed, gearbox input speed); more coverage needed** |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
@@ -95,9 +95,15 @@ no dependence on the `.rod` field codec.
 
 ### The remaining work, in order
 
-**1. The capture session (blocked on nothing — both adapters now run together).**
-`vagcan sniff --out <file>` alongside VCDS, engine running, ADVMB logged to CSV, a wide
-sustained rev twice over, operator markers typed as it goes.
+**1. The capture session — DONE 2026-08-01, and it worked.** 308 s of listen-only capture
+alongside a live VCDS session; `vagcan analyse` proved three scalings, one of which
+(coolant = `raw − 40`) reproduces the standard OBD-II PID 05 formula and thereby validates
+the whole pipeline. Details in `research/rod-labels.md` §4.3.
+
+**1a. More coverage — the next session.** The logs were only ~20 s each, giving 14–16
+matched points against a 20-point default. Record VCDS logging for **several minutes** per
+group, covering the measurements that matter (boost, load, throttle, speed), with a wide
+sustained rev. Everything else is already built.
 
 **2. `vagcan analyse` — BUILT (2026-08-01).** The offline tool that turns a capture into
 scalings, written before the session so the data can be checked while the car is available.
@@ -112,7 +118,8 @@ It:
 - emits accepted rows as `MeasurementDef` catalog entries, which `UdsReadExt::read_catalog`
   already reads.
 
-Still unexercised against real capture+log data — that happens in step 1.
+Exercised against real capture+log data on 2026-08-01: it found the three scalings above
+and rejected a two-level false positive, which is what the guards are for.
 
 **3. Names and the per-ECU measurement list from the `.rod`.** Scaling now comes from the
 car, but the label corpus still supplies what a value is *called* and which values an ECU

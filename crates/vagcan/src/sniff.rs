@@ -275,12 +275,17 @@ pub async fn run(
             signalled.store(true, Ordering::Relaxed);
         }
     });
-    let (notes_tx, mut notes_rx) = tokio::sync::mpsc::channel::<String>(16);
-    tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt as _;
-        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if notes_tx.send(line).await.is_err() {
+    // Markers are read on a plain OS thread, NOT `tokio::io::stdin()`. That
+    // reads on a runtime blocking thread, and dropping the runtime waits for
+    // blocking work to finish — a read parked on an idle terminal never
+    // finishes, so the process would print its summary after Ctrl-C and then
+    // hang forever. A detached OS thread does not hold the process open.
+    let (notes_tx, notes_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if notes_tx.send(line).is_err() {
                 break;
             }
         }

@@ -122,6 +122,48 @@ fn ignition_def(did: u16) -> MeasurementDef {
     }
 }
 
+/// Measurements proven against the car on 2026-08-01 by crossing a passive CAN
+/// capture with a simultaneous VCDS log (`vagcan analyse`).
+///
+/// Each row fitted with `R² = 1.00000` — an exact linear relation, not a
+/// correlation — over 14–16 matched samples spanning a real rev. They are
+/// specific to this vehicle's control units (engine `8V0906264H`, gearbox
+/// `0CW300041G`); another car's identifiers must be proven the same way rather
+/// than assumed.
+///
+/// The coolant row is the load-bearing one for confidence: the fit produced
+/// `raw − 40`, which is exactly the standard OBD-II PID 05 formula. Nothing in
+/// the pipeline knows that formula, so recovering it from the data validates
+/// the alignment and the fitting end to end.
+pub fn proven_measurements() -> Vec<MeasurementDef> {
+    vec![
+        MeasurementDef {
+            name: Cow::Borrowed("Coolant temperature"),
+            unit: Cow::Borrowed("°C"),
+            address: ReadId::Uds(0xF405),
+            raw_form: RawForm::U8First,
+            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: -40.0 }),
+        },
+        MeasurementDef {
+            name: Cow::Borrowed("Engine speed"),
+            unit: Cow::Borrowed("/min"),
+            address: ReadId::Uds(0x206E),
+            raw_form: RawForm::U16Be,
+            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
+        },
+        MeasurementDef {
+            // Gearbox (address 02). Little-endian — verified byte by byte
+            // against the log, not inferred: raw `B2 02` = 690 /min, `CC 08` =
+            // 2252 /min. Big-endian would read 45570 and 52232.
+            name: Cow::Borrowed("Transmission input speed"),
+            unit: Cow::Borrowed("/min"),
+            address: ReadId::Uds(0x380A),
+            raw_form: RawForm::U16Le,
+            scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
+        },
+    ]
+}
+
 /// A selectable set of measurement definitions — the user's chosen catalog.
 ///
 /// Serializable so it round-trips to a config file (`load`/`save`): the user
@@ -138,10 +180,12 @@ impl MeasurementCatalog {
         MeasurementCatalog { defs }
     }
 
-    /// The catalog seeded with everything proven so far (today: the ignition
-    /// family). This is the baseline a fresh install ships with.
+    /// The catalog seeded with everything proven so far. This is the baseline
+    /// a fresh install ships with.
     pub fn seeded() -> Self {
-        MeasurementCatalog::new(ignition_angle())
+        let mut defs = proven_measurements();
+        defs.extend(ignition_angle());
+        MeasurementCatalog::new(defs)
     }
 
     pub fn len(&self) -> usize {
@@ -221,6 +265,28 @@ mod tests {
     }
 
     #[test]
+    fn the_proven_rows_reproduce_the_values_the_car_displayed() {
+        // Spot values lifted straight from the 2026-08-01 session, so the
+        // catalog cannot drift away from the evidence that justified it.
+        let defs = proven_measurements();
+
+        let coolant = &defs[0];
+        // Raw 0x6D = 109 → 69 °C. This is the standard OBD-II PID 05 formula,
+        // recovered from the data rather than assumed.
+        assert_eq!(coolant.interpret(&[0x6D]), Some(69.0));
+        assert_eq!(coolant.unit, "°C");
+
+        let rpm = &defs[1];
+        assert_eq!(rpm.interpret(&[0x02, 0xBD]), Some(701.0));
+
+        // The gearbox reports little-endian: `B2 02` is 690 /min, not 45570.
+        let input = &defs[2];
+        assert_eq!(input.interpret(&[0xB2, 0x02]), Some(690.0));
+        assert_eq!(input.interpret(&[0xCC, 0x08]), Some(2252.0));
+        assert_eq!(input.interpret(&[0x7A, 0x0E]), Some(3706.0));
+    }
+
+    #[test]
     fn catalog_round_trips_through_json_config() {
         // The user-facing config: a catalog (mix of proven anchor + a fully
         // linear row) survives save→load byte-for-byte, so config selection is
@@ -238,9 +304,9 @@ mod tests {
         let back = MeasurementCatalog::from_json(&json).expect("deserialize");
 
         assert_eq!(back, cat);
-        assert_eq!(back.len(), 5); // 4 ignition + 1 RPM
+        assert_eq!(back.len(), 8); // 3 proven + 4 ignition + 1 RPM
         // The linear row interprets a real raw after the round-trip.
-        let rpm = &back.defs[4];
+        let rpm = &back.defs[7];
         assert_eq!(rpm.interpret(&[0x0B, 0x34]), Some(717.0)); // 0x0B34=2868 *0.25
     }
 }

@@ -411,6 +411,48 @@ resolves it against the corpus in one step. This removes the last piece of guess
 the label path — it does **not** touch the STRUC field-codec problem, which is still what
 blocks reading measurement *values*.
 
+## 4.3 The live crib WORKS — first proven scalings (2026-08-01)
+
+The parallel-adapter session finally happened: `vagcan sniff` recorded the OBD-II bus in
+listen-only mode for 308 s while VCDS ran a normal measuring-block session on the same bus,
+logging to CSV. `vagcan analyse` crossed the two. **Three scalings proved out**, each an
+exact linear relation (`R² = 1.00000`), not a correlation:
+
+| ECU | DID | form | scaling | measurement | points |
+|---|---|---|---|---|---|
+| Engine 01 | `F405` | `u8` | `raw − 40` | coolant temperature `°C` (IDE00025) | 16 |
+| Engine 01 | `206E` | `u16` BE | `raw` | engine speed `/min` (IDE00405) | 16 |
+| Gearbox 02 | `380A` | `u16` **LE** | `raw` | transmission input speed `/min` (IDE00022) | 14 |
+
+**Why this is trustworthy:**
+- The coolant fit produced `raw − 40`, which is exactly the **standard OBD-II PID 05
+  formula**. Nothing in the pipeline knows that formula; recovering it from the data
+  validates the clock alignment and the fitting end to end. `F4xx` is the UDS mirror of
+  OBD PID `xx`, so this row was independently checkable — and it checked out.
+- The gearbox row was verified **byte by byte** against the log rather than trusted:
+  `B2 02` = 690 /min, `D7 02` = 727, `CC 08` = 2252, `7A 0E` = 3706 — matching the logged
+  values exactly. Big-endian would read 45570 and 52232, so the little-endian reading is
+  established, not assumed.
+- Alignment was arithmetic: capture anchor 01:17:21, engine log header 01:19:39, offset
+  `+138.0 s`. Nothing was slid against anything.
+
+**A false positive was caught and closed.** The first run also "proved" `200C` as an
+ignition angle with factor `−0.008824` at `R² = 1.0` — off **two distinct raw values**. Two
+points define a line exactly, so a perfect fit there is arithmetic, not evidence. `analyse`
+now requires a minimum number of distinct raw levels (default 4) and the row disappears.
+This is the §4.0a/§4.0b failure mode reproducing itself, caught by a guard this time.
+
+**What this does NOT settle:** the logs were short (19.7 s engine, ~25 s gearbox), giving
+14–16 matched points against a default threshold of 20 — the runs above used `--min-points
+10`. The relations are exact, so the evidence is strong, but a longer simultaneous log
+would remove the caveat entirely. The remaining engine identifiers polled during the
+session (`200A`, `200B`, `200D`, `2029`, `202A`, `293E`, `293F`) were either constant in
+the overlap window or not covered by the logged measurements.
+
+**Consequence for the roadmap:** scaling no longer depends on the `.rod` field codec at
+all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
+path for *values*; the corpus is still what supplies names and per-ECU measurement lists.
+
 ## 5. Design proposal — how `vag-data` should consume this (TEXT ONLY)
 
 *(No crate is modified in this research; another workflow owns `crates/`.)*

@@ -68,10 +68,44 @@ pub enum Rejected {
     TooFewPoints { did: u16, ide: String, points: usize },
     /// The raw bytes never move, so no slope is observable.
     RawConstant { did: u16, ide: String },
+    /// The raw bytes take too few distinct values to constrain a line.
+    RawTooFewLevels { did: u16, ide: String, levels: usize },
     /// The displayed value never moves.
     ValueConstant { ide: String },
     /// A fit was computed but did not clear the threshold.
     PoorFit { did: u16, ide: String, form: RawForm, r2: f64 },
+}
+
+impl Rejected {
+    /// How informative this reason is. Every raw interpretation is tried, and
+    /// they fail differently — reading one byte of a two-byte value looks
+    /// constant while the pair varies. Reporting whichever failure happened to
+    /// come first would make the reason an artefact of the trial order, so the
+    /// most informative one is kept.
+    fn rank(&self) -> u8 {
+        match self {
+            Rejected::PoorFit { .. } => 4,
+            Rejected::RawTooFewLevels { .. } => 3,
+            Rejected::RawConstant { .. } => 2,
+            Rejected::TooFewPoints { .. } => 1,
+            Rejected::ValueConstant { .. } => 0,
+        }
+    }
+}
+
+/// Keep `candidate` only if it explains more than what is already held.
+fn keep_best_miss(held: &mut Option<Rejected>, candidate: Rejected) {
+    let better = match held {
+        None => true,
+        Some(had) => match (had, &candidate) {
+            // Among poor fits, the closest one is the useful lead.
+            (Rejected::PoorFit { r2: had_r2, .. }, Rejected::PoorFit { r2, .. }) => r2 > had_r2,
+            (had, new) => new.rank() > had.rank(),
+        },
+    };
+    if better {
+        *held = Some(candidate);
+    }
 }
 
 /// Split a positive `ReadDataByIdentifier` response into per-identifier records.
@@ -254,6 +288,13 @@ pub struct Thresholds {
     pub min_r2: f64,
     pub min_points: usize,
     pub tolerance_s: f64,
+    /// How many DISTINCT raw values a fit must be built on.
+    ///
+    /// Two distinct values define a line exactly, so `R²` is 1.0 by
+    /// construction and says nothing. This caught a real false positive on the
+    /// first live run: identifier `200C` "fitted" an ignition angle with factor
+    /// −0.008824 off two levels. Points are not evidence; levels are.
+    pub min_levels: usize,
 }
 
 impl Default for Thresholds {
@@ -261,7 +302,7 @@ impl Default for Thresholds {
         // Deliberately strict. A real linear COMPU method against its own
         // source data fits nearly perfectly; anything looser starts admitting
         // the "|r| ≈ 0.9 at some lag" results that did not survive scrutiny.
-        Thresholds { min_r2: 0.995, min_points: 20, tolerance_s: 0.5 }
+        Thresholds { min_r2: 0.995, min_points: 20, tolerance_s: 0.5, min_levels: 4 }
     }
 }
 
@@ -288,33 +329,44 @@ pub fn fit_all(
                 let pairs =
                     pair_samples(s, form, &measurement.samples, log_offset_s, limits.tolerance_s);
                 if pairs.len() < limits.min_points {
-                    best_miss.get_or_insert(Rejected::TooFewPoints {
-                        did: s.did,
-                        ide: measurement.ide.clone(),
-                        points: pairs.len(),
-                    });
+                    keep_best_miss(
+                        &mut best_miss,
+                        Rejected::TooFewPoints {
+                            did: s.did,
+                            ide: measurement.ide.clone(),
+                            points: pairs.len(),
+                        },
+                    );
+                    continue;
+                }
+                let mut levels: Vec<i64> = pairs.iter().map(|(x, _)| *x as i64).collect();
+                levels.sort_unstable();
+                levels.dedup();
+                if levels.len() < limits.min_levels {
+                    let why = if levels.len() <= 1 {
+                        Rejected::RawConstant { did: s.did, ide: measurement.ide.clone() }
+                    } else {
+                        Rejected::RawTooFewLevels {
+                            did: s.did,
+                            ide: measurement.ide.clone(),
+                            levels: levels.len(),
+                        }
+                    };
+                    keep_best_miss(&mut best_miss, why);
                     continue;
                 }
                 let Some((scale, r2)) = fit_linear(&pairs) else {
-                    best_miss.get_or_insert(Rejected::RawConstant {
-                        did: s.did,
-                        ide: measurement.ide.clone(),
-                    });
+                    keep_best_miss(
+                        &mut best_miss,
+                        Rejected::RawConstant { did: s.did, ide: measurement.ide.clone() },
+                    );
                     continue;
                 };
                 if r2 < limits.min_r2 {
-                    let worse = match &best_miss {
-                        Some(Rejected::PoorFit { r2: had, .. }) => r2 <= *had,
-                        _ => false,
-                    };
-                    if !worse {
-                        best_miss = Some(Rejected::PoorFit {
-                            did: s.did,
-                            ide: measurement.ide.clone(),
-                            form,
-                            r2,
-                        });
-                    }
+                    keep_best_miss(
+                        &mut best_miss,
+                        Rejected::PoorFit { did: s.did, ide: measurement.ide.clone(), form, r2 },
+                    );
                     continue;
                 }
                 let candidate = Fitted {
@@ -435,7 +487,34 @@ pub fn run(
     let (fits, rejected) = fit_all(&series, &log.measurements, offset, limits);
 
     if fits.is_empty() {
-        println!("Nothing cleared the bar (R² ≥ {:.3}, ≥ {} points).", limits.min_r2, limits.min_points);
+        println!(
+            "Nothing cleared the bar (R² ≥ {:.3}, ≥ {} points over ≥ {} distinct raw values).",
+            limits.min_r2, limits.min_points, limits.min_levels
+        );
+        let mut why: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for r in &rejected {
+            *why.entry(match r {
+                Rejected::TooFewPoints { .. } => "too few overlapping samples",
+                Rejected::RawConstant { .. } => "the raw bytes never moved",
+                Rejected::RawTooFewLevels { .. } => "too few distinct raw values",
+                Rejected::ValueConstant { .. } => "the logged value never moved",
+                Rejected::PoorFit { .. } => "the fit was too poor",
+            })
+            .or_default() += 1;
+        }
+        println!("\nWhy:");
+        for (reason, count) in why {
+            println!("  {count:4}  {reason}");
+        }
+        if let Some(Rejected::TooFewPoints { points, .. }) =
+            rejected.iter().find(|r| matches!(r, Rejected::TooFewPoints { .. }))
+        {
+            println!(
+                "\nThe best overlap was {points} samples. Either the log covers a shorter window \
+                 than the capture, or the two barely overlap — check that both were recorded at \
+                 the same time."
+            );
+        }
     } else {
         println!("Proven scalings:\n");
         for f in &fits {
@@ -628,6 +707,36 @@ mod tests {
             Thresholds::default(),
         );
         assert!(skewed.0.is_empty(), "misaligned, it must not: {:?}", skewed.0);
+    }
+
+    #[test]
+    fn two_raw_levels_cannot_prove_a_scaling() {
+        // The false positive from the first live run: identifier 200C "fitted"
+        // an ignition angle with factor -0.008824 and R² = 1.0, off two raw
+        // values. Two points define a line exactly, so a perfect R² there is
+        // arithmetic, not evidence.
+        // Two raw levels that DO reach the matched points (alternating every
+        // other captured sample would alias against the log's 1 s spacing and
+        // present a single level, which is a different rejection).
+        let two_levels: Vec<(f64, u16)> = (0..60)
+            .map(|i| (i as f64 * 0.5, 0x0100 + (i / 2) % 2))
+            .collect();
+        let log_samples: Vec<(f64, f64)> = (0..30)
+            .map(|i| (i as f64, if i % 2 == 0 { 0.0 } else { -2.25 }))
+            .collect();
+
+        let (fits, rejected) = fit_all(
+            &[series(0x200C, &two_levels)],
+            &[logged("IDE00157", log_samples)],
+            0.0,
+            Thresholds { min_points: 10, ..Default::default() },
+        );
+
+        assert!(fits.is_empty(), "two levels are not a proof: {fits:?}");
+        assert!(
+            matches!(rejected.first(), Some(Rejected::RawTooFewLevels { levels: 2, .. })),
+            "and the reason is stated: {rejected:?}"
+        );
     }
 
     #[test]
