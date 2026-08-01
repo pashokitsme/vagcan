@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Reading the per-car unit-number table; see address.rs.
+serde_json.workspace = true
 vag-transport = { path = "../vag-transport" }
 vag-data = { path = "../vag-data" }
 thiserror.workspace = true

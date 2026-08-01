@@ -59,30 +59,70 @@ impl UnitAddress {
     }
 }
 
-/// Short unit numbers this project has evidence for, and nothing else.
+/// Short unit numbers, as a table that can be replaced without a rebuild.
 ///
-/// * `01`/`02` — engine and gearbox, read live and cross-checked against the
-///   car's own Auto-Scan.
-/// * `17` — the instrument cluster: the VCDS log `LOG-17-…` names the unit it
-///   was recorded from, and four of its identification fields match `0x714`'s
-///   answers byte for byte (`research/other-ecus.md` §2).
-/// * `09`/`16` — central electrics and the steering column module: VCDS opened
-///   those two units in the capture where `0x70E` and `0x70C` answered their
-///   identification blocks.
+/// The numbers themselves (`01` engine, `02` gearbox, `17` instruments) are a
+/// diagnostic-world convention, but **which CAN id each one is answered on is
+/// not in any data file this project has found**: the label corpus carries the
+/// numbers and the names, and no CAN id anywhere. So the pairing has to be
+/// established per car by reading it, and the built-in list below is only the
+/// part this project has verified on hardware:
 ///
-/// Deliberately absent: the gateway and everything unidentified. VW numbering
-/// would supply a plausible answer for all of them, and a plausible answer is
-/// exactly what this project keeps out of its tables.
-const SHORT_NUMBERS: &[(u8, u16)] = &[(1, 0x7E0), (2, 0x7E1), (9, 0x70E), (16, 0x70C), (17, 0x714)];
+/// * `01`/`02` — engine and gearbox, cross-checked against the car's Auto-Scan.
+/// * `17` — the instrument cluster: a VCDS log names the unit it came from and
+///   four of its identification fields match `0x714`'s answers byte for byte.
+/// * `09`/`16` — central electrics and the steering column module, both opened
+///   by VCDS in the capture where `0x70E` and `0x70C` identified themselves.
+///
+/// Everything else must be named by request id. A file at
+/// [`OVERRIDE_PATH`] extends or replaces the list for another car, so a user
+/// is never blocked on this source being edited.
+const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] =
+    &[(1, 0x7E0), (2, 0x7E1), (9, 0x70E), (16, 0x70C), (17, 0x714)];
 
-/// The request id a short unit number denotes, when it is an established one.
+/// Where a car's own number-to-id pairings are read from, when it has them:
+/// a JSON object of `{"03": "713"}` — decimal-looking unit number to hex
+/// request id, both as the user writes them.
+pub const OVERRIDE_PATH: &str = "catalogs/unit-numbers.json";
+
+/// The pairings in force: the file's, then the built-in ones for anything the
+/// file does not mention.
+fn short_numbers() -> Vec<(u8, u16)> {
+    let mut out: Vec<(u8, u16)> = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(OVERRIDE_PATH) {
+        match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
+            Ok(map) => {
+                for (number, request) in map {
+                    let number = number.trim_start_matches('0');
+                    if let (Ok(n), Ok(id)) =
+                        (number.parse::<u8>(), u16::from_str_radix(request.trim(), 16))
+                    {
+                        out.push((n, id));
+                    }
+                }
+            }
+            // A malformed override is worth saying out loud: silently falling
+            // back would leave the user's own pairings quietly ignored.
+            Err(e) => eprintln!("{OVERRIDE_PATH} is not readable ({e}) — using built-ins"),
+        }
+    }
+    for (number, request) in BUILT_IN_SHORT_NUMBERS {
+        if !out.iter().any(|(n, _)| n == number) {
+            out.push((*number, *request));
+        }
+    }
+    out
+}
+
+/// The request id a short unit number denotes, when there is an established
+/// pairing for it.
 pub fn request_for_short(number: u8) -> Option<u16> {
-    SHORT_NUMBERS.iter().find(|(n, _)| *n == number).map(|(_, id)| *id)
+    short_numbers().into_iter().find(|(n, _)| *n == number).map(|(_, id)| id)
 }
 
 /// The short number for a request id, when there is one.
 pub fn short_number(request: u16) -> Option<u8> {
-    SHORT_NUMBERS.iter().find(|(_, id)| *id == request).map(|(n, _)| *n)
+    short_numbers().into_iter().find(|(_, id)| *id == request).map(|(n, _)| n)
 }
 
 /// Parse how a user names a unit: a short number (`01`, `17`) or a request id
@@ -109,8 +149,9 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
         .map_err(|_| format!("{text:?} is not a control-unit number like 01 or 17"))?;
     let request = request_for_short(number).ok_or_else(|| {
         format!(
-            "control unit {number:02} has no established address in this project — \
-             give its request id instead, e.g. 713 (see `vagcan units`)"
+            "control unit {number:02} has no known request id — give the id instead, \
+             e.g. 713 (`vagcan units` lists what this car has), or add the pairing to \
+             {OVERRIDE_PATH}"
         )
     })?;
     Ok(UnitAddress { request, response: request + if request >= ISO_FIRST { ISO_OFFSET } else { VW_OFFSET } })
@@ -156,11 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unproven_short_number_is_refused_rather_than_guessed() {
+    fn a_number_with_no_known_id_is_refused_rather_than_guessed() {
         // VW numbering would give an answer for 03 (brakes) and 19 (gateway).
-        // This project has not verified either, so it says so instead.
+        // Nothing in the corpus states which CAN id those answer on, so the
+        // tool says so and points at the file where a user can record it.
         let err = parse("03").unwrap_err();
-        assert!(err.contains("no established address"), "{err}");
+        assert!(err.contains("no known request id"), "{err}");
+        assert!(err.contains(OVERRIDE_PATH), "{err}");
         assert!(parse("19").is_err());
         assert!(parse("zz").is_err());
     }
