@@ -66,8 +66,8 @@ pub fn format_code(code: [u8; 3]) -> String {
 /// How long ago a fault happened, told against the unit's own counters.
 ///
 /// Both halves are differences taken on the same control unit, so neither
-/// needs an epoch or a calendar: the seconds counter is free-running with an
-/// unverified zero, and the odometer is whatever this car has driven.
+/// needs an epoch or a calendar: the clock is a day counter whose zero is
+/// unknown, and the odometer is whatever this car has driven.
 pub fn describe_age(context: &FaultContext, now: Option<&UnitStamp>) -> String {
     let mut parts = vec![format!("{} km", context.mileage_km)];
     match context.occurrences {
@@ -75,8 +75,8 @@ pub fn describe_age(context: &FaultContext, now: Option<&UnitStamp>) -> String {
         n => parts.push(format!("{n}×")),
     }
     if let Some(now) = now {
-        if now.clock >= context.clock {
-            let seconds = (now.clock - context.clock) as f64;
+        if let Some(seconds) = vag_protocol::dtc::seconds_between(context.clock, now.clock) {
+            let seconds = seconds as f64;
             parts.push(match seconds {
                 s if s < 90.0 => format!("{s:.0} s ago"),
                 s if s < 5_400.0 => format!("{:.0} min ago", s / 60.0),
@@ -345,7 +345,10 @@ mod tests {
         let text = describe_age(&context, Some(&now));
         assert!(text.contains("212763 km"), "{text}");
         assert!(text.contains("9×"), "{text}");
-        assert!(text.contains("17.9 h ago"), "{text}");
+        // Just under a day. Subtracting the raw counters — as this once did —
+        // would have called it 17.9 h, because a day advances the counter's
+        // high half by one rather than by 86 400.
+        assert!(text.contains("23.7 h ago"), "{text}");
         assert!(text.contains("42 km ago"), "{text}");
 
         // With nothing to compare against, only what the record itself says.

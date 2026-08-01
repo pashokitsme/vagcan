@@ -105,16 +105,24 @@ Further evidence for the mileage field alone: across 17 stored faults on six uni
 value exceeds the instrument cluster's odometer, the newest equal it exactly, and mileage
 and counter order the same way.
 
-**The counter's epoch is not established.** Read as a Unix timestamp it lands about 92
-days before the reading — either the car's clock is wrong or the epoch is not 1970, and
-nothing here distinguishes those. It does advance at 1 Hz: units read seconds apart
-during a survey differ by exactly those seconds, and a read 9.4 hours later differed by
-33 756 counts.
+**The clock is a day counter and a second of the day, not a plain seconds counter.**
+The car's own scan dates the brake unit's fault 297 at `2026.07.27 00:00:03`, and the
+unit stores `0x69F60003` for it: the low half is exactly 3. A 32-bit seconds counter
+would leave an arbitrary value there, so landing on the scan's own seconds is a
+1-in-65 536 coincidence. Two records on the same day differ by their seconds; a day
+advances the high half by one.
 
-So ages are reported as **differences**, never as dates. Identifier `0x02BD` returns the
-same stamp live — `91 <mileage:3> <2 bytes> <clock:4>`, the tail of a fault record without
-the fault — and "42 km ago, 17.9 h ago" is true without knowing what year the car thinks
-it is.
+This corrects an earlier reading here. Subtracting the raw 32-bit values loses 20 864
+seconds per day crossed, which made a fault stored the previous day look 18 hours old
+instead of 24.
+
+**The epoch is still not established.** `0x69F6` is some day in late July 2026 by the
+scan, and nothing says what numbering that is; under the day reading the car's clock also
+appears to run about two days behind real time, which is plausible for a car clock but
+not verified. So ages are reported as **differences**, never as dates. Identifier
+`0x02BD` returns the same stamp live — `91 <mileage:3> <2 bytes> <clock:4>`, the tail of a
+fault record without the fault — and "42 km ago, 26 h ago" is true without knowing what
+year the car thinks it is.
 
 ### 2.4 The unit's own code list is not available
 
@@ -150,10 +158,37 @@ label files, and not in the per-ECU `.rod` `[DTC]` sections — those hold
 `<TTTEXT text-id>,<2-character code>` rows, i.e. *which* faults a unit can name, with no
 number attached that anyone here can read yet.
 
-Open lead: those two characters are a candidate encoding of the fault number under the
-TTTEXT cipher's numeric glyph class, which `research/tttext-codec.md` §6 records as
-unbroken. This car now supplies cribs — known (number, name) pairs on known units — which
-is exactly what the letter classes were broken with.
+### The registry that is keyed by the fault number — and what still blocks it
+
+`UDS_EV/RD.rod` is a **global fault registry keyed by the number itself**, not per ECU.
+Its `[DTC]` section needs `IV[3..8] = 5c b0 48 d4 3f`, inflates to 6.3 MB, and holds
+228 394 rows under 66 903 six-digit plaintext ids in three ascending blocks.
+
+The check that could have failed:
+
+| key tried | hits |
+|---|---|
+| the 946 captured fault numbers below 10⁶, in block 0 | **946 / 946** |
+| the same numbers ±1, ±2, +256, +1000 | 473–781 |
+| 26 numbers from the scans, 9 of them in sparse regions | 26 / 26, joint p ≈ 6·10⁻¹⁰ |
+| ⌊n/100⌋ for numbers ≥ 10⁶, in block 1 | **125 / 127** (9.8 expected by chance) |
+| n//64, n//99, n//101, n//120, n//128 | 4–24 |
+
+Row grammar is the familiar `<id><sep><2-char code><sep>…`, the same shape as an ECU
+`[DTC]` row. **But the payload numbers are under the per-table digit substitution that
+`research/label-linkage.md` §2.4 records as unbroken**, so the last hop — registry row to
+text-id to name — does not resolve. Fitting without the code constraint gives thousands
+of candidates per table; with it, zero for three of four cribs.
+
+Refuted along the way, so nobody retries: the per-ECU `[DTC]` section is **not** the
+source — 11 of the 23 units in the crib have no `[DTC]` section at all, including the
+brake unit that reports fault 297, and only ~5 % of the rows that do exist resolve
+against `names-uds.json`. The two-character code cannot carry a fault number either:
+40² = 1600 and the crib includes 5386 and 6922. `Codes.dat` lacks 5386, 6922, 291104,
+14751, 15187 and 25548 entirely. `TTText-RUS.rod`, `TTText2-RUS.rod` and `TTTEXT2.ROD`
+do not decrypt under the known first-block rule — a different unknown from the old one,
+and the Russian text table would otherwise have been free, Cyrillic being outside all
+three cipher classes.
 
 ---
 
