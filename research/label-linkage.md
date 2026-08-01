@@ -66,21 +66,27 @@ carries one. That section was re-inflated here from the vector recorded in `rod-
 §4.0c (`5a478e243d`): **11,979 bytes, 1,089 rows**, every row `<6-digit text-id>,<2-char code>`,
 1,089 distinct text-ids, 596 distinct codes.
 
-### 1.3 A bug in the shipped cracker (not fixed here — `crates/` is out of scope)
+### 1.3 A bug in the shipped cracker — found here, since **fixed** in `27908a0`
 
-`vagcan labels … --crack` panics on very small sections:
+`vagcan labels … --crack` panicked on very small sections:
 
 ```
 thread '<unnamed>' panicked at crates/vag-data/src/rod/crack.rs:58:13:
 index out of bounds: the len is 72 but the index is 72
 ```
 
-It is reproducible on the gearbox `FFMUX` section (80 cipher bytes → 72-byte tail): the
-oracle indexes one past the end of the tail when the tail is shorter than the deflate header
-window it wants to read. The panicking worker threads die silently and the run continues, so
-the failure looks like "no hit" rather than a crash. Larger sections are unaffected. The
-cracks in this writeup were driven through the standalone
-`research/clb-crack/rod_crack` instead, which does not have the bug.
+Reproducible on the gearbox `FFMUX` section (80 cipher bytes → 72-byte tail): the header
+oracle is speculative — it is fed candidate bytes that are almost always wrong — and when the
+tail held fewer bytes than the header wanted to read, it indexed one past the end. Because
+that happened on a worker thread the panic was silent and the search reported no hit, so a
+real answer elsewhere in the space would have been lost with it. Fixed by flagging the
+overrun and rejecting the candidate.
+
+**Correction to an earlier draft of this section:** it claimed the standalone
+`research/clb-crack/rod_crack` "does not have the bug". That is wrong. Its bit reader does the
+same unchecked `self.tail[i-6]` at `src/main.rs:34`. It never tripped here only because every
+section driven through it had a multi-kilobyte tail (`TTTEXT` 4,817,000 B, gearbox `MWB`
+4,560 B). Feed it a short section and it will panic identically. See §7 item 2.
 
 ---
 
@@ -427,8 +433,8 @@ fields, and count distinct non-separator glyphs per table id.
    ~2–3 effective cores even with `threads=10`, so allow **1–2 hours wall per section**, not
    the "~1 minute" `rod-labels.md` §1.3 quotes for `STRUC` (that one's answer happened to sit
    3 % into the space).
-2. **Fix `crates/vag-data/src/rod/crack.rs:58`** (§1.3) so `--crack` stops killing worker
-   threads on sections under ~100 cipher bytes.
+2. ~~Speed the searcher up~~ — **done, §9.** A full 2³⁶ sweep went from ~29 minutes to
+   ~2 minutes on this machine.
 3. **Crack `TTTEXT2.ROD` and `MUX.rod`** (§5.5). They are the only remaining places a global
    measurement registry — and with it the read identifier — could live. If neither holds one,
    the `.rod` corpus is *proven* to be name-and-list-only, which is a clean end to a question
@@ -461,3 +467,56 @@ fields, and count distinct non-separator glyphs per table id.
   in `TTDOP`, base **10** under a keyed per-table glyph substitution — and the read-identifier
   negative is now an argument from cardinality (§3) rather than from a search that came back
   empty.
+
+---
+
+## 9. The searcher: a 14× speedup, measured
+
+The brute force was the binding constraint on everything above — §4's names were not delivered
+because a sweep did not finish. `rod-labels.md` §1.3 has prescribed the fix since the
+beginning ("porting the Python DFS pruning into Rust would make it fast regardless of where
+the answer lands"); the Rust port had dropped it. It is now in.
+
+**What was wrong.** The search was a flat five-deep loop calling a full header parse on every
+one of the 2³⁶ leaves. Each call re-read the deflate header from bit 0, re-deriving the
+code-length prefix that all 65,536 of a node's siblings share, and allocated a `Vec` for the
+code-length Huffman on every candidate that got that far.
+
+**What it is now.** A depth-first walk that prunes a subtree the moment the bytes pinned at
+that depth make a valid header impossible. The bit layout is what makes it pay: `d0` is exact
+and pins BFINAL/BTYPE/HLIT, `d1` pins HDIST and most of HCLEN, and by `d3` there are five
+complete code-length-code entries to test — so one rejection there replaces 65,536 leaf
+parses. Also: fixed-size arrays instead of a per-candidate allocation, a completeness check on
+the code-length code (RFC 1951 requires it; the old parse did not test it), a size-bounded
+inflate, and work-stealing over `(d1, d2)` instead of fixed chunks that left the last thread
+running alone.
+
+**Both pruning rules are sound, not heuristic.** This matters more than the speed: a wrong
+prune would silently discard the answer and report `NO HIT`, which is indistinguishable from a
+genuine miss. Over-subscription (Kraft sum above 1) admits no Huffman code, ever.
+Unreachability (even every remaining entry at the shortest legal length cannot reach a
+complete code) admits no completion below that node. Neither can discard a valid header.
+
+**Measured, on `STRUC.rod` whose answer `9d69922429` is known independently.** Both searchers
+were run on the same prepped input, uncontended, on the same machine; both returned the
+correct five bytes.
+
+| | space covered | wall | CPU-s | rate (space/CPU-s) | extrapolated full 2³⁶ sweep |
+|---|---|---|---|---|---|
+| old | 2.196 × 10⁹ | 55.3 s | 374.7 | 5.86 × 10⁶ | **~29 min** |
+| new | 4.211 × 10¹⁰ | 76.3 s | 675.4 | 6.24 × 10⁷ | **~2.1 min** |
+
+"Space covered" counts pruned subtrees, which is legitimate — they are proven empty, not
+skipped. The new run reached a leaf for only 26.3 % of the positions it covered: 201,527
+subtrees died at `d3` (65,536 leaves each) and 42,396,316 at `d4` (256 each).
+
+**10.6× per CPU-second, 13.9× on full-sweep wall time.** The two runs did different amounts of
+work — where the answer falls in the traversal order is luck, and `STRUC`'s sat 3.2 % into the
+old ordering against 26 % into the new — which is exactly why the comparison is normalised by
+space covered rather than by time-to-hit. Note this also revises the §7 budget: at ~2 minutes
+per section, `TTTEXT2` and `MUX` are no longer multi-hour commitments, and the honest reason
+§4 came back empty was a slow searcher rather than anything about the data.
+
+Regression: `rod_crack_prep.py prep STRUC.rod STRUC` then `rod_crack` must print
+`9d69922429`. Keep that check — it is the only thing standing between a pruning bug and a
+silent false negative.

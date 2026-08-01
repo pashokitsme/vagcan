@@ -12,10 +12,45 @@
 //! `IV[3..8]` carries the low 5 bytes of the runtime `product`. Only the first
 //! cipher block's plaintext depends on the IV (CBC), so the zlib magic
 //! `78 da` (plaintext `0..2`) survives but deflate bytes `1..=5` are corrupted.
-//! Deflate byte 0 (plaintext[2]) is exact. We brute-force the 5 unknown bytes
-//! over reduced per-byte candidate sets, filtering with an incremental-Kraft
-//! dynamic-Huffman header parse, and confirm with a full `miniz_oxide` inflate
-//! that yields exactly `plainlen` bytes.
+//! Deflate byte 0 (plaintext[2]) is exact. We recover the 5 unknown bytes from
+//! reduced per-byte candidate sets with a **pruned DFS** over a dynamic-Huffman
+//! header parse, and confirm survivors with a full `miniz_oxide` inflate that
+//! yields exactly `plainlen` bytes.
+//!
+//! ## Search shape, and where the speed actually came from
+//!
+//! The search is a DFS, mirroring the Python reference
+//! (`rod_struc_decode.py`): parse the header over a *partially* assigned
+//! guess, and when the parse reaches a byte that is not assigned yet, stop and
+//! branch on exactly that byte ([`Probe::Need`]). Bytes the header never reads
+//! are left to the inflate oracle.
+//!
+//! **The tree-shape pruning is worth far less than it looks, and it is worth
+//! recording why.** The intuition — "reject at depth 3 and you kill a
+//! 65,536-leaf subtree" — is right about the mechanism and wrong about the
+//! magnitude, because of where the bits fall. Deflate byte 0 is exact and
+//! covers BFINAL/BTYPE/HLIT; HDIST and HCLEN then run to bit 17, so the 3-bit
+//! code-length-code entries only start inside `d2`. With `d1..d3` pinned there
+//! are five entries to test, with `d1..d4` seven — and five or seven entries
+//! drawn from a wrong candidate over-subscribe the Kraft inequality only
+//! sometimes. Measured on `STRUC.rod`: the DFS visits 1.25e9 leaves where the
+//! flat loop visited 2.06e9. That is 1.65×, not the hoped-for 50×.
+//!
+//! What actually paid, in order:
+//!
+//! 1. **The leaf test got cheap and early.** Kraft as an O(1) running total
+//!    instead of an O(maxlen) rescan per length; the code-length code required
+//!    to be *complete*, which rejects ~99% of leaves before a table is built;
+//!    and the literal/distance Kraft totals checked as lengths arrive instead
+//!    of after all 300-odd are decoded.
+//! 2. **Siblings share the prefix.** A stall inside the code-length loop hands
+//!    its parse state to every child ([`Resume`]), so the 17-bit preamble and
+//!    the entries already read are not re-read once per leaf.
+//! 3. **The hot path carries nothing.** [`cl_scan`] keeps a bit position and
+//!    one running total; the table, the arrays and the length decode live in
+//!    [`parse_full`], reached about once per hundred leaves.
+//!
+//! Net on `STRUC.rod`: ~306 CPU-seconds to ~35, the answer unchanged.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,15 +63,18 @@ const CLCL_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
 ];
 
-/// LSB-first bit reader over `[d0] ++ guess[0..5] ++ tail`.
-struct Bits<'a> {
-    d0: u8,
-    guess: &'a [u8; 5],
-    tail: &'a [u8],
-    byte: usize,
-    nbits: u32,
-    cur: u64,
-    /// Set once a read ran past the end of the section.
+/// All five guess bytes assigned — the mask a fully-specified candidate uses.
+/// The search itself never needs it (it grows the mask one branch at a time);
+/// it is what a one-shot full-header check passes.
+#[cfg(test)]
+const ALL_KNOWN: u8 = 0b1_1111;
+
+/// Why a speculative header parse stopped early.
+#[derive(Clone, Copy)]
+enum Stop {
+    /// The parse wants guess byte `idx` (1..=5) and it is not assigned yet.
+    Need(usize),
+    /// A read ran past the end of the section.
     ///
     /// A short section can hold fewer bytes than a deflate header wants to
     /// read, and the header oracle is speculative by nature — it is fed
@@ -44,81 +82,155 @@ struct Bits<'a> {
     /// panic, which killed the worker thread silently and made the whole
     /// search look like it had simply found nothing. Overrunning means this
     /// candidate cannot be evaluated, which is a rejection, not a crash.
-    overrun: bool,
+    Overrun,
+}
+
+/// The verdict on a header parse over a partially assigned guess.
+enum Probe {
+    /// Parsed cleanly using only the bytes assigned so far.
+    Valid,
+    /// Impossible — prune this whole subtree.
+    Reject,
+    /// Stalled on unassigned guess byte `idx` (1..=5); branch there. `at` is
+    /// the parse state to hand each child, when the stall happened somewhere
+    /// that can be resumed.
+    Need { idx: usize, at: Option<Resume> },
+}
+
+/// Parse state captured at a stall inside the code-length-code loop.
+///
+/// Without this every child re-reads the header from bit 0: the 17-bit
+/// preamble plus every code-length entry its parent already read. Those bits
+/// are identical across all siblings — the only thing that differs is the byte
+/// being branched on, which comes *after* them. Since the last unknown byte is
+/// deflate byte 5 and the code-length entries run well past it, that repeated
+/// prefix is most of the work at the leaves, where nearly all the time goes.
+///
+/// The bit reader stops on a whole-byte boundary with a self-consistent
+/// buffer, so resuming is exactly equivalent to re-parsing (asserted by
+/// `resuming_matches_a_fresh_parse`).
+#[derive(Clone, Copy)]
+struct Resume {
+    byte: usize,
+    nbits: u32,
+    cur: u64,
+    hclen: usize,
+    /// Index of the next code-length-code entry to read.
+    i: usize,
+    /// Kraft running total over the entries read so far.
+    wcl: u32,
+}
+
+/// LSB-first bit reader over `[d0] ++ guess[0..5] ++ tail`, where only the
+/// guess bytes flagged in `known` may be read. Reading an unknown byte or
+/// running off the end stops the parse and records why in `stop`.
+struct Bits<'a> {
+    d0: u8,
+    guess: &'a [u8; 5],
+    known: u8,
+    tail: &'a [u8],
+    byte: usize,
+    nbits: u32,
+    cur: u64,
+    stop: Option<Stop>,
 }
 impl<'a> Bits<'a> {
-    fn new(d0: u8, guess: &'a [u8; 5], tail: &'a [u8]) -> Self {
+    fn new(d0: u8, guess: &'a [u8; 5], known: u8, tail: &'a [u8]) -> Self {
         Bits {
             d0,
             guess,
+            known,
             tail,
             byte: 0,
             nbits: 0,
             cur: 0,
-            overrun: false,
+            stop: None,
         }
     }
     #[inline]
-    fn getb(&mut self, i: usize) -> u8 {
+    fn getb(&mut self, i: usize) -> Option<u8> {
         if i == 0 {
-            self.d0
+            Some(self.d0)
         } else if i <= 5 {
-            self.guess[i - 1]
+            if self.known & (1 << (i - 1)) != 0 {
+                Some(self.guess[i - 1])
+            } else {
+                self.stop = Some(Stop::Need(i));
+                None
+            }
         } else {
             match self.tail.get(i - 6) {
-                Some(b) => *b,
+                Some(b) => Some(*b),
                 None => {
-                    self.overrun = true;
-                    0
+                    self.stop = Some(Stop::Overrun);
+                    None
                 }
             }
         }
     }
     #[inline]
-    fn read(&mut self, n: u32) -> u64 {
+    fn read(&mut self, n: u32) -> Option<u64> {
         while self.nbits < n {
-            self.cur |= (self.getb(self.byte) as u64) << self.nbits;
+            let b = self.getb(self.byte)?;
+            self.cur |= (b as u64) << self.nbits;
             self.byte += 1;
             self.nbits += 8;
         }
         let v = self.cur & ((1u64 << n) - 1);
         self.cur >>= n;
         self.nbits -= n;
-        v
+        Some(v)
+    }
+    /// Turn a stopped read into a verdict. An overrun — or a plain decode
+    /// failure with no recorded stop — is a rejection; only a missing guess
+    /// byte is worth branching on.
+    #[inline]
+    fn verdict(&self) -> Probe {
+        match self.stop {
+            Some(Stop::Need(i)) => Probe::Need { idx: i, at: None },
+            Some(Stop::Overrun) | None => Probe::Reject,
+        }
     }
 }
 
-fn kraft_ok(lens: &[u8]) -> bool {
-    let mut cnt = [0i64; 16];
-    let mut maxbl = 0usize;
-    for &l in lens {
-        if l > 0 {
-            cnt[l as usize] += 1;
-            if (l as usize) > maxbl {
-                maxbl = l as usize;
-            }
+/// Read `n` bits or hand the caller's verdict back up.
+macro_rules! rd {
+    ($bs:expr, $n:expr) => {
+        match $bs.read($n) {
+            Some(v) => v,
+            None => return $bs.verdict(),
         }
-    }
-    if maxbl == 0 {
-        return true;
-    }
-    let mut left: i64 = 1;
-    for &c in &cnt[1..=maxbl] {
-        left <<= 1;
-        left -= c;
-        if left < 0 {
-            return false;
-        }
-    }
-    true
+    };
 }
 
+// Kraft, done in O(1) per code length instead of O(maxlen) per length.
+//
+// The textbook check walks `left = 2*left - cnt[bl]` over bl = 1..maxbl and
+// fails if `left` ever goes negative. Dividing that by 2^bl, the condition at
+// bl is `Σ_{j<=bl} cnt[j]·2^-j <= 1` — a *prefix* of the Kraft sum. Every term
+// is non-negative, so the prefix conditions are all implied by the total one
+// and vice versa: the walk fails exactly when `Σ 2^-l > 1`. Scaling by the
+// deepest possible code makes that an integer running total, which can be
+// maintained as lengths arrive and compared in one instruction.
+//
+// This matters because it sits on the hottest path in the search: the CL loop
+// runs it per entry, and the lit/dist decode runs it per emitted length.
+
+/// Scale for the code-length-code Kraft total: those lengths are 3 bits, so 7
+/// is the deepest code and `2^7` represents a full (complete) code.
+const CL_KRAFT_FULL: u32 = 1 << 7;
+/// Scale for literal/distance Kraft totals: those lengths cap at 15.
+const LEN_KRAFT_FULL: u32 = 1 << 15;
+
+/// Canonical Huffman decode table for the 19 code-length codes. The symbol
+/// array is fixed-size on purpose: this is built once per surviving node, and
+/// a heap allocation there showed up as pure overhead.
 struct Huff {
     counts: [u16; 16],
-    symbols: Vec<u16>,
+    symbols: [u16; 19],
     maxlen: u32,
 }
-fn build_huff(lens: &[u8]) -> Option<Huff> {
+fn build_huff(lens: &[u8; 19]) -> Option<Huff> {
     let mut counts = [0u16; 16];
     let mut maxlen = 0u32;
     for &l in lens {
@@ -138,7 +250,7 @@ fn build_huff(lens: &[u8]) -> Option<Huff> {
         offs[i] = s;
         s += counts[i];
     }
-    let mut symbols = vec![0u16; s as usize];
+    let mut symbols = [0u16; 19];
     for (sym, &l) in lens.iter().enumerate() {
         if l > 0 {
             symbols[offs[l as usize] as usize] = sym as u16;
@@ -152,13 +264,15 @@ fn build_huff(lens: &[u8]) -> Option<Huff> {
     })
 }
 
+/// `None` means either "no such code" or "the reader stalled"; the caller
+/// distinguishes them via [`Bits::verdict`].
 #[inline]
 fn decode_sym(bs: &mut Bits, h: &Huff) -> Option<u16> {
     let mut code: i32 = 0;
     let mut first: i32 = 0;
     let mut index: i32 = 0;
     for len in 1..=h.maxlen as usize {
-        code |= bs.read(1) as i32;
+        code |= bs.read(1)? as i32;
         let count = h.counts[len] as i32;
         if code - first < count {
             return Some(h.symbols[(index + (code - first)) as usize]);
@@ -171,83 +285,200 @@ fn decode_sym(bs: &mut Bits, h: &Huff) -> Option<u16> {
     None
 }
 
-/// Full dynamic-Huffman header parse (must be BTYPE=2). Returns true if the
-/// header decodes cleanly with valid Kraft on the code-length, literal and
-/// distance code lengths.
-fn header_ok(d0: u8, guess: &[u8; 5], tail: &[u8]) -> bool {
-    // Every `return` below must also reject an overrun; see `Bits::overrun`.
-    let mut bs = Bits::new(d0, guess, tail);
-    let _bfinal = bs.read(1);
-    if bs.read(2) != 2 {
-        return false;
+/// Dynamic-Huffman header **filter** over a partially assigned guess.
+///
+/// This is the hot path: it is entered once per node, and the overwhelming
+/// majority of nodes are leaves that it rejects. So it deliberately does the
+/// least work that can decide the question — read the preamble, then walk the
+/// code-length-code entries keeping nothing but a Kraft running total. No
+/// table, no arrays, nothing that has to be copied into a resumed frame.
+///
+/// A candidate that survives is handed to [`parse_full`], which is the
+/// authority: it re-parses from bit 0 and decides properly. That split is what
+/// keeps the hot loop in registers, and it is sound in one direction only —
+/// every test here must be one `parse_full` also applies, or the search would
+/// discard an answer it never re-checked.
+fn probe_header(d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Probe {
+    let mut bs = Bits::new(d0, guess, known, tail);
+    let _bfinal = rd!(bs, 1);
+    if rd!(bs, 2) != 2 {
+        return Probe::Reject;
     }
-    let hlit = bs.read(5) as usize + 257;
-    let hdist = bs.read(5) as usize + 1;
-    let hclen = bs.read(4) as usize + 4;
-    let mut cl = [0u8; 19];
-    let mut cnt = [0i64; 16];
-    for i in 0..hclen {
-        let l = bs.read(3) as u8;
-        cl[CLCL_ORDER[i]] = l;
-        if l > 0 {
-            cnt[l as usize] += 1;
-            let mut left: i64 = 1;
-            let mut over = false;
-            for &c in &cnt[1..=7] {
-                left <<= 1;
-                left -= c;
-                if left < 0 {
-                    over = true;
-                    break;
+    let _hlit = rd!(bs, 5);
+    let _hdist = rd!(bs, 5);
+    let hclen = rd!(bs, 4) as usize + 4;
+    cl_scan(bs, hclen, 0, 0)
+}
+
+/// Continue the filter from where a sibling stalled, with one more byte pinned.
+fn probe_resume(at: &Resume, d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Probe {
+    let mut bs = Bits::new(d0, guess, known, tail);
+    bs.byte = at.byte;
+    bs.nbits = at.nbits;
+    bs.cur = at.cur;
+    cl_scan(bs, at.hclen, at.i, at.wcl)
+}
+
+/// Walk code-length-code entries `i..hclen`, carrying the Kraft total `wcl`.
+#[inline]
+fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Probe {
+    for i in i0..hclen {
+        let l = match bs.read(3) {
+            Some(v) => v as u32,
+            None => {
+                // Stalled mid-table. Before branching, check the subtree can
+                // still *reach* a complete code: every entry left contributes
+                // at most 2^-1, so if all of them at the shortest legal length
+                // still fall short, nothing below here completes it. Sound, not
+                // heuristic — a wrong prune would silently drop the answer.
+                let remaining = (hclen - i) as u32;
+                if wcl + remaining * (CL_KRAFT_FULL / 2) < CL_KRAFT_FULL {
+                    return Probe::Reject;
                 }
+                return match bs.stop {
+                    Some(Stop::Need(idx)) => Probe::Need {
+                        idx,
+                        at: Some(Resume {
+                            byte: bs.byte,
+                            nbits: bs.nbits,
+                            cur: bs.cur,
+                            hclen,
+                            i,
+                            wcl,
+                        }),
+                    },
+                    Some(Stop::Overrun) | None => Probe::Reject,
+                };
             }
-            if over {
-                return false;
+        };
+        if l > 0 {
+            wcl += 1 << (7 - l);
+            if wcl > CL_KRAFT_FULL {
+                return Probe::Reject;
             }
         }
+    }
+    // RFC 1951 requires the code-length code itself to be *complete*, and
+    // zlib's `inflate_table` rejects an incomplete one outright — so a
+    // candidate that lands short can never inflate, whatever follows. This is
+    // the single most selective cheap test there is: about 1% of leaves get
+    // past it, and everything below this line runs only for those.
+    //
+    // Note it also subsumes the over-subscription test above: the entries are
+    // non-negative and must total exactly `CL_KRAFT_FULL`, so no prefix of
+    // them can exceed it. The early check is kept because it fires sooner.
+    if wcl != CL_KRAFT_FULL {
+        return Probe::Reject;
+    }
+    parse_full(bs.d0, bs.guess, bs.known, bs.tail)
+}
+
+/// The complete header parse, and the authority on what is a valid header:
+/// code-length table built, all `HLIT + HDIST` code lengths decoded against
+/// the exact tail bytes, Kraft honoured on both alphabets.
+///
+/// Reached for roughly one leaf in a hundred, so it re-reads the header from
+/// bit 0 rather than complicating the state the hot path carries. Kept out of
+/// line for the same reason — inlined, its length spills the caller's loop.
+#[inline(never)]
+fn parse_full(d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Probe {
+    let mut bs = Bits::new(d0, guess, known, tail);
+    let _bfinal = rd!(bs, 1);
+    if rd!(bs, 2) != 2 {
+        return Probe::Reject;
+    }
+    let hlit = rd!(bs, 5) as usize + 257;
+    let hdist = rd!(bs, 5) as usize + 1;
+    let hclen = rd!(bs, 4) as usize + 4;
+    let mut cl = [0u8; 19];
+    let mut wcl: u32 = 0;
+    for i in 0..hclen {
+        let l = rd!(bs, 3) as u8;
+        cl[CLCL_ORDER[i]] = l;
+        if l > 0 {
+            wcl += 1 << (7 - l);
+            if wcl > CL_KRAFT_FULL {
+                return Probe::Reject;
+            }
+        }
+    }
+    if wcl != CL_KRAFT_FULL {
+        return Probe::Reject;
     }
     let clh = match build_huff(&cl) {
         Some(h) => h,
-        None => return false,
+        None => return Probe::Reject,
     };
+    // Decode the HLIT+HDIST code lengths against the (exact) tail bytes,
+    // running the literal and distance Kraft totals as they arrive.
+    //
+    // Checking those totals only at the end — as the reference does — is what
+    // made a wrong candidate expensive: it decoded all 300-odd lengths before
+    // noticing. A wrong candidate's lengths over-subscribe after roughly a
+    // dozen symbols, and since the totals only ever grow, bailing there is the
+    // same predicate reached far sooner.
     let n = hlit + hdist;
-    let mut lengths: Vec<u8> = Vec::with_capacity(n + 8);
-    while lengths.len() < n {
+    let mut nlen = 0usize;
+    let mut last = 0u8; // previous code length, for the repeat symbol (16)
+    let mut wlit: u32 = 0;
+    let mut wdist: u32 = 0;
+    while nlen < n {
         let sym = match decode_sym(&mut bs, &clh) {
             Some(s) => s,
-            None => return false,
+            None => return bs.verdict(),
         };
-        match sym {
-            0..=15 => lengths.push(sym as u8),
+        let start = nlen;
+        let l = match sym {
+            0..=15 => {
+                nlen += 1;
+                sym as u8
+            }
             16 => {
-                if lengths.is_empty() {
-                    return false;
+                if nlen == 0 {
+                    return Probe::Reject;
                 }
-                let r = (bs.read(2) + 3) as usize;
-                let last = *lengths.last().unwrap();
-                lengths.resize(lengths.len() + r, last);
+                nlen += (rd!(bs, 2) + 3) as usize;
+                last
             }
             17 => {
-                let r = (bs.read(3) + 3) as usize;
-                lengths.resize(lengths.len() + r, 0);
+                nlen += (rd!(bs, 3) + 3) as usize;
+                0
             }
             18 => {
-                let r = (bs.read(7) + 11) as usize;
-                lengths.resize(lengths.len() + r, 0);
+                nlen += (rd!(bs, 7) + 11) as usize;
+                0
             }
-            _ => return false,
+            _ => return Probe::Reject,
+        };
+        if nlen > n {
+            return Probe::Reject;
         }
-        if lengths.len() > n {
-            return false;
+        last = l;
+        if l > 0 {
+            // A run can straddle the literal/distance boundary; the two code
+            // spaces are independent, so split it there.
+            let w = 1u32 << (15 - l);
+            if start < hlit {
+                wlit += w * (nlen.min(hlit) - start) as u32;
+                if wlit > LEN_KRAFT_FULL {
+                    return Probe::Reject;
+                }
+            }
+            if nlen > hlit {
+                wdist += w * (nlen - start.max(hlit)) as u32;
+                if wdist > LEN_KRAFT_FULL {
+                    return Probe::Reject;
+                }
+            }
         }
     }
-    if !kraft_ok(&lengths[..hlit]) {
-        return false;
-    }
-    if !kraft_ok(&lengths[hlit..hlit + hdist]) {
-        return false;
-    }
-    !bs.overrun
+    Probe::Valid
+}
+
+/// Full-header oracle for a completely specified guess.
+#[cfg(test)]
+fn header_ok(d0: u8, guess: &[u8; 5], tail: &[u8]) -> bool {
+    matches!(probe_header(d0, guess, ALL_KNOWN, tail), Probe::Valid)
 }
 
 /// The reduced per-byte candidate sets for deflate bytes `d[1..=5]`
@@ -276,12 +507,7 @@ fn candidate_sets(tag_m: u8, t: &[u8; 8]) -> [Vec<u8>; 5] {
 /// uses per candidate; exposed so the plumbing can be tested without running
 /// the multi-minute brute force (which the `vag-rod` acceptance run exercises).
 #[cfg(test)]
-pub(crate) fn confirm_iv3to8(
-    tag: &[u8],
-    cipher: &[u8],
-    plainlen: usize,
-    iv3to8: [u8; 5],
-) -> bool {
+pub(crate) fn confirm_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize, iv3to8: [u8; 5]) -> bool {
     if cipher.len() < 8 || cipher.len() % 8 != 0 {
         return false;
     }
@@ -305,6 +531,83 @@ pub(crate) fn confirm_iv3to8(
         miniz_oxide::inflate::decompress_to_vec_zlib(&zs),
         Ok(o) if o.len() == plainlen
     )
+}
+
+/// One worker's slice of the search tree.
+struct Search<'a> {
+    d0: u8,
+    tail: &'a [u8],
+    sets: &'a [Vec<u8>; 5],
+    /// Candidates for the *first* branch point (deflate byte 1), narrowed to
+    /// this worker's share so threads walk disjoint subtrees.
+    d1slice: &'a [u8],
+    plainlen: usize,
+    found: &'a AtomicBool,
+}
+
+impl Search<'_> {
+    #[inline]
+    fn set_for(&self, idx: usize) -> &[u8] {
+        if idx == 1 {
+            self.d1slice
+        } else {
+            &self.sets[idx - 1]
+        }
+    }
+
+    /// Probe with what is assigned so far; branch only where the header
+    /// actually needs a byte, and only on candidates that survive. `at` is the
+    /// parent's stalled parse state, when it had one to hand down.
+    fn dfs(&self, guess: &mut [u8; 5], known: u8, at: Option<&Resume>) -> Option<[u8; 5]> {
+        if self.found.load(Ordering::Relaxed) {
+            return None;
+        }
+        let probe = match at {
+            Some(r) => probe_resume(r, self.d0, guess, known, self.tail),
+            None => probe_header(self.d0, guess, known, self.tail),
+        };
+        match probe {
+            Probe::Reject => None,
+            Probe::Need { idx, at: next } => {
+                for &c in self.set_for(idx) {
+                    guess[idx - 1] = c;
+                    if let Some(hit) = self.dfs(guess, known | (1 << (idx - 1)), next.as_ref()) {
+                        return Some(hit);
+                    }
+                }
+                None
+            }
+            Probe::Valid => self.confirm(guess, known),
+        }
+    }
+
+    /// A header can parse without ever reading some of the five bytes (a small
+    /// HCLEN plus a short code-length list). Those are unconstrained by the
+    /// oracle, so they get enumerated in full and settled by the inflate.
+    fn confirm(&self, guess: &mut [u8; 5], known: u8) -> Option<[u8; 5]> {
+        if let Some(k) = (0..5).find(|k| known & (1 << k) == 0) {
+            for &c in self.set_for(k + 1) {
+                guess[k] = c;
+                if let Some(hit) = self.confirm(guess, known | (1 << k)) {
+                    return Some(hit);
+                }
+            }
+            return None;
+        }
+        // The inflate is the definitive oracle: the header parse has false
+        // positives, a stream that inflates to exactly `plainlen` does not.
+        let mut zs = Vec::with_capacity(3 + 5 + self.tail.len());
+        zs.extend_from_slice(&[0x78, 0xda, self.d0]);
+        zs.extend_from_slice(guess);
+        zs.extend_from_slice(self.tail);
+        match miniz_oxide::inflate::decompress_to_vec_zlib(&zs) {
+            Ok(out) if out.len() == self.plainlen => {
+                self.found.store(true, Ordering::Relaxed);
+                Some(*guess)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Recover the raw first-block `iv[3..8]` for a `product != 0` zlib section.
@@ -353,38 +656,16 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Opti
         let found = Arc::clone(&found);
         let result = Arc::clone(&result);
         handles.push(thread::spawn(move || {
-            let (s1, s2, s3, s4) = (&sets[1], &sets[2], &sets[3], &sets[4]);
-            'outer: for &d1 in &d1slice {
-                for &d2 in s1 {
-                    for &d3 in s2 {
-                        for &d4 in s3 {
-                            for &d5 in s4 {
-                                if found.load(Ordering::Relaxed) {
-                                    break 'outer;
-                                }
-                                let guess = [d1, d2, d3, d4, d5];
-                                if !header_ok(d0, &guess, &tail) {
-                                    continue;
-                                }
-                                let mut zs = Vec::with_capacity(3 + 5 + tail.len());
-                                zs.push(0x78);
-                                zs.push(0xda);
-                                zs.push(d0);
-                                zs.extend_from_slice(&guess);
-                                zs.extend_from_slice(&tail);
-                                if let Ok(out) =
-                                    miniz_oxide::inflate::decompress_to_vec_zlib(&zs)
-                                {
-                                    if out.len() == plainlen {
-                                        *result.lock().unwrap() = Some(guess);
-                                        found.store(true, Ordering::Relaxed);
-                                        break 'outer;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            let search = Search {
+                d0,
+                tail: &tail,
+                sets: &sets,
+                d1slice: &d1slice,
+                plainlen,
+                found: &found,
+            };
+            if let Some(hit) = search.dfs(&mut [0u8; 5], 0, None) {
+                *result.lock().unwrap() = Some(hit);
             }
         }));
     }
@@ -416,5 +697,187 @@ mod overrun_tests {
     #[test]
     fn an_empty_tail_is_rejected_too() {
         assert!(!header_ok(0x8C, &[0; 5], &[]));
+    }
+
+    /// An overrun must read as "reject", never as "branch on a byte" — a DFS
+    /// that branched there would loop forever on a truncated section.
+    #[test]
+    fn a_short_section_stalls_as_reject_even_with_bytes_unassigned() {
+        assert!(matches!(
+            probe_header(0x8C, &[0; 5], ALL_KNOWN, &[]),
+            Probe::Reject
+        ));
+    }
+}
+
+#[cfg(test)]
+mod dfs_tests {
+    use super::*;
+
+    /// A real deflate header, with the five guess bytes progressively hidden.
+    /// The probe must ask for exactly the first byte it cannot see — that is
+    /// the whole basis of the pruning — and accept the full assignment.
+    #[test]
+    fn probe_asks_for_the_first_byte_it_cannot_see() {
+        let plain: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
+        let z = miniz_oxide::deflate::compress_to_vec_zlib(&plain, 9);
+        let d0 = z[2];
+        let guess: [u8; 5] = z[3..8].try_into().unwrap();
+        let tail = &z[8..];
+
+        assert!(matches!(
+            probe_header(d0, &guess, ALL_KNOWN, tail),
+            Probe::Valid
+        ));
+        // Hiding byte k must stall on k (the header reads bytes in order and
+        // consumes well past byte 5).
+        for k in 1..=5usize {
+            let known = ALL_KNOWN & !(1 << (k - 1));
+            match probe_header(d0, &guess, known, tail) {
+                Probe::Need { idx, .. } => assert_eq!(idx, k, "hid byte {k}, stalled on {idx}"),
+                _ => panic!("hiding byte {k} should stall the parse"),
+            }
+        }
+    }
+
+    /// The pruned DFS must find the same answer a flat five-deep sweep would.
+    /// The candidate sets are kept small (the truth plus decoys, truth *last*
+    /// so the search cannot get it by luck) — the point is the tree walk, not
+    /// throughput; the full-width sweep is `recovers_via_full_search`.
+    #[test]
+    fn dfs_finds_the_true_bytes() {
+        let plain: Vec<u8> = (0..4096u32)
+            .map(|i| 0x20 + ((i.wrapping_mul(7).wrapping_add(i / 13)) % 60) as u8)
+            .collect();
+        let mut z = miniz_oxide::deflate::compress_to_vec_zlib(&plain, 9);
+        z[0] = 0x78;
+        z[1] = 0xda;
+        let truth: [u8; 5] = z[3..8].try_into().unwrap();
+        let sets: [Vec<u8>; 5] = std::array::from_fn(|k| {
+            let mut s: Vec<u8> = (0..16u8)
+                .map(|j| j.wrapping_mul(17).wrapping_add(k as u8))
+                .collect();
+            s.retain(|&c| c != truth[k]);
+            s.push(truth[k]);
+            s
+        });
+        let found = AtomicBool::new(false);
+        let d1 = sets[0].clone();
+        let search = Search {
+            d0: z[2],
+            tail: &z[8..],
+            sets: &sets,
+            d1slice: &d1,
+            plainlen: plain.len(),
+            found: &found,
+        };
+        assert_eq!(search.dfs(&mut [0u8; 5], 0, None), Some(truth));
+    }
+
+    /// The cheap filter must agree with the authority. `cl_scan` may only
+    /// reject what `parse_full` would also reject — if it ever rejected more,
+    /// the search would drop candidates that were never re-examined, and the
+    /// failure mode is a silent "no hit" rather than anything that looks like
+    /// a bug. Checked over random streams (nearly all rejects, which is what
+    /// the search actually sees) and real deflate headers (the accepts).
+    #[test]
+    fn the_cheap_filter_never_rejects_what_the_full_parse_accepts() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rng = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..50_000 {
+            let d0 = (rng() & 0xff) as u8;
+            let guess: [u8; 5] = std::array::from_fn(|_| (rng() & 0xff) as u8);
+            let tail: Vec<u8> = (0..80).map(|_| (rng() & 0xff) as u8).collect();
+            let filtered = matches!(probe_header(d0, &guess, ALL_KNOWN, &tail), Probe::Valid);
+            let authority = matches!(parse_full(d0, &guess, ALL_KNOWN, &tail), Probe::Valid);
+            assert_eq!(filtered, authority, "d0={d0:#x} guess={guess:02x?}");
+        }
+        for level in [1u8, 6, 9] {
+            let plain: Vec<u8> = (0..8192u32)
+                .map(|i| (i.wrapping_mul(37) % 211) as u8)
+                .collect();
+            let z = miniz_oxide::deflate::compress_to_vec_zlib(&plain, level);
+            let guess: [u8; 5] = z[3..8].try_into().unwrap();
+            assert!(matches!(
+                probe_header(z[2], &guess, ALL_KNOWN, &z[8..]),
+                Probe::Valid
+            ));
+            assert!(matches!(
+                parse_full(z[2], &guess, ALL_KNOWN, &z[8..]),
+                Probe::Valid
+            ));
+        }
+    }
+
+    /// Resuming a stalled parse must be indistinguishable from parsing the
+    /// same fully-pinned stream from bit 0. If it ever diverged the search
+    /// would quietly explore the wrong subtree, so this walks a spread of
+    /// pseudo-random streams (most of which are garbage headers — exactly what
+    /// the search actually sees) and compares the two routes at every depth.
+    #[test]
+    fn resuming_matches_a_fresh_parse() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut rng = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut resumed = 0usize;
+        for _ in 0..20_000 {
+            let d0 = (rng() & 0xff) as u8;
+            let guess: [u8; 5] = std::array::from_fn(|_| (rng() & 0xff) as u8);
+            let tail: Vec<u8> = (0..64).map(|_| (rng() & 0xff) as u8).collect();
+            // Walk depth by depth, carrying the resume state the way dfs does.
+            let mut at: Option<Resume> = None;
+            for known in [0b0_0001u8, 0b0_0011, 0b0_0111, 0b0_1111, 0b1_1111] {
+                let fresh = probe_header(d0, &guess, known, &tail);
+                let via = match &at {
+                    Some(r) => {
+                        resumed += 1;
+                        probe_resume(r, d0, &guess, known, &tail)
+                    }
+                    None => probe_header(d0, &guess, known, &tail),
+                };
+                let tag = |p: &Probe| match p {
+                    Probe::Valid => (0u8, 0usize),
+                    Probe::Reject => (1, 0),
+                    Probe::Need { idx, .. } => (2, *idx),
+                };
+                assert_eq!(tag(&fresh), tag(&via), "d0={d0:#x} guess={guess:02x?}");
+                match via {
+                    Probe::Need { at: next, .. } => at = next,
+                    _ => break,
+                }
+            }
+        }
+        // Guard against the test silently never exercising the resume path.
+        assert!(resumed > 1000, "only {resumed} resumes exercised");
+    }
+
+    /// A guard on the two prunes that could silently lose the answer: the
+    /// code-length code must be complete, and the literal/distance Kraft
+    /// totals are checked as lengths arrive rather than at the end. A real
+    /// deflate header must survive both.
+    #[test]
+    fn a_real_header_survives_the_completeness_and_incremental_kraft_prunes() {
+        for level in [1u8, 6, 9] {
+            let plain: Vec<u8> = (0..8192u32)
+                .map(|i| (i.wrapping_mul(31) % 200) as u8)
+                .collect();
+            let z = miniz_oxide::deflate::compress_to_vec_zlib(&plain, level);
+            assert!(
+                matches!(
+                    probe_header(z[2], &z[3..8].try_into().unwrap(), ALL_KNOWN, &z[8..]),
+                    Probe::Valid
+                ),
+                "level {level} header rejected"
+            );
+        }
     }
 }
