@@ -66,6 +66,7 @@ vagcan devices      list connected USB-CAN adapters
 vagcan info         VIN + engine and gearbox passports
 vagcan properties   everything a control unit says about itself, named
 vagcan sniff        listen-only bus capture (runs alongside VCDS)
+vagcan units        ask the gateway which control units the car has
 vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
 vagcan watch        live values, polled as fast as the bus allows (46 Hz measured)
 vagcan analyse      prove scalings from a capture + a VCDS log

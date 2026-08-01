@@ -7,7 +7,7 @@ selectable from config, with **no hardcoded addresses or formulas**. Live transp
 the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md` for the locked
 stack and `todo/GOAL.md` for the goal statement.
 
-## Status (2026-08-01)
+## Status (2026-08-01, overnight)
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
 built and merged. The offline path to measurements is **exhausted**: the STRUC field
@@ -26,7 +26,7 @@ running in parallel, and the offline tool that turns it into scalings.
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
-| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **18 scalings proven by crib + the whole OBD-II parameter set decoded from the standard (`vagcan sensors`, 27 live)** |
+| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **21 rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states** |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
@@ -92,6 +92,57 @@ Tooling (built, `docs/superpowers/specs/2026-07-31-can-sniffer-design.md`):
 The pairing to collect: sniff + VCDS running ADVMB logging to CSV, engine running, a wide
 rev. That yields `(read address → raw bytes → displayed engineering value)` directly, with
 no dependence on the `.rod` field codec.
+
+### Overnight results (2026-08-01→02, four parallel analyses)
+
+All from data already on disk; the car was not attached.
+
+**The car enumerates itself.** The gateway's installation list (`0x2A26`, also `0x04A3`)
+is a 32-byte bitmap, LSB-first, indexed by `id − 0x700`. One read replaces sweeping
+`0x700..0x7BF`. Verified before use: all seven units separately observed answering appear,
+with no false negatives; the opposite bit order finds two of seven. Shipped as
+`vagcan units`. Nine units answer; four are identified by their own identification block
+(steering column `5Q0 953 521 KM`, body control `5Q0 937 084 CF`, gateway `3Q0 907 530 B`,
+cluster `5E0 920 740 D`).
+
+**Two more OBD-II services are mirrored.** `F6xx` is service 06 and `F8xx` is service 09 —
+proven by content, not convention: `F802` holds the VIN, `F804` the calibration identifier
+`8V0264H 0005AEAJ`, `F80A` the string `ECM\0-EngineControl`. Service 09 now decodes in
+`vagcan properties`; it carries what `F1xx` cannot, namely which emissions calibration the
+unit is actually running.
+
+**The engaged gear, without a VCDS log.** `0x3816`, proven by arithmetic against the
+already-proven shaft speeds (η² = 0.972, runner-up 0.072). `gear = code − 1`; `0x0C`
+reverse, `0x00` not engaged. Selector lever at `0x3809` (P/R/N/D). Both are represented
+with the new `Scaling::Enum`, because a gear is not a quantity — a linear scaling would
+report reverse as "gear 11".
+
+**Odometer, by exact hit.** Cluster `0x2203` returned `03 3F 18` while a log read
+212,760 km. `0x033F18` = 212,760.
+
+**A defect in our own tool.** `watch --out` wrote one timestamp per row, but identifiers
+are polled in batches, so columns are up to a polling cycle apart. Every value now carries
+its own time column — the same thing VCDS's export does, and which this project already
+parsed correctly for VCDS while producing the flawed version itself. Correcting it lifted
+the gear evidence from η² 0.872 to 0.972.
+
+Writeups: `research/identifier-map.md`, `research/other-ecus.md`,
+`research/gearbox-state.md`.
+
+### What the next session should do
+
+1. **Re-sweep the engine with it running.** 450 of 896 identifiers read zero because the
+   sweep was taken engine-off — very likely "no signal", not "unimplemented". Cheapest
+   improvement available.
+2. **A parked identification pass driven off the gateway list** — read `2A26`, then
+   `F187/F197/F19E/F189/F191` on every id in it. Names nine currently-unknown units and
+   yields their label-file keys without moving.
+3. **Record the gearbox `3820–38FF` block while driving.** Every proven clutch row lives
+   there and none of it has been recorded moving.
+4. **Select S and manual deliberately.** Gearbox mode was not found because the lever never
+   left P/R/N/D — the stimulus is absent, not the signal.
+5. **A cold start** while polling cluster `0x22D0`, the one action that converts its
+   coolant reading from "consistent with" into measured.
 
 ### The remaining work, in order
 
