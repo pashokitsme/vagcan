@@ -14,10 +14,72 @@
 //! vehicle make/model, so there is nothing to group by. Rendering is factored
 //! into pure `render_*` helpers so the formatting is unit-tested without a disk.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use vag_data::{scan_corpus, CorpusScan, LabelDb, Measurement};
+
+/// Where a parsed corpus is cached between runs.
+///
+/// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
+/// slow part of every lookup, and the corpus does not change between runs. The
+/// cache is keyed by the directory it was built from, so the English and the
+/// Russian install each keep their own — switching language is a matter of
+/// pointing at the other directory, not of rebuilding anything.
+const CACHE_DIR: &str = "catalogs/label-cache";
+
+/// The cache file for a corpus directory.
+fn cache_path_for(dir: &Path) -> PathBuf {
+    // The directory's own name, with anything awkward flattened — readable in
+    // a listing, and distinct per install.
+    let key: String = dir
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let key = key.trim_matches('-').to_string();
+    Path::new(CACHE_DIR).join(format!("{key}.sqlite"))
+}
+
+/// Load a corpus, using the SQLite cache when it is usable and building it when
+/// it is not.
+///
+/// A stale cache is worse than none, so the file is only trusted when it is
+/// newer than the corpus directory it was built from. `refresh` forces a
+/// rebuild regardless.
+pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
+    let cache = cache_path_for(dir);
+    let fresh = !refresh
+        && match (std::fs::metadata(&cache), std::fs::metadata(dir)) {
+            (Ok(c), Ok(d)) => match (c.modified(), d.modified()) {
+                (Ok(c), Ok(d)) => c >= d,
+                _ => false,
+            },
+            _ => false,
+        };
+    if fresh {
+        match vag_db::load_db(&cache) {
+            Ok(db) => return Ok(db),
+            // A corrupt or half-written cache is a reason to rebuild, not to
+            // fail the command.
+            Err(e) => eprintln!("cache {} unusable ({e}) — rebuilding", cache.display()),
+        }
+    }
+
+    if let Some(parent) = cache.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating the cache directory {}", parent.display()))?;
+    }
+    let stats = vag_db::build_db(dir, &cache)
+        .map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?;
+    eprintln!(
+        "cached {} label files ({} measurements) in {}",
+        stats.files,
+        stats.measurements,
+        cache.display()
+    );
+    vag_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
+}
 
 /// Entry point for the `labels` subcommand. Loads the corpus once, prints the
 /// summary, then runs whichever lookup(s) were requested.
@@ -26,15 +88,17 @@ pub fn labels_cmd(
     part: Option<&str>,
     block: Option<u16>,
     field: Option<u8>,
+    refresh: bool,
 ) -> anyhow::Result<()> {
+    // The summary counts files on disk, which is cheap and is also the only
+    // way to report `.rod` files — those are not in the cache.
     let scan = scan_corpus(Path::new(dir))
         .with_context(|| format!("scanning label corpus under {dir:?}"))?;
 
     print!("{}", render_summary(&scan));
 
-    // The block/part lookups need a LabelDb, which consumes the parsed files.
     if part.is_some() || block.is_some() {
-        let db = LabelDb::new(scan.files);
+        let db = load_cached(Path::new(dir), refresh)?;
         if let Some(part_no) = part {
             print!("\n{}", render_part_lookup(&db, part_no));
         }
@@ -120,7 +184,7 @@ fn render_measurement_row(m: &Measurement) -> String {
 /// being a part-number guess: the car answers the question. Reports what the
 /// file contains, marking sections whose payload did not decode rather than
 /// implying the whole file was read.
-pub fn resolve_odx(dir: &str, odx_name: &str, crack: bool, cache_path: &str) -> anyhow::Result<()> {
+pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Result<()> {
     use vag_data::rod::{decode_rod_recover, IvCache, RodStatus};
 
     let hits = vag_data::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
@@ -133,8 +197,10 @@ pub fn resolve_odx(dir: &str, odx_name: &str, crack: bool, cache_path: &str) -> 
         return Ok(());
     }
 
-    // Recovered initialisation vectors are cached: cracking one costs about a
-    // minute, and the answer is a property of the file, not of the run.
+    // Recovered initialisation vectors come from the cache only. The search
+    // that fills it costs minutes of every core and lives in a separate tool
+    // (`cargo run -p vag-data --features rod-crack --bin vag-rod <file.rod>`),
+    // so reading a car never links it.
     let mut cache = IvCache::load(std::path::Path::new(cache_path));
     for path in &hits {
         println!("{}", path.display());
@@ -146,7 +212,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, crack: bool, cache_path: &str) -> 
             }
         };
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        let sections = decode_rod_recover(&bytes, name, &mut cache, crack);
+        let sections = decode_rod_recover(&bytes, name, &mut cache, false);
         if sections.is_empty() {
             println!("  no sections found");
             continue;
@@ -155,20 +221,16 @@ pub fn resolve_odx(dir: &str, odx_name: &str, crack: bool, cache_path: &str) -> 
             let state = match section.status {
                 RodStatus::Tea => "decrypted",
                 RodStatus::Zlib => "decrypted + inflated",
+                // No vector in the cache for this section, and this binary
+                // cannot search for one.
                 RodStatus::Undecodable => {
-                    if crack {
-                        "NOT decoded"
-                    } else {
-                        "encrypted (pass --crack to recover)"
-                    }
+                    "encrypted (recover with: cargo run -p vag-data \
+                     --features rod-crack --bin vag-rod <file.rod>)"
                 }
             };
             let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
             println!("  [{}]  {state}, {size} bytes", section.tag);
         }
-    }
-    if let Err(e) = cache.save(std::path::Path::new(cache_path)) {
-        eprintln!("warning: could not save the IV cache to {cache_path}: {e}");
     }
     Ok(())
 }

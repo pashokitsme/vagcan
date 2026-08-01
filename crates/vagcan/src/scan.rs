@@ -244,7 +244,7 @@ pub fn format_hit(hit: &DidHit) -> String {
 pub async fn run(
     device_path: &str,
     baud: u32,
-    ecu: u8,
+    unit: vag_protocol::address::UnitAddress,
     range: &str,
     out: Option<&str>,
     delay_ms: u64,
@@ -253,6 +253,7 @@ pub async fn run(
     use std::io::Write;
     use std::time::Instant;
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
+    use vag_transport::CanId;
 
     let ranges = parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
     let total = total_dids(&ranges);
@@ -269,9 +270,17 @@ pub async fn run(
     let backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
         .await
         .with_context(|| format!("opening the adapter at {device_path}"))?;
-    let mut uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, ecu));
+    let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+        backend,
+        CanId::Standard(unit.request),
+        CanId::Standard(unit.response),
+    ));
 
-    println!("scanning control unit {:02} — {total} identifiers ({range})", ecu + 1);
+    println!(
+        "scanning control unit {} ({:03X}) — {total} identifiers ({range})",
+        unit.label(),
+        unit.request
+    );
 
     // Group testing is only valid if the unit answers a mixed request with the
     // identifiers it does support. Establish that before relying on it.

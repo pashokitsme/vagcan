@@ -1,3 +1,4 @@
+pub mod address;
 pub mod dtc;
 pub mod gateway;
 pub mod identity;
@@ -6,6 +7,7 @@ mod pdu;
 pub mod read;
 pub mod uds;
 pub mod uds_async;
+pub use address::UnitAddress;
 pub use dtc::RawDtc;
 pub use identity::EcuIdentity;
 pub use isotp::SoftwareIsoTp;

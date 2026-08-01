@@ -341,8 +341,18 @@ mod odx_lookup_tests {
     use super::*;
 
     /// Build a throwaway corpus tree under the OS temp dir.
+    ///
+    /// The directory is named after the files themselves. Naming it after
+    /// their combined *length* — as this once did — gives two tests with
+    /// equally long names the same tree, and since tests run in parallel each
+    /// deletes the other's fixture at random.
     fn corpus(files: &[&str]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("vagcan-odx-{}", files.join("_").len()));
+        let key: String = files
+            .join("_")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let root = std::env::temp_dir().join(format!("vagcan-odx-{key}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
         for name in files {

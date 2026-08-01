@@ -10,13 +10,16 @@
 //! the `vag-hex` crate remain, but they are not product commands.
 
 mod analyse;
+mod calibrate;
 mod device;
 mod discover;
 mod labels;
+mod names;
 mod props;
 mod render;
 mod scan;
 mod sniff;
+mod survey;
 mod vcdslog;
 mod watch;
 
@@ -24,6 +27,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+use vag_protocol::address::UnitAddress;
 use vag_protocol::{AsyncUdsClient, UdsReadExt};
 
 /// Serial speed to the adapter. slcan is ASCII over USB CDC, where the baud
@@ -125,35 +129,30 @@ enum Command {
         ecu: String,
     },
 
-    /// Watch a few values live, polled as fast as the bus allows.
+    /// Live view of the car — configured from inside, not by flags.
     ///
-    /// Made for values that move quickly — boost, throttle, rail pressure.
-    /// Reads are batched eight at a time, so a whole set costs one round trip.
+    /// Shows values from several control units at once. The catalogs cover
+    /// the engine, gearbox and instrument cluster; pass `--survey` to offer
+    /// every identifier a survey found on any other unit as well. Press `c`
+    /// to choose what appears.
     Watch {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
-        /// A curated set: boost, engine, thermal, gearbox, clutches.
-        #[arg(long, value_name = "NAME")]
-        preset: Option<String>,
-        /// Identifiers to poll, hex, comma separated (e.g. `2029,202A`).
-        #[arg(long, value_name = "LIST", conflicts_with = "preset")]
+        /// Start with these selected, e.g. `01:2029,202A 02:380A`. A bare list
+        /// means the engine.
+        #[arg(long, value_name = "SPEC")]
         did: Option<String>,
-        /// Control unit: 01 = engine, 02 = gearbox. Implied by --preset.
-        #[arg(long, value_name = "NN")]
-        ecu: Option<String>,
-        /// Target sample rate.
-        #[arg(long, default_value_t = 20.0, value_name = "HZ")]
+        /// Target poll rate.
+        #[arg(long, default_value_t = 10.0, value_name = "HZ")]
         hz: f64,
-        /// Stop after this many seconds. Default: until Ctrl-C.
-        #[arg(long, value_name = "N")]
-        seconds: Option<u64>,
-        /// Also write the samples to a CSV file.
+        /// Also record to CSV.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
-        /// Catalog of known scalings, for engineering units.
+        /// Offer everything a `vagcan survey` run found, on every unit it
+        /// found it on — not just the measurements already proven.
         #[arg(long, value_name = "FILE")]
-        catalog: Option<String>,
+        survey: Option<String>,
     },
 
     /// Find every data identifier a control unit answers.
@@ -174,6 +173,32 @@ enum Command {
         /// Pause between reads, in milliseconds.
         #[arg(long, default_value_t = 2, value_name = "MS")]
         delay_ms: u64,
+    },
+
+    /// Sweep every control unit the car has, not just the powertrain.
+    ///
+    /// Reads the gateway's installation list, then walks each unit: its
+    /// identification block, then the identifier pages known to be in use on
+    /// this car. Run it once parked and once driving — the identifiers whose
+    /// bytes differ between the two runs are the live measurements, and that
+    /// list needs no label file.
+    Survey {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// Hex ranges to sweep per unit.
+        #[arg(long, default_value = survey::SURVEY_RANGES, value_name = "SPEC")]
+        range: String,
+        /// Write the answers to this file (JSON lines, one object per unit).
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// Pause between reads, in milliseconds.
+        #[arg(long, default_value_t = 2, value_name = "MS")]
+        delay_ms: u64,
+        /// Survey only these units, e.g. `17,70E,7E0`, skipping the gateway
+        /// read.
+        #[arg(long, value_name = "LIST")]
+        only: Option<String>,
     },
 
     /// Cross a capture with a VCDS log to prove measurement scalings.
@@ -213,6 +238,39 @@ enum Command {
         pairs: bool,
     },
 
+    /// Prove new scalings against ones already trusted — no VCDS needed.
+    ///
+    /// Offline. Reads a `watch --out` recording that contains BOTH converted
+    /// reference columns and raw hex columns, and fits each unknown against
+    /// each reference. One clock, so no alignment error is possible. Cannot
+    /// name anything, and cannot find a quantity unrelated to everything
+    /// already known.
+    Calibrate {
+        /// Recording written by `vagcan watch --out`.
+        #[arg(long, value_name = "FILE")]
+        log: String,
+        /// Minimum R² for a fit to count.
+        #[arg(long, default_value_t = 0.995, value_name = "R2")]
+        min_r2: f64,
+        /// Minimum matched samples for a fit to count.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        min_points: usize,
+    },
+
+    /// Search the measurement names recovered from the label corpus.
+    ///
+    /// Offline. The names are keyed by the corpus's own text id, not by data
+    /// identifier — that join does not exist in the label files — so a match
+    /// is a hypothesis to test on the car, not an identification.
+    Names {
+        /// Substring to look for, case-insensitive.
+        #[arg(value_name = "TEXT")]
+        text: String,
+        /// Stop after this many matches.
+        #[arg(long, default_value_t = 40, value_name = "N")]
+        limit: usize,
+    },
+
     /// Look measurements up in a VCDS label directory. Offline — no car.
     Labels {
         /// VCDS install root, or any directory below it.
@@ -238,12 +296,12 @@ enum Command {
         /// Control unit to ask when using --from-car.
         #[arg(long, default_value = "01", value_name = "NN")]
         ecu: String,
-        /// Recover the encryption vectors of sections that need one, so the
-        /// measurement list and fault-code table decode too. Costs about a
-        /// minute per section the first time; the answer is then cached.
+        /// Rebuild the label cache even if it looks current.
         #[arg(long)]
-        crack: bool,
-        /// Where to keep recovered vectors between runs.
+        refresh: bool,
+        /// Where the recovered encryption vectors are kept. Filling it is a
+        /// separate tool: `cargo run -p vag-data --features rod-crack --bin
+        /// vag-rod <file.rod>`.
         #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
         iv_cache: String,
         /// Adapter to use with --from-car.
@@ -267,14 +325,42 @@ async fn main() -> Result<()> {
                 .await
         }
         Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
-        Command::Watch { device, preset, did, ecu, hz, seconds, out, catalog } => {
-            watch_cmd(device.as_deref(), preset.as_deref(), did.as_deref(), ecu.as_deref(), hz, seconds, out.as_deref(), catalog.as_deref())
-                .await
+        Command::Watch { device, did, hz, out, survey } => {
+            let preselect = match did.as_deref() {
+                Some(spec) => watch::plan::parse_spec(spec)
+                    .map_err(|e| anyhow::anyhow!("--did: {e}"))?,
+                None => Vec::new(),
+            };
+            watch::run(
+                &device::resolve(device.as_deref())?,
+                ADAPTER_BAUD,
+                &preselect,
+                hz,
+                out.as_deref(),
+                survey.as_deref(),
+            )
+            .await
         }
         Command::Scan { device, ecu, range, out, delay_ms } => {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
         }
+        Command::Survey { device, range, out, delay_ms, only } => {
+            survey::run(
+                &device::resolve(device.as_deref())?,
+                ADAPTER_BAUD,
+                &range,
+                out.as_deref(),
+                delay_ms,
+                only.as_deref(),
+            )
+            .await
+        }
+        Command::Names { text, limit } => names::run(&text, limit),
+        Command::Calibrate { log, min_r2, min_points } => calibrate::run(
+            &log,
+            analyse::Thresholds { min_r2, min_points, ..Default::default() },
+        ),
         Command::Analyse { capture, log, out, min_r2, min_points } => analyse::run(
             &capture,
             &log,
@@ -308,44 +394,42 @@ async fn main() -> Result<()> {
             from_car,
             ecu,
             device,
-            crack,
             iv_cache,
+            refresh,
         } => {
             if from_car {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
-                labels::resolve_odx(&dir, &name, crack, &iv_cache)
+                labels::resolve_odx(&dir, &name, &iv_cache)
             } else if let Some(name) = odx {
-                labels::resolve_odx(&dir, &name, crack, &iv_cache)
+                labels::resolve_odx(&dir, &name, &iv_cache)
             } else {
-                labels::labels_cmd(&dir, part.as_deref(), block, field)
+                labels::labels_cmd(&dir, part.as_deref(), block, field, refresh)
             }
         }
     }
 }
 
-/// Parse an ECU address the way the VCDS world writes it: `01` is the engine,
-/// which is index 0 on the wire (tester `0x7E0`, ECU `0x7E8`).
-fn parse_ecu(text: &str) -> Result<u8> {
-    let n: u8 = text
-        .trim_start_matches('0')
-        .parse()
-        .with_context(|| format!("--ecu {text:?} is not a control-unit number like 01 or 02"))?;
-    if n == 0 {
-        anyhow::bail!("--ecu is 1-based: 01 = engine, 02 = gearbox");
-    }
-    Ok(n - 1)
+/// Parse how the user named a control unit — `01`, `17`, or a request id like
+/// `70E`. Which id block it lives on, and therefore which response rule
+/// applies, is decided by `vag_protocol::address`.
+fn parse_ecu(text: &str) -> Result<UnitAddress> {
+    vag_protocol::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
 }
 
 /// Open the adapter and address one control unit over UDS.
 async fn open_ecu(
     device_path: &str,
-    ecu: u8,
+    unit: UnitAddress,
 ) -> Result<AsyncUdsClient<IsoTpCan<vag_can::SerialSlcan>>> {
     let backend = SlcanBackend::open_mode(device_path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
         .await
         .with_context(|| format!("opening the adapter at {device_path}"))?;
-    Ok(AsyncUdsClient::new(IsoTpCan::for_ecu(backend, ecu)))
+    Ok(AsyncUdsClient::new(IsoTpCan::new(
+        backend,
+        vag_transport::CanId::Standard(unit.request),
+        vag_transport::CanId::Standard(unit.response),
+    )))
 }
 
 /// Identify the car (see the `Info` subcommand docs).
@@ -354,11 +438,17 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
 
     // One serial port, two control units: read the engine, then re-address the
     // same backend for the gearbox rather than re-opening the adapter.
-    let mut engine_uds = open_ecu(&path, 0).await?;
+    let engine_unit = parse_ecu("01")?;
+    let mut engine_uds = open_ecu(&path, engine_unit).await?;
     let engine = engine_uds.read_identity().await;
 
+    let gearbox_unit = parse_ecu("02")?;
     let backend = engine_uds.into_transport().into_backend();
-    let mut gearbox_uds = AsyncUdsClient::new(IsoTpCan::for_ecu(backend, 1));
+    let mut gearbox_uds = AsyncUdsClient::new(IsoTpCan::new(
+        backend,
+        vag_transport::CanId::Standard(gearbox_unit.request),
+        vag_transport::CanId::Standard(gearbox_unit.response),
+    ));
     let gearbox = gearbox_uds.read_identity().await;
 
     if engine.is_empty() && gearbox.is_empty() {
@@ -367,72 +457,6 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
     }
     println!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
     Ok(())
-}
-
-/// Watch values live (see the `Watch` subcommand docs).
-#[allow(clippy::too_many_arguments)]
-async fn watch_cmd(
-    device_arg: Option<&str>,
-    preset_name: Option<&str>,
-    did_spec: Option<&str>,
-    ecu_arg: Option<&str>,
-    hz: f64,
-    seconds: Option<u64>,
-    out: Option<&str>,
-    catalog_path: Option<&str>,
-) -> Result<()> {
-    use vag_data::catalog::MeasurementCatalog;
-
-    // A preset carries its own control unit; an explicit --ecu still wins.
-    let (dids_text, ecu_text) = match (preset_name, did_spec) {
-        (Some(name), _) => {
-            let (ecu, dids, what) = watch::preset(name).ok_or_else(|| {
-                let names: Vec<&str> = watch::PRESETS.iter().map(|(n, ..)| *n).collect();
-                anyhow::anyhow!("unknown preset {name:?}. Available: {}", names.join(", "))
-            })?;
-            println!("{name}: {what}");
-            (dids.to_string(), ecu_arg.map(str::to_string).unwrap_or(format!("{ecu:02}")))
-        }
-        (None, Some(spec)) => {
-            (spec.to_string(), ecu_arg.unwrap_or("01").to_string())
-        }
-        (None, None) => {
-            let names: Vec<&str> = watch::PRESETS.iter().map(|(n, ..)| *n).collect();
-            anyhow::bail!("say what to watch: --preset <{}> or --did <hex,hex>", names.join("|"))
-        }
-    };
-    let dids = watch::parse_dids(&dids_text)?;
-
-    // Known scalings: an explicit catalog, else the OBD-II standard set plus
-    // whatever this project has proven.
-    let catalog = match catalog_path {
-        Some(path) => {
-            let text = std::fs::read_to_string(path)
-                .with_context(|| format!("reading the catalog {path:?}"))?;
-            MeasurementCatalog::from_json(&text)
-                .with_context(|| format!("parsing the catalog {path:?}"))?
-        }
-        // Per control unit, because the units disagree: F40D is the OBD-II
-        // km/h mirror on the engine and a different two-byte value on the
-        // gearbox. Loading both would make one of them wrong.
-        None => match parse_ecu(&ecu_text)? {
-            0 => {
-                let mut defs: Vec<_> = vag_data::obd::PIDS.iter().map(|p| p.to_def()).collect();
-                defs.extend(vag_data::catalog::proven_engine());
-                MeasurementCatalog::new(defs)
-            }
-            1 => MeasurementCatalog::new(vag_data::catalog::proven_gearbox()),
-            // Address 17 in VCDS's numbering is the instrument cluster.
-            16 => MeasurementCatalog::new(vag_data::catalog::proven_cluster()),
-            // Nothing is proven on the other units yet, so everything shows
-            // as raw rather than borrowing another unit's meanings.
-            _ => MeasurementCatalog::default(),
-        },
-    };
-
-    let path = device::resolve(device_arg)?;
-    let mut uds = open_ecu(&path, parse_ecu(&ecu_text)?).await?;
-    watch::run(&mut uds, &dids, &catalog, hz, seconds, out).await
 }
 
 /// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
@@ -552,10 +576,10 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 /// List a control unit's properties (see the `Properties` subcommand docs).
 async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
     let path = device::resolve(device_arg)?;
-    let ecu = parse_ecu(ecu_text)?;
+    let unit = parse_ecu(ecu_text)?;
     let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
-    let mut uds = open_ecu(&path, ecu).await?;
+    let mut uds = open_ecu(&path, unit).await?;
     let mut found = Vec::new();
     scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, |hit| {
         found.push(props::Property { did: hit.did, data: hit.data.clone() });
@@ -567,7 +591,7 @@ async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
         println!("{}", render::render_nothing_answered());
         return Ok(());
     }
-    println!("{}", props::render(&format!("Control unit {ecu_text}"), &found));
+    println!("{}", props::render(&format!("Control unit {}", unit.label()), &found));
 
     // Mode 09 lives outside the identification block and carries what a part
     // number cannot: which emissions calibration this unit is actually

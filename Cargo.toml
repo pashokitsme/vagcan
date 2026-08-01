@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-hex", "crates/vag-can", "crates/vagcan"]
+members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-can", "crates/vagcan"]
 
 [workspace.package]
 edition = "2024"

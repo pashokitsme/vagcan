@@ -13,9 +13,10 @@ miniz_oxide = "0.7"
 criterion = { workspace = true }
 
 [features]
-# The `.rod` product/IV offline recovery (`rod::crack`) is always compiled; this
-# feature flag is retained as a no-op so callers can request it explicitly
-# (e.g. `cargo run --features rod-crack --bin vag-rod`).
+# The `.rod` IV brute force. Off by default: it is minutes of CPU per section,
+# and every consumer of the *result* reads the cached five bytes instead. Only
+# the `vag-rod` tool turns it on (`--features rod-crack`). Was previously a
+# no-op flag while the search compiled into everything.
 rod-crack = []
 
 [[bin]]
@@ -25,6 +26,9 @@ path = "src/bin/vag-labels.rs"
 [[bin]]
 name = "vag-rod"
 path = "src/bin/vag-rod.rs"
+# The only consumer of the brute force. Without it the binary would silently
+# skip every section that still needs recovering.
+required-features = ["rod-crack"]
 
 [[bench]]
 name = "lookup"

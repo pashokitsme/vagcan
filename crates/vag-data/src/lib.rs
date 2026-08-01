@@ -14,7 +14,6 @@ pub mod measure;
 pub mod obd;
 pub mod mwb;
 pub mod rod;
-pub mod struc;
 mod tea;
 
 pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
@@ -25,4 +24,3 @@ pub use label::{parse_label, LabelFile, Measurement, Record};
 pub use measure::{LinearScale, RawForm, IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW};
 pub use mwb::{parse_mwb, MwbEntry};
 pub use rod::{decode_rod, RodSection, RodStatus};
-pub use struc::{StrucRecord, StrucTable};

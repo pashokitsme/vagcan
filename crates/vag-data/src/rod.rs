@@ -294,12 +294,21 @@ impl IvCache {
     }
 }
 
+/// The brute-force IV recovery, compiled only into the tool that needs it.
+///
+/// Recovery costs about a minute of every core per section, and nothing in the
+/// live path can use it: reading a car needs the *answer*, which is a five-byte
+/// value in `catalogs/rod-iv-cache.json`, not the search that produced it. So
+/// the search ships in the `vag-rod` tool (`--features rod-crack`) and the CLI
+/// links only the cache lookup.
+#[cfg(feature = "rod-crack")]
 mod crack;
 
 /// Recover the first-block `iv[3..8]` for a single `product != 0` zlib section,
 /// given its raw framed payload (the bytes between `[TAG]` and `[/TAG]`).
 /// Returns `None` if the section is not a compressed section, is malformed, or
 /// the search fails. CPU-heavy (multithreaded brute force, ~1 min per section).
+#[cfg(feature = "rod-crack")]
 pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
     if tag.len() < 3 {
         return None;
@@ -315,8 +324,9 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 /// decode AND is a zlib section, recover the missing `iv[3..8]` offline
 /// (brute force) and retry. Recovered values are read from / written to
 /// `cache` under the key `(file, tag)`; pass the file's display name as
-/// `file`. Set `run_crack = false` to only use already-cached values (no new
-/// brute force).
+/// `file`. Set `run_crack = false` to only use already-cached values; without
+/// the `rod-crack` feature that is the only behaviour available, and the flag
+/// is accepted so callers do not need two spellings.
 pub fn decode_rod_recover(
     data: &[u8],
     file: &str,
@@ -336,16 +346,17 @@ pub fn decode_rod_recover(
                     if let Some(sc) = parse_section_cipher(payload) {
                         if sc.compressed {
                             let recovered = cache.get(file, &tag_str).or_else(|| {
+                                #[cfg(feature = "rod-crack")]
                                 if run_crack {
                                     let iv =
                                         crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen);
                                     if let Some(v) = iv {
                                         cache.insert(file, &tag_str, v);
                                     }
-                                    iv
-                                } else {
-                                    None
+                                    return iv;
                                 }
+                                let _ = run_crack;
+                                None
                             });
                             if let Some(iv3to8) = recovered {
                                 let iv = rod_block0_iv_recovered(&tag, iv3to8);
@@ -481,6 +492,7 @@ mod tests {
     // --- Stage 1: end-to-end offline crack on a synthetic blocked section ---
 
     /// TEA encrypt one 8-byte block (inverse of [`crate::tea::tea_decrypt_block`]).
+    #[cfg(feature = "rod-crack")]
     fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
         let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
         let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
@@ -500,6 +512,7 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "rod-crack")]
     fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(plain.len());
         let mut prev = iv;
@@ -518,6 +531,7 @@ mod tests {
     /// Build the full first-block IV for a chosen (nonzero) 5-byte product,
     /// mirroring `rod_block0_iv` but with a nonzero seed tail — so the produced
     /// `iv[3..8]` is guaranteed to lie in the reachable candidate space.
+    #[cfg(feature = "rod-crack")]
     fn iv_for_product(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
         let m = tag[1] as usize;
         let mut seed = [0u8; 8];
@@ -533,6 +547,9 @@ mod tests {
 
     /// Build a synthetic `product != 0` zlib section, then prove the offline
     /// cracker recovers the exact `iv[3..8]` and the section decodes.
+    // Both of these exercise the brute force itself, so they build only with
+    // the feature that compiles it.
+    #[cfg(feature = "rod-crack")]
     #[test]
     fn recovers_product_blocked_zlib_section() {
         // ~4 KB of skewed-alphabet text -> miniz emits a dynamic-Huffman block,
@@ -593,6 +610,7 @@ mod tests {
     /// The full multithreaded brute force, on the same synthetic section.
     /// `#[ignore]`d because it sweeps a ~2^36 space (minutes). Run with
     /// `cargo test -p vag-data --lib -- --ignored recovers_via_full_search`.
+    #[cfg(feature = "rod-crack")]
     #[test]
     #[ignore = "multi-minute brute force; run explicitly"]
     fn recovers_via_full_search() {
