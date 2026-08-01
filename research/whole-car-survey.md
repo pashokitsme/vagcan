@@ -86,7 +86,7 @@ that answered:
 ```
 06 09  02B8  033F1B  0000  69F9044B
 ^  ^   ^     ^       ^     ^
-|  |   |     |       |     free-running seconds counter
+|  |   |     |       |     car clock: day counter << 16 | second of the day
 |  |   |     |       two bytes, zero in every sample seen
 |  |   |     odometer, km, u24 big-endian
 |  |   reset counter — rises with driving cycles
