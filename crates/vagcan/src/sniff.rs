@@ -239,7 +239,7 @@ pub async fn run(
     let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
     let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, mode)
         .await
-        .with_context(|| format!("opening the adapter at {device_path}"))?;
+        .with_context(|| crate::device::open_failure(device_path))?;
 
     let capture: Option<Box<dyn Write>> = match out {
         Some(path) => {
@@ -324,16 +324,31 @@ pub async fn run(
     let _ = backend.close_channel().await;
     let stats = session.stats();
     session.finish()?;
+    // "written" is only true when there is a file; without one it reads as a
+    // promise of a capture that does not exist.
+    let written = match out {
+        Some(path) => format!(", {} written to {path}", stats.frames_kept),
+        None => String::new(),
+    };
     println!(
-        "\nstopped after {:.1}s: {} frames seen, {} written, {} messages reassembled, \
+        "\nstopped after {:.1}s: {} frames seen{written}, {} messages reassembled, \
          {} incomplete, {} markers",
         started.elapsed().as_secs_f64(),
         stats.frames_seen,
-        stats.frames_kept,
         stats.pdus,
         stats.dropped,
         stats.markers
     );
+    if stats.frames_seen > 0 && stats.pdus == 0 {
+        // The usual case, and it looks like a failure until someone says it is
+        // not: this port carries diagnostics on demand and nothing else.
+        println!(
+            "\nNo diagnostic conversation to show — the frames seen are the car's own \n\
+             background traffic. This port only carries diagnostics while something is \n\
+             asking: run VCDS, or another vagcan command from a second adapter, while \n\
+             this is sniffing."
+        );
+    }
     if stats.frames_seen == 0 {
         println!(
             "\nNo traffic at all. On this platform the diagnostic line is nearly silent when \

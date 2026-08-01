@@ -22,7 +22,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use plan::Channel;
 
@@ -55,6 +55,16 @@ pub struct App {
     pub latest: std::collections::BTreeMap<(u16, u16), (f64, Vec<u8>)>,
     screen: Screen,
     cursor: usize,
+    /// Substring the selection screen is narrowed to. With a survey loaded
+    /// there are over a thousand candidates, and stepping through them one
+    /// arrow at a time is not a way to find anything.
+    filter: String,
+    /// True while the filter is being typed, so letters go into it instead of
+    /// triggering `a`/`n`/`q`.
+    typing_filter: bool,
+    /// Scroll position of the selection list. Without one, everything past the
+    /// bottom of the terminal is unreachable.
+    select_state: TableState,
     /// Completed poll cycles, and when the run started.
     cycles: u64,
     started: Instant,
@@ -68,10 +78,35 @@ impl App {
             latest: std::collections::BTreeMap::new(),
             screen: Screen::Live,
             cursor: 0,
+            filter: String::new(),
+            typing_filter: false,
+            select_state: TableState::default(),
             cycles: 0,
             started: Instant::now(),
             status: String::new(),
         }
+    }
+
+    /// Which channels the selection screen is showing, as indices into
+    /// `channels`.
+    ///
+    /// A filter matches the measurement name, the identifier or the unit, so
+    /// `boost`, `202A` and `713` all narrow to something useful.
+    fn visible(&self) -> Vec<usize> {
+        if self.filter.is_empty() {
+            return (0..self.channels.len()).collect();
+        }
+        let needle = self.filter.to_lowercase();
+        self.channels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.label().to_lowercase().contains(&needle)
+                    || format!("{:04x}", c.did).contains(&needle)
+                    || c.unit().to_lowercase().contains(&needle)
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Rows currently on screen, in the order the plan polls them.
@@ -230,18 +265,13 @@ fn draw_live(frame: &mut Frame, app: &App) {
 }
 
 /// Draw the selection screen.
-fn draw_select(frame: &mut Frame, app: &App) {
-    let rows: Vec<Row> = app
-        .channels
+fn draw_select(frame: &mut Frame, app: &mut App) {
+    let visible = app.visible();
+    let rows: Vec<Row> = visible
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
+        .map(|i| {
+            let c = &app.channels[*i];
             let mark = if c.selected { "[x]" } else { "[ ]" };
-            let style = if i == app.cursor {
-                Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
             Row::new(vec![
                 Cell::from(mark),
                 Cell::from(c.unit()),
@@ -249,27 +279,48 @@ fn draw_select(frame: &mut Frame, app: &App) {
                 Cell::from(c.label()),
                 Cell::from(c.unit_of_measure().to_string()),
             ])
-            .style(style)
         })
         .collect();
 
     let name_w = app.channels.iter().map(|c| c.label().len()).max().unwrap_or(4) as u16;
     let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
+    let title = match app.filter.is_empty() {
+        true => format!(" choose what to show — {} available ", app.channels.len()),
+        false => format!(
+            " choose what to show — {} of {} match {:?} ",
+            visible.len(),
+            app.channels.len(),
+            app.filter
+        ),
+    };
     let table = Table::new(
         rows,
         [
             Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Length(name_w),
             Constraint::Length(9),
         ],
     )
-    .block(Block::default().borders(Borders::ALL).title(" choose what to show "));
-    frame.render_widget(table, layout[0]);
+    .row_highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
+    .block(Block::default().borders(Borders::ALL).title(title));
+
+    // The cursor is an index into `channels`; the table shows the filtered
+    // subset, so it is translated — and the state is what makes the list
+    // scroll instead of clipping at the bottom of the terminal.
+    let row = visible.iter().position(|i| *i == app.cursor);
+    app.select_state.select(row);
+    frame.render_stateful_widget(table, layout[0], &mut app.select_state);
+
+    let help = if app.typing_filter {
+        format!(" filter: {}▏ [enter] apply  [esc] clear ", app.filter)
+    } else {
+        " [space] toggle  [↑↓/pgup/pgdn/home/end] move  [/] filter  [a] all  [n] none  [enter] back "
+            .to_string()
+    };
     frame.render_widget(
-        Paragraph::new(" [space] toggle  [↑↓] move  [a] all  [n] none  [enter] back ")
-            .block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(help).block(Block::default().borders(Borders::ALL)),
         layout[1],
     );
 }
@@ -282,24 +333,59 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
             KeyCode::Char('c') => app.screen = Screen::Select,
             _ => {}
         },
-        Screen::Select => match code {
-            KeyCode::Char('q') => return false,
-            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('c') => app.screen = Screen::Live,
-            KeyCode::Up => app.cursor = app.cursor.saturating_sub(1),
-            KeyCode::Down => {
-                if app.cursor + 1 < app.channels.len() {
-                    app.cursor += 1;
-                }
+        // While a filter is being typed the letters belong to it, or `n` would
+        // clear the selection halfway through typing "engine".
+        Screen::Select if app.typing_filter => match code {
+            KeyCode::Enter => app.typing_filter = false,
+            KeyCode::Esc => {
+                app.filter.clear();
+                app.typing_filter = false;
             }
-            KeyCode::Char(' ') => {
-                if let Some(c) = app.channels.get_mut(app.cursor) {
-                    c.selected = !c.selected;
-                }
+            KeyCode::Backspace => {
+                app.filter.pop();
             }
-            KeyCode::Char('a') => app.channels.iter_mut().for_each(|c| c.selected = true),
-            KeyCode::Char('n') => app.channels.iter_mut().for_each(|c| c.selected = false),
+            KeyCode::Char(c) => app.filter.push(c),
             _ => {}
         },
+        Screen::Select => {
+            let visible = app.visible();
+            let at = visible.iter().position(|i| *i == app.cursor).unwrap_or(0);
+            let step = |app: &mut App, to: usize| {
+                if let Some(i) = visible.get(to.min(visible.len().saturating_sub(1))) {
+                    app.cursor = *i;
+                }
+            };
+            match code {
+                KeyCode::Char('q') => return false,
+                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('c') => app.screen = Screen::Live,
+                KeyCode::Char('/') => app.typing_filter = true,
+                KeyCode::Up => step(app, at.saturating_sub(1)),
+                KeyCode::Down => step(app, at + 1),
+                KeyCode::PageUp => step(app, at.saturating_sub(10)),
+                KeyCode::PageDown => step(app, at + 10),
+                KeyCode::Home => step(app, 0),
+                KeyCode::End => step(app, visible.len().saturating_sub(1)),
+                KeyCode::Char(' ') => {
+                    if let Some(c) = app.channels.get_mut(app.cursor) {
+                        c.selected = !c.selected;
+                    }
+                }
+                // `all` and `none` act on what is on screen: with a filter up,
+                // selecting "all" of a thousand channels would be a mistake
+                // nobody meant to make.
+                KeyCode::Char('a') => {
+                    for i in &visible {
+                        app.channels[*i].selected = true;
+                    }
+                }
+                KeyCode::Char('n') => {
+                    for i in &visible {
+                        app.channels[*i].selected = false;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
     true
 }
@@ -319,6 +405,8 @@ pub async fn run(
     use vag_protocol::AsyncUdsClient;
     use vag_transport::CanId;
 
+    // Argument checking first: the adapter is a single-user resource, and
+    // holding it open while failing on a typo blocks the next attempt.
     let store = vag_data::catalog::CatalogStore::open(catalogs);
     let survey_text = match survey {
         Some(path) => Some(
@@ -339,7 +427,7 @@ pub async fn run(
     let mut adapter =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
-            .with_context(|| format!("opening the adapter at {device_path}"))?;
+            .with_context(|| crate::device::open_failure(device_path))?;
 
     // Any unit that will be polled but was not in the survey is asked for its
     // identification block now — two reads, once, at startup.
@@ -403,7 +491,11 @@ pub async fn run(
     };
     let mut header_written = false;
 
-    enable_raw_mode()?;
+    // A full-screen view needs a terminal; without one crossterm fails with a
+    // bare errno that says nothing about why.
+    enable_raw_mode().map_err(|e| {
+        anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
+    })?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
@@ -413,7 +505,7 @@ pub async fn run(
     let result = loop {
         terminal.draw(|f| match app.screen {
             Screen::Live => draw_live(f, &app),
-            Screen::Select => draw_select(f, &app),
+            Screen::Select => draw_select(f, &mut app),
         })?;
 
         // Drain the keyboard without blocking the poll loop. `q` here has to
@@ -609,6 +701,76 @@ mod tests {
         a.cursor = a.channels.len() - 1;
         on_key(&mut a, KeyCode::Down);
         assert_eq!(a.cursor, a.channels.len() - 1, "cannot run off the bottom");
+        // A page jump past the end lands on the last row rather than nowhere.
+        on_key(&mut a, KeyCode::PageDown);
+        assert_eq!(a.cursor, a.channels.len() - 1);
+        on_key(&mut a, KeyCode::Home);
+        assert_eq!(a.cursor, 0);
+        on_key(&mut a, KeyCode::End);
+        assert_eq!(a.cursor, a.channels.len() - 1);
+    }
+
+    #[test]
+    fn a_filter_narrows_the_list_and_the_cursor_follows_it() {
+        // With a survey loaded there are over a thousand candidates; stepping
+        // to one by arrow key is not a way to find anything.
+        let mut a = app();
+        a.screen = Screen::Select;
+        assert_eq!(a.visible().len(), a.channels.len());
+
+        on_key(&mut a, KeyCode::Char('/'));
+        for c in "boost".chars() {
+            on_key(&mut a, KeyCode::Char(c));
+        }
+        on_key(&mut a, KeyCode::Enter);
+
+        let visible = a.visible();
+        assert!(!visible.is_empty() && visible.len() < a.channels.len(), "{}", visible.len());
+        assert!(visible.iter().all(|i| a.channels[*i].label().to_lowercase().contains("boost")));
+
+        // Moving now walks the filtered rows, not the hidden ones.
+        on_key(&mut a, KeyCode::Home);
+        assert_eq!(a.cursor, visible[0]);
+        on_key(&mut a, KeyCode::End);
+        assert_eq!(a.cursor, *visible.last().unwrap());
+    }
+
+    #[test]
+    fn select_all_applies_to_what_is_on_screen_not_to_everything() {
+        // "All" with a filter up must not silently select a thousand channels
+        // the user cannot see.
+        let mut a = app();
+        a.screen = Screen::Select;
+        on_key(&mut a, KeyCode::Char('/'));
+        for c in "boost".chars() {
+            on_key(&mut a, KeyCode::Char(c));
+        }
+        on_key(&mut a, KeyCode::Enter);
+        on_key(&mut a, KeyCode::Char('a'));
+
+        let visible = a.visible();
+        assert!(visible.iter().all(|i| a.channels[*i].selected));
+        let hidden_selected =
+            a.channels.iter().enumerate().filter(|(i, c)| c.selected && !visible.contains(i)).count();
+        assert_eq!(hidden_selected, 2, "only the two the fixture pre-selected");
+    }
+
+    #[test]
+    fn typing_a_filter_does_not_trigger_the_command_keys() {
+        // `n` clears the selection; typing "engine" must not.
+        let mut a = app();
+        a.screen = Screen::Select;
+        a.channels[3].selected = true;
+        on_key(&mut a, KeyCode::Char('/'));
+        for c in "engine".chars() {
+            on_key(&mut a, KeyCode::Char(c));
+        }
+        assert!(a.channels[3].selected, "the selection survived typing");
+        assert_eq!(a.filter, "engine");
+        // Escape abandons the filter rather than the screen.
+        on_key(&mut a, KeyCode::Esc);
+        assert_eq!(a.filter, "");
+        assert_eq!(a.screen, Screen::Select);
     }
 
     #[test]

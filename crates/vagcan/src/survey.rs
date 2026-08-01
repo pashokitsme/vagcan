@@ -144,6 +144,100 @@ fn walk_order(listed: &[u16]) -> Vec<u16> {
     out
 }
 
+/// One unit's identifiers as a survey recorded them.
+fn dids_of(line: &serde_json::Value) -> std::collections::BTreeMap<u16, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(entries) = line["dids"].as_array() else { return out };
+    for entry in entries {
+        let (Some(did), Some(data)) = (entry["did"].as_str(), entry["data"].as_str()) else {
+            continue;
+        };
+        if let Ok(did) = u16::from_str_radix(did, 16) {
+            out.insert(did, data.to_string());
+        }
+    }
+    out
+}
+
+/// Compare two survey files and report the identifiers whose bytes changed.
+///
+/// This is the step the survey exists for. One pass parked and one driving
+/// differ exactly in what is live, and that list is obtained without a label
+/// file, without VCDS and without guessing — an identifier that moved between
+/// two known conditions is a measurement, and one that did not is not evidence
+/// of anything.
+pub fn diff(before: &str, after: &str) -> Vec<(u16, u16, String, String)> {
+    let read = |text: &str| {
+        let mut units: std::collections::BTreeMap<u16, std::collections::BTreeMap<u16, String>> =
+            std::collections::BTreeMap::new();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let Some(request) =
+                value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok())
+            else {
+                continue;
+            };
+            units.insert(request, dids_of(&value));
+        }
+        units
+    };
+    let (a, b) = (read(before), read(after));
+    let mut out = Vec::new();
+    for (request, before_dids) in &a {
+        let Some(after_dids) = b.get(request) else { continue };
+        for (did, before_data) in before_dids {
+            let Some(after_data) = after_dids.get(did) else { continue };
+            if before_data != after_data {
+                out.push((*request, *did, before_data.clone(), after_data.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Print a survey diff (`vagcan survey --diff a.jsonl b.jsonl`).
+pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
+    let before = std::fs::read_to_string(before_path)
+        .with_context(|| format!("reading {before_path:?}"))?;
+    let after =
+        std::fs::read_to_string(after_path).with_context(|| format!("reading {after_path:?}"))?;
+    let changed = diff(&before, &after);
+
+    if changed.is_empty() {
+        println!(
+            "Nothing changed between the two surveys.\n\n\
+             Either the car was in the same state both times, or the two files are the same \n\
+             run. The point of the comparison is to catch what moves between conditions — \n\
+             parked and driving, cold and warm, lights off and on."
+        );
+        return Ok(());
+    }
+
+    println!("{} identifiers changed between the two surveys:\n", changed.len());
+    let mut unit = None;
+    for (request, did, before_data, after_data) in &changed {
+        if unit != Some(*request) {
+            let label = UnitAddress::from_request(*request)
+                .map(|a| a.label())
+                .unwrap_or_else(|| format!("{request:03X}"));
+            println!("  {label}  {request:03X}");
+            unit = Some(*request);
+        }
+        println!("    {did:04X}  {before_data}  ->  {after_data}");
+    }
+    println!(
+        "\nThese are the live values. To watch them: \n  \
+         vagcan watch --survey {after_path} --did \"{}\"",
+        changed
+            .iter()
+            .take(4)
+            .map(|(request, did, _, _)| format!("{request:03X}:{did:04X}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(())
+}
+
 /// Run the survey (see the module docs).
 pub async fn run(
     device_path: &str,
@@ -166,7 +260,7 @@ pub async fn run(
     let mut backend =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
-            .with_context(|| format!("opening the adapter at {device_path}"))?;
+            .with_context(|| crate::device::open_failure(device_path))?;
 
     let order = match only {
         // An explicit list skips the gateway read, so one unit can be re-run
@@ -320,8 +414,10 @@ pub async fn run(
     if let Some(path) = out {
         println!(
             "written to {path}\n\n\
-             Run this once parked and once driving: the identifiers whose bytes differ \n\
-             between the two are the live measurements, and that list needs no label file."
+             Run this once parked and once driving, then compare:\n  \
+             vagcan survey --diff parked.jsonl driving.jsonl\n\
+             The identifiers whose bytes differ are the live measurements, and that list \n\
+             needs no label file."
         );
     }
     Ok(())
@@ -334,6 +430,29 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_diff_reports_only_what_actually_moved() {
+        let parked = "{\"request\":\"7E0\",\"dids\":[{\"did\":\"2029\",\"data\":\"0B34\"},                      {\"did\":\"206E\",\"data\":\"02BD\"}]}";
+        let driving = "{\"request\":\"7E0\",\"dids\":[{\"did\":\"2029\",\"data\":\"0B34\"},                       {\"did\":\"206E\",\"data\":\"0CC8\"}]}";
+        let changed = diff(parked, driving);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0].0, 0x7E0);
+        assert_eq!(changed[0].1, 0x206E);
+        assert_eq!((changed[0].2.as_str(), changed[0].3.as_str()), ("02BD", "0CC8"));
+    }
+
+    #[test]
+    fn an_identifier_missing_from_one_run_is_not_called_a_change() {
+        // A unit that was asleep during one pass has not "changed"; reporting
+        // it would drown the real movement in noise.
+        let a = "{\"request\":\"7E0\",\"dids\":[{\"did\":\"2029\",\"data\":\"0B34\"}]}";
+        let b = "{\"request\":\"7E0\",\"dids\":[{\"did\":\"202A\",\"data\":\"0B34\"}]}";
+        assert!(diff(a, b).is_empty());
+        // And a unit absent from the second file entirely is skipped, not
+        // reported as every identifier changing.
+        assert!(diff(a, "").is_empty());
+    }
 
     #[test]
     fn the_walk_covers_the_units_the_gateway_cannot_list() {

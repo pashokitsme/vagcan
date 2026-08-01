@@ -11,6 +11,7 @@
 
 mod analyse;
 mod calibrate;
+mod datadir;
 mod device;
 mod discover;
 mod faults;
@@ -39,11 +40,31 @@ const ADAPTER_BAUD: u32 = 115_200;
 #[command(
     name = "vagcan",
     version,
-    about = "Read a VAG car (VW / Audi / Škoda / SEAT) over CAN",
+    about = "Read a VAG car (VW / Audi / Škoda / SEAT) over CAN. \
+             Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND, termination OFF. \
+             Start with `vagcan devices`.",
     long_about = "Read a VAG car over a USB-CAN adapter on the OBD-II port.\n\n\
                   Read-only: this tool never writes to a control unit.\n\n\
                   Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
-                  and the adapter's termination jumper OFF."
+                  and the adapter's termination jumper OFF.\n\n\
+                  START HERE\n  \
+                  vagcan devices            is the adapter connected?\n  \
+                  vagcan info               which car is this?\n  \
+                  vagcan units              which control units does it have?\n\n\
+                  LOOK AT THE CAR\n  \
+                  faults / properties / sensors\n\n\
+                  WATCH IT LIVE\n  \
+                  watch                     values from several units, chosen on screen\n  \
+                  sniff                     the bus itself, listen-only\n\n\
+                  FIND NEW MEASUREMENTS\n  \
+                  survey --out parked.jsonl        then, after a drive:\n  \
+                  survey --out driving.jsonl       then:\n  \
+                  survey --diff parked.jsonl driving.jsonl   what moved = what is live\n  \
+                  watch --out drive.csv            then: discover --log drive.csv\n  \
+                  calibrate --log drive.csv        prove a scaling against a known one\n  \
+                  sniff --out cap.jsonl beside VCDS, then analyse --capture cap.jsonl\n\n\
+                  OFFLINE REFERENCE\n  \
+                  names / labels"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -80,7 +101,7 @@ enum Command {
         /// VCDS label directory. With one, each unit's part number is resolved
         /// against the corpus, which supplies the diagnostic address and the
         /// corpus's name for it — data, not a table in this program.
-        #[arg(long, value_name = "DIR")]
+        #[arg(long, value_name = "DIR", requires = "identify")]
         labels: Option<String>,
     },
 
@@ -92,8 +113,9 @@ enum Command {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
-        /// Control unit: 01 = engine, 02 = gearbox, and so on.
-        #[arg(long, default_value = "01", value_name = "NN")]
+        /// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
+        /// a request id (713, 70E). `vagcan units` lists this car's.
+        #[arg(long, default_value = "01", value_name = "ID")]
         ecu: String,
     },
 
@@ -114,8 +136,9 @@ enum Command {
         /// Stop after this many seconds. Default: until Ctrl-C.
         #[arg(long, value_name = "N")]
         seconds: Option<u64>,
-        /// Join the bus normally instead of listen-only. The adapter will then
-        /// acknowledge frames.
+        /// Join the bus normally instead of listen-only, so the adapter
+        /// acknowledges frames. Needed only when nothing else is on the bus to
+        /// acknowledge — it is no longer strictly passive.
         #[arg(long)]
         active: bool,
     },
@@ -129,8 +152,9 @@ enum Command {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
-        /// Control unit: 01 = engine, 02 = gearbox, and so on.
-        #[arg(long, default_value = "01", value_name = "NN")]
+        /// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
+        /// a request id (713, 70E). `vagcan units` lists this car's.
+        #[arg(long, default_value = "01", value_name = "ID")]
         ecu: String,
     },
 
@@ -144,8 +168,9 @@ enum Command {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
-        /// Start with these selected, e.g. `01:2029,202A 02:380A`. A bare list
-        /// means the engine.
+        /// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
+        /// before the colon is a unit — short number or request id — and a
+        /// bare list means the engine.
         #[arg(long, value_name = "SPEC")]
         did: Option<String>,
         /// Target poll rate.
@@ -165,13 +190,14 @@ enum Command {
         catalogs: String,
     },
 
-    /// Find every data identifier a control unit answers.
+    /// Sweep ONE control unit for every data identifier it answers.
     Scan {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
-        /// Control unit: 01 = engine, 02 = gearbox, and so on.
-        #[arg(long, default_value = "01", value_name = "NN")]
+        /// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
+        /// a request id (713, 70E). `vagcan units` lists this car's.
+        #[arg(long, default_value = "01", value_name = "ID")]
         ecu: String,
         /// Hex ranges to sweep, e.g. `7400-7500,A000-A100`. `0000-FFFF` sweeps
         /// everything.
@@ -199,8 +225,8 @@ enum Command {
         /// gateway lists.
         #[arg(long, value_name = "LIST")]
         ecu: Option<String>,
-        /// Also read the extended data stored with each fault — occurrence
-        /// counter and mileage stamp live there, in a per-unit layout.
+        /// Also dump each fault's raw extended-data record as hex. The layout is
+        /// per-unit and mostly undecoded — for offline analysis.
         #[arg(long)]
         details: bool,
         /// Show every code the units list, not just the confirmed ones.
@@ -211,7 +237,8 @@ enum Command {
         supported: bool,
     },
 
-    /// Sweep every control unit the car has, not just the powertrain.
+    /// Sweep EVERY control unit the car has — `scan` for the whole car. Slow:
+    /// about 8 minutes.
     ///
     /// Reads the gateway's installation list, then walks each unit: its
     /// identification block, then the identifier pages known to be in use on
@@ -235,6 +262,10 @@ enum Command {
         /// read.
         #[arg(long, value_name = "LIST")]
         only: Option<String>,
+        /// Compare two earlier survey files instead of reading the car, and
+        /// list the identifiers whose bytes differ. Offline.
+        #[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
+        diff: Option<Vec<String>>,
     },
 
     /// Cross a capture with a VCDS log to prove measurement scalings.
@@ -380,7 +411,7 @@ async fn main() -> Result<()> {
                 hz,
                 out.as_deref(),
                 survey.as_deref(),
-                &catalogs,
+                &datadir::resolve(&catalogs).to_string_lossy(),
             )
             .await
         }
@@ -399,7 +430,8 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Survey { device, range, out, delay_ms, only } => {
+        Command::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
+        Command::Survey { device, range, out, delay_ms, only, .. } => {
             survey::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
@@ -410,7 +442,9 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Names { text, limit, catalog } => names::run(&text, limit, &catalog),
+        Command::Names { text, limit, catalog } => {
+            names::run(&text, limit, &datadir::resolve(&catalog).to_string_lossy())
+        }
         Command::Calibrate { log, min_r2, min_points } => calibrate::run(
             &log,
             analyse::Thresholds { min_r2, min_points, ..Default::default() },
@@ -454,9 +488,9 @@ async fn main() -> Result<()> {
             if from_car {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
-                labels::resolve_odx(&dir, &name, &iv_cache)
+                labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
             } else if let Some(name) = odx {
-                labels::resolve_odx(&dir, &name, &iv_cache)
+                labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
             } else {
                 labels::labels_cmd(&dir, part.as_deref(), block, field, refresh)
             }
@@ -478,7 +512,7 @@ async fn open_ecu(
 ) -> Result<AsyncUdsClient<IsoTpCan<vag_can::SerialSlcan>>> {
     let backend = SlcanBackend::open_mode(device_path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
         .await
-        .with_context(|| format!("opening the adapter at {device_path}"))?;
+        .with_context(|| device::open_failure(device_path))?;
     Ok(AsyncUdsClient::new(IsoTpCan::new(
         backend,
         vag_transport::CanId::Standard(unit.request),
@@ -510,6 +544,12 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
         return Ok(());
     }
     println!("{}", render::render_info(engine.vin.as_deref(), &engine, &gearbox));
+    println!(
+        "\nNext:  vagcan units      what else this car has\n       \
+         vagcan faults     stored fault codes\n       \
+         vagcan sensors    live standard readings\n       \
+         vagcan watch      live values from several units at once"
+    );
     Ok(())
 }
 
@@ -533,6 +573,11 @@ async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
     let width = readings.iter().map(|r| r.name.len()).max().unwrap_or(0);
     for r in &readings {
         match r.value {
+            // A count is not a measurement to two decimals, and it has no unit
+            // column to fill.
+            Some(v) if r.unit.is_empty() && v.fract() == 0.0 => {
+                println!("  {:<width$}  {v:>10.0}", r.name)
+            }
             Some(v) => println!("  {:<width$}  {v:>10.2} {}", r.name, r.unit),
             // The identifier answered but the bytes did not fit the form.
             None => println!("  {:<width$}  {:>10} (raw)", r.name, hex(&r.raw)),
@@ -585,7 +630,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
     let backend =
         SlcanBackend::open_mode(&path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
-            .with_context(|| format!("opening the adapter at {path}"))?;
+            .with_context(|| device::open_failure(&path))?;
     let channel = IsoTpCan::new(
         backend,
         CanId::Standard(GATEWAY_REQUEST),
@@ -604,6 +649,8 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
     }
 
     println!("{} control units:\n", ids.len());
+    let mut identified = 0usize;
+    let mut resolved = 0usize;
     let mut backend = uds.into_transport().into_backend();
     for id in ids {
         if !identify {
@@ -630,14 +677,25 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
             // Two names, both from data: the unit's own component string, and
             // what the label corpus calls the part number — the latter also
             // supplying the diagnostic address people use.
+            identified += 1;
             let from_corpus = corpus
                 .as_ref()
                 .and_then(|db| db.unit_for_part(&part))
-                .map(|u| format!("{:02X}  {}", u.address, u.name))
+                .map(|u| {
+                    resolved += 1;
+                    format!("{:02X}  {}", u.address, u.name)
+                })
                 .unwrap_or_default();
             println!("  {id:03X}  {part:<14} {component:<16} {from_corpus}");
         }
         backend = unit.into_transport().into_backend();
+    }
+    if let Some(dir) = labels_dir {
+        // Silence here would read as "the corpus agrees"; it usually means the
+        // corpus has no entry for these part numbers.
+        println!(
+            "\n{resolved} of {identified} part numbers resolved against the corpus at {dir}."
+        );
     }
     Ok(())
 }

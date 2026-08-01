@@ -85,11 +85,26 @@ const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] =
 /// request id, both as the user writes them.
 pub const OVERRIDE_PATH: &str = "catalogs/unit-numbers.json";
 
+/// Read the override file from the working directory or any parent of it, so
+/// the tool behaves the same wherever it is run from.
+fn read_override() -> std::io::Result<String> {
+    let mut at = std::env::current_dir().ok();
+    for _ in 0..6 {
+        let Some(dir) = at else { break };
+        let candidate = dir.join(OVERRIDE_PATH);
+        if candidate.exists() {
+            return std::fs::read_to_string(candidate);
+        }
+        at = dir.parent().map(|p| p.to_path_buf());
+    }
+    std::fs::read_to_string(OVERRIDE_PATH)
+}
+
 /// The pairings in force: the file's, then the built-in ones for anything the
 /// file does not mention.
 fn short_numbers() -> Vec<(u8, u16)> {
     let mut out: Vec<(u8, u16)> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(OVERRIDE_PATH) {
+    if let Ok(text) = read_override() {
         match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text) {
             Ok(map) => {
                 for (number, request) in map {

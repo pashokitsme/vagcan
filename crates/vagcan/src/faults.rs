@@ -30,6 +30,9 @@ use vag_transport::CanId;
 /// listing the code.
 pub const CONFIRMED: u8 = 0x08;
 
+/// Status bit 0 — the test is failing at this moment, not historically.
+pub const FAILED_NOW: u8 = 0x01;
+
 /// What one unit reported.
 #[derive(Debug, Clone, Default)]
 pub struct UnitFaults {
@@ -120,7 +123,7 @@ pub async fn run(
     let mut backend =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
-            .with_context(|| format!("opening the adapter at {device_path}"))?;
+            .with_context(|| crate::device::open_failure(device_path))?;
 
     let order = match only {
         Some(spec) => {
@@ -162,7 +165,20 @@ pub async fn run(
         }
     };
 
+    // The caveat belongs before the codes, not after them. A list of hex on a
+    // screen headed "faults" is read as a verdict on the car; by the time a
+    // disclaimer arrives at the bottom the reader has already had the fright.
+    if !supported {
+        println!(
+            "Stored codes are a record that something happened once — not a diagnosis, and \n\
+             not necessarily a fault present now. Only codes marked \"failed now\" are \n\
+             currently failing. This tool cannot translate a code to text yet, so nothing \n\
+             below is named.\n"
+        );
+    }
+
     let mut total = 0usize;
+    let mut failing_now = 0usize;
     for request in order {
         let Some(address) = UnitAddress::from_request(request) else { continue };
         let mut uds = AsyncUdsClient::new(IsoTpCan::new(
@@ -215,16 +231,23 @@ pub async fn run(
             continue;
         }
 
-        let show: Vec<RawDtc> = if all_codes {
+        let mut show: Vec<RawDtc> = if all_codes {
             unit.all.clone()
         } else {
             unit.confirmed().into_iter().cloned().collect()
         };
+        // Something failing right now outranks a code stored months ago.
+        show.sort_by_key(|d| (d.status & FAILED_NOW == 0, d.code));
+        failing_now += show.iter().filter(|d| d.status & FAILED_NOW != 0).count();
         if !show.is_empty() {
+            // A unit with no short number shows a dash rather than repeating
+            // its id, which reads as a rendering fault.
+            let number = match vag_protocol::address::short_number(request) {
+                Some(n) => format!("{n:02}"),
+                None => "--".to_string(),
+            };
             println!(
-                "\n{}  {:03X}  {}",
-                address.label(),
-                request,
+                "\n{number}  {request:03X}  {}",
                 unit.component.clone().unwrap_or_default()
             );
             for dtc in &show {
@@ -261,15 +284,22 @@ pub async fn run(
         backend = uds.into_transport().into_backend();
     }
 
-    if total == 0 {
-        println!("No stored faults.");
-    } else {
-        println!("\n{total} {} in total.", if all_codes { "codes" } else { "stored faults" });
-        println!(
-            "Codes are shown as the car reports them. The fault texts live in the label \n\
-             corpus and are not resolved yet, so nothing here is named."
-        );
+    if supported {
+        return Ok(());
     }
+    if total == 0 {
+        println!("No stored codes.");
+        return Ok(());
+    }
+    println!(
+        "\n{total} stored {}. {}",
+        if total == 1 { "code" } else { "codes" },
+        match failing_now {
+            0 => "None is failing now — all of them are history.".to_string(),
+            1 => "1 is failing now; the rest are history.".to_string(),
+            n => format!("{n} are failing now; the rest are history."),
+        }
+    );
     Ok(())
 }
 

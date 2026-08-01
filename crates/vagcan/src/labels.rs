@@ -90,12 +90,13 @@ pub fn labels_cmd(
     field: Option<u8>,
     refresh: bool,
 ) -> anyhow::Result<()> {
-    // The summary counts files on disk, which is cheap and is also the only
-    // way to report `.rod` files — those are not in the cache.
-    let scan = scan_corpus(Path::new(dir))
-        .with_context(|| format!("scanning label corpus under {dir:?}"))?;
-
-    print!("{}", render_summary(&scan));
+    // The inventory is what someone asking *nothing* wants; with a lookup on
+    // the command line it is six lines of noise before the answer.
+    if part.is_none() && block.is_none() {
+        let scan = scan_corpus(Path::new(dir))
+            .with_context(|| format!("scanning label corpus under {dir:?}"))?;
+        print!("{}", render_summary(&scan));
+    }
 
     if part.is_some() || block.is_some() {
         let db = load_cached(Path::new(dir), refresh)?;

@@ -269,7 +269,7 @@ pub async fn run(
 
     let backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
         .await
-        .with_context(|| format!("opening the adapter at {device_path}"))?;
+        .with_context(|| crate::device::open_failure(device_path))?;
     let mut uds = AsyncUdsClient::new(IsoTpCan::new(
         backend,
         CanId::Standard(unit.request),

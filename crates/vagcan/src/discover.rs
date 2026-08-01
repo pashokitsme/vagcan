@@ -201,7 +201,7 @@ pub fn render(columns: &[Column]) -> String {
         .filter(|c| c.behaviour == Behaviour::Constant)
         .count();
     out.push_str(&format!(
-        "\n{} columns: {} candidates, {continuous} continuous (use `analyse`), {constant} never moved\n",
+        "\n{} columns: {} candidates, {continuous} continuous (use `calibrate`), {constant} never moved\n",
         columns.len(),
         candidates.len(),
     ));

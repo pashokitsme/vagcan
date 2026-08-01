@@ -66,7 +66,7 @@ pub fn run(needle: &str, limit: usize, path: &str) -> Result<()> {
         println!("  {id}  {text}");
     }
     if hits.len() > shown {
-        println!("\n… {} more (pass --limit to see them)", hits.len() - shown);
+        println!("\n… {} more — showing {shown}, raise it with --limit", hits.len() - shown);
     }
     println!(
         "\n{} of {} names matched.\n\n\

@@ -77,6 +77,16 @@ pub fn render_list(found: &[AdapterInfo]) -> String {
     out
 }
 
+/// What to say when the adapter will not open.
+///
+/// The `devices` command exists precisely for this moment and used to be
+/// unreachable from it: nothing ever told the user it was there.
+pub fn open_failure(path: &str) -> String {
+    format!(
+        "opening the adapter at {path} — run `vagcan devices` to list what is connected"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

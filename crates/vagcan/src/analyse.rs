@@ -601,8 +601,17 @@ pub fn run(
 
     let capture = std::fs::File::open(capture_path)
         .with_context(|| format!("opening the capture {capture_path:?}"))?;
-    let records = vag_capture::read_records(std::io::BufReader::new(capture))
-        .with_context(|| format!("reading the capture {capture_path:?}"))?;
+    let records = vag_capture::read_records(std::io::BufReader::new(capture)).map_err(|e| {
+        // Three different things in this project are written as `.jsonl`, and
+        // a parser's opinion about line 1 column 2 does not tell the user
+        // which one they handed over.
+        anyhow::anyhow!(
+            "{capture_path} is not a `vagcan sniff` capture — that file is JSON lines with a \
+             `ts_us` field per frame. A `scan --out` or `survey --out` file has a different \
+             shape, and a `watch --out` file is CSV (use `discover` or `calibrate` for that \
+             one). Parser said: {e}"
+        )
+    })?;
     let (anchor, series) = extract_series(&records);
 
     let log_bytes = std::fs::read(log_path)
