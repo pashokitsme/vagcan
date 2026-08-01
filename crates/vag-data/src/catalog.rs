@@ -42,10 +42,23 @@ pub enum ReadId {
 /// so a **partially** reversed measurement is representable without fabricating
 /// the missing part — the honest state for this car, where the ignition zero
 /// point is proven but the slope is not.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Scaling {
     /// A fully-proven linear COMPU method: `value = raw * factor + offset`.
     Linear(LinearScale),
+    /// A discrete state: each raw value means one thing, and there is no
+    /// scale between them.
+    ///
+    /// A gear, a selector position or a switch is not a quantity. Forcing one
+    /// into [`Scaling::Linear`] produces confident nonsense — on this car the
+    /// gear code is `gear + 1`, so `factor 1, offset −1` would report the
+    /// reverse-gear code `0C` as "gear 11" and neutral as "gear −1", across a
+    /// third of a recording. Anything not listed is reported as unknown rather
+    /// than extrapolated.
+    Enum {
+        /// `(raw value, what it means)`, in whatever order reads best.
+        levels: Vec<(i32, String)>,
+    },
     /// Only a single `(raw, value)` point is proven; the slope is **not** yet
     /// reversed. Interpreting any other raw value would be a guess, so it is
     /// deliberately not attempted (see [`MeasurementDef::interpret`]).
@@ -87,9 +100,34 @@ impl MeasurementDef {
     /// can be produced). A fully [`Scaling::Linear`] row always converts.
     pub fn interpret(&self, data: &[u8]) -> Option<f64> {
         let raw = self.raw_form.read(data)?;
-        match self.scaling {
+        match &self.scaling {
             Scaling::Linear(s) => Some(s.apply(raw)),
-            Scaling::Anchor { raw: a, value } => (raw == a).then_some(value),
+            Scaling::Anchor { raw: a, value } => (raw == *a).then_some(*value),
+            // A state has no numeric value; ask for its name instead.
+            Scaling::Enum { .. } => None,
+        }
+    }
+
+    /// What to show a person: the name of a state, or the value and its unit.
+    ///
+    /// `None` when the bytes cannot be read at all, or when they carry a state
+    /// this definition does not know — an unlisted code is reported as unknown,
+    /// never guessed at.
+    pub fn describe(&self, data: &[u8]) -> Option<String> {
+        let raw = self.raw_form.read(data)?;
+        match &self.scaling {
+            Scaling::Enum { levels } => levels
+                .iter()
+                .find(|(value, _)| *value == raw)
+                .map(|(_, name)| name.clone()),
+            _ => {
+                let value = self.interpret(data)?;
+                Some(if self.unit.is_empty() {
+                    format!("{value}")
+                } else {
+                    format!("{value} {}", self.unit)
+                })
+            }
         }
     }
 }
@@ -288,12 +326,44 @@ mod tests {
     }
 
     #[test]
+    fn a_discrete_state_reports_its_name_and_refuses_to_extrapolate() {
+        // The gear as this car encodes it: code = gear + 1, and reverse sits
+        // at 0x0C where no arithmetic reaches it.
+        let def = MeasurementDef {
+            name: Cow::Borrowed("Selected gear"),
+            unit: Cow::Borrowed(""),
+            address: ReadId::Uds(0x3816),
+            raw_form: RawForm::U8First,
+            scaling: Scaling::Enum {
+                levels: vec![
+                    (0x00, "not engaged".to_string()),
+                    (0x03, "2".to_string()),
+                    (0x0C, "R".to_string()),
+                ],
+            },
+        };
+        assert_eq!(def.describe(&[0x03]).as_deref(), Some("2"));
+        assert_eq!(def.describe(&[0x0C]).as_deref(), Some("R"));
+        assert_eq!(def.describe(&[0x00]).as_deref(), Some("not engaged"));
+        // A code not in the table is unknown, not extrapolated.
+        assert_eq!(def.describe(&[0x09]), None);
+        // And a state is never a number.
+        assert_eq!(def.interpret(&[0x03]), None);
+    }
+
+    #[test]
+    fn a_measured_quantity_still_describes_itself_with_its_unit() {
+        let rpm = &proven_engine()[0];
+        assert_eq!(rpm.describe(&[0x02, 0xBD]).as_deref(), Some("701 /min"));
+    }
+
+    #[test]
     fn the_shipped_catalogs_are_loadable_data_not_code() {
         // The definitions live in catalogs/*.json. If they ever moved back
         // into Rust literals this test would still pass, so it also checks the
         // count matches the files as shipped.
         assert_eq!(proven_engine().len(), 3, "engine rows come from the file");
-        assert_eq!(proven_gearbox().len(), 10, "gearbox rows come from the file");
+        assert_eq!(proven_gearbox().len(), 12, "gearbox rows come from the file");
         assert_eq!(proven_cluster().len(), 1, "cluster rows come from the file");
         // The odometer reproduces the exact reading that justified it.
         assert_eq!(proven_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
@@ -318,6 +388,24 @@ mod tests {
         assert_eq!(input.interpret(&[0xB2, 0x02]), Some(690.0));
         assert_eq!(input.interpret(&[0xCC, 0x08]), Some(2252.0));
         assert_eq!(input.interpret(&[0x7A, 0x0E]), Some(3706.0));
+    }
+
+    #[test]
+    fn the_gear_row_matches_the_evidence_that_proved_it() {
+        // Proven by ratio arithmetic against the already-proven shaft speeds:
+        // from standstill the code stepped 02→03→…→08 in strict order, seven
+        // consecutive codes on a seven-speed box, so gear = code − 1. Reverse
+        // sits at 0C, outside any arithmetic.
+        let gear = proven_gearbox()
+            .into_iter()
+            .find(|d| d.address == ReadId::Uds(0x3816))
+            .expect("the gearbox set carries the gear");
+        assert_eq!(gear.describe(&[0x02]).as_deref(), Some("1"));
+        assert_eq!(gear.describe(&[0x08]).as_deref(), Some("7"));
+        assert_eq!(gear.describe(&[0x0C]).as_deref(), Some("R"));
+        assert_eq!(gear.describe(&[0x00]).as_deref(), Some("not engaged"));
+        // 0x01 was never observed; it is not "gear 0".
+        assert_eq!(gear.describe(&[0x01]), None);
     }
 
     #[test]

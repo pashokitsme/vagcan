@@ -21,7 +21,7 @@ Column names in this document are the raw **hex DIDs** as `vagcan watch` labels 
 
 | finding | verdict |
 |---|---|
-| `0x3816` = **engaged gear**, `gear = code − 1` (`02`…`08` = 1st…7th), `00` = no gear, `0C` = reverse | **PROVEN** |
+| `0x3816` = **the gear**, `gear = code − 1` (`02`…`08` = 1st…7th), `00` = no gear, `0C` = reverse | **PROVEN** (engaged vs commanded not separable at 1.28 Hz — §2.6) |
 | `0x3809` / `0x3815` = **selector lever**, `00`=P `01`=R `02`=N `03`=D (`0x3808` / `0x3818` carry `8 − x`) | **PROVEN** for P/R/D, weak for N |
 | `0x2112` = **no gear engaged** flag | **PROVEN** (99.5 % agreement) |
 | `0x2170` = **direction of travel**, i8 `+1`/`0`/`−1`; `0x3810` is its `==+1` boolean | **PROVEN** |
@@ -397,7 +397,8 @@ Direction of travel     UDS 0x2170  I8First   Enum { 0x01: "forward", 0x00: "sta
 
 | claim | confidence | what would break it |
 |---|---|---|
-| `0x3816` is the engaged-gear code | **very high** | nothing in this data; η² 0.97, cluster cv 0.2–0.5 %, no competing column, whole-drive median error 0.32 % |
+| `0x3816` is the gear code | **very high** | nothing in this data; η² 0.97, cluster cv 0.2–0.5 %, no competing column, whole-drive median error 0.32 % |
+| …and it is the *engaged* rather than the *commanded* gear | **not established** | §2.6 — the two differ by less than the 0.78 s sweep; identical at every steady state |
 | `0x3816` codes `03`…`08` = gears 2…7 | **very high** | six measured, monotone, tightly-clustered ratios |
 | `0x3816` code `02` = 1st | **high** | rests on the launch sequence + 7-speed structure, not on a measured ratio; a held-1st recording would settle it |
 | `0x3816` code `0C` = reverse | **high** | gear engaged, lever position distinct from P/N/D, `0x2170` negative — but no measured ratio |

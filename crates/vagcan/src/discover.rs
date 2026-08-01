@@ -47,6 +47,13 @@ impl Column {
 const STEPPED_MAX_LEVELS: usize = 12;
 
 /// Read a `vagcan watch --out` recording and classify every column.
+///
+/// Two layouts are accepted. Current recordings carry a time column per value
+/// (`<name>_t_s,<name>`), because values on one row are **not** simultaneous —
+/// identifiers are polled in batches, so the last column can be most of a
+/// cycle newer than the first. Older recordings have a single `t_s` and one
+/// column per value; they still parse, using the row time for everything, but
+/// a transition read from one is only located to within a polling cycle.
 pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
     let mut lines = csv.lines();
     let header = lines.next().ok_or("the recording is empty")?;
@@ -55,29 +62,52 @@ pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
         return Err("not a `vagcan watch --out` recording (expected a t_s column)".to_string());
     }
 
-    let mut series: Vec<Vec<(f64, String)>> = vec![Vec::new(); names.len() - 1];
+    // Value columns, and where each one's own timestamp lives.
+    let mut value_columns: Vec<(usize, Option<usize>, &str)> = Vec::new();
+    let mut i = 1;
+    while i < names.len() {
+        let paired = names
+            .get(i)
+            .zip(names.get(i + 1))
+            .is_some_and(|(t, v)| t.strip_suffix("_t_s") == Some(*v));
+        if paired {
+            value_columns.push((i + 1, Some(i), names[i + 1]));
+            i += 2;
+        } else {
+            value_columns.push((i, None, names[i]));
+            i += 1;
+        }
+    }
+
+    let mut series: Vec<Vec<(f64, String)>> = vec![Vec::new(); value_columns.len()];
     for line in lines {
         if line.trim().is_empty() {
             continue;
         }
         let cells: Vec<&str> = line.split(',').collect();
-        let Some(Ok(t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
+        let Some(Ok(row_t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
             continue;
         };
-        for (i, cell) in cells.iter().skip(1).enumerate() {
-            let cell = cell.trim();
+        for (slot, (value_at, time_at, _)) in value_columns.iter().enumerate() {
+            let Some(cell) = cells.get(*value_at).map(|c| c.trim()) else {
+                continue;
+            };
             // A blank cell means the unit did not answer that cycle. Skipping
             // keeps a dropped read from looking like a state change.
-            if cell.is_empty() || i >= series.len() {
+            if cell.is_empty() {
                 continue;
             }
-            series[i].push((t, cell.to_string()));
+            let t = time_at
+                .and_then(|at| cells.get(at))
+                .and_then(|c| c.trim().parse::<f64>().ok())
+                .unwrap_or(row_t);
+            series[slot].push((t, cell.to_string()));
         }
     }
 
     let mut out = Vec::new();
-    for (i, name) in names.iter().skip(1).enumerate() {
-        let samples = &series[i];
+    for (slot, (_, _, name)) in value_columns.iter().enumerate() {
+        let samples = &series[slot];
         let mut values: Vec<String> = Vec::new();
         let mut transitions = Vec::new();
         let mut previous: Option<&String> = None;
@@ -100,7 +130,7 @@ pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
             n => Behaviour::Continuous { levels: n },
         };
         out.push(Column {
-            name: name.to_string(),
+            name: (*name).to_string(),
             samples: samples.len(),
             behaviour,
             values,
@@ -234,6 +264,31 @@ mod tests {
         assert_eq!(cols[3].name, "3808");
         assert_eq!(cols[3].samples, 0);
         assert_eq!(cols[3].behaviour, Behaviour::Constant);
+    }
+
+    #[test]
+    fn a_recording_with_per_value_timestamps_uses_them() {
+        // The current format. Values on one row are not simultaneous, and a
+        // transition must be located by the value's OWN sample time — using
+        // the row time would misplace it by most of a polling cycle, which is
+        // exactly what defeats co-change analysis.
+        let csv = "t_s,A_t_s,A,B_t_s,B\n\
+             0.000,0.010,01,0.780,10\n\
+             1.000,1.010,02,1.780,10\n\
+             2.000,2.010,02,2.780,20\n";
+        let cols = classify(csv).unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0].name, "A");
+        assert_eq!(cols[0].transitions, vec![1.010], "A's own time, not 1.000");
+        assert_eq!(cols[1].name, "B");
+        assert_eq!(cols[1].transitions, vec![2.780], "B is sampled late in the cycle");
+    }
+
+    #[test]
+    fn a_recording_from_before_per_value_timestamps_still_parses() {
+        let cols = classify(RECORDING).unwrap();
+        assert_eq!(cols.len(), 4);
+        assert_eq!(cols[0].transitions, vec![0.4, 0.8]);
     }
 
     #[test]

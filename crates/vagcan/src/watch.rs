@@ -36,7 +36,7 @@ pub const PRESETS: &[(&str, u8, &str, &str)] = &[
     ("boost", 1, "2029,202A,206E,F423", "boost target + actual, engine speed, rail pressure"),
     ("engine", 1, "206E,202A,F404,F411,F40B,F40F", "speed, boost, load, throttle, manifold, intake air"),
     ("thermal", 1, "F405,F40F,F446,F43C,F442", "coolant, intake, ambient, catalyst, voltage"),
-    ("gearbox", 2, "380A,380B,3804,3832,383B", "input + output speed, pedal, clutch duty"),
+    ("gearbox", 2, "3816,3809,380A,380B,3804", "gear, selector, shaft speeds, pedal"),
     ("clutches", 2, "38F6,38F9,38AC,38AD", "clutch positions, nominal and actual (mm)"),
 ];
 
@@ -97,6 +97,20 @@ impl Column {
     /// bytes tagged **(raw)**, so a number whose meaning is unproven can never
     /// be mistaken for one that is.
     fn render(&self, data: &[u8]) -> String {
+        // A discrete state has a name, not a number.
+        if let Some(def) = &self.def {
+            if matches!(def.scaling, vag_data::catalog::Scaling::Enum { .. }) {
+                return match def.describe(data) {
+                    Some(state) => state,
+                    // A code the definition does not list is unknown, and
+                    // saying so beats inventing a state.
+                    None => format!(
+                        "{} (raw)",
+                        data.iter().map(|b| format!("{b:02X}")).collect::<String>()
+                    ),
+                };
+            }
+        }
         match self.def.as_ref().and_then(|d| d.interpret(data)) {
             Some(v) => {
                 let unit = self.def.as_ref().map(|d| d.unit.as_ref()).unwrap_or("");
@@ -134,8 +148,18 @@ pub async fn run<T: AsyncIsoTpTransport>(
             let file = std::fs::File::create(path)
                 .with_context(|| format!("creating {path:?}"))?;
             let mut w = std::io::BufWriter::new(file);
-            // CSV: seconds, then one column per identifier.
-            writeln!(w, "t_s,{}", columns.iter().map(|c| c.label()).collect::<Vec<_>>().join(","))?;
+            // Each value gets its OWN time column, because the values on one
+            // row are not simultaneous: identifiers are polled in batches, so
+            // the last column of a row can be most of a cycle newer than the
+            // first. Writing one timestamp per row would assert a simultaneity
+            // that does not exist, and any later column-against-column
+            // analysis would inherit the error. (VCDS's own export does the
+            // same thing for the same reason.)
+            let header: Vec<String> = columns
+                .iter()
+                .map(|c| format!("{}_t_s,{}", c.label(), c.label()))
+                .collect();
+            writeln!(w, "t_s,{}", header.join(","))?;
             Some(w)
         }
         None => None,
@@ -163,7 +187,7 @@ pub async fn run<T: AsyncIsoTpTransport>(
         let cycle = Instant::now();
         let t_s = started.elapsed().as_secs_f64();
 
-        let mut values: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
+        let mut values: BTreeMap<u16, (f64, Vec<u8>)> = BTreeMap::new();
         for chunk in dids.chunks(BATCH) {
             let answer = if chunk.len() == 1 {
                 uds.read_data_by_identifier(chunk[0]).await.map(|d| vec![(chunk[0], d)])
@@ -172,8 +196,11 @@ pub async fn run<T: AsyncIsoTpTransport>(
                     .await
                     .map(|payload| split(&payload, chunk).unwrap_or_default())
             };
+            let at = started.elapsed().as_secs_f64();
             match answer {
-                Ok(records) => values.extend(records),
+                Ok(records) => {
+                    values.extend(records.into_iter().map(|(did, data)| (did, (at, data))));
+                }
                 // A refusal mid-run is normal if the unit drops a parameter;
                 // keep polling rather than aborting the session.
                 Err(_) => continue,
@@ -183,8 +210,8 @@ pub async fn run<T: AsyncIsoTpTransport>(
         let row: Vec<String> = columns
             .iter()
             .map(|c| match values.get(&c.did) {
-                Some(data) => format!("{:>16}", c.render(data)),
-                None => format!("{:>16}", "-"),
+                Some((_, data)) => format!("{:>17} ", c.render(data)),
+                None => format!("{:>17} ", "-"),
             })
             .collect();
         // A terminal gets one line that updates in place; a pipe or a file
@@ -201,11 +228,16 @@ pub async fn run<T: AsyncIsoTpTransport>(
             let cells: Vec<String> = columns
                 .iter()
                 .map(|c| match values.get(&c.did) {
-                    Some(data) => match c.def.as_ref().and_then(|d| d.interpret(data)) {
-                        Some(v) => format!("{v}"),
-                        None => data.iter().map(|b| format!("{b:02X}")).collect(),
-                    },
-                    None => String::new(),
+                    Some((at, data)) => {
+                        let value = match c.def.as_ref().and_then(|d| d.interpret(data)) {
+                            Some(v) => format!("{v}"),
+                            None => data.iter().map(|b| format!("{b:02X}")).collect(),
+                        };
+                        format!("{at:.3},{value}")
+                    }
+                    // No answer this cycle: no time either, so nothing can be
+                    // read as a sample that was never taken.
+                    None => ",".to_string(),
                 })
                 .collect();
             writeln!(w, "{t_s:.3},{}", cells.join(","))?;
@@ -276,6 +308,18 @@ mod tests {
         let unknown = Column { did: 0x1234, def: None };
         assert_eq!(unknown.render(&[0x03, 0xDF]), "03DF (raw)");
         assert_eq!(unknown.label(), "1234");
+    }
+
+    #[test]
+    fn a_gear_shows_its_name_and_an_unlisted_code_shows_as_raw() {
+        let gear = vag_data::catalog::proven_gearbox()
+            .into_iter()
+            .find(|d| matches!(d.address, ReadId::Uds(0x3816)))
+            .unwrap();
+        let column = Column { did: 0x3816, def: Some(gear) };
+        assert_eq!(column.render(&[0x05]), "4");
+        assert_eq!(column.render(&[0x0C]), "R");
+        assert_eq!(column.render(&[0x09]), "09 (raw)");
     }
 
     #[test]
