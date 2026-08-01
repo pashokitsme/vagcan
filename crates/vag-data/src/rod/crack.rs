@@ -533,6 +533,60 @@ pub(crate) fn confirm_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize, iv3to8:
     )
 }
 
+/// Scratch buffers a worker reuses across confirmations.
+///
+/// The confirming inflate used to allocate twice per candidate: it rebuilt the
+/// whole zlib stream when only five bytes differ, and grew a fresh output
+/// vector to the section's full plaintext length. On a 7.4 MB section that
+/// allocation churn dominated everything else — a `TTDOP` sweep spent 152 s of
+/// user time against 537 s of system time. Both buffers are now allocated once
+/// per worker and rewritten in place.
+struct Scratch {
+    /// `78 da` + `d0` + the five candidate bytes + the section tail. Only
+    /// bytes 3..8 ever change.
+    stream: Vec<u8>,
+    /// Inflate output, sized to the declared plaintext length up front.
+    out: Vec<u8>,
+    inflater: Box<miniz_oxide::inflate::core::DecompressorOxide>,
+}
+
+impl Scratch {
+    fn new(d0: u8, tail: &[u8], plainlen: usize) -> Self {
+        let mut stream = Vec::with_capacity(3 + 5 + tail.len());
+        stream.extend_from_slice(&[0x78, 0xda, d0]);
+        stream.extend_from_slice(&[0u8; 5]);
+        stream.extend_from_slice(tail);
+        Scratch {
+            stream,
+            out: vec![0u8; plainlen],
+            inflater: Box::new(miniz_oxide::inflate::core::DecompressorOxide::new()),
+        }
+    }
+
+    /// True when `guess` makes the stream inflate to exactly `plainlen` bytes.
+    ///
+    /// Same verdict as building a fresh stream and calling
+    /// `decompress_to_vec_zlib`, which a test asserts directly — this is the
+    /// definitive oracle, so the optimisation must not change what it accepts.
+    fn inflates_to_plainlen(&mut self, guess: &[u8; 5]) -> bool {
+        use miniz_oxide::inflate::TINFLStatus;
+        use miniz_oxide::inflate::core::inflate_flags;
+
+        self.stream[3..8].copy_from_slice(guess);
+        self.inflater.init();
+        let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
+            | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+        let (status, _read, written) = miniz_oxide::inflate::core::decompress(
+            &mut self.inflater,
+            &self.stream,
+            &mut self.out,
+            0,
+            flags,
+        );
+        status == TINFLStatus::Done && written == self.out.len()
+    }
+}
+
 /// One worker's slice of the search tree.
 struct Search<'a> {
     d0: u8,
@@ -541,7 +595,6 @@ struct Search<'a> {
     /// Candidates for the *first* branch point (deflate byte 1), narrowed to
     /// this worker's share so threads walk disjoint subtrees.
     d1slice: &'a [u8],
-    plainlen: usize,
     found: &'a AtomicBool,
 }
 
@@ -558,7 +611,13 @@ impl Search<'_> {
     /// Probe with what is assigned so far; branch only where the header
     /// actually needs a byte, and only on candidates that survive. `at` is the
     /// parent's stalled parse state, when it had one to hand down.
-    fn dfs(&self, guess: &mut [u8; 5], known: u8, at: Option<&Resume>) -> Option<[u8; 5]> {
+    fn dfs(
+        &self,
+        guess: &mut [u8; 5],
+        known: u8,
+        at: Option<&Resume>,
+        scratch: &mut Scratch,
+    ) -> Option<[u8; 5]> {
         if self.found.load(Ordering::Relaxed) {
             return None;
         }
@@ -571,24 +630,31 @@ impl Search<'_> {
             Probe::Need { idx, at: next } => {
                 for &c in self.set_for(idx) {
                     guess[idx - 1] = c;
-                    if let Some(hit) = self.dfs(guess, known | (1 << (idx - 1)), next.as_ref()) {
+                    if let Some(hit) =
+                        self.dfs(guess, known | (1 << (idx - 1)), next.as_ref(), scratch)
+                    {
                         return Some(hit);
                     }
                 }
                 None
             }
-            Probe::Valid => self.confirm(guess, known),
+            Probe::Valid => self.confirm(guess, known, scratch),
         }
     }
 
     /// A header can parse without ever reading some of the five bytes (a small
     /// HCLEN plus a short code-length list). Those are unconstrained by the
     /// oracle, so they get enumerated in full and settled by the inflate.
-    fn confirm(&self, guess: &mut [u8; 5], known: u8) -> Option<[u8; 5]> {
+    fn confirm(
+        &self,
+        guess: &mut [u8; 5],
+        known: u8,
+        scratch: &mut Scratch,
+    ) -> Option<[u8; 5]> {
         if let Some(k) = (0..5).find(|k| known & (1 << k) == 0) {
             for &c in self.set_for(k + 1) {
                 guess[k] = c;
-                if let Some(hit) = self.confirm(guess, known | (1 << k)) {
+                if let Some(hit) = self.confirm(guess, known | (1 << k), scratch) {
                     return Some(hit);
                 }
             }
@@ -596,17 +662,11 @@ impl Search<'_> {
         }
         // The inflate is the definitive oracle: the header parse has false
         // positives, a stream that inflates to exactly `plainlen` does not.
-        let mut zs = Vec::with_capacity(3 + 5 + self.tail.len());
-        zs.extend_from_slice(&[0x78, 0xda, self.d0]);
-        zs.extend_from_slice(guess);
-        zs.extend_from_slice(self.tail);
-        match miniz_oxide::inflate::decompress_to_vec_zlib(&zs) {
-            Ok(out) if out.len() == self.plainlen => {
-                self.found.store(true, Ordering::Relaxed);
-                Some(*guess)
-            }
-            _ => None,
+        if scratch.inflates_to_plainlen(guess) {
+            self.found.store(true, Ordering::Relaxed);
+            return Some(*guess);
         }
+        None
     }
 }
 
@@ -661,10 +721,11 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Opti
                 tail: &tail,
                 sets: &sets,
                 d1slice: &d1slice,
-                plainlen,
                 found: &found,
             };
-            if let Some(hit) = search.dfs(&mut [0u8; 5], 0, None) {
+            // One set of buffers per worker, reused for every confirmation.
+            let mut scratch = Scratch::new(d0, &tail, plainlen);
+            if let Some(hit) = search.dfs(&mut [0u8; 5], 0, None, &mut scratch) {
                 *result.lock().unwrap() = Some(hit);
             }
         }));
@@ -768,10 +829,10 @@ mod dfs_tests {
             tail: &z[8..],
             sets: &sets,
             d1slice: &d1,
-            plainlen: plain.len(),
             found: &found,
         };
-        assert_eq!(search.dfs(&mut [0u8; 5], 0, None), Some(truth));
+        let mut scratch = Scratch::new(z[2], &z[8..], plain.len());
+        assert_eq!(search.dfs(&mut [0u8; 5], 0, None, &mut scratch), Some(truth));
     }
 
     /// The cheap filter must agree with the authority. `cl_scan` may only
@@ -780,6 +841,44 @@ mod dfs_tests {
     /// failure mode is a silent "no hit" rather than anything that looks like
     /// a bug. Checked over random streams (nearly all rejects, which is what
     /// the search actually sees) and real deflate headers (the accepts).
+    #[test]
+    fn the_reusable_buffer_agrees_with_a_fresh_allocation() {
+        // The confirming inflate is the definitive oracle, so reusing its
+        // buffers must not change a single verdict. Compare the in-place
+        // version against building a fresh stream and calling
+        // decompress_to_vec_zlib, over a real header plus deliberate misses.
+        let plain: Vec<u8> = (0..4096u32).map(|i| (i * 7 % 251) as u8).collect();
+        let zs = miniz_oxide::deflate::compress_to_vec_zlib(&plain, 6);
+        assert!(zs.len() > 8, "need a stream with a tail");
+        let d0 = zs[2];
+        let truth: [u8; 5] = zs[3..8].try_into().unwrap();
+        let tail = zs[8..].to_vec();
+
+        let mut scratch = Scratch::new(d0, &tail, plain.len());
+        let fresh = |guess: &[u8; 5]| {
+            let mut s = vec![0x78, 0xda, d0];
+            s.extend_from_slice(guess);
+            s.extend_from_slice(&tail);
+            matches!(miniz_oxide::inflate::decompress_to_vec_zlib(&s),
+                     Ok(o) if o.len() == plain.len())
+        };
+
+        assert!(scratch.inflates_to_plainlen(&truth), "the true bytes must confirm");
+        assert!(fresh(&truth));
+        // And a reused buffer must not let a previous success leak into a
+        // later miss — run several wrong guesses after the hit.
+        for k in 0..5 {
+            let mut wrong = truth;
+            wrong[k] = wrong[k].wrapping_add(1);
+            assert_eq!(
+                scratch.inflates_to_plainlen(&wrong),
+                fresh(&wrong),
+                "verdict differs for a one-byte miss at {k}"
+            );
+        }
+        assert!(scratch.inflates_to_plainlen(&truth), "still confirms after misses");
+    }
+
     #[test]
     fn the_cheap_filter_never_rejects_what_the_full_parse_accepts() {
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
