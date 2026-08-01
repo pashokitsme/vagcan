@@ -36,8 +36,8 @@ from the label corpus — the read DID is provably not stored in `STRUC`
 `vagcan sniff` records a listen-only capture alongside a live VCDS session, `vagcan analyse`
 crosses it against the VCDS CSV and accepts only exact linear fits, and `vagcan calibrate`
 extends coverage offline by fitting unknown raw columns against already-trusted references
-in the same `watch` recording. Proven rows live in `catalogs/*.json` (engine, gearbox,
-cluster). Names come from the corpus: `TTTEXT.ROD` is cracked and `catalogs/names-uds.json`
+in the same `watch` recording. Proven rows live in `catalogs/vehicles/<part number>.json`, one file per
+control unit, keyed by what that unit reports about itself. Names come from the corpus: `TTTEXT.ROD` is cracked and `catalogs/names-uds.json`
 carries 17,009 measurement names (`research/tttext-codec.md`) — but the corpus holds no
 name→DID join, so a name match is a hypothesis to test on the car, not an answer.
 

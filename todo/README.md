@@ -3,11 +3,48 @@
 **Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
 definitions as **data, not code**: names from VW's own label files
 (`catalogs/names-uds.json`), read address + scaling + unit **proven live on the car**
-(`catalogs/*.json`) — the corpus provably does not carry them
+(`catalogs/vehicles/<part number>.json`, keyed by what the unit reports about itself) —
+the corpus provably does not carry them
 (`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3). Any value a unit
 exposes is selectable from config, with no hardcoded addresses or formulas in Rust.
 Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
 for the locked stack and `todo/GOAL.md` for the goal statement.
+
+
+## Where it stands after the whole-car pass (2026-08-02)
+
+The tool now reads **every control unit the car has**, not the two the ISO addressing
+block reaches. On the reference car that is 15 units and 1206 identifiers
+(`research/whole-car-survey.md`), and every previously unidentified unit named itself:
+parking aid, steering assist, ESC, airbag, climate, both door modules, telematics,
+media.
+
+Done since the last update:
+
+| what | where | note |
+|---|---|---|
+| whole-car sweep | `vagcan survey` | gateway list → every unit; identification, fault codes, nine identifier pages; `--diff` compares a parked and a driving run |
+| fault reader | `vagcan faults` | confirmed codes only, sorted with what is failing now first, occurrence count, odometer, time of day, and a date stated as a bound |
+| unit addressing | `vag-protocol::address` | two id blocks with different response rules; unit-number pairings live in `catalogs/unit-numbers.json`, not in the source |
+| catalogs as data | `vag_data::catalog::CatalogStore` | one file per control unit under `catalogs/vehicles/`, keyed by the part number the unit reports; nothing car-specific compiled in |
+| corpus unit labels | `LabelDb::unit_for_part` | `; Component: … (#02)` headers give an address and a name for 987 of 3035 label files |
+| live view | `vagcan watch` | ratatui, several units at once, `/` filter over everything a survey found, actual/specified pairs on one line |
+
+### The open work
+
+1. **Drive with the survey running.** One parked pass exists; `survey --diff parked.jsonl
+   driving.jsonl` names the identifiers that moved, and those are the live measurements.
+   Cheapest large win available, needs no label file.
+2. **Fault names.** The chain is: fault number → `UDS_EV/RD.rod` registry (**established**,
+   946/946) → text-id → `catalogs/names-uds.json`. The last hop is blocked by the
+   per-table digit substitution (`research/label-linkage.md` §2.4). Everything else about
+   this is recorded in `research/whole-car-survey.md` §3, including what has been refuted.
+3. **The cluster's coolant scaling.** `22D0` has read `0xB8` = 90 °C in every sample ever
+   taken; one cold start settles `×0.75 − 48` against `×0.5 − 2`.
+4. **Brakes and body control.** `0x713` and `0x70E` answer 48 and 126 identifiers and own
+   the signals a driver can provoke on demand — pedal, wheel speeds, lights, doors.
+5. **The clock's epoch.** The day counter skips days the car is unused, so dates are
+   printed as bounds. A run of readings across a known idle period would settle it.
 
 ## Status (2026-08-01)
 
@@ -16,7 +53,7 @@ built and merged. The offline path to measurement *scaling* is **refuted, not ju
 the read DID provably does not live in the corpus (`research/rod-labels.md` §4.0c,
 `research/label-linkage.md` §3 — a structural impossibility, do not retry). Scaling comes
 from the car: the parallel-VCDS capture session ran, `vagcan analyse` and `vagcan calibrate`
-turn recordings into proven rows, and `catalogs/*.json` holds 16 of them across engine,
+turn recordings into proven rows, and `catalogs/vehicles/` holds 16 of them across engine,
 gearbox and cluster. Names come from the corpus after all — `TTTEXT.ROD` is cracked
 (`research/tttext-codec.md`) and `catalogs/names-uds.json` carries 17,009 names, but the
 corpus has **no name→DID join**, so `vagcan names` output is a hypothesis to test live.
@@ -221,7 +258,7 @@ gearbox mode, switches and lamps cannot be fitted: a two-level value fits any li
 exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
 continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
 coincide. The gear (`0x3816`, η² = 0.972 against the proven shaft-speed ratio) and the
-selector lever (`0x3809`) are identified and in `catalogs/gearbox-02.json` as enums.
+selector lever (`0x3809`) are identified and in `catalogs/vehicles/0CW300041G.json` as enums.
 Still to do: the drive mode (D/S/manual — never selected during the recording, so the
 stimulus is missing, not the signal), and the same treatment for the other units.
 

@@ -1,5 +1,12 @@
 # Measurement catalogs
 
+**A catalog is named after the control unit it describes**, by the part number that
+unit reports for itself (`F187`) or its ODX file name (`F19E`) — not by a unit number
+like `01`. A scaling belongs to the unit it was measured on: `0x202A` is boost pressure
+on engine `8V0906264H` and means nothing in particular elsewhere. Files live under
+`catalogs/vehicles/` and are read at run time, so a car this project has never seen
+finds no file and shows raw bytes rather than being given another car's numbers.
+
 Measurement definitions are **data**, not code. Each row is
 `(read identifier, raw byte form, factor, offset, unit)` — everything needed to
 turn a UDS response into an engineering value — and adding a measurement means
@@ -30,9 +37,9 @@ come from the label corpus.
 
 | file | control unit | rows |
 |---|---|---|
-| `engine-01.json` | Engine, `8V0906264H` (1.8 TFSI, MQB) | VW-specific identifiers |
-| `gearbox-02.json` | Gearbox, `0CW300041G` (DQ200) | VW-specific identifiers |
-| `cluster-17.json` | Instrument cluster, `5E0 920 740 D` | VW-specific identifiers |
+| `vehicles/8V0906264H.json` | Engine, 1.8 TFSI MQB | VW-specific identifiers |
+| `vehicles/0CW300041G.json` | Gearbox, DQ200 | VW-specific identifiers |
+| `vehicles/5E0920740D.json` | Instrument cluster | VW-specific identifiers |
 
 Not measurement catalogs, but kept alongside them:
 
