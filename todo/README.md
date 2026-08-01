@@ -139,8 +139,12 @@ Writeups: `research/identifier-map.md`, `research/other-ecus.md`,
    yields their label-file keys without moving.
 3. **Record the gearbox `3820–38FF` block while driving.** Every proven clutch row lives
    there and none of it has been recorded moving.
-4. **Select S and manual deliberately.** Gearbox mode was not found because the lever never
-   left P/R/N/D — the stimulus is absent, not the signal.
+4. **Select S and paddle-shift deliberately.** The lever moved through P, R, N and D during
+   the recording — that is what proved the selector at `0x3809` (P 76 samples, R 48, D 294;
+   N only 4, hence flagged weak). What is missing is the **drive mode**, which on a DQ200 is
+   a separate signal from lever position: D versus S versus manual. It was never selected,
+   so the stimulus is absent, not the signal. Also worth holding N for ten seconds to settle
+   it properly.
 5. **A cold start** while polling cluster `0x22D0`, the one action that converts its
    coolant reading from "consistent with" into measured.
 

@@ -409,3 +409,29 @@ Direction of travel     UDS 0x2170  I8First   Enum { 0x01: "forward", 0x00: "sta
 
 All numbers above are reproducible from `research/dumps/drive-gear.csv` alone; no Rust
 source and no catalog file was modified in producing them.
+
+
+## Addendum — the driver's account, checked against the data (2026-08-02)
+
+The owner confirms deliberately shifting to N, reversing, and finishing in P. The recording
+agrees on every count:
+
+| `0x3809` | lever | samples | approx. dwell |
+|---|---|---|---|
+| `00` | P | 76 | 59 s |
+| `01` | R | 48 | 37 s |
+| `02` | N | 4 | 3 s |
+| `03` | D | 294 | 3.8 min |
+
+Observed dwell cross-checks against an independent identifier: the gear code `0x0C`
+(reverse) holds for 46 samples against the lever's 48 in R. Two separate signals telling
+the same story.
+
+**N remains the weak position** at four samples. At the recording's ~1.3 Hz that is about
+three seconds, which cannot distinguish a deliberate but brief stop in N from a
+pass-through during a P→R→D move. It is not a data problem to solve by analysis: it needs a
+recording where N is held for ten seconds or so.
+
+**Drive mode (D/S/manual) is a different signal from lever position** and is still absent,
+because it was never selected. On a DQ200 the lever stays in D and the mode changes by a
+sideways nudge or the paddles, so no amount of P/R/N/D movement can reveal it.
