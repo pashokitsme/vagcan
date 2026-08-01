@@ -93,6 +93,55 @@ pub const PIDS: &[ObdPid] = &[
     ObdPid { pid: 0x5E, name: "Engine fuel rate", unit: "L/h", form: RawForm::U16Be, factor: 0.05, offset: 0.0 },
 ];
 
+
+/// Mode 09 (vehicle information) mirrored at `0xF800 + PID`.
+///
+/// Confirmed against the reference engine's own bytes rather than assumed:
+/// `F802` carries the VIN, `F804` a 16-character calibration identifier, and
+/// `F80A` the string `ECM\0-EngineControl`. Each response opens with a count
+/// of data items, then the items themselves — so the payload is not the value,
+/// and reading it as one would prepend a stray byte.
+///
+/// These are worth having because they are **not** in the `F1xx`
+/// identification block: the calibration identifier and its verification
+/// number identify the exact emissions calibration, which a part number does
+/// not.
+pub const VEHICLE_INFO: &[(u8, &str)] = &[
+    (0x02, "VIN"),
+    (0x04, "Calibration ID"),
+    (0x0A, "ECU name"),
+];
+
+/// The UDS data identifier a mode-09 PID is mirrored at.
+pub const fn did_for_info_pid(pid: u8) -> u16 {
+    0xF800 | pid as u16
+}
+
+/// Decode a mode-09 text response: a count byte, then that many fixed-width
+/// items packed together.
+///
+/// Returns each item separately. NUL and space padding is trimmed — VW pads
+/// both ways — and a response whose length is not a whole number of items is
+/// rejected rather than split arbitrarily.
+pub fn decode_info_text(data: &[u8]) -> Option<Vec<String>> {
+    let (&count, items) = data.split_first()?;
+    let count = count as usize;
+    if count == 0 || items.is_empty() || items.len() % count != 0 {
+        return None;
+    }
+    let width = items.len() / count;
+    Some(
+        items
+            .chunks(width)
+            .map(|item| {
+                String::from_utf8_lossy(item)
+                    .trim_matches(|c: char| c == '\0' || c == ' ')
+                    .to_string()
+            })
+            .collect(),
+    )
+}
+
 /// Look a parameter up by its PID.
 pub fn pid(pid: u8) -> Option<&'static ObdPid> {
     PIDS.iter().find(|p| p.pid == pid)
@@ -175,6 +224,38 @@ mod tests {
         let trim = pid(0x06).unwrap().to_def();
         assert_eq!(trim.interpret(&[128]), Some(0.0));
         assert_eq!(trim.interpret(&[0]), Some(-100.0));
+    }
+
+    #[test]
+    fn mode_nine_text_is_decoded_from_the_cars_own_bytes() {
+        // Exactly what the reference engine returned, count byte included.
+        let vin = decode_info_text(b"\x01XW8AD4NE9JH008917").unwrap();
+        assert_eq!(vin, vec!["XW8AD4NE9JH008917"]);
+
+        let calid = decode_info_text(b"\x018V0264H 0005AEAJ").unwrap();
+        assert_eq!(calid, vec!["8V0264H 0005AEAJ"]);
+
+        // The ECU name carries an interior NUL; only the padding is trimmed.
+        let name = decode_info_text(b"\x01ECM\0-EngineControl\0\0").unwrap();
+        assert_eq!(name, vec!["ECM\0-EngineControl"]);
+
+        assert_eq!(did_for_info_pid(0x02), 0xF802);
+    }
+
+    #[test]
+    fn a_response_that_does_not_divide_into_items_is_refused() {
+        // Splitting it anyway would hand back fragments of a value.
+        assert_eq!(decode_info_text(b"\x02abcde"), None);
+        assert_eq!(decode_info_text(b"\x00abc"), None);
+        assert_eq!(decode_info_text(b"\x01"), None);
+        assert_eq!(decode_info_text(b""), None);
+    }
+
+    #[test]
+    fn several_items_come_back_separately() {
+        // Mode 09 allows a count above one; each item is its own string.
+        let items = decode_info_text(b"\x02AAAABBBB").unwrap();
+        assert_eq!(items, vec!["AAAA", "BBBB"]);
     }
 
     #[test]

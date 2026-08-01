@@ -467,5 +467,26 @@ async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
         return Ok(());
     }
     println!("{}", props::render(&format!("Control unit {ecu_text}"), &found));
+
+    // Mode 09 lives outside the identification block and carries what a part
+    // number cannot: which emissions calibration this unit is actually
+    // running.
+    let mut info = Vec::new();
+    for (pid, name) in vag_data::obd::VEHICLE_INFO {
+        let did = vag_data::obd::did_for_info_pid(*pid);
+        let Ok(data) = uds.read_data_by_identifier(did).await else {
+            continue;
+        };
+        if let Some(items) = vag_data::obd::decode_info_text(&data) {
+            info.push((*name, items.join(", ")));
+        }
+    }
+    if !info.is_empty() {
+        let width = info.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+        println!("  Vehicle information (OBD-II mode 09):");
+        for (name, value) in info {
+            println!("    {name:<width$}  {value}");
+        }
+    }
     Ok(())
 }
