@@ -36,6 +36,15 @@ struct Bits<'a> {
     byte: usize,
     nbits: u32,
     cur: u64,
+    /// Set once a read ran past the end of the section.
+    ///
+    /// A short section can hold fewer bytes than a deflate header wants to
+    /// read, and the header oracle is speculative by nature — it is fed
+    /// candidate bytes that are usually wrong. Indexing past the tail used to
+    /// panic, which killed the worker thread silently and made the whole
+    /// search look like it had simply found nothing. Overrunning means this
+    /// candidate cannot be evaluated, which is a rejection, not a crash.
+    overrun: bool,
 }
 impl<'a> Bits<'a> {
     fn new(d0: u8, guess: &'a [u8; 5], tail: &'a [u8]) -> Self {
@@ -46,16 +55,23 @@ impl<'a> Bits<'a> {
             byte: 0,
             nbits: 0,
             cur: 0,
+            overrun: false,
         }
     }
     #[inline]
-    fn getb(&self, i: usize) -> u8 {
+    fn getb(&mut self, i: usize) -> u8 {
         if i == 0 {
             self.d0
         } else if i <= 5 {
             self.guess[i - 1]
         } else {
-            self.tail[i - 6]
+            match self.tail.get(i - 6) {
+                Some(b) => *b,
+                None => {
+                    self.overrun = true;
+                    0
+                }
+            }
         }
     }
     #[inline]
@@ -159,6 +175,7 @@ fn decode_sym(bs: &mut Bits, h: &Huff) -> Option<u16> {
 /// header decodes cleanly with valid Kraft on the code-length, literal and
 /// distance code lengths.
 fn header_ok(d0: u8, guess: &[u8; 5], tail: &[u8]) -> bool {
+    // Every `return` below must also reject an overrun; see `Bits::overrun`.
     let mut bs = Bits::new(d0, guess, tail);
     let _bfinal = bs.read(1);
     if bs.read(2) != 2 {
@@ -230,7 +247,7 @@ fn header_ok(d0: u8, guess: &[u8; 5], tail: &[u8]) -> bool {
     if !kraft_ok(&lengths[hlit..hlit + hdist]) {
         return false;
     }
-    true
+    !bs.overrun
 }
 
 /// The reduced per-byte candidate sets for deflate bytes `d[1..=5]`
@@ -378,4 +395,26 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Opti
     // Convert recovered plaintext[3..8] into raw iv[3..8]: iv[i] = t[i] ^ p[i].
     let guess = (*result.lock().unwrap())?;
     Some(std::array::from_fn(|k| t[k + 3] ^ guess[k]))
+}
+
+#[cfg(test)]
+mod overrun_tests {
+    use super::*;
+
+    #[test]
+    fn a_section_too_short_for_a_deflate_header_is_rejected_not_a_panic() {
+        // A candidate that needs more bytes than the section holds cannot be
+        // evaluated. This used to index past the tail and panic, and because
+        // the panic happened on a worker thread the search reported "no hit"
+        // — a real answer elsewhere in the space would have been lost with it.
+        // 0x8C is the byte that says "dynamic Huffman", so the parser commits
+        // to reading a header that is not there.
+        let tail: [u8; 2] = [0x00, 0x00];
+        assert!(!header_ok(0x8C, &[0x9d, 0x69, 0x92, 0x24, 0x29], &tail));
+    }
+
+    #[test]
+    fn an_empty_tail_is_rejected_too() {
+        assert!(!header_ok(0x8C, &[0; 5], &[]));
+    }
 }
