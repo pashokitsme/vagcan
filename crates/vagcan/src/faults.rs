@@ -45,17 +45,19 @@ impl UnitFaults {
     }
 }
 
-/// How a code is written: the three bytes, then the reading VW's own tools use
-/// — a fault number and a failure type.
+/// How a code is written: the three bytes, and the decimal fault number VW's
+/// own tools print.
 ///
-/// The split is stated as a convention, not proven here: it is consistent with
-/// every code read off this car (`0x00 0x01 0x07` on a body control module,
-/// `0xD0 0x17 0x21` on the parking aid), but nothing in the captures confirms
-/// which half means what. Printing both spellings lets a reader cross-check
-/// against any other tool without this project having to be right about it.
+/// **All three bytes are one number**, big-endian. An earlier version of this
+/// function split them into a two-byte number and a symptom byte, which was
+/// wrong: `00 01 29` is fault 297, not fault 1 symptom 0x29. The refutation is
+/// this car's own VCDS scan, which prints `0297` beside the brake unit's code
+/// and `291104` beside the steering column's `04 71 20`
+/// (`research/VCDS-RUS/Scans/`), matching the 24-bit reading in all four cases
+/// checked and the 16-bit one in none.
 pub fn format_code(code: [u8; 3]) -> String {
-    let number = u16::from_be_bytes([code[0], code[1]]);
-    format!("{:02X}{:02X}{:02X}  ({number:05} type {:02X})", code[0], code[1], code[2], code[2])
+    let number = u32::from_be_bytes([0, code[0], code[1], code[2]]);
+    format!("{:02X}{:02X}{:02X}  ({number})", code[0], code[1], code[2])
 }
 
 /// How long ago a fault happened, told against the unit's own counters.
@@ -113,6 +115,7 @@ pub async fn run(
     only: Option<&str>,
     details: bool,
     all_codes: bool,
+    supported: bool,
 ) -> Result<()> {
     let mut backend =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
@@ -187,6 +190,30 @@ pub async fn run(
             .await
             .ok()
             .and_then(|data| UnitStamp::parse(&data));
+
+        if supported {
+            // The unit's whole catalogue of codes, in its own order — which is
+            // how the label corpus stores fault names, so the two lists are
+            // worth comparing.
+            match uds.read_supported_dtcs().await {
+                Ok(list) => {
+                    println!(
+                        "\n{}  {:03X}  {}  — {} codes supported",
+                        address.label(),
+                        request,
+                        unit.component.clone().unwrap_or_default(),
+                        list.len()
+                    );
+                    for dtc in &list {
+                        println!("  {}", format_code(dtc.code));
+                    }
+                    total += list.len();
+                }
+                Err(e) => println!("\n{}  {:03X}  no supported list ({e})", address.label(), request),
+            }
+            backend = uds.into_transport().into_backend();
+            continue;
+        }
 
         let show: Vec<RawDtc> = if all_codes {
             unit.all.clone()
@@ -310,12 +337,12 @@ mod tests {
     }
 
     #[test]
-    fn a_code_is_shown_as_bytes_and_as_the_conventional_reading() {
-        // Both spellings, because this project has not established which half
-        // means what — a reader can cross-check either way.
-        let text = format_code([0x06, 0x09, 0x01]);
-        assert!(text.starts_with("060901"), "{text}");
-        assert!(text.contains("01545"), "{text}");
-        assert!(text.contains("type 01"), "{text}");
+    fn all_three_bytes_are_one_fault_number() {
+        // Checked against this car's own VCDS scan, which prints these decimal
+        // numbers for these units: reading the first two bytes as the number
+        // would give 1, 1137 and 260 instead.
+        assert_eq!(format_code([0x00, 0x01, 0x29]), "000129  (297)");
+        assert_eq!(format_code([0x04, 0x71, 0x20]), "047120  (291104)");
+        assert_eq!(format_code([0x01, 0x04, 0x05]), "010405  (66565)");
     }
 }

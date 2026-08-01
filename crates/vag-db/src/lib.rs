@@ -60,8 +60,13 @@ pub struct BuildStats {
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS label_file (
-    id      INTEGER PRIMARY KEY,
-    name    TEXT NOT NULL UNIQUE
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    -- What the file's own header says the unit is: its diagnostic address and
+    -- the corpus's name for it. Cached like everything else here so a lookup
+    -- costs no re-parse.
+    unit_address INTEGER,
+    unit_name    TEXT
 );
 CREATE TABLE IF NOT EXISTS measurement (
     file_id     INTEGER NOT NULL REFERENCES label_file(id),
@@ -128,7 +133,9 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
              DELETE FROM label_file;",
         )?;
 
-        let mut insert_file = tx.prepare("INSERT INTO label_file (name) VALUES (?1)")?;
+        let mut insert_file = tx.prepare(
+            "INSERT INTO label_file (name, unit_address, unit_name) VALUES (?1, ?2, ?3)",
+        )?;
         let mut insert_measurement = tx.prepare(
             "INSERT INTO measurement \
                 (file_id, block, field, name, location, description, unit, range_min, range_max) \
@@ -146,7 +153,11 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
         )?;
 
         for lf in files {
-            insert_file.execute(params![lf.source])?;
+            insert_file.execute(params![
+                lf.source,
+                lf.unit.as_ref().map(|u| u.address),
+                lf.unit.as_ref().map(|u| u.name.clone()),
+            ])?;
             let file_id = tx.last_insert_rowid();
             stats.files += 1;
 
@@ -188,9 +199,10 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
 /// `Record::Other` and `Redirect.comment` cannot round-trip (neither is
 /// persisted by [`insert_files`]).
 fn read_files(conn: &Connection) -> Result<Vec<LabelFile>, Error> {
-    let mut file_stmt = conn.prepare("SELECT id, name FROM label_file ORDER BY id")?;
-    let file_rows: Vec<(i64, String)> = file_stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let mut file_stmt =
+        conn.prepare("SELECT id, name, unit_address, unit_name FROM label_file ORDER BY id")?;
+    let file_rows: Vec<(i64, String, Option<u8>, Option<String>)> = file_stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
     drop(file_stmt);
 
@@ -209,7 +221,7 @@ fn read_files(conn: &Connection) -> Result<Vec<LabelFile>, Error> {
     )?;
 
     let mut files = Vec::with_capacity(file_rows.len());
-    for (file_id, name) in file_rows {
+    for (file_id, name, address, unit_name) in file_rows {
         let mut records = Vec::new();
 
         let measurements = meas_stmt.query_map(params![file_id], |row| {
@@ -268,7 +280,10 @@ fn read_files(conn: &Connection) -> Result<Vec<LabelFile>, Error> {
             records.push(lc?);
         }
 
-        files.push(LabelFile { source: name, records });
+        let unit = address
+            .zip(unit_name)
+            .map(|(address, name)| vag_data::label::UnitLabel { address, name });
+        files.push(LabelFile { source: name, records, unit });
     }
 
     Ok(files)

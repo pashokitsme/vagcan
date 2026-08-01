@@ -18,6 +18,38 @@ pub struct LabelFile {
     /// Source file name (basename), e.g. `06F-906-056-AXW.lbl`.
     pub source: String,
     pub records: Vec<Record>,
+    /// What the file says the unit is, from its own header comment:
+    /// `; Component: J743 - Transmission Electronic (#02) - …`.
+    ///
+    /// This is the corpus's answer to "which control unit is this, and what
+    /// number does the diagnostic world call it" — the alternative being a
+    /// table of one car's units written into the code, which would be wrong
+    /// on every other car.
+    pub unit: Option<UnitLabel>,
+}
+
+/// A control unit as the label corpus describes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnitLabel {
+    /// The VW diagnostic address, e.g. `0x02` for a gearbox — written `02`.
+    pub address: u8,
+    /// The human name, as the corpus spells it.
+    pub name: String,
+}
+
+/// Read `; Component: J743 - Transmission Electronic (#02) - 7-Speed DSG` into
+/// a unit label.
+///
+/// Only the parenthesised address counts as the key; the text before it is
+/// taken verbatim. A comment without `(#AA)` names nothing addressable and is
+/// ignored rather than guessed at.
+pub fn parse_component_comment(comment: &str) -> Option<UnitLabel> {
+    let rest = comment.trim().strip_prefix("Component:")?.trim();
+    let open = rest.find("(#")?;
+    let close = rest[open..].find(')')? + open;
+    let address = u8::from_str_radix(rest[open + 2..close].trim(), 16).ok()?;
+    let name = rest[..open].trim().trim_end_matches('-').trim().to_string();
+    (!name.is_empty()).then_some(UnitLabel { address, name })
 }
 
 /// A single label record.
@@ -227,6 +259,7 @@ fn parse_record(content: &str, comment: Option<&str>) -> Record {
 pub fn parse_label(source: impl Into<String>, bytes: &[u8]) -> LabelFile {
     let text = decode_latin1(bytes);
     let mut records = Vec::new();
+    let mut unit = None;
     for raw_line in text.split('\n') {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         if line.trim().is_empty() {
@@ -234,19 +267,62 @@ pub fn parse_label(source: impl Into<String>, bytes: &[u8]) -> LabelFile {
         }
         let (content, comment) = split_comment(line);
         if content.is_empty() {
-            continue; // full-line comment
+            // A full-line comment is where the corpus states which unit the
+            // file is for, so it is read rather than discarded.
+            if unit.is_none() {
+                if let Some(text) = comment {
+                    unit = parse_component_comment(text);
+                }
+            }
+            continue;
         }
         records.push(parse_record(content, comment));
     }
     LabelFile {
         source: source.into(),
         records,
+        unit,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_component_header_names_the_unit_and_its_address() {
+        // Verbatim from Labels/0A-02.lbl in a VCDS installation.
+        let unit = parse_component_comment(
+            " Component: J743 - Transmission Electronic (#02) - 7-Speed Direct Shift Gearbox              (DSG) 0AM",
+        )
+        .unwrap();
+        assert_eq!(unit.address, 0x02);
+        assert_eq!(unit.name, "J743 - Transmission Electronic");
+
+        // Addresses are hex in this corpus: 5F is a real one, and reading it
+        // as decimal would silently land on a different unit.
+        let unit = parse_component_comment(" Component: Information Electr. (#5F)").unwrap();
+        assert_eq!(unit.address, 0x5F);
+    }
+
+    #[test]
+    fn a_comment_without_an_address_names_nothing() {
+        // Copyright lines and prose must not become unit labels.
+        assert!(parse_component_comment(" Copyright 2009+ Ross-Tech, LLC").is_none());
+        assert!(parse_component_comment(" Component: something").is_none());
+        assert!(parse_component_comment("").is_none());
+    }
+
+    #[test]
+    fn a_label_file_carries_the_unit_its_header_declares() {
+        let text = b"; VCDS Redirect File\n; Component: J285 - Instrument Cluster (#17)\n                     REDIRECT,5G0-920-XXX-17.CLB,6V0-920-???-???\n";
+        let file = parse_label("6V-17.lbl", text);
+        let unit = file.unit.expect("the header names a unit");
+        assert_eq!(unit.address, 0x17);
+        assert_eq!(unit.name, "J285 - Instrument Cluster");
+        // And the records still parse as before.
+        assert_eq!(file.records.len(), 1);
+    }
 
     fn measurements(lf: &LabelFile) -> Vec<&Measurement> {
         lf.records

@@ -182,6 +182,34 @@ impl LabelDb {
         self.resolve_idx(part_no).map(|i| &self.files[i])
     }
 
+    /// Which control unit a part number belongs to, as the corpus describes it
+    /// — its diagnostic address and the corpus's name for it.
+    ///
+    /// This is how the tool learns that `0CW300041G` is unit `02` and a
+    /// transmission controller without a table of one car's units in the code.
+    /// The answer comes from the label file the part number resolves to; if
+    /// that file has no `Component:` header, the redirect that led to it
+    /// usually does, so the chain is walked.
+    pub fn unit_for_part(&self, part_no: &str) -> Option<&crate::label::UnitLabel> {
+        if let Some(unit) = self.resolve(part_no).and_then(|f| f.unit.as_ref()) {
+            return Some(unit);
+        }
+        // The terminal file said nothing; ask whatever pointed at it.
+        let target = self.resolve(part_no)?.source.to_ascii_uppercase();
+        self.files
+            .iter()
+            .find(|f| {
+                f.unit.is_some()
+                    && f.records.iter().any(|r| match r {
+                        crate::label::Record::Redirect { target: t, .. } => {
+                            t.to_ascii_uppercase() == target
+                        }
+                        _ => false,
+                    })
+            })
+            .and_then(|f| f.unit.as_ref())
+    }
+
     /// Memoizing front-end for [`Self::resolve_uncached`].
     fn resolve_idx(&self, part_no: &str) -> Option<usize> {
         // Try each spelling the corpus might use; the first that resolves wins.

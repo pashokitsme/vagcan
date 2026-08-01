@@ -78,8 +78,15 @@ pub(crate) fn parse_rdbi_response(did: u16, resp: &[u8]) -> Result<Vec<u8>, UdsE
 /// Parse a ReadDTCInformation 0x02 response body (after SID strip):
 /// `0x02 <availability mask> [code(3) status(1)]*`.
 pub(crate) fn parse_dtc_response(resp: &[u8]) -> Result<Vec<RawDtc>, UdsError> {
-    if resp.len() < 2 || resp[0] != 0x02 {
-        return Err(UdsError::Malformed("bad ReadDTCInformation 0x02 response".into()));
+    parse_dtc_list(resp, 0x02)
+}
+
+/// The same framing for any subfunction that answers with a status mask
+/// followed by `[code(3) status(1)]` records — `0x02` by status mask and
+/// `0x0A` for the unit's whole supported list.
+pub(crate) fn parse_dtc_list(resp: &[u8], subfunction: u8) -> Result<Vec<RawDtc>, UdsError> {
+    if resp.len() < 2 || resp[0] != subfunction {
+        return Err(UdsError::Malformed("bad ReadDTCInformation response".into()));
     }
     let entries = &resp[2..];
     if entries.len() % 4 != 0 {

@@ -77,6 +77,11 @@ enum Command {
         /// and a unit that does not answer is reported as such.
         #[arg(long)]
         identify: bool,
+        /// VCDS label directory. With one, each unit's part number is resolved
+        /// against the corpus, which supplies the diagnostic address and the
+        /// corpus's name for it — data, not a table in this program.
+        #[arg(long, value_name = "DIR")]
+        labels: Option<String>,
     },
 
     /// List everything a control unit tells about itself.
@@ -201,6 +206,9 @@ enum Command {
         /// Show every code the units list, not just the confirmed ones.
         #[arg(long)]
         all: bool,
+        /// List every code each unit *can* report, in the unit's own order.
+        #[arg(long)]
+        supported: bool,
     },
 
     /// Sweep every control unit the car has, not just the powertrain.
@@ -351,7 +359,9 @@ async fn main() -> Result<()> {
         }
         Command::Info { device } => info(device.as_deref()).await,
         Command::Properties { device, ecu } => properties(device.as_deref(), &ecu).await,
-        Command::Units { device, identify } => units(device.as_deref(), identify).await,
+        Command::Units { device, identify, labels } => {
+            units(device.as_deref(), identify, labels.as_deref()).await
+        }
         Command::Sniff { device, out, diag_only, seconds, active } => {
             sniff::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, out.as_deref(), diag_only, seconds, active)
                 .await
@@ -378,13 +388,14 @@ async fn main() -> Result<()> {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
         }
-        Command::Faults { device, ecu, details, all } => {
+        Command::Faults { device, ecu, details, all, supported } => {
             faults::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
                 ecu.as_deref(),
                 details,
                 all,
+                supported,
             )
             .await
         }
@@ -554,13 +565,21 @@ async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<S
 }
 
 /// List the car's control units (see the `Units` subcommand docs).
-async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
+async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str>) -> Result<()> {
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
     use vag_protocol::gateway;
     use vag_transport::CanId;
 
     const GATEWAY_REQUEST: u16 = 0x710;
     const VW_RESPONSE_OFFSET: u16 = 0x6A;
+
+    // The corpus, when one was given: it turns a part number the car reports
+    // into the unit's diagnostic address and name, for any VAG car rather than
+    // for a list written here.
+    let corpus = match labels_dir {
+        Some(dir) => Some(labels::load_cached(std::path::Path::new(dir), false)?),
+        None => None,
+    };
 
     let path = device::resolve(device_arg)?;
     let backend =
@@ -608,9 +627,15 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
         if part.is_empty() && component.is_empty() {
             println!("  {id:03X}  (did not answer)");
         } else {
-            // The name is the unit's own component string, not a table: the
-            // same tool has to work on a car nobody here has seen.
-            println!("  {id:03X}  {part:<14} {component}");
+            // Two names, both from data: the unit's own component string, and
+            // what the label corpus calls the part number — the latter also
+            // supplying the diagnostic address people use.
+            let from_corpus = corpus
+                .as_ref()
+                .and_then(|db| db.unit_for_part(&part))
+                .map(|u| format!("{:02X}  {}", u.address, u.name))
+                .unwrap_or_default();
+            println!("  {id:03X}  {part:<14} {component:<16} {from_corpus}");
         }
         backend = unit.into_transport().into_backend();
     }
