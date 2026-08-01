@@ -520,3 +520,30 @@ per section, `TTTEXT2` and `MUX` are no longer multi-hour commitments, and the h
 Regression: `rod_crack_prep.py prep STRUC.rod STRUC` then `rod_crack` must print
 `9d69922429`. Keep that check — it is the only thing standing between a pruning bug and a
 silent false negative.
+
+
+## Addendum — the `ENG######` lead is refuted (2026-08-02)
+
+§4 flagged the second number in the gearbox VCDS logs (`Loc. IDE00022-ENG103074`) as a
+possible text-id, on the strength of 6 of 15 such numbers appearing somewhere among the
+corpus's 43,781 text-ids against an 18.2 % baseline — p ≈ 0.05, suggestive only.
+
+The gearbox `MWB` is now cracked (1,020 rows, 907 distinct text-ids, range 171…176,260),
+which allows the *right* test rather than the global one: do these numbers appear in **this
+gearbox's own measurement list**? They are this gearbox's measurements, so they must.
+
+**Zero of eleven.** Checked against every proven pair — `ENG103074`↔`380A`,
+`ENG99005`↔`380B`, `ENG99967`↔`F40D`, `ENG98363`↔`3804`, `ENG120857`↔`3832`,
+`ENG120861`↔`383B`, `ENG120895`↔`38F6`, `ENG120898`↔`38F9`, `ENG120909`↔`38AC`,
+`ENG120910`↔`38AD`, plus `ENG103124` — and confirmed by raw byte search across **all eight
+decoded sections**, not just `MWB`, in case the parse was at fault. In the window
+103,000–103,200 the list holds only `103093`; `103074` and `103124` are simply absent.
+
+The earlier global hit rate was therefore the baseline showing through, not a signal. This
+was the last lead §4 had identified, so it closes.
+
+**Refined hypothesis, untested:** the Russian VCDS displays these measurements bilingually
+("Число оборотов на входе КП-Transmission Input Speed Sensor"), so `ENG` plausibly means
+*English* rather than *engine* — a key into a separate English text table rather than into
+the per-ECU list. The English install is on disk; its `TTTEXT.ROD` is not yet cracked. That
+is a cheap check once it is, and it is the only remaining way this number could be useful.

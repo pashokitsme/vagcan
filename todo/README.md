@@ -184,12 +184,15 @@ function of the text-id with no per-ECU degree of freedom. So the corpus is for 
 per-ECU lists**, nothing more — unless `TTTEXT2.ROD` or `MUX.rod` turns out to hold a global
 registry, the last two uncracked candidates.
 
-Outstanding for names: crack `TTTEXT.ROD` (mechanical, but one to two hours on this machine,
-not the minute the old note claims) and join `MWB → text-id → TTTEXT`. One lead worth
-settling first: the gearbox VCDS logs carry a second number per column
-(`Loc. IDE00022-ENG103074`), and `IDE00022 ↔ 7E9/380A` is proven — if `ENG######` is a
-text-id, that is a direct `text-id ↔ proven identifier` pair. Currently suggestive only
-(6 of 15 appear among 43,781 text-ids against an 18.2 % baseline, p ≈ 0.05).
+Outstanding for names: crack `TTTEXT.ROD` and join `MWB → text-id → TTTEXT`. The gearbox
+`MWB` is now cracked (1,020 rows), so only the name table is missing. Budget minutes, not
+hours — the cracker is 10.9× faster since 2026-08-02 — but do the reusable-inflate-buffer
+fix first, since `TTTEXT` is 7.4 MB and allocation churn dominates at that size.
+
+The `ENG######` lead is **refuted**: none of the eleven numbers from the proven pairs
+appears anywhere in this gearbox's own decoded sections (`research/label-linkage.md`
+addendum). Refined hypothesis, untested: `ENG` may mean *English* rather than *engine*, and
+key a separate English text table — checkable for free once `TTTEXT` is cracked.
 
 **4. `vagcan watch` — BUILT.** Polls live at bus speed (46 Hz measured on the boost set)
 using batched reads. Presets carry their own control unit. Anything unproven prints its
