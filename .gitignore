@@ -23,6 +23,9 @@ research/clb-crack/decoded_*.txt
 research/captures/*.pcapng
 research/dumps/
 research/logs/
+# Ross-Tech VCDS installations: proprietary software and label data, ~300 MB.
+# Present for offline research only; never committed.
+research/VCDS-*/
 
 # VCDS install symlinks — proprietary Ross-Tech label/ODX data, never commit
 research/vcds-data/
@@ -32,3 +35,6 @@ research/vcds-data/
 /*.jsonl
 research/dumps/
 research/logs/
+# Ross-Tech VCDS installations: proprietary software and label data, ~300 MB.
+# Present for offline research only; never committed.
+research/VCDS-*/
