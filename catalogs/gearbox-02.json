@@ -57,7 +57,7 @@
       }
     },
     {
-      "name": "Clutch 1 position, actual",
+      "name": "Clutch 1 position coefficient",
       "unit": "%",
       "address": {
         "Uds": 14386
@@ -71,7 +71,7 @@
       }
     },
     {
-      "name": "Clutch 2 position, actual",
+      "name": "Clutch 2 position coefficient",
       "unit": "%",
       "address": {
         "Uds": 14395

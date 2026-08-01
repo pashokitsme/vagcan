@@ -5,10 +5,11 @@
 //! PID `05` would. The conversions are the public SAE J1979 ones, so this whole
 //! family is decodable without reverse-engineering anything.
 //!
-//! **This is not assumed — it is measured.** Five of these were proven
-//! independently by crossing a passive CAN capture with a simultaneous VCDS log
-//! (`vagcan analyse`, 2026-08-01), and every one came out exactly as the
-//! standard defines, including a two-byte pressure with a ×10 factor:
+//! **Five of these rows were measured on this car; the other 27 are transcribed
+//! from SAE J1979.** The five were fitted blind by crossing a passive CAN
+//! capture with a simultaneous VCDS log (`vagcan analyse`, 2026-08-01) — the
+//! fitter is told nothing about J1979 — and every one landed exactly on the
+//! standard's conversion, including a two-byte pressure with a ×10 factor:
 //!
 //! | DID | fitted from the car | J1979 |
 //! |---|---|---|
@@ -18,8 +19,15 @@
 //! | `F423` | `raw × 10` kPa | `(256A+B) × 10` |
 //! | `F446` | `raw − 40` °C | `A − 40` |
 //!
-//! A test in this module pins that agreement, so the table cannot drift away
-//! from the evidence that justifies trusting it.
+//! Five blind fits landing on published formulas — one of them neither a
+//! temperature nor a single byte, so not something a lucky guess reaches — is
+//! powerful evidence that this unit implements the family faithfully. The
+//! remaining rows rest on that inference rather than on a fit of their own: two
+//! more (fuel tank level, barometric pressure) agreed with VCDS to display
+//! precision on a live read, and the rest are unverified predictions — correct
+//! if and only if the mirror is faithful beyond the five that were measured. A
+//! test in this module pins the measured five, so the table cannot drift away
+//! from the evidence that justifies trusting the rest.
 //!
 //! Only parameters with a **linear** conversion are listed. Bitfields (which
 //! PIDs are supported, which monitors are ready), enumerations (fuel type, OBD

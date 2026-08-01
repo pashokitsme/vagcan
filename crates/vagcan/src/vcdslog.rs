@@ -58,18 +58,34 @@ pub struct VcdsLog {
     pub measurements: Vec<LoggedMeasurement>,
 }
 
+/// CP1251's `0x80..=0xBF`: Latin-1 punctuation plus the Cyrillic characters
+/// that fall outside the contiguous block, indexed by `byte - 0x80`.
+///
+/// Spelled out rather than folded into a fallback because VCDS uses this range
+/// for real: `µ` (0xB5) in `µs`, `ё` (0xB8) in names, `№`, `±`, `°`. Collapsing
+/// it to spaces silently rewrites a unit string, and a unit is what a fitted
+/// scaling gets judged against.
+#[rustfmt::skip]
+const CP1251_HIGH: [char; 64] = [
+    'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡', '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ',
+    'ђ', '‘', '’', '“', '”', '•', '–', '—', '?', '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ',
+    '\u{00A0}', 'Ў', 'ў', 'Ј', '¤', 'Ґ', '¦', '§', 'Ё', '©', 'Є', '«', '¬', '\u{00AD}', '®', 'Ї',
+    '°', '±', 'І', 'і', 'ґ', 'µ', '¶', '·', 'ё', '№', 'є', '»', 'ј', 'Ѕ', 'ѕ', 'ї',
+];
+
 /// Decode CP1251 (the Russian VCDS build's encoding).
 ///
 /// The Cyrillic block is contiguous — `0xC0..=0xFF` maps straight onto
-/// `U+0410..=U+044F` — so the whole table is three arms and no dependency.
+/// `U+0410..=U+044F` — so only the middle range needs a table, and no
+/// dependency is needed for either.
 fn cp1251(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&b| match b {
             0x00..=0x7F => b as char,
-            0xB0 => '°',
+            // 0x98 is the one byte CP1251 leaves undefined; it decodes to '?'.
+            0x80..=0xBF => CP1251_HIGH[(b - 0x80) as usize],
             0xC0..=0xFF => char::from_u32(0x0410 + (b as u32 - 0xC0)).unwrap_or('?'),
-            _ => ' ',
         })
         .collect()
 }
@@ -146,8 +162,10 @@ pub fn parse(bytes: &[u8]) -> Result<VcdsLog, String> {
         }
         let row = fields(line);
         for (col, measurement) in by_column.iter_mut() {
-            // The value's time lives in the column immediately to its left.
-            let (Some(t), Some(v)) = (row.get(col - 1), row.get(*col)) else {
+            // The value's time lives in the column immediately to its left, so
+            // an id in column 0 has none — skip it rather than underflow.
+            let (Some(t), Some(v)) = (col.checked_sub(1).and_then(|t| row.get(t)), row.get(*col))
+            else {
                 continue;
             };
             let (Ok(t), Ok(v)) = (t.trim().parse::<f64>(), v.trim().parse::<f64>()) else {
@@ -223,6 +241,44 @@ mod tests {
         assert_eq!(decoded, "Температура");
         // The degree sign VCDS uses in unit columns.
         assert_eq!(cp1251(&[0xB0]), "°");
+    }
+
+    #[test]
+    fn an_id_in_the_first_column_does_not_panic() {
+        // The parser reads a value's timestamp from the column to its left. An
+        // export whose very first column carries the id has no such column;
+        // subtracting one from it underflows and aborts the whole parse.
+        let mut out: Vec<u8> = Vec::new();
+        out.extend(b"Sun,12,Jul,2026,15:07:29:00009-VCID:418318C6\r\n");
+        out.extend(b"8V0 906 264 H,ADVMB,1.8l R4 TFSI\r\n");
+        out.extend(b",,G004,F0,\r\n");
+        out.extend(b"\r\n");
+        out.extend(b"Loc. IDE00025,TIME,Loc. IDE00405,\r\n");
+        out.extend(b"Coolant,STAMP,Engine speed,\r\n");
+        out.extend(b" *C,, /min,\r\n");
+        out.extend(b"99,0.43,801,\r\n");
+        out.extend(b"100,1.94,796,\r\n");
+
+        let log = parse(&out).expect("a timestampless first column is skipped, not fatal");
+        // The measurement that does have a time column still comes through.
+        assert_eq!(log.measurements.len(), 1);
+        assert_eq!(log.measurements[0].ide, "IDE00405");
+        assert_eq!(log.measurements[0].samples, vec![(0.43, 801.0), (1.94, 796.0)]);
+    }
+
+    #[test]
+    fn units_outside_the_cyrillic_block_are_not_flattened_to_spaces() {
+        // CP1251 puts Latin-1 punctuation and a few Cyrillic strays in
+        // 0x80..=0xBF. Mapping the whole range to a space turns "µs" into " s"
+        // and "ёмкость" into " мкость" — silent corruption of a unit string,
+        // which is exactly what a fitted scaling is checked against.
+        assert_eq!(cp1251(&[0xB5, b's']), "µs");
+        assert_eq!(cp1251(&[0xB8]), "ё");
+        assert_eq!(cp1251(&[0xA8]), "Ё");
+        assert_eq!(cp1251(&[0xB9]), "№");
+        assert_eq!(cp1251(&[0xB1]), "±");
+        assert_eq!(cp1251(&[0xB7]), "·");
+        assert_eq!(cp1251(&[0x97]), "—");
     }
 
     #[test]

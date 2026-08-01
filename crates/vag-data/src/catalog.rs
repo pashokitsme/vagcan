@@ -126,15 +126,18 @@ fn ignition_def(did: u16) -> MeasurementDef {
 /// capture with a simultaneous VCDS log (`vagcan analyse`).
 ///
 /// Each row fitted with `R² = 1.00000` — an exact linear relation, not a
-/// correlation — over 14–16 matched samples spanning a real rev. They are
-/// specific to this vehicle's control units (engine `8V0906264H`, gearbox
-/// `0CW300041G`); another car's identifiers must be proven the same way rather
-/// than assumed.
+/// correlation. Engine speed (`206E`) comes from the first, 19.7-second session
+/// and rests on 14–16 matched samples spanning a real rev; the two boost
+/// pressures (`2029`/`202A`) come from the later 16-minute capture, over ~100
+/// matched points each (`research/rod-labels.md` §4.3a). They are specific to
+/// this vehicle's control units (engine `8V0906264H`, gearbox `0CW300041G`);
+/// another car's identifiers must be proven the same way rather than assumed.
 ///
-/// The coolant row is the load-bearing one for confidence: the fit produced
-/// `raw − 40`, which is exactly the standard OBD-II PID 05 formula. Nothing in
-/// the pipeline knows that formula, so recovering it from the data validates
-/// the alignment and the fitting end to end.
+/// The coolant fit from the same sessions is the load-bearing one for
+/// confidence: it produced `raw − 40`, exactly the standard OBD-II PID 05
+/// formula. Nothing in the pipeline knows that formula, so recovering it from
+/// the data validates the alignment and the fitting end to end. It lives in
+/// [`crate::obd`] with the rest of the standard family, not here.
 pub fn proven_measurements() -> Vec<MeasurementDef> {
     proven_engine()
 }

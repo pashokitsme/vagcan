@@ -109,7 +109,16 @@ impl IsoTpSniffer {
         let len = (data[0] & 0x0F) as usize;
         // Length 0 is the CAN-FD escape form; this bus is classic CAN.
         if len == 0 || len > data.len() - 1 {
+            // Not a frame we can read, so it is not evidence of anything —
+            // notably not a reason to throw away an assembly in progress.
             return None;
+        }
+        // ISO 15765-2: a single frame terminates any assembly in flight on that
+        // id. Keeping the partial would let a consecutive frame from the *next*
+        // message — whose first frame we then missed — be stitched onto it and
+        // emitted as a PDU that was never on the bus.
+        if self.in_flight.remove(&id).is_some() {
+            self.dropped += 1;
         }
         Some(SnifferPdu { id, data: data[1..1 + len].to_vec(), frames: 1 })
     }
@@ -142,6 +151,17 @@ impl IsoTpSniffer {
         );
     }
 
+    /// Known residual hole, deliberately not chased: if a first frame is lost
+    /// while an older assembly on the same id is still within the timeout, that
+    /// message's `seq == 1` grafts onto the stale partial. The two cases are
+    /// indistinguishable in-band — a legitimate `FF, CF1` pair looks exactly the
+    /// same, and the gap between them is bounded only by the tester's flow
+    /// control (N_Bs, block size, STmin), so no timing rule separates them
+    /// without discarding real messages on a busy bus. It takes two losses at
+    /// once — a first frame dropped on an id whose previous message was itself
+    /// left unfinished — and the result is a PDU truncated or extended to the
+    /// stale header's declared length, which the decoder above sees as garbage
+    /// rather than as a plausible reading.
     fn consecutive_frame(&mut self, id: u32, data: &[u8], now: Instant) -> Option<SnifferPdu> {
         let seq = data[0] & 0x0F;
         let partial = self.in_flight.get_mut(&id)?;
@@ -259,6 +279,42 @@ mod tests {
         let pdu = s.observe_at(0x7E8, &[0x21, 0, 0, 0, 0, 0, 0, 0], now).expect("second finishes");
         assert_eq!(pdu.data.len(), 9);
         assert_eq!(&pdu.data[..3], &[0x62, 0xA0, 0x58]);
+    }
+
+    #[test]
+    fn a_single_frame_abandons_the_unfinished_message_on_its_id() {
+        // ISO 15765-2: a single frame terminates whatever was being assembled
+        // on that id. Leaving the partial alive lets a later consecutive frame
+        // — which belongs to a message we never saw the start of — be stitched
+        // onto it, producing a PDU that was never on the bus.
+        let mut s = IsoTpSniffer::new();
+        let now = t0();
+        s.observe_at(0x7E8, &[0x10, 0x13, 0x62, 0xF1, 0x90, 1, 2, 3], now);
+
+        let pdu = s
+            .observe_at(0x7E8, &[0x03, 0x7F, 0x22, 0x78, 0, 0, 0, 0], now)
+            .expect("the single frame is still emitted");
+        assert_eq!(pdu.data, vec![0x7F, 0x22, 0x78]);
+        assert_eq!(s.dropped(), 1, "the interrupted assembly is accounted for");
+
+        // The continuation of the dead message must not resurrect it.
+        assert_eq!(s.observe_at(0x7E8, &[0x21, 4, 5, 6, 7, 8, 9, 10], now), None);
+        assert_eq!(s.dropped(), 1, "nothing new was lost — it was already gone");
+    }
+
+    #[test]
+    fn a_malformed_single_frame_leaves_the_assembly_alone() {
+        // Only a well-formed single frame is evidence that the ECU moved on.
+        // A frame we cannot even parse is more likely line noise than a new
+        // message, and killing a good assembly over it would lose real data.
+        let mut s = IsoTpSniffer::new();
+        let now = t0();
+        s.observe_at(0x7E8, &[0x10, 0x09, 0x62, 0xA0, 0x58, 0x55, 0x55, 0], now);
+        assert_eq!(s.observe_at(0x7E8, &[0x07, 0x22, 0xF1], now), None);
+        assert_eq!(s.dropped(), 0);
+
+        let pdu = s.observe_at(0x7E8, &[0x21, 0, 0, 0, 0, 0, 0, 0], now).expect("still assembling");
+        assert_eq!(pdu.data.len(), 9);
     }
 
     #[test]

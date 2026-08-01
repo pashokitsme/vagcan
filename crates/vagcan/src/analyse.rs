@@ -130,50 +130,67 @@ fn keep_best_miss(held: &mut Option<Rejected>, candidate: Rejected) {
 /// rather than guessed at — a mis-split would attribute one measurement's bytes
 /// to another identifier, which is worse than having no sample.
 pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>> {
-    let head = |did: u16| [(did >> 8) as u8, (did & 0xFF) as u8];
-
-    if dids.len() == 1 {
-        let did = dids[0];
-        return payload
-            .strip_prefix(&head(did))
-            .map(|data| vec![(did, data.to_vec())]);
+    let mut found = Vec::new();
+    parse_from(payload, dids, 0, &mut Vec::new(), &mut found);
+    // Exactly one way to read the response is a reading; two ways is a guess.
+    match found.len() {
+        1 => found.pop(),
+        _ => None,
     }
+}
 
-    let mut out = Vec::with_capacity(dids.len());
-    let mut cursor = 0usize;
-    for (i, &did) in dids.iter().enumerate() {
-        if payload.get(cursor..cursor + 2)? != head(did) {
-            return None;
+/// Enumerate every self-consistent way to cut `payload` into records.
+///
+/// The server states no record lengths, so a boundary is only known by the
+/// next identifier's bytes appearing — and those bytes can occur inside a
+/// record's data by coincidence, which little-endian gearbox values do
+/// readily. Requiring each boundary to be unique would throw away perfectly
+/// readable responses; requiring the whole *parse* to be unique keeps them
+/// while still refusing when the response genuinely reads two ways.
+///
+/// At most eight identifiers per request and a few hundred bytes, so the
+/// search is cheap.
+fn parse_from(
+    payload: &[u8],
+    dids: &[u16],
+    at: usize,
+    prefix: &mut Vec<(u16, Vec<u8>)>,
+    found: &mut Vec<Vec<(u16, Vec<u8>)>>,
+) {
+    // More than a couple of readings already means ambiguity; stop searching.
+    if found.len() > 1 {
+        return;
+    }
+    let Some((&did, rest)) = dids.split_first() else {
+        // Every identifier placed, and the payload is fully consumed.
+        if at == payload.len() {
+            found.push(prefix.clone());
         }
-        let body = cursor + 2;
-        let end = match dids.get(i + 1) {
-            Some(&next) => {
-                let next_head = head(next);
-                // The next record starts where its identifier appears — but
-                // only if it appears ONCE. A record's data can contain the
-                // next identifier's bytes by coincidence (little-endian
-                // gearbox values do it readily), and taking the first
-                // occurrence would cut the record short and hand its tail to
-                // the wrong identifier. An ambiguous boundary is not a
-                // boundary: refuse the whole response.
-                let mut found = payload
-                    .windows(2)
-                    .enumerate()
-                    .skip(body)
-                    .filter(|(_, w)| *w == next_head)
-                    .map(|(at, _)| at);
-                let at = found.next()?;
-                if found.next().is_some() {
-                    return None;
-                }
-                at
-            }
-            None => payload.len(),
-        };
-        out.push((did, payload[body..end].to_vec()));
-        cursor = end;
+        return;
+    };
+    let head = [(did >> 8) as u8, (did & 0xFF) as u8];
+    if payload.get(at..at + 2) != Some(&head[..]) {
+        return;
     }
-    Some(out)
+    let body = at + 2;
+
+    let Some((&next, _)) = rest.split_first() else {
+        // The last record runs to the end of the payload.
+        prefix.push((did, payload[body..].to_vec()));
+        parse_from(payload, rest, payload.len(), prefix, found);
+        prefix.pop();
+        return;
+    };
+
+    let next_head = [(next >> 8) as u8, (next & 0xFF) as u8];
+    let boundaries: Vec<usize> = (body..payload.len().saturating_sub(1))
+        .filter(|i| payload[*i..*i + 2] == next_head)
+        .collect();
+    for end in boundaries {
+        prefix.push((did, payload[body..end].to_vec()));
+        parse_from(payload, rest, end, prefix, found);
+        prefix.pop();
+    }
 }
 
 /// The id a control unit answers a request on, if the request id is one we
@@ -555,8 +572,18 @@ pub fn log_offset_seconds(anchor_unix_us: u64, log_hms: (u32, u32, u32)) -> Opti
         + anchor.minute() as f64 * 60.0
         + anchor.second() as f64
         + anchor.timestamp_subsec_micros() as f64 / 1e6;
-    let log_secs =
-        log_hms.0 as f64 * 3600.0 + log_hms.1 as f64 * 60.0 + log_hms.2 as f64;
+    // The log header states its start to the second only, so the true start
+    // lies somewhere inside that second and the midpoint is the best estimate.
+    // Subtracting the capture's exact microsecond time from a truncated log
+    // time without this correction biases every pairing by up to a second —
+    // measured, not theorised: on the reference session it shifted the gearbox
+    // offset by 0.5 s, which flipped half the pairings to the neighbouring
+    // sample and collapsed an R² = 1.00000 fit to 0.051.
+    const LOG_SECOND_MIDPOINT: f64 = 0.5;
+    let log_secs = log_hms.0 as f64 * 3600.0
+        + log_hms.1 as f64 * 60.0
+        + log_hms.2 as f64
+        + LOG_SECOND_MIDPOINT;
 
     // Both are times of day on the same date; a session crossing midnight
     // would need the date, which the log does not state in a parseable form.
@@ -686,18 +713,32 @@ pub fn run(
             } else if levels < limits.min_levels {
                 format!("only {levels} distinct values")
             } else {
-                rejected
+                // Report the CLOSEST any identifier came, not whichever
+                // rejection happened to be recorded first — most identifiers
+                // in a capture never overlap this measurement's window at all,
+                // and quoting one of those says nothing about the ones that
+                // did.
+                let best_r2 = rejected
                     .iter()
-                    .find_map(|r| match r {
-                        Rejected::PoorFit { ide, r2, .. } if *ide == m.ide => {
-                            Some(format!("best fit only R²={r2:.3}"))
-                        }
-                        Rejected::TooFewPoints { ide, points, .. } if *ide == m.ide => {
-                            Some(format!("only {points} overlapping samples"))
-                        }
+                    .filter_map(|r| match r {
+                        Rejected::PoorFit { ide, r2, .. } if *ide == m.ide => Some(*r2),
                         _ => None,
                     })
-                    .unwrap_or_else(|| "no identifier explained it".to_string())
+                    .fold(None, |acc: Option<f64>, r| Some(acc.map_or(r, |a: f64| a.max(r))));
+                let most_points = rejected
+                    .iter()
+                    .filter_map(|r| match r {
+                        Rejected::TooFewPoints { ide, points, .. } if *ide == m.ide => Some(*points),
+                        _ => None,
+                    })
+                    .max();
+                match (best_r2, most_points) {
+                    (Some(r2), _) => format!("best fit only R²={r2:.3}"),
+                    (None, Some(points)) => {
+                        format!("no identifier overlapped it by more than {points} samples")
+                    }
+                    (None, None) => "no identifier explained it".to_string(),
+                }
             };
             println!(
                 "  {:<22} {:>9.2}..{:<9.2} [{}]  — {why}",
@@ -891,6 +932,34 @@ mod tests {
             matches!(rejected.first(), Some(Rejected::PoorFit { .. })),
             "the rejection states why: {rejected:?}"
         );
+    }
+
+    #[test]
+    fn the_offset_accounts_for_the_logs_whole_second_granularity() {
+        // The capture anchor is exact to the microsecond; the log header is
+        // truncated to the second. Subtracting one from the other directly
+        // biases every pairing, and on the reference session that bias was
+        // enough to turn an R² = 1.00000 gearbox fit into 0.051 — half the log
+        // points matched the neighbouring capture sample instead of their own.
+        // A capture starting exactly on the second, and a log header one
+        // minute later, must give 60.5 s: the log's true start is somewhere
+        // inside its stated second, and the midpoint is the best estimate.
+        let on_the_second = 1_785_536_240_000_000u64;
+        let capture_hms = {
+            use chrono::{Local, TimeZone, Timelike};
+            let t = Local.timestamp_micros(on_the_second as i64).single().unwrap();
+            (t.hour(), t.minute(), t.second())
+        };
+        let one_minute_later =
+            (capture_hms.0, capture_hms.1 + 1, capture_hms.2);
+        let offset = log_offset_seconds(on_the_second, one_minute_later).unwrap();
+        assert!((offset - 60.5).abs() < 1e-9, "got {offset}");
+
+        // Half a second into the capture's second, the same log header is that
+        // much closer.
+        let half_past = on_the_second + 500_000;
+        let offset = log_offset_seconds(half_past, one_minute_later).unwrap();
+        assert!((offset - 60.0).abs() < 1e-9, "got {offset}");
     }
 
     #[test]
