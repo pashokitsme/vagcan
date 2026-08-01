@@ -200,6 +200,26 @@ at ~800 /min (idle) with the car parked in P and gear code `00`. So the ratio me
 here is a whole-driveline ratio (engine rev per output-shaft rev), which is why the
 absolute values 2.57–10.10 are far larger than any published *internal* DQ200 gear ratio.
 
+### 2.6 Engaged gear or commanded gear? — timed, not settled
+
+For each of the 38 shift events between two ratio-known codes, the moment the code changed
+(corrected for the 0.75 s sweep offset) was compared with the moment the ratio crossed the
+midpoint of the two cluster values:
+
+```
+median lead = -0.03 s     mean = -0.13 s     range -1.59 … +0.75 s
+30 of 38 events within one sweep period (0.78 s)
+25 events simultaneous, 9 with the code leading by 1–2 samples, 4 lagging by <1 sample
+```
+
+So the code **never lags the mechanics by more than one sample, and sometimes leads by
+one or two**. That is exactly what "the code flips when the shift is commanded while the
+torque handover takes a few hundred ms" predicts — and it is equally what a *commanded /
+target* gear register would look like. **At 1.28 Hz the two cannot be separated.** The
+name used throughout this document is "engaged gear" because it is right at every steady
+state, which is the case that matters for display; a recording at ≥ 10 Hz on `0x3816`
+alone would settle it.
+
 ---
 
 ## 3. PROVEN — selector lever at `0x3809` / `0x3815`
@@ -316,11 +336,9 @@ plausible enough that this negative is about *this recording*, not about the ECU
 **No target/requested gear identifier was found.** Nothing else in the `0x38xx` block
 behaves like a gear. `research/dumps/drive-gearbox.csv` (the `0x0xxx`/`0x10xx` range) was
 surveyed for staircase-shaped columns; it contains 16-bit analogue quantities and nothing
-gear-shaped, and it has no shaft-speed columns to test against anyway. Note also that
-`0x3816` cannot be *distinguished* from a "target gear" here: a DSG commands the shift a
-few hundred ms before it completes, which is inside one sweep period. §2.5's 0.32 % median
-error says it matches the *engaged* gear at least as well as any target would, but the
-sample rate cannot separate the two.
+gear-shaped, and it has no shaft-speed columns to test against anyway. And `0x3816` itself
+cannot be *distinguished* from a target gear at this sample rate — see §2.6, where the
+measurement was actually made: a median lead of −0.03 s with a ±1-sample spread.
 
 ### 6.1 A comparison deliberately NOT used as evidence
 

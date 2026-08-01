@@ -1,0 +1,18 @@
+{
+  "defs": [
+    {
+      "name": "Odometer",
+      "unit": "km",
+      "address": {
+        "Uds": 8707
+      },
+      "raw_form": "U24Be",
+      "scaling": {
+        "Linear": {
+          "factor": 1.0,
+          "offset": 0.0
+        }
+      }
+    }
+  ]
+}

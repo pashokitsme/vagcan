@@ -70,6 +70,9 @@ pub enum RawForm {
     U16Le,
     /// Two data bytes, signed 16-bit big-endian.
     I16Be,
+    /// Three data bytes, unsigned 24-bit big-endian. An odometer needs more
+    /// than 16 bits and does not warrant 32.
+    U24Be,
 }
 
 impl RawForm {
@@ -81,6 +84,12 @@ impl RawForm {
             RawForm::U8Second => data.get(1).map(|&b| b as i32),
             RawForm::U16Be => match data {
                 [hi, lo, ..] => Some(((*hi as i32) << 8) | *lo as i32),
+                _ => None,
+            },
+            RawForm::U24Be => match data {
+                [hi, mid, lo, ..] => {
+                    Some(((*hi as i32) << 16) | ((*mid as i32) << 8) | *lo as i32)
+                }
                 _ => None,
             },
             RawForm::U16Le => match data {
@@ -133,6 +142,22 @@ pub const IGNITION_ANGLE_ZERO_RAW: u16 = 0x5555;
 /// pairing is not individually determined (all four are constant `0.00°`), so
 /// only set membership + the zero point are asserted.
 pub const IGNITION_ANGLE_ZERO_DIDS: &[u16] = &[0xA058, 0xA059, 0xA05E, 0xA05F];
+
+#[cfg(test)]
+mod u24_tests {
+    use super::*;
+
+    #[test]
+    fn a_24_bit_reading_recovers_the_cars_odometer_exactly() {
+        // The instrument cluster answered 0x03 0x3F 0x18 while a VCDS log
+        // recorded 212760 km at the same moment. An exact hit on a six-figure
+        // value is not something a wrong byte order or width reaches.
+        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18]), Some(212_760));
+        // Trailing bytes are ignored, missing ones are not invented.
+        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18, 0xFF]), Some(212_760));
+        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F]), None);
+    }
+}
 
 #[cfg(test)]
 mod tests {

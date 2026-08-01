@@ -149,6 +149,7 @@ pub fn proven_measurements() -> Vec<MeasurementDef> {
 /// a new branch here.
 const ENGINE_CATALOG: &str = include_str!("../../../catalogs/engine-01.json");
 const GEARBOX_CATALOG: &str = include_str!("../../../catalogs/gearbox-02.json");
+const CLUSTER_CATALOG: &str = include_str!("../../../catalogs/cluster-17.json");
 
 /// Engine (address 01) rows that are NOT part of the OBD-II standard set —
 /// VW's own identifiers, which only the capture crib could supply. Combine
@@ -168,6 +169,20 @@ pub fn proven_engine() -> Vec<MeasurementDef> {
 pub fn proven_gearbox() -> Vec<MeasurementDef> {
     MeasurementCatalog::from_json(GEARBOX_CATALOG)
         .expect("the shipped gearbox catalog is valid JSON")
+        .defs
+}
+
+/// Instrument cluster (address 17) rows.
+///
+/// The odometer is proven by an exact hit rather than by a fit: the cluster
+/// answered `03 3F 18` while a VCDS log recorded 212,760 km at the same
+/// moment, and `0x033F18` is 212,760. Road speed and the parking-brake state
+/// were also observed there and look readable, but each moves between too few
+/// values to prove on the evidence available — they are recorded as leads in
+/// `research/other-ecus.md` rather than shipped as facts.
+pub fn proven_cluster() -> Vec<MeasurementDef> {
+    MeasurementCatalog::from_json(CLUSTER_CATALOG)
+        .expect("the shipped cluster catalog is valid JSON")
         .defs
 }
 
@@ -279,6 +294,9 @@ mod tests {
         // count matches the files as shipped.
         assert_eq!(proven_engine().len(), 3, "engine rows come from the file");
         assert_eq!(proven_gearbox().len(), 10, "gearbox rows come from the file");
+        assert_eq!(proven_cluster().len(), 1, "cluster rows come from the file");
+        // The odometer reproduces the exact reading that justified it.
+        assert_eq!(proven_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
     }
 
     #[test]

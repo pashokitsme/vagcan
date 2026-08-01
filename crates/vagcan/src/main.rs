@@ -403,6 +403,8 @@ async fn watch_cmd(
                 MeasurementCatalog::new(defs)
             }
             1 => MeasurementCatalog::new(vag_data::catalog::proven_gearbox()),
+            // Address 17 in VCDS's numbering is the instrument cluster.
+            16 => MeasurementCatalog::new(vag_data::catalog::proven_cluster()),
             // Nothing is proven on the other units yet, so everything shows
             // as raw rather than borrowing another unit's meanings.
             _ => MeasurementCatalog::default(),
