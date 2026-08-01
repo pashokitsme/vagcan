@@ -5,17 +5,20 @@ here. The MVP task breakdown lives in `todo/README.md`.
 
 ## Goal
 
-Read the **whole car over CAN** and show measurements by name/value/unit, with every
-definition sourced from VW's own label files rather than hardcoded. Extensible foundation
-first; UI later.
+Read the **whole car over CAN** and show measurements by name/value/unit. Names come from
+VW's own label files (`catalogs/names-uds.json`); scaling is proven **live on the car** —
+the corpus provably does not carry the read identifier (`research/rod-labels.md` §4.0c,
+`research/label-linkage.md` §3). Extensible foundation first; UI later.
 
 **Done and verified on the car (2026-08-01):** `vagcan info` prints the VIN and the engine
-and gearbox passports, read live over a generic slcan USB-CAN adapter. The remaining work
-is measurement *scaling* — see `todo/README.md` M3.
+and gearbox passports, read live over a generic slcan USB-CAN adapter; 16 measurement rows
+are proven across engine, gearbox and cluster and watched live in the `vagcan watch` TUI.
+The remaining work is whole-car *coverage* — see `todo/README.md` M3.
 
-The original plan routed this through the owner's FTDI HEX cable. That path is parked: its
-session crypto is a dead end, and a generic USB-CAN adapter reaches the same bus with no
-crypto at all.
+The original plan routed this through the owner's FTDI HEX cable. That path is dead: its
+session KDF is VMProtect-sealed, the `vag-hex` crate and the vendored driver are deleted,
+and the research is archived under `archive/research/` as negative results. A generic
+USB-CAN adapter reaches the same bus with no crypto at all.
 
 ## Tech stack & architecture (locked)
 
@@ -28,12 +31,12 @@ crypto at all.
   parallelism. Multiple cables later = actor-per-cable.
 - **Pluggable backend, static dispatch:** `trait Backend { async fn read/write }`
   (native async-fn-in-trait, no `dyn`/`async-trait`). The live backend is `SlcanBackend`
-  over a serial port (`vag-can`); the D2XX/HEX backend remains behind the same seam but is
-  parked.
+  over a serial port (`vag-can`); any future backend implements the same seam.
 - `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
   client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** (indexed/prepared SQLite or preloaded map; benchmark it).
-- **Host = macOS Apple Silicon (M4).** Vendored darwin-arm64 D2XX in `driver/`.
+  FAST** — `vagcan labels` caches the parsed corpus to SQLite under
+  `catalogs/label-cache/`, keyed by corpus directory.
+- **Host = macOS Apple Silicon (M4).**
 
 ## Development workflow
 

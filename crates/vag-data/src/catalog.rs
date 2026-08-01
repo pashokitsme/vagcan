@@ -160,68 +160,67 @@ fn ignition_def(did: u16) -> MeasurementDef {
     }
 }
 
-/// Measurements proven against the car on 2026-08-01 by crossing a passive CAN
-/// capture with a simultaneous VCDS log (`vagcan analyse`).
+/// Measurement definitions on disk, one file per control unit, named after
+/// what that unit calls itself.
 ///
-/// Each row fitted with `R² = 1.00000` — an exact linear relation, not a
-/// correlation. Engine speed (`206E`) comes from the first, 19.7-second session
-/// and rests on 14–16 matched samples spanning a real rev; the two boost
-/// pressures (`2029`/`202A`) come from the later 16-minute capture, over ~100
-/// matched points each (`research/rod-labels.md` §4.3a). They are specific to
-/// this vehicle's control units (engine `8V0906264H`, gearbox `0CW300041G`);
-/// another car's identifiers must be proven the same way rather than assumed.
-///
-/// The coolant fit from the same sessions is the load-bearing one for
-/// confidence: it produced `raw − 40`, exactly the standard OBD-II PID 05
-/// formula. Nothing in the pipeline knows that formula, so recovering it from
-/// the data validates the alignment and the fitting end to end. It lives in
-/// [`crate::obd`] with the rest of the standard family, not here.
-pub fn proven_measurements() -> Vec<MeasurementDef> {
-    proven_engine()
+/// A scaling is a property of a *control unit*, not of a project: `0x202A` is
+/// boost pressure on engine `8V0906264H` and means nothing in particular on
+/// another. So catalogs are keyed by the unit's own part number (`F187`) or
+/// ODX file name (`F19E`) — both of which any VAG car reports about itself —
+/// and are loaded at run time from a directory rather than compiled in. A car
+/// this project has never seen simply finds no file and reads raw bytes,
+/// which is the honest outcome; it never gets another car's numbers applied to
+/// it.
+#[derive(Debug, Clone)]
+pub struct CatalogStore {
+    dir: std::path::PathBuf,
 }
 
-/// The shipped catalogs, embedded so the binary needs no data directory.
-///
-/// These are **files, not literals**: measurement definitions are data (see
-/// `catalogs/README.md`), and a new measurement is a new row there rather than
-/// a new branch here.
-const ENGINE_CATALOG: &str = include_str!("../../../catalogs/engine-01.json");
-const GEARBOX_CATALOG: &str = include_str!("../../../catalogs/gearbox-02.json");
-const CLUSTER_CATALOG: &str = include_str!("../../../catalogs/cluster-17.json");
+impl CatalogStore {
+    pub fn open(dir: impl Into<std::path::PathBuf>) -> Self {
+        CatalogStore { dir: dir.into() }
+    }
 
-/// Engine (address 01) rows that are NOT part of the OBD-II standard set —
-/// VW's own identifiers, which only the capture crib could supply. Combine
-/// with [`crate::obd::PIDS`] for the standard parameters.
-pub fn proven_engine() -> Vec<MeasurementDef> {
-    MeasurementCatalog::from_json(ENGINE_CATALOG)
-        .expect("the shipped engine catalog is valid JSON")
-        .defs
-}
+    /// Where the catalogs live by default, relative to the working directory.
+    pub const DEFAULT_DIR: &'static str = "catalogs/vehicles";
 
-/// Gearbox (address 02) rows.
-///
-/// Kept separate from the engine set on purpose: **`F40D` means different
-/// things on the two units** — one byte of km/h on the engine (the OBD-II
-/// mirror), two little-endian bytes at ×0.01 here. A single combined catalog
-/// could only be wrong for one of them.
-pub fn proven_gearbox() -> Vec<MeasurementDef> {
-    MeasurementCatalog::from_json(GEARBOX_CATALOG)
-        .expect("the shipped gearbox catalog is valid JSON")
-        .defs
-}
+    /// The rows known for a unit, given what it reported about itself.
+    ///
+    /// The part number is tried first and the ODX name second; a unit that
+    /// reports neither, or reports something with no file, gets nothing. Keys
+    /// are matched with spaces and padding removed, because control units pad
+    /// these strings to a fixed width.
+    pub fn for_unit(&self, part_number: Option<&str>, odx_name: Option<&str>) -> Vec<MeasurementDef> {
+        [part_number, odx_name]
+            .into_iter()
+            .flatten()
+            .filter_map(|key| self.load(key))
+            .next()
+            .unwrap_or_default()
+    }
 
-/// Instrument cluster (address 17) rows.
-///
-/// The odometer is proven by an exact hit rather than by a fit: the cluster
-/// answered `03 3F 18` while a VCDS log recorded 212,760 km at the same
-/// moment, and `0x033F18` is 212,760. Road speed and the parking-brake state
-/// were also observed there and look readable, but each moves between too few
-/// values to prove on the evidence available — they are recorded as leads in
-/// `research/other-ecus.md` rather than shipped as facts.
-pub fn proven_cluster() -> Vec<MeasurementDef> {
-    MeasurementCatalog::from_json(CLUSTER_CATALOG)
-        .expect("the shipped cluster catalog is valid JSON")
-        .defs
+    /// Load one catalog by key. `None` when there is no such file or it does
+    /// not parse — a broken catalog must not be silently half-applied.
+    pub fn load(&self, key: &str) -> Option<Vec<MeasurementDef>> {
+        let key = Self::normalise(key);
+        if key.is_empty() {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.dir.join(format!("{key}.json"))).ok()?;
+        match MeasurementCatalog::from_json(&text) {
+            Ok(catalog) => Some(catalog.defs),
+            Err(e) => {
+                eprintln!("catalog {key}.json is not readable: {e}");
+                None
+            }
+        }
+    }
+
+    /// A control unit reports `"5E0920740D "` with trailing padding, and part
+    /// numbers are written with spaces as often as without.
+    fn normalise(key: &str) -> String {
+        key.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_uppercase()
+    }
 }
 
 /// A selectable set of measurement definitions — the user's chosen catalog.
@@ -240,13 +239,18 @@ impl MeasurementCatalog {
         MeasurementCatalog { defs }
     }
 
-    /// The catalog seeded with everything proven on the engine so far. This is
-    /// the baseline a fresh install ships with; the gearbox has its own set
-    /// (see [`proven_gearbox`]) because the two units disagree on `F40D`.
-    pub fn seeded() -> Self {
-        let mut defs = proven_engine();
-        defs.extend(ignition_angle());
-        MeasurementCatalog::new(defs)
+    /// The rows for one control unit, from a store on disk plus the families
+    /// this project proved by measurement rather than by label.
+    ///
+    /// Nothing car-specific is compiled in: the store answers by the unit's
+    /// own part number or ODX name, so a car the project has never seen gets
+    /// an empty catalog rather than another car's scalings.
+    pub fn for_unit(
+        store: &CatalogStore,
+        part_number: Option<&str>,
+        odx_name: Option<&str>,
+    ) -> Self {
+        MeasurementCatalog::new(store.for_unit(part_number, odx_name))
     }
 
     pub fn len(&self) -> usize {
@@ -271,6 +275,30 @@ impl MeasurementCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reference car's catalogs, read from the repository's store.
+    ///
+    /// These files are evidence, not a shipped table: they are keyed by the
+    /// part number each control unit reports, and the tests below check that
+    /// the numbers still reproduce the readings that justified them.
+    fn reference_store() -> CatalogStore {
+        CatalogStore::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../catalogs/vehicles"),
+        )
+    }
+
+    fn reference_engine() -> Vec<MeasurementDef> {
+        reference_store().load("8V0906264H").expect("the reference engine catalog is present")
+    }
+
+    fn reference_gearbox() -> Vec<MeasurementDef> {
+        reference_store().load("0CW300041G").expect("the reference gearbox catalog is present")
+    }
+
+    fn reference_cluster() -> Vec<MeasurementDef> {
+        reference_store().load("5E0920740D").expect("the reference cluster catalog is present")
+    }
 
     #[test]
     fn linear_row_interprets_every_raw() {
@@ -353,27 +381,31 @@ mod tests {
 
     #[test]
     fn a_measured_quantity_still_describes_itself_with_its_unit() {
-        let rpm = &proven_engine()[0];
+        let rpm = &reference_engine()[0];
         assert_eq!(rpm.describe(&[0x02, 0xBD]).as_deref(), Some("701 /min"));
     }
 
     #[test]
-    fn the_shipped_catalogs_are_loadable_data_not_code() {
-        // The definitions live in catalogs/*.json. If they ever moved back
-        // into Rust literals this test would still pass, so it also checks the
-        // count matches the files as shipped.
-        assert_eq!(proven_engine().len(), 3, "engine rows come from the file");
-        assert_eq!(proven_gearbox().len(), 12, "gearbox rows come from the file");
-        assert_eq!(proven_cluster().len(), 1, "cluster rows come from the file");
+    fn catalogs_are_data_on_disk_keyed_by_what_a_unit_calls_itself() {
+        // Nothing car-specific is compiled in. A unit is looked up by the part
+        // number it reports, so a car this project has never seen gets an
+        // empty catalog instead of another car's scalings.
+        assert_eq!(reference_engine().len(), 3, "engine rows come from the file");
+        assert_eq!(reference_gearbox().len(), 12, "gearbox rows come from the file");
+        assert_eq!(reference_cluster().len(), 1, "cluster rows come from the file");
+        // Padding and spacing in a reported part number must not matter —
+        // control units pad these strings to a fixed width.
+        assert_eq!(reference_store().for_unit(Some("5E0 920 740 D "), None).len(), 1);
+        assert!(reference_store().for_unit(Some("NOSUCHPART"), None).is_empty());
         // The odometer reproduces the exact reading that justified it.
-        assert_eq!(proven_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
+        assert_eq!(reference_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
     }
 
     #[test]
     fn the_proven_rows_reproduce_the_values_the_car_displayed() {
         // Spot values lifted straight from the 2026-08-01 session, so the
         // catalog cannot drift away from the evidence that justified it.
-        let engine = proven_engine();
+        let engine = reference_engine();
         let rpm = &engine[0];
         assert_eq!(rpm.interpret(&[0x02, 0xBD]), Some(701.0));
 
@@ -383,7 +415,7 @@ mod tests {
         assert_eq!(boost.unit, "bar");
 
         // The gearbox reports little-endian: `B2 02` is 690 /min, not 45570.
-        let gearbox = proven_gearbox();
+        let gearbox = reference_gearbox();
         let input = &gearbox[0];
         assert_eq!(input.interpret(&[0xB2, 0x02]), Some(690.0));
         assert_eq!(input.interpret(&[0xCC, 0x08]), Some(2252.0));
@@ -396,7 +428,7 @@ mod tests {
         // from standstill the code stepped 02→03→…→08 in strict order, seven
         // consecutive codes on a seven-speed box, so gear = code − 1. Reverse
         // sits at 0C, outside any arithmetic.
-        let gear = proven_gearbox()
+        let gear = reference_gearbox()
             .into_iter()
             .find(|d| d.address == ReadId::Uds(0x3816))
             .expect("the gearbox set carries the gear");
@@ -413,8 +445,8 @@ mod tests {
         // On the engine F40D is the OBD-II mirror: one byte of km/h. On the
         // gearbox it is two little-endian bytes at x0.01. Merging the sets
         // would silently make one of them wrong.
-        assert!(!proven_engine().iter().any(|d| d.address == ReadId::Uds(0xF40D)));
-        let gearbox_speed = proven_gearbox()
+        assert!(!reference_engine().iter().any(|d| d.address == ReadId::Uds(0xF40D)));
+        let gearbox_speed = reference_gearbox()
             .into_iter()
             .find(|d| d.address == ReadId::Uds(0xF40D))
             .expect("the gearbox set carries its own F40D");
@@ -427,7 +459,8 @@ mod tests {
         // The user-facing config: a catalog (mix of proven anchor + a fully
         // linear row) survives save→load byte-for-byte, so config selection is
         // pure data.
-        let mut cat = MeasurementCatalog::seeded();
+        let mut cat = MeasurementCatalog::for_unit(&reference_store(), Some("8V0906264H"), None);
+        cat.defs.extend(ignition_angle());
         cat.defs.push(MeasurementDef {
             name: Cow::Owned("Engine RPM".to_string()),
             unit: Cow::Owned("/min".to_string()),

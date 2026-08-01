@@ -15,8 +15,13 @@
 
 use anyhow::{Context, Result};
 
-/// The names catalog, compiled in so the command works from any directory.
-const NAMES: &str = include_str!("../../../catalogs/names-uds.json");
+/// Where the recovered names live by default.
+///
+/// Loaded at run time, not compiled in: this file is one corpus's worth of
+/// names — the corpus that happened to be installed here — and a different
+/// VCDS installation will have a different one. Data belongs on disk where it
+/// can be replaced without a rebuild.
+pub const DEFAULT_PATH: &str = "catalogs/names-uds.json";
 
 /// Every name whose text contains `needle`, case-insensitively, with its text
 /// id.
@@ -36,9 +41,15 @@ pub fn search<'a>(catalog: &'a serde_json::Value, needle: &str) -> Vec<(&'a str,
 }
 
 /// Run the command (see the module docs).
-pub fn run(needle: &str, limit: usize) -> Result<()> {
+pub fn run(needle: &str, limit: usize, path: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "reading the names catalog {path:?} — it is recovered from a VCDS \
+             installation, see research/tttext-codec.md"
+        )
+    })?;
     let catalog: serde_json::Value =
-        serde_json::from_str(NAMES).context("parsing the names catalog")?;
+        serde_json::from_str(&text).context("parsing the names catalog")?;
     let hits = search(&catalog, needle);
 
     if hits.is_empty() {
@@ -99,9 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_catalog_parses_and_is_the_size_the_research_claims() {
-        // research/tttext-codec.md §7: 17,009 names recovered.
-        let catalog: serde_json::Value = serde_json::from_str(NAMES).unwrap();
+    fn the_recovered_catalog_parses_and_is_the_size_the_research_claims() {
+        // research/tttext-codec.md §7: 17,009 names recovered. Read from disk,
+        // because that is where the command reads it from too.
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../").join(DEFAULT_PATH);
+        let catalog: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(catalog.as_object().unwrap().len(), 17_009);
         // A name that came out of the crack, spot-checked in the research doc.
         assert!(!search(&catalog, "rear lid unlocking").is_empty());

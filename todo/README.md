@@ -1,24 +1,30 @@
 # vagcan — roadmap & status
 
 **Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
-with every definition (name, read address, scaling, unit) taken **from VW's own label
-files** (`.lbl`/`.clb`/`.rod`) — exactly like VCDS — so any value a block exposes is
-selectable from config, with **no hardcoded addresses or formulas**. Live transport =
-the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md` for the locked
-stack and `todo/GOAL.md` for the goal statement.
+definitions as **data, not code**: names from VW's own label files
+(`catalogs/names-uds.json`), read address + scaling + unit **proven live on the car**
+(`catalogs/*.json`) — the corpus provably does not carry them
+(`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3). Any value a unit
+exposes is selectable from config, with no hardcoded addresses or formulas in Rust.
+Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
+for the locked stack and `todo/GOAL.md` for the goal statement.
 
-## Status (2026-08-01, overnight)
+## Status (2026-08-01)
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
-built and merged. The offline path to measurements is **exhausted**: the STRUC field
-segmentation is unreversed *and* the read DID is now proven not to live in STRUC at all
-(`research/rod-labels.md` §4.0c). M3 therefore no longer waits on the label corpus — it
-waits on **live evidence from the car**, and the tooling to collect it is now built.
+built and merged. The offline path to measurement *scaling* is **refuted, not just stalled**:
+the read DID provably does not live in the corpus (`research/rod-labels.md` §4.0c,
+`research/label-linkage.md` §3 — a structural impossibility, do not retry). Scaling comes
+from the car: the parallel-VCDS capture session ran, `vagcan analyse` and `vagcan calibrate`
+turn recordings into proven rows, and `catalogs/*.json` holds 16 of them across engine,
+gearbox and cluster. Names come from the corpus after all — `TTTEXT.ROD` is cracked
+(`research/tttext-codec.md`) and `catalogs/names-uds.json` carries 17,009 names, but the
+corpus has **no name→DID join**, so `vagcan names` output is a hypothesis to test live.
 
-The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, the identifier
-sweep runs over the whole 16-bit space in minutes, and the CLI has been rebuilt around the
-commands a person actually uses. What remains for M3 is one capture session with VCDS
-running in parallel, and the offline tool that turns it into scalings.
+The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, `vagcan survey`
+walks every unit the gateway lists (identification, stored DTCs, identifier sweep), and
+`vagcan watch` is a full-screen multi-unit TUI. What remains for M3 is **coverage**: the
+open-work list at the end of this file.
 
 ### Milestones
 | M | what | state |
@@ -26,7 +32,7 @@ running in parallel, and the offline tool that turns it into scalings.
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
-| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **21 rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states** |
+| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **16 catalog rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
@@ -42,16 +48,24 @@ running in parallel, and the offline tool that turns it into scalings.
 | label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
-| labels-cli | vagcan | `vagcan labels` — corpus inventory + `--part` / `--block` lookup |
-| cli-app | vagcan | `devices` / `info` / `properties` / `sniff` / `scan` / `labels` (HEX-clone commands removed) |
+| labels-cli | vagcan | `vagcan labels` — corpus inventory + `--part` / `--block` lookup; SQLite cache under `catalogs/label-cache/` per corpus dir (`--refresh` rebuilds); the IV brute force moved behind the `rod-crack` feature (`vag-rod` bin only) |
+| addressing | vag-protocol | `address.rs` — `UnitAddress`: ISO block `7E0..7E7` → +8, VW block `700..7BF` → +0x6A; fixes `--ecu 17` resolving to `0x7F0` (nothing) instead of the cluster `0x714`; short numbers only for evidenced units (01/02/09/16/17), everything else by request id |
+| survey | vagcan | `vagcan survey` — walk the gateway's installation list (plus engine/gearbox/gateway, which it never contains): identification, stored DTCs (`19 02 FF`), then the identifier bands in use on this car; JSON lines per unit; silent units skipped after ident |
+| watch-tui | vagcan | `vagcan watch` — full-screen ratatui TUI, multi-unit, reconfigurable in place (`c`); `--survey FILE` offers everything a survey found; actual/specified pairs on one line; unconverted CSV columns suffixed `_raw` |
+| calibrate | vagcan | `vagcan calibrate` — offline; fits `_raw` columns against trusted reference columns in the same `watch --out` recording |
+| names | vagcan | `vagcan names` — substring search over `catalogs/names-uds.json` (17,009 TTTEXT names); a match is a hypothesis, the corpus has no name→DID join |
+| cli-app | vagcan | `devices` / `info` / `units` / `properties` / `sniff` / `sensors` / `watch` / `scan` / `survey` / `analyse` / `discover` / `calibrate` / `names` / `labels` (HEX-clone commands removed); `faults` is in the working tree, not yet merged |
 
-## M3 — measurements from `.rod` (the current work)
+## M3 — measurements (the current work)
 
-### How VCDS reads measurements on this car (MQB / UDS), = our target
-The ECU's `.rod` (`EV_ECM…rod`) is the source of truth: each measuring value =
+### How VCDS reads measurements on this car (MQB / UDS)
+The ECU's `.rod` (`EV_ECM…rod`) is VCDS's source of truth: each measuring value =
 `{ read DID, COMPU-method ref → DOP scaling, text-id → TTTEXT name }`. VCDS issues
 `UDS 22 <DID>`, applies the COMPU method, prints `name = value unit`. Groups (`G004…`)
-bundle DIDs. So the product needs the ECU `.rod` decoded into `(DID, scale, unit, name)`.
+bundle DIDs. That was the original target — decode the ECU `.rod` into
+`(DID, scale, unit, name)` — but the corpus turned out not to carry the DID or readable
+scaling (below), so this project gets the *names* from the corpus and proves the
+*(DID, scale, unit)* part on the car.
 
 ### What is done vs the wall
 - ✅ `.rod` TEA-CBC + zlib + the per-record `product`/IV blocker — **defeated offline**
@@ -72,7 +86,7 @@ ran end-to-end and produced a clean negative: the read DID is **not stored in ST
 any tested encoding, `STRUC-id` is not the IDE measurement id, and `IDE-id` is not the
 MWB row index (`research/rod-labels.md` §4.0c). Do not re-run it.
 
-### Next lever — sniff VCDS on the bus (the live crib)
+### The lever that worked — sniff VCDS on the bus (the live crib)
 Every prior crib came from USB captures of the HEX clone, where the link cipher hides the
 payload and VCDS's **group reads** — the source of RPM / vehicle speed / coolant — never
 decoded (§4.0a/§4.0b). CAN is multi-drop, so a second adapter can sit on the same OBD-II
@@ -80,7 +94,7 @@ bus in listen-only mode while VCDS runs a normal session and record the whole co
 **in the clear**, multi-frame group reads included.
 
 Tooling (built, `docs/superpowers/specs/2026-07-31-can-sniffer-design.md`):
-- `vagcan sniff --port <tty> --out cap.jsonl` — listen-only by default; streams every frame
+- `vagcan sniff --out cap.jsonl` — listen-only by default; streams every frame
   to a `vag-capture` JSONL headed by a wall-clock anchor, reassembles ISO-TP live, and takes
   operator markers from stdin. The anchor exists because the capture↔CSV lag had to be
   *guessed* last time (~52 s), which is how several "correlations" turned out to be
@@ -89,9 +103,10 @@ Tooling (built, `docs/superpowers/specs/2026-07-31-can-sniffer-design.md`):
   regardless of what any label file names.
 - `vagcan properties --ecu 01` — the identification range, named.
 
-The pairing to collect: sniff + VCDS running ADVMB logging to CSV, engine running, a wide
-rev. That yields `(read address → raw bytes → displayed engineering value)` directly, with
-no dependence on the `.rod` field codec.
+The pairing — sniff + VCDS running ADVMB logging to CSV, engine running, a wide rev —
+was collected on 2026-08-01 and yielded `(read address → raw bytes → displayed engineering
+value)` directly, with no dependence on the `.rod` field codec. See "The remaining work"
+item 1 below.
 
 ### Overnight results (2026-08-01→02, four parallel analyses)
 
@@ -134,9 +149,10 @@ Writeups: `research/identifier-map.md`, `research/other-ecus.md`,
 1. **Re-sweep the engine with it running.** 450 of 896 identifiers read zero because the
    sweep was taken engine-off — very likely "no signal", not "unimplemented". Cheapest
    improvement available.
-2. **A parked identification pass driven off the gateway list** — read `2A26`, then
-   `F187/F197/F19E/F189/F191` on every id in it. Names nine currently-unknown units and
-   yields their label-file keys without moving.
+2. **A parked identification pass driven off the gateway list** — shipped as
+   `vagcan survey`: reads `2A26`, walks every listed unit (plus engine/gearbox/gateway,
+   which the list never contains), reads identification, stored DTCs and the identifier
+   bands in use on this car, one JSON line per unit. Run it parked.
 3. **Record the gearbox `3820–38FF` block while driving.** Every proven clutch row lives
    there and none of it has been recorded moving.
 4. **Select S and paddle-shift deliberately.** The lever moved through P, R, N and D during
@@ -176,44 +192,49 @@ It:
 Exercised against real capture+log data on 2026-08-01: it found the three scalings above
 and rejected a two-level false positive, which is what the guards are for.
 
-**3. Names and the per-ECU measurement list from the `.rod`.** Scaling now comes from the
-car, and after the 2026-08-02 linkage attempt (`research/label-linkage.md`,
-`research/rod-labels.md` §4.4) that is settled: the corpus holds **no linear coefficients**,
-its values are base-10 under a per-table glyph substitution, and the `MWB` code is a global
-function of the text-id with no per-ECU degree of freedom. So the corpus is for **names and
-per-ECU lists**, nothing more — unless `TTTEXT2.ROD` or `MUX.rod` turns out to hold a global
-registry, the last two uncracked candidates.
+**3. Names from the `.rod` — DONE.** Scaling comes from the car, and after the linkage
+attempt (`research/label-linkage.md`, `research/rod-labels.md` §4.4) that is settled: the
+corpus holds **no linear coefficients**, its values are base-10 under a per-table glyph
+substitution, and the `MWB` code is a global function of the text-id with no per-ECU degree
+of freedom. So the corpus is for **names and per-ECU lists**, nothing more.
 
-Outstanding for names: crack `TTTEXT.ROD` and join `MWB → text-id → TTTEXT`. The gearbox
-`MWB` is now cracked (1,020 rows), so only the name table is missing. Budget minutes, not
-hours — the cracker is 10.9× faster since 2026-08-02 — but do the reusable-inflate-buffer
-fix first, since `TTTEXT` is 7.4 MB and allocation churn dominates at that size.
+The name table itself is cracked (`research/tttext-codec.md`): **17,009 names** shipped in
+`catalogs/names-uds.json`, searchable with `vagcan names <text>`. The `ENG######` question
+is settled — the number **is** the `TTTEXT` text-id, proven four for four on records solved
+blind (`research/tttext-codec.md` §2, superseding `research/label-linkage.md` §4's
+"suggestive, not established"), and the recovered names are English text — the
+`ENG`-means-*English* reading, not *engine*. That closes the chain
+*proven identifier → IDE → ENG → name* for gearbox rows whose `IDE` the VCDS log prints —
+but only for those. The corpus itself carries **no name→DID join**: `MWB` has no per-ECU
+identifier, so a `vagcan names` hit is a hypothesis to confirm on the car, not a binding.
+`mwb.rs` is deliberately kept for the possible MWB→TTTEXT name join.
 
-The `ENG######` lead is **refuted**: none of the eleven numbers from the proven pairs
-appears anywhere in this gearbox's own decoded sections (`research/label-linkage.md`
-addendum). Refined hypothesis, untested: `ENG` may mean *English* rather than *engine*, and
-key a separate English text table — checkable for free once `TTTEXT` is cracked.
+**4. `vagcan watch` — BUILT, now a full-screen TUI.** ratatui, multi-unit, reconfigurable
+from inside (`c`); `--survey FILE` offers every identifier a survey found; actual/specified
+pairs (e.g. boost `0x2029` specified / `0x202A` actual) render on one line. Polls live at
+bus speed (46 Hz measured on the boost set) using batched reads. Anything unproven prints
+its bytes tagged raw, and unconverted columns are written to CSV with a `_raw` suffix —
+which is what `vagcan calibrate` fits against the trusted columns in the same recording.
 
-**4. `vagcan watch` — BUILT.** Polls live at bus speed (46 Hz measured on the boost set)
-using batched reads. Presets carry their own control unit. Anything unproven prints its
-bytes tagged `(raw)` rather than a bare number.
-
-**5. Discrete state — `vagcan discover`, BUILT; identification in progress.** Gear,
+**5. Discrete state — `vagcan discover` BUILT; gear and selector identified.** Gear,
 gearbox mode, switches and lamps cannot be fitted: a two-level value fits any line
 exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
 continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
-coincide. Still to do: confirm which candidate is the gear (cross against the
-input/output shaft speed ratio, both already proven), then the same for the cluster (17)
-and ABS (03), which have not been swept yet.
+coincide. The gear (`0x3816`, η² = 0.972 against the proven shaft-speed ratio) and the
+selector lever (`0x3809`) are identified and in `catalogs/gearbox-02.json` as enums.
+Still to do: the drive mode (D/S/manual — never selected during the recording, so the
+stimulus is missing, not the signal), and the same treatment for the other units.
 
 ### Then — the extensible foundation (architecture)
 ```
 MeasurementDef { name, unit, address: Uds(did) | Group(g,field), raw_form, scale }
-MeasurementCatalog::load_from_rod(ecu_rod) -> Vec<MeasurementDef>   // data, not code
+MeasurementCatalog                                                  // data, not code:
+    names/lists from the corpus, scaling from live calibration
 read_measurement(&def, uds) -> (name, value, unit)                 // one generic path
 ```
-Add a parameter = a data row / config selection, never new match-arms. Scaling comes
-from `.rod` (when STRUC is reversed) or empirically from a live crib — unified.
+Add a parameter = a data row / config selection, never new match-arms. Scaling is proven
+empirically from a live crib (`analyse` / `calibrate`) — the corpus provably cannot supply
+it; names and per-ECU lists are what the corpus is for.
 
 ## Hardware checkpoints (STOP, confirm on the real car)
 Dongle: **MKS CANable V2.0 Pro** (STM32G431 + ADM3050E isolated) — fits `vag-can`'s
@@ -232,8 +253,8 @@ resistor drags it to 40 Ω); leave **BOOT** open (DFU only).
 
 Risk climbs monotonically — stop and confirm at each step:
 1. ✅ **`vagcan sniff`, no VCDS.** Zero risk: listen-only cannot even ACK.
-2. 🔴 **`vagcan sniff` + VCDS in parallel**, VCDS logging ADVMB to CSV, engine running, wide
-   rev. The trophy — see "Next lever" above. **Next action.**
+2. ✅ **`vagcan sniff` + VCDS in parallel** — done 2026-08-01, 308 s captured alongside a
+   live VCDS session; see "The remaining work" item 1.
 3. ✅ **`vagcan info`** — done 2026-08-01, see below.
 4. ✅ **`vagcan scan`** — full `0000-FFFF` sweep of both units, 2026-08-01: the engine
    answers **896** identifiers (191 s, 10,840 requests), the gearbox **541** (274 s, 9,406
@@ -279,14 +300,38 @@ not there and every open fails with "No such file or directory". That is a USB-s
 not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
 `ls /dev/cu.usbmodem*` before believing any "the bus is dead" result.
 
-**Validation oracle:** the owner's full Auto-Scan is in `research/vcds-rus-crack.md`
+**Validation oracle:** the owner's full Auto-Scan is in `archive/research/vcds-rus-crack.md`
 (VIN `XW8AD4NE9JH008917`, every ECU part-number/coding/VCID) — golden fixtures.
 
+## The open work (M3 coverage and beyond)
+
+- **Whole-car measurement coverage.** The catalogs cover engine, gearbox and cluster; the
+  survey reaches every unit. Specifically:
+  - body control module `0x70E` — lights, doors, indicators;
+  - cluster `0x714` — a **cold start** while polling `0x22D0`, the one action that turns
+    its coolant scaling from "consistent with" into measured;
+  - the unidentified units `0x712` / `0x713` / `0x715` / `0x746` / `0x74A` / `0x74B` /
+    `0x767` / `0x773` (`research/other-ecus.md`) — identify, then sweep;
+  - deeper engine and gearbox coverage (the `3820–38FF` gearbox block while driving, the
+    engine re-swept with the engine running).
+- **Unit addresses from the corpus.** `vag-protocol/src/address.rs` is a table in code,
+  deliberately limited to the five evidenced short numbers. The addresses (and the full
+  unit-number ↔ name mapping) should come from the label corpus (`.rod`/label files)
+  instead. Open — not started.
+- **Electrical-system and brake channels.** Nothing from ABS/brakes or the electrical
+  system is in a catalog yet.
+
+## Dead and archived (kept as negative results — do not retry)
+- **HEX-clone live UDS** — the session KDF is VMProtect-sealed and dead. The `vag-hex`
+  crate and the vendored FTDI D2XX driver are **deleted**; the research writeups moved to
+  `archive/research/` (`vag-hex-framing.md`, `clone-crypto.md`, `vcds-rus-crack.md`) and
+  stay authoritative as negative results. The clone capture decoder
+  (`research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
+- **Scaling from the corpus** — refuted structurally, twice over
+  (`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3/§5).
+- **OBD-II Mode 01 as the product path** — dropped. The standard sensors survive as
+  `vagcan sensors` and as calibration references, not as the measurement model.
+
 ## Parked (designed, not being implemented now)
-- **HEX-clone live UDS** — blocked by a VMProtect-sealed session KDF; a dead end for the
-  multi-platform/CAN goal even if cracked (`research/clone-crypto.md`). The clone capture
-  decoder (`research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
-- **OBD-II Mode 01** — dropped. The product reads VW measuring blocks from label files,
-  not fixed SAE PIDs.
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan under
   `docs/superpowers/{specs,plans}/2026-07-06-cross-platform-*`. Below-the-seam refactor.

@@ -105,7 +105,6 @@ impl UnitReport {
         let address = UnitAddress::from_request(self.request)
             .map(|a| a.label())
             .unwrap_or_else(|| format!("{:03X}", self.request));
-        let named = gateway::unit_name(self.request).unwrap_or("");
         let component = self.component().unwrap_or_default();
         let part = self.part_number().unwrap_or_default();
         if !self.answered {
@@ -116,9 +115,8 @@ impl UnitReport {
             n => format!(", {n} stored faults"),
         };
         format!(
-            "  {address:<4} {:03X}  {:<24} {:<14} {:<14} {} identifiers{faults}",
+            "  {address:<4} {:03X}  {:<14} {:<16} {} identifiers{faults}",
             self.request,
-            named,
             part,
             component,
             self.hits.len()

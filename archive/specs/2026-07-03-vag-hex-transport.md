@@ -1,3 +1,6 @@
+> **SUPERSEDED (archived).** The HEX-clone path is dead — its session KDF is VMProtect-sealed (`archive/research/clone-crypto.md`) and the `vag-hex` crate is deleted.
+> The live transport is the generic slcan USB-CAN adapter (`vag-can`); see `todo/GOAL.md`. The framing research this spec cites is archived at `archive/research/vag-hex-framing.md` and stays authoritative as a negative result.
+
 # vag-hex — Cable Transport Design
 
 **Status:** capture done, framing implemented. Two USBPcap traces

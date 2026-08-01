@@ -263,9 +263,15 @@ a unit, a display class, or a structure. Which one cannot be settled without §2
 
 ---
 
-## 4. Names (task 2) — NOT DELIVERED, and the reason is worth stating precisely
+## 4. Names (task 2) — NOT DELIVERED *at the time of writing*, and the reason is worth stating precisely
 
-**`catalogs/names-uds.json` was not written.** Not because the names are unreachable, but
+> **Update:** superseded by `research/tttext-codec.md`. `TTTEXT`'s codec was subsequently
+> broken and `catalogs/names-uds.json` now exists — 17,009 names, keyed by text-id exactly
+> as this section prescribes (not by identifier, for the reason given below, which stands).
+> The `ENG######` lead at the end of this section is also settled there: it **is** the
+> `TTTEXT` text-id, proven four for four on records solved blind (`tttext-codec.md` §2).
+
+**`catalogs/names-uds.json` was not written then.** Not because the names are unreachable, but
 because a `identifier → name` file needs two things and only one of them is within reach.
 
 **What is reachable.** The name join itself is mechanical: `MWB` row → 6-digit text-id →
@@ -302,7 +308,9 @@ matters because `vagcan analyse` proves `IDE00022 ↔ 7E9/380A` at `R² = 1.0000
 (re-run here on `research/dumps/session-2026-08-01.jsonl`), which would give a **real**
 `text-id ↔ proven identifier` pair — the join this whole exercise is missing.
 
-Status of that lead: **suggestive, not established.** Of the 15 distinct `ENG######` numbers
+Status of that lead *when written*: **suggestive, not established** — since settled as
+**established** by `research/tttext-codec.md` §2 (four records solved blind all match the
+log's names). Of the 15 distinct `ENG######` numbers
 in our gearbox logs, 6 appear among the 43,781 text-ids the corpus references — against an
 18.2 % density baseline in that numeric window, so 40 % vs 18 %, `p ≈ 0.05` at `n = 15`. That
 is one-and-a-bit sigma of evidence, and the nine misses are equally well explained by those
@@ -394,6 +402,11 @@ supports it otherwise.
 ---
 
 ## 6. Reproduction
+
+(As-run commands from the time of this work. `vagcan labels` has since lost `--crack`:
+the IV brute force now lives behind the `rod-crack` cargo feature —
+`cargo run -p vag-data --features rod-crack --bin vag-rod <file.rod>` — and `vagcan labels`
+reads the cached IVs from `catalogs/rod-iv-cache.json`.)
 
 ```
 # decode a car label file (IV cache kept outside research/VCDS-*)

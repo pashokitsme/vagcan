@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::dtc::RawDtc;
+use crate::dtc::{DtcExtendedData, DtcSnapshot, RawDtc};
 use crate::uds::UdsError;
 
 /// How long each client waits for one response PDU.
@@ -90,4 +90,97 @@ pub(crate) fn parse_dtc_response(resp: &[u8]) -> Result<Vec<RawDtc>, UdsError> {
         out.push(RawDtc { code: [chunk[0], chunk[1], chunk[2]], status: chunk[3] });
     }
     Ok(out)
+}
+
+/// Parse a ReadDTCInformation 0x04 response body (after SID strip):
+/// `0x04 code(3) status(1) [record(1) count(1) [did(2) data]*]*`.
+///
+/// The per-identifier lengths are **not** in the response — a reader is
+/// expected to know them from the unit's own description. Without that, the
+/// only honest parse is: record number, then the remaining bytes of that
+/// record. So the identifiers are read where the count makes them
+/// unambiguous, and the rest is kept whole.
+pub(crate) fn parse_dtc_snapshot(resp: &[u8]) -> Result<Vec<DtcSnapshot>, UdsError> {
+    if resp.len() < 5 || resp[0] != 0x04 {
+        return Err(UdsError::Malformed("bad ReadDTCInformation 0x04 response".into()));
+    }
+    // resp[1..4] is the DTC the caller asked about, resp[4] its status.
+    let mut out = Vec::new();
+    let mut at = 5;
+    while at + 1 < resp.len() {
+        let record = resp[at];
+        let count = resp[at + 1] as usize;
+        at += 2;
+        let mut values = Vec::new();
+        for _ in 0..count {
+            if at + 2 > resp.len() {
+                break;
+            }
+            let did = u16::from_be_bytes([resp[at], resp[at + 1]]);
+            at += 2;
+            // Everything left belongs to this record; without per-identifier
+            // lengths there is no way to split further, and inventing a split
+            // would misreport the values.
+            let rest = resp[at..].to_vec();
+            at = resp.len();
+            values.push((did, rest));
+        }
+        out.push(DtcSnapshot { record, values });
+    }
+    Ok(out)
+}
+
+/// Parse a ReadDTCInformation 0x06 response body (after SID strip):
+/// `0x06 code(3) status(1) [record(1) data]*`.
+///
+/// Record boundaries are per-unit, so each record is returned whole rather
+/// than split into fields this project has not established.
+pub(crate) fn parse_dtc_extended(resp: &[u8]) -> Result<Vec<DtcExtendedData>, UdsError> {
+    if resp.len() < 5 || resp[0] != 0x06 {
+        return Err(UdsError::Malformed("bad ReadDTCInformation 0x06 response".into()));
+    }
+    let mut out = Vec::new();
+    let mut at = 5;
+    while at < resp.len() {
+        let record = resp[at];
+        at += 1;
+        let data = resp[at..].to_vec();
+        at = resp.len();
+        out.push(DtcExtendedData { record, data });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod dtc_detail_tests {
+    use super::*;
+
+    #[test]
+    fn a_snapshot_keeps_its_record_number_and_the_identifier_it_captured() {
+        // 0x04, the code asked about, its status, then record 01 holding one
+        // captured identifier 0x1234.
+        let resp = [0x04, 0x00, 0x01, 0x07, 0x08, 0x01, 0x01, 0x12, 0x34, 0xAA, 0xBB];
+        let snaps = parse_dtc_snapshot(&resp).unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].record, 0x01);
+        assert_eq!(snaps[0].values, vec![(0x1234, vec![0xAA, 0xBB])]);
+    }
+
+    #[test]
+    fn extended_data_is_returned_whole_rather_than_split_into_guessed_fields() {
+        // Record boundaries inside extended data are per-unit. Splitting them
+        // on a guess would report an occurrence count nobody established.
+        let resp = [0x06, 0x00, 0x01, 0x07, 0x08, 0x01, 0x03, 0x00, 0x12];
+        let ext = parse_dtc_extended(&resp).unwrap();
+        assert_eq!(ext.len(), 1);
+        assert_eq!(ext[0].record, 0x01);
+        assert_eq!(ext[0].data, vec![0x03, 0x00, 0x12]);
+    }
+
+    #[test]
+    fn a_response_for_the_wrong_subfunction_is_rejected() {
+        assert!(parse_dtc_snapshot(&[0x06, 0, 0, 0, 0]).is_err());
+        assert!(parse_dtc_extended(&[0x04, 0, 0, 0, 0]).is_err());
+        assert!(parse_dtc_snapshot(&[0x04]).is_err());
+    }
 }

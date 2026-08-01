@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use vag_data::catalog::{MeasurementDef, ReadId};
+use vag_data::catalog::{CatalogStore, MeasurementDef, ReadId};
 use vag_protocol::address::UnitAddress;
 
 /// Identifiers per request. Measured on the reference car: eight are answered,
@@ -110,18 +110,35 @@ pub fn split_role(name: &str) -> Option<(&str, Role)> {
         .find_map(|(suffix, role)| name.strip_suffix(suffix).map(|base| (base, *role)))
 }
 
-/// Request ids of the units this project has proven measurements for.
-const ENGINE: u16 = 0x7E0;
-const GEARBOX: u16 = 0x7E1;
-const CLUSTER: u16 = 0x714;
+/// The engine's request id on the ISO block.
+///
+/// Not a fact about a particular car: ISO 15765-4 puts the first emissions
+/// unit at `0x7E0`, which is also where the legislated OBD-II parameter set is
+/// answered. Everything else about a unit comes from the car.
+pub const ENGINE: u16 = 0x7E0;
 
-/// Everything on offer from the catalogs, in a stable order: the standard
-/// OBD-II parameters on the engine, then whatever each unit has proven.
+/// What one control unit said about itself, which is how its catalog is found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitIdentity {
+    pub request: u16,
+    /// `F187`, the part number.
+    pub part_number: Option<String>,
+    /// `F19E`, the ODX label file the unit names for itself.
+    pub odx_name: Option<String>,
+}
+
+/// Everything on offer: the standard OBD-II parameters on the engine, then
+/// whatever the catalog store holds for each unit the car reported.
+///
+/// No unit number appears here. A scaling belongs to the control unit that was
+/// measured, so it is looked up by that unit's own part number — the same
+/// mechanism works on a car this project has never seen, and finds nothing
+/// rather than misapplying another car's numbers.
 ///
 /// This is what is *known*. Everything else the car answers comes from a
 /// survey file — see [`with_survey`] — because a measurement nobody has
 /// proven still has bytes worth watching.
-pub fn available() -> Vec<Channel> {
+pub fn available(store: &CatalogStore, units: &[UnitIdentity]) -> Vec<Channel> {
     let mut out = Vec::new();
     for p in vag_data::obd::PIDS {
         out.push(Channel {
@@ -131,11 +148,10 @@ pub fn available() -> Vec<Channel> {
             selected: false,
         });
     }
-    for (request, defs) in [
-        (ENGINE, vag_data::catalog::proven_engine()),
-        (GEARBOX, vag_data::catalog::proven_gearbox()),
-        (CLUSTER, vag_data::catalog::proven_cluster()),
-    ] {
+    for unit in units {
+        let request = unit.request;
+        let defs =
+            store.for_unit(unit.part_number.as_deref(), unit.odx_name.as_deref());
         for def in defs {
             let ReadId::Uds(did) = def.address;
             // A control unit's own proven row wins over the standard one at
@@ -152,6 +168,49 @@ pub fn available() -> Vec<Channel> {
         }
     }
     out
+}
+
+/// What each unit in a survey said about itself.
+///
+/// A survey already asked every unit for its identification block, so a
+/// recording of one carries the keys its catalogs are found under — no need to
+/// re-read the car to know which scalings apply.
+pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
+    let mut out = Vec::new();
+    for line in survey.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Some(request) =
+            value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok())
+        else {
+            continue;
+        };
+        let field = |did: &str| -> Option<String> {
+            let entry = value["ident"]
+                .as_array()?
+                .iter()
+                .find(|e| e["did"].as_str() == Some(did))?;
+            let bytes = hex_bytes(entry["data"].as_str()?)?;
+            let text =
+                String::from_utf8_lossy(&bytes).trim_end_matches(['\0', ' ']).to_string();
+            (!text.is_empty()).then_some(text)
+        };
+        out.push(UnitIdentity {
+            request,
+            part_number: field("F187"),
+            odx_name: field("F19E"),
+        });
+    }
+    out
+}
+
+/// Parse a hex string as bytes; `None` if it is not whole bytes of hex.
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 {
+        return None;
+    }
+    (0..text.len() / 2)
+        .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok())
+        .collect()
 }
 
 /// Add every identifier a `vagcan survey` run found, on every unit it found
@@ -254,6 +313,36 @@ mod tests {
     use vag_data::catalog::{ReadId, Scaling};
     use vag_data::measure::{LinearScale, RawForm};
 
+    /// Request ids of the reference car's units, for tests only — the code
+    /// itself never names a unit by number.
+    const GEARBOX: u16 = 0x7E1;
+    const CLUSTER: u16 = 0x714;
+
+    /// The repository's own catalog store, and the reference car's identities.
+    fn reference() -> (CatalogStore, Vec<UnitIdentity>) {
+        let store = CatalogStore::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
+        );
+        let ident = |request, part: &str| UnitIdentity {
+            request,
+            part_number: Some(part.to_string()),
+            odx_name: None,
+        };
+        (
+            store,
+            vec![
+                ident(ENGINE, "8V0906264H"),
+                ident(GEARBOX, "0CW300041G"),
+                ident(CLUSTER, "5E0920740D"),
+            ],
+        )
+    }
+
+    fn reference_channels() -> Vec<Channel> {
+        let (store, units) = reference();
+        available(&store, &units)
+    }
+
     fn known(request: u16, did: u16, name: &'static str) -> Channel {
         Channel {
             request,
@@ -330,7 +419,7 @@ mod tests {
         // F40D is one byte of km/h on the engine (the OBD mirror) and two
         // little-endian bytes on the gearbox. Listing both under one entry
         // would make one of them wrong.
-        let all = available();
+        let all = reference_channels();
         let engine = all.iter().find(|c| c.request == ENGINE && c.did == 0xF40D).unwrap();
         let gearbox = all.iter().find(|c| c.request == GEARBOX && c.did == 0xF40D).unwrap();
         assert_eq!(engine.def.as_ref().unwrap().raw_form, RawForm::U8First);
@@ -350,7 +439,10 @@ mod tests {
 
     #[test]
     fn a_discrete_state_shows_its_name_and_an_unlisted_code_shows_raw() {
-        let gear = vag_data::catalog::proven_gearbox()
+        let (store, _) = reference();
+        let gear = store
+            .load("0CW300041G")
+            .unwrap()
             .into_iter()
             .find(|d| matches!(d.address, ReadId::Uds(0x3816)))
             .unwrap();
@@ -399,7 +491,7 @@ mod tests {
 {\"did\":\"192F\",\"data\":\"0305AA11\"}]}
 {\"request\":\"7E0\",\"unit\":\"01\",\"dids\":[{\"did\":\"2029\",\"data\":\"0B34\"}]}
 ";
-        let channels = with_survey(available(), survey);
+        let channels = with_survey(reference_channels(), survey);
         let bcm: Vec<&Channel> = channels.iter().filter(|c| c.request == 0x70E).collect();
         assert_eq!(bcm.len(), 2, "both BCM identifiers are on offer");
         assert!(bcm.iter().all(|c| c.def.is_none()), "nothing proven, so nothing claimed");
@@ -415,8 +507,9 @@ mod tests {
 
     #[test]
     fn a_malformed_survey_line_is_skipped_rather_than_fatal() {
-        let before = available().len();
-        let channels = with_survey(available(), "not json\n{\"request\":\"zz\"}\n\n");
+        let before = reference_channels().len();
+        let channels =
+            with_survey(reference_channels(), "not json\n{\"request\":\"zz\"}\n\n");
         assert_eq!(channels.len(), before);
     }
 }

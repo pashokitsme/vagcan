@@ -13,6 +13,7 @@ mod analyse;
 mod calibrate;
 mod device;
 mod discover;
+mod faults;
 mod labels;
 mod names;
 mod props;
@@ -67,8 +68,7 @@ enum Command {
     ///
     /// One read of the gateway's installation list, instead of sweeping every
     /// diagnostic address and waiting out a timeout for each one the car does
-    /// not have. Units this project has identified are named; the rest are
-    /// listed by address.
+    /// not have. Pass `--identify` to have each unit name itself.
     Units {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
@@ -153,6 +153,11 @@ enum Command {
         /// found it on — not just the measurements already proven.
         #[arg(long, value_name = "FILE")]
         survey: Option<String>,
+        /// Where the measurement catalogs live. Each file is named after the
+        /// part number or ODX name of the control unit it describes, so a car
+        /// this tool has not seen before simply finds none.
+        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
+        catalogs: String,
     },
 
     /// Find every data identifier a control unit answers.
@@ -173,6 +178,29 @@ enum Command {
         /// Pause between reads, in milliseconds.
         #[arg(long, default_value_t = 2, value_name = "MS")]
         delay_ms: u64,
+    },
+
+    /// Read stored fault codes from every control unit.
+    ///
+    /// Only codes the unit has confirmed are called faults: asking for
+    /// everything returns hundreds of tests that have merely never run since
+    /// the memory was cleared. Read-only — clearing faults is a write, which
+    /// this tool cannot do.
+    Faults {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// Read only these units, e.g. `01,713,70E`. Default: every unit the
+        /// gateway lists.
+        #[arg(long, value_name = "LIST")]
+        ecu: Option<String>,
+        /// Also read the extended data stored with each fault — occurrence
+        /// counter and mileage stamp live there, in a per-unit layout.
+        #[arg(long)]
+        details: bool,
+        /// Show every code the units list, not just the confirmed ones.
+        #[arg(long)]
+        all: bool,
     },
 
     /// Sweep every control unit the car has, not just the powertrain.
@@ -269,6 +297,10 @@ enum Command {
         /// Stop after this many matches.
         #[arg(long, default_value_t = 40, value_name = "N")]
         limit: usize,
+        /// Names file to search. Recovered from a VCDS installation, so a
+        /// different installation means a different file.
+        #[arg(long, default_value = names::DEFAULT_PATH, value_name = "FILE")]
+        catalog: String,
     },
 
     /// Look measurements up in a VCDS label directory. Offline — no car.
@@ -325,7 +357,7 @@ async fn main() -> Result<()> {
                 .await
         }
         Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
-        Command::Watch { device, did, hz, out, survey } => {
+        Command::Watch { device, did, hz, out, survey, catalogs } => {
             let preselect = match did.as_deref() {
                 Some(spec) => watch::plan::parse_spec(spec)
                     .map_err(|e| anyhow::anyhow!("--did: {e}"))?,
@@ -338,12 +370,23 @@ async fn main() -> Result<()> {
                 hz,
                 out.as_deref(),
                 survey.as_deref(),
+                &catalogs,
             )
             .await
         }
         Command::Scan { device, ecu, range, out, delay_ms } => {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
+        }
+        Command::Faults { device, ecu, details, all } => {
+            faults::run(
+                &device::resolve(device.as_deref())?,
+                ADAPTER_BAUD,
+                ecu.as_deref(),
+                details,
+                all,
+            )
+            .await
         }
         Command::Survey { device, range, out, delay_ms, only } => {
             survey::run(
@@ -356,7 +399,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Names { text, limit } => names::run(&text, limit),
+        Command::Names { text, limit, catalog } => names::run(&text, limit, &catalog),
         Command::Calibrate { log, min_r2, min_points } => calibrate::run(
             &log,
             analyse::Thresholds { min_r2, min_points, ..Default::default() },
@@ -544,9 +587,8 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
     println!("{} control units:\n", ids.len());
     let mut backend = uds.into_transport().into_backend();
     for id in ids {
-        let named = gateway::unit_name(id).unwrap_or("");
         if !identify {
-            println!("  {id:03X}  {named}");
+            println!("  {id:03X}");
             continue;
         }
         // Re-address the same adapter for each unit rather than reopening it.
@@ -564,9 +606,11 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
         };
         let (part, component) = (text(part), text(component));
         if part.is_empty() && component.is_empty() {
-            println!("  {id:03X}  {named:<24} (did not answer)");
+            println!("  {id:03X}  (did not answer)");
         } else {
-            println!("  {id:03X}  {named:<24} {part}  {component}");
+            // The name is the unit's own component string, not a table: the
+            // same tool has to work on a car nobody here has seen.
+            println!("  {id:03X}  {part:<14} {component}");
         }
         backend = unit.into_transport().into_backend();
     }

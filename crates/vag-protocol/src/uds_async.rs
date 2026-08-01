@@ -84,6 +84,28 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
         Ok(())
     }
 
+    /// ReadDTCInformation (0x19 0x04): the snapshot a unit froze when it
+    /// stored this fault.
+    ///
+    /// `0xFF` asks for every snapshot record the unit kept for that code.
+    pub async fn read_dtc_snapshot(
+        &mut self,
+        code: [u8; 3],
+    ) -> Result<Vec<crate::dtc::DtcSnapshot>, UdsError> {
+        let resp = self.request(0x19, &[0x04, code[0], code[1], code[2], 0xFF]).await?;
+        pdu::parse_dtc_snapshot(&resp)
+    }
+
+    /// ReadDTCInformation (0x19 0x06): the extended data stored with a fault —
+    /// on these units the occurrence counter and mileage live here.
+    pub async fn read_dtc_extended(
+        &mut self,
+        code: [u8; 3],
+    ) -> Result<Vec<crate::dtc::DtcExtendedData>, UdsError> {
+        let resp = self.request(0x19, &[0x06, code[0], code[1], code[2], 0xFF]).await?;
+        pdu::parse_dtc_extended(&resp)
+    }
+
     /// ReadDTCInformation (0x19 0x02 `mask`): DTCs matching the status mask.
     pub async fn read_dtcs_by_status_mask(&mut self, mask: u8) -> Result<Vec<RawDtc>, UdsError> {
         let resp = self.request(0x19, &[0x02, mask]).await?;

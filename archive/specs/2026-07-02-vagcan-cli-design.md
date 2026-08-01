@@ -1,3 +1,6 @@
+> **SUPERSEDED (archived).** This PRD predates the pivot away from the HEX-clone cable: it treats `vag-hex` as the transport, and the `vag-cli`/`vag-core` crates it plans never existed.
+> Current goal/architecture: `todo/GOAL.md` + `todo/README.md`; the live transport is the generic slcan USB-CAN adapter (`vag-can`).
+
 # vagcan — VAG CAN-bus Diagnostics CLI (PRD / Design)
 
 **Date:** 2026-07-02 (progress updated 2026-07-03)

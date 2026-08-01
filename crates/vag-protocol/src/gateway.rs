@@ -5,6 +5,10 @@
 //! `0x700..0x7BF` and waiting out a timeout for every address the car does not
 //! have.
 //!
+//! The list gives addresses, not names. What a unit *is* comes from the unit
+//! itself — `F187` part number, `F197` component string, `F19E` label file —
+//! so nothing here carries a table of one car's control units.
+//!
 //! Established from a capture of VCDS doing exactly this, then verified
 //! independently: the gateway returned 32 bytes at both `0x2A26` and `0x04A3`,
 //! and decoding them **least-significant bit first** yields
@@ -52,26 +56,6 @@ pub fn decode_installation_list(payload: &[u8]) -> Vec<u16> {
         }
     }
     out
-}
-
-/// The units this project has identified by reading their own identification
-/// block, so a listing can name them instead of printing bare numbers.
-///
-/// Every entry was read off the reference car (`research/other-ecus.md`); none
-/// is inferred from a numbering convention. A unit absent from this table is
-/// printed as its id — an honest blank rather than a guess.
-const KNOWN_UNITS: &[(u16, &str)] = &[
-    (0x70C, "Steering column module"),
-    (0x70E, "Body control module"),
-    (0x710, "Gateway"),
-    (0x714, "Instrument cluster"),
-    (0x7E0, "Engine"),
-    (0x7E1, "Gearbox"),
-];
-
-/// The name of a control unit at `request_id`, when this project has read one.
-pub fn unit_name(request_id: u16) -> Option<&'static str> {
-    KNOWN_UNITS.iter().find(|(id, _)| *id == request_id).map(|(_, name)| *name)
 }
 
 #[cfg(test)]
@@ -133,12 +117,4 @@ mod tests {
         assert!(decode_installation_list(&[0u8; 32]).is_empty());
     }
 
-    #[test]
-    fn only_units_actually_read_are_named() {
-        assert_eq!(unit_name(0x714), Some("Instrument cluster"));
-        assert_eq!(unit_name(0x7E0), Some("Engine"));
-        // Present in the installation list, never identified — no invented name.
-        assert_eq!(unit_name(0x746), None);
-        assert_eq!(unit_name(0x767), None);
-    }
 }

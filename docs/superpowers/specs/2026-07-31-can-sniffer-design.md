@@ -29,7 +29,7 @@ This design covers the tooling for that capture, plus the active-side counterpar
 | passive frame capture to `vag-capture` JSONL | writing to the car (any UDS service but `0x22`) |
 | passive ISO-TP reassembly + live decode | offline analysis tooling (separate work) |
 | `vagcan sniff` (silent default, `--active` opt-in) | measurement scaling inference itself |
-| `vagcan scan-dids` (read-only DID sweep) | GUI / TUI |
+| `vagcan scan` (read-only DID sweep) | GUI / TUI |
 
 ## Hardware facts established on the bench (2026-07-31)
 
@@ -144,8 +144,8 @@ turns VCDS's multi-frame group reads into readable PDUs.
 ### 4. `vagcan sniff`
 
 ```
-vagcan sniff --port <tty>
-             [--baud 115200] [--out <file.jsonl>] [--diag-only]
+vagcan sniff [--device <path>]
+             [--out <file.jsonl>] [--diag-only]
              [--seconds <n>] [--active]
 ```
 
@@ -178,11 +178,11 @@ delivers frames in batches, so per-frame jitter is tens of milliseconds. That is
 aligning against a VCDS CSV (samples arrive every ~100 ms at best) and useless for bus-level
 timing analysis. Do not read physics into sub-100 ms structure.
 
-### 5. `vagcan scan-dids`
+### 5. `vagcan scan`
 
 ```
-vagcan scan-dids --port <tty> --ecu <01|02|…>
-                 [--range 7400-7500] [--out <file.jsonl>] [--delay-ms 5]
+vagcan scan [--device <path>] --ecu <01|02|714|…>
+            [--range 7400-7500] [--out <file.jsonl>] [--delay-ms 5]
 ```
 
 Issues UDS `ReadDataByIdentifier` (`0x22`) across the range and records every positive
@@ -209,7 +209,7 @@ Everything above is unit-testable without a car:
 | `IsoTpSniffer` | SF; FF+CF reassembly; interleaved ids; sequence gap drops; FF-restart; stale timeout; FC ignored |
 | `Marker` | JSONL round-trip; old capture files (no markers) still parse |
 | `--diag-only` filter | id classification table |
-| `scan-dids` | scripted `MockAsyncTransport`: positive/negative mix, resumability, TesterPresent cadence |
+| `scan` | scripted `MockAsyncTransport`: positive/negative mix, resumability, TesterPresent cadence |
 
 Existing suite (198 tests) must stay green; `cargo clippy --all-targets -- -D warnings` clean.
 
@@ -224,14 +224,14 @@ Risk climbs monotonically; stop and confirm at each step.
 3. **`sniff` + VCDS in parallel**, with VCDS logging ADVMB to CSV. The trophy: cleartext
    diagnostic traffic including multi-frame group reads, with an aligned engineering-value log.
 4. **`info`** — first transmission, closes the long-outstanding M1 live verification.
-5. **`scan-dids`** — the widest active read.
+5. **`scan`** — the widest active read.
 
 ## Risks
 
 - **Silent mode cannot be confirmed from outside.** A listen-only node is by definition
   invisible. Mitigation: the firmware source was read (not guessed) for the `M1` semantics, and
   a unit test locks the byte sequence. Residual risk accepted.
-- **Bus load.** Sniffing adds none. `scan-dids` adds a request every few ms on a diagnostic
+- **Bus load.** Sniffing adds none. `scan` adds a request every few ms on a diagnostic
   address — the same thing VCDS does continuously.
 - **Capture size.** Unfiltered, ~50–100 MB per 5 minutes. Acceptable; `--diag-only` exists for
   when it is not.

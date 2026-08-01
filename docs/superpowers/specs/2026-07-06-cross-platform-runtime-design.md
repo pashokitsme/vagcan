@@ -1,7 +1,7 @@
 # Cross-Platform Runtime — Portable Core + Runtime Adapters
 
 **Date:** 2026-07-06
-**Status:** Design proposal — pending owner spec review. Future architecture milestone; does **not** block the in-flight clone-probe / Track A `vagcan info` work.
+**Status:** Design proposal — pending owner spec review. Future architecture milestone; parked (see `todo/README.md`). Note: the `vag-hex` crate this spec lists among the desktop-only crates has since been deleted (HEX-clone path dead, research archived under `archive/research/`); the portable-core split is unaffected.
 **Author:** Pavel Smirnov (with Claude Fable 5)
 **Working name:** cross-platform runtime (`vag-runtime-*`)
 

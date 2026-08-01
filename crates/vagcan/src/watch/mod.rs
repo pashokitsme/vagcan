@@ -312,25 +312,72 @@ pub async fn run(
     hz: f64,
     out: Option<&str>,
     survey: Option<&str>,
+    catalogs: &str,
 ) -> Result<()> {
     use std::io::Write as _;
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
     use vag_protocol::AsyncUdsClient;
     use vag_transport::CanId;
 
-    let mut channels = plan::available();
-    if let Some(path) = survey {
+    let store = vag_data::catalog::CatalogStore::open(catalogs);
+    let survey_text = match survey {
+        Some(path) => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("reading the survey {path:?}"))?,
+        ),
+        None => None,
+    };
+
+    // Which scalings apply is decided by what each unit says it is, never by
+    // its address. A survey already asked; without one, the units to be polled
+    // are asked directly below.
+    let mut identities = match &survey_text {
+        Some(text) => plan::identities_from_survey(text),
+        None => Vec::new(),
+    };
+
+    let mut adapter =
+        SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
+            .await
+            .with_context(|| format!("opening the adapter at {device_path}"))?;
+
+    // Any unit that will be polled but was not in the survey is asked for its
+    // identification block now — two reads, once, at startup.
+    let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
+    wanted.push(plan::ENGINE);
+    wanted.sort_unstable();
+    wanted.dedup();
+    for request in wanted {
+        if identities.iter().any(|i| i.request == request) {
+            continue;
+        }
+        let Some(address) = vag_protocol::address::UnitAddress::from_request(request) else {
+            continue;
+        };
+        let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+            adapter,
+            CanId::Standard(address.request),
+            CanId::Standard(address.response),
+        ));
+        let text = |data: Option<Vec<u8>>| {
+            data.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
+                .filter(|s| !s.is_empty())
+        };
+        let part = text(uds.read_data_by_identifier(0xF187).await.ok());
+        let odx = text(uds.read_data_by_identifier(0xF19E).await.ok());
+        identities.push(plan::UnitIdentity { request, part_number: part, odx_name: odx });
+        adapter = uds.into_transport().into_backend();
+    }
+
+    let mut channels = plan::available(&store, &identities);
+    if let Some(text) = &survey_text {
         // Everything a survey found becomes watchable, on every unit — which
         // is the only way the units outside the catalogs get on screen at all.
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading the survey {path:?}"))?;
-        channels = plan::with_survey(channels, &text);
+        channels = plan::with_survey(channels, text);
     }
     for (request, did) in preselect {
         match channels.iter_mut().find(|c| c.request == *request && c.did == *did) {
             Some(c) => c.selected = true,
-            // An identifier nobody has proven is still worth watching; it just
-            // shows its bytes.
             None => channels.push(Channel {
                 request: *request,
                 did: *did,
@@ -340,17 +387,11 @@ pub async fn run(
         }
     }
     if !channels.iter().any(|c| c.selected) {
-        // Something has to be on screen before the configure key means
-        // anything, so start with the engine's standard set.
-        for c in channels.iter_mut().filter(|c| c.request == 0x7E0).take(8) {
+        for c in channels.iter_mut().filter(|c| c.request == plan::ENGINE).take(8) {
             c.selected = true;
         }
     }
-
-    let mut backend =
-        Some(SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
-            .await
-            .with_context(|| format!("opening the adapter at {device_path}"))?);
+    let mut backend = Some(adapter);
 
     let mut sink = match out {
         Some(path) => {
@@ -503,8 +544,29 @@ pub async fn run(
 mod tests {
     use super::*;
 
+    /// The reference car's catalogs and identities — test fixtures, not a
+    /// table the code carries.
+    fn reference_channels() -> Vec<Channel> {
+        let store = vag_data::catalog::CatalogStore::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
+        );
+        let ident = |request, part: &str| plan::UnitIdentity {
+            request,
+            part_number: Some(part.to_string()),
+            odx_name: None,
+        };
+        plan::available(
+            &store,
+            &[
+                ident(0x7E0, "8V0906264H"),
+                ident(0x7E1, "0CW300041G"),
+                ident(0x714, "5E0920740D"),
+            ],
+        )
+    }
+
     fn app() -> App {
-        let mut channels = plan::available();
+        let mut channels = reference_channels();
         channels[0].selected = true;
         channels[1].selected = true;
         App::new(channels)
@@ -553,7 +615,7 @@ mod tests {
     fn a_specified_value_shares_a_line_with_its_actual() {
         // Boost is published twice: 2029 is what the engine asked for, 202A is
         // what it got. Side by side the gap is readable at a glance.
-        let mut a = App::new(plan::available());
+        let mut a = App::new(reference_channels());
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && (c.did == 0x2029 || c.did == 0x202A) {
                 c.selected = true;
@@ -578,7 +640,7 @@ mod tests {
     fn half_a_pair_still_draws_a_line() {
         // Selecting only the actual value must not hide it waiting for a
         // partner that was never asked for.
-        let mut a = App::new(plan::available());
+        let mut a = App::new(reference_channels());
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && c.did == 0x202A {
                 c.selected = true;
