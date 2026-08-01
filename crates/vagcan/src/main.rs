@@ -238,6 +238,14 @@ enum Command {
         /// Control unit to ask when using --from-car.
         #[arg(long, default_value = "01", value_name = "NN")]
         ecu: String,
+        /// Recover the encryption vectors of sections that need one, so the
+        /// measurement list and fault-code table decode too. Costs about a
+        /// minute per section the first time; the answer is then cached.
+        #[arg(long)]
+        crack: bool,
+        /// Where to keep recovered vectors between runs.
+        #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
+        iv_cache: String,
         /// Adapter to use with --from-car.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
@@ -291,13 +299,24 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Labels { dir, part, block, field, odx, from_car, ecu, device } => {
+        Command::Labels {
+            dir,
+            part,
+            block,
+            field,
+            odx,
+            from_car,
+            ecu,
+            device,
+            crack,
+            iv_cache,
+        } => {
             if from_car {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
-                labels::resolve_odx(&dir, &name)
+                labels::resolve_odx(&dir, &name, crack, &iv_cache)
             } else if let Some(name) = odx {
-                labels::resolve_odx(&dir, &name)
+                labels::resolve_odx(&dir, &name, crack, &iv_cache)
             } else {
                 labels::labels_cmd(&dir, part.as_deref(), block, field)
             }

@@ -120,8 +120,8 @@ fn render_measurement_row(m: &Measurement) -> String {
 /// being a part-number guess: the car answers the question. Reports what the
 /// file contains, marking sections whose payload did not decode rather than
 /// implying the whole file was read.
-pub fn resolve_odx(dir: &str, odx_name: &str) -> anyhow::Result<()> {
-    use vag_data::rod::{decode_rod, RodStatus};
+pub fn resolve_odx(dir: &str, odx_name: &str, crack: bool, cache_path: &str) -> anyhow::Result<()> {
+    use vag_data::rod::{decode_rod_recover, IvCache, RodStatus};
 
     let hits = vag_data::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
     if hits.is_empty() {
@@ -133,6 +133,9 @@ pub fn resolve_odx(dir: &str, odx_name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Recovered initialisation vectors are cached: cracking one costs about a
+    // minute, and the answer is a property of the file, not of the run.
+    let mut cache = IvCache::load(std::path::Path::new(cache_path));
     for path in &hits {
         println!("{}", path.display());
         let bytes = match std::fs::read(path) {
@@ -142,7 +145,8 @@ pub fn resolve_odx(dir: &str, odx_name: &str) -> anyhow::Result<()> {
                 continue;
             }
         };
-        let sections = decode_rod(&bytes);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let sections = decode_rod_recover(&bytes, name, &mut cache, crack);
         if sections.is_empty() {
             println!("  no sections found");
             continue;
@@ -151,11 +155,20 @@ pub fn resolve_odx(dir: &str, odx_name: &str) -> anyhow::Result<()> {
             let state = match section.status {
                 RodStatus::Tea => "decrypted",
                 RodStatus::Zlib => "decrypted + inflated",
-                RodStatus::Undecodable => "NOT decoded",
+                RodStatus::Undecodable => {
+                    if crack {
+                        "NOT decoded"
+                    } else {
+                        "encrypted (pass --crack to recover)"
+                    }
+                }
             };
             let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
             println!("  [{}]  {state}, {size} bytes", section.tag);
         }
+    }
+    if let Err(e) = cache.save(std::path::Path::new(cache_path)) {
+        eprintln!("warning: could not save the IV cache to {cache_path}: {e}");
     }
     Ok(())
 }

@@ -184,7 +184,13 @@ impl LabelDb {
 
     /// Memoizing front-end for [`Self::resolve_uncached`].
     fn resolve_idx(&self, part_no: &str) -> Option<usize> {
-        let pn = normalize(part_no);
+        // Try each spelling the corpus might use; the first that resolves wins.
+        let candidates = part_number_candidates(part_no);
+        let pn = candidates
+            .iter()
+            .find(|c| self.resolve_one(c).is_some())
+            .cloned()
+            .unwrap_or_else(|| normalize(part_no));
         let cache = self
             .resolve_cache
             .lock()
@@ -193,7 +199,7 @@ impl LabelDb {
             return hit;
         }
         drop(cache); // don't hold the lock across the actual resolution
-        let result = self.resolve_uncached(&pn);
+        let result = self.resolve_one(&pn);
         self.resolve_cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -203,7 +209,8 @@ impl LabelDb {
 
     /// The actual resolution: corpus-wide initial match (spec step 2), then
     /// follow in-file redirect chains (step 3). `pn` is already normalized.
-    fn resolve_uncached(&self, pn: &str) -> Option<usize> {
+    /// Resolve one exact spelling (the caller has already normalised it).
+    fn resolve_one(&self, pn: &str) -> Option<usize> {
         // Step 2: pick the initial file.
         let initial = match self.best_redirect_target(pn) {
             Some(target) => target,
@@ -323,6 +330,41 @@ fn normalize(s: &str) -> String {
     s.trim().to_ascii_uppercase()
 }
 
+/// The spellings a VAG part number can appear under in a label corpus.
+///
+/// A control unit reports its number packed — `0AM927769E`, `06K907425B` —
+/// while the corpus names files in the printed form, grouped and hyphenated,
+/// and usually without the index letter: `0AM-927-769.clb`,
+/// `06K-907-425-V1.clb`. Looking up only what the car said therefore finds
+/// nothing, which is exactly what happened on the reference gearbox.
+///
+/// Returns the forms to try, most specific first: as given, hyphenated with
+/// the index letter, and hyphenated without it. Anything that is not
+/// `AAA NNN NNN` shaped is returned unchanged rather than forced into groups.
+pub fn part_number_candidates(part_no: &str) -> Vec<String> {
+    let pn = normalize(part_no);
+    let mut out = vec![pn.clone()];
+
+    let core: String = pn.chars().filter(|c| *c != '-' && *c != ' ').collect();
+    // The printed form is three characters, then two groups of three digits,
+    // then an optional index.
+    if core.len() < 9 || !core[3..9].chars().all(|c| c.is_ascii_digit()) {
+        return out;
+    }
+    let grouped = format!("{}-{}-{}", &core[..3], &core[3..6], &core[6..9]);
+    let index = &core[9..];
+    if !index.is_empty() {
+        let with_index = format!("{grouped}-{index}");
+        if !out.contains(&with_index) {
+            out.push(with_index);
+        }
+    }
+    if !out.contains(&grouped) {
+        out.push(grouped);
+    }
+    out
+}
+
 /// Strip a trailing `.ext` (last dot onward), if any. Input is expected
 /// already normalized (uppercased).
 fn strip_ext(s: &str) -> &str {
@@ -359,6 +401,30 @@ fn selector_matches_normalized(selector: &str, pn: &str) -> bool {
 mod tests {
     use super::*;
     use crate::label::parse_label;
+
+    #[test]
+    fn a_part_number_is_tried_in_the_spellings_a_corpus_uses() {
+        // What the car reports versus how the corpus names its files. The
+        // reference gearbox says 0AM927769E; the file is 0AM-927-769.clb.
+        assert_eq!(
+            part_number_candidates("0AM927769E"),
+            vec!["0AM927769E", "0AM-927-769-E", "0AM-927-769"]
+        );
+        // The engine's hardware number, whose corpus files carry a variant
+        // suffix instead of the index letter.
+        assert_eq!(
+            part_number_candidates("06K907425B"),
+            vec!["06K907425B", "06K-907-425-B", "06K-907-425"]
+        );
+        // Already printed: no duplicate spellings.
+        assert_eq!(
+            part_number_candidates("8V0 906 264 H"),
+            vec!["8V0 906 264 H", "8V0-906-264-H", "8V0-906-264"]
+        );
+        // Not part-number shaped: left alone rather than forced into groups.
+        assert_eq!(part_number_candidates("EV_ECM18TFS"), vec!["EV_ECM18TFS"]);
+        assert_eq!(part_number_candidates("1K0"), vec!["1K0"]);
+    }
 
     #[test]
     fn direct_file_named_after_part_number_resolves() {
