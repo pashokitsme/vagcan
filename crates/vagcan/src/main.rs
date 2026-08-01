@@ -59,6 +59,22 @@ enum Command {
         device: Option<String>,
     },
 
+    /// Ask the gateway which control units this car has.
+    ///
+    /// One read of the gateway's installation list, instead of sweeping every
+    /// diagnostic address and waiting out a timeout for each one the car does
+    /// not have. Units this project has identified are named; the rest are
+    /// listed by address.
+    Units {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// Also read each listed unit's part number and component name. Slower,
+        /// and a unit that does not answer is reported as such.
+        #[arg(long)]
+        identify: bool,
+    },
+
     /// List everything a control unit tells about itself.
     ///
     /// Sweeps the identification range and names what answers — part numbers,
@@ -237,6 +253,7 @@ async fn main() -> Result<()> {
         }
         Command::Info { device } => info(device.as_deref()).await,
         Command::Properties { device, ecu } => properties(device.as_deref(), &ecu).await,
+        Command::Units { device, identify } => units(device.as_deref(), identify).await,
         Command::Sniff { device, out, diag_only, seconds, active } => {
             sniff::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, out.as_deref(), diag_only, seconds, active)
                 .await
@@ -446,6 +463,69 @@ async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<S
         anyhow::bail!("the control unit returned an empty ODX file name");
     }
     Ok(name)
+}
+
+/// List the car's control units (see the `Units` subcommand docs).
+async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
+    use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+    use vag_protocol::gateway;
+    use vag_transport::CanId;
+
+    const GATEWAY_REQUEST: u16 = 0x710;
+    const VW_RESPONSE_OFFSET: u16 = 0x6A;
+
+    let path = device::resolve(device_arg)?;
+    let backend =
+        SlcanBackend::open_mode(&path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
+            .await
+            .with_context(|| format!("opening the adapter at {path}"))?;
+    let channel = IsoTpCan::new(
+        backend,
+        CanId::Standard(GATEWAY_REQUEST),
+        CanId::Standard(GATEWAY_REQUEST + VW_RESPONSE_OFFSET),
+    );
+    let mut uds = AsyncUdsClient::new(channel);
+
+    let bitmap = uds
+        .read_data_by_identifier(gateway::INSTALLATION_LIST)
+        .await
+        .context("reading the gateway's installation list")?;
+    let ids = gateway::decode_installation_list(&bitmap);
+    if ids.is_empty() {
+        println!("The gateway listed no control units.");
+        return Ok(());
+    }
+
+    println!("{} control units:\n", ids.len());
+    let mut backend = uds.into_transport().into_backend();
+    for id in ids {
+        let named = gateway::unit_name(id).unwrap_or("");
+        if !identify {
+            println!("  {id:03X}  {named}");
+            continue;
+        }
+        // Re-address the same adapter for each unit rather than reopening it.
+        let channel = IsoTpCan::new(
+            backend,
+            CanId::Standard(id),
+            CanId::Standard(id + VW_RESPONSE_OFFSET),
+        );
+        let mut unit = AsyncUdsClient::new(channel);
+        let part = unit.read_data_by_identifier(0xF187).await.ok();
+        let component = unit.read_data_by_identifier(0xF197).await.ok();
+        let text = |v: Option<Vec<u8>>| {
+            v.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
+                .unwrap_or_default()
+        };
+        let (part, component) = (text(part), text(component));
+        if part.is_empty() && component.is_empty() {
+            println!("  {id:03X}  {named:<24} (did not answer)");
+        } else {
+            println!("  {id:03X}  {named:<24} {part}  {component}");
+        }
+        backend = unit.into_transport().into_backend();
+    }
+    Ok(())
 }
 
 /// List a control unit's properties (see the `Properties` subcommand docs).

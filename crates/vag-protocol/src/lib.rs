@@ -1,4 +1,5 @@
 pub mod dtc;
+pub mod gateway;
 pub mod identity;
 pub mod isotp;
 mod pdu;
