@@ -177,8 +177,19 @@ Exercised against real capture+log data on 2026-08-01: it found the three scalin
 and rejected a two-level false positive, which is what the guards are for.
 
 **3. Names and the per-ECU measurement list from the `.rod`.** Scaling now comes from the
-car, but the label corpus still supplies what a value is *called* and which values an ECU
-exposes. `F19E` already resolves the right file (§ODX link above).
+car, and after the 2026-08-02 linkage attempt (`research/label-linkage.md`,
+`research/rod-labels.md` §4.4) that is settled: the corpus holds **no linear coefficients**,
+its values are base-10 under a per-table glyph substitution, and the `MWB` code is a global
+function of the text-id with no per-ECU degree of freedom. So the corpus is for **names and
+per-ECU lists**, nothing more — unless `TTTEXT2.ROD` or `MUX.rod` turns out to hold a global
+registry, the last two uncracked candidates.
+
+Outstanding for names: crack `TTTEXT.ROD` (mechanical, but one to two hours on this machine,
+not the minute the old note claims) and join `MWB → text-id → TTTEXT`. One lead worth
+settling first: the gearbox VCDS logs carry a second number per column
+(`Loc. IDE00022-ENG103074`), and `IDE00022 ↔ 7E9/380A` is proven — if `ENG######` is a
+text-id, that is a direct `text-id ↔ proven identifier` pair. Currently suggestive only
+(6 of 15 appear among 43,781 text-ids against an 18.2 % baseline, p ≈ 0.05).
 
 **4. `vagcan watch` — BUILT.** Polls live at bus speed (46 Hz measured on the boost set)
 using batched reads. Presets carry their own control unit. Anything unproven prints its

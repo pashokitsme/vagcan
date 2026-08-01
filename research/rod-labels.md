@@ -530,6 +530,55 @@ Two lessons, both general:
    simply is not the measurement. Alignment errors must be excluded structurally, not by
    inspecting fits.
 
+### 4.4 The linkage is not merely unfound — the search is ill-formed (2026-08-02)
+
+With the full English VCDS install available offline and 16 scalings now **proven from the
+car**, the `code → scaling` linkage was attacked from the known end for the first time:
+find `TTDOP` methods carrying our measured constants, then see what references them. The
+result is a structural negative, and it closes the question rather than deferring it.
+
+**`TTDOP` contains no linear coefficients at all.** All 17,636 ids parse as
+`(lower, upper, ref)` COMPU-SCALE triples, with `lower == upper` in 97.4 % of 124,603 rows
+and the exceptions tiling as adjacent intervals. It is a table of *texttables* — enumerated
+states — not of factors and offsets.
+
+**The corpus cannot express `0.001`.** The payload codec is now understood one layer deeper
+than §2: fields are joined by a per-table separator glyph, and values are **base 10 under a
+keyed per-table glyph substitution**. Every one of the 15 largest tables uses exactly ten
+non-separator glyphs, and 35 of 37 have exactly one glyph never appearing in leading
+position — the zero digit, which is variously `9`, `1`, `_`, `,`, never `0`. `.` and `-`
+are digits, not decimal points. So searching the corpus for a constant is not a search that
+can succeed: the digits are permuted per table and the permutation is pseudorandom (across
+4,716 tables, **zero** of 91 glyph pairs is absent from the unused sets, which rules out any
+fixed-ring rotation).
+
+`STRUC` did yield to this: 1,220 of 1,221 ids parse as exactly **11 fields**, with field 9
+identified as the text pointer and field 7 as a one-digit type code. But without the
+per-table key no numeric comparison is possible in either direction.
+
+**The decisive result — the 2-char code has no per-ECU degree of freedom.** Across
+`MWB`/`ADP`/`GES`/`SOT`/`XPL`/`FFMUX`/`DTC`, the code is a **global function of the
+text-id**: 100.00 % single-code over 10,583 text-ids appearing in up to 295 different
+control-unit files, with no counter-example. A per-ECU read identifier cannot hide in a
+field that does not vary per ECU. Independently, `MWB` uses 1,492 of the 1,600 possible
+codes while `STRUC` holds only 1,221 distinct ids — the code cannot be addressing `STRUC`
+at all.
+
+Refuted and recorded so they are not retried: `IDE` = base-40 code (the IDE space reaches
+6282 > 1600); `IDE` = `TTDOP` id (64 % vs a 61 % density baseline); `IDE` = `STRUC` id (10
+of 36 out of range outright); code = a modular hash of the text-id. And the one apparent
+hit — `TTDOP` id `022063` matching our proven gear enumeration `{0,2,3,4,5,6,7,8,12}`
+exactly over 9 rows — is **not evidence**, because under the substitution those characters
+are not the numbers they look like.
+
+**What remains:** `TTTEXT2.ROD` and `MUX.rod` are the only uncracked files that could hold a
+global measurement registry. If neither does, the `.rod` corpus is **names and per-ECU lists
+only**, and the scaling question is closed for good.
+
+**A practical correction:** §1.3 says a section cracks in about a minute. That was measured
+on ten effective cores; a machine sustaining two or three takes **one to two hours** per
+section. Budget accordingly.
+
 **Consequence for the roadmap:** scaling no longer depends on the `.rod` field codec at
 all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
 path for *values*; the corpus is still what supplies names and per-ECU measurement lists.
