@@ -501,6 +501,35 @@ level **72.16 %** vs VCDS's 72.2 %, barometric pressure **99 kPa** vs 98–99. B
 measurements the fitting approach had to *reject* for being constant — the standard route
 decodes them anyway, because it needs no variation.
 
+### 4.3c Two clocks of different resolution — a methodological trap worth remembering
+
+Aligning a capture to a VCDS log is arithmetic, not search (§4.3). But the two sides do not
+carry the same precision, and treating them as if they did is a silent bias:
+
+- the capture's wall-clock anchor is exact to the **microsecond**;
+- the VCDS log header states its start time to the **second**, truncated.
+
+Subtracting an exact time from a truncated one does not remove imprecision — it introduces
+a systematic offset error of up to a second. The log's true start lies somewhere inside its
+stated second, so the correct estimate adds **half a second** to the log side.
+
+This was caught by regression, not by reasoning. A code review correctly observed that
+truncating the anchor threw away precision; the "fix" of keeping that precision shifted the
+gearbox offset by 0.5 s, which flipped half the pairings to the neighbouring capture sample
+and turned ten rows at `R² = 1.00000` into one wrong row with a best fit of **`R² = 0.051`**.
+Restoring the midpoint correction restored all ten — and, unprompted, dissolved the crossed
+false pair (output-shaft speed explaining vehicle speed at `R² = 0.99915`), which the true
+`F40D` then explained at `R² = 1.00000`.
+
+Two lessons, both general:
+1. **A theoretically sound change can be empirically wrong.** The only reason this was
+   caught is that the real session is re-run after every change to the fitter. Keep doing
+   that; unit tests on synthetic data would not have shown it.
+2. **A half-second error is invisible in the output and fatal to the result.** Nothing about
+   `R² = 0.051` says "your clocks disagree" — it looks exactly like an identifier that
+   simply is not the measurement. Alignment errors must be excluded structurally, not by
+   inspecting fits.
+
 **Consequence for the roadmap:** scaling no longer depends on the `.rod` field codec at
 all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
 path for *values*; the corpus is still what supplies names and per-ECU measurement lists.
