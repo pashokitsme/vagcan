@@ -91,6 +91,31 @@ pub fn describe_age(context: &FaultContext, now: Option<&UnitStamp>) -> String {
     parts.join(", ")
 }
 
+/// The time of day a fault was stored, and the latest calendar date it can
+/// have happened on.
+///
+/// The clock gives a second of the day outright, so `00:18:19` is exact. The
+/// date is not: the day counter skips days the car is not used, so counting
+/// its days back from today lands on or after the true date. The wording says
+/// so rather than printing a date that reads as fact — this project has a rule
+/// about numbers that look more certain than they are.
+pub fn describe_when(
+    context: &FaultContext,
+    now: Option<&UnitStamp>,
+    today: chrono::NaiveDate,
+) -> String {
+    let (_, second) = vag_protocol::dtc::split_clock(context.clock);
+    let time = format!("{:02}:{:02}:{:02}", second / 3600, (second % 3600) / 60, second % 60);
+    let Some(now) = now else { return format!("at {time} (car clock)") };
+    let Some(days) = vag_protocol::dtc::days_between(context.clock, now.clock) else {
+        return format!("at {time} (car clock)");
+    };
+    match today.checked_sub_days(chrono::Days::new(days.into())) {
+        Some(date) => format!("at {time} on or before {date} (car clock)"),
+        None => format!("at {time} (car clock)"),
+    }
+}
+
 /// Decode the status byte into the states it actually asserts.
 ///
 /// Straight out of ISO 14229-1 table D.1 — every bit is defined there, so
@@ -259,7 +284,11 @@ pub async fn run(
                 for record in &records {
                     match FaultContext::parse(&record.data) {
                         Some(context) => {
-                            println!("      {}", describe_age(&context, now.as_ref()))
+                            println!("      {}", describe_age(&context, now.as_ref()));
+                            println!(
+                                "      {}",
+                                describe_when(&context, now.as_ref(), chrono::Local::now().date_naive())
+                            );
                         }
                         // A record this project cannot read is shown, not
                         // dropped — and not guessed at either.
@@ -355,6 +384,42 @@ mod tests {
         let alone = describe_age(&context, None);
         assert!(alone.contains("212763 km"));
         assert!(!alone.contains("ago"), "{alone}");
+    }
+
+    #[test]
+    fn the_time_of_day_is_exact_and_the_date_is_stated_as_a_bound() {
+        // The anchor: this car's VCDS scan dates fault 297 at 00:00:03 and the
+        // brake unit stores 0x69F60003. Four clock days later the car reads
+        // 0x69FA, while six calendar days have passed — the two it spent
+        // parked did not count, so counting back four days from today lands
+        // after the true date, never before it.
+        let context = FaultContext {
+            priority: 1,
+            occurrences: 1,
+            cycle_counter: 0x02B5,
+            mileage_km: 212_722,
+            clock: 0x69F6_0003,
+        };
+        let now = UnitStamp { mileage_km: 212_805, clock: 0x69FA_005C };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
+        let text = describe_when(&context, Some(&now), today);
+        assert!(text.contains("00:00:03"), "{text}");
+        assert!(text.contains("on or before 2026-07-29"), "{text}");
+        // And the true date is indeed on or before that bound.
+        assert!(chrono::NaiveDate::from_ymd_opt(2026, 7, 27).unwrap() <= chrono::NaiveDate::from_ymd_opt(2026, 7, 29).unwrap());
+    }
+
+    #[test]
+    fn without_a_live_stamp_only_the_time_of_day_is_claimed() {
+        let context = FaultContext {
+            priority: 1,
+            occurrences: 1,
+            cycle_counter: 0,
+            mileage_km: 1,
+            clock: 0x69F6_F7B1,
+        };
+        let text = describe_when(&context, None, chrono::NaiveDate::from_ymd_opt(2026, 8, 2).unwrap());
+        assert_eq!(text, "at 17:36:49 (car clock)");
     }
 
     #[test]

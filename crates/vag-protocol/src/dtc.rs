@@ -92,6 +92,19 @@ pub fn split_clock(clock: u32) -> (u16, u16) {
     ((clock >> 16) as u16, (clock & 0xFFFF) as u16)
 }
 
+/// How many of the clock's days lie between two readings.
+///
+/// **This is not a count of calendar days.** On the reference car the brake
+/// unit's fault is dated 2026-07-27 by VCDS and the clock has advanced four
+/// days since, while six calendar days have passed — the two the car sat
+/// unused did not count. So a date computed by subtracting these from today is
+/// an **upper bound**: the event happened on or before it, possibly earlier.
+pub fn days_between(earlier: u32, later: u32) -> Option<u16> {
+    let (day_a, _) = split_clock(earlier);
+    let (day_b, _) = split_clock(later);
+    day_b.checked_sub(day_a)
+}
+
 /// Seconds between two car-clock readings.
 ///
 /// A day is 86 400 seconds but only advances the counter's high half by one,
