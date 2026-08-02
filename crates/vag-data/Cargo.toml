@@ -24,6 +24,10 @@ name = "vag-labels"
 path = "src/bin/vag-labels.rs"
 
 [[bin]]
+name = "vag-tttext"
+path = "src/bin/vag-tttext.rs"
+
+[[bin]]
 name = "vag-rod"
 path = "src/bin/vag-rod.rs"
 # The only consumer of the brute force. Without it the binary would silently

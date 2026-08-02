@@ -15,6 +15,7 @@ pub mod measure;
 pub mod obd;
 pub mod mwb;
 pub mod rod;
+pub mod tttext;
 mod tea;
 
 pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
