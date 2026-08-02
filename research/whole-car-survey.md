@@ -86,7 +86,7 @@ that answered:
 ```
 06 09  02B8  033F1B  0000  69F9044B
 ^  ^   ^     ^       ^     ^
-|  |   |     |       |     car clock: day counter << 16 | second of the day
+|  |   |     |       |     car clock: packed date and time (see below)
 |  |   |     |       two bytes, zero in every sample seen
 |  |   |     odometer, km, u24 big-endian
 |  |   reset counter — rises with driving cycles
@@ -105,24 +105,58 @@ Further evidence for the mileage field alone: across 17 stored faults on six uni
 value exceeds the instrument cluster's odometer, the newest equal it exactly, and mileage
 and counter order the same way.
 
-**The clock is a day counter and a second of the day, not a plain seconds counter.**
-The car's own scan dates the brake unit's fault 297 at `2026.07.27 00:00:03`, and the
-unit stores `0x69F60003` for it: the low half is exactly 3. A 32-bit seconds counter
-would leave an arbitrary value there, so landing on the scan's own seconds is a
-1-in-65 536 coincidence. Two records on the same day differ by their seconds; a day
-advances the high half by one.
+**The clock is a packed calendar date and time.** Most significant bit first: 6 bits
+year from 2000, 4 month, 5 day, 5 hour, 6 minute, 6 second. Two VCDS printouts of this
+car are reproduced field for field — `0x69F60003` → `2026.07.27 00:00:03` on the brake
+unit and `0x69F97C82` → `2026.07.28 23:50:02` on the steering assist.
 
-This corrects an earlier reading here. Subtracting the raw 32-bit values loses 20 864
-seconds per day crossed, which made a fault stored the previous day look 18 hours old
-instead of 24.
+This is the **second** correction of this field, and both earlier readings are dead:
 
-**The epoch is still not established.** `0x69F6` is some day in late July 2026 by the
-scan, and nothing says what numbering that is; under the day reading the car's clock also
-appears to run about two days behind real time, which is plausible for a car clock but
-not verified. So ages are reported as **differences**, never as dates. Identifier
-`0x02BD` returns the same stamp live — `91 <mileage:3> <2 bytes> <clock:4>`, the tail of a
-fault record without the fault — and "42 km ago, 26 h ago" is true without knowing what
-year the car thinks it is.
+* A plain 32-bit seconds counter. Refuted by the brake anchor, whose low half is exactly
+  the scan's own `03` seconds — a 1-in-65 536 coincidence otherwise.
+* `day counter << 16 | second of the day` (what this section used to say). It fits the
+  brake anchor only because that fault is three seconds past midnight, where the two
+  layouts agree. It reads the steering anchor as `08:51:14` where VCDS prints `23:50:02`.
+
+### `0x02BD` is the same field, and it is not a counter
+
+Identifier `0x02BD` returns the tail of a fault record without the fault —
+`9x <mileage:3> <2 bytes> <clock:4>` — on nine of the fifteen units. Raw differences of
+that `clock` looked like a free-running 1 Hz counter, which is what put the two readings
+in conflict. They are not in conflict; **subtracting raw packed values is the mistake.**
+The seconds field is six bits but wraps at 60, so a raw difference overshoots real
+elapsed time by 4 per minute boundary crossed, 256 per hour and 32 768 per day.
+
+Four checks, each of which could have failed:
+
+| check | result |
+|---|---|
+| The instrument cluster keeps its own real-time clock (`2238`/`2239`/`223A`/`223B`/`223C`) and is read part-way through each sweep. | In all three sweeps it falls inside the bracket its neighbours' `02BD` stamps set — `23:51` between `23:50:17` and `23:52:41`; `03:18` between `03:17:19` and `03:19:44`; `03:26` between `03:25:36` and `03:28:01` — and its year/month/day match the unpacked ones exactly. |
+| Units are read one after another, so unpacked times must rise in file order. | They do, in every sweep, for every unit. |
+| Between the two driving sweeps, raw differences were 528–533 while real elapsed time was 496–497 s. | The packed layout predicts each unit's own value exactly (elapsed + 4 × minute boundaries): 529, 529, 533, 529, 533, 529, 528. A 1 Hz counter predicts 496–497 for all seven. |
+| Two single-unit reads 94.5 s apart by the host clock. | 94 s apart unpacked; 98 raw. |
+
+The old "1 Hz" evidence dissolves under the same arithmetic. The pair that read "33 756
+counts, 9.4 hours later" is the body control module at `2026-07-28 23:50:00` and the same
+unit at `2026-07-29 00:01:28` — **11 minutes 28 seconds** apart. The 9.4 came from
+dividing the raw difference by 3600, i.e. from the assumption it was testing.
+
+**The epoch was never the question — the car's date is.** This car's clock runs four days
+behind real time while keeping the correct time of day: the three sweep files were closed
+4 d + 3.0 s, 4 d + 3.6 s and 4 d + 4.3 s after the last stamp they contain, the residual
+being the time to finish and write the file. So a stamp is an exact moment on the car's
+clock, and four days must be added to reach a real one — for this car, which is not a
+fact any other car inherits.
+
+**One unit's record is not decoded.** The two door units (`0x74A`, `0x74B`) answer
+`0x02BD` with **eleven** bytes, not ten, and the packed clock inside is offset by seven
+bits. Read byte-aligned it gives `2013-03-30` and an odometer of 9 516 020 km on a car
+that has done 212 805. At the one bit offset that yields a valid date at all — one of 57
+— all four of their records land in exactly the right slot of the sweep order
+(`23:53:14` and `23:53:46` between `746` at `23:52:41` and `767` at `23:54:08`, and the
+same in the driving sweep). So the clock is there and it is this clock; the surrounding
+record is not understood, and `UnitStamp::parse` now refuses any length but ten rather
+than reading a wrong date out of the front.
 
 ### 2.4 The unit's own code list is not available
 

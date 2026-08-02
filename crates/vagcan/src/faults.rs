@@ -66,8 +66,11 @@ pub fn format_code(code: [u8; 3]) -> String {
 /// How long ago a fault happened, told against the unit's own counters.
 ///
 /// Both halves are differences taken on the same control unit, so neither
-/// needs an epoch or a calendar: the clock is a day counter whose zero is
-/// unknown, and the odometer is whatever this car has driven.
+/// depends on the car's clock being set right: the stamp is a packed date
+/// (`vag_protocol::dtc::CarTime`) and the difference between two of them is
+/// real elapsed time even when the date itself is days out, as it is here.
+/// The difference is taken through `seconds_between`, which unpacks first —
+/// subtracting the raw stamps overshoots by 4 counts per minute boundary.
 pub fn describe_age(context: &FaultContext, now: Option<&UnitStamp>) -> String {
     let mut parts = vec![format!("{} km", context.mileage_km)];
     match context.occurrences {

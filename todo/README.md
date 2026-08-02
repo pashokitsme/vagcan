@@ -43,8 +43,13 @@ Done since the last update:
    taken; one cold start settles `×0.75 − 48` against `×0.5 − 2`.
 4. **Brakes and body control.** `0x713` and `0x70E` answer 48 and 126 identifiers and own
    the signals a driver can provoke on demand — pedal, wheel speeds, lights, doors.
-5. **The clock's epoch.** The day counter skips days the car is unused, so dates are
-   printed as bounds. A run of readings across a known idle period would settle it.
+5. ~~**The clock's epoch.**~~ **Settled (2026-08-02).** There is no epoch: the stamp is a
+   packed calendar date and time, in stored faults *and* at live `0x02BD`. The apparent
+   free-running counter at `02BD` was raw subtraction of a packed field — the seconds
+   field wraps at 60 in six bits, so a raw difference overshoots by 4 per minute boundary.
+   Established against the instrument cluster's own clock across three sweeps; see
+   `vag_protocol::dtc::CarTime` and `research/whole-car-survey.md` §2.3. What is *not* a
+   protocol fact: this car's clock runs four days behind real time.
 
 ## Status (2026-08-01)
 

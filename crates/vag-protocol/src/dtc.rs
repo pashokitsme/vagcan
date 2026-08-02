@@ -39,7 +39,7 @@ pub struct DtcExtendedData {
 /// ```text
 /// 06 09  02B8  033F1B  0000  69F9044B
 /// ^  ^   ^     ^       ^     ^
-/// |  |   |     |       |     free-running seconds counter
+/// |  |   |     |       |     the car's own date and time, packed — see CarTime
 /// |  |   |     |       two bytes, zero in every sample seen
 /// |  |   |     odometer, km, u24 big-endian
 /// |  |   a counter that rises with time, shared across units
@@ -55,16 +55,19 @@ pub struct DtcExtendedData {
 ///   it exactly, and older faults order the same way by mileage and by
 ///   counter. A three-byte field landing on the odometer in every one of 17
 ///   records is not available to another reading.
-/// * **The counter runs at 1 Hz.** During a survey the units were read
-///   seconds apart and their counters differed by exactly those seconds; a
-///   read 9.4 hours later differed by 33 756 counts.
+/// * **The clock is a date, not a tally.** See [`CarTime`]; the same field is
+///   answered live at [`UnitStamp::DID`], where it decodes to the instrument
+///   cluster's own displayed date and time.
 ///
-/// What is **not** established is the counter's epoch. Read as a Unix
-/// timestamp it lands about 92 days before the reading — either the car's
-/// clock is wrong or the epoch is not 1970, and nothing here distinguishes
-/// those. So this type keeps the raw counter, and callers should express age
-/// *relative* to the same counter read from the same car, which needs no
-/// epoch at all.
+/// **This field looked like a free-running 1 Hz counter, and it is not.** The
+/// appearance comes from subtracting two raw stamps: the seconds field is six
+/// bits but wraps at 60, so a raw difference overshoots the elapsed time by 4
+/// per minute boundary crossed, 256 per hour and 32 768 per day. Across seven
+/// units between the two driving sweeps the raw differences were 528–533 where
+/// the elapsed time was 496–497 s — a 6–7 % overshoot that a counter cannot
+/// explain and that this layout predicts exactly, unit by unit (pinned in
+/// [`tests`]). Take differences with [`seconds_between`], never on the raw
+/// values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultContext {
     pub priority: u8,
@@ -88,7 +91,33 @@ pub struct FaultContext {
 ///
 /// This replaces an earlier reading of the same field as a day counter plus a
 /// second of the day. That fitted the first anchor — whose time is three
-/// seconds past midnight, where the two layouts agree — and nothing else.
+/// seconds past midnight, where the two layouts agree — and nothing else: it
+/// reads the second anchor as `08:51:14` where VCDS printed `23:50:02`.
+///
+/// **The same layout holds at [`UnitStamp::DID`] (`0x02BD`), read live.** The
+/// two places were suspected of meaning different things because raw `02BD`
+/// differences behave like a counter; they do not (see [`FaultContext`]). Four
+/// independent checks, each able to have failed:
+///
+/// * **The instrument cluster's own clock.** Its `2238`/`2239`/`223A`/`223B`/
+///   `223C` are a separate unit's real-time clock, read part-way through each
+///   sweep. In all three whole-car sweeps it lands inside the bracket the
+///   neighbouring units' `02BD` stamps set — `23:51` between `23:50:17` and
+///   `23:52:41`, `03:18` between `03:17:19` and `03:19:44`, `03:26` between
+///   `03:25:36` and `03:28:01` — and its year, month and day match the unpacked
+///   ones exactly (2026-07-28, then 2026-07-29 twice).
+/// * **Sweep order.** Within a sweep the units are read one after another, and
+///   the unpacked times rise monotonically in file order, every time.
+/// * **Raw differences.** Seven units, two sweeps: predicted exactly, 528 /
+///   529 / 533, including which units get which.
+/// * **Elapsed wall time.** Two single-unit reads 94.5 s apart by the host
+///   clock differ by 94 s unpacked and by 98 raw.
+///
+/// The clock the units carry is the **car's**, and on this car it runs four
+/// days behind real time while keeping the correct time of day: three sweep
+/// files were written 4 d + 3.0 s, 4 d + 3.6 s and 4 d + 4.3 s after the last
+/// stamp they recorded, the residual being the time to finish and close the
+/// file. So a stamp is a real moment, but it is the car's idea of the date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CarTime {
     pub year: u16,
@@ -171,10 +200,19 @@ impl FaultContext {
 
 /// The same "when" stamp, read live from identifier `0x02BD`.
 ///
-/// Every unit that answers it returns `91 <mileage:3> <2 bytes> <clock:4>` —
-/// the tail of a fault record without the fault. Reading it gives the *now*
-/// against which a stored fault's counter becomes an age, with no epoch
-/// involved.
+/// The units that answer it in this layout return exactly ten bytes,
+/// `9x <mileage:3> <2 bytes> <clock:4>` — the tail of a fault record without
+/// the fault. Reading it gives the *now* against which a stored fault becomes
+/// an age. The `clock` is the same packed [`CarTime`] the fault records carry;
+/// the evidence that it is the same in both places is on [`CarTime`].
+///
+/// **Anything that is not ten bytes is refused rather than read from the
+/// front.** The reference car's two door units (`0x74A`, `0x74B`) answer with
+/// eleven, and the packed clock inside is offset by seven bits, so a
+/// byte-aligned read of their record yields 9 516 020 km and a date in 2013 —
+/// both of which the plain sanity checks accept. Refusing an unfamiliar length
+/// costs a reading; accepting one costs a wrong date, and this project has
+/// retracted three decodings already.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitStamp {
     pub mileage_km: u32,
@@ -185,8 +223,13 @@ impl UnitStamp {
     /// Identifier holding it.
     pub const DID: u16 = 0x02BD;
 
+    /// The established record length. Not a magic number: it is the width of
+    /// the layout above, and a response of any other width is a layout this
+    /// project has not established.
+    pub const LEN: usize = 10;
+
     pub fn parse(data: &[u8]) -> Option<UnitStamp> {
-        if data.len() < 10 {
+        if data.len() != Self::LEN {
             return None;
         }
         Some(UnitStamp {
@@ -258,6 +301,133 @@ mod tests {
         // A day apart is a day, and the two anchors are 47 hours and change.
         assert_eq!(seconds_between(0x69F6_0003, 0x69F9_7C82), Some(172_199));
         assert_eq!(seconds_between(0x69F9_7C82, 0x69F6_0003), None);
+    }
+
+    /// Live `02BD` clocks, verbatim from `research/dumps/survey-parked.jsonl`
+    /// and the two `survey-driving-20260802-*.jsonl`, in the order the units
+    /// were read. The cluster (`0x714`) does not answer `02BD`; its own
+    /// real-time clock identifiers are quoted alongside.
+    /// One whole-car sweep: its name, the seven units that answered `02BD` in
+    /// the order they were read, and the instrument cluster's own displayed
+    /// hour and minute from part-way through it.
+    type Sweep = (&'static str, [(&'static str, u32); 7], (u8, u8));
+
+    const SWEEPS: [Sweep; 3] = [
+        (
+            "parked",
+            [
+                ("710", 0x69F9_7C2F),
+                ("70A", 0x69F9_7C51),
+                ("70E", 0x69F9_7C80),
+                ("712", 0x69F9_7C91),
+                ("746", 0x69F9_7D29),
+                ("767", 0x69F9_7D88),
+                ("773", 0x69F9_7D9B),
+            ],
+            (23, 51), // cluster 2238=0x17, 2239=0x33, read between 712 and 746
+        ),
+        (
+            "driving 03:14",
+            [
+                ("710", 0x69FA_33F2),
+                ("70A", 0x69FA_3413),
+                ("70E", 0x69FA_3443),
+                ("712", 0x69FA_3453),
+                ("746", 0x69FA_34EC),
+                ("767", 0x69FA_354A),
+                ("773", 0x69FA_355D),
+            ],
+            (3, 18), // cluster 2238=0x03, 2239=0x12
+        ),
+        (
+            "driving 03:22",
+            [
+                ("710", 0x69FA_3607),
+                ("70A", 0x69FA_3624),
+                ("70E", 0x69FA_3654),
+                ("712", 0x69FA_3664),
+                ("746", 0x69FA_3701),
+                ("767", 0x69FA_375B),
+                ("773", 0x69FA_376D),
+            ],
+            (3, 26), // cluster 2238=0x03, 2239=0x1A
+        ),
+    ];
+
+    #[test]
+    fn the_live_stamp_at_02bd_is_the_same_packed_date_the_cluster_shows() {
+        // The instrument cluster keeps its own real-time clock and was read
+        // part-way through each sweep, between units 712 and 746. If 02BD were
+        // anything but this date, its unpacked minute would not bracket the
+        // cluster's — that is the check that could have failed.
+        for (name, units, (hour, minute)) in SWEEPS {
+            let before = CarTime::parse(units[3].1).unwrap(); // 712
+            let after = CarTime::parse(units[4].1).unwrap(); // 746
+            let cluster = (hour as i64) * 60 + minute as i64;
+            let at = |t: &CarTime| (t.hour as i64) * 60 + t.minute as i64;
+            assert!(
+                at(&before) <= cluster && cluster <= at(&after),
+                "{name}: cluster {hour:02}:{minute:02} outside {:02}:{:02}..{:02}:{:02}",
+                before.hour,
+                before.minute,
+                after.hour,
+                after.minute
+            );
+            // And the units are read in order, so their stamps must rise.
+            for pair in units.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                assert!(
+                    seconds_between(a.1, b.1).is_some_and(|s| s > 0),
+                    "{name}: {} then {} did not advance",
+                    a.0,
+                    b.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_differences_overshoot_exactly_as_a_packed_field_must() {
+        // This is what made 02BD look like a counter. Between the two driving
+        // sweeps the elapsed time was 496–497 s and the raw differences were
+        // 528–533. A 1 Hz counter predicts 496–497 for all seven units; this
+        // layout predicts each unit's own value, because the overshoot is 4 per
+        // minute boundary the interval crosses and the units cross different
+        // numbers of them.
+        let (_, first, _) = SWEEPS[1];
+        let (_, second, _) = SWEEPS[2];
+        for (i, (unit, a)) in first.iter().enumerate() {
+            let b = second[i].1;
+            let elapsed = seconds_between(*a, b).unwrap();
+            let raw = (b - a) as i64;
+            let (a_t, b_t) = (CarTime::parse(*a).unwrap(), CarTime::parse(b).unwrap());
+            let boundaries = (b_t.hour as i64 * 60 + b_t.minute as i64)
+                - (a_t.hour as i64 * 60 + a_t.minute as i64);
+            assert_eq!(raw, elapsed + 4 * boundaries, "unit {unit}");
+            assert!((496..=497).contains(&elapsed), "unit {unit}: elapsed {elapsed}");
+            assert!((528..=533).contains(&raw), "unit {unit}: raw {raw}");
+            assert_ne!(raw, elapsed, "unit {unit}: the two readings must disagree");
+        }
+    }
+
+    #[test]
+    fn a_record_of_an_unfamiliar_length_is_refused_rather_than_read_from_the_front() {
+        // The reference car's door units answer 02BD with eleven bytes, and the
+        // packed clock inside sits seven bits off a byte boundary. Read as the
+        // ten-byte layout, 0x74A gives a date in 2013 and an odometer of
+        // 9 516 020 km on a car that has done 212 805 — and CarTime::parse
+        // accepts that date, so only the length check stops it.
+        let door = [0x00, 0x91, 0x33, 0xF4, 0x50, 0x00, 0x34, 0xFC, 0xBE, 0xA7, 0x00];
+        assert_eq!(UnitStamp::parse(&door), None);
+        // What it would have produced, spelt out so the cost of relaxing the
+        // check is on the record.
+        let wrong = u32::from_be_bytes([0x34, 0xFC, 0xBE, 0xA7]);
+        assert_eq!(CarTime::parse(wrong).unwrap().year, 2013);
+        assert_eq!(u32::from_be_bytes([0, 0x91, 0x33, 0xF4]), 9_516_020);
+
+        // Nine bytes is short of the layout, and eleven is not it either.
+        assert_eq!(UnitStamp::parse(&door[..9]), None);
+        assert!(UnitStamp::parse(&[0x91, 0x03, 0x3F, 0x45, 0, 0, 0x69, 0xF9, 0x7C, 0x2F]).is_some());
     }
 
     #[test]
