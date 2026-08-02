@@ -780,3 +780,88 @@ proprietary label text beyond minimal format snippets is reproduced.
 ```
 STRUC.rod [STRUC]: plaintext[3:8] = 9d 69 92 24 29 → 293,560 bytes inflated.
 ```
+
+---
+
+## 5. The numbers inside STRUC and TTDOP (2026-08-02)
+
+The per-table digit substitution is broken — by row order, not by cribs; the method and
+its evidence are in `research/whole-car-survey.md` §3 and the decoder is
+`crates/vag-data/src/glyphs.rs`. Applying it to the two structure tables settles what
+they hold.
+
+### 5.1 Grammar and sort key
+
+`STRUC.rod [STRUC]` is 1221 tables / 8853 rows of `NNNNNN,<payload>`, ids plaintext and
+monotone. Exactly one glyph per table splits every row into the same field count, and
+that count is **11**: of the 703 tables with four or more rows, 584 have a unique such
+separator and **584 of 584 give eleven fields**. `TTDOP.rod [DOP]` is 17 636 tables /
+127 433 rows with **four** fields, 10 720 of 10 720 uniquely resolved.
+
+The sort key is not a prefix of the record, which is why a first pass saw only 65 %:
+
+| key | acyclic | length violations |
+|---|---|---|
+| `f0` | 146 / 226 (64.6 %) | 495 |
+| **`(f6, f7)`** — byte offset, then bit offset | **545 / 545 (100 %)** | **0** |
+| `(f6, f7)` on shuffled rows | 231 / 543 (42.5 %) | 653 |
+| `f7` alone | 34 / 285 (11.9 %) | — |
+
+`TTDOP` sorts on `f0`: 5591 of 5591 acyclic, zero length violations, against 15 391
+violations shuffled.
+
+### 5.2 What the fields are
+
+`f6` byte offset · `f7` bit offset · `f8` bit length · `f5` unit id · `f9` name text-id ·
+`f10` structure size in bytes · `f1` the kind, which gates the rest: `f1 ∈ {3,6}` means
+`f0` is present (a reference) in 2126 of 2126 rows, and `f1 = 0` means `f2/f3/f4` are
+present in 162 of 162 rows as offset, numerator and denominator.
+
+Every check below could have failed:
+
+* `f9` is a valid `TTTEXT` record id in **3837 of 3837** rows; the same alphabets
+  shuffled give 637.
+* `f5` is a valid `UNIT.ROD` id in **382 of 382** rows, where ids are 56.5 % dense.
+* `f7 ∈ 0..7` in **3969 of 3969** rows — exactly a bit index.
+* Contiguity, `f6·8 + f7 + f8` equals the next row's bit position: **2477 of 2963**
+  (83.6 %) against 46 shuffled (1.6 %).
+* `f10` is constant within all 248 tables and equals ⌈structure bits / 8⌉ in 216 of 223.
+
+A **blind prediction, 6 for 6**: six recurring text ids had to be Seconds, Minutes,
+Hours, Day, Month, Year from their ciphertext word lengths alone. Predicted bit widths
+6, 6, 5, 5, 4, 7 — measured 6, 6, 5, 5, 4, 7, with Year carrying offset 2000 (103 rows)
+or 1970 (7).
+
+### 5.3 The honest limit: STRUC does not carry the fine scalings
+
+The complete inventory of linear rows decoded so far — 162 of them — is
+`(2000, 1/1)`×109, `(0, 4/10)`×16, `(0, 5/1)`×10, `(0, 10/1)`×10, `(1970, 1/1)`×7,
+`(0, 3/1)`×5, `(0, 25/1)`×3, `(0, 4/1)`×2. **Denominators are 1 or 10, nothing else.**
+
+The factors this project proved by driving the car — `0.001` for boost, `0.01` for the
+gearbox's speed, `0.75`/`−48` for a temperature — appear **zero times** in 4003 decoded
+rows. So "read STRUC and stop measuring on the car" is false as stated, and the live
+calibration path stays load-bearing.
+
+`TTDOP` is a text table — `(lower, upper, text-id)` — with no coefficient field, so it is
+not the home of the missing factors either.
+
+### 5.4 One near-miss, deliberately not claimed
+
+Table `000742` decodes to sixteen consecutive 8-bit parameters with unit id 1 = `%` and
+factor 4/10 — numerically identical to the accelerator-pedal scaling proven on gearbox
+`0CW300041G` (`0x3804`, one byte, ×0.4 %). It is **not** an identification: 0.4 % per bit
+on a byte is the commonest scaling VAG uses, and the rows' name text-ids 62816–62831 are
+not among the 17 009 names recovered so far. A match of form is not a match.
+
+The §4.0c refutation is untouched: nothing here puts a read identifier in STRUC.
+
+### 5.5 Where the leverage now is
+
+The bottleneck has moved from the cipher to the **names**: 100 % of `f9` values are valid
+`TTTEXT` ids but only 8.8 % of `TTTEXT` records have their letter key solved. Cracking
+the ~200 records that STRUC's linear rows point at would turn the near-miss above into
+either an identification or a refutation. Separately, 990 STRUC tables remain unsolved
+for want of rows; identical structures recur verbatim across tables (251 and 252 are
+byte-identical), so a cross-table pass should absorb many of them.
+
