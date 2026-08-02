@@ -246,6 +246,7 @@ pub async fn run(
     out: Option<&str>,
     delay_ms: u64,
     only: Option<&str>,
+    extended: bool,
 ) -> Result<()> {
     let ranges = scan::parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
     let mut sink = match out {
@@ -317,10 +318,13 @@ pub async fn run(
             CanId::Standard(address.response),
         ));
 
-        // VCDS opens an extended session before reading these units, and the
-        // four unidentified ones answered nothing else. A refusal here is not
-        // fatal — the engine answers `0x22` in the default session.
-        let _ = uds.start_session(0x03).await;
+        // No session change by default. `0x10 0x03` is workshop mode, and a
+        // unit that assists the driver may stop assisting while it is in one —
+        // the steering assist on the reference car dropped out mid-drive
+        // exactly here, a third of the way through the walk.
+        if extended {
+            let _ = uds.start_session(0x03).await;
+        }
 
         let mut report = UnitReport { request, ..Default::default() };
         for (did, _) in IDENT {

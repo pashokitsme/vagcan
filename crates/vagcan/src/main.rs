@@ -19,6 +19,7 @@ mod labels;
 mod names;
 mod props;
 mod render;
+mod safety;
 mod scan;
 mod sniff;
 mod survey;
@@ -235,6 +236,12 @@ enum Command {
         /// List every code each unit *can* report, in the unit's own order.
         #[arg(long)]
         supported: bool,
+        /// Ask each unit for an extended diagnostic session first. Off by
+        /// default and refused while the car is moving: that session is
+        /// workshop mode, and a unit that assists the driver may stop
+        /// assisting while it is in one.
+        #[arg(long)]
+        extended: bool,
     },
 
     /// Sweep EVERY control unit the car has — `scan` for the whole car. Slow:
@@ -266,6 +273,12 @@ enum Command {
         /// list the identifiers whose bytes differ. Offline.
         #[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
         diff: Option<Vec<String>>,
+        /// Ask each unit for an extended diagnostic session first. Off by
+        /// default and refused while the car is moving: that session is
+        /// workshop mode, and a unit that assists the driver may stop
+        /// assisting while it is in one.
+        #[arg(long)]
+        extended: bool,
     },
 
     /// Cross a capture with a VCDS log to prove measurement scalings.
@@ -419,7 +432,7 @@ async fn main() -> Result<()> {
             scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
                 .await
         }
-        Command::Faults { device, ecu, details, all, supported } => {
+        Command::Faults { device, ecu, details, all, supported, extended } => {
             faults::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
@@ -427,11 +440,12 @@ async fn main() -> Result<()> {
                 details,
                 all,
                 supported,
+                extended,
             )
             .await
         }
         Command::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
-        Command::Survey { device, range, out, delay_ms, only, .. } => {
+        Command::Survey { device, range, out, delay_ms, only, extended, .. } => {
             survey::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
@@ -439,6 +453,7 @@ async fn main() -> Result<()> {
                 out.as_deref(),
                 delay_ms,
                 only.as_deref(),
+                extended,
             )
             .await
         }

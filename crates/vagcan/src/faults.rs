@@ -144,6 +144,7 @@ pub async fn run(
     details: bool,
     all_codes: bool,
     supported: bool,
+    extended: bool,
 ) -> Result<()> {
     let mut backend =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
@@ -211,7 +212,11 @@ pub async fn run(
             CanId::Standard(address.request),
             CanId::Standard(address.response),
         ));
-        let _ = uds.start_session(0x03).await;
+        // See `crate::safety`: an extended session is workshop mode, and this
+        // command reads faults perfectly well without one.
+        if extended {
+            let _ = uds.start_session(0x03).await;
+        }
 
         // The unit names itself; nothing here maps an address to a name.
         let component = uds

@@ -239,6 +239,27 @@ three cipher classes.
 
 ---
 
+## 3b. A control unit dropped out mid-drive — and why
+
+During a driving survey on 2026-08-02 the **steering assist stopped assisting**, about a
+third of the way through the walk. `0x712` is the seventh of eighteen addresses in the
+walk order, which is that third.
+
+The cause is almost certainly ours. Before reading each unit the survey sent
+`0x10 0x03` — extended diagnostic session. On this platform that is workshop mode, and a
+unit responsible for assisting the driver is entitled to stop assisting while it is in
+one. Nothing else in the command writes: the only other service issued is `0x22`.
+
+What changed as a result: the session request is **off by default** in both `survey` and
+`faults`, and where it is asked for explicitly (`--extended`) it is **refused unless the
+car is standing still**, checked by reading road speed from the engine first. A car that
+does not report its speed counts as moving.
+
+Open check for the next session with the car: the driving surveys were recorded with the
+session request still in place, so it is not yet known which units need it. If a unit
+answers nothing without one, that is worth recording per unit rather than restoring the
+blanket request.
+
 ## 4. What to record next
 
 * **Drive with the survey running.** One parked pass exists; the identifiers whose bytes
