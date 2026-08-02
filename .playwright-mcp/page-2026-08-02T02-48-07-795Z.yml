@@ -1,0 +1,885 @@
+- generic [active] [ref=f44e1]:
+  - link "Skip to content" [ref=f44e2] [cursor=pointer]:
+    - /url: "#ipsLayout__main"
+  - generic [ref=f44e4]:
+    - text:      
+    - banner [ref=f44e5]:
+      - generic [ref=f44e7]:
+        - link [ref=f44e10] [cursor=pointer]:
+          - /url: https://www.briskoda.net/forums/
+          - img "BRISKODA" [ref=f44e12]
+        - list [ref=f44e15]:
+          - listitem [ref=f44e16]:
+            - button "Existing user? Sign In" [ref=f44e17] [cursor=pointer]:
+              - generic [ref=f44e18]: 
+            - text: 
+          - listitem [ref=f44e20]:
+            - link "Sign Up" [ref=f44e21] [cursor=pointer]:
+              - /url: https://www.briskoda.net/forums/register/
+              - generic [ref=f44e22]: 
+      - navigation "Primary" [ref=f44e28]:
+        - list [ref=f44e30]:
+          - listitem [ref=f44e31]:
+            - link "Forums" [ref=f44e32] [cursor=pointer]:
+              - /url: https://www.briskoda.net/forums/
+              - generic [ref=f44e33]: 
+          - listitem [ref=f44e37]:
+            - link "All Activity" [ref=f44e38] [cursor=pointer]:
+              - /url: https://www.briskoda.net/forums/discover/
+              - generic [ref=f44e39]: 
+          - listitem [ref=f44e43]:
+            - button "Shop" [ref=f44e44] [cursor=pointer]:
+              - generic [ref=f44e45]: 
+              - generic [ref=f44e47]:
+                - generic [ref=f44e48]: Shop
+                - generic [ref=f44e49]: 
+            - text:  
+          - listitem [ref=f44e50]:
+            - button "More" [ref=f44e51] [cursor=pointer]:
+              - generic [ref=f44e52]: 
+              - generic [ref=f44e54]:
+                - generic [ref=f44e55]: More
+                - generic [ref=f44e56]: 
+            - text:      
+          - listitem [ref=f44e57]:
+            - link "Bug Tracker" [ref=f44e58] [cursor=pointer]:
+              - /url: https://www.briskoda.net/forums/bugtracker/
+              - generic [ref=f44e59]: 
+          - text:  
+    - main [ref=f44e63]:
+      - generic [ref=f44e65]:
+        - navigation "Breadcrumbs" [ref=f44e69]:
+          - list [ref=f44e70]:
+            - listitem [ref=f44e71]:
+              - link "Home" [ref=f44e72] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/
+                - generic [ref=f44e73]: 
+                - text: Home
+              - text: 
+            - listitem [ref=f44e74]:
+              - link "Škoda Owners Forums" [ref=f44e75] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/353-%C5%A1koda-owners-forums/
+              - text: 
+            - listitem [ref=f44e76]:
+              - link "Škoda Octavia" [ref=f44e77] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/169-%C5%A1koda-octavia/
+              - text: 
+            - listitem [ref=f44e78]:
+              - link "Skoda Octavia Mk3 (2013 - 2020)" [ref=f44e79] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/235-skoda-octavia-mk3-2013-2020/
+              - text: 
+            - listitem [ref=f44e80]:
+              - generic [ref=f44e81]: Power Steering Problem B200F00, octavia 1.6tdi
+          - text: 
+        - generic [ref=f44e82]:
+          - generic [ref=f44e83]:
+            - generic [ref=f44e86]:
+              - generic [ref=f44e88]:
+                - generic [ref=f44e89]:
+                  - generic [ref=f44e90]:
+                    - heading "Power Steering Problem B200F00, octavia 1.6tdi" [level=1] [ref=f44e92]
+                    - list [ref=f44e93]:
+                      - listitem [ref=f44e94]:
+                        - link "b200f00" [ref=f44e95] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/tags/b200f00/
+                      - listitem [ref=f44e96]:
+                        - link "eps" [ref=f44e97] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/tags/eps/
+                      - listitem [ref=f44e98]:
+                        - link "int malfunction" [ref=f44e99] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/tags/int-malfunction/
+                      - listitem [ref=f44e100]:
+                        - link "module faulty" [ref=f44e101] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/tags/module-faulty/
+                      - listitem [ref=f44e102]:
+                        - link "power steering" [ref=f44e103] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/tags/power-steering/
+                  - list [ref=f44e104]:
+                    - listitem [ref=f44e105]:
+                      - button "Share" [ref=f44e106] [cursor=pointer]:
+                        - generic [ref=f44e107]: 
+                      - text:    
+                    - listitem [ref=f44e109]:
+                      - link "Followers" [ref=f44e111] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/login/
+                        - generic [ref=f44e112]:
+                          - generic [ref=f44e113]: 
+                          - generic [ref=f44e114]: Followers
+                - generic [ref=f44e117]:
+                  - link [ref=f44e118] [cursor=pointer]:
+                    - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                  - generic [ref=f44e120]:
+                    - link "nicktheskodaguy" [ref=f44e122] [cursor=pointer]:
+                      - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                    - generic [ref=f44e123]:
+                      - time [ref=f44e124]: 29 July, 2021
+                      - text: in
+                      - link "Skoda Octavia Mk3 (2013 - 2020)" [ref=f44e125] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/forum/235-skoda-octavia-mk3-2013-2020/
+              - text:  
+              - generic [ref=f44e126]:
+                - generic [ref=f44e128]:
+                  - article [ref=f44e129]:
+                    - complementary [ref=f44e130]:
+                      - generic [ref=f44e131]:
+                        - generic [ref=f44e132]:
+                          - generic [ref=f44e133]:
+                            - link [ref=f44e134] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                            - img "Newbie" [ref=f44e136]
+                          - generic [ref=f44e137]:
+                            - heading "nicktheskodaguy New here" [level=3] [ref=f44e138]:
+                              - link "nicktheskodaguy" [ref=f44e139] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                              - generic [ref=f44e140]: New here
+                            - paragraph [ref=f44e141]:
+                              - time [ref=f44e142]: 29 July, 2021
+                        - button "Author stats" [ref=f44e143] [cursor=pointer]:
+                          - generic [ref=f44e144]: 
+                    - generic [ref=f44e148]:
+                      - paragraph [ref=f44e149]: Hey guys, i am new to the forum, hoping someone can help me with my problem.
+                      - paragraph [ref=f44e150]: I have recently bought Skoda Octavia mk3 2014 1.6tdi.
+                      - paragraph [ref=f44e151]: Car had a new new steering rack fitted just before i got it. It drove fine for few days after i bought it, then i have decided to fix driver's door hinges as they were badly worn. This procedure required taking the door off and disconnecting harness. After i put door back i got airbag fault(drivers door) and power steering loss with light on the dash.
+                      - paragraph [ref=f44e152]: "Airbag fault cleared fine but not power steering. DTCs are: B200ff0 internal malfunction(static/abiogenesis), B2000f1 ctrl module faulty"
+                      - paragraph [ref=f44e153]: I was able to clear this codes after leaving car overnight with joined battery leads, also narrowed circle to glow plug relay 511, if you unplug it and plug it back in 1 out of 3 times power steering comes back and lights go out, faults clear. But if you turn off the engine and wait for 5min (until main relay cuts power off i guess) fault is back and red steering wheel on the dash. Sometimes cuts off after 2 seconds of Fuse box checked - wiring is ok. I bought another 511 relay but same story ,as i expected, no idea how glow plug relay is related to power steering but there you go.
+                      - paragraph [ref=f44e154]: Steering angle sensor seem to work correctly(according to live data) I have disconnected door harness again and checked for bent pins or broken wires - all good.
+                      - paragraph [ref=f44e155]: I would suspect the battery but voltage is there, car starts no bother and when engine is running faults are still there. Also tried to put ignition on while battery connected to charger, no luck.
+                      - paragraph [ref=f44e156]: Pretty frustrated with that situation, asked few garages about it, none of them seem to have clue what can cause it.
+                      - paragraph [ref=f44e157]: Will try to check wiring to the control module but first need to locate it.
+                      - paragraph [ref=f44e158]: Any help appreciated!
+                      - paragraph [ref=f44e159]: Thanks!
+                  - article [ref=f44e160]:
+                    - complementary [ref=f44e161]:
+                      - generic [ref=f44e162]:
+                        - generic [ref=f44e163]:
+                          - generic [ref=f44e164]:
+                            - link [ref=f44e165] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/121621-langers2k/
+                            - img "Experienced" [ref=f44e167]
+                          - generic [ref=f44e168]:
+                            - heading "langers2k Resident Member" [level=3] [ref=f44e169]:
+                              - link "langers2k" [ref=f44e170] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/121621-langers2k/
+                              - generic [ref=f44e171]: Resident Member
+                            - paragraph [ref=f44e172]:
+                              - time [ref=f44e173]: 30 July, 2021
+                        - button "Author stats" [ref=f44e174] [cursor=pointer]:
+                          - generic [ref=f44e175]: 
+                    - generic [ref=f44e179]:
+                      - paragraph [ref=f44e180]: A quick google suggests most people who get B200ff0 and B2000f1 then replace the rack...
+                      - paragraph [ref=f44e181]
+                      - paragraph [ref=f44e182]: Given you've recently bought it and it had a new rack fitted just prior to that, I'd suggest contacting the garage who did that work as hopefully it'll still be in warranty. At least assuming those are the only two codes.
+                      - paragraph [ref=f44e183]
+                      - paragraph [ref=f44e184]:
+                        - text: I can't see how removing a door would cause a steering rack issue so I'd probably not mention that
+                        - img ":)" [ref=f44e186]
+                  - article [ref=f44e187]:
+                    - complementary [ref=f44e188]:
+                      - generic [ref=f44e189]:
+                        - generic [ref=f44e190]:
+                          - generic [ref=f44e191]:
+                            - link [ref=f44e192] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                            - img "Newbie" [ref=f44e194]
+                          - generic [ref=f44e195]:
+                            - heading "nicktheskodaguy New here" [level=3] [ref=f44e196]:
+                              - link "nicktheskodaguy" [ref=f44e197] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                              - generic [ref=f44e198]: New here
+                            - paragraph [ref=f44e199]:
+                              - time [ref=f44e200]: 30 July, 2021
+                        - list [ref=f44e201]:
+                          - listitem [ref=f44e202]:
+                            - generic [ref=f44e203]: Author
+                        - button "Author stats" [ref=f44e204] [cursor=pointer]:
+                          - generic [ref=f44e205]: 
+                    - generic [ref=f44e209]:
+                      - blockquote [ref=f44e210]:
+                        - generic [ref=f44e211]:
+                          - text: 
+                          - link "" [ref=f44e212] [cursor=pointer]:
+                            - /url: //www.briskoda.net/forums/?app=core&module=system&controller=content&do=find&content_class=forums_Topic&content_id=496082&content_commentid=5566537
+                          - text: On 30/07/2021 at 09:39,
+                          - link "langers2k" [ref=f44e214] [cursor=pointer]:
+                            - /url: //www.briskoda.net/forums/?app=core&module=members&controller=profile&id=121621
+                          - text: "said:"
+                        - generic [ref=f44e215]:
+                          - paragraph [ref=f44e216]: A quick google suggests most people who get B200ff0 and B2000f1 then replace the rack...
+                          - paragraph [ref=f44e217]
+                          - paragraph [ref=f44e218]: Given you've recently bought it and it had a new rack fitted just prior to that, I'd suggest contacting the garage who did that work as hopefully it'll still be in warranty. At least assuming those are the only two codes.
+                          - paragraph [ref=f44e219]
+                          - paragraph [ref=f44e220]:
+                            - text: I can't see how removing a door would cause a steering rack issue so I'd probably not mention that
+                            - img ":)" [ref=f44e222]
+                        - button "Expand " [ref=f44e223] [cursor=pointer]:
+                          - generic [ref=f44e224]: Expand
+                          - generic [ref=f44e225]: 
+                      - paragraph [ref=f44e226]: Thank You for reply. It's the garage where i am working now actually😄 But seems strange to me that reconditioned (forgot to mention) rack would pack up at such short periode.
+                  - article [ref=f44e227]:
+                    - complementary [ref=f44e228]:
+                      - generic [ref=f44e229]:
+                        - generic [ref=f44e230]:
+                          - generic [ref=f44e231]:
+                            - link [ref=f44e232] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/121621-langers2k/
+                            - img "Experienced" [ref=f44e234]
+                          - generic [ref=f44e235]:
+                            - heading "langers2k Resident Member" [level=3] [ref=f44e236]:
+                              - link "langers2k" [ref=f44e237] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/121621-langers2k/
+                              - generic [ref=f44e238]: Resident Member
+                            - paragraph [ref=f44e239]:
+                              - time [ref=f44e240]: 30 July, 2021
+                        - button "Author stats" [ref=f44e241] [cursor=pointer]:
+                          - generic [ref=f44e242]: 
+                    - generic [ref=f44e246]:
+                      - paragraph [ref=f44e247]: If it's reconditioned I'd defiantly contact the supplier.
+                      - paragraph [ref=f44e248]
+                      - paragraph [ref=f44e249]: "Depending on why it was sent for reconditioning it feels like:"
+                      - paragraph [ref=f44e250]: "- this is the original fault with it and it's not been repaired properly"
+                      - paragraph [ref=f44e251]: "- it had a different issue and it's just chance that it's got a second one"
+                      - paragraph [ref=f44e252]
+                      - paragraph [ref=f44e253]:
+                        - text: Either way, it's seemingly faulty so hopefully can be exchanged for a working one. I imagine it's a good chunk of work to replace it again though
+                        - img ":thinking:"
+                  - article [ref=f44e254]:
+                    - complementary [ref=f44e255]:
+                      - generic [ref=f44e256]:
+                        - generic [ref=f44e257]:
+                          - generic [ref=f44e258]:
+                            - link [ref=f44e259] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                            - img "Newbie" [ref=f44e261]
+                          - generic [ref=f44e262]:
+                            - heading "nicktheskodaguy New here" [level=3] [ref=f44e263]:
+                              - link "nicktheskodaguy" [ref=f44e264] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                              - generic [ref=f44e265]: New here
+                            - paragraph [ref=f44e266]:
+                              - time [ref=f44e267]: 30 July, 2021
+                        - list [ref=f44e268]:
+                          - listitem [ref=f44e269]:
+                            - generic [ref=f44e270]: Author
+                        - button "Author stats" [ref=f44e271] [cursor=pointer]:
+                          - generic [ref=f44e272]: 
+                    - generic [ref=f44e276]:
+                      - paragraph [ref=f44e277]
+                      - blockquote [ref=f44e278]:
+                        - generic [ref=f44e279]:
+                          - text: 
+                          - link "" [ref=f44e280] [cursor=pointer]:
+                            - /url: //www.briskoda.net/forums/?app=core&module=system&controller=content&do=find&content_class=forums_Topic&content_id=496082&content_commentid=5566543
+                          - text: On 30/07/2021 at 09:51,
+                          - link "langers2k" [ref=f44e282] [cursor=pointer]:
+                            - /url: //www.briskoda.net/forums/?app=core&module=members&controller=profile&id=121621
+                          - text: "said:"
+                        - generic [ref=f44e283]:
+                          - paragraph [ref=f44e284]: If it's reconditioned I'd defiantly contact the supplier.
+                          - paragraph [ref=f44e285]
+                          - paragraph [ref=f44e286]: "Depending on why it was sent for reconditioning it feels like:"
+                          - paragraph [ref=f44e287]: "- this is the original fault with it and it's not been repaired properly"
+                          - paragraph [ref=f44e288]: "- it had a different issue and it's just chance that it's got a second one"
+                          - paragraph [ref=f44e289]
+                          - paragraph [ref=f44e290]:
+                            - text: Either way, it's seemingly faulty so hopefully can be exchanged for a working one. I imagine it's a good chunk of work to replace it again though
+                            - img ":thinking:"
+                        - button "Expand " [ref=f44e291] [cursor=pointer]:
+                          - generic [ref=f44e292]: Expand
+                          - generic [ref=f44e293]: 
+                      - paragraph [ref=f44e294]: Well.. the rack came from local Skoda dealer and still has a warranty, but i must be 100% certain that that is the problem before even thinking of taking it off.
+                  - list [ref=f44e295]:
+                    - listitem [ref=f44e296]: 1 month later...
+                  - article [ref=f44e297]:
+                    - complementary [ref=f44e298]:
+                      - generic [ref=f44e299]:
+                        - generic [ref=f44e300]:
+                          - generic [ref=f44e301]:
+                            - link [ref=f44e302] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                            - img "Newbie" [ref=f44e304]
+                          - generic [ref=f44e305]:
+                            - heading "nicktheskodaguy New here" [level=3] [ref=f44e306]:
+                              - link "nicktheskodaguy" [ref=f44e307] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/profile/200733-nicktheskodaguy/
+                              - generic [ref=f44e308]: New here
+                            - paragraph [ref=f44e309]:
+                              - time [ref=f44e310]: 9 September, 2021
+                        - list [ref=f44e311]:
+                          - listitem [ref=f44e312]:
+                            - generic [ref=f44e313]: Author
+                        - button "Author stats" [ref=f44e314] [cursor=pointer]:
+                          - generic [ref=f44e315]: 
+                    - paragraph [ref=f44e320]: Update. After lots of checks through wiring and VCDS adaptation attempts i ended up replacing steering rack again which has solved the issue 👍
+                - generic [ref=f44e325]:
+                  - heading "Create an account or sign in to comment" [level=2] [ref=f44e326]
+                  - generic [ref=f44e327]:
+                    - link "Register a new account" [ref=f44e329] [cursor=pointer]:
+                      - /url: https://www.briskoda.net/forums/register/
+                    - link "Sign In Now" [ref=f44e331] [cursor=pointer]:
+                      - /url: https://www.briskoda.net/forums/login/?ref=aHR0cHM6Ly93d3cuYnJpc2tvZGEubmV0L2ZvcnVtcy90b3BpYy80OTYwODItcG93ZXItc3RlZXJpbmctcHJvYmxlbS1iMjAwZjAwLW9jdGF2aWEtMTZ0ZGkvI3JlcGx5Rm9ybQ==
+                - text:      
+              - link "Go to topic listing " [ref=f44e334] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/235-skoda-octavia-mk3-2013-2020/
+                - generic [ref=f44e335]: Go to topic listing
+                - text: 
+            - generic [ref=f44e336]:
+              - generic [ref=f44e340]:
+                - heading "Recently Browsing 0" [level=3] [ref=f44e341]:
+                  - generic [ref=f44e342]: Recently Browsing
+                  - generic "0 members" [ref=f44e343]:
+                    - generic [ref=f44e344]: 
+                    - text: "0"
+                - list [ref=f44e346]:
+                  - listitem [ref=f44e347]: No registered users viewing this page.
+              - link [ref=f44e352] [cursor=pointer]:
+                - /url: https://www.chrisknott.co.uk/briskoda-owners-club-insurance/
+                - img "Discount insurance from Chris Knott" [ref=f44e353]
+          - complementary [ref=f44e354]:
+            - generic [ref=f44e356]:
+              - generic [ref=f44e357]:
+                - heading "Announcements" [level=3] [ref=f44e358]
+                - generic [ref=f44e359]:
+                  - generic [ref=f44e360]:
+                    - link "Need help?" [ref=f44e361] [cursor=pointer]:
+                      - /url: https://www.briskoda.net/forums/announcement/9-need-help/
+                      - generic [ref=f44e362]: 
+                      - text: Need help?
+                    - text: 
+                  - generic [ref=f44e363]:
+                    - link "Ways you can support BRISKODA" [ref=f44e364] [cursor=pointer]:
+                      - /url: https://www.briskoda.net/forums/topic/472785-ways-to-support-briskoda/
+                      - generic [ref=f44e365]: 
+                      - text: Ways you can support BRISKODA
+                    - text: 
+                  - generic [ref=f44e366]:
+                    - link "Classic, custom or modified car insurance" [ref=f44e367] [cursor=pointer]:
+                      - /url: https://www.chrisknott.co.uk/briskoda-owners-club-insurance/
+                      - generic [ref=f44e368]: 
+                      - text: Classic, custom or modified car insurance
+                    - text: 
+                  - generic [ref=f44e369]:
+                    - link "Security Tips (external)" [ref=f44e370] [cursor=pointer]:
+                      - /url: https://www.ncsc.gov.uk/collection/top-tips-for-staying-secure-online
+                      - generic [ref=f44e371]: 
+                      - text: Security Tips (external)
+                    - text: 
+              - generic [ref=f44e372]:
+                - generic [ref=f44e376]:
+                  - heading "About BRISKODA" [level=3] [ref=f44e377]
+                  - paragraph [ref=f44e378]:
+                    - link "BRISKODA" [ref=f44e379] [cursor=pointer]:
+                      - /url: https://briskoda.net/
+                    - text: is for the sharing of information on ŠKODA. Founded for all motoring enthusiasts, it's free to join and use. We have members from all over the world.
+                  - list [ref=f44e380]:
+                    - listitem [ref=f44e381]:
+                      - paragraph [ref=f44e382]:
+                        - link "Our Guidelines." [ref=f44e383] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/guidelines/
+                    - listitem [ref=f44e384]:
+                      - paragraph [ref=f44e385]:
+                        - link "Search the Site." [ref=f44e386] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/search/
+                    - listitem [ref=f44e387]:
+                      - paragraph [ref=f44e388]:
+                        - link "Explore the Forums." [ref=f44e389] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/
+                    - listitem [ref=f44e390]:
+                      - paragraph [ref=f44e391]:
+                        - link "Gaze into the Gallery." [ref=f44e392] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/gallery/
+                    - listitem [ref=f44e393]:
+                      - paragraph [ref=f44e394]:
+                        - link "Make a date, the Calendar." [ref=f44e395] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/calendar/
+                    - listitem [ref=f44e396]:
+                      - paragraph [ref=f44e397]:
+                        - link "Classic, custom or modified car insurance!" [ref=f44e398] [cursor=pointer]:
+                          - /url: https://www.chrisknott.co.uk/briskoda-owners-club-insurance/
+                    - listitem [ref=f44e399]:
+                      - paragraph [ref=f44e400]: Please be respectful when posting.
+                - generic [ref=f44e403]:
+                  - heading "Available Subscriptions" [level=3] [ref=f44e405]
+                  - generic [ref=f44e406]:
+                    - list [ref=f44e408]:
+                      - listitem [ref=f44e409]:
+                        - link [ref=f44e410] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/subscriptions/5/
+                          - generic [ref=f44e411]: FREEDOM Lite - £6/year
+                        - generic [ref=f44e414]:
+                          - heading [level=4] [ref=f44e415]:
+                            - link "FREEDOM Lite" [ref=f44e416] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/subscriptions/5/
+                          - generic [ref=f44e417]: £6/year
+                      - listitem [ref=f44e418]:
+                        - link [ref=f44e419] [cursor=pointer]:
+                          - /url: https://www.briskoda.net/forums/subscriptions/1/
+                          - generic [ref=f44e420]: FREEDOM - £10/year
+                        - generic [ref=f44e423]:
+                          - heading [level=4] [ref=f44e424]:
+                            - link "FREEDOM" [ref=f44e425] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/subscriptions/1/
+                          - generic [ref=f44e426]: £10/year
+                    - paragraph [ref=f44e427]:
+                      - link "See all Subscription Plans" [ref=f44e428] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/subscriptions/
+                        - text: See all Subscription Plans
+                        - generic [ref=f44e429]: 
+                - generic [ref=f44e432]:
+                  - heading "Similar Content" [level=3] [ref=f44e433]
+                  - list [ref=f44e436]:
+                    - listitem [ref=f44e437]:
+                      - link [ref=f44e438] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/527797-paracitic-draw-from-electric-power-steering/
+                        - generic [ref=f44e439]: Paracitic draw from electric power steering
+                      - generic [ref=f44e440]:
+                        - generic [ref=f44e441]:
+                          - heading [level=4] [ref=f44e443]:
+                            - link "Paracitic draw from electric power steering" [ref=f44e444] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/527797-paracitic-draw-from-electric-power-steering/
+                          - generic [ref=f44e445]:
+                            - link "Jacehere" [ref=f44e446] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/168568-jacehere/
+                            - text: ·
+                            - time [ref=f44e447]: 5 November, 2024
+                          - list [ref=f44e448]:
+                            - listitem [ref=f44e449]:
+                              - link "flat battery" [ref=f44e450] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/flat-battery/
+                            - listitem [ref=f44e451]:
+                              - link "paracitic" [ref=f44e452] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/paracitic/
+                            - listitem [ref=f44e453]:
+                              - link "power steering" [ref=f44e454] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/power-steering/
+                        - list [ref=f44e455]:
+                          - listitem [ref=f44e456]: 1 reply
+                          - listitem [ref=f44e457]: 642 views
+                        - generic [ref=f44e459]:
+                          - link "sepulchrave" [ref=f44e461] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/profile/60211-sepulchrave/
+                          - link [ref=f44e463] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/topic/527797-paracitic-draw-from-electric-power-steering/
+                            - time [ref=f44e464]: 1 yr
+                          - text: 
+                    - listitem [ref=f44e465]:
+                      - link [ref=f44e466] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/526423-eps-fault-limp-mode-any-clue/
+                        - generic [ref=f44e467]: EPS Fault Limp Mode Any Clue?
+                      - generic [ref=f44e468]:
+                        - generic [ref=f44e469]:
+                          - heading [level=4] [ref=f44e471]:
+                            - link "EPS Fault Limp Mode Any Clue?" [ref=f44e472] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/526423-eps-fault-limp-mode-any-clue/
+                          - generic [ref=f44e473]:
+                            - link "richard1966" [ref=f44e474] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/218139-richard1966/
+                            - text: ·
+                            - time [ref=f44e475]: 10 September, 2024
+                          - list [ref=f44e476]:
+                            - listitem [ref=f44e477]:
+                              - link "eps" [ref=f44e478] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/eps/
+                            - listitem [ref=f44e479]:
+                              - link "kodiak" [ref=f44e480] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/kodiak/
+                            - listitem [ref=f44e481]:
+                              - link "vrs" [ref=f44e482] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/vrs/
+                        - list [ref=f44e483]:
+                          - listitem [ref=f44e484]: 0 replies
+                          - listitem [ref=f44e485]: 919 views
+                        - generic [ref=f44e487]:
+                          - link "richard1966" [ref=f44e489] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/profile/218139-richard1966/
+                          - link [ref=f44e491] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/topic/526423-eps-fault-limp-mode-any-clue/
+                            - time [ref=f44e492]: 1 yr
+                          - text: 
+                    - listitem [ref=f44e493]:
+                      - link [ref=f44e494] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/524590-hydraulic-power-steering-or-electric/
+                        - generic [ref=f44e495]: Hydraulic power steering or Electric?
+                      - generic [ref=f44e496]:
+                        - generic [ref=f44e497]:
+                          - heading [level=4] [ref=f44e499]:
+                            - link "Hydraulic power steering or Electric?" [ref=f44e500] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/524590-hydraulic-power-steering-or-electric/
+                          - generic [ref=f44e501]:
+                            - link "VAskodas" [ref=f44e502] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/224656-vaskodas/
+                            - text: ·
+                            - time [ref=f44e503]: 25 June, 2024
+                          - list [ref=f44e504]:
+                            - listitem [ref=f44e505]:
+                              - link "power steering" [ref=f44e506] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/power-steering/
+                            - listitem [ref=f44e507]:
+                              - link "steering" [ref=f44e508] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/steering/
+                            - listitem [ref=f44e509]:
+                              - link "steering type" [ref=f44e510] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/steering-type/
+                        - list [ref=f44e511]:
+                          - listitem [ref=f44e512]: 6 replies
+                          - listitem [ref=f44e513]: 2,930 views
+                        - generic [ref=f44e515]:
+                          - link "Warrior193" [ref=f44e517] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/profile/144526-warrior193/
+                          - link [ref=f44e519] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/topic/524590-hydraulic-power-steering-or-electric/
+                            - time [ref=f44e520]: 2 yr
+                          - text: 
+                    - listitem [ref=f44e521]:
+                      - link [ref=f44e522] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/502523-fabia-mk3-steering-wheel-knock-sound/
+                        - generic [ref=f44e523]: Fabia mk3 steering wheel knock sound
+                      - generic [ref=f44e524]:
+                        - generic [ref=f44e525]:
+                          - heading [level=4] [ref=f44e527]:
+                            - link "Fabia mk3 steering wheel knock sound" [ref=f44e528] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/502523-fabia-mk3-steering-wheel-knock-sound/
+                          - generic [ref=f44e529]:
+                            - link "RWI" [ref=f44e530] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/204420-rwi/
+                            - text: ·
+                            - time [ref=f44e531]: 9 March, 2022
+                          - list [ref=f44e532]:
+                            - listitem [ref=f44e533]:
+                              - link "eps" [ref=f44e534] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/eps/
+                            - listitem [ref=f44e535]:
+                              - link "knock" [ref=f44e536] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/knock/
+                            - listitem [ref=f44e537]:
+                              - link "noise" [ref=f44e538] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/noise/
+                            - listitem [ref=f44e539]:
+                              - link "steering" [ref=f44e540] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/steering/
+                            - listitem [ref=f44e541]:
+                              - button "+2 more" [ref=f44e542] [cursor=pointer]:
+                                - text: +2 more
+                                - generic [ref=f44e543]: 
+                        - list [ref=f44e544]:
+                          - listitem [ref=f44e545]: 3 replies
+                          - listitem [ref=f44e546]: 3,384 views
+                        - generic [ref=f44e548]:
+                          - link "RWI" [ref=f44e550] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/profile/204420-rwi/
+                          - link [ref=f44e552] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/topic/502523-fabia-mk3-steering-wheel-knock-sound/
+                            - time [ref=f44e553]: 4 yr
+                          - text: 
+                    - listitem [ref=f44e554]:
+                      - link [ref=f44e555] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/501764-skoda-octavia19-tdi2007elegance-power-steering-issue/
+                        - generic [ref=f44e556]: SKODA OCTAVIA,1.9 TDI,2007,ELEGANCE - POWER STEERING ISSUE
+                      - generic [ref=f44e557]:
+                        - generic [ref=f44e558]:
+                          - heading [level=4] [ref=f44e560]:
+                            - link "SKODA OCTAVIA,1.9 TDI,2007,ELEGANCE - POWER STEERING ISSUE" [ref=f44e561] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/501764-skoda-octavia19-tdi2007elegance-power-steering-issue/
+                          - generic [ref=f44e562]:
+                            - link "SKODAKA05" [ref=f44e563] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/205919-skodaka05/
+                            - text: ·
+                            - time [ref=f44e564]: 7 February, 2022
+                          - list [ref=f44e565]:
+                            - listitem [ref=f44e566]:
+                              - link "back pressure" [ref=f44e567] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/back-pressure/
+                            - listitem [ref=f44e568]:
+                              - link "power steering" [ref=f44e569] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/power-steering/
+                            - listitem [ref=f44e570]:
+                              - link "skoda octavia" [ref=f44e571] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/skoda-octavia/
+                            - listitem [ref=f44e572]:
+                              - link "whinning sound" [ref=f44e573] [cursor=pointer]:
+                                - /url: https://www.briskoda.net/forums/tags/whinning-sound/
+                        - list [ref=f44e574]:
+                          - listitem [ref=f44e575]: 1 reply
+                          - listitem [ref=f44e576]: 1,137 views
+                        - generic [ref=f44e578]:
+                          - link "langers2k" [ref=f44e580] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/profile/121621-langers2k/
+                          - link [ref=f44e582] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/topic/501764-skoda-octavia19-tdi2007elegance-power-steering-issue/
+                            - time [ref=f44e583]: 4 yr
+                          - text: 
+                - generic [ref=f44e586]:
+                  - heading "Recent Topics" [level=3] [ref=f44e588]
+                  - list [ref=f44e591]:
+                    - listitem [ref=f44e592]:
+                      - link [ref=f44e593] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/527882-update-to-infotainment-version-1985-download-link-and-guide/
+                        - generic [ref=f44e594]: Update To Infotainment Version 1985 - Download Link and Guide
+                      - generic [ref=f44e597]:
+                        - generic [ref=f44e598]:
+                          - link "Skoda Octavia Mk4 (2020 > )" [ref=f44e600] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/forum/396-skoda-octavia-mk4-2020/
+                          - heading [level=4] [ref=f44e602]:
+                            - link "Update To Infotainment Version 1985 - Download Link and Guide" [ref=f44e603] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/527882-update-to-infotainment-version-1985-download-link-and-guide/
+                          - generic [ref=f44e604]:
+                            - link "spcdust" [ref=f44e605] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/221016-spcdust/
+                            - text: ·
+                            - time [ref=f44e606]: 8 November, 2024
+                          - generic [ref=f44e607]: Read the guide below and watch the YouTube video which is extremely useful and shows you an update process in real time. Only perform this procedure if you are confident in doing so and it is at your own risk. Apparently, Skoda has stated this will be the last major software version update for the Skoda Octavia Mk4s, although I imagine the mid-Mk4 facelift models will get further updates. I applied the update to my Octavia Estate First Edition 2021 plate and all seems to have
+                        - generic [ref=f44e608]:
+                          - list [ref=f44e609]:
+                            - listitem [ref=f44e610]:
+                              - generic [ref=f44e611]:  158
+                            - listitem [ref=f44e612]:
+                              - generic [ref=f44e613]:  55,147
+                          - text: ·
+                          - generic [ref=f44e615]:
+                            - link "East_Yorkshire_Retrofits" [ref=f44e617] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/205757-east_yorkshire_retrofits/
+                            - link [ref=f44e619] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/527882-update-to-infotainment-version-1985-download-link-and-guide/
+                              - time [ref=f44e620]: 3 hr
+                            - text: 
+                    - listitem [ref=f44e621]:
+                      - link [ref=f44e622] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/538891-tyre-pressure-monitoring-fault/
+                        - generic [ref=f44e623]: Tyre Pressure Monitoring fault
+                      - generic [ref=f44e626]:
+                        - generic [ref=f44e627]:
+                          - link "Skoda Kodiaq MK1 (2017-2023)" [ref=f44e629] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/forum/339-skoda-kodiaq-mk1-2017-2023/
+                          - heading [level=4] [ref=f44e631]:
+                            - link "Tyre Pressure Monitoring fault" [ref=f44e632] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/538891-tyre-pressure-monitoring-fault/
+                          - generic [ref=f44e633]:
+                            - link "Avocet" [ref=f44e634] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/195665-avocet/
+                            - text: ·
+                            - time [ref=f44e635]: 16 April
+                          - generic [ref=f44e636]: Hi All, 2017 150 diesel 4x4 DSG, with about 70,000 miles on it. Repeated tyre pressure warning, but a gauge confirms the pressures are all correct? Any thoughts, please?
+                        - generic [ref=f44e637]:
+                          - list [ref=f44e638]:
+                            - listitem [ref=f44e639]:
+                              - generic [ref=f44e640]:  26
+                            - listitem [ref=f44e641]:
+                              - generic [ref=f44e642]:  2,238
+                          - text: ·
+                          - generic [ref=f44e644]:
+                            - link "Avocet" [ref=f44e646] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/195665-avocet/
+                            - link [ref=f44e648] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/538891-tyre-pressure-monitoring-fault/
+                              - time [ref=f44e649]: 3 hr
+                            - text: 
+                    - listitem [ref=f44e650]:
+                      - link [ref=f44e651] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/424071-more-led-drl-woes/
+                        - generic [ref=f44e652]: More LED DRL Woes!
+                      - generic [ref=f44e655]:
+                        - generic [ref=f44e656]:
+                          - link "Skoda Octavia Mk3 (2013 - 2020)" [ref=f44e658] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/forum/235-skoda-octavia-mk3-2013-2020/
+                          - heading [level=4] [ref=f44e660]:
+                            - link "More LED DRL Woes!" [ref=f44e661] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/424071-more-led-drl-woes/
+                          - generic [ref=f44e662]:
+                            - link "Garnett" [ref=f44e663] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/106182-garnett/
+                            - text: ·
+                            - time [ref=f44e664]: 8 February, 2017
+                          - generic [ref=f44e665]: I am starting to really dislike my LED DRLs! After a bash last year my headlights started leeking and shorted out. Skoda checked them and said that it was due to hairline cracks caused by the bash. The insurance company agreed and changed them. last month. They let in water so they changed them again. Last week I caught a metal post in the car park. Minor bumper damage and the pipe to the headlight washer sheared off. All replaced. Everything was working fine. I have had a couple of RH DRL warni
+                        - generic [ref=f44e666]:
+                          - list [ref=f44e667]:
+                            - listitem [ref=f44e668]:
+                              - generic [ref=f44e669]:  37
+                            - listitem [ref=f44e670]:
+                              - generic [ref=f44e671]:  15,154
+                          - text: ·
+                          - generic [ref=f44e673]:
+                            - link "Milet" [ref=f44e675] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/224422-milet/
+                            - link [ref=f44e677] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/424071-more-led-drl-woes/
+                              - time [ref=f44e678]: 4 hr
+                            - text: 
+                    - listitem [ref=f44e679]:
+                      - link [ref=f44e680] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/540565-snow-chains-with-18-wheels/
+                        - generic [ref=f44e681]: Snow chains with 18" wheels
+                      - generic: 
+                      - generic [ref=f44e682]:
+                        - generic [ref=f44e683]:
+                          - link "Škoda Kamiq" [ref=f44e685] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/forum/390-%C5%A1koda-kamiq/
+                          - heading [level=4] [ref=f44e687]:
+                            - link "Snow chains with 18\" wheels" [ref=f44e688] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/540565-snow-chains-with-18-wheels/
+                          - generic [ref=f44e689]:
+                            - link "26DIPP" [ref=f44e690] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/133229-26dipp/
+                            - text: ·
+                            - time [ref=f44e691]: 4 hours ago
+                          - generic [ref=f44e692]: I know it is the hight of summer with heat wave 100...., but I would like to check if anyone has used snow chains on a Kamiq. My daughter's Kamiq SEL runs on 18" alloys. She has got all-season tyres fitted to the 18" wheels and might need to fit snow chains. The Skoda manual recommends snow chains only on the 16" option. I have seen on the www that you could use thinner 9mm chains rather than 12mm for low clearance on 18" wheels. Is there anyone who has done this successfully?
+                        - generic [ref=f44e693]:
+                          - list [ref=f44e694]:
+                            - listitem [ref=f44e695]:
+                              - generic [ref=f44e696]:  0
+                            - listitem [ref=f44e697]:
+                              - generic [ref=f44e698]:  22
+                          - text: ·
+                          - generic [ref=f44e700]:
+                            - link "26DIPP" [ref=f44e702] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/133229-26dipp/
+                            - link [ref=f44e704] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/540565-snow-chains-with-18-wheels/
+                              - time [ref=f44e705]: 4 hr
+                            - text: ·
+                    - listitem [ref=f44e706]:
+                      - link [ref=f44e707] [cursor=pointer]:
+                        - /url: https://www.briskoda.net/forums/topic/540524-what-to-look-for-when-buying/
+                        - generic [ref=f44e708]: What to look for when buying
+                      - generic: 
+                      - generic [ref=f44e709]:
+                        - generic [ref=f44e710]:
+                          - link "Škoda Citigo" [ref=f44e712] [cursor=pointer]:
+                            - /url: https://www.briskoda.net/forums/forum/216-%C5%A1koda-citigo/
+                          - heading [level=4] [ref=f44e714]:
+                            - link "What to look for when buying" [ref=f44e715] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/540524-what-to-look-for-when-buying/
+                          - generic [ref=f44e716]:
+                            - link "skomaz" [ref=f44e717] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/93-skomaz/
+                            - text: ·
+                            - time [ref=f44e718]: Wednesday at 19:51
+                          - generic [ref=f44e719]: Probably one for the likes of @mac11irl here but... I've been looking at and test driving a 2017 Citigo Colour for my daughter. It looks to be in decent condition apart from the off scrape of paint in the boot and a couple. It needs a couple of front tyres and two wheels tidying a little but one concern I have is that it almost sounds a little wheezy with an open throttle, as if there is a slight intake leak somewhere but I cant find it if there is. Is that normal? And is there anything else
+                        - generic [ref=f44e720]:
+                          - list [ref=f44e721]:
+                            - listitem [ref=f44e722]:
+                              - generic [ref=f44e723]:  14
+                            - listitem [ref=f44e724]:
+                              - generic [ref=f44e725]:  289
+                          - text: ·
+                          - generic [ref=f44e727]:
+                            - link "Sheriff" [ref=f44e729] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/profile/63484-sheriff/
+                            - link [ref=f44e731] [cursor=pointer]:
+                              - /url: https://www.briskoda.net/forums/topic/540524-what-to-look-for-when-buying/
+                              - time [ref=f44e732]: 4 hr
+                            - text: 
+        - navigation "Breadcrumbs" [ref=f44e733]:
+          - list [ref=f44e734]:
+            - listitem [ref=f44e735]:
+              - link "Home" [ref=f44e736] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/
+                - generic [ref=f44e737]: 
+                - text: Home
+              - text: 
+            - listitem [ref=f44e738]:
+              - link "Škoda Owners Forums" [ref=f44e739] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/353-%C5%A1koda-owners-forums/
+              - text: 
+            - listitem [ref=f44e740]:
+              - link "Škoda Octavia" [ref=f44e741] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/169-%C5%A1koda-octavia/
+              - text: 
+            - listitem [ref=f44e742]:
+              - link "Skoda Octavia Mk3 (2013 - 2020)" [ref=f44e743] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/forum/235-skoda-octavia-mk3-2013-2020/
+              - text: 
+            - listitem [ref=f44e744]:
+              - generic [ref=f44e745]: Power Steering Problem B200F00, octavia 1.6tdi
+          - list [ref=f44e746]:
+            - listitem [ref=f44e747]:
+              - link "All Activity" [ref=f44e748] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/discover/
+                - generic [ref=f44e749]: 
+                - text: All Activity
+    - generic [ref=f44e752]:
+      - complementary [ref=f44e753]:
+        - generic [ref=f44e754]:
+          - generic [ref=f44e757]:
+            - heading "Tell a friend" [level=3] [ref=f44e758]
+            - generic [ref=f44e760]:
+              - generic [ref=f44e761]: Love BRISKODA? Tell a friend!
+              - list [ref=f44e763]:
+                - listitem [ref=f44e764]:
+                  - link "Email" [ref=f44e765] [cursor=pointer]:
+                    - /url: mailto:?subject=Check%20out%20BRISKODA%21&body=https%3A%2F%2Fwww.briskoda.net%2Fforums%2F
+                    - generic [ref=f44e766]: 
+                - listitem [ref=f44e768]:
+                  - link "Share" [ref=f44e769] [cursor=pointer]:
+                    - /url: https://www.briskoda.net/forums/index.php?app=core&module=system&controller=settings&do=invite
+                    - generic [ref=f44e770]: 
+          - generic [ref=f44e775]:
+            - paragraph [ref=f44e776]:
+              - strong [ref=f44e777]: BRISKODA
+              - text: is owned and operated by Summit 360 Ltd, registered in England & Wales, company number 05710517.
+            - paragraph [ref=f44e778]: We are registered with the Information Commissioner, registration number ZA187892, it details the purpose for which we process personal data.
+            - paragraph [ref=f44e779]: "Disclaimer: BRISKODA is not an official SKODA site and is not affiliated to SKODA in any way."
+            - paragraph [ref=f44e780]: Visit the Official SKODA Website.
+            - paragraph [ref=f44e781]: BRISKODA are not directly responsible for information which maybe posted in this forum.
+            - paragraph [ref=f44e782]: All content is viewed and used at your own risk. We do not warrant the accuracy or reliability of any of the information.
+            - paragraph [ref=f44e783]: The views expressed herein are those of the individual contributors and not necessarily those of BRISKODA or SKODA.
+            - paragraph [ref=f44e784]: All trademarks and copyrights remain property of their respective owners.
+      - contentinfo [ref=f44e785]:
+        - generic [ref=f44e787]:
+          - list [ref=f44e788]:
+            - listitem "Light Mode" [ref=f44e789]:
+              - button "Light Mode" [ref=f44e790] [cursor=pointer]:
+                - generic [ref=f44e791]: 
+            - listitem "Dark Mode" [ref=f44e793]:
+              - button "Dark Mode" [ref=f44e794] [cursor=pointer]:
+                - generic [ref=f44e795]: 
+            - listitem "System Preference" [ref=f44e797]:
+              - button "System Preference" [ref=f44e798] [cursor=pointer]:
+                - generic [ref=f44e799]: 
+          - list [ref=f44e801]:
+            - listitem [ref=f44e802]:
+              - link "facebook" [ref=f44e803] [cursor=pointer]:
+                - /url: https://www.facebook.com/BRISKODA/
+          - separator [ref=f44e807]
+          - list [ref=f44e808]:
+            - listitem:  
+            - listitem [ref=f44e809]:
+              - link "Privacy Policy" [ref=f44e810] [cursor=pointer]:
+                - /url: https://www.iubenda.com/privacy-policy/89557013
+            - listitem [ref=f44e811]:
+              - link "Contact Us" [ref=f44e812] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/contact/
+            - listitem [ref=f44e813]:
+              - link "Cookies" [ref=f44e814] [cursor=pointer]:
+                - /url: https://www.briskoda.net/forums/cookies/
+          - paragraph [ref=f44e815]:
+            - generic [ref=f44e816]:
+              - text: Copyright 2002-2026
+              - link "SUMMIT 360 Ltd." [ref=f44e817] [cursor=pointer]:
+                - /url: https://www.summit360.co.uk/
+              - text: E.& O.E.
+            - link "Powered by Invision Community" [ref=f44e818] [cursor=pointer]:
+              - /url: https://www.invisioncommunity.com/
+    - generic [ref=f44e821]:
+      - generic [ref=f44e822]:
+        - heading "Important Information" [level=2] [ref=f44e823]
+        - paragraph [ref=f44e824]:
+          - text: Welcome to BRISKODA. Please note the following important links
+          - link "Terms of Use" [ref=f44e825] [cursor=pointer]:
+            - /url: https://www.briskoda.net/forums/terms/
+          - text: . We have a comprehensive
+          - link "Privacy Policy" [ref=f44e826] [cursor=pointer]:
+            - /url: https://www.iubenda.com/privacy-policy/89557013
+          - text: . We have placed
+          - link "cookies" [ref=f44e827] [cursor=pointer]:
+            - /url: https://www.briskoda.net/forums/cookies/
+          - text: on your device to help make this website better. You can
+          - link "adjust your cookie settings" [ref=f44e828] [cursor=pointer]:
+            - /url: https://www.briskoda.net/forums/cookies/
+          - text: ", otherwise we'll assume you're okay to continue."
+      - generic [ref=f44e831]:
+        - button "Accept Cookies" [ref=f44e832] [cursor=pointer]:
+          - generic [ref=f44e833]: 
+          - text: Accept Cookies
+        - button "Reject Cookies" [ref=f44e834] [cursor=pointer]
+  - text:                              
+  - generic [ref=f44e837]:
+    - img "Logo"

@@ -1,0 +1,194 @@
+- generic [ref=f216e2]:
+  - generic [ref=f216e3]:
+    - link "DuckDuckGo" [ref=f216e4] [cursor=pointer]:
+      - /url: /html/
+    - generic [ref=f216e5]:
+      - generic [ref=f216e6]:
+        - textbox [ref=f216e7]: start
+        - button "Submit" [ref=f216e8] [cursor=pointer]
+      - combobox [ref=f216e10] [cursor=pointer]:
+        - option "All Regions" [selected]
+        - option "Argentina"
+        - option "Australia"
+        - option "Austria"
+        - option "Belgium (fr)"
+        - option "Belgium (nl)"
+        - option "Brazil"
+        - option "Bulgaria"
+        - option "Canada (en)"
+        - option "Canada (fr)"
+        - option "Catalonia"
+        - option "Chile"
+        - option "China"
+        - option "Colombia"
+        - option "Croatia"
+        - option "Czech Republic"
+        - option "Denmark"
+        - option "Estonia"
+        - option "Finland"
+        - option "France"
+        - option "Germany"
+        - option "Greece"
+        - option "Hong Kong"
+        - option "Hungary"
+        - option "Iceland"
+        - option "India (en)"
+        - option "Indonesia (en)"
+        - option "Ireland"
+        - option "Israel (en)"
+        - option "Italy"
+        - option "Japan"
+        - option "Korea"
+        - option "Latvia"
+        - option "Lithuania"
+        - option "Malaysia (en)"
+        - option "Mexico"
+        - option "Netherlands"
+        - option "New Zealand"
+        - option "Norway"
+        - option "Pakistan (en)"
+        - option "Peru"
+        - option "Philippines (en)"
+        - option "Poland"
+        - option "Portugal"
+        - option "Romania"
+        - option "Russia"
+        - option "Saudi Arabia"
+        - option "Singapore"
+        - option "Slovakia"
+        - option "Slovenia"
+        - option "South Africa"
+        - option "Spain (ca)"
+        - option "Spain (es)"
+        - option "Sweden"
+        - option "Switzerland (de)"
+        - option "Switzerland (fr)"
+        - option "Taiwan"
+        - option "Thailand (en)"
+        - option "Turkey"
+        - option "US (English)"
+        - option "US (Spanish)"
+        - option "Ukraine"
+        - option "United Kingdom"
+        - option "Vietnam (en)"
+      - combobox [ref=f216e12] [cursor=pointer]:
+        - option "Any Time" [selected]
+        - option "Past Day"
+        - option "Past Week"
+        - option "Past Month"
+        - option "Past Year"
+  - generic [ref=f216e15]:
+    - generic [ref=f216e17]:
+      - heading [level=2] [ref=f216e18]:
+        - link "Start Menu | Microsoft Windows" [ref=f216e19] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.microsoft.com%2Fen%2Dus%2Fwindows%2Ftips%2Fstart%2Dmenu&rut=b5dfdaa6f7bdd8b3742cd3d251e5e97e8b86662c45ff464b4cab38750378e3f4
+      - generic [ref=f216e21]:
+        - link [ref=f216e23] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.microsoft.com%2Fen%2Dus%2Fwindows%2Ftips%2Fstart%2Dmenu&rut=b5dfdaa6f7bdd8b3742cd3d251e5e97e8b86662c45ff464b4cab38750378e3f4
+        - link "www.microsoft.com/en-us/windows/tips/start-menu" [ref=f216e24] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.microsoft.com%2Fen%2Dus%2Fwindows%2Ftips%2Fstart%2Dmenu&rut=b5dfdaa6f7bdd8b3742cd3d251e5e97e8b86662c45ff464b4cab38750378e3f4
+      - link "Learn how to use the Start menu to access apps, settings, files, and more on your Windows 11 device. Customize your Start menu with pinned apps, folders, and personalization options." [ref=f216e25] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.microsoft.com%2Fen%2Dus%2Fwindows%2Ftips%2Fstart%2Dmenu&rut=b5dfdaa6f7bdd8b3742cd3d251e5e97e8b86662c45ff464b4cab38750378e3f4
+    - generic [ref=f216e27]:
+      - heading [level=2] [ref=f216e28]:
+        - link "Startpage" [ref=f216e29] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.startpage.com%2F&rut=48dbb62e8bc863771c986b14428001c60abd6b1ca8f6f0273886b46332e338f5
+      - generic [ref=f216e31]:
+        - link [ref=f216e33] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.startpage.com%2F&rut=48dbb62e8bc863771c986b14428001c60abd6b1ca8f6f0273886b46332e338f5
+        - link "www.startpage.com" [ref=f216e34] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.startpage.com%2F&rut=48dbb62e8bc863771c986b14428001c60abd6b1ca8f6f0273886b46332e338f5
+      - link "Startpage is a private search engine that protects your personal data and ensures browsing without tracking or targeting." [ref=f216e35] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.startpage.com%2F&rut=48dbb62e8bc863771c986b14428001c60abd6b1ca8f6f0273886b46332e338f5
+    - generic [ref=f216e37]:
+      - heading [level=2] [ref=f216e38]:
+        - link "3 Ways To Open The Start Menu In Windows 10/11" [ref=f216e39] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.intowindows.com%2F3%2Dways%2Dto%2Dopen%2Dthe%2Dstart%2Dmenu%2Din%2Dwindows%2D10%2D11%2F&rut=368f08dbc9d5decf0515954fede13a54c191fbd0cc46ae3839746ba4fcdeb994
+      - generic [ref=f216e41]:
+        - link [ref=f216e43] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.intowindows.com%2F3%2Dways%2Dto%2Dopen%2Dthe%2Dstart%2Dmenu%2Din%2Dwindows%2D10%2D11%2F&rut=368f08dbc9d5decf0515954fede13a54c191fbd0cc46ae3839746ba4fcdeb994
+        - link "www.intowindows.com/3-ways-to-open-the-start-menu-in-windows-10-11/" [ref=f216e44] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.intowindows.com%2F3%2Dways%2Dto%2Dopen%2Dthe%2Dstart%2Dmenu%2Din%2Dwindows%2D10%2D11%2F&rut=368f08dbc9d5decf0515954fede13a54c191fbd0cc46ae3839746ba4fcdeb994
+      - link "Learn three ways to access the Start menu in Windows 10 and 11 using mouse, keyboard, or keyboard shortcut. The Start menu lets you launch apps, search, and access shut down options." [ref=f216e45] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.intowindows.com%2F3%2Dways%2Dto%2Dopen%2Dthe%2Dstart%2Dmenu%2Din%2Dwindows%2D10%2D11%2F&rut=368f08dbc9d5decf0515954fede13a54c191fbd0cc46ae3839746ba4fcdeb994
+    - generic [ref=f216e47]:
+      - heading [level=2] [ref=f216e48]:
+        - link "START Definition & Meaning - Merriam-Webster" [ref=f216e49] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.merriam%2Dwebster.com%2Fdictionary%2Fstart&rut=2194896121b1dde622b68432f386c86163bd379d4f39f1ef426b75dae3dbafc6
+      - generic [ref=f216e51]:
+        - link [ref=f216e53] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.merriam%2Dwebster.com%2Fdictionary%2Fstart&rut=2194896121b1dde622b68432f386c86163bd379d4f39f1ef426b75dae3dbafc6
+        - link "www.merriam-webster.com/dictionary/start" [ref=f216e54] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.merriam%2Dwebster.com%2Fdictionary%2Fstart&rut=2194896121b1dde622b68432f386c86163bd379d4f39f1ef426b75dae3dbafc6
+        - text: 2026-07-28T00:00:00.0000000
+      - link "The meaning of START is to come into being, activity, or operation. How to use start in a sentence. Synonym Discussion of Start." [ref=f216e55] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.merriam%2Dwebster.com%2Fdictionary%2Fstart&rut=2194896121b1dde622b68432f386c86163bd379d4f39f1ef426b75dae3dbafc6
+    - generic [ref=f216e57]:
+      - heading [level=2] [ref=f216e58]:
+        - link "START | English meaning - Cambridge Dictionary" [ref=f216e59] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fdictionary.cambridge.org%2Fdictionary%2Fenglish%2Fstart&rut=6003c0c82985ba478bba0f919a1082237a62a26de1cce804d6bf4a061b2b7461
+      - generic [ref=f216e61]:
+        - link [ref=f216e63] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fdictionary.cambridge.org%2Fdictionary%2Fenglish%2Fstart&rut=6003c0c82985ba478bba0f919a1082237a62a26de1cce804d6bf4a061b2b7461
+        - link "dictionary.cambridge.org/dictionary/english/start" [ref=f216e64] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fdictionary.cambridge.org%2Fdictionary%2Fenglish%2Fstart&rut=6003c0c82985ba478bba0f919a1082237a62a26de1cce804d6bf4a061b2b7461
+      - 'link "START definition: 1. to begin doing something: 2. If a business or other organization starts, or if someone starts…. Learn more." [ref=f216e65] [cursor=pointer]':
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fdictionary.cambridge.org%2Fdictionary%2Fenglish%2Fstart&rut=6003c0c82985ba478bba0f919a1082237a62a26de1cce804d6bf4a061b2b7461
+    - generic [ref=f216e67]:
+      - heading [level=2] [ref=f216e68]:
+        - link "Start - Wikipedia" [ref=f216e69] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FStart&rut=56cd5e35b4f5f448b2e0f841c7497be90c940afe7bb52ff9c2eb8869052fb837
+      - generic [ref=f216e71]:
+        - link [ref=f216e73] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FStart&rut=56cd5e35b4f5f448b2e0f841c7497be90c940afe7bb52ff9c2eb8869052fb837
+        - link "en.wikipedia.org/wiki/Start" [ref=f216e74] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FStart&rut=56cd5e35b4f5f448b2e0f841c7497be90c940afe7bb52ff9c2eb8869052fb837
+      - 'link "Start can refer to multiple topics: Takeoff, the phase of flight where an aircraft transitions from moving along the ground to flying through the air Starting lineup in sports Starts use in sport race Standing start, and rolling start, in an auto race" [ref=f216e75] [cursor=pointer]':
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FStart&rut=56cd5e35b4f5f448b2e0f841c7497be90c940afe7bb52ff9c2eb8869052fb837
+    - generic [ref=f216e77]:
+      - heading [level=2] [ref=f216e78]:
+        - link "Microsoft Start" [ref=f216e79] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart&rut=6f2a3884b6055074f95f91e626d144341e0161d2bc5d4107dc28dbfe1c84f717
+      - generic [ref=f216e81]:
+        - link [ref=f216e83] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart&rut=6f2a3884b6055074f95f91e626d144341e0161d2bc5d4107dc28dbfe1c84f717
+        - link "startapp.microsoft.com/start" [ref=f216e84] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart&rut=6f2a3884b6055074f95f91e626d144341e0161d2bc5d4107dc28dbfe1c84f717
+      - link "MSN is an app that delivers personalized content from thousands of trusted publishers, based on your preferences and AI. You can also track your local weather, favorite stocks, watch short videos and get Copilot, your AI companion." [ref=f216e85] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart&rut=6f2a3884b6055074f95f91e626d144341e0161d2bc5d4107dc28dbfe1c84f717
+    - generic [ref=f216e87]:
+      - heading [level=2] [ref=f216e88]:
+        - link "Microsoft Start" [ref=f216e89] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart%3Fadjust%3D10b9f62c_10rdcyvv&rut=6ca40fd28b014185a41afbe99b9dcbd508e0d95aac25273b0f78dbd845bf7131
+      - generic [ref=f216e91]:
+        - link [ref=f216e93] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart%3Fadjust%3D10b9f62c_10rdcyvv&rut=6ca40fd28b014185a41afbe99b9dcbd508e0d95aac25273b0f78dbd845bf7131
+        - link "startapp.microsoft.com/start?adjust=10b9f62c_10rdcyvv" [ref=f216e94] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart%3Fadjust%3D10b9f62c_10rdcyvv&rut=6ca40fd28b014185a41afbe99b9dcbd508e0d95aac25273b0f78dbd845bf7131
+      - link "Stay informed and entertained with personalized news, entertainment, and inspiration powered by AI on MSN." [ref=f216e95] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstartapp.microsoft.com%2Fstart%3Fadjust%3D10b9f62c_10rdcyvv&rut=6ca40fd28b014185a41afbe99b9dcbd508e0d95aac25273b0f78dbd845bf7131
+    - generic [ref=f216e97]:
+      - heading [level=2] [ref=f216e98]:
+        - link "Онлайн-кинотеатр Start — Смотреть Легальные Фильмы, Сериалы ..." [ref=f216e99] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstart.ru%2F&rut=4ac2307c0cbede73b75a69afa584c83aa86011f0d670d962ca077c218c22b98c
+      - generic [ref=f216e101]:
+        - link [ref=f216e103] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstart.ru%2F&rut=4ac2307c0cbede73b75a69afa584c83aa86011f0d670d962ca077c218c22b98c
+        - link "start.ru" [ref=f216e104] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstart.ru%2F&rut=4ac2307c0cbede73b75a69afa584c83aa86011f0d670d962ca077c218c22b98c
+      - link "Онлайн-кинотеатр START.ru — это премьеры фильмов и сериалов в хорошем качестве по подписке. Вы можете смотреть интернет кинотеатр START на любых устройствах в любой точке мира." [ref=f216e105] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fstart.ru%2F&rut=4ac2307c0cbede73b75a69afa584c83aa86011f0d670d962ca077c218c22b98c
+    - generic [ref=f216e107]:
+      - heading [level=2] [ref=f216e108]:
+        - link "Customize the Windows Start Menu | Microsoft Support" [ref=f216e109] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fsupport.microsoft.com%2Fen%2DUS%2FWindows%2Fexperience%2Fpersonalization%2Fcustomize%2Dthe%2Dwindows%2Dstart%2Dmenu&rut=1469842b9c2f384d2ba8308340e35661f2a4d8a92eb1e005e9d692f6d23c0e53
+      - generic [ref=f216e111]:
+        - link [ref=f216e113] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fsupport.microsoft.com%2Fen%2DUS%2FWindows%2Fexperience%2Fpersonalization%2Fcustomize%2Dthe%2Dwindows%2Dstart%2Dmenu&rut=1469842b9c2f384d2ba8308340e35661f2a4d8a92eb1e005e9d692f6d23c0e53
+        - link "support.microsoft.com/en-US/Windows/experience/personalization/customize-the-windows-start-menu" [ref=f216e114] [cursor=pointer]:
+          - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fsupport.microsoft.com%2Fen%2DUS%2FWindows%2Fexperience%2Fpersonalization%2Fcustomize%2Dthe%2Dwindows%2Dstart%2Dmenu&rut=1469842b9c2f384d2ba8308340e35661f2a4d8a92eb1e005e9d692f6d23c0e53
+      - link "Learn how to customize the Windows Start menu, pin or unpin apps, adjust the layout, and personalize its appearance to enhance your productivity and user experience." [ref=f216e115] [cursor=pointer]:
+        - /url: //duckduckgo.com/l/?uddg=https%3A%2F%2Fsupport.microsoft.com%2Fen%2DUS%2FWindows%2Fexperience%2Fpersonalization%2Fcustomize%2Dthe%2Dwindows%2Dstart%2Dmenu&rut=1469842b9c2f384d2ba8308340e35661f2a4d8a92eb1e005e9d692f6d23c0e53
+    - button "Next" [ref=f216e118] [cursor=pointer]
+    - link "Feedback" [ref=f216e120] [cursor=pointer]:
+      - /url: //duckduckgo.com/feedback.html

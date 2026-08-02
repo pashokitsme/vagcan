@@ -247,6 +247,7 @@ pub async fn run(
     delay_ms: u64,
     only: Option<&str>,
     extended: bool,
+    while_driving: bool,
 ) -> Result<()> {
     let ranges = scan::parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
     let mut sink = match out {
@@ -262,6 +263,33 @@ pub async fn run(
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
             .with_context(|| crate::device::open_failure(device_path))?;
+
+    if extended {
+        // An extended session is workshop mode; see `crate::safety`.
+        backend = match crate::safety::require_stationary(backend).await {
+            Ok(backend) => backend,
+            Err((_, why)) => anyhow::bail!("--extended refused: {why}"),
+        };
+    }
+
+    // A full identifier sweep is a fuzz of the unit's diagnostic server, and a
+    // unit whose firmware mishandles one request can crash on it. That
+    // happened on the reference car: the steering assist dropped out during a
+    // sweep, recovered on a restart, and dropped out permanently during the
+    // next one. Reading a moving car is therefore opt-in, with the reason
+    // stated rather than buried in a flag.
+    if !while_driving {
+        backend = match crate::safety::require_stationary(backend).await {
+            Ok(backend) => backend,
+            Err((_, why)) => anyhow::bail!(
+                "{why}\n\n\
+                 A sweep asks a unit thousands of requests it may never have been asked \n\
+                 before. On the reference car that made the steering assist stop assisting \n\
+                 mid-drive. Sweep while parked, or pass --while-driving if you accept that \n\
+                 risk with the car in motion."
+            ),
+        };
+    }
 
     let order = match only {
         // An explicit list skips the gateway read, so one unit can be re-run

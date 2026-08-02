@@ -1,0 +1,385 @@
+- generic [active] [ref=e1]:
+  - dialog [ref=e2]:
+    - document [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e5]:
+          - heading "Consent to Cookies & Data processing" [level=1] [ref=e6]
+          - generic [ref=e7]:
+            - text: On this website we use cookies and similar functions to process end device information and personal data (e.g. such as IP-addresses or browser information). The processing is used for purposes such as to integrate content, external services and elements from third parties, statistical analysis/measurement, personalized advertising and the integration of social media. Depending on the function, data is passed on to up to
+            - link "376 third parties" [ref=e8] [cursor=pointer]:
+              - /url: "#"
+            - text: and processed by them. This consent is voluntary, not required for the use of our website and can be revoked at any time using the icon on the bottom left.
+        - form "Purpose" [ref=e9]:
+          - generic [ref=e10]: Store and/or access information on a device
+          - generic [ref=e20]: Precise geolocation data, and identification through device scanning
+          - generic [ref=e25]: Personalised advertising and content, advertising and content measurement, audience research and services development
+      - form [ref=e34]:
+        - button "Settings" [ref=e36] [cursor=pointer]
+        - button "Accept all" [ref=e38] [cursor=pointer]
+        - generic [ref=e40]:
+          - link "Privacy notice" [ref=e41] [cursor=pointer]:
+            - /url: https://www.motor-talk.de/info/datenschutz
+          - text: "|"
+          - link "Legal notice" [ref=e42] [cursor=pointer]:
+            - /url: https://www.motor-talk.de/info/impressum
+    - 'button "Language: en" [ref=e45] [cursor=pointer]'
+  - generic [ref=e47]:
+    - banner [ref=e49]:
+      - generic [ref=e50]:
+        - link "MOTOR-TALK - Auto Forum & News MOTOR-TALK - Auto Forum & News" [ref=e52] [cursor=pointer]:
+          - /url: /
+          - img "MOTOR-TALK - Auto Forum & News" [ref=e53]
+          - generic [ref=e55]: MOTOR-TALK - Auto Forum & News
+        - list [ref=e56]:
+          - listitem [ref=e57]:
+            - link "Forum" [ref=e58] [cursor=pointer]:
+              - /url: /forum.html
+          - listitem [ref=e60]:
+            - link "Tests" [ref=e61] [cursor=pointer]:
+              - /url: /tests
+          - listitem [ref=e63]:
+            - link "Blogs" [ref=e64] [cursor=pointer]:
+              - /url: /blogs.html
+          - listitem [ref=e66]:
+            - link "Marktplatz" [ref=e67] [cursor=pointer]:
+              - /url: /marktplatz
+        - generic [ref=e70]:
+          - textbox "Search Input" [ref=e71]:
+            - /placeholder: Suche ...
+          - button "Search Button" [ref=e72] [cursor=pointer]
+        - link "Anmelden" [ref=e78] [cursor=pointer]:
+          - /url: /einloggen?cmpnoscreen=1&rf=primary-nav&redirect_uri=https%3A%2F%2Fwww.motor-talk.de%2Fforum%2Fb200ff0-interner-fehler-t8575021.html
+    - generic [ref=e80]:
+      - generic [ref=e84]:
+        - article [ref=e86]:
+          - generic [ref=e87]:
+            - list [ref=e89]:
+              - listitem [ref=e90]:
+                - link "Startseite" [ref=e91] [cursor=pointer]:
+                  - /url: /
+                - text: ›
+              - listitem [ref=e92]:
+                - link "Forum" [ref=e93] [cursor=pointer]:
+                  - /url: /forum.html
+                - text: ›
+              - listitem [ref=e94]:
+                - link "Auto" [ref=e95] [cursor=pointer]:
+                  - /url: /forum/auto-b3.html
+                - text: ›
+              - listitem [ref=e96]:
+                - link "Skoda" [ref=e97] [cursor=pointer]:
+                  - /url: /forum/skoda-b189.html
+                - text: ›
+              - listitem [ref=e98]:
+                - link "Karoq" [ref=e99] [cursor=pointer]:
+                  - /url: /forum/skoda-karoq-b1022.html
+                - text: ›
+              - listitem [ref=e100]:
+                - link "B200FF0 interner fehler" [ref=e101] [cursor=pointer]:
+                  - /url: /forum/b200ff0-interner-fehler-t8575021.html
+            - generic [ref=e102]:
+              - generic [ref=e103]: 0 Antworten
+              - link "Neuester Beitrag am 25. Mai 2026 um 7:57" [ref=e104] [cursor=pointer]:
+                - /url: /forum/b200ff0-interner-fehler-t8575021.html#post74598856
+            - generic [ref=e107]:
+              - generic [ref=e108]:
+                - button "Zur ersten Seite" [disabled] [ref=e109]
+                - button "Vorherige Seite" [disabled] [ref=e112]
+              - generic [ref=e116]:
+                - combobox "1 von 1" [ref=e117] [cursor=pointer]:
+                  - option "Seite 1" [selected]
+                - generic [ref=e118] [cursor=pointer]: 1 von 1
+              - generic [ref=e122]:
+                - button "Nächste Seite" [disabled] [ref=e123]
+                - button "Zur letzten Seite" [disabled] [ref=e126]
+          - generic [ref=e129]:
+            - generic [ref=e130]:
+              - link [ref=e131] [cursor=pointer]:
+                - /url: /nutzer/vang0s
+                - img "Avatar von Faltenbalg137067" [ref=e134]
+              - generic [ref=e135]:
+                - generic [ref=e136]:
+                  - link "Faltenbalg137067" [ref=e137] [cursor=pointer]:
+                    - /url: /nutzer/vang0s
+                  - generic [ref=e138]: Themenstarter
+                - link "am 25. Mai 2026 um 7:57 Uhr" [ref=e139] [cursor=pointer]:
+                  - /url: /forum/b200ff0-interner-fehler-t8575021.html#post74598856
+            - generic [ref=e141]: Skoda Karoq
+            - heading "B200FF0 interner fehler" [level=1] [ref=e145]
+            - generic [ref=e146]:
+              - paragraph [ref=e147]: Hallo zusammen,
+              - paragraph [ref=e148]: ich brauche dringend euren Rat zu meinem gebrauchten Skoda Karoq 2.0 TSI 4x4.
+              - paragraph [ref=e149]: Bei der Diagnose wurde der Fehlercode B200FF0 „Steuergerät – Interner Fehler“ im System der elektrischen Lenkungsunterstützung (44) 4.1 ausgelesen. Laut Bosch-Protokoll ist dieser Fehler mit Priorität 1 hinterlegt, der Häufigkeitszähler steht auf 1 und der Verlernzähler auf 255. Der Fehler trat laut Protokoll bei 57.946 km am 27.02.2024 zum ersten Mal auf. Mittlerweile hat das Auto ca. 76.595 km gelaufen und der Fehler ist immer noch im Speicher hinterlegt, auch wenn er dort aktuell als sporadisch geführt wird.
+              - paragraph [ref=e150]: "Zur Problematik: In der ersten Woche nach dem Kauf hatte ich beim Starten mehrfach die Meldung, dass der „Travel Assist“ momentan nicht verfügbar sei. Ich musste das Auto dann neu starten, damit das System wieder funktionierte. Ich bin damit in die Werkstatt gefahren, doch dort sagte man mir lediglich, das läge an einer verschmutzten Kamera. Da ich es absolut nicht für normal halte, dass sich ein System bei einer vermeintlich verschmutzten Kamera nicht von selbst wieder reaktiviert, sondern einen kompletten Neustart des Motors erzwingt, war ich skeptisch. Ich habe den Wagen daher privat noch einmal auslesen lassen – und genau dabei bin ich auf diesen hartnäckigen, internen Steuergerätefehler gestoßen."
+              - paragraph [ref=e151]: "Wichtig ist mir zu erwähnen: Die anfänglichen Probleme mit dem „Travel Assist“ treten aktuell nicht mehr auf. Das Auto fährt sich vollkommen normal, so als wäre absolut nichts. Dennoch bleibt der Fehlercode im System bestehen."
+              - paragraph [ref=e152]: Interessanterweise belegt das Werkstatt-Dokument für exakt denselben Tag, den 27.02.2024 bei 55.460 km, auch massive Probleme mit der Fahrzeugelektrik. Dort ist dokumentiert, dass die Starterbatterie entladen war, der Motor nicht startete und es verschiedene Einträge im Ereignisspeicher gab, die laut technischer Information repariert wurden. Da das Steuergerät der Lenkung extrem spannungsempfindlich ist, vermute ich einen direkten Zusammenhang zwischen diesem massiven Batterieproblem und dem zeitgleich aufgetretenen Lenkungsfehler.
+              - paragraph [ref=e153]: "Dazu kommt: Das Auto hat beim Kauf frischen TÜV bekommen. Dass ein sicherheitsrelevanter Fehler mit Priorität 1 in der Lenkung seit 18.000 km im Speicher liegt, lässt mich sehr an der Sorgfalt bei der Prüfung zweifeln."
+              - paragraph [ref=e154]: Ich habe das Fahrzeug seit dem Kauf bereits zweimal wegen genau dieser Problematik in der Werkstatt vorgestellt. Trotz meiner Hinweise auf den internen Steuergerätefehler und die Historie hat die Werkstatt bisher keinerlei Maßnahmen ergriffen. Die Aussage, das sei alles normal, ist für mich bei einem Prio-1-Fehler in der Lenkung nicht akzeptabel.
+              - paragraph [ref=e155]: Ist ein solcher interner Fehler mit Priorität 1 wirklich als normal abzutun oder wird hier versucht, die Garantieabwicklung zu vermeiden? Besteht durch diesen Fehler ein Sicherheitsrisiko und werde ich damit beim nächsten TÜV Probleme bekommen, da der Fehler ja offensichtlich schon vor der letzten Untersuchung vorhanden war?
+              - paragraph [ref=e156]: Hat jemand von euch Erfahrung mit diesem speziellen Fehler B200FF0 oder weiß, ob es dazu offizielle technische Informationen von Skoda gibt, die den Zusammenhang zwischen Batterieproblemen und diesem Lenkungsfehler erklären? Über eure Einschätzungen und Tipps, wie ich gegenüber der Werkstatt argumentieren soll, wäre ich sehr dankbar
+              - paragraph [ref=e157]: Vielen Dank im Voraus
+            - generic [ref=e158]:
+              - button "Neue Antwort schreiben" [ref=e159] [cursor=pointer]:
+                - generic [ref=e160]: Antworten
+              - button "\\\"Ich habe die gleiche Frage\\\" entfernen" [ref=e161] [cursor=pointer]: "1"
+              - button "Zu den Antworten scrollen" [ref=e164] [cursor=pointer]: "0"
+            - generic [ref=e167]:
+              - generic [ref=e168]:
+                - img "Avatar von Meine Antwort" [ref=e171]
+                - generic [ref=e172]:
+                  - generic [ref=e173]: Meine Antwort
+                  - generic [ref=e174] [cursor=pointer]: Entwurf
+              - textbox "Quick post message" [ref=e176]:
+                - /placeholder: Erste Antwort schreiben...
+              - button "Antwort schreiben" [ref=e178] [cursor=pointer]
+          - generic [ref=e182]:
+            - generic [ref=e183]:
+              - button "Zur ersten Seite" [disabled] [ref=e184]
+              - button "Vorherige Seite" [disabled] [ref=e187]
+            - generic [ref=e191]:
+              - combobox "1 von 1" [ref=e192] [cursor=pointer]:
+                - option "Seite 1" [selected]
+              - generic [ref=e193] [cursor=pointer]: 1 von 1
+            - generic [ref=e197]:
+              - button "Nächste Seite" [disabled] [ref=e198]
+              - button "Zur letzten Seite" [disabled] [ref=e201]
+        - complementary [ref=e205]:
+          - generic [ref=e206]:
+            - heading "Skoda Karoq Forum" [level=3] [ref=e207]
+            - generic [ref=e208]: NU, ab 2017
+            - generic [ref=e210]:
+              - generic [ref=e211]: "Aktuell online:"
+              - generic [ref=e212]: 393 Mitglieder
+            - link [ref=e214] [cursor=pointer]:
+              - /url: /registrieren?rf=write-question&redirect_uri=https%3A%2F%2Fwww.motor-talk.de%2Fforum%2Faktion%2FStartThread.html%3FboardId%3D1022
+          - generic [ref=e219]:
+            - heading "Forum wird betreut von:" [level=3] [ref=e220]
+            - list [ref=e221]:
+              - listitem [ref=e222]:
+                - link [ref=e223] [cursor=pointer]:
+                  - /url: /nutzer/andy-b7
+                - link "Andy B7" [ref=e227] [cursor=pointer]:
+                  - /url: /nutzer/andy-b7
+                - generic [ref=e228]: Moderator
+              - listitem [ref=e229]:
+                - link [ref=e230] [cursor=pointer]:
+                  - /url: /nutzer/droetzi
+                - link "Dr.OeTzi" [ref=e234] [cursor=pointer]:
+                  - /url: /nutzer/droetzi
+                - generic [ref=e235]: Moderator
+              - listitem [ref=e236]:
+                - link [ref=e237] [cursor=pointer]:
+                  - /url: /nutzer/dolofan
+                - link "dolofan" [ref=e241] [cursor=pointer]:
+                  - /url: /nutzer/dolofan
+                - generic [ref=e242]: Moderator
+          - generic [ref=e244]:
+            - generic [ref=e245]:
+              - heading "Tests" [level=3] [ref=e246]
+              - link "Alle Skoda Karoq Tests" [ref=e247] [cursor=pointer]:
+                - /url: https://www.motor-talk.de/tests/auto/skoda/karoq
+            - list [ref=e251]:
+              - listitem [ref=e252]:
+                - link [ref=e253] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/tests/auto/skoda/karoq/nu/1-0-tsi-ftId245512
+                  - img "Skoda Karoq NU 1.0 TSI DSG Test" [ref=e255]
+                  - generic [ref=e256]:
+                    - heading "Skoda Karoq NU 1.0 TSI DSG Test" [level=3] [ref=e257]
+                    - generic [ref=e291]:
+                      - text: von
+                      - strong [ref=e292]: twinnitus
+              - listitem [ref=e293]:
+                - link [ref=e294] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/tests/auto/skoda/karoq/nu/1-0-tsi-ftId257820
+                  - img "Skoda Karoq NU 1.0 TSI Test" [ref=e296]
+                  - generic [ref=e297]:
+                    - heading "Skoda Karoq NU 1.0 TSI Test" [level=3] [ref=e298]
+                    - generic [ref=e332]:
+                      - text: von
+                      - strong [ref=e333]: twinnitus
+              - listitem [ref=e334]:
+                - link [ref=e335] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/tests/auto/skoda/karoq/nu/2-0-tdi-4x4-ftId233440
+                  - img "Skoda Karoq NU 2.0 TDI 4x4 Test" [ref=e337]
+                  - generic [ref=e338]:
+                    - heading "Skoda Karoq NU 2.0 TDI 4x4 Test" [level=3] [ref=e339]
+                    - generic [ref=e373]:
+                      - text: von
+                      - strong [ref=e374]: gradel
+              - listitem [ref=e375]:
+                - link [ref=e376] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/tests/auto/skoda/karoq/nu/1-5-tsi-ftId235488
+                  - img "Skoda Karoq NU 1.5 TSI Test" [ref=e378]
+                  - generic [ref=e379]:
+                    - heading "Skoda Karoq NU 1.5 TSI Test" [level=3] [ref=e380]
+                    - generic [ref=e414]:
+                      - text: von
+                      - strong [ref=e415]: Wagesa
+          - generic [ref=e416]:
+            - generic [ref=e417]:
+              - heading "Blogs" [level=3] [ref=e418]
+              - link "Alle Blogs" [ref=e419] [cursor=pointer]:
+                - /url: /blogs.html
+            - list [ref=e423]:
+              - listitem [ref=e424]:
+                - link [ref=e425] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/blogs/recallerin/airbag-beeintraechtigung-skoda-ruft-rund-50-000-kodiaq-zurueck-t8502052.html
+                  - 'img "Airbag-Beeinträchtigung: Skoda ruft rund 50.000 Kodiaq zurück" [ref=e427]'
+                  - generic [ref=e428]:
+                    - 'heading "Airbag-Beeinträchtigung: Skoda ruft rund 50.000 Kodiaq zurück" [level=3] [ref=e429]'
+                    - generic [ref=e430]:
+                      - text: von
+                      - strong [ref=e431]: recallerin
+              - listitem [ref=e432]:
+                - link [ref=e433] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/blogs/motor-talk/2-831-km-mit-einer-tankfuellung-reichweitenriese-skoda-superb-t8393499.html
+                  - 'img "2.831 km mit einer Tankfüllung: Reichweitenriese Skoda Superb" [ref=e435]'
+                  - generic [ref=e436]:
+                    - 'heading "2.831 km mit einer Tankfüllung: Reichweitenriese Skoda Superb" [level=3] [ref=e437]'
+                    - generic [ref=e438]:
+                      - text: von
+                      - strong [ref=e439]: MOTOR-TALK
+              - listitem [ref=e440]:
+                - link [ref=e441] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/blogs/wollvo22/-14-von-orange-zu-gruen-t6441596.html
+                  - img "#14 Von Orange zu Grün" [ref=e443]
+                  - generic [ref=e444]:
+                    - heading "#14 Von Orange zu Grün" [level=3] [ref=e445]
+                    - generic [ref=e446]:
+                      - text: von
+                      - strong [ref=e447]: wollvo22
+              - listitem [ref=e448]:
+                - link [ref=e449] [cursor=pointer]:
+                  - /url: https://www.motor-talk.de/dialog/skoda/3-zwischenbericht-das-koennen-die-sicherheits-und-assistenzsysteme-t6116264.html
+                  - 'img "3. Zwischenbericht: Das können die Sicherheits- und Assistenzsysteme" [ref=e451]'
+                  - generic [ref=e452]:
+                    - 'heading "3. Zwischenbericht: Das können die Sicherheits- und Assistenzsysteme" [level=3] [ref=e453]'
+                    - generic [ref=e454]:
+                      - text: von
+                      - strong [ref=e455]: MOTOR-TALK
+          - generic [ref=e456]:
+            - generic [ref=e457]:
+              - paragraph [ref=e458]: Steig ein
+              - paragraph [ref=e459]:
+                - text: Erhalte innerhalb von
+                - strong [ref=e460]: 90 Minuten
+                - text: eine
+                - strong [ref=e461]: Antwort
+                - text: aus Europas größter Auto- und Motor-Community mit über 50 Mio. Beiträgen.
+              - button [ref=e463] [cursor=pointer]
+            - img "Create thread teaser"
+        - list [ref=e470]:
+          - listitem [ref=e471]:
+            - link "Startseite" [ref=e472] [cursor=pointer]:
+              - /url: /
+            - text: ›
+          - listitem [ref=e473]:
+            - link "Forum" [ref=e474] [cursor=pointer]:
+              - /url: /forum.html
+            - text: ›
+          - listitem [ref=e475]:
+            - link "Auto" [ref=e476] [cursor=pointer]:
+              - /url: /forum/auto-b3.html
+            - text: ›
+          - listitem [ref=e477]:
+            - link "Skoda" [ref=e478] [cursor=pointer]:
+              - /url: /forum/skoda-b189.html
+            - text: ›
+          - listitem [ref=e479]:
+            - link "Karoq" [ref=e480] [cursor=pointer]:
+              - /url: /forum/skoda-karoq-b1022.html
+            - text: ›
+          - listitem [ref=e481]:
+            - link "B200FF0 interner fehler" [ref=e482] [cursor=pointer]:
+              - /url: /forum/b200ff0-interner-fehler-t8575021.html
+      - button "Schließen" [ref=e484] [cursor=pointer]
+    - contentinfo [ref=e488]:
+      - generic [ref=e490]:
+        - generic [ref=e491]:
+          - generic [ref=e492]: Community
+          - list [ref=e493]:
+            - listitem [ref=e494]:
+              - link "Auto Forum" [ref=e495] [cursor=pointer]:
+                - /url: /forum/auto-b3.html
+            - listitem [ref=e496]:
+              - link "Motorrad Forum" [ref=e497] [cursor=pointer]:
+                - /url: /forum/motorrad-forum-b15.html
+            - listitem [ref=e498]:
+              - link "Wissen Forum" [ref=e499] [cursor=pointer]:
+                - /url: /forum/wissen-b6.html
+            - listitem [ref=e500]:
+              - link "MOTOR-TALK App" [ref=e501] [cursor=pointer]:
+                - /url: /app
+            - listitem [ref=e502]:
+              - link "MOTOR-TALK fördern" [ref=e503] [cursor=pointer]:
+                - /url: /foerdern
+        - generic [ref=e504]:
+          - generic [ref=e505]: Magazin
+          - list [ref=e506]:
+            - listitem [ref=e507]:
+              - link "Bilder" [ref=e508] [cursor=pointer]:
+                - /url: /bilder.html
+            - listitem [ref=e509]:
+              - link "Videos" [ref=e510] [cursor=pointer]:
+                - /url: /videos.html
+            - listitem [ref=e511]:
+              - link "Umfragen" [ref=e512] [cursor=pointer]:
+                - /url: /forum/aktion/ListPolls.html
+            - listitem [ref=e513]:
+              - link "Verkehrstipps" [ref=e514] [cursor=pointer]:
+                - /url: /exklusiv
+            - listitem [ref=e515]:
+              - link "Newsletter" [ref=e516] [cursor=pointer]:
+                - /url: /newsletter
+        - generic [ref=e517]:
+          - generic [ref=e518]: MOTOR-TALK
+          - list [ref=e519]:
+            - listitem [ref=e520]:
+              - link "Über uns" [ref=e521] [cursor=pointer]:
+                - /url: /info/presse
+            - listitem [ref=e522]:
+              - link "Kontakt" [ref=e523] [cursor=pointer]:
+                - /url: /inhalt/Contact.html
+            - listitem [ref=e524]:
+              - link "Beitragsregeln" [ref=e525] [cursor=pointer]:
+                - /url: /info/beitragsregeln
+            - listitem [ref=e526]:
+              - link "Hilfe" [ref=e527] [cursor=pointer]:
+                - /url: /info/hilfe
+            - listitem [ref=e528]:
+              - link "Auf MOTOR-TALK werben" [ref=e529] [cursor=pointer]:
+                - /url: /info/werbung
+        - generic [ref=e530]:
+          - generic [ref=e531]: Soziale Medien
+          - list [ref=e532]:
+            - listitem [ref=e533]:
+              - link "Facebook" [ref=e534] [cursor=pointer]:
+                - /url: https://www.facebook.com/motortalk
+            - listitem [ref=e535]:
+              - link "Instagram" [ref=e536] [cursor=pointer]:
+                - /url: https://www.instagram.com/motortalk/
+            - listitem [ref=e537]:
+              - link "YouTube" [ref=e538] [cursor=pointer]:
+                - /url: https://www.youtube.com/user/motortalk
+          - 'button "Theme: Tag" [ref=e539] [cursor=pointer]'
+      - generic [ref=e543]:
+        - generic [ref=e544]: Teil des MOTOR-TALK Netzwerkes. © 2001-2026
+        - list [ref=e549]:
+          - listitem [ref=e550]:
+            - link "Impressum" [ref=e551] [cursor=pointer]:
+              - /url: /info/impressum
+          - listitem [ref=e552]:
+            - link "Nutzungsbedingungen" [ref=e553] [cursor=pointer]:
+              - /url: /info/nutzungsbedingungen
+          - listitem [ref=e554]:
+            - link "Datenschutz" [ref=e555] [cursor=pointer]:
+              - /url: /info/datenschutz
+          - listitem [ref=e556]:
+            - link "Erklärung zu Cookies" [ref=e557] [cursor=pointer]:
+              - /url: /info/cookies
+          - listitem [ref=e558]:
+            - link "Nutzungsbasierte Online-Werbung" [ref=e559] [cursor=pointer]:
+              - /url: /info/nutzungsbasierte-online-werbung
+          - listitem [ref=e560]:
+            - link "Utiq verwalten" [ref=e561] [cursor=pointer]:
+              - /url: /info/utiq-verwalten

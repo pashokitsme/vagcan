@@ -1,0 +1,14 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e5]:
+      - paragraph [ref=e6]: SORRY
+      - generic [ref=e7]:
+        - paragraph [ref=e8]: Something went wrong on our end
+        - separator [ref=e9]
+        - paragraph [ref=e10]: 0.17ce2e17.1785639117.87e29ffd
+        - separator [ref=e11]
+        - paragraph [ref=e12]: Please go back and try againor go to eBay Homepage.
+      - link "Go to homepage" [ref=e13] [cursor=pointer]:
+        - /url: https://www.ebay.com
+  - contentinfo [ref=e14]:
+    - paragraph [ref=e15]: Copyright © 1995-2026 eBay Inc. All Rights Reserved.

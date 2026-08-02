@@ -273,6 +273,11 @@ enum Command {
         /// list the identifiers whose bytes differ. Offline.
         #[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
         diff: Option<Vec<String>>,
+        /// Sweep while the car is moving. Refused by default: a sweep is
+        /// thousands of requests a unit may never have handled, and on the
+        /// reference car it made the steering assist stop assisting mid-drive.
+        #[arg(long)]
+        while_driving: bool,
         /// Ask each unit for an extended diagnostic session first. Off by
         /// default and refused while the car is moving: that session is
         /// workshop mode, and a unit that assists the driver may stop
@@ -445,7 +450,7 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
-        Command::Survey { device, range, out, delay_ms, only, extended, .. } => {
+        Command::Survey { device, range, out, delay_ms, only, extended, while_driving, .. } => {
             survey::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
@@ -454,6 +459,7 @@ async fn main() -> Result<()> {
                 delay_ms,
                 only.as_deref(),
                 extended,
+                while_driving,
             )
             .await
         }

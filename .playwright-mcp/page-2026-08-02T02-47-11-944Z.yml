@@ -1,0 +1,700 @@
+- generic [ref=f17e2]:
+  - banner [ref=f17e3]:
+    - link [ref=f17e7] [cursor=pointer]:
+      - /url: https://www.bolidenforum.de/forum
+      - img "Bolidenforum.de" [ref=f17e9]
+  - navigation [ref=f17e11]:
+    - generic [ref=f17e12]:
+      - list [ref=f17e15]:
+        - listitem [ref=f17e16]:
+          - link "Portal" [ref=f17e18] [cursor=pointer]:
+            - /url: Http://www.bolidenforum.de
+        - listitem [ref=f17e19]:
+          - link "Startseite" [ref=f17e21] [cursor=pointer]:
+            - /url: https://www.bolidenforum.de/forum
+        - listitem [ref=f17e22]:
+          - link "Foren" [ref=f17e24] [cursor=pointer]:
+            - /url: /forum/
+        - listitem [ref=f17e25]:
+          - generic [ref=f17e26]:
+            - link "Aktuelles" [ref=f17e27] [cursor=pointer]:
+              - /url: /forum/whats-new/
+            - button "Toggle erweitert" [ref=f17e28] [cursor=pointer]
+        - listitem [ref=f17e29]:
+          - generic [ref=f17e30]:
+            - link "Mitglieder" [ref=f17e31] [cursor=pointer]:
+              - /url: /forum/members/
+            - button "Toggle erweitert" [ref=f17e32] [cursor=pointer]
+        - listitem [ref=f17e33]:
+          - link "Tools" [ref=f17e35] [cursor=pointer]:
+            - /url: https://www.bolidenforum.de/forum/pages/tools/
+      - generic [ref=f17e36]:
+        - generic [ref=f17e37]:
+          - link "Anmelden" [ref=f17e38] [cursor=pointer]:
+            - /url: /forum/login/
+          - link "Registrieren" [ref=f17e39] [cursor=pointer]:
+            - /url: /forum/register/
+        - link "Suche" [ref=f17e41] [cursor=pointer]:
+          - /url: /forum/search/
+  - list [ref=f17e46]:
+    - listitem [ref=f17e47]:
+      - link "Neue Beiträge" [ref=f17e49] [cursor=pointer]:
+        - /url: /forum/whats-new/posts/
+    - listitem [ref=f17e50]:
+      - link "Foren durchsuchen" [ref=f17e52] [cursor=pointer]:
+        - /url: /forum/search/?type=post
+  - generic [ref=f17e54]:
+    - list [ref=f17e55]:
+      - listitem [ref=f17e56]:
+        - link "Startseite" [ref=f17e57] [cursor=pointer]:
+          - /url: https://www.bolidenforum.de/forum
+      - listitem [ref=f17e58]:
+        - link "Foren" [ref=f17e59] [cursor=pointer]:
+          - /url: /forum/
+      - listitem [ref=f17e60]:
+        - link "BolidenForum.de" [ref=f17e61] [cursor=pointer]:
+          - /url: /forum/categories/bolidenforum-de.2/
+      - listitem [ref=f17e62]:
+        - link "Volkswagen Forum" [ref=f17e63] [cursor=pointer]:
+          - /url: /forum/forums/volkswagen-forum.78/
+      - listitem [ref=f17e64]:
+        - link "VW Technik allgemein Forum" [ref=f17e65] [cursor=pointer]:
+          - /url: /forum/forums/vw-technik-allgemein-forum.294/
+      - listitem [ref=f17e66]:
+        - link "VAG TPI" [ref=f17e67] [cursor=pointer]:
+          - /url: /forum/forums/vag-tpi.4689494/
+      - listitem [ref=f17e68]:
+        - link "VAG TPI 2021" [ref=f17e69] [cursor=pointer]:
+          - /url: /forum/forums/vag-tpi-2021.4694002/
+    - generic [ref=f17e70]:
+      - heading "TPI-Nr 2063041/1 - 48. Rote Warnleuchte für Servolenkung leuchtet im Kombiinstrument, Fehlercode B200000 ist im Steuergerät für Servolenkung gespeiche" [level=1] [ref=f17e72]
+      - list [ref=f17e74]:
+        - listitem [ref=f17e75]:
+          - img "Ersteller" [ref=f17e77]
+          - generic [ref=f17e79]: Ersteller
+          - link "VAG-TPI" [ref=f17e80] [cursor=pointer]:
+            - /url: /forum/members/vag-tpi.162348/
+        - listitem [ref=f17e81]:
+          - text: ·
+          - img "Erstellt am" [ref=f17e83]
+          - generic [ref=f17e85]: Erstellt am
+          - link [ref=f17e86] [cursor=pointer]:
+            - /url: /forum/threads/tpi-nr-2063041-1-48-rote-warnleuchte-fuer-servolenkung-leuchtet-im-kombiinstrument-fehlercode-b200000-ist-im-steuergeraet-fuer-servolenkung-gespeiche.4695968/
+            - time [ref=f17e87]: 27. Nov. 2025
+    - generic [ref=f17e88]:
+      - generic [ref=f17e91]:
+        - complementary "Partnerlink" [ref=f17e92]:
+          - generic [ref=f17e93]:
+            - text: Hier findest du weitere Informationen zu
+            - strong [ref=f17e94]:
+              - link "TPI-Nr 2063041/1 - 48. Rote Warnleuchte für Servolenkung leuchtet im Kombiinstrument, Fehlercode B200000 ist im Steuergerät für Servolenkung gespeiche" [ref=f17e95] [cursor=pointer]:
+                - /url: https://www.amazon.de/gp/search?ie=UTF8&tag=bolide-21&linkCode=ur2&linkId=3c9077cd481ac98492ed85e10c21838e&camp=1638&creative=6742&index=aps&keywords=TPI-Nr+2063041%2F1+-+48.+Rote+Warnleuchte+f%C3%BCr+Servolenkung+leuchtet+im+Kombiinstrument%2C+Fehlercode+B200000+ist+im+Steuerger%C3%A4t+f%C3%BCr+Servolenkung+gespeiche
+        - generic [ref=f17e96]:
+          - article [ref=f17e99]:
+            - generic [ref=f17e100]:
+              - generic [ref=f17e102]:
+                - link [ref=f17e105] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e106]: V
+                - generic [ref=f17e107]:
+                  - heading [level=4] [ref=f17e108]:
+                    - link "VAG-TPI" [ref=f17e109] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - heading "Boliden-Koryphäe" [level=5] [ref=f17e110]
+              - generic [ref=f17e113]:
+                - generic [ref=f17e114]:
+                  - list [ref=f17e115]:
+                    - listitem [ref=f17e116]:
+                      - link [ref=f17e117] [cursor=pointer]:
+                        - /url: /forum/threads/tpi-nr-2063041-1-48-rote-warnleuchte-fuer-servolenkung-leuchtet-im-kombiinstrument-fehlercode-b200000-ist-im-steuergeraet-fuer-servolenkung-gespeiche.4695968/post-4695968
+                        - time [ref=f17e118]: 27. Nov. 2025
+                  - list [ref=f17e119]:
+                    - listitem [ref=f17e120]:
+                      - link "Teilen" [ref=f17e121] [cursor=pointer]:
+                        - /url: /forum/threads/tpi-nr-2063041-1-48-rote-warnleuchte-fuer-servolenkung-leuchtet-im-kombiinstrument-fehlercode-b200000-ist-im-steuergeraet-fuer-servolenkung-gespeiche.4695968/post-4695968
+                    - listitem [ref=f17e125]:
+                      - link "#1" [ref=f17e126] [cursor=pointer]:
+                        - /url: /forum/threads/tpi-nr-2063041-1-48-rote-warnleuchte-fuer-servolenkung-leuchtet-im-kombiinstrument-fehlercode-b200000-ist-im-steuergeraet-fuer-servolenkung-gespeiche.4695968/post-4695968
+                - article [ref=f17e129]:
+                  - generic [ref=f17e131]:
+                    - generic [ref=f17e132]: Gebrauchsanweisung
+                    - table [ref=f17e134]:
+                      - rowgroup [ref=f17e135]:
+                        - row [ref=f17e136]:
+                          - cell [ref=f17e137]:
+                            - generic "hinweis.gif" [ref=f17e138]:
+                              - img "hinweis.gif" [ref=f17e139]
+                            - text: "Bitte beachten Sie: Dieser TSH-Artikel darf nur verwendet werden, wenn die unten aufgeführten Gerätekombinationen , Bordsteuergeräte und Ereignisspeichereinträge auf das Fahrzeug zutreffen."
+                    - generic [ref=f17e140]: Diagnosefehlercodes
+                    - table [ref=f17e142]:
+                      - rowgroup [ref=f17e143]:
+                        - row [ref=f17e144]:
+                          - cell "Diagnoseadresse" [ref=f17e145]
+                          - cell "Diagnosefehlercode" [ref=f17e147]
+                          - cell "Fehlersymptom" [ref=f17e149]
+                          - cell "Speicherzustand" [ref=f17e151]
+                        - row [ref=f17e153]:
+                          - cell "0044 - Servolenkung" [ref=f17e154]
+                          - 'cell "B200000: Fehlerhaftes Steuergerät" [ref=f17e155]'
+                          - cell [ref=f17e156]
+                          - cell "Zeitweise" [ref=f17e157]
+                        - row [ref=f17e158]:
+                          - cell "0044 - Servolenkung" [ref=f17e159]
+                          - 'cell "B200000: Fehlerhaftes Steuergerät" [ref=f17e160]'
+                          - cell [ref=f17e161]
+                          - cell "statisch" [ref=f17e162]
+                    - separator [ref=f17e163]
+                    - table [ref=f17e165]:
+                      - rowgroup [ref=f17e166]:
+                        - row [ref=f17e167]:
+                          - cell "TPI" [ref=f17e168]
+                          - cell "TPI-Nr:2063041/1" [ref=f17e169]
+                        - row [ref=f17e170]:
+                          - cell [ref=f17e171]:
+                            - list [ref=f17e172]:
+                              - listitem [ref=f17e173]: Rote Warnleuchte für Servolenkung leuchtet im Kombiinstrument, Fehlercode B200000 ist im Steuergerät für Servolenkung gespeichert.
+                          - 'cell "Veröffentlichungsdatum: 21. April 2021" [ref=f17e174]'
+                    - separator [ref=f17e175]
+                    - generic [ref=f17e176]: Zustand
+                    - text: "Der Kunde gibt an:"
+                    - table [ref=f17e178]:
+                      - rowgroup [ref=f17e179]:
+                        - row [ref=f17e180]:
+                          - cell "•" [ref=f17e181]
+                          - cell "Die Lenkung fühlt sich schwergängig an." [ref=f17e182]
+                    - table [ref=f17e184]:
+                      - rowgroup [ref=f17e185]:
+                        - row [ref=f17e186]:
+                          - cell "•" [ref=f17e187]
+                          - cell "Rote Warnleuchte für Lenkung im Kombiinstrument." [ref=f17e188]
+                    - text: "Ergebnisse des Workshops:"
+                    - table [ref=f17e190]:
+                      - rowgroup [ref=f17e191]:
+                        - row [ref=f17e192]:
+                          - cell "•" [ref=f17e193]
+                          - cell "Das Kundenproblem lässt sich reproduzieren." [ref=f17e194]
+                    - text: "Im Servolenkungssteuergerät J500 (Adresswort 0044) ist eine der folgenden Kombinationen aus Fehlercode (DTC) und Symptomcode gespeichert:"
+                    - table [ref=f17e196]:
+                      - rowgroup [ref=f17e197]:
+                        - row [ref=f17e198]:
+                          - cell "•" [ref=f17e199]
+                          - cell "Fehlercode B200000 (Fehlerhaftes Steuergerät) mit Symptomcode 14848." [ref=f17e200]
+                    - text: Oder
+                    - table [ref=f17e202]:
+                      - rowgroup [ref=f17e203]:
+                        - row [ref=f17e204]:
+                          - cell "•" [ref=f17e205]
+                          - cell "Fehlercode B200000 (Fehlerhaftes Steuergerät) mit Symptomcode 5120." [ref=f17e206]
+                    - separator [ref=f17e207]
+                    - generic [ref=f17e208]: Technischer Hintergrund
+                    - table [ref=f17e210]:
+                      - rowgroup [ref=f17e211]:
+                        - row [ref=f17e212]:
+                          - 'cell "Bevor Sie das Servolenkungssteuergerät J500 (Adresswort 0044) aktualisieren, überprüfen Sie die folgenden 4 Schritte: 179636.jpg Notiz: Beachten Sie die erweiterten Umgebungsbedingungen im Steuermodul, andernfalls wird ein Software-Update das Problem nicht beheben." [ref=f17e213]':
+                            - text: "Bevor Sie das Servolenkungssteuergerät J500 (Adresswort 0044) aktualisieren, überprüfen Sie die folgenden 4 Schritte:"
+                            - generic "179636.jpg" [ref=f17e214]:
+                              - img "179636.jpg" [ref=f17e215]
+                            - text: "Notiz: Beachten Sie die erweiterten Umgebungsbedingungen im Steuermodul, andernfalls wird ein Software-Update das Problem"
+                            - generic [ref=f17e216]: nicht beheben.
+                          - cell [ref=f17e217]
+                        - row [ref=f17e218]:
+                          - cell "1." [ref=f17e219]
+                          - cell "Mit DTC B200000, Symptomcode 14848 und (Softwareversion 409 und 410) 1.1 Überprüfen Sie den Parameter für den Kundenfehlertyp ( Param_Kfa ) unter den erweiterten Umgebungsbedingungen. 1.2 Die Zahl 6 muss aufgeführt sein. Wenn die Zahl 6 angezeigt wird, wird das Update wirksam (Abbildung 1). 158260.jpg Abbildung 1. Erweiterte Umgebungsbedingungen." [ref=f17e220]:
+                            - generic [ref=f17e221]: Mit DTC B200000, Symptomcode 14848 und (Softwareversion 409 und 410)
+                            - text: 1.1 Überprüfen Sie den Parameter für den Kundenfehlertyp ( Param_Kfa ) unter den erweiterten Umgebungsbedingungen. 1.2 Die Zahl 6 muss aufgeführt sein. Wenn die Zahl 6 angezeigt wird, wird das Update wirksam (Abbildung 1).
+                            - generic "158260.jpg" [ref=f17e223] [cursor=pointer]:
+                              - img "158260.jpg" [ref=f17e224]
+                            - generic [ref=f17e225]: Abbildung 1.
+                            - text: Erweiterte Umgebungsbedingungen.
+                        - row [ref=f17e226]:
+                          - cell "2." [ref=f17e227]
+                          - cell "Mit DTC B200000, Symptomcode 14848 und (Softwareversion 405 und 407) 2.1 ( Param_Kfa ) ist mit dieser Softwareversion nicht sichtbar . 2.2Wenn nach dem SVM-Update keine DTC-Einträge mehr protokolliert werden, war das Update erfolgreich. 2.3 Falls der Fehlercode (DTC) nach dem SVM-Update weiterhin protokolliert wird, muss das Lenkgetriebe ausgetauscht werden." [ref=f17e228]:
+                            - generic [ref=f17e229]: Mit DTC B200000, Symptomcode 14848 und (Softwareversion 405 und 407)
+                            - text: 2.1 ( Param_Kfa ) ist mit dieser Softwareversion nicht sichtbar . 2.2Wenn nach dem SVM-Update keine DTC-Einträge mehr protokolliert werden, war das Update erfolgreich. 2.3 Falls der Fehlercode (DTC) nach dem SVM-Update weiterhin protokolliert wird, muss das Lenkgetriebe ausgetauscht werden.
+                        - row [ref=f17e230]:
+                          - cell "3." [ref=f17e231]
+                          - 'cell "Bei DTC B200000, Symptomcode 5120: (Softwareversion 409 und 410). 3.1 Überprüfen Sie den Parameter für den Kundenfehlertyp ( Param_Kfa ) unter den erweiterten Umgebungsbedingungen. 3.2 Die Nummer 11 muss aufgeführt sein. Wenn die Nummer 11 angezeigt wird, ist das Update wirksam." [ref=f17e232]':
+                            - generic [ref=f17e233]: "Bei DTC B200000, Symptomcode 5120: (Softwareversion 409 und 410)."
+                            - text: 3.1 Überprüfen Sie den Parameter für den Kundenfehlertyp ( Param_Kfa ) unter den erweiterten Umgebungsbedingungen. 3.2 Die Nummer 11 muss aufgeführt sein. Wenn die Nummer 11 angezeigt wird, ist das Update wirksam.
+                        - row [ref=f17e234]:
+                          - cell "4." [ref=f17e235]
+                          - 'cell "Bei DTC B200000, Symptomcode 5120: (Softwareversion 405 und 407). 4.1 (Param_Kfa) ist in dieser Softwareversion nicht sichtbar . 4.2 Wenn nach dem SVM-Update kein DTC mehr protokolliert wird, war das Update erfolgreich. 4.3 Wenn der Fehlercode (DTC) nach dem SVM-Update immer noch protokolliert ist, muss das Lenkgetriebe ausgetauscht werden." [ref=f17e236]':
+                            - generic [ref=f17e237]: "Bei DTC B200000, Symptomcode 5120: (Softwareversion 405 und 407)."
+                            - text: 4.1 (Param_Kfa) ist in dieser Softwareversion nicht sichtbar . 4.2 Wenn nach dem SVM-Update kein DTC mehr protokolliert wird, war das Update erfolgreich. 4.3 Wenn der Fehlercode (DTC) nach dem SVM-Update immer noch protokolliert ist, muss das Lenkgetriebe ausgetauscht werden.
+                    - separator [ref=f17e238]
+                    - generic [ref=f17e239]: Produktionslösung
+                    - text: Verbesserte Software für Modelljahr 2021.
+                    - separator [ref=f17e240]
+                    - generic [ref=f17e241]: Service
+                    - text: SVM-Aktualisierungsanleitung
+                    - table [ref=f17e243]:
+                      - rowgroup [ref=f17e244]:
+                        - row [ref=f17e245]:
+                          - cell "1." [ref=f17e246]
+                          - 'cell "Befolgen Sie alle Anweisungen in TSB 2011732: 00 Software Version Management (SVM), Bedienungsanleitung ." [ref=f17e247]'
+                    - table [ref=f17e249]:
+                      - rowgroup [ref=f17e250]:
+                        - row [ref=f17e251]:
+                          - cell "2." [ref=f17e252]
+                          - cell "Aktualisieren Sie gegebenenfalls das Servolenkungssteuergerät J500 (Adresswort 0044) mithilfe des in der folgenden Tabelle aufgeführten SVM-Aktionscodes:" [ref=f17e253]
+                    - table [ref=f17e255]:
+                      - rowgroup [ref=f17e256]:
+                        - row [ref=f17e257]:
+                          - cell "Modell" [ref=f17e258]
+                          - cell "Alte Software-Teilenummer" [ref=f17e259]
+                          - cell "Alte Softwareversion" [ref=f17e261]
+                          - cell "Neue Software-Teilenummer (oder höher)" [ref=f17e263]:
+                            - generic [ref=f17e264]: Neue Software-Teilenummer
+                            - generic [ref=f17e265]: (oder höher)
+                          - cell "Neue Softwareversion (oder höher)" [ref=f17e266]:
+                            - generic [ref=f17e267]: Neue Softwareversion
+                            - generic [ref=f17e268]: (oder höher)
+                          - cell "SVM-Code-Eingabe" [ref=f17e269]
+                        - row [ref=f17e271]:
+                          - cell "A4/A5" [ref=f17e272]
+                          - cell "8W0909144F" [ref=f17e274]
+                          - cell "0407" [ref=f17e276]
+                          - cell "8W0909144J" [ref=f17e278]
+                          - cell "0411" [ref=f17e280]
+                          - cell "44A013" [ref=f17e282]
+                        - row [ref=f17e284]:
+                          - cell "8W0909144D" [ref=f17e285]
+                          - cell "0405" [ref=f17e287]
+                          - cell [ref=f17e289]
+                          - cell [ref=f17e290]
+                          - cell [ref=f17e291]
+                          - cell [ref=f17e292]
+                        - row [ref=f17e293]:
+                          - cell "8W0909144H" [ref=f17e294]
+                          - cell "0410" [ref=f17e296]
+                          - cell [ref=f17e298]
+                          - cell [ref=f17e299]
+                          - cell [ref=f17e300]
+                          - cell [ref=f17e301]
+                        - row [ref=f17e302]:
+                          - cell "8W0909144G" [ref=f17e303]
+                          - cell "0409" [ref=f17e305]
+                          - cell [ref=f17e307]
+                          - cell [ref=f17e308]
+                          - cell [ref=f17e309]
+                          - cell [ref=f17e310]
+                    - list [ref=f17e311]:
+                      - listitem [ref=f17e312]: Falls ein Austausch des Lenkgetriebes erforderlich ist, gehen Sie wie im Elsa-Reparaturhandbuch unter Fahrgestell >> Federung, Räder, Lenkung >> 48 Lenkung >> Lenkgetriebe >> Aus- und Einbau beschrieben vor.
+                    - separator [ref=f17e313]
+                    - generic [ref=f17e314]: Garantie
+                    - table [ref=f17e316]:
+                      - rowgroup [ref=f17e317]:
+                        - row [ref=f17e318]:
+                          - cell "Anspruchsart:" [ref=f17e319]
+                          - cell [ref=f17e320]:
+                            - table [ref=f17e322]:
+                              - rowgroup [ref=f17e323]:
+                                - row [ref=f17e324]:
+                                  - cell "•" [ref=f17e325]
+                                  - cell "110 bis zu 48 Monate/50.000 Meilen." [ref=f17e326]
+                            - table [ref=f17e328]:
+                              - rowgroup [ref=f17e329]:
+                                - row [ref=f17e330]:
+                                  - cell "•" [ref=f17e331]
+                                  - cell "G10 für CPO-gedeckte Fahrzeuge – Eigentümer verifizieren." [ref=f17e332]
+                            - table [ref=f17e334]:
+                              - rowgroup [ref=f17e335]:
+                                - row [ref=f17e336]:
+                                  - cell "•" [ref=f17e337]
+                                  - cell "Wenn für das Fahrzeug keine Garantie mehr besteht, dient dieses technische Service-Bulletin nur zu Informationszwecken." [ref=f17e338]
+                            - text: "Servicenummer: 4835 Schadenscode: 0040 Arbeitsabläufe: Elektromechanische Lenkung Aus- und Einbau (nur wenn das Lenkgetriebe ausgetauscht wird) 4835 1900 Siehe SRT mit zugehörigen Operationen Fahrzeugmaß vorne hinten (nur wenn das Lenkgetriebe ausgetauscht wird) 4495 0300 Siehe SRT mit zugehörigen Operationen Software-Update 0151 0000 30 TU Diagnosezeit: GFF 0150 0000 Zeitangabe gemäß Diagnoseprotokoll (Max. 50 TU) Probefahrt vor der Serviceleistung Keine Zulage 0 TU Probefahrt nach der Serviceleistung 0121 0004 10 TU Kommentar zur Behauptung: Gemäß TSB Nr. 2063041/1 Alle zur Zahlung eingereichten Garantieansprüche müssen den Richtlinien und Verfahren des Audi-Garantiehandbuchs entsprechen . Die Ansprüche werden von Audi Warranty geprüft."
+                            - separator [ref=f17e339]
+                            - generic [ref=f17e340]: Benötigte Teile und Werkzeuge
+                            - table [ref=f17e342]:
+                              - rowgroup [ref=f17e343]:
+                                - row [ref=f17e344]:
+                                  - cell "Bitte wenden Sie sich stets an Ihre Teileabteilung und/oder ETKA, um die aktuellsten Informationen und Teile-Bulletins zu erhalten." [ref=f17e345]
+                                  - cell [ref=f17e346]
+                                  - cell [ref=f17e347]
+                                - row [ref=f17e348]:
+                                  - cell "Teilenummer" [ref=f17e349]
+                                  - cell "Teilebeschreibung" [ref=f17e350]
+                                  - cell "Menge" [ref=f17e351]
+                                - row [ref=f17e352]:
+                                  - cell "Siehe ETKA" [ref=f17e353]
+                                  - cell "Befestigungselemente, Bolzen, Muttern und Schrauben nach Bedarf gemäß Reparaturhandbuch" [ref=f17e354]
+                                  - cell "Siehe ETKA/ELSA" [ref=f17e355]
+                                - row [ref=f17e356]:
+                                  - cell "Siehe ETKA" [ref=f17e357]
+                                  - cell "Lenkgetriebe (falls erforderlich)" [ref=f17e358]
+                                  - cell "01" [ref=f17e359]
+                            - separator [ref=f17e360]
+                            - generic [ref=f17e361]: Weitere Informationen
+                            - text: "Weitere Informationen zu diesem System finden Sie in den folgenden Quellen:"
+                            - table [ref=f17e363]:
+                              - rowgroup [ref=f17e364]:
+                                - row [ref=f17e365]:
+                                  - cell "•" [ref=f17e366]
+                                  - 'cell "Elsa: Chassis >> Federung, Räder, Lenkung >> 48 Lenkung >> Lenkgetriebe >> Aus- und Einbau." [ref=f17e367]'
+                            - text: "Für die Durchführung dieses Verfahrens werden folgende technische Service-Bulletins benötigt:"
+                            - table [ref=f17e369]:
+                              - rowgroup [ref=f17e370]:
+                                - row [ref=f17e371]:
+                                  - cell "•" [ref=f17e372]
+                                  - cell "TSB 2011732, 00 Software Version Management (SVM), Betriebsanleitung." [ref=f17e373]
+                            - text: Alle in dieser Technischen Serviceinformation (TSB) (2063041) aufgeführten Teile- und Serviceangaben können sich ändern oder entfernt werden. Bitte wenden Sie sich stets an Ihre Teileabteilung und/oder ETKA, um die aktuellsten Informationen und Teilemitteilungen zu erhalten. Beachten Sie bitte das Reparaturhandbuch hinsichtlich der Befestigungselemente, Schrauben, Muttern und Bolzen, die im Rahmen der Reparatur ausgetauscht werden müssen. ©2021 Audi of America, Inc. Alle Rechte vorbehalten. Die in diesem Dokument enthaltenen Informationen basieren auf dem zum Zeitpunkt des Drucks verfügbaren Stand und unterliegen dem Urheberrecht und anderen Schutzrechten von Audi of America, Inc., ihren verbundenen Unternehmen und Lizenzgebern. Änderungen sind jederzeit und ohne Vorankündigung möglich. Ohne die vorherige ausdrückliche schriftliche Genehmigung des Herausgebers ist es untersagt, dieses Dokument oder Teile davon in irgendeiner Form oder mit irgendwelchen Mitteln – elektronisch, mechanisch, durch Fotokopieren, Aufzeichnen oder auf andere Weise – zu vervielfältigen, in einem Datenabfragesystem zu speichern oder zu übertragen. Ebenso ist es untersagt, diese Materialien zu verändern oder auf anderen Websites zu veröffentlichen.
+          - link "Du musst dich einloggen oder registrieren, um hier zu antworten." [ref=f17e376] [cursor=pointer]:
+            - /url: /forum/login/
+        - generic [ref=f17e378]:
+          - insertion
+        - generic [ref=f17e380]:
+          - heading "Ähnliche Themen" [level=3] [ref=f17e381]
+          - generic [ref=f17e383]:
+            - generic [ref=f17e384]:
+              - link [ref=f17e387] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e388]: V
+              - generic [ref=f17e389]:
+                - link "TPI-Nr 2064018/6 - Die rote Warnleuchte für die Servolenkung (Nr. 48) leuchtet, der Fehlercode C10AC07 ist im Steuergerät der Servolenkung gespeichert" [ref=f17e391] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2064018-6-die-rote-warnleuchte-fuer-die-servolenkung-nr-48-leuchtet-der-fehlercode-c10ac07-ist-im-steuergeraet-der-servolenkung-gespeichert.4694774/
+                - list [ref=f17e393]:
+                  - listitem [ref=f17e394]:
+                    - link "VAG-TPI" [ref=f17e395] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - listitem [ref=f17e396]:
+                    - text: ·
+                    - link [ref=f17e397] [cursor=pointer]:
+                      - /url: /forum/threads/tpi-nr-2064018-6-die-rote-warnleuchte-fuer-die-servolenkung-nr-48-leuchtet-der-fehlercode-c10ac07-ist-im-steuergeraet-der-servolenkung-gespeichert.4694774/
+                      - time [ref=f17e398]: 27. Nov. 2025
+                  - listitem [ref=f17e399]:
+                    - text: ·
+                    - link "VAG TPI 2022" [ref=f17e400] [cursor=pointer]:
+                      - /url: /forum/forums/vag-tpi-2022.4694001/
+              - 'generic "Reaktionspunkte erster Beitrag: 0" [ref=f17e401]':
+                - generic [ref=f17e402]:
+                  - term [ref=f17e403]: "Antworten:"
+                  - definition [ref=f17e404]: "0"
+                - generic [ref=f17e405]:
+                  - term [ref=f17e406]: "Aufrufe:"
+                  - definition [ref=f17e407]: "64"
+              - generic [ref=f17e408]:
+                - link [ref=f17e409] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2064018-6-die-rote-warnleuchte-fuer-die-servolenkung-nr-48-leuchtet-der-fehlercode-c10ac07-ist-im-steuergeraet-der-servolenkung-gespeichert.4694774/latest
+                  - time [ref=f17e410]: 27. Nov. 2025
+                - link "VAG-TPI" [ref=f17e412] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+              - link [ref=f17e415] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e416]: V
+            - generic [ref=f17e417]:
+              - link [ref=f17e420] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e421]: V
+              - generic [ref=f17e422]:
+                - link "TPI-Nr 2063153/2 - Der Fehlercode 48 DTC C10AC07 ist im Lenkungssteuergerät gespeichert." [ref=f17e424] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2063153-2-der-fehlercode-48-dtc-c10ac07-ist-im-lenkungssteuergeraet-gespeichert.4695981/
+                - list [ref=f17e426]:
+                  - listitem [ref=f17e427]:
+                    - link "VAG-TPI" [ref=f17e428] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - listitem [ref=f17e429]:
+                    - text: ·
+                    - link [ref=f17e430] [cursor=pointer]:
+                      - /url: /forum/threads/tpi-nr-2063153-2-der-fehlercode-48-dtc-c10ac07-ist-im-lenkungssteuergeraet-gespeichert.4695981/
+                      - time [ref=f17e431]: 27. Nov. 2025
+                  - listitem [ref=f17e432]:
+                    - text: ·
+                    - link "VAG TPI 2021" [ref=f17e433] [cursor=pointer]:
+                      - /url: /forum/forums/vag-tpi-2021.4694002/
+              - 'generic "Reaktionspunkte erster Beitrag: 0" [ref=f17e434]':
+                - generic [ref=f17e435]:
+                  - term [ref=f17e436]: "Antworten:"
+                  - definition [ref=f17e437]: "0"
+                - generic [ref=f17e438]:
+                  - term [ref=f17e439]: "Aufrufe:"
+                  - definition [ref=f17e440]: "61"
+              - generic [ref=f17e441]:
+                - link [ref=f17e442] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2063153-2-der-fehlercode-48-dtc-c10ac07-ist-im-lenkungssteuergeraet-gespeichert.4695981/latest
+                  - time [ref=f17e443]: 27. Nov. 2025
+                - link "VAG-TPI" [ref=f17e445] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+              - link [ref=f17e448] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e449]: V
+            - generic [ref=f17e450]:
+              - link [ref=f17e453] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e454]: V
+              - generic [ref=f17e455]:
+                - link "TPI-Nr 2061003/3 - 40 Fehlercodes (DTC) B200000 wurden im vorderen und/oder hinteren Stabilitätskontrollmodul gespeichert." [ref=f17e457] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2061003-3-40-fehlercodes-dtc-b200000-wurden-im-vorderen-und-oder-hinteren-stabilitaetskontrollmodul-gespeichert.4695707/
+                - list [ref=f17e459]:
+                  - listitem [ref=f17e460]:
+                    - link "VAG-TPI" [ref=f17e461] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - listitem [ref=f17e462]:
+                    - text: ·
+                    - link [ref=f17e463] [cursor=pointer]:
+                      - /url: /forum/threads/tpi-nr-2061003-3-40-fehlercodes-dtc-b200000-wurden-im-vorderen-und-oder-hinteren-stabilitaetskontrollmodul-gespeichert.4695707/
+                      - time [ref=f17e464]: 27. Nov. 2025
+                  - listitem [ref=f17e465]:
+                    - text: ·
+                    - link "VAG TPI 2021" [ref=f17e466] [cursor=pointer]:
+                      - /url: /forum/forums/vag-tpi-2021.4694002/
+              - 'generic "Reaktionspunkte erster Beitrag: 0" [ref=f17e467]':
+                - generic [ref=f17e468]:
+                  - term [ref=f17e469]: "Antworten:"
+                  - definition [ref=f17e470]: "0"
+                - generic [ref=f17e471]:
+                  - term [ref=f17e472]: "Aufrufe:"
+                  - definition [ref=f17e473]: "33"
+              - generic [ref=f17e474]:
+                - link [ref=f17e475] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2061003-3-40-fehlercodes-dtc-b200000-wurden-im-vorderen-und-oder-hinteren-stabilitaetskontrollmodul-gespeichert.4695707/latest
+                  - time [ref=f17e476]: 27. Nov. 2025
+                - link "VAG-TPI" [ref=f17e478] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+              - link [ref=f17e481] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e482]: V
+            - generic [ref=f17e483]:
+              - link [ref=f17e486] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e487]: V
+              - generic [ref=f17e488]:
+                - link "TPI-Nr 2063042/1 - Die Warnleuchte für die Lenkung (Nr. 48) leuchtet, der Fehlercode B200FF0 ist im Lenkungssteuergerät der Hinterachse gespeichert." [ref=f17e490] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2063042-1-die-warnleuchte-fuer-die-lenkung-nr-48-leuchtet-der-fehlercode-b200ff0-ist-im-lenkungssteuergeraet-der-hinterachse-gespeichert.4695969/
+                - list [ref=f17e492]:
+                  - listitem [ref=f17e493]:
+                    - link "VAG-TPI" [ref=f17e494] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - listitem [ref=f17e495]:
+                    - text: ·
+                    - link [ref=f17e496] [cursor=pointer]:
+                      - /url: /forum/threads/tpi-nr-2063042-1-die-warnleuchte-fuer-die-lenkung-nr-48-leuchtet-der-fehlercode-b200ff0-ist-im-lenkungssteuergeraet-der-hinterachse-gespeichert.4695969/
+                      - time [ref=f17e497]: 27. Nov. 2025
+                  - listitem [ref=f17e498]:
+                    - text: ·
+                    - link "VAG TPI 2021" [ref=f17e499] [cursor=pointer]:
+                      - /url: /forum/forums/vag-tpi-2021.4694002/
+              - 'generic "Reaktionspunkte erster Beitrag: 0" [ref=f17e500]':
+                - generic [ref=f17e501]:
+                  - term [ref=f17e502]: "Antworten:"
+                  - definition [ref=f17e503]: "0"
+                - generic [ref=f17e504]:
+                  - term [ref=f17e505]: "Aufrufe:"
+                  - definition [ref=f17e506]: "39"
+              - generic [ref=f17e507]:
+                - link [ref=f17e508] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2063042-1-die-warnleuchte-fuer-die-lenkung-nr-48-leuchtet-der-fehlercode-b200ff0-ist-im-lenkungssteuergeraet-der-hinterachse-gespeichert.4695969/latest
+                  - time [ref=f17e509]: 27. Nov. 2025
+                - link "VAG-TPI" [ref=f17e511] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+              - link [ref=f17e514] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e515]: V
+            - generic [ref=f17e516]:
+              - link [ref=f17e519] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e520]: V
+              - generic [ref=f17e521]:
+                - link "TPI-Nr 2045522/3 - Beim Drehen des Lenkrads leuchtet die Kontrollleuchte für die Servolenkung auf." [ref=f17e523] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2045522-3-beim-drehen-des-lenkrads-leuchtet-die-kontrollleuchte-fuer-die-servolenkung-auf.4695343/
+                - list [ref=f17e525]:
+                  - listitem [ref=f17e526]:
+                    - link "VAG-TPI" [ref=f17e527] [cursor=pointer]:
+                      - /url: /forum/members/vag-tpi.162348/
+                  - listitem [ref=f17e528]:
+                    - text: ·
+                    - link [ref=f17e529] [cursor=pointer]:
+                      - /url: /forum/threads/tpi-nr-2045522-3-beim-drehen-des-lenkrads-leuchtet-die-kontrollleuchte-fuer-die-servolenkung-auf.4695343/
+                      - time [ref=f17e530]: 27. Nov. 2025
+                  - listitem [ref=f17e531]:
+                    - text: ·
+                    - link "VAG TPI 2021" [ref=f17e532] [cursor=pointer]:
+                      - /url: /forum/forums/vag-tpi-2021.4694002/
+              - 'generic "Reaktionspunkte erster Beitrag: 0" [ref=f17e533]':
+                - generic [ref=f17e534]:
+                  - term [ref=f17e535]: "Antworten:"
+                  - definition [ref=f17e536]: "0"
+                - generic [ref=f17e537]:
+                  - term [ref=f17e538]: "Aufrufe:"
+                  - definition [ref=f17e539]: "38"
+              - generic [ref=f17e540]:
+                - link [ref=f17e541] [cursor=pointer]:
+                  - /url: /forum/threads/tpi-nr-2045522-3-beim-drehen-des-lenkrads-leuchtet-die-kontrollleuchte-fuer-die-servolenkung-auf.4695343/latest
+                  - time [ref=f17e542]: 27. Nov. 2025
+                - link "VAG-TPI" [ref=f17e544] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+              - link [ref=f17e547] [cursor=pointer]:
+                - /url: /forum/members/vag-tpi.162348/
+                - img "VAG-TPI" [ref=f17e548]: V
+        - generic [ref=f17e550]:
+          - generic [ref=f17e551]: "Teilen:"
+          - generic [ref=f17e552]:
+            - link "Facebook" [ref=f17e553] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "X (Twitter)" [ref=f17e558] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "Bluesky" [ref=f17e563] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "LinkedIn" [ref=f17e568] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "Reddit" [ref=f17e573] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "WhatsApp" [ref=f17e578] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+            - link "E-Mail" [ref=f17e583] [cursor=pointer]:
+              - /url: "#_xfUid-1-1785638830"
+      - generic [ref=f17e588]:
+        - generic [ref=f17e590]:
+          - heading "Teilen" [level=3] [ref=f17e591]
+          - generic [ref=f17e594]:
+            - link "Facebook" [ref=f17e595] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "X (Twitter)" [ref=f17e600] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "Bluesky" [ref=f17e605] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "LinkedIn" [ref=f17e610] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "Reddit" [ref=f17e615] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "WhatsApp" [ref=f17e620] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+            - link "E-Mail" [ref=f17e625] [cursor=pointer]:
+              - /url: "#_xfUid-2-1785638830"
+        - generic [ref=f17e631]:
+          - heading "Ähnliche Themen" [level=3] [ref=f17e632]
+          - list [ref=f17e633]:
+            - listitem [ref=f17e634]:
+              - generic [ref=f17e635]:
+                - link [ref=f17e637] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e638]: V
+                - generic [ref=f17e639]:
+                  - link "TPI-Nr 2064018/6 - Die rote Warnleuchte für die Servolenkung (Nr. 48) leuchtet, der Fehlercode C10AC07 ist im Steuergerät der Servolenkung gespeichert" [ref=f17e640] [cursor=pointer]:
+                    - /url: /forum/threads/tpi-nr-2064018-6-die-rote-warnleuchte-fuer-die-servolenkung-nr-48-leuchtet-der-fehlercode-c10ac07-ist-im-steuergeraet-der-servolenkung-gespeichert.4694774/
+                  - list [ref=f17e642]:
+                    - listitem [ref=f17e643]: Gestartet von VAG-TPI
+                    - listitem [ref=f17e644]:
+                      - text: ·
+                      - time [ref=f17e645]: 27. Nov. 2025
+                    - listitem [ref=f17e646]: "· Antworten: 0"
+                  - link "VAG TPI 2022" [ref=f17e648] [cursor=pointer]:
+                    - /url: /forum/forums/vag-tpi-2022.4694001/
+            - listitem [ref=f17e649]:
+              - generic [ref=f17e650]:
+                - link [ref=f17e652] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e653]: V
+                - generic [ref=f17e654]:
+                  - link "TPI-Nr 2063153/2 - Der Fehlercode 48 DTC C10AC07 ist im Lenkungssteuergerät gespeichert." [ref=f17e655] [cursor=pointer]:
+                    - /url: /forum/threads/tpi-nr-2063153-2-der-fehlercode-48-dtc-c10ac07-ist-im-lenkungssteuergeraet-gespeichert.4695981/
+                  - list [ref=f17e657]:
+                    - listitem [ref=f17e658]: Gestartet von VAG-TPI
+                    - listitem [ref=f17e659]:
+                      - text: ·
+                      - time [ref=f17e660]: 27. Nov. 2025
+                    - listitem [ref=f17e661]: "· Antworten: 0"
+                  - link "VAG TPI 2021" [ref=f17e663] [cursor=pointer]:
+                    - /url: /forum/forums/vag-tpi-2021.4694002/
+            - listitem [ref=f17e664]:
+              - generic [ref=f17e665]:
+                - link [ref=f17e667] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e668]: V
+                - generic [ref=f17e669]:
+                  - link "TPI-Nr 2061003/3 - 40 Fehlercodes (DTC) B200000 wurden im vorderen und/oder hinteren Stabilitätskontrollmodul gespeichert." [ref=f17e670] [cursor=pointer]:
+                    - /url: /forum/threads/tpi-nr-2061003-3-40-fehlercodes-dtc-b200000-wurden-im-vorderen-und-oder-hinteren-stabilitaetskontrollmodul-gespeichert.4695707/
+                  - list [ref=f17e672]:
+                    - listitem [ref=f17e673]: Gestartet von VAG-TPI
+                    - listitem [ref=f17e674]:
+                      - text: ·
+                      - time [ref=f17e675]: 27. Nov. 2025
+                    - listitem [ref=f17e676]: "· Antworten: 0"
+                  - link "VAG TPI 2021" [ref=f17e678] [cursor=pointer]:
+                    - /url: /forum/forums/vag-tpi-2021.4694002/
+            - listitem [ref=f17e679]:
+              - generic [ref=f17e680]:
+                - link [ref=f17e682] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e683]: V
+                - generic [ref=f17e684]:
+                  - link "TPI-Nr 2063042/1 - Die Warnleuchte für die Lenkung (Nr. 48) leuchtet, der Fehlercode B200FF0 ist im Lenkungssteuergerät der Hinterachse gespeichert." [ref=f17e685] [cursor=pointer]:
+                    - /url: /forum/threads/tpi-nr-2063042-1-die-warnleuchte-fuer-die-lenkung-nr-48-leuchtet-der-fehlercode-b200ff0-ist-im-lenkungssteuergeraet-der-hinterachse-gespeichert.4695969/
+                  - list [ref=f17e687]:
+                    - listitem [ref=f17e688]: Gestartet von VAG-TPI
+                    - listitem [ref=f17e689]:
+                      - text: ·
+                      - time [ref=f17e690]: 27. Nov. 2025
+                    - listitem [ref=f17e691]: "· Antworten: 0"
+                  - link "VAG TPI 2021" [ref=f17e693] [cursor=pointer]:
+                    - /url: /forum/forums/vag-tpi-2021.4694002/
+            - listitem [ref=f17e694]:
+              - generic [ref=f17e695]:
+                - link [ref=f17e697] [cursor=pointer]:
+                  - /url: /forum/members/vag-tpi.162348/
+                  - img "VAG-TPI" [ref=f17e698]: V
+                - generic [ref=f17e699]:
+                  - link "TPI-Nr 2045522/3 - Beim Drehen des Lenkrads leuchtet die Kontrollleuchte für die Servolenkung auf." [ref=f17e700] [cursor=pointer]:
+                    - /url: /forum/threads/tpi-nr-2045522-3-beim-drehen-des-lenkrads-leuchtet-die-kontrollleuchte-fuer-die-servolenkung-auf.4695343/
+                  - list [ref=f17e702]:
+                    - listitem [ref=f17e703]: Gestartet von VAG-TPI
+                    - listitem [ref=f17e704]:
+                      - text: ·
+                      - time [ref=f17e705]: 27. Nov. 2025
+                    - listitem [ref=f17e706]: "· Antworten: 0"
+                  - link "VAG TPI 2021" [ref=f17e708] [cursor=pointer]:
+                    - /url: /forum/forums/vag-tpi-2021.4694002/
+    - list [ref=f17e709]:
+      - listitem [ref=f17e710]:
+        - link "Startseite" [ref=f17e711] [cursor=pointer]:
+          - /url: https://www.bolidenforum.de/forum
+      - listitem [ref=f17e712]:
+        - link "Foren" [ref=f17e713] [cursor=pointer]:
+          - /url: /forum/
+      - listitem [ref=f17e714]:
+        - link "BolidenForum.de" [ref=f17e715] [cursor=pointer]:
+          - /url: /forum/categories/bolidenforum-de.2/
+      - listitem [ref=f17e716]:
+        - link "Volkswagen Forum" [ref=f17e717] [cursor=pointer]:
+          - /url: /forum/forums/volkswagen-forum.78/
+      - listitem [ref=f17e718]:
+        - link "VW Technik allgemein Forum" [ref=f17e719] [cursor=pointer]:
+          - /url: /forum/forums/vw-technik-allgemein-forum.294/
+      - listitem [ref=f17e720]:
+        - link "VAG TPI" [ref=f17e721] [cursor=pointer]:
+          - /url: /forum/forums/vag-tpi.4689494/
+      - listitem [ref=f17e722]:
+        - link "VAG TPI 2021" [ref=f17e723] [cursor=pointer]:
+          - /url: /forum/forums/vag-tpi-2021.4694002/
+  - contentinfo [ref=f17e724]:
+    - generic [ref=f17e725]:
+      - generic [ref=f17e726]:
+        - list [ref=f17e728]:
+          - listitem [ref=f17e729]:
+            - link "Bolidenforum 2026" [ref=f17e730] [cursor=pointer]:
+              - /url: /forum/misc/style
+            - button [ref=f17e734] [cursor=pointer]:
+              - img "Style-Variante" [ref=f17e736]
+        - list [ref=f17e739]:
+          - listitem [ref=f17e740]:
+            - link "Kontakt" [ref=f17e741] [cursor=pointer]:
+              - /url: /forum/misc/contact
+          - listitem [ref=f17e742]:
+            - link "Nutzungsbedingungen" [ref=f17e743] [cursor=pointer]:
+              - /url: /forum/help/terms/
+          - listitem [ref=f17e744]:
+            - link "Datenschutz" [ref=f17e745] [cursor=pointer]:
+              - /url: /forum/help/privacy-policy/
+          - listitem [ref=f17e746]:
+            - link "Hilfe und Impressum" [ref=f17e747] [cursor=pointer]:
+              - /url: /forum/help/
+          - listitem [ref=f17e748]:
+            - link "Start" [ref=f17e749] [cursor=pointer]:
+              - /url: https://www.bolidenforum.de/forum
+          - listitem [ref=f17e750]:
+            - link "RSS" [ref=f17e751] [cursor=pointer]:
+              - /url: /forum/forums/-/index.rss
+      - link [ref=f17e758] [cursor=pointer]:
+        - /url: https://xenforo.com
+        - text: Community platform by XenForo
+        - superscript [ref=f17e759]: ®
+        - text: © 2010-2026 XenForo Ltd.

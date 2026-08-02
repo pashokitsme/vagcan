@@ -1,0 +1,20 @@
+[    1591ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://www.digital-kaos.co.uk/forums/the-garage/airbag-chiptuning-dash-ecu-immo-locksmith-radio-satnav/ecu/485301-golf-mk7-steering-assist-internal-error:0
+[    4434ms] [LOG] vBulletin.loadingIndicator.show ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    4701ms] [LOG] vBulletin.loadingIndicator.hide ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    4702ms] [LOG] vBulletin.loadingIndicator.show ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5002ms] [LOG] vBulletin.loadingIndicator.hide ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5002ms] [LOG] vBulletin.loadingIndicator.show ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5260ms] [LOG] vBulletin.loadingIndicator.hide ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5264ms] [LOG] vBulletin.loadingIndicator.show ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5515ms] [LOG] vBulletin.loadingIndicator.hide ajax indicator suppressed @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:726
+[    5517ms] [LOG] Securitytoken updated @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:775
+[    5532ms] [LOG] PM Dropdown not detected, skipping init. @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:1318
+[    5532ms] [LOG] PM Chat window not detected, skipping init. @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:1319
+[    5532ms] [LOG] metadata plugin not present @ https://www.digital-kaos.co.uk/forums/js/notice-rollup.js?c=tF6jvB:30
+[    5532ms] [LOG] Condensing [274]: If this is your first visit, be sure to
+		check out the FAQ by clicking the
+		link above. You may have to register
+		before you can post: click the register link above to proceed. To start viewing messages,
+		select the forum that you want to visit from the selection below. @ https://www.digital-kaos.co.uk/forums/js/notice-rollup.js?c=tF6jvB:30
+[    5533ms] [LOG] element too short: skipping. @ https://www.digital-kaos.co.uk/forums/js/notice-rollup.js?c=tF6jvB:30
+[    6862ms] [LOG] Service worker successfully registered. ServiceWorkerRegistration @ https://www.digital-kaos.co.uk/forums/js/footer-rollup.js?c=tF6jvB:1370

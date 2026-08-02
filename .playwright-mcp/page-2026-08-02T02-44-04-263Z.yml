@@ -1,0 +1,746 @@
+- generic [ref=e1]:
+  - text:    
+  - generic [ref=e2]:
+    - generic [ref=e5]:
+      - generic:
+        - link [ref=e7] [cursor=pointer]:
+          - /url: /
+          - img "logo elektroda" [ref=e8]
+        - text:  
+        - generic [ref=e9]:
+          - text:  
+          - list [ref=e10]:
+            - listitem [ref=e11]:
+              - link "Forum" [ref=e12] [cursor=pointer]:
+                - /url: /rtvforum/forums.html
+            - listitem [ref=e13]:
+              - link "Recent" [ref=e14] [cursor=pointer]:
+                - /url: /rtvforum/viewactive.php
+            - listitem [ref=e15]:
+              - link "Unanswered" [ref=e16] [cursor=pointer]:
+                - /url: /rtvforum/search.php?search_id=unanswered
+            - text: 
+      - generic:
+        - list [ref=e17]:
+          - listitem [ref=e18]:
+            - link [ref=e19] [cursor=pointer]:
+              - /url: /rtvforum/login.php
+              - generic [ref=e20]: 
+              - text: Log In
+            - text: 
+          - listitem [ref=e22]:
+            - link "Sign Up" [ref=e23] [cursor=pointer]:
+              - /url: /rtvforum/profile.php?mode=register
+        - link "Search" [ref=e25] [cursor=pointer]:
+          - /url: "#"
+          - text: Search
+          - generic [ref=e26]: 
+    - list [ref=e30]:
+      - listitem [ref=e31]: "Sections:"
+      - listitem [ref=e32]:
+        - link "Articles" [ref=e33] [cursor=pointer]:
+          - /url: /news/
+      - listitem [ref=e34]:
+        - link "Security" [ref=e35] [cursor=pointer]:
+          - /url: /section77.html
+      - listitem [ref=e36]:
+        - link "Electricity" [ref=e37] [cursor=pointer]:
+          - /url: /section117.html
+      - listitem [ref=e38]:
+        - link "Automation" [ref=e39] [cursor=pointer]:
+          - /url: /section82.html
+      - listitem [ref=e40]:
+        - link "Smart Home" [ref=e41] [cursor=pointer]:
+          - /url: /section390.html
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]:
+          - link [ref=e47] [cursor=pointer]:
+            - /url: https://www.elektroda.pl/rtvforum/topic4018987.html
+            - img "Language pl" [ref=e48]
+          - link [ref=e49] [cursor=pointer]:
+            - /url: https://www.elektroda.de
+            - img "Language de" [ref=e50]
+          - link [ref=e51] [cursor=pointer]:
+            - /url: https://www.elektroda.com
+            - img "Language en" [ref=e52]
+        - link "Classic layout" [ref=e58] [cursor=pointer]:
+          - /url: "#"
+      - generic [ref=e59]:
+        - link "Podcast" [ref=e60] [cursor=pointer]:
+          - /url: /rtvforum/audio.php?id=f1f25daa-8113-4699-bad1-7c19257d209d
+          - generic [ref=e61]: 
+          - text: Podcast
+        - generic [ref=e63] [cursor=pointer]:
+          - generic [ref=e64]: 
+          - text: 
+      - generic [ref=e65]:
+        - text: English version is available
+        - paragraph [ref=e66]: Do you prefer the English version of the page elektroda?
+        - link "No, thank you" [ref=e67] [cursor=pointer]:
+          - /url: "#"
+        - link "Send me over there" [ref=e68] [cursor=pointer]:
+          - /url: https://www.elektroda.com
+  - list [ref=e71]:
+    - listitem [ref=e72]:
+      - link "Home page" [ref=e73] [cursor=pointer]:
+        - /url: /
+    - listitem [ref=e74]: /
+    - listitem [ref=e75]:
+      - link "Forum" [ref=e76] [cursor=pointer]:
+        - /url: /rtvforum/forums.html
+    - listitem [ref=e77]: /
+    - listitem [ref=e78]:
+      - link "Car Service" [ref=e79] [cursor=pointer]:
+        - /url: /rtvforum/forum231.html
+    - listitem [ref=e80]: /
+    - listitem [ref=e81]:
+      - link "Cars Electronics and Electrical Engineering" [ref=e82] [cursor=pointer]:
+        - /url: /rtvforum/forum61.html
+    - listitem [ref=e83]: /
+    - listitem [ref=e84]:
+      - link "Wspomaganie 1K1909144H bład wewnętrzny 0003 potrzebny flash" [ref=e85] [cursor=pointer]:
+        - /url: /rtvforum/topic4018987.html
+  - generic [ref=e91]:
+    - generic:
+      - generic [ref=e94]:
+        - generic [ref=e95]:
+          - generic [ref=e96]: 
+          - generic [ref=e98]:
+            - heading "[Solved] Wspomaganie 1K1909144H bład wewnętrzny 0003 potrzebny flash" [level=1] [ref=e99]
+            - generic [ref=e100]:
+              - button "" [ref=e101] [cursor=pointer]
+              - text:        
+            - generic [ref=e103]:
+              - generic [ref=e104]: adielektro
+              - generic [ref=e105]:
+                - generic [ref=e106]: 
+                - text: 03 Dec 2023 16:14
+              - generic [ref=e107]:
+                - generic [ref=e108]: 
+                - text: "1692"
+              - generic [ref=e109]:
+                - generic [ref=e110]: 
+                - text: "7"
+        - generic [ref=e113]:
+          - textbox "Search This Topic" [ref=e114]
+          - button "Search" [ref=e115] [cursor=pointer]:
+            - generic [ref=e116]: 
+      - generic [ref=e120]:
+        - link "Report a violation of the law" [ref=e122] [cursor=pointer]:
+          - /url: /contact
+        - generic [ref=e126]:
+          - text: "|"
+          - link "New topic" [ref=e127] [cursor=pointer]:
+            - /url: /rtvforum/posting.php?mode=newtopic&f=61
+        - list [ref=e130]:
+          - listitem [ref=e131]:
+            - article [ref=e134]:
+              - generic [ref=e135]:
+                - text: 
+                - generic [ref=e136]: adielektro
+                - text: Level 20
+                - generic [ref=e142]:
+                  - generic [ref=e143]:
+                    - generic [ref=e144]: 
+                    - generic [ref=e145]: "Posts: 604"
+                  - generic [ref=e146]:
+                    - generic [ref=e147]: 
+                    - generic [ref=e148]: "Help: 20"
+                  - generic [ref=e149]:
+                    - generic [ref=e150]: 
+                    - generic [ref=e151]: "Rate: 158"
+                  - list
+              - generic [ref=e153]:
+                - navigation:
+                  - generic [ref=e154]: Topic author
+                - generic [ref=e156]:
+                  - link [ref=e157] [cursor=pointer]:
+                    - /url: "#20844517"
+                    - 'heading "Post #1" [level=2] [ref=e158]'
+                  - generic [ref=e159]: "20844517"
+                  - generic [ref=e160]: 
+                  - time [ref=e161]: 03 Dec 2023 16:14
+                - generic [ref=e162]: Wspomaganie 1K1909144H VW caddy 2006r, błąd wewnętrzny 0003 potrzebny flash, przyblokował rozrusznik, spadek napięcia i wywaliło wspomaganie. Chcę przeflashować bo auto bezwypadkowe - usterka programowa. Proszę o wsad, może być z odisa pod np VCP.
+          - listitem [ref=e164]
+          - listitem [ref=e166]:
+            - article [ref=e169]:
+              - generic [ref=e170]:
+                - text: 
+                - generic [ref=e171]: seat21
+                - text: Level 29
+                - generic [ref=e177]:
+                  - generic [ref=e178]:
+                    - generic [ref=e179]: 
+                    - generic [ref=e180]: "Posts: 900"
+                  - generic [ref=e181]:
+                    - generic [ref=e182]: 
+                    - generic [ref=e183]: "Help: 150"
+                  - generic [ref=e184]:
+                    - generic [ref=e185]: 
+                    - generic [ref=e186]: "Rate: 398"
+                  - list
+              - generic [ref=e188]:
+                - navigation:
+                  - link " Helpful post? (+1)" [ref=e191] [cursor=pointer]:
+                    - /url: "#"
+                    - generic [ref=e192]: 
+                    - generic [ref=e193]: Helpful post? (+1)
+                - generic [ref=e194]:
+                  - generic [ref=e195]: Helpful post
+                  - link [ref=e197] [cursor=pointer]:
+                    - /url: "#20845236"
+                    - 'heading "Post #2" [level=2] [ref=e198]'
+                  - generic [ref=e199]: "20845236"
+                  - generic [ref=e200]: 
+                  - time [ref=e201]: 03 Dec 2023 22:00
+                - generic [ref=e202]:
+                  - generic [ref=e203]: testuj może zadziała
+                  - generic [ref=e204]:
+                    - text: "Attachments:"
+                    - list [ref=e205]:
+                      - listitem [ref=e206]:
+                        - generic [ref=e207]: lh0041504.rar
+                        - generic [ref=e208]: (876 Bytes)
+                        - text: You must be logged in to download this attachment.
+          - listitem [ref=e209]
+          - listitem [ref=e211]:
+            - article [ref=e214]:
+              - generic [ref=e215]:
+                - text: 
+                - generic [ref=e216]: adielektro
+                - text: Level 20
+                - generic [ref=e222]:
+                  - generic [ref=e223]:
+                    - generic [ref=e224]: 
+                    - generic [ref=e225]: "Posts: 604"
+                  - generic [ref=e226]:
+                    - generic [ref=e227]: 
+                    - generic [ref=e228]: "Help: 20"
+                  - generic [ref=e229]:
+                    - generic [ref=e230]: 
+                    - generic [ref=e231]: "Rate: 158"
+                  - list
+              - generic [ref=e233]:
+                - navigation:
+                  - generic [ref=e234]:
+                    - generic [ref=e235]: Topic author
+                    - link " Helpful post? (0)" [ref=e237] [cursor=pointer]:
+                      - /url: "#"
+                      - generic [ref=e238]: 
+                      - generic [ref=e239]: Helpful post? (0)
+                - generic [ref=e240]:
+                  - link [ref=e241] [cursor=pointer]:
+                    - /url: "#20845623"
+                    - 'heading "Post #3" [level=2] [ref=e242]'
+                  - generic [ref=e243]: "20845623"
+                  - generic [ref=e244]: 
+                  - time [ref=e245]: 04 Dec 2023 09:52
+                - generic [ref=e246]:
+                  - generic [ref=e247]: Taka sytuacja, nie wiem czy plik niepoprawny/niezgodny tak jak podpowiada VCP, flashowałem tym kablem kilka Audi od 2008 do 2015 nigdy VW (mam na myśli właśnie wspomagania) i zawsze to wykonał poprawnie. Może masz jakiś inny plik który mogę wypróbować ? Dziękuję za zainteresowanie.
+                  - generic [ref=e248]:
+                    - text: "Attachments:"
+                    - list [ref=e249]:
+                      - listitem [ref=e250]:
+                        - link [ref=e251] [cursor=pointer]:
+                          - /url: https://static.elektroda.pl/attach/1202078/IMG20231204093916_4209365.jpg
+                          - img "Wspomaganie 1K1909144H bład wewnętrzny 0003 potrzebny flash" [ref=e252]
+                        - generic [ref=e253]: IMG20231204093916.jpg
+                        - generic [ref=e254]: (3.98 MB)
+                        - text: You must be logged in to download this attachment.
+                      - listitem [ref=e255]:
+                        - link [ref=e256] [cursor=pointer]:
+                          - /url: https://static.elektroda.pl/attach/1202077/IMG20231204094310_5198790.jpg
+                          - img "Wspomaganie 1K1909144H bład wewnętrzny 0003 potrzebny flash" [ref=e257]
+                        - generic [ref=e258]: IMG20231204094310.jpg
+                        - generic [ref=e259]: (3.22 MB)
+                        - text: You must be logged in to download this attachment.
+          - listitem [ref=e260]
+          - listitem [ref=e262]:
+            - article [ref=e265]:
+              - generic [ref=e266]:
+                - text: 
+                - generic [ref=e267]: adielektro
+                - text: Level 20
+                - generic [ref=e273]:
+                  - generic [ref=e274]:
+                    - generic [ref=e275]: 
+                    - generic [ref=e276]: "Posts: 604"
+                  - generic [ref=e277]:
+                    - generic [ref=e278]: 
+                    - generic [ref=e279]: "Help: 20"
+                  - generic [ref=e280]:
+                    - generic [ref=e281]: 
+                    - generic [ref=e282]: "Rate: 158"
+                  - list
+              - generic [ref=e284]:
+                - navigation:
+                  - generic [ref=e285]:
+                    - generic [ref=e286]: Topic author
+                    - link " Helpful post? (0)" [ref=e288] [cursor=pointer]:
+                      - /url: "#"
+                      - generic [ref=e289]: 
+                      - generic [ref=e290]: Helpful post? (0)
+                - generic [ref=e291]:
+                  - link [ref=e292] [cursor=pointer]:
+                    - /url: "#20845855"
+                    - 'heading "Post #4" [level=2] [ref=e293]'
+                  - generic [ref=e294]: "20845855"
+                  - generic [ref=e295]: 
+                  - time [ref=e296]: 04 Dec 2023 09:55
+                - generic [ref=e297]: Oczywiście to, że po lewo widać funkcje od sterownika silnika EDC.. to tak jest zawsze ja mam otwarty sterownik 44 wspomaganie i to jego flashuję. Może jakimś innym urządzeniem ten plik wgrać , mam kabel vcds oryginał , VCP ori. Autel IM606, launch 431 on line, vvdi
+          - listitem [ref=e299]
+          - listitem [ref=e301]:
+            - article [ref=e304]:
+              - generic [ref=e305]:
+                - text: 
+                - generic [ref=e306]: seat21
+                - text: Level 29
+                - generic [ref=e312]:
+                  - generic [ref=e313]:
+                    - generic [ref=e314]: 
+                    - generic [ref=e315]: "Posts: 900"
+                  - generic [ref=e316]:
+                    - generic [ref=e317]: 
+                    - generic [ref=e318]: "Help: 150"
+                  - generic [ref=e319]:
+                    - generic [ref=e320]: 
+                    - generic [ref=e321]: "Rate: 398"
+                  - list
+              - generic [ref=e323]:
+                - navigation:
+                  - link " Helpful post? (+1)" [ref=e326] [cursor=pointer]:
+                    - /url: "#"
+                    - generic [ref=e327]: 
+                    - generic [ref=e328]: Helpful post? (+1)
+                - generic [ref=e329]:
+                  - link [ref=e330] [cursor=pointer]:
+                    - /url: "#20845882"
+                    - 'heading "Post #5" [level=2] [ref=e331]'
+                  - generic [ref=e332]: "20845882"
+                  - generic [ref=e333]: 
+                  - time [ref=e334]: 04 Dec 2023 12:51
+                - generic [ref=e335]: odisem to robiłem ale po flashowania i tak bład wracał to było chyba a3
+          - listitem [ref=e337]:
+            - article [ref=e340]:
+              - generic [ref=e341]:
+                - text: 
+                - generic [ref=e342]: adielektro
+                - text: Level 20
+                - generic [ref=e348]:
+                  - generic [ref=e349]:
+                    - generic [ref=e350]: 
+                    - generic [ref=e351]: "Posts: 604"
+                  - generic [ref=e352]:
+                    - generic [ref=e353]: 
+                    - generic [ref=e354]: "Help: 20"
+                  - generic [ref=e355]:
+                    - generic [ref=e356]: 
+                    - generic [ref=e357]: "Rate: 158"
+                  - list
+              - generic [ref=e359]:
+                - navigation:
+                  - generic [ref=e360]:
+                    - generic [ref=e361]: Topic author
+                    - link " Helpful post? (0)" [ref=e363] [cursor=pointer]:
+                      - /url: "#"
+                      - generic [ref=e364]: 
+                      - generic [ref=e365]: Helpful post? (0)
+                - generic [ref=e366]:
+                  - link [ref=e367] [cursor=pointer]:
+                    - /url: "#20846068"
+                    - 'heading "Post #6" [level=2] [ref=e368]'
+                  - generic [ref=e369]: "20846068"
+                  - generic [ref=e370]: 
+                  - time [ref=e371]: 04 Dec 2023 15:17
+                - generic [ref=e373]:
+                  - blockquote [ref=e374]:
+                    - generic [ref=e375]: "seat21 wrote:"
+                    - generic [ref=e376]: odisem to robiłem ale po flashowania i tak bład wracał to było chyba a3
+                  - text: postawiłem tak tylko około 20% przypadków, mam kilka plików głównie do audi. Pewnie skończy się na wymianie.
+          - listitem [ref=e377]:
+            - article [ref=e380]:
+              - generic [ref=e381]:
+                - text: 
+                - generic [ref=e382]: adielektro
+                - text: Level 20
+                - generic [ref=e388]:
+                  - generic [ref=e389]:
+                    - generic [ref=e390]: 
+                    - generic [ref=e391]: "Posts: 604"
+                  - generic [ref=e392]:
+                    - generic [ref=e393]: 
+                    - generic [ref=e394]: "Help: 20"
+                  - generic [ref=e395]:
+                    - generic [ref=e396]: 
+                    - generic [ref=e397]: "Rate: 158"
+                  - list
+              - generic [ref=e399]:
+                - navigation:
+                  - generic [ref=e400]:
+                    - generic [ref=e401]: Topic author
+                    - link " Helpful post? (0)" [ref=e403] [cursor=pointer]:
+                      - /url: "#"
+                      - generic [ref=e404]: 
+                      - generic [ref=e405]: Helpful post? (0)
+                - generic [ref=e406]:
+                  - link [ref=e407] [cursor=pointer]:
+                    - /url: "#20848730"
+                    - 'heading "Post #7" [level=2] [ref=e408]'
+                  - generic [ref=e409]: "20848730"
+                  - generic [ref=e410]: 
+                  - time [ref=e411]: 06 Dec 2023 09:34
+                - generic [ref=e412]: Temat zamykam, założone drugie wspomaganie, nie jestem zadowolony bo wiem ,że to po prostu usterka oprogramowania ale czas goni i magiel za 400zł zrobiły swoje.
+          - listitem [ref=e414]:
+            - article [ref=e417]:
+              - generic [ref=e418]:
+                - text: 
+                - generic [ref=e419]: adielektro
+                - text: Level 20
+                - generic [ref=e425]:
+                  - generic [ref=e426]:
+                    - generic [ref=e427]: 
+                    - generic [ref=e428]: "Posts: 604"
+                  - generic [ref=e429]:
+                    - generic [ref=e430]: 
+                    - generic [ref=e431]: "Help: 20"
+                  - generic [ref=e432]:
+                    - generic [ref=e433]: 
+                    - generic [ref=e434]: "Rate: 158"
+                  - list
+              - generic [ref=e436]:
+                - navigation:
+                  - generic [ref=e437]:
+                    - generic [ref=e438]: Topic author
+                    - link " Helpful post? (0)" [ref=e440] [cursor=pointer]:
+                      - /url: "#"
+                      - generic [ref=e441]: 
+                      - generic [ref=e442]: Helpful post? (0)
+                - generic [ref=e443]:
+                  - link [ref=e444] [cursor=pointer]:
+                    - /url: "#20848733"
+                    - 'heading "Post #8" [level=2] [ref=e445]'
+                  - generic [ref=e446]: "20848733"
+                  - generic [ref=e447]: 
+                  - time [ref=e448]: 06 Dec 2023 09:35
+                - generic [ref=e449]: Opis jak wyżej rozwiązał problem.
+          - listitem [ref=e451]:
+            - generic [ref=e454]:
+              - img "Elektroda.pl" [ref=e456]
+              - generic [ref=e459]:
+                - generic [ref=e460]:
+                  - link "Create an account" [ref=e461] [cursor=pointer]:
+                    - /url: /rtvforum/profile.php?mode=register
+                  - text: ","
+                  - link "log in here" [ref=e462] [cursor=pointer]:
+                    - /url: /rtvforum/login.php
+                  - text: and be active on the forum — ads won't appear. Earn points for registering and replying.
+                - iframe [ref=e467]:
+                  - button "Sign in with Google. Opens in new tab" [ref=f4e3] [cursor=pointer]:
+                    - generic [ref=f4e5]: Sign in
+        - generic [ref=e471]:
+          - text: "|"
+          - link "New topic" [ref=e472] [cursor=pointer]:
+            - /url: /rtvforum/posting.php?mode=newtopic&f=61
+        - link "Report a violation of the law" [ref=e476] [cursor=pointer]:
+          - /url: /contact
+      - generic [ref=e477]:
+        - heading "Topic summary" [level=3] [ref=e478]
+        - generic [ref=e479]:
+          - img "LABEL_AI_GENERATED" [ref=e480]
+          - text: Użytkownik zgłosił problem z wspomaganiem 1K1909144H w VW Caddy z 2006 roku, który wyświetla błąd wewnętrzny 0003, blokując rozrusznik i powodując spadek napięcia. Użytkownik poszukuje pliku do przeflashowania sterownika, sugerując, że usterka może być programowa. W odpowiedziach pojawiły się sugestie dotyczące użycia różnych narzędzi diagnostycznych, takich jak VCP, VCDS, Autel IM606 oraz Launch 431. Użytkownik próbował flashowania, ale napotkał problemy z niezgodnymi plikami. Ostatecznie zdecydował się na wymianę wspomagania, mimo że uważał, że problem był związany z oprogramowaniem.AI summary based on the discussion. May contain errors.
+      - list [ref=e482]:
+        - listitem [ref=e483]:
+          - link "Home page" [ref=e484] [cursor=pointer]:
+            - /url: /
+        - listitem [ref=e485]: /
+        - listitem [ref=e486]:
+          - link "Forum" [ref=e487] [cursor=pointer]:
+            - /url: /rtvforum/forums.html
+        - listitem [ref=e488]: /
+        - listitem [ref=e489]:
+          - link "Car Service" [ref=e490] [cursor=pointer]:
+            - /url: /rtvforum/forum231.html
+        - listitem [ref=e491]: /
+        - listitem [ref=e492]:
+          - link "Cars Electronics and Electrical Engineering" [ref=e493] [cursor=pointer]:
+            - /url: /rtvforum/forum61.html
+        - listitem [ref=e494]: /
+        - listitem [ref=e495]:
+          - link "Wspomaganie 1K1909144H bład wewnętrzny 0003 potrzebny flash" [ref=e496] [cursor=pointer]:
+            - /url: /rtvforum/topic4018987.html
+      - navigation "Similar topics":
+        - generic [ref=e498]:
+          - heading "Similar topics" [level=2] [ref=e499]
+          - list [ref=e500]:
+            - listitem [ref=e501]:
+              - generic [ref=e502]:
+                - heading [level=3] [ref=e503]:
+                  - link "Błąd 13636608 - Sterownik zakodowany nieprawidłowo U1014 00" [ref=e504] [cursor=pointer]:
+                    - /url: /rtvforum/topic4089036.html
+                - generic [ref=e505]:
+                  - generic [ref=e506]: 
+                  - text: 24 Nov 2024 19:47
+                  - generic [ref=e507]:
+                    - generic [ref=e508]: 
+                    - text: (13)
+              - paragraph [ref=e510]:
+                - text: Użytkownik zgłasza błąd 13636608 - "Sterownik zakodowany nieprawidłowo" w swoim pojeździe, co może być związane z nieprawidłowym kodowaniem zestawu wskaźników. Wskazano, że asystent zmiany pasa ruchu działa, ale użytkownik zastanawia się nad możliwoś...
+                - link "[Read more]" [ref=e511] [cursor=pointer]:
+                  - /url: /rtvforum/topic4089036.html
+            - listitem [ref=e512]:
+              - generic [ref=e513]:
+                - heading [level=3] [ref=e514]:
+                  - link "VW Caddy 2.0 SDI 2004 – wspomaganie elektryczne, błąd 00003 sterownika po starcie" [ref=e515] [cursor=pointer]:
+                    - /url: /rtvforum/topic4165483.html
+                - generic [ref=e516]:
+                  - generic [ref=e517]: 
+                  - text: 18 Feb 2026 15:28
+                  - generic [ref=e518]:
+                    - generic [ref=e519]: 
+                    - text: (12)
+              - paragraph [ref=e521]:
+                - text: Właściciel VW Caddy 2.0 SDI z 2004 roku zgłasza problem z elektrycznym wspomaganiem kierownicy, które przy rozruchu wyłącza się i zapala się czerwona kontrolka kierownicy. Po wyłączeniu i ponownym uruchomieniu silnika wspomaganie działa, a kontrolka ...
+                - link "[Read more]" [ref=e522] [cursor=pointer]:
+                  - /url: /rtvforum/topic4165483.html
+            - listitem [ref=e523]:
+              - generic [ref=e524]:
+                - heading [level=3] [ref=e525]:
+                  - link "VW Caddy 1.6 TDI CAYC 105km - VCDS błąd P2146 00 [165] - przerwa" [ref=e526] [cursor=pointer]:
+                    - /url: /rtvforum/topic3787070.html
+                - generic [ref=e527]:
+                  - generic [ref=e528]: 
+                  - text: 13 Mar 2021 11:37
+                  - generic [ref=e529]:
+                    - generic [ref=e530]: 
+                    - text: (31)
+              - paragraph [ref=e532]:
+                - text: Dyskusja dotyczy problemu z VW Caddy 1.6 TDI CAYC, który przestał działać podczas jazdy, a po próbie uruchomienia pojawia się błąd P2146 00 - przerwa. Użytkownik sprawdził wtryskiwacze, bezpieczniki, filtr paliwa oraz akumulator, jednak błąd powraca...
+                - link "[Read more]" [ref=e533] [cursor=pointer]:
+                  - /url: /rtvforum/topic3787070.html
+            - listitem [ref=e534]:
+              - generic [ref=e535]:
+                - heading [level=3] [ref=e536]:
+                  - link "VW Caddy IV - błąd 01044 oraz 01325 - nieprawidłowo zakodowany sterownik." [ref=e537] [cursor=pointer]:
+                    - /url: /rtvforum/topic3763110.html
+                - generic [ref=e538]:
+                  - generic [ref=e539]: 
+                  - text: 31 Dec 2020 21:59
+                  - generic [ref=e540]:
+                    - generic [ref=e541]: 
+                    - text: (3)
+              - paragraph [ref=e543]:
+                - text: Użytkownik zgłosił błędy 01044 (nieprawidłowo zakodowany sterownik) oraz 01325 (brak lub nieprawidłowe nastawy sterownika układu kontroli ciśnienia w oponach) w VW Caddy IV. Po wykonaniu kopii zapasowej sterownika 19 Gateway, problem został rozwiązan...
+                - link "[Read more]" [ref=e544] [cursor=pointer]:
+                  - /url: /rtvforum/topic3763110.html
+            - listitem [ref=e545]:
+              - generic [ref=e546]:
+                - heading [level=3] [ref=e547]:
+                  - link "VV CC 2013 - Nie można zakodować hamulca ręcznego" [ref=e548] [cursor=pointer]:
+                    - /url: /rtvforum/topic3092375.html
+                - generic [ref=e549]:
+                  - generic [ref=e550]: 
+                  - text: 24 Sep 2015 10:15
+                  - generic [ref=e551]:
+                    - generic [ref=e552]: 
+                    - text: (10)
+              - paragraph [ref=e554]:
+                - text: Użytkownik ma problem z zakodowaniem hamulca ręcznego w pojeździe typu VW, gdzie sterownik 53 EPB nie akceptuje nowych kodów, mimo prób z użyciem VCDS, VCP i ODIS Online. Auto pochodzi z USA i miało lekkie uszkodzenia. Użytkownik sprawdził zasilanie ...
+                - link "[Read more]" [ref=e555] [cursor=pointer]:
+                  - /url: /rtvforum/topic3092375.html
+            - listitem [ref=e556]:
+              - generic [ref=e557]:
+                - heading [level=3] [ref=e558]:
+                  - link "Audi Q5 - Szukam wsadu do wspomagania 8r0909144p SW 0510, błąd P2000" [ref=e559] [cursor=pointer]:
+                    - /url: /rtvforum/topic3592654.html
+                - generic [ref=e560]:
+                  - generic [ref=e561]: 
+                  - text: 24 Jun 2019 20:25
+                  - generic [ref=e562]:
+                    - generic [ref=e563]: 
+                    - text: (3)
+              - paragraph [ref=e565]:
+                - text: Użytkownik poszukuje pliku flash do wspomagania o numerze 8r0909144p SW 0510, ponieważ wyświetla się błąd P2000 związany z błędnym checksumem. Po znalezieniu wsadu, użytkownik napotkał problem z kierowaniem, gdzie wspomaganie działa w przeciwną stron...
+                - link "[Read more]" [ref=e566] [cursor=pointer]:
+                  - /url: /rtvforum/topic3592654.html
+    - generic [ref=e567]:
+      - insertion:
+        - generic:
+          - iframe
+  - contentinfo [ref=e568]:
+    - generic [ref=e570]:
+      - generic [ref=e571]:
+        - generic [ref=e572]: Forum
+        - list [ref=e574]:
+          - listitem [ref=e575]:
+            - link "Forum Home Page" [ref=e576] [cursor=pointer]:
+              - /url: /rtvforum/forums.html
+          - listitem [ref=e577]:
+            - link "Last Posts" [ref=e578] [cursor=pointer]:
+              - /url: /rtvforum/viewactive.php
+          - listitem [ref=e579]:
+            - link "AI @ElektrodaBot" [ref=e580] [cursor=pointer]:
+              - /url: /elektrodabot
+          - listitem [ref=e581]:
+            - link "Add" [ref=e582] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#add
+          - listitem [ref=e583]:
+            - link "Points" [ref=e584] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#points_information
+          - listitem [ref=e585]:
+            - link "Groups" [ref=e586] [cursor=pointer]:
+              - /url: /rtvforum/groupcp.php
+          - listitem [ref=e587]:
+            - link "Chat IRC" [ref=e588] [cursor=pointer]:
+              - /url: /rtvforum/chat.php
+          - listitem [ref=e589]:
+            - link "Podcast" [ref=e590] [cursor=pointer]:
+              - /url: /rtvforum/audio.php
+        - list [ref=e592]:
+          - listitem [ref=e593]:
+            - link "Help" [ref=e594] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#pomoce
+          - listitem [ref=e595]:
+            - link "Forum Rules" [ref=e596] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#regulamin_forum
+          - listitem [ref=e597]:
+            - link "Terms of Use" [ref=e598] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#regulamin_ogolny
+          - listitem [ref=e599]:
+            - link "Privacy Policy & Cookies" [ref=e600] [cursor=pointer]:
+              - /url: /rtvforum/faq.php#ciasteczka
+          - listitem [ref=e601]:
+            - link "Digital Service Act (DSA)" [ref=e602] [cursor=pointer]:
+              - /url: /rtvforum/n/dsa_info
+          - listitem [ref=e603]:
+            - link "Forgot me" [ref=e604] [cursor=pointer]:
+              - /url: /rtvforum/cookies.php
+          - listitem [ref=e605]:
+            - link "Administrator" [ref=e606] [cursor=pointer]:
+              - /url: /contact
+      - generic [ref=e607]:
+        - generic [ref=e608]:
+          - generic [ref=e609]: Databases
+          - list [ref=e610]:
+            - listitem [ref=e611]:
+              - link "Companies catalog" [ref=e612] [cursor=pointer]:
+                - /url: /rtvforum/companies.html
+            - listitem [ref=e613]:
+              - link "Electronics Components" [ref=e614] [cursor=pointer]:
+                - /url: /rtvforum/zasoby.html
+            - listitem [ref=e615]:
+              - link "Links" [ref=e616] [cursor=pointer]:
+                - /url: /rtvforum/linki.html
+            - listitem [ref=e617]:
+              - link "Schemas database" [ref=e618] [cursor=pointer]:
+                - /url: /rtvforum/schematy.html
+            - listitem [ref=e619]:
+              - link "Replacements database" [ref=e620] [cursor=pointer]:
+                - /url: /rtvforum/zamienniki.html
+            - listitem [ref=e621]:
+              - link "Ranking DIY" [ref=e622] [cursor=pointer]:
+                - /url: /rtvforum/ranking.php
+            - listitem [ref=e623]:
+              - link "Calculators for electronics" [ref=e624] [cursor=pointer]:
+                - /url: /calculators/
+        - generic [ref=e625]:
+          - generic [ref=e626]: Our services
+          - list [ref=e627]:
+            - listitem [ref=e628]:
+              - link "Discussion groups" [ref=e629] [cursor=pointer]:
+                - /url: https://news.elektroda.pl/
+            - listitem [ref=e630]:
+              - link "pl.misc.elektronika" [ref=e631] [cursor=pointer]:
+                - /url: https://plmiscelektronika.elektroda.pl/
+            - listitem [ref=e632]:
+              - link "Search elektroda.pl" [ref=e633] [cursor=pointer]:
+                - /url: https://poszukaj.elektroda.pl
+            - listitem [ref=e634]:
+              - link "Files elektroda.pl" [ref=e635] [cursor=pointer]:
+                - /url: https://pliki.elektroda.pl
+      - generic [ref=e636]:
+        - generic [ref=e637]:
+          - generic [ref=e638]: Follow us
+          - link "Facebook elektroda.pl" [ref=e639] [cursor=pointer]:
+            - /url: https://www.facebook.com/elektroda
+            - generic [ref=e640]: 
+          - link "Youtube elektroda.pl" [ref=e641] [cursor=pointer]:
+            - /url: https://www.youtube.com/user/elektrodatv
+            - generic [ref=e642]: 
+          - link "X elektroda.pl" [ref=e643] [cursor=pointer]:
+            - /url: https://x.com/elektrodapl
+            - generic [ref=e644]: 
+          - link "LinkedIn elektroda.pl" [ref=e645] [cursor=pointer]:
+            - /url: https://www.linkedin.com/showcase/elektroda-pl/
+            - generic [ref=e646]: 
+          - link "Spotify elektroda.pl" [ref=e647] [cursor=pointer]:
+            - /url: https://open.spotify.com/show/3XkhGViIDF4SQpCLH4vxAr
+            - generic [ref=e648]: 
+          - link "iTunes elektroda.pl" [ref=e649] [cursor=pointer]:
+            - /url: https://podcasts.apple.com/pl/podcast/elektroda-pl/id1463953177
+            - generic [ref=e650]: 
+          - link "Prefer Elektroda in Google" [ref=e651] [cursor=pointer]:
+            - /url: https://google.com/preferences/source?q=elektroda.pl
+            - generic [ref=e652]: 
+          - link [ref=e653] [cursor=pointer]:
+            - /url: https://play.google.com/store/apps/details?id=com.elektroda.pl
+            - img "google play" [ref=e654]
+        - generic [ref=e655]:
+          - text: Copyright © 1999-2026 elektroda.pl
+          - list [ref=e656]:
+            - listitem [ref=e657]:
+              - link "Contact" [ref=e658] [cursor=pointer]:
+                - /url: /contact
+            - listitem [ref=e659]:
+              - link "Media kit" [ref=e661] [cursor=pointer]:
+                - /url: /rtvforum/companyabout.php
+            - listitem [ref=e662]:
+              - link "Editors" [ref=e663] [cursor=pointer]:
+                - /url: /rtvforum/support.php
+            - listitem [ref=e664]:
+              - link "Sitemap" [ref=e665] [cursor=pointer]:
+                - /url: /rtvforum/map.html
+  - dialog [active] [ref=e666]:
+    - generic "You can close this modal content with the ESC key" [ref=e667]:
+      - generic [ref=e669]:
+        - generic:
+          - generic:
+            - button "Rotate counterclockwise" [ref=e670]
+            - button "Rotate clockwise" [ref=e671]
+          - generic:
+            - button "Zoom in" [ref=e672]
+            - button "Zoom out" [ref=e673]
+            - button "Download" [ref=e674] [cursor=pointer]
+            - button "Close" [ref=e675] [cursor=pointer]
+        - button "Previous" [ref=e676] [cursor=pointer]
+        - button "Next" [ref=e681] [cursor=pointer]
+      - generic [ref=e683]:
+        - 'button "Slide to #1" [ref=e685] [cursor=pointer]':
+          - 'img "Thumbnail #0"'
+        - 'button "Slide to #1" [ref=e687] [cursor=pointer]':
+          - 'img "Thumbnail #1"'
+  - dialog "elektroda.pl prosi Cię o zgodę na wykorzystanie Twoich danych osobowych w tych celach:" [ref=e691]:
+    - button "Zamknij" [ref=e693] [cursor=pointer]
+    - generic [ref=e703]:
+      - generic [ref=e704]:
+        - paragraph [ref=e706]: elektroda.pl
+        - heading "elektroda.pl prosi Cię o zgodę na wykorzystanie Twoich danych osobowych w tych celach:" [level=1] [ref=e707]
+      - list [ref=e709]:
+        - listitem [ref=e710]:
+          - generic [ref=e715]: Spersonalizowane reklamy i treści, pomiar reklam i treści, badanie odbiorców i ulepszanie usług
+        - listitem [ref=e716]:
+          - generic [ref=e721]: Przechowywanie informacji na urządzeniu lub dostęp do nich
+      - button "Więcej informacji" [ref=e722] [cursor=pointer]
+      - generic [ref=e728]:
+        - paragraph [ref=e729]:
+          - text: Twoje dane osobowe będą przetwarzane, a informacje z Twojego urządzenia (pliki cookie, unikalne identyfikatory i inne dane o urządzeniu) mogą być wyświetlane i przechowywane przez 201 partnerów lub udostępniane im. Mogą też być wykorzystywane przez tę witrynę. My i nasi partnerzy możemy używać dokładnych danych geolokalizacyjnych.
+          - button "Lista partnerów" [ref=e730] [cursor=pointer]
+        - paragraph [ref=e731]: Niektórzy dostawcy mogą przetwarzać Twoje dane osobowe na podstawie uzasadnionego interesu. Możesz się na to nie zgodzić, zmieniając opcje poniżej. Link umożliwiający zarządzanie zgodą lub jej wycofanie w ramach ustawień dotyczących prywatności i plików cookie znajdziesz u dołu tej strony lub w menu witryny.
+    - generic [ref=e732]:
+      - generic [ref=e734]:
+        - button "Akceptuję" [ref=e735] [cursor=pointer]:
+          - paragraph [ref=e737]: Akceptuję
+        - button "Odrzuć wszystko" [ref=e738] [cursor=pointer]:
+          - paragraph [ref=e740]: Odrzuć wszystko
+      - button "Zarządzaj opcjami" [ref=e741] [cursor=pointer]:
+        - paragraph [ref=e742]: Zarządzaj opcjami

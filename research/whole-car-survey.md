@@ -239,7 +239,45 @@ three cipher classes.
 
 ---
 
-## 3b. A control unit dropped out mid-drive — and why
+## 3b. A control unit was destroyed by sweeping it — read this before running one
+
+**Summary: the identifier sweep in `vagcan survey` disabled the steering assist on the
+reference car, twice, the second time permanently.** The unit still answers every
+diagnostic request and its identification block is intact, but it stores
+`B2000` (control unit defective — internal memory checksum), `B200F` (internal fault)
+and `B1168` (steering angle: no initialisation), the warning lamp is on, and there is no
+assist. The commissioning dataset at identifier `1923` read `01 00 28 61 D7 E9` before
+and reads `01 00 00 00 00 00` after, and did not refill over a subsequent drive.
+
+Sequence, from the owner:
+
+1. First `survey` run — assist dropped out during the sweep. **Switching the engine off
+   and on restored it.**
+2. A kilometre or two later, second `survey` run — assist dropped out again, mid-drive,
+   and a restart no longer helped. It has not returned since.
+
+That the first event was recoverable is the important part: the hardware was working, and
+what a sweep does is crash the unit's diagnostic server. A full sweep is 2816 requests
+for identifiers the unit may never have been asked for in its life — a fuzz of a UDS
+server, and a server with a defect in one of those paths falls over. VW's own bulletin
+**TPI 2055045/4** (address 44, May 2024) documents `B200FF0` appearing *"during
+maintenance or repair work"* with the technical reason *"wrong software for the power
+steering control unit"*, which is the same failure from the factory's side of the desk.
+
+What changed in the tool as a result:
+
+* the extended diagnostic session (`0x10 0x03`) is no longer sent at all by default — it
+  is workshop mode, and a unit that assists the driver may stop while it is in one;
+* `survey` **refuses to run on a moving car** unless `--while-driving` is passed, and
+  says why;
+* `--extended` is refused whenever the car is moving, established by reading road speed
+  first, with a car that will not report its speed counted as moving.
+
+None of that makes a sweep safe. It makes it survivable to stop and restart, which is
+what the first event turned out to be. A sweep is still the most invasive thing this
+read-only tool does, and on a unit with a firmware defect it is enough.
+
+## 3c. The same event, as it looked before the owner supplied the sequence
 
 During a driving survey on 2026-08-02 the **steering assist stopped assisting**, about a
 third of the way through the walk. `0x712` is the seventh of eighteen addresses in the

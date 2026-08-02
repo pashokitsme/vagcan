@@ -72,50 +72,83 @@ pub struct FaultContext {
     pub occurrences: u8,
     pub cycle_counter: u16,
     pub mileage_km: u32,
-    /// The car's own clock: a day counter in the high 16 bits and seconds
-    /// since midnight in the low 16. See [`FaultContext::seconds_between`].
+    /// The car's own date and time, packed — see [`CarTime`].
     pub clock: u32,
 }
 
-/// Split a car-clock value into its day counter and its second of the day.
+/// The car's own date and time, as a control unit stamps a fault with it.
 ///
-/// **Evidence for the split.** The reference car's brake unit stores fault 297
-/// with clock `0x69F60003`, and the car's own VCDS scan dates that fault
-/// `2026.07.27 00:00:03` — the low half is exactly 3, the second of the day.
-/// A 32-bit seconds counter would put an arbitrary value there; landing on the
-/// scan's own seconds by chance is a 1-in-65 536 coincidence.
+/// The 32 bits are packed, most significant first: **6 bits year (from 2000),
+/// 4 month, 5 day, 5 hour, 6 minute, 6 second**.
 ///
-/// **What is not established** is the day counter's epoch: `0x69F6` is some
-/// day in late July 2026 and nothing here says which numbering that is. So
-/// this is used for *differences*, never to print a date.
-pub fn split_clock(clock: u32) -> (u16, u16) {
-    ((clock >> 16) as u16, (clock & 0xFFFF) as u16)
+/// Established against two independent VCDS printouts of this car, each
+/// reproduced to the second: `0x69F60003` → `2026.07.27 00:00:03` on the brake
+/// unit, and `0x69F97C82` → `2026.07.28 23:50:02` on the steering assist. Two
+/// exact hits over six fields is not something a wrong layout produces.
+///
+/// This replaces an earlier reading of the same field as a day counter plus a
+/// second of the day. That fitted the first anchor — whose time is three
+/// seconds past midnight, where the two layouts agree — and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CarTime {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
 }
 
-/// How many of the clock's days lie between two readings.
-///
-/// **This is not a count of calendar days.** On the reference car the brake
-/// unit's fault is dated 2026-07-27 by VCDS and the clock has advanced four
-/// days since, while six calendar days have passed — the two the car sat
-/// unused did not count. So a date computed by subtracting these from today is
-/// an **upper bound**: the event happened on or before it, possibly earlier.
-pub fn days_between(earlier: u32, later: u32) -> Option<u16> {
-    let (day_a, _) = split_clock(earlier);
-    let (day_b, _) = split_clock(later);
-    day_b.checked_sub(day_a)
+impl CarTime {
+    /// Unpack a stamp, or `None` if the fields are not a real date — an
+    /// unset or corrupt stamp must not print as a plausible moment.
+    pub fn parse(clock: u32) -> Option<CarTime> {
+        let time = CarTime {
+            year: 2000 + (clock >> 26) as u16,
+            month: ((clock >> 22) & 0xF) as u8,
+            day: ((clock >> 17) & 0x1F) as u8,
+            hour: ((clock >> 12) & 0x1F) as u8,
+            minute: ((clock >> 6) & 0x3F) as u8,
+            second: (clock & 0x3F) as u8,
+        };
+        let sane = (1..=12).contains(&time.month)
+            && (1..=31).contains(&time.day)
+            && time.hour < 24
+            && time.minute < 60
+            && time.second < 60;
+        sane.then_some(time)
+    }
+
+    /// Seconds since 2000-01-01, for taking differences without a calendar
+    /// library. Days-from-civil, the standard algorithm.
+    pub fn epoch_seconds(&self) -> i64 {
+        let (y, m) = if self.month <= 2 {
+            (self.year as i64 - 1, self.month as i64 + 12)
+        } else {
+            (self.year as i64, self.month as i64)
+        };
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let yoe = y - era * 400;
+        let doy = (153 * (m - 3) + 2) / 5 + self.day as i64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        days * 86_400
+            + self.hour as i64 * 3_600
+            + self.minute as i64 * 60
+            + self.second as i64
+    }
 }
 
-/// Seconds between two car-clock readings.
-///
-/// A day is 86 400 seconds but only advances the counter's high half by one,
-/// so subtracting the raw values loses 20 864 seconds per day crossed — which
-/// made a fault stored yesterday look 18 hours old instead of 24.
+/// Seconds between two car-clock stamps, or `None` if either is not a date or
+/// the later one is earlier.
 pub fn seconds_between(earlier: u32, later: u32) -> Option<i64> {
-    let (day_a, sec_a) = split_clock(earlier);
-    let (day_b, sec_b) = split_clock(later);
-    let days = i64::from(day_b) - i64::from(day_a);
-    Some(days * 86_400 + i64::from(sec_b) - i64::from(sec_a)).filter(|s| *s >= 0)
+    let a = CarTime::parse(earlier)?;
+    let b = CarTime::parse(later)?;
+    let seconds = b.epoch_seconds() - a.epoch_seconds();
+    (seconds >= 0).then_some(seconds)
 }
+
+
 
 impl FaultContext {
     /// Parse extended-data record `0x01`.
@@ -201,18 +234,38 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_is_a_day_counter_and_a_second_of_the_day() {
-        // The anchor: this car's VCDS scan dates fault 297 at 00:00:03 and the
-        // unit stores 0x69F60003 for it.
-        assert_eq!(split_clock(0x69F6_0003), (0x69F6, 3));
+    fn the_clock_is_a_packed_date_and_time() {
+        // Both anchors are VCDS printouts of this car, and both are matched to
+        // the second across all six fields.
+        let brake = CarTime::parse(0x69F6_0003).unwrap();
+        assert_eq!(
+            (brake.year, brake.month, brake.day, brake.hour, brake.minute, brake.second),
+            (2026, 7, 27, 0, 0, 3)
+        );
+        let steering = CarTime::parse(0x69F9_7C82).unwrap();
+        assert_eq!(
+            (
+                steering.year,
+                steering.month,
+                steering.day,
+                steering.hour,
+                steering.minute,
+                steering.second
+            ),
+            (2026, 7, 28, 23, 50, 2)
+        );
 
-        // Two records on the same day are simply their difference apart …
-        assert_eq!(seconds_between(0x69F6_0003, 0x69F6_F7B1), Some(63_406));
-        // … and one day later is a full day, not the 44 672 that subtracting
-        // the raw values would give.
-        assert_eq!(seconds_between(0x69F6_0003, 0x69F7_0003), Some(86_400));
-        // A reading earlier than the fault means the two are not comparable.
-        assert_eq!(seconds_between(0x69F7_0003, 0x69F6_0003), None);
+        // A day apart is a day, and the two anchors are 47 hours and change.
+        assert_eq!(seconds_between(0x69F6_0003, 0x69F9_7C82), Some(172_199));
+        assert_eq!(seconds_between(0x69F9_7C82, 0x69F6_0003), None);
+    }
+
+    #[test]
+    fn a_stamp_that_is_not_a_date_is_refused() {
+        // Month 0 and hour 31 are what an unset or corrupt stamp looks like;
+        // printing them as a moment would invent one.
+        assert!(CarTime::parse(0x0000_0000).is_none());
+        assert!(CarTime::parse(0xFFFF_FFFF).is_none());
     }
 
     #[test]
@@ -223,10 +276,11 @@ mod tests {
         assert_eq!(stamp.mileage_km, 212_805);
         assert_eq!(stamp.clock, 0x69FA_005C);
 
-        // And it is what turns a stored counter into an age without needing to
-        // know the epoch: one day and just over 23 hours of it.
+        // And it is what turns a stamp into an age: 2026-07-28 16:17:11 to
+        // 2026-07-29 00:01:28 by the car's clock, seven and three quarter
+        // hours.
         let ctx = FaultContext::parse(&BCM_000107).unwrap();
-        assert_eq!(seconds_between(ctx.clock, stamp.clock), Some(85_393));
+        assert_eq!(seconds_between(ctx.clock, stamp.clock), Some(27_857));
         assert_eq!(stamp.mileage_km - ctx.mileage_km, 42);
     }
 }
