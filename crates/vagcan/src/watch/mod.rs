@@ -71,8 +71,8 @@ pub struct App {
     /// thousand identifiers between them; one list of all of it is a list
     /// nobody reads.
     tab: usize,
-    /// Where each tab was drawn, so a click can find it.
-    tab_spans: Vec<(u16, u16, usize)>,
+    /// Where the unit list was drawn, so a click can find a unit.
+    unit_area: Option<Rect>,
     /// Where the selection list was drawn, for the same reason.
     list_area: Option<Rect>,
     /// What each unit called itself (`F197`), for the tab labels. A unit that
@@ -102,7 +102,7 @@ impl App {
             typing_filter: false,
             select_state: TableState::default(),
             tab: 0,
-            tab_spans: Vec::new(),
+            unit_area: None,
             list_area: None,
             units: Vec::new(),
             cycles: 0,
@@ -122,6 +122,22 @@ impl App {
         units.sort_unstable();
         units.dedup();
         units
+    }
+
+    /// Open the first unit that has anything on screen.
+    ///
+    /// Tabs are in id order, and the lowest id is not usually the interesting
+    /// one — opening on a unit with nothing selected makes the tool look empty
+    /// at the moment a person first sees it.
+    fn open_first_populated(&mut self) {
+        if let Some(index) =
+            self.tabs().iter().position(|r| self.channels.iter().any(|c| c.request == *r && c.selected))
+        {
+            self.tab = index;
+            if let Some(first) = self.visible().first() {
+                self.cursor = *first;
+            }
+        }
     }
 
     /// The unit the open tab shows, or `None` on the "everything" tab.
@@ -269,36 +285,56 @@ fn unit_names(identities: &[plan::UnitIdentity]) -> Vec<(u16, String)> {
         .collect()
 }
 
-/// Draw the tab bar and return the area left for the table.
-fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
-    let split = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).split(area);
-    let tabs = app.tabs();
-    let mut spans = Vec::new();
-    let mut line: Vec<Span> = Vec::new();
-    let mut x = split[0].x;
-    for (index, request) in tabs.iter().enumerate() {
-        let selected = app.channels.iter().filter(|c| c.request == *request && c.selected).count();
-        let text = match selected {
-            0 => format!(" {} ", app.tab_label(*request)),
-            n => format!(" {} ({n}) ", app.tab_label(*request)),
-        };
-        let width = text.chars().count() as u16;
-        let style = match index == app.tab {
-            true => Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD),
-            false => Style::default().fg(Color::DarkGray),
-        };
-        spans.push((x, x + width, index));
-        x += width;
-        line.push(Span::styled(text, style));
-    }
-    app.tab_spans = spans;
-    frame.render_widget(Paragraph::new(Line::from(line)), split[0]);
-    split[1]
+/// Draw the list of control units down the right, and return the area left
+/// for the table.
+///
+/// A car has fifteen units and over a thousand identifiers between them. The
+/// list is what makes that navigable: it says which units this car has, how
+/// much of each is on screen, and which one is open. Tab moves between them
+/// and so does a click — the list looks selectable, so it is.
+fn draw_units(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
+    let units = app.tabs();
+    // Wide enough for the longest label, within reason: a component string
+    // can be long and the table is what the screen is for.
+    // Room for the longest label, its `selected/available` count, the column
+    // gap and both borders — within reason, because the table is what the
+    // screen is for.
+    let width = units
+        .iter()
+        .map(|r| app.tab_label(*r).chars().count() + 11)
+        .max()
+        .unwrap_or(16)
+        .clamp(16, 36) as u16;
+    let split =
+        Layout::horizontal([Constraint::Min(20), Constraint::Length(width)]).split(area);
+
+    let rows: Vec<Row> = units
+        .iter()
+        .map(|request| {
+            let selected =
+                app.channels.iter().filter(|c| c.request == *request && c.selected).count();
+            let available = app.channels.iter().filter(|c| c.request == *request).count();
+            Row::new(vec![
+                Cell::from(app.tab_label(*request)),
+                Cell::from(format!("{selected}/{available}")),
+            ])
+        })
+        .collect();
+
+    let mut state = TableState::default();
+    state.select(Some(app.tab.min(units.len().saturating_sub(1))));
+    let list = Table::new(rows, [Constraint::Min(6), Constraint::Length(7)])
+        .row_highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
+        .block(Block::default().borders(Borders::ALL).title(" units [tab] "));
+    // Remembered so a click can be turned back into a unit.
+    app.unit_area = Some(split[1]);
+    frame.render_stateful_widget(list, split[1], &mut state);
+    split[0]
 }
 
 fn draw_live(frame: &mut Frame, app: &mut App) {
-    let layout = Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).split(frame.area());
-    let table_area = draw_tabs(frame, app, layout[0]);
+    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
+    let table_area = draw_units(frame, app, layout[0]);
     let shown = app.rows();
     let rows: Vec<Row> = shown
         .iter()
@@ -371,8 +407,8 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 
 /// Draw the selection screen.
 fn draw_select(frame: &mut Frame, app: &mut App) {
-    let layout = Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).split(frame.area());
-    let table_area = draw_tabs(frame, app, layout[0]);
+    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
+    let table_area = draw_units(frame, app, layout[0]);
     let visible = app.visible();
     let rows: Vec<Row> = visible
         .iter()
@@ -463,15 +499,18 @@ fn on_mouse(app: &mut App, event: crossterm::event::MouseEvent) {
     let (x, y) = (event.column, event.row);
     match event.kind {
         MouseEventKind::Down(_) => {
-            // The tab bar is the top line of either screen.
-            if let Some((_, _, index)) =
-                app.tab_spans.iter().find(|(from, to, _)| y == 0 && x >= *from && x < *to)
-            {
-                app.tab = *index;
-                if let Some(first) = app.visible().first() {
-                    app.cursor = *first;
+            // The unit list runs down the right of either screen.
+            if let Some(area) = app.unit_area {
+                if x >= area.x && x < area.x + area.width && y > area.y {
+                    let index = (y - area.y - 1) as usize;
+                    if index < app.tabs().len() {
+                        app.tab = index;
+                        if let Some(first) = app.visible().first() {
+                            app.cursor = *first;
+                        }
+                    }
+                    return;
                 }
-                return;
             }
             if app.screen != Screen::Select {
                 return;
@@ -659,6 +698,7 @@ pub async fn run_recording(
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let mut app = App::new(channels);
+    app.open_first_populated();
     app.units = match named_by_survey {
         true => unit_names(&identities),
         false => {
@@ -816,10 +856,32 @@ pub async fn run(
             .await
             .with_context(|| crate::device::open_failure(device_path))?;
 
-    // Any unit that will be polled but was not in the survey is asked for its
-    // identification block now — two reads, once, at startup.
+    // Which units the car has. Without this the view would only ever show the
+    // engine, because a unit with no identity contributes no channels and so
+    // no tab — which is what "switching between units does nothing" looked
+    // like. One read of the gateway's installation list answers it, the same
+    // read `vagcan units` makes; a car whose gateway does not answer falls
+    // back to whatever was asked for.
     let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
     wanted.push(plan::ENGINE);
+    if survey_text.is_none() {
+        let gateway = vag_protocol::address::UnitAddress::from_request(0x710)
+            .expect("the gateway is in VW's block");
+        let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+            adapter,
+            CanId::Standard(gateway.request),
+            CanId::Standard(gateway.response),
+        ));
+        if let Ok(bitmap) =
+            uds.read_data_by_identifier(vag_protocol::gateway::INSTALLATION_LIST).await
+        {
+            wanted.extend(vag_protocol::gateway::decode_installation_list(&bitmap));
+        }
+        // The powertrain is never in that list — it lives on the other id
+        // block — so it is added rather than discovered.
+        wanted.push(0x7E1);
+        adapter = uds.into_transport().into_backend();
+    }
     wanted.sort_unstable();
     wanted.dedup();
     for request in wanted {
@@ -839,14 +901,21 @@ pub async fn run(
                 .filter(|s| !s.is_empty())
         };
         let part = text(uds.read_data_by_identifier(0xF187).await.ok());
-        let odx = text(uds.read_data_by_identifier(0xF19E).await.ok());
         let component = text(uds.read_data_by_identifier(0xF197).await.ok());
-        identities.push(plan::UnitIdentity {
-            request,
-            part_number: part,
-            odx_name: odx,
-            component,
-        });
+        // Identification only — three reads, no session change and no sweep.
+        // `SAFETY.md` is about what a sweep can provoke; this is not one.
+        let odx = match part.is_some() || component.is_some() {
+            true => text(uds.read_data_by_identifier(0xF19E).await.ok()),
+            false => None,
+        };
+        if part.is_some() || component.is_some() || request == plan::ENGINE {
+            identities.push(plan::UnitIdentity {
+                request,
+                part_number: part,
+                odx_name: odx,
+                component,
+            });
+        }
         adapter = uds.into_transport().into_backend();
     }
 
@@ -885,6 +954,7 @@ pub async fn run(
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let mut app = App::new(channels);
+    app.open_first_populated();
     app.units = unit_names(&identities);
     let period = Duration::from_secs_f64(1.0 / hz.max(0.1));
     let result = loop {
@@ -1263,6 +1333,22 @@ mod tests {
             step_tab(&mut a, true);
         }
         assert_eq!(a.tab, 1);
+    }
+
+    #[test]
+    fn the_view_opens_on_a_unit_that_has_something_to_show() {
+        // Tabs are in id order and the lowest id is rarely the interesting
+        // one; opening there shows an empty table at the moment a person
+        // first sees the tool.
+        let mut a = App::new(reference_channels());
+        for c in a.channels.iter_mut() {
+            if c.request == 0x7E1 {
+                c.selected = true;
+            }
+        }
+        a.open_first_populated();
+        assert_eq!(a.tabs()[a.tab], 0x7E1);
+        assert!(!a.shown().is_empty());
     }
 
     #[test]

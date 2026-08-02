@@ -26,6 +26,7 @@ fn main() {
     let mut word_files: Vec<String> = Vec::new();
     let mut names_file = None;
     let mut out = None;
+    let mut partial_out = None;
     let mut passes = 4usize;
     let mut limits = Limits::default();
 
@@ -34,6 +35,7 @@ fn main() {
             "--words" => word_files.extend(args.next()),
             "--names" => names_file = args.next(),
             "--out" => out = args.next(),
+            "--partial" => partial_out = args.next(),
             "--passes" => passes = args.next().and_then(|v| v.parse().ok()).unwrap_or(passes),
             "--steps" => {
                 limits.steps = args.next().and_then(|v| v.parse().ok()).unwrap_or(limits.steps)
@@ -95,22 +97,27 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Records sharing a whole-payload pattern hold the same text under
-    // different keys, so one solve serves the cluster and every other member
-    // is had by transfer.
+    // Records sharing the repetition pattern of their *letter runs* hold the
+    // same words under different keys, so one solve serves the cluster. The
+    // pattern of the whole payload would not do: the trailing numeric fields
+    // differ between records that carry identical text, which splits the
+    // cluster and throws away the free members.
     let mut clusters: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
     for (index, record) in records.iter().enumerate() {
-        if tttext::tokens(&record.cipher).len() >= 2 {
-            clusters.entry(tttext::pattern(&record.cipher)).or_default().push(index);
+        let tokens = tttext::tokens(&record.cipher);
+        if tokens.len() >= 2 {
+            clusters.entry(tttext::pattern(&tokens.join("|"))).or_default().push(index);
         }
     }
     eprintln!("{} clusters with something to solve", clusters.len());
 
     let mut solved: HashMap<usize, String> = HashMap::new();
+    let mut partials: Vec<(usize, String)> = Vec::new();
     for pass in 1..=passes {
         let mut learned = 0usize;
         let mut fresh = 0usize;
         let mut partial = 0usize;
+        partials.clear();
 
         for members in clusters.values() {
             // A cluster already read needs no second look.
@@ -120,19 +127,33 @@ fn main() {
             let leader = members[0];
             let cipher = &records[leader].cipher;
             let Some(solution) = tttext::solve(cipher, &dict, limits) else { continue };
-            if !solution.key.covers(cipher) {
+            // The search stops at its best-scoring reading, which routinely
+            // leaves a token unexplained; the letters the rest of the record
+            // pins are evidence it did not have at the time, so re-filter that
+            // token against them before giving the record up.
+            let key = match solution.key.covers(cipher) {
+                true => solution.key,
+                false => tttext::complete(cipher, &solution.key, &dict, MARGIN),
+            };
+            if !key.covers(cipher) {
                 partial += 1;
+                partials.push((leader, key.decode(cipher)));
                 continue;
             }
-            let plain = solution.key.decode(cipher);
+            let plain = key.decode(cipher);
             fresh += 1;
             solved.insert(leader, plain.clone());
 
-            // Every other member is free — and checked: a member whose key
-            // does not line up is not the same text and is dropped.
+            // Every other member is free — and checked: a member whose tokens
+            // do not line up letter for letter is not the same text and is
+            // dropped. Only the letter runs are compared, because that is what
+            // the cluster claims is shared.
+            let words: Vec<&str> = tttext::tokens(&plain);
             for member in &members[1..] {
-                if tttext::transfer(&records[*member].cipher, &plain).is_some() {
-                    solved.insert(*member, plain.clone());
+                let cipher = &records[*member].cipher;
+                let Some(key) = transfer_tokens(cipher, &words) else { continue };
+                if key.covers(cipher) {
+                    solved.insert(*member, key.decode(cipher));
                 }
             }
 
@@ -155,6 +176,16 @@ fn main() {
         }
     }
 
+    if let Some(path) = &partial_out {
+        let mut sink = std::io::BufWriter::new(
+            std::fs::File::create(path).expect("creating the partial output file"),
+        );
+        for (index, plain) in &partials {
+            let _ = writeln!(sink, "{:06}\t{plain}", records[*index].id);
+        }
+        eprintln!("{} partial readings written to {path}", partials.len());
+    }
+
     let mut sink: Box<dyn Write> = match &out {
         Some(path) => Box::new(std::io::BufWriter::new(
             std::fs::File::create(path).expect("creating the output file"),
@@ -173,6 +204,41 @@ fn main() {
         records.len(),
         100.0 * ordered.len() as f32 / records.len() as f32
     );
+}
+
+/// How far the best reading of a token must outweigh the runner-up before the
+/// completion step will pin its letters. A likelihood ratio, not a proof: at
+/// 20x a token with a real second reading is left unpinned and the record is
+/// dropped, which is the direction to err in.
+const MARGIN: f32 = 20.0;
+
+/// Read a cluster member's key off the leader's plaintext words.
+///
+/// The members share only their letter runs — the trailing numeric fields
+/// differ — so the alignment is token by token. A member whose tokens do not
+/// line up injectively is not the same text and gets no key at all, which is
+/// the check that makes the transfer safe rather than merely free.
+fn transfer_tokens(cipher: &str, words: &[&str]) -> Option<tttext::Key> {
+    let tokens = tttext::tokens(cipher);
+    if tokens.len() != words.len() {
+        return None;
+    }
+    let mut key = tttext::Key::default();
+    for (token, word) in tokens.iter().zip(words) {
+        if token.len() != word.len() {
+            return None;
+        }
+        for (c, p) in token.bytes().zip(word.bytes()) {
+            let (c, p) = (c.to_ascii_lowercase(), p.to_ascii_lowercase());
+            if !c.is_ascii_lowercase() || !p.is_ascii_lowercase() {
+                return None;
+            }
+            if !key.insert(c - b'a', p - b'a') {
+                return None;
+            }
+        }
+    }
+    Some(key)
 }
 
 /// Split the section into records. The id is plaintext; everything after the

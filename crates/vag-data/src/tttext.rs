@@ -325,6 +325,66 @@ fn search(
     search(tokens, at + 1, key, score, letters, dict, limits, steps, best, total_letters);
 }
 
+/// Fill letters the search left unassigned, accepting only a clear winner.
+///
+/// The search stops at the reading with the best score, which routinely leaves
+/// a token unexplained and so leaves letters unpinned — and a record with one
+/// unpinned letter is thrown away, because a name with an invented letter reads
+/// exactly like a name without one. But by then the *rest* of the record has
+/// pinned most of the alphabet, and that is new evidence the search did not
+/// have when it looked at this token: re-filtering the token's pattern class
+/// against those letters usually leaves a single survivor.
+///
+/// A survivor is applied only if it is alone, or if it outweighs the runner-up
+/// by `margin`. That ratio is the whole safety of the step: a token with two
+/// plausible readings is left unpinned rather than guessed, which costs the
+/// record and keeps the catalog honest.
+pub fn complete(cipher: &str, key: &Key, dict: &Dictionary, margin: f32) -> Key {
+    let mut key = *key;
+    let tokens = tokens(cipher);
+    loop {
+        let mut progress = false;
+        for token in &tokens {
+            if key.covers(token) {
+                continue;
+            }
+            let mut winner: Option<(Key, f32)> = None;
+            let mut runner_up = 0.0f32;
+            for (word, weight) in dict.candidates(token) {
+                let mut next = key;
+                let fits =
+                    token.chars().zip(word.chars()).all(|(c, p)| {
+                        match (letter_index(c), letter_index(p)) {
+                            (Some(c), Some(p)) => next.insert(c as u8, p as u8),
+                            _ => false,
+                        }
+                    });
+                if !fits {
+                    continue;
+                }
+                match &winner {
+                    // Candidates arrive best-first, so the first fit is the
+                    // winner and the next is what it has to beat.
+                    Some(_) => {
+                        runner_up = runner_up.max(*weight);
+                        break;
+                    }
+                    None => winner = Some((next, *weight)),
+                }
+            }
+            if let Some((next, weight)) = winner {
+                if runner_up == 0.0 || weight >= margin * runner_up {
+                    key = next;
+                    progress = true;
+                }
+            }
+        }
+        if !progress {
+            return key;
+        }
+    }
+}
+
 /// Carry a solved record's plaintext to another record with the same pattern.
 ///
 /// Two records whose whole payloads share a repetition pattern hold the same
@@ -458,6 +518,43 @@ mod tests {
         let dict = dictionary(&["coolant", "temperature"]);
         let solved = solve(&cipher, &dict, Limits::default()).expect("the rest carries it");
         assert!(solved.key.decode(&cipher).starts_with("Coolant temperature"));
+    }
+
+    #[test]
+    fn completion_pins_a_letter_the_rest_of_the_record_already_decides() {
+        // `sensor` is the only word of its shape that the record's other
+        // letters allow, so the token the search skipped is settled by
+        // evidence rather than by preference.
+        let plain = "Coolant temperature sensor";
+        let cipher = encipher(plain, 9);
+        let dict = dictionary(&["coolant", "temperature", "sensor"]);
+        let mut partial = Key::default();
+        for (c, p) in encipher("coolant temperature", 9).chars().zip("coolant temperature".chars())
+        {
+            if let (Some(c), Some(p)) = (letter_index(c), letter_index(p)) {
+                partial.insert(c as u8, p as u8);
+            }
+        }
+        assert!(!partial.covers(&cipher), "the fixture really does leave letters open");
+        let filled = complete(&cipher, &partial, &dict, 20.0);
+        assert_eq!(filled.decode(&cipher), plain);
+    }
+
+    #[test]
+    fn completion_refuses_a_token_with_two_readings() {
+        // `fill` and `hill` are the same shape and equally weighted, and the
+        // rest of the record pins neither `f` nor `h`. Guessing here is
+        // exactly the failure the catalog gate exists to prevent.
+        let cipher = encipher("bytes fill", 5);
+        let dict = dictionary(&["bytes", "fill", "hill"]);
+        let mut partial = Key::default();
+        for (c, p) in encipher("bytes", 5).chars().zip("bytes".chars()) {
+            if let (Some(c), Some(p)) = (letter_index(c), letter_index(p)) {
+                partial.insert(c as u8, p as u8);
+            }
+        }
+        let filled = complete(&cipher, &partial, &dict, 20.0);
+        assert!(!filled.covers(&cipher), "an ambiguous token must stay unpinned");
     }
 
     #[test]

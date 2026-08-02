@@ -68,9 +68,15 @@ temperature, despite sitting at the OBD-II mirror address: no linear map takes
 its three readings (87, 90, 109) to the engine's own PID-05 readings (129, 93,
 137) at the same three moments, and the two move in opposite directions
 overnight. Its `F40C` is one byte where SAE J1979 PID `0C` is two. So this
-unit's `F4xx` block is not a faithful mirror and must not be read as one —
-which also means `vagcan sensors --ecu 746` will print J1979 conversions that
-are wrong for this unit.
+unit's `F4xx` block is not a faithful mirror and must not be read as one.
+
+`vagcan sensors` now enforces that. It converts only on the emissions-related
+units ISO 15765-4 addresses (`0x7E0..0x7E7`) — a property of the protocol, not
+of this car — and only where the answer is the width J1979 defines. Both gates
+are needed: the climate unit's `F405` is one byte, the right width for the
+wrong quantity, and the gearbox is inside the ISO block yet answers `F40D` with
+two little-endian bytes where PID `0D` is one. Anything refused is still shown,
+as bytes, with the reason.
 
 Not measurement catalogs, but kept alongside them:
 

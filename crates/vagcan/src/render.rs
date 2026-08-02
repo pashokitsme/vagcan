@@ -271,6 +271,54 @@ mod tests {
         assert!(!row.contains("km/h"), "{row}");
     }
 
+    /// The climate unit's own bytes, from `research/dumps/survey-parked.jsonl`
+    /// (unit `0x746`, `5E0907044AM`).
+    #[test]
+    fn a_unit_off_the_iso_block_gets_bytes_and_a_reason_never_a_value() {
+        let lines = vec![
+            SensorLine::Unconverted {
+                did: 0xF405,
+                bytes: vec![0x57],
+                why: Unconverted::NotAnEmissionsUnit,
+            },
+            SensorLine::Unconverted {
+                did: 0xF40C,
+                bytes: vec![0x00],
+                why: Unconverted::NotAnEmissionsUnit,
+            },
+        ];
+        let text = render_sensors("746", &lines);
+        assert!(text.contains("F405          57"), "{text}");
+        assert!(text.contains("ISO 15765-4"), "{text}");
+        assert!(text.contains("0 of 2 standard sensors converted"), "{text}");
+        // 0x57 is 87; as PID 05 that would print 47.00 °C. It must not appear,
+        // nor may the parameter be named — the name is the claim in doubt.
+        assert!(!text.contains("47.00"), "{text}");
+        assert!(!text.contains("Coolant"), "{text}");
+        assert!(!text.contains("°C"), "{text}");
+    }
+
+    #[test]
+    fn a_wrong_width_row_says_so_and_the_good_rows_still_print() {
+        // Engine coolant, which is established, alongside the gearbox's
+        // two-byte F40D, which is not PID 0D.
+        let lines = vec![
+            SensorLine::Converted(reading("Coolant temperature", "°C", Some(89.0))),
+            SensorLine::Unconverted {
+                did: 0xF40D,
+                bytes: vec![0x9C, 0x02],
+                why: Unconverted::WrongWidth { expected: 1, got: 2 },
+            },
+        ];
+        let text = render_sensors("02", &lines);
+        assert!(text.contains("Coolant temperature       89.00 °C"), "{text}");
+        assert!(text.contains("F40D       9C 02"), "{text}");
+        assert!(text.contains("2 bytes, standard says 1"), "{text}");
+        assert!(text.contains("1 of 2 standard sensors converted"), "{text}");
+        // The first byte read as km/h would be 156. Never printed.
+        assert!(!text.contains("156"), "{text}");
+    }
+
     #[test]
     fn the_silence_message_names_the_checks_in_order() {
         let text = nothing_answered();

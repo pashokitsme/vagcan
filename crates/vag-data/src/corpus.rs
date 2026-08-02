@@ -347,12 +347,18 @@ mod odx_lookup_tests {
     /// equally long names the same tree, and since tests run in parallel each
     /// deletes the other's fixture at random.
     fn corpus(files: &[&str]) -> PathBuf {
-        let key: String = files
-            .join("_")
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        let root = std::env::temp_dir().join(format!("vagcan-odx-{key}"));
+        // The name has to distinguish `.ROD` from `.rod`, and a path cannot:
+        // this filesystem is case-insensitive, so two tests differing only in
+        // case shared a directory and deleted each other's fixtures. A hash of
+        // the exact strings does distinguish them.
+        let joined = files.join("_");
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in joined.as_bytes() {
+            hash = (hash ^ *byte as u64).wrapping_mul(0x1000_0000_01b3);
+        }
+        let key: String =
+            joined.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let root = std::env::temp_dir().join(format!("vagcan-odx-{key}-{hash:016x}"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("UDS_EV")).unwrap();
         for name in files {

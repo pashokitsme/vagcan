@@ -149,6 +149,11 @@ enum Command {
     /// These ride the legislated parameter set mirrored at `F400 + PID`, so
     /// their conversions are public and need no reverse engineering — and five
     /// of them were independently confirmed against this car.
+    ///
+    /// They are only converted on the emissions-related units ISO 15765-4
+    /// addresses (0x7E0..0x7E7), and only where the answer is the width SAE
+    /// J1979 defines. Other units answer `F4xx` identifiers too and mean
+    /// something else by them, so those are shown as bytes with the reason.
     Sensors {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
