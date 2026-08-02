@@ -88,6 +88,10 @@ pub struct App {
     /// False on a replay, where a poll rate would be the redraw rate and mean
     /// nothing about a car.
     live: bool,
+    /// The unit a request is out to, while it is out. Shown in the footer:
+    /// a batch can take as long as that unit's deadline, and a still screen
+    /// during it reads as a hang.
+    waiting: Option<u16>,
     status: String,
 }
 
@@ -109,6 +113,7 @@ impl App {
             started: Instant::now(),
             clock: 0.0,
             live: true,
+            waiting: None,
             status: String::new(),
         }
     }
@@ -421,8 +426,14 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
         true => format!("{:.1} Hz · ", app.poll_rate()),
         false => String::new(),
     };
+    let waiting = match app.waiting {
+        Some(request) => {
+            format!("  {} reading {}…", crate::progress::frame(app.cycles), app.unit_heading(request))
+        }
+        None => String::new(),
+    };
     let help = format!(
-        " {rate}{} of {} shown · [tab] unit  [c] configure  [q] quit{}",
+        " {rate}{} of {} shown · [tab] unit  [c] configure  [q] quit{}{waiting}",
         shown.len(),
         app.channels.iter().filter(|c| c.selected).count(),
         app.status
@@ -892,7 +903,9 @@ pub async fn run(
     // back to whatever was asked for.
     let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
     wanted.push(plan::ENGINE);
+    let mut progress = crate::progress::Line::new();
     if survey_text.is_none() {
+        progress.update("asking the gateway which control units this car has");
         let gateway = vag_protocol::address::UnitAddress::from_request(0x710)
             .expect("the gateway is in VW's block");
         let mut uds = AsyncUdsClient::new(IsoTpCan::new(
@@ -912,7 +925,9 @@ pub async fn run(
     }
     wanted.sort_unstable();
     wanted.dedup();
-    for request in wanted {
+    let total = wanted.len();
+    for (at, request) in wanted.into_iter().enumerate() {
+        progress.update(&format!("identifying control units — {request:03X}, {} of {total}", at + 1));
         if identities.iter().any(|i| i.request == request) {
             continue;
         }
@@ -951,6 +966,7 @@ pub async fn run(
         adapter = uds.into_transport().into_backend();
     }
 
+    progress.finish();
     // Say what the car answered and what could be shown, before the screen
     // takes over. A unit that identified itself but has no catalog contributes
     // no measurements and so no tab — which looks like the tool failing to
@@ -1072,6 +1088,14 @@ pub async fn run(
                 CanId::Standard(address.request),
                 CanId::Standard(address.response),
             );
+            // Redraw before the request, so the footer says which unit is
+            // being waited on. A batch can take as long as that unit's
+            // deadline, and a still screen during it reads as a hang.
+            app.waiting = Some(batch.request);
+            terminal.draw(|f| match app.screen {
+                Screen::Live => draw_live(f, &mut app),
+                Screen::Select => draw_select(f, &mut app),
+            })?;
             let mut uds = AsyncUdsClient::new(channel);
             let answer = if batch.dids.len() == 1 {
                 uds.read_data_by_identifier(batch.dids[0])
@@ -1090,6 +1114,7 @@ pub async fn run(
                 }
             }
             backend = Some(uds.into_transport().into_backend());
+            app.waiting = None;
         }
         if quit_mid_cycle {
             break Ok(());

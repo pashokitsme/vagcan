@@ -17,6 +17,7 @@ mod discover;
 mod faults;
 mod labels;
 mod names;
+mod progress;
 mod props;
 mod render;
 mod safety;
@@ -715,10 +716,15 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
     }
 
     println!("{} {}:\n", ids.len(), render::plural(ids.len(), "control unit"));
+    let mut spinner = progress::Line::new();
     let mut identified = 0usize;
     let mut resolved = 0usize;
     let mut backend = uds.into_transport().into_backend();
-    for id in ids {
+    let listed = ids.len();
+    for (at, id) in ids.into_iter().enumerate() {
+        if identify {
+            spinner.update(&format!("identifying {id:03X} — {} of {listed}", at + 1));
+        }
         if !identify {
             println!("  {id:03X}");
             continue;
@@ -737,6 +743,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
                 .unwrap_or_default()
         };
         let (part, component) = (text(part), text(component));
+        spinner.finish();
         if part.is_empty() && component.is_empty() {
             println!("  {id:03X}  (did not answer)");
         } else {

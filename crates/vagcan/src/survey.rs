@@ -355,7 +355,14 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 
     let started = Instant::now();
     let mut reports = Vec::new();
-    for request in order {
+    let total = order.len();
+    let mut progress = crate::progress::Line::new();
+    for (at, request) in order.into_iter().enumerate() {
+        progress.update(&format!(
+            "sweeping {request:03X} — unit {} of {total}, {:.0}s so far",
+            at + 1,
+            started.elapsed().as_secs_f64()
+        ));
         let Some(address) = UnitAddress::from_request(request) else {
             println!("  {request:03X} is in neither diagnostic block — skipped");
             continue;
@@ -400,6 +407,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
         // anyway costs one timeout per identifier — minutes of waiting to
         // rediscover the silence already established.
         if !report.answered {
+            progress.finish();
             println!("{}", report.summary());
             backend = uds.into_transport().into_backend();
             reports.push(report);
@@ -427,6 +435,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
         };
         report.hits = hits;
 
+        progress.finish();
         println!("{}", report.summary());
         if let Some(w) = sink.as_mut() {
             // JSON lines: a survey interrupted halfway keeps every unit it

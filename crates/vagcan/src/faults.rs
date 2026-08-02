@@ -211,7 +211,10 @@ pub async fn run(
 
     let mut total = 0usize;
     let mut failing_now = 0usize;
-    for request in order {
+    let count = order.len();
+    let mut progress = crate::progress::Line::new();
+    for (at, request) in order.into_iter().enumerate() {
+        progress.update(&format!("reading faults — {request:03X}, unit {} of {count}", at + 1));
         let Some(address) = UnitAddress::from_request(request) else { continue };
         let mut uds = AsyncUdsClient::new(IsoTpCan::new(
             backend,
@@ -277,6 +280,7 @@ pub async fn run(
         show.sort_by_key(|d| (d.status & FAILED_NOW == 0, d.code));
         failing_now += show.iter().filter(|d| d.status & FAILED_NOW != 0).count();
         if !show.is_empty() {
+            progress.finish();
             // A unit with no short number shows a dash rather than repeating
             // its id, which reads as a rendering fault.
             let number = match vag_protocol::address::short_number(request) {
