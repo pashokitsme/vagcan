@@ -70,9 +70,18 @@ pub enum RawForm {
     U16Le,
     /// Two data bytes, signed 16-bit big-endian.
     I16Be,
-    /// Three data bytes, unsigned 24-bit big-endian. An odometer needs more
-    /// than 16 bits and does not warrant 32.
+    /// Three data bytes, unsigned 24-bit big-endian. An odometer in kilometres
+    /// needs more than 16 bits and does not warrant 32.
     U24Be,
+    /// Four data bytes, unsigned 32-bit big-endian. Needed by counters that
+    /// genuinely exceed 24 bits — the reference cluster's metre-resolution
+    /// odometer reads 212 810 125, which 24 bits cannot hold.
+    ///
+    /// The carrier is `i32`, so a value above [`i32::MAX`] reads as `None`
+    /// rather than as a negative number. That ceiling is 2 147 483 647, i.e.
+    /// 2.1 million kilometres for a metre counter — beyond any odometer — and
+    /// refusing is the honest answer for anything that does exceed it.
+    U32Be,
 }
 
 impl RawForm {
@@ -98,6 +107,10 @@ impl RawForm {
             },
             RawForm::I16Be => match data {
                 [hi, lo, ..] => Some((((*hi as u16) << 8 | *lo as u16) as i16) as i32),
+                _ => None,
+            },
+            RawForm::U32Be => match data {
+                [a, b, c, d, ..] => i32::try_from(u32::from_be_bytes([*a, *b, *c, *d])).ok(),
                 _ => None,
             },
         }
@@ -173,6 +186,19 @@ mod tests {
         assert_eq!(RawForm::I16Be.read(&[0xFF, 0xFE]), Some(-2));
         assert_eq!(RawForm::U16Be.read(&[0x01]), None);
         assert_eq!(RawForm::U8Second.read(&[0x01]), None);
+    }
+
+    #[test]
+    fn a_thirty_two_bit_form_reads_wide_counters_and_refuses_to_go_negative() {
+        // The reference cluster's metre odometer: 212 810 125 m. Read as 24
+        // bits it would be 11 483 021, so the width is not cosmetic.
+        assert_eq!(RawForm::U32Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(212_810_125));
+        assert_eq!(RawForm::U24Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(0x0CAF39));
+        assert_eq!(RawForm::U32Be.read(&[0x7F, 0xFF, 0xFF, 0xFF]), Some(i32::MAX));
+        // Above i32::MAX there is no honest answer, so there is no answer —
+        // never a value that has silently wrapped to negative.
+        assert_eq!(RawForm::U32Be.read(&[0x80, 0x00, 0x00, 0x00]), None);
+        assert_eq!(RawForm::U32Be.read(&[0x01, 0x02, 0x03]), None);
     }
 
     #[test]

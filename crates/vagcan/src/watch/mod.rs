@@ -12,6 +12,7 @@
 //! and it can also show a name in full instead of eliding it to fit a column.
 
 pub mod plan;
+pub mod replay;
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -68,6 +69,13 @@ pub struct App {
     /// Completed poll cycles, and when the run started.
     cycles: u64,
     started: Instant,
+    /// The clock a reading's age is measured against. Live, it is time since
+    /// the run started; on a replay it is the playhead, because a value
+    /// recorded ten minutes into a drive is not ten minutes old.
+    clock: f64,
+    /// False on a replay, where a poll rate would be the redraw rate and mean
+    /// nothing about a car.
+    live: bool,
     status: String,
 }
 
@@ -83,6 +91,8 @@ impl App {
             select_state: TableState::default(),
             cycles: 0,
             started: Instant::now(),
+            clock: 0.0,
+            live: true,
             status: String::new(),
         }
     }
@@ -182,7 +192,7 @@ impl App {
     }
 
     fn age(&self, at: f64) -> String {
-        format!("{:.1}s", self.started.elapsed().as_secs_f64() - at)
+        format!("{:.1}s", (self.clock - at).max(0.0))
     }
 
     fn poll_rate(&self) -> f64 {
@@ -251,9 +261,12 @@ fn draw_live(frame: &mut Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title(" vagcan watch "));
     frame.render_widget(table, layout[0]);
 
+    let rate = match app.live {
+        true => format!("{:.1} Hz · ", app.poll_rate()),
+        false => String::new(),
+    };
     let help = format!(
-        " {:.1} Hz · {} of {} shown · [c] configure  [q] quit {}",
-        app.poll_rate(),
+        " {rate}{} of {} shown · [c] configure  [q] quit{}",
         shown.len(),
         app.channels.len(),
         app.status
@@ -388,6 +401,171 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
         }
     }
     true
+}
+
+/// Play a recorded drive back through the same screen, with no car.
+///
+/// A separate loop from the live one, deliberately: see `replay`'s module
+/// docs. Nothing here opens a port or addresses a control unit.
+pub async fn run_recording(
+    recording_path: &str,
+    catalogs: &str,
+    survey: Option<&str>,
+    speed: f64,
+) -> Result<()> {
+    let csv = std::fs::read_to_string(recording_path)
+        .with_context(|| format!("reading the recording {recording_path:?}"))?;
+    let recording = replay::Recording::parse(&csv)
+        .map_err(|e| anyhow::anyhow!("{recording_path}: {e}"))?;
+
+    let store = vag_data::catalog::CatalogStore::open(catalogs);
+    // A recording carries no identification block, so the catalogs are offered
+    // for every unit this project has one for. On a replay that is honest:
+    // nothing is being addressed, and a column only appears if it matched.
+    let mut identities: Vec<plan::UnitIdentity> = Vec::new();
+    if let Some(path) = survey {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the survey {path:?}"))?;
+        identities = plan::identities_from_survey(&text);
+    }
+    if identities.is_empty() {
+        for entry in std::fs::read_dir(store.dir()).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(part) = name.strip_suffix(".json") {
+                identities.push(plan::UnitIdentity {
+                    request: plan::ENGINE,
+                    part_number: Some(part.to_string()),
+                    odx_name: None,
+                });
+            }
+        }
+    }
+
+    let mut channels = plan::available(&store, &identities);
+    // A recording does not say which unit each column came from. Columns that
+    // match a known measurement keep its unit; the rest are attributed to the
+    // engine's id, which is a label on a screen and addresses nothing — no
+    // request is ever sent in this mode.
+    let resolved = replay::resolve(&recording.columns, &mut channels, plan::ENGINE);
+    if resolved.is_empty() {
+        anyhow::bail!(
+            "none of the {} columns in {recording_path} matched a channel this build knows. \n\
+             A recording is matched by measurement name or identifier; check that the \n\
+             catalogs in {catalogs} are the ones it was recorded with.",
+            recording.columns.len()
+        );
+    }
+    // Start with the channels that actually moved. A column that read the same
+    // bytes for the whole drive proves nothing — the rule this project applies
+    // to its own measurements — and on the reference recording 75 of 104
+    // columns are like that. The rest are one keypress away.
+    let moved = replay::columns_that_moved(&recording);
+    for column in &moved {
+        if let Some(hit) = resolved.get(column) {
+            channels[hit.channel].selected = true;
+        }
+    }
+    if moved.is_empty() {
+        for hit in resolved.values() {
+            channels[hit.channel].selected = true;
+        }
+    }
+
+    enable_raw_mode().map_err(|e| {
+        anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
+    })?;
+    let mut stdout = io::stdout();
+    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+
+    let mut app = App::new(channels);
+    app.live = false;
+    let duration = recording.duration();
+    let mut playhead = 0.0f64;
+    let mut paused = false;
+    let mut speed = speed.clamp(0.05, 50.0);
+    let mut last = Instant::now();
+
+    let result = loop {
+        // Advance the playhead by real time, and wrap: a demo that stops after
+        // one pass is a demo somebody has to keep restarting.
+        let elapsed = last.elapsed().as_secs_f64();
+        last = Instant::now();
+        if !paused && duration > 0.0 {
+            playhead = (playhead + elapsed * speed) % duration;
+        }
+        if let Some((_, cells)) = recording.at(playhead) {
+            for (column, hit) in &resolved {
+                let Some(cell) = cells.get(*column).and_then(|c| c.as_ref()) else { continue };
+                let channel = &app.channels[hit.channel];
+                let (request, did) = (channel.request, channel.did);
+                if let Some(bytes) = replay::cell_to_bytes(cell, channel, hit.raw) {
+                    app.latest.insert((request, did), (playhead, bytes));
+                }
+            }
+        }
+        app.clock = playhead;
+        app.status = format!(
+            " · [space] pause  [←→] seek  [+-] speed · {:.0}/{:.0}s ×{speed:.2}{}",
+            playhead,
+            duration,
+            if paused { " PAUSED" } else { "" }
+        );
+        app.cycles += 1;
+
+        terminal.draw(|f| match app.screen {
+            Screen::Live => draw_live(f, &app),
+            Screen::Select => draw_select(f, &mut app),
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(k) = event::read()? {
+                if k.kind == KeyEventKind::Press {
+                    // Playback keys only mean something on the live screen;
+                    // on the selection screen they are ordinary input.
+                    if app.screen == Screen::Live {
+                        match k.code {
+                            KeyCode::Char(' ') => {
+                                paused = !paused;
+                                continue;
+                            }
+                            KeyCode::Char('+') | KeyCode::Char('=') => {
+                                speed = (speed * 2.0).min(50.0);
+                                continue;
+                            }
+                            KeyCode::Char('-') => {
+                                speed = (speed / 2.0).max(0.05);
+                                continue;
+                            }
+                            KeyCode::Left => {
+                                playhead = (playhead - 10.0).max(0.0);
+                                continue;
+                            }
+                            KeyCode::Right => {
+                                playhead = (playhead + 10.0).min(duration);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !on_key(&mut app, k.code) {
+                        break Ok(());
+                    }
+                }
+            }
+        }
+    };
+
+    disable_raw_mode()?;
+    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    println!(
+        "replayed {recording_path} — {:.0}s of driving, {} columns, {} of which ever changed",
+        duration,
+        recording.columns.len(),
+        moved.len()
+    );
+    result
 }
 
 /// Run the live view against a real adapter.
@@ -552,6 +730,7 @@ pub async fn run(
                 })
             };
             let at = app.started.elapsed().as_secs_f64();
+            app.clock = at;
             if let Ok(records) = answer {
                 for (did, data) in records {
                     app.latest.insert((batch.request, did), (at, data));

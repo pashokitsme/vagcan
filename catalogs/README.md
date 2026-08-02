@@ -29,6 +29,23 @@ selector enums were identified by arithmetic against the proven shaft speeds
 reading. `vagcan calibrate` extends coverage by fitting raw columns against
 already-trusted references in the same `watch --out` recording.
 
+**The instrument-cluster rows added on 2026-08-02 came from a third route:**
+three whole-car surveys — one parked, two taken while driving
+(`research/dumps/survey-parked.jsonl`, `survey-driving-20260802-0314.jsonl`,
+`-0322.jsonl`) — crossed against each other and against the host's own clock.
+Three snapshots is one point more than a line needs, so each row below carries
+a check it could have failed:
+
+| row | check | what would have refuted it |
+|---|---|---|
+| `22B8` odometer, metres | `⌊22B8 / 1000⌋` equals the `2203` odometer in **all three** snapshots (212 805 188 → 212 805; 212 810 125 → 212 810), and its fractional part rises monotonically | any snapshot where the two disagreed; a 24-bit or little-endian reading breaks all three |
+| `22D2` road speed, km/h | between the two driving reads, `22B8` says the car covered 4 856 m in the 497 s that `2216` says elapsed — mean 35 km/h, bracketed by the 5 and 53 km/h read at the ends | ×0.01 makes that drive 49 m; ×10 makes it 49 km |
+| `2238`/`2239`/`223A`/`223B`/`223C` clock | they are byte-for-byte the fields of the block identifiers `2216` (`hh mm ss`) and `2217` (`yyyy mm dd`), and the assembled time lands within 4–7 s of when the host wrote each survey file. `2216` advanced **497 s** between the two driving sweeps; the host's file timestamps are **497 s** apart | a different byte order (the parked read would be hour 32); any of the three times missing its window |
+
+The cluster's date is set four days slow (it reads 2026-07-28 for 2026-08-01),
+which is the car's business and not a decoding error — the offset is constant
+across both snapshots and the day rolled over correctly at midnight.
+
 Rows are named in this project's own words. The VCDS display strings are
 Ross-Tech's localised label text and are not reproduced; names are meant to
 come from the label corpus.
@@ -40,6 +57,20 @@ come from the label corpus.
 | `vehicles/8V0906264H.json` | Engine, 1.8 TFSI MQB | VW-specific identifiers |
 | `vehicles/0CW300041G.json` | Gearbox, DQ200 | VW-specific identifiers |
 | `vehicles/5E0920740D.json` | Instrument cluster | VW-specific identifiers |
+
+No file exists for the brakes (`5Q0614517AQ`), body control (`5Q0937084CF`),
+parking aid (`5QA919283A`), climate (`5E0907044AM`) or the doors
+(`5Q4959393E`/`5Q4959392E`). Identifiers on those units *did* move between the
+parked and driving surveys, but none of them could be pinned to an engineering
+value against a reference, and a plausible-looking wrong scaling is worse than
+none. In particular the climate unit's `F405` is **not** the engine's coolant
+temperature, despite sitting at the OBD-II mirror address: no linear map takes
+its three readings (87, 90, 109) to the engine's own PID-05 readings (129, 93,
+137) at the same three moments, and the two move in opposite directions
+overnight. Its `F40C` is one byte where SAE J1979 PID `0C` is two. So this
+unit's `F4xx` block is not a faithful mirror and must not be read as one —
+which also means `vagcan sensors --ecu 746` will print J1979 conversions that
+are wrong for this unit.
 
 Not measurement catalogs, but kept alongside them:
 

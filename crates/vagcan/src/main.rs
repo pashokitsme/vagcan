@@ -184,6 +184,14 @@ enum Command {
         /// found it on — not just the measurements already proven.
         #[arg(long, value_name = "FILE")]
         survey: Option<String>,
+        /// Replay a recording written by `--out` instead of reading a car.
+        /// No adapter is opened and nothing is addressed — for trying the
+        /// interface, or showing it, away from a vehicle.
+        #[arg(long, value_name = "FILE", conflicts_with = "device")]
+        replay: Option<String>,
+        /// Playback speed for --replay. 2 is twice as fast as it happened.
+        #[arg(long, default_value_t = 1.0, value_name = "N")]
+        speed: f64,
         /// Where the measurement catalogs live. Each file is named after the
         /// part number or ODX name of the control unit it describes, so a car
         /// this tool has not seen before simply finds none.
@@ -425,7 +433,16 @@ async fn main() -> Result<()> {
                 .await
         }
         Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
-        Command::Watch { device, did, hz, out, survey, catalogs } => {
+        Command::Watch { replay: Some(path), catalogs, survey, speed, .. } => {
+            watch::run_recording(
+                &path,
+                &datadir::resolve(&catalogs).to_string_lossy(),
+                survey.as_deref(),
+                speed,
+            )
+            .await
+        }
+        Command::Watch { device, did, hz, out, survey, catalogs, .. } => {
             let preselect = match did.as_deref() {
                 Some(spec) => watch::plan::parse_spec(spec)
                     .map_err(|e| anyhow::anyhow!("--did: {e}"))?,

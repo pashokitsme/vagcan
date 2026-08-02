@@ -177,6 +177,12 @@ pub struct CatalogStore {
 }
 
 impl CatalogStore {
+    /// The directory being read, so a caller can list what is on offer
+    /// without duplicating the path handling.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn open(dir: impl Into<std::path::PathBuf>) -> Self {
         CatalogStore { dir: dir.into() }
     }
@@ -392,13 +398,104 @@ mod tests {
         // empty catalog instead of another car's scalings.
         assert_eq!(reference_engine().len(), 3, "engine rows come from the file");
         assert_eq!(reference_gearbox().len(), 12, "gearbox rows come from the file");
-        assert_eq!(reference_cluster().len(), 1, "cluster rows come from the file");
+        assert_eq!(reference_cluster().len(), 8, "cluster rows come from the file");
         // Padding and spacing in a reported part number must not matter —
         // control units pad these strings to a fixed width.
-        assert_eq!(reference_store().for_unit(Some("5E0 920 740 D "), None).len(), 1);
+        assert_eq!(reference_store().for_unit(Some("5E0 920 740 D "), None).len(), 8);
         assert!(reference_store().for_unit(Some("NOSUCHPART"), None).is_empty());
         // The odometer reproduces the exact reading that justified it.
         assert_eq!(reference_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
+    }
+
+    /// One row per cluster DID: `watch` keeps a single channel per (unit, DID)
+    /// and the last definition wins, so a duplicate would silently shadow.
+    #[test]
+    fn the_cluster_catalog_has_one_row_per_identifier() {
+        let mut dids: Vec<u16> = reference_cluster()
+            .iter()
+            .map(|d| match d.address {
+                ReadId::Uds(did) => did,
+            })
+            .collect();
+        let before = dids.len();
+        dids.sort_unstable();
+        dids.dedup();
+        assert_eq!(dids.len(), before);
+    }
+
+    /// The metre-resolution odometer, pinned to the three readings that proved
+    /// it: `22B8 / 1000` truncates to the `2203` odometer at every snapshot of
+    /// the 2026-08-01/02 surveys, across a drive that moved both.
+    ///
+    /// A single wrong byte order, width or factor breaks all three at once —
+    /// `U24Be` would read 212 805 188 as 13 300 262, and little-endian as
+    /// 1 143 705 356.
+    #[test]
+    fn the_fine_odometer_agrees_with_the_kilometre_odometer_at_every_snapshot() {
+        let cluster = reference_cluster();
+        let coarse = &cluster[0];
+        let fine = &cluster[1];
+        assert_eq!(fine.raw_form, RawForm::U32Be);
+        for (km, metres) in [
+            ([0x03u8, 0x3F, 0x45], [0x0Cu8, 0xAF, 0x26, 0x44]), // parked
+            ([0x03, 0x3F, 0x45], [0x0C, 0xAF, 0x26, 0x95]),     // driving, sweep 1
+            ([0x03, 0x3F, 0x4A], [0x0C, 0xAF, 0x39, 0x8D]),     // driving, sweep 2
+        ] {
+            let coarse_km = coarse.interpret(&km).expect("the odometer reads");
+            let fine_m = fine.interpret(&metres).expect("the fine odometer reads");
+            assert_eq!((fine_m / 1000.0).floor(), coarse_km);
+        }
+        // 212 805.188 km, and the drive moved it 4 856 m while the kilometre
+        // odometer stepped by 5.
+        assert_eq!(fine.interpret(&[0x0C, 0xAF, 0x26, 0x44]), Some(212_805_188.0));
+        assert_eq!(fine.unit, "m");
+    }
+
+    /// The car's own clock, as five identifiers that reassemble into the two
+    /// block identifiers `2216` (`hh mm ss`) and `2217` (`yyyy mm dd`).
+    ///
+    /// Values are the reference car's parked survey: the cluster displayed
+    /// 23:51:32 on the car's calendar day 2026-07-28, which landed within
+    /// 4 s of the host clock's own reading of when that identifier was read.
+    #[test]
+    fn the_clock_rows_read_the_time_the_cluster_displayed() {
+        let cluster = reference_cluster();
+        let by_did = |did: u16| {
+            cluster
+                .iter()
+                .find(|d| d.address == ReadId::Uds(did))
+                .unwrap_or_else(|| panic!("the cluster set carries {did:#06X}"))
+                .clone()
+        };
+        // 2216 read `17 33 20`, and 2238/2239 read its first two bytes.
+        assert_eq!(by_did(0x2238).interpret(&[0x17]), Some(23.0));
+        assert_eq!(by_did(0x2239).interpret(&[0x33]), Some(51.0));
+        // 2217 read `07EA 07 1C`, and 223A/223B/223C read its three fields.
+        assert_eq!(by_did(0x223A).interpret(&[0x07, 0xEA]), Some(2026.0));
+        assert_eq!(by_did(0x223B).interpret(&[0x07]), Some(7.0));
+        assert_eq!(by_did(0x223C).interpret(&[0x1C]), Some(28.0));
+        // Little-endian would have read the year as 60 167, not 2026.
+        assert_eq!(by_did(0x223A).raw_form, RawForm::U16Be);
+    }
+
+    /// Road speed, `22D2`: proven by timing against a VCDS log in
+    /// `research/other-ecus.md` §4.1 over 0–5 km/h, and corroborated at 53 km/h
+    /// by the 2026-08-02 driving surveys — where the metre odometer says the
+    /// car covered 4 856 m in the 497 s between the two cluster reads, a mean
+    /// of 35 km/h that brackets the 5 and 53 km/h read at the ends.
+    ///
+    /// A ×0.01 factor would make that drive 49 m long, and ×10 would make it
+    /// 49 km; both are refuted by the odometer in the same response set.
+    #[test]
+    fn the_cluster_road_speed_is_kilometres_per_hour_at_factor_one() {
+        let speed = reference_cluster()
+            .into_iter()
+            .find(|d| d.address == ReadId::Uds(0x22D2))
+            .expect("the cluster set carries road speed");
+        assert_eq!(speed.interpret(&[0x00, 0x00]), Some(0.0));
+        assert_eq!(speed.interpret(&[0x00, 0x05]), Some(5.0));
+        assert_eq!(speed.interpret(&[0x00, 0x35]), Some(53.0));
+        assert_eq!(speed.unit, "km/h");
     }
 
     #[test]
