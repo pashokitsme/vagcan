@@ -174,11 +174,58 @@ The check that could have failed:
 | ⌊n/100⌋ for numbers ≥ 10⁶, in block 1 | **125 / 127** (9.8 expected by chance) |
 | n//64, n//99, n//101, n//120, n//128 | 4–24 |
 
-Row grammar is the familiar `<id><sep><2-char code><sep>…`, the same shape as an ECU
-`[DTC]` row. **But the payload numbers are under the per-table digit substitution that
-`research/label-linkage.md` §2.4 records as unbroken**, so the last hop — registry row to
-text-id to name — does not resolve. Fitting without the code constraint gives thousands
-of candidates per table; with it, zero for three of four cribs.
+Row grammar is `<fault number><sep><A><sep><2-char code><sep><B><sep>…`, 210 734 of
+228 392 rows. The ids run **monotonically ascending throughout** — zero descents — six
+digits below 10⁶ and eight above, under 105 186 distinct keys.
+
+### The digit substitution is broken — by the row order, not by cribs
+
+Rows inside a table are stored in ascending order of their **plaintext**. The
+substitution therefore leaks that order: for two consecutive rows, the first position
+where they differ says which of the two glyphs is the smaller digit. Collecting those
+constraints and topologically sorting them *is* the alphabet. No known plaintext is
+involved anywhere, which is why every crib-based attempt had failed.
+
+| check | result | what would have refuted it |
+|---|---|---|
+| constraint graph acyclic, tables with ≥4 rows | **10 916 / 10 916** | the same rows shuffled: 7 258 cycles |
+| 14 958 values decoded from 680 independently-keyed tables | **2 080 distinct** | random per-table maps: 10 392 distinct |
+| one value reached identically by | 42 different keys | — |
+| 2 143 decoded 7/8-glyph values read as 24-bit fault codes, low byte | **66.5 % exactly `0xF0`**, 95 % in `0xF0..0xF7` | random maps: 0.2 % |
+| system letter of those codes | B (1 526) or C (617), never P or U | — |
+
+Worked example, the fault-531 table, alphabet `0 . - 8 3 2 1 5 7 4`:
+`.0374730` → 10 489 840 = `0xA00FF0`, `4527503` → 9 758 704 = `0x94E7F0`, `.-0238` →
+120 543. The decoder is `crates/vag-data/src/glyphs.rs`.
+
+Coverage from ordering alone is 680 of 105 186 tables, because a table needs roughly
+five rows before its order pins all ten glyphs and the registry averages 2.2. Tables for
+faults 531, 297 and 527 are solved outright.
+
+### …and it still does not give a fault name
+
+The registry rows are **cross-references, not self-identification**:
+
+* the two-character code is a function of field `A`, not of field `B` (97.3 % against
+  66 %), which is why the previous pass's assumption scored zero;
+* for faults 531 and 297, 0 of 20 and 1 of 21 of their decoded `A` values appear in
+  their own ECU's `[DTC]` fault-name list — a fault's own name would have to be there;
+* of 2 080 distinct decoded `A` values, 5.8 % are in `names-uds.json`, *below* the 8.8 %
+  baseline, so `A` is not preferentially a name id;
+* only 1 966 of 64 205 large-key tables contain their own code with the `0xF0` byte, so
+  a row is not the fault describing itself;
+* field `B` (190 000–450 000) is disjoint from TTTEXT's dense region — a second id space,
+  most likely `TTTEXT2.ROD`, which still does not decrypt.
+
+So the wall has moved rather than fallen: the digit substitution is no longer the
+blocker. What blocks a fault name now is that nothing yet ties a fault *number* to a
+position in a per-ECU `[DTC]` list, and that most of those lists' text-ids point outside
+the part of `TTTEXT.ROD` that has been recovered.
+
+**Worth doing next:** the same ordering attack on `STRUC.rod`, which is the blocker
+`research/label-linkage.md` §2.4 named for *measurement* scaling rather than fault names.
+A first pass gives 384 of 585 tables acyclic field-wise against 217 on shuffled controls
+— real signal, and its rows are probably sorted on a subset of their eleven fields.
 
 Refuted along the way, so nobody retries: the per-ECU `[DTC]` section is **not** the
 source — 11 of the 23 units in the crib have no `[DTC]` section at all, including the

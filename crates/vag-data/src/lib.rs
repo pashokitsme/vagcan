@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod clb;
 pub mod corpus;
 pub mod db;
+pub mod glyphs;
 pub mod label;
 pub mod measure;
 pub mod obd;
