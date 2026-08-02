@@ -172,9 +172,41 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
     Ok(UnitAddress { request, response: request + if request >= ISO_FIRST { ISO_OFFSET } else { VW_OFFSET } })
 }
 
+/// Parse a comma-separated list of units, e.g. `01,713,70E`.
+///
+/// Every token is checked, and one bad token fails the whole list: the callers
+/// (`faults --ecu`, `survey --only`) use this to validate before they open the
+/// adapter, which is a single-user resource — opening it and then failing on a
+/// typo leaves the port held while the user retypes.
+pub fn parse_list(spec: &str) -> Result<Vec<UnitAddress>, String> {
+    let units: Vec<UnitAddress> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(parse)
+        .collect::<Result<_, _>>()?;
+    if units.is_empty() {
+        return Err("no control unit given".to_string());
+    }
+    Ok(units)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_list_is_parsed_whole_or_not_at_all() {
+        let units = parse_list("01, 713,70E").unwrap();
+        assert_eq!(units.iter().map(|u| u.request).collect::<Vec<_>>(), vec![0x7E0, 0x713, 0x70E]);
+
+        // One bad token fails the list — the caller is about to open the
+        // adapter on the strength of this having parsed.
+        assert!(parse_list("01,zz").is_err());
+        // Nothing at all is not an empty selection; it is a mistake.
+        assert!(parse_list("").is_err());
+        assert!(parse_list(" , ").is_err());
+    }
 
     #[test]
     fn each_block_uses_its_own_response_rule() {

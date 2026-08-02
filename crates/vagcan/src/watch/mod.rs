@@ -406,13 +406,23 @@ pub async fn run(
     use vag_transport::CanId;
 
     // Argument checking first: the adapter is a single-user resource, and
-    // holding it open while failing on a typo blocks the next attempt.
+    // holding it open while failing on a typo blocks the next attempt. That
+    // means the recording is created here too, not once the car is answering —
+    // an unwritable --out path is the same typo as an unreadable --survey one.
     let store = vag_data::catalog::CatalogStore::open(catalogs);
     let survey_text = match survey {
         Some(path) => Some(
             std::fs::read_to_string(path)
                 .with_context(|| format!("reading the survey {path:?}"))?,
         ),
+        None => None,
+    };
+    let mut sink = match out {
+        Some(path) => {
+            let file = std::fs::File::create(path)
+                .with_context(|| format!("creating {path:?}"))?;
+            Some(std::io::BufWriter::new(file))
+        }
         None => None,
     };
 
@@ -480,15 +490,6 @@ pub async fn run(
         }
     }
     let mut backend = Some(adapter);
-
-    let mut sink = match out {
-        Some(path) => {
-            let file = std::fs::File::create(path)
-                .with_context(|| format!("creating {path:?}"))?;
-            Some(std::io::BufWriter::new(file))
-        }
-        None => None,
-    };
     let mut header_written = false;
 
     // A full-screen view needs a terminal; without one crossterm fails with a

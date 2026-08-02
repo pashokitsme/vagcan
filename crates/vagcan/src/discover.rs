@@ -158,6 +158,8 @@ pub fn transition_overlap(a: &Column, b: &Column, window: f64) -> f64 {
     matched as f64 / a.transitions.len() as f64
 }
 
+use crate::render::plural;
+
 /// Render the classification for a human.
 pub fn render(columns: &[Column]) -> String {
     let mut out = String::new();
@@ -184,8 +186,10 @@ pub fn render(columns: &[Column]) -> String {
             let shown: Vec<String> = c.values.iter().take(8).cloned().collect();
             let more = if c.values.len() > shown.len() { " …" } else { "" };
             out.push_str(&format!(
-                "  {:<10} {levels:>2} values, {changes:>4} changes of {:>5} reads   [{}{more}]\n",
+                "  {:<10} {levels:>2} {:<7} {changes:>4} {:<7} of {:>5} reads   [{}{more}]\n",
                 c.name,
+                format!("{},", plural(levels, "value")),
+                plural(changes, "change"),
                 c.samples,
                 shown.join(" "),
             ));
@@ -201,9 +205,11 @@ pub fn render(columns: &[Column]) -> String {
         .filter(|c| c.behaviour == Behaviour::Constant)
         .count();
     out.push_str(&format!(
-        "\n{} columns: {} candidates, {continuous} continuous (use `calibrate`), {constant} never moved\n",
+        "\n{} {}: {} {}, {continuous} continuous (use `calibrate`), {constant} never moved\n",
         columns.len(),
+        plural(columns.len(), "column"),
         candidates.len(),
+        plural(candidates.len(), "candidate"),
     ));
     out
 }
@@ -323,6 +329,19 @@ mod tests {
         let text = render(&classify(csv).unwrap());
         assert!(text.contains("No identifier changed"), "{text}");
         assert!(text.contains("2 never moved"), "{text}");
+    }
+
+    #[test]
+    fn counts_of_one_read_as_one() {
+        // A switch that flipped once is "2 values, 1 change of 3 reads", and
+        // one such column is "1 candidate" — not "1 changes" of "1 candidates".
+        let csv = "t_s,A\n0.0,0\n1.0,1\n2.0,1\n";
+        let text = render(&classify(csv).unwrap());
+        assert!(text.contains("2 values,"), "{text}");
+        assert!(text.contains("1 change "), "{text}");
+        assert!(!text.contains("1 changes"), "{text}");
+        assert!(text.contains("1 column:"), "{text}");
+        assert!(text.contains("1 candidate,"), "{text}");
     }
 
     #[test]

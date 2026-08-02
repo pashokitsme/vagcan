@@ -61,6 +61,14 @@ pub fn parse_ranges(spec: &str) -> Result<Vec<RangeInclusive<u16>>, String> {
 /// engine ECU (`research/rod-labels.md` §4.0a/§4.0b), plus the standard
 /// identification block. The default, because a full `0000-FFFF` sweep is
 /// 65,536 requests — minutes at best, and most of it is refusals.
+///
+/// On the reference engine only the `F1xx` part of this answered: the two crib
+/// bands returned nothing. They are kept anyway — one car's silence is not
+/// evidence that another car's unit is silent there, and under group testing
+/// ([`scan_dids_fast`]) 771 identifiers cost about a hundred requests, not 771.
+/// What that run *did* show is that the default can finish having found only
+/// what `properties` already prints, so [`summary`] now says so and names the
+/// commands that go further.
 pub const DEFAULT_RANGES: &str = "7400-7500,A000-A100,F100-F200";
 
 /// How many identifiers a range list covers.
@@ -222,21 +230,77 @@ pub async fn probe_batching<T: AsyncIsoTpTransport>(
     uds.read_data_by_identifiers(&dids).await.is_ok()
 }
 
-/// One report line for a hit: `A058  55 55` plus ASCII when the bytes look
-/// like text (part numbers and component names are the common case).
+/// One report line for a hit: `A058  55 55`, plus the text when the bytes are
+/// printable and the documented name when the identifier has one.
+///
+/// Both come from [`crate::props`], which is what `vagcan properties` renders
+/// with — the two commands sweep the same identification block, so a name and a
+/// value that read one way there must read the same way here. In particular the
+/// text goes through [`crate::props::Property::text`], which cuts at a NUL and
+/// trims VW's trailing-space padding: `properties` showed `8V0906264H` where
+/// this printed `"8V0906264H "`.
 pub fn format_hit(hit: &DidHit) -> String {
-    let hex: Vec<String> = hit.data.iter().map(|b| format!("{b:02X}")).collect();
-    // Only call it text when there is enough of it to mean something: part
-    // numbers and component names run 10+ characters, while a two-byte
-    // measurement like 0x5555 is "UU" by coincidence and printing that as a
-    // string would invite reading a number as a name.
-    let printable = hit.data.len() >= 4 && hit.data.iter().all(|&b| (0x20..0x7F).contains(&b));
-    let text = if printable {
-        format!("  \"{}\"", String::from_utf8_lossy(&hit.data))
-    } else {
-        String::new()
-    };
-    format!("{:04X}  {}{}", hit.did, hex.join(" "), text)
+    let property = crate::props::Property { did: hit.did, data: hit.data.clone() };
+    let text = property.text().map(|t| format!("  \"{t}\"")).unwrap_or_default();
+    let name = crate::props::name_of(hit.did)
+        .map(|n| format!("  — {n}"))
+        .unwrap_or_default();
+    format!("{:04X}  {}{text}{name}", hit.did, property.hex())
+}
+
+/// The closing report of a sweep: what answered, and what to do next.
+///
+/// Kept pure so the advice is tested without a car. `found` is every identifier
+/// that answered, in the order they were reported.
+pub fn summary(
+    unit_label: &str,
+    total: usize,
+    stats: ScanStats,
+    found: &[u16],
+    elapsed_s: f64,
+) -> String {
+    let mut out = format!(
+        "\n{} of {total} identifiers answered ({} refused, {} unanswered) in {elapsed_s:.1}s \
+         using {} requests\n",
+        stats.hits, stats.refused, stats.failed, stats.asked
+    );
+
+    if stats.asked > 0 && stats.failed == stats.asked {
+        out.push_str(
+            "\nNothing answered at all. Check the ignition, the wiring (OBD-II pin 6 → CAN-H, \
+             pin 14 → CAN-L), the termination jumper being OFF, and that --ecu names a control \
+             unit this car has.\n",
+        );
+        return out;
+    }
+
+    // A sweep that only turned up identification data has told the user
+    // nothing `properties` would not have told them faster, and on the
+    // reference car that is exactly what the default range did. Say so, and
+    // name the two commands that go further, rather than leaving the reader to
+    // notice that every hit begins with F1.
+    let ident = parse_ranges(crate::props::IDENT_RANGE).expect("the built-in range parses");
+    let all_ident = !found.is_empty()
+        && found.iter().all(|did| ident.iter().any(|r| r.contains(did)));
+    if all_ident {
+        let whole_space = format!("vagcan scan --ecu {unit_label} --range 0000-FFFF");
+        let width = whole_space.len();
+        out.push_str(&format!(
+            "\nEverything that answered is in the identification block, which\n\
+             `vagcan properties --ecu {unit_label}` shows named and in order.\n\n\
+             To go further:\n  \
+             {whole_space}   this unit's whole identifier space (slow)\n  \
+             {:<width$}   every unit, the pages known to be in use\n",
+            "vagcan survey"
+        ));
+    } else if found.is_empty() {
+        out.push_str(
+            "\nThe unit answered nothing in this range. Widen it (--range 0000-FFFF sweeps \
+             everything, slowly), or run `vagcan survey` to see which pages this car uses \
+             at all.\n",
+        );
+    }
+    out
 }
 
 /// Sweep one control unit's identifiers against a real adapter (the `vagcan
@@ -295,7 +359,9 @@ pub async fn run(
     );
 
     let started = Instant::now();
+    let mut found: Vec<u16> = Vec::new();
     let on_hit = |hit: &DidHit| {
+            found.push(hit.did);
             println!("{}", format_hit(hit));
             if let Some(w) = sink.as_mut() {
                 // JSON lines, so results join against a capture without a parser.
@@ -316,22 +382,10 @@ pub async fn run(
         w.flush()?;
     }
 
-    println!(
-        "\n{} of {} identifiers answered ({} refused, {} unanswered) in {:.1}s using {} requests",
-        stats.hits,
-        total,
-        stats.refused,
-        stats.failed,
-        started.elapsed().as_secs_f64(),
-        stats.asked
+    print!(
+        "{}",
+        summary(&unit.label(), total, stats, &found, started.elapsed().as_secs_f64())
     );
-    if stats.failed == stats.asked && stats.asked > 0 {
-        println!(
-            "\nNothing answered at all. Check the ignition, the wiring (OBD-II pin 6 → CAN-H, \
-             pin 14 → CAN-L), the termination jumper being OFF, and that --ecu names a control \
-             unit this car has."
-        );
-    }
     Ok(())
 }
 
@@ -446,7 +500,52 @@ mod tests {
         // A part number reads as text — the common shape of an identity DID.
         assert_eq!(
             format_hit(&DidHit { did: 0xF187, data: b"8V0906264H".to_vec() }),
-            "F187  38 56 30 39 30 36 32 36 34 48  \"8V0906264H\"",
+            "F187  38 56 30 39 30 36 32 36 34 48  \"8V0906264H\"  — VW spare part number",
         );
+    }
+
+    #[test]
+    fn a_named_identifier_is_named_here_exactly_as_properties_names_it() {
+        // What the reference engine returns for F187, padding included. The two
+        // commands sweep the same block; disagreeing about whether it can be
+        // named — or about the trailing space — is what this pins.
+        let line = format_hit(&DidHit { did: 0xF187, data: b"8V0906264H ".to_vec() });
+        assert!(line.contains(crate::props::name_of(0xF187).unwrap()), "{line}");
+        assert!(line.contains("\"8V0906264H\""), "the padding is trimmed: {line}");
+
+        // An identifier with no documented name gets no invented one.
+        let line = format_hit(&DidHit { did: 0x7401, data: vec![0x00, 0x01] });
+        assert_eq!(line, "7401  00 01");
+    }
+
+    #[test]
+    fn a_sweep_that_only_found_identification_data_says_where_to_go_next() {
+        // The reference car's result with the default range: every hit an F1xx
+        // identifier, i.e. a subset of what `properties` prints.
+        let stats = ScanStats { asked: 100, hits: 3, refused: 97, failed: 0 };
+        let text = summary("01", 771, stats, &[0xF187, 0xF190, 0xF19E], 12.5);
+        assert!(text.contains("3 of 771 identifiers answered"), "{text}");
+        assert!(text.contains("vagcan properties --ecu 01"), "{text}");
+        assert!(text.contains("0000-FFFF"), "{text}");
+        assert!(text.contains("vagcan survey"), "{text}");
+
+        // One hit outside the block means the sweep earned its time; no advice.
+        let text = summary("01", 771, stats, &[0xF187, 0xA058], 12.5);
+        assert!(!text.contains("vagcan properties"), "{text}");
+    }
+
+    #[test]
+    fn silence_and_emptiness_are_told_apart() {
+        // Nothing on the wire at all: a wiring or ignition problem.
+        let dead = ScanStats { asked: 50, hits: 0, refused: 0, failed: 50 };
+        let text = summary("01", 771, dead, &[], 4.0);
+        assert!(text.contains("Nothing answered at all"), "{text}");
+
+        // The unit answered — with refusals. That is a range worth widening,
+        // not a cable worth checking.
+        let refusing = ScanStats { asked: 50, hits: 0, refused: 400, failed: 0 };
+        let text = summary("01", 771, refusing, &[], 4.0);
+        assert!(!text.contains("Nothing answered at all"), "{text}");
+        assert!(text.contains("--range 0000-FFFF"), "{text}");
     }
 }

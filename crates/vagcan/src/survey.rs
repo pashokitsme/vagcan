@@ -213,7 +213,11 @@ pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{} identifiers changed between the two surveys:\n", changed.len());
+    println!(
+        "{} {} changed between the two surveys:\n",
+        changed.len(),
+        crate::render::plural(changed.len(), "identifier")
+    );
     let mut unit = None;
     for (request, did, before_data, after_data) in &changed {
         if unit != Some(*request) {
@@ -238,18 +242,46 @@ pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// What a survey run was asked to do.
+///
+/// Bundled rather than passed positionally: four of these are booleans, and
+/// `while_driving` is the one that decides whether the sweep that cost this car
+/// its steering assist is allowed to happen at speed (see `SAFETY.md`). Named
+/// fields cannot be swapped by accident.
+pub struct Options<'a> {
+    /// Hex ranges to sweep per unit.
+    pub range: &'a str,
+    /// Where to write the answers, if anywhere.
+    pub out: Option<&'a str>,
+    /// Pause between reads, in milliseconds.
+    pub delay_ms: u64,
+    /// Survey only these units, skipping the gateway read.
+    pub only: Option<&'a str>,
+    /// Ask each unit for an extended diagnostic session first.
+    pub extended: bool,
+    /// Sweep even though the car is moving.
+    pub while_driving: bool,
+}
+
 /// Run the survey (see the module docs).
-pub async fn run(
-    device_path: &str,
-    baud: u32,
-    range: &str,
-    out: Option<&str>,
-    delay_ms: u64,
-    only: Option<&str>,
-    extended: bool,
-    while_driving: bool,
-) -> Result<()> {
+pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<()> {
+    let Options { range, out, delay_ms, only, extended, while_driving } = options;
+    // Every argument is checked before the adapter is opened: it is a
+    // single-user resource, and holding it open to fail on a typo blocks the
+    // next attempt.
     let ranges = scan::parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
+    // An explicit list skips the gateway read, so one unit can be re-run
+    // without the rest.
+    let requested = match only {
+        Some(spec) => Some(
+            vag_protocol::address::parse_list(spec)
+                .map_err(|e| anyhow::anyhow!("--only: {e}"))?
+                .iter()
+                .map(|u| u.request)
+                .collect::<Vec<_>>(),
+        ),
+        None => None,
+    };
     let mut sink = match out {
         Some(path) => {
             let file =
@@ -291,20 +323,8 @@ pub async fn run(
         };
     }
 
-    let order = match only {
-        // An explicit list skips the gateway read, so one unit can be re-run
-        // without the rest.
-        Some(spec) => {
-            let mut ids = Vec::new();
-            for token in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                ids.push(
-                    vag_protocol::address::parse(token)
-                        .map_err(|e| anyhow::anyhow!("--only: {e}"))?
-                        .request,
-                );
-            }
-            ids
-        }
+    let order = match requested {
+        Some(ids) => ids,
         None => {
             let address = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
             let mut uds = AsyncUdsClient::new(IsoTpCan::new(

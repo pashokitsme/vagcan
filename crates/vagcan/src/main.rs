@@ -200,8 +200,9 @@ enum Command {
         /// a request id (713, 70E). `vagcan units` lists this car's.
         #[arg(long, default_value = "01", value_name = "ID")]
         ecu: String,
-        /// Hex ranges to sweep, e.g. `7400-7500,A000-A100`. `0000-FFFF` sweeps
-        /// everything.
+        /// Hex ranges to sweep, e.g. `7400-7500,A000-A100`. The default is the
+        /// identification block plus two bands seen carrying live values on the
+        /// reference car; `0000-FFFF` sweeps everything, slowly.
         #[arg(long, default_value = scan::DEFAULT_RANGES, value_name = "SPEC")]
         range: String,
         /// Write the answers to this file (JSON lines).
@@ -300,10 +301,12 @@ enum Command {
         /// Write the proven scalings as a measurement catalog.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
-        /// Minimum R² for a fit to count.
+        /// Minimum R² for a fit to count (the whole bar: R² ≥ 0.995, ≥ 20
+        /// points over ≥ 4 distinct raw values).
         #[arg(long, default_value_t = 0.995, value_name = "R2")]
         min_r2: f64,
-        /// Minimum matched samples for a fit to count.
+        /// Minimum matched samples for a fit to count (the whole bar: R² ≥
+        /// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
         #[arg(long, default_value_t = 20, value_name = "N")]
         min_points: usize,
     },
@@ -334,10 +337,12 @@ enum Command {
         /// Recording written by `vagcan watch --out`.
         #[arg(long, value_name = "FILE")]
         log: String,
-        /// Minimum R² for a fit to count.
+        /// Minimum R² for a fit to count (the whole bar: R² ≥ 0.995, ≥ 20
+        /// points over ≥ 4 distinct raw values).
         #[arg(long, default_value_t = 0.995, value_name = "R2")]
         min_r2: f64,
-        /// Minimum matched samples for a fit to count.
+        /// Minimum matched samples for a fit to count (the whole bar: R² ≥
+        /// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
         #[arg(long, default_value_t = 20, value_name = "N")]
         min_points: usize,
     },
@@ -388,9 +393,13 @@ enum Command {
         /// Rebuild the label cache even if it looks current.
         #[arg(long)]
         refresh: bool,
-        /// Where the recovered encryption vectors are kept. Filling it is a
-        /// separate tool: `cargo run -p vag-data --features rod-crack --bin
-        /// vag-rod <file.rod>`.
+        /// Where the keys for reading encrypted .rod label files are cached.
+        ///
+        /// VW ships .rod files with their contents encrypted, and the key for a
+        /// section has to be recovered by a separate, slow tool before that
+        /// section can be read. A section with no key here is reported as
+        /// unreadable rather than guessed, and the command that recovers one is
+        /// printed against the section that needs it.
         #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
         iv_cache: String,
         /// Adapter to use with --from-car.
@@ -454,12 +463,14 @@ async fn main() -> Result<()> {
             survey::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
-                &range,
-                out.as_deref(),
-                delay_ms,
-                only.as_deref(),
-                extended,
-                while_driving,
+                survey::Options {
+                    range: &range,
+                    out: out.as_deref(),
+                    delay_ms,
+                    only: only.as_deref(),
+                    extended,
+                    while_driving,
+                },
             )
             .await
         }
@@ -507,6 +518,14 @@ async fn main() -> Result<()> {
             refresh,
         } => {
             if from_car {
+                // The corpus is checked before the adapter is opened: reading
+                // F19E off the car and only then discovering that the label
+                // directory does not exist costs the port for nothing.
+                if !std::path::Path::new(&dir).is_dir() {
+                    anyhow::bail!(
+                        "{dir:?} is not a directory — point it at the VCDS install root"
+                    );
+                }
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
                 labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
@@ -593,24 +612,10 @@ async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
     }
     let width = readings.iter().map(|r| r.name.len()).max().unwrap_or(0);
     for r in &readings {
-        match r.value {
-            // A count is not a measurement to two decimals, and it has no unit
-            // column to fill.
-            Some(v) if r.unit.is_empty() && v.fract() == 0.0 => {
-                println!("  {:<width$}  {v:>10.0}", r.name)
-            }
-            Some(v) => println!("  {:<width$}  {v:>10.2} {}", r.name, r.unit),
-            // The identifier answered but the bytes did not fit the form.
-            None => println!("  {:<width$}  {:>10} (raw)", r.name, hex(&r.raw)),
-        }
+        println!("{}", render::render_sensor_row(r, width));
     }
     println!("\n{} of {} standard sensors answered", readings.len(), catalog.len());
     Ok(())
-}
-
-/// Hex for a raw response body.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
 /// Read the ODX label-file name a control unit reports for itself (F19E).
@@ -669,7 +674,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
         return Ok(());
     }
 
-    println!("{} control units:\n", ids.len());
+    println!("{} {}:\n", ids.len(), render::plural(ids.len(), "control unit"));
     let mut identified = 0usize;
     let mut resolved = 0usize;
     let mut backend = uds.into_transport().into_backend();
@@ -762,4 +767,54 @@ async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// The help for one flag of one subcommand.
+    fn flag_help(command: &str, flag: &str) -> String {
+        let mut cli = Cli::command();
+        let sub = cli.find_subcommand_mut(command).expect("the subcommand exists");
+        let arg = sub
+            .get_arguments()
+            .find(|a| a.get_id() == flag)
+            .unwrap_or_else(|| panic!("{command} has no {flag}"));
+        arg.get_help().map(|h| h.to_string()).unwrap_or_default()
+    }
+
+    #[test]
+    fn the_fit_flags_state_the_bar_that_is_actually_enforced() {
+        // The bar is quoted twice — in this static help and in the failure
+        // message the fitters print — and the numbers come from a third place,
+        // `Thresholds::default()`. Loosening a threshold without updating the
+        // help would leave the tool advertising a standard it no longer holds
+        // itself to; this makes that a test failure.
+        let bar = analyse::Thresholds::default();
+        for command in ["analyse", "calibrate"] {
+            for flag in ["min_r2", "min_points"] {
+                let help = flag_help(command, flag);
+                assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{command} {flag}: {help}");
+                assert!(
+                    help.contains(&format!("≥ {} points", bar.min_points)),
+                    "{command} {flag}: {help}"
+                );
+                assert!(
+                    help.contains(&format!("≥ {} distinct raw values", bar.min_levels)),
+                    "{command} {flag}: {help}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_iv_cache_flag_is_legible_without_the_research() {
+        // It used to explain itself with a `cargo run --features rod-crack`
+        // invocation, which says nothing to someone holding an OBD adapter.
+        let help = flag_help("labels", "iv_cache");
+        assert!(!help.contains("cargo"), "{help}");
+        assert!(help.contains(".rod"), "{help}");
+    }
 }

@@ -138,6 +138,19 @@ pub async fn run(
     supported: bool,
     extended: bool,
 ) -> Result<()> {
+    // Arguments first: the adapter is a single-user resource, so a typo in
+    // --ecu must not cost the port before it is reported.
+    let requested = match only {
+        Some(spec) => Some(
+            vag_protocol::address::parse_list(spec)
+                .map_err(|e| anyhow::anyhow!("--ecu: {e}"))?
+                .iter()
+                .map(|u| u.request)
+                .collect::<Vec<_>>(),
+        ),
+        None => None,
+    };
+
     let mut backend =
         SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
             .await
@@ -151,18 +164,8 @@ pub async fn run(
         };
     }
 
-    let order = match only {
-        Some(spec) => {
-            let mut ids = Vec::new();
-            for token in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                ids.push(
-                    vag_protocol::address::parse(token)
-                        .map_err(|e| anyhow::anyhow!("--ecu: {e}"))?
-                        .request,
-                );
-            }
-            ids
-        }
+    let order = match requested {
+        Some(ids) => ids,
         None => {
             let gw = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
             let mut uds = AsyncUdsClient::new(IsoTpCan::new(
@@ -244,11 +247,12 @@ pub async fn run(
             match uds.read_supported_dtcs().await {
                 Ok(list) => {
                     println!(
-                        "\n{}  {:03X}  {}  — {} codes supported",
+                        "\n{}  {:03X}  {}  — {} {} supported",
                         address.label(),
                         request,
                         unit.component.clone().unwrap_or_default(),
-                        list.len()
+                        list.len(),
+                        crate::render::plural(list.len(), "code")
                     );
                     for dtc in &list {
                         println!("  {}", format_code(dtc.code));

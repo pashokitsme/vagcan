@@ -236,11 +236,8 @@ pub async fn run(
     use std::time::{Duration, Instant, SystemTime};
     use vag_can::{CanBackend, CanError, SlcanBackend, SlcanBitrate, SlcanMode};
 
-    let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
-    let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, mode)
-        .await
-        .with_context(|| crate::device::open_failure(device_path))?;
-
+    // The capture file is opened first: the adapter is a single-user resource,
+    // and a --out path that cannot be created should not cost the port.
     let capture: Option<Box<dyn Write>> = match out {
         Some(path) => {
             let file = std::fs::File::create(path)
@@ -249,6 +246,11 @@ pub async fn run(
         }
         None => None,
     };
+
+    let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
+    let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, mode)
+        .await
+        .with_context(|| crate::device::open_failure(device_path))?;
     let unix_us = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)

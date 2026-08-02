@@ -1,7 +1,7 @@
 //! Pure rendering of what `doctor` prints — kept free of I/O and hardware so
 //! the output formatting is unit-tested with captured identify bytes.
 
-use vag_protocol::EcuIdentity;
+use vag_protocol::{EcuIdentity, Reading};
 
 /// Placeholder for an identification field the ECU did not return.
 const MISSING: &str = "—";
@@ -68,6 +68,50 @@ pub fn render_nothing_answered() -> String {
     nothing_answered()
 }
 
+/// The noun for a count: `1 change`, `2 changes`.
+///
+/// Only regular plurals, because every count in this tool is of something with
+/// one — identifiers, columns, changes, control units.
+pub fn plural(n: usize, singular: &str) -> String {
+    if n == 1 {
+        singular.to_string()
+    } else {
+        format!("{singular}s")
+    }
+}
+
+/// Hex for a raw response body.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+}
+
+/// One `vagcan sensors` row: name, value, and a unit only when there is one.
+///
+/// Whether a row has a unit is a property of the measurement, not of the value
+/// it happens to be carrying — so the unit column is decided by the definition.
+/// The earlier version decided it by asking whether the value was a whole
+/// number as well, which printed `Warm-ups since codes cleared  4.00 ` with a
+/// trailing space for a reading of 4.5 and for the whole numbers it did catch
+/// printed no unit but still no trailing space by luck rather than by rule.
+/// Decimals are dropped for a unitless whole number: a count of warm-ups is not
+/// a measurement to two decimal places.
+pub fn render_sensor_row(reading: &Reading, width: usize) -> String {
+    let name = &reading.name;
+    let Some(value) = reading.value else {
+        // The identifier answered but the bytes did not fit the form; the unit
+        // belongs to the value that could not be formed, so it is not printed.
+        return format!("  {name:<width$}  {:>10} (raw)", hex(&reading.raw));
+    };
+    if reading.unit.is_empty() {
+        let text = match value.fract() == 0.0 {
+            true => format!("{value:>10.0}"),
+            false => format!("{value:>10.2}"),
+        };
+        return format!("  {name:<width$}  {text}");
+    }
+    format!("  {name:<width$}  {value:>10.2} {}", reading.unit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +151,48 @@ mod tests {
         engine.serial = None;
         let text = render_info(None, &engine, &engine);
         assert!(text.contains(MISSING), "an absent field is marked, not blank: {text}");
+    }
+
+    fn reading(name: &str, unit: &str, value: Option<f64>) -> Reading {
+        Reading {
+            name: name.to_string(),
+            unit: unit.to_string(),
+            value,
+            raw: vec![0x04],
+        }
+    }
+
+    #[test]
+    fn a_count_prints_as_an_integer_with_no_unit_column() {
+        // PID 30 on the reference engine: a count, no unit. It used to print
+        // `4.00 ` — two decimals it cannot have, and a trailing space where a
+        // unit would have been.
+        let row = render_sensor_row(&reading("Warm-ups since codes cleared", "", Some(4.0)), 28);
+        assert_eq!(row, "  Warm-ups since codes cleared           4");
+        assert_eq!(row.trim_end(), row, "no trailing space where a unit would be");
+
+        // Unitless and NOT whole: still no unit column, decimals kept because
+        // they are real.
+        let row = render_sensor_row(&reading("Something", "", Some(4.5)), 9);
+        assert_eq!(row, "  Something        4.50");
+        assert_eq!(row.trim_end(), row);
+    }
+
+    #[test]
+    fn a_measurement_keeps_its_unit_and_its_decimals() {
+        let row = render_sensor_row(&reading("Coolant temperature", "°C", Some(74.0)), 19);
+        assert_eq!(row, "  Coolant temperature       74.00 °C");
+    }
+
+    #[test]
+    fn bytes_that_did_not_fit_the_form_are_shown_as_bytes() {
+        let mut r = reading("Odd one", "km/h", None);
+        r.raw = vec![0xAB, 0xCD];
+        let row = render_sensor_row(&r, 7);
+        assert!(row.contains("AB CD (raw)"), "{row}");
+        // No unit on a value that was never formed — it would claim the bytes
+        // had been understood.
+        assert!(!row.contains("km/h"), "{row}");
     }
 
     #[test]
