@@ -330,6 +330,76 @@ mod tests {
     }
 
     #[test]
+    fn the_climate_units_f405_is_refused_because_no_conversion_carries_it() {
+        // research/dumps/survey-parked.jsonl and survey-driving-20260802-03{14,22}
+        // .jsonl, unit 0x746 (5E0907044AM) against unit 0x7E0 (8V0906264H):
+        //
+        //   climate F405   0x57=87   0x5A=90   0x6D=109
+        //   engine  F405   0x81=129  0x5D=93   0x89=137  → 89 / 53 / 97 °C
+        //
+        // Between the first two the engine's coolant fell 36 °C while the
+        // climate value rose by 3; a line through those two pairs (slope −12)
+        // predicts −135 for the third, where the engine reads 137. So the
+        // climate value is not this parameter under any linear conversion —
+        // and it is one byte wide, exactly like PID 05, which is why the width
+        // check alone cannot save us here.
+        let p = pid(0x05).unwrap();
+        assert_eq!(p.data_len(), 1);
+        for raw in [0x57u8, 0x5A, 0x6D] {
+            assert_eq!(
+                conversion_for(p, false, &[raw]),
+                Err(Unconverted::NotAnEmissionsUnit),
+                "a non-emissions unit's F405 must never convert"
+            );
+        }
+        // The same bytes on the engine do convert, unchanged.
+        assert_eq!(
+            conversion_for(p, true, &[0x81]).unwrap().interpret(&[0x81]),
+            Some(89.0)
+        );
+    }
+
+    #[test]
+    fn a_response_of_the_wrong_width_is_refused_even_on_the_engine_block() {
+        // The gearbox (0x7E1) is inside the ISO block, and still answers F40D
+        // with two bytes where J1979 PID 0D is one — its own catalog row reads
+        // them little-endian at ×0.01 km/h. Converting the first byte as km/h
+        // would report 0x9C 0x02 (668.4 km/h in its own units) as 156 km/h.
+        let speed = pid(0x0D).unwrap();
+        assert_eq!(
+            conversion_for(speed, true, &[0x00, 0x00]),
+            Err(Unconverted::WrongWidth { expected: 1, got: 2 })
+        );
+        // And the climate unit's one-byte F40C, where PID 0C is two bytes.
+        let rpm = pid(0x0C).unwrap();
+        assert_eq!(rpm.data_len(), 2);
+        assert_eq!(
+            conversion_for(rpm, true, &[0x0A]),
+            Err(Unconverted::WrongWidth { expected: 2, got: 1 })
+        );
+    }
+
+    #[test]
+    fn every_parameter_the_car_proved_still_converts_at_its_own_width() {
+        // The five blind fits, at the byte widths the engine actually answered
+        // in research/dumps/survey-parked.jsonl. If the new gate rejected any
+        // of these, it would have broken the one path that is established.
+        let proven: &[(u8, &[u8], f64)] = &[
+            (0x05, &[0x81], 89.0),          // parked coolant
+            (0x0D, &[0x00], 0.0),           // parked road speed
+            (0x0F, &[0x71], 73.0),          // parked intake air
+            (0x23, &[0x05, 0xCE], 14860.0), // parked fuel rail, two bytes ×10
+            (0x46, &[0x44], 28.0),          // parked ambient
+        ];
+        for (id, bytes, expected) in proven {
+            let p = pid(*id).unwrap();
+            let def = conversion_for(p, true, bytes)
+                .unwrap_or_else(|e| panic!("PID {id:02X} refused on the engine: {e:?}"));
+            assert_eq!(def.interpret(bytes), Some(*expected), "PID {id:02X}");
+        }
+    }
+
+    #[test]
     fn only_supported_identifiers_make_it_into_a_catalog() {
         // The identifiers a sweep found on the reference engine, plus one the
         // table does not model (PID 13 is a bitfield) and one it does not have.

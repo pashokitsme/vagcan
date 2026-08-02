@@ -613,27 +613,43 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
 }
 
 /// Read the standard OBD-II sensors (see the `Sensors` subcommand docs).
+///
+/// The table in `vag_data::obd` is SAE J1979's, and J1979 is only binding on
+/// the emissions-related units ISO 15765-4 addresses. Every identifier that
+/// answers is still shown; whether its bytes become a number is decided by
+/// `obd::conversion_for`, per parameter, from the unit's block and the width of
+/// what it actually answered.
 async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
-    use vag_data::catalog::MeasurementCatalog;
-    use vag_data::obd::PIDS;
+    use vag_data::obd::{self, PIDS};
+    use render::SensorLine;
 
     let path = device::resolve(device_arg)?;
-    let mut uds = open_ecu(&path, parse_ecu(ecu_text)?).await?;
+    let unit = parse_ecu(ecu_text)?;
+    let established = unit.is_emissions_related();
+    let mut uds = open_ecu(&path, unit).await?;
 
     // Ask for every standard parameter; the unit refuses the ones it does not
-    // implement, and `read_catalog` skips those rather than failing the run.
-    let catalog = MeasurementCatalog::new(PIDS.iter().map(|p| p.to_def()).collect());
-    let readings = uds.read_catalog(&catalog).await;
+    // implement, and those are skipped rather than failing the run.
+    let mut lines = Vec::new();
+    for p in PIDS {
+        let did = obd::did_for_pid(p.pid);
+        let Ok(bytes) = uds.read_data_by_identifier(did).await else { continue };
+        lines.push(match obd::conversion_for(p, established, &bytes) {
+            Ok(def) => SensorLine::Converted(vag_protocol::Reading {
+                name: def.name.to_string(),
+                unit: def.unit.to_string(),
+                value: def.interpret(&bytes),
+                raw: bytes,
+            }),
+            Err(why) => SensorLine::Unconverted { did, bytes, why },
+        });
+    }
 
-    if readings.is_empty() {
+    if lines.is_empty() {
         println!("{}", render::render_nothing_answered());
         return Ok(());
     }
-    let width = readings.iter().map(|r| r.name.len()).max().unwrap_or(0);
-    for r in &readings {
-        println!("{}", render::render_sensor_row(r, width));
-    }
-    println!("\n{} of {} standard sensors answered", readings.len(), catalog.len());
+    println!("{}", render::render_sensors(&unit.label(), &lines));
     Ok(())
 }
 

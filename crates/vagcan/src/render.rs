@@ -1,6 +1,7 @@
 //! Pure rendering of what `doctor` prints — kept free of I/O and hardware so
 //! the output formatting is unit-tested with captured identify bytes.
 
+use vag_data::obd::Unconverted;
 use vag_protocol::{EcuIdentity, Reading};
 
 /// Placeholder for an identification field the ECU did not return.
@@ -110,6 +111,81 @@ pub fn render_sensor_row(reading: &Reading, width: usize) -> String {
         return format!("  {name:<width$}  {text}");
     }
     format!("  {name:<width$}  {value:>10.2} {}", reading.unit)
+}
+
+/// One line of `vagcan sensors`: either a reading the standard conversion is
+/// established for, or the bytes a unit answered with and the reason the tool
+/// will not turn them into a number.
+pub enum SensorLine {
+    /// The conversion holds here (see [`vag_data::obd::conversion_for`]).
+    Converted(Reading),
+    /// It does not, so only the identifier and its bytes are shown. Nothing is
+    /// named: the J1979 name would assert the very thing that is in doubt.
+    Unconverted { did: u16, bytes: Vec<u8>, why: Unconverted },
+}
+
+/// The whole `vagcan sensors` report.
+///
+/// Converted rows first, then — under a heading that says why — the identifiers
+/// whose bytes the tool refuses to interpret. The refusal is spelt out rather
+/// than left as a silent omission: a user who sees `F405` answer on the climate
+/// unit and no row for it deserves to know that the tool read it and would not
+/// convert it.
+pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> String {
+    let width = lines
+        .iter()
+        .filter_map(|l| match l {
+            SensorLine::Converted(r) => Some(r.name.len()),
+            SensorLine::Unconverted { .. } => None,
+        })
+        .max()
+        .unwrap_or(0);
+
+    let mut out = String::new();
+    let mut converted = 0usize;
+    for line in lines {
+        if let SensorLine::Converted(r) = line {
+            converted += 1;
+            out.push_str(&render_sensor_row(r, width));
+            out.push('\n');
+        }
+    }
+
+    let refused: Vec<&SensorLine> =
+        lines.iter().filter(|l| matches!(l, SensorLine::Unconverted { .. })).collect();
+    if !refused.is_empty() {
+        if converted > 0 {
+            out.push('\n');
+        }
+        let off_block = refused
+            .iter()
+            .any(|l| matches!(l, SensorLine::Unconverted { why: Unconverted::NotAnEmissionsUnit, .. }));
+        if off_block {
+            out.push_str(&format!(
+                "Control unit {unit_label} is not one ISO 15765-4 addresses for emissions\n\
+                 diagnostics (0x7E0..0x7E7), so nothing establishes that its F4xx\n\
+                 identifiers are the SAE J1979 parameters. On the reference car they are\n\
+                 not. Bytes only:\n\n"
+            ));
+        } else {
+            out.push_str(
+                "Answered, but not at the width SAE J1979 defines — so these are not\n\
+                 those parameters. Bytes only:\n\n",
+            );
+        }
+        for line in refused {
+            let SensorLine::Unconverted { did, bytes, why } = line else { continue };
+            let note = match why {
+                Unconverted::NotAnEmissionsUnit => String::new(),
+                Unconverted::WrongWidth { expected, got } => {
+                    format!("   ({got} {}, standard says {expected})", plural(*got, "byte"))
+                }
+            };
+            out.push_str(&format!("  {did:04X}  {:>10}{note}\n", hex(bytes)));
+        }
+    }
+    out.push_str(&format!("\n{converted} of {} standard sensors converted", lines.len()));
+    out
 }
 
 #[cfg(test)]
