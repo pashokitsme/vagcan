@@ -123,12 +123,26 @@ impl MeasurementDef {
             _ => {
                 let value = self.interpret(data)?;
                 Some(if self.unit.is_empty() {
-                    format!("{value}")
+                    round(value)
                 } else {
-                    format!("{value} {}", self.unit)
+                    format!("{} {}", round(value), self.unit)
                 })
             }
         }
+    }
+}
+
+/// Format a measured value for a person to read.
+///
+/// Three decimals, and no trailing zeros. The finest scaling this project has
+/// proven is ×0.001 (boost pressure, in bar), so three decimals is exactly the
+/// resolution the car reports and a fourth would be arithmetic rather than
+/// measurement. Whole numbers print whole: an odometer is not `212805.000`.
+fn round(value: f64) -> String {
+    let text = format!("{value:.3}");
+    match text.contains('.') {
+        true => text.trim_end_matches('0').trim_end_matches('.').to_string(),
+        false => text,
     }
 }
 
@@ -383,6 +397,21 @@ mod tests {
         assert_eq!(def.describe(&[0x09]), None);
         // And a state is never a number.
         assert_eq!(def.interpret(&[0x03]), None);
+    }
+
+    #[test]
+    fn values_are_rounded_to_the_resolution_the_car_reports() {
+        // ×0.001 is the finest scaling proven on this car, so a fourth decimal
+        // would be arithmetic rather than measurement — and a whole number
+        // prints whole, because an odometer is not 212805.000.
+        assert_eq!(round(1.0005678), "1.001");
+        assert_eq!(round(0.991), "0.991");
+        assert_eq!(round(212_805.0), "212805");
+        assert_eq!(round(90.5), "90.5");
+        assert_eq!(round(-0.25), "-0.25");
+        // The case that made this necessary: a division that lands just off.
+        assert_eq!(round(717.4999999999999), "717.5");
+        assert_eq!(round(1.0 / 3.0), "0.333");
     }
 
     #[test]

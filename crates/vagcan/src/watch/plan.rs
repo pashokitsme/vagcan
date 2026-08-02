@@ -125,6 +125,9 @@ pub struct UnitIdentity {
     pub part_number: Option<String>,
     /// `F19E`, the ODX label file the unit names for itself.
     pub odx_name: Option<String>,
+    /// `F197`, the component string — what the unit calls itself. Used to
+    /// label its tab; a unit that did not say goes by its number alone.
+    pub component: Option<String>,
 }
 
 /// Everything on offer: the standard OBD-II parameters on the engine, then
@@ -198,6 +201,7 @@ pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
             request,
             part_number: field("F187"),
             odx_name: field("F19E"),
+            component: field("F197"),
         });
     }
     out
@@ -327,6 +331,7 @@ mod tests {
             request,
             part_number: Some(part.to_string()),
             odx_name: None,
+            component: None,
         };
         (
             store,

@@ -22,6 +22,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
@@ -66,6 +67,17 @@ pub struct App {
     /// Scroll position of the selection list. Without one, everything past the
     /// bottom of the terminal is unreachable.
     select_state: TableState,
+    /// Which control unit's tab is open. A car has fifteen units and over a
+    /// thousand identifiers between them; one list of all of it is a list
+    /// nobody reads.
+    tab: usize,
+    /// Where each tab was drawn, so a click can find it.
+    tab_spans: Vec<(u16, u16, usize)>,
+    /// Where the selection list was drawn, for the same reason.
+    list_area: Option<Rect>,
+    /// What each unit called itself (`F197`), for the tab labels. A unit that
+    /// did not say goes by its number alone rather than an invented name.
+    pub units: Vec<(u16, String)>,
     /// Completed poll cycles, and when the run started.
     cycles: u64,
     started: Instant,
@@ -89,11 +101,44 @@ impl App {
             filter: String::new(),
             typing_filter: false,
             select_state: TableState::default(),
+            tab: 0,
+            tab_spans: Vec::new(),
+            list_area: None,
+            units: Vec::new(),
             cycles: 0,
             started: Instant::now(),
             clock: 0.0,
             live: true,
             status: String::new(),
+        }
+    }
+
+    /// The control units on offer, in the order their tabs appear.
+    ///
+    /// One tab per unit, and a last tab for everything at once — the pile is
+    /// still reachable for anyone who wants it, it is just not what opens.
+    fn tabs(&self) -> Vec<u16> {
+        let mut units: Vec<u16> = self.channels.iter().map(|c| c.request).collect();
+        units.sort_unstable();
+        units.dedup();
+        units
+    }
+
+    /// The unit the open tab shows, or `None` on the "everything" tab.
+    fn open_unit(&self) -> Option<u16> {
+        self.tabs().get(self.tab).copied()
+    }
+
+    /// How a tab is labelled: the unit's short number when this project has
+    /// established one, otherwise its request id, and the component string the
+    /// unit gave for itself when there is one.
+    fn tab_label(&self, request: u16) -> String {
+        let address = vag_protocol::address::UnitAddress::from_request(request)
+            .map(|a| a.label())
+            .unwrap_or_else(|| format!("{request:03X}"));
+        match self.units.iter().find(|(id, _)| *id == request) {
+            Some((_, name)) => format!("{address} {name}"),
+            None => address,
         }
     }
 
@@ -103,15 +148,15 @@ impl App {
     /// A filter matches the measurement name, the identifier or the unit, so
     /// `boost`, `202A` and `713` all narrow to something useful.
     fn visible(&self) -> Vec<usize> {
-        if self.filter.is_empty() {
-            return (0..self.channels.len()).collect();
-        }
+        let unit = self.open_unit();
         let needle = self.filter.to_lowercase();
         self.channels
             .iter()
             .enumerate()
+            .filter(|(_, c)| unit.is_none_or(|u| c.request == u))
             .filter(|(_, c)| {
-                c.label().to_lowercase().contains(&needle)
+                needle.is_empty()
+                    || c.label().to_lowercase().contains(&needle)
                     || format!("{:04x}", c.did).contains(&needle)
                     || c.unit().to_lowercase().contains(&needle)
             })
@@ -121,7 +166,12 @@ impl App {
 
     /// Rows currently on screen, in the order the plan polls them.
     fn shown(&self) -> Vec<&Channel> {
-        let mut v: Vec<&Channel> = self.channels.iter().filter(|c| c.selected).collect();
+        let unit = self.open_unit();
+        let mut v: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|c| c.selected && unit.is_none_or(|u| c.request == u))
+            .collect();
         v.sort_by_key(|c| (c.request, c.did));
         v
     }
@@ -205,7 +255,50 @@ impl App {
 ///
 /// Column widths come from the content, so a long name is shown in full rather
 /// than elided — the whole reason for moving off a single scrolling line.
-fn draw_live(frame: &mut Frame, app: &App) {
+/// What each unit called itself, for the tab labels.
+///
+/// The component string when the unit gave one, else its part number — both
+/// come from the unit, so a tab never carries a name this project made up.
+fn unit_names(identities: &[plan::UnitIdentity]) -> Vec<(u16, String)> {
+    identities
+        .iter()
+        .filter_map(|i| {
+            let name = i.component.clone().or_else(|| i.part_number.clone())?;
+            Some((i.request, name))
+        })
+        .collect()
+}
+
+/// Draw the tab bar and return the area left for the table.
+fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
+    let split = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).split(area);
+    let tabs = app.tabs();
+    let mut spans = Vec::new();
+    let mut line: Vec<Span> = Vec::new();
+    let mut x = split[0].x;
+    for (index, request) in tabs.iter().enumerate() {
+        let selected = app.channels.iter().filter(|c| c.request == *request && c.selected).count();
+        let text = match selected {
+            0 => format!(" {} ", app.tab_label(*request)),
+            n => format!(" {} ({n}) ", app.tab_label(*request)),
+        };
+        let width = text.chars().count() as u16;
+        let style = match index == app.tab {
+            true => Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD),
+            false => Style::default().fg(Color::DarkGray),
+        };
+        spans.push((x, x + width, index));
+        x += width;
+        line.push(Span::styled(text, style));
+    }
+    app.tab_spans = spans;
+    frame.render_widget(Paragraph::new(Line::from(line)), split[0]);
+    split[1]
+}
+
+fn draw_live(frame: &mut Frame, app: &mut App) {
+    let layout = Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).split(frame.area());
+    let table_area = draw_tabs(frame, app, layout[0]);
     let shown = app.rows();
     let rows: Vec<Row> = shown
         .iter()
@@ -242,7 +335,6 @@ fn draw_live(frame: &mut Frame, app: &App) {
         .unwrap_or(8)
         .max(14) as u16;
 
-    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
     let table = Table::new(
         rows,
         [
@@ -259,16 +351,16 @@ fn draw_live(frame: &mut Frame, app: &App) {
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().borders(Borders::ALL).title(" vagcan watch "));
-    frame.render_widget(table, layout[0]);
+    frame.render_widget(table, table_area);
 
     let rate = match app.live {
         true => format!("{:.1} Hz · ", app.poll_rate()),
         false => String::new(),
     };
     let help = format!(
-        " {rate}{} of {} shown · [c] configure  [q] quit{}",
+        " {rate}{} of {} shown · [tab] unit  [c] configure  [q] quit{}",
         shown.len(),
-        app.channels.len(),
+        app.channels.iter().filter(|c| c.selected).count(),
         app.status
     );
     frame.render_widget(
@@ -279,6 +371,8 @@ fn draw_live(frame: &mut Frame, app: &App) {
 
 /// Draw the selection screen.
 fn draw_select(frame: &mut Frame, app: &mut App) {
+    let layout = Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).split(frame.area());
+    let table_area = draw_tabs(frame, app, layout[0]);
     let visible = app.visible();
     let rows: Vec<Row> = visible
         .iter()
@@ -296,7 +390,6 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
         .collect();
 
     let name_w = app.channels.iter().map(|c| c.label().len()).max().unwrap_or(4) as u16;
-    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
     let title = match app.filter.is_empty() {
         true => format!(" choose what to show — {} available ", app.channels.len()),
         false => format!(
@@ -324,12 +417,15 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
     // scroll instead of clipping at the bottom of the terminal.
     let row = visible.iter().position(|i| *i == app.cursor);
     app.select_state.select(row);
-    frame.render_stateful_widget(table, layout[0], &mut app.select_state);
+    // Remember where the list landed, so a click can be turned back into a row.
+    app.list_area = Some(table_area);
+    frame.render_stateful_widget(table, table_area, &mut app.select_state);
 
     let help = if app.typing_filter {
         format!(" filter: {}▏ [enter] apply  [esc] clear ", app.filter)
     } else {
-        " [space] toggle  [↑↓/pgup/pgdn/home/end] move  [/] filter  [a] all  [n] none  [enter] back "
+        " [space]/click toggle  [↑↓ pgup/pgdn] move  [tab] unit  [/] filter  [a] all  [n] none  \
+         [enter] back "
             .to_string()
     };
     frame.render_widget(
@@ -338,8 +434,85 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
     );
 }
 
+/// Move to the next or previous unit tab, wrapping.
+fn step_tab(app: &mut App, forward: bool) {
+    let count = app.tabs().len();
+    if count == 0 {
+        return;
+    }
+    app.tab = match forward {
+        true => (app.tab + 1) % count,
+        false => (app.tab + count - 1) % count,
+    };
+    // The cursor belongs to the tab it is in; leaving it behind makes the
+    // arrow keys jump to a row nobody can see.
+    if let Some(first) = app.visible().first() {
+        app.cursor = *first;
+    }
+}
+
+/// Handle a mouse event.
+///
+/// Clicking is the obvious thing to try on a list of checkboxes, and the tool
+/// draws them as `[x]`. Supporting it costs one branch; not supporting it
+/// leaves a screen that looks clickable and is not. Nothing here can quit —
+/// there is no click that means "stop", and inventing one would make a stray
+/// click end a recording.
+fn on_mouse(app: &mut App, event: crossterm::event::MouseEvent) {
+    use crossterm::event::MouseEventKind;
+    let (x, y) = (event.column, event.row);
+    match event.kind {
+        MouseEventKind::Down(_) => {
+            // The tab bar is the top line of either screen.
+            if let Some((_, _, index)) =
+                app.tab_spans.iter().find(|(from, to, _)| y == 0 && x >= *from && x < *to)
+            {
+                app.tab = *index;
+                if let Some(first) = app.visible().first() {
+                    app.cursor = *first;
+                }
+                return;
+            }
+            if app.screen != Screen::Select {
+                return;
+            }
+            // Inside the list, a row is one line below the border, offset by
+            // however far the list has been scrolled.
+            let Some(area) = app.list_area else { return };
+            if y <= area.y || y + 1 >= area.y + area.height {
+                return;
+            }
+            let visible = app.visible();
+            let index = (y - area.y - 1) as usize + app.select_state.offset();
+            if let Some(channel) = visible.get(index) {
+                app.cursor = *channel;
+                app.channels[*channel].selected = !app.channels[*channel].selected;
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            on_key(app, KeyCode::Down);
+        }
+        MouseEventKind::ScrollUp => {
+            on_key(app, KeyCode::Up);
+        }
+        _ => {}
+    }
+}
+
 /// Handle one key. Returns false when the user asked to quit.
 fn on_key(app: &mut App, code: KeyCode) -> bool {
+    // The tab bar is on both screens, so its keys are handled before either.
+    match code {
+        KeyCode::Tab => {
+            step_tab(app, true);
+            return true;
+        }
+        KeyCode::BackTab => {
+            step_tab(app, false);
+            return true;
+        }
+        _ => {}
+    }
     match app.screen {
         Screen::Live => match code {
             KeyCode::Char('q') | KeyCode::Esc => return false,
@@ -428,7 +601,13 @@ pub async fn run_recording(
             .with_context(|| format!("reading the survey {path:?}"))?;
         identities = plan::identities_from_survey(&text);
     }
-    if identities.is_empty() {
+    // A recording does not record which unit each column came from. With a
+    // survey the real units are known and the tabs are real; without one every
+    // catalog is offered under a single tab named after the file, because
+    // splitting them into units this build merely happens to have catalogs for
+    // would put addresses on screen that the recording never claimed.
+    let named_by_survey = !identities.is_empty();
+    if !named_by_survey {
         for entry in std::fs::read_dir(store.dir()).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(part) = name.strip_suffix(".json") {
@@ -436,6 +615,7 @@ pub async fn run_recording(
                     request: plan::ENGINE,
                     part_number: Some(part.to_string()),
                     odx_name: None,
+                    component: None,
                 });
             }
         }
@@ -475,10 +655,20 @@ pub async fn run_recording(
         anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
     })?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let mut app = App::new(channels);
+    app.units = match named_by_survey {
+        true => unit_names(&identities),
+        false => {
+            let file = std::path::Path::new(recording_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| recording_path.to_string());
+            vec![(plan::ENGINE, file)]
+        }
+    };
     app.live = false;
     let duration = recording.duration();
     let mut playhead = 0.0f64;
@@ -514,13 +704,17 @@ pub async fn run_recording(
         app.cycles += 1;
 
         terminal.draw(|f| match app.screen {
-            Screen::Live => draw_live(f, &app),
+            Screen::Live => draw_live(f, &mut app),
             Screen::Select => draw_select(f, &mut app),
         })?;
 
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press {
+            match event::read()? {
+                Event::Mouse(m) => {
+                    on_mouse(&mut app, m);
+                    continue;
+                }
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
                     // Playback keys only mean something on the live screen;
                     // on the selection screen they are ordinary input.
                     if app.screen == Screen::Live {
@@ -552,12 +746,17 @@ pub async fn run_recording(
                         break Ok(());
                     }
                 }
+                _ => {}
             }
         }
     };
 
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     println!(
         "replayed {recording_path} — {:.0}s of driving, {} columns, {} of which ever changed",
@@ -641,7 +840,13 @@ pub async fn run(
         };
         let part = text(uds.read_data_by_identifier(0xF187).await.ok());
         let odx = text(uds.read_data_by_identifier(0xF19E).await.ok());
-        identities.push(plan::UnitIdentity { request, part_number: part, odx_name: odx });
+        let component = text(uds.read_data_by_identifier(0xF197).await.ok());
+        identities.push(plan::UnitIdentity {
+            request,
+            part_number: part,
+            odx_name: odx,
+            component,
+        });
         adapter = uds.into_transport().into_backend();
     }
 
@@ -676,14 +881,15 @@ pub async fn run(
         anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
     })?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let mut app = App::new(channels);
+    app.units = unit_names(&identities);
     let period = Duration::from_secs_f64(1.0 / hz.max(0.1));
     let result = loop {
         terminal.draw(|f| match app.screen {
-            Screen::Live => draw_live(f, &app),
+            Screen::Live => draw_live(f, &mut app),
             Screen::Select => draw_select(f, &mut app),
         })?;
 
@@ -692,11 +898,15 @@ pub async fn run(
         // swallowed and a whole poll cycle runs before the quit takes effect.
         let mut quit = false;
         while event::poll(Duration::from_millis(0))? {
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press && !on_key(&mut app, k.code) {
-                    quit = true;
-                    break;
+            match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    if !on_key(&mut app, k.code) {
+                        quit = true;
+                        break;
+                    }
                 }
+                Event::Mouse(m) => on_mouse(&mut app, m),
+                _ => {}
             }
         }
         if quit {
@@ -785,11 +995,15 @@ pub async fn run(
                 }
                 continue;
             }
-            if let Event::Key(k) = event::read()? {
-                if k.kind == KeyEventKind::Press && !on_key(&mut app, k.code) {
-                    quit = true;
-                    break;
+            match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Press => {
+                    if !on_key(&mut app, k.code) {
+                        quit = true;
+                        break;
+                    }
                 }
+                Event::Mouse(m) => on_mouse(&mut app, m),
+                _ => {}
             }
         }
         if quit {
@@ -798,7 +1012,11 @@ pub async fn run(
     };
 
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     if let Some(w) = sink.as_mut() {
         w.flush()?;
@@ -826,6 +1044,7 @@ mod tests {
             request,
             part_number: Some(part.to_string()),
             odx_name: None,
+            component: None,
         };
         plan::available(
             &store,
@@ -835,6 +1054,12 @@ mod tests {
                 ident(0x714, "5E0920740D"),
             ],
         )
+    }
+
+    /// Open the tab that holds `request`, so a test about rows is not really
+    /// a test about which tab happens to be first.
+    fn open(app: &mut App, request: u16) {
+        app.tab = app.tabs().iter().position(|r| *r == request).expect("the unit has a tab");
     }
 
     fn app() -> App {
@@ -860,13 +1085,20 @@ mod tests {
         let mut a = app();
         let before = plan::plan(&a.channels).len();
         a.screen = Screen::Select;
-        a.cursor = 5;
+        open(&mut a, 0x7E0);
+        a.cursor = a.visible()[5];
+        let at = a.cursor;
         on_key(&mut a, KeyCode::Char(' '));
-        assert!(a.channels[5].selected);
+        assert!(a.channels[at].selected);
         // Selecting more can only add work, never remove it.
         assert!(plan::plan(&a.channels).len() >= before);
 
-        on_key(&mut a, KeyCode::Char('n'));
+        // `a` and `n` act on the open tab, so clearing every tab clears the
+        // plan — and polling never follows the tab, only the selection.
+        for _ in 0..a.tabs().len() {
+            on_key(&mut a, KeyCode::Char('n'));
+            step_tab(&mut a, true);
+        }
         assert!(plan::plan(&a.channels).is_empty(), "none selected polls nothing");
         on_key(&mut a, KeyCode::Char('a'));
         assert!(!plan::plan(&a.channels).is_empty());
@@ -876,18 +1108,23 @@ mod tests {
     fn the_cursor_stays_inside_the_list() {
         let mut a = app();
         a.screen = Screen::Select;
+        open(&mut a, 0x7E0);
+        let visible = a.visible();
+        let (first, last) = (visible[0], *visible.last().unwrap());
+
+        a.cursor = first;
         on_key(&mut a, KeyCode::Up);
-        assert_eq!(a.cursor, 0, "cannot run off the top");
-        a.cursor = a.channels.len() - 1;
+        assert_eq!(a.cursor, first, "cannot run off the top of the tab");
+        a.cursor = last;
         on_key(&mut a, KeyCode::Down);
-        assert_eq!(a.cursor, a.channels.len() - 1, "cannot run off the bottom");
+        assert_eq!(a.cursor, last, "cannot run off the bottom of the tab");
         // A page jump past the end lands on the last row rather than nowhere.
         on_key(&mut a, KeyCode::PageDown);
-        assert_eq!(a.cursor, a.channels.len() - 1);
+        assert_eq!(a.cursor, last);
         on_key(&mut a, KeyCode::Home);
-        assert_eq!(a.cursor, 0);
+        assert_eq!(a.cursor, first);
         on_key(&mut a, KeyCode::End);
-        assert_eq!(a.cursor, a.channels.len() - 1);
+        assert_eq!(a.cursor, last);
     }
 
     #[test]
@@ -896,7 +1133,9 @@ mod tests {
         // to one by arrow key is not a way to find anything.
         let mut a = app();
         a.screen = Screen::Select;
-        assert_eq!(a.visible().len(), a.channels.len());
+        open(&mut a, 0x7E0);
+        let in_tab = a.visible().len();
+        assert!(in_tab > 1, "the engine tab has rows to filter");
 
         on_key(&mut a, KeyCode::Char('/'));
         for c in "boost".chars() {
@@ -905,7 +1144,7 @@ mod tests {
         on_key(&mut a, KeyCode::Enter);
 
         let visible = a.visible();
-        assert!(!visible.is_empty() && visible.len() < a.channels.len(), "{}", visible.len());
+        assert!(!visible.is_empty() && visible.len() < in_tab, "{}", visible.len());
         assert!(visible.iter().all(|i| a.channels[*i].label().to_lowercase().contains("boost")));
 
         // Moving now walks the filtered rows, not the hidden ones.
@@ -921,6 +1160,7 @@ mod tests {
         // the user cannot see.
         let mut a = app();
         a.screen = Screen::Select;
+        open(&mut a, 0x7E0);
         on_key(&mut a, KeyCode::Char('/'));
         for c in "boost".chars() {
             on_key(&mut a, KeyCode::Char(c));
@@ -958,6 +1198,7 @@ mod tests {
         // Boost is published twice: 2029 is what the engine asked for, 202A is
         // what it got. Side by side the gap is readable at a glance.
         let mut a = App::new(reference_channels());
+        open(&mut a, 0x7E0);
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && (c.did == 0x2029 || c.did == 0x202A) {
                 c.selected = true;
@@ -983,6 +1224,7 @@ mod tests {
         // Selecting only the actual value must not hide it waiting for a
         // partner that was never asked for.
         let mut a = App::new(reference_channels());
+        open(&mut a, 0x7E0);
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && c.did == 0x202A {
                 c.selected = true;
@@ -995,6 +1237,52 @@ mod tests {
         a.latest.insert((0x7E0, 0x202A), (1.0, vec![0x03, 0xE8]));
         let rows = a.rows();
         assert_eq!(a.value_of(&rows[0]).0, "1 bar");
+    }
+
+    #[test]
+    fn each_unit_gets_its_own_tab_and_the_table_follows_it() {
+        // A car has fifteen units and over a thousand identifiers between
+        // them; one list of all of it is a list nobody reads.
+        let mut a = App::new(reference_channels());
+        a.channels.iter_mut().for_each(|c| c.selected = true);
+        let tabs = a.tabs();
+        assert!(tabs.len() > 1, "the reference car has more than one unit: {tabs:02X?}");
+        assert_eq!(tabs[0], 0x714, "tabs are in id order, so the cluster comes first");
+
+        let on_first: Vec<u16> = a.shown().iter().map(|c| c.request).collect();
+        assert!(on_first.iter().all(|r| *r == tabs[0]), "a tab shows one unit");
+        assert!(!on_first.is_empty());
+
+        step_tab(&mut a, true);
+        let on_second: Vec<u16> = a.shown().iter().map(|c| c.request).collect();
+        assert!(on_second.iter().all(|r| *r == tabs[1]));
+        assert_ne!(on_first, on_second);
+
+        // And it wraps rather than running off the end.
+        for _ in 0..tabs.len() {
+            step_tab(&mut a, true);
+        }
+        assert_eq!(a.tab, 1);
+    }
+
+    #[test]
+    fn a_tab_is_labelled_by_what_the_unit_said_about_itself() {
+        let mut a = App::new(reference_channels());
+        a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
+        assert_eq!(a.tab_label(0x7E0), "01 1.8l R4 TFSI");
+        // A unit that said nothing goes by its number, not by an invented name.
+        assert_eq!(a.tab_label(0x714), "17");
+        assert_eq!(a.tab_label(0x713), "713");
+    }
+
+    #[test]
+    fn the_cursor_moves_with_the_tab_it_belongs_to() {
+        // Leaving it behind makes the arrow keys walk a row nobody can see.
+        let mut a = App::new(reference_channels());
+        a.screen = Screen::Select;
+        step_tab(&mut a, true);
+        let visible = a.visible();
+        assert!(visible.contains(&a.cursor), "{:?} not in the open tab", a.cursor);
     }
 
     #[test]

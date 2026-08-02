@@ -186,7 +186,9 @@ enum Command {
         survey: Option<String>,
         /// Replay a recording written by `--out` instead of reading a car.
         /// No adapter is opened and nothing is addressed — for trying the
-        /// interface, or showing it, away from a vehicle.
+        /// interface, or showing it, away from a vehicle. Pass `--survey`
+        /// alongside it to get one tab per control unit; a recording alone
+        /// does not say which unit each column came from.
         #[arg(long, value_name = "FILE", conflicts_with = "device")]
         replay: Option<String>,
         /// Playback speed for --replay. 2 is twice as fast as it happened.
