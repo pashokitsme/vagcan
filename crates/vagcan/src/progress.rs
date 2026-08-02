@@ -14,6 +14,15 @@
 //! "working…" and a blank screen carry the same information.
 
 use std::io::Write;
+use std::time::{Duration, Instant};
+
+/// How long a wait has to last before it is worth reporting.
+///
+/// Below this the report is the only thing anybody sees: a line that appears
+/// and vanishes in a tenth of a second is noise, and on a car that answers
+/// promptly the whole operation is over before a reader could focus on it.
+/// Above it, silence is the thing that misleads.
+pub const THRESHOLD: Duration = Duration::from_millis(500);
 
 /// The frames of the spinner, in order.
 ///
@@ -37,6 +46,9 @@ pub struct Line {
     /// Whether anything was drawn, so [`Line::finish`] knows if there is a
     /// line to clear.
     drawn: bool,
+    /// When the operation began. Nothing is written until it has been running
+    /// longer than [`THRESHOLD`].
+    started: Instant,
 }
 
 impl Default for Line {
@@ -47,13 +59,21 @@ impl Default for Line {
 
 impl Line {
     pub fn new() -> Self {
-        Line { step: 0, width: 0, drawn: false }
+        Line { step: 0, width: 0, drawn: false, started: Instant::now() }
     }
 
-    /// Redraw with a new message.
+    /// Redraw with a new message, once the operation has run long enough to
+    /// be worth reporting.
+    ///
+    /// Calls before [`THRESHOLD`] still advance the spinner, so the first
+    /// frame drawn is not always the first one — the animation matches how
+    /// long the wait has actually been.
     pub fn update(&mut self, message: &str) {
-        let text = format!("{} {message}", frame(self.step));
         self.step += 1;
+        if self.started.elapsed() < THRESHOLD {
+            return;
+        }
+        let text = format!("{} {message}", frame(self.step));
         let mut err = std::io::stderr();
         // Pad to the previous width so a shorter message does not leave the
         // tail of a longer one behind it.
@@ -108,10 +128,33 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_shorter_than_the_threshold_is_never_drawn() {
+        // On a car that answers promptly the whole operation is over before a
+        // reader could focus on the line, and a report that flashes past is
+        // worse than none.
+        let mut line = Line::new();
+        for _ in 0..5 {
+            line.update("identifying control units");
+        }
+        assert!(!line.drawn, "nothing on screen yet");
+        assert_eq!(line.step, 5, "but the spinner tracked the calls");
+    }
+
+    #[test]
+    fn a_wait_past_the_threshold_is_drawn() {
+        let mut line = Line::new();
+        line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
+        line.update("identifying control units");
+        assert!(line.drawn);
+        line.finish();
+    }
+
+    #[test]
     fn the_line_remembers_how_much_it_must_overwrite() {
         // A short message after a long one must cover the tail of the long
         // one, or the screen keeps characters nobody wrote.
         let mut line = Line::new();
+        line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
         line.update("identifying control units 12 of 15");
         let long = line.width;
         line.update("done");

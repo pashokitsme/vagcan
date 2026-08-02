@@ -92,6 +92,15 @@ pub struct App {
     /// a batch can take as long as that unit's deadline, and a still screen
     /// during it reads as a hang.
     waiting: Option<u16>,
+    /// Units whose last request took longer than the threshold.
+    ///
+    /// The screen is drawn before the request is sent — it has to be, since
+    /// the await blocks — so whether *this* request will be slow is not yet
+    /// knowable. What is knowable is whether the last one to this unit was,
+    /// and a unit that timed out once will time out again. So the first slow
+    /// answer passes unannounced and the rest are called: over-reporting a
+    /// prompt unit would put a spinner on screen at every redraw.
+    slow: std::collections::BTreeSet<u16>,
     status: String,
 }
 
@@ -114,6 +123,7 @@ impl App {
             clock: 0.0,
             live: true,
             waiting: None,
+            slow: std::collections::BTreeSet::new(),
             status: String::new(),
         }
     }
@@ -1091,11 +1101,12 @@ pub async fn run(
             // Redraw before the request, so the footer says which unit is
             // being waited on. A batch can take as long as that unit's
             // deadline, and a still screen during it reads as a hang.
-            app.waiting = Some(batch.request);
+            app.waiting = app.slow.contains(&batch.request).then_some(batch.request);
             terminal.draw(|f| match app.screen {
                 Screen::Live => draw_live(f, &mut app),
                 Screen::Select => draw_select(f, &mut app),
             })?;
+            let asked = Instant::now();
             let mut uds = AsyncUdsClient::new(channel);
             let answer = if batch.dids.len() == 1 {
                 uds.read_data_by_identifier(batch.dids[0])
@@ -1115,6 +1126,12 @@ pub async fn run(
             }
             backend = Some(uds.into_transport().into_backend());
             app.waiting = None;
+            // Remember for next time round, so the footer can warn before the
+            // wait rather than after it.
+            match asked.elapsed() >= crate::progress::THRESHOLD {
+                true => app.slow.insert(batch.request),
+                false => app.slow.remove(&batch.request),
+            };
         }
         if quit_mid_cycle {
             break Ok(());
@@ -1454,6 +1471,18 @@ mod tests {
             }
         }
         assert!(seen.len() > 1, "the fixture really does span units: {seen:02X?}");
+    }
+
+    #[test]
+    fn only_a_unit_that_has_been_slow_is_announced() {
+        // The screen is drawn before the request, so whether this one will be
+        // slow is not knowable; whether the last one was, is. A prompt unit
+        // must not put a spinner on screen at every redraw.
+        let mut a = App::new(reference_channels());
+        assert!(a.slow.is_empty());
+        assert_eq!(a.slow.contains(&0x7E0).then_some(0x7E0), None);
+        a.slow.insert(0x7E0);
+        assert_eq!(a.slow.contains(&0x7E0).then_some(0x7E0), Some(0x7E0));
     }
 
     #[test]
