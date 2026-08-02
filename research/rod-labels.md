@@ -135,7 +135,7 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
   magnitudes" reading failed. **Corroboration:** decoding a payload as one big-endian base-14
   bignum yields, across the multiple rows of a single structure id, a **shared high-order prefix**
   (the structure template) + a varying low-order tail (the per-channel field) — e.g. id 000147's
-  8 rows all begin `08 56 26 27 d2 03…`. Shipped as `vag_data::struc::{STRUC_BASE14_ALPHABET,
+  8 rows all begin `08 56 26 27 d2 03…`. ~~Shipped as~~ **was** `vag_data::struc::{STRUC_BASE14_ALPHABET,
   base14_value, StrucRecord::decode_base14_be}`.
 - **Still open (honest):** the **field segmentation** of that base-14 number — where each field
   begins/ends and which is the read identifier (DID) / raw byte spec / scaling / unit ref / name
@@ -159,6 +159,14 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
   code → STRUC-id mapping — two unknowns, so not yet a validation path).
 - Sections decoding cleanly vs blocked, for `STRUC.rod`: **1 / 1** (the sole section, cracked).
   No residual `product`-blocked sections remain in this file.
+
+> **The `struc` module no longer exists.** It was deleted on 2026-08-02 as dead
+> code: nothing in the workspace called it, and the path it served — reading a
+> measurement's scaling out of STRUC — is refuted in §4.0c and §5.3. What
+> replaced it is the digit-substitution break in `crates/vag-data/src/glyphs.rs`,
+> which reads those tables without a bespoke parser. Anything above describing
+> `vag_data::struc::…` as available is history, not API.
+
 
 ---
 

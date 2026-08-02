@@ -27,6 +27,8 @@ fn main() {
     let mut names_file = None;
     let mut out = None;
     let mut partial_out = None;
+    let mut check = 0usize;
+    let mut gated = false;
     let mut passes = 4usize;
     let mut limits = Limits::default();
 
@@ -36,6 +38,8 @@ fn main() {
             "--names" => names_file = args.next(),
             "--out" => out = args.next(),
             "--partial" => partial_out = args.next(),
+            "--gated" => gated = true,
+            "--check" => check = args.next().and_then(|v| v.parse().ok()).unwrap_or(check),
             "--passes" => passes = args.next().and_then(|v| v.parse().ok()).unwrap_or(passes),
             "--steps" => {
                 limits.steps = args.next().and_then(|v| v.parse().ok()).unwrap_or(limits.steps)
@@ -176,6 +180,62 @@ fn main() {
         }
     }
 
+    // Validation, and it is not optional. Within a cluster the member's
+    // cipher pattern equals the leader's *plaintext* pattern by construction,
+    // so `transfer_tokens` can never fail injectivity — it is free, but it is
+    // not a check. The check is to solve a member from scratch, under its own
+    // key and its own search path, and see whether it says the same thing.
+    // Two plaintexts can share a repetition pattern; this is what would catch
+    // it.
+    if check > 0 {
+        let mut members: Vec<(usize, &String)> = Vec::new();
+        for group in clusters.values() {
+            for member in &group[1..] {
+                match solved.get(member) {
+                    // Only readings a catalog would consider. Sampling every
+                    // transferred member measures the transfer over acronym
+                    // soup that no gate would ship, which is not the number
+                    // that matters and is not what the published 599/600 was
+                    // measured on.
+                    Some(plain) if !gated || shippable(plain, &known) => {
+                        members.push((*member, plain))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A fixed stride over the sorted list rather than a random sample:
+        // reproducible, and it cannot be accused of picking the easy ones.
+        let stride = (members.len() / check.max(1)).max(1);
+        let (mut agree, mut disagree, mut unusable) = (0usize, 0usize, 0usize);
+        let mut examples: Vec<(u32, String, String)> = Vec::new();
+        for (index, transferred) in members.iter().step_by(stride).take(check) {
+            let cipher = &records[*index].cipher;
+            let Some(solution) = tttext::solve(cipher, &dict, limits) else {
+                unusable += 1;
+                continue;
+            };
+            let key = tttext::complete(cipher, &solution.key, &dict, MARGIN);
+            if !key.covers(cipher) {
+                unusable += 1;
+                continue;
+            }
+            let fresh = key.decode(cipher);
+            if fresh.eq_ignore_ascii_case(transferred) {
+                agree += 1;
+            } else {
+                disagree += 1;
+                if examples.len() < 20 {
+                    examples.push((records[*index].id, (*transferred).clone(), fresh));
+                }
+            }
+        }
+        eprintln!("independent re-solve of transferred members: agree {agree} disagree {disagree} unusable {unusable}");
+        for (id, transferred, fresh) in &examples {
+            eprintln!("  {id:06} transferred {transferred:?} != re-solved {fresh:?}");
+        }
+    }
+
     if let Some(path) = &partial_out {
         let mut sink = std::io::BufWriter::new(
             std::fs::File::create(path).expect("creating the partial output file"),
@@ -204,6 +264,25 @@ fn main() {
         records.len(),
         100.0 * ordered.len() as f32 / records.len() as f32
     );
+}
+
+/// Whether a reading is the kind a catalog would consider at all.
+///
+/// Three of the five filters of `research/tttext-codec.md` §7: enough letters
+/// to be sure of, no unresolved letter, and every word of length >= 3 a word
+/// the vocabulary knows. The other two — the ambiguity margin and the framing
+/// rule — are not reimplemented here; this is a sampling filter, not the gate.
+fn shippable(plain: &str, known: &HashSet<String>) -> bool {
+    if plain.contains('?') {
+        return false;
+    }
+    if plain.chars().filter(|c| c.is_ascii_alphabetic()).count() < 12 {
+        return false;
+    }
+    plain
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| w.len() >= 3)
+        .all(|w| known.contains(&w.to_ascii_lowercase()))
 }
 
 /// How far the best reading of a token must outweigh the runner-up before the
@@ -244,8 +323,13 @@ fn transfer_tokens(cipher: &str, words: &[&str]) -> Option<tttext::Key> {
 /// Split the section into records. The id is plaintext; everything after the
 /// first comma is the enciphered payload.
 fn parse(bytes: &[u8]) -> Vec<Record> {
-    String::from_utf8_lossy(bytes)
-        .lines()
+    // Latin-1, not UTF-8. The section carries 19 distinct high bytes — the
+    // umlauts, `°`, `µ` — and they are *pass-through*: outside every enciphered
+    // class, so they are plaintext evidence. `from_utf8_lossy` would fold all
+    // of them onto one replacement character, which merges records that differ
+    // only in which umlaut they use and silently deletes the `°C` crib.
+    let text: String = bytes.iter().map(|b| char::from(*b)).collect();
+    text.lines()
         .filter_map(|line| {
             let (id, cipher) = line.split_once(',')?;
             Some(Record { id: id.trim().parse().ok()?, cipher: cipher.to_string() })
