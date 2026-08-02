@@ -928,26 +928,55 @@ pub async fn run(
             data.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
                 .filter(|s| !s.is_empty())
         };
-        let part = text(uds.read_data_by_identifier(0xF187).await.ok());
-        let component = text(uds.read_data_by_identifier(0xF197).await.ok());
-        // Identification only — three reads, no session change and no sweep.
-        // `SAFETY.md` is about what a sweep can provoke; this is not one.
-        let odx = match part.is_some() || component.is_some() {
-            true => text(uds.read_data_by_identifier(0xF19E).await.ok()),
-            false => None,
-        };
-        if part.is_some() || component.is_some() || request == plan::ENGINE {
-            identities.push(plan::UnitIdentity {
-                request,
-                part_number: part,
-                odx_name: odx,
-                component,
-            });
+        // One short probe decides whether the unit is there. A unit that is
+        // not costs this deadline once, instead of the full two-second one
+        // three times over — fifteen listed addresses at that price is what
+        // made startup take several seconds.
+        const PROBE: Duration = Duration::from_millis(300);
+        let part = text(uds.read_data_by_identifier_within(0xF187, PROBE).await.ok());
+        if part.is_none() && request != plan::ENGINE {
+            adapter = uds.into_transport().into_backend();
+            continue;
         }
+        // Identification only — no session change and no sweep. `SAFETY.md`
+        // is about what a sweep can provoke; this is not one.
+        let component = text(uds.read_data_by_identifier_within(0xF197, PROBE).await.ok());
+        let odx = text(uds.read_data_by_identifier_within(0xF19E, PROBE).await.ok());
+        identities.push(plan::UnitIdentity {
+            request,
+            part_number: part,
+            odx_name: odx,
+            component,
+        });
         adapter = uds.into_transport().into_backend();
     }
 
+    // Say what the car answered and what could be shown, before the screen
+    // takes over. A unit that identified itself but has no catalog contributes
+    // no measurements and so no tab — which looks like the tool failing to
+    // find it, and is worth distinguishing from that.
     let mut channels = plan::available(&store, &identities);
+    {
+        let with_rows: Vec<String> = identities
+            .iter()
+            .filter(|i| channels.iter().any(|c| c.request == i.request))
+            .map(|i| format!("{:03X}", i.request))
+            .collect();
+        let without: Vec<String> = identities
+            .iter()
+            .filter(|i| !channels.iter().any(|c| c.request == i.request))
+            .map(|i| format!("{:03X}", i.request))
+            .collect();
+        println!("{} control units answered: {}", identities.len(), with_rows.join(" "));
+        if !without.is_empty() {
+            println!(
+                "no measurements known for {} — they answer, but {catalogs} holds no \n\
+                 catalog for their part numbers. `vagcan survey --out FILE` then \n\
+                 `watch --survey FILE` offers their identifiers as raw bytes.",
+                without.join(" ")
+            );
+        }
+    }
     if let Some(text) = &survey_text {
         // Everything a survey found becomes watchable, on every unit — which
         // is the only way the units outside the catalogs get on screen at all.
@@ -1010,7 +1039,25 @@ pub async fn run(
         }
 
         let cycle = Instant::now();
+        let mut quit_mid_cycle = false;
         for batch in plan::plan(&app.channels) {
+            // Between batches, not only between cycles: a cycle that spans
+            // several units takes as long as their timeouts add up to, and a
+            // keypress should not wait for that.
+            while event::poll(Duration::from_millis(0))? {
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        if !on_key(&mut app, k.code) {
+                            quit_mid_cycle = true;
+                        }
+                    }
+                    Event::Mouse(m) => on_mouse(&mut app, m),
+                    _ => {}
+                }
+            }
+            if quit_mid_cycle {
+                break;
+            }
             let Some(b) = backend.take() else { break };
             // Each unit is addressed by the rule its id block uses: the
             // cluster answers on 0x77E, not on 0x7E0 + 16, which is what
@@ -1043,6 +1090,9 @@ pub async fn run(
                 }
             }
             backend = Some(uds.into_transport().into_backend());
+        }
+        if quit_mid_cycle {
+            break Ok(());
         }
         app.cycles += 1;
 

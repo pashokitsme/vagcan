@@ -37,11 +37,27 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
     /// Services outside the read-only allowlist `{0x10, 0x19, 0x22, 0x3E}` are
     /// rejected with [`UdsError::Forbidden`] before touching the transport.
     pub async fn request(&mut self, sid: u8, payload: &[u8]) -> Result<Vec<u8>, UdsError> {
+        self.request_within(sid, payload, RESPONSE_TIMEOUT).await
+    }
+
+    /// The same, with a deadline of the caller's choosing.
+    ///
+    /// The default is generous because a control unit may take its time over a
+    /// real read. **Asking whether a unit is there at all is a different
+    /// question**, and waiting two seconds per absent unit is what made
+    /// startup take several: the gateway lists fifteen addresses, and the ones
+    /// that do not answer cost the full deadline each.
+    pub async fn request_within(
+        &mut self,
+        sid: u8,
+        payload: &[u8],
+        timeout: std::time::Duration,
+    ) -> Result<Vec<u8>, UdsError> {
         let req = pdu::encode_request(sid, payload)?;
         self.channel.send(&req).await?;
 
         for _ in 0..MAX_PENDING {
-            let resp = self.channel.recv(RESPONSE_TIMEOUT).await?;
+            let resp = self.channel.recv(timeout).await?;
             match pdu::classify_response(sid, &resp)? {
                 Classified::Pending => continue, // responsePending: read again.
                 Classified::Data(data) => return Ok(data),
@@ -53,6 +69,16 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
     /// ReadDataByIdentifier (0x22): returns the record bytes after the DID echo.
     pub async fn read_data_by_identifier(&mut self, did: u16) -> Result<Vec<u8>, UdsError> {
         let resp = self.request(0x22, &pdu::did_bytes(did)).await?;
+        pdu::parse_rdbi_response(did, &resp)
+    }
+
+    /// The same, giving up after `timeout` rather than the default deadline.
+    pub async fn read_data_by_identifier_within(
+        &mut self,
+        did: u16,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<u8>, UdsError> {
+        let resp = self.request_within(0x22, &pdu::did_bytes(did), timeout).await?;
         pdu::parse_rdbi_response(did, &resp)
     }
 
