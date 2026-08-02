@@ -148,6 +148,10 @@ impl App {
     /// How a tab is labelled: the unit's short number when this project has
     /// established one, otherwise its request id, and the component string the
     /// unit gave for itself when there is one.
+    fn unit_heading(&self, request: u16) -> String {
+        self.tab_label(request)
+    }
+
     fn tab_label(&self, request: u16) -> String {
         let address = vag_protocol::address::UnitAddress::from_request(request)
             .map(|a| a.label())
@@ -181,13 +185,13 @@ impl App {
     }
 
     /// Rows currently on screen, in the order the plan polls them.
+    /// Every selected channel, from every unit.
+    ///
+    /// The live screen is not filtered by the open unit: the point of choosing
+    /// measurements from several control units is to watch them together. The
+    /// unit list belongs to the configure screen, where the choosing happens.
     fn shown(&self) -> Vec<&Channel> {
-        let unit = self.open_unit();
-        let mut v: Vec<&Channel> = self
-            .channels
-            .iter()
-            .filter(|c| c.selected && unit.is_none_or(|u| c.request == u))
-            .collect();
+        let mut v: Vec<&Channel> = self.channels.iter().filter(|c| c.selected).collect();
         v.sort_by_key(|c| (c.request, c.did));
         v
     }
@@ -285,13 +289,14 @@ fn unit_names(identities: &[plan::UnitIdentity]) -> Vec<(u16, String)> {
         .collect()
 }
 
-/// Draw the list of control units down the right, and return the area left
-/// for the table.
+/// Draw the list of control units down the left of the configure screen, and
+/// return the area left for that unit's measurements.
 ///
-/// A car has fifteen units and over a thousand identifiers between them. The
-/// list is what makes that navigable: it says which units this car has, how
-/// much of each is on screen, and which one is open. Tab moves between them
-/// and so does a click — the list looks selectable, so it is.
+/// A car has fifteen control units and over a thousand identifiers between
+/// them. The list is what makes choosing navigable: which units this car has,
+/// how much of each is already on screen, and which one's measurements are
+/// listed beside it. Tab moves between them and so does a click — the list
+/// looks selectable, so it is.
 fn draw_units(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     let units = app.tabs();
     // Wide enough for the longest label, within reason: a component string
@@ -305,8 +310,9 @@ fn draw_units(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
         .max()
         .unwrap_or(16)
         .clamp(16, 36) as u16;
+    // The list takes what its content needs; the measurements take the rest.
     let split =
-        Layout::horizontal([Constraint::Min(20), Constraint::Length(width)]).split(area);
+        Layout::horizontal([Constraint::Length(width), Constraint::Min(20)]).split(area);
 
     let rows: Vec<Row> = units
         .iter()
@@ -327,38 +333,60 @@ fn draw_units(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
         .row_highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
         .block(Block::default().borders(Borders::ALL).title(" units [tab] "));
     // Remembered so a click can be turned back into a unit.
-    app.unit_area = Some(split[1]);
-    frame.render_stateful_widget(list, split[1], &mut state);
-    split[0]
+    app.unit_area = Some(split[0]);
+    frame.render_stateful_widget(list, split[0], &mut state);
+    split[1]
 }
 
 fn draw_live(frame: &mut Frame, app: &mut App) {
     let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
-    let table_area = draw_units(frame, app, layout[0]);
+    let table_area = layout[0];
     let shown = app.rows();
-    let rows: Vec<Row> = shown
-        .iter()
-        .map(|r| {
-            let (value, age) = app.value_of(r);
-            let c = r.any();
-            // A pair is addressed by two identifiers; showing both keeps the
-            // line honest about where the numbers came from.
-            let dids = match (r.actual, r.specified) {
-                (Some(a), Some(s)) => format!("{:04X}/{:04X}", a.did, s.did),
-                _ => format!("{:04X}", c.did),
-            };
-            Row::new(vec![
-                Cell::from(c.unit()),
-                Cell::from(dids),
-                Cell::from(r.label.clone()),
-                Cell::from(value).style(Style::default().add_modifier(Modifier::BOLD)),
-                Cell::from(c.unit_of_measure().to_string()),
-                Cell::from(age).style(Style::default().fg(Color::DarkGray)),
-            ])
-        })
-        .collect();
+    // Grouped by control unit, with a line naming each: values from several
+    // units on one screen are unreadable without saying which is which.
+    let mut rows: Vec<Row> = Vec::new();
+    let mut unit_of_row: Option<u16> = None;
+    for r in &shown {
+        let c = r.any();
+        if unit_of_row != Some(c.request) {
+            unit_of_row = Some(c.request);
+            // The heading goes in the measurement column, which is the wide
+            // one: a table cannot span columns, and in the four-wide first
+            // column the unit's name would read `── 0`.
+            rows.push(
+                Row::new(vec![
+                    Cell::from("──"),
+                    Cell::from("────"),
+                    Cell::from(format!("{} ", app.unit_heading(c.request))),
+                    Cell::from("──────────"),
+                ])
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            );
+        }
+        let (value, age) = app.value_of(r);
+        // A pair is addressed by two identifiers; showing both keeps the
+        // line honest about where the numbers came from.
+        let dids = match (r.actual, r.specified) {
+            (Some(a), Some(s)) => format!("{:04X}/{:04X}", a.did, s.did),
+            _ => format!("{:04X}", c.did),
+        };
+        rows.push(Row::new(vec![
+            Cell::from(c.unit()),
+            Cell::from(dids),
+            Cell::from(r.label.clone()),
+            Cell::from(value).style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from(c.unit_of_measure().to_string()),
+            Cell::from(age).style(Style::default().fg(Color::DarkGray)),
+        ]));
+    }
 
-    let name_w = shown.iter().map(|r| r.label.len()).max().unwrap_or(4).max(11) as u16;
+    let heading_w = shown
+        .iter()
+        .map(|r| app.unit_heading(r.any().request).chars().count() + 1)
+        .max()
+        .unwrap_or(0);
+    let name_w =
+        shown.iter().map(|r| r.label.len()).chain([heading_w]).max().unwrap_or(4).max(11) as u16;
     let did_w = shown
         .iter()
         .map(|r| if r.actual.is_some() && r.specified.is_some() { 9 } else { 4 })
@@ -937,9 +965,7 @@ pub async fn run(
         }
     }
     if !channels.iter().any(|c| c.selected) {
-        for c in channels.iter_mut().filter(|c| c.request == plan::ENGINE).take(8) {
-            c.selected = true;
-        }
+        plan::select_basics(&mut channels);
     }
     let mut backend = Some(adapter);
     let mut header_written = false;
@@ -1310,29 +1336,58 @@ mod tests {
     }
 
     #[test]
-    fn each_unit_gets_its_own_tab_and_the_table_follows_it() {
-        // A car has fifteen units and over a thousand identifiers between
-        // them; one list of all of it is a list nobody reads.
+    fn the_unit_list_narrows_the_choosing_but_not_the_watching() {
+        // The point of choosing measurements from several units is to watch
+        // them together, so the live table is never filtered by the open unit.
+        // The configure screen's list is.
         let mut a = App::new(reference_channels());
         a.channels.iter_mut().for_each(|c| c.selected = true);
-        let tabs = a.tabs();
-        assert!(tabs.len() > 1, "the reference car has more than one unit: {tabs:02X?}");
-        assert_eq!(tabs[0], 0x714, "tabs are in id order, so the cluster comes first");
+        let units = a.tabs();
+        assert!(units.len() > 1, "the reference car has more than one unit: {units:02X?}");
 
-        let on_first: Vec<u16> = a.shown().iter().map(|c| c.request).collect();
-        assert!(on_first.iter().all(|r| *r == tabs[0]), "a tab shows one unit");
-        assert!(!on_first.is_empty());
+        let on_screen: Vec<u16> = a.shown().iter().map(|c| c.request).collect();
+        assert!(on_screen.iter().any(|r| *r == units[0]));
+        assert!(on_screen.iter().any(|r| *r == units[1]), "every unit at once");
 
+        // Choosing is per unit, and it moves with the tab.
+        let first: Vec<u16> = a.visible().iter().map(|i| a.channels[*i].request).collect();
+        assert!(first.iter().all(|r| *r == units[0]));
         step_tab(&mut a, true);
-        let on_second: Vec<u16> = a.shown().iter().map(|c| c.request).collect();
-        assert!(on_second.iter().all(|r| *r == tabs[1]));
-        assert_ne!(on_first, on_second);
+        let second: Vec<u16> = a.visible().iter().map(|i| a.channels[*i].request).collect();
+        assert!(second.iter().all(|r| *r == units[1]));
 
         // And it wraps rather than running off the end.
-        for _ in 0..tabs.len() {
+        for _ in 0..units.len() {
             step_tab(&mut a, true);
         }
         assert_eq!(a.tab, 1);
+    }
+
+    #[test]
+    fn a_unit_appears_as_one_group_not_scattered_down_the_table() {
+        // Separators are written where the unit changes, so a unit that
+        // reappeared later would get a second heading and the table would read
+        // as if there were two of it.
+        let mut a = App::new(reference_channels());
+        a.channels.iter_mut().for_each(|c| c.selected = true);
+        let order: Vec<u16> = a.rows().iter().map(|r| r.any().request).collect();
+        let mut seen: Vec<u16> = Vec::new();
+        for request in order {
+            if seen.last() != Some(&request) {
+                assert!(!seen.contains(&request), "{request:03X} appears twice");
+                seen.push(request);
+            }
+        }
+        assert!(seen.len() > 1, "the fixture really does span units: {seen:02X?}");
+    }
+
+    #[test]
+    fn the_live_table_says_which_unit_each_group_came_from() {
+        // Values from several units on one screen are unreadable without it.
+        let mut a = App::new(reference_channels());
+        a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
+        assert_eq!(a.unit_heading(0x7E0), "01 1.8l R4 TFSI");
+        assert_eq!(a.unit_heading(0x714), "17", "a unit that said nothing is not named");
     }
 
     #[test]

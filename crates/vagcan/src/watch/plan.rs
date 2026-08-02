@@ -286,6 +286,43 @@ pub fn plan(channels: &[Channel]) -> Vec<Batch> {
         .collect()
 }
 
+/// What to put on screen when the user asked for nothing in particular.
+///
+/// The things a driver would look at first: engine and shaft speeds, road
+/// speed, boost, the pedal, the gear and the selector. Chosen by **what the
+/// catalogs call them**, not by identifier — a rule of thumb over names is
+/// data-driven and works on any car whose catalog uses the same words, where
+/// a list of identifiers would be this Škoda written into the source.
+///
+/// Anything unproven is left out: a screenful of `(raw)` is a poor first
+/// impression and teaches nothing.
+const BASIC_MEASUREMENTS: &[&str] = &[
+    "engine speed",
+    "input shaft speed",
+    "output shaft speed",
+    "vehicle speed",
+    "road speed",
+    "boost pressure",
+    "accelerator pedal",
+    "selected gear",
+    "selector lever",
+    "coolant",
+];
+
+/// Select the basics, and report how many were found.
+pub fn select_basics(channels: &mut [Channel]) -> usize {
+    let mut count = 0;
+    for channel in channels.iter_mut() {
+        let Some(def) = &channel.def else { continue };
+        let name = def.name.to_lowercase();
+        if BASIC_MEASUREMENTS.iter().any(|basic| name.contains(basic)) {
+            channel.selected = true;
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Parse `01:2029,202A 714:2203` or a bare `2029,202A` (engine assumed).
 ///
 /// The unit before the colon is whatever `vag_protocol::address` accepts: a
@@ -471,6 +508,27 @@ mod tests {
         assert_eq!(parse_spec("713:1001").unwrap(), vec![(0x713, 0x1001)]);
         assert!(parse_spec("zz").is_err());
         assert!(parse_spec("").is_err());
+    }
+
+    #[test]
+    fn the_default_selection_is_what_a_driver_would_look_at_first() {
+        let (store, units) = reference();
+        let mut channels = available(&store, &units);
+        let count = select_basics(&mut channels);
+        assert!(count >= 6, "found only {count}");
+
+        let chosen: Vec<String> =
+            channels.iter().filter(|c| c.selected).map(|c| c.label()).collect();
+        for wanted in ["Engine speed", "Input shaft speed", "Selector lever"] {
+            assert!(chosen.iter().any(|n| n == wanted), "{wanted} missing from {chosen:?}");
+        }
+        // Nothing unproven: a screenful of `(raw)` teaches nothing.
+        assert!(channels.iter().filter(|c| c.selected).all(|c| c.def.is_some()));
+        // And it is chosen by name, so a catalog using the same words works
+        // on a car this project has never seen.
+        assert!(chosen.iter().all(|n| BASIC_MEASUREMENTS
+            .iter()
+            .any(|b| n.to_lowercase().contains(b))));
     }
 
     #[test]
