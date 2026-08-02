@@ -68,7 +68,15 @@ fn main() {
         }
         eprintln!("{} words from names already recovered", known.len());
     }
-    for path in &word_files {
+    for spec in &word_files {
+        // `FILE` or `FILE:WEIGHT`. The weight is the prior: the corpus's own
+        // label files are in-domain and must outrank a general word list, or
+        // the search prefers an English rarity to the term the corpus uses.
+        let (path, weight) = match spec.rsplit_once(':').and_then(|(p, w)| Some((p, w.parse().ok()?)))
+        {
+            Some((path, weight)) => (path, weight),
+            None => (spec.as_str(), 8.0f32),
+        };
         let Ok(text) = std::fs::read_to_string(path) else {
             eprintln!("skipping {path}: unreadable");
             continue;
@@ -76,10 +84,10 @@ fn main() {
         let before = known.len();
         for word in text.split(|c: char| !c.is_ascii_alphabetic()) {
             if word.len() >= 2 && known.insert(word.to_ascii_lowercase()) {
-                dict.insert(word, 8.0);
+                dict.insert(word, weight);
             }
         }
-        eprintln!("{} words from {path}", known.len() - before);
+        eprintln!("{} words from {path} at weight {weight}", known.len() - before);
     }
     dict.finish();
     if dict.is_empty() {

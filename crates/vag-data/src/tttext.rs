@@ -73,7 +73,7 @@ impl Key {
         match self.map[cipher as usize] {
             Some(existing) => existing == plain,
             None => {
-                if self.map.iter().any(|m| *m == Some(plain)) {
+                if self.map.contains(&Some(plain)) {
                     return false;
                 }
                 self.map[cipher as usize] = Some(plain);
@@ -467,7 +467,7 @@ mod tests {
         let plain = "Intake air temperature";
         let a = encipher(plain, 4);
         let b = encipher(plain, 17);
-        let key = transfer(&b, &plain).expect("same text, so the key lines up");
+        let key = transfer(&b, plain).expect("same text, so the key lines up");
         assert_eq!(key.decode(&b), plain);
         assert_ne!(a, b, "the fixture really does use two different keys");
     }

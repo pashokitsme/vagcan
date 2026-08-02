@@ -29,6 +29,20 @@
 //! test in this module pins the measured five, so the table cannot drift away
 //! from the evidence that justifies trusting the rest.
 //!
+//! ## Where this table applies — and where it does not
+//!
+//! On the **emissions-related** control units ISO 15765-4 addresses
+//! (`0x7E0..0x7E7`), and nowhere else. Units on VW's own `0x700..0x7BF` block
+//! answer `F4xx` identifiers too, and they are not these parameters: the
+//! reference car's climate unit (`0x746`) answers `F405` with 87 / 90 / 109 at
+//! three moments when the engine's `F405` reads 129 / 93 / 137 — a line through
+//! the first two pairs predicts −135 for the third — and answers `F40C` with
+//! one byte where PID `0C` is two. Even inside the block the width has to be
+//! checked: the gearbox at `0x7E1` answers `F40D` with two little-endian bytes
+//! at ×0.01 km/h (its own catalog row) where PID `0D` is one byte of km/h.
+//! [`conversion_for`] is the gate; applying this table without it prints
+//! confident nonsense.
+//!
 //! Only parameters with a **linear** conversion are listed. Bitfields (which
 //! PIDs are supported, which monitors are ready), enumerations (fuel type, OBD
 //! standard) and the multi-field lambda parameters are deliberately absent
@@ -145,6 +159,63 @@ pub fn decode_info_text(data: &[u8]) -> Option<Vec<String>> {
 /// Look a parameter up by its PID.
 pub fn pid(pid: u8) -> Option<&'static ObdPid> {
     PIDS.iter().find(|p| p.pid == pid)
+}
+
+/// Why a mirrored identifier's bytes were **not** converted.
+///
+/// A reading must never print as an engineering value when the conversion is
+/// not known to hold; these are the two ways this project has established that
+/// it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unconverted {
+    /// The control unit is not one ISO 15765-4 addresses for emissions
+    /// diagnostics, so nothing obliges its `F4xx` identifiers to be the J1979
+    /// ones — and on the reference car they demonstrably are not (see
+    /// `vag_protocol::address::UnitAddress::is_emissions_related`).
+    NotAnEmissionsUnit,
+    /// The unit *is* one, but the response is not the width the standard
+    /// defines for this parameter. Whatever it answered, it is not this
+    /// parameter: a two-byte answer to a one-byte PID means the first byte is
+    /// not the value, and a one-byte answer to a two-byte PID has no value in
+    /// it at all.
+    WrongWidth { expected: usize, got: usize },
+}
+
+impl ObdPid {
+    /// How many data bytes SAE J1979 defines for this parameter — one for the
+    /// single-byte forms, two for the `256A + B` ones.
+    pub const fn data_len(&self) -> usize {
+        match self.form {
+            RawForm::U8First | RawForm::U8Second => 1,
+            RawForm::U16Be | RawForm::U16Le | RawForm::I16Be => 2,
+            RawForm::U24Be => 3,
+            RawForm::U32Be => 4,
+        }
+    }
+}
+
+/// Decide whether the standard conversion may be applied to what a unit
+/// answered at this parameter's mirror.
+///
+/// `mirror_established` is the caller's answer to "is this a unit the standard
+/// set is defined on" — in the CLI, `UnitAddress::is_emissions_related`. Both
+/// gates are needed and neither subsumes the other: the reference car's climate
+/// unit answers `F405` with one byte, the right width for a wrong quantity, so
+/// the width check alone would convert it; and its in-block gearbox answers
+/// `F40D` with two bytes where PID `0D` is one, so the block check alone would
+/// convert that.
+pub fn conversion_for(
+    p: &ObdPid,
+    mirror_established: bool,
+    data: &[u8],
+) -> Result<MeasurementDef, Unconverted> {
+    if !mirror_established {
+        return Err(Unconverted::NotAnEmissionsUnit);
+    }
+    if data.len() != p.data_len() {
+        return Err(Unconverted::WrongWidth { expected: p.data_len(), got: data.len() });
+    }
+    Ok(p.to_def())
 }
 
 impl ObdPid {

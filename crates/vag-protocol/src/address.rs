@@ -49,6 +49,29 @@ impl UnitAddress {
         Some(UnitAddress { request, response })
     }
 
+    /// Whether this unit is one of the **emissions-related** control units that
+    /// ISO 15765-4 addresses — and therefore one on which the legislated
+    /// OBD-II parameter set, mirrored at `F400 + PID`, is required to exist and
+    /// to mean what SAE J1979 says it means.
+    ///
+    /// This is a property of the protocol, not of a car: ISO 15765-4 reserves
+    /// `0x7E0..0x7E7` for the physically-addressed emissions-related servers
+    /// (`0x7DF` being their functional address), and it is those servers that
+    /// legislation obliges to answer mode 01. A unit on VW's own `0x700..0x7BF`
+    /// block is outside that obligation, so nothing says its `F4xx`
+    /// identifiers are the standard's.
+    ///
+    /// The reference car shows they are not. Its climate unit (`0x746`,
+    /// `5E0907044AM`) answers `F405` with 87 / 90 / 109 at three moments where
+    /// the engine's own `F405` reads 129 / 93 / 137: fitting a line through the
+    /// first two pairs predicts −135 for the third, and between the first two
+    /// the engine's coolant fell 36 °C while the climate value *rose* by 3. No
+    /// conversion carries one to the other. The same unit answers `F40C` with
+    /// one byte where J1979 defines PID `0C` as two.
+    pub fn is_emissions_related(&self) -> bool {
+        (ISO_FIRST..=ISO_LAST).contains(&self.request)
+    }
+
     /// How this unit is written on screen and on the command line: the short
     /// number when one is established, otherwise the request id.
     pub fn label(&self) -> String {
