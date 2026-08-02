@@ -52,16 +52,61 @@ impl DigitOrder {
         self.map.is_empty()
     }
 
-    /// Read one enciphered numeric field.
+    /// Read one enciphered field as an integer.
     ///
     /// `None` if any glyph is unaccounted for — a partly-decoded number is a
-    /// wrong number, and this project has a rule about those.
+    /// wrong number, and this project has a rule about those. **A field
+    /// carrying a decimal point or a minus sign is not an integer and is
+    /// refused here**; use [`DigitOrder::decode_field`], which reads them.
     pub fn decode(&self, text: &str) -> Option<u64> {
         let mut out = 0u64;
         for glyph in text.chars() {
             out = out.checked_mul(10)?.checked_add(self.digit(glyph)? as u64)?;
         }
         (!text.is_empty()).then_some(out)
+    }
+
+    /// Read one enciphered field, punctuation included.
+    ///
+    /// The substitution covers `.` and `-` alongside the ten digits: a scaling
+    /// numerator can be `0.125` and an offset can be `-48`, and both are
+    /// written in the table's own alphabet like everything else. Reading such
+    /// a field as an integer silently drops the point and the sign — `0.125`
+    /// becomes `125` and `-8` becomes `8`, which are exactly the numbers a
+    /// caller would then use to scale a measurement.
+    ///
+    /// Which glyph is which comes from where it may appear, established over
+    /// the 116 tables that use more than eleven glyphs: a point sits only
+    /// inside a field and at most once, a minus sign only at its start. Those
+    /// two roles have to be supplied by the caller, because a single field in
+    /// isolation cannot tell them apart from digits.
+    pub fn decode_field(&self, text: &str, point: Option<char>, minus: Option<char>) -> Option<f64> {
+        let (negative, body) = match minus {
+            Some(sign) => match text.strip_prefix(sign) {
+                Some(rest) => (true, rest),
+                None => (false, text),
+            },
+            None => (false, text),
+        };
+        if body.is_empty() {
+            return None;
+        }
+        let (whole, fraction) = match point.and_then(|p| body.split_once(p)) {
+            Some((a, b)) => (a, Some(b)),
+            None => (body, None),
+        };
+        // A point with nothing after it, or a second point, is not a number.
+        if fraction.is_some_and(|f| f.is_empty() || point.is_some_and(|p| f.contains(p))) {
+            return None;
+        }
+        let mut value = match whole.is_empty() {
+            true => 0.0,
+            false => self.decode(whole)? as f64,
+        };
+        if let Some(fraction) = fraction {
+            value += self.decode(fraction)? as f64 / 10f64.powi(fraction.len() as i32);
+        }
+        Some(if negative { -value } else { value })
     }
 }
 
@@ -171,6 +216,30 @@ mod tests {
         assert_eq!(order.decode(".0374730"), Some(10_489_840));
         assert_eq!(order.decode("4527503"), Some(9_758_704));
         assert_eq!(order.decode(".-0238"), Some(120_543));
+    }
+
+    #[test]
+    fn a_field_carrying_punctuation_is_read_as_a_number_not_as_digits() {
+        // The substitution covers `.` and `-` with the digits. Reading such a
+        // field as an integer turns 0.125 into 125 and −8 into 8 — the exact
+        // numbers a caller would then scale a measurement with.
+        let order = digit_order(&table_531(), &[]).unwrap();
+        // In this alphabet `8` stands for 3 and `3` stands for 4.
+        assert_eq!(order.decode_field("083", Some(','), Some('9')), Some(34.0));
+        assert_eq!(order.decode_field("0,83", Some(','), Some('9')), Some(0.34));
+        assert_eq!(order.decode_field("9083", Some(','), Some('9')), Some(-34.0));
+        assert_eq!(order.decode_field("90,83", Some(','), Some('9')), Some(-0.34));
+        // Without the roles named, punctuation is simply an unknown glyph.
+        assert_eq!(order.decode_field("0,83", None, None), None);
+    }
+
+    #[test]
+    fn a_malformed_field_is_refused_rather_than_repaired() {
+        let order = digit_order(&table_531(), &[]).unwrap();
+        assert_eq!(order.decode_field("08,", Some(','), None), None, "a point with no fraction");
+        assert_eq!(order.decode_field("0,8,3", Some(','), None), None, "two points");
+        assert_eq!(order.decode_field("9", None, Some('9')), None, "a sign with no number");
+        assert_eq!(order.decode_field("", Some(','), Some('9')), None);
     }
 
     #[test]

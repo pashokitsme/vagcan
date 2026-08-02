@@ -832,27 +832,58 @@ Hours, Day, Month, Year from their ciphertext word lengths alone. Predicted bit 
 6, 6, 5, 5, 4, 7 — measured 6, 6, 5, 5, 4, 7, with Year carrying offset 2000 (103 rows)
 or 1970 (7).
 
-### 5.3 The honest limit: STRUC does not carry the fine scalings
+### 5.3 WITHDRAWN: "STRUC does not carry the fine scalings"
 
-The complete inventory of linear rows decoded so far — 162 of them — is
-`(2000, 1/1)`×109, `(0, 4/10)`×16, `(0, 5/1)`×10, `(0, 10/1)`×10, `(1970, 1/1)`×7,
-`(0, 3/1)`×5, `(0, 25/1)`×3, `(0, 4/1)`×2. **Denominators are 1 or 10, nothing else.**
+This section previously reported that STRUC's denominators were only `{1, 10}` and that
+the factors proven by driving appeared **zero times** in 4003 decoded rows. **That is
+withdrawn.** It was an artefact of the solver, not a property of the data.
 
-The factors this project proved by driving the car — `0.001` for boost, `0.01` for the
-gearbox's speed, `0.75`/`−48` for a temperature — appear **zero times** in 4003 decoded
-rows. So "read STRUC and stop measuring on the car" is false as stated, and the live
-calibration path stays load-bearing.
+The solver assumed every non-separator glyph was a decimal digit, so it could only
+handle tables using eleven glyphs or fewer — and **116 of 1221 tables use twelve or
+thirteen**. The extra symbols are punctuation, enciphered along with the digits: a glyph
+confined to the numerator field, never first or last and at most once, is a **decimal
+point**; a glyph confined to the offset field and only ever at its start is a **minus
+sign**. In all 43 of the thirteen-glyph tables there is exactly one of each, in exactly
+those fields.
+
+So the tables that carry fine factors and negative offsets were precisely the tables the
+old model could not represent: **0 of the 86 tables containing punctuation were in the
+old solved set.** Over 899 linear rows from the corrected solver:
+
+* denominators are `{1, 4, 5, 10}`;
+* **`0.001` appears** (tables `000963`, `001266`, `001453`) and **`0.01` appears**
+  (9 rows), alongside 0.0039, 0.004, 0.05, 0.1, 0.125, 0.24, 0.25, 0.4, 0.5, 0.7;
+* negative offsets exist: −4, −5, −8, −20, −40, −50, −70, −127.7874, −550, −32768.
+
+What survives is much weaker and stated as such: **`0.75` with offset `−48` is still
+absent** from all 899 rows. But the corpus is only 38 % solved and 0.7/−70, 0.5/−50 and
+0.5/−40 are all present, so this is no longer evidence that STRUC lacks the fine
+scalings. Live calibration remains the only *proven* path; it is no longer the only
+possible one.
+
+The decoder in `crates/vag-data/src/glyphs.rs` reads punctuation
+(`DigitOrder::decode_field`). Reading such a field as an integer turns `0.125` into
+`125` and `−8` into `8` — the exact numbers a caller would then scale a measurement
+with, which is why the integer reader now refuses them rather than dropping them
+silently.
 
 `TTDOP` is a text table — `(lower, upper, text-id)` — with no coefficient field, so it is
-not the home of the missing factors either.
+not the home of the missing factors.
 
-### 5.4 One near-miss, deliberately not claimed
+### 5.4 The near-miss, now refuted outright
 
-Table `000742` decodes to sixteen consecutive 8-bit parameters with unit id 1 = `%` and
-factor 4/10 — numerically identical to the accelerator-pedal scaling proven on gearbox
-`0CW300041G` (`0x3804`, one byte, ×0.4 %). It is **not** an identification: 0.4 % per bit
-on a byte is the commonest scaling VAG uses, and the rows' name text-ids 62816–62831 are
-not among the 17 009 names recovered so far. A match of form is not a match.
+Table `000742` decoded to sixteen 8-bit parameters at unit id 1 = `%` and factor 4/10 —
+numerically identical to the accelerator-pedal scaling proven on gearbox `0CW300041G`
+(`0x3804`, one byte, ×0.4 %). It was recorded as a match of form. With more tables
+solved it is now **refuted as an identification**, on structure rather than on taste:
+
+* `f10 = 17` bytes, a byte-0 header row, then sixteen one-byte parameters at consecutive
+  offsets 1…16. A 17-byte, 16-element array is not a scalar measurement, and the proven
+  reading is a single byte.
+* The form is not distinctive: of 86 solved rows at unit `%` on 8 bits, 32 use ×0.5 and
+  25 use ×0.4, nine of them outside this table.
+* The names cannot rescue it — the nearest recovered text-ids to its run of 62816–62831
+  are 62795 and 63117, a gap of 322.
 
 The §4.0c refutation is untouched: nothing here puts a read identifier in STRUC.
 
