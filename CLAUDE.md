@@ -12,6 +12,20 @@
 - Keep the `Claude-Session:` trailer line as well.
 - Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`…).
 
+## Safety (MANDATORY — read [`SAFETY.md`](SAFETY.md))
+
+This tool only reads, and it has still cost the reference car its power steering: an
+identifier sweep crashed the steering assist unit, twice, the second time permanently
+(`research/eps-j500-report-ru.md`). Read-only bounds what can be *changed* about a car,
+not what can be *provoked*.
+
+- **Never add a write service.** No coding, no adaptation, no clearing faults, no
+  flashing. The UDS allowlist is `0x22`, `0x19`, `0x10`, `0x3E` and stays that way.
+- **A sweep is a fuzz test of a diagnostic server.** It is the most invasive thing here.
+  Guard anything new that resembles one the same way `survey` is guarded.
+- **Anything that can change how a unit behaves is refused on a moving car** — checked
+  by reading road speed, with "no answer" counted as moving.
+
 ## No car-specific data in the code (MANDATORY)
 
 The tool must work on **any VAG car**, not on this Škoda. That means a hard line

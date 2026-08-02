@@ -1,5 +1,9 @@
 # vagcan — VAG CAN-bus diagnostics (Rust)
 
+> **Read [`SAFETY.md`](SAFETY.md) before pointing this at a car you care about.**
+> It only reads, and it has still cost one car its power steering.
+
+
 A from-scratch, CLI-first diagnostics tool for VAG-group cars (VW / Audi / Škoda / SEAT),
 targeting the **MQB** platform. Goal: talk to the car directly over the OBD-II cable — live
 monitoring and fault-code reading — as an open alternative to VCDS / "Vasya".
