@@ -29,7 +29,7 @@ it can put the gear, the pedal and the boost on the same time axis as the stopwa
 | a session of several runs, saved as one raw JSON | writing anything to a control unit |
 | `--view FILE.json` — a self-contained HTML chart page | a server, a bundler, or any external asset |
 | proven channels only | discovering measurements — that is what `survey` and `watch --survey` are for |
-| `--setup` and `--coastdown`: the car described once, and its road load measured | asking for a number before every run that nobody knows off the top of their head |
+| `--setup`: the car described once, then its road load measured on the road | asking for a number before every run that nobody knows off the top of their head |
 
 `race` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
 a fixed handful of known identifiers. `SAFETY.md`'s sweep gate does not apply: this is
@@ -86,8 +86,9 @@ vagcan race [--device PATH] [--profile FILE] [--minimal]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
             [--accel-window SECONDS] [--hz N] [--out FILE] [--catalogs DIR]
 
-vagcan race --setup [--device PATH]        interview this car once, write its profile
-vagcan race --coastdown [--device PATH]    measure CdA and Crr on the road
+vagcan race --setup [--device PATH] [--coast-from 120] [--coast-to 40]
+                                           describe this car once, then measure its
+                                           road load on the road. Writes the profile.
 vagcan race --view FILE.json               open a saved session as a chart page
 
 overrides, all of which normally live in the profile:
@@ -97,8 +98,8 @@ overrides, all of which normally live in the profile:
 ```
 
 **The ordinary invocation is `vagcan race` with no flags at all.** Everything the model needs
-either comes from the car, or was answered once by `--setup` and measured once by
-`--coastdown`, and lives in the car's profile (§0). The override flags exist for a one-off —
+either comes from the car, or was answered once by `--setup` and measured by the
+coastdown it ends with, and lives in the car's profile (§0). The override flags exist for a one-off —
 a loaded boot, a different set of wheels — and what was used is recorded in every file. None
 of them has a generic default: a parameter that cannot be had honestly is one the run does
 without, which is what `--minimal` describes.
@@ -139,19 +140,27 @@ absurd when the car carries a barometer. Sorted by where each figure actually co
 
 So the car needs a profile, and the profile needs to be written once.
 
-**`vagcan race --setup`** does it, standing still:
+**`vagcan race --setup`** is the whole of it — one command that starts parked and ends on the
+road:
 
-1. Identifies the car — VIN from the engine, part numbers and component strings from every
-   unit the gateway lists. The VIN is the profile's key, exactly as a part number is a
+1. **Identifies the car** — VIN from the engine, part numbers and component strings from
+   every unit the gateway lists. The VIN is the profile's key, exactly as a part number is a
    measurement catalog's key: the car names itself and the file is found by that name.
-2. Runs the pre-flight channel check and prints what it found and what it did not, so a
+2. **Runs the pre-flight channel check** and prints what it found and what it did not, so a
    missing channel is discovered at a standstill rather than at a green light.
-3. Asks for what only a person can supply, with the source named rather than the units:
+3. **Asks for what only a person can supply**, with the source named rather than the units:
    *kerb mass from the registration document, plus the people and fuel that will be in the
    car* — and the tyre size as written on the sidewall.
-4. Writes `catalogs/cars/<VIN>.json` and says plainly that the profile is **not finished**:
-   the coastdown supplies the other half and needs a road, so it is a separate command run
-   when there is one. Until it has run, `race` is in minimal mode (below).
+4. **Then waits for the road.** It says what it needs and watches the bus for it: get up to
+   `--coast-from` (120 km/h), then coast in neutral down to `--coast-to` (40). It prompts
+   once, before anything moves, and then goes quiet — the screen shows the current speed and
+   what it is waiting for, and nothing asks the driver anything at speed.
+5. **Asks for the return pass**, turns the same stretch around, and repeats.
+6. **Fits, then writes** `catalogs/cars/<VIN>.json`.
+
+If the run is abandoned before the passes are done, what was answered is still saved, and
+`race` is in minimal mode until the setup is finished. Setup can be re-run; it keeps the
+answers and asks only for what is missing.
 
 ```json
 { "vin": "XW8AD4NE9JH008917",
@@ -183,11 +192,11 @@ There are exactly two states this command runs in:
 | mode | requires | produces |
 |---|---|---|
 | **minimal** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
-| **complete** | `--setup` **and** `--coastdown` | all of the above, plus power |
+| **complete** | `--setup`, carried through both coastdown passes | all of the above, plus power |
 
-There is deliberately **no state in between**. A profile with a mass but no coastdown does
-not "fall back to a generic CdA" — it runs minimal. Generic road-load numbers are gone from
-the model entirely: a power figure resting on a hatchback-shaped guess is exactly the sort of
+There is deliberately **no state in between**. A setup abandoned after the questions does not
+"fall back to a generic CdA" — it runs minimal. Generic road-load numbers are gone from the
+model entirely: a power figure resting on a hatchback-shaped guess is exactly the sort of
 number this document spends nine sections refusing to print. Either the road load was
 measured on this car or there is no power column.
 
@@ -201,7 +210,7 @@ A car that has never been set up is the normal first encounter, and it must not 
 
 ```
   no profile for XW8AD4NE9JH008917 — minimal mode: times, speeds and telemetry,
-  no power. Park, then: vagcan race --setup, and vagcan race --coastdown.
+  no power. Park, then run: vagcan race --setup
 ```
 
 Minimal mode is not a stripped-down recording. It records **every channel worth having on its
@@ -227,30 +236,44 @@ Where a profile *does* exist, those two channels are read **once per run** rathe
 cycle. Barometric pressure and outside air temperature do not change measurably in seven
 seconds, and polling them at 20 Hz would cost cycles for no information.
 
-### The coastdown — `race --coastdown`
+### The coastdown, inside setup
 
-Road load can be measured instead of guessed. Coasting in neutral, the only forces left are
-drag and rolling resistance, so the deceleration decomposes:
+Road load is measured rather than guessed. Coasting in neutral, the only forces left are drag
+and rolling resistance, so the deceleration decomposes:
 
 ```
 −m·k·a(v)  =  ½·ρ·CdA·v²  +  m·g·Crr
 ```
 
-Everything on the left is known — speed from the bus, mass from the profile, `k ≈ 1.03` since
-only the wheels still turn — and a least-squares fit against `v²` returns **both** unknowns,
-for this car, with its wheels and its tyre pressures. This is the standard method (SAE J1263 /
-J2263) reduced to what a bus and a laptop can do.
+Everything on the left is known — speed from the bus, mass from the answers just given,
+`k ≈ 1.03` since only the wheels still turn — and a least-squares fit against `v²` returns
+**both** unknowns, for this car, with its wheels and its tyre pressures. This is the standard
+method (SAE J1263 / J2263) reduced to what a bus and a laptop can do.
 
-- The run is **two-way**: down the stretch and back, averaged. Grade and steady wind reverse
-  sign between the two passes and cancel to first order, and a coastdown is *more* sensitive
-  to grade than an acceleration run is, because the force it measures is ten times smaller.
-  A one-way coastdown is not accepted; the tool asks for the return pass.
-- A useful range is roughly 120 down to 40 km/h, which takes a quiet, flat, dry road with no
-  traffic. The tool records; when and whether to select neutral is the driver's decision and
-  the tool does not prompt for it while the car is moving.
-- The fit is rejected below an R² threshold, and rejected outright if the two passes disagree
-  by more than a stated margin — which is what a slope or a gusty day looks like in the data.
-- Nothing here is a write. The car is coasting; the tool is reading speed.
+**A pass is recognised from the bus, not from a keystroke.** It starts when speed passes
+`--coast-from` with **pedal at zero and the selector in N**, and it ends at `--coast-to`. Both
+conditions are proven channels, so the tool knows a coast is happening without asking. A pass
+is discarded, with the reason on screen, if the pedal moves, the selector leaves N, the speed
+rises, or the deceleration jumps in a way braking looks like — a partial coast fitted as a
+whole one would put the brakes into `Crr`.
+
+- **Two passes, opposite directions.** Grade and steady wind reverse sign between them and
+  cancel to first order, and a coastdown is *more* sensitive to slope than an acceleration
+  run is, because the force it measures is ten times smaller. The tool cannot tell which way
+  the car is pointing — there is no compass on this bus — so it counts passes and says to
+  turn around; the disagreement check between the two is what catches a pair that was not
+  actually reciprocal.
+- **The range is a default, not a rule.** 120 to 40 km/h is what conditions the fit well: the
+  drag term dominates at the top, rolling resistance at the bottom, and separating them needs
+  both ends. `--coast-from`/`--coast-to` narrow it for a road or a limit that does not allow
+  120, and the fit reports the worse conditioning rather than hiding it.
+- **The fit is rejected** below an R² threshold, or when the two passes disagree by more than
+  a stated margin — which is what a slope, a gusty day or a half-braked pass looks like in the
+  data. A rejected fit leaves the profile without road load, which means minimal mode, which
+  is the correct outcome and not a failure of the tool.
+- It needs a quiet, flat, dry road with no traffic. **Nothing here is a write**: the car is
+  coasting and the tool is reading speed. Whether and when to select neutral is the driver's
+  decision, taken before the pass begins, and the tool never prompts for it at speed.
 
 ### The odometer cross-check — a hypothesis, not a method
 
@@ -793,7 +816,7 @@ crates/vagcan/src/race/mod.rs       the command, the poll loop, the TUI
 crates/vagcan/src/race/session.rs   state machine, marks, derived metrics — no I/O
 crates/vagcan/src/race/power.rs     the dynamics model and air density
 crates/vagcan/src/race/profile.rs   the per-VIN car profile: read, write, precedence
-crates/vagcan/src/race/coastdown.rs the road-load fit
+crates/vagcan/src/race/setup.rs     the interview, the coastdown passes, the road-load fit
 crates/vagcan/src/race/report.rs    the results table
 crates/vagcan/src/race/view.rs      HTML generation
 ```
