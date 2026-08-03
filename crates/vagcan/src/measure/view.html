@@ -1512,6 +1512,17 @@ svg.addEventListener("dblclick", function () { state.zoom = null; draw(); });
 
 var elResults = document.getElementById("results");
 
+/* One metric horsepower, DIN 66036 — the same constant `report.rs` states, and
+   for the same reason: "hp" names two units 1.4 % apart.
+
+   Horsepower first and kW in brackets. The file stores watts and every model
+   here works in watts; this is the last step before the eye, because a car is
+   sold and argued about in PS and leading with kW makes the reader divide. */
+var PS_W = 735.49875;
+function powerFigure(kw) {
+  return (kw * 1000 / PS_W).toFixed(0) + " PS (" + kw.toFixed(1) + " kW)";
+}
+
 function markName(m) { return m.from + "–" + m.to; }
 
 /* A 0-based mark prints as a range, because the moment the car started is
@@ -1556,12 +1567,10 @@ function renderResults() {
          d.peak_accel_gear ? "in gear " + d.peak_accel_gear : null,
          CFG.peak_statistic ? CFG.peak_statistic : null].filter(Boolean).join(", ")));
     if (typeof d.peak_power_wheel_kw === "number")
-      comp.push(row("peak power, wheel", d.peak_power_wheel_kw.toFixed(1) + " kW",
-        "(" + (d.peak_power_wheel_kw * 1000 / 735.49875).toFixed(0) + " PS) estimate"));
+      comp.push(row("peak power, wheel", powerFigure(d.peak_power_wheel_kw), "estimate"));
     if (typeof d.peak_power_shaft_kw === "number")
-      comp.push(row("peak power, shaft", d.peak_power_shaft_kw.toFixed(1) + " kW",
-        "(" + (d.peak_power_shaft_kw * 1000 / 735.49875).toFixed(0) +
-        " PS) estimate, engine-side inertia included"));
+      comp.push(row("peak power, shaft", powerFigure(d.peak_power_shaft_kw),
+        "estimate, engine-side inertia included"));
     (d.shifts || []).forEach(function (s) {
       comp.push(row("shift " + s.from + "→" + s.to,
         (typeof s.speed_deficit_ms === "number" ? (s.speed_deficit_ms * 3.6).toFixed(1) + " km/h" : "—"),

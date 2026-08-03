@@ -1484,7 +1484,7 @@ fn value_rows(
             power::power(speed / power::KMH_PER_MS, *accel, None, &model.load, &model.conditions);
         rows.push(ui::ValueRow {
             name: "power".into(),
-            value: format!("{:.0} kW", watts.wheel_w / 1000.0),
+            value: report::power_figure(watts.wheel_w / 1000.0),
             origin: ui::Origin::Computed("estimate"),
         });
     }

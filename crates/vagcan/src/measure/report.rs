@@ -34,6 +34,16 @@ use super::types::{Seconds, Track};
 /// apart, and a power figure that does not say which is not a figure.
 pub const PS_W: f64 = 735.498_75;
 
+/// A power figure as a person reads it: horsepower first, watts in brackets.
+///
+/// The model computes in watts and everything stored is in watts — this is the
+/// last step before the eye and nowhere else. A car is sold, compared and
+/// argued about in PS, so leading with kW makes the reader do the division
+/// every time; leading with PS and keeping kW in reach costs nothing.
+pub(super) fn power_figure(kw: f64) -> String {
+    format!("{:.0} PS ({kw:.1} kW)", kw * 1000.0 / PS_W)
+}
+
 /// The default half-width of the least-squares acceleration window.
 ///
 /// Long enough to hold half a dozen samples at the rates this loop achieves,
@@ -539,18 +549,13 @@ fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
         );
     }
     if let Some(kw) = derived.peak_power_wheel_kw {
-        let _ = writeln!(
-            out,
-            "    peak power, wheel   {kw:.0} kW    ({:.0} PS) estimate",
-            kw * 1000.0 / PS_W
-        );
+        let _ = writeln!(out, "    peak power, wheel   {}    estimate", power_figure(kw));
     }
     if let Some(kw) = derived.peak_power_shaft_kw {
         let _ = writeln!(
             out,
-            "    peak power, shaft   {kw:.0} kW    ({:.0} PS) estimate, engine-side inertia \
-             included",
-            kw * 1000.0 / PS_W
+            "    peak power, shaft   {}    estimate, engine-side inertia included",
+            power_figure(kw)
         );
     }
     for shift in &derived.shifts {
@@ -794,7 +799,10 @@ mod tests {
             assert!(table.contains(expected), "{expected} missing from:\n{table}");
         }
         assert!(table.contains("peak power, wheel"), "{table}");
-        assert!(table.contains(" PS) estimate"), "every power figure says so: {table}");
+        // Horsepower leads and the watts stay in reach, and the figure still
+        // says it is an estimate wherever it appears.
+        assert!(table.contains(" PS ("), "power reads PS first: {table}");
+        assert!(table.contains(" kW)    estimate"), "every power figure says so: {table}");
     }
 
     #[test]
