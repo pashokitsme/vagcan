@@ -29,6 +29,8 @@ mod vcds;
 mod vcdslog;
 mod watch;
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
@@ -206,8 +208,11 @@ enum Command {
         /// a screen. This is the plain-console mode: no terminal needed, so it
         /// works over a pipe, in a log, or from a script. Without `--out` the
         /// rows go to stdout, one per poll cycle, flushed as they happen.
-        #[arg(long = "for", value_name = "SECONDS")]
-        r#for: Option<f64>,
+        ///
+        /// Output that is not a terminal uses this mode whether or not it was
+        /// asked for, running until interrupted.
+        #[arg(long = "for", value_name = "SECONDS", value_parser = duration_arg, conflicts_with = "replay")]
+        r#for: Option<Duration>,
         /// Where the measurement catalogs live. Each file is named after the
         /// part number or ODX name of the control unit it describes, so a car
         /// this tool has not seen before simply finds none.
@@ -235,6 +240,11 @@ enum Command {
         /// Pause between reads, in milliseconds.
         #[arg(long, default_value_t = 2, value_name = "MS")]
         delay_ms: u64,
+        /// Sweep while the car is moving. Refused by default: a sweep is
+        /// thousands of requests a unit may never have handled, and on the
+        /// reference car it made the steering assist stop assisting mid-drive.
+        #[arg(long)]
+        while_driving: bool,
     },
 
     /// Read stored fault codes from every control unit.
@@ -364,12 +374,12 @@ async fn main() -> Result<()> {
             };
             // A pipe, a log file or an agent gets the plain-console view
             // whether or not it thought to ask: the full-screen one needs a
-            // terminal and would otherwise fail with a bare errno. Left
-            // running until Ctrl-C, since no duration was named.
-            let for_seconds = match (r#for, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
-                (Some(seconds), _) => Some(seconds),
-                (None, false) => Some(f64::INFINITY),
-                (None, true) => None,
+            // terminal and would otherwise fail with a bare errno. With no
+            // duration named it runs until interrupted.
+            let view = match (r#for, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+                (Some(d), _) => watch::View::Plain(Some(d)),
+                (None, false) => watch::View::Plain(None),
+                (None, true) => watch::View::FullScreen,
             };
             watch::run(
                 &device::resolve(device.as_deref())?,
@@ -380,14 +390,22 @@ async fn main() -> Result<()> {
                     out: out.as_deref(),
                     survey: survey.as_deref(),
                     catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
-                    for_seconds,
+                    view,
                 },
             )
             .await
         }
-        Command::Scan { device, ecu, range, out, delay_ms } => {
-            scan::run(&device::resolve(device.as_deref())?, ADAPTER_BAUD, parse_ecu(&ecu)?, &range, out.as_deref(), delay_ms)
-                .await
+        Command::Scan { device, ecu, range, out, delay_ms, while_driving } => {
+            scan::run(
+                &device::resolve(device.as_deref())?,
+                ADAPTER_BAUD,
+                parse_ecu(&ecu)?,
+                &range,
+                out.as_deref(),
+                delay_ms,
+                while_driving,
+            )
+            .await
         }
         Command::Faults { device, ecu, details, all, supported, extended } => {
             faults::run(
@@ -431,6 +449,19 @@ async fn main() -> Result<()> {
             }
         },
     }
+}
+
+/// A duration in seconds, rejected here rather than at the point of use.
+///
+/// `Duration::from_secs_f64` panics on a negative, a NaN or an infinity, and
+/// the point of use is inside the poll loop — with the adapter open and the car
+/// on the bus. A usage error belongs before any of that happens.
+fn duration_arg(text: &str) -> Result<Duration, String> {
+    let seconds: f64 = text.parse().map_err(|_| format!("{text:?} is not a number"))?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(format!("{text:?} is not a positive number of seconds"));
+    }
+    Duration::try_from_secs_f64(seconds).map_err(|e| e.to_string())
 }
 
 /// Parse how the user named a control unit — `01`, `17`, or a request id like
@@ -739,6 +770,22 @@ mod tests {
         let help = flag_help(&["vcds", "labels"], "iv_cache");
         assert!(!help.contains("cargo"), "{help}");
         assert!(help.contains(".rod"), "{help}");
+    }
+
+    #[test]
+    fn every_sweep_is_refused_on_a_moving_car() {
+        // `scan` had no guard while `survey` did, for no better reason than
+        // that the incident happened during a survey. They are the same
+        // operation over a different number of units, and the danger simply
+        // moves to whichever spelling is unguarded.
+        let mut cli = Cli::command();
+        for sweep in ["scan", "survey"] {
+            let sub = cli.find_subcommand_mut(sweep).expect("the sweep exists");
+            assert!(
+                sub.get_arguments().any(|a| a.get_id() == "while_driving"),
+                "{sweep} is a sweep with no --while-driving gate"
+            );
+        }
     }
 
     #[test]

@@ -312,6 +312,7 @@ pub async fn run(
     range: &str,
     out: Option<&str>,
     delay_ms: u64,
+    while_driving: bool,
 ) -> anyhow::Result<()> {
     use anyhow::Context as _;
     use std::io::Write;
@@ -331,9 +332,29 @@ pub async fn run(
         None => None,
     };
 
-    let backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
+    let mut backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
         .await
         .with_context(|| crate::device::open_failure(device_path))?;
+
+    // This is a sweep, and a sweep is a fuzz of the unit's diagnostic server:
+    // thousands of requests it may never have been asked before, any one of
+    // which its firmware may mishandle. That is what took the steering assist
+    // off the reference car. `survey` is this command run over every unit and
+    // is guarded the same way; guarding one and not the other would only mean
+    // the danger moves to whichever spelling is unguarded.
+    if !while_driving {
+        backend = match crate::safety::require_stationary(backend).await {
+            Ok(backend) => backend,
+            Err((_, why)) => anyhow::bail!(
+                "{why}\n\n\
+                 A sweep asks a unit thousands of requests it may never have been asked \n\
+                 before. On the reference car that made the steering assist stop assisting \n\
+                 mid-drive. Sweep while parked, or pass --while-driving if you accept that \n\
+                 risk with the car in motion."
+            ),
+        };
+    }
+
     let mut uds = AsyncUdsClient::new(IsoTpCan::new(
         backend,
         CanId::Standard(unit.request),

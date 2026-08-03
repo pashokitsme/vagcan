@@ -62,8 +62,13 @@ about a car. It does not bound what you can *provoke*.
 * `--extended` is **refused while the car is moving**, established by reading
   road speed from the engine first. A car that will not report its speed counts
   as moving.
-* `survey` is **refused while the car is moving** unless `--while-driving` is
-  passed, and the refusal explains what happened here rather than citing a rule.
+* **Both** sweeps — `survey` over every unit and `scan` over one — are **refused
+  while the car is moving** unless `--while-driving` is passed, and the refusal
+  explains what happened here rather than citing a rule. `scan` went unguarded
+  at first for no better reason than that the incident happened during a survey;
+  they are the same operation over a different number of units, and guarding one
+  only moves the danger to the other spelling. A test now asserts that every
+  sweep has the gate, so the next one cannot ship without it (2026-08-03).
 * Nothing in the UDS client will emit a write service. The allowlist admits
   `0x22` (read data), `0x19` (read faults), `0x10` (session) and `0x3E`
   (tester present), and that is the whole of it.
