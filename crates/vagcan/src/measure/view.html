@@ -1023,11 +1023,13 @@ function draw() {
         });
       });
       if (!isFinite(lo2)) { lo2 = 0; hi2 = 1; }
-      if (g.flag) { lo2 = 0; hi2 = 1; }
       if (lo2 > 0 && lo2 < (hi2 - lo2) * 0.6) lo2 = 0;
       if (hi2 <= lo2) hi2 = lo2 + 1;
       var pad = (hi2 - lo2) * 0.08;
       g.lo = lo2 - pad; g.hi = hi2 + pad;
+      /* A flag keeps headroom, so an `on` does not land exactly on top of a
+         read series that happens to be at the top of its own scale. */
+      if (g.flag) { g.lo = -0.08; g.hi = 1.55; }
       g.unit = g.series[0] ? chUnit(g.series[0].key) : "";
       g.ticks = g.flag
         ? [{ y: 0, label: "off" }, { y: 1, label: "on" }]
@@ -1109,8 +1111,12 @@ function draw() {
 
   /* direct labels at the end of each line — the relief the palette needs, and
      the thing that makes a four-line chart readable without hunting the key */
+  /* Only the reference run is labelled at the line's end. Four runs of four
+     series is sixteen labels in a column, which is not a label any more; the
+     other runs are told apart by their muting and named in the legend. */
   var labels = [];
   series.forEach(function (s) {
+    if (s.runOrder > 0) return;
     var last = null;
     for (var i = s.pts.length - 1; i >= 0; i--) {
       var p = s.pts[i];
@@ -1120,10 +1126,7 @@ function draw() {
     if (!last) return;
     var X = Math.min(sx(last.x), mL + pw - 2), Y = s.group.sy(last.y);
     if (Y < mT || Y > mT + ph) return;
-    labels.push({
-      x: X - 5, y: Y - 5, color: s.color, opacity: s.opacity,
-      text: chName(s.key) + (selectedRuns().length > 1 ? " · " + s.run.index : "")
-    });
+    labels.push({ x: X - 5, y: Y - 5, color: s.color, opacity: s.opacity, text: chName(s.key) });
   });
   labels.sort(function (a, b) { return a.y - b.y; });
   for (var li = 1; li < labels.length; li++) {
@@ -1176,6 +1179,20 @@ function backgroundMarkup(run, sx, mT, ph, x0, x1) {
   if (state.bg === "none") return "";
   var xf = xMapper(run), out = [];
 
+  /* Two rows for the mark labels, each tracking how far right it is already
+     used: `0–80` and `50–100` land at nearly the same place and one on top of
+     the other is not a label. */
+  var rowEnd = [-1e9, -1e9];
+  function labelY(left, right) {
+    for (var r = 0; r < 2; r++) {
+      if (left > rowEnd[r] + 4) { rowEnd[r] = right; return mT + 11 + r * 12; }
+    }
+    var pick = rowEnd[0] <= rowEnd[1] ? 0 : 1;
+    rowEnd[pick] = right;
+    return mT + 11 + pick * 12;
+  }
+  function textWidth(t) { return String(t).length * 5.6; }
+
   function band(t0, t1, text, alt) {
     var a = xf(t0), b = xf(t1);
     if (a === null || b === null) return;
@@ -1187,7 +1204,9 @@ function backgroundMarkup(run, sx, mT, ph, x0, x1) {
     out.push('<rect x="' + X.toFixed(1) + '" y="' + mT + '" width="' + Wd.toFixed(1) +
              '" height="' + ph + '" fill="' + (alt ? "var(--band-alt)" : "var(--band)") + '"/>');
     if (text && Wd > 16) {
-      out.push('<text x="' + (X + Wd / 2).toFixed(1) + '" y="' + (mT + 12) +
+      var cx = X + Wd / 2, hw = textWidth(text) / 2;
+      out.push('<text x="' + cx.toFixed(1) + '" y="' +
+               (state.bg === "mark" ? labelY(cx - hw, cx + hw) : mT + 12) +
                '" text-anchor="middle" font-size="10" font-weight="600" fill="var(--ink-3)">' +
                esc(text) + '</text>');
     }
@@ -1219,7 +1238,8 @@ function backgroundMarkup(run, sx, mT, ph, x0, x1) {
         var px = sx(X);
         out.push('<line x1="' + px.toFixed(1) + '" y1="' + mT + '" x2="' + px.toFixed(1) +
                  '" y2="' + (mT + ph) + '" stroke="var(--mark)" stroke-width="1" stroke-dasharray="2 3"/>');
-        out.push('<text x="' + (px - 3).toFixed(1) + '" y="' + (mT + 11) +
+        out.push('<text x="' + (px - 3).toFixed(1) + '" y="' +
+                 labelY(px - 3 - textWidth(name), px - 3) +
                  '" text-anchor="end" font-size="10" fill="var(--ink-3)">' + esc(name) + '</text>');
       } else {
         var ta = crossingTime(run, m.from);
@@ -1286,8 +1306,9 @@ function renderLegend(series, groups, dropped) {
       }).join("; ")) + " — three Y axes is what the plot can carry.</p></div>";
   }
   if (selectedRuns().length > 1) {
+    var swatch = series.length ? series[0].color : "var(--s1)";
     html += '<div><div class="ttl">Runs</div>' + selectedRuns().map(function (r, i) {
-      return '<div class="it"><span class="sw" style="border-top-color:var(--s1);opacity:' +
+      return '<div class="it"><span class="sw" style="border-top-color:' + swatch + ';opacity:' +
         RUN_OPACITY[i] + '"></span><span class="nm">run ' + esc(r.index) +
         (r.aborted ? " (aborted)" : "") + "</span></div>";
     }).join("") + '<p class="mt">The first run draws full; the rest are muted variants of the ' +
