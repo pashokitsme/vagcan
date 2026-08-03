@@ -24,14 +24,51 @@ and it can put the gear, the pedal and the boost on the same time axis as the st
 |---|---|
 | `vagcan race` — armed stopwatch over a live poll loop | GPS, or any external reference |
 | user-defined marks (`0-100`, `50-100`, …) | a "dyno" claim — the power figure is an estimate and says so |
-| live TUI mirroring speed / engine speed / acceleration | drag-strip conventions (rollout, 1/4-mile traps) — later, if wanted |
+| live TUI: a value table and one chart at a time | drag-strip conventions (rollout, 1/4-mile traps) — later, if wanted |
 | a session of several runs, saved as one raw JSON | writing anything to a control unit |
 | `--view FILE.json` — a self-contained HTML chart page | a server, a bundler, or any external asset |
+| proven channels only | discovering measurements — that is what `survey` and `watch --survey` are for |
 
 `race` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
 a fixed handful of known identifiers. `SAFETY.md`'s sweep gate does not apply: this is
 `watch` with a stopwatch, not a fuzz test, and driving is the point of the command rather
 than a hazard to refuse.
+
+## Two kinds of number, and only two
+
+Every figure this command shows is either **read** — a value that was on the bus and whose
+meaning is proven, from a catalog row or from the SAE J1979 table — or **derived**, computed
+here from read values. Nothing else is admitted.
+
+**A number that was never on the bus must not look like one that was.** In the tables that
+means a stated origin, in the charts a different line style, in the file an explicit field.
+
+The third class the rest of this project deals with — bytes that were read but whose meaning
+nobody has proven, rendered `(raw)` by `Channel::render` and suffixed `_raw` in the `watch`
+CSV — **does not exist in `race`**. `watch` and `survey` show raw bytes because their job is
+to *find* measurements. `race` is an instrument, not a search: an unproven byte cannot be
+timed, integrated or differentiated, so there is nothing for it to do here.
+
+That has a consequence worth stating plainly: **`race` refuses to start on a car whose
+catalogs do not cover it.** After the units identify themselves, every required channel is
+resolved by name from the catalog store or the standard table, and a missing one is a fatal
+error naming the channel and the unit — not an empty column.
+
+| channel | required? | if missing |
+|---|---|---|
+| speed (leading) | yes | refuse — there is no stopwatch without it |
+| engine speed, gear, pedal | yes | refuse — a run with none of these explains nothing |
+| boost, specified and actual | no | the series is absent |
+| air mass, shaft speeds, selector | no | the series is absent |
+| barometric pressure, ambient temperature | no | **power is not computed** — air density has no source |
+
+A missing channel means the row is not there. It never means raw bytes, and it never means a
+guessed value.
+
+An unmapped value on a *proven* channel is a third thing again, and not the same as an
+unproven channel: if the selector answers a code outside the P/R/N/D table, it shows as
+`unknown code 07`, is excluded from every derived figure, and is stored as the byte with a
+flag. That is an admission, not a claim.
 
 ## CLI
 
@@ -80,8 +117,8 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
 - After a run the result stays on screen and the trigger re-arms by itself once the car is
   standing still again, so a session is a sequence of runs in one file.
 
-Keys: `p` pauses the trigger, `Esc` cancels the current run, `s` saves the session, `q`
-quits.
+Keys: `p` pauses the trigger, `Esc` cancels the current run, `s` saves the session, `←`/`→`
+change which series the chart shows, `q` quits.
 
 ## 2. Polling — `race/mod.rs`
 
@@ -164,8 +201,8 @@ empty one.
 
 **Gearbox mode.** The selector lever from the catalog: P/R/N/D are proven. **D versus S
 versus manual is not** — it is open work in `todo/README.md` (the stimulus was never given
-during the recording that identified the lever). Unknown codes render as raw bytes, which
-is what `Channel::render` already does.
+during the recording that identified the lever). A code outside the proven table shows as
+`unknown code 07` and enters nothing.
 
 ## 4. The live view — `race/mod.rs`
 
@@ -174,25 +211,59 @@ is what `Channel::render` already does.
 crate.
 
 ```
-  ARMED — waiting for the car to move            marks
-  ┌────────────────────────────────────────┐   0-10   0.98 s
-  │ speed   62.4 km/h    gear 3            │   0-25   2.11 s
-  │ engine  4310 /min    pedal 100 %       │   0-50   4.03 s
-  │ accel   0.41 g       boost 1.62 bar    │   0-60   ·
-  └────────────────────────────────────────┘   0-80   ·
-  ┌── speed ─ engine speed ─ accel ────────┐   0-100  ·
-  │                              ╱─────    │
-  │                    ╱────────╱          │
-  │          ╱────────╱                    │
-  └────────────────────────────────────────┘
+  RUN 4.31 s                                     marks
+  ┌──────────────────────────────────────────┐  0-10   0.98 s
+  │ speed    62.4 km/h    bus                │  0-25   2.11 s
+  │ engine   4310 /min    bus                │  0-50   4.03 s
+  │ gear     3            bus                │  0-60   ·
+  │ pedal    100 %        bus                │  0-80   ·
+  │ boost    1.71 / 1.62 bar   bus           │  0-100  ·
+  │ accel    0.41 g       computed, trailing │
+  │ power    164 hp       computed, estimate │
+  └──────────────────────────────────────────┘
+  ┌── speed ── ← → to change ────────────────┐
+  │                                ╱─────    │
+  │                      ╱────────╱          │
+  │            ╱────────╱                    │
+  └──────────────────────────────────────────┘
     0s        2s        4s        6s
 ```
 
-The acceleration series is drawn from the accumulated run buffer, not from the last point
-alone — its running end is causal by construction and is marked as such on screen.
+**The table carries every value; the chart carries one.** A table of ten rows is readable
+and a chart of ten series is not, so the chart shows a single series at a time, switched
+with the arrow keys and named in its own border. Speed opens; acceleration is next along.
+
+**Each row states where its number came from** — `bus` or `computed` — in a column of its
+own. Derived rows carry the qualifier that matters for reading them: the live acceleration
+is `trailing`, because live it can only be causal, and power is an `estimate`.
+
+The chart is drawn from the accumulated run buffer, not from the last point alone. When the
+series shown is a derived one, its running end is causal by construction and the border says
+so.
 
 With no terminal — a pipe, a log, an agent — the same loop runs and prints rows instead of
 drawing, exactly as `watch::View::Plain` does.
+
+**The results table — `race/report.rs`.** Shown when a run finishes or is cancelled, in two
+blocks under their own headings rather than one list:
+
+```
+  Run 2 — measured
+    mark     time      average acceleration
+    0-10     0.98 s    2.83 m/s²
+    0-100    6.12 s    4.54 m/s²
+    peak engine speed  6480 /min at 5.9 s
+  Run 2 — computed   (mass 1400 kg, CdA 0.65 m², Crr 0.012, window 0.30 s, central)
+    distance          118.4 m
+    peak acceleration 5.31 m/s²  (0.54 g) at 1.21 s, gear 2
+    peak power        171 hp     estimate at the wheels
+    shift 2→3         0.31 s dip at 2.44 s
+```
+
+The measured block holds times, the average accelerations that are `Δv/Δt` across a mark's
+own endpoints, and peaks of channels the car reported. The computed block carries its
+conditions in the heading: the same run under a different mass is a different set of numbers,
+and a table that hides that invites the comparison it cannot support.
 
 ## 5. The saved session — raw JSON
 
@@ -203,7 +274,14 @@ drawing, exactly as `watch::View::Plain` does.
                 "inertia": 1.0, "speed_source": "7E1:F40D", "speed_scale": 1.0,
                 "accel_window_s": 0.3, "accel_method": "central", "hz": 21.4 },
   "channels": [ { "key": "speed", "name": "Vehicle speed", "unit": "km/h",
-                  "request": "7E1", "did": "F40D", "proven": true } ],
+                  "origin": "read", "request": "7E1", "did": "F40D" },
+                { "key": "accel", "name": "Acceleration", "unit": "m/s2",
+                  "origin": "derived", "from": ["speed"],
+                  "method": "central-difference", "window_s": 0.3 },
+                { "key": "power", "name": "Power at the wheels", "unit": "hp",
+                  "origin": "derived", "estimate": true,
+                  "from": ["speed", "barometric_pressure", "ambient_temperature"],
+                  "method": "road-load" } ],
   "runs":     [ { "index": 1, "t0_wall": "…", "aborted": false,
                   "samples": [ { "t": -2.94, "speed": { "t": -2.94, "v": 0.0 } } ],
                   "marks":   [ { "from": 0, "to": 100, "seconds": 6.12,
@@ -215,9 +293,15 @@ drawing, exactly as `watch::View::Plain` does.
                                              "dip_seconds": 0.31, "speed_lost": 0.0 } ] } } ] }
 ```
 
-A proven channel is written as a value; an unproven one as hex bytes — the same rule the
-`watch` CSV already follows, and for the same reason: a four-digit hex string and a
-four-digit decimal look identical, and the reader cannot tell them apart from the value.
+Every channel declares its `origin`. A derived one also declares what it was derived
+**from** and by what **method**, with the parameters that method used — an acceleration
+figure whose window is not recorded is not reproducible, and a power figure whose mass is
+not recorded is not checkable. There is no `proven` flag: in `race` it would be `true` on
+every row, since nothing else gets in.
+
+A value that a proven channel returned but whose meaning is not in its table — an
+unmapped selector code — is stored as `{ "raw": "07", "unmapped": true }` and enters no
+derived figure.
 
 `--out` writes continuously; `s` writes on demand. Both write the same document.
 
@@ -227,12 +311,44 @@ four-digit decimal look identical, and the reader cannot tell them apart from th
 Inline SVG and inline JavaScript, no CDN, no external asset of any kind — a strict rule,
 and a test asserts the output contains no `http://` or `https://`.
 
-- One panel, series chosen by checkbox: speed, engine speed, acceleration, pedal, boost,
-  air mass, power, shaft speeds. Two Y axes, left and right, assigned by clicking a series.
-- A cursor line with a tooltip reading every selected series at that instant. This is the
-  requirement that the page exists for: any value, at any moment.
+A run has more channels than any one chart can carry, and a wall of checkboxes makes that
+the reader's problem. Two switches make it the page's.
+
+**Switch 1 — the X axis.** What the run is plotted *against* is a question of its own, and
+the answers are not interchangeable:
+
+| axis | what it shows |
+|---|---|
+| time | the measurement itself: seconds to each mark, where the dips are |
+| speed | the shape of the run with time divided out — two attempts compare directly |
+| distance | how many metres the launch cost |
+| engine speed | the run by revs — power against engine speed is the familiar dyno curve |
+
+**Switch 2 — the series set.** Groups that are worth reading together, at most three series
+and two Y axes each:
+
+| set | series |
+|---|---|
+| Run | speed + acceleration |
+| Engine | engine speed + boost specified/actual + air mass |
+| Driver | pedal + kickdown + gear |
+| Transmission | gear + shaft speeds + speed |
+| Power | power + acceleration |
+| Custom | the checkboxes, for a cut nobody anticipated |
+
+Sets are named by channel key, not by identifier, and a set whose channels this car does not
+have is not offered — which follows from the pre-flight check with no extra logic.
+
+The rest:
+
+- A cursor line with a tooltip reading every shown series at that point. This is the
+  requirement the page exists for: any value, at any moment.
+- **Read series are drawn solid, derived series dashed**, and the legend separates them
+  under two headings. Power's tooltip carries the conditions it was computed under — mass,
+  CdA, Crr, air density — because a power figure without them is not a figure.
 - Background discriminators, one at a time: **by gear**, **by mark**, **by kickdown**, **by
-  acceleration dips** (which shows the shifts without reading the gear row), or none.
+  acceleration dip** (the shifts, without reading the gear row), or none. They work on any X
+  axis — on the speed axis a gear change is still a vertical line, just at a km/h.
 - A run selector when the session holds several.
 
 Everything drawn comes from the recomputed derivative layer, so the page and the results
@@ -267,6 +383,11 @@ which is what makes the tests possible without a car.
 | no mass | the power column is empty rather than defaulted |
 | page | the generated HTML contains the sample data and no external URL |
 | session hygiene | the run issues no `0x10` session change |
+| pre-flight | a catalog store missing the speed channel refuses the run and names it |
+| optional channels | no barometer means no power column, and the run still happens |
+| origin | every channel in the file declares `origin`, and every derived one its method and parameters |
+| unmapped code | a selector value outside the table is stored flagged and reaches no derived figure |
+| series sets | a set whose channels this car lacks is not offered on the page |
 
 ## Open questions deliberately left open
 
