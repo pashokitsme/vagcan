@@ -578,4 +578,30 @@ mod tests {
         assert_eq!(live_m.unit, cached_m.unit);
         assert_eq!(live_m.range, cached_m.range);
     }
+
+    #[test]
+    fn the_cache_carries_the_corpus_unit_numbering() {
+        // The numbering is what tells the tool that `44` is a power steering
+        // unit on any VAG car. It has to survive the cache, or a second run
+        // would silently fall back to the five built-in pairings.
+        let ws = TempWorkspace::new("unitnumbers");
+        std::fs::write(
+            ws.labels_dir.join("6V-17.lbl"),
+            b"; Component: J285 - Instrument Cluster (#17)\n001,1,Something,,",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.labels_dir.join("5Q-44.lbl"),
+            b"; Component: J500 - Power Steering (#44)\n001,1,Something,,",
+        )
+        .unwrap();
+
+        build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
+        let cached = load_db(&ws.db_path).expect("load_db should succeed");
+        let live = LabelDb::new(load_corpus(&ws.labels_dir).unwrap().files);
+
+        assert_eq!(cached.unit_numbers(), live.unit_numbers());
+        assert_eq!(cached.unit_name(0x44), Some("J500 - Power Steering"));
+        assert_eq!(cached.unit_name(0x17), Some("J285 - Instrument Cluster"));
+    }
 }

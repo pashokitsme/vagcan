@@ -58,6 +58,11 @@ pub struct LabelDb {
     /// file index (`None` = known miss). Interior mutability keeps the
     /// lookup API `&self`; `Mutex` keeps `LabelDb: Sync`.
     resolve_cache: Mutex<HashMap<String, Option<usize>>>,
+    /// The corpus's own unit numbering: diagnostic address -> the name the
+    /// corpus gives it, extracted once here rather than re-derived per lookup
+    /// (about a thousand of the three thousand files carry a `Component:`
+    /// header). Sorted by address. See [`Self::unit_numbers`].
+    unit_numbers: Vec<(u8, String)>,
 }
 
 /// One `REDIRECT` row with its selector pre-normalized and its specificity
@@ -141,6 +146,7 @@ impl LabelDb {
             file_redirects.push(prepared);
             measurement_index.push(m_index);
         }
+        let unit_numbers = collect_unit_numbers(&files);
         LabelDb {
             files,
             file_index,
@@ -149,7 +155,30 @@ impl LabelDb {
             file_redirects,
             measurement_index,
             resolve_cache: Mutex::new(HashMap::new()),
+            unit_numbers,
         }
+    }
+
+    /// The unit numbering the corpus itself states: every diagnostic address
+    /// that appears in a `; Component: … (#17)` header, with the name the
+    /// corpus gives it, sorted by address.
+    ///
+    /// This is the hundred-odd-row table that would otherwise be written into
+    /// the code — `17` is the instrument cluster on every VAG car, not on this
+    /// Škoda. It is **numbers and names only**: no label file anywhere states
+    /// which CAN id a number is answered on, so pairing a number with a request
+    /// id still takes the car (`vagcan units --identify --labels`) or a user's
+    /// own note.
+    pub fn unit_numbers(&self) -> &[(u8, String)] {
+        &self.unit_numbers
+    }
+
+    /// What the corpus calls one diagnostic address.
+    pub fn unit_name(&self, address: u8) -> Option<&str> {
+        self.unit_numbers
+            .binary_search_by_key(&address, |(a, _)| *a)
+            .ok()
+            .map(|i| self.unit_numbers[i].1.as_str())
     }
 
     /// Number of files indexed.
@@ -350,6 +379,35 @@ impl LabelDb {
             })
             .map(|r| r.target.as_str())
     }
+}
+
+/// Pull the corpus's unit numbering out of the `Component:` headers.
+///
+/// A number is named many times over — 108 files call `01` an engine — and not
+/// always with the same words, since the name belongs to a car's own ECU and
+/// the corpus spans two decades of them. The **most frequent** spelling wins,
+/// ties broken alphabetically, so the answer depends on the corpus and not on
+/// the order its files happened to be read in.
+fn collect_unit_numbers(files: &[LabelFile]) -> Vec<(u8, String)> {
+    let mut counts: HashMap<u8, HashMap<&str, usize>> = HashMap::new();
+    for unit in files.iter().filter_map(|f| f.unit.as_ref()) {
+        *counts
+            .entry(unit.address)
+            .or_default()
+            .entry(unit.name.as_str())
+            .or_default() += 1;
+    }
+    let mut out: Vec<(u8, String)> = counts
+        .into_iter()
+        .filter_map(|(address, names)| {
+            names
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+                .map(|(name, _)| (address, name.to_string()))
+        })
+        .collect();
+    out.sort_by_key(|(address, _)| *address);
+    out
 }
 
 /// Uppercase + trim a name/selector/part-number for case-insensitive matching.
@@ -744,6 +802,36 @@ mod tests {
 
         // A block nobody defines → empty, not a panic.
         assert!(db.measurements_by_block(99, None).is_empty());
+    }
+
+    #[test]
+    fn the_corpus_states_its_own_unit_numbering() {
+        // Three files naming unit 17 — two agreeing, one an older spelling —
+        // and one naming 44, a number no code in this project knows.
+        let header = |address: &str, name: &str| {
+            format!("; Component: {name} (#{address})\n001,1,Something,,")
+        };
+        let db = LabelDb::new(vec![
+            parse_label("A.LBL", header("17", "J285 - Instrument Cluster").as_bytes()),
+            parse_label("B.LBL", header("17", "J285 - Instrument Cluster").as_bytes()),
+            parse_label("C.LBL", header("17", "Instruments").as_bytes()),
+            parse_label("D.LBL", header("44", "J500 - Power Steering").as_bytes()),
+            parse_label("E.LBL", b"001,1,No header at all,,"),
+        ]);
+
+        // Sorted by address, one row per number, the majority spelling.
+        assert_eq!(
+            db.unit_numbers(),
+            [
+                (0x17, "J285 - Instrument Cluster".to_string()),
+                (0x44, "J500 - Power Steering".to_string()),
+            ]
+        );
+        assert_eq!(db.unit_name(0x44), Some("J500 - Power Steering"));
+        assert_eq!(db.unit_name(0x03), None);
+
+        // The number is hex, as the corpus writes it: `(#17)` is 0x17, not 17.
+        assert_eq!(db.unit_numbers()[0].0, 23);
     }
 
     #[test]

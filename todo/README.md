@@ -363,10 +363,17 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
     `0x767` / `0x773` (`research/other-ecus.md`) — identify, then sweep;
   - deeper engine and gearbox coverage (the `3820–38FF` gearbox block while driving, the
     engine re-swept with the engine running).
-- **Unit addresses from the corpus.** `vag-protocol/src/address.rs` is a table in code,
-  deliberately limited to the five evidenced short numbers. The addresses (and the full
-  unit-number ↔ name mapping) should come from the label corpus (`.rod`/label files)
-  instead. Open — not started.
+- **Unit addresses from the corpus.** Done for the half the corpus can answer: the
+  numbering (`44` is a power steering unit, and what it is called) now comes from the
+  corpus's `; Component: … (#44)` headers — 73 numbers, extracted once by
+  `LabelDb::unit_numbers` — and is injected into `vag-protocol::address::install` by
+  the commands that load a corpus. The five built-in pairings are the fallback, behind
+  the override file and the corpus. **Still open:** which CAN request id a number is
+  answered on is in *no* label file — the two numberings are unrelated (`17` answers on
+  `0x714`, whose own UDS address is `0x14`; `19` on `0x710` — `research/other-ecus.md`
+  §3) — so that half is learned per car by `units --identify --labels`, which asks each
+  id for its part number and the corpus whose part number that is, and is lost when the
+  process exits. A per-car cache of learned pairings would keep it.
 - **Electrical-system and brake channels.** Nothing from ABS/brakes or the electrical
   system is in a catalog yet.
 

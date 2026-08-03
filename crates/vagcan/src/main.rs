@@ -592,7 +592,14 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
     // into the unit's diagnostic address and name, for any VAG car rather than
     // for a list written here.
     let corpus = match labels_dir {
-        Some(dir) => Some(labels::load_cached(std::path::Path::new(dir), false)?),
+        Some(dir) => {
+            let db = labels::load_cached(std::path::Path::new(dir), false)?;
+            // The corpus's numbering, in force for the rest of the run: what
+            // each number *is*. Which id answers it is learned below, from the
+            // car.
+            labels::install_unit_numbers(&db);
+            Some(db)
+        }
         None => None,
     };
 
@@ -654,15 +661,30 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
             // what the label corpus calls the part number — the latter also
             // supplying the diagnostic address people use.
             identified += 1;
-            let from_corpus = corpus
+            let name = corpus
                 .as_ref()
                 .and_then(|db| db.unit_for_part(&part))
                 .map(|u| {
                     resolved += 1;
-                    format!("{:02X}  {}", u.address, u.name)
+                    // This is the pairing: the corpus says the part number is
+                    // unit 44, the car says 0x712 answered with it. Neither
+                    // half is in this program's source, and one read of the
+                    // car is what joins them.
+                    vag_protocol::address::install([vag_protocol::address::UnitNumber {
+                        number: u.address,
+                        request: Some(id),
+                        name: Some(u.name.clone()),
+                    }]);
+                    u.name.clone()
                 })
                 .unwrap_or_default();
-            println!("  {id:03X}  {part:<14} {component:<16} {from_corpus}");
+            // The number in force — the override file's, then the corpus's,
+            // then the built-in fallback's — or the request id when nothing
+            // has paired one with it.
+            let number = vag_protocol::address::UnitAddress::from_request(id)
+                .map(|a| a.label())
+                .unwrap_or_else(|| format!("{id:03X}"));
+            println!("  {id:03X}  {number:<4} {part:<14} {component:<16} {name}");
         }
         backend = unit.into_transport().into_backend();
     }

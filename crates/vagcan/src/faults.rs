@@ -284,7 +284,7 @@ pub async fn run(
             // A unit with no short number shows a dash rather than repeating
             // its id, which reads as a rendering fault.
             let number = match vag_protocol::address::short_number(request) {
-                Some(n) => format!("{n:02}"),
+                Some(n) => format!("{n:02X}"),
                 None => "--".to_string(),
             };
             println!(

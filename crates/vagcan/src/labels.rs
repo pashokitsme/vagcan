@@ -93,6 +93,27 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
     vag_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
 }
 
+/// Hand the corpus's unit numbering to the address layer.
+///
+/// `vag-protocol` cannot read a label file — it is the protocol layer, and a
+/// corpus is not a protocol — so the numbering is pushed in from here, where
+/// both crates are already in scope. What crosses the seam is plain numbers and
+/// strings.
+///
+/// Names only: no label file states which CAN id a number is answered on (see
+/// `vag_protocol::address`), so this tier fills in *what* `44` is and leaves
+/// *where to reach it* to the car, to the user's override file, or to the
+/// built-in fallback.
+pub fn install_unit_numbers(db: &LabelDb) {
+    vag_protocol::address::install(db.unit_numbers().iter().map(|(number, name)| {
+        vag_protocol::address::UnitNumber {
+            number: *number,
+            request: None,
+            name: Some(name.clone()),
+        }
+    }));
+}
+
 /// Entry point for the `labels` subcommand. Loads the corpus once, prints the
 /// summary, then runs whichever lookup(s) were requested.
 pub fn labels_cmd(
@@ -112,6 +133,7 @@ pub fn labels_cmd(
 
     if part.is_some() || block.is_some() {
         let db = load_cached(Path::new(dir), refresh)?;
+        install_unit_numbers(&db);
         if let Some(part_no) = part {
             print!("\n{}", render_part_lookup(&db, part_no));
         }
@@ -147,6 +169,12 @@ fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
     match db.resolve(part_no) {
         Some(file) => {
             out.push_str(&format!("Resolved file: {}\n", file.source));
+            // Which unit this part number *is*, in the corpus's own numbering —
+            // the answer `vagcan units --identify` needs to name a unit `44`
+            // rather than `712`.
+            if let Some(unit) = db.unit_for_part(part_no) {
+                out.push_str(&format!("Control unit: {:02X}  {}\n", unit.address, unit.name));
+            }
             let ms = db.measurements(part_no);
             if ms.is_empty() {
                 out.push_str("(no measurements in resolved file)\n");
