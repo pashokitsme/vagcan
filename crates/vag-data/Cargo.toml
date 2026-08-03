@@ -15,24 +15,8 @@ criterion = { workspace = true }
 [features]
 # The `.rod` IV brute force. Off by default: it is minutes of CPU per section,
 # and every consumer of the *result* reads the cached five bytes instead. Only
-# the `vag-rod` tool turns it on (`--features rod-crack`). Was previously a
-# no-op flag while the search compiled into everything.
+# `vagcan vcds rod` turns it on, through `vagcan`'s feature of the same name.
 rod-crack = []
-
-[[bin]]
-name = "vag-labels"
-path = "src/bin/vag-labels.rs"
-
-[[bin]]
-name = "vag-tttext"
-path = "src/bin/vag-tttext.rs"
-
-[[bin]]
-name = "vag-rod"
-path = "src/bin/vag-rod.rs"
-# The only consumer of the brute force. Without it the binary would silently
-# skip every section that still needs recovering.
-required-features = ["rod-crack"]
 
 [[bench]]
 name = "lookup"

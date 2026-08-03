@@ -1,64 +1,46 @@
-//! Recover names from the corpus's global text table.
+//! `vagcan vcds tttext` — recover names from the corpus's global text table.
 //!
-//! ```text
-//! vag-tttext <TXT.bin> [--words FILE]... [--names catalogs/names-uds.json]
-//!                      [--out FILE] [--passes N] [--steps N]
-//! ```
+//! Was the `vag-tttext` binary. Every record of `TTTEXT.ROD`'s `[TXT]` section
+//! is enciphered under its own substitution, so there is no single key to find:
+//! the attack is dictionary-driven and bootstraps, with words read off records
+//! it solves becoming vocabulary for the next pass.
 //!
-//! `TXT.bin` is the decrypted, inflated `[TXT]` section of `TTTEXT.ROD` —
-//! `NNNNNN,<enciphered payload>` per line. Each payload is under its own
-//! substitution (`vag_data::tttext`), so the attack is dictionary-driven and
-//! bootstraps: words read off records it solves become vocabulary for the next
-//! pass, and passes run until nothing new is learned.
-//!
-//! Output is `id\tplaintext` for every record solved with **no unresolved
-//! letter**. Partial readings are counted and dropped: a name with a guessed
+//! Only records read with **no unresolved letter** are output. A partial reading
+//! is not a weaker result — it is an unmarked guess, and a name with a guessed
 //! letter reads exactly like a name without one.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
+use anyhow::{Context, Result};
+
 use vag_data::tttext::{self, Dictionary, Limits, Record};
 
-fn main() {
-    let mut args = std::env::args().skip(1);
-    let mut input = None;
-    let mut word_files: Vec<String> = Vec::new();
-    let mut names_file = None;
-    let mut out = None;
-    let mut partial_out = None;
-    let mut check = 0usize;
-    let mut gated = false;
-    let mut passes = 4usize;
+/// How far the best reading of a token must outweigh the runner-up before the
+/// completion step will pin its letters. A likelihood ratio, not a proof: at
+/// 20x a token with a real second reading is left unpinned and the record is
+/// dropped, which is the direction to err in.
+const MARGIN: f32 = 20.0;
+
+pub struct Options<'a> {
+    pub file: &'a str,
+    pub words: &'a [String],
+    pub names: Option<&'a str>,
+    pub out: Option<&'a str>,
+    pub partial: Option<&'a str>,
+    pub passes: usize,
+    pub steps: Option<u32>,
+    pub check: usize,
+    pub gated: bool,
+}
+
+pub fn run(opts: Options<'_>) -> Result<()> {
     let mut limits = Limits::default();
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--words" => word_files.extend(args.next()),
-            "--names" => names_file = args.next(),
-            "--out" => out = args.next(),
-            "--partial" => partial_out = args.next(),
-            "--gated" => gated = true,
-            "--check" => check = args.next().and_then(|v| v.parse().ok()).unwrap_or(check),
-            "--passes" => passes = args.next().and_then(|v| v.parse().ok()).unwrap_or(passes),
-            "--steps" => {
-                limits.steps = args.next().and_then(|v| v.parse().ok()).unwrap_or(limits.steps)
-            }
-            _ => input = Some(arg),
-        }
+    if let Some(steps) = opts.steps {
+        limits.steps = steps;
     }
-    let Some(input) = input else {
-        eprintln!(
-            "usage: vag-tttext <TXT.bin> [--words FILE]... [--names FILE] [--out FILE] \
-             [--passes N] [--steps N]"
-        );
-        std::process::exit(2);
-    };
 
-    let text = std::fs::read(&input).unwrap_or_else(|e| {
-        eprintln!("reading {input}: {e}");
-        std::process::exit(1);
-    });
+    let text = std::fs::read(opts.file).with_context(|| format!("reading {:?}", opts.file))?;
     let records = parse(&text);
     eprintln!("{} records", records.len());
 
@@ -67,22 +49,22 @@ fn main() {
     // dictionary is there to catch the rest.
     let mut dict = Dictionary::default();
     let mut known: HashSet<String> = HashSet::new();
-    if let Some(path) = &names_file {
+    if let Some(path) = opts.names {
         for word in words_of_json(path) {
             known.insert(word.clone());
             dict.insert(&word, 400.0);
         }
         eprintln!("{} words from names already recovered", known.len());
     }
-    for spec in &word_files {
+    for spec in opts.words {
         // `FILE` or `FILE:WEIGHT`. The weight is the prior: the corpus's own
         // label files are in-domain and must outrank a general word list, or
         // the search prefers an English rarity to the term the corpus uses.
-        let (path, weight) = match spec.rsplit_once(':').and_then(|(p, w)| Some((p, w.parse().ok()?)))
-        {
-            Some((path, weight)) => (path, weight),
-            None => (spec.as_str(), 8.0f32),
-        };
+        let (path, weight) =
+            match spec.rsplit_once(':').and_then(|(p, w)| Some((p, w.parse().ok()?))) {
+                Some((path, weight)) => (path, weight),
+                None => (spec.as_str(), 8.0f32),
+            };
         let Ok(text) = std::fs::read_to_string(path) else {
             eprintln!("skipping {path}: unreadable");
             continue;
@@ -96,10 +78,7 @@ fn main() {
         eprintln!("{} words from {path} at weight {weight}", known.len() - before);
     }
     dict.finish();
-    if dict.is_empty() {
-        eprintln!("no vocabulary: pass --names and/or --words");
-        std::process::exit(1);
-    }
+    anyhow::ensure!(!dict.is_empty(), "no vocabulary: pass --names and/or --words");
 
     // Records sharing the repetition pattern of their *letter runs* hold the
     // same words under different keys, so one solve serves the cluster. The
@@ -117,7 +96,7 @@ fn main() {
 
     let mut solved: HashMap<usize, String> = HashMap::new();
     let mut partials: Vec<(usize, String)> = Vec::new();
-    for pass in 1..=passes {
+    for pass in 1..=opts.passes {
         let mut learned = 0usize;
         let mut fresh = 0usize;
         let mut partial = 0usize;
@@ -180,75 +159,25 @@ fn main() {
         }
     }
 
-    // Validation, and it is not optional. Within a cluster the member's
-    // cipher pattern equals the leader's *plaintext* pattern by construction,
-    // so `transfer_tokens` can never fail injectivity — it is free, but it is
-    // not a check. The check is to solve a member from scratch, under its own
-    // key and its own search path, and see whether it says the same thing.
-    // Two plaintexts can share a repetition pattern; this is what would catch
-    // it.
-    if check > 0 {
-        let mut members: Vec<(usize, &String)> = Vec::new();
-        for group in clusters.values() {
-            for member in &group[1..] {
-                match solved.get(member) {
-                    // Only readings a catalog would consider. Sampling every
-                    // transferred member measures the transfer over acronym
-                    // soup that no gate would ship, which is not the number
-                    // that matters and is not what the published 599/600 was
-                    // measured on.
-                    Some(plain) if !gated || shippable(plain, &known) => {
-                        members.push((*member, plain))
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // A fixed stride over the sorted list rather than a random sample:
-        // reproducible, and it cannot be accused of picking the easy ones.
-        let stride = (members.len() / check.max(1)).max(1);
-        let (mut agree, mut disagree, mut unusable) = (0usize, 0usize, 0usize);
-        let mut examples: Vec<(u32, String, String)> = Vec::new();
-        for (index, transferred) in members.iter().step_by(stride).take(check) {
-            let cipher = &records[*index].cipher;
-            let Some(solution) = tttext::solve(cipher, &dict, limits) else {
-                unusable += 1;
-                continue;
-            };
-            let key = tttext::complete(cipher, &solution.key, &dict, MARGIN);
-            if !key.covers(cipher) {
-                unusable += 1;
-                continue;
-            }
-            let fresh = key.decode(cipher);
-            if fresh.eq_ignore_ascii_case(transferred) {
-                agree += 1;
-            } else {
-                disagree += 1;
-                if examples.len() < 20 {
-                    examples.push((records[*index].id, (*transferred).clone(), fresh));
-                }
-            }
-        }
-        eprintln!("independent re-solve of transferred members: agree {agree} disagree {disagree} unusable {unusable}");
-        for (id, transferred, fresh) in &examples {
-            eprintln!("  {id:06} transferred {transferred:?} != re-solved {fresh:?}");
-        }
+    if opts.check > 0 {
+        recheck(&records, &clusters, &solved, &dict, limits, opts.check, opts.gated, &known);
     }
 
-    if let Some(path) = &partial_out {
+    if let Some(path) = opts.partial {
         let mut sink = std::io::BufWriter::new(
-            std::fs::File::create(path).expect("creating the partial output file"),
+            std::fs::File::create(path)
+                .with_context(|| format!("creating the partial output file {path:?}"))?,
         );
         for (index, plain) in &partials {
-            let _ = writeln!(sink, "{:06}\t{plain}", records[*index].id);
+            writeln!(sink, "{:06}\t{plain}", records[*index].id)?;
         }
         eprintln!("{} partial readings written to {path}", partials.len());
     }
 
-    let mut sink: Box<dyn Write> = match &out {
+    let mut sink: Box<dyn Write> = match opts.out {
         Some(path) => Box::new(std::io::BufWriter::new(
-            std::fs::File::create(path).expect("creating the output file"),
+            std::fs::File::create(path)
+                .with_context(|| format!("creating the output file {path:?}"))?,
         )),
         None => Box::new(std::io::stdout().lock()),
     };
@@ -256,7 +185,7 @@ fn main() {
         solved.iter().map(|(index, plain)| (records[*index].id, plain)).collect();
     ordered.sort_unstable();
     for (id, plain) in &ordered {
-        let _ = writeln!(sink, "{id:06}\t{plain}");
+        writeln!(sink, "{id:06}\t{plain}")?;
     }
     eprintln!(
         "{} of {} records read ({:.1} %)",
@@ -264,6 +193,74 @@ fn main() {
         records.len(),
         100.0 * ordered.len() as f32 / records.len() as f32
     );
+    Ok(())
+}
+
+/// Validation, and it is not optional.
+///
+/// Within a cluster the member's cipher pattern equals the leader's *plaintext*
+/// pattern by construction, so [`transfer_tokens`] can never fail injectivity —
+/// it is free, but it is not a check. The check is to solve a member from
+/// scratch, under its own key and its own search path, and see whether it says
+/// the same thing. Two plaintexts can share a repetition pattern; this is what
+/// would catch it.
+#[allow(clippy::too_many_arguments)]
+fn recheck(
+    records: &[Record],
+    clusters: &BTreeMap<Vec<u8>, Vec<usize>>,
+    solved: &HashMap<usize, String>,
+    dict: &Dictionary,
+    limits: Limits,
+    check: usize,
+    gated: bool,
+    known: &HashSet<String>,
+) {
+    let mut members: Vec<(usize, &String)> = Vec::new();
+    for group in clusters.values() {
+        for member in &group[1..] {
+            match solved.get(member) {
+                // Only readings a catalog would consider. Sampling every
+                // transferred member measures the transfer over acronym soup
+                // that no gate would ship, which is not the number that matters
+                // and is not what the published 599/600 was measured on.
+                Some(plain) if !gated || shippable(plain, known) => members.push((*member, plain)),
+                _ => {}
+            }
+        }
+    }
+    // A fixed stride over the sorted list rather than a random sample:
+    // reproducible, and it cannot be accused of picking the easy ones.
+    let stride = (members.len() / check.max(1)).max(1);
+    let (mut agree, mut disagree, mut unusable) = (0usize, 0usize, 0usize);
+    let mut examples: Vec<(u32, String, String)> = Vec::new();
+    for (index, transferred) in members.iter().step_by(stride).take(check) {
+        let cipher = &records[*index].cipher;
+        let Some(solution) = tttext::solve(cipher, dict, limits) else {
+            unusable += 1;
+            continue;
+        };
+        let key = tttext::complete(cipher, &solution.key, dict, MARGIN);
+        if !key.covers(cipher) {
+            unusable += 1;
+            continue;
+        }
+        let fresh = key.decode(cipher);
+        if fresh.eq_ignore_ascii_case(transferred) {
+            agree += 1;
+        } else {
+            disagree += 1;
+            if examples.len() < 20 {
+                examples.push((records[*index].id, (*transferred).clone(), fresh));
+            }
+        }
+    }
+    eprintln!(
+        "independent re-solve of transferred members: agree {agree} disagree {disagree} \
+         unusable {unusable}"
+    );
+    for (id, transferred, fresh) in &examples {
+        eprintln!("  {id:06} transferred {transferred:?} != re-solved {fresh:?}");
+    }
 }
 
 /// Whether a reading is the kind a catalog would consider at all.
@@ -284,12 +281,6 @@ fn shippable(plain: &str, known: &HashSet<String>) -> bool {
         .filter(|w| w.len() >= 3)
         .all(|w| known.contains(&w.to_ascii_lowercase()))
 }
-
-/// How far the best reading of a token must outweigh the runner-up before the
-/// completion step will pin its letters. A likelihood ratio, not a proof: at
-/// 20x a token with a real second reading is left unpinned and the record is
-/// dropped, which is the direction to err in.
-const MARGIN: f32 = 20.0;
 
 /// Read a cluster member's key off the leader's plaintext words.
 ///
@@ -353,4 +344,24 @@ fn words_of_json(path: &str) -> Vec<String> {
     out.sort_unstable();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_record_keeps_its_high_bytes() {
+        // `°` is 0xB0 and is pass-through, so it survives the cipher and is a
+        // crib. Reading the section as UTF-8 would destroy it.
+        let records = parse(b"000123,abc \xb0C\n");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, 123);
+        assert!(records[0].cipher.contains('\u{b0}'), "{:?}", records[0].cipher);
+    }
+
+    #[test]
+    fn a_line_without_an_id_is_dropped_rather_than_guessed() {
+        assert!(parse(b"not a record\n").is_empty());
+    }
 }

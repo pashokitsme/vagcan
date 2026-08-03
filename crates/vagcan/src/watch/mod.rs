@@ -857,15 +857,99 @@ pub async fn run_recording(
 }
 
 /// Run the live view against a real adapter.
-pub async fn run(
-    device_path: &str,
-    baud: u32,
-    preselect: &[(u16, u16)],
-    hz: f64,
-    out: Option<&str>,
-    survey: Option<&str>,
-    catalogs: &str,
-) -> Result<()> {
+/// Read one batch of identifiers and record the answer against the clock.
+///
+/// Shared by the full-screen view and the plain-console one so the two cannot
+/// drift: whatever a recording means, it means the same thing in both.
+async fn poll_batch<B: vag_can::CanBackend>(
+    app: &mut App,
+    backend: &mut Option<B>,
+    batch: &plan::Batch,
+) {
+    use vag_can::IsoTpCan;
+    use vag_protocol::AsyncUdsClient;
+    use vag_transport::CanId;
+
+    let Some(b) = backend.take() else { return };
+    // Each unit is addressed by the rule its id block uses: the cluster
+    // answers on 0x77E, not on 0x7E0 + 16, which is what treating the unit
+    // number as an ISO index used to produce.
+    let Some(address) = vag_protocol::address::UnitAddress::from_request(batch.request) else {
+        *backend = Some(b);
+        return;
+    };
+    let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+        b,
+        CanId::Standard(address.request),
+        CanId::Standard(address.response),
+    ));
+    let answer = if batch.dids.len() == 1 {
+        uds.read_data_by_identifier(batch.dids[0]).await.map(|d| vec![(batch.dids[0], d)])
+    } else {
+        uds.read_data_by_identifiers(&batch.dids).await.map(|payload| {
+            crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default()
+        })
+    };
+    let at = app.started.elapsed().as_secs_f64();
+    app.clock = at;
+    if let Ok(records) = answer {
+        for (did, data) in records {
+            app.latest.insert((batch.request, did), (at, data));
+        }
+    }
+    *backend = Some(uds.into_transport().into_backend());
+}
+
+/// One CSV row of whatever is selected, writing the header first.
+///
+/// A raw column is marked, because a four-digit hex value and a four-digit
+/// decimal are the same string — the reader cannot tell them apart from the
+/// value alone. Every value carries its own time, because identifiers are
+/// polled in batches and columns are up to a cycle apart.
+fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool) -> Result<()> {
+    let shown = app.shown();
+    if !*header_written {
+        let cols: Vec<String> = shown
+            .iter()
+            .map(|c| {
+                let name =
+                    if c.def.is_some() { c.label() } else { format!("{}_raw", c.label()) };
+                format!("{name}_t_s,{name}")
+            })
+            .collect();
+        writeln!(w, "t_s,{}", cols.join(","))?;
+        *header_written = true;
+    }
+    let cells: Vec<String> = shown
+        .iter()
+        .map(|c| match app.latest.get(&(c.request, c.did)) {
+            Some((t, data)) => {
+                let v = match c.def.as_ref().and_then(|d| d.interpret(data)) {
+                    Some(v) => format!("{v}"),
+                    None => data.iter().map(|b| format!("{b:02X}")).collect(),
+                };
+                format!("{t:.3},{v}")
+            }
+            None => ",".to_string(),
+        })
+        .collect();
+    writeln!(w, "{:.3},{}", app.started.elapsed().as_secs_f64(), cells.join(","))?;
+    Ok(())
+}
+
+pub struct Options<'a> {
+    pub preselect: &'a [(u16, u16)],
+    pub hz: f64,
+    pub out: Option<&'a str>,
+    pub survey: Option<&'a str>,
+    pub catalogs: &'a str,
+    /// Poll for this many seconds and exit, without a full-screen view. Set by
+    /// `--for`, and forced when stdout is not a terminal.
+    pub for_seconds: Option<f64>,
+}
+
+pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> {
+    let Options { preselect, hz, out, survey, catalogs, for_seconds } = opts;
     use std::io::Write as _;
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
     use vag_protocol::AsyncUdsClient;
@@ -1025,19 +1109,55 @@ pub async fn run(
     let mut backend = Some(adapter);
     let mut header_written = false;
 
-    // A full-screen view needs a terminal; without one crossterm fails with a
-    // bare errno that says nothing about why.
-    enable_raw_mode().map_err(|e| {
-        anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
-    })?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-
     let mut app = App::new(channels);
     app.open_first_populated();
     app.units = unit_names(&identities);
     let period = Duration::from_secs_f64(1.0 / hz.max(0.1));
+
+    // No terminal wanted: a script, a pipe, or an agent that cannot press a
+    // key. Same poll loop, no drawing and no input — and with no `--out` the
+    // samples go to stdout, so they can be read directly instead of through a
+    // file nobody asked for.
+    if let Some(seconds) = for_seconds {
+        let mut sink: Box<dyn std::io::Write> = match sink {
+            Some(file) => Box::new(file),
+            None => Box::new(io::stdout().lock()),
+        };
+        let deadline = Instant::now() + Duration::from_secs_f64(seconds);
+        while Instant::now() < deadline {
+            let cycle = Instant::now();
+            for batch in plan::plan(&app.channels) {
+                poll_batch(&mut app, &mut backend, &batch).await;
+            }
+            app.cycles += 1;
+            write_row(&mut sink, &app, &mut header_written)?;
+            // Flushed every cycle: a reader watching the pipe should see the
+            // samples as they happen, not in one burst when the run ends.
+            sink.flush()?;
+            if let Some(rest) = period.checked_sub(cycle.elapsed()) {
+                tokio::time::sleep(rest).await;
+            }
+        }
+        eprintln!(
+            "{} cycles over {:.1} s",
+            app.cycles,
+            app.started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+
+    // A full-screen view needs a terminal; without one crossterm fails with a
+    // bare errno that says nothing about why.
+    enable_raw_mode().map_err(|e| {
+        anyhow::anyhow!(
+            "`watch` needs an interactive terminal (it draws a full-screen view). \
+             Without one, use `--for SECONDS`, which polls the same channels and \
+             writes CSV: {e}"
+        )
+    })?;
+    let mut stdout = io::stdout();
+    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     let result = loop {
         terminal.draw(|f| match app.screen {
             Screen::Live => draw_live(f, &mut app),
@@ -1084,20 +1204,6 @@ pub async fn run(
             if quit_mid_cycle {
                 break;
             }
-            let Some(b) = backend.take() else { break };
-            // Each unit is addressed by the rule its id block uses: the
-            // cluster answers on 0x77E, not on 0x7E0 + 16, which is what
-            // treating the unit number as an ISO index used to produce.
-            let Some(address) = vag_protocol::address::UnitAddress::from_request(batch.request)
-            else {
-                backend = Some(b);
-                continue;
-            };
-            let channel = IsoTpCan::new(
-                b,
-                CanId::Standard(address.request),
-                CanId::Standard(address.response),
-            );
             // Redraw before the request, so the footer says which unit is
             // being waited on. A batch can take as long as that unit's
             // deadline, and a still screen during it reads as a hang.
@@ -1107,24 +1213,7 @@ pub async fn run(
                 Screen::Select => draw_select(f, &mut app),
             })?;
             let asked = Instant::now();
-            let mut uds = AsyncUdsClient::new(channel);
-            let answer = if batch.dids.len() == 1 {
-                uds.read_data_by_identifier(batch.dids[0])
-                    .await
-                    .map(|d| vec![(batch.dids[0], d)])
-            } else {
-                uds.read_data_by_identifiers(&batch.dids).await.map(|payload| {
-                    crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default()
-                })
-            };
-            let at = app.started.elapsed().as_secs_f64();
-            app.clock = at;
-            if let Ok(records) = answer {
-                for (did, data) in records {
-                    app.latest.insert((batch.request, did), (at, data));
-                }
-            }
-            backend = Some(uds.into_transport().into_backend());
+            poll_batch(&mut app, &mut backend, &batch).await;
             app.waiting = None;
             // Remember for next time round, so the footer can warn before the
             // wait rather than after it.
@@ -1139,39 +1228,7 @@ pub async fn run(
         app.cycles += 1;
 
         if let Some(w) = sink.as_mut() {
-            let shown = app.shown();
-            if !header_written {
-                // A raw column is marked, because a four-digit hex value and a
-                // four-digit decimal are the same string — the reader cannot
-                // tell them apart from the value alone.
-                let cols: Vec<String> = shown
-                    .iter()
-                    .map(|c| {
-                        let name = if c.def.is_some() {
-                            c.label()
-                        } else {
-                            format!("{}_raw", c.label())
-                        };
-                        format!("{name}_t_s,{name}")
-                    })
-                    .collect();
-                writeln!(w, "t_s,{}", cols.join(","))?;
-                header_written = true;
-            }
-            let cells: Vec<String> = shown
-                .iter()
-                .map(|c| match app.latest.get(&(c.request, c.did)) {
-                    Some((t, data)) => {
-                        let v = match c.def.as_ref().and_then(|d| d.interpret(data)) {
-                            Some(v) => format!("{v}"),
-                            None => data.iter().map(|b| format!("{b:02X}")).collect(),
-                        };
-                        format!("{t:.3},{v}")
-                    }
-                    None => ",".to_string(),
-                })
-                .collect();
-            writeln!(w, "{:.3},{}", app.started.elapsed().as_secs_f64(), cells.join(","))?;
+            write_row(w, &app, &mut header_written)?;
         }
 
         // A key pressed during the poll should not wait a whole cycle.

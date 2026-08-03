@@ -19,11 +19,13 @@ mod labels;
 mod names;
 mod progress;
 mod props;
+mod recording;
 mod render;
 mod safety;
 mod scan;
 mod sniff;
 mod survey;
+mod vcds;
 mod vcdslog;
 mod watch;
 
@@ -61,12 +63,12 @@ const ADAPTER_BAUD: u32 = 115_200;
                   FIND NEW MEASUREMENTS\n  \
                   survey --out parked.jsonl        then, after a drive:\n  \
                   survey --out driving.jsonl       then:\n  \
-                  survey --diff parked.jsonl driving.jsonl   what moved = what is live\n  \
-                  watch --out drive.csv            then: discover --log drive.csv\n  \
-                  calibrate --log drive.csv        prove a scaling against a known one\n  \
-                  sniff --out cap.jsonl beside VCDS, then analyse --capture cap.jsonl\n\n\
-                  OFFLINE REFERENCE\n  \
-                  names / labels"
+                  survey --diff parked.jsonl driving.jsonl   what moved = what is live\n\n\
+                  AWAY FROM THE CAR\n  \
+                  recording ...             read back a `watch --out` drive\n  \
+                  vcds ...                  VCDS's own files: labels, names, logs\n\n\
+                  Everything above this line needs a car in front of you;\n\
+                  everything below it needs only files."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -200,6 +202,12 @@ enum Command {
         /// Playback speed for --replay. 2 is twice as fast as it happened.
         #[arg(long, default_value_t = 1.0, value_name = "N")]
         speed: f64,
+        /// Poll for this many seconds and exit, printing CSV instead of drawing
+        /// a screen. This is the plain-console mode: no terminal needed, so it
+        /// works over a pipe, in a log, or from a script. Without `--out` the
+        /// rows go to stdout, one per poll cycle, flushed as they happen.
+        #[arg(long = "for", value_name = "SECONDS")]
+        r#for: Option<f64>,
         /// Where the measurement catalogs live. Each file is named after the
         /// part number or ODX name of the control unit it describes, so a car
         /// this tool has not seen before simply finds none.
@@ -303,124 +311,22 @@ enum Command {
         extended: bool,
     },
 
-    /// Cross a capture with a VCDS log to prove measurement scalings.
+    /// Read back a drive this tool recorded. Offline — no car.
     ///
-    /// Offline — no car. Aligns the two by their wall-clock stamps and fits
-    /// raw bytes to displayed values, reporting only what clears the bar.
-    Analyse {
-        /// Capture written by `vagcan sniff`.
-        #[arg(long, value_name = "FILE")]
-        capture: String,
-        /// VCDS measuring-blocks CSV export recorded at the same time.
-        #[arg(long, value_name = "FILE")]
-        log: String,
-        /// Write the proven scalings as a measurement catalog.
-        #[arg(long, value_name = "FILE")]
-        out: Option<String>,
-        /// Minimum R² for a fit to count (the whole bar: R² ≥ 0.995, ≥ 20
-        /// points over ≥ 4 distinct raw values).
-        #[arg(long, default_value_t = 0.995, value_name = "R2")]
-        min_r2: f64,
-        /// Minimum matched samples for a fit to count (the whole bar: R² ≥
-        /// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
-        #[arg(long, default_value_t = 20, value_name = "N")]
-        min_points: usize,
+    /// `vagcan watch --out` writes the CSV; these read it afterwards, at a
+    /// desk. Neither has anything to say with the car in front of you.
+    Recording {
+        #[command(subcommand)]
+        tool: recording::Tool,
     },
 
-    /// Find which identifiers carry discrete state — gear, mode, a switch.
+    /// Work with VCDS's own files: labels, recovered names, its logs. Offline.
     ///
-    /// Offline — no car. Reads a `vagcan watch --out` recording and sorts every
-    /// identifier by how it behaved: never moved, stepped between a few values,
-    /// or varied continuously. Gear and switches cannot be found by fitting a
-    /// line; they are found by noticing what changed when.
-    Discover {
-        /// Recording written by `vagcan watch --out`.
-        #[arg(long, value_name = "FILE")]
-        log: String,
-        /// Also list identifiers that changed at the same moments.
-        #[arg(long)]
-        pairs: bool,
-    },
-
-    /// Prove new scalings against ones already trusted — no VCDS needed.
-    ///
-    /// Offline. Reads a `watch --out` recording that contains BOTH converted
-    /// reference columns and raw hex columns, and fits each unknown against
-    /// each reference. One clock, so no alignment error is possible. Cannot
-    /// name anything, and cannot find a quantity unrelated to everything
-    /// already known.
-    Calibrate {
-        /// Recording written by `vagcan watch --out`.
-        #[arg(long, value_name = "FILE")]
-        log: String,
-        /// Minimum R² for a fit to count (the whole bar: R² ≥ 0.995, ≥ 20
-        /// points over ≥ 4 distinct raw values).
-        #[arg(long, default_value_t = 0.995, value_name = "R2")]
-        min_r2: f64,
-        /// Minimum matched samples for a fit to count (the whole bar: R² ≥
-        /// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
-        #[arg(long, default_value_t = 20, value_name = "N")]
-        min_points: usize,
-    },
-
-    /// Search the measurement names recovered from the label corpus.
-    ///
-    /// Offline. The names are keyed by the corpus's own text id, not by data
-    /// identifier — that join does not exist in the label files — so a match
-    /// is a hypothesis to test on the car, not an identification.
-    Names {
-        /// Substring to look for, case-insensitive.
-        #[arg(value_name = "TEXT")]
-        text: String,
-        /// Stop after this many matches.
-        #[arg(long, default_value_t = 40, value_name = "N")]
-        limit: usize,
-        /// Names file to search. Recovered from a VCDS installation, so a
-        /// different installation means a different file.
-        #[arg(long, default_value = names::DEFAULT_PATH, value_name = "FILE")]
-        catalog: String,
-    },
-
-    /// Look measurements up in a VCDS label directory. Offline — no car.
-    Labels {
-        /// VCDS install root, or any directory below it.
-        #[arg(value_name = "DIR")]
-        dir: String,
-        /// Resolve a part number to its label file and measurements.
-        #[arg(long, value_name = "PART")]
-        part: Option<String>,
-        /// List every file defining this measuring block.
-        #[arg(long, value_name = "N")]
-        block: Option<u16>,
-        /// Narrow --block to one field.
-        #[arg(long, requires = "block", value_name = "N")]
-        field: Option<u8>,
-        /// Resolve the ODX file a control unit names for itself, e.g.
-        /// `EV_ECM18TFS0208V0906264H` — the value of identifier F19E, which
-        /// `vagcan properties` reads off the car.
-        #[arg(long, value_name = "NAME")]
-        odx: Option<String>,
-        /// Read F19E from the car and resolve that, instead of passing --odx.
-        #[arg(long, conflicts_with = "odx")]
-        from_car: bool,
-        /// Control unit to ask when using --from-car.
-        #[arg(long, default_value = "01", value_name = "NN")]
-        ecu: String,
-        /// Rebuild the label cache even if it looks current.
-        #[arg(long)]
-        refresh: bool,
-        /// Where the keys for reading encrypted .rod label files are cached.
-        ///
-        /// VW ships .rod files with their contents encrypted, and the key for a
-        /// section has to be recovered by a separate, slow tool before that
-        /// section can be read. A section with no key here is reported as
-        /// unreadable rather than guessed, and the command that recovers one is
-        /// printed against the section that needs it.
-        #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
-        iv_cache: String,
-        /// Adapter to use with --from-car.
-        #[arg(long, value_name = "PATH")]
-        device: Option<String>,
+    /// Nothing here needs an adapter — the input is always a file that came
+    /// from a VCDS installation, or something recovered from one.
+    Vcds {
+        #[command(subcommand)]
+        tool: vcds::Tool,
     },
 }
 
@@ -450,20 +356,32 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Watch { device, did, hz, out, survey, catalogs, .. } => {
+        Command::Watch { device, did, hz, out, survey, catalogs, r#for, .. } => {
             let preselect = match did.as_deref() {
                 Some(spec) => watch::plan::parse_spec(spec)
                     .map_err(|e| anyhow::anyhow!("--did: {e}"))?,
                 None => Vec::new(),
             };
+            // A pipe, a log file or an agent gets the plain-console view
+            // whether or not it thought to ask: the full-screen one needs a
+            // terminal and would otherwise fail with a bare errno. Left
+            // running until Ctrl-C, since no duration was named.
+            let for_seconds = match (r#for, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+                (Some(seconds), _) => Some(seconds),
+                (None, false) => Some(f64::INFINITY),
+                (None, true) => None,
+            };
             watch::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
-                &preselect,
-                hz,
-                out.as_deref(),
-                survey.as_deref(),
-                &datadir::resolve(&catalogs).to_string_lossy(),
+                watch::Options {
+                    preselect: &preselect,
+                    hz,
+                    out: out.as_deref(),
+                    survey: survey.as_deref(),
+                    catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                    for_seconds,
+                },
             )
             .await
         }
@@ -499,67 +417,19 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Names { text, limit, catalog } => {
-            names::run(&text, limit, &datadir::resolve(&catalog).to_string_lossy())
-        }
-        Command::Calibrate { log, min_r2, min_points } => calibrate::run(
-            &log,
-            analyse::Thresholds { min_r2, min_points, ..Default::default() },
-        ),
-        Command::Analyse { capture, log, out, min_r2, min_points } => analyse::run(
-            &capture,
-            &log,
-            out.as_deref(),
-            analyse::Thresholds { min_r2, min_points, ..Default::default() },
-        ),
-        Command::Discover { log, pairs } => {
-            let text = std::fs::read_to_string(&log)
-                .with_context(|| format!("reading the recording {log:?}"))?;
-            let columns = discover::classify(&text).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
-            print!("{}", discover::render(&columns));
-            if pairs {
-                let together = discover::co_changing(&columns, 0.5);
-                if together.is_empty() {
-                    println!("\nNo two candidates changed together.");
-                } else {
-                    println!("\nChanged at the same moments — probably one thing seen twice:");
-                    for (a, b, overlap) in together {
-                        println!("  {a} + {b}   {:.0}% of transitions coincide", overlap * 100.0);
-                    }
-                }
-            }
-            Ok(())
-        }
-        Command::Labels {
-            dir,
-            part,
-            block,
-            field,
-            odx,
-            from_car,
-            ecu,
-            device,
-            iv_cache,
-            refresh,
-        } => {
-            if from_car {
-                // The corpus is checked before the adapter is opened: reading
-                // F19E off the car and only then discovering that the label
-                // directory does not exist costs the port for nothing.
-                if !std::path::Path::new(&dir).is_dir() {
-                    anyhow::bail!(
-                        "{dir:?} is not a directory — point it at the VCDS install root"
-                    );
-                }
+        Command::Recording { tool } => recording::run(tool),
+        // `labels --from-car` is the one thing under `vcds` that touches a
+        // vehicle: it reads F19E off the unit and resolves that. The group is
+        // otherwise pure file work, so it hands this one case back here rather
+        // than starting a runtime of its own inside a synchronous call.
+        Command::Vcds { tool } => match vcds::run(tool)? {
+            vcds::Outcome::Done => Ok(()),
+            vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
                 labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
-            } else if let Some(name) = odx {
-                labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
-            } else {
-                labels::labels_cmd(&dir, part.as_deref(), block, field, refresh)
             }
-        }
+        },
     }
 }
 
@@ -821,14 +691,20 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// The help for one flag of one subcommand.
-    fn flag_help(command: &str, flag: &str) -> String {
+    /// The help for one flag, named the way a user would reach it — the whole
+    /// path, because the offline commands live under a group now.
+    fn flag_help(path: &[&str], flag: &str) -> String {
         let mut cli = Cli::command();
-        let sub = cli.find_subcommand_mut(command).expect("the subcommand exists");
+        let mut sub = &mut cli;
+        for name in path {
+            sub = sub
+                .find_subcommand_mut(name)
+                .unwrap_or_else(|| panic!("no subcommand {name} in {path:?}"));
+        }
         let arg = sub
             .get_arguments()
             .find(|a| a.get_id() == flag)
-            .unwrap_or_else(|| panic!("{command} has no {flag}"));
+            .unwrap_or_else(|| panic!("{path:?} has no {flag}"));
         arg.get_help().map(|h| h.to_string()).unwrap_or_default()
     }
 
@@ -840,17 +716,17 @@ mod tests {
         // help would leave the tool advertising a standard it no longer holds
         // itself to; this makes that a test failure.
         let bar = analyse::Thresholds::default();
-        for command in ["analyse", "calibrate"] {
+        for path in [["vcds", "analyse"], ["recording", "calibrate"]] {
             for flag in ["min_r2", "min_points"] {
-                let help = flag_help(command, flag);
-                assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{command} {flag}: {help}");
+                let help = flag_help(&path, flag);
+                assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{path:?} {flag}: {help}");
                 assert!(
                     help.contains(&format!("≥ {} points", bar.min_points)),
-                    "{command} {flag}: {help}"
+                    "{path:?} {flag}: {help}"
                 );
                 assert!(
                     help.contains(&format!("≥ {} distinct raw values", bar.min_levels)),
-                    "{command} {flag}: {help}"
+                    "{path:?} {flag}: {help}"
                 );
             }
         }
@@ -860,8 +736,23 @@ mod tests {
     fn the_iv_cache_flag_is_legible_without_the_research() {
         // It used to explain itself with a `cargo run --features rod-crack`
         // invocation, which says nothing to someone holding an OBD adapter.
-        let help = flag_help("labels", "iv_cache");
+        let help = flag_help(&["vcds", "labels"], "iv_cache");
         assert!(!help.contains("cargo"), "{help}");
         assert!(help.contains(".rod"), "{help}");
+    }
+
+    #[test]
+    fn the_top_level_is_only_what_needs_a_car() {
+        // The whole point of the `vcds` and `recording` groups: a top level
+        // crowded with offline analysis cannot be scanned while standing at an
+        // open driver's door. This is the rule made enforceable.
+        let cli = Cli::command();
+        let top: Vec<&str> = cli.get_subcommands().map(|s| s.get_name()).collect();
+        for offline in ["analyse", "calibrate", "discover", "labels", "names"] {
+            assert!(!top.contains(&offline), "{offline} belongs under a group, not at the top");
+        }
+        for live in ["info", "units", "faults", "watch", "survey", "sniff"] {
+            assert!(top.contains(&live), "{live} needs a car and belongs at the top");
+        }
     }
 }
