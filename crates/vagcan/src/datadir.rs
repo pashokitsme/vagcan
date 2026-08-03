@@ -36,10 +36,9 @@ pub fn resolve(relative: &str) -> PathBuf {
     given.to_path_buf()
 }
 
-/// Where this tool keeps its own configuration — one directory, `~/.config/vagcan`.
-///
-/// The car files live under `cars/` inside it: one per VIN, holding what an
-/// owner typed about their car and what the coastdown measured on it.
+/// Where this tool keeps its own configuration, with the car files under
+/// `cars/` inside it: one per VIN, holding what an owner typed about their car
+/// and what the coastdown measured on it.
 ///
 /// Not `catalogs/`. That is a checked-in corpus keyed by part number, where a
 /// measurement proven on one `0CW300041G` is true of every `0CW300041G` in the
@@ -52,15 +51,11 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// and wrong for *writing*: it would put a car file in whichever checkout the
 /// shell happened to be standing in.
 ///
-/// `~/.config` on every platform rather than each system's own convention. The
-/// `dirs` crate would give `~/Library/Application Support` on macOS, which is
-/// where a Mac application belongs and not where someone who edits their tools'
-/// config files by hand will look for it. `XDG_CONFIG_HOME` is honoured when it
-/// is absolute; a relative one is ignored, since resolving it against the
-/// working directory is exactly the "wherever the shell is standing" failure
-/// this function exists to avoid.
+/// The location is whatever `dirs::config_dir` says, so it follows each
+/// platform's own convention — `~/.config` on Linux and BSD, honouring
+/// `XDG_CONFIG_HOME`; `~/Library/Application Support` on macOS.
 pub fn config_dir() -> anyhow::Result<PathBuf> {
-    config_dir_from(std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from), dirs::home_dir())
+    config_dir_in(dirs::config_dir())
 }
 
 /// Where the per-VIN car files live.
@@ -68,18 +63,16 @@ pub fn car_dir() -> anyhow::Result<PathBuf> {
     Ok(config_dir()?.join("cars"))
 }
 
-/// The rule behind [`config_dir`], with the environment passed in so it can be
-/// tested without a process-wide `set_var` that the other tests would race.
-fn config_dir_from(config_home: Option<PathBuf>, home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    if let Some(base) = config_home.filter(|p| p.is_absolute()) {
-        return Ok(base.join("vagcan"));
-    }
-    let home = home.filter(|p| p.is_absolute()).ok_or_else(|| {
+/// The rule behind [`config_dir`], with the base passed in so it can be tested
+/// without a process-wide `set_var` that the other tests would race.
+fn config_dir_in(base: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let base = base.filter(|p| p.is_absolute()).ok_or_else(|| {
         anyhow::anyhow!(
-            "no home directory to write to — set HOME or XDG_CONFIG_HOME, or pass an explicit path"
+            "no configuration directory to write to — set HOME or XDG_CONFIG_HOME, \
+             or pass an explicit path"
         )
     })?;
-    Ok(home.join(".config").join("vagcan"))
+    Ok(base.join("vagcan"))
 }
 
 /// Where to look, in order: the working directory and its parents, then the
@@ -155,37 +148,27 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_config_home_is_ignored_because_it_would_follow_the_shell() {
-        let dir =
-            config_dir_from(Some(PathBuf::from("relative/config")), Some(PathBuf::from("/home/someone")))
-                .unwrap();
+    fn the_car_files_sit_under_whatever_the_platform_calls_its_config_directory() {
+        let dir = config_dir_in(Some(PathBuf::from("/home/someone/.config"))).unwrap();
         assert_eq!(dir, Path::new("/home/someone/.config/vagcan"));
-    }
-
-    #[test]
-    fn an_absolute_config_home_wins() {
-        let dir =
-            config_dir_from(Some(PathBuf::from("/etc/xdg")), Some(PathBuf::from("/home/someone")))
-                .unwrap();
-        assert_eq!(dir, Path::new("/etc/xdg/vagcan"));
-    }
-
-    #[test]
-    fn every_platform_gets_the_same_dot_config_path() {
-        // Not each system's own convention: `dirs` would put this in
-        // `~/Library/Application Support` on a Mac, which is right for an
-        // application bundle and wrong for a file someone edits by hand.
-        let dir = config_dir_from(None, Some(PathBuf::from("/Users/someone"))).unwrap();
-        assert_eq!(dir, Path::new("/Users/someone/.config/vagcan"));
         assert_eq!(
-            config_dir_from(None, Some(PathBuf::from("/home/someone"))).unwrap(),
-            Path::new("/home/someone/.config/vagcan")
+            config_dir_in(Some(PathBuf::from("/Users/someone/Library/Application Support")))
+                .unwrap()
+                .join("cars"),
+            Path::new("/Users/someone/Library/Application Support/vagcan/cars")
         );
     }
 
     #[test]
+    fn a_relative_base_is_ignored_because_it_would_follow_the_shell() {
+        // Resolving against the working directory is the same "wherever the
+        // shell is standing" failure this module exists to avoid.
+        assert!(config_dir_in(Some(PathBuf::from("relative/config"))).is_err());
+    }
+
+    #[test]
     fn with_nowhere_to_write_the_error_says_what_to_set() {
-        let err = config_dir_from(None, None).unwrap_err().to_string();
+        let err = config_dir_in(None).unwrap_err().to_string();
         assert!(err.contains("HOME") && err.contains("XDG_CONFIG_HOME"), "{err}");
     }
 }
