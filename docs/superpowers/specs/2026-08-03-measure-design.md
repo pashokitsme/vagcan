@@ -1285,6 +1285,23 @@ into the page the browser has to load. Columnar is the same information at rough
 of the size, and it is the shape the page's JavaScript wants anyway. Each channel keeps its
 own `t` array, which is what "every value carries its own timestamp" means in this layout.
 
+**Five details the writer must get right**, each of which the page had to guess at:
+
+- **Channel keys are `snake_case` in the file** — `engine_speed`, `boost_actual`,
+  `input_shaft_speed` — even though `channels.rs` matches on the catalog's prose names. One
+  spelling in the document, and the reader does not normalise.
+- **A rolling mark carries `sigma_s`**, its 1σ from `√2·T_refresh/√12`. A 0-based mark
+  carries `bracket_s: { earliest, latest }` instead — absolute times, not offsets, because
+  they come from two different extrapolations rather than from a tolerance around one number.
+- **Distance is a derived channel**, written out like any other, not only a scalar in
+  `derived`. The chart offers a distance axis, and integrating speed a second time in the
+  page would be a second implementation of §3.
+- **`derived` is written already recomputed.** The page draws stored series and reads
+  `derived` for its table; it has no arithmetic layer and cannot honour the stamp rule by
+  itself. Whoever writes the file recomputes first.
+- **Marks that never closed are still listed**, with no time. A run that died at 80 says so
+  by having `0-100` present and empty, not by omitting it.
+
 **`derived` is a cache, and `config` is what makes it safe.** The storage rule says the file
 holds raw samples and derivatives are recomputed; `derived` exists so a person or a script
 can read the answers without reimplementing §3. It carries a `stamp` naming the methods that
