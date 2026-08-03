@@ -1585,10 +1585,11 @@ function renderResults() {
       : '<p class="hint">No mark closed in this run.</p>';
     if (peaks.length) html += '<table class="t" style="margin-top:6px">' + peaks.join("") + "</table>";
     if (anyZero) {
-      html += '<p class="note">Marks from a standstill read short: the car is already rolling ' +
-        "before its own speed signal wakes up, and no arithmetic recovers that. The true time is " +
-        "at the top of each range, never below it. A rolling mark starts from a real crossing and " +
-        "has no such bias.</p>";
+      html += '<p class="note">A mark from a standstill is a range because the moment the car ' +
+        "started is bracketed, not known: it is already rolling before its own speed signal wakes " +
+        "up, and the two ways of reaching back through that stretch disagree. The truth is inside " +
+        "the range, not at either end. A rolling mark starts from a real crossing and needs no " +
+        "reaching back, so it gets one number and a real ±.</p>";
     }
     html += "</div>";
 
@@ -1642,9 +1643,10 @@ function conditionLine() {
   p.push("<b>Read solid, derived dashed.</b> A read value was on the bus and its meaning is " +
     "proven; a derived one was computed here from read values. A number that was never on the " +
     "bus must not look like one that was.");
-  p.push("<b>The errors here are one-signed.</b> Driven-wheel slip, the speedometer's own " +
-    "reading and a launch that starts before the speed signal wakes up all push in the same " +
-    "direction, and it is the flattering one. Expect a systematic gap against a magazine figure.");
+  p.push("<b>These times flatter the car.</b> Driven-wheel slip and the speedometer's own reading " +
+    "both push the same way — the car looks quicker than it is — so expect a systematic gap " +
+    "against a magazine figure. The launch is a separate matter and is not one-signed: it is why " +
+    "a 0-based mark is printed as a range rather than a number with a bias.");
   if (CFG.refresh_estimate_s) {
     p.push("<b>Each reading is stale by an unknown amount</b>, bounded by roughly " +
       CFG.refresh_estimate_s + " s of refresh period. On a rolling mark that bias cancels in the " +
