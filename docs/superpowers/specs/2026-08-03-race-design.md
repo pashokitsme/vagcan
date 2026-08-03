@@ -29,7 +29,7 @@ it can put the gear, the pedal and the boost on the same time axis as the stopwa
 | a session of several runs, saved as one raw JSON | writing anything to a control unit |
 | `--view FILE.json` — a self-contained HTML chart page | a server, a bundler, or any external asset |
 | proven channels only | discovering measurements — that is what `survey` and `watch --survey` are for |
-| `--setup`: the car described once, then its road load measured on the road | asking for a number before every run that nobody knows off the top of their head |
+| `race setup`: the car described once, then its road load measured on the road | asking for a number before every run that nobody knows off the top of their head |
 
 `race` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
 a fixed handful of known identifiers. `SAFETY.md`'s sweep gate does not apply: this is
@@ -82,51 +82,77 @@ from* is about parameters. What both answers have in common is that neither may 
 ## CLI
 
 ```
-vagcan race [--device PATH] [--profile FILE] [--full]
+vagcan race [--device PATH] [--car FILE] [--full] [--minimal]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
-            [--accel-window SECONDS] [--hz N] [--out FILE] [--catalogs DIR]
+            [--accel-window SECONDS] [--out FILE] [--catalogs DIR]
 
-vagcan race --setup [--device PATH] [--coast-from 120] [--coast-to 40]
-                                           describe this car once, then measure its
-                                           road load on the road. Writes the profile.
-vagcan race --view FILE.json               open a saved session as a chart page
+vagcan race setup [--device PATH] [--coast-from 120] [--coast-to 40]
+                                     describe this car once, then measure its road
+                                     load on the road. Writes the car file.
+vagcan race view FILE.json           open a saved session as a chart page
 
-overrides, all of which normally live in the profile:
-            [--mass KG] [--tyre 205/55R16] [--cda M2 --crr N] [--inertia N]
+overrides, all of which normally live in the car file:
+            [--mass KG] [--tyre 205/55R16] [--cda M2 --crr N] [--inertia-factor N]
             [--grade PERCENT] [--headwind M_S] [--air-density KG_M3]
             [--speed-scale N]
 ```
 
+`setup` and `view` are **subcommands, not flags**. `--view` is a different input to the same
+job and could have been a flag — `survey --diff` is that precedent — but `setup` is a
+different command: it prompts, it runs a driving script, it takes flags that mean nothing
+elsewhere, and it produces a different artefact. The repository already groups that way with
+`recording` and `vcds`.
+
 **The ordinary invocation is `vagcan race` with no flags at all**, and `vagcan race --full`
 once the car has been set up. Everything the model needs either comes from the car, or was
-answered once by `--setup` and measured by the coastdown it ends with, and lives in the car's
-profile (§0). The override flags exist for a one-off — a loaded boot, a different set of
+answered once by `race setup` and measured by the coastdown it ends with, and lives in the
+car file (§0). The override flags exist for a one-off — a loaded boot, a different set of
 wheels — and what was used is recorded in every file. None of them has a generic default: a
 parameter that cannot be had honestly is one the run does without, which is why power is
-opt-in and gated on a profile.
+opt-in and gated on a car file.
 
-`--marks` takes `A-B` pairs in km/h, comma-separated, `A < B`. The default is
-`0-10,0-25,0-50,0-60,0-80,0-100`.
+**There is no `--hz`.** §2 promises the rate is measured and never asserted in advance, and a
+flag that throttles a stopwatch could only make it worse. The leading/background cadence is
+the only rate control, and the achieved rate is reported.
+
+The argument relationships are clap's job, not prose, so that a bad combination fails before
+the adapter is opened — the reason `duration_arg` exists in `main.rs` today:
+
+| flag | rule |
+|---|---|
+| `--cda` / `--crr` | each `requires` the other: the fit produces them as a pair |
+| `--air-density` | `requires = "full"`: it feeds power and nothing else |
+| `--minimal` | `conflicts_with = "full"` |
+| `--coast-from` / `--coast-to` | belong to `setup` only |
+| `--marks` | a `value_parser` that rejects `100-50`, `abc` and an empty list at parse time |
+| `--speed-scale` | a `value_parser` that rejects zero, negatives and non-finite values |
+
+`--marks` takes `A-B` pairs in **km/h**, comma-separated, `A < B`. The default is
+`0-10,0-25,0-50,0-60,0-80,0-100`. The unit is stated in the flag's own help and in the
+results table header, because `0-60` is the American figure and that one is in mph — an
+ambiguity that would otherwise sit unnoticed in the default list.
 
 `--speed-scale` is applied **before** mark detection, not to the printed result: otherwise
 `0-100` would mean an indicated 100 rather than a corrected one, and the correction would
 silently not apply to the thing it was set for. Which was used is recorded in the file.
 
-`--full` asks for the power column, and is the only thing that does. It requires a
-profile completed by `--setup` (§0) and is **refused** without one, naming what is missing —
+`--full` asks for the power column, and is the only thing that does. It requires a car file
+completed by `race setup` (§0) and is **refused** without one, naming what is missing —
 it never quietly degrades to generic numbers. Without it the run is the default one:
 telemetry and times, no power, and no polling of the channels that exist only to feed the
 power model. Leaving it off is also how a run buys sample rate back when the times matter
 more than the wattage.
 
-`--tyre` is the only flag that describes the car's hardware, and it is there because the
-rolling radius closes the loop on the equivalent-inertia factor (§3).
+`--tyre` is the only flag that describes the car's hardware. The rolling radius it gives is
+no longer needed by the power model — the exact engine-side inertia term (§3) cancels it —
+but it is what turns the generic inertias into this car's coefficients, and it is what a
+ratio sanity check needs.
 
-`--view` reads a saved session and opens a chart page; it touches no adapter. The precedent
-is `survey --diff`, which is likewise an offline mode of a command that otherwise needs the
-car — the command stays where the user looks for it.
+`race view` reads a saved session and opens a chart page; it touches no adapter. It stays
+under `race` rather than moving to the offline groups because it is the other half of the
+same job, and `survey --diff` is the precedent for an offline mode living on a live command.
 
-## 0. Knowing the car — `race --setup` and the profile
+## 0. Knowing the car — `race setup` and the car file
 
 A first draft of this design asked the driver for seven numbers. That is a design failure
 dressed as configurability: nobody knows their car's `CdA`, and asking for air density is
@@ -141,39 +167,73 @@ absurd when the car carries a barometer. Sorted by where each figure actually co
 | `CdA`, `Crr` | nobody knows theirs. **Measured on the car** by a coastdown, once |
 | speed correction | GPS, or possibly the odometer (below). Optional, once |
 
-So the car needs a profile, and the profile needs to be written once.
+So the car needs a file of its own, written once.
 
-**`vagcan race --setup`** is the whole of it — one command that starts parked and ends on the
+**`vagcan race setup`** is the whole of it — one command that starts parked and ends on the
 road:
 
 1. **Identifies the car** — VIN from the engine, part numbers and component strings from
-   every unit the gateway lists. The VIN is the profile's key, exactly as a part number is a
-   measurement catalog's key: the car names itself and the file is found by that name.
+   every unit the gateway lists. The VIN is the file's key: the car names itself and its file
+   is found by that name.
 2. **Runs the pre-flight channel check** and prints what it found and what it did not, so a
    missing channel is discovered at a standstill rather than at a green light.
-3. **Asks for what only a person can supply**, with the source named rather than the units:
-   *kerb mass from the registration document, plus the people and fuel that will be in the
-   car* — and the tyre size as written on the sidewall.
+3. **Asks for what only a person can supply**, in two parts so the arithmetic is the tool's
+   and not the owner's: the **mass in running order** (EU registration field G, "mass in
+   service" on a UK V5C) and then who and what else will be aboard. This matters more than it
+   looks: under Regulation 1230/2012 that figure *already includes* a 75 kg driver and a
+   near-full tank, so "kerb mass plus yourself and your fuel" — what an earlier draft of this
+   document asked — double-counts about 150 kg on a 1400 kg car. The tool asks whether the
+   stated figure includes the driver, adds only what is left, shows the sum, and stores the
+   parts rather than the total. Then the tyre size as written on the sidewall.
 4. **Then waits for the road.** It says what it needs and watches the bus for it: get up to
    `--coast-from` (120 km/h), then coast in neutral down to `--coast-to` (40). It prompts
    once, before anything moves, and then goes quiet — the screen shows the current speed and
    what it is waiting for, and nothing asks the driver anything at speed.
 5. **Asks for the return pass**, turns the same stretch around, and repeats.
-6. **Fits, then writes** `catalogs/cars/<VIN>.json`.
+6. **Fits, then writes the car file**, printing the path and what it now knows.
 
-If the run is abandoned before the passes are done, what was answered is still saved, and
-`--full` is unavailable until the setup is finished. Setup can be re-run; it keeps the
-answers and asks only for what is missing.
+If the run is abandoned before the passes are done, everything already obtained is kept —
+the answers **and any accepted pass** — and `--full` stays unavailable until the rest is
+done. `race setup` can be re-run; it says where it stands and asks only for what is missing.
+
+**Where the file lives.** Not in `catalogs/`. That directory is a checked-in corpus of shared
+knowledge keyed by part number — a measurement row proven on one `0CW300041G` is true of every
+`0CW300041G` in the world. A car file is the opposite on every axis: keyed by a **VIN**, which
+is a personal identifier; holding numbers a person typed and measurements of one physical car
+on one day with its wheels and its tyre pressures; and worth nothing to anybody else. The
+repository's `.gitignore` already keeps VIN-bearing captures out of git, and putting a VIN
+under `catalogs/` would be one `git add` from undoing that.
+
+It belongs in the user's own data directory. `datadir::resolve` is not it — that function
+walks parent directories looking for something that already exists, which is right for
+*reading* the corpus and wrong for *writing* a file, since it would pick whichever checkout
+the shell happens to be standing in. A sibling is needed:
+
+```rust
+/// Where files this tool writes about *your* car live. Not the corpus.
+pub fn car_dir() -> anyhow::Result<PathBuf>;   // $XDG_DATA_HOME/vagcan/cars, else
+                                               // ~/Library/Application Support/vagcan/cars
+```
+
+`--car FILE` overrides it explicitly, the way `--catalogs DIR` overrides the corpus, and
+`race setup` prints the path it wrote so the file is never a matter of faith.
 
 ```json
 { "vin": "XW8AD4NE9JH008917",
   "units": [ { "request": "7E0", "part_number": "8V0906264H" } ],
-  "mass_kg":       { "value": 1400,  "source": "stated",   "at": "2026-08-03" },
+  "mass_kg":       { "value": 1475,  "source": "stated",   "at": "2026-08-03",
+                     "parts": { "running_order": 1395, "includes_driver": true,
+                                "aboard": 80 } },
   "tyre":          { "value": "205/55R16", "source": "stated" },
   "rolling_radius_m": { "value": 0.313, "source": "derived-from-tyre" },
-  "cda":           { "value": 0.63,  "source": "coastdown", "r2": 0.998, "passes": 2,
-                     "at": "2026-08-04" },
-  "crr":           { "value": 0.0114,"source": "coastdown", "r2": 0.998, "passes": 2 },
+  "i_wheels_kgm2": { "value": 5.5,   "source": "wong-typical" },
+  "i_engine_kgm2": { "value": 0.34,  "source": "wong-typical", "uncertainty": 0.3 },
+  "cda":           { "value": 0.63,  "source": "coastdown", "passes": 2, "at": "2026-08-04",
+                     "rho_at_fit": 1.183, "rho_source": "measured",
+                     "mass_at_fit_kg": 1385,
+                     "wind_estimate_ms": 0.8, "grade_estimate_percent": 0.3 },
+  "crr":           { "value": 0.0114,"source": "coastdown", "passes": 2,
+                     "includes": "bearings, seals, pad rub, gearbox churning" },
   "speed_scale":   { "value": 1.0,   "source": "uncorrected" },
   "refresh_estimate_s": { "value": 0.048, "source": "measured" } }
 ```
@@ -185,8 +245,8 @@ one was chosen. There is no `default`: a parameter this tool cannot get honestly
 parameter it does without (below). The results table and the chart page name the source, so
 that two runs are never compared across a change in how the car was described.
 
-Precedence is flag → profile → default, and the file records the value *and* where it came
-from.
+Precedence is flag → car file, and every run records the value *and* where it came from.
+There is no third tier: a parameter neither source supplies is one the run does without.
 
 ### Two modes, and no third — default, or full
 
@@ -195,7 +255,7 @@ There are exactly two states this command runs in:
 | mode | requires | produces |
 |---|---|---|
 | **default** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
-| **full** (`--full`) | a profile from `--setup`, carried through both coastdown passes | all of the above, plus power |
+| **full** (`--full`) | a profile from `race setup`, carried through both coastdown passes | all of the above, plus power |
 
 There is deliberately **no state in between**. A setup abandoned after the questions does not
 "fall back to a generic CdA": `--full` is refused, naming what is missing, and the run is the
@@ -243,16 +303,25 @@ seconds, and polling them at 20 Hz would cost cycles for no information.
 ### The coastdown, inside setup
 
 Road load is measured rather than guessed. Coasting in neutral, the only forces left are drag
-and rolling resistance, so the deceleration decomposes:
+and rolling resistance:
 
 ```
-−m·k·a(v)  =  ½·ρ·CdA·v²  +  m·g·Crr
+m·(1 + δ₁)·(−dv/dt)  =  ½·ρ·CdA·v²  +  m·g·Crr
 ```
 
-Everything on the left is known — speed from the bus, mass from the answers just given,
-`k ≈ 1.03` since only the wheels still turn — and a least-squares fit against `v²` returns
-**both** unknowns, for this car, with its wheels and its tyre pressures. This is the standard
-method (SAE J1263 / J2263) reduced to what a bus and a laptop can do.
+`1 + δ₁` because only the wheels turn with the drivetrain disconnected — the same `δ₁` the
+power model already carries, not a third number written down separately. (An earlier draft
+said 1.03 while §3 said wheels alone are 1.04; that inconsistency biased **both** coefficients
+1.4 % low, since they scale together with it.)
+
+**Fit `v(t)`, not force against `v²`.** The differential equation has a closed form,
+`v(t) = v_c·tan( arctan(v₀/v_c) − t/τ )` with `v_c = √(B/A)` and `τ = m(1+δ₁)/√(AB)`, so the
+fit runs directly against the raw speed samples with **no differentiation at all**. That
+removes a question the force form leaves open — what smoothing window the coastdown uses,
+which is not the run's 0.3 s: at that window the force fit reaches only R² ≈ 0.93 and would
+reject every valid coastdown, needing 1–2 s instead. It is also better conditioned by an
+order of magnitude and gives residuals in km/h, which a person can judge. One Gauss-Newton
+loop over three parameters.
 
 **A pass is recognised from the bus, not from a keystroke.** It starts when speed passes
 `--coast-from` with **pedal at zero and the selector in N**, and it ends at `--coast-to`. Both
@@ -261,32 +330,55 @@ is discarded, with the reason on screen, if the pedal moves, the selector leaves
 rises, or the deceleration jumps in a way braking looks like — a partial coast fitted as a
 whole one would put the brakes into `Crr`.
 
-- **Two passes, opposite directions.** Grade and steady wind reverse sign between them and
-  cancel to first order, and a coastdown is *more* sensitive to slope than an acceleration
-  run is, because the force it measures is ten times smaller. The tool cannot tell which way
-  the car is pointing — there is no compass on this bus — so it counts passes and says to
-  turn around; the disagreement check between the two is what catches a pair that was not
-  actually reciprocal.
-- **The range is a default, not a rule.** 120 to 40 km/h is what conditions the fit well: the
-  drag term dominates at the top, rolling resistance at the bottom, and separating them needs
-  both ends. `--coast-from`/`--coast-to` narrow it for a road or a limit that does not allow
-  120, and the fit reports the worse conditioning rather than hiding it.
-- **The fit is rejected** below an R² threshold, or when the two passes disagree by more than
-  a stated margin — which is what a slope, a gusty day or a half-braked pass looks like in the
-  data. A rejected fit leaves the profile without road load, which means `--full` stays
-  unavailable, which
-  is the correct outcome and not a failure of the tool.
+- **Two passes, opposite directions — and this is the only grade detector there is.** A
+  constant slope adds a constant force, which in a model linear in `[v², 1]` is absorbed
+  *entirely into the intercept*: a 1 % grade nearly **doubles `Crr`** and moves R² by 0.0003.
+  R² cannot see it. What can is the disagreement between reciprocal passes, and its power is
+  enormous — the statistical scatter on `Crr` is 0.16 % while a 1 % grade moves it 88 %. So
+  the acceptance test is stated in `Crr` units, and the implied slope, `sin θ = (Crr_A −
+  Crr_B)·(1+δ₁)/2`, is **reported** rather than merely used, because it comes free and tells
+  the driver something about the road they chose.
+- **Grade cancels exactly; wind does not.** Drag acts on `(v ± w)²`, whose cross-term is
+  antisymmetric and cancels between passes, but whose `w²` term is symmetric and does not. It
+  is a constant, so it lands wholly in `Crr` and always positive: `ΔCrr = ½ρ·CdA·w²/(m·g)`,
+  which is **+6 % at 5 m/s of wind and +1.5 % at 2.5 m/s**. That gives the help text a real
+  criterion — do this in under about 2 m/s or `Crr` reads 2 % high — and the per-pass `CdA`
+  spread is itself a wind estimate, `w ≈ (CdA_A − CdA_B)/(CdA_A + CdA_B) · v̄`, free from the
+  same two passes.
+- **`Crr` as fitted is the whole speed-independent road load**, not a tyre property: wheel
+  bearings, seals, brake-pad rub and gearbox oil churning are all roughly speed-independent
+  over this range and land in the same intercept. A realistic 15 N of that is **+10 % on a
+  `Crr` of 0.0114**. It is the right number for the power model — it is what actually resists
+  the car — and the wrong number to compare against a tyre catalogue, or to replace with one
+  from a datasheet.
+- **What must be recorded with the answer.** The fit returns `½ρ·CdA`, so `CdA` is
+  meaningless without the `ρ` that was in the air at the time — and `CdA` scales with the mass
+  used in the fit, which is that day's load, not the run's. Both go in the car file, along
+  with the estimated wind and grade. An unrecorded ±3 % in `ρ` is a direct ±3 % in `CdA`,
+  larger than everything else in the fit. This also means **`race setup` polls the barometer
+  and the ambient sensor regardless of mode**: the frugality rule that skips them belongs to
+  runs, not to the measurement that makes runs possible.
+- **The range is a default, not a rule.** 120 to 40 km/h separates the two terms; narrowing it
+  correlates them badly (`ρ(CdA, Crr) = −0.86` over the full range, −0.97 over 120→80).
+  `--coast-from`/`--coast-to` narrow it for a road or a limit that does not allow 120. But the
+  fit reports the **two-pass disagreement**, not a condition number: with ~2000 samples the
+  statistical error is 0.2 %, some thirty times below the systematic floor, so conditioning is
+  not what is actually limiting and inviting the reader to worry about it would be misdirection.
+- **The fit is rejected** when the passes disagree beyond the stated margin, or when the
+  residuals show the pass was not a clean coast. A rejected fit leaves the car file without
+  road load, which means `--full` stays unavailable, which is the correct outcome and not a
+  failure of the tool.
 - It needs a quiet, flat, dry road with no traffic. **Nothing here is a write**: the car is
   coasting and the tool is reading speed. Whether and when to select neutral is the driver's
   decision, taken before the pass begins, and the tool never prompts for it at speed.
 
 ### The odometer cross-check — a hypothesis, not a method
 
-The cluster reports the odometer (`0x2203`, proven by an exact hit at 212 760 km). Integrating
-bus speed over a long drive and comparing against the odometer's increment would yield a scale
-factor — **if** the odometer and the speed signal are derived differently. They may share a
-source, in which case the check is an identity and measures nothing. It is written down here
-as a hypothesis one drive settles, not as a calibration this design relies on.
+The cluster reports the odometer (proven by an exact hit at 212 760 km), so integrating bus
+speed over a long drive and comparing would yield a scale factor — **if** the odometer and the
+speed signal are derived differently. On this platform they very likely share a source, in
+which case the check is an identity and cannot distinguish "perfectly calibrated" from "no
+information". Recorded as an open question, not as something this design rests on.
 
 ## 1. The run state machine — `race/session.rs`
 
@@ -302,25 +394,35 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
         Finished ──car stands still again──► Armed  ◄────────────┘
 ```
 
-- **Standstill** is speed exactly zero on the leading channel, held for one second. The
-  hold is what stops a crawling stop-and-go from arming the trigger between every gap.
+- **Standstill** is decided on the **raw integer the unit answered**, not on a converted
+  float: `--speed-scale` multiplies before mark detection, and `v == 0.0` on a scaled float is
+  a comparison this project would regret. Where a float comparison is unavoidable the bound is
+  half the channel's own quantum — `factor / 2` from its catalog row, so even the tolerance is
+  data rather than a magic number. Zero must hold for one second: the hold is what stops a
+  crawling stop-and-go from arming the trigger in every gap.
 - **The start** is the first non-zero sample after that.
-- **t0** is not that sample, and it is not a straight line back from it either. A launch is
-  *convex* — acceleration rises from zero as the clutch engages — so a backward **linear**
-  extrapolation runs under the true curve and reaches zero **late**, which makes every
-  0-based mark come out **short**. On a constant-jerk launch reaching 1 km/h at 0.29 s the
-  linear estimate lands 157 ms late: three times larger than the 50 ms polling cycle it was
-  meant to recover, and always in the flattering direction. So t0 is a **least-squares fit of
-  `v = ½jt²` over the first ~0.4 s of movement**, extrapolated to `v = 0` and clamped to
-  `(last zero, first non-zero]`. The clamp bounds the extrapolation; it does not bound the
-  error.
-- **The residual is larger than the method.** A wheel-speed signal has a low-speed dead band:
-  at roughly 48 teeth per revolution the pulse interval at 1 km/h is ~150 ms, so below about
-  2–3 km/h the signal's own update rate collapses and it reports zero. The car can therefore
-  have been moving for 100–250 ms before the first non-zero sample, and no extrapolation from
-  inside that region recovers it. **Every mark starting at 0 carries a systematic uncertainty
-  of order 50–200 ms**, one-signed, and is printed with it: `0-100 6.12 s ±0.1`. Rolling
-  marks like `50-100` are printed to hundredths, because there both endpoints are
+- **t0** is not that sample. A launch is *convex* — acceleration rises from zero as the clutch
+  engages — so extrapolating backwards runs under the true curve and reaches zero **late**,
+  which makes every 0-based mark come out **short**. t0 is a least-squares fit of `v = ½jt²`
+  over the first ~0.4 s of movement, extrapolated to `v = 0`, bounded above by the first
+  non-zero sample and **not bounded below**.
+- **The clamp an earlier draft proposed was worse than the disease.** Clamping t0 into
+  `(last zero, first non-zero]` sounds conservative and is the opposite: under a dead band the
+  true t0 lies *before* that window, so the clamp bounds the estimate into a region that
+  provably excludes the answer. Simulated on a realistic ramp launch it fires on every run and
+  adds **+100 to +150 ms**, one-signed, in the flattering direction — turning a 160 ms error
+  into a 280–350 ms one. The lower bound is gone.
+- **The dominant term is unrecoverable, and the quadratic fit does not rescue it.** A
+  wheel-speed signal has a low-speed dead band: at roughly 48 teeth per revolution the pulse
+  interval at 1 km/h is ~150 ms, so below about 2–3 km/h the signal's own update collapses and
+  it reports zero. Against that, quadratic and linear extrapolation differ by less than their
+  own scatter (164 ms versus 156 ms at a 1 km/h cutoff). The quadratic is kept because it is
+  the right shape, not because it buys accuracy.
+- **So the launch bias is printed as what it is: one-signed.** `0-100  6.12 s  +0.30/−0.00`,
+  not `6.12 ± 0.1`. A symmetric ± on an error that only ever runs one way is the single most
+  misleading way to present it: it claims the tool might be pessimistic, which it never is.
+  The magnitude is 0.10–0.35 s depending on where this car's signal wakes up. Rolling marks
+  like `50-100` print to hundredths with a genuine ±, because there both endpoints are
   interpolated crossings and the staleness bias cancels (§3).
 - **A ring buffer of the 3 s before t0** is written into the run: pedal, engine speed and
   selector *before* the start are half of what explains a bad one.
@@ -333,35 +435,66 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
 Keys: `p` pauses the trigger, `Esc` cancels the current run, `s` saves the session, `←`/`→`
 change which series the chart shows, `q` quits.
 
-## 2. Polling — `race/mod.rs`
+## 2. Polling — `race/channels.rs` and `race/mod.rs`
 
-Two batches per cycle, both within `plan::BATCH` (8 identifiers, the measured per-request
-limit on this car):
+**Nothing here names an identifier.** Which identifier carries road speed on this car is a
+fact about this car; the tool resolves every channel by the **name its catalog gives it**,
+the way `plan::select_basics` already does, and a car whose catalog uses the same words works
+without a line of code changing. The identifiers on the reference car appear once, in a
+footnote, as evidence — never in the code path.
 
-| batch | unit | identifiers |
+| role | resolved by name | required? |
 |---|---|---|
-| leading | gearbox `7E1` | speed `F40D`, gear `3816`, selector `3809`, shafts `380A`/`380B`, pedal `3804` |
-| background | engine `7E0` | engine speed `206E`, boost `2029`/`202A`, air mass `F410`, speed `F40D` |
+| leading speed | "vehicle speed" / "road speed" | yes |
+| engine speed | "engine speed" | yes |
+| gear | "selected gear" | yes |
+| pedal | "accelerator pedal position" | yes |
+| selector | "selector lever" | no |
+| shaft speeds | "input/output shaft speed" | no |
+| boost | "boost pressure", actual and specified | no |
+| air mass | SAE J1979 PID 0x10 | no |
+| barometric pressure, ambient temperature | SAE J1979 PIDs 0x33 and 0x46 | only under `--full` |
 
-The leading batch is polled every cycle; the background batch every second cycle. Marks are
-timed from the leading speed alone, so its sample rate is what matters and it gets twice the
-rate of everything else. The engine's own road speed is read for two purposes and used for
-neither of the obvious ones: as a cross-check against the leading channel, and — by comparing
-the two channels' values against their own timestamps — as an empirical handle on how often
-the units actually refresh an identifier, which is the number that sets the smoothing window
-(§3). It never times anything.
+**The leading unit is derived, not declared.** It is whichever control unit owns the speed
+channel that won resolution — writing "the gearbox" would be this Škoda's accident, not a
+rule: on this car the finest road speed happens to sit on the gearbox at 0.01 km/h, while the
+cluster publishes 1 km/h and the engine's OBD mirror is one byte.
 
-Engine speed earns its place twice as well: as a channel in its own right, and as the
-numerator of the engine-to-wheel ratio that the equivalent-inertia factor needs (§3).
+That makes the **tie-break** load-bearing, because more than one unit answers to those names.
+The rule is algorithmic: among the name matches, take the one whose `Scaling::Linear` factor
+is finest; break a remaining tie by unit id, so the choice is stable across runs; and record
+the winner in `config.speed_source`. Every other unit that matched is polled too, as a
+cross-check, and never times anything.
 
-Boost is read as the pair the unit publishes, specified `2029` and actual `202A`. The
-catalog's unit is `bar`; whether that is absolute or gauge is stated on screen and in the
-file, because a stock EA888 runs about 1.0–1.2 bar **gauge** and 1.6 bar **absolute** is the
-same pressure written two ways — this is the first number a knowledgeable driver checks.
+Everything else is the **background** set. Two batches per cycle, each within `plan::BATCH`
+(8 identifiers, the measured per-request limit — `plan.rs` carries that number and its
+caveat, and this design does not copy it). The leading batch is polled every cycle, the
+background batch every second: marks are timed from the leading speed alone, so its rate is
+what matters and it gets twice the rate of everything else.
 
-Which identifiers these are comes from the catalogs by name, exactly as
-`plan::select_basics` already does — a car whose catalog uses the same words works, and a
-car with no catalog gets an error naming what it could not find rather than a wrong number.
+A second speed channel earns its place twice over: as a cross-check on the leading one, and —
+by comparing the two channels' values against their own timestamps — as the empirical handle
+on how often a unit actually refreshes an identifier, which is the number that sets the
+smoothing window (§3).
+
+Engine speed likewise: a channel in its own right, and the input to the engine-side inertia
+term (§3). Under `--full` it moves to the **leading** batch: that term needs `ω̇_engine`, and
+differentiating a half-rate channel across a gearshift costs about 2.5 % of the power figure
+at each end of the shift.
+
+Boost is read as the pair the unit publishes, actual and specified, and rendered in that
+order — the order `watch` already uses. The catalog's unit is `bar`; whether that is absolute
+or gauge is stated on screen and in the file, and the two are far apart: a stock EA888 runs
+roughly 1.0–1.2 bar **gauge** at full load, which is 2.0–2.2 bar **absolute**, while 1.6 bar
+absolute is only 0.6 gauge — part load. This is the first number a knowledgeable driver
+checks, and an unlabelled column would have them reading a healthy car as a sick one. (Those
+figures are this engine's, quoted here to make the point; nothing about them belongs in the
+code path.)
+
+**Values are never rendered through `plan::Channel::render`.** That function returns
+`"… (raw)"` for anything unproven, which is exactly the class this design excludes;
+`race` goes through `MeasurementDef::interpret` and `describe`, and treats `None` as an
+absent channel rather than as bytes to show.
 
 Every value carries its own timestamp, as in `watch --out`. Batches are separated in time,
 and one shared timestamp has already corrupted evidence on this project once (the gear
@@ -375,10 +508,11 @@ consequences, none of which the first draft handled:
   computed on the **leading channel's grid**, with every other input linearly interpolated
   onto it. Each derived sample carries the largest staleness among its inputs, and an input
   older than a stated bound suppresses the value rather than approximating it.
-- **Uncertainty is computed, not tabulated.** The `±0.1` and `±0.02` printed with the marks
-  are worked out from *this run's* measured sample interval and `T_refresh`, not from
-  constants in the source. Select more channels and the cycle lengthens and the bound grows;
-  the numbers must say so.
+- **Uncertainty is computed where it can be.** A rolling mark's ± comes from this run's own
+  measured refresh period, `σ ≈ √2·T_refresh/√12`, not from a constant in the source. A
+  0-based mark's launch bias cannot be computed at all — the dead band is not observable from
+  the bus — so it is printed as a one-signed range, and the document says which of the two a
+  given number is.
 - **Degradation is visible.** A unit that starts timing out halves the cycle while the
   figures keep printing at the same apparent confidence. Below a floor the run is flagged
   `degraded`, on screen and in the file.
@@ -395,17 +529,30 @@ The achieved rate is written into the file. It is never asserted in advance.
 bracket the crossing. Both crossings must happen in the same run, in a monotonically rising
 pass.
 
-The interpolation itself is not a source of error worth discussing: the chord deviates from a
-locally parabolic `v(t)` by at most `(a/8)·Δt²`, which converts to a time error of
-`Δt²/8 = 0.3 ms` at 20 Hz, independent of acceleration and twenty times below the printed
+The interpolation itself is negligible: the chord's deviation from a locally parabolic `v(t)`
+is at most `j·Δt²/8` — the curvature of `v` is **jerk**, not acceleration — so the time error
+is `j·Δt²/(8a)`, about **0.8 ms** at 20 Hz with `j = 10 m/s³`. Twenty times below the printed
 resolution.
 
 What *is* worth stating is why a rolling mark is the trustworthy one. Each sample is stale by
 an unknown amount, but both crossings of a mark are biased late by the **same** mean
-staleness, so it **cancels exactly in the difference**. The residual is only the staleness
-jitter, `σ ≈ T_refresh/√12 ≈ 14 ms` per endpoint, about 20 ms on the difference. That is why
-`50-100` is quotable to hundredths while `0-100` is not: its lower endpoint is not a
-crossing at all, it is t0, and t0 has no partner to cancel against.
+staleness, so it **cancels in the difference** — simulated at 24.6 ms and 25.0 ms on the two
+endpoints, 0.4 ms on the difference, and independent of how hard the car is accelerating.
+What is left is the staleness jitter:
+
+```
+σ_mark ≈ √2 · T_refresh / √12          ≈ 20 ms at T_refresh = 50 ms
+```
+
+That is the **whole** of the printed uncertainty on a rolling mark, and it is a 1σ figure —
+the 1st-to-99th-percentile spread is about ±40 ms. It depends on the unit's refresh period
+and **not** on our cycle time: halving the poll interval at fixed refresh moves it by
+nothing. Any test that asserts otherwise is asserting a falsehood.
+
+`0-100` has no such formula, because its lower endpoint is not a crossing — it is t0, whose
+error is dominated by a dead band that is not observable from the bus at all (§1). So
+"uncertainty is computed, not tabulated" is true of rolling marks and only half true of
+0-based ones, and the document should say which half.
 
 Speed is converted once, `v[m/s] = v[km/h] / 3.6` exactly (ISO 80000-3), and every formula
 below is in SI.
@@ -415,8 +562,11 @@ difference quotient too — calling it "measured rather than differentiated" wou
 distinction. What makes it the most trustworthy acceleration figure here is that its
 **numerator is exact by construction**: `Δv = 100 km/h` is the mark's definition and carries
 no measurement error at all, so the relative error of the average equals the relative error
-of the mark time — about **0.3 % on `0-100`** and about **2 % on `0-10`**, against tens of
-percent for any instantaneous estimate. It sits in the results table next to the time.
+of the mark time. That makes it excellent for a **rolling** mark — 0.6 % on `50-100` — and
+progressively worse for a short 0-based one, where the launch bias dominates: 2–4 % on
+`0-100`, **10–25 % on `0-10`**. Against roughly 8 % for the instantaneous estimate below, the
+rolling average is the most trustworthy acceleration figure here and the `0-10` average is
+the least. It sits in the results table next to the time.
 
 **Instantaneous acceleration.** A **first-order least-squares slope** over `--accel-window`
 (default 0.3 s), fitted against each sample's own timestamp:
@@ -446,12 +596,24 @@ staleness uniform on that interval the induced error in a slope over window `W` 
 σ_a ≈ a · √2 · (T_refresh/√12) / W
 ```
 
-— at `a = 4 m/s²`, `T_refresh = 50 ms`, `W = 0.3 s` that is **0.27 m/s² (0.028 g)**, seventy
-times the quantisation floor. It shows up as consecutive polls returning the identical value
-followed by a double-sized step, which is what makes a raw difference *look* like noise.
-`T_refresh` is measurable on this car for free — the engine's own `F40D` is already polled
-as a cross-check, and comparing the two channels' value-against-timestamp bounds it — so the
-window is chosen from a measurement rather than guessed, and the measured value is recorded.
+— which is a **lower bound**, because it assumes the staleness is independent per sample. It
+is not: a zero-order hold with a slowly beating phase makes consecutive samples' staleness
+strongly correlated, which is precisely the "identical value, then a double-sized step" the
+mechanism produces. Simulated against the real hold, `σ_a` at `a = 4 m/s²`,
+`T_refresh = 50 ms`, `W = 0.3 s` is **0.38 m/s² (0.039 g)**, about 1.4× the formula and
+skewed — the estimator sits low on a plateau and overshoots on a step. Sixteen times the
+quantisation floor rather than seventy, which changes nothing about the conclusion and
+everything about quoting the right number.
+
+**Measuring `T_refresh` is harder than the first draft assumed.** Comparing the leading speed
+against a second unit's speed does not do it: the background batch runs at half the rate, so
+it cannot resolve a 50 ms period at all, and on this platform the second channel is very
+likely the *same* signal gatewayed onward — the identity trap this document already flags for
+the odometer, walked into without noticing. It has to come from the **leading channel itself**:
+the intervals between consecutive *distinct* values. When the poll interval and the refresh
+period are close, as they are here, that yields a **bound rather than a measurement**, and it
+is recorded as such — one significant figure and a flag, not three digits of false
+precision.
 
 **Causal live, central afterwards.**
 
@@ -462,10 +624,24 @@ window is chosen from a measurement rather than guessed, and the measured value 
 
 The central scheme fixes the **lag and nothing else**. Both schemes have the same magnitude
 response — attenuation is a property of the window, not of where it sits — so switching to
-central recovers no peak height whatever. What the window costs is `sinc(πfW)`: **14 % on a
-~1 Hz acceleration peak, 36 % on a ~0.3 s shift dip** at `W = 0.3 s`. The dip case is the
-uncomfortable one, because the window is the same size as the feature, and it is why shifts
-are located from the gear channel rather than from the derivative (below).
+central recovers no peak height whatever.
+
+What the window costs is **not** `sinc(πfW)`. That is the response of a boxcar *smoother*;
+this is a first-order least-squares *differentiator*, whose response relative to ideal
+differentiation is
+
+```
+|H(f)| = (3/x²)·| sin x / x − cos x | ,        x = πfW
+```
+
+At `W = 0.3 s` that is **9 % lost on a ~1 Hz acceleration peak** and **~25 % on a 0.3 s shift
+dip** — sinc would have said 14 % and 36 %, and would also have claimed the dip is nulled out
+entirely at 3.3 Hz, where the true response is still 0.30. A synthetic 0.3 s dip of 3.0 m/s²
+comes back at 2.18 m/s² when sampled at 21 Hz, which is the number to assert in a test.
+
+The dip case is still the uncomfortable one — the window is the size of the feature — but
+that is not why shifts are located from the gear channel. They are located there because the
+gear is *on the bus*, so no threshold and no baseline are needed at all.
 
 At the run's edges the central window has no symmetric neighbourhood. The first and last
 `W/2` use a one-sided fit over whatever samples exist, flagged in the series — a DQ200's
@@ -478,11 +654,24 @@ never reach the file. Without that rule the same run reports two different peaks
 on whether it was read off the screen or out of the JSON — and, more usefully, every method
 below can be corrected later without re-driving the car.
 
-**Peak acceleration.** Not the maximum of the series: taking the max of a noisy estimator
-selects positive noise excursions, which biases the peak **upward** by roughly σ — a 3–5 %
-effect on both peak acceleration and peak power, in the flattering direction. Reported
-instead as the mean over a ±0.2 s neighbourhood of the argmax, with the time and the gear.
-The statistic used is named in the file.
+**Peak acceleration.** Not the maximum of the series: the max of a noisy estimator selects
+positive noise excursions, which biases it **upward by about 7 %**, in the flattering
+direction. Reported instead as the mean over a ±τ neighbourhood of the argmax, with the time
+and the gear, and the statistic named in the file.
+
+That correction has a residual of its own, and it is now the dominant one: averaging a locally
+parabolic peak of curvature `c` over ±τ under-reads it by exactly `c·τ²/6` — **−1.3 % on a
+broad peak and −4 % on a sharp first-gear one** at τ = 0.2 s. Shrinking τ to 0.1 s quarters
+it. Either way the residual is stated rather than left for someone to rediscover, because the
+whole reason for the correction was that a biased peak is not acceptable.
+
+**The peak search excludes the edges it cannot measure.** The first and last `W/2` have no
+symmetric window, and a one-sided fit over a shrinking span gets noisy fast — five times the
+interior noise by the time only two samples remain. Combined with `argmax`, that would make
+the very first eligible sample the reported peak far more often than it should be, which is
+exactly where a DQ200's real peak lives and therefore exactly where the error would hide. A
+sample enters the search only if its fit span is at least 0.6·W, and each peak carries its own
+σ, which the fit already computes as part of `Σ(tᵢ − t̄)²`.
 
 **Shifts.** A gear change is **observed**, not inferred: `3816` is polled and says which gear
 is engaged. Deriving an event from an attenuated derivative when the event itself is on the
@@ -497,64 +686,94 @@ accelerates it less — so `speed_lost` would read `0.0` essentially always. The
 acceleration:
 
 ```
-speed_deficit = ∫_dip ( a_pre − a(t) ) dt          [m/s]
+speed_deficit = ∫_shift ( a_post − a(t) ) dt          [m/s]
+cost_on_mark  = speed_deficit / a(v_mark)             [s]
 ```
 
-Always positive, directly interpretable ("this shift cost 0.8 km/h"), and dividable by the
-acceleration at that speed to say what it cost in seconds on the mark.
+Three details decide whether that number means anything:
+
+- **The baseline is the acceleration in the gear being shifted *into*, not out of.** The
+  counterfactual for "what did this shift cost" is an instantaneous change into the new gear,
+  which is already slower than the old one. Using the pre-shift value charges the shift for
+  the ratio change as well, and overstates the cost by about 35 %.
+- **The divisor is the acceleration at the mark's upper endpoint, not at the shift.** A
+  velocity deficit taken at 60 km/h persists all the way to 100, so the time it costs is
+  `Δv / a(100 km/h)`. Dividing by the acceleration where the shift happened understates the
+  cost by nearly a factor of two.
+- **The limits come from the gear channel**, plus a fixed pad — never from "wherever `a` fell
+  below the baseline". A threshold-found window makes the metric positive by construction and
+  reports a cost where no shift occurred, which is the same selection-on-noise mistake the
+  peak statistic exists to avoid.
 
 **Distance.** Trapezoidal integration over each interval's own `Δtᵢ`, never a nominal
 `1/hz`. The numerical error is negligible and should not be the caveat: composite-trapezoid
 error is `(h²/12)·Δa ≈ 1 mm` over a 10 s run. The real distance error is the speed signal
-itself — a few per cent of bias (below) and driven-wheel slip — which is **three orders of
-magnitude larger**. The caveat names that, so nobody optimises the integrator.
+itself, and it has **three** multiplicative parts, all of them thousands of times larger than
+the integrator: the speedometer question (§3a), driven-wheel slip at the launch, and the
+rolling circumference the car's own unit is calibrated with — which shifts with a non-stock
+tyre size, with wear (a worn tyre is ~1.5 % smaller) and with pressure. The last is the same
+knob `--speed-scale` addresses. The caveat names all three, so nobody reaches for Simpson's
+rule.
 
-**Power.** Road-load power at the contact patch:
-
-```
-P = ( m·k·a  +  ½·ρ·CdA·(v + v_head)²  +  m·g·Crr  +  m·g·sin θ ) · v
-```
-
-Note the asymmetry: drag acts on air speed, power is delivered against ground speed. `v_head`
-is 0 and `θ` is 0 unless given — see "Which way the numbers lean" for what that costs and how
-to cancel it.
-
-`k` is the **equivalent-inertia factor**, and it multiplies the inertial term only — never
-drag, never rolling resistance. `k = 1` would say the car has no rotating mass, which is
-never true: wheels alone are `k ≈ 1.04`, and the drivetrain's contribution scales with the
-square of the overall ratio, so `k` is strongly gear-dependent. Wong, *Theory of Ground
-Vehicles*, gives the generic form
+**Power.** Two figures, not one, because they are two different quantities and a single
+number with a paragraph of apology is worse than two labelled ones:
 
 ```
-k = 1 + δ₁ + δ₂·ξ²        δ₁ ≈ 0.04, δ₂ ≈ 0.0025, ξ = overall engine-to-wheel ratio
+P_wheel = ( m·(1+δ₁)·a  +  ½·ρ·CdA·(v + v_head)²  +  m·g·Crr  +  m·g·sin θ ) · v
+P_shaft = P_wheel  +  I_e · ω_engine · ω̇_engine
 ```
 
-which for a DQ200-like set runs from `k ≈ 1.5` in first to `k ≈ 1.05` in sixth. Taking
-`k = 1.0` understates the inertial term — some 90 % of the total — by 5 % in fourth and
-**35 % in first**. That is the largest single error available in this model, so:
+`P_wheel` is what crosses the contact patch and is the figure comparable to a rolling road.
+`P_shaft` adds the power going into spinning the engine and clutch up, which is real work the
+engine is doing and is not delivered to the road. Calling the sum "power at the contact
+patch", as an earlier draft did, was simply wrong: the engine-side term is upstream of the
+clutch. Note the asymmetry in the drag term — drag acts on air speed, power is delivered
+against ground speed. `v_head` is 0 and `θ` is 0 unless given.
 
-- `ξ` is **measured live**, not tabulated: `ξ = ω_engine·r / v`, from engine speed `206E` and
-  road speed, once the rolling radius `r` is known.
-- `r` comes from the tyre size in the profile — the owner's statement about their own car,
-  not a constant in the source. With it, `k` is computed per sample from the ratio the car
-  itself is reporting, which is exactly the shape this project wants: algorithm in code, car
-  in data.
-- There is no fallback, because there is no half-configured mode: a run without a tyre size
-  has no mass and no road load either, so it cannot be a full run and computes no power.
-  `--inertia` overrides `k` with a flat factor for anyone who wants to force one.
+**The engine-side term is written exactly, never through a gear ratio.** An earlier draft
+computed an equivalent-inertia factor `k = 1 + δ₁ + δ₂·ξ²` from a measured engine-to-wheel
+ratio `ξ = ω_engine·r/v`. That is correct while the clutch is locked and **catastrophic when
+it is not**: at launch the engine sits at ~2200 rpm while `v` is near zero, so `ξ → ∞` and the
+factor explodes. Simulated on this car's own numbers it reports **330 kW at 1 km/h** — on a
+132 kW car, from the first sample of every single run, straight into `peak_power_kw`. The
+exact form above is algebraically identical under lock (verified term by term), is finite at
+launch because `ω̇_engine ≈ 0` there, and correctly goes **negative** during an upshift, when
+the engine gives its stored energy back. It also makes the rolling radius cancel out entirely.
 
-Air density is `ρ = p / (R·T)`, `R = 287.05287 J/(kg·K)` for dry air (ISO 2533), `p` from
-OBD-II PID 0x33 (absolute barometric pressure, 1 kPa/bit) and `T` from PID 0x46 (ambient air
-temperature, `A − 40 °C`; `T_K = T_C + 273.15`). The dry-air assumption costs −0.4 % at 20 °C
-and 50 % relative humidity, −1.6 % at a worst-case 30 °C and saturation, and J1979 has no
-humidity parameter to do better with. If either PID is absent, **power is not computed** —
-`--air-density` may be given explicitly, and the file records whether ρ was measured or
-stated.
+**And it is still suppressed while the clutch slips**, because even the exact form is wrong
+there: the energy the engine releases goes into the clutch as heat, not to the road. Slip is
+detected against the ratio the car itself reports — `|ξ_measured − ξ_gear| / ξ_gear > 5 %`,
+where `ξ_gear` is learned per gear from the plateaus the car shows during steady driving, so
+no ratio table is written down anywhere. A floor of 15 km/h backs it up. A suppressed sample
+produces no power value at all, exactly as a stale input does.
 
-Mass, `CdA` and `Crr` come from the car's profile (§0), not from flags typed before every
-run, and **none of the three has a default**. Mass belongs to one specific car; `CdA` and
-`Crr` are measured by the coastdown on that same car. Without all three there is no power
-column and `--full` is refused — there is no generic-number fallback, because a power figure
+`δ₁` and `δ₂` are **not universal constants**, and treating them as such would be precisely
+the failure this project's rules are about. They are `I_wheels/(m·r²)` and `I_engine/(m·r²)` —
+so the textbook 0.04 and 0.0025 are a *typical car's inertias divided by someone else's mass
+and wheels*, and they change by nearly a factor of two across the range of cars this tool is
+meant to serve. What is generic is the **inertia**, not the ratio. So the car file stores
+`I_wheels` and `I_engine` with a source of their own, and the coefficients are computed from
+this car's mass and radius:
+
+```
+δ₁ = I_wheels / (m·r²)      δ₂ = I_engine / (m·r²)
+```
+
+Wong, *Theory of Ground Vehicles*, is the source of the typical inertias, and it is worth
+noting that the implied `I_engine ≈ 0.34 kg·m²` is the right order for a four-cylinder crank
+with a dual-mass flywheel and a clutch pack — which is the most that can be said for it. They
+carry roughly ±30 %, which is **±2 % of power in top gear and ±12 % in first**, and that row
+belongs in §3a with everything else that can move the number.
+
+For sizing only, and never in the code path: with this gearbox's published ratios the
+equivalent factor runs from about **1.66 in first to 1.05 in seventh** (it is a seven-speed),
+so ignoring rotational inertia altogether would understate the inertial term by 40 % in first
+and 9 % in fourth.
+
+Mass, `CdA` and `Crr` come from the car file (§0), not from flags typed before every run, and
+**none of the three has a default**. Mass belongs to one specific car; `CdA` and `Crr` are
+measured by the coastdown on that same car. Without all three there is no power column and
+the run is the default one — there is no generic-number fallback, because a power figure
 resting on the drag of hatchbacks-in-general is not a measurement of this car at all.
 
 (For sizing an error budget, generic values are still worth naming: `CdA ≈ 0.65 m²` for a
@@ -562,11 +781,20 @@ C-segment hatchback, `Crr ≈ 0.012` for passenger radials on asphalt — Gilles
 *Fundamentals of Vehicle Dynamics*, gives 0.010–0.015. They appear in §3a for that purpose
 and nowhere in the code path.)
 
-Every power figure is labelled an estimate at the contact patch. It is **not** a chassis-dyno
-"wheel horsepower": because `k` folds in the power spent accelerating the drivetrain's
-rotating masses, this figure legitimately exceeds a steady-state roller number, and a driver
-will otherwise compare the two. Stored in kW (SI); any horsepower display states which
-horsepower (metric PS = 735.49875 W, DIN 66036) since the two differ by 1.4 %.
+Air density is `ρ = p / (R·T)`, `R = 287.05287 J/(kg·K)` for dry air (ISO 2533), `p` from
+OBD-II PID 0x33 (absolute barometric pressure, 1 kPa/bit) and `T` from PID 0x46 (ambient air
+temperature, `A − 40 °C`; `T_K = T_C + 273.15`). Dry air costs up to −1.6 % on `ρ` at 30 °C
+and saturation, which is under 0.1 kW — mentioned once and not defended further.
+
+What does matter is **when** `T` is read. That sensor is heavily damped and heat-soaks while
+the car stands still: +5 to +15 K after idling is ordinary, and +10 K reads `ρ` 3.4 % low,
+which is an order of magnitude more than the humidity and quantisation terms this document
+used to dwell on. So it is read **at the end of the run, at speed**, not at the standstill
+where the driver was waiting. If either PID is absent, power is not computed — `--air-density`
+may be given explicitly, and the file records whether `ρ` was measured or stated.
+
+Every power figure is labelled an estimate. Stored in kW (SI); any horsepower display states
+which horsepower (metric PS = 735.49875 W, DIN 66036) since the two differ by 1.4 %.
 
 Air mass (`F410`) is recorded but takes no part in the model. A MAF-based cross-check exists
 in folklore at roughly 1 PS per g/s, but that ratio is an empirical BSFC artefact rather than
@@ -581,15 +809,25 @@ identifiers, none of them proven), the difference between driven and undriven be
 direct measurement of wheelspin — a column no phone app can produce. Recorded here as the
 reason to want it.
 
-**Kickdown.** If the unit's catalog holds a row whose name contains `kickdown`, that is
-used. Otherwise it is derived from the pedal (≥ 99 %) and labelled derived. No identifier
-for it has been proven on this car, and a column that silently guesses is worse than an
+**Kickdown.** If the unit's catalog holds a row whose name contains `kickdown`, that is used.
+Otherwise it is derived from the pedal — but **not** against a fixed 99 %, which would be this
+car's number in disguise: the pedal here is a byte scaled by 0.4, so full travel reads 102 %,
+and what full travel reads is a property of one unit's scaling. The threshold is the run's own
+observed maximum, less one raw step, and the result is labelled derived. No identifier for
+kickdown has been proven on this car, and a column that silently guesses is worse than an
 empty one.
 
 **Gearbox mode.** The selector lever from the catalog: P/R/N/D are proven. **D versus S
 versus manual is not** — it is open work in `todo/README.md` (the stimulus was never given
 during the recording that identified the lever). A code outside the proven table shows as
 `unknown code 07` and enters nothing.
+
+**Gears are read by their labels, never by the order of their codes.** This car's enum is
+`[[0,"not engaged"],[2,"1"],…,[8,"7"],[12,"R"]]` — the codes are neither contiguous nor
+ordered by ratio, and two of the levels are not gears at all. A transition into or out of a
+non-numeric level is not a shift and must not be measured as one. This is the exact bug the
+project already made once and documented in `catalog.rs`, where `gear + 1` reported reverse
+as "gear 11".
 
 ## 3a. Which way the numbers lean
 
@@ -604,20 +842,26 @@ a ≈ 2.5 m/s², total ≈ 120 kW):
 
 | error | size | direction |
 |---|---|---|
-| `k = 1` instead of the gear-dependent factor | 5 % of power in 4th, **35 % in 1st** | understates power |
-| t0 from a launch that is convex | 50–200 ms on any 0-based mark | **flatters** — the run looks shorter |
+| ignoring rotational inertia entirely | 9 % of power in 4th, **40 % in 1st** | understates power |
+| mass wrong by ±50 kg | ±3.8 kW ≈ ±5.2 PS | either way |
+| speed scale wrong by ±2 % | ±4.8 kW ≈ ±6.5 PS | either way, and it moves the times too |
+| inertias generic to ±30 % | ±2 % of power in top, **±12 % in 1st** | either way |
+| `Crr` uncertain by ±0.002 | ±0.76 kW | either way |
+| t0 before the speed signal wakes up | 0.10–0.35 s on any 0-based mark | **flatters** — the run looks shorter |
 | road speed is the car's own signal, which regulation forbids to under-read | ~0.2–0.3 s on a 7 s 0-100 | **flatters** |
 | driven-wheel slip during the launch, 2–5 % in 1st and 2nd | tenths on early marks, 1–3 m on distance | **flatters** |
 | unknown grade, ±1 % | ±3.8 kW ≈ 5 PS | downhill **flatters** |
 | unknown headwind, 5 m/s | 3.3 kW ≈ 4.5 PS | tailwind **flatters** |
-| peak taken as the max of a noisy series | 3–5 % on peak power and peak acceleration | **flatters** |
+| wind during the coastdown, 5 m/s | +6 % on `Crr`, and it does **not** cancel between passes | overstates road load, so understates power |
+| peak taken as the max of a noisy series | ~7 % on peak power and peak acceleration | **flatters**, which is why it is not taken that way |
 | CdA uncertainty ±0.05 m², which is what a *generic* value is worth | ±0.67 kW ≈ 0.9 PS | either way — and the coastdown is what removes it |
 | air density from the car's own PIDs, quantisation | ±0.045 kW ≈ 0.06 PS | either way |
 
-The last row is there to keep the effort proportionate: reading ρ from the barometer and the
-ambient sensor is correct, but it is **80 times smaller than an unnoticed 1 % grade**. The
-framing "density comes from the car itself rather than a constant" oversells it, and the doc
-should not.
+The last rows are there to keep the effort proportionate. Reading `ρ` from the barometer and
+the ambient sensor is correct, but its quantisation is **80 times smaller than an unnoticed
+1 % grade** — and smaller still than the heat-soak in the same sensor, which is why *when* it
+is read matters more than how finely it is quantised (§3). The framing "density comes from the
+car itself rather than a constant" oversells it, and the doc should not.
 
 Two mitigations are procedural, not code, and belong in the command's own help:
 
@@ -638,14 +882,14 @@ crate.
 
 ```
   RUN 4.31 s                       full       marks
-  ┌──────────────────────────────────────────┐  0-10   1.0 s ±0.1
-  │ speed    62.4 km/h    bus                │  0-25   2.1 s ±0.1
-  │ engine   4310 /min    bus                │  0-50   4.0 s ±0.1
-  │ gear     3            bus                │  0-60   ·
-  │ pedal    100 %        bus                │  0-80   ·
-  │ boost    1.71 / 1.62 bar abs   bus       │  0-100  ·
-  │ accel    0.41 g       computed, trailing │
-  │ power    110 kW       computed, estimate │
+  ┌──────────────────────────────────────────┐  0-10   1.0+ s
+  │ speed    62.4 km/h                       │  0-25   2.1+ s
+  │ engine   4310 rpm                        │  0-50   4.0+ s
+  │ gear     3                               │  0-60    ·
+  │ pedal    100 %                           │  0-80    ·
+  │ boost    2.06 / 2.15 bar abs (act/spec)  │  0-100   ·
+  │ accel    0.41 g       trailing           │
+  │ power    108 kW       estimate           │
   └──────────────────────────────────────────┘
   ┌── speed ── ← → to change ────────────────┐
   │                                ╱─────    │
@@ -681,22 +925,30 @@ blocks under their own headings rather than one list:
 
 ```
   Run 2 — measured
-    mark      time          average acceleration
-    0-10      1.0 s  ±0.1   2.8 m/s²
-    0-100     6.1 s  ±0.1   4.5 m/s²
-    50-100    3.24 s ±0.02  4.28 m/s²
+    mark (km/h)   time                average acceleration
+    0-10          1.03 … 1.13 s       2.8 m/s²
+    0-100         6.12 … 6.42 s       4.5 m/s²
+    50-100        3.24 s ± 0.02       4.28 m/s²
+
+    Marks from a standstill read short: the car is already rolling before its own
+    speed signal wakes up, and no arithmetic recovers that. The true time is at the
+    top of each range, never below it. 50-100 starts from a real crossing and has
+    no such bias.
     peak engine speed   6480 /min at 5.9 s
   Run 2 — computed   (mass 1400 kg, tyre 205/55R16, CdA 0.65 m², Crr 0.012,
                       ρ 1.19 kg/m³ measured, grade 0 %, window 0.30 s, central)
-    distance            118 m      speed-signal bias dominates, not the integrator
-    peak acceleration   5.3 m/s²   (0.54 g) at 1.21 s, gear 2, ±0.2 s mean
-    peak power          112 kW     (152 PS) estimate at the contact patch
-    shift 2→3           cost 0.79 km/h, 0.18 s on the 0-100
+    distance             92 m      ±3 % — the car's own speed signal, not the maths
+    peak acceleration   5.3 m/s²   (0.54 g) at 1.21 s in gear 2  (mean over ±0.2 s)
+    peak power, wheel   108 kW     (147 PS) estimate
+    peak power, shaft   112 kW     (152 PS) estimate, engine-side inertia included
+    shift 2→3           cost 1.6 km/h, 0.18 s on the 0-100
 ```
 
-Marks starting at 0 print to a tenth with their systematic bound; rolling marks print to
-hundredths (§1, §3). The two are not the same kind of number and the table does not pretend
-they are.
+A 0-based mark prints as a **range**, one-signed, because its error is one-signed; a rolling
+mark prints a single number with a real ±. On the live screen, where there is room for one
+number and no time to read, the 0-based marks carry a trailing `+` and the range waits for the
+results table. The two are not the same kind of number and neither display pretends they
+are.
 
 The measured block holds times, the average accelerations that are `Δv/Δt` across a mark's
 own endpoints, and peaks of channels the car reported. The computed block carries its
@@ -706,45 +958,75 @@ and a table that hides that invites the comparison it cannot support.
 ## 5. The saved session — raw JSON
 
 ```json
-{ "tool": "vagcan race", "recorded_at": "2026-08-03T12:41:07+03:00",
+{ "schema": 1, "tool": "vagcan race", "recorded_at": "2026-08-03T12:41:07+03:00",
   "car":      { "vin": "…", "units": [ { "request": "7E1", "part_number": "0CW300041G" } ] },
   "config":   { "marks": [[0,100]],
-                "mass_kg": 1400, "tyre": "205/55R16", "rolling_radius_m": 0.313,
-                "inertia_model": "wong-1+d1+d2*ratio^2", "d1": 0.04, "d2": 0.0025,
+                "mass_kg": 1475, "tyre": "205/55R16", "rolling_radius_m": 0.313,
+                "inertia_model": "exact-engine-side",
+                "i_wheels_kgm2": 5.5, "i_engine_kgm2": 0.34,
+                "i_source": "wong-typical", "i_uncertainty": 0.3,
                 "cda": 0.63, "cda_source": "coastdown",
                 "crr": 0.0114, "crr_source": "coastdown",
-                "profile": "catalogs/cars/XW8AD4NE9JH008917.json",
+                "car_file_source": "user",
                 "grade_percent": 0.0, "headwind_ms": 0.0,
                 "air_density_kg_m3": 1.19, "air_density_source": "measured",
-                "degraded": false, "cycle_median_s": 0.047,
-                "speed_source": "7E1:F40D", "speed_scale": 1.0, "speed_scale_applied": "before-marks",
+                "degraded": false, "cycle_median_s": 0.047, "hz": 21.4,
+                "speed_source": "7E1:F40D", "speed_scale": 1.0,
+                "speed_scale_applied": "before-marks",
                 "t0_method": "quadratic-fit", "t0_clamp_s": 0.048,
                 "accel_window_s": 0.3, "accel_method": "central-least-squares",
                 "peak_statistic": "mean-over-0.2s-neighbourhood",
-                "refresh_estimate_s": 0.05, "hz": 21.4 },
+                "refresh_estimate_s": 0.05 },
   "channels": [ { "key": "speed", "name": "Vehicle speed", "unit": "km/h",
                   "origin": "read", "request": "7E1", "did": "F40D" },
                 { "key": "accel", "name": "Acceleration", "unit": "m/s2",
                   "origin": "derived", "from": ["speed"],
                   "method": "central-least-squares", "window_s": 0.3 },
-                { "key": "power", "name": "Power at the contact patch", "unit": "kW",
+                { "key": "power_wheel", "name": "Power at the wheels", "unit": "kW",
                   "origin": "derived", "estimate": true,
-                  "from": ["speed", "engine_speed",
-                           "barometric_pressure", "ambient_temperature"],
-                  "method": "road-load" } ],
+                  "from": ["speed", "barometric_pressure", "ambient_temperature"],
+                  "method": "road-load" },
+                { "key": "power_shaft", "name": "Power including engine-side inertia",
+                  "unit": "kW", "origin": "derived", "estimate": true,
+                  "from": ["power_wheel", "engine_speed"],
+                  "method": "road-load+engine-inertia",
+                  "suppressed_when": "clutch slipping" } ],
   "runs":     [ { "index": 1, "t0_wall": "…", "aborted": false,
-                  "samples": [ { "t": -2.94, "speed": { "t": -2.94, "v": 0.0 } } ],
-                  "marks":   [ { "from": 0, "to": 100, "seconds": 6.12,
-                                 "uncertainty_s": 0.1, "from_t0": true,
+                  "series": { "speed":  { "t": [-2.94, -2.89], "v": [0.0, 0.0] },
+                              "gear":   { "t": [-2.94],        "v": ["not engaged"] } },
+                  "marks":   [ { "from": 0, "to": 100, "seconds": 6.12, "from_t0": true,
+                                 "bias_s": { "low": 0.10, "high": 0.35,
+                                             "sense": "reads-short" },
                                  "avg_accel_ms2": 4.54 } ],
-                  "derived": { "distance_m": 118.4, "peak_rpm": 6480,
-                               "peak_power_kw": 112.3,
+                  "derived": { "stamp": "t0=quadratic-fit accel=central-least-squares/0.3 \
+peak=mean-0.2s",
+                               "distance_m": 118.4, "peak_rpm": 6480,
+                               "peak_power_wheel_kw": 108.1, "peak_power_shaft_kw": 112.3,
                                "peak_accel_ms2": 5.31, "peak_accel_t": 1.21,
                                "peak_accel_gear": "2",
                                "shifts": [ { "t": 2.44, "from": "2", "to": "3",
-                                             "speed_deficit_ms": 0.22,
+                                             "speed_deficit_ms": 0.45,
                                              "cost_on_mark_s": 0.18 } ] } } ] }
 ```
+
+**`schema` is checked before anything else.** A session cannot be regenerated — it is
+evidence from a drive — so `race view` refuses a schema it does not know, naming it, rather
+than half-reading it. Every field added later carries `#[serde(default)]`, or old files stop
+loading and the storage rule defeats itself.
+
+**Samples are columnar, not a list of objects.** `{"speed": {"t": [...], "v": [...]}}` rather
+than a `speed` key repeated on every sample: twenty runs of ten seconds at 20 Hz over ten
+channels is about a megabyte of JSON written the verbose way, and `race view` inlines that
+into the page the browser has to load. Columnar is the same information at roughly a quarter
+of the size, and it is the shape the page's JavaScript wants anyway. Each channel keeps its
+own `t` array, which is what "every value carries its own timestamp" means in this layout.
+
+**`derived` is a cache, and `config` is what makes it safe.** The storage rule says the file
+holds raw samples and derivatives are recomputed; `derived` exists so a person or a script
+can read the answers without reimplementing §3. It carries a `stamp` naming the methods that
+produced it, and `report` and `race view` **recompute and ignore `derived` whenever the stamp
+does not match the maths they are running**. Without that rule the same file would hold two
+answers and no way to choose.
 
 Every channel declares its `origin`. A derived one also declares what it was derived
 **from** and by what **method**, with the parameters that method used — an acceleration
@@ -767,9 +1049,31 @@ one rather than merely readable.
 
 ## 6. The chart page — `race/view.rs`
 
-`--view FILE.json` generates a self-contained HTML file next to the input and opens it.
-Inline SVG and inline JavaScript, no CDN, no external asset of any kind — a strict rule,
-and a test asserts the output contains no `http://` or `https://`.
+`race view FILE.json` generates a self-contained HTML file next to the input and opens it.
+Inline SVG and inline JavaScript, no CDN, no external asset of any kind — a strict rule, and
+a test asserts the output contains no `http://` or `https://`.
+
+**The page is a real file, not a Rust string.** What §6 asks for — a cursor with a tooltip
+over every shown series, four X axes, six series sets, five background discriminators, a run
+selector, a legend split by origin — is a small charting application. Written as `format!`
+in Rust it becomes a thousand lines of unlintable string soup that no editor understands, and
+the "no external URL" test would pass on a page that renders nothing at all.
+
+```rust
+// race/view.rs — the whole of it
+const PAGE: &str = include_str!("view.html");
+let html = PAGE.replace("/*{{SESSION}}*/", &serde_json::to_string(&session)?);
+```
+
+`view.html` carries the CSS, the JavaScript and the SVG scaffold, with the session's JSON
+substituted at one marked point. It is editable, lintable and viewable on its own with a
+sample session pasted in. The tests then assert three things instead of one: the placeholder
+is gone, the embedded JSON parses back to the session it came from, and neither the template
+nor the output contains an external URL. Nothing verifies that the chart *draws* — say so,
+rather than letting a green test imply it.
+
+Opening the file is a convenience, not the job: the path is printed first, and a platform
+without a usable `open` is not a failure of the command.
 
 A run has more channels than any one chart can carry, and a wall of checkboxes makes that
 the reader's problem. Two switches make it the page's.
@@ -817,25 +1121,92 @@ table cannot disagree.
 ## 7. Files
 
 ```
-crates/vagcan/src/race/mod.rs       the command, the poll loop, the TUI
-crates/vagcan/src/race/session.rs   state machine, marks, derived metrics — no I/O
-crates/vagcan/src/race/power.rs     the dynamics model and air density
-crates/vagcan/src/race/profile.rs   the per-VIN car profile: read, write, precedence
-crates/vagcan/src/race/setup.rs     the interview, the coastdown passes, the road-load fit
-crates/vagcan/src/race/report.rs    the results table
-crates/vagcan/src/race/view.rs      HTML generation
+crates/vagcan/src/race/mod.rs        the command and the poll loop
+crates/vagcan/src/race/channels.rs   resolve every channel by name; the pre-flight check
+crates/vagcan/src/race/session.rs    the state machine and run assembly — no I/O
+crates/vagcan/src/race/derive.rs     t0, the accel series, peaks, shifts, distance — pure
+crates/vagcan/src/race/power.rs      the dynamics model and air density
+crates/vagcan/src/race/carfile.rs    the per-VIN car file: read, write, precedence
+crates/vagcan/src/race/setup.rs      the interview and the driving script — I/O only
+crates/vagcan/src/race/coastdown.rs  pass detection and the road-load fit — pure
+crates/vagcan/src/race/ui.rs         the live screen: drawing and keys
+crates/vagcan/src/race/report.rs     the results table
+crates/vagcan/src/race/view.rs       thirty lines: template plus substitution
+crates/vagcan/src/race/view.html     the page itself
 ```
 
-`session.rs` holds everything worth testing and knows nothing about adapters or terminals,
-which is what makes the tests possible without a car.
+Eleven files rather than seven, and the reason is that the first split put two of them on a
+path to being unreadable. `watch/mod.rs` is 1615 lines — the largest file in the crate —
+doing command, loop and TUI; `race`'s screen is more complex than `watch`'s, so `ui.rs` is
+split off at the seam `watch` never split. And `session.rs` as first drafted held eleven
+algorithms and something like twenty-five tests; the boundary between "state over time" and
+"arithmetic over a finished run" is the one §3's storage rule already draws, so `derive.rs`
+draws it in the file system too.
+
+The split also separates by testability: `channels.rs`, `session.rs`, `derive.rs`,
+`power.rs`, `coastdown.rs`, `carfile.rs` and `report.rs` know nothing about adapters or
+terminals, which is what makes almost every test below runnable without a car.
+
+## 7a. What this reuses, and the two extractions it needs
+
+`race` is a third live loop in a crate that already has two. Almost everything it needs is
+written; what is missing is that the useful parts are private or inline.
+
+**Reusable unchanged:** `plan::Channel`, `plan::Batch`, `plan::plan`, `plan::BATCH`,
+`plan::available` (which already merges the standard OBD parameters with per-part catalog
+rows, and already resolves the collision where the same identifier means different things on
+two units), `plan::select_basics`'s name-matching approach, `plan::identities_from_survey`,
+and — for the coastdown — `analyse::fit_linear`, which is least squares **with R²** and whose
+two `None` paths are exactly the "not enough speed range" rejection.
+
+**Two extractions, no behaviour change:**
+
+```rust
+// out of watch/mod.rs:poll_batch, which is private and writes into watch::App
+pub async fn read_batch<B: vag_can::CanBackend>(
+    backend: &mut Option<B>, batch: &Batch, started: Instant,
+) -> BatchOutcome;                 // must report "no answer" explicitly — see below
+
+// out of the identification block inlined in watch::run
+pub async fn identify<B: vag_can::CanBackend>(
+    backend: B, also: &[u16], progress: &mut crate::progress::Line,
+) -> (B, Vec<plan::UnitIdentity>);
+```
+
+The second matters more than it looks: the gateway walk, the 300 ms probe, and the rule that
+the powertrain is never in the gateway's list and so is added rather than discovered, all
+live inline in `watch::run` today. `race` needs them and `race setup` needs them. Copied,
+they drift.
+
+**Do not write a second least squares, and do not write a second R² number.** The repository
+has one stated bar in `analyse::Thresholds::default()` and a test in `main.rs` whose whole
+purpose is to catch a copy of it drifting from the original. A coastdown needing a different
+bar adds a *named field* to `Thresholds`, not a literal.
+
+**Four hazards specific to this loop:**
+
+- `read_batch` must return an explicit no-answer. `poll_batch` currently drops the error and
+  leaves the previous value in place, which is invisible — and `degraded` (§2) cannot be
+  detected without it. Measure the floor in **cycle time**, not in missed answers: a unit
+  replying "response pending" can legally stall for many seconds without missing anything.
+- **Do not wrap the batch read in `select!`.** The backend is `take()`n out of an `Option`
+  and put back after the await; if that future is dropped mid-flight the `Option` stays
+  `None` and the adapter is silently gone for the rest of the run. Drain the keyboard
+  *between* batches, as `watch` does, so `Esc` never waits out a two-second response timeout.
+- The loop takes its reader through a seam so the scheduling is testable without a car:
+  `trait BatchReader { async fn read(&mut self, batch: &Batch) -> BatchOutcome; }` — live
+  implementation wrapping `read_batch`, test implementation replaying a synthetic drive.
+- `analyse::split_records` — which is what makes a multi-identifier response usable — lives
+  in the offline-analysis module. It is the inverse of `read_data_by_identifiers` and belongs
+  beside it in `vag-protocol`; moving it keeps a live loop from importing the offline module.
 
 ## 8. Tests
 
 | test | asserts |
 |---|---|
 | arming | a synthetic profile arms only after zero is held a full second |
-| t0 on a **constant-jerk** launch | the quadratic fit's bias stays inside a stated bound. A *constant-acceleration* profile must not be used: linear back-extrapolation is exact there, so the obvious test is vacuous against the only failure mode that exists |
-| t0 dead band | a profile whose first samples are suppressed below 2 km/h still reports its uncertainty rather than a confident number |
+| t0 on a **constant-jerk** launch **with a dead band** | the bias stays inside a stated bound and stays one-signed. Two traps: a *constant-acceleration* trace makes linear extrapolation exact and the test vacuous, and a trace with no dead band hides the dominant term entirely |
+| t0 lower clamp | there isn't one: a trace with a dead band must not have t0 pushed later than the fit puts it, and an implementation that clamps is caught here |
 | marks | interpolated `0-100` on an analytic profile equals the closed-form answer |
 | mark precision | a 0-based mark prints a tenth with a bound; a rolling mark prints hundredths |
 | staleness cancellation | with a simulated uniform staleness, the rolling mark's error is an order below the 0-based one's |
@@ -845,24 +1216,56 @@ which is what makes the tests possible without a car.
 | `--marks` parser | `0-100,50-100` parses, `100-50` and `abc` are rejected |
 | `--speed-scale` | a scale of 0.97 moves the detected crossing, not just the printed number |
 | least squares on uneven samples | the slope of a known ramp is recovered from deliberately jittered timestamps |
-| causal vs central | the two differ in **phase only** on a known profile — equal peak magnitude — and the file holds the central one |
-| window attenuation | a 0.3 s synthetic dip is recovered ~36 % shallow, which is asserted rather than discovered later |
+| causal vs central | the two differ in **phase only** on a known trace — equal peak magnitude — and the file holds the central one |
+| window attenuation | a 0.3 s synthetic dip of 3.0 m/s² is recovered at ~2.2 m/s² at 21 Hz — the least-squares differentiator's response `(3/x²)|sin x/x − cos x|`, **not** `sinc(πfW)`, which would have predicted a third less |
 | shifts | a shift is located from the gear channel, and its cost is the integrated deficit, positive on a profile where speed never falls |
 | peak statistic | on a series with injected noise the reported peak is not the maximum, and its upward bias is bounded |
 | air density | ρ = **1.225 kg/m³** at 101.325 kPa and 288.15 K — the ISO 2533 sea-level value, four significant figures. Not a comparison against the same formula: this anchor catches a wrong R, a K/°C slip and a kPa/Pa slip in one assertion |
-| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top |
+| launch power | a synthetic launch with engine speed held at 2200 rpm while the car crawls produces **no power sample at all** until lock-up — the ratio-based form would have reported 330 kW here |
+| slip gate | a ratio 5 % from the gear's learned plateau suppresses power, and the plateaus are learned from the trace rather than tabulated |
+| engine-side inertia | the exact form matches the ratio-based one term for term while locked, and goes negative during an upshift |
+| inertia provenance | `δ₁`/`δ₂` are computed from this car's mass and radius, and the file records the inertias and their source rather than the coefficients alone |
+| peak edges | an injected noise spike inside the first 0.1 s does not become the reported peak |
+| peak residual | the ±τ statistic under-reads a known parabolic peak by `c·τ²/6`, and the figure is asserted |
+| shift cost | the baseline is the post-shift gear, the divisor is the acceleration at the mark's upper endpoint, and the window comes from the gear channel — a trace with no shift yields no cost |
+| coastdown grade | a 1 % slope leaves R² at 0.999 and moves `Crr` by ~88 %: the fit is rejected by the two-pass disagreement, never by R², and the implied slope is reported |
+| coastdown wind | a 5 m/s wind survives two-pass averaging as +6 % on `Crr`, matching `½ρCdA·w²/(mg)`, and the per-pass `CdA` spread recovers the wind speed |
+| coastdown inputs | `CdA` is unusable without the `ρ` and the mass that were in force at fit time, and both are in the car file |
 | two modes only | `--full` on a profile with a mass but no coastdown is refused, not silently downgraded to a generic-CdA power run; `--cda` alone is refused, `--cda` with `--crr` is accepted as `stated` |
 | the default is not a stub | a default run still produces every mark, acceleration, distance and shift cost, and every read channel is in the file |
-| frugality | barometric pressure and ambient temperature are **not polled** in the default mode, and are polled **once**, not per cycle, under `--full` |
-| profile round trip | `--setup` writes a profile the next run reads, and the run then needs no flags |
+| frugality | barometric pressure and ambient temperature are **not polled** in the default mode, and are polled **once**, not per cycle, under `--full` — reachable through the `BatchReader` seam |
+
+Almost every row above runs on synthetic sample vectors with no transport at all, which is
+the point of the module split. Two do not, and they are the two that matter for safety:
+"never sends `0x10`" and the polling-frugality rule both need something that answers like a
+control unit. Neither existing double will do — `ReplayCan` is synchronous and order-exact, so
+a loop that skips the background batch on odd cycles desynchronises it immediately, and
+`MockAsyncTransport` sits at the PDU layer while the loop constructs its own ISO-TP channel
+over a `CanBackend`. **There is no `CanBackend` double in the workspace.**
+
+Two steps, in order. First the `BatchReader` seam (§7a), which makes scheduling and frugality
+testable with no CAN at all and costs nothing. Then a `FakeCar` in `vag-can`, gated the way
+`vag-transport` already gates its mock, recording every service byte and every
+`(request id, identifier)` it was asked for — about 120 lines, most of it ISO-TP framing. It
+pays for itself beyond `race`: `watch`'s loop, `faults` and `survey` are equally untestable
+today.
+| profile round trip | `race setup` writes a profile the next run reads, and the run then needs no flags |
 | provenance | every parameter in the file names its source, and none of them may be a guess |
 | precedence | a flag beats the profile, and the file names the winner |
 | coastdown fit | synthetic coastdown data with known `CdA`/`Crr` recovers both; a one-way pass is refused; two passes that disagree are rejected |
-| uncertainty from data | doubling the simulated cycle time doubles the printed bound — it is computed, not tabulated |
+| uncertainty from data | doubling the simulated **refresh period** doubles a rolling mark's bound; doubling the **cycle time** at fixed refresh moves it by nothing. The first draft's test asserted the second and would have failed |
 | one time base | a derived value whose engine-speed input is a cycle stale is interpolated onto the leading grid, and one that is beyond the bound is suppressed |
 | degradation | a run whose rate falls below the floor is flagged, and the flag reaches both the screen and the file |
-| page | the generated HTML contains the sample data and no external URL |
-| session hygiene | the run issues no `0x10` session change |
+| page | the placeholder is substituted, the embedded JSON parses back to the session, and neither template nor output contains an external URL. **Nothing asserts the chart draws** |
+| schema | `race view` refuses an unknown `schema` by name instead of half-reading the file |
+| columnar round trip | a session survives write-then-read with every channel's own timestamps intact |
+| stale cache | a `derived` block whose `stamp` does not match the current maths is ignored and recomputed |
+| channels by name | resolution succeeds against a catalog whose identifiers differ from the reference car's, and the leading unit follows the finest speed channel rather than a fixed unit |
+| speed tie-break | with three units matching "speed", the finest `factor` wins and the choice is recorded in `speed_source` |
+| gear labels | a gear enum with non-contiguous codes and non-numeric levels yields shifts only between numeric levels |
+| kickdown threshold | with a pedal that reads 102 % at full travel, kickdown is still detected, and no literal percentage appears in the source |
+| standstill | arming is decided on the raw integer, and a `--speed-scale` of 0.97 does not prevent a stopped car from arming |
+| session hygiene | the run issues no `0x10` session change — **needs a `CanBackend` double, which the workspace does not have** (below) |
 | pre-flight | a catalog store missing the speed channel refuses the run and names it |
 | optional channels | no barometer means no power column, and the run still happens |
 | origin | every channel in the file declares `origin`, and every derived one its method and parameters |
@@ -885,9 +1288,12 @@ which is what makes the tests possible without a car.
   document was out of character for this project. One GPS comparison run settles it.
   `--speed-scale` exists for whoever does that; the default is 1.0, and the file records
   both the value and that it was applied before mark detection.
-- **The rolling radius** is taken from `--tyre`, a nominal size, not from a measured rolling
-  circumference — which differs by a few per cent with pressure, load and wear. It feeds `k`,
-  where a few per cent is second-order, and nothing else.
+- **The rolling radius** is a nominal size from `--tyre`, not a measured rolling
+  circumference, and the two differ by a few per cent with pressure, load and wear. The exact
+  inertia form no longer uses it (§3); what it still affects is turning the generic inertias
+  into this car's coefficients, where a 3 % error in `r` is 6 % on `I/(m·r²)`. Which
+  convention the derivation uses must be stated: the geometric radius of a 205/55R16 is
+  0.316 m, its dynamic radius about 0.98 of that.
 - **A non-driven wheel speed** would turn the launch-slip caveat into a measurement. The
   brake unit answers 48 identifiers and none of them is proven; this is the concrete reason
   to go and prove one.
