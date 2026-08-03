@@ -22,5 +22,6 @@ pub mod carfile;
 pub mod channels;
 pub mod coastdown;
 pub mod derive;
+pub mod messages;
 pub mod power;
 pub mod types;
