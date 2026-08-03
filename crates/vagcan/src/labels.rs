@@ -53,6 +53,54 @@ fn cache_path_for(dir: &Path) -> PathBuf {
     cache_dir().join(format!("{key}.sqlite"))
 }
 
+/// The directory the label files are actually in.
+///
+/// `--labels` is documented as taking a VCDS install root *or* any directory
+/// below it, and people point it at the root, because that is what they have.
+/// The loader reads one directory level, so a root — where the labels sit in
+/// `Labels/` and the ODX files in `UDS_EV/` — used to cache nothing at all and
+/// say so as "cached 0 label files", which reads as an empty corpus rather than
+/// as a wrong path.
+///
+/// So the directory is located rather than assumed: the one given if it holds
+/// label files, otherwise the first child that does. Two levels is enough for
+/// every layout Ross-Tech ships and shallow enough not to wander into a home
+/// directory.
+fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
+    fn holds_labels(dir: &Path) -> bool {
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                matches!(
+                    e.path().extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref(),
+                    Some("lbl") | Some("clb")
+                )
+            })
+        })
+    }
+
+    if holds_labels(given) {
+        return Ok(given.to_path_buf());
+    }
+    let mut children: Vec<PathBuf> = std::fs::read_dir(given)
+        .with_context(|| format!("reading {}", given.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    children.sort();
+    for child in &children {
+        if holds_labels(child) {
+            eprintln!("using {} — the label files are there, not in {}", child.display(), given.display());
+            return Ok(child.clone());
+        }
+    }
+    anyhow::bail!(
+        "no label files under {} — expected a VCDS install root (with a Labels directory) \
+         or the Labels directory itself",
+        given.display()
+    )
+}
+
 /// Load a corpus, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
@@ -60,6 +108,7 @@ fn cache_path_for(dir: &Path) -> PathBuf {
 /// newer than the corpus directory it was built from. `refresh` forces a
 /// rebuild regardless.
 pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
+    let dir = &label_dir_under(dir)?;
     let cache = cache_path_for(dir);
     let fresh = !refresh
         && match (std::fs::metadata(&cache), std::fs::metadata(dir)) {
