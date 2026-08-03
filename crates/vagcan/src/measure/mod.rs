@@ -25,5 +25,8 @@ pub mod derive;
 pub mod messages;
 pub mod power;
 pub mod session;
+pub mod ui;
+pub mod setup;
+pub mod report;
 pub mod types;
 pub mod view;
