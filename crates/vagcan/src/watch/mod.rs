@@ -943,9 +943,7 @@ pub struct Options<'a> {
 pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> {
     let Options { preselect, hz, out, survey, catalogs, view } = opts;
     use std::io::Write as _;
-    use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
-    use vag_protocol::AsyncUdsClient;
-    use vag_transport::CanId;
+    use vag_can::{SlcanBackend, SlcanBitrate, SlcanMode};
 
     // Argument checking first: the adapter is a single-user resource, and
     // holding it open while failing on a typo blocks the next attempt. That
@@ -981,76 +979,27 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
             .await
             .with_context(|| crate::device::open_failure(device_path))?;
 
-    // Which units the car has. Without this the view would only ever show the
-    // engine, because a unit with no identity contributes no channels and so
-    // no tab — which is what "switching between units does nothing" looked
-    // like. One read of the gateway's installation list answers it, the same
-    // read `vagcan units` makes; a car whose gateway does not answer falls
-    // back to whatever was asked for.
+    // Which units the car has, and what each of them is. Without this the view
+    // would only ever show the engine, because a unit with no identity
+    // contributes no channels and so no tab — which is what "switching between
+    // units does nothing" looked like. The walk lives in `crate::units`,
+    // because `race` makes the same one.
     let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
     wanted.push(plan::ENGINE);
     let mut progress = crate::progress::Line::new();
-    if survey_text.is_none() {
-        progress.update("asking the gateway which control units this car has");
-        let gateway = vag_protocol::address::UnitAddress::from_request(0x710)
-            .expect("the gateway is in VW's block");
-        let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-            adapter,
-            CanId::Standard(gateway.request),
-            CanId::Standard(gateway.response),
-        ));
-        if let Ok(bitmap) =
-            uds.read_data_by_identifier(vag_protocol::gateway::INSTALLATION_LIST).await
-        {
-            wanted.extend(vag_protocol::gateway::decode_installation_list(&bitmap));
-        }
-        // The powertrain is never in that list — it lives on the other id
-        // block — so it is added rather than discovered.
-        wanted.push(0x7E1);
-        adapter = uds.into_transport().into_backend();
-    }
-    wanted.sort_unstable();
-    wanted.dedup();
-    let total = wanted.len();
-    for (at, request) in wanted.into_iter().enumerate() {
-        progress.update(&format!("identifying control units — {request:03X}, {} of {total}", at + 1));
-        if identities.iter().any(|i| i.request == request) {
-            continue;
-        }
-        let Some(address) = vag_protocol::address::UnitAddress::from_request(request) else {
-            continue;
-        };
-        let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-            adapter,
-            CanId::Standard(address.request),
-            CanId::Standard(address.response),
-        ));
-        let text = |data: Option<Vec<u8>>| {
-            data.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
-                .filter(|s| !s.is_empty())
-        };
-        // One short probe decides whether the unit is there. A unit that is
-        // not costs this deadline once, instead of the full two-second one
-        // three times over — fifteen listed addresses at that price is what
-        // made startup take several seconds.
-        const PROBE: Duration = Duration::from_millis(300);
-        let part = text(uds.read_data_by_identifier_within(0xF187, PROBE).await.ok());
-        if part.is_none() && request != plan::ENGINE {
-            adapter = uds.into_transport().into_backend();
-            continue;
-        }
-        // Identification only — no session change and no sweep. `SAFETY.md`
-        // is about what a sweep can provoke; this is not one.
-        let component = text(uds.read_data_by_identifier_within(0xF197, PROBE).await.ok());
-        let odx = text(uds.read_data_by_identifier_within(0xF19E, PROBE).await.ok());
-        identities.push(plan::UnitIdentity {
-            request,
-            part_number: part,
-            odx_name: odx,
-            component,
-        });
-        adapter = uds.into_transport().into_backend();
-    }
+    let found = if survey_text.is_some() {
+        // A survey already asked the whole car, so the gateway has nothing left
+        // to say; only what the survey did not cover is worth a probe.
+        let (back, found) =
+            crate::units::identify_listed(adapter, &wanted, &identities, &mut progress).await;
+        adapter = back;
+        found
+    } else {
+        let (back, found) = crate::units::identify(adapter, &wanted, &mut progress).await;
+        adapter = back;
+        found
+    };
+    identities.extend(found);
 
     progress.finish();
     // Say what the car answered and what could be shown, before the screen

@@ -26,6 +26,7 @@ mod safety;
 mod scan;
 mod sniff;
 mod survey;
+mod units;
 mod vcds;
 mod vcdslog;
 mod watch;
