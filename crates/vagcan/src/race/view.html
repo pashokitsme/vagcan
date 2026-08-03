@@ -1,0 +1,1645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vagcan race — session</title>
+<style>
+/* ---------------------------------------------------------------------------
+   No external asset of any kind: no font, no stylesheet, no image, no script
+   from anywhere. Everything this page needs is in this file. A test asserts
+   the output carries no external URL, so not even a reference in a comment.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --surface:      #fcfcfb;
+  --panel:        #ffffff;
+  --panel-2:      #f4f3f0;
+  --line:         #dedcd6;
+  --line-soft:    #eae8e3;
+  --ink:          #0b0b0b;
+  --ink-2:        #52514e;
+  --ink-3:        #82807a;
+  --accent:       #2a78d6;
+  --band:         rgba(11, 11, 11, 0.055);
+  --band-alt:     rgba(11, 11, 11, 0.018);
+  --mark:         rgba(11, 11, 11, 0.34);
+  --s1: #2a78d6;  /* blue    */
+  --s2: #eb6834;  /* orange  */
+  --s3: #1baf7a;  /* aqua    */
+  --s4: #4a3aa7;  /* violet  */
+  --shadow: 0 1px 2px rgba(11,11,11,.06), 0 8px 24px rgba(11,11,11,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface:   #131312;
+    --panel:     #1a1a19;
+    --panel-2:   #232322;
+    --line:      #383835;
+    --line-soft: #2a2a28;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --ink-3:     #8d8c84;
+    --accent:    #3987e5;
+    --band:      rgba(255, 255, 255, 0.075);
+    --band-alt:  rgba(255, 255, 255, 0.025);
+    --mark:      rgba(255, 255, 255, 0.40);
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --s4: #9085e9;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface:   #131312;
+  --panel:     #1a1a19;
+  --panel-2:   #232322;
+  --line:      #383835;
+  --line-soft: #2a2a28;
+  --ink:       #ffffff;
+  --ink-2:     #c3c2b7;
+  --ink-3:     #8d8c84;
+  --accent:    #3987e5;
+  --band:      rgba(255, 255, 255, 0.075);
+  --band-alt:  rgba(255, 255, 255, 0.025);
+  --mark:      rgba(255, 255, 255, 0.40);
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #9085e9;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+}
+
+* { box-sizing: border-box; }
+/* `hidden` has to beat the layout rules below, which set `display` by class. */
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+}
+.page { max-width: 1180px; margin: 0 auto; padding: 20px 18px 56px; }
+
+h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 14px; margin: 0; letter-spacing: 0.01em; }
+h3 { font-size: 12px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .08em;
+     color: var(--ink-3); font-weight: 600; }
+p  { margin: 0; }
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+.hdr { display: flex; align-items: flex-start; justify-content: space-between;
+       gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.sub { color: var(--ink-2); font-size: 12.5px; margin-top: 4px; }
+.sub .dot { color: var(--ink-3); padding: 0 6px; }
+
+button { font: inherit; color: inherit; cursor: pointer; }
+.ghost {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 5px 10px; font-size: 12.5px; color: var(--ink-2);
+}
+.ghost:hover { border-color: var(--ink-3); color: var(--ink); }
+
+.card { background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; box-shadow: var(--shadow); }
+
+/* ---- controls -------------------------------------------------------- */
+.controls { display: grid; gap: 12px; margin-bottom: 16px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.grp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.grp > .lbl { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em;
+              color: var(--ink-3); font-weight: 600; }
+
+.seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line);
+       border-radius: 9px; padding: 2px; gap: 2px; }
+.seg button {
+  border: 0; background: transparent; border-radius: 7px; padding: 4px 11px;
+  font-size: 13px; color: var(--ink-2); white-space: nowrap;
+}
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
+.seg button:disabled { opacity: .38; cursor: not-allowed; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line);
+  background: var(--panel); border-radius: 999px; padding: 4px 11px 4px 8px; font-size: 13px;
+  color: var(--ink-2);
+}
+.chip[aria-pressed="true"] { border-color: currentColor; color: var(--ink); font-weight: 600; }
+.chip .swatch { width: 10px; height: 10px; border-radius: 3px; background: var(--s1); flex: none; }
+.chip .ab { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--s2); }
+
+select {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px;
+}
+.checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.checks label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+                color: var(--ink-2); }
+.checks input { accent-color: var(--accent); }
+.checks label.off { opacity: .45; }
+.hint { font-size: 12px; color: var(--ink-3); }
+.warn { font-size: 12px; color: var(--s2); }
+
+/* ---- results --------------------------------------------------------- */
+.results { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+           margin-bottom: 16px; }
+.res { padding: 14px 16px 16px; }
+.res .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.res .head .rn { font-weight: 700; font-size: 14px; }
+.res .head .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; color: var(--ink-3); }
+.res .head .badge.ab { color: var(--s2); border-color: var(--s2); }
+.blk + .blk { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.t th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .06em; padding: 0 0 4px; }
+table.t td { padding: 2px 0; vertical-align: baseline; }
+table.t td.k { color: var(--ink-2); padding-right: 10px; white-space: nowrap; }
+table.t td.v { text-align: right; white-space: nowrap; }
+table.t td.v2 { text-align: right; color: var(--ink-2); padding-left: 12px;
+  font-size: 11.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.cond { font-size: 11.5px; color: var(--ink-3); margin: -4px 0 8px; line-height: 1.45; }
+.note { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin-top: 8px;
+        border-left: 2px solid var(--line); padding-left: 9px; }
+
+/* ---- chart ----------------------------------------------------------- */
+.chartcard { padding: 14px 16px 12px; }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+              flex-wrap: wrap; margin-bottom: 6px; }
+.cap { font-size: 11.5px; color: var(--ink-3); }
+.chartwrap { position: relative; width: 100%; touch-action: pan-y; }
+svg { display: block; width: 100%; user-select: none; }
+.tip {
+  position: absolute; pointer-events: none; z-index: 3; min-width: 170px; max-width: 320px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 9px 11px; font-size: 12.5px; line-height: 1.45;
+}
+.tip .tx { font-weight: 700; margin-bottom: 6px; }
+.tip .rn { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+           color: var(--ink-3); margin: 6px 0 2px; }
+.tip .r { display: flex; align-items: baseline; gap: 7px; }
+.tip .r .nm { color: var(--ink-2); flex: 1 1 auto; }
+.tip .r .vl { white-space: nowrap; }
+.tip .sw { width: 14px; height: 0; border-top-width: 2px; border-top-style: solid;
+           flex: none; position: relative; top: -3px; }
+.tip .sw.d { border-top-style: dashed; }
+.tip .diff { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line-soft);
+             color: var(--ink-2); }
+.tip .cond { margin: 4px 0 0; }
+
+.legend { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft);
+          display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.legend .ttl { font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
+               color: var(--ink-3); font-weight: 600; margin-bottom: 5px; }
+.legend .it { display: flex; align-items: baseline; gap: 8px; padding: 1px 0; }
+.legend .sw { width: 18px; height: 0; border-top-width: 2.5px; border-top-style: solid;
+              flex: none; position: relative; top: -4px; }
+.legend .sw.d { border-top-style: dashed; }
+.legend .nm { font-size: 12.5px; }
+.legend .mt { font-size: 11.5px; color: var(--ink-3); }
+
+.foot { margin-top: 22px; display: grid; gap: 7px; }
+.foot p { font-size: 12px; color: var(--ink-3); line-height: 1.55; max-width: 78ch; }
+.foot b { color: var(--ink-2); font-weight: 600; }
+.fatal { padding: 14px 16px; border-radius: 12px; border: 1px solid var(--s2);
+         color: var(--ink); background: var(--panel); margin-bottom: 16px; font-size: 13px; }
+
+@media (max-width: 640px) {
+  .page { padding: 14px 12px 40px; }
+  .results { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- The session is substituted here, once, by race/view.rs. -->
+<script type="application/json" id="session-data">/*{{SESSION}}*/</script>
+
+<div class="page">
+  <header class="hdr">
+    <div>
+      <h1>vagcan race</h1>
+      <p class="sub" id="hdr-sub"></p>
+    </div>
+    <button type="button" class="ghost" id="theme">light / dark</button>
+  </header>
+
+  <div class="fatal" id="fatal" hidden></div>
+
+  <section class="controls" id="controls" hidden>
+    <div class="row">
+      <div class="grp"><span class="lbl">Runs</span><span id="runchips" class="grp"></span></div>
+      <span class="hint" id="runhint"></span>
+    </div>
+    <div class="row">
+      <div class="grp"><span class="lbl">Against</span><span class="seg" id="axisseg"></span></div>
+      <div class="grp"><span class="lbl">Series</span><span class="seg" id="setseg"></span></div>
+      <div class="grp" id="gearpick" hidden>
+        <span class="lbl">Gear</span><select id="gearsel"></select>
+      </div>
+      <div class="grp">
+        <span class="lbl">Background</span>
+        <select id="bgsel"></select>
+      </div>
+    </div>
+    <div class="row" id="customrow" hidden>
+      <div class="grp" style="align-items: flex-start">
+        <span class="lbl">Channels</span>
+        <div>
+          <div class="checks" id="customchecks"></div>
+          <p class="warn" id="customwarn" hidden></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="results" id="results"></section>
+
+  <section class="card chartcard" id="chartcard" hidden>
+    <div class="chart-head">
+      <h2 id="charttitle"></h2>
+      <p class="cap" id="chartcap"></p>
+    </div>
+    <div class="chartwrap" id="chartwrap">
+      <svg id="chart" height="430" aria-label="Race chart"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+"use strict";
+(function () {
+
+/* ===========================================================================
+   0. The session
+   =========================================================================== */
+
+var SESSION = null;
+try { SESSION = JSON.parse(document.getElementById("session-data").textContent); }
+catch (err) { SESSION = null; }
+
+var fatalEl = document.getElementById("fatal");
+function fatal(msg) { fatalEl.textContent = msg; fatalEl.hidden = false; }
+
+if (!SESSION || typeof SESSION !== "object" || !Array.isArray(SESSION.runs)) {
+  fatal("No session in this page. It is the template, not a rendered file — " +
+        "run `vagcan race view FILE.json` to get one with a drive in it.");
+  return;
+}
+if (SESSION.schema !== 1) {
+  fatal("This page was written for schema 1 and the session says schema " +
+        String(SESSION.schema) + ". What is drawn below may be wrong.");
+}
+
+var CFG = SESSION.config || {};
+var RUNS = SESSION.runs.filter(function (r) { return r && r.series; });
+if (!RUNS.length) { fatal("The session holds no runs."); return; }
+
+/* ===========================================================================
+   1. Channels — keys are normalised, so `engine speed` and `engine_speed`
+      are the same channel whichever way the writer spelled it.
+   =========================================================================== */
+
+function norm(k) {
+  return String(k).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+var CH = {};                       /* normalised key -> channel declaration   */
+(SESSION.channels || []).forEach(function (c) { if (c && c.key) CH[norm(c.key)] = c; });
+
+/* Each run's series, re-keyed the same way. */
+RUNS.forEach(function (r) {
+  var s = {};
+  Object.keys(r.series || {}).forEach(function (k) {
+    var tr = r.series[k];
+    if (tr && Array.isArray(tr.t) && Array.isArray(tr.v) && tr.t.length) s[norm(k)] = tr;
+  });
+  r._s = s;
+});
+
+function hasKey(k) { return !!CH[k] && RUNS.some(function (r) { return !!r._s[k]; }); }
+
+var KEYS = Object.keys(CH).filter(hasKey);
+
+/* A channel is a state channel when the car answers it with labels rather than
+   numbers — the gear, the selector lever. Never interpolated: a gear halfway
+   between third and fourth is an invention. */
+function isState(k) {
+  var found = false;
+  RUNS.some(function (r) {
+    var tr = r._s[k];
+    if (!tr) return false;
+    for (var i = 0; i < tr.v.length; i++) {
+      var v = tr.v[i];
+      if (typeof v === "string") { found = true; return true; }
+      if (v && typeof v === "object") { found = true; return true; }
+    }
+    return false;
+  });
+  return found;
+}
+var STATE = {};
+KEYS.forEach(function (k) { STATE[k] = isState(k); });
+
+/* A flag is a read or derived 0/1 channel — kickdown. Stepped, not sloped. */
+function isFlag(k) {
+  if (STATE[k]) return false;
+  var ok = false;
+  RUNS.forEach(function (r) {
+    var tr = r._s[k];
+    if (!tr) return;
+    for (var i = 0; i < tr.v.length; i++) {
+      if (tr.v[i] !== 0 && tr.v[i] !== 1) return;
+    }
+    ok = true;
+  });
+  return ok;
+}
+var FLAG = {};
+KEYS.forEach(function (k) { FLAG[k] = isFlag(k); });
+
+function chName(k) { return (CH[k] && CH[k].name) || k; }
+function chUnit(k) { return (CH[k] && CH[k].unit) || ""; }
+/* Units are stored the way they can be typed into a file; they are shown the
+   way they are written. Presentation only — the stored string is untouched. */
+function pretty(u) {
+  return String(u || "").replace(/m\/s2\b/g, "m/s²").replace(/\bm2\b/g, "m²")
+                        .replace(/\bm3\b/g, "m³").replace(/\bdegC\b/g, "°C");
+}
+function isDerived(k) { return !!CH[k] && CH[k].origin === "derived"; }
+
+/* ===========================================================================
+   2. Series sets. `need` is a list of alternatives-groups: every group must be
+      satisfied by at least one of its keys. A set this car cannot fill is not
+      offered — decided from the session's own channel list, never a table.
+   =========================================================================== */
+
+var SETS = [
+  { id: "run",   label: "Run",
+    need: [["speed"]],
+    draw: ["speed", "accel"] },
+  { id: "engine", label: "Engine",
+    need: [["engine_speed"]],
+    draw: ["engine_speed", "boost_actual", "boost_specified", "air_mass"] },
+  { id: "driver", label: "Driver",
+    need: [["pedal"]],
+    draw: ["pedal", "kickdown", "gear"] },
+  { id: "trans", label: "Transmission",
+    need: [["gear"], ["input_shaft_speed", "output_shaft_speed"]],
+    draw: ["gear", "input_shaft_speed", "output_shaft_speed", "speed"] },
+  { id: "power", label: "Power",
+    need: [["power_wheel", "power_shaft"]],
+    draw: ["power_wheel", "power_shaft", "accel"] },
+  { id: "custom", label: "Custom", need: [], draw: [] }
+];
+
+SETS.forEach(function (s) {
+  s.available = s.id === "custom"
+    ? KEYS.length > 0
+    : s.need.every(function (grp) { return grp.some(hasKey); });
+  s.keys = s.draw.filter(hasKey);
+});
+var AVAIL_SETS = SETS.filter(function (s) { return s.available; });
+
+/* Colours are fixed per channel, not per position, so a channel keeps its hue
+   between sets. The assignment is collision-free inside every set above. */
+var SLOT = {
+  speed: 1, accel: 2, engine_speed: 3, boost_actual: 1, boost_specified: 4,
+  air_mass: 2, pedal: 1, kickdown: 2, gear: 3, input_shaft_speed: 2,
+  output_shaft_speed: 4, power_wheel: 1, power_shaft: 4, distance: 3, selector: 4
+};
+function slotOf(k, i) { return SLOT[k] || ((i % 4) + 1); }
+
+/* ===========================================================================
+   3. X axes
+   =========================================================================== */
+
+var AXES = [
+  { id: "time",  label: "Time",         unit: "s",    key: null },
+  { id: "speed", label: "Speed",        unit: "km/h", key: "speed" },
+  { id: "dist",  label: "Distance",     unit: "m",    key: "distance" },
+  { id: "rpm",   label: "Engine speed", unit: "/min", key: "engine_speed" }
+];
+AXES.forEach(function (a) {
+  a.available = a.id === "time" ? true
+    : a.id === "dist" ? (hasKey("distance") || hasKey("speed"))
+    : hasKey(a.key);
+});
+var AVAIL_AXES = AXES.filter(function (a) { return a.available; });
+
+/* ===========================================================================
+   4. Track arithmetic
+   =========================================================================== */
+
+function idxAtOrBefore(ts, t) {
+  var lo = 0, hi = ts.length - 1, ans = -1;
+  while (lo <= hi) {
+    var mid = (lo + hi) >> 1;
+    if (ts[mid] <= t) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return ans;
+}
+
+/* Linear between the two samples that bracket t; nothing outside the span —
+   an extrapolated reading is not a measurement. */
+function interp(tr, t) {
+  if (!tr || !tr.t.length) return null;
+  if (t < tr.t[0] || t > tr.t[tr.t.length - 1]) return null;
+  var i = idxAtOrBefore(tr.t, t);
+  if (i < 0) return null;
+  if (i === tr.t.length - 1) return num(tr.v[i]);
+  var a = num(tr.v[i]), b = num(tr.v[i + 1]);
+  if (a === null || b === null) return a;
+  var dt = tr.t[i + 1] - tr.t[i];
+  if (dt <= 0) return a;
+  return a + (b - a) * (t - tr.t[i]) / dt;
+}
+function num(v) { return typeof v === "number" && isFinite(v) ? v : null; }
+
+/* A state holds until the next sample: that is what the unit reported. */
+function holdAt(tr, t) {
+  if (!tr || !tr.t.length || t < tr.t[0]) return null;
+  var i = idxAtOrBefore(tr.t, t);
+  return i < 0 ? null : tr.v[i];
+}
+
+/* Distance, when the writer did not store it: trapezoid over each interval's
+   own dt, never a nominal 1/hz. Derived here and labelled as such. */
+function distanceTrack(run) {
+  if (run._s.distance) return run._s.distance;
+  if (run._dist) return run._dist;
+  var sp = run._s.speed;
+  if (!sp) return null;
+  var t = [], v = [], acc = 0;
+  for (var i = 0; i < sp.t.length; i++) {
+    if (i) {
+      var a = num(sp.v[i - 1]), b = num(sp.v[i]);
+      if (a !== null && b !== null) acc += 0.5 * (a + b) / 3.6 * (sp.t[i] - sp.t[i - 1]);
+    }
+    t.push(sp.t[i]); v.push(acc);
+  }
+  run._dist = { t: t, v: v };
+  return run._dist;
+}
+
+/* The gear held longest, and its window. Against engine speed a multi-gear run
+   folds back on itself at every upshift, so one gear is the honest default. */
+function gearSpans(run) {
+  var tr = run._s.gear;
+  if (!tr) return [];
+  var out = [], i;
+  for (i = 0; i < tr.t.length; i++) {
+    var lab = label(tr.v[i]);
+    var last = out[out.length - 1];
+    if (last && last.label === lab) { last.t1 = tr.t[i]; }
+    else { out.push({ label: lab, t0: tr.t[i], t1: tr.t[i], unmapped: unmapped(tr.v[i]) }); }
+  }
+  var end = tr.t[tr.t.length - 1];
+  for (i = 0; i < out.length; i++) out[i].t1 = i + 1 < out.length ? out[i + 1].t0 : end;
+  return out;
+}
+function label(v) {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") return "unknown code " + String(v.raw);
+  if (typeof v === "number") return String(v);
+  return "";
+}
+function unmapped(v) { return !!(v && typeof v === "object" && v.unmapped); }
+
+function gearChoices(run) {
+  var spans = gearSpans(run).filter(function (s) { return s.t1 > 0 && !s.unmapped; });
+  var by = {};
+  spans.forEach(function (s) {
+    var t0 = Math.max(0, s.t0);
+    if (s.t1 <= t0) return;
+    by[s.label] = by[s.label] || { label: s.label, held: 0, t0: t0, t1: s.t1 };
+    by[s.label].held += s.t1 - t0;
+    if (s.t1 - t0 >= by[s.label].t1 - by[s.label].t0) { by[s.label].t0 = t0; by[s.label].t1 = s.t1; }
+  });
+  return Object.keys(by).map(function (k) { return by[k]; })
+    .sort(function (a, b) { return b.held - a.held; });
+}
+
+/* ===========================================================================
+   5. State scale — labels get slots, numeric labels keep their number, and
+      everything else sits below them. The axis is ticked with the labels the
+      car reported, never with the codes behind them.
+   =========================================================================== */
+
+function stateScale(keys, runs) {
+  var seen = [], numeric = [], other = [];
+  runs.forEach(function (r) {
+    keys.forEach(function (k) {
+      var tr = r._s[k];
+      if (!tr) return;
+      tr.v.forEach(function (v) {
+        var l = label(v);
+        if (l === "" || seen.indexOf(l) >= 0) return;
+        seen.push(l);
+        if (/^-?\d+(\.\d+)?$/.test(l)) numeric.push(l); else other.push(l);
+      });
+    });
+  });
+  var map = {}, ticks = [];
+  numeric.sort(function (a, b) { return parseFloat(a) - parseFloat(b); });
+  var lowest = numeric.length ? parseFloat(numeric[0]) : 1;
+  numeric.forEach(function (l) { map[l] = parseFloat(l); ticks.push({ y: map[l], label: l }); });
+  other.forEach(function (l, i) {
+    map[l] = lowest - 1 - i;
+    ticks.push({ y: map[l], label: l });
+  });
+  ticks.sort(function (a, b) { return a.y - b.y; });
+  return { map: map, ticks: ticks };
+}
+
+/* ===========================================================================
+   6. State
+   =========================================================================== */
+
+var state = {
+  runs: [RUNS[0].index],
+  axis: AVAIL_AXES[0].id,
+  set: AVAIL_SETS[0].id,
+  custom: [],
+  bg: "none",
+  gear: null,
+  zoom: null
+};
+
+function selectedRuns() {
+  return state.runs.map(function (ix) {
+    return RUNS.filter(function (r) { return r.index === ix; })[0];
+  }).filter(Boolean);
+}
+function refRun() { return selectedRuns()[0] || RUNS[0]; }
+
+var BG_OPTIONS = [{ id: "none", label: "none" }];
+if (hasKey("gear")) BG_OPTIONS.push({ id: "gear", label: "by gear" });
+if (RUNS.some(function (r) { return (r.marks || []).length; }))
+  BG_OPTIONS.push({ id: "mark", label: "by mark" });
+if (hasKey("kickdown")) BG_OPTIONS.push({ id: "kickdown", label: "by kickdown" });
+state.bg = BG_OPTIONS.length > 1 ? BG_OPTIONS[1].id : "none";
+
+/* ===========================================================================
+   7. Formatting
+   =========================================================================== */
+
+function fmt(v, unit) {
+  if (v === null || v === undefined || !isFinite(v)) return "—";
+  var a = Math.abs(v), d;
+  if (unit === "/min" || unit === "m" || unit === "g/s") d = a >= 100 ? 0 : 1;
+  else if (unit === "km/h") d = a >= 100 ? 1 : 2;
+  else if (unit === "bar") d = 2;
+  else if (unit === "s") d = a >= 10 ? 2 : 3;
+  else d = a >= 100 ? 1 : a >= 10 ? 2 : 3;
+  return v.toFixed(d);
+}
+function fmtTick(v) {
+  var a = Math.abs(v);
+  if (a >= 1000) return String(Math.round(v));
+  if (a >= 10) return String(Math.round(v * 10) / 10);
+  if (a === 0) return "0";
+  return String(Math.round(v * 100) / 100);
+}
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                  .replace(/"/g, "&quot;");
+}
+function unitSuffix(u) { return u ? " " + pretty(u) : ""; }
+
+/* ===========================================================================
+   8. Controls
+   =========================================================================== */
+
+var elControls = document.getElementById("controls");
+var elRunChips = document.getElementById("runchips");
+var elRunHint  = document.getElementById("runhint");
+var elAxisSeg  = document.getElementById("axisseg");
+var elSetSeg   = document.getElementById("setseg");
+var elGearPick = document.getElementById("gearpick");
+var elGearSel  = document.getElementById("gearsel");
+var elBgSel    = document.getElementById("bgsel");
+var elCustomRow = document.getElementById("customrow");
+var elCustomChecks = document.getElementById("customchecks");
+var elCustomWarn = document.getElementById("customwarn");
+
+var RUN_OPACITY = [1, 0.74, 0.55, 0.42];
+var RUN_WIDTH   = [2.2, 2.0, 1.8, 1.6];
+
+function buildControls() {
+  elControls.hidden = false;
+
+  RUNS.forEach(function (r) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.dataset.run = String(r.index);
+    b.innerHTML = '<span class="swatch"></span>run ' + esc(r.index) +
+      (r.aborted ? ' <span class="ab">aborted</span>' : "");
+    b.addEventListener("click", function () { toggleRun(r.index); });
+    elRunChips.appendChild(b);
+  });
+
+  AVAIL_AXES.forEach(function (a) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = a.label; b.dataset.axis = a.id;
+    b.addEventListener("click", function () { state.axis = a.id; state.zoom = null; sync(); });
+    elAxisSeg.appendChild(b);
+  });
+
+  AVAIL_SETS.forEach(function (s) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = s.label; b.dataset.set = s.id;
+    b.addEventListener("click", function () { state.set = s.id; sync(); });
+    elSetSeg.appendChild(b);
+  });
+
+  BG_OPTIONS.forEach(function (o) {
+    var op = document.createElement("option");
+    op.value = o.id; op.textContent = o.label;
+    elBgSel.appendChild(op);
+  });
+  elBgSel.value = state.bg;
+  elBgSel.addEventListener("change", function () { state.bg = elBgSel.value; draw(); });
+
+  KEYS.forEach(function (k) {
+    var lab = document.createElement("label");
+    var cb = document.createElement("input");
+    cb.type = "checkbox"; cb.value = k;
+    cb.addEventListener("change", function () { toggleCustom(k); });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(chName(k) + (chUnit(k) ? " (" + pretty(chUnit(k)) + ")" : "")));
+    lab.dataset.key = k;
+    elCustomChecks.appendChild(lab);
+  });
+
+  elGearSel.addEventListener("change", function () {
+    state.gear = elGearSel.value; state.zoom = null; draw();
+  });
+}
+
+function toggleRun(ix) {
+  var at = state.runs.indexOf(ix);
+  if (at >= 0) {
+    if (state.runs.length > 1) state.runs.splice(at, 1);
+  } else if (state.runs.length < 4) {
+    state.runs.push(ix);
+    state.runs.sort(function (a, b) { return a - b; });
+  } else {
+    elRunHint.textContent = "Four runs is the limit — any more and the chart is mud.";
+    return;
+  }
+  elRunHint.textContent = "";
+  state.zoom = null;
+  sync();
+}
+
+function toggleCustom(k) {
+  var at = state.custom.indexOf(k);
+  if (at >= 0) state.custom.splice(at, 1); else state.custom.push(k);
+  sync();
+}
+
+/* At most three series and two Y axes: rpm at 6480 beside boost at 2.1 bar
+   destroys both scales, and silently dropping one is worse than saying so. */
+function customSelection() {
+  var picked = [], axes = [], dropped = [];
+  state.custom.forEach(function (k) {
+    var ax = axisKeyOf(k);
+    if (picked.length >= 3) { dropped.push({ k: k, why: "three series" }); return; }
+    if (axes.indexOf(ax) < 0 && axes.length >= 2) { dropped.push({ k: k, why: "two Y axes" }); return; }
+    if (axes.indexOf(ax) < 0) axes.push(ax);
+    picked.push(k);
+  });
+  return { picked: picked, dropped: dropped };
+}
+function axisKeyOf(k) { return STATE[k] ? " state" : FLAG[k] ? " flag" : chUnit(k); }
+
+function drawnKeys() {
+  if (state.set === "custom") return customSelection().picked;
+  var s = AVAIL_SETS.filter(function (x) { return x.id === state.set; })[0];
+  return s ? s.keys : [];
+}
+
+function sync() {
+  Array.prototype.forEach.call(elRunChips.children, function (b) {
+    var on = state.runs.indexOf(parseInt(b.dataset.run, 10)) >= 0;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    var i = state.runs.indexOf(parseInt(b.dataset.run, 10));
+    var sw = b.querySelector(".swatch");
+    sw.style.opacity = on ? String(RUN_OPACITY[i]) : "0.25";
+  });
+  Array.prototype.forEach.call(elAxisSeg.children, function (b) {
+    b.setAttribute("aria-pressed", b.dataset.axis === state.axis ? "true" : "false");
+  });
+  Array.prototype.forEach.call(elSetSeg.children, function (b) {
+    b.setAttribute("aria-pressed", b.dataset.set === state.set ? "true" : "false");
+  });
+
+  elCustomRow.hidden = state.set !== "custom";
+  if (state.set === "custom") {
+    var sel = customSelection();
+    Array.prototype.forEach.call(elCustomChecks.children, function (lab) {
+      var k = lab.dataset.key;
+      lab.querySelector("input").checked = state.custom.indexOf(k) >= 0;
+      lab.className = sel.picked.indexOf(k) >= 0 || state.custom.indexOf(k) < 0 ? "" : "off";
+    });
+    if (sel.dropped.length) {
+      elCustomWarn.hidden = false;
+      elCustomWarn.textContent = sel.dropped.map(function (d) {
+        return chName(d.k) + " is not drawn — " + d.why + " is the cap.";
+      }).join("  ");
+    } else { elCustomWarn.hidden = true; }
+  }
+
+  /* The gear picker belongs to the engine-speed axis and nowhere else. */
+  var wantGear = state.axis === "rpm" && hasKey("gear");
+  elGearPick.hidden = !wantGear;
+  if (wantGear) {
+    var choices = gearChoices(refRun());
+    elGearSel.innerHTML = "";
+    choices.forEach(function (c) {
+      var op = document.createElement("option");
+      op.value = c.label;
+      op.textContent = c.label + "  (" + c.held.toFixed(1) + " s)";
+      elGearSel.appendChild(op);
+    });
+    var labels = choices.map(function (c) { return c.label; });
+    if (labels.indexOf(state.gear) < 0) state.gear = labels.length ? labels[0] : null;
+    if (state.gear !== null) elGearSel.value = state.gear;
+  }
+
+  renderResults();
+  draw();
+}
+
+/* ===========================================================================
+   9. Building the plotted series
+   =========================================================================== */
+
+function xMapper(run) {
+  var axis = state.axis;
+  if (axis === "time") return function (t) { return t; };
+  if (axis === "speed") {
+    var sp = run._s.speed;
+    return function (t) { return t < 0 ? null : interp(sp, t); };
+  }
+  if (axis === "dist") {
+    var d = distanceTrack(run);
+    return function (t) { return t < 0 ? null : interp(d, t); };
+  }
+  var rpm = run._s.engine_speed;
+  var span = gearWindow(run);
+  return function (t) {
+    if (t < 0) return null;
+    if (span && (t < span.t0 || t > span.t1)) return null;
+    return interp(rpm, t);
+  };
+}
+
+function gearWindow(run) {
+  if (state.axis !== "rpm" || !hasKey("gear")) return null;
+  var choices = gearChoices(run);
+  var want = state.gear;
+  var hit = choices.filter(function (c) { return c.label === want; })[0] || choices[0];
+  return hit ? { t0: hit.t0, t1: hit.t1, label: hit.label } : null;
+}
+
+/* Off the time axis the run has to be read forwards: the pre-launch buffer all
+   maps to x = 0, and an aborted run comes back down the speed axis it went up. */
+function buildSeries() {
+  /* The channel the X axis is made of is not drawn against itself: speed
+     against speed is a 45° line that says nothing and costs a Y axis. */
+  var axisKey = (AXES.filter(function (a) { return a.id === state.axis; })[0] || {}).key;
+  var keys = drawnKeys().filter(function (k) { return k !== axisKey; });
+  var runs = selectedRuns();
+  var stateKeys = keys.filter(function (k) { return STATE[k]; });
+  var sc = stateKeys.length ? stateScale(stateKeys, runs) : null;
+  var out = [];
+
+  runs.forEach(function (run, ri) {
+    var xf = xMapper(run);
+    keys.forEach(function (k, ki) {
+      var tr = run._s[k];
+      if (!tr) return;
+      var pts = [], lastX = -Infinity;
+      for (var i = 0; i < tr.t.length; i++) {
+        var x = xf(tr.t[i]);
+        if (x === null || !isFinite(x)) continue;
+        if (state.axis !== "time") {
+          if (x < lastX - 1e-9) continue;
+          lastX = x;
+        }
+        var raw = tr.v[i], y = null, lab = null;
+        if (STATE[k]) {
+          lab = label(raw);
+          y = unmapped(raw) ? null : (sc && lab in sc.map ? sc.map[lab] : null);
+        } else {
+          y = num(raw);
+          lab = y === null ? label(raw) : null;
+        }
+        pts.push({ x: x, t: tr.t[i], y: y, label: lab, unmapped: unmapped(raw) });
+      }
+      if (!pts.length) return;
+      out.push({
+        key: k, run: run, runOrder: ri, pts: pts,
+        state: STATE[k], step: STATE[k] || FLAG[k],
+        derived: isDerived(k), axisKey: axisKeyOf(k),
+        color: "var(--s" + slotOf(k, ki) + ")",
+        opacity: RUN_OPACITY[ri], width: RUN_WIDTH[ri]
+      });
+    });
+  });
+  return { series: out, scale: sc };
+}
+
+/* x -> t for a run, so the tooltip can say how far apart two runs are. */
+function xtOf(run) {
+  var xf = xMapper(run);
+  var sp = run._s.speed || run._s[KEYS[0]];
+  if (!sp) return null;
+  var xs = [], ts = [], lastX = -Infinity;
+  for (var i = 0; i < sp.t.length; i++) {
+    var x = xf(sp.t[i]);
+    if (x === null || !isFinite(x)) continue;
+    if (state.axis !== "time") { if (x < lastX - 1e-9) continue; lastX = x; }
+    xs.push(x); ts.push(sp.t[i]);
+  }
+  return xs.length ? { t: xs, v: ts } : null;   /* an interp()-shaped track */
+}
+
+/* ===========================================================================
+   10. Scales and ticks
+   =========================================================================== */
+
+function niceTicks(lo, hi, target) {
+  var span = hi - lo;
+  if (!(span > 0)) return [lo];
+  var step0 = span / target;
+  var mag = Math.pow(10, Math.floor(Math.log(step0) / Math.LN10));
+  var n = step0 / mag;
+  var step = mag * (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10);
+  var out = [];
+  for (var v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) {
+    out.push(Math.abs(v) < step * 1e-6 ? 0 : v);
+  }
+  return out;
+}
+
+function extentX(series) {
+  var lo = Infinity, hi = -Infinity;
+  series.forEach(function (s) {
+    s.pts.forEach(function (p) { if (p.x < lo) lo = p.x; if (p.x > hi) hi = p.x; });
+  });
+  if (!isFinite(lo)) return null;
+  /* The session carries about three seconds of pre-launch ring buffer. Opening
+     the chart there makes every run look like it starts with nothing happening. */
+  if (state.axis === "time") lo = Math.max(lo, -0.5);
+  if (hi <= lo) hi = lo + 1;
+  return [lo, hi];
+}
+
+/* ===========================================================================
+   11. Drawing
+   =========================================================================== */
+
+var svg = document.getElementById("chart");
+var wrap = document.getElementById("chartwrap");
+var tip = document.getElementById("tip");
+var elLegend = document.getElementById("legend");
+var elChartCard = document.getElementById("chartcard");
+var elChartTitle = document.getElementById("charttitle");
+var elChartCap = document.getElementById("chartcap");
+
+var NS = svg.namespaceURI;     /* the SVG namespace, without naming a URL */
+var layerStatic = document.createElementNS(NS, "g");
+var layerOver = document.createElementNS(NS, "g");
+svg.appendChild(layerStatic);
+svg.appendChild(layerOver);
+
+var cursorLine = document.createElementNS(NS, "line");
+cursorLine.setAttribute("stroke", "var(--ink-3)");
+cursorLine.setAttribute("stroke-width", "1");
+cursorLine.setAttribute("pointer-events", "none");
+cursorLine.setAttribute("visibility", "hidden");
+var cursorDots = document.createElementNS(NS, "g");
+var brushRect = document.createElementNS(NS, "rect");
+brushRect.setAttribute("fill", "var(--accent)");
+brushRect.setAttribute("fill-opacity", "0.13");
+brushRect.setAttribute("stroke", "var(--accent)");
+brushRect.setAttribute("stroke-width", "1");
+brushRect.setAttribute("visibility", "hidden");
+brushRect.setAttribute("pointer-events", "none");
+layerOver.appendChild(cursorLine);
+layerOver.appendChild(cursorDots);
+layerOver.appendChild(brushRect);
+
+var view = null;   /* everything the cursor needs, recomputed on every draw */
+
+function draw() {
+  var built = buildSeries();
+  var series = built.series;
+  elChartCard.hidden = false;
+
+  var W = Math.max(320, wrap.clientWidth || 800);
+  var H = W < 560 ? 340 : 430;
+  svg.setAttribute("width", String(W));
+  svg.setAttribute("height", String(H));
+
+  var axis = AXES.filter(function (a) { return a.id === state.axis; })[0];
+  var gw = gearWindow(refRun());
+
+  elChartTitle.textContent = (AVAIL_SETS.filter(function (s) { return s.id === state.set; })[0] || {}).label
+    + "  against  " + axis.label.toLowerCase();
+  var caps = [];
+  if (state.axis === "rpm") {
+    caps.push(gw
+      ? "Gear " + gw.label + " only — a multi-gear run folds back on itself at every upshift."
+      : "One gear at a time — a multi-gear run folds back on itself at every upshift.");
+  }
+  if (state.axis === "time") caps.push("From −0.5 s; the run carries a longer pre-launch buffer.");
+  if (state.axis === "dist" && !hasKey("distance")) caps.push("Distance integrated here from speed.");
+  caps.push("Drag to zoom, double-click to reset.");
+  elChartCap.textContent = caps.join("  ·  ");
+
+  if (!series.length) {
+    layerStatic.innerHTML = "";
+    cursorLine.setAttribute("visibility", "hidden");
+    cursorDots.innerHTML = "";
+    elLegend.innerHTML = '<p class="hint">' + (drawnKeys().length
+      ? "Nothing left once the X axis takes its own channel — pick another set, or another axis."
+      : "Nothing selected to draw.") + "</p>";
+    view = null;
+    return;
+  }
+
+  /* --- axes ---------------------------------------------------------- */
+  var groups = [];
+  series.forEach(function (s) {
+    var g = groups.filter(function (x) { return x.key === s.axisKey; })[0];
+    if (!g) { g = { key: s.axisKey, series: [], state: s.state, flag: !s.state && FLAG[s.key] }; groups.push(g); }
+    g.series.push(s);
+  });
+  var dropped = groups.slice(3);
+  groups = groups.slice(0, 3);
+  var kept = {};
+  groups.forEach(function (g) { kept[g.key] = true; });
+  series = series.filter(function (s) { return kept[s.axisKey]; });
+
+  var ext = extentX(series);
+  var x0 = state.zoom ? state.zoom[0] : ext[0];
+  var x1 = state.zoom ? state.zoom[1] : ext[1];
+
+  var mL = 54, mR = 14 + Math.max(0, groups.length - 1) * 52, mT = 16, mB = 34;
+  var pw = Math.max(40, W - mL - mR), ph = Math.max(60, H - mT - mB);
+  var sx = function (x) { return mL + (x - x0) / (x1 - x0) * pw; };
+
+  groups.forEach(function (g) {
+    if (g.state) {
+      var ts = built.scale ? built.scale.ticks : [];
+      var lo = ts.length ? ts[0].y : 0, hi = ts.length ? ts[ts.length - 1].y : 1;
+      g.lo = lo - 0.6; g.hi = hi + 0.6;
+      g.ticks = ts.map(function (t) { return { y: t.y, label: t.label }; });
+      g.unit = "";
+      g.title = "gear";
+    } else {
+      var lo2 = Infinity, hi2 = -Infinity;
+      g.series.forEach(function (s) {
+        s.pts.forEach(function (p) {
+          if (p.y === null || p.x < x0 || p.x > x1) return;
+          if (p.y < lo2) lo2 = p.y;
+          if (p.y > hi2) hi2 = p.y;
+        });
+      });
+      if (!isFinite(lo2)) { lo2 = 0; hi2 = 1; }
+      if (g.flag) { lo2 = 0; hi2 = 1; }
+      if (lo2 > 0 && lo2 < (hi2 - lo2) * 0.6) lo2 = 0;
+      if (hi2 <= lo2) hi2 = lo2 + 1;
+      var pad = (hi2 - lo2) * 0.08;
+      g.lo = lo2 - pad; g.hi = hi2 + pad;
+      g.unit = g.series[0] ? chUnit(g.series[0].key) : "";
+      g.ticks = g.flag
+        ? [{ y: 0, label: "off" }, { y: 1, label: "on" }]
+        : niceTicks(g.lo, g.hi, 5).map(function (v) { return { y: v, label: fmtTick(v) }; });
+      g.title = pretty(g.unit);
+    }
+    g.sy = (function (glo, ghi) {
+      return function (y) { return mT + ph - (y - glo) / (ghi - glo) * ph; };
+    })(g.lo, g.hi);
+    g.color = g.series.length === 1 ? g.series[0].color : "var(--ink-3)";
+  });
+  series.forEach(function (s) {
+    s.group = groups.filter(function (g) { return g.key === s.axisKey; })[0];
+  });
+
+  /* --- markup -------------------------------------------------------- */
+  var out = [];
+  var clipId = "plotclip";
+  out.push('<defs><clipPath id="' + clipId + '"><rect x="' + mL + '" y="' + mT +
+           '" width="' + pw + '" height="' + ph + '"/></clipPath></defs>');
+
+  /* background discriminator, on the reference run only */
+  out.push('<g clip-path="url(#' + clipId + ')">');
+  out.push(backgroundMarkup(refRun(), sx, mT, ph, x0, x1));
+  out.push("</g>");
+
+  /* grid off the first axis */
+  var g0 = groups[0];
+  g0.ticks.forEach(function (t) {
+    var y = g0.sy(t.y);
+    if (y < mT - 1 || y > mT + ph + 1) return;
+    out.push('<line x1="' + mL + '" y1="' + y.toFixed(1) + '" x2="' + (mL + pw) +
+             '" y2="' + y.toFixed(1) + '" stroke="var(--line-soft)" stroke-width="1"/>');
+  });
+
+  /* frame */
+  out.push('<line x1="' + mL + '" y1="' + (mT + ph) + '" x2="' + (mL + pw) + '" y2="' + (mT + ph) +
+           '" stroke="var(--line)" stroke-width="1"/>');
+
+  /* x ticks */
+  var xt = niceTicks(x0, x1, W < 560 ? 5 : 8);
+  xt.forEach(function (v) {
+    var X = sx(v);
+    if (X < mL - 1 || X > mL + pw + 1) return;
+    out.push('<line x1="' + X.toFixed(1) + '" y1="' + (mT + ph) + '" x2="' + X.toFixed(1) +
+             '" y2="' + (mT + ph + 4) + '" stroke="var(--line)" stroke-width="1"/>');
+    out.push('<text x="' + X.toFixed(1) + '" y="' + (mT + ph + 16) +
+             '" text-anchor="middle" font-size="10.5" fill="var(--ink-3)">' +
+             esc(fmtTick(v)) + '</text>');
+  });
+  out.push('<text x="' + (mL + pw) + '" y="' + (mT + ph + 30) +
+           '" text-anchor="end" font-size="10.5" fill="var(--ink-3)">' +
+           esc(axis.label + (axis.unit ? " (" + axis.unit + ")" : "")) + '</text>');
+
+  /* y axes: first on the left, the rest stacked to the right */
+  groups.forEach(function (g, gi) {
+    var xpos = gi === 0 ? mL - 8 : mL + pw + 8 + (gi - 1) * 52;
+    var anchor = gi === 0 ? "end" : "start";
+    g.ticks.forEach(function (t) {
+      var y = g.sy(t.y);
+      if (y < mT - 4 || y > mT + ph + 4) return;
+      out.push('<text x="' + xpos + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="' + anchor +
+               '" font-size="10.5" fill="var(--ink-3)">' + esc(t.label) + '</text>');
+    });
+    var lx = gi === 0 ? mL - 8 : mL + pw + 8 + (gi - 1) * 52;
+    out.push('<text x="' + lx + '" y="' + (mT - 4) + '" text-anchor="' + anchor +
+             '" font-size="10" font-weight="600" fill="' + g.color + '">' +
+             esc(g.title || "") + '</text>');
+  });
+
+  /* the lines */
+  out.push('<g clip-path="url(#' + clipId + ')" fill="none" stroke-linejoin="round" stroke-linecap="round">');
+  series.forEach(function (s) {
+    out.push('<path d="' + pathOf(s.pts, sx, s.group.sy, s.step) + '" stroke="' + s.color +
+             '" stroke-width="' + s.width + '" stroke-opacity="' + s.opacity + '"' +
+             (s.derived ? ' stroke-dasharray="6 4"' : "") + '/>');
+  });
+  out.push("</g>");
+
+  /* direct labels at the end of each line — the relief the palette needs, and
+     the thing that makes a four-line chart readable without hunting the key */
+  var labels = [];
+  series.forEach(function (s) {
+    var last = null;
+    for (var i = s.pts.length - 1; i >= 0; i--) {
+      var p = s.pts[i];
+      if (p.y === null || p.x < x0 || p.x > x1) continue;
+      last = p; break;
+    }
+    if (!last) return;
+    var X = Math.min(sx(last.x), mL + pw - 2), Y = s.group.sy(last.y);
+    if (Y < mT || Y > mT + ph) return;
+    labels.push({
+      x: X - 5, y: Y - 5, color: s.color, opacity: s.opacity,
+      text: chName(s.key) + (selectedRuns().length > 1 ? " · " + s.run.index : "")
+    });
+  });
+  labels.sort(function (a, b) { return a.y - b.y; });
+  for (var li = 1; li < labels.length; li++) {
+    if (labels[li].y - labels[li - 1].y < 12) labels[li].y = labels[li - 1].y + 12;
+  }
+  var over = labels.length ? labels[labels.length - 1].y - (mT + ph - 2) : 0;
+  if (over > 0) labels.forEach(function (l) { l.y -= over; });
+  out.push('<g>');
+  labels.forEach(function (l) {
+    out.push('<text x="' + l.x.toFixed(1) + '" y="' + l.y.toFixed(1) +
+             '" text-anchor="end" font-size="10.5" font-weight="600" fill="' + l.color +
+             '" opacity="' + l.opacity + '" paint-order="stroke" stroke="var(--panel)" ' +
+             'stroke-width="3" stroke-linejoin="round">' + esc(l.text) + '</text>');
+  });
+  out.push("</g>");
+
+  layerStatic.innerHTML = out.join("");
+  cursorLine.setAttribute("y1", String(mT));
+  cursorLine.setAttribute("y2", String(mT + ph));
+  brushRect.setAttribute("y", String(mT));
+  brushRect.setAttribute("height", String(ph));
+
+  view = {
+    series: series, groups: groups, sx: sx, x0: x0, x1: x1,
+    mL: mL, mT: mT, pw: pw, ph: ph, axis: axis,
+    xt: selectedRuns().map(function (r) { return { run: r, track: xtOf(r) }; }),
+    dropped: dropped
+  };
+
+  renderLegend(series, groups, dropped);
+}
+
+function pathOf(pts, sx, sy, step) {
+  var d = "", pen = false;
+  for (var i = 0; i < pts.length; i++) {
+    var p = pts[i];
+    if (p.y === null) { pen = false; continue; }
+    var X = sx(p.x), Y = sy(p.y);
+    if (!isFinite(X) || !isFinite(Y)) { pen = false; continue; }
+    if (!pen) { d += "M" + X.toFixed(1) + " " + Y.toFixed(1); pen = true; }
+    else if (step) { d += "H" + X.toFixed(1) + "V" + Y.toFixed(1); }
+    else { d += "L" + X.toFixed(1) + " " + Y.toFixed(1); }
+  }
+  return d;
+}
+
+/* --- background discriminators ---------------------------------------- */
+
+function backgroundMarkup(run, sx, mT, ph, x0, x1) {
+  if (state.bg === "none") return "";
+  var xf = xMapper(run), out = [];
+
+  function band(t0, t1, text, alt) {
+    var a = xf(t0), b = xf(t1);
+    if (a === null || b === null) return;
+    if (b < a) { var s = a; a = b; b = s; }
+    if (b < x0 || a > x1) return;
+    a = Math.max(a, x0); b = Math.min(b, x1);
+    var X = sx(a), Wd = sx(b) - sx(a);
+    if (Wd < 0.5) return;
+    out.push('<rect x="' + X.toFixed(1) + '" y="' + mT + '" width="' + Wd.toFixed(1) +
+             '" height="' + ph + '" fill="' + (alt ? "var(--band-alt)" : "var(--band)") + '"/>');
+    if (text && Wd > 16) {
+      out.push('<text x="' + (X + Wd / 2).toFixed(1) + '" y="' + (mT + 12) +
+               '" text-anchor="middle" font-size="10" font-weight="600" fill="var(--ink-3)">' +
+               esc(text) + '</text>');
+    }
+  }
+
+  if (state.bg === "gear") {
+    gearSpans(run).forEach(function (s, i) {
+      var t0 = state.axis === "time" ? s.t0 : Math.max(0, s.t0);
+      if (s.t1 <= t0) return;
+      band(t0, s.t1, s.label, i % 2 === 1);
+    });
+  } else if (state.bg === "kickdown") {
+    var tr = run._s.kickdown;
+    if (tr) {
+      var on = null;
+      for (var i = 0; i < tr.t.length; i++) {
+        var v = num(tr.v[i]);
+        if (v === 1 && on === null) on = tr.t[i];
+        if (v !== 1 && on !== null) { band(on, tr.t[i], "kickdown", false); on = null; }
+      }
+      if (on !== null) band(on, tr.t[tr.t.length - 1], "kickdown", false);
+    }
+  } else if (state.bg === "mark") {
+    (run.marks || []).forEach(function (m) {
+      var name = m.from + "–" + m.to;
+      if (m.from_t0) {
+        var X = xf(m.seconds);
+        if (X === null || X < x0 || X > x1) return;
+        var px = sx(X);
+        out.push('<line x1="' + px.toFixed(1) + '" y1="' + mT + '" x2="' + px.toFixed(1) +
+                 '" y2="' + (mT + ph) + '" stroke="var(--mark)" stroke-width="1" stroke-dasharray="2 3"/>');
+        out.push('<text x="' + (px - 3).toFixed(1) + '" y="' + (mT + 11) +
+                 '" text-anchor="end" font-size="10" fill="var(--ink-3)">' + esc(name) + '</text>');
+      } else {
+        var ta = crossingTime(run, m.from);
+        if (ta === null) return;
+        band(ta, ta + m.seconds, name, false);
+      }
+    });
+  }
+  return out.join("");
+}
+
+/* The first upward crossing of a speed, from the run's own samples. */
+function crossingTime(run, kmh) {
+  var sp = run._s.speed;
+  if (!sp) return null;
+  for (var i = 1; i < sp.t.length; i++) {
+    var a = num(sp.v[i - 1]), b = num(sp.v[i]);
+    if (a === null || b === null) continue;
+    if (a < kmh && b >= kmh) {
+      var f = (kmh - a) / (b - a);
+      return sp.t[i - 1] + f * (sp.t[i] - sp.t[i - 1]);
+    }
+  }
+  return null;
+}
+
+/* --- legend ------------------------------------------------------------ */
+
+function renderLegend(series, groups, dropped) {
+  var seen = {}, read = [], derived = [];
+  series.forEach(function (s) {
+    if (seen[s.key]) return;
+    seen[s.key] = true;
+    (s.derived ? derived : read).push(s);
+  });
+  function item(s) {
+    var meta = [];
+    var c = CH[s.key] || {};
+    if (s.derived) {
+      if (c.from) meta.push("from " + [].concat(c.from).join(" + "));
+      if (c.method) meta.push(c.method);
+      if (c.window_s) meta.push("window " + c.window_s + " s");
+      if (c.estimate) meta.push("estimate");
+      if (c.suppressed_when) meta.push("suppressed when " + c.suppressed_when);
+    } else {
+      if (c.request && c.did) meta.push(c.request + ":" + c.did);
+      else if (c.request) meta.push(String(c.request));
+    }
+    return '<div class="it"><span class="sw' + (s.derived ? " d" : "") +
+      '" style="border-top-color:' + s.color + '"></span><span><span class="nm">' +
+      esc(chName(s.key)) + (chUnit(s.key) ? ' <span class="mt">' + esc(pretty(chUnit(s.key))) + "</span>" : "") +
+      '</span>' + (meta.length ? '<div class="mt">' + esc(meta.join(" · ")) + "</div>" : "") +
+      "</span></div>";
+  }
+  var html = "";
+  html += '<div><div class="ttl">Read — it was on the bus (solid)</div>' +
+          (read.length ? read.map(item).join("") : '<p class="mt">none in this set</p>') + "</div>";
+  html += '<div><div class="ttl">Derived — computed here (dashed)</div>' +
+          (derived.length ? derived.map(item).join("") : '<p class="mt">none in this set</p>') + "</div>";
+  if (dropped && dropped.length) {
+    html += '<div><div class="ttl">Not drawn</div><p class="mt">' +
+      esc(dropped.map(function (g) {
+        return g.series.map(function (s) { return chName(s.key); }).join(", ");
+      }).join("; ")) + " — three Y axes is what the plot can carry.</p></div>";
+  }
+  if (selectedRuns().length > 1) {
+    html += '<div><div class="ttl">Runs</div>' + selectedRuns().map(function (r, i) {
+      return '<div class="it"><span class="sw" style="border-top-color:var(--s1);opacity:' +
+        RUN_OPACITY[i] + '"></span><span class="nm">run ' + esc(r.index) +
+        (r.aborted ? " (aborted)" : "") + "</span></div>";
+    }).join("") + '<p class="mt">The first run draws full; the rest are muted variants of the ' +
+      'same hues, so solid-versus-dashed still reads.</p></div>';
+  }
+  elLegend.innerHTML = html;
+}
+
+/* ===========================================================================
+   12. Cursor, tooltip, zoom
+   =========================================================================== */
+
+function valueAt(s, x) {
+  var pts = s.pts;
+  if (!pts.length || x < pts[0].x || x > pts[pts.length - 1].x) return null;
+  var lo = 0, hi = pts.length - 1, at = -1;
+  while (lo <= hi) { var m = (lo + hi) >> 1; if (pts[m].x <= x) { at = m; lo = m + 1; } else { hi = m - 1; } }
+  if (at < 0) return null;
+  var p = pts[at];
+  if (s.step || s.state) return { y: p.y, label: p.label, t: p.t, unmapped: p.unmapped };
+  var q = pts[at + 1];
+  if (!q || p.y === null || q.y === null) return { y: p.y, label: p.label, t: p.t };
+  var dx = q.x - p.x;
+  var f = dx > 0 ? (x - p.x) / dx : 0;
+  return { y: p.y + (q.y - p.y) * f, label: null, t: p.t + (q.t - p.t) * f };
+}
+
+function showCursor(px) {
+  if (!view) return;
+  var x = view.x0 + (px - view.mL) / view.pw * (view.x1 - view.x0);
+  cursorLine.setAttribute("x1", px.toFixed(1));
+  cursorLine.setAttribute("x2", px.toFixed(1));
+  cursorLine.setAttribute("visibility", "visible");
+
+  var dots = [], byRun = [];
+  view.series.forEach(function (s) {
+    var v = valueAt(s, x);
+    if (!v || v.y === null) {
+      if (v && v.label) pushRow(byRun, s, "<i>" + esc(v.label) + "</i>");
+      return;
+    }
+    var Y = s.group.sy(v.y);
+    if (Y >= view.mT - 2 && Y <= view.mT + view.ph + 2) {
+      dots.push('<circle cx="' + view.sx(Math.max(view.x0, Math.min(view.x1, x))).toFixed(1) +
+        '" cy="' + Y.toFixed(1) + '" r="3.4" fill="var(--panel)" stroke="' + s.color +
+        '" stroke-width="2" opacity="' + s.opacity + '"/>');
+    }
+    var text = s.state ? esc(v.label || fmtTick(v.y))
+      : s.step ? (v.y ? "on" : "off")
+      : esc(fmt(v.y, chUnit(s.key)) + unitSuffix(chUnit(s.key)));
+    pushRow(byRun, s, text);
+  });
+  cursorDots.innerHTML = dots.join("");
+
+  var head = fmt(x, view.axis.unit) + unitSuffix(view.axis.unit);
+  var html = '<div class="tx num">' + esc(view.axis.label + "  " + head) + "</div>";
+  var multi = byRun.length > 1;
+  byRun.forEach(function (grp) {
+    if (multi) html += '<div class="rn">run ' + esc(grp.run.index) + "</div>";
+    html += grp.rows.join("");
+    if (grp.cond) html += '<p class="cond">' + esc(grp.cond) + "</p>";
+  });
+  var d = differenceRow(x);
+  if (d) html += '<div class="diff">' + esc(d) + "</div>";
+  tip.innerHTML = html;
+  tip.hidden = false;
+
+  var box = wrap.getBoundingClientRect();
+  var tw = tip.offsetWidth;
+  var left = px + 14;
+  if (left + tw > box.width - 4) left = px - tw - 14;
+  tip.style.left = Math.max(2, left) + "px";
+  tip.style.top = (view.mT + 6) + "px";
+}
+
+function pushRow(byRun, s, valueHtml) {
+  var grp = byRun.filter(function (g) { return g.run === s.run; })[0];
+  if (!grp) {
+    grp = { run: s.run, rows: [], cond: null };
+    byRun.push(grp);
+  }
+  /* A power figure without the conditions it was computed under is not a
+     figure, so it carries them here. */
+  if (/^power/.test(s.key) && !grp.cond) grp.cond = conditions();
+  grp.rows.push('<div class="r"><span class="sw' + (s.derived ? " d" : "") +
+    '" style="border-top-color:' + s.color + ';opacity:' + s.opacity +
+    '"></span><span class="nm">' + esc(chName(s.key)) + '</span><span class="vl num">' +
+    valueHtml + "</span></div>");
+}
+
+function conditions() {
+  var p = [];
+  if (CFG.mass_kg) p.push("mass " + CFG.mass_kg + " kg");
+  if (CFG.cda) p.push("CdA " + CFG.cda + " m²");
+  if (CFG.crr) p.push("Crr " + CFG.crr);
+  if (CFG.air_density_kg_m3) p.push("ρ " + CFG.air_density_kg_m3 + " kg/m³" +
+    (CFG.air_density_source ? " " + CFG.air_density_source : ""));
+  return p.length ? "estimate — " + p.join(" · ") : null;
+}
+
+/* `run 3 is 0.14 s ahead of run 1 at 80 km/h` — on the time axis the useful
+   difference is a speed, everywhere else it is a time. */
+function differenceRow(x) {
+  var sel = view.xt;
+  if (sel.length < 2) return null;
+  var unitTxt = view.axis.unit ? " " + view.axis.unit : "";
+  var at = fmt(x, view.axis.unit) + unitTxt;
+
+  if (state.axis === "time") {
+    var base = sel[0].run._s.speed ? interp(sel[0].run._s.speed, x) : null;
+    if (base === null) return null;
+    var parts = [];
+    for (var i = 1; i < sel.length; i++) {
+      var v = sel[i].run._s.speed ? interp(sel[i].run._s.speed, x) : null;
+      if (v === null) continue;
+      var d = v - base;
+      parts.push("run " + sel[i].run.index + " is " + Math.abs(d).toFixed(1) + " km/h " +
+        (d >= 0 ? "ahead of" : "behind") + " run " + sel[0].run.index);
+    }
+    return parts.length ? parts.join("; ") + " at " + at : null;
+  }
+  var t0 = sel[0].track ? interp(sel[0].track, x) : null;
+  if (t0 === null) return null;
+  var out = [];
+  for (var j = 1; j < sel.length; j++) {
+    var tj = sel[j].track ? interp(sel[j].track, x) : null;
+    if (tj === null) continue;
+    var dt = tj - t0;
+    out.push("run " + sel[j].run.index + " is " + Math.abs(dt).toFixed(2) + " s " +
+      (dt <= 0 ? "ahead of" : "behind") + " run " + sel[0].run.index);
+  }
+  return out.length ? out.join("; ") + " at " + at : null;
+}
+
+function hideCursor() {
+  cursorLine.setAttribute("visibility", "hidden");
+  cursorDots.innerHTML = "";
+  tip.hidden = true;
+}
+
+var dragFrom = null;
+
+function localX(ev) {
+  var box = svg.getBoundingClientRect();
+  return ev.clientX - box.left;
+}
+function inPlot(px) { return view && px >= view.mL && px <= view.mL + view.pw; }
+
+svg.addEventListener("pointermove", function (ev) {
+  var px = localX(ev);
+  if (!inPlot(px)) { if (!dragFrom) hideCursor(); return; }
+  if (dragFrom !== null) {
+    var a = Math.min(dragFrom, px), b = Math.max(dragFrom, px);
+    brushRect.setAttribute("x", a.toFixed(1));
+    brushRect.setAttribute("width", Math.max(0, b - a).toFixed(1));
+    brushRect.setAttribute("visibility", "visible");
+    return;
+  }
+  showCursor(px);
+});
+svg.addEventListener("pointerleave", function () { if (dragFrom === null) hideCursor(); });
+svg.addEventListener("pointerdown", function (ev) {
+  var px = localX(ev);
+  if (!inPlot(px)) return;
+  dragFrom = px;
+  hideCursor();
+  if (svg.setPointerCapture) { try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* no capture */ } }
+});
+svg.addEventListener("pointerup", function (ev) {
+  if (dragFrom === null || !view) return;
+  var px = localX(ev);
+  var a = Math.min(dragFrom, px), b = Math.max(dragFrom, px);
+  dragFrom = null;
+  brushRect.setAttribute("visibility", "hidden");
+  if (b - a < 8) return;                      /* a click, not a drag */
+  var toX = function (p) {
+    return view.x0 + (p - view.mL) / view.pw * (view.x1 - view.x0);
+  };
+  state.zoom = [toX(a), toX(b)];
+  draw();
+});
+svg.addEventListener("dblclick", function () { state.zoom = null; draw(); });
+
+/* ===========================================================================
+   13. The results table — spec §4's two blocks, so nobody has to hunt with a
+       cursor for the number they opened the page to show someone.
+   =========================================================================== */
+
+var elResults = document.getElementById("results");
+
+function markName(m) { return m.from + "–" + m.to; }
+
+/* A 0-based mark prints as a one-signed range: the car is already rolling
+   before its own speed signal wakes up, so the true time is at the top of the
+   range and never below it. A rolling mark's error cancels, so it prints one
+   number with a real ±. */
+function markTime(m) {
+  if (m.from_t0 && m.bias_s) {
+    var lo = m.seconds + (m.bias_s.low || 0);
+    var hi = m.seconds + (m.bias_s.high || 0);
+    return lo.toFixed(2) + " … " + hi.toFixed(2) + " s";
+  }
+  if (!m.from_t0 && typeof m.sigma_s === "number") {
+    return m.seconds.toFixed(2) + " s ± " + m.sigma_s.toFixed(2);
+  }
+  return m.seconds.toFixed(2) + " s";
+}
+
+function renderResults() {
+  var html = "";
+  selectedRuns().forEach(function (run) {
+    var d = run.derived || {};
+    var rows = (run.marks || []).map(function (m) {
+      return '<tr><td class="k mono">' + esc(markName(m)) + '</td><td class="v num">' +
+        esc(markTime(m)) + '</td><td class="v2 num">' +
+        (typeof m.avg_accel_ms2 === "number" ? esc(m.avg_accel_ms2.toFixed(2)) + " m/s²" : "—") +
+        "</td></tr>";
+    }).join("");
+
+    var anyZero = (run.marks || []).some(function (m) { return m.from_t0; });
+
+    var comp = [];
+    if (typeof d.distance_m === "number")
+      comp.push(row("distance", d.distance_m.toFixed(1) + " m",
+        "±3 % — the car's own speed signal, not the maths"));
+    if (typeof d.peak_accel_ms2 === "number")
+      comp.push(row("peak acceleration",
+        d.peak_accel_ms2.toFixed(2) + " m/s² (" + (d.peak_accel_ms2 / 9.80665).toFixed(2) + " g)",
+        [typeof d.peak_accel_t === "number" ? "at " + d.peak_accel_t.toFixed(2) + " s" : null,
+         d.peak_accel_gear ? "in gear " + d.peak_accel_gear : null,
+         CFG.peak_statistic ? CFG.peak_statistic : null].filter(Boolean).join(", ")));
+    if (typeof d.peak_power_wheel_kw === "number")
+      comp.push(row("peak power, wheel", d.peak_power_wheel_kw.toFixed(1) + " kW",
+        "(" + (d.peak_power_wheel_kw * 1000 / 735.49875).toFixed(0) + " PS) estimate"));
+    if (typeof d.peak_power_shaft_kw === "number")
+      comp.push(row("peak power, shaft", d.peak_power_shaft_kw.toFixed(1) + " kW",
+        "(" + (d.peak_power_shaft_kw * 1000 / 735.49875).toFixed(0) +
+        " PS) estimate, engine-side inertia included"));
+    (d.shifts || []).forEach(function (s) {
+      comp.push(row("shift " + s.from + "→" + s.to,
+        (typeof s.speed_deficit_ms === "number" ? (s.speed_deficit_ms * 3.6).toFixed(1) + " km/h" : "—"),
+        (typeof s.cost_on_mark_s === "number" ? s.cost_on_mark_s.toFixed(2) + " s on the mark" : "") +
+        (typeof s.t === "number" ? "  at " + s.t.toFixed(2) + " s" : "")));
+    });
+
+    var peaks = [];
+    if (typeof d.peak_rpm === "number")
+      peaks.push(row("peak engine speed", Math.round(d.peak_rpm) + " /min", ""));
+
+    html += '<div class="card res"><div class="head"><span class="rn">Run ' + esc(run.index) +
+      "</span>" + (run.aborted ? '<span class="badge ab">aborted</span>' : "") +
+      (run.t0_wall ? '<span class="badge">' + esc(String(run.t0_wall).replace("T", " ").slice(0, 19)) +
+        "</span>" : "") + "</div>";
+
+    html += '<div class="blk"><h3>Measured</h3>';
+    html += rows
+      ? '<table class="t"><tr><th>mark (km/h)</th><th style="text-align:right">time</th>' +
+        '<th style="text-align:right">average acceleration</th></tr>' + rows + "</table>"
+      : '<p class="hint">No mark closed in this run.</p>';
+    if (peaks.length) html += '<table class="t" style="margin-top:6px">' + peaks.join("") + "</table>";
+    if (anyZero) {
+      html += '<p class="note">Marks from a standstill read short: the car is already rolling ' +
+        "before its own speed signal wakes up, and no arithmetic recovers that. The true time is " +
+        "at the top of each range, never below it. A rolling mark starts from a real crossing and " +
+        "has no such bias.</p>";
+    }
+    html += "</div>";
+
+    if (comp.length) {
+      html += '<div class="blk"><h3>Computed</h3><p class="cond">' + esc(conditionLine()) + "</p>" +
+        '<table class="t">' + comp.join("") + "</table></div>";
+    }
+    html += "</div>";
+  });
+  elResults.innerHTML = html;
+}
+
+function row(k, v, v2) {
+  return '<tr><td class="k">' + esc(k) + '</td><td class="v num">' + esc(v) +
+    '</td><td class="v2">' + esc(v2 || "") + "</td></tr>";
+}
+
+function conditionLine() {
+  var p = [];
+  if (CFG.mass_kg) p.push("mass " + CFG.mass_kg + " kg");
+  if (CFG.tyre) p.push("tyre " + CFG.tyre);
+  if (CFG.cda) p.push("CdA " + CFG.cda + " m²" + (CFG.cda_source ? " " + CFG.cda_source : ""));
+  if (CFG.crr) p.push("Crr " + CFG.crr + (CFG.crr_source ? " " + CFG.crr_source : ""));
+  if (CFG.air_density_kg_m3) p.push("ρ " + CFG.air_density_kg_m3 + " kg/m³" +
+    (CFG.air_density_source ? " " + CFG.air_density_source : ""));
+  if (typeof CFG.grade_percent === "number") p.push("grade " + CFG.grade_percent + " %");
+  if (CFG.accel_window_s) p.push("window " + CFG.accel_window_s.toFixed(2) + " s");
+  if (CFG.accel_method) p.push(CFG.accel_method);
+  return p.join(", ");
+}
+
+/* ===========================================================================
+   14. Header, footer, theme
+   =========================================================================== */
+
+(function header() {
+  var car = SESSION.car || {};
+  var bits = [];
+  if (car.vin) bits.push("VIN " + car.vin);
+  if (SESSION.recorded_at) bits.push(String(SESSION.recorded_at).replace("T", " "));
+  bits.push(RUNS.length + (RUNS.length === 1 ? " run" : " runs"));
+  if (CFG.hz) bits.push(CFG.hz.toFixed(1) + " Hz");
+  if (CFG.speed_source) bits.push("speed " + CFG.speed_source);
+  document.getElementById("hdr-sub").innerHTML =
+    bits.map(esc).join('<span class="dot">·</span>');
+})();
+
+(function footer() {
+  var f = document.getElementById("foot");
+  var p = [];
+  p.push("<b>Read solid, derived dashed.</b> A read value was on the bus and its meaning is " +
+    "proven; a derived one was computed here from read values. A number that was never on the " +
+    "bus must not look like one that was.");
+  p.push("<b>The errors here are one-signed.</b> Driven-wheel slip, the speedometer's own " +
+    "reading and a launch that starts before the speed signal wakes up all push in the same " +
+    "direction, and it is the flattering one. Expect a systematic gap against a magazine figure.");
+  if (CFG.refresh_estimate_s) {
+    p.push("<b>Each reading is stale by an unknown amount</b>, bounded by roughly " +
+      CFG.refresh_estimate_s + " s of refresh period. On a rolling mark that bias cancels in the " +
+      "difference; on a 0-based one it does not.");
+  }
+  p.push("<b>One session per page.</b> Comparing runs across two session files is out of scope — " +
+    "everything here comes from the file this page was generated from.");
+  f.innerHTML = p.map(function (t) { return "<p>" + t + "</p>"; }).join("");
+})();
+
+document.getElementById("theme").addEventListener("click", function () {
+  var cur = document.documentElement.getAttribute("data-theme");
+  var dark = cur ? cur === "dark"
+    : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+});
+
+/* ===========================================================================
+   15. Go
+   =========================================================================== */
+
+buildControls();
+sync();
+
+var redrawTimer = null;
+window.addEventListener("resize", function () {
+  if (redrawTimer) clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(function () { draw(); }, 80);
+});
+
+})();
+</script>
+</body>
+</html>
