@@ -29,6 +29,7 @@ it can put the gear, the pedal and the boost on the same time axis as the stopwa
 | a session of several runs, saved as one raw JSON | writing anything to a control unit |
 | `--view FILE.json` — a self-contained HTML chart page | a server, a bundler, or any external asset |
 | proven channels only | discovering measurements — that is what `survey` and `watch --survey` are for |
+| `--setup` and `--coastdown`: the car described once, and its road load measured | asking for a number before every run that nobody knows off the top of their head |
 
 `race` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
 a fixed handful of known identifiers. `SAFETY.md`'s sweep gate does not apply: this is
@@ -71,17 +72,34 @@ unproven channel: if the selector answers a code outside the P/R/N/D table, it s
 `unknown code 07`, is excluded from every derived figure, and is stored as the byte with a
 flag. That is an admission, not a claim.
 
+Read and derived classify **channels** — series that vary through a run. The car's mass, its
+`CdA`, its tyre size are **parameters**: constants a derived channel is computed with. They
+are not series and they are not on the bus, so they live in the profile and in `config`, each
+with its own provenance — `stated`, `coastdown`, `derived-from-tyre`, `default` (§0). The two
+questions stay separate: *was this number on the bus* is about channels, *where did this
+constant come from* is about parameters.
+
 ## CLI
 
 ```
-vagcan race [--device PATH]
+vagcan race [--device PATH] [--profile FILE] [--minimal]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
+            [--accel-window SECONDS] [--hz N] [--out FILE] [--catalogs DIR]
+
+vagcan race --setup [--device PATH]        interview this car once, write its profile
+vagcan race --coastdown [--device PATH]    measure CdA and Crr on the road
+vagcan race --view FILE.json               open a saved session as a chart page
+
+overrides, all of which normally live in the profile:
             [--mass KG] [--tyre 205/55R16] [--cda M2] [--crr N] [--inertia N]
             [--grade PERCENT] [--headwind M_S] [--air-density KG_M3]
-            [--accel-window SECONDS] [--speed-scale N]
-            [--hz N] [--out FILE] [--catalogs DIR]
-            [--view FILE.json]
+            [--speed-scale N]
 ```
+
+**The ordinary invocation is `vagcan race` with no flags at all.** Everything the model needs
+either comes from the car, or was answered once by `--setup` and lives in the car's profile
+(§0). The override flags exist for a one-off — a loaded boot, a different set of wheels — and
+what was used is recorded in every file.
 
 `--marks` takes `A-B` pairs in km/h, comma-separated, `A < B`. The default is
 `0-10,0-25,0-50,0-60,0-80,0-100`.
@@ -97,6 +115,92 @@ figure understates low gears by up to a third.
 `--view` reads a saved session and opens a chart page; it touches no adapter. The precedent
 is `survey --diff`, which is likewise an offline mode of a command that otherwise needs the
 car — the command stays where the user looks for it.
+
+## 0. Knowing the car — `race --setup` and the profile
+
+A first draft of this design asked the driver for seven numbers. That is a design failure
+dressed as configurability: nobody knows their car's `CdA`, and asking for air density is
+absurd when the car carries a barometer. Sorted by where each figure actually comes from:
+
+| figure | where it really comes from |
+|---|---|
+| air density | **the car already knows** — PID 0x33 and PID 0x46, read every run. `--air-density` is a fallback for a unit that lacks them, not an input |
+| road speed, engine speed, gear, pedal, boost | the car, every run |
+| mass | the car does not know it. The registration document does — asked **once** |
+| tyre size | the sidewall — asked **once** |
+| `CdA`, `Crr` | nobody knows theirs. **Measured on the car** by a coastdown, once |
+| speed correction | GPS, or possibly the odometer (below). Optional, once |
+
+So the car needs a profile, and the profile needs to be written once.
+
+**`vagcan race --setup`** does it, standing still:
+
+1. Identifies the car — VIN from the engine, part numbers and component strings from every
+   unit the gateway lists. The VIN is the profile's key, exactly as a part number is a
+   measurement catalog's key: the car names itself and the file is found by that name.
+2. Runs the pre-flight channel check and prints what it found and what it did not, so a
+   missing channel is discovered at a standstill rather than at a green light.
+3. Asks for what only a person can supply, with the source named rather than the units:
+   *kerb mass from the registration document, plus the people and fuel that will be in the
+   car* — and the tyre size as written on the sidewall.
+4. Offers the coastdown, which needs a road; it can be run then or later.
+5. Writes `catalogs/cars/<VIN>.json`.
+
+```json
+{ "vin": "XW8AD4NE9JH008917",
+  "units": [ { "request": "7E0", "part_number": "8V0906264H" } ],
+  "mass_kg":       { "value": 1400,  "source": "stated",   "at": "2026-08-03" },
+  "tyre":          { "value": "205/55R16", "source": "stated" },
+  "rolling_radius_m": { "value": 0.313, "source": "derived-from-tyre" },
+  "cda":           { "value": 0.63,  "source": "coastdown", "r2": 0.998, "runs": 2 },
+  "crr":           { "value": 0.0114,"source": "coastdown", "r2": 0.998, "runs": 2 },
+  "speed_scale":   { "value": 1.0,   "source": "default" },
+  "refresh_estimate_s": { "value": 0.048, "source": "measured" } }
+```
+
+**Every field carries its provenance**, and the four values are not the same kind of thing:
+`stated` came from a person, `coastdown` was measured on this car, `derived-from-tyre` is
+arithmetic on a stated value, `default` is a generic number nobody has checked. The results
+table and the chart page say which — a run whose `CdA` is a default is not comparable with one
+whose `CdA` was measured, and hiding that would produce exactly the false comparison this
+whole document is trying to avoid.
+
+Precedence is flag → profile → default, and the file records the value *and* where it came
+from. A car with no profile still runs: marks and times need nothing but speed. It is the
+power column that degrades, and it says so instead of quietly using generic numbers.
+
+### The coastdown — `race --coastdown`
+
+Road load can be measured instead of guessed. Coasting in neutral, the only forces left are
+drag and rolling resistance, so the deceleration decomposes:
+
+```
+−m·k·a(v)  =  ½·ρ·CdA·v²  +  m·g·Crr
+```
+
+Everything on the left is known — speed from the bus, mass from the profile, `k ≈ 1.03` since
+only the wheels still turn — and a least-squares fit against `v²` returns **both** unknowns,
+for this car, with its wheels and its tyre pressures. This is the standard method (SAE J1263 /
+J2263) reduced to what a bus and a laptop can do.
+
+- The run is **two-way**: down the stretch and back, averaged. Grade and steady wind reverse
+  sign between the two passes and cancel to first order, and a coastdown is *more* sensitive
+  to grade than an acceleration run is, because the force it measures is ten times smaller.
+  A one-way coastdown is not accepted; the tool asks for the return pass.
+- A useful range is roughly 120 down to 40 km/h, which takes a quiet, flat, dry road with no
+  traffic. The tool records; when and whether to select neutral is the driver's decision and
+  the tool does not prompt for it while the car is moving.
+- The fit is rejected below an R² threshold, and rejected outright if the two passes disagree
+  by more than a stated margin — which is what a slope or a gusty day looks like in the data.
+- Nothing here is a write. The car is coasting; the tool is reading speed.
+
+### The odometer cross-check — a hypothesis, not a method
+
+The cluster reports the odometer (`0x2203`, proven by an exact hit at 212 760 km). Integrating
+bus speed over a long drive and comparing against the odometer's increment would yield a scale
+factor — **if** the odometer and the speed signal are derived differently. They may share a
+source, in which case the check is an identity and measures nothing. It is written down here
+as a hypothesis one drive settles, not as a calibration this design relies on.
 
 ## 1. The run state machine — `race/session.rs`
 
@@ -177,7 +281,27 @@ Every value carries its own timestamp, as in `watch --out`. Batches are separate
 and one shared timestamp has already corrupted evidence on this project once (the gear
 proof moved from η² 0.872 to 0.972 when the columns got their own clocks).
 
-The achieved rate is measured and written into the file. It is never asserted in advance.
+**The rate is a measurement, not a setting, and it propagates into the answers.** Three
+consequences, none of which the first draft handled:
+
+- **One time base.** Channels are sampled at different rates and at different instants, so a
+  derived value at time `t` — power needs `v(t)`, `a(t)` and engine speed for `k` — is
+  computed on the **leading channel's grid**, with every other input linearly interpolated
+  onto it. Each derived sample carries the largest staleness among its inputs, and an input
+  older than a stated bound suppresses the value rather than approximating it.
+- **Uncertainty is computed, not tabulated.** The `±0.1` and `±0.02` printed with the marks
+  are worked out from *this run's* measured sample interval and `T_refresh`, not from
+  constants in the source. Select more channels and the cycle lengthens and the bound grows;
+  the numbers must say so.
+- **Degradation is visible.** A unit that starts timing out halves the cycle while the
+  figures keep printing at the same apparent confidence. Below a floor the run is flagged
+  `degraded`, on screen and in the file.
+
+`--minimal` polls only what the stopwatch needs — speed and gear — for the highest achievable
+rate, at the cost of the telemetry. It is a deliberate trade and therefore a flag rather than
+a hidden heuristic.
+
+The achieved rate is written into the file. It is never asserted in advance.
 
 ## 3. What is computed — `race/session.rs`, `race/power.rs`
 
@@ -341,11 +465,15 @@ humidity parameter to do better with. If either PID is absent, **power is not co
 `--air-density` may be given explicitly, and the file records whether ρ was measured or
 stated.
 
-`--mass` has **no default**: a mass belongs to one specific car, and this project does not
-put those in code. Without it there is no power column. `--cda` (default **0.65 m²** — a
-generic C-segment hatchback, `Cd ≈ 0.30` over `A ≈ 2.2 m²`) and `--crr` (default **0.012**,
-Gillespie, *Fundamentals of Vehicle Dynamics*: 0.010–0.015 for passenger radials on asphalt)
-are documented generic values, not this car's.
+Mass, `CdA` and `Crr` come from the car's profile (§0), not from flags typed before every
+run. Mass has **no default** — it belongs to one specific car, and this project does not put
+those in code — so without it there is no power column. `CdA` and `Crr` are **measured by the
+coastdown**; until that has been run they fall back to documented generic values — `CdA`
+0.65 m² for a C-segment hatchback (`Cd ≈ 0.30` over `A ≈ 2.2 m²`) and `Crr` 0.012 (Gillespie,
+*Fundamentals of Vehicle Dynamics*: 0.010–0.015 for passenger radials on asphalt) — and every
+figure computed from them is labelled as resting on a default rather than on a measurement.
+The distinction is the same one this document draws everywhere else: a number somebody
+measured on this car is not the same kind of thing as a number that fits cars in general.
 
 Every power figure is labelled an estimate at the contact patch. It is **not** a chassis-dyno
 "wheel horsepower": because `k` folds in the power spent accelerating the drivetrain's
@@ -440,6 +568,12 @@ crate.
     0s        2s        4s        6s
 ```
 
+**A run needs no keystroke.** Arming, starting, finishing and saving all happen by
+themselves; the output file names itself from the time and the VIN. The keys are for
+exceptions only — cancelling, pausing the trigger, changing the series — and none of them has
+to be pressed for the tool to do its job. Nothing prompts the driver while the car is moving,
+and the results table appears when the car is stopped, not at the finish of the mark.
+
 **The table carries every value; the chart carries one.** A table of ten rows is readable
 and a chart of ten series is not, so the chart shows a single series at a time, switched
 with the arrow keys and named in its own border. Speed opens; acceleration is next along.
@@ -490,8 +624,12 @@ and a table that hides that invites the comparison it cannot support.
   "config":   { "marks": [[0,100]],
                 "mass_kg": 1400, "tyre": "205/55R16", "rolling_radius_m": 0.313,
                 "inertia_model": "wong-1+d1+d2*ratio^2", "d1": 0.04, "d2": 0.0025,
-                "cda": 0.65, "crr": 0.012, "grade_percent": 0.0, "headwind_ms": 0.0,
+                "cda": 0.63, "cda_source": "coastdown",
+                "crr": 0.0114, "crr_source": "coastdown",
+                "profile": "catalogs/cars/XW8AD4NE9JH008917.json",
+                "grade_percent": 0.0, "headwind_ms": 0.0,
                 "air_density_kg_m3": 1.19, "air_density_source": "measured",
+                "degraded": false, "cycle_median_s": 0.047,
                 "speed_source": "7E1:F40D", "speed_scale": 1.0, "speed_scale_applied": "before-marks",
                 "t0_method": "quadratic-fit", "t0_clamp_s": 0.048,
                 "accel_window_s": 0.3, "accel_method": "central-least-squares",
@@ -592,11 +730,13 @@ table cannot disagree.
 ## 7. Files
 
 ```
-crates/vagcan/src/race/mod.rs      the command, the poll loop, the TUI
-crates/vagcan/src/race/session.rs  state machine, marks, derived metrics — no I/O
-crates/vagcan/src/race/power.rs    the dynamics model and air density
-crates/vagcan/src/race/report.rs   the results table
-crates/vagcan/src/race/view.rs     HTML generation
+crates/vagcan/src/race/mod.rs       the command, the poll loop, the TUI
+crates/vagcan/src/race/session.rs   state machine, marks, derived metrics — no I/O
+crates/vagcan/src/race/power.rs     the dynamics model and air density
+crates/vagcan/src/race/profile.rs   the per-VIN car profile: read, write, precedence
+crates/vagcan/src/race/coastdown.rs the road-load fit
+crates/vagcan/src/race/report.rs    the results table
+crates/vagcan/src/race/view.rs      HTML generation
 ```
 
 `session.rs` holds everything worth testing and knows nothing about adapters or terminals,
@@ -623,8 +763,15 @@ which is what makes the tests possible without a car.
 | shifts | a shift is located from the gear channel, and its cost is the integrated deficit, positive on a profile where speed never falls |
 | peak statistic | on a series with injected noise the reported peak is not the maximum, and its upward bias is bounded |
 | air density | ρ = **1.225 kg/m³** at 101.325 kPa and 288.15 K — the ISO 2533 sea-level value, four significant figures. Not a comparison against the same formula: this anchor catches a wrong R, a K/°C slip and a kPa/Pa slip in one assertion |
-| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top; without `--tyre` it is the flat fallback and the run is flagged |
+| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top; without a tyre size it is the flat fallback and the run is flagged |
 | no mass | the power column is empty rather than defaulted |
+| profile round trip | `--setup` writes a profile the next run reads, and the run then needs no flags |
+| provenance | a coastdown `CdA` and a default `CdA` are distinguishable in the file and on the page |
+| precedence | a flag beats the profile, the profile beats the default, and the file names the winner |
+| coastdown fit | synthetic coastdown data with known `CdA`/`Crr` recovers both; a one-way pass is refused; two passes that disagree are rejected |
+| uncertainty from data | doubling the simulated cycle time doubles the printed bound — it is computed, not tabulated |
+| one time base | a derived value whose engine-speed input is a cycle stale is interpolated onto the leading grid, and one that is beyond the bound is suppressed |
+| degradation | a run whose rate falls below the floor is flagged, and the flag reaches both the screen and the file |
 | page | the generated HTML contains the sample data and no external URL |
 | session hygiene | the run issues no `0x10` session change |
 | pre-flight | a catalog store missing the speed channel refuses the run and names it |
