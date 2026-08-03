@@ -213,7 +213,7 @@ pub fn no_car_file(vin: &str) -> String {
 /// A car file exists: say so, or twenty minutes of coastdown look like nothing.
 pub fn car_file_summary(vin: &str, at: &str, mass_kg: f64, cda: f64, measured: bool) -> String {
     format!(
-        "{vin} — car file {at} (mass {mass_kg:.0} kg, CdA {cda:.2} {})\n\
+        "{vin} — car file {at} (mass {mass_kg:.0} kg, CdA {cda:.2} m² {})\n\
          default mode: times and telemetry. Add --full for the power column.",
         if measured { "measured" } else { "stated" }
     )

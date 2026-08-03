@@ -61,6 +61,13 @@ const KELVIN_AT_ZERO_C: f64 = 273.15;
 /// ambient sensor itself — which is why *when* the temperature is read matters
 /// more than what is done with it afterwards.
 pub fn air_density(pressure_kpa: f64, ambient_c: f64) -> f64 {
+    // Below absolute zero the denominator changes sign and the answer would be
+    // a negative density — physical nonsense that would then divide into a
+    // drag figure. J1979 spells PID 0x46 as one byte offset by 40, so a real
+    // reading cannot get here; a corrupted one can.
+    if ambient_c <= -KELVIN_AT_ZERO_C {
+        return f64::NAN;
+    }
     pressure_kpa * 1_000.0 / (R_DRY_AIR * (ambient_c + KELVIN_AT_ZERO_C))
 }
 
@@ -319,6 +326,14 @@ impl Ratios {
     /// cancels — the same cancellation that makes the exact engine-side term
     /// radius-free.
     pub fn slipping(&self, gear: &str, engine_omega: f64, speed_ms: f64) -> bool {
+        // A NaN answers `false` to every comparison, including the one below,
+        // so a reading that is not a number would arrive here and be called
+        // *locked* — the one verdict that lets a bad sample through into a
+        // power figure. Every uncertain case answers "slipping", and an
+        // engine speed that is not a number is the most uncertain of all.
+        if !engine_omega.is_finite() || !speed_ms.is_finite() {
+            return true;
+        }
         if speed_ms <= 0.0 || speed_ms * KMH_PER_MS < RATIO_FLOOR_KMH {
             return true;
         }

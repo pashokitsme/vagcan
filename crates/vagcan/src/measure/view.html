@@ -375,7 +375,21 @@ function chUnit(k) { return (CH[k] && CH[k].unit) || ""; }
    way they are written. Presentation only — the stored string is untouched. */
 function pretty(u) {
   return String(u || "").replace(/m\/s2\b/g, "m/s²").replace(/\bm2\b/g, "m²")
-                        .replace(/\bm3\b/g, "m³").replace(/\bdegC\b/g, "°C");
+                        .replace(/\bm3\b/g, "m³").replace(/\bdegC\b/g, "°C")
+                        .replace(/\/min\b/g, "rpm");
+}
+/* A boost pressure with no "absolute" or "gauge" on it is the one unlabelled
+   number on this page that a knowledgeable driver will misread: a healthy
+   EA888 runs about 1.0–1.2 bar gauge at full load, which is 2.0–2.2 absolute,
+   so the same engine reads either fine or sick depending on which the column
+   meant. The catalog says only "bar", so the qualifier is added where a
+   pressure is shown and the stored string is left alone. */
+function unitOf(k) {
+  var u = pretty(chUnit(k));
+  if (/^bar$/i.test(u) && /(boost|pressure)/i.test(k + " " + ((CH[k] && CH[k].name) || ""))) {
+    return u + " abs";
+  }
+  return u;
 }
 function isDerived(k) { return !!CH[k] && CH[k].origin === "derived"; }
 
@@ -679,7 +693,7 @@ function buildControls() {
     cb.type = "checkbox"; cb.value = k;
     cb.addEventListener("change", function () { toggleCustom(k); });
     lab.appendChild(cb);
-    lab.appendChild(document.createTextNode(chName(k) + (chUnit(k) ? " (" + pretty(chUnit(k)) + ")" : "")));
+    lab.appendChild(document.createTextNode(chName(k) + (chUnit(k) ? " (" + unitOf(k) + ")" : "")));
     lab.dataset.key = k;
     elCustomChecks.appendChild(lab);
   });
@@ -724,7 +738,7 @@ function customSelection() {
   });
   return { picked: picked, dropped: dropped };
 }
-function axisKeyOf(k) { return STATE[k] ? " state" : FLAG[k] ? " flag" : chUnit(k); }
+function axisKeyOf(k) { return STATE[k] ? "axis:state" : FLAG[k] ? "axis:flag" : chUnit(k); }
 
 function drawnKeys() {
   if (state.set === "custom") return customSelection().picked;
@@ -1290,7 +1304,7 @@ function renderLegend(series, groups, dropped) {
     }
     return '<div class="it"><span class="sw' + (s.derived ? " d" : "") +
       '" style="border-top-color:' + s.color + '"></span><span><span class="nm">' +
-      esc(chName(s.key)) + (chUnit(s.key) ? ' <span class="mt">' + esc(pretty(chUnit(s.key))) + "</span>" : "") +
+      esc(chName(s.key)) + (chUnit(s.key) ? ' <span class="mt">' + esc(unitOf(s.key)) + "</span>" : "") +
       '</span>' + (meta.length ? '<div class="mt">' + esc(meta.join(" · ")) + "</div>" : "") +
       "</span></div>";
   }
