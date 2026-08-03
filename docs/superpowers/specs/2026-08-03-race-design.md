@@ -82,7 +82,7 @@ from* is about parameters. What both answers have in common is that neither may 
 ## CLI
 
 ```
-vagcan race [--device PATH] [--profile FILE] [--minimal]
+vagcan race [--device PATH] [--profile FILE] [--full]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
             [--accel-window SECONDS] [--hz N] [--out FILE] [--catalogs DIR]
 
@@ -97,12 +97,13 @@ overrides, all of which normally live in the profile:
             [--speed-scale N]
 ```
 
-**The ordinary invocation is `vagcan race` with no flags at all.** Everything the model needs
-either comes from the car, or was answered once by `--setup` and measured by the
-coastdown it ends with, and lives in the car's profile (§0). The override flags exist for a one-off —
-a loaded boot, a different set of wheels — and what was used is recorded in every file. None
-of them has a generic default: a parameter that cannot be had honestly is one the run does
-without, which is what `--minimal` describes.
+**The ordinary invocation is `vagcan race` with no flags at all**, and `vagcan race --full`
+once the car has been set up. Everything the model needs either comes from the car, or was
+answered once by `--setup` and measured by the coastdown it ends with, and lives in the car's
+profile (§0). The override flags exist for a one-off — a loaded boot, a different set of
+wheels — and what was used is recorded in every file. None of them has a generic default: a
+parameter that cannot be had honestly is one the run does without, which is why power is
+opt-in and gated on a profile.
 
 `--marks` takes `A-B` pairs in km/h, comma-separated, `A < B`. The default is
 `0-10,0-25,0-50,0-60,0-80,0-100`.
@@ -111,10 +112,12 @@ without, which is what `--minimal` describes.
 `0-100` would mean an indicated 100 rather than a corrected one, and the correction would
 silently not apply to the thing it was set for. Which was used is recorded in the file.
 
-`--minimal` forces the mode a car without a profile is in anyway (§0): telemetry and times,
-no power, and no polling of the channels that exist only to feed the power model. With a
-complete profile it is a way to buy sample rate back when the run matters more than the
-wattage.
+`--full` asks for the power column, and is the only thing that does. It requires a
+profile completed by `--setup` (§0) and is **refused** without one, naming what is missing —
+it never quietly degrades to generic numbers. Without it the run is the default one:
+telemetry and times, no power, and no polling of the channels that exist only to feed the
+power model. Leaving it off is also how a run buys sample rate back when the times matter
+more than the wattage.
 
 `--tyre` is the only flag that describes the car's hardware, and it is there because the
 rolling radius closes the loop on the equivalent-inertia factor (§3).
@@ -159,7 +162,7 @@ road:
 6. **Fits, then writes** `catalogs/cars/<VIN>.json`.
 
 If the run is abandoned before the passes are done, what was answered is still saved, and
-`race` is in minimal mode until the setup is finished. Setup can be re-run; it keeps the
+`--full` is unavailable until the setup is finished. Setup can be re-run; it keeps the
 answers and asks only for what is missing.
 
 ```json
@@ -185,20 +188,21 @@ that two runs are never compared across a change in how the car was described.
 Precedence is flag → profile → default, and the file records the value *and* where it came
 from.
 
-### Two modes, and no third — minimal, or complete
+### Two modes, and no third — default, or full
 
 There are exactly two states this command runs in:
 
 | mode | requires | produces |
 |---|---|---|
-| **minimal** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
-| **complete** | `--setup`, carried through both coastdown passes | all of the above, plus power |
+| **default** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
+| **full** (`--full`) | a profile from `--setup`, carried through both coastdown passes | all of the above, plus power |
 
 There is deliberately **no state in between**. A setup abandoned after the questions does not
-"fall back to a generic CdA" — it runs minimal. Generic road-load numbers are gone from the
-model entirely: a power figure resting on a hatchback-shaped guess is exactly the sort of
-number this document spends nine sections refusing to print. Either the road load was
-measured on this car or there is no power column.
+"fall back to a generic CdA": `--full` is refused, naming what is missing, and the run is the
+default one. Generic road-load numbers are gone from the model entirely — a power figure
+resting on a hatchback-shaped guess is exactly the sort of number this document spends nine
+sections refusing to print. Either the road load was measured on this car, or there is no
+power column.
 
 `--cda` and `--crr` remain as overrides for someone who genuinely has the figures — a
 manufacturer's coastdown, a wind-tunnel number — and passing both satisfies the requirement,
@@ -206,16 +210,16 @@ recorded as `stated` rather than `coastdown`. Passing one is not enough; the fit
 them as a pair.
 
 A car that has never been set up is the normal first encounter, and it must not be a wall.
-`race` runs anyway, in **minimal mode**, announced in one line at the top of the screen:
+`race` runs anyway, in the **default mode**, announced in one line at the top of the screen:
 
 ```
-  no profile for XW8AD4NE9JH008917 — minimal mode: times, speeds and telemetry,
+  no profile for XW8AD4NE9JH008917 — default mode: times, speeds and telemetry,
   no power. Park, then run: vagcan race --setup
 ```
 
-Minimal mode is not a stripped-down recording. It records **every channel worth having on its
-own** — speed, engine speed, gear, selector, pedal, boost specified and actual, air mass,
-shaft speeds — and computes every figure that needs no parameter: the marks, their average
+The default mode is not a stripped-down recording. It records **every channel worth having
+on its own** — speed, engine speed, gear, selector, pedal, boost specified and actual, air
+mass, shaft speeds — and computes every figure that needs no parameter: the marks, their average
 accelerations, the instantaneous acceleration, the distance, the shift costs. All of those
 come from speed, gear and time, and none of them needs a mass.
 
@@ -227,7 +231,7 @@ air density, which feeds one figure, power. With no mass there is no power, so t
 nothing for them to feed, and reading them would spend bus time to store two numbers nobody
 will look at. A cycle spent on nothing is a cycle not spent on speed.
 
-The consequence is worth stating rather than discovering later: **a minimal recording can
+The consequence is worth stating rather than discovering later: **a default-mode recording can
 never be turned into a power figure afterwards, even once a profile exists**, because the
 density its model needs was never sampled. Everything else about the run — every time, every
 mark, every acceleration — is complete and stays comparable with runs recorded later.
@@ -269,7 +273,8 @@ whole one would put the brakes into `Crr`.
   120, and the fit reports the worse conditioning rather than hiding it.
 - **The fit is rejected** below an R² threshold, or when the two passes disagree by more than
   a stated margin — which is what a slope, a gusty day or a half-braked pass looks like in the
-  data. A rejected fit leaves the profile without road load, which means minimal mode, which
+  data. A rejected fit leaves the profile without road load, which means `--full` stays
+  unavailable, which
   is the correct outcome and not a failure of the tool.
 - It needs a quiet, flat, dry road with no traffic. **Nothing here is a write**: the car is
   coasting and the tool is reading speed. Whether and when to select neutral is the driver's
@@ -535,7 +540,7 @@ which for a DQ200-like set runs from `k ≈ 1.5` in first to `k ≈ 1.05` in six
   itself is reporting, which is exactly the shape this project wants: algorithm in code, car
   in data.
 - There is no fallback, because there is no half-configured mode: a run without a tyre size
-  has no mass and no road load either, so it is minimal and computes no power at all.
+  has no mass and no road load either, so it cannot be a full run and computes no power.
   `--inertia` overrides `k` with a flat factor for anyone who wants to force one.
 
 Air density is `ρ = p / (R·T)`, `R = 287.05287 J/(kg·K)` for dry air (ISO 2533), `p` from
@@ -549,7 +554,7 @@ stated.
 Mass, `CdA` and `Crr` come from the car's profile (§0), not from flags typed before every
 run, and **none of the three has a default**. Mass belongs to one specific car; `CdA` and
 `Crr` are measured by the coastdown on that same car. Without all three there is no power
-column and the run is minimal — there is no generic-number fallback, because a power figure
+column and `--full` is refused — there is no generic-number fallback, because a power figure
 resting on the drag of hatchbacks-in-general is not a measurement of this car at all.
 
 (For sizing an error budget, generic values are still worth naming: `CdA ≈ 0.65 m²` for a
@@ -632,8 +637,8 @@ to zero and both are recorded in the file.
 crate.
 
 ```
-  RUN 4.31 s                                     marks
-  ┌──────────────────────────────────────────┐  0-10   0.98 s
+  RUN 4.31 s                       full       marks
+  ┌──────────────────────────────────────────┐  0-10   1.0 s ±0.1
   │ speed    62.4 km/h    bus                │  0-25   2.1 s ±0.1
   │ engine   4310 /min    bus                │  0-50   4.0 s ±0.1
   │ gear     3            bus                │  0-60   ·
@@ -846,9 +851,9 @@ which is what makes the tests possible without a car.
 | peak statistic | on a series with injected noise the reported peak is not the maximum, and its upward bias is bounded |
 | air density | ρ = **1.225 kg/m³** at 101.325 kPa and 288.15 K — the ISO 2533 sea-level value, four significant figures. Not a comparison against the same formula: this anchor catches a wrong R, a K/°C slip and a kPa/Pa slip in one assertion |
 | equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top |
-| two modes only | a profile with a mass but no coastdown runs **minimal**, not a generic-CdA power run; `--cda` alone is refused, `--cda` with `--crr` is accepted as `stated` |
-| minimal completeness | a minimal run still produces every mark, acceleration, distance and shift cost, and every read channel is in the file |
-| minimal frugality | barometric pressure and ambient temperature are **not polled** with no profile, and are polled **once**, not per cycle, with one |
+| two modes only | `--full` on a profile with a mass but no coastdown is refused, not silently downgraded to a generic-CdA power run; `--cda` alone is refused, `--cda` with `--crr` is accepted as `stated` |
+| the default is not a stub | a default run still produces every mark, acceleration, distance and shift cost, and every read channel is in the file |
+| frugality | barometric pressure and ambient temperature are **not polled** in the default mode, and are polled **once**, not per cycle, under `--full` |
 | profile round trip | `--setup` writes a profile the next run reads, and the run then needs no flags |
 | provenance | every parameter in the file names its source, and none of them may be a guess |
 | precedence | a flag beats the profile, and the file names the winner |
