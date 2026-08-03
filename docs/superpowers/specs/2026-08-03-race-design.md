@@ -15,8 +15,9 @@ temperature and barometric pressure. What is missing is the one thing a driver a
 asks for — *how long did 0 to 100 take, and where did it lose the time*.
 
 A phone app answers that from GPS and knows nothing about the car. This tool has the
-opposite problem and the opposite advantage: its speed is the car's own, quantised finely,
-and it can put the gear, the pedal and the boost on the same time axis as the stopwatch.
+opposite problem and the opposite advantage: its speed is the car's own — finely quantised,
+though its accuracy and update rate are set by the sensor rather than by the resolution — and
+it can put the gear, the pedal and the boost on the same time axis as the stopwatch.
 
 ## Scope
 
@@ -60,7 +61,7 @@ error naming the channel and the unit — not an empty column.
 | engine speed, gear, pedal | yes | refuse — a run with none of these explains nothing |
 | boost, specified and actual | no | the series is absent |
 | air mass, shaft speeds, selector | no | the series is absent |
-| barometric pressure, ambient temperature | no | **power is not computed** — air density has no source |
+| barometric pressure, ambient temperature | no | **power is not computed** unless `--air-density` is given — density has no source |
 
 A missing channel means the row is not there. It never means raw bytes, and it never means a
 guessed value.
@@ -75,7 +76,8 @@ flag. That is an admission, not a claim.
 ```
 vagcan race [--device PATH]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
-            [--mass KG] [--cda M2] [--crr N] [--inertia N]
+            [--mass KG] [--tyre 205/55R16] [--cda M2] [--crr N] [--inertia N]
+            [--grade PERCENT] [--headwind M_S] [--air-density KG_M3]
             [--accel-window SECONDS] [--speed-scale N]
             [--hz N] [--out FILE] [--catalogs DIR]
             [--view FILE.json]
@@ -83,6 +85,14 @@ vagcan race [--device PATH]
 
 `--marks` takes `A-B` pairs in km/h, comma-separated, `A < B`. The default is
 `0-10,0-25,0-50,0-60,0-80,0-100`.
+
+`--speed-scale` is applied **before** mark detection, not to the printed result: otherwise
+`0-100` would mean an indicated 100 rather than a corrected one, and the correction would
+silently not apply to the thing it was set for. Which was used is recorded in the file.
+
+`--tyre` is the only flag that describes the car's hardware, and it is there because the
+rolling radius closes the loop on the equivalent-inertia factor (§3) — without it the power
+figure understates low gears by up to a third.
 
 `--view` reads a saved session and opens a chart page; it touches no adapter. The precedent
 is `survey --diff`, which is likewise an offline mode of a command that otherwise needs the
@@ -105,10 +115,23 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
 - **Standstill** is speed exactly zero on the leading channel, held for one second. The
   hold is what stops a crawling stop-and-go from arming the trigger between every gap.
 - **The start** is the first non-zero sample after that.
-- **t0** is not that sample. It is a backward linear extrapolation to `v = 0` from the
-  first two non-zero samples, clamped to the interval `(last zero, first non-zero]`. Taking
-  the first non-zero sample as the start throws away up to a whole polling cycle, which at
-  ~20 Hz is 50 ms on a number quoted to hundredths.
+- **t0** is not that sample, and it is not a straight line back from it either. A launch is
+  *convex* — acceleration rises from zero as the clutch engages — so a backward **linear**
+  extrapolation runs under the true curve and reaches zero **late**, which makes every
+  0-based mark come out **short**. On a constant-jerk launch reaching 1 km/h at 0.29 s the
+  linear estimate lands 157 ms late: three times larger than the 50 ms polling cycle it was
+  meant to recover, and always in the flattering direction. So t0 is a **least-squares fit of
+  `v = ½jt²` over the first ~0.4 s of movement**, extrapolated to `v = 0` and clamped to
+  `(last zero, first non-zero]`. The clamp bounds the extrapolation; it does not bound the
+  error.
+- **The residual is larger than the method.** A wheel-speed signal has a low-speed dead band:
+  at roughly 48 teeth per revolution the pulse interval at 1 km/h is ~150 ms, so below about
+  2–3 km/h the signal's own update rate collapses and it reports zero. The car can therefore
+  have been moving for 100–250 ms before the first non-zero sample, and no extrapolation from
+  inside that region recovers it. **Every mark starting at 0 carries a systematic uncertainty
+  of order 50–200 ms**, one-signed, and is printed with it: `0-100 6.12 s ±0.1`. Rolling
+  marks like `50-100` are printed to hundredths, because there both endpoints are
+  interpolated crossings and the staleness bias cancels (§3).
 - **A ring buffer of the 3 s before t0** is written into the run: pedal, engine speed and
   selector *before* the start are half of what explains a bad one.
 - A run ends at the highest mark, at `Esc`, or when speed returns to zero. The last is
@@ -132,8 +155,19 @@ limit on this car):
 
 The leading batch is polled every cycle; the background batch every second cycle. Marks are
 timed from the leading speed alone, so its sample rate is what matters and it gets twice the
-rate of everything else. The engine's own road speed is read as a cross-check and stored,
-never used for timing.
+rate of everything else. The engine's own road speed is read for two purposes and used for
+neither of the obvious ones: as a cross-check against the leading channel, and — by comparing
+the two channels' values against their own timestamps — as an empirical handle on how often
+the units actually refresh an identifier, which is the number that sets the smoothing window
+(§3). It never times anything.
+
+Engine speed earns its place twice as well: as a channel in its own right, and as the
+numerator of the engine-to-wheel ratio that the equivalent-inertia factor needs (§3).
+
+Boost is read as the pair the unit publishes, specified `2029` and actual `202A`. The
+catalog's unit is `bar`; whether that is absolute or gauge is stated on screen and in the
+file, because a stock EA888 runs about 1.0–1.2 bar **gauge** and 1.6 bar **absolute** is the
+same pressure written two ways — this is the first number a knowledgeable driver checks.
 
 Which identifiers these are comes from the catalogs by name, exactly as
 `plan::select_basics` already does — a car whose catalog uses the same words works, and a
@@ -147,52 +181,190 @@ The achieved rate is measured and written into the file. It is never asserted in
 
 ## 3. What is computed — `race/session.rs`, `race/power.rs`
 
-**Marks.** `t(B) − t(A)`, where `t(v)` is linearly interpolated between the two samples
-that bracket the crossing. Both crossings must happen in the same run, in a monotonically
-rising pass.
+**Marks.** `t(B) − t(A)`, where `t(v)` is linearly interpolated between the two samples that
+bracket the crossing. Both crossings must happen in the same run, in a monotonically rising
+pass.
 
-**Average acceleration per mark.** `Δv / Δt` across the mark's own endpoints. This is the
-only acceleration figure here that is *measured* rather than differentiated — no smoothing,
-no window, no lag. It sits in the results table next to the time.
+The interpolation itself is not a source of error worth discussing: the chord deviates from a
+locally parabolic `v(t)` by at most `(a/8)·Δt²`, which converts to a time error of
+`Δt²/8 = 0.3 ms` at 20 Hz, independent of acceleration and twenty times below the printed
+resolution.
 
-**Instantaneous acceleration.** A difference quotient over `--accel-window` (default 0.3 s),
-reported in m/s² and in g (`g = 9.80665 m/s²`, the SI definition, not a property of any
-car). Smoothing is not optional: speed is quantised to 0.01 km/h and the samples jitter in
-time, so a raw sample-to-sample difference is noise with the signal buried in it.
+What *is* worth stating is why a rolling mark is the trustworthy one. Each sample is stale by
+an unknown amount, but both crossings of a mark are biased late by the **same** mean
+staleness, so it **cancels exactly in the difference**. The residual is only the staleness
+jitter, `σ ≈ T_refresh/√12 ≈ 14 ms` per endpoint, about 20 ms on the difference. That is why
+`50-100` is quotable to hundredths while `0-100` is not: its lower endpoint is not a
+crossing at all, it is t0, and t0 has no partner to cancel against.
 
-The window is applied two different ways, and the difference is load-bearing:
+Speed is converted once, `v[m/s] = v[km/h] / 3.6` exactly (ISO 80000-3), and every formula
+below is in SI.
+
+**Average acceleration per mark.** `Δv / Δt` across the mark's own endpoints. This is a
+difference quotient too — calling it "measured rather than differentiated" would be a false
+distinction. What makes it the most trustworthy acceleration figure here is that its
+**numerator is exact by construction**: `Δv = 100 km/h` is the mark's definition and carries
+no measurement error at all, so the relative error of the average equals the relative error
+of the mark time — about **0.3 % on `0-100`** and about **2 % on `0-10`**, against tens of
+percent for any instantaneous estimate. It sits in the results table next to the time.
+
+**Instantaneous acceleration.** A **first-order least-squares slope** over `--accel-window`
+(default 0.3 s), fitted against each sample's own timestamp:
+
+```
+a = Σ(tᵢ − t̄)(vᵢ − v̄) / Σ(tᵢ − t̄)²        valid at t = t̄
+```
+
+Reported in m/s² and in g (`g = 9.80665 m/s²`, 3rd CGPM 1901, an SI definition and not a
+property of any car). This is a Savitzky-Golay filter of order 1 generalised to uneven
+spacing, and it is chosen over a plain endpoint difference for three reasons that matter
+more than its ~20 % variance advantage: an endpoint difference throws away five of seven
+samples in the window, so one stale endpoint corrupts the whole estimate; the samples are
+**unevenly spaced in time**, which is the entire reason each value carries its own
+timestamp, and an endpoint difference's effective baseline then wanders with the jitter; and
+the fit has a well-defined attachment point `t̄`, which makes the causal lag exactly
+`t_now − t̄` instead of "about half the window".
+
+**Why smoothing is needed — and it is not quantisation.** Speed quantised at 0.01 km/h gives
+`σ_q = q/√12 = 8·10⁻⁴ m/s`, so a raw sample-to-sample difference at 50 ms carries
+`√2·σ_q/Δt = 0.023 m/s²` against a signal of 4–5 m/s². That is nothing. The real noise is
+**value staleness**: the control unit refreshes each identifier on its own schedule,
+asynchronous to our polling, so a reading is stale by an unknown `0…T_refresh`. With
+staleness uniform on that interval the induced error in a slope over window `W` is
+
+```
+σ_a ≈ a · √2 · (T_refresh/√12) / W
+```
+
+— at `a = 4 m/s²`, `T_refresh = 50 ms`, `W = 0.3 s` that is **0.27 m/s² (0.028 g)**, seventy
+times the quantisation floor. It shows up as consecutive polls returning the identical value
+followed by a double-sized step, which is what makes a raw difference *look* like noise.
+`T_refresh` is measurable on this car for free — the engine's own `F40D` is already polled
+as a cross-check, and comparing the two channels' value-against-timestamp bounds it — so the
+window is chosen from a measurement rather than guessed, and the measured value is recorded.
+
+**Causal live, central afterwards.**
 
 | where | method | why |
 |---|---|---|
-| live, on the TUI | **causal** — the trailing window only | the future half of a centred window does not exist yet |
-| the results table, the JSON, the chart page | **central** — symmetric window over the finished run | a causal estimate lags by about half the window and clips the peak |
+| live, on the TUI | **causal** — trailing window, reported at `t̄` | the future half of a centred window does not exist yet |
+| the results table, the JSON, the chart page | **central** — symmetric window over the finished run | the causal estimate is delayed by exactly `t_now − t̄ ≈ W/2 = 150 ms` |
+
+The central scheme fixes the **lag and nothing else**. Both schemes have the same magnitude
+response — attenuation is a property of the window, not of where it sits — so switching to
+central recovers no peak height whatever. What the window costs is `sinc(πfW)`: **14 % on a
+~1 Hz acceleration peak, 36 % on a ~0.3 s shift dip** at `W = 0.3 s`. The dip case is the
+uncomfortable one, because the window is the same size as the feature, and it is why shifts
+are located from the gear channel rather than from the derivative (below).
+
+At the run's edges the central window has no symmetric neighbourhood. The first and last
+`W/2` use a one-sided fit over whatever samples exist, flagged in the series — a DQ200's
+peak acceleration is often inside the first 0.5 s, so simply skipping that region would
+truncate the peak search exactly where the peak lives.
 
 This forces a storage rule: **the file holds raw speed samples, and every derivative is a
 separate, labelled layer recomputed in one pass over the complete run.** Numbers shown live
 never reach the file. Without that rule the same run reports two different peaks depending
-on whether it was read off the screen or out of the JSON.
+on whether it was read off the screen or out of the JSON — and, more usefully, every method
+below can be corrected later without re-driving the car.
 
-**Peak acceleration.** Maximum of the central-method series, with the time and the gear it
-happened in.
+**Peak acceleration.** Not the maximum of the series: taking the max of a noisy estimator
+selects positive noise excursions, which biases the peak **upward** by roughly σ — a 3–5 %
+effect on both peak acceleration and peak power, in the flattering direction. Reported
+instead as the mean over a ±0.2 s neighbourhood of the argmax, with the time and the gear.
+The statistic used is named in the file.
 
-**Shifts.** A DSG upshift is a dip in acceleration, and its length is what the gear costs.
-Each dip below a fraction of the run's peak is recorded as
-`{ t, from, to, dip_seconds, speed_lost }` alongside the plain `gear_changes`.
+**Shifts.** A gear change is **observed**, not inferred: `3816` is polled and says which gear
+is engaged. Deriving an event from an attenuated derivative when the event itself is on the
+bus is the weaker method, and a threshold relative to the run's peak cannot work — in a tall
+gear the acceleration is *permanently* a small fraction of the run's peak, so no fixed
+fraction distinguishes fifth gear from a shift.
 
-**Distance.** Trapezoidal integration of speed from t0. Approximate, and labelled so.
-
-**Power.** Wheel power from the dynamics:
+The gear channel locates the shift; the acceleration trace only measures its cost, and the
+cost is not the dip's duration. A full-load upshift does not decelerate the car — it
+accelerates it less — so `speed_lost` would read `0.0` essentially always. The cost is the
+**velocity deficit**, the integrated acceleration shortfall against the pre-shift local
+acceleration:
 
 ```
-P = (m·k·a  +  ½·ρ·CdA·v²  +  m·g·Crr) · v
+speed_deficit = ∫_dip ( a_pre − a(t) ) dt          [m/s]
 ```
 
-Air density comes from the car itself rather than a constant: `ρ = p / (R·T)` with `p` the
-barometric pressure (OBD-II PID 0x33), `T` the ambient air temperature (PID 0x46) and
-`R = 287.05 J/(kg·K)` for dry air. `--mass` has **no default** — a mass is a property of one
-specific car, and this project does not put those in code; without it the power column is
-empty. `--cda`, `--crr` and `--inertia` carry generic documented defaults. Every power
-figure is labelled an estimate at the wheels.
+Always positive, directly interpretable ("this shift cost 0.8 km/h"), and dividable by the
+acceleration at that speed to say what it cost in seconds on the mark.
+
+**Distance.** Trapezoidal integration over each interval's own `Δtᵢ`, never a nominal
+`1/hz`. The numerical error is negligible and should not be the caveat: composite-trapezoid
+error is `(h²/12)·Δa ≈ 1 mm` over a 10 s run. The real distance error is the speed signal
+itself — a few per cent of bias (below) and driven-wheel slip — which is **three orders of
+magnitude larger**. The caveat names that, so nobody optimises the integrator.
+
+**Power.** Road-load power at the contact patch:
+
+```
+P = ( m·k·a  +  ½·ρ·CdA·(v + v_head)²  +  m·g·Crr  +  m·g·sin θ ) · v
+```
+
+Note the asymmetry: drag acts on air speed, power is delivered against ground speed. `v_head`
+is 0 and `θ` is 0 unless given — see "Which way the numbers lean" for what that costs and how
+to cancel it.
+
+`k` is the **equivalent-inertia factor**, and it multiplies the inertial term only — never
+drag, never rolling resistance. `k = 1` would say the car has no rotating mass, which is
+never true: wheels alone are `k ≈ 1.04`, and the drivetrain's contribution scales with the
+square of the overall ratio, so `k` is strongly gear-dependent. Wong, *Theory of Ground
+Vehicles*, gives the generic form
+
+```
+k = 1 + δ₁ + δ₂·ξ²        δ₁ ≈ 0.04, δ₂ ≈ 0.0025, ξ = overall engine-to-wheel ratio
+```
+
+which for a DQ200-like set runs from `k ≈ 1.5` in first to `k ≈ 1.05` in sixth. Taking
+`k = 1.0` understates the inertial term — some 90 % of the total — by 5 % in fourth and
+**35 % in first**. That is the largest single error available in this model, so:
+
+- `ξ` is **measured live**, not tabulated: `ξ = ω_engine·r / v`, from engine speed `206E` and
+  road speed, once the rolling radius `r` is known.
+- `r` comes from the user's tyre size (`--tyre 205/55R16`) — the user's statement about their
+  own car, not a constant in the source. Given it, `k` is computed per sample from the ratio
+  the car itself is reporting, which is exactly the shape this project wants: algorithm in
+  code, car in data.
+- Without `--tyre`, `k` falls back to `--inertia` (default **1.05**, wheels only, cited
+  above), and the run is flagged: low-gear power is understated by up to a third and the file
+  says so.
+
+Air density is `ρ = p / (R·T)`, `R = 287.05287 J/(kg·K)` for dry air (ISO 2533), `p` from
+OBD-II PID 0x33 (absolute barometric pressure, 1 kPa/bit) and `T` from PID 0x46 (ambient air
+temperature, `A − 40 °C`; `T_K = T_C + 273.15`). The dry-air assumption costs −0.4 % at 20 °C
+and 50 % relative humidity, −1.6 % at a worst-case 30 °C and saturation, and J1979 has no
+humidity parameter to do better with. If either PID is absent, **power is not computed** —
+`--air-density` may be given explicitly, and the file records whether ρ was measured or
+stated.
+
+`--mass` has **no default**: a mass belongs to one specific car, and this project does not
+put those in code. Without it there is no power column. `--cda` (default **0.65 m²** — a
+generic C-segment hatchback, `Cd ≈ 0.30` over `A ≈ 2.2 m²`) and `--crr` (default **0.012**,
+Gillespie, *Fundamentals of Vehicle Dynamics*: 0.010–0.015 for passenger radials on asphalt)
+are documented generic values, not this car's.
+
+Every power figure is labelled an estimate at the contact patch. It is **not** a chassis-dyno
+"wheel horsepower": because `k` folds in the power spent accelerating the drivetrain's
+rotating masses, this figure legitimately exceeds a steady-state roller number, and a driver
+will otherwise compare the two. Stored in kW (SI); any horsepower display states which
+horsepower (metric PS = 735.49875 W, DIN 66036) since the two differ by 1.4 %.
+
+Air mass (`F410`) is recorded but takes no part in the model. A MAF-based cross-check exists
+in folklore at roughly 1 PS per g/s, but that ratio is an empirical BSFC artefact rather than
+a published standard, so it stays out of every reported figure.
+
+**Wheel slip.** The gearbox's road speed is derived from the **driven** axle, so during a
+launch it exceeds ground speed by the longitudinal tyre slip — 2–5 % at 0.5 g. That inflates
+the early marks and the integrated distance, in the flattering direction, and it is separate
+from and additive to the speedometer question. It is caveated, not corrected. If a
+non-driven wheel speed is ever proven on this car (the brake unit `0x713` answers 48
+identifiers, none of them proven), the difference between driven and undriven becomes a
+direct measurement of wheelspin — a column no phone app can produce. Recorded here as the
+reason to want it.
 
 **Kickdown.** If the unit's catalog holds a row whose name contains `kickdown`, that is
 used. Otherwise it is derived from the pedal (≥ 99 %) and labelled derived. No identifier
@@ -204,6 +376,45 @@ versus manual is not** — it is open work in `todo/README.md` (the stimulus was
 during the recording that identified the lever). A code outside the proven table shows as
 `unknown code 07` and enters nothing.
 
+## 3a. Which way the numbers lean
+
+The errors in this tool are not symmetric noise around a true value. **Almost every one of
+them is one-signed, and almost every one makes the car look quicker or more powerful than it
+is.** A driver comparing these numbers against a phone app or a magazine figure will see a
+systematic gap, and the honest thing is to say so on the page rather than let them conclude
+the tool is broken.
+
+Sized against a reference case (1400 kg, CdA 0.65 m², Crr 0.012, ρ 1.20 kg/m³, 100 km/h,
+a ≈ 2.5 m/s², total ≈ 120 kW):
+
+| error | size | direction |
+|---|---|---|
+| `k = 1` instead of the gear-dependent factor | 5 % of power in 4th, **35 % in 1st** | understates power |
+| t0 from a launch that is convex | 50–200 ms on any 0-based mark | **flatters** — the run looks shorter |
+| road speed is the car's own signal, which regulation forbids to under-read | ~0.2–0.3 s on a 7 s 0-100 | **flatters** |
+| driven-wheel slip during the launch, 2–5 % in 1st and 2nd | tenths on early marks, 1–3 m on distance | **flatters** |
+| unknown grade, ±1 % | ±3.8 kW ≈ 5 PS | downhill **flatters** |
+| unknown headwind, 5 m/s | 3.3 kW ≈ 4.5 PS | tailwind **flatters** |
+| peak taken as the max of a noisy series | 3–5 % on peak power and peak acceleration | **flatters** |
+| CdA uncertainty ±0.05 m² | ±0.67 kW ≈ 0.9 PS | either way |
+| air density from the car's own PIDs, quantisation | ±0.045 kW ≈ 0.06 PS | either way |
+
+The last row is there to keep the effort proportionate: reading ρ from the barometer and the
+ambient sensor is correct, but it is **80 times smaller than an unnoticed 1 % grade**. The
+framing "density comes from the car itself rather than a constant" oversells it, and the doc
+should not.
+
+Two mitigations are procedural, not code, and belong in the command's own help:
+
+- **Run out and back on the same stretch and average at matched speeds.** Grade and steady
+  wind both reverse sign between the two runs and cancel to first order. Nothing else
+  available here removes them.
+- **Compare against GPS once** to settle whether this car's *bus* speed carries the
+  speedometer's optimism at all, then set `--speed-scale`.
+
+`--grade PERCENT` and `--headwind M_S` exist for a user who knows the figures; both default
+to zero and both are recorded in the file.
+
 ## 4. The live view — `race/mod.rs`
 
 `ratatui::widgets::Chart` with `Dataset` and `Marker::Braille`. The dependency is already in
@@ -213,13 +424,13 @@ crate.
 ```
   RUN 4.31 s                                     marks
   ┌──────────────────────────────────────────┐  0-10   0.98 s
-  │ speed    62.4 km/h    bus                │  0-25   2.11 s
-  │ engine   4310 /min    bus                │  0-50   4.03 s
+  │ speed    62.4 km/h    bus                │  0-25   2.1 s ±0.1
+  │ engine   4310 /min    bus                │  0-50   4.0 s ±0.1
   │ gear     3            bus                │  0-60   ·
   │ pedal    100 %        bus                │  0-80   ·
-  │ boost    1.71 / 1.62 bar   bus           │  0-100  ·
+  │ boost    1.71 / 1.62 bar abs   bus       │  0-100  ·
   │ accel    0.41 g       computed, trailing │
-  │ power    164 hp       computed, estimate │
+  │ power    110 kW       computed, estimate │
   └──────────────────────────────────────────┘
   ┌── speed ── ← → to change ────────────────┐
   │                                ╱─────    │
@@ -249,16 +460,22 @@ blocks under their own headings rather than one list:
 
 ```
   Run 2 — measured
-    mark     time      average acceleration
-    0-10     0.98 s    2.83 m/s²
-    0-100    6.12 s    4.54 m/s²
-    peak engine speed  6480 /min at 5.9 s
-  Run 2 — computed   (mass 1400 kg, CdA 0.65 m², Crr 0.012, window 0.30 s, central)
-    distance          118.4 m
-    peak acceleration 5.31 m/s²  (0.54 g) at 1.21 s, gear 2
-    peak power        171 hp     estimate at the wheels
-    shift 2→3         0.31 s dip at 2.44 s
+    mark      time          average acceleration
+    0-10      1.0 s  ±0.1   2.8 m/s²
+    0-100     6.1 s  ±0.1   4.5 m/s²
+    50-100    3.24 s ±0.02  4.28 m/s²
+    peak engine speed   6480 /min at 5.9 s
+  Run 2 — computed   (mass 1400 kg, tyre 205/55R16, CdA 0.65 m², Crr 0.012,
+                      ρ 1.19 kg/m³ measured, grade 0 %, window 0.30 s, central)
+    distance            118 m      speed-signal bias dominates, not the integrator
+    peak acceleration   5.3 m/s²   (0.54 g) at 1.21 s, gear 2, ±0.2 s mean
+    peak power          112 kW     (152 PS) estimate at the contact patch
+    shift 2→3           cost 0.79 km/h, 0.18 s on the 0-100
 ```
+
+Marks starting at 0 print to a tenth with their systematic bound; rolling marks print to
+hundredths (§1, §3). The two are not the same kind of number and the table does not pretend
+they are.
 
 The measured block holds times, the average accelerations that are `Δv/Δt` across a mark's
 own endpoints, and peaks of channels the car reported. The computed block carries its
@@ -270,27 +487,38 @@ and a table that hides that invites the comparison it cannot support.
 ```json
 { "tool": "vagcan race", "recorded_at": "2026-08-03T12:41:07+03:00",
   "car":      { "vin": "…", "units": [ { "request": "7E1", "part_number": "0CW300041G" } ] },
-  "config":   { "marks": [[0,100]], "mass_kg": 1400, "cda": 0.65, "crr": 0.012,
-                "inertia": 1.0, "speed_source": "7E1:F40D", "speed_scale": 1.0,
-                "accel_window_s": 0.3, "accel_method": "central", "hz": 21.4 },
+  "config":   { "marks": [[0,100]],
+                "mass_kg": 1400, "tyre": "205/55R16", "rolling_radius_m": 0.313,
+                "inertia_model": "wong-1+d1+d2*ratio^2", "d1": 0.04, "d2": 0.0025,
+                "cda": 0.65, "crr": 0.012, "grade_percent": 0.0, "headwind_ms": 0.0,
+                "air_density_kg_m3": 1.19, "air_density_source": "measured",
+                "speed_source": "7E1:F40D", "speed_scale": 1.0, "speed_scale_applied": "before-marks",
+                "t0_method": "quadratic-fit", "t0_clamp_s": 0.048,
+                "accel_window_s": 0.3, "accel_method": "central-least-squares",
+                "peak_statistic": "mean-over-0.2s-neighbourhood",
+                "refresh_estimate_s": 0.05, "hz": 21.4 },
   "channels": [ { "key": "speed", "name": "Vehicle speed", "unit": "km/h",
                   "origin": "read", "request": "7E1", "did": "F40D" },
                 { "key": "accel", "name": "Acceleration", "unit": "m/s2",
                   "origin": "derived", "from": ["speed"],
-                  "method": "central-difference", "window_s": 0.3 },
-                { "key": "power", "name": "Power at the wheels", "unit": "hp",
+                  "method": "central-least-squares", "window_s": 0.3 },
+                { "key": "power", "name": "Power at the contact patch", "unit": "kW",
                   "origin": "derived", "estimate": true,
-                  "from": ["speed", "barometric_pressure", "ambient_temperature"],
+                  "from": ["speed", "engine_speed",
+                           "barometric_pressure", "ambient_temperature"],
                   "method": "road-load" } ],
   "runs":     [ { "index": 1, "t0_wall": "…", "aborted": false,
                   "samples": [ { "t": -2.94, "speed": { "t": -2.94, "v": 0.0 } } ],
                   "marks":   [ { "from": 0, "to": 100, "seconds": 6.12,
+                                 "uncertainty_s": 0.1, "from_t0": true,
                                  "avg_accel_ms2": 4.54 } ],
-                  "derived": { "distance_m": 118.4, "peak_rpm": 6480, "peak_hp": 171,
+                  "derived": { "distance_m": 118.4, "peak_rpm": 6480,
+                               "peak_power_kw": 112.3,
                                "peak_accel_ms2": 5.31, "peak_accel_t": 1.21,
                                "peak_accel_gear": "2",
                                "shifts": [ { "t": 2.44, "from": "2", "to": "3",
-                                             "dip_seconds": 0.31, "speed_lost": 0.0 } ] } } ] }
+                                             "speed_deficit_ms": 0.22,
+                                             "cost_on_mark_s": 0.18 } ] } } ] }
 ```
 
 Every channel declares its `origin`. A derived one also declares what it was derived
@@ -302,6 +530,13 @@ every row, since nothing else gets in.
 A value that a proven channel returned but whose meaning is not in its table — an
 unmapped selector code — is stored as `{ "raw": "07", "unmapped": true }` and enters no
 derived figure.
+
+`config` records not just the inputs but **which method produced each derived layer** —
+`t0_method`, `accel_method`, `peak_statistic`, `air_density_source`, `inertia_model`, the
+measured `refresh_estimate_s`. Every correction in this document arrived after the design was
+first written, and the reason they are all retrofittable is that the file keeps raw speed.
+Recording the vintage of the maths alongside it is what makes an old file comparable to a new
+one rather than merely readable.
 
 `--out` writes continuously; `s` writes on demand. Both write the same document.
 
@@ -372,14 +607,23 @@ which is what makes the tests possible without a car.
 | test | asserts |
 |---|---|
 | arming | a synthetic profile arms only after zero is held a full second |
-| t0 | the extrapolated start matches a known-acceleration profile to within a sample |
+| t0 on a **constant-jerk** launch | the quadratic fit's bias stays inside a stated bound. A *constant-acceleration* profile must not be used: linear back-extrapolation is exact there, so the obvious test is vacuous against the only failure mode that exists |
+| t0 dead band | a profile whose first samples are suppressed below 2 km/h still reports its uncertainty rather than a confident number |
 | marks | interpolated `0-100` on an analytic profile equals the closed-form answer |
+| mark precision | a 0-based mark prints a tenth with a bound; a rolling mark prints hundredths |
+| staleness cancellation | with a simulated uniform staleness, the rolling mark's error is an order below the 0-based one's |
 | abort | speed returning to zero keeps the marks that closed and flags the run |
 | re-arm | a second standstill starts a second run in the same session |
 | trigger pause | `p` prevents arming and does not lose the previous run |
 | `--marks` parser | `0-100,50-100` parses, `100-50` and `abc` are rejected |
-| causal vs central | the two methods differ on a known profile and the file holds the central one |
-| air density | ρ from a known pressure and temperature matches the ideal-gas value |
+| `--speed-scale` | a scale of 0.97 moves the detected crossing, not just the printed number |
+| least squares on uneven samples | the slope of a known ramp is recovered from deliberately jittered timestamps |
+| causal vs central | the two differ in **phase only** on a known profile — equal peak magnitude — and the file holds the central one |
+| window attenuation | a 0.3 s synthetic dip is recovered ~36 % shallow, which is asserted rather than discovered later |
+| shifts | a shift is located from the gear channel, and its cost is the integrated deficit, positive on a profile where speed never falls |
+| peak statistic | on a series with injected noise the reported peak is not the maximum, and its upward bias is bounded |
+| air density | ρ = **1.225 kg/m³** at 101.325 kPa and 288.15 K — the ISO 2533 sea-level value, four significant figures. Not a comparison against the same formula: this anchor catches a wrong R, a K/°C slip and a kPa/Pa slip in one assertion |
+| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top; without `--tyre` it is the flat fallback and the run is flagged |
 | no mass | the power column is empty rather than defaulted |
 | page | the generated HTML contains the sample data and no external URL |
 | session hygiene | the run issues no `0x10` session change |
@@ -397,7 +641,17 @@ which is what makes the tests possible without a car.
 - **Kickdown** has no proven identifier. The derived-from-pedal value is a stopgap, marked
   as such, and should be replaced the first time a survey run with a deliberate kickdown
   isolates the real one.
-- **Speedometer error.** Bus speed is the speedometer's, which on this platform reads
-  optimistically. `--speed-scale` exists for a user who has compared against GPS; the
-  default is 1.0 and the file records which was used. This tool does not invent a
-  correction factor.
+- **Speedometer error — unverified, and the earlier draft asserted it.** UNECE R39 forbids a
+  speedometer to under-read and permits over-reading by 10 % + 4 km/h, so the *indicated*
+  speed is optimistic by regulation. Whether the **bus** value carries that optimism is a
+  different question: on many VAG platforms the gearbox/ABS value is close to true wheel
+  speed and the bias is added in the instrument cluster. Stating it as fact in a design
+  document was out of character for this project. One GPS comparison run settles it.
+  `--speed-scale` exists for whoever does that; the default is 1.0, and the file records
+  both the value and that it was applied before mark detection.
+- **The rolling radius** is taken from `--tyre`, a nominal size, not from a measured rolling
+  circumference — which differs by a few per cent with pressure, load and wear. It feeds `k`,
+  where a few per cent is second-order, and nothing else.
+- **A non-driven wheel speed** would turn the launch-slip caveat into a measurement. The
+  brake unit answers 48 identifiers and none of them is proven; this is the concrete reason
+  to go and prove one.
