@@ -18,4 +18,9 @@
 // The module is being built task by task; items land before their callers do.
 #![allow(dead_code)]
 
+pub mod carfile;
+pub mod channels;
+pub mod coastdown;
+pub mod derive;
+pub mod power;
 pub mod types;
