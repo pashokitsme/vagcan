@@ -19,14 +19,14 @@ scaling is a dead end: the read identifier is not stored in `STRUC` in any
 encoding, which was established against ground truth rather than assumed
 (`research/rod-labels.md` §4.0c).
 
-Instead the linear rows were fitted by `vagcan analyse`, which crosses a passive
+Instead the linear rows were fitted by `vagcan vcds analyse`, which crosses a passive
 CAN capture against a VCDS log recorded at the same moment, aligns them by
 wall-clock arithmetic, and accepts only exact linear relations
 (`R² ≥ 0.995` over ≥ 20 points and ≥ 4 distinct raw values); every linear row
 fitted at `R² = 1.00000`. The exceptions carry their own evidence: the gear and
 selector enums were identified by arithmetic against the proven shaft speeds
 (`research/gearbox-state.md`), the odometer by exact hit against a logged
-reading. `vagcan calibrate` extends coverage by fitting raw columns against
+reading. `vagcan recording calibrate` extends coverage by fitting raw columns against
 already-trusted references in the same `watch --out` recording.
 
 **The instrument-cluster rows added on 2026-08-02 came from a third route:**
@@ -82,9 +82,9 @@ Not measurement catalogs, but kept alongside them:
 
 | file / dir | what |
 |---|---|
-| `names-uds.json` | 17,009 measurement names recovered from `TTTEXT.ROD` (`research/tttext-codec.md`), keyed by the corpus's 6-digit text-id — **not** by data identifier; the corpus holds no name→DID join. Searched by `vagcan names`. |
-| `rod-iv-cache.json` | Recovered `.rod` per-record IVs. Written by the `vag-rod` binary (`cargo run -p vag-data --features rod-crack --bin vag-rod <file.rod>`), read by `vagcan labels`. |
-| `label-cache/` | SQLite caches of the parsed label corpus, one per corpus directory (so the English and the Russian VCDS installs each keep their own; switching language = pointing at the other directory). Created by `vagcan labels`; `--refresh` rebuilds. |
+| `names-uds.json` | 17,009 measurement names recovered from `TTTEXT.ROD` (`research/tttext-codec.md`), keyed by the corpus's 6-digit text-id — **not** by data identifier; the corpus holds no name→DID join. Searched by `vagcan vcds names`. |
+| `rod-iv-cache.json` | Recovered `.rod` per-record IVs. Written by `cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`, read by `vagcan vcds labels`. |
+| `label-cache/` | SQLite caches of the parsed label corpus, one per corpus directory (so the English and the Russian VCDS installs each keep their own; switching language = pointing at the other directory). Created by `vagcan vcds labels`; `--refresh` rebuilds. |
 
 The **standard OBD-II parameters** are not duplicated here. They live in
 `vag_data::obd` because they are defined by SAE J1979 rather than measured —

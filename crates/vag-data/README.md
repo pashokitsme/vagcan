@@ -28,10 +28,10 @@ label files into human-meaningful measurement names, units, and ranges.
 
 ```
 # parse+decrypt a Labels dir into a JSON corpus + coverage summary
-cargo run -p vag-data --bin vag-labels -- /path/to/VCDS/Labels --out corpus.json --summary
+cargo run -p vagcan -- vcds corpus /path/to/VCDS/Labels --out corpus.json
 
 # resolve a part number to its measurements
-cargo run -p vag-data --bin vag-labels -- /path/to/VCDS/Labels --lookup 06F-906-056-AXW
+cargo run -p vagcan -- vcds labels /path/to/VCDS/Labels --part 06F-906-056-AXW
 ```
 
 Against the reference install (~2884 files): **1202 `.lbl` + 1627 `.clb` all parse**;

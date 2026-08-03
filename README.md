@@ -30,15 +30,15 @@ Milestones (see `todo/README.md` for the live task list):
 |---|---|---|
 | M0 | ISO-TP + UDS + transport stack (read-only) | ✅ done |
 | M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | ✅ **verified on the real car 2026-08-01** (VIN + both passports match the Auto-Scan oracle) |
-| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan labels` corpus tool | ✅ done |
+| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan vcds labels` corpus tool | ✅ done |
 | **M3** | **Measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🟡 **the method works — 16 catalog rows proven across engine, gearbox and cluster; whole-car coverage is the open work** |
 | HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | ✅ live on the car — reads and writes at 500 kbit/s |
 
 **Where it stands (M3):** the method works and is producing rows. Scaling does **not** come
 from the label corpus — the read DID is provably not stored in `STRUC`
 (`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3) — it comes from the car:
-`vagcan sniff` records a listen-only capture alongside a live VCDS session, `vagcan analyse`
-crosses it against the VCDS CSV and accepts only exact linear fits, and `vagcan calibrate`
+`vagcan sniff` records a listen-only capture alongside a live VCDS session, `vagcan vcds analyse`
+crosses it against the VCDS CSV and accepts only exact linear fits, and `vagcan recording calibrate`
 extends coverage offline by fitting unknown raw columns against already-trusted references
 in the same `watch` recording. Proven rows live in `catalogs/vehicles/<part number>.json`, one file per
 control unit, keyed by what that unit reports about itself. Names come from the corpus: `TTTEXT.ROD` is cracked and `catalogs/names-uds.json`
@@ -61,9 +61,9 @@ vag-data        .lbl/.clb/.rod parsing+decrypt, TEA, LabelDb lookup, ODX file re
 vag-db          SQLite cache of the label corpus (rusqlite)
 ```
 
-Binaries: `vagcan` (the CLI), `vag-labels` (parse a Labels dir → JSON / lookup), `vag-rod`
-(`.rod` inspection; the IV brute force needs `--features rod-crack`), `vag-db`
-(`build`/`lookup`/`stats`/`rod`).
+Binaries: `vagcan` (the CLI) and `vag-db` (`build`/`lookup`/`stats`/`rod`). The
+one-shot corpus tools that used to be separate binaries are subcommands now —
+`vagcan vcds rod`, `vagcan vcds corpus`, `vagcan vcds tttext`.
 
 ## The CLI
 
@@ -78,15 +78,26 @@ vagcan watch        live values, full-screen TUI, multi-unit; `c` reconfigures i
 vagcan scan         every data identifier a control unit answers
 vagcan faults       stored fault codes from every unit; --details adds extended data
 vagcan survey       walk every unit: identification, stored faults, identifier sweep
-vagcan analyse      prove scalings from a capture + a VCDS log
-vagcan discover     find identifiers carrying discrete state (gear, mode, switches)
-vagcan calibrate    fit unknown raw columns against trusted ones in a watch recording
-vagcan names        search the 17,009 measurement names recovered from the corpus
-vagcan labels       label lookup; --from-car resolves the ODX file the unit names
+```
+
+The top level is only what is worth having with the car in front of you. Everything
+offline is grouped by what its input is:
+
+```
+vagcan recording calibrate   fit raw columns against trusted ones in a watch recording
+vagcan recording discover    identifiers carrying discrete state (gear, mode, switches)
+
+vagcan vcds labels           label lookup; --from-car resolves the ODX file a unit names
+vagcan vcds names            search the 17,009 measurement names recovered from the corpus
+vagcan vcds analyse          prove scalings from a capture + a VCDS log
+vagcan vcds rod              decrypt + inflate a `.rod`, recovering blocked section keys
+vagcan vcds corpus           parse a whole Labels/ directory into one JSON file
+vagcan vcds tttext           recover names from the corpus's global text table
 ```
 
 `--device` is optional: a recognised adapter is selected automatically. Read-only
-throughout — the UDS allowlist admits no writes.
+throughout — the UDS allowlist admits no writes. `watch` draws a full-screen view on a
+terminal and prints CSV without one; `--for SECONDS` picks the plain mode explicitly.
 
 ## Label ciphers (reverse-engineered for interoperability)
 
@@ -99,12 +110,12 @@ the VCDS binary (static analysis; no protection was circumvented and no software
 
 `.rod` MWB rows are the UDS measurement *ID* index; human names live in `TTTEXT.ROD`,
 whose glyph-substitution codec is broken (`research/tttext-codec.md`) — 17,009 names are
-shipped in `catalogs/names-uds.json` and searchable with `vagcan names`. The corpus holds
+shipped in `catalogs/names-uds.json` and searchable with `vagcan vcds names`. The corpus holds
 no name→DID join, so a name is a lead, not a binding.
 
-The `.rod` per-record IV brute force is behind the `rod-crack` cargo feature; only the
-`vag-rod` binary enables it (`cargo run -p vag-data --features rod-crack --bin vag-rod`).
-`vagcan labels` reads the cached results from `catalogs/rod-iv-cache.json` and caches the
+The `.rod` per-record IV brute force is behind the `rod-crack` cargo feature
+(`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`).
+`vagcan vcds labels` reads the cached results from `catalogs/rod-iv-cache.json` and caches the
 parsed corpus to SQLite under `catalogs/label-cache/` (`--refresh` rebuilds).
 
 ## Scope boundary

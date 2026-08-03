@@ -5,7 +5,13 @@ Cargo.lock
 *.capture.local
 .superpowers/
 # Agent worktrees + local harness state
-.claude/
+.claude/*
+# …except the project's own skills. Those are documentation of how this repo is
+# worked on, they go stale when the code moves, and a cleanup pass re-verifies
+# them against the binary — none of which works if they live only on one machine.
+# The parent is `.claude/*` and not `.claude/`: git does not descend into an
+# excluded directory, so a negation under one never matches.
+!.claude/skills/
 
 # --- research working dir: exclude junk + third-party/proprietary content ---
 # Regenerable tooling state

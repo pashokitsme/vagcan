@@ -34,7 +34,7 @@ USB-CAN adapter reaches the same bus with no crypto at all.
   over a serial port (`vag-can`); any future backend implements the same seam.
 - `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
   client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan labels` caches the parsed corpus to SQLite under
+  FAST** — `vagcan vcds labels` caches the parsed corpus to SQLite under
   `catalogs/label-cache/`, keyed by corpus directory.
 - **Host = macOS Apple Silicon (M4).**
 

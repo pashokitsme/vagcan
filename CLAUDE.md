@@ -70,8 +70,11 @@ crates/          the Rust workspace
   vag-data         label parsers/decoders (.lbl/.clb/.rod) + LabelDb + ODX file resolution
   vag-db           SQLite cache over the label corpus
   vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
-  vagcan           the CLI: devices / info / units / properties / sniff / sensors / watch /
-                   scan / faults / survey / analyse / discover / calibrate / names / labels
+  vagcan           the CLI. Top level = needs the car: devices / info / units /
+                   properties / sniff / sensors / watch / scan / faults / survey.
+                   Offline work is grouped by what its input is: `recording …`
+                   (our own `watch --out` recordings) and `vcds …` (VCDS's files —
+                   labels, names, analyse, rod, corpus, tttext)
 research/        RE writeups + tooling (NOT shipped). Key reads:
   rod-labels.md        the .rod crack + the STRUC refutation (why scaling is live-only)
   tttext-codec.md      the TTTEXT name codec crack → catalogs/names-uds.json

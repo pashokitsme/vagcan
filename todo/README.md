@@ -57,11 +57,11 @@ The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipe
 built and merged. The offline path to measurement *scaling* is **refuted, not just stalled**:
 the read DID provably does not live in the corpus (`research/rod-labels.md` §4.0c,
 `research/label-linkage.md` §3 — a structural impossibility, do not retry). Scaling comes
-from the car: the parallel-VCDS capture session ran, `vagcan analyse` and `vagcan calibrate`
+from the car: the parallel-VCDS capture session ran, `vagcan vcds analyse` and `vagcan recording calibrate`
 turn recordings into proven rows, and `catalogs/vehicles/` holds 16 of them across engine,
 gearbox and cluster. Names come from the corpus after all — `TTTEXT.ROD` is cracked
 (`research/tttext-codec.md`) and `catalogs/names-uds.json` carries 17,009 names, but the
-corpus has **no name→DID join**, so `vagcan names` output is a hypothesis to test live.
+corpus has **no name→DID join**, so `vagcan vcds names` output is a hypothesis to test live.
 
 The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, `vagcan survey`
 walks every unit the gateway lists (identification, stored DTCs, identifier sweep), and
@@ -73,7 +73,7 @@ open-work list at the end of this file.
 |---|------|-------|
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
-| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan labels` | ✅ done |
+| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan vcds labels` | ✅ done |
 | **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **16 catalog rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
@@ -88,15 +88,15 @@ open-work list at the end of this file.
 | scan | vagcan | `vagcan scan` — group-testing sweep of the identifier space; `vagcan properties` |
 | odx-link | vag-data/vagcan | `find_rod_by_odx_name` + `labels --from-car`: the unit names its own `.rod` (F19E) |
 | label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
-| rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vag-rod` bin); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
+| rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vagcan vcds rod`); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
-| labels-cli | vagcan | `vagcan labels` — corpus inventory + `--part` / `--block` lookup; SQLite cache under `catalogs/label-cache/` per corpus dir (`--refresh` rebuilds); the IV brute force moved behind the `rod-crack` feature (`vag-rod` bin only) |
+| labels-cli | vagcan | `vagcan vcds labels` — corpus inventory + `--part` / `--block` lookup; SQLite cache under `catalogs/label-cache/` per corpus dir (`--refresh` rebuilds); the IV brute force is behind the `rod-crack` feature (`vagcan vcds rod` only) |
 | addressing | vag-protocol | `address.rs` — `UnitAddress`: ISO block `7E0..7E7` → +8, VW block `700..7BF` → +0x6A; fixes `--ecu 17` resolving to `0x7F0` (nothing) instead of the cluster `0x714`; short numbers only for evidenced units (01/02/09/16/17), everything else by request id |
 | survey | vagcan | `vagcan survey` — walk the gateway's installation list (plus engine/gearbox/gateway, which it never contains): identification, stored DTCs (`19 02 FF`), then the identifier bands in use on this car; JSON lines per unit; silent units skipped after ident |
 | watch-tui | vagcan | `vagcan watch` — full-screen ratatui TUI, multi-unit, reconfigurable in place (`c`); `--survey FILE` offers everything a survey found; actual/specified pairs on one line; unconverted CSV columns suffixed `_raw` |
-| calibrate | vagcan | `vagcan calibrate` — offline; fits `_raw` columns against trusted reference columns in the same `watch --out` recording |
-| names | vagcan | `vagcan names` — substring search over `catalogs/names-uds.json` (17,009 TTTEXT names); a match is a hypothesis, the corpus has no name→DID join |
-| cli-app | vagcan | `devices` / `info` / `units` / `properties` / `sniff` / `sensors` / `watch` / `scan` / `survey` / `analyse` / `discover` / `calibrate` / `names` / `labels` (HEX-clone commands removed); `faults` is in the working tree, not yet merged |
+| calibrate | vagcan | `vagcan recording calibrate` — offline; fits `_raw` columns against trusted reference columns in the same `watch --out` recording |
+| names | vagcan | `vagcan vcds names` — substring search over `catalogs/names-uds.json` (17,009 TTTEXT names); a match is a hypothesis, the corpus has no name→DID join |
+| cli-app | vagcan | Top level, all needing the car: `devices` / `info` / `units` / `properties` / `sniff` / `sensors` / `watch` / `scan` / `survey` / `faults`. Offline work is grouped by what its input is — `recording calibrate|discover` over our own recordings, `vcds labels|names|analyse|rod|corpus|tttext` over VCDS's files (2026-08-03) |
 
 ## M3 — measurements (the current work)
 
@@ -209,7 +209,7 @@ Writeups: `research/identifier-map.md`, `research/other-ecus.md`,
 ### The remaining work, in order
 
 **1. The capture session — DONE 2026-08-01, and it worked.** 308 s of listen-only capture
-alongside a live VCDS session; `vagcan analyse` proved three scalings, one of which
+alongside a live VCDS session; `vagcan vcds analyse` proved three scalings, one of which
 (coolant = `raw − 40`) reproduces the standard OBD-II PID 05 formula and thereby validates
 the whole pipeline. Details in `research/rod-labels.md` §4.3.
 
@@ -218,7 +218,7 @@ matched points against a 20-point default. Record VCDS logging for **several min
 group, covering the measurements that matter (boost, load, throttle, speed), with a wide
 sustained rev. Everything else is already built.
 
-**2. `vagcan analyse` — BUILT (2026-08-01).** The offline tool that turns a capture into
+**2. `vagcan vcds analyse` — BUILT (2026-08-01).** The offline tool that turns a capture into
 scalings, written before the session so the data can be checked while the car is available.
 It:
 - reads the capture JSONL and the VCDS CSV (CP1251; each measurement carries its own time
@@ -241,14 +241,14 @@ substitution, and the `MWB` code is a global function of the text-id with no per
 of freedom. So the corpus is for **names and per-ECU lists**, nothing more.
 
 The name table itself is cracked (`research/tttext-codec.md`): **17,009 names** shipped in
-`catalogs/names-uds.json`, searchable with `vagcan names <text>`. The `ENG######` question
+`catalogs/names-uds.json`, searchable with `vagcan vcds names <text>`. The `ENG######` question
 is settled — the number **is** the `TTTEXT` text-id, proven four for four on records solved
 blind (`research/tttext-codec.md` §2, superseding `research/label-linkage.md` §4's
 "suggestive, not established"), and the recovered names are English text — the
 `ENG`-means-*English* reading, not *engine*. That closes the chain
 *proven identifier → IDE → ENG → name* for gearbox rows whose `IDE` the VCDS log prints —
 but only for those. The corpus itself carries **no name→DID join**: `MWB` has no per-ECU
-identifier, so a `vagcan names` hit is a hypothesis to confirm on the car, not a binding.
+identifier, so a `vagcan vcds names` hit is a hypothesis to confirm on the car, not a binding.
 `mwb.rs` is deliberately kept for the possible MWB→TTTEXT name join.
 
 **4. `vagcan watch` — BUILT, now a full-screen TUI.** ratatui, multi-unit, reconfigurable
@@ -256,9 +256,9 @@ from inside (`c`); `--survey FILE` offers every identifier a survey found; actua
 pairs (e.g. boost `0x2029` specified / `0x202A` actual) render on one line. Polls live at
 bus speed (46 Hz measured on the boost set) using batched reads. Anything unproven prints
 its bytes tagged raw, and unconverted columns are written to CSV with a `_raw` suffix —
-which is what `vagcan calibrate` fits against the trusted columns in the same recording.
+which is what `vagcan recording calibrate` fits against the trusted columns in the same recording.
 
-**5. Discrete state — `vagcan discover` BUILT; gear and selector identified.** Gear,
+**5. Discrete state — `vagcan recording discover` BUILT; gear and selector identified.** Gear,
 gearbox mode, switches and lamps cannot be fitted: a two-level value fits any line
 exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
 continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
