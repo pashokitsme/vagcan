@@ -177,14 +177,22 @@ fault sections. That route is closed.
 record := <8 ASCII digits: id> ' ' <u8 cipher_len> <u8 text_len> <cipher> "\r\n"
 ```
 
-34 716 records in English, 27 587 in Russian. The block-0 IV is per-record and unsolved,
-so the first 8 characters of each text are lost; the rest is exact.
+34 716 records in English, 27 587 in Russian. The block-0 IV is per-record; it was
+unsolved when this was written, and it is derived from the record's own key in
+[`codes-dat.md`](codes-dat.md) §2.2. Both language files now decrypt in full — the first
+8 characters are not lost.
 
 **The key is not the VW fault number.** Ids below 65536 are legacy KWP codes and the
 higher band is `SAE_code << 8 | failure_type`. Looking up 297 returns "…Speed Sensor
 (G38)" where the car means the steering angle sensor — a plausible-looking wrong answer,
 which is the worst kind. Naming faults from this file directly would be wrong on most
 codes.
+
+That is stronger than the individual absences listed below. It is not that this car's
+particular numbers happen to be missing: **no** VW fault number is a key at all, because
+every key is a 24-bit ISO DTC ([`codes-dat.md`](codes-dat.md) §4). One hop —
+VW fault number → ISO DTC — is the whole of what remains; everything past it is a
+dictionary lookup.
 
 What VCDS evidently has and this project does not is the map from a VW fault number to
 its SAE code (it prints both). That map is not in `Codes.dat`, not in the `.lbl`/`.clb`

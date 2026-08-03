@@ -133,6 +133,26 @@ Zero control bytes across 1.5 MB of recovered text is the check that would have 
 partly-wrong IV: a single wrong first block shows up as ~8 control characters, and the
 pre-crack decrypt had 30 599 of them in the Russian file.
 
+### 2.4 The bytes are a code page, and it is not the obvious one
+
+The table above counts *bytes*. Turning them into characters is a separate step, and the
+first version of the decoder did it by mapping each byte straight to a `char` — ISO
+8859-1 — which is wrong for both files:
+
+| file | page | what 8859-1 did to it |
+|---|---|---|
+| `Codes.dat` (EN) | Windows-1252 | `0x96` is an en dash; 8859-1 makes it U+0096, a C1 control. 191 occurrences, in 216 records |
+| `Code-RUS.dat` (RU) | Windows-1251 | 27 380 of 27 587 records became mojibake — `Äàò÷èê` for `Датчик` |
+
+Nothing in a record says which page it is, so `CodesDb::parse` takes the English one and
+`parse_in` asks. Re-run against both files with the pages named: **0 control and 0
+undefined characters** in either.
+
+§2.3 is unaffected — it counts bytes below 0x20 in the plaintext, and 0x96 is not one.
+The two checks catch different things: §2.3 proves the decryption is exact, and this one
+proves the text is then read in the page it was written in. Only the second would have
+noticed that a correct decrypt was being displayed as `Äàò÷èê`.
+
 ---
 
 ## 3. What is in it

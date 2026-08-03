@@ -35,6 +35,75 @@ use std::collections::BTreeMap;
 use crate::rod::{KS, MT, OFF_ROD};
 use crate::tea::tea_cbc_decrypt;
 
+/// The code page a `Codes.dat` is written in.
+///
+/// The file stores single bytes, not Unicode, and the page belongs to the
+/// translation rather than to the container — nothing in a record says which
+/// one it is. The English `Codes.dat` is Windows-1252 and `Code-RUS.dat` is
+/// Windows-1251.
+///
+/// Mapping a byte straight to a `char` — ISO 8859-1, the obvious thing —
+/// silently produces wrong text either way: `0x96` occurs 191 times in the
+/// English file, where it is an en dash and 8859-1 makes it U+0096, a C1
+/// control; and 27 380 of the Russian file's 27 587 records turn into
+/// mojibake. So the page is asked for, with the English one as the default
+/// because that is the file this project reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodePage {
+    /// Windows-1252 — the English `Codes.dat`.
+    #[default]
+    Windows1252,
+    /// Windows-1251 — `Code-RUS.dat`.
+    Windows1251,
+}
+
+impl CodePage {
+    /// Decode one record's bytes.
+    ///
+    /// A byte the page leaves undefined becomes U+FFFD rather than something
+    /// plausible: these files decrypt exactly, so an undefined byte means the
+    /// text is not in this page and the reader should see that.
+    pub fn decode(self, bytes: &[u8]) -> String {
+        bytes.iter().map(|&b| self.char_of(b)).collect()
+    }
+
+    fn char_of(self, b: u8) -> char {
+        if b < 0x80 {
+            return b as char;
+        }
+        match self {
+            // 1252 is 8859-1 except for the 0x80..0xA0 block.
+            Self::Windows1252 => match b {
+                0xA0..=0xFF => b as char,
+                _ => CP1252_HIGH[(b - 0x80) as usize],
+            },
+            // In 1251 the Cyrillic alphabet is contiguous from 0xC0, so only
+            // the punctuation block below it needs a table.
+            Self::Windows1251 => match b {
+                0xC0..=0xFF => {
+                    char::from_u32(0x410 + (b as u32 - 0xC0)).expect("in the Cyrillic block")
+                }
+                _ => CP1251_HIGH[(b - 0x80) as usize],
+            },
+        }
+    }
+}
+
+/// Windows-1252, `0x80..=0x9F`. `\u{FFFD}` marks the five undefined bytes.
+const CP1252_HIGH: [char; 32] = [
+    '€', '\u{FFFD}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{FFFD}', 'Ž',
+    '\u{FFFD}', '\u{FFFD}', '\u{2018}', '\u{2019}', '“', '”', '•', '–', '—', '˜', '™', 'š', '›',
+    'œ', '\u{FFFD}', 'ž', 'Ÿ',
+];
+
+/// Windows-1251, `0x80..=0xBF` — everything below the contiguous Cyrillic run.
+const CP1251_HIGH: [char; 64] = [
+    'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡', '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ', 'ђ',
+    '\u{2018}', '\u{2019}', '“', '”', '•', '–', '—', '\u{FFFD}', '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ',
+    '\u{00A0}', 'Ў', 'ў', 'Ј', '¤', 'Ґ', '¦', '§', 'Ё', '©', 'Є', '«', '¬', '\u{00AD}', '®', 'Ї',
+    '°', '±', 'І', 'і', 'ґ', 'µ', '¶', '·', 'ё', '№', 'є', '»', 'ј', 'Ѕ', 'ѕ', 'ї',
+];
+
 /// The lowest key Ross-Tech uses for the 24-bit ISO/SAE DTC band. Below this
 /// (and below 65 536 in practice) the keys are legacy 5-digit fault codes in
 /// an unrelated numbering.
@@ -157,8 +226,14 @@ pub struct CodesDb {
 
 impl CodesDb {
     /// Parse and decrypt a whole `Codes.dat`, recovering the file-wide IV
-    /// constant on the way.
+    /// constant on the way. Reads the text as Windows-1252, the English file's
+    /// page; use [`CodesDb::parse_in`] for a translation.
     pub fn parse(data: &[u8]) -> Self {
+        Self::parse_in(data, CodePage::default())
+    }
+
+    /// [`CodesDb::parse`], for a file in a named code page.
+    pub fn parse_in(data: &[u8], page: CodePage) -> Self {
         let raw = Self::frame(data);
         let file_constant = recover_file_constant(&raw);
         let texts = raw
@@ -169,12 +244,7 @@ impl CodesDb {
                     &crate::rod::KEY_ROD,
                     block0_iv(r.key, file_constant),
                 );
-                (r.text_len <= plain.len()).then(|| {
-                    (
-                        r.key,
-                        plain[..r.text_len].iter().map(|&b| b as char).collect(),
-                    )
-                })
+                (r.text_len <= plain.len()).then(|| (r.key, page.decode(&plain[..r.text_len])))
             })
             .collect();
         Self {
@@ -355,6 +425,21 @@ mod tests {
         record_c(key, text, 0)
     }
 
+    /// A record whose text is bytes rather than a `&str` — the file stores a
+    /// code page, so a test about one cannot start from Rust's UTF-8.
+    fn record_bytes(key: u32, text: &[u8]) -> Vec<u8> {
+        let text_len = text.len();
+        let mut plain = text.to_vec();
+        plain.resize(text_len.div_ceil(8) * 8, 0);
+        let cipher = tea_cbc_encrypt(&plain, &crate::rod::KEY_ROD, block0_iv(key, 0));
+        let mut out = format!("{key:08} ").into_bytes();
+        out.push(cipher.len() as u8);
+        out.push(text_len as u8);
+        out.extend_from_slice(&cipher);
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
     #[test]
     fn container_round_trips_and_keeps_the_first_eight_characters() {
         let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
@@ -442,5 +527,39 @@ mod tests {
             db.get(9_529_586),
             Some("Steering Angle Sensor: Not Initialized")
         );
+    }
+
+    /// The byte that made the point: 0x96 appears 191 times in the English
+    /// file. Read as ISO 8859-1 it is U+0096, a C1 control, and the text was
+    /// reported as clean because nothing looked.
+    #[test]
+    fn the_english_page_reads_punctuation_and_not_control_bytes() {
+        let text = CodePage::Windows1252.decode(&[b'A', 0x96, b'B', 0xA9, 0xB0]);
+        assert_eq!(text, "A–B©°");
+        assert!(
+            !text.chars().any(|c| c.is_control()),
+            "a code page that yields control characters is the wrong code page"
+        );
+    }
+
+    /// `Code-RUS.dat` is Windows-1251, where the same high bytes are Cyrillic.
+    /// The word is the one the recovered IV was confirmed against, in Russian.
+    #[test]
+    fn the_russian_page_reads_cyrillic_where_the_english_one_reads_symbols() {
+        let bytes = [0xC4, 0xE0, 0xF2, 0xF7, 0xE8, 0xEA, 0xB8, 0xB9];
+        assert_eq!(CodePage::Windows1251.decode(&bytes), "Датчикё№");
+        assert_ne!(CodePage::Windows1252.decode(&bytes), "Датчикё№");
+    }
+
+    /// Choosing the page is the caller's job, so a file parsed in the wrong
+    /// one must differ visibly rather than quietly.
+    #[test]
+    fn the_page_reaches_the_stored_text() {
+        let file = record_bytes(9_529_586, &[0xC4, 0xE0, 0xF2]);
+        assert_eq!(
+            CodesDb::parse_in(&file, CodePage::Windows1251).get(9_529_586),
+            Some("Дат")
+        );
+        assert_eq!(CodesDb::parse(&file).get(9_529_586), Some("Äà\u{f2}"));
     }
 }
