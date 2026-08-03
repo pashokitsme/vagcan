@@ -375,8 +375,7 @@ function chUnit(k) { return (CH[k] && CH[k].unit) || ""; }
    way they are written. Presentation only — the stored string is untouched. */
 function pretty(u) {
   return String(u || "").replace(/m\/s2\b/g, "m/s²").replace(/\bm2\b/g, "m²")
-                        .replace(/\bm3\b/g, "m³").replace(/\bdegC\b/g, "°C")
-                        .replace(/\/min\b/g, "rpm");
+                        .replace(/\bm3\b/g, "m³").replace(/\bdegC\b/g, "°C");
 }
 /* A boost pressure with no "absolute" or "gauge" on it is the one unlabelled
    number on this page that a knowledgeable driver will misread: a healthy
