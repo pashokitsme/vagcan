@@ -185,12 +185,65 @@ road:
    document asked — double-counts about 150 kg on a 1400 kg car. The tool asks whether the
    stated figure includes the driver, adds only what is left, shows the sum, and stores the
    parts rather than the total. Then the tyre size as written on the sidewall.
-4. **Then waits for the road.** It says what it needs and watches the bus for it: get up to
-   `--coast-from` (120 km/h), then coast in neutral down to `--coast-to` (40). It prompts
-   once, before anything moves, and then goes quiet — the screen shows the current speed and
-   what it is waiting for, and nothing asks the driver anything at speed.
-5. **Asks for the return pass**, turns the same stretch around, and repeats.
-6. **Fits, then writes the car file**, printing the path and what it now knows.
+4. **Explains the road part while the car is still parked**, because none of it can be
+   explained at 120 km/h:
+
+   ```
+     The road part needs about a kilometre of clear, flat, dry road with no traffic
+     behind you — twice, once in each direction. Coasting from 120 to 40 km/h takes
+     30 to 45 seconds; the car does not slow quickly in neutral. Find the road
+     before you set off.
+
+     Each pass: get to 120, select N, take your foot off, let it roll to 40, then
+     drive normally. Nothing here touches the car — it is coasting and this tool is
+     reading its speed. Decide about neutral before the pass, not during it: I will
+     not ask you anything while you are moving.
+
+     You can stop at any point. Everything answered and every accepted pass is kept.
+   ```
+5. **Then waits, and says what it is waiting for.** The screen shows the current speed and the
+   target; the bus decides when a pass starts and ends (below). If two minutes pass without
+   ever reaching the target it offers the way out, since the flags are unreachable at the
+   moment they are needed:
+
+   ```
+     still waiting for 120 km/h — the fastest so far is 96.
+     If this road will not do it, press Esc and start again with a lower range:
+         vagcan race setup --coast-from 90 --coast-to 30
+     A narrower range separates drag from rolling resistance less well, and the fit
+     will say by how much rather than hiding it.
+   ```
+6. **Asks for the return pass** — pointing the other way, same stretch — and repeats.
+7. **Fits, then writes the car file** and says what the car is now known to be, and what that
+   makes available:
+
+   ```
+     Setup complete — /Users/you/Library/Application Support/vagcan/cars/XW8…917.json
+
+       mass    1475 kg        you, 2026-08-03
+       tyre    205/55R16      you
+       CdA     0.63 m²        measured on this car, 2 passes
+       Crr     0.0114         measured on this car
+       ρ 1.183 kg/m³ and 1385 kg at fit time, wind ≈ 0.8 m/s, slope ≈ 0.3 %
+
+     Power is now available:   vagcan race --full
+
+     Two things worth doing once, neither of which needs this tool:
+       • run out and back on the same stretch and average at matched speeds — slope
+         and steady wind reverse sign between the two and cancel
+       • compare one run against GPS to see whether this car's bus speed carries the
+         speedometer's optimism, then pass --speed-scale
+   ```
+
+A resumed setup says where it stands rather than starting over:
+
+```
+  resuming setup for XW8AD4NE9JH008917
+    mass, tyre      answered 2026-08-03
+    coastdown       1 of 2 passes done (2026-08-03, 38.2 s)
+  Drive the return pass on the same stretch. If you no longer know which way the
+  first pass went, press r to discard it and drive both again.
+```
 
 If the run is abandoned before the passes are done, everything already obtained is kept —
 the answers **and any accepted pass** — and `--full` stays unavailable until the rest is
@@ -273,8 +326,17 @@ A car that has never been set up is the normal first encounter, and it must not 
 `race` runs anyway, in the **default mode**, announced in one line at the top of the screen:
 
 ```
-  no profile for XW8AD4NE9JH008917 — default mode: times, speeds and telemetry,
-  no power. Park, then run: vagcan race --setup
+  no car file for XW8AD4NE9JH008917 — default mode: times, speeds and telemetry,
+  no power. Park, then run: vagcan race setup
+```
+
+And once a car file *does* exist, the banner does not simply disappear — a user who spent
+twenty minutes on a coastdown and then sees no difference whatsoever concludes it did
+nothing:
+
+```
+  XW8AD4NE9JH008917 — car file 2026-08-04 (mass 1475 kg, CdA 0.63 measured)
+  default mode: times and telemetry. Add --full for the power column.
 ```
 
 The default mode is not a stripped-down recording. It records **every channel worth having
@@ -433,7 +495,9 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
   standing still again, so a session is a sequence of runs in one file.
 
 Keys: `p` pauses the trigger, `Esc` cancels the current run, `s` saves the session, `←`/`→`
-change which series the chart shows, `q` quits.
+change which series the chart shows, `q` quits — and argues back if anything is unsaved.
+The keyboard is drained between batches, never around one: a read that is waiting out a
+two-second response deadline must not make `Esc` wait with it.
 
 ## 2. Polling — `race/channels.rs` and `race/mod.rs`
 
@@ -899,11 +963,53 @@ crate.
     0s        2s        4s        6s
 ```
 
-**A run needs no keystroke.** Arming, starting, finishing and saving all happen by
-themselves; the output file names itself from the time and the VIN. The keys are for
-exceptions only — cancelling, pausing the trigger, changing the series — and none of them has
-to be pressed for the tool to do its job. Nothing prompts the driver while the car is moving,
-and the results table appears when the car is stopped, not at the finish of the mark.
+**A run needs no keystroke.** Arming, starting and finishing all happen by themselves. The
+keys are for exceptions — cancelling, pausing the trigger, changing the series, saving — and
+none of them has to be pressed for a run to be *measured*. Nothing prompts the driver while
+the car is moving.
+
+**Saving is explicit**, and that is a deliberate choice against the alternative: `s` writes
+the session, and `--out` writes continuously for anyone who wants that. What must not happen
+is losing a drive by accident, so quitting with unsaved runs does not quit:
+
+```
+  4 runs not saved.   [s] save    [q] again to discard
+```
+
+Two keystrokes to throw away a drive, one to keep it, and no file appears that nobody asked
+for.
+
+**The screen always says which state it is in**, in a band across the top, because the state
+machine in §1 is otherwise invisible and the first thing a new user meets is `Idle` — with
+nothing on screen telling them the tool is waiting for the car to stop:
+
+| state | band |
+|---|---|
+| Idle, moving | `WAITING — come to a full stop to arm      0.4 km/h` |
+| Idle, stopped, counting | `ARMING — hold still  0.6 s` |
+| Armed | `ARMED — go when you are ready` |
+| Running | `RUN  4.31 s` |
+| Finished | `DONE  6.12 s — stop completely to arm the next run` |
+| Aborted | `ABORTED at 82 km/h — kept 0-10, 0-25, 0-50, 0-60` |
+| Trigger paused | `PAUSED — will not arm.  [p] resume` |
+| Rate collapsed | the band gains `  SLOW — 6 Hz, times less certain` |
+
+The right-hand corner carries the achieved rate and whether a file is open. `WAITING` shows
+the current speed next to it for one specific reason: arming needs a true zero, and a car
+creeping at 0.4 km/h would otherwise sit there looking broken with nothing to explain it.
+
+**A tone marks each closed mark**, because the screen is unreadable at the moment the
+information arrives. One short tone per mark, a different one when the run finishes, a low
+one when a run is aborted or a coastdown pass is rejected — that last is the one that matters
+most, since without it a rejected pass is discovered a kilometre later. macOS carries usable
+sounds in `/System/Library/Sounds`; the terminal bell is the fallback, and `--quiet` turns it
+off. The player is spawned and never waited on: a poll loop that blocks on audio would put
+the sound ahead of the measurement.
+
+**The results table waits for the car to stop.** At the finish the marks panel simply stops
+filling in and the band says `DONE`; the two-block table redraws the screen only once the car
+is stationary. Redrawing a dense table at 100 km/h is exactly what the rest of this design
+avoids.
 
 **The table carries every value; the chart carries one.** A table of ten rows is readable
 and a chart of ten series is not, so the chart shows a single series at a time, switched
@@ -954,6 +1060,114 @@ The measured block holds times, the average accelerations that are `Δv/Δt` acr
 own endpoints, and peaks of channels the car reported. The computed block carries its
 conditions in the heading: the same run under a different mass is a different set of numbers,
 and a table that hides that invites the comparison it cannot support.
+
+## 4a. What the user reads when something goes wrong
+
+Every refusal in §8's test table needs words, and the design had none — an assertion that a
+command "refuses, naming what is missing" is not a message. The rule these follow: say what
+happened, say what it cost, and end with something to do.
+
+Two of them are already written. `race` resolves its adapter through the same helper the rest
+of the CLI uses, so "no adapter" and the documented failure where this hardware enumerates on
+USB but macOS attaches no serial node — the one that needs a physical unplug — inherit copy
+that already exists rather than growing a worse second version.
+
+**A required channel is missing** (checked at a standstill, in `race` as well as in `setup`):
+
+```
+  race needs road speed, and this car's catalogs do not have it.
+
+    gearbox  7E1  0CW300041G   speed          not in the catalog
+    engine   7E0  8V0906264H   engine speed   ok
+                               pedal          ok
+
+  There is no stopwatch without a speed channel, and race will not guess one from
+  raw bytes. To find it:
+      vagcan survey --out parked.jsonl      then, after a drive:
+      vagcan survey --out driving.jsonl
+      vagcan survey --diff parked.jsonl driving.jsonl
+  The identifiers whose bytes moved are the live measurements.
+```
+
+**`--full` without a finished car file:**
+
+```
+  --full computes power, and power needs this car measured, not assumed.
+
+    mass 1475 kg        answered 2026-08-03
+    tyre 205/55R16      answered 2026-08-03
+    CdA, Crr            missing — the coastdown was never completed
+
+  Park the car and run:  vagcan race setup
+  It keeps what you already answered and asks only for the coastdown.
+
+  Running without --full: every time, every mark, acceleration, distance and shift
+  cost. Only the power column is absent.
+```
+
+**A coastdown pass is rejected** — and it must say which way to point next, because the tool
+cannot see direction and a mis-paired set poisons the fit silently:
+
+```
+  pass 2 rejected — the brake was used (deceleration jumped at 71 km/h).
+  Stay pointing the way you are now and do it again: you still owe one pass in
+  this direction.   Passes so far: 1 of 2.
+```
+
+**The fit is rejected** — the worst moment in the whole feature, twenty minutes of driving for
+nothing, so this one ends with a plan rather than a verdict:
+
+```
+  The two passes disagree by 11 % on Crr (limit 5 %), so neither is trusted and no
+  road load was written.
+
+    pass 1   CdA 0.61 m²   Crr 0.0109      implied slope between them: 0.9 %
+    pass 2   CdA 0.68 m²   Crr 0.0121      implied wind: 4.1 m/s
+
+  Both passes fit their own data well, so this is not noise — something differed
+  between the two directions. A slope of about 1 % would do it, and so would that
+  much wind.
+
+  What to try, in order:
+    • a flatter stretch — both passes must be the same piece of road
+    • a calmer day; above roughly 2 m/s the wind alone shifts Crr by 2 %
+    • warm the car first: cold tyres and cold gearbox oil read a higher rolling
+      resistance than the car will have on a run
+
+  Nothing else is lost. Mass and tyre size are saved. Re-run vagcan race setup and
+  it asks only for the passes.
+```
+
+**The rate collapses mid-run:**
+
+```
+  SLOW — 6 Hz (was 21). A control unit has started timing out.
+
+  The times are still real, but their uncertainty has roughly tripled and the run is
+  flagged `degraded` in the file. Marks from a standstill are worst affected.
+  Try --minimal, or check the adapter at the OBD port.
+```
+
+**The car stops answering** — ignition off, a pulled connector, a unit that went quiet — in
+both `race` and `setup`, which the first draft never covered at all:
+
+```
+  the car stopped answering. Current run discarded; 3 saved runs are untouched.
+  Waiting — this will pick up again when the ignition is back on.
+```
+
+**The car file is for a different car:**
+
+```
+  that car file is for XW8AD4NE9JH008917 and this car says XW8AD4NE9JH000123.
+  Ignoring it: mass and road load belong to one specific car. Run
+  vagcan race setup for this one, or pass --car with the right file.
+```
+
+**Two keys that mean different things in different commands.** `Esc` cancels a run here and
+quits in `watch`. That is a deliberate divergence rather than an oversight — a stopwatch needs
+a cheap "throw this one away" and `watch` has nothing to throw away — and it is written down
+so it stays deliberate. `q` quits both, and here it argues back when there is unsaved work.
 
 ## 5. The saved session — raw JSON
 
@@ -1113,7 +1327,14 @@ The rest:
 - Background discriminators, one at a time: **by gear**, **by mark**, **by kickdown**, **by
   acceleration dip** (the shifts, without reading the gear row), or none. They work on any X
   axis — on the speed axis a gear change is still a vertical line, just at a km/h.
-- A run selector when the session holds several.
+- **Runs overlay, up to four.** The speed axis exists so that two attempts compare directly,
+  and a page that can only show one run cannot do the thing its own axis was chosen for. The
+  first selected run draws in the full palette and the rest in muted variants of the same
+  hues, so the solid/dashed distinction between read and derived still reads. The cursor
+  tooltip gains a difference row — `run 3 is 0.14 s ahead of run 1 at 80 km/h` — and the
+  background discriminator applies to the reference run only, since four sets of gear bands
+  would be mud. Comparing runs across two session files is out of scope, and the page says so
+  rather than leaving it to be discovered.
 
 Everything drawn comes from the recomputed derivative layer, so the page and the results
 table cannot disagree.
@@ -1271,6 +1492,12 @@ today.
 | origin | every channel in the file declares `origin`, and every derived one its method and parameters |
 | unmapped code | a selector value outside the table is stored flagged and reaches no derived figure |
 | series sets | a set whose channels this car lacks is not offered on the page |
+| run overlay | four runs render together, the difference row is computed at matched speeds, and the background follows the reference run only |
+| quit guard | quitting with unsaved runs does not quit, and a second `q` discards |
+| state band | every state in §1 has a band, and `WAITING` shows the speed that is keeping it there |
+| sound | a closed mark plays a tone without blocking the poll loop, and `--quiet` silences it |
+| error copy | each refusal names what happened, what it cost and what to do next; a missing channel names the channel and the unit |
+| wrong car | a car file whose VIN differs from the car's is ignored with a message, never applied |
 
 ## Open questions deliberately left open
 
