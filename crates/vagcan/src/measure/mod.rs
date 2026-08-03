@@ -813,6 +813,7 @@ fn prepare(
             .map(str::to_string)
             .or_else(|| car.as_ref().and_then(|c| c.tyre.as_ref().map(|t| t.value.clone()))),
         pedal_step: pedal_step(&set),
+        units: channel_units(&set),
         ..report::Setting::default()
     };
 
@@ -898,6 +899,16 @@ fn found_report(
             })
         })
         .collect()
+}
+
+/// What each resolved channel calls its own unit, keyed by the role it fills.
+///
+/// The same words the session file records, so the table and the file cannot
+/// disagree about what the car was asked. Nothing here knows which quantity is
+/// which: every channel hands over its catalog's spelling and the table prints
+/// it.
+fn channel_units(set: &channels::Set) -> BTreeMap<&'static str, String> {
+    set.all().map(|channel| (channel.key, channel.def.unit.to_string())).collect()
 }
 
 /// One raw step of the pedal channel, which is what a kickdown threshold is

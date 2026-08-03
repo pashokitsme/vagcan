@@ -22,6 +22,7 @@
 //! from this run's own measured refresh period. Neither display pretends to be
 //! the other.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::derive::{self, Scheme, Slope};
@@ -75,6 +76,26 @@ pub struct Setting {
     /// measured in. A percentage written here would be one unit's scaling in
     /// disguise: the reference car's pedal reads 102 % at full travel.
     pub pedal_step: Option<f64>,
+    /// What each channel calls its own unit, keyed by the role it fills.
+    ///
+    /// The table prints these and never a word of its own. Writing `rpm` where
+    /// the car's catalog says `/min` is a unit this tool invented: the session
+    /// file beside the table records `/min`, and a reader comparing the two has
+    /// no way to tell whether the car was asked something different or the
+    /// spelling was changed on the way to the screen. A channel whose unit is
+    /// not known prints a bare number, which is the honest form of not knowing.
+    pub units: BTreeMap<&'static str, String>,
+}
+
+impl Setting {
+    /// The unit of the channel filling `key`, ready to append to a number —
+    /// `" /min"`, or nothing at all for a dimensionless or unknown channel.
+    fn unit_suffix(&self, key: &str) -> String {
+        match self.units.get(key).map(String::as_str).unwrap_or_default() {
+            "" => String::new(),
+            unit => format!(" {unit}"),
+        }
+    }
 }
 
 /// The dynamics half of [`Setting`] — present exactly when `--full` was
@@ -96,6 +117,7 @@ impl Default for Setting {
             tyre: None,
             rho_measured: false,
             pedal_step: None,
+            units: BTreeMap::new(),
         }
     }
 }
@@ -413,13 +435,13 @@ fn power_series(run: &Run, accel: &Track, model: &Model, window: Seconds) -> (Tr
 /// detail, since a mark's own precision is what says how much of it to believe.
 pub fn results(run: &Run, derived: &Derived, setting: &Setting) -> String {
     let mut out = String::new();
-    measured_block(&mut out, run, derived);
+    measured_block(&mut out, run, derived, setting);
     computed_block(&mut out, run, derived, setting);
     out
 }
 
 /// Times, and the peaks of channels the car itself reported.
-fn measured_block(out: &mut String, run: &Run, derived: &Derived) {
+fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Setting) {
     let aborted = if run.aborted { " (aborted)" } else { "" };
     let _ = writeln!(out, "  Run {} — measured{aborted}", run.index);
 
@@ -466,16 +488,27 @@ fn measured_block(out: &mut String, run: &Run, derived: &Derived) {
     }
 
     if let Some(peak) = derived.peak_engine_speed {
-        // `rpm`, not the catalog's `/min`: this table is read by a driver, and
-        // that is the word a driver uses.
-        let _ =
-            writeln!(out, "    peak engine speed   {:.0} rpm at {:.1} s", peak.value, peak.t);
-    }
-    if let (Some(peak), Some(reference)) = (derived.peak_boost, derived.boost_reference) {
+        // The channel's own unit, whatever it is. This row used to print `rpm`
+        // on the grounds that a driver says rpm, which renamed the catalog's
+        // `/min` — the one thing about a measurement nobody may quietly change.
         let _ = writeln!(
             out,
-            "    peak boost          {:.2} bar {reference} at {:.1} s",
-            peak.value, peak.t
+            "    peak engine speed   {:.0}{} at {:.1} s",
+            peak.value,
+            setting.unit_suffix("engine speed"),
+            peak.t
+        );
+    }
+    if let (Some(peak), Some(reference)) = (derived.peak_boost, derived.boost_reference) {
+        // Likewise `bar`, which was the reference car's catalog spelling written
+        // into the source: a unit that answers in mbar would have read a
+        // thousandfold wrong and said nothing about it.
+        let _ = writeln!(
+            out,
+            "    peak boost          {:.2}{} {reference} at {:.1} s",
+            peak.value,
+            setting.unit_suffix("boost actual"),
+            peak.t
         );
     }
 }
@@ -671,16 +704,41 @@ mod tests {
         assert!(results(&run, &derived, &Setting::default()).contains("mark (km/h)"));
     }
 
+    /// A run whose channels reported their units, as a resolved set does.
+    fn setting_with_units() -> Setting {
+        Setting {
+            units: [("engine speed", "/min".to_string()), ("boost actual", "bar".to_string())]
+                .into_iter()
+                .collect(),
+            ..Setting::default()
+        }
+    }
+
     #[test]
-    fn engine_speed_is_rpm_here_whatever_the_catalog_calls_it() {
-        // The catalog says `/min`; a driver says rpm, and this table is read by
-        // a driver.
+    fn a_peak_is_printed_in_the_unit_its_own_channel_reports_and_never_a_renamed_one() {
+        // This row used to print `rpm` because that is the word a driver uses.
+        // The catalog says `/min`, the session file says `/min`, and a table
+        // that says something else has invented a unit — the reader comparing
+        // the two cannot tell which of them the car actually reported.
+        let run = run();
+        let setting = setting_with_units();
+        let derived = recompute(&run, &setting);
+        let table = results(&run, &derived, &setting);
+        assert!(table.contains("peak engine speed"), "{table}");
+        assert!(table.contains(" /min at "), "{table}");
+        assert!(!table.contains("rpm"), "{table}");
+    }
+
+    #[test]
+    fn a_channel_that_did_not_say_what_it_measures_in_prints_a_bare_number() {
+        // Not a borrowed unit: a car whose catalog leaves the unit empty gets a
+        // number with nothing after it, which is the honest form of not knowing.
         let run = run();
         let derived = recompute(&run, &Setting::default());
         let table = results(&run, &derived, &Setting::default());
-        assert!(table.contains("peak engine speed"), "{table}");
-        assert!(table.contains(" rpm at "), "{table}");
-        assert!(!table.contains("/min"), "{table}");
+        let row = table.lines().find(|l| l.contains("peak engine speed")).expect("the row is there");
+        assert!(row.contains(" at "), "{row}");
+        assert!(!row.contains("rpm") && !row.contains("/min"), "{row}");
     }
 
     #[test]
@@ -688,9 +746,10 @@ mod tests {
         // 1.6 bar absolute is part load and 1.6 gauge is a healthy full-load
         // figure; an unlabelled column reads a healthy car as a sick one.
         let run = run();
-        let derived = recompute(&run, &Setting::default());
+        let setting = setting_with_units();
+        let derived = recompute(&run, &setting);
         assert_eq!(derived.boost_reference, Some("abs"));
-        assert!(results(&run, &derived, &Setting::default()).contains("bar abs at"));
+        assert!(results(&run, &derived, &setting).contains("bar abs at"));
 
         // The same channel offset to gauge is recognised as gauge, with no
         // table and no per-car constant.
