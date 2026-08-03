@@ -25,3 +25,4 @@ pub mod derive;
 pub mod messages;
 pub mod power;
 pub mod types;
+pub mod view;
