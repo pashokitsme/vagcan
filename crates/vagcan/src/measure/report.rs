@@ -16,11 +16,13 @@
 //! cannot disagree about what happened.
 //!
 //! **Two kinds of mark, printed as two kinds of number.** A mark from a
-//! standstill is an interval — its lower endpoint is not a crossing but a launch
-//! reconstructed by two estimators that miss from opposite sides, so the truth
-//! is between them. A rolling mark is a single figure with a real `±`, computed
-//! from this run's own measured refresh period. Neither display pretends to be
-//! the other.
+//! standstill carries an interval — its lower endpoint is not a crossing but a
+//! launch reconstructed by two estimators that miss from opposite sides, so the
+//! truth is between them. It leads with the midpoint so there is one figure to
+//! quote, and the interval stays beside it because the midpoint is not better
+//! known than its ends. A rolling mark is a single figure with a real `±`,
+//! computed from this run's own measured refresh period. Neither display
+//! pretends to be the other, and the interval is never respelled as a `±`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -482,10 +484,12 @@ fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
     if run.marks.iter().any(Mark::starts_at_launch) {
         let _ = writeln!(
             out,
-            "\n    Marks from a standstill are a range, not a number: the car is already\n\
-             \x20   rolling before its own speed signal wakes up, and where inside that gap\n\
-             \x20   it started cannot be recovered. The two ways of extrapolating back to\n\
-             \x20   zero err in opposite directions, so the answer is between them."
+            "\n    A mark from a standstill carries a range: the car is already rolling\n\
+             \x20   before its own speed signal wakes up, and where inside that gap it\n\
+             \x20   started cannot be recovered. The two ways of extrapolating back to zero\n\
+             \x20   err in opposite directions, so the answer is between them. The figure in\n\
+             \x20   front is the middle of the range — quotable, and no better known than\n\
+             \x20   the range. It is not a ±: nothing here is more likely in the centre."
         );
         if let Some(mark) = run.marks.iter().find(|mark| !mark.starts_at_launch()) {
             let _ = writeln!(
@@ -607,9 +611,24 @@ fn conditions(setting: &Setting, derived: &Derived) -> String {
 }
 
 /// How a mark's time is spelled, which is how much of it to believe.
+///
+/// A mark from a standstill leads with one number so there is something to read
+/// at a glance and to quote, and carries the bracket beside it. The number is
+/// the bracket's midpoint and nothing more: the moment the car started was not
+/// observed, and the two estimators that reach back through the speed signal's
+/// dead band disagree by the width shown. It is deliberately **not** written
+/// `1.19 s ± 0.05` — that spelling claims a symmetric error around a measured
+/// value, and there is neither a measurement nor a reason to think the middle
+/// of the interval more likely than its ends.
+///
+/// A rolling mark is the opposite case and gets the `±` it has earned: both
+/// ends are real crossings, the dead band cancels in the difference, and what
+/// is left is the leading unit's refresh period.
 fn mark_time(mark: &Mark, sigma: Option<Seconds>) -> String {
     match (mark.bracket, sigma) {
-        (Some(span), _) => format!("{:.2} … {:.2} s", span.earliest, span.latest),
+        (Some(span), _) => {
+            format!("{:.2} s ({:.2} … {:.2})", mark.seconds, span.earliest, span.latest)
+        }
         (None, Some(sigma)) => format!("{:.2} s ± {sigma:.2}", mark.seconds),
         (None, None) => format!("{:.2} s", mark.seconds),
     }
@@ -695,7 +714,12 @@ mod tests {
         let run = run();
         let derived = recompute(&run, &Setting::default());
         let table = results(&run, &derived, &Setting::default());
-        assert!(table.contains("6.85 … 7.04 s"), "{table}");
+        // One number to quote, and the interval it came out of beside it.
+        let launch = table.lines().find(|l| l.contains("0-100")).unwrap();
+        assert!(launch.contains("6.94 s (6.85 … 7.04)"), "{launch}");
+        // Never spelled as a ±: that would claim a symmetric error around a
+        // measurement, and the launch is neither symmetric nor measured.
+        assert!(!launch.contains('±'), "a bracket is not a ±: {launch}");
         let rolling = table.lines().find(|l| l.contains("50-100")).unwrap();
         assert!(rolling.contains(" ± "), "a rolling mark carries a real ±: {rolling}");
         assert!(!rolling.contains('…'), "and never a bracket: {rolling}");

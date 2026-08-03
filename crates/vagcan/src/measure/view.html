@@ -1525,17 +1525,22 @@ function powerFigure(kw) {
 
 function markName(m) { return m.from + "–" + m.to; }
 
-/* A 0-based mark prints as a range, because the moment the car started is
-   bracketed rather than known: the quadratic fit gives the earliest t0 the
-   samples allow and the linear one the latest, and the truth is between them.
-   The range is not one-signed — an earlier attempt assumed the reported time
-   could only read short, and that was wrong in both directions.
+/* A 0-based mark leads with one number, so there is something to quote, and
+   carries its bracket beside it. The number is the bracket's midpoint and
+   nothing more: the moment the car started was not observed, the quadratic fit
+   gives the earliest t0 the samples allow and the linear one the latest, and
+   the truth is somewhere between. Deliberately not written `1.19 s ± 0.05` —
+   that claims a symmetric error around a measured value, and there is neither
+   a measurement nor a reason to prefer the middle to the ends. Nor is it
+   one-signed: an earlier attempt assumed the time could only read short, and
+   that was wrong in both directions.
 
    A rolling mark starts and ends on the same signal, so that error cancels and
    it prints one number with a real ±. */
 function markTime(m) {
   if (m.bracket_s) {
-    return m.bracket_s.earliest.toFixed(2) + " … " + m.bracket_s.latest.toFixed(2) + " s";
+    return m.seconds.toFixed(2) + " s (" + m.bracket_s.earliest.toFixed(2) +
+      " … " + m.bracket_s.latest.toFixed(2) + ")";
   }
   if (!m.from_t0 && typeof m.sigma_s === "number") {
     return m.seconds.toFixed(2) + " s ± " + m.sigma_s.toFixed(2);
@@ -1594,11 +1599,13 @@ function renderResults() {
       : '<p class="hint">No mark closed in this run.</p>';
     if (peaks.length) html += '<table class="t" style="margin-top:6px">' + peaks.join("") + "</table>";
     if (anyZero) {
-      html += '<p class="note">A mark from a standstill is a range because the moment the car ' +
-        "started is bracketed, not known: it is already rolling before its own speed signal wakes " +
-        "up, and the two ways of reaching back through that stretch disagree. The truth is inside " +
-        "the range, not at either end. A rolling mark starts from a real crossing and needs no " +
-        "reaching back, so it gets one number and a real ±.</p>";
+      html += '<p class="note">A mark from a standstill carries a range because the moment the ' +
+        "car started was not observed: it is already rolling before its own speed signal wakes " +
+        "up, and the two ways of reaching back through that stretch disagree by the width shown. " +
+        "The figure in front is the middle of that range, quotable but no better known than the " +
+        "range itself — the truth is anywhere inside it, not preferentially in the centre, which " +
+        "is why it is not written as a ±. A rolling mark starts from a real crossing and needs " +
+        "no reaching back, so its ± is a real one: the unit's refresh period.</p>";
     }
     html += "</div>";
 
