@@ -222,6 +222,93 @@ enum Command {
         catalogs: String,
     },
 
+    /// Time an acceleration run from the car's own speed signal.
+    ///
+    /// Arms itself when the car stands still, starts when it moves, and times
+    /// every mark on the way up — no keystroke is needed for a run to be
+    /// measured, and nothing prompts the driver while the car is moving.
+    ///
+    /// The ordinary invocation is `vagcan measure` with no flags at all. It
+    /// gives every time, every mark, the acceleration, the distance and the
+    /// shift costs. `--full` adds the power column and needs this car measured
+    /// first, by `vagcan measure setup`.
+    ///
+    /// There is no `--hz`: the rate is measured and reported, never asserted in
+    /// advance, and a flag that throttled a stopwatch could only make it worse.
+    Measure {
+        /// `setup` describes this car once; `view` opens a saved session.
+        #[command(subcommand)]
+        tool: Option<measure::Tool>,
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// Use this car file instead of the one kept for this car's VIN.
+        #[arg(long, value_name = "FILE")]
+        car: Option<String>,
+        /// Compute power as well. Needs a car file completed by
+        /// `vagcan measure setup`, and is refused without one rather than
+        /// falling back to generic road-load numbers.
+        #[arg(long)]
+        full: bool,
+        /// Poll only what the stopwatch needs — speed and gear — for the
+        /// highest achievable rate, at the cost of the telemetry.
+        #[arg(long, conflicts_with = "full")]
+        minimal: bool,
+        /// Marks to time, as `A-B` pairs in km/h, `A < B`. `0-60` here is the
+        /// metric one; the American figure is in mph.
+        #[arg(long, default_value = measure::DEFAULT_MARKS, value_name = "LIST",
+              value_parser = measure::parse_marks)]
+        marks: measure::Marks,
+        /// Half-width of the least-squares acceleration window, in seconds.
+        #[arg(long, default_value_t = measure::report::ACCEL_WINDOW_S, value_name = "SECONDS",
+              value_parser = measure::parse_seconds)]
+        accel_window: f64,
+        /// Write the session here continuously. Without it, `s` saves on demand
+        /// into this car's own directory.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+        /// No tone on a closed mark.
+        #[arg(long)]
+        quiet: bool,
+        /// Where the measurement catalogs live.
+        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
+        catalogs: String,
+        /// Mass in kilograms, overriding the car file for this run.
+        #[arg(long, value_name = "KG")]
+        mass: Option<f64>,
+        /// Tyre size as written on the sidewall, e.g. `205/55R16`.
+        #[arg(long, value_name = "SIZE")]
+        tyre: Option<String>,
+        /// Drag area in m². The coastdown measures this; pass it only if you
+        /// genuinely have the figure, and pass `--crr` with it.
+        #[arg(long, value_name = "M2", requires = "crr")]
+        cda: Option<f64>,
+        /// Rolling resistance coefficient. The fit produces it and `--cda` as a
+        /// pair, so neither is accepted alone.
+        #[arg(long, value_name = "N", requires = "cda")]
+        crr: Option<f64>,
+        /// Scale the stored wheel and engine inertias, for a car whose
+        /// rotating mass is known to differ from the typical figures.
+        #[arg(long, value_name = "N")]
+        inertia_factor: Option<f64>,
+        /// Road gradient in per cent. Downhill flatters every figure.
+        #[arg(long, default_value_t = 0.0, value_name = "PERCENT")]
+        grade: f64,
+        /// Headwind in m/s. Drag acts on air speed, not on ground speed.
+        #[arg(long, default_value_t = 0.0, value_name = "M_S")]
+        headwind: f64,
+        /// Air density in kg/m³, for a car whose barometer or ambient sensor
+        /// this tool cannot read. It feeds power and nothing else.
+        #[arg(long, value_name = "KG_M3", requires = "full")]
+        air_density: Option<f64>,
+        /// Multiply every speed reading before mark detection, so that `0-100`
+        /// means a corrected 100 rather than an indicated one. One GPS
+        /// comparison run is what settles the value.
+        #[arg(long, default_value_t = 1.0, value_name = "N",
+              value_parser = measure::parse_speed_scale)]
+        speed_scale: f64,
+    },
+
     /// Sweep ONE control unit for every data identifier it answers.
     Scan {
         /// Adapter to use. Omit it when only one is connected.
@@ -395,6 +482,65 @@ async fn main() -> Result<()> {
                     view,
                 },
             )
+            .await
+        }
+        Command::Measure { tool: Some(measure::Tool::View { file }), .. } => {
+            measure::open_view(&file)
+        }
+        Command::Measure {
+            tool: Some(measure::Tool::Setup { device, coast_from, coast_to, catalogs, car }),
+            ..
+        } => {
+            measure::setup::run(measure::setup::Options {
+                device: device.as_deref(),
+                catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                coast_from_kmh: coast_from,
+                coast_to_kmh: coast_to,
+                car: car.as_deref(),
+            })
+            .await
+        }
+        Command::Measure {
+            device,
+            car,
+            full,
+            minimal,
+            marks,
+            accel_window,
+            out,
+            quiet,
+            catalogs,
+            mass,
+            tyre,
+            cda,
+            crr,
+            inertia_factor,
+            grade,
+            headwind,
+            air_density,
+            speed_scale,
+            ..
+        } => {
+            measure::run(measure::Options {
+                device: device.as_deref(),
+                car: car.as_deref(),
+                catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                full,
+                minimal,
+                marks: marks.0,
+                accel_window_s: accel_window,
+                out: out.as_deref(),
+                quiet,
+                mass_kg: mass,
+                tyre: tyre.as_deref(),
+                cda,
+                crr,
+                inertia_factor,
+                grade_percent: grade,
+                headwind_ms: headwind,
+                air_density,
+                speed_scale,
+            })
             .await
         }
         Command::Scan { device, ecu, range, out, delay_ms, while_driving } => {

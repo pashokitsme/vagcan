@@ -202,15 +202,40 @@ pub struct Screen {
     pub file: Option<String>,
     /// The quit guard, once `q` has been pressed with work outstanding.
     pub warning: Option<String>,
+    /// The results table for the run that just ended.
+    ///
+    /// It takes the whole middle of the screen, and the loop only sets it once
+    /// the car is stationary: redrawing a dense table at 100 km/h is exactly
+    /// what the rest of this design avoids.
+    pub table: Option<String>,
 }
 
 /// The keyboard's own state: which chart is up, and whether `q` is armed.
 #[derive(Clone, Debug, Default)]
 pub struct Controls {
     pub chart: usize,
+    /// How many series there are to walk. Kept here rather than passed in, so
+    /// that a caller cannot hold the keyboard state and the count at once and
+    /// have them disagree.
+    pub charts: usize,
     /// Set by the first `q` with unsaved runs, cleared by anything else. Two
     /// keystrokes to throw away a drive, one to keep it.
     quit_armed: bool,
+    /// Set by `s`. The write itself is deferred out of the key handler, so that
+    /// a file is never created between two batches of one cycle.
+    save_requested: bool,
+}
+
+impl Controls {
+    /// Note that a save was asked for.
+    pub fn ask_save(&mut self) {
+        self.save_requested = true;
+    }
+
+    /// Whether a save is owed, clearing the request.
+    pub fn take_save(&mut self) -> bool {
+        std::mem::take(&mut self.save_requested)
+    }
 }
 
 /// What a keystroke asked for.
@@ -232,11 +257,12 @@ pub enum Action {
 /// divergence rather than an oversight — a stopwatch needs a cheap "throw this
 /// one away" and `watch` has nothing to throw away — and it is written down so
 /// that it stays deliberate.
-pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize, charts: usize) -> Action {
+pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action {
     // Any key that is not a second `q` disarms the guard: a driver who pressed
     // `q`, thought better of it and pressed `s` must not then lose the drive to
     // a later stray `q`.
     let armed = std::mem::take(&mut controls.quit_armed);
+    let charts = controls.charts;
     match code {
         KeyCode::Char('q') => match unsaved == 0 || armed {
             true => Action::Quit,
@@ -288,6 +314,20 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         );
     }
 
+    // Once the car has stopped, the results table is what the screen is for.
+    if let Some(table) = &screen.table {
+        frame.render_widget(
+            Paragraph::new(table.clone())
+                .block(Block::default().borders(Borders::ALL).title(" results ")),
+            outer[2],
+        );
+        frame.render_widget(
+            Paragraph::new(status_line(screen)).block(Block::default().borders(Borders::ALL)),
+            outer[3],
+        );
+        return;
+    }
+
     // The marks panel takes what its content needs and the values take the
     // rest: a mark is `0-100` and a value can be `2.06 / 2.15 bar abs`.
     let marks_width = screen
@@ -309,22 +349,21 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     draw_chart(frame, screen, left[1]);
     draw_marks(frame, screen, middle[1]);
 
-    let status = match &screen.warning {
-        Some(warning) => warning.clone(),
-        None => {
-            let rate = screen.hz.map(|hz| format!("{hz:.1} Hz · ")).unwrap_or_default();
-            let file = screen
-                .file
-                .as_deref()
-                .map(|path| format!("  ·  writing {path}"))
-                .unwrap_or_default();
-            format!(" {rate}{}{file}", HINTS.trim_start())
-        }
-    };
     frame.render_widget(
-        Paragraph::new(status).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(status_line(screen)).block(Block::default().borders(Borders::ALL)),
         outer[3],
     );
+}
+
+/// The footer: the achieved rate, whether a file is open, and the keys.
+fn status_line(screen: &Screen) -> String {
+    if let Some(warning) = &screen.warning {
+        return warning.clone();
+    }
+    let rate = screen.hz.map(|hz| format!("{hz:.1} Hz · ")).unwrap_or_default();
+    let file =
+        screen.file.as_deref().map(|path| format!("  ·  writing {path}")).unwrap_or_default();
+    format!(" {rate}{}{file}", HINTS.trim_start())
 }
 
 fn draw_values(frame: &mut Frame, screen: &Screen, area: Rect) {
@@ -583,36 +622,37 @@ mod tests {
     #[test]
     fn quitting_with_unsaved_runs_does_not_quit_and_a_second_q_discards() {
         // Two keystrokes to throw away a drive, one to keep it.
-        let mut controls = Controls::default();
-        let refused = on_key(&mut controls, KeyCode::Char('q'), 4, 2);
+        let mut controls = Controls { charts: 2, ..Controls::default() };
+        let refused = on_key(&mut controls, KeyCode::Char('q'), 4);
         assert!(matches!(refused, Action::Refuse(ref text) if text.contains("[s] save")), "{refused:?}");
-        assert_eq!(on_key(&mut controls, KeyCode::Char('q'), 4, 2), Action::Quit);
+        assert_eq!(on_key(&mut controls, KeyCode::Char('q'), 4), Action::Quit);
 
         // Nothing outstanding, nothing to argue about.
         let mut controls = Controls::default();
-        assert_eq!(on_key(&mut controls, KeyCode::Char('q'), 0, 2), Action::Quit);
+        assert_eq!(on_key(&mut controls, KeyCode::Char('q'), 0), Action::Quit);
     }
 
     #[test]
     fn the_quit_guard_is_disarmed_by_thinking_better_of_it() {
         // `q`, then `s`, then a stray `q` much later must not lose the drive.
         let mut controls = Controls::default();
-        assert!(matches!(on_key(&mut controls, KeyCode::Char('q'), 4, 2), Action::Refuse(_)));
-        assert_eq!(on_key(&mut controls, KeyCode::Char('s'), 4, 2), Action::Save);
-        assert!(matches!(on_key(&mut controls, KeyCode::Char('q'), 4, 2), Action::Refuse(_)));
+        assert!(matches!(on_key(&mut controls, KeyCode::Char('q'), 4), Action::Refuse(_)));
+        assert_eq!(on_key(&mut controls, KeyCode::Char('s'), 4), Action::Save);
+        assert!(matches!(on_key(&mut controls, KeyCode::Char('q'), 4), Action::Refuse(_)));
     }
 
     #[test]
     fn the_arrow_keys_walk_the_charts_and_wrap() {
-        let mut controls = Controls::default();
-        assert_eq!(on_key(&mut controls, KeyCode::Right, 0, 3), Action::Nothing);
+        let mut controls = Controls { charts: 3, ..Controls::default() };
+        assert_eq!(on_key(&mut controls, KeyCode::Right, 0), Action::Nothing);
         assert_eq!(controls.chart, 1);
-        on_key(&mut controls, KeyCode::Left, 0, 3);
+        on_key(&mut controls, KeyCode::Left, 0);
         assert_eq!(controls.chart, 0);
-        on_key(&mut controls, KeyCode::Left, 0, 3);
+        on_key(&mut controls, KeyCode::Left, 0);
         assert_eq!(controls.chart, 2, "wraps rather than running off the end");
         // With nothing to show there is nothing to switch between.
-        on_key(&mut controls, KeyCode::Right, 0, 0);
+        controls.charts = 0;
+        on_key(&mut controls, KeyCode::Right, 0);
         assert_eq!(controls.chart, 2);
     }
 
@@ -620,13 +660,10 @@ mod tests {
     fn escape_cancels_the_run_here_rather_than_quitting() {
         // A deliberate divergence from `watch`: a stopwatch needs a cheap
         // "throw this one away", and `watch` has nothing to throw away.
-        let mut controls = Controls::default();
+        let mut controls = Controls { charts: 1, ..Controls::default() };
+        assert_eq!(on_key(&mut controls, KeyCode::Esc, 0), Action::Session(session::Command::Cancel));
         assert_eq!(
-            on_key(&mut controls, KeyCode::Esc, 0, 1),
-            Action::Session(session::Command::Cancel)
-        );
-        assert_eq!(
-            on_key(&mut controls, KeyCode::Char('p'), 0, 1),
+            on_key(&mut controls, KeyCode::Char('p'), 0),
             Action::Session(session::Command::PauseTrigger)
         );
     }
@@ -734,8 +771,14 @@ mod tests {
             hz: Some(21.4),
             file: Some("drive.json".into()),
             warning: None,
+            table: None,
         };
-        for screen in [full, Screen::default()] {
+        let stopped = Screen {
+            band: band(&Phase::Done { seconds: Some(6.12) }, None),
+            table: Some("  Run 1 — measured\n    0-100  6.03 … 6.38 s\n".into()),
+            ..Screen::default()
+        };
+        for screen in [full, stopped, Screen::default()] {
             for (w, h) in [(120u16, 40u16), (40, 12), (20, 6)] {
                 let backend = ratatui::backend::TestBackend::new(w, h);
                 let mut terminal = Terminal::new(backend).unwrap();

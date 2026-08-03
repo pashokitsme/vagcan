@@ -202,6 +202,14 @@ pub fn unsaved_on_quit(runs: usize) -> String {
     format!("{runs} runs not saved.   [s] save    [q] again to discard")
 }
 
+/// The session was written out.
+///
+/// It names the path because saving is explicit here by design, and an
+/// acknowledgement that does not say *where* leaves the driver to go looking.
+pub fn saved(path: &str, runs: usize) -> String {
+    format!("saved {runs} {} to {path}", if runs == 1 { "run" } else { "runs" })
+}
+
 /// No car file yet: the run happens anyway, and says what it is not doing.
 pub fn no_car_file(vin: &str) -> String {
     format!(
@@ -291,6 +299,14 @@ mod tests {
         assert!(car_silent(3).contains("3 saved runs are untouched"));
         assert!(car_silent(1).contains("1 saved run is untouched"));
         assert!(car_silent(0).contains("nothing was recorded yet"));
+    }
+
+    #[test]
+    fn saving_says_where_it_went() {
+        // Saving is explicit by design; an acknowledgement that does not name
+        // the path leaves the driver to go looking for their own drive.
+        assert_eq!(saved("/tmp/drive.json", 1), "saved 1 run to /tmp/drive.json");
+        assert!(saved("/tmp/drive.json", 4).contains("4 runs"));
     }
 
     #[test]

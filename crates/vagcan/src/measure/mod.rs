@@ -14,9 +14,35 @@
 //! live is ever saved. That is what lets a method be corrected afterwards
 //! without re-driving the car, and every correction in the design's history so
 //! far has needed it.
+//!
+//! This file is the command and the poll loop. Two things about the loop are
+//! load-bearing and easy to undo by accident:
+//!
+//! * **The keyboard is drained between batches, never around one.** A batch read
+//!   can sit out a unit's two-second response deadline, and `Esc` must not wait
+//!   with it. Wrapping the read in a `select!` would be worse than useless: the
+//!   backend is `take()`n out of an `Option` and put back after the await, so a
+//!   dropped future leaves the adapter silently gone for the rest of the run.
+//! * **No session control is ever sent.** `measure` reads a fixed handful of
+//!   known identifiers with `0x22` and nothing else. `SAFETY.md` is about what a
+//!   sweep can provoke; this is `watch` with a stopwatch.
 
-// The module is being built task by task; items land before their callers do.
+// Tasks 12 to 14 are still landing, so a few proven items here have no caller
+// yet — a coastdown reject variant, a `Ratios` accessor. They are kept because
+// they are tested and because the module that will use them is written next.
 #![allow(dead_code)]
+
+use std::collections::BTreeMap;
+use std::io;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use crossterm::event::{self, Event as TermEvent, KeyEventKind};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::prelude::*;
+use serde_json::{Map, Value, json};
 
 pub mod carfile;
 pub mod channels;
@@ -24,9 +50,1653 @@ pub mod coastdown;
 pub mod derive;
 pub mod messages;
 pub mod power;
-pub mod session;
-pub mod ui;
-pub mod setup;
 pub mod report;
+pub mod session;
+pub mod setup;
 pub mod types;
+pub mod ui;
 pub mod view;
+
+use channels::Resolved;
+use types::{Seconds, Track};
+
+/// The session file's format. Checked before anything else is read.
+///
+/// A session cannot be regenerated — it is evidence from a drive — so a reader
+/// refuses a schema it does not know, naming it, rather than half-reading the
+/// file and reporting whichever fields happened to survive.
+pub const SCHEMA: u64 = 1;
+
+/// The marks a run measures when nobody said otherwise, in **km/h**.
+///
+/// The unit is stated wherever this list appears, because `0-60` is the American
+/// figure and that one is in mph — an ambiguity that would otherwise sit
+/// unnoticed in the default itself.
+pub const DEFAULT_MARKS: &str = "0-10,0-25,0-50,0-60,0-80,0-100";
+
+/// How much of the approach a run keeps before the launch.
+///
+/// The pedal, the engine and the selector *before* the start are half of what
+/// explains a bad one, and none of them can be recovered afterwards.
+const RING_SECONDS: Seconds = 3.0;
+
+/// How many cycles the leading unit may fail to answer before the car counts as
+/// having stopped answering.
+///
+/// Enough that one timed-out request is not an ignition-off — a unit replying
+/// "response pending" can stall legally — and few enough that a pulled connector
+/// is noticed before the driver has gone another kilometre.
+const SILENT_CYCLES: u32 = 10;
+
+/// How much of a run's tail the live chart keeps, in seconds.
+///
+/// The chart is drawn from the accumulated buffer rather than the last point, so
+/// the shape of the run is visible while it happens; a buffer with no bound
+/// would grow for as long as the tool is left running at a kerbside.
+const CHART_SECONDS: Seconds = 30.0;
+
+/// A parsed `--marks` list.
+///
+/// A newtype rather than a bare `Vec`, so that clap parses the whole flag with
+/// one value parser and a bad list fails before the adapter is opened — the
+/// reason `duration_arg` exists in `main.rs` today.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marks(pub Vec<(u32, u32)>);
+
+/// Parse `0-100,50-100`: `A-B` pairs in **km/h**, `A < B`.
+pub fn parse_marks(text: &str) -> Result<Marks, String> {
+    let mut out = Vec::new();
+    for pair in text.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (from, to) = pair
+            .split_once('-')
+            .ok_or_else(|| format!("{pair:?} is not a mark — write it as `0-100`, in km/h"))?;
+        let number = |text: &str| {
+            text.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("{text:?} in {pair:?} is not a speed in km/h"))
+        };
+        let (from, to) = (number(from)?, number(to)?);
+        if from >= to {
+            return Err(format!(
+                "{pair:?} does not rise — a mark runs from a lower speed to a higher one"
+            ));
+        }
+        out.push((from, to));
+    }
+    if out.is_empty() {
+        return Err("no marks given — the default is `0-10,0-25,0-50,0-60,0-80,0-100`, in km/h"
+            .to_string());
+    }
+    Ok(Marks(out))
+}
+
+/// Parse `--speed-scale`: a positive, finite multiplier.
+///
+/// It is applied **before** mark detection, so a value that is not a number
+/// would corrupt every time rather than merely a printed figure.
+pub fn parse_speed_scale(text: &str) -> Result<f64, String> {
+    let value: f64 = text.parse().map_err(|_| format!("{text:?} is not a number"))?;
+    match value.is_finite() && value > 0.0 {
+        true => Ok(value),
+        false => Err(format!("{text:?} is not a positive speed correction")),
+    }
+}
+
+/// Parse a positive number of seconds — the acceleration window.
+pub fn parse_seconds(text: &str) -> Result<f64, String> {
+    let value: f64 = text.parse().map_err(|_| format!("{text:?} is not a number"))?;
+    match value.is_finite() && value > 0.0 {
+        true => Ok(value),
+        false => Err(format!("{text:?} is not a positive number of seconds")),
+    }
+}
+
+/// The two jobs that are not "time a run".
+///
+/// Subcommands rather than flags: `setup` prompts, runs a driving script, takes
+/// flags that mean nothing elsewhere and produces a different artefact, and
+/// `view` touches no adapter at all. The repository already groups that way with
+/// `recording` and `vcds`.
+#[derive(clap::Subcommand)]
+pub enum Tool {
+    /// Describe this car once, then measure its road load on the road.
+    ///
+    /// Starts parked and ends on the road: it identifies the car, checks every
+    /// channel a run needs, asks for the mass and the tyre size, and then runs
+    /// two coastdown passes — one in each direction — whose fit is what makes
+    /// `--full` available. It keeps whatever was already answered.
+    Setup {
+        /// Adapter to use. Omit it when only one is connected.
+        #[arg(long, value_name = "PATH")]
+        device: Option<String>,
+        /// The speed a coastdown pass opens at. Narrowing the range separates
+        /// drag from rolling resistance less well, and the fit says by how much.
+        #[arg(long, default_value_t = setup::COAST_FROM_KMH, value_name = "KMH")]
+        coast_from: f64,
+        /// The speed a coastdown pass closes at.
+        #[arg(long, default_value_t = setup::COAST_TO_KMH, value_name = "KMH")]
+        coast_to: f64,
+        /// Where the measurement catalogs live.
+        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
+        catalogs: String,
+        /// Write the car file here instead of into this tool's own directory.
+        #[arg(long, value_name = "FILE")]
+        car: Option<String>,
+    },
+
+    /// Open a saved session as a chart page. Offline — no adapter.
+    View {
+        /// A session file written by `--out` or by pressing `s`.
+        #[arg(value_name = "FILE")]
+        file: String,
+    },
+}
+
+/// Everything `measure` was asked for.
+///
+/// Every override here normally lives in the car file. They exist for a one-off
+/// — a loaded boot, a different set of wheels — and what was used is recorded in
+/// every file that comes out.
+pub struct Options<'a> {
+    pub device: Option<&'a str>,
+    pub car: Option<&'a str>,
+    pub catalogs: &'a str,
+    pub full: bool,
+    pub minimal: bool,
+    pub marks: Vec<(u32, u32)>,
+    pub accel_window_s: f64,
+    pub out: Option<&'a str>,
+    pub quiet: bool,
+    pub mass_kg: Option<f64>,
+    pub tyre: Option<&'a str>,
+    pub cda: Option<f64>,
+    pub crr: Option<f64>,
+    pub inertia_factor: Option<f64>,
+    pub grade_percent: f64,
+    pub headwind_ms: f64,
+    pub air_density: Option<f64>,
+    pub speed_scale: f64,
+}
+
+/// Read one batch of identifiers.
+///
+/// The seam the loop is tested behind: the scheduling — two batches a cycle, the
+/// background one every second cycle, the barometer once a run — is decided here
+/// and can be observed with no CAN at all. The live implementation is
+/// [`LiveReader`], over `plan::read_batch`.
+pub trait BatchReader {
+    fn read(
+        &mut self,
+        batch: &crate::watch::plan::Batch,
+    ) -> impl std::future::Future<Output = (Seconds, crate::watch::plan::BatchOutcome)>;
+}
+
+/// The live reader: one adapter, addressed a unit at a time.
+///
+/// The backend lives in an `Option` because it is a single-user resource with no
+/// way to borrow it across an await — it is handed over and handed back, which
+/// is also why this future must never be dropped mid-flight.
+pub struct LiveReader<B> {
+    backend: Option<B>,
+    started: Instant,
+}
+
+impl<B: vag_can::CanBackend> BatchReader for LiveReader<B> {
+    async fn read(
+        &mut self,
+        batch: &crate::watch::plan::Batch,
+    ) -> (Seconds, crate::watch::plan::BatchOutcome) {
+        crate::watch::plan::read_batch(&mut self.backend, batch, self.started).await
+    }
+}
+
+/// Which channels are polled at which cadence, already grouped into requests.
+///
+/// One request addresses one control unit, so the grouping is by unit and not by
+/// taste. The leading batch — everything on the unit that owns the winning speed
+/// channel — is read every cycle; everything else every second cycle, because
+/// marks are timed from the leading speed alone and its rate is the only one
+/// that sets a stopwatch.
+struct Plan {
+    leading: crate::watch::plan::Batch,
+    background: Vec<crate::watch::plan::Batch>,
+    /// The barometer and the ambient sensor, read **once per run** and at the
+    /// end of it. Once, because neither moves measurably in seven seconds and
+    /// polling them at 20 Hz would cost cycles for no information; at the end,
+    /// because the ambient sensor heat-soaks at a standstill and +10 K reads the
+    /// air density 3.4 % low.
+    density: Option<crate::watch::plan::Batch>,
+    /// Every resolved channel by address, for turning an answer back into a
+    /// value.
+    by_address: BTreeMap<(u16, u16), Resolved>,
+}
+
+impl Plan {
+    fn build(set: &channels::Set, minimal: bool) -> Plan {
+        let wanted = |channel: &Resolved| match minimal {
+            // `--minimal` polls only what the stopwatch needs, for the highest
+            // achievable rate and at the cost of the telemetry. A deliberate
+            // trade, and therefore a flag rather than a hidden heuristic.
+            true => matches!(channel.key, "speed" | "gear" | "cross-check speed"),
+            false => true,
+        };
+        let density_role = |key: &str| matches!(key, "barometer" | "ambient");
+
+        let mut by_address = BTreeMap::new();
+        let mut leading = crate::watch::plan::Batch { request: set.leading.request, dids: vec![] };
+        let mut background: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
+        let mut density: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
+
+        for channel in set.all() {
+            if !wanted(channel) {
+                continue;
+            }
+            by_address.insert((channel.request, channel.did), channel.clone());
+            let into = if density_role(channel.key) {
+                density.entry(channel.request).or_default()
+            } else if channel.request == set.leading.request {
+                &mut leading.dids
+            } else {
+                background.entry(channel.request).or_default()
+            };
+            into.push(channel.did);
+        }
+
+        let batches = |grouped: BTreeMap<u16, Vec<u16>>| {
+            grouped
+                .into_iter()
+                .map(|(request, dids)| crate::watch::plan::Batch { request, dids })
+                .collect::<Vec<_>>()
+        };
+        Plan {
+            leading,
+            background: batches(background),
+            // The two density channels always live on the same emissions unit,
+            // so this is one request or none.
+            density: batches(density).into_iter().next(),
+            by_address,
+        }
+    }
+}
+
+/// A speed reading in metres per second, from whatever the catalog said its
+/// unit was.
+///
+/// `None` for a unit this does not know, which makes the channel absent rather
+/// than off by a factor of 3.6. The conversions are exact and are properties of
+/// the units themselves: ISO 80000-3 for km/h, and the international mile for
+/// mph.
+fn speed_to_ms(unit: &str, value: f64) -> Option<f64> {
+    match unit.trim() {
+        "km/h" | "kmh" | "kph" => Some(value / power::KMH_PER_MS),
+        "m/s" | "ms" => Some(value),
+        "mph" => Some(value * 0.447_04),
+        _ => None,
+    }
+}
+
+/// One cycle's answers, keyed by address.
+type Records = Vec<(u16, u16, Vec<u8>)>;
+
+/// Turn one batch's answers into the state machine's input.
+///
+/// Only what was answered goes in. Repeating a background value on the cycles it
+/// was not read would invent samples the car never produced, and would make the
+/// leading channel's refresh period unmeasurable.
+///
+/// Every value carries `at` — the batch's own arrival time. Batches are
+/// separated in time, and one shared timestamp has already cost this project a
+/// wrong proof: the gear evidence moved from η² 0.872 to 0.972 when the columns
+/// got their own clocks.
+fn sample_set(plan: &Plan, records: &Records, at: Seconds) -> session::SampleSet {
+    let mut set = session::SampleSet::default();
+    let mut cross_check_taken = false;
+    for (request, did, data) in records {
+        let Some(channel) = plan.by_address.get(&(*request, *did)) else { continue };
+        match channel.key {
+            "speed" => {
+                let Some(value) = channel.value(data) else { continue };
+                let Some(ms) = speed_to_ms(&channel.def.unit, value) else { continue };
+                // The raw integer travels beside the converted value because
+                // standstill is decided on it and on nothing else: the scale is
+                // applied before mark detection, and `v == 0.0` on a scaled
+                // float is a comparison this project would regret.
+                let Some(raw) = channel.def.raw_form.read(data) else { continue };
+                set.speed = Some((at, ms, raw.unsigned_abs()));
+            }
+            "engine speed" => {
+                if let Some(value) = channel.value(data) {
+                    set.engine_speed = Some((at, value));
+                }
+            }
+            "pedal" => {
+                if let Some(value) = channel.value(data) {
+                    set.pedal = Some((at, value));
+                }
+            }
+            "gear" => {
+                if let Some(label) = channel.state(data) {
+                    set.gear = Some((at, label));
+                }
+            }
+            "selector" => {
+                if let Some(label) = channel.state(data) {
+                    set.states.push((channel.key, at, label));
+                }
+            }
+            // Several units can answer to "speed"; they share one role key, so
+            // only the first is carried as a channel of its own. Merging two
+            // units' speeds into one track would invent a signal neither
+            // reported.
+            "cross-check speed" if cross_check_taken => {}
+            key => {
+                if let Some(value) = channel.value(data) {
+                    cross_check_taken |= key == "cross-check speed";
+                    set.others.push((key, at, value));
+                }
+            }
+        }
+    }
+    set
+}
+
+/// One finished run, with the derivative layer already recomputed.
+///
+/// Recomputed here rather than in the writer, because the page and the results
+/// table have no arithmetic layer of their own and could not honour the storage
+/// rule by themselves.
+struct Recorded {
+    run: session::Run,
+    derived: report::Derived,
+    at: String,
+    /// The air density in force, and whether it was measured or stated.
+    rho: Option<(f64, bool)>,
+}
+
+/// What the whole session was recorded under.
+struct Meta {
+    vin: Option<String>,
+    units: Vec<crate::watch::plan::UnitIdentity>,
+    marks: Vec<(u32, u32)>,
+    speed_source: String,
+    speed_scale: f64,
+    accel_window_s: f64,
+    setting: report::Setting,
+    grade_percent: f64,
+    headwind_ms: f64,
+    car_file: Option<String>,
+    channels: Vec<Value>,
+}
+
+/// Everything a `measure` command needs to know before it can draw a screen.
+struct Prepared {
+    plan: Plan,
+    meta: Meta,
+    banner: String,
+    /// Present exactly when `--full` was accepted.
+    full: bool,
+}
+
+/// A channel's key as the session file spells it: `snake_case`, one spelling in
+/// the document, so the reader never has to normalise.
+fn file_key(role: &str) -> String {
+    role.replace(['-', ' '], "_")
+}
+
+/// The channel descriptors for the file: every read channel, then every derived
+/// one with what it was derived from and by what method.
+fn channel_descriptors(plan: &Plan, full: bool, window: f64) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for ((request, did), channel) in &plan.by_address {
+        out.push(json!({
+            "key": file_key(channel.key),
+            "name": channel.def.name,
+            "unit": channel.def.unit,
+            "origin": "read",
+            "request": format!("{request:03X}"),
+            "did": format!("{did:04X}"),
+        }));
+    }
+    out.push(json!({
+        "key": "accel", "name": "Acceleration", "unit": "m/s2", "origin": "derived",
+        "from": ["speed"], "method": "central-least-squares", "window_s": window,
+    }));
+    out.push(json!({
+        "key": "distance", "name": "Distance travelled", "unit": "m", "origin": "derived",
+        "from": ["speed"], "method": "trapezoid",
+    }));
+    out.push(json!({
+        "key": "kickdown", "name": "Kickdown", "unit": "", "origin": "derived",
+        "from": ["pedal"], "method": "pedal at observed maximum less one raw step",
+    }));
+    if full {
+        out.push(json!({
+            "key": "power_wheel", "name": "Power at the wheels", "unit": "kW",
+            "origin": "derived", "estimate": true,
+            "from": ["speed", "barometer", "ambient"], "method": "road-load",
+        }));
+        out.push(json!({
+            "key": "power_shaft", "name": "Power including engine-side inertia", "unit": "kW",
+            "origin": "derived", "estimate": true,
+            "from": ["power_wheel", "engine_speed"],
+            "method": "road-load+engine-inertia", "suppressed_when": "clutch slipping",
+        }));
+    }
+    out
+}
+
+/// A numeric channel, columnar: its own values against its own timestamps.
+fn track_json(track: &Track) -> Value {
+    json!({ "t": track.t, "v": track.v })
+}
+
+/// The whole session, as the file holds it.
+///
+/// Columnar rather than a list of objects: twenty runs of ten seconds at 20 Hz
+/// over ten channels is about a megabyte written the verbose way, and
+/// `measure view` inlines that into a page a browser has to load.
+fn document(
+    meta: &Meta,
+    recorded: &[Recorded],
+    degraded: bool,
+    hz: Option<f64>,
+    cycle_median_s: Option<f64>,
+) -> Value {
+    let mut config = Map::new();
+    config.insert("marks".into(), json!(meta.marks.iter().map(|(a, b)| [a, b]).collect::<Vec<_>>()));
+    config.insert("speed_source".into(), json!(meta.speed_source));
+    config.insert("speed_scale".into(), json!(meta.speed_scale));
+    config.insert("speed_scale_applied".into(), json!("before-marks"));
+    config.insert("accel_window_s".into(), json!(meta.accel_window_s));
+    config.insert("accel_method".into(), json!("central-least-squares"));
+    config.insert("t0_method".into(), json!("quadratic-and-linear-bracket"));
+    config.insert("peak_statistic".into(), json!("mean-over-neighbourhood"));
+    config.insert("inertia_model".into(), json!("exact-engine-side"));
+    config.insert("grade_percent".into(), json!(meta.grade_percent));
+    config.insert("headwind_ms".into(), json!(meta.headwind_ms));
+    config.insert("degraded".into(), json!(degraded));
+    if let Some(hz) = hz {
+        config.insert("hz".into(), json!(round3(hz)));
+    }
+    if let Some(median) = cycle_median_s {
+        config.insert("cycle_median_s".into(), json!(round3(median)));
+    }
+    if let Some(tyre) = &meta.setting.tyre {
+        config.insert("tyre".into(), json!(tyre));
+    }
+    if let Some(model) = &meta.setting.model {
+        config.insert("mass_kg".into(), json!(model.conditions.mass_kg));
+        config.insert("rolling_radius_m".into(), json!(model.conditions.radius_m));
+        config.insert("i_wheels_kgm2".into(), json!(model.conditions.inertias.wheels_kgm2));
+        config.insert("i_engine_kgm2".into(), json!(model.conditions.inertias.engine_kgm2));
+        config.insert("cda".into(), json!(model.load.cda));
+        config.insert("crr".into(), json!(model.load.crr));
+    }
+    if let Some(path) = &meta.car_file {
+        config.insert("car_file".into(), json!(path));
+    }
+    if let Some(rho) = recorded.iter().rev().find_map(|r| r.rho) {
+        config.insert("air_density_kg_m3".into(), json!(round3(rho.0)));
+        config.insert(
+            "air_density_source".into(),
+            json!(if rho.1 { "measured" } else { "stated" }),
+        );
+    }
+    if let Some(refresh) = recorded.iter().rev().find_map(|r| r.derived.refresh_s) {
+        config.insert("refresh_estimate_s".into(), json!(round3(refresh)));
+        config.insert("refresh_is_a_bound".into(), json!(true));
+    }
+
+    let units: Vec<Value> = meta
+        .units
+        .iter()
+        .map(|unit| {
+            json!({ "request": format!("{:03X}", unit.request), "part_number": unit.part_number })
+        })
+        .collect();
+
+    json!({
+        "schema": SCHEMA,
+        "tool": "vagcan measure",
+        "recorded_at": now(),
+        "car": { "vin": meta.vin, "units": units },
+        "config": Value::Object(config),
+        "channels": meta.channels,
+        "runs": recorded.iter().map(|r| run_json(meta, r)).collect::<Vec<_>>(),
+    })
+}
+
+fn run_json(meta: &Meta, recorded: &Recorded) -> Value {
+    let run = &recorded.run;
+    let derived = &recorded.derived;
+    let mut series = Map::new();
+    series.insert("speed".into(), track_json(&run.samples.speed));
+    series.insert("engine_speed".into(), track_json(&run.samples.engine_speed));
+    series.insert("pedal".into(), track_json(&run.samples.pedal));
+    series.insert("gear".into(), json!({ "t": run.samples.gear.t, "v": run.samples.gear.v }));
+    for (key, track) in &run.samples.others {
+        series.insert(file_key(key), track_json(track));
+    }
+    for (key, states) in &run.samples.states {
+        series.insert(file_key(key), json!({ "t": states.t, "v": states.v }));
+    }
+    series.insert("accel".into(), track_json(&report::as_track(&derived.accel)));
+    series.insert("distance".into(), track_json(&derived.distance));
+    if let Some(kickdown) = &derived.kickdown {
+        series.insert("kickdown".into(), track_json(kickdown));
+    }
+    if !derived.power_wheel.is_empty() {
+        series.insert("power_wheel".into(), track_json(&scaled(&derived.power_wheel, 0.001)));
+        series.insert("power_shaft".into(), track_json(&scaled(&derived.power_shaft, 0.001)));
+    }
+
+    // Marks that never closed are still listed, with no time: a run that died at
+    // 80 says so by having `0-100` present and empty, not by omitting it.
+    let marks: Vec<Value> = meta
+        .marks
+        .iter()
+        .map(|(from, to)| match run.marks.iter().find(|m| m.from_kmh == *from && m.to_kmh == *to) {
+            None => json!({ "from": from, "to": to, "from_t0": *from == 0 }),
+            Some(mark) => {
+                let mut entry = Map::new();
+                entry.insert("from".into(), json!(from));
+                entry.insert("to".into(), json!(to));
+                entry.insert("seconds".into(), json!(round3(mark.seconds)));
+                entry.insert("from_t0".into(), json!(mark.starts_at_launch()));
+                entry.insert("avg_accel_ms2".into(), json!(round3(mark.avg_accel_ms2())));
+                match mark.bracket {
+                    Some(span) => {
+                        entry.insert(
+                            "bracket_s".into(),
+                            json!({
+                                "earliest": round3(span.earliest),
+                                "latest": round3(span.latest),
+                                "from": "quadratic-and-linear-t0",
+                            }),
+                        );
+                    }
+                    None => {
+                        if let Some(sigma) = derived.rolling_sigma() {
+                            entry.insert("sigma_s".into(), json!(round3(sigma)));
+                        }
+                    }
+                }
+                Value::Object(entry)
+            }
+        })
+        .collect();
+
+    let mut block = Map::new();
+    block.insert("stamp".into(), json!(derived.stamp));
+    block.insert("distance_m".into(), json!(round3(derived.distance_m)));
+    if let Some(peak) = derived.peak_engine_speed {
+        block.insert("peak_rpm".into(), json!(round3(peak.value)));
+    }
+    if let Some(peak) = derived.peak_accel {
+        block.insert("peak_accel_ms2".into(), json!(round3(peak.value)));
+        block.insert("peak_accel_t".into(), json!(round3(peak.t)));
+        block.insert("peak_accel_sigma".into(), json!(round3(peak.sigma)));
+    }
+    if let Some(gear) = &derived.peak_accel_gear {
+        block.insert("peak_accel_gear".into(), json!(gear));
+    }
+    if let Some(kw) = derived.peak_power_wheel_kw {
+        block.insert("peak_power_wheel_kw".into(), json!(round3(kw)));
+    }
+    if let Some(kw) = derived.peak_power_shaft_kw {
+        block.insert("peak_power_shaft_kw".into(), json!(round3(kw)));
+    }
+    if let Some(reference) = derived.boost_reference {
+        block.insert("boost_reference".into(), json!(reference));
+    }
+    block.insert(
+        "shifts".into(),
+        json!(
+            derived
+                .shifts
+                .iter()
+                .map(|shift| json!({
+                    "t": round3(shift.t), "from": shift.from, "to": shift.to,
+                    "speed_deficit_ms": round3(shift.speed_deficit_ms),
+                    "cost_on_mark_s": shift.cost_on_mark_s.map(round3),
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+
+    json!({
+        "index": run.index,
+        "t0_wall": recorded.at,
+        "aborted": run.aborted,
+        "degraded": run.degraded,
+        "series": Value::Object(series),
+        "marks": marks,
+        "derived": Value::Object(block),
+    })
+}
+
+fn scaled(track: &Track, by: f64) -> Track {
+    let mut out = Track::default();
+    for i in 0..track.len() {
+        out.push(track.t[i], track.v[i] * by);
+    }
+    out
+}
+
+/// Three decimals, so that a millisecond and a gram survive and the file does
+/// not carry seventeen digits of float noise per sample.
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+fn now() -> String {
+    chrono::Local::now().to_rfc3339()
+}
+
+/// `measure view FILE.json` — open a saved session as a chart page.
+///
+/// Touches no adapter. The schema is checked before anything else, by name: a
+/// session is evidence from a drive and cannot be regenerated, so half-reading
+/// one is worse than refusing it.
+pub fn open_view(path: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the session {path:?}"))?;
+    let session: Value = serde_json::from_str(&text)
+        .with_context(|| format!("{path} is not a session this tool wrote"))?;
+    match session["schema"].as_u64() {
+        Some(SCHEMA) => {}
+        Some(other) => anyhow::bail!(
+            "{path} is schema {other} and this build reads schema {SCHEMA}.\n\
+             A session cannot be regenerated, so it is left alone rather than half-read.\n\
+             Use a build that knows schema {other}."
+        ),
+        None => anyhow::bail!(
+            "{path} carries no `schema` field, so it is not a session this tool wrote."
+        ),
+    }
+    view::write_and_open(std::path::Path::new(path), &session)?;
+    Ok(())
+}
+
+/// Run the command against a car.
+pub async fn run(opts: Options<'_>) -> Result<()> {
+    use vag_can::{SlcanBackend, SlcanBitrate, SlcanMode};
+
+    // Argument checking before the adapter, which is a single-user resource: an
+    // unwritable `--out` is the same typo as a bad `--marks`, and holding the
+    // port open while failing on either blocks the next attempt.
+    let store = vag_data::catalog::CatalogStore::open(opts.catalogs);
+    if let Some(path) = opts.out {
+        std::fs::File::create(path).with_context(|| format!("creating {path:?}"))?;
+    }
+
+    let device = crate::device::resolve(opts.device)?;
+    let adapter =
+        SlcanBackend::open_mode(&device, crate::ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
+            .await
+            .with_context(|| crate::device::open_failure(&device))?;
+
+    let mut progress = crate::progress::Line::new();
+    let (mut adapter, identities) =
+        crate::units::identify(adapter, &[crate::watch::plan::ENGINE], &mut progress).await;
+    progress.update("reading the vehicle identification number");
+    let (back, vin) = read_vin(adapter).await;
+    adapter = back;
+    progress.finish();
+
+    let prepared = prepare(&store, &identities, vin.clone(), &opts)?;
+    if !prepared.banner.is_empty() {
+        println!("{}", prepared.banner);
+    }
+    println!(
+        "{} channels on {} control units — timing from {}",
+        prepared.plan.by_address.len(),
+        identities.len(),
+        prepared.meta.speed_source
+    );
+
+    let reader = LiveReader { backend: Some(adapter), started: Instant::now() };
+    let full_screen = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    drive(reader, prepared, &opts, full_screen).await
+}
+
+/// Read the VIN off the engine, and hand the adapter back.
+///
+/// The VIN is what a car file is keyed by and what the session file records, and
+/// a car that will not say is not a failure — it simply has no file of its own.
+async fn read_vin<B: vag_can::CanBackend>(backend: B) -> (B, Option<String>) {
+    use vag_protocol::{AsyncUdsClient, UdsReadExt};
+    use vag_transport::CanId;
+
+    let Some(engine) = vag_protocol::address::UnitAddress::from_request(crate::watch::plan::ENGINE)
+    else {
+        return (backend, None);
+    };
+    let mut uds = AsyncUdsClient::new(vag_can::IsoTpCan::new(
+        backend,
+        CanId::Standard(engine.request),
+        CanId::Standard(engine.response),
+    ));
+    let vin = uds.read_identity().await.vin.filter(|text| !text.trim().is_empty());
+    (uds.into_transport().into_backend(), vin)
+}
+
+/// Resolve the channels, settle what mode the run is in, and say so.
+///
+/// Every refusal here happens at a standstill, before a screen is drawn, and
+/// every one of them goes through [`messages`].
+fn prepare(
+    store: &vag_data::catalog::CatalogStore,
+    identities: &[crate::watch::plan::UnitIdentity],
+    vin: Option<String>,
+    opts: &Options<'_>,
+) -> Result<Prepared> {
+    let set = channels::resolve(store, identities, opts.full).map_err(|missing| {
+        let found = found_report(identities, &missing);
+        anyhow::anyhow!(
+            "{}",
+            messages::missing_channels(
+                &found,
+                &missing
+                    .into_iter()
+                    .map(|m| messages::MissingChannel { key: m.key, tried: m.tried })
+                    .collect::<Vec<_>>()
+            )
+        )
+    })?;
+
+    let (car, car_path) = load_car_file(vin.as_deref(), identities, opts);
+    let mut setting = report::Setting {
+        accel_window_s: opts.accel_window_s,
+        tyre: opts
+            .tyre
+            .map(str::to_string)
+            .or_else(|| car.as_ref().and_then(|c| c.tyre.as_ref().map(|t| t.value.clone()))),
+        pedal_step: pedal_step(&set),
+        ..report::Setting::default()
+    };
+
+    let banner = if opts.full {
+        // A car with no file at all takes the same path as one whose setup was
+        // abandoned halfway: the refusal names every parameter that is missing,
+        // and there is deliberately no state in between the two modes.
+        let described = car
+            .clone()
+            .unwrap_or_else(|| carfile::CarFile::new(vin.clone().unwrap_or_default()));
+        let (load, conditions) = road_load(&described, opts).map_err(|missing| {
+            anyhow::anyhow!("{}", messages::full_without_car_file(&known_of(&described), &missing))
+        })?;
+        setting.model = Some(report::Model {
+            load,
+            conditions: power::Conditions {
+                mass_kg: conditions.mass_kg,
+                // Replaced with the measured value at the end of the first run;
+                // until then this is whatever was stated, or the sea-level
+                // standard, and the file records which.
+                rho: opts.air_density.unwrap_or(power::air_density(101.325, 15.0)),
+                grade_percent: opts.grade_percent,
+                headwind_ms: opts.headwind_ms,
+                inertias: power::Inertias {
+                    wheels_kgm2: conditions.i_wheels_kgm2 * opts.inertia_factor.unwrap_or(1.0),
+                    engine_kgm2: conditions.i_engine_kgm2 * opts.inertia_factor.unwrap_or(1.0),
+                },
+                radius_m: conditions.radius_m,
+            },
+        });
+        setting.rho_measured = opts.air_density.is_none();
+        String::new()
+    } else {
+        match (&car, &vin) {
+            (Some(car), _) => messages::car_file_summary(
+                &car.vin,
+                car.cda.as_ref().and_then(|c| c.at.as_deref()).unwrap_or("—"),
+                car.mass_total_kg().unwrap_or(0.0),
+                car.cda.as_ref().map_or(0.0, |c| c.value),
+                car.cda.as_ref().is_some_and(|c| c.source == carfile::Source::Coastdown),
+            ),
+            (None, Some(vin)) => messages::no_car_file(vin),
+            (None, None) => messages::no_car_file("a car that did not give its VIN"),
+        }
+    };
+
+    let plan = Plan::build(&set, opts.minimal);
+    let channels = channel_descriptors(&plan, opts.full, opts.accel_window_s);
+    Ok(Prepared {
+        meta: Meta {
+            vin,
+            units: identities.to_vec(),
+            marks: opts.marks.clone(),
+            speed_source: set.leading.source(),
+            speed_scale: opts.speed_scale,
+            accel_window_s: opts.accel_window_s,
+            setting,
+            grade_percent: opts.grade_percent,
+            headwind_ms: opts.headwind_ms,
+            car_file: car_path,
+            channels,
+        },
+        plan,
+        banner,
+        full: opts.full,
+    })
+}
+
+/// What the units answered, so the reader of a refusal can see the check was
+/// real.
+fn found_report(
+    identities: &[crate::watch::plan::UnitIdentity],
+    missing: &[channels::Missing],
+) -> Vec<messages::ChannelFound> {
+    identities
+        .iter()
+        .flat_map(|unit| {
+            missing.iter().map(move |m| messages::ChannelFound {
+                unit: format!("{:03X}", unit.request),
+                part_number: unit.part_number.clone().unwrap_or_else(|| "—".to_string()),
+                key: m.key,
+                ok: false,
+            })
+        })
+        .collect()
+}
+
+/// One raw step of the pedal channel, which is what a kickdown threshold is
+/// measured in.
+fn pedal_step(set: &channels::Set) -> Option<f64> {
+    set.all().find(|channel| channel.key == "pedal").and_then(|channel| {
+        match &channel.def.scaling {
+            vag_data::catalog::Scaling::Linear(scale) => Some(scale.factor.abs()),
+            _ => None,
+        }
+    })
+}
+
+/// Which car file applies, if any — the flag's, or this car's own by VIN.
+///
+/// A file whose VIN differs from the car's is **ignored with a message**, never
+/// applied: mass and road load belong to one specific car, and quietly using
+/// another one's is the false comparison this design spends its length avoiding.
+fn load_car_file(
+    vin: Option<&str>,
+    identities: &[crate::watch::plan::UnitIdentity],
+    opts: &Options<'_>,
+) -> (Option<carfile::CarFile>, Option<String>) {
+    let description = identities
+        .iter()
+        .find(|unit| unit.request == crate::watch::plan::ENGINE)
+        .and_then(|unit| unit.component.clone());
+    let path = match opts.car {
+        Some(path) => std::path::PathBuf::from(path),
+        None => match vin.and_then(|vin| {
+            carfile::CarFile::path_for(vin, description.as_deref()).ok()
+        }) {
+            Some(path) => path,
+            None => return (None, None),
+        },
+    };
+    if !path.exists() {
+        return (None, None);
+    }
+    let car = match carfile::CarFile::load(&path) {
+        Ok(car) => car,
+        Err(why) => {
+            eprintln!("{why:#}");
+            return (None, None);
+        }
+    };
+    if let Some(vin) = vin
+        && car.vin != vin
+    {
+        println!("{}", messages::wrong_car(&car.vin, vin));
+        return (None, None);
+    }
+    let shown = path.display().to_string();
+    (Some(car), Some(shown))
+}
+
+/// What is already known about the car, in the words the owner was asked in.
+fn known_of(car: &carfile::CarFile) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if let Some(mass) = car.mass_total_kg() {
+        out.push(("mass", format!("{mass:.0} kg")));
+    }
+    if let Some(tyre) = &car.tyre {
+        out.push(("tyre", tyre.value.clone()));
+    }
+    out
+}
+
+/// The road load and the car, with the flags layered over the file.
+///
+/// Precedence is flag → car file, and there is no third tier: a parameter
+/// neither source supplies is one the run does without. `--cda` and `--crr`
+/// arrive as a pair — clap enforces that — and count as `stated` rather than
+/// `coastdown`.
+fn road_load(
+    car: &carfile::CarFile,
+    opts: &Options<'_>,
+) -> Result<(power::RoadLoad, carfile::CarConditions), Vec<&'static str>> {
+    let mut car = car.clone();
+    if let Some(mass) = opts.mass_kg {
+        car.mass = Some(carfile::Sourced::new(
+            carfile::Mass { running_order_kg: mass, includes_driver: true, aboard_kg: 0.0 },
+            carfile::Source::Stated,
+        ));
+    }
+    if let Some(tyre) = opts.tyre {
+        car.rolling_radius_m = carfile::rolling_radius_m(tyre)
+            .map(|radius| carfile::Sourced::new(radius, carfile::Source::DerivedFromTyre));
+    }
+    if let (Some(cda), Some(crr)) = (opts.cda, opts.crr) {
+        car.cda = Some(carfile::Sourced::new(cda, carfile::Source::Stated));
+        car.crr = Some(carfile::Sourced::new(crr, carfile::Source::Stated));
+    }
+    let (load, conditions) = car.road_load()?;
+    Ok((power::RoadLoad { cda: load.cda, crr: load.crr }, conditions))
+}
+
+/// The poll loop.
+///
+/// Two batches a cycle — the leading one every cycle, the background one every
+/// second — with the keyboard drained between them and never around one.
+async fn drive<R: BatchReader>(
+    mut reader: R,
+    prepared: Prepared,
+    opts: &Options<'_>,
+    full_screen: bool,
+) -> Result<()> {
+    let Prepared { plan, mut meta, banner, full } = prepared;
+    let mut session = session::Session::new(opts.marks.clone(), RING_SECONDS, opts.speed_scale);
+    let mut controls = ui::Controls::default();
+    let mut recorded: Vec<Recorded> = Vec::new();
+    let mut charts: BTreeMap<String, Track> = BTreeMap::new();
+    let mut values: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut closed: BTreeMap<(u32, u32), Seconds> = BTreeMap::new();
+    let mut last_outcome: Option<ui::Outcome> = None;
+    let mut warning: Option<String> = None;
+    let mut table: Option<String> = None;
+    let mut silent = 0u32;
+    let mut cycles = 0u64;
+    let mut speed_kmh = 0.0f64;
+    let mut clock = 0.0f64;
+    let mut density: Option<(f64, bool)> = opts.air_density.map(|rho| (rho, false));
+
+    let mut terminal = match full_screen {
+        true => {
+            enable_raw_mode().map_err(|e| {
+                anyhow::anyhow!(
+                    "`measure` needs an interactive terminal (it draws a full-screen view). \
+                     Without one it prints a line per cycle instead: {e}"
+                )
+            })?;
+            let mut stdout = io::stdout();
+            crossterm::execute!(stdout, EnterAlternateScreen)?;
+            Some(Terminal::new(CrosstermBackend::new(stdout))?)
+        }
+        false => None,
+    };
+
+    let result: Result<()> = loop {
+        // The results table waits for the car to stop: redrawing a dense table
+        // at 100 km/h is exactly what the rest of this design avoids.
+        let stationary = matches!(
+            session.state(),
+            session::State::Arming { .. } | session::State::Armed | session::State::Paused
+        );
+        let series = series_of(&charts);
+        controls.charts = series.len();
+        let screen = ui::Screen {
+            band: ui::band(
+                &ui::phase_of(session.state(), speed_kmh, clock, last_outcome.as_ref()),
+                session.degraded().then(|| session.hz().unwrap_or(0.0)),
+            ),
+            banner: (!banner.is_empty()).then(|| banner.clone()),
+            rows: value_rows(&values, &charts, &meta),
+            marks: mark_rows(&opts.marks, &closed),
+            chart: controls.chart.min(series.len().saturating_sub(1)),
+            series,
+            hz: session.hz(),
+            file: opts.out.map(str::to_string),
+            warning: warning.clone(),
+            table: table.clone().filter(|_| stationary),
+        };
+        match terminal.as_mut() {
+            Some(terminal) => {
+                terminal.draw(|frame| ui::draw(frame, &screen))?;
+            }
+            None => println!("{}", ui::plain_line(&screen)),
+        }
+
+        // Between batches, never around one: a read can sit out a unit's
+        // two-second deadline and `Esc` must not wait with it.
+        let mut quit = false;
+        let mut set = session::SampleSet::default();
+        let mut answered_leading = false;
+        let mut records: Records = Vec::new();
+
+        for (index, batch) in due(&plan, cycles).into_iter().enumerate() {
+            if terminal.is_some() && drain(&mut controls, &mut session, &mut warning, &mut quit)? {
+                break;
+            }
+            let (at, outcome) = reader.read(batch).await;
+            clock = at;
+            let answers = match outcome {
+                crate::watch::plan::BatchOutcome::Answered(answers) => answers,
+                crate::watch::plan::BatchOutcome::NoAnswer
+                | crate::watch::plan::BatchOutcome::Unaddressable => Vec::new(),
+            };
+            if index == 0 {
+                answered_leading = !answers.is_empty();
+            }
+            let batch_records: Records =
+                answers.into_iter().map(|(did, data)| (batch.request, did, data)).collect();
+            merge(&mut set, sample_set(&plan, &batch_records, at));
+            records.extend(batch_records);
+        }
+        if quit {
+            break Ok(());
+        }
+
+        // A car that stops answering is not a car that is standing still.
+        silent = match answered_leading {
+            true => 0,
+            false => silent + 1,
+        };
+        if silent == SILENT_CYCLES {
+            warning = Some(messages::car_silent(session.runs().len()));
+            session.on_command(session::Command::Cancel);
+        }
+
+        for (key, text) in rendered(&plan, &records) {
+            values.insert(key, text);
+        }
+        if let Some((_, ms, _)) = set.speed {
+            speed_kmh = ms * opts.speed_scale * power::KMH_PER_MS;
+        }
+        accumulate(&mut charts, &set, opts.speed_scale, clock, opts.accel_window_s);
+
+        for event in session.on_sample(clock, set) {
+            match event {
+                session::Event::Started(_) => {
+                    closed.clear();
+                    charts.clear();
+                    table = None;
+                }
+                session::Event::MarkClosed(mark) => {
+                    closed.insert((mark.from_kmh, mark.to_kmh), mark.seconds);
+                    ui::play(ui::Tone::Mark, opts.quiet);
+                }
+                session::Event::Degraded { now_hz, was_hz } => {
+                    warning = Some(messages::degraded(now_hz, was_hz));
+                }
+                session::Event::Finished(run) | session::Event::Aborted(run) => {
+                    ui::play(
+                        if run.aborted { ui::Tone::Rejected } else { ui::Tone::Finished },
+                        opts.quiet,
+                    );
+                    // The barometer and the ambient sensor are read here and
+                    // nowhere else: once per run, and at the end of it, because
+                    // that sensor heat-soaks at a standstill and +10 K reads the
+                    // air density 3.4 % low.
+                    if full
+                        && let Some(batch) = &plan.density
+                        && let Some(measured) = read_density(&mut reader, &plan, batch).await
+                    {
+                        density = Some((measured, true));
+                    }
+                    if let Some((rho, _)) = density
+                        && let Some(model) = meta.setting.model.as_mut()
+                    {
+                        model.conditions.rho = rho;
+                    }
+                    last_outcome = Some(match run.aborted {
+                        true => ui::Outcome::Aborted {
+                            at_kmh: speed_kmh,
+                            kept: run
+                                .marks
+                                .iter()
+                                .map(|m| format!("{}-{}", m.from_kmh, m.to_kmh))
+                                .collect(),
+                        },
+                        false => ui::Outcome::Done {
+                            seconds: run.marks.last().map(|mark| mark.seconds),
+                        },
+                    });
+                    let derived = report::recompute(&run, &meta.setting);
+                    let text = report::results(&run, &derived, &meta.setting);
+                    recorded.push(Recorded { run: *run, derived, at: now(), rho: density });
+                    match terminal.is_some() {
+                        true => table = Some(text),
+                        false => println!("{text}"),
+                    }
+                    // `--out` writes continuously; `s` writes on demand. Both
+                    // write the same document.
+                    if let Some(path) = opts.out {
+                        write_session(path, &meta, &recorded, &session)?;
+                        session.on_command(session::Command::Save);
+                    }
+                }
+                session::Event::Armed => {}
+            }
+        }
+
+        if terminal.is_some() && drain(&mut controls, &mut session, &mut warning, &mut quit)? {
+            break Ok(());
+        }
+        if controls.take_save() {
+            match save(opts.out, &meta, &recorded, &session) {
+                Ok(path) => {
+                    session.on_command(session::Command::Save);
+                    warning = Some(messages::saved(&path, recorded.len()));
+                }
+                Err(why) => warning = Some(format!("{why:#}")),
+            }
+        }
+        cycles += 1;
+    };
+
+    if let Some(mut terminal) = terminal {
+        disable_raw_mode()?;
+        crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+        for record in &recorded {
+            println!("{}", report::results(&record.run, &record.derived, &meta.setting));
+        }
+    }
+    if session.unsaved() > 0 {
+        println!("{}", messages::unsaved_on_quit(session.unsaved()));
+    }
+    result
+}
+
+/// Which batches this cycle asks for.
+///
+/// The leading batch every cycle, the background one every second. Marks are
+/// timed from the leading speed alone, so its rate is the only one that sets a
+/// stopwatch, and it gets twice the rate of everything else. The barometer and
+/// the ambient sensor are in neither: they are read once per run, at the end of
+/// it, and never here.
+fn due(plan: &Plan, cycle: u64) -> Vec<&crate::watch::plan::Batch> {
+    let mut out = vec![&plan.leading];
+    if cycle % 2 == 0 {
+        out.extend(plan.background.iter());
+    }
+    out
+}
+
+/// Write the session out, and say where it went.
+///
+/// `--out` names the file; otherwise it goes into this car's own directory
+/// beside its car file, under the time it was written. Not the working
+/// directory: a drive belongs to the car, not to wherever the shell happened to
+/// be standing.
+fn save(
+    out: Option<&str>,
+    meta: &Meta,
+    recorded: &[Recorded],
+    session: &session::Session,
+) -> Result<String> {
+    let path = match (out, &meta.vin) {
+        (Some(path), _) => path.to_string(),
+        (None, Some(vin)) => {
+            let dir = crate::datadir::measures_dir(vin, None)?;
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating {}", dir.display()))?;
+            dir.join(format!("{}.json", chrono::Local::now().format("%Y-%m-%d-%H%M%S")))
+                .display()
+                .to_string()
+        }
+        // A car that would not give its VIN has no directory of its own, so the
+        // file lands where the command was run and says so.
+        (None, None) => format!("{}.json", chrono::Local::now().format("%Y-%m-%d-%H%M%S")),
+    };
+    write_session(&path, meta, recorded, session)?;
+    Ok(path)
+}
+
+fn write_session(
+    path: &str,
+    meta: &Meta,
+    recorded: &[Recorded],
+    session: &session::Session,
+) -> Result<()> {
+    let document =
+        document(meta, recorded, session.degraded(), session.hz(), session.cycle_median_s());
+    let mut text = serde_json::to_string(&document)?;
+    text.push('\n');
+    std::fs::write(path, text).with_context(|| format!("writing {path}"))
+}
+
+/// Read the barometer and the ambient sensor, once, and turn them into a
+/// density.
+async fn read_density<R: BatchReader>(
+    reader: &mut R,
+    plan: &Plan,
+    batch: &crate::watch::plan::Batch,
+) -> Option<f64> {
+    let (_, outcome) = reader.read(batch).await;
+    let crate::watch::plan::BatchOutcome::Answered(answers) = outcome else { return None };
+    let mut pressure_kpa = None;
+    let mut ambient_c = None;
+    for (did, data) in answers {
+        let Some(channel) = plan.by_address.get(&(batch.request, did)) else { continue };
+        match channel.key {
+            "barometer" => pressure_kpa = channel.value(&data),
+            "ambient" => ambient_c = channel.value(&data),
+            _ => {}
+        }
+    }
+    Some(power::air_density(pressure_kpa?, ambient_c?))
+}
+
+/// Fold one batch's readings into the cycle's set.
+fn merge(into: &mut session::SampleSet, from: session::SampleSet) {
+    if from.speed.is_some() {
+        into.speed = from.speed;
+    }
+    if from.engine_speed.is_some() {
+        into.engine_speed = from.engine_speed;
+    }
+    if from.pedal.is_some() {
+        into.pedal = from.pedal;
+    }
+    if from.gear.is_some() {
+        into.gear = from.gear;
+    }
+    into.others.extend(from.others);
+    into.states.extend(from.states);
+}
+
+/// Drain the keyboard. Returns true when the user asked to quit.
+fn drain(
+    controls: &mut ui::Controls,
+    session: &mut session::Session,
+    warning: &mut Option<String>,
+    quit: &mut bool,
+) -> Result<bool> {
+    while event::poll(Duration::from_millis(0))? {
+        if let TermEvent::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match ui::on_key(controls, key.code, session.unsaved()) {
+                ui::Action::Nothing => {}
+                ui::Action::Session(command) => {
+                    session.on_command(command);
+                    *warning = None;
+                }
+                ui::Action::Save => controls.ask_save(),
+                ui::Action::Refuse(text) => *warning = Some(text),
+                ui::Action::Quit => {
+                    *quit = true;
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// What each channel last read, as the catalog's own `describe` renders it.
+///
+/// Never `plan::Channel::render`: that falls back to `"… (raw)"`, which is
+/// exactly the class of number this command excludes.
+fn rendered(plan: &Plan, records: &Records) -> Vec<(&'static str, String)> {
+    records
+        .iter()
+        .filter_map(|(request, did, data)| {
+            let channel = plan.by_address.get(&(*request, *did))?;
+            Some((channel.key, channel.def.describe(data)?))
+        })
+        .collect()
+}
+
+/// Keep the chart buffers, trimmed to the tail worth drawing.
+///
+/// The live acceleration is **causal** and nothing else can be: the future half
+/// of a centred window has not been read yet. The file and the results table use
+/// the central scheme, recomputed over the finished run, which is why nothing
+/// accumulated here is ever saved.
+fn accumulate(
+    charts: &mut BTreeMap<String, Track>,
+    set: &session::SampleSet,
+    speed_scale: f64,
+    now: Seconds,
+    window: Seconds,
+) {
+    if let Some((t, ms, _)) = set.speed {
+        let speed = charts.entry("speed".to_string()).or_default();
+        speed.push(t, ms * speed_scale * power::KMH_PER_MS);
+        let last = speed.len() - 1;
+        let slope = derive::slope(speed, last, window, derive::Scheme::Causal);
+        if let Some(slope) = slope {
+            // The chart carries km/h, so its slope is km/h per second.
+            charts
+                .entry("accel".to_string())
+                .or_default()
+                .push(slope.t, slope.a / power::KMH_PER_MS);
+        }
+    }
+    if let Some((t, rpm)) = set.engine_speed {
+        charts.entry("engine speed".to_string()).or_default().push(t, rpm);
+    }
+    if let Some((t, pedal)) = set.pedal {
+        charts.entry("pedal".to_string()).or_default().push(t, pedal);
+    }
+    for (key, t, value) in &set.others {
+        charts.entry((*key).to_string()).or_default().push(*t, *value);
+    }
+    for track in charts.values_mut() {
+        let drop = track.t.partition_point(|probe| *probe < now - CHART_SECONDS);
+        track.t.drain(..drop);
+        track.v.drain(..drop);
+    }
+}
+
+/// The series on offer, in a stable order so the arrow keys mean the same thing
+/// from one cycle to the next. Speed opens; acceleration is next along.
+fn series_of(charts: &BTreeMap<String, Track>) -> Vec<ui::Series> {
+    let mut out: Vec<ui::Series> = Vec::new();
+    for name in ["speed", "accel", "engine speed", "pedal"] {
+        if let Some(track) = charts.get(name) {
+            out.push(ui::Series {
+                label: name.to_string(),
+                points: track.clone(),
+                causal: name == "accel",
+            });
+        }
+    }
+    for (name, track) in charts {
+        if !out.iter().any(|series| &series.label == name) {
+            out.push(ui::Series { label: name.clone(), points: track.clone(), causal: false });
+        }
+    }
+    out
+}
+
+/// The value table: every channel that answered, and every figure derived from
+/// one, each saying which it is.
+fn value_rows(
+    values: &BTreeMap<&'static str, String>,
+    charts: &BTreeMap<String, Track>,
+    meta: &Meta,
+) -> Vec<ui::ValueRow> {
+    let mut rows: Vec<ui::ValueRow> = Vec::new();
+    // The order a driver reads them in, not the order they were resolved.
+    for (name, role) in [
+        ("speed", "speed"),
+        ("engine", "engine speed"),
+        ("gear", "gear"),
+        ("pedal", "pedal"),
+        ("selector", "selector"),
+    ] {
+        if let Some(value) = values.get(role) {
+            rows.push(ui::ValueRow {
+                name: name.to_string(),
+                value: value.clone(),
+                origin: ui::Origin::Bus,
+            });
+        }
+    }
+    // Actual before specified, the order `watch` already uses, and on one line
+    // because the gap between them is the whole diagnostic.
+    if let Some(actual) = values.get("boost actual") {
+        let pair = match values.get("boost specified") {
+            Some(specified) => format!("{actual} / {specified} (act/spec)"),
+            None => actual.clone(),
+        };
+        rows.push(ui::ValueRow { name: "boost".into(), value: pair, origin: ui::Origin::Bus });
+    }
+    if let Some(value) = values.get("air mass") {
+        rows.push(ui::ValueRow {
+            name: "air mass".into(),
+            value: value.clone(),
+            origin: ui::Origin::Bus,
+        });
+    }
+
+    if let Some(accel) = charts.get("accel").and_then(|track| track.v.last()) {
+        rows.push(ui::ValueRow {
+            name: "accel".into(),
+            value: format!("{:.2} g", accel / power::G),
+            origin: ui::Origin::Computed("trailing"),
+        });
+    }
+    // Live power needs an air density, and under `--full` the car's own is only
+    // read at the end of a run. Until one exists the row is absent rather than
+    // computed against a guess.
+    if let (Some(model), Some(speed), Some(accel)) = (
+        &meta.setting.model,
+        charts.get("speed").and_then(|track| track.v.last()),
+        charts.get("accel").and_then(|track| track.v.last()),
+    ) {
+        let watts =
+            power::power(speed / power::KMH_PER_MS, *accel, None, &model.load, &model.conditions);
+        rows.push(ui::ValueRow {
+            name: "power".into(),
+            value: format!("{:.0} kW", watts.wheel_w / 1000.0),
+            origin: ui::Origin::Computed("estimate"),
+        });
+    }
+    rows
+}
+
+/// The marks panel: every mark asked for, with the ones that closed filled in.
+///
+/// A mark that has not closed shows a placeholder rather than a blank, because a
+/// gap reads as a mark that was never asked for.
+fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> Vec<ui::MarkRow> {
+    wanted
+        .iter()
+        .map(|(from, to)| ui::MarkRow {
+            name: format!("{from}-{to}"),
+            seconds: closed.get(&(*from, *to)).copied(),
+            from_launch: *from == 0,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_marks_parser_rejects_a_pair_that_does_not_rise() {
+        assert_eq!(parse_marks("0-100,50-100").unwrap(), Marks(vec![(0, 100), (50, 100)]));
+        assert!(parse_marks("100-50").is_err(), "a mark runs upwards");
+        assert!(parse_marks("abc").is_err());
+        assert!(parse_marks("").is_err(), "an empty list is not a default");
+        assert!(parse_marks("0-0").is_err());
+        // The documented default is what the flag actually parses.
+        assert_eq!(parse_marks(DEFAULT_MARKS).unwrap().0.len(), 6);
+    }
+
+    #[test]
+    fn the_speed_scale_parser_refuses_anything_a_stopwatch_cannot_use() {
+        assert_eq!(parse_speed_scale("0.97").unwrap(), 0.97);
+        for bad in ["0", "-1", "nan", "inf", "x"] {
+            assert!(parse_speed_scale(bad).is_err(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_speed_is_converted_by_the_unit_the_catalog_gave_it() {
+        // A conversion applied twice, or not at all, is the kind of error no
+        // other test in this crate could see.
+        assert!((speed_to_ms("km/h", 36.0).unwrap() - 10.0).abs() < 1e-12);
+        assert_eq!(speed_to_ms("m/s", 10.0), Some(10.0));
+        assert!((speed_to_ms("mph", 100.0).unwrap() - 44.704).abs() < 1e-9);
+        // An unknown unit makes the channel absent rather than off by 3.6.
+        assert_eq!(speed_to_ms("furlong/fortnight", 1.0), None);
+    }
+
+    #[test]
+    fn a_channel_key_is_snake_case_in_the_file() {
+        // One spelling in the document, so the reader never has to normalise.
+        assert_eq!(file_key("engine speed"), "engine_speed");
+        assert_eq!(file_key("boost actual"), "boost_actual");
+        assert_eq!(file_key("cross-check speed"), "cross_check_speed");
+    }
+
+    /// The reference car's catalogs and identities — fixtures, not a table the
+    /// code carries, in the style `watch::plan`'s own tests use.
+    fn reference() -> (vag_data::catalog::CatalogStore, Vec<crate::watch::plan::UnitIdentity>) {
+        let store = vag_data::catalog::CatalogStore::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
+        );
+        let ident = |request, part: &str| crate::watch::plan::UnitIdentity {
+            request,
+            part_number: Some(part.to_string()),
+            odx_name: None,
+            component: None,
+        };
+        (
+            store,
+            vec![
+                ident(0x7E0, "8V0906264H"),
+                ident(0x7E1, "0CW300041G"),
+                ident(0x714, "5E0920740D"),
+            ],
+        )
+    }
+
+    fn plan_for(full: bool, minimal: bool) -> Plan {
+        let (store, units) = reference();
+        let set = channels::resolve(&store, &units, full).expect("the reference car resolves");
+        Plan::build(&set, minimal)
+    }
+
+    /// The keys a plan would poll, per batch, so a test can talk about roles
+    /// rather than about identifiers.
+    fn keys(plan: &Plan, batch: &crate::watch::plan::Batch) -> Vec<&'static str> {
+        batch
+            .dids
+            .iter()
+            .filter_map(|did| plan.by_address.get(&(batch.request, *did)).map(|c| c.key))
+            .collect()
+    }
+
+    #[test]
+    fn the_channels_that_only_feed_the_power_model_are_not_polled_without_full() {
+        // A cycle spent on a number nobody will look at is a cycle not spent on
+        // speed, and a default-mode recording can never become a power figure
+        // afterwards because the density its model needs was never sampled.
+        let plan = plan_for(false, false);
+        assert!(plan.density.is_none(), "nothing to read them with");
+        let polled: Vec<&str> = std::iter::once(&plan.leading)
+            .chain(plan.background.iter())
+            .flat_map(|batch| keys(&plan, batch))
+            .collect();
+        assert!(!polled.contains(&"barometer"), "{polled:?}");
+        assert!(!polled.contains(&"ambient"), "{polled:?}");
+        // And everything worth having on its own is still there.
+        for wanted in ["speed", "engine speed", "gear", "pedal"] {
+            assert!(polled.contains(&wanted), "{wanted} missing from {polled:?}");
+        }
+    }
+
+    #[test]
+    fn under_full_the_barometer_is_a_batch_of_its_own_and_not_in_the_cycle() {
+        // Once per run, not per cycle: neither reading moves measurably in seven
+        // seconds, and polling them at 20 Hz would cost cycles for no
+        // information.
+        let plan = plan_for(true, false);
+        let density = plan.density.as_ref().expect("--full reads them");
+        let mut found = keys(&plan, density);
+        found.sort_unstable();
+        assert_eq!(found, ["ambient", "barometer"]);
+        let per_cycle: Vec<&str> = std::iter::once(&plan.leading)
+            .chain(plan.background.iter())
+            .flat_map(|batch| keys(&plan, batch))
+            .collect();
+        assert!(!per_cycle.contains(&"barometer"), "{per_cycle:?}");
+        assert!(!per_cycle.contains(&"ambient"), "{per_cycle:?}");
+    }
+
+    #[test]
+    fn minimal_polls_only_what_the_stopwatch_needs() {
+        let plan = plan_for(false, true);
+        let polled: Vec<&str> = std::iter::once(&plan.leading)
+            .chain(plan.background.iter())
+            .flat_map(|batch| keys(&plan, batch))
+            .collect();
+        assert!(polled.contains(&"speed"), "{polled:?}");
+        assert!(polled.contains(&"gear"), "{polled:?}");
+        assert!(!polled.contains(&"pedal"), "the telemetry is the trade: {polled:?}");
+        assert!(!polled.contains(&"boost actual"), "{polled:?}");
+    }
+
+    #[test]
+    fn the_leading_batch_runs_every_cycle_and_the_background_every_second() {
+        // Marks are timed from the leading speed alone, so its rate is the only
+        // one that sets a stopwatch.
+        let plan = plan_for(false, false);
+        assert!(!plan.background.is_empty(), "the reference car spans units");
+        for cycle in 0..6u64 {
+            let batches = due(&plan, cycle);
+            assert_eq!(batches[0].request, plan.leading.request, "cycle {cycle}");
+            let expected = match cycle % 2 {
+                0 => 1 + plan.background.len(),
+                _ => 1,
+            };
+            assert_eq!(batches.len(), expected, "cycle {cycle}");
+        }
+    }
+
+    /// A reader that answers from a table and counts what it was asked for.
+    /// The seam the loop's scheduling is tested behind — no CAN, no adapter.
+    struct Fake {
+        asked: Vec<crate::watch::plan::Batch>,
+        answers: BTreeMap<(u16, u16), Vec<u8>>,
+    }
+
+    impl BatchReader for Fake {
+        async fn read(
+            &mut self,
+            batch: &crate::watch::plan::Batch,
+        ) -> (Seconds, crate::watch::plan::BatchOutcome) {
+            self.asked.push(batch.clone());
+            let records: Vec<(u16, Vec<u8>)> = batch
+                .dids
+                .iter()
+                .filter_map(|did| {
+                    self.answers.get(&(batch.request, *did)).map(|data| (*did, data.clone()))
+                })
+                .collect();
+            (self.asked.len() as f64 * 0.05, crate::watch::plan::BatchOutcome::Answered(records))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_density_batch_is_read_once_and_lands_on_the_iso_2533_anchor() {
+        let plan = plan_for(true, false);
+        let density = plan.density.clone().expect("--full reads them");
+        // 101 kPa and 15 °C, as SAE J1979 spells them: 1 kPa/bit and A − 40 °C.
+        let answers = plan
+            .by_address
+            .iter()
+            .filter_map(|((request, did), channel)| match channel.key {
+                "barometer" => Some(((*request, *did), vec![101u8])),
+                "ambient" => Some(((*request, *did), vec![55u8])),
+                _ => None,
+            })
+            .collect();
+        let mut reader = Fake { asked: Vec::new(), answers };
+        let rho = read_density(&mut reader, &plan, &density).await.expect("both answered");
+        assert_eq!(reader.asked.len(), 1, "once per run, not per channel");
+        assert!((rho - 1.2211).abs() < 1e-3, "{rho}");
+    }
+
+    #[test]
+    fn a_session_refuses_a_schema_it_does_not_know_by_name() {
+        let dir = std::env::temp_dir().join(format!("vagcan-measure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("future.json");
+        std::fs::write(&path, r#"{"schema": 99, "runs": []}"#).unwrap();
+        let why = open_view(path.to_str().unwrap()).unwrap_err().to_string();
+        assert!(why.contains("schema 99"), "{why}");
+
+        std::fs::write(&path, r#"{"runs": []}"#).unwrap();
+        assert!(open_view(path.to_str().unwrap()).unwrap_err().to_string().contains("no `schema`"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

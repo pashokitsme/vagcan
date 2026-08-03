@@ -179,7 +179,12 @@ pub fn recompute(run: &Run, setting: &Setting) -> Derived {
     let accel_track = as_track(&accel);
 
     let distance = cumulative_distance(speed);
-    let distance_m = distance.v.last().copied().unwrap_or(0.0);
+    // The total goes through the shared integrator rather than the running one,
+    // so the scalar in the file and the channel beside it cannot drift apart.
+    let distance_m = match (speed.t.first(), speed.t.last()) {
+        (Some(first), Some(last)) => derive::distance_m(speed, first.max(0.0), *last),
+        _ => 0.0,
+    };
 
     let peak_accel = derive::peak(&accel, tau, window);
     let peak_accel_gear = peak_accel.and_then(|p| run.samples.gear.at(p.t)).map(str::to_string);
