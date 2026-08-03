@@ -206,6 +206,14 @@ pub struct CarConditions {
 pub struct CarFile {
     /// The key. The car names itself, and its file is found by that name.
     pub vin: String,
+    /// What the owner calls this car — "Škoda Octavia III", "the blue one".
+    ///
+    /// It has to be asked for, because **no control unit broadcasts a make or a
+    /// model**. The engine reports a description of itself (`1.8l R4 TFSI`) and
+    /// every unit reports a part number; a marque and a generation would have to
+    /// come from a table this project does not have and would not be allowed to
+    /// invent. So it is `Stated`, like the mass, by the one person who knows.
+    pub name: Option<Sourced<String>>,
     pub units: Vec<UnitRef>,
     pub mass: Option<Sourced<Mass>>,
     pub tyre: Option<Sourced<String>>,
@@ -226,6 +234,7 @@ impl CarFile {
     pub fn new(vin: impl Into<String>) -> CarFile {
         CarFile {
             vin: vin.into(),
+            name: None,
             units: Vec::new(),
             mass: None,
             tyre: None,
@@ -250,6 +259,16 @@ impl CarFile {
     /// this tool writes.
     pub fn path_for(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
         Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str(), description)?.join("car.json"))
+    }
+
+    /// Where this car's own file is, using whatever it is called.
+    ///
+    /// The owner's name when there is one, the engine's description of itself
+    /// when there is not. Both only make the directory readable; the VIN is
+    /// what makes it unique.
+    pub fn path(&self, description: Option<&str>) -> anyhow::Result<PathBuf> {
+        let label = self.name.as_ref().map(|n| n.value.as_str()).or(description);
+        CarFile::path_for(&self.vin, label)
     }
 
     /// Read a car file. Anything it cannot vouch for is an error naming the
@@ -833,6 +852,20 @@ mod tests {
         ] {
             assert_eq!(rolling_radius_m(not_a_tyre), None, "{not_a_tyre:?} produced a radius");
         }
+    }
+
+    #[test]
+    fn a_car_is_filed_under_what_its_owner_calls_it() {
+        // No unit broadcasts a make or a model, so the readable half of the
+        // path is either what the owner said or what the engine said about
+        // itself — never something this tool decoded out of a VIN.
+        let mut car = CarFile::new("XW8AD4NE9JH008917");
+        let unnamed = car.path(Some("1.8l R4 TFSI")).unwrap();
+        assert!(unnamed.ends_with("1.8l-R4-TFSI-XW8AD4NE9JH008917/car.json"), "{unnamed:?}");
+
+        car.name = Some(Sourced::new("Škoda Octavia III".to_string(), Source::Stated));
+        let named = car.path(Some("1.8l R4 TFSI")).unwrap();
+        assert!(named.ends_with("koda-Octavia-III-XW8AD4NE9JH008917/car.json"), "{named:?}");
     }
 
     #[test]

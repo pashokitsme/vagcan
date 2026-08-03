@@ -177,7 +177,13 @@ road:
    is found by that name.
 2. **Runs the pre-flight channel check** and prints what it found and what it did not, so a
    missing channel is discovered at a standstill rather than at a green light.
-3. **Asks for what only a person can supply**, in two parts so the arithmetic is the tool's
+3. **Asks what to call this car.** No control unit broadcasts a make or a model: the engine
+   describes itself (`1.8l R4 TFSI`), every unit reports a part number, and a marque and a
+   generation would have to come from a table this project does not have and will not invent.
+   The owner knows, so the owner is asked — one line, defaulted to the engine's own
+   description, and it becomes the readable half of the car's directory name:
+   `Škoda-Octavia-III-XW8AD4NE9JH008917`.
+4. **Asks for what only a person can supply**, in two parts so the arithmetic is the tool's
    and not the owner's: the **mass in running order** (EU registration field G, "mass in
    service" on a UK V5C) and then who and what else will be aboard. This matters more than it
    looks: under Regulation 1230/2012 that figure *already includes* a 75 kg driver and a
@@ -185,7 +191,7 @@ road:
    document asked — double-counts about 150 kg on a 1400 kg car. The tool asks whether the
    stated figure includes the driver, adds only what is left, shows the sum, and stores the
    parts rather than the total. Then the tyre size as written on the sidewall.
-4. **Explains the road part while the car is still parked**, because none of it can be
+5. **Explains the road part while the car is still parked**, because none of it can be
    explained at 120 km/h:
 
    ```
@@ -201,7 +207,7 @@ road:
 
      You can stop at any point. Everything answered and every accepted pass is kept.
    ```
-5. **Then waits, and says what it is waiting for.** The screen shows the current speed and the
+6. **Then waits, and says what it is waiting for.** The screen shows the current speed and the
    target; the bus decides when a pass starts and ends (below). If two minutes pass without
    ever reaching the target it offers the way out, since the flags are unreachable at the
    moment they are needed:
@@ -213,12 +219,12 @@ road:
      A narrower range separates drag from rolling resistance less well, and the fit
      will say by how much rather than hiding it.
    ```
-6. **Asks for the return pass** — pointing the other way, same stretch — and repeats.
-7. **Fits, then writes the car file** and says what the car is now known to be, and what that
+7. **Asks for the return pass** — pointing the other way, same stretch — and repeats.
+8. **Fits, then writes the car file** and says what the car is now known to be, and what that
    makes available:
 
    ```
-     Setup complete — ~/.vagcan/cars/XW8AD4NE9JH008917.json
+     Setup complete — ~/.vagcan/cars/Škoda-Octavia-III-XW8AD4NE9JH008917/car.json
 
        mass    1475 kg        you, 2026-08-03
        tyre    205/55R16      you
@@ -273,6 +279,7 @@ pub fn car_dir()    -> anyhow::Result<PathBuf>;   // ~/.vagcan/cars
 
 ```json
 { "vin": "XW8AD4NE9JH008917",
+  "name":          { "value": "Škoda Octavia III", "source": "stated" },
   "units": [ { "request": "7E0", "part_number": "8V0906264H" } ],
   "mass_kg":       { "value": 1475,  "source": "stated",   "at": "2026-08-03",
                      "parts": { "running_order": 1395, "includes_driver": true,
@@ -392,14 +399,38 @@ is discarded, with the reason on screen, if the pedal moves, the selector leaves
 rises, or the deceleration jumps in a way braking looks like — a partial coast fitted as a
 whole one would put the brakes into `Crr`.
 
-- **Two passes, opposite directions — and this is the only grade detector there is.** A
-  constant slope adds a constant force, which in a model linear in `[v², 1]` is absorbed
-  *entirely into the intercept*: a 1 % grade nearly **doubles `Crr`** and moves R² by 0.0003.
-  R² cannot see it. What can is the disagreement between reciprocal passes, and its power is
-  enormous — the statistical scatter on `Crr` is 0.16 % while a 1 % grade moves it 88 %. So
-  the acceptance test is stated in `Crr` units, and the implied slope, `sin θ = (Crr_A −
-  Crr_B)·(1+δ₁)/2`, is **reported** rather than merely used, because it comes free and tells
-  the driver something about the road they chose.
+- **Two passes, opposite directions — and what that does and does not buy.** A constant slope
+  adds a constant force, which in a model linear in `[v², 1]` is absorbed *entirely into the
+  intercept*: a 1 % grade nearly **doubles `Crr`** and moves the residual by less than
+  0.01 km/h. No measure of fit quality can see it. Averaging two reciprocal passes cancels it
+  **exactly**, and the half-difference is the slope itself:
+
+  ```
+  sin θ = (Crr_A − Crr_B) / 2
+  ```
+
+  with no `(1+δ₁)` in it — the fit already divides by `m·(1+δ₁)`, so gravity's `m·g·sin θ`
+  sits in the same units as `m·g·Crr` and the factor would overstate every slope by about 4 %.
+
+  The implied slope is **reported**, because it comes free and says something about the road
+  the driver chose. It is not, however, an acceptance test, and the disagreement between
+  passes is a much weaker guard than an earlier draft of this document claimed:
+
+  | what happened | `Crr` disagreement | the average | reported slope |
+  |---|---|---|---|
+  | two reciprocal passes on a 1 % slope | ~88 % | **correct** — the slope cancels | ~1 %, true |
+  | two passes the **same way** on that slope | ~0 % — they agree | **biased** by the slope | ~0 %, false |
+
+  The bad case looks perfect and the good case looks alarming. So the disagreement bar can
+  only be loose — it means "both directions measured *a* road load at all", not "the pair was
+  reciprocal" — and a tight one would reject exactly the measurements the two-way procedure
+  exists to make possible.
+
+  **A non-reciprocal pair is undetectable from the bus.** There is no compass here, and a
+  reported slope near zero means either a flat road or a driver who went the same way twice.
+  The tool cannot tell those apart; it counts passes, says to turn around, and reports what
+  it measured. That is the whole of the protection, and saying so is better than implying a
+  check that does not exist.
 - **Grade cancels exactly; wind does not.** Drag acts on `(v ± w)²`, whose cross-term is
   antisymmetric and cancels between passes, but whose `w²` term is symmetric and does not. It
   is a constant, so it lands wholly in `Crr` and always positive: `ΔCrr = ½ρ·CdA·w²/(m·g)`,
