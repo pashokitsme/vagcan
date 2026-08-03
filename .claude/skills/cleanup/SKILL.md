@@ -82,10 +82,11 @@ session repeats the experiment.
 
 ### Phase 4 — retire code by relocation
 
-- **A one-shot tool is not dead code.** `vag-rod` (the `.rod` IV brute force) and
-  `vag-labels` (corpus dump) ran once and produced committed artefacts. They keep
-  their value for the next corpus, on another machine, or when an artefact is
-  doubted. Retire them into a subcommand group, not into `git rm`.
+- **A one-shot tool is not dead code.** The `.rod` key search and the corpus dump
+  each ran once and produced a committed artefact, and each keeps its value for the
+  next corpus, on another machine, or when an artefact is doubted. They were retired
+  into `vagcan vcds rod` and `vagcan vcds corpus` rather than into `git rm`; do the
+  same with the next one.
 - **Every one-shot tool states three things in its help text**, because by the time
   it is needed again nobody will remember them: **what it is for** (and what it
   produced last time, so the artefact can be recognised), **what it expects on
@@ -98,9 +99,12 @@ session repeats the experiment.
   Pick the survivor by capability, not by age: whichever covers the other's flags.
   If the older one has a mode the survivor lacks, port that mode first, then delete —
   the merge is not finished while a capability is stranded.
-- **Genuinely dead** means: no caller outside its own tests, and the reason it was
-  kept has since been refuted. Both halves. `mwb.rs` qualifies — exported, uncalled,
-  and the MWB→name join it was held for has been shown not to exist.
+- **Genuinely dead** means: no caller outside its own tests, **and** the reason it was
+  kept has since been refuted. Both halves, and the second is the one that gets
+  skipped. `mwb.rs` is the worked example of failing it: exported from `lib.rs`,
+  called by nothing but its own tests — and still not dead, because the MWB→TTTEXT
+  name join it is held for is recorded as a live prediction
+  (`research/label-linkage.md` §5, `todo/README.md`). Uncalled is half a case.
 - **The top level of the CLI is for commands used with the car in front of you.**
   That is the whole test: if it needs an adapter and a running vehicle, it is a
   top-level command. Everything that reads static files — a VCDS installation, a
@@ -147,7 +151,7 @@ mixed in.
 
 ## What a cleanup pass produces
 
-Four things, and no more:
+Five things, and no more:
 
 1. Commits that move files and delete nothing of substance, each staged by path.
 2. `todo/README.md` accurate as of today's date, with the milestone table matching

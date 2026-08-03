@@ -19,6 +19,11 @@ what not to run is not advisory.
 Everything below needs the car present and the ignition on. Commands under
 `vagcan vcds` and `vagcan recording` need only files and are out of scope here.
 
+## Invoking it
+
+There is no installed binary. Everything below is `cargo run -q -p vagcan -- <args>`
+from the repository root; the commands are written bare for readability.
+
 ## Quick reference
 
 | Task | Command |
@@ -43,8 +48,9 @@ guesses — pass what `units` printed.
 
 `watch` has two modes. With a terminal it draws a full-screen view; **with `--for
 SECONDS` it prints CSV and needs no terminal at all**, which is the mode to use from
-a script or an agent. Piped output falls into that mode automatically, running until
-interrupted since no duration was named.
+a script or an agent. Output that is not a terminal takes that mode automatically and
+runs until interrupted, so **always pass `--for`** — an agent has no way to send the
+interrupt.
 
 ```bash
 vagcan watch --did "01:2029,202A 02:3816" --for 30 --hz 10 --out drive.csv

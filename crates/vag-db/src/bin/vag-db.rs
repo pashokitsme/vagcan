@@ -10,7 +10,7 @@
 //! every `.clb`, see [`vag_data::load_corpus`]) and writes the parsed corpus
 //! to a SQLite file, overwriting any existing tables of the same name.
 //! `lookup` loads that cache into a [`vag_data::LabelDb`] and resolves a part
-//! number exactly like `vag-labels --lookup`. `stats` prints row counts per
+//! number exactly like `vagcan vcds labels --part`. `stats` prints row counts per
 //! table. `rod` decodes a `.rod` (UDS/ODX) file's sections and prints each
 //! one's tag, decode status, and text (see [`vag_data::decode_rod`]); `.rod`
 //! is NOT part of the SQLite corpus.
@@ -67,7 +67,7 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// Mirrors `vag-labels --lookup`'s output: resolved file name + measurements.
+/// Mirrors `vagcan vcds labels --part`'s output: resolved file name + measurements.
 fn print_lookup(db: &vag_data::LabelDb, part_no: &str) {
     match db.resolve(part_no) {
         Some(file) => {

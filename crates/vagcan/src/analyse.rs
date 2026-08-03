@@ -1,4 +1,4 @@
-//! `vagcan analyse` — turn a capture plus a VCDS log into proven scalings.
+//! `vagcan vcds analyse` — turn a capture plus a VCDS log into proven scalings.
 //!
 //! The capture holds what went over the wire; the VCDS CSV holds what VCDS
 //! displayed at the same moment. Crossing them gives
@@ -590,7 +590,7 @@ pub fn log_offset_seconds(anchor_unix_us: u64, log_hms: (u32, u32, u32)) -> Opti
     Some(log_secs - capture_secs)
 }
 
-/// `vagcan analyse` — cross a capture with a VCDS log.
+/// `vagcan vcds analyse` — cross a capture with a VCDS log.
 pub fn run(
     capture_path: &str,
     log_path: &str,

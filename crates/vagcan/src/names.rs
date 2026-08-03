@@ -1,4 +1,4 @@
-//! `vagcan names` — search the measurement names recovered from the label
+//! `vagcan vcds names` — search the measurement names recovered from the label
 //! corpus.
 //!
 //! `catalogs/names-uds.json` holds 17,009 names, recovered by breaking

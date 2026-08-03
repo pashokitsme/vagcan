@@ -1,4 +1,4 @@
-//! `vagcan discover` — find the identifiers that carry discrete state.
+//! `vagcan recording discover` — find the identifiers that carry discrete state.
 //!
 //! Gear, gearbox mode, a turn signal, a brake switch: none of these can be
 //! found by fitting a straight line. A gear takes seven values and a switch
@@ -19,7 +19,7 @@ pub enum Behaviour {
     Constant,
     /// Moved between a small set of values: a gear, a mode, a switch, a state.
     Stepped { levels: usize, changes: usize },
-    /// Took many values — an analogue quantity, for `vagcan analyse` instead.
+    /// Took many values — an analogue quantity, for `vagcan vcds analyse` instead.
     Continuous { levels: usize },
 }
 

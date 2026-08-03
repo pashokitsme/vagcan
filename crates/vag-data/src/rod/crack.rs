@@ -505,7 +505,7 @@ fn candidate_sets(tag_m: u8, t: &[u8; 8]) -> [Vec<u8>; 5] {
 /// deflate stream and check the dynamic-Huffman header parses AND the full
 /// inflate yields exactly `plainlen` bytes. This is the same oracle the search
 /// uses per candidate; exposed so the plumbing can be tested without running
-/// the multi-minute brute force (which the `vag-rod` acceptance run exercises).
+/// the multi-minute brute force (which the `vagcan vcds rod` acceptance run exercises).
 #[cfg(test)]
 pub(crate) fn confirm_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize, iv3to8: [u8; 5]) -> bool {
     if cipher.len() < 8 || cipher.len() % 8 != 0 {

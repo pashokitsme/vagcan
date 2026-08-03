@@ -7,7 +7,7 @@
 //!
 //! The compiled/encrypted `.clb` sibling format is TEA-CBC encrypted and IS
 //! handled, but not here: see the [`crate::clb`] module (decryption) and the
-//! `vag-labels` binary (which feeds decrypted `.clb` bytes back through
+//! `vagcan vcds corpus` binary (which feeds decrypted `.clb` bytes back through
 //! `parse_label`). Most MQB-era labels ship only as `.clb`.
 
 use serde::Serialize;

@@ -299,7 +299,7 @@ impl IvCache {
 /// Recovery costs about a minute of every core per section, and nothing in the
 /// live path can use it: reading a car needs the *answer*, which is a five-byte
 /// value in `catalogs/rod-iv-cache.json`, not the search that produced it. So
-/// the search ships in the `vag-rod` tool (`--features rod-crack`) and the CLI
+/// the search ships in `vagcan vcds rod` (`--features rod-crack`) and the CLI
 /// links only the cache lookup.
 #[cfg(feature = "rod-crack")]
 mod crack;
@@ -588,7 +588,7 @@ mod tests {
         // The recovery ORACLE confirms the true iv[3..8] and rejects a wrong
         // one — this exercises the whole plumbing (TEA block, CBC tail,
         // header oracle, inflate) without the multi-minute 2^36 search, which
-        // the `vag-rod` acceptance run performs on the real STRUC.rod.
+        // the `vagcan vcds rod` acceptance run performs on the real STRUC.rod.
         let true_tail = [iv[3], iv[4], iv[5], iv[6], iv[7]];
         assert!(crack::confirm_iv3to8(tag, &cipher, plain.len(), true_tail));
         let wrong_tail = [

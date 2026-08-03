@@ -1,4 +1,4 @@
-//! `vagcan labels` — inventory + lookup over a VCDS label/ODX directory tree.
+//! `vagcan vcds labels` — inventory + lookup over a VCDS label/ODX directory tree.
 //!
 //! Points at a VCDS install root (or any subtree), recursively counts the
 //! `.lbl` / `.clb` / `.rod` files it holds, and answers two lookups:
@@ -200,7 +200,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Resul
 
     // Recovered initialisation vectors come from the cache only. The search
     // that fills it costs minutes of every core and lives in a separate tool
-    // (`cargo run -p vag-data --features rod-crack --bin vag-rod <file.rod>`),
+    // (`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`),
     // so reading a car never links it.
     let mut cache = IvCache::load(std::path::Path::new(cache_path));
     for path in &hits {
@@ -225,8 +225,8 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Resul
                 // No vector in the cache for this section, and this binary
                 // cannot search for one.
                 RodStatus::Undecodable => {
-                    "encrypted (recover with: cargo run -p vag-data \
-                     --features rod-crack --bin vag-rod <file.rod>)"
+                    "encrypted (recover with: cargo run -p vagcan \
+                     --features rod-crack -- vcds rod <file.rod>)"
                 }
             };
             let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);

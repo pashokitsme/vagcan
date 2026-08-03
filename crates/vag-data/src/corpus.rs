@@ -1,7 +1,7 @@
 //! Corpus loading: walk a VCDS `Labels/` directory, parse every plaintext
 //! `.lbl` file and decrypt+parse every encrypted `.clb` file into a `Vec<LabelFile>`.
 //!
-//! Shared by the `vag-labels` binary (JSON/summary/lookup CLI) and the
+//! Shared by the `vagcan vcds corpus` binary (JSON/summary/lookup CLI) and the
 //! `vag-db` crate (SQLite cache builder), so both stay in sync on how the
 //! corpus is walked and parsed.
 
@@ -101,7 +101,7 @@ pub struct CorpusScan {
     pub lbl_count: usize,
     pub clb_count: usize,
     /// `.rod` files found. NOT parsed (the ODX crypto/inflate pipeline lives
-    /// elsewhere) — counted only, so `vagcan labels` can report corpus size.
+    /// elsewhere) — counted only, so `vagcan vcds labels` can report corpus size.
     pub rod_count: usize,
     pub other_count: usize,
     pub read_errors: usize,

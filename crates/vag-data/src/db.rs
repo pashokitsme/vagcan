@@ -282,7 +282,7 @@ impl LabelDb {
     /// skipped. Results are sorted by `(source, field)` for deterministic output.
     ///
     /// This is the cross-corpus counterpart to [`Self::measurement`], which is
-    /// scoped to a single resolved part number. Used by `vagcan labels --block`
+    /// scoped to a single resolved part number. Used by `vagcan vcds labels --block`
     /// to answer "which label files define measuring block N, and what is it?".
     pub fn measurements_by_block(
         &self,

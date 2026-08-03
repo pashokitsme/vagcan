@@ -1,4 +1,4 @@
-//! `vagcan calibrate` — prove new scalings against ones we already trust.
+//! `vagcan recording calibrate` — prove new scalings against ones we already trust.
 //!
 //! `analyse` needs a VCDS log because it needs *reference values with units*.
 //! But this project already has references of its own: the 32 standard OBD-II
@@ -238,7 +238,7 @@ pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, Strin
     Ok(out)
 }
 
-/// `vagcan calibrate` — see the module docs.
+/// `vagcan recording calibrate` — see the module docs.
 pub fn run(log: &str, limits: Thresholds) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
