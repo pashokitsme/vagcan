@@ -21,6 +21,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 serde_json.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
+dirs = "6"
 
 [features]
 # Recovering the key of a `.rod` section that VW's encryption blocks. Off by

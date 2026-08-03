@@ -218,7 +218,7 @@ road:
    makes available:
 
    ```
-     Setup complete — /Users/you/Library/Application Support/vagcan/cars/XW8…917.json
+     Setup complete — ~/.config/vagcan/cars/XW8AD4NE9JH008917.json
 
        mass    1475 kg        you, 2026-08-03
        tyre    205/55R16      you
@@ -264,8 +264,8 @@ the shell happens to be standing in. A sibling is needed:
 
 ```rust
 /// Where files this tool writes about *your* car live. Not the corpus.
-pub fn car_dir() -> anyhow::Result<PathBuf>;   // $XDG_DATA_HOME/vagcan/cars, else
-                                               // ~/Library/Application Support/vagcan/cars
+pub fn config_dir() -> anyhow::Result<PathBuf>;   // $XDG_CONFIG_HOME/vagcan,
+pub fn car_dir()    -> anyhow::Result<PathBuf>;   // else ~/.config/vagcan — then /cars
 ```
 
 `--car FILE` overrides it explicitly, the way `--catalogs DIR` overrides the corpus, and
