@@ -36,9 +36,14 @@ pub fn resolve(relative: &str) -> PathBuf {
     given.to_path_buf()
 }
 
-/// Where this tool keeps its own configuration, with the car files under
-/// `cars/` inside it: one per VIN, holding what an owner typed about their car
-/// and what the coastdown measured on it.
+/// This tool's own directory, `~/.vagcan`: the configuration, and `cars/`
+/// beside it holding one file per VIN — what an owner typed about their car and
+/// what the coastdown measured on it.
+///
+/// One dot-directory rather than each platform's convention. `dirs::config_dir`
+/// would scatter this across `~/.config` and `~/Library/Application Support`,
+/// which is right for an application bundle and wrong for a tool whose files a
+/// person opens, reads and edits by hand.
 ///
 /// Not `catalogs/`. That is a checked-in corpus keyed by part number, where a
 /// measurement proven on one `0CW300041G` is true of every `0CW300041G` in the
@@ -50,29 +55,22 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// for something that already exists, which is right for *reading* the corpus
 /// and wrong for *writing*: it would put a car file in whichever checkout the
 /// shell happened to be standing in.
-///
-/// The location is whatever `dirs::config_dir` says, so it follows each
-/// platform's own convention — `~/.config` on Linux and BSD, honouring
-/// `XDG_CONFIG_HOME`; `~/Library/Application Support` on macOS.
-pub fn config_dir() -> anyhow::Result<PathBuf> {
-    config_dir_in(dirs::config_dir())
+pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
+    vagcan_dir_in(dirs::home_dir())
 }
 
 /// Where the per-VIN car files live.
 pub fn car_dir() -> anyhow::Result<PathBuf> {
-    Ok(config_dir()?.join("cars"))
+    Ok(vagcan_dir()?.join("cars"))
 }
 
-/// The rule behind [`config_dir`], with the base passed in so it can be tested
-/// without a process-wide `set_var` that the other tests would race.
-fn config_dir_in(base: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    let base = base.filter(|p| p.is_absolute()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no configuration directory to write to — set HOME or XDG_CONFIG_HOME, \
-             or pass an explicit path"
-        )
+/// The rule behind [`vagcan_dir`], with the home directory passed in so it can
+/// be tested without a process-wide `set_var` that the other tests would race.
+fn vagcan_dir_in(home: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let home = home.filter(|p| p.is_absolute()).ok_or_else(|| {
+        anyhow::anyhow!("no home directory to write to — set HOME, or pass an explicit path")
     })?;
-    Ok(base.join("vagcan"))
+    Ok(home.join(".vagcan"))
 }
 
 /// Where to look, in order: the working directory and its parents, then the
@@ -148,27 +146,22 @@ mod tests {
     }
 
     #[test]
-    fn the_car_files_sit_under_whatever_the_platform_calls_its_config_directory() {
-        let dir = config_dir_in(Some(PathBuf::from("/home/someone/.config"))).unwrap();
-        assert_eq!(dir, Path::new("/home/someone/.config/vagcan"));
-        assert_eq!(
-            config_dir_in(Some(PathBuf::from("/Users/someone/Library/Application Support")))
-                .unwrap()
-                .join("cars"),
-            Path::new("/Users/someone/Library/Application Support/vagcan/cars")
-        );
+    fn everything_this_tool_writes_lives_in_one_dot_directory() {
+        let dir = vagcan_dir_in(Some(PathBuf::from("/home/someone"))).unwrap();
+        assert_eq!(dir, Path::new("/home/someone/.vagcan"));
+        assert_eq!(dir.join("cars"), Path::new("/home/someone/.vagcan/cars"));
     }
 
     #[test]
-    fn a_relative_base_is_ignored_because_it_would_follow_the_shell() {
+    fn a_relative_home_is_ignored_because_it_would_follow_the_shell() {
         // Resolving against the working directory is the same "wherever the
         // shell is standing" failure this module exists to avoid.
-        assert!(config_dir_in(Some(PathBuf::from("relative/config"))).is_err());
+        assert!(vagcan_dir_in(Some(PathBuf::from("relative/home"))).is_err());
     }
 
     #[test]
     fn with_nowhere_to_write_the_error_says_what_to_set() {
-        let err = config_dir_in(None).unwrap_err().to_string();
-        assert!(err.contains("HOME") && err.contains("XDG_CONFIG_HOME"), "{err}");
+        let err = vagcan_dir_in(None).unwrap_err().to_string();
+        assert!(err.contains("HOME"), "{err}");
     }
 }
