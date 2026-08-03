@@ -866,38 +866,19 @@ async fn poll_batch<B: vag_can::CanBackend>(
     backend: &mut Option<B>,
     batch: &plan::Batch,
 ) {
-    use vag_can::IsoTpCan;
-    use vag_protocol::AsyncUdsClient;
-    use vag_transport::CanId;
-
-    let Some(b) = backend.take() else { return };
-    // Each unit is addressed by the rule its id block uses: the cluster
-    // answers on 0x77E, not on 0x7E0 + 16, which is what treating the unit
-    // number as an ISO index used to produce.
-    let Some(address) = vag_protocol::address::UnitAddress::from_request(batch.request) else {
-        *backend = Some(b);
-        return;
+    let (at, outcome) = plan::read_batch(backend, batch, app.started).await;
+    let records = match outcome {
+        // Nothing was sent, so nothing about the clock has moved on either.
+        plan::BatchOutcome::Unaddressable => return,
+        // The clock still advances: the wait happened, and a row that keeps
+        // its old value has to be seen ageing.
+        plan::BatchOutcome::NoAnswer => Vec::new(),
+        plan::BatchOutcome::Answered(records) => records,
     };
-    let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-        b,
-        CanId::Standard(address.request),
-        CanId::Standard(address.response),
-    ));
-    let answer = if batch.dids.len() == 1 {
-        uds.read_data_by_identifier(batch.dids[0]).await.map(|d| vec![(batch.dids[0], d)])
-    } else {
-        uds.read_data_by_identifiers(&batch.dids).await.map(|payload| {
-            crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default()
-        })
-    };
-    let at = app.started.elapsed().as_secs_f64();
     app.clock = at;
-    if let Ok(records) = answer {
-        for (did, data) in records {
-            app.latest.insert((batch.request, did), (at, data));
-        }
+    for (did, data) in records {
+        app.latest.insert((batch.request, did), (at, data));
     }
-    *backend = Some(uds.into_transport().into_backend());
 }
 
 /// One CSV row of whatever is selected, writing the header first.

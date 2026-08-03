@@ -8,6 +8,12 @@
 //! A channel is keyed by the unit's **request id**, not by a unit number: the
 //! two id blocks on this car have different response rules, and a number is
 //! only a display convenience over the id (see `vag_protocol::address`).
+//!
+//! One exception to the no-car rule: [`read_batch`] performs the read a plan
+//! describes. It lives here because it is the other half of [`Batch`] — a
+//! reader who wants to know what a batch *is* and what asking for one costs
+//! should not have to open two files — and because more than one live loop
+//! needs it, and a copied one drifts.
 
 use std::collections::BTreeMap;
 
@@ -284,6 +290,76 @@ pub fn plan(channels: &[Channel]) -> Vec<Batch> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// What one batch read produced.
+///
+/// `NoAnswer` is explicit because a silent failure leaves the previous value on
+/// screen and makes a collapsing poll rate undetectable: a caller that only
+/// hears about answers cannot tell a value that is steady from a link that has
+/// died, and both look like a table nobody is updating.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOutcome {
+    /// The unit answered. Possibly with fewer records than were asked for —
+    /// a response that will not split into records comes back empty rather
+    /// than as an error, which is what the car does when a request holds more
+    /// identifiers than the unit accepts.
+    Answered(Vec<(u16, Vec<u8>)>),
+    /// Nothing was sent, so this says nothing about the car: either there is no
+    /// adapter to ask with, or no addressing rule for this request id.
+    Unaddressable,
+    /// Asked, and the unit did not answer within its deadline.
+    NoAnswer,
+}
+
+/// Read one batch of identifiers, and say when the answer arrived.
+///
+/// The returned time is seconds since `started`, taken the moment the request
+/// resolves — it is the age of every record in the batch, and identifiers are
+/// polled in groups, so columns in one cycle are up to a cycle apart.
+///
+/// **The adapter is `take()`n out of the `Option` and put back after the
+/// await.** A dropped future therefore leaves the `Option` empty and the
+/// adapter gone for the rest of the run, silently. Do not put this call in a
+/// `select!`; drain the keyboard between batches instead, as `watch` does.
+pub async fn read_batch<B: vag_can::CanBackend>(
+    backend: &mut Option<B>,
+    batch: &Batch,
+    started: std::time::Instant,
+) -> (f64, BatchOutcome) {
+    use vag_can::IsoTpCan;
+    use vag_protocol::AsyncUdsClient;
+    use vag_transport::CanId;
+
+    let elapsed = || started.elapsed().as_secs_f64();
+    let Some(b) = backend.take() else {
+        return (elapsed(), BatchOutcome::Unaddressable);
+    };
+    // Each unit is addressed by the rule its id block uses: the cluster
+    // answers on 0x77E, not on 0x7E0 + 16, which is what treating the unit
+    // number as an ISO index used to produce.
+    let Some(address) = UnitAddress::from_request(batch.request) else {
+        *backend = Some(b);
+        return (elapsed(), BatchOutcome::Unaddressable);
+    };
+    let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+        b,
+        CanId::Standard(address.request),
+        CanId::Standard(address.response),
+    ));
+    let answer = if batch.dids.len() == 1 {
+        uds.read_data_by_identifier(batch.dids[0]).await.map(|d| vec![(batch.dids[0], d)])
+    } else {
+        uds.read_data_by_identifiers(&batch.dids).await.map(|payload| {
+            crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default()
+        })
+    };
+    let at = elapsed();
+    *backend = Some(uds.into_transport().into_backend());
+    match answer {
+        Ok(records) => (at, BatchOutcome::Answered(records)),
+        Err(_) => (at, BatchOutcome::NoAnswer),
+    }
 }
 
 /// What to put on screen when the user asked for nothing in particular.
