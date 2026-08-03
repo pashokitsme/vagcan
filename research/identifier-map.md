@@ -51,6 +51,37 @@ carry the same value, and those 16 are either zero or genuine standard identifie
 
 ---
 
+
+## 0.5 Is a data identifier a platform convention? Measured: no (2026-08-04)
+
+§0.4 states that the identifier space is ECU-local, on the strength of one example — `F40D`
+is one byte of km/h on the engine and two little-endian bytes ×0.01 on the gearbox. The
+question matters beyond that example, because if a `DID → meaning` table transferred between
+control units, one car could describe a platform. It was put to the parked whole-car survey
+(`research/dumps/survey-parked.jsonl`, 15 units, 1206 identifiers).
+
+Of the identifiers outside the `Fxxx` standardised ranges, **67 appear on two or more units**:
+
+| | count | what it proves |
+|---|---|---|
+| the answer is a **different length** on different units | **39 (58 %)** | different meanings, conclusively |
+| same length, different bytes | 17 | same width, unrelated contents |
+| same length, identical bytes | 11 | plausibly a genuinely vehicle-wide datum |
+
+So at most 11 of 67 look like a shared meaning, and none of those 11 is established — identical
+bytes at a standstill is what a constant looks like as much as what a shared measurement does.
+Examples of the majority case: `02E0` answers four bytes on four units with four unrelated
+values; `2A30` answers three bytes on four units, all different; `02A0` is 64 bytes on the
+engine, 32 on the gateway, 24 on the climate unit and 16 on the ESC.
+
+**Consequence for any future `DID → measurement` table.** It cannot be keyed by platform,
+model or bus. It has to be keyed by what the unit says it *is* — `F187`, the part number, or
+better `F19E`, the ODX file it names — and then it transfers to another car by **identity**
+rather than by extrapolation: the same software answers the same way because it is the same
+software. Two cars carrying different engines say nothing about each other, and this survey is
+the evidence for why.
+
+
 ## 1. Family structure
 
 ### 1.1 Engine — 896 identifiers, 44 high-byte families
