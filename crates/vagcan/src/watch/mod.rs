@@ -937,19 +937,30 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
     Ok(())
 }
 
+/// How the values are shown.
+///
+/// Two modes rather than one flag, because "which view" and "for how long" are
+/// separate questions and encoding them in a single `Option<f64>` needs a
+/// sentinel for "plain, indefinitely" — the sentinel was infinity, and
+/// `Duration::from_secs_f64` panics on it.
+pub enum View {
+    /// The full-screen view. Needs a terminal.
+    FullScreen,
+    /// CSV, no screen and no keyboard. `None` runs until interrupted.
+    Plain(Option<Duration>),
+}
+
 pub struct Options<'a> {
     pub preselect: &'a [(u16, u16)],
     pub hz: f64,
     pub out: Option<&'a str>,
     pub survey: Option<&'a str>,
     pub catalogs: &'a str,
-    /// Poll for this many seconds and exit, without a full-screen view. Set by
-    /// `--for`, and forced when stdout is not a terminal.
-    pub for_seconds: Option<f64>,
+    pub view: View,
 }
 
 pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> {
-    let Options { preselect, hz, out, survey, catalogs, for_seconds } = opts;
+    let Options { preselect, hz, out, survey, catalogs, view } = opts;
     use std::io::Write as _;
     use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
     use vag_protocol::AsyncUdsClient;
@@ -1118,13 +1129,17 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
     // key. Same poll loop, no drawing and no input — and with no `--out` the
     // samples go to stdout, so they can be read directly instead of through a
     // file nobody asked for.
-    if let Some(seconds) = for_seconds {
+    if let View::Plain(duration) = view {
         let mut sink: Box<dyn std::io::Write> = match sink {
             Some(file) => Box::new(file),
             None => Box::new(io::stdout().lock()),
         };
-        let deadline = Instant::now() + Duration::from_secs_f64(seconds);
-        while Instant::now() < deadline {
+        // `checked_add`, not `+`: a duration a caller is free to name can be
+        // large enough to overflow the instant, and panicking there would do it
+        // with the adapter open and the car on the bus. Too far away to reach
+        // is the same as no deadline at all.
+        let deadline = duration.and_then(|d| Instant::now().checked_add(d));
+        while deadline.is_none_or(|d| Instant::now() < d) {
             let cycle = Instant::now();
             for batch in plan::plan(&app.channels) {
                 poll_batch(&mut app, &mut backend, &batch).await;
