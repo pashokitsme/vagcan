@@ -16,7 +16,7 @@
 //! which is why `--full` is refused rather than fed a hatchback-shaped guess.
 //!
 //! The file is keyed by VIN and so lives in the user's own data directory, never
-//! in `catalogs/` — the reasoning is at [`crate::datadir::car_dir`].
+//! in `catalogs/` — the reasoning is at [`crate::datadir::vagcan_dir`].
 //!
 //! JSON is read and written by hand against `serde_json::Value` rather than by
 //! `#[derive(Serialize)]`, which is how the rest of this crate does it: `vagcan`
@@ -240,14 +240,16 @@ impl CarFile {
         }
     }
 
-    /// Where this tool keeps the file for a car with this VIN.
+    /// Where this tool keeps the file for one car: `car.json` inside that car's
+    /// own directory, beside its saved races and its reports.
     ///
-    /// The VIN arrives from the bus, so it is checked before it becomes a file
-    /// name: a unit answering `F190` with a separator or a `..` would otherwise
-    /// choose where this tool writes. ISO 3779 spells a VIN in digits and
-    /// capitals, a subset of what is accepted here.
-    pub fn path_for(vin: &str) -> anyhow::Result<PathBuf> {
-        Ok(crate::datadir::car_dir()?.join(format!("{}.json", checked_vin(vin)?)))
+    /// `description` is what a unit said about itself — the engine's component
+    /// string — and only makes the directory readable; the VIN is what makes it
+    /// unique. Both arrive from the bus, so neither is trusted as a path: a
+    /// unit answering with a separator or a `..` would otherwise choose where
+    /// this tool writes.
+    pub fn path_for(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
+        Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str(), description)?.join("car.json"))
     }
 
     /// Read a car file. Anything it cannot vouch for is an error naming the
@@ -835,11 +837,11 @@ mod tests {
 
     #[test]
     fn a_vin_off_the_bus_never_chooses_where_this_tool_writes() {
-        assert!(CarFile::path_for("../../catalogs/vehicles/8V0906264H").is_err());
-        assert!(CarFile::path_for("").is_err());
-        assert!(CarFile::path_for("XW8/AD4").is_err());
-        let path = CarFile::path_for("XW8AD4NE9JH008917").unwrap();
-        assert!(path.ends_with("XW8AD4NE9JH008917.json"), "{path:?}");
+        assert!(CarFile::path_for("../../catalogs/vehicles/8V0906264H", None).is_err());
+        assert!(CarFile::path_for("", None).is_err());
+        assert!(CarFile::path_for("XW8/AD4", None).is_err());
+        let path = CarFile::path_for("XW8AD4NE9JH008917", Some("1.8l R4 TFSI")).unwrap();
+        assert!(path.ends_with("1.8l-R4-TFSI-XW8AD4NE9JH008917/car.json"), "{path:?}");
     }
 
     #[test]

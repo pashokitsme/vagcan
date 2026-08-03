@@ -347,6 +347,13 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
 
 ## The open work (M3 coverage and beyond)
 
+- **A car keeps its own files.** `~/.vagcan/cars/<description>-<VIN>/` now exists
+  (`crate::datadir`), holding `car.json`, `races/` and `reports/`. What is left is to point
+  the commands at it: **`survey` with no `--out` should write into that car's `reports/`**
+  with a timestamped name and say where it went, instead of printing a run nobody kept. The
+  same applies to `faults --details`. The directory is named for what the car said about
+  itself plus its VIN — no make or model, because a car does not broadcast one.
+
 - **Whole-car measurement coverage.** The catalogs cover engine, gearbox and cluster; the
   survey reaches every unit. Specifically:
   - body control module `0x70E` — lights, doors, indicators;
