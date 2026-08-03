@@ -75,9 +75,9 @@ flag. That is an admission, not a claim.
 Read and derived classify **channels** — series that vary through a run. The car's mass, its
 `CdA`, its tyre size are **parameters**: constants a derived channel is computed with. They
 are not series and they are not on the bus, so they live in the profile and in `config`, each
-with its own provenance — `stated`, `coastdown`, `derived-from-tyre`, `default` (§0). The two
-questions stay separate: *was this number on the bus* is about channels, *where did this
-constant come from* is about parameters.
+with its own provenance — `stated`, `coastdown`, `derived-from-tyre` (§0). The two questions
+stay separate: *was this number on the bus* is about channels, *where did this constant come
+from* is about parameters. What both answers have in common is that neither may be a guess.
 
 ## CLI
 
@@ -91,15 +91,17 @@ vagcan race --coastdown [--device PATH]    measure CdA and Crr on the road
 vagcan race --view FILE.json               open a saved session as a chart page
 
 overrides, all of which normally live in the profile:
-            [--mass KG] [--tyre 205/55R16] [--cda M2] [--crr N] [--inertia N]
+            [--mass KG] [--tyre 205/55R16] [--cda M2 --crr N] [--inertia N]
             [--grade PERCENT] [--headwind M_S] [--air-density KG_M3]
             [--speed-scale N]
 ```
 
 **The ordinary invocation is `vagcan race` with no flags at all.** Everything the model needs
-either comes from the car, or was answered once by `--setup` and lives in the car's profile
-(§0). The override flags exist for a one-off — a loaded boot, a different set of wheels — and
-what was used is recorded in every file.
+either comes from the car, or was answered once by `--setup` and measured once by
+`--coastdown`, and lives in the car's profile (§0). The override flags exist for a one-off —
+a loaded boot, a different set of wheels — and what was used is recorded in every file. None
+of them has a generic default: a parameter that cannot be had honestly is one the run does
+without, which is what `--minimal` describes.
 
 `--marks` takes `A-B` pairs in km/h, comma-separated, `A < B`. The default is
 `0-10,0-25,0-50,0-60,0-80,0-100`.
@@ -108,9 +110,13 @@ what was used is recorded in every file.
 `0-100` would mean an indicated 100 rather than a corrected one, and the correction would
 silently not apply to the thing it was set for. Which was used is recorded in the file.
 
+`--minimal` forces the mode a car without a profile is in anyway (§0): telemetry and times,
+no power, and no polling of the channels that exist only to feed the power model. With a
+complete profile it is a way to buy sample rate back when the run matters more than the
+wattage.
+
 `--tyre` is the only flag that describes the car's hardware, and it is there because the
-rolling radius closes the loop on the equivalent-inertia factor (§3) — without it the power
-figure understates low gears by up to a third.
+rolling radius closes the loop on the equivalent-inertia factor (§3).
 
 `--view` reads a saved session and opens a chart page; it touches no adapter. The precedent
 is `survey --diff`, which is likewise an offline mode of a command that otherwise needs the
@@ -143,8 +149,9 @@ So the car needs a profile, and the profile needs to be written once.
 3. Asks for what only a person can supply, with the source named rather than the units:
    *kerb mass from the registration document, plus the people and fuel that will be in the
    car* — and the tyre size as written on the sidewall.
-4. Offers the coastdown, which needs a road; it can be run then or later.
-5. Writes `catalogs/cars/<VIN>.json`.
+4. Writes `catalogs/cars/<VIN>.json` and says plainly that the profile is **not finished**:
+   the coastdown supplies the other half and needs a road, so it is a separate command run
+   when there is one. Until it has run, `race` is in minimal mode (below).
 
 ```json
 { "vin": "XW8AD4NE9JH008917",
@@ -152,22 +159,73 @@ So the car needs a profile, and the profile needs to be written once.
   "mass_kg":       { "value": 1400,  "source": "stated",   "at": "2026-08-03" },
   "tyre":          { "value": "205/55R16", "source": "stated" },
   "rolling_radius_m": { "value": 0.313, "source": "derived-from-tyre" },
-  "cda":           { "value": 0.63,  "source": "coastdown", "r2": 0.998, "runs": 2 },
-  "crr":           { "value": 0.0114,"source": "coastdown", "r2": 0.998, "runs": 2 },
-  "speed_scale":   { "value": 1.0,   "source": "default" },
+  "cda":           { "value": 0.63,  "source": "coastdown", "r2": 0.998, "passes": 2,
+                     "at": "2026-08-04" },
+  "crr":           { "value": 0.0114,"source": "coastdown", "r2": 0.998, "passes": 2 },
+  "speed_scale":   { "value": 1.0,   "source": "uncorrected" },
   "refresh_estimate_s": { "value": 0.048, "source": "measured" } }
 ```
 
-**Every field carries its provenance**, and the four values are not the same kind of thing:
+**Every field carries its provenance**, and the sources are not the same kind of thing:
 `stated` came from a person, `coastdown` was measured on this car, `derived-from-tyre` is
-arithmetic on a stated value, `default` is a generic number nobody has checked. The results
-table and the chart page say which — a run whose `CdA` is a default is not comparable with one
-whose `CdA` was measured, and hiding that would produce exactly the false comparison this
-whole document is trying to avoid.
+arithmetic on a stated value, `uncorrected` means no correction was applied rather than that
+one was chosen. There is no `default`: a parameter this tool cannot get honestly is a
+parameter it does without (below). The results table and the chart page name the source, so
+that two runs are never compared across a change in how the car was described.
 
 Precedence is flag → profile → default, and the file records the value *and* where it came
-from. A car with no profile still runs: marks and times need nothing but speed. It is the
-power column that degrades, and it says so instead of quietly using generic numbers.
+from.
+
+### Two modes, and no third — minimal, or complete
+
+There are exactly two states this command runs in:
+
+| mode | requires | produces |
+|---|---|---|
+| **minimal** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
+| **complete** | `--setup` **and** `--coastdown` | all of the above, plus power |
+
+There is deliberately **no state in between**. A profile with a mass but no coastdown does
+not "fall back to a generic CdA" — it runs minimal. Generic road-load numbers are gone from
+the model entirely: a power figure resting on a hatchback-shaped guess is exactly the sort of
+number this document spends nine sections refusing to print. Either the road load was
+measured on this car or there is no power column.
+
+`--cda` and `--crr` remain as overrides for someone who genuinely has the figures — a
+manufacturer's coastdown, a wind-tunnel number — and passing both satisfies the requirement,
+recorded as `stated` rather than `coastdown`. Passing one is not enough; the fit produces
+them as a pair.
+
+A car that has never been set up is the normal first encounter, and it must not be a wall.
+`race` runs anyway, in **minimal mode**, announced in one line at the top of the screen:
+
+```
+  no profile for XW8AD4NE9JH008917 — minimal mode: times, speeds and telemetry,
+  no power. Park, then: vagcan race --setup, and vagcan race --coastdown.
+```
+
+Minimal mode is not a stripped-down recording. It records **every channel worth having on its
+own** — speed, engine speed, gear, selector, pedal, boost specified and actual, air mass,
+shaft speeds — and computes every figure that needs no parameter: the marks, their average
+accelerations, the instantaneous acceleration, the distance, the shift costs. All of those
+come from speed, gear and time, and none of them needs a mass.
+
+What it drops is the **parameter-dependent** layer — power, and only power.
+
+And it drops it at the source: **channels that exist solely to feed a computation are not
+polled at all.** Barometric pressure and ambient air temperature are read for one purpose,
+air density, which feeds one figure, power. With no mass there is no power, so there is
+nothing for them to feed, and reading them would spend bus time to store two numbers nobody
+will look at. A cycle spent on nothing is a cycle not spent on speed.
+
+The consequence is worth stating rather than discovering later: **a minimal recording can
+never be turned into a power figure afterwards, even once a profile exists**, because the
+density its model needs was never sampled. Everything else about the run — every time, every
+mark, every acceleration — is complete and stays comparable with runs recorded later.
+
+Where a profile *does* exist, those two channels are read **once per run** rather than every
+cycle. Barometric pressure and outside air temperature do not change measurably in seven
+seconds, and polling them at 20 Hz would cost cycles for no information.
 
 ### The coastdown — `race --coastdown`
 
@@ -449,13 +507,13 @@ which for a DQ200-like set runs from `k ≈ 1.5` in first to `k ≈ 1.05` in six
 
 - `ξ` is **measured live**, not tabulated: `ξ = ω_engine·r / v`, from engine speed `206E` and
   road speed, once the rolling radius `r` is known.
-- `r` comes from the user's tyre size (`--tyre 205/55R16`) — the user's statement about their
-  own car, not a constant in the source. Given it, `k` is computed per sample from the ratio
-  the car itself is reporting, which is exactly the shape this project wants: algorithm in
-  code, car in data.
-- Without `--tyre`, `k` falls back to `--inertia` (default **1.05**, wheels only, cited
-  above), and the run is flagged: low-gear power is understated by up to a third and the file
-  says so.
+- `r` comes from the tyre size in the profile — the owner's statement about their own car,
+  not a constant in the source. With it, `k` is computed per sample from the ratio the car
+  itself is reporting, which is exactly the shape this project wants: algorithm in code, car
+  in data.
+- There is no fallback, because there is no half-configured mode: a run without a tyre size
+  has no mass and no road load either, so it is minimal and computes no power at all.
+  `--inertia` overrides `k` with a flat factor for anyone who wants to force one.
 
 Air density is `ρ = p / (R·T)`, `R = 287.05287 J/(kg·K)` for dry air (ISO 2533), `p` from
 OBD-II PID 0x33 (absolute barometric pressure, 1 kPa/bit) and `T` from PID 0x46 (ambient air
@@ -466,14 +524,15 @@ humidity parameter to do better with. If either PID is absent, **power is not co
 stated.
 
 Mass, `CdA` and `Crr` come from the car's profile (§0), not from flags typed before every
-run. Mass has **no default** — it belongs to one specific car, and this project does not put
-those in code — so without it there is no power column. `CdA` and `Crr` are **measured by the
-coastdown**; until that has been run they fall back to documented generic values — `CdA`
-0.65 m² for a C-segment hatchback (`Cd ≈ 0.30` over `A ≈ 2.2 m²`) and `Crr` 0.012 (Gillespie,
-*Fundamentals of Vehicle Dynamics*: 0.010–0.015 for passenger radials on asphalt) — and every
-figure computed from them is labelled as resting on a default rather than on a measurement.
-The distinction is the same one this document draws everywhere else: a number somebody
-measured on this car is not the same kind of thing as a number that fits cars in general.
+run, and **none of the three has a default**. Mass belongs to one specific car; `CdA` and
+`Crr` are measured by the coastdown on that same car. Without all three there is no power
+column and the run is minimal — there is no generic-number fallback, because a power figure
+resting on the drag of hatchbacks-in-general is not a measurement of this car at all.
+
+(For sizing an error budget, generic values are still worth naming: `CdA ≈ 0.65 m²` for a
+C-segment hatchback, `Crr ≈ 0.012` for passenger radials on asphalt — Gillespie,
+*Fundamentals of Vehicle Dynamics*, gives 0.010–0.015. They appear in §3a for that purpose
+and nowhere in the code path.)
 
 Every power figure is labelled an estimate at the contact patch. It is **not** a chassis-dyno
 "wheel horsepower": because `k` folds in the power spent accelerating the drivetrain's
@@ -524,7 +583,7 @@ a ≈ 2.5 m/s², total ≈ 120 kW):
 | unknown grade, ±1 % | ±3.8 kW ≈ 5 PS | downhill **flatters** |
 | unknown headwind, 5 m/s | 3.3 kW ≈ 4.5 PS | tailwind **flatters** |
 | peak taken as the max of a noisy series | 3–5 % on peak power and peak acceleration | **flatters** |
-| CdA uncertainty ±0.05 m² | ±0.67 kW ≈ 0.9 PS | either way |
+| CdA uncertainty ±0.05 m², which is what a *generic* value is worth | ±0.67 kW ≈ 0.9 PS | either way — and the coastdown is what removes it |
 | air density from the car's own PIDs, quantisation | ±0.045 kW ≈ 0.06 PS | either way |
 
 The last row is there to keep the effort proportionate: reading ρ from the barometer and the
@@ -763,11 +822,13 @@ which is what makes the tests possible without a car.
 | shifts | a shift is located from the gear channel, and its cost is the integrated deficit, positive on a profile where speed never falls |
 | peak statistic | on a series with injected noise the reported peak is not the maximum, and its upward bias is bounded |
 | air density | ρ = **1.225 kg/m³** at 101.325 kPa and 288.15 K — the ISO 2533 sea-level value, four significant figures. Not a comparison against the same formula: this anchor catches a wrong R, a K/°C slip and a kPa/Pa slip in one assertion |
-| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top; without a tyre size it is the flat fallback and the run is flagged |
-| no mass | the power column is empty rather than defaulted |
+| equivalent inertia | `k` from a measured ratio exceeds 1.4 in first gear and approaches 1.05 in top |
+| two modes only | a profile with a mass but no coastdown runs **minimal**, not a generic-CdA power run; `--cda` alone is refused, `--cda` with `--crr` is accepted as `stated` |
+| minimal completeness | a minimal run still produces every mark, acceleration, distance and shift cost, and every read channel is in the file |
+| minimal frugality | barometric pressure and ambient temperature are **not polled** with no profile, and are polled **once**, not per cycle, with one |
 | profile round trip | `--setup` writes a profile the next run reads, and the run then needs no flags |
-| provenance | a coastdown `CdA` and a default `CdA` are distinguishable in the file and on the page |
-| precedence | a flag beats the profile, the profile beats the default, and the file names the winner |
+| provenance | every parameter in the file names its source, and none of them may be a guess |
+| precedence | a flag beats the profile, and the file names the winner |
 | coastdown fit | synthetic coastdown data with known `CdA`/`Crr` recovers both; a one-way pass is refused; two passes that disagree are rejected |
 | uncertainty from data | doubling the simulated cycle time doubles the printed bound — it is computed, not tabulated |
 | one time base | a derived value whose engine-speed input is a cycle stale is interpolated onto the leading grid, and one that is beyond the bound is suppressed |
