@@ -61,6 +61,9 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
     let mut ok = 0usize;
     for s in &sections {
         let (status, size, preview) = match (&s.status, &s.text) {
+            // Two different pieces of news, and printing one word for both is
+            // what left `TTTEXT2.ROD` looking unreadable for four writeups.
+            (RodStatus::SearchDeclined, _) => ("NO CRIB".to_string(), 0usize, String::new()),
             (RodStatus::Undecodable, _) | (_, None) => {
                 ("UNDECODABLE".to_string(), 0usize, String::new())
             }
@@ -69,7 +72,7 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
                 let label = match st {
                     RodStatus::Tea => "tea",
                     RodStatus::Zlib => "zlib",
-                    RodStatus::Undecodable => unreachable!(),
+                    RodStatus::Undecodable | RodStatus::SearchDeclined => unreachable!(),
                 };
                 let preview: String =
                     t.chars().take(60).map(|c| if c.is_control() { '.' } else { c }).collect();
@@ -79,5 +82,14 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
         println!("  [{:<8}] {:>4}  {:>9} bytes  {}", s.tag, status, size, preview);
     }
     println!("decoded {ok}/{} section(s)", sections.len());
+    let declined = sections.iter().filter(|s| s.status == RodStatus::SearchDeclined).count();
+    if declined > 0 {
+        println!(
+            "{declined} section(s) marked NO CRIB: the key search needs the zlib header as \
+             known plaintext and this file does not present it. Around 40 % of the corpus \
+             carries a per-file XOR on the first-block IV of every section after [CMP], which \
+             this tool does not yet recover — see research/tttext2.md. Not a damaged file."
+        );
+    }
     Ok(())
 }

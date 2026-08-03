@@ -317,6 +317,12 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Resul
                     "encrypted (recover with: cargo run -p vagcan \
                      --features rod-crack -- vcds rod <file.rod>)"
                 }
+                // Pointing at the recovery command here would waste an hour of
+                // every core: the search cannot start on this file at all.
+                RodStatus::SearchDeclined => {
+                    "encrypted, and the key search has no crib on this file \
+                     (see research/tttext2.md) — not damaged, not yet openable"
+                }
             };
             let size = section.text.as_ref().map(|t| t.len()).unwrap_or(0);
             println!("  [{}]  {state}, {size} bytes", section.tag);

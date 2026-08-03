@@ -32,6 +32,21 @@ pub enum RodStatus {
     Tea,
     /// Decrypted then zlib-inflated.
     Zlib,
+    /// The key search never ran, because its crib is absent.
+    ///
+    /// Recovering a blocked first block is a known-plaintext attack and the
+    /// known plaintext is the zlib header: the first two bytes must decrypt to
+    /// `78 da` under the tag-derived IV, or there is nothing to search against.
+    /// In **40 % of the corpus** they do not — those files carry a per-file XOR
+    /// on the first-block IV of every section after `[CMP]`
+    /// (`research/tttext2.md`).
+    ///
+    /// Reported apart from [`RodStatus::Undecodable`] because the two say
+    /// opposite things. A file that is undecodable has been tried; one that is
+    /// declined has not, and reading the second as the first is how
+    /// `TTTEXT2.ROD` sat "uncrackable" through four writeups that named it as
+    /// the next thing to open.
+    SearchDeclined,
     /// Could not be decoded: bad framing, a first block needing the
     /// (unavailable) nonzero per-record `product` term, a short/misaligned
     /// cipher, or an inflate failure.
@@ -320,6 +335,28 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
     crack::recover_iv3to8(tag, sc.cipher, sc.plainlen)
 }
 
+/// Whether the key search has anything to search against.
+///
+/// The search is a known-plaintext attack and the known plaintext is the zlib
+/// header. `iv[0..3]` is derived from the section tag alone and does not depend
+/// on the missing `product`, so the first two plaintext bytes can be checked
+/// before any work is done — and if they are not `78 da`, the crib is absent
+/// and the search declines rather than fails.
+///
+/// A section that answers `false` here is not corrupt: 40 % of the corpus
+/// carries a per-file XOR on this IV, and one of those files was opened by
+/// deriving it (`research/tttext2.md`). Nothing in this crate recovers that
+/// XOR yet, which is exactly why the two cases are reported apart.
+fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
+    if tag.len() < 3 || cipher.len() < 8 {
+        return false;
+    }
+    let Ok(first) = <[u8; 8]>::try_from(&cipher[0..8]) else { return false };
+    let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
+    let iv = rod_block0_iv(tag);
+    t[0] ^ iv[0] == 0x78 && t[1] ^ iv[1] == 0xda
+}
+
 /// Like [`decode_rod`], but for every section that fails the `product = 0`
 /// decode AND is a zlib section, recover the missing `iv[3..8]` offline
 /// (brute force) and retry. Recovered values are read from / written to
@@ -358,9 +395,19 @@ pub fn decode_rod_recover(
                                 let _ = run_crack;
                                 None
                             });
-                            if let Some(iv3to8) = recovered {
-                                let iv = rod_block0_iv_recovered(&tag, iv3to8);
-                                section = decode_with_iv(&tag_str, &sc, iv);
+                            match recovered {
+                                Some(iv3to8) => {
+                                    let iv = rod_block0_iv_recovered(&tag, iv3to8);
+                                    section = decode_with_iv(&tag_str, &sc, iv);
+                                }
+                                // Say which of the two happened. A search that
+                                // ran and lost and a search that never started
+                                // are not the same news, and only one of them
+                                // means the section is beyond this tooling.
+                                None if !search_has_a_crib(&tag, sc.cipher) => {
+                                    section.status = RodStatus::SearchDeclined;
+                                }
+                                None => {}
                             }
                         }
                     }
@@ -418,6 +465,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_section_the_search_cannot_start_on_says_so_instead_of_undecodable() {
+        // The search is a known-plaintext attack whose crib is the zlib header.
+        // Corrupt the compressed section's first block and the crib is gone —
+        // which is the shape 40 % of the real corpus has, where the IV carries
+        // a per-file XOR nobody had noticed. Reporting that as `Undecodable`
+        // reads as "this file is broken", and it is not.
+        let mut data = hex_decode(FIXTURE_HEX);
+        let at = data.windows(5).position(|w| w == b"[MWB]").unwrap() + 7 + 6;
+        data[at] ^= 0xff;
+
+        let mut cache = IvCache::default();
+        let sections = decode_rod_recover(&data, "fixture", &mut cache, false);
+        let mwb = sections.iter().find(|s| s.tag == "MWB").unwrap();
+        assert_eq!(mwb.status, RodStatus::SearchDeclined, "{sections:?}");
+
+        // And the untouched file still reports the case where a search would
+        // run: the two must not collapse back into one word.
+        let clean = decode_rod_recover(&hex_decode(FIXTURE_HEX), "fixture", &mut cache, false);
+        assert_eq!(clean.iter().find(|s| s.tag == "MWB").unwrap().status, RodStatus::Zlib);
     }
 
     #[test]
