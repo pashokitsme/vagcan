@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vagcan race — session</title>
+<title>vagcan measure — session</title>
 <style>
 /* ---------------------------------------------------------------------------
    No external asset of any kind: no font, no stylesheet, no image, no script
@@ -225,7 +225,7 @@ svg { display: block; width: 100%; user-select: none; }
 <div class="page">
   <header class="hdr">
     <div>
-      <h1>vagcan race</h1>
+      <h1>vagcan measure</h1>
       <p class="sub" id="hdr-sub"></p>
     </div>
     <button type="button" class="ghost" id="theme">light / dark</button>
@@ -294,7 +294,7 @@ function fatal(msg) { fatalEl.textContent = msg; fatalEl.hidden = false; }
 
 if (!SESSION || typeof SESSION !== "object" || !Array.isArray(SESSION.runs)) {
   fatal("No session in this page. It is the template, not a rendered file — " +
-        "run `vagcan race view FILE.json` to get one with a drive in it.");
+        "run `vagcan measure view FILE.json` to get one with a drive in it.");
   return;
 }
 if (SESSION.schema !== 1) {

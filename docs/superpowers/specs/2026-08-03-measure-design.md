@@ -1,4 +1,4 @@
-# `vagcan race` — acceleration runs — design
+# `vagcan measure` — acceleration runs — design
 
 **Date:** 2026-08-03
 **Status:** approved (design), not yet implemented
@@ -23,15 +23,15 @@ it can put the gear, the pedal and the boost on the same time axis as the stopwa
 
 | In | Out |
 |---|---|
-| `vagcan race` — armed stopwatch over a live poll loop | GPS, or any external reference |
+| `vagcan measure` — armed stopwatch over a live poll loop | GPS, or any external reference |
 | user-defined marks (`0-100`, `50-100`, …) | a "dyno" claim — the power figure is an estimate and says so |
 | live TUI: a value table and one chart at a time | drag-strip conventions (rollout, 1/4-mile traps) — later, if wanted |
 | a session of several runs, saved as one raw JSON | writing anything to a control unit |
 | `--view FILE.json` — a self-contained HTML chart page | a server, a bundler, or any external asset |
 | proven channels only | discovering measurements — that is what `survey` and `watch --survey` are for |
-| `race setup`: the car described once, then its road load measured on the road | asking for a number before every run that nobody knows off the top of their head |
+| `measure setup`: the car described once, then its road load measured on the road | asking for a number before every run that nobody knows off the top of their head |
 
-`race` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
+`measure` changes no diagnostic session (`0x10 0x03` is never sent), sweeps nothing, and reads
 a fixed handful of known identifiers. `SAFETY.md`'s sweep gate does not apply: this is
 `watch` with a stopwatch, not a fuzz test, and driving is the point of the command rather
 than a hazard to refuse.
@@ -48,10 +48,10 @@ means a stated origin, in the charts a different line style, in the file an expl
 The third class the rest of this project deals with — bytes that were read but whose meaning
 nobody has proven, rendered `(raw)` by `Channel::render` and suffixed `_raw` in the `watch`
 CSV — **does not exist in `race`**. `watch` and `survey` show raw bytes because their job is
-to *find* measurements. `race` is an instrument, not a search: an unproven byte cannot be
+to *find* measurements. `measure` is an instrument, not a search: an unproven byte cannot be
 timed, integrated or differentiated, so there is nothing for it to do here.
 
-That has a consequence worth stating plainly: **`race` refuses to start on a car whose
+That has a consequence worth stating plainly: **`measure` refuses to start on a car whose
 catalogs do not cover it.** After the units identify themselves, every required channel is
 resolved by name from the catalog store or the standard table, and a missing one is a fatal
 error naming the channel and the unit — not an empty column.
@@ -82,14 +82,14 @@ from* is about parameters. What both answers have in common is that neither may 
 ## CLI
 
 ```
-vagcan race [--device PATH] [--car FILE] [--full] [--minimal]
+vagcan measure [--device PATH] [--car FILE] [--full] [--minimal]
             [--marks 0-10,0-25,0-50,0-60,0-80,0-100]
             [--accel-window SECONDS] [--out FILE] [--catalogs DIR]
 
-vagcan race setup [--device PATH] [--coast-from 120] [--coast-to 40]
+vagcan measure setup [--device PATH] [--coast-from 120] [--coast-to 40]
                                      describe this car once, then measure its road
                                      load on the road. Writes the car file.
-vagcan race view FILE.json           open a saved session as a chart page
+vagcan measure view FILE.json           open a saved session as a chart page
 
 overrides, all of which normally live in the car file:
             [--mass KG] [--tyre 205/55R16] [--cda M2 --crr N] [--inertia-factor N]
@@ -103,9 +103,9 @@ different command: it prompts, it runs a driving script, it takes flags that mea
 elsewhere, and it produces a different artefact. The repository already groups that way with
 `recording` and `vcds`.
 
-**The ordinary invocation is `vagcan race` with no flags at all**, and `vagcan race --full`
+**The ordinary invocation is `vagcan measure` with no flags at all**, and `vagcan measure --full`
 once the car has been set up. Everything the model needs either comes from the car, or was
-answered once by `race setup` and measured by the coastdown it ends with, and lives in the
+answered once by `measure setup` and measured by the coastdown it ends with, and lives in the
 car file (§0). The override flags exist for a one-off — a loaded boot, a different set of
 wheels — and what was used is recorded in every file. None of them has a generic default: a
 parameter that cannot be had honestly is one the run does without, which is why power is
@@ -137,7 +137,7 @@ ambiguity that would otherwise sit unnoticed in the default list.
 silently not apply to the thing it was set for. Which was used is recorded in the file.
 
 `--full` asks for the power column, and is the only thing that does. It requires a car file
-completed by `race setup` (§0) and is **refused** without one, naming what is missing —
+completed by `measure setup` (§0) and is **refused** without one, naming what is missing —
 it never quietly degrades to generic numbers. Without it the run is the default one:
 telemetry and times, no power, and no polling of the channels that exist only to feed the
 power model. Leaving it off is also how a run buys sample rate back when the times matter
@@ -148,11 +148,11 @@ no longer needed by the power model — the exact engine-side inertia term (§3)
 but it is what turns the generic inertias into this car's coefficients, and it is what a
 ratio sanity check needs.
 
-`race view` reads a saved session and opens a chart page; it touches no adapter. It stays
-under `race` rather than moving to the offline groups because it is the other half of the
+`measure view` reads a saved session and opens a chart page; it touches no adapter. It stays
+under `measure` rather than moving to the offline groups because it is the other half of the
 same job, and `survey --diff` is the precedent for an offline mode living on a live command.
 
-## 0. Knowing the car — `race setup` and the car file
+## 0. Knowing the car — `measure setup` and the car file
 
 A first draft of this design asked the driver for seven numbers. That is a design failure
 dressed as configurability: nobody knows their car's `CdA`, and asking for air density is
@@ -169,7 +169,7 @@ absurd when the car carries a barometer. Sorted by where each figure actually co
 
 So the car needs a file of its own, written once.
 
-**`vagcan race setup`** is the whole of it — one command that starts parked and ends on the
+**`vagcan measure setup`** is the whole of it — one command that starts parked and ends on the
 road:
 
 1. **Identifies the car** — VIN from the engine, part numbers and component strings from
@@ -215,7 +215,7 @@ road:
    ```
      still waiting for 120 km/h — the fastest so far is 96.
      If this road will not do it, press Esc and start again with a lower range:
-         vagcan race setup --coast-from 90 --coast-to 30
+         vagcan measure setup --coast-from 90 --coast-to 30
      A narrower range separates drag from rolling resistance less well, and the fit
      will say by how much rather than hiding it.
    ```
@@ -232,7 +232,7 @@ road:
        Crr     0.0114         measured on this car
        ρ 1.183 kg/m³ and 1385 kg at fit time, wind ≈ 0.8 m/s, slope ≈ 0.3 %
 
-     Power is now available:   vagcan race --full
+     Power is now available:   vagcan measure --full
 
      Two things worth doing once, neither of which needs this tool:
        • run out and back on the same stretch and average at matched speeds — slope
@@ -253,7 +253,7 @@ A resumed setup says where it stands rather than starting over:
 
 If the run is abandoned before the passes are done, everything already obtained is kept —
 the answers **and any accepted pass** — and `--full` stays unavailable until the rest is
-done. `race setup` can be re-run; it says where it stands and asks only for what is missing.
+done. `measure setup` can be re-run; it says where it stands and asks only for what is missing.
 
 **Where the file lives.** Not in `catalogs/`. That directory is a checked-in corpus of shared
 knowledge keyed by part number — a measurement row proven on one `0CW300041G` is true of every
@@ -275,7 +275,7 @@ pub fn car_dir()    -> anyhow::Result<PathBuf>;   // ~/.vagcan/cars
 ```
 
 `--car FILE` overrides it explicitly, the way `--catalogs DIR` overrides the corpus, and
-`race setup` prints the path it wrote so the file is never a matter of faith.
+`measure setup` prints the path it wrote so the file is never a matter of faith.
 
 ```json
 { "vin": "XW8AD4NE9JH008917",
@@ -315,7 +315,7 @@ There are exactly two states this command runs in:
 | mode | requires | produces |
 |---|---|---|
 | **default** | nothing at all | every time, every mark, acceleration, distance, shift costs, full telemetry |
-| **full** (`--full`) | a profile from `race setup`, carried through both coastdown passes | all of the above, plus power |
+| **full** (`--full`) | a profile from `measure setup`, carried through both coastdown passes | all of the above, plus power |
 
 There is deliberately **no state in between**. A setup abandoned after the questions does not
 "fall back to a generic CdA": `--full` is refused, naming what is missing, and the run is the
@@ -330,11 +330,11 @@ recorded as `stated` rather than `coastdown`. Passing one is not enough; the fit
 them as a pair.
 
 A car that has never been set up is the normal first encounter, and it must not be a wall.
-`race` runs anyway, in the **default mode**, announced in one line at the top of the screen:
+`measure` runs anyway, in the **default mode**, announced in one line at the top of the screen:
 
 ```
   no car file for XW8AD4NE9JH008917 — default mode: times, speeds and telemetry,
-  no power. Park, then run: vagcan race setup
+  no power. Park, then run: vagcan measure setup
 ```
 
 And once a car file *does* exist, the banner does not simply disappear — a user who spent
@@ -448,7 +448,7 @@ whole one would put the brakes into `Crr`.
   meaningless without the `ρ` that was in the air at the time — and `CdA` scales with the mass
   used in the fit, which is that day's load, not the run's. Both go in the car file, along
   with the estimated wind and grade. An unrecorded ±3 % in `ρ` is a direct ±3 % in `CdA`,
-  larger than everything else in the fit. This also means **`race setup` polls the barometer
+  larger than everything else in the fit. This also means **`measure setup` polls the barometer
   and the ambient sensor regardless of mode**: the frugality rule that skips them belongs to
   runs, not to the measurement that makes runs possible.
 - **The range is a default, not a rule.** 120 to 40 km/h separates the two terms; narrowing it
@@ -473,7 +473,7 @@ speed signal are derived differently. On this platform they very likely share a 
 which case the check is an identity and cannot distinguish "perfectly calibrated" from "no
 information". Recorded as an open question, not as something this design rests on.
 
-## 1. The run state machine — `race/session.rs`
+## 1. The run state machine — `measure/session.rs`
 
 Pure state and arithmetic, no I/O, no adapter, no terminal. Everything below is testable
 against a synthetic speed profile.
@@ -548,7 +548,7 @@ change which series the chart shows, `q` quits — and argues back if anything i
 The keyboard is drained between batches, never around one: a read that is waiting out a
 two-second response deadline must not make `Esc` wait with it.
 
-## 2. Polling — `race/channels.rs` and `race/mod.rs`
+## 2. Polling — `measure/channels.rs` and `measure/mod.rs`
 
 **Nothing here names an identifier.** Which identifier carries road speed on this car is a
 fact about this car; the tool resolves every channel by the **name its catalog gives it**,
@@ -606,7 +606,7 @@ code path.)
 
 **Values are never rendered through `plan::Channel::render`.** That function returns
 `"… (raw)"` for anything unproven, which is exactly the class this design excludes;
-`race` goes through `MeasurementDef::interpret` and `describe`, and treats `None` as an
+`measure` goes through `MeasurementDef::interpret` and `describe`, and treats `None` as an
 absent channel rather than as bytes to show.
 
 Every value carries its own timestamp, as in `watch --out`. Batches are separated in time,
@@ -636,7 +636,7 @@ a hidden heuristic.
 
 The achieved rate is written into the file. It is never asserted in advance.
 
-## 3. What is computed — `race/session.rs`, `race/power.rs`
+## 3. What is computed — `measure/session.rs`, `measure/power.rs`
 
 **Marks.** `t(B) − t(A)`, where `t(v)` is linearly interpolated between the two samples that
 bracket the crossing. Both crossings must happen in the same run, in a monotonically rising
@@ -987,7 +987,7 @@ Two mitigations are procedural, not code, and belong in the command's own help:
 `--grade PERCENT` and `--headwind M_S` exist for a user who knows the figures; both default
 to zero and both are recorded in the file.
 
-## 4. The live view — `race/mod.rs`
+## 4. The live view — `measure/mod.rs`
 
 `ratatui::widgets::Chart` with `Dataset` and `Marker::Braille`. The dependency is already in
 `crates/vagcan/Cargo.toml`; `textplots` and `rasciigraph` would render worse and add a
@@ -1075,7 +1075,7 @@ so.
 With no terminal — a pipe, a log, an agent — the same loop runs and prints rows instead of
 drawing, exactly as `watch::View::Plain` does.
 
-**The results table — `race/report.rs`.** Shown when a run finishes or is cancelled, in two
+**The results table — `measure/report.rs`.** Shown when a run finishes or is cancelled, in two
 blocks under their own headings rather than one list:
 
 ```
@@ -1117,12 +1117,12 @@ Every refusal in §8's test table needs words, and the design had none — an as
 command "refuses, naming what is missing" is not a message. The rule these follow: say what
 happened, say what it cost, and end with something to do.
 
-Two of them are already written. `race` resolves its adapter through the same helper the rest
+Two of them are already written. `measure` resolves its adapter through the same helper the rest
 of the CLI uses, so "no adapter" and the documented failure where this hardware enumerates on
 USB but macOS attaches no serial node — the one that needs a physical unplug — inherit copy
 that already exists rather than growing a worse second version.
 
-**A required channel is missing** (checked at a standstill, in `race` as well as in `setup`):
+**A required channel is missing** (checked at a standstill, in `measure` as well as in `setup`):
 
 ```
   race needs road speed, and this car's catalogs do not have it.
@@ -1148,7 +1148,7 @@ that already exists rather than growing a worse second version.
     tyre 205/55R16      answered 2026-08-03
     CdA, Crr            missing — the coastdown was never completed
 
-  Park the car and run:  vagcan race setup
+  Park the car and run:  vagcan measure setup
   It keeps what you already answered and asks only for the coastdown.
 
   Running without --full: every time, every mark, acceleration, distance and shift
@@ -1184,7 +1184,7 @@ nothing, so this one ends with a plan rather than a verdict:
     • warm the car first: cold tyres and cold gearbox oil read a higher rolling
       resistance than the car will have on a run
 
-  Nothing else is lost. Mass and tyre size are saved. Re-run vagcan race setup and
+  Nothing else is lost. Mass and tyre size are saved. Re-run vagcan measure setup and
   it asks only for the passes.
 ```
 
@@ -1199,7 +1199,7 @@ nothing, so this one ends with a plan rather than a verdict:
 ```
 
 **The car stops answering** — ignition off, a pulled connector, a unit that went quiet — in
-both `race` and `setup`, which the first draft never covered at all:
+both `measure` and `setup`, which the first draft never covered at all:
 
 ```
   the car stopped answering. Current run discarded; 3 saved runs are untouched.
@@ -1211,7 +1211,7 @@ both `race` and `setup`, which the first draft never covered at all:
 ```
   that car file is for XW8AD4NE9JH008917 and this car says XW8AD4NE9JH000123.
   Ignoring it: mass and road load belong to one specific car. Run
-  vagcan race setup for this one, or pass --car with the right file.
+  vagcan measure setup for this one, or pass --car with the right file.
 ```
 
 **Two keys that mean different things in different commands.** `Esc` cancels a run here and
@@ -1222,7 +1222,7 @@ so it stays deliberate. `q` quits both, and here it argues back when there is un
 ## 5. The saved session — raw JSON
 
 ```json
-{ "schema": 1, "tool": "vagcan race", "recorded_at": "2026-08-03T12:41:07+03:00",
+{ "schema": 1, "tool": "vagcan measure", "recorded_at": "2026-08-03T12:41:07+03:00",
   "car":      { "vin": "…", "units": [ { "request": "7E1", "part_number": "0CW300041G" } ] },
   "config":   { "marks": [[0,100]],
                 "mass_kg": 1475, "tyre": "205/55R16", "rolling_radius_m": 0.313,
@@ -1274,13 +1274,13 @@ peak=mean-0.2s",
 ```
 
 **`schema` is checked before anything else.** A session cannot be regenerated — it is
-evidence from a drive — so `race view` refuses a schema it does not know, naming it, rather
+evidence from a drive — so `measure view` refuses a schema it does not know, naming it, rather
 than half-reading it. Every field added later carries `#[serde(default)]`, or old files stop
 loading and the storage rule defeats itself.
 
 **Samples are columnar, not a list of objects.** `{"speed": {"t": [...], "v": [...]}}` rather
 than a `speed` key repeated on every sample: twenty runs of ten seconds at 20 Hz over ten
-channels is about a megabyte of JSON written the verbose way, and `race view` inlines that
+channels is about a megabyte of JSON written the verbose way, and `measure view` inlines that
 into the page the browser has to load. Columnar is the same information at roughly a quarter
 of the size, and it is the shape the page's JavaScript wants anyway. Each channel keeps its
 own `t` array, which is what "every value carries its own timestamp" means in this layout.
@@ -1288,14 +1288,14 @@ own `t` array, which is what "every value carries its own timestamp" means in th
 **`derived` is a cache, and `config` is what makes it safe.** The storage rule says the file
 holds raw samples and derivatives are recomputed; `derived` exists so a person or a script
 can read the answers without reimplementing §3. It carries a `stamp` naming the methods that
-produced it, and `report` and `race view` **recompute and ignore `derived` whenever the stamp
+produced it, and `report` and `measure view` **recompute and ignore `derived` whenever the stamp
 does not match the maths they are running**. Without that rule the same file would hold two
 answers and no way to choose.
 
 Every channel declares its `origin`. A derived one also declares what it was derived
 **from** and by what **method**, with the parameters that method used — an acceleration
 figure whose window is not recorded is not reproducible, and a power figure whose mass is
-not recorded is not checkable. There is no `proven` flag: in `race` it would be `true` on
+not recorded is not checkable. There is no `proven` flag: in `measure` it would be `true` on
 every row, since nothing else gets in.
 
 A value that a proven channel returned but whose meaning is not in its table — an
@@ -1311,7 +1311,7 @@ one rather than merely readable.
 
 `--out` writes continuously; `s` writes on demand. Both write the same document.
 
-## 6. The chart page — `race/view.rs`
+## 6. The chart page — `measure/view.rs`
 
 `race view FILE.json` generates a self-contained HTML file next to the input and opens it.
 Inline SVG and inline JavaScript, no CDN, no external asset of any kind — a strict rule, and
@@ -1392,18 +1392,18 @@ table cannot disagree.
 ## 7. Files
 
 ```
-crates/vagcan/src/race/mod.rs        the command and the poll loop
-crates/vagcan/src/race/channels.rs   resolve every channel by name; the pre-flight check
-crates/vagcan/src/race/session.rs    the state machine and run assembly — no I/O
-crates/vagcan/src/race/derive.rs     t0, the accel series, peaks, shifts, distance — pure
-crates/vagcan/src/race/power.rs      the dynamics model and air density
-crates/vagcan/src/race/carfile.rs    the per-VIN car file: read, write, precedence
-crates/vagcan/src/race/setup.rs      the interview and the driving script — I/O only
-crates/vagcan/src/race/coastdown.rs  pass detection and the road-load fit — pure
-crates/vagcan/src/race/ui.rs         the live screen: drawing and keys
-crates/vagcan/src/race/report.rs     the results table
-crates/vagcan/src/race/view.rs       thirty lines: template plus substitution
-crates/vagcan/src/race/view.html     the page itself
+crates/vagcan/src/measure/mod.rs        the command and the poll loop
+crates/vagcan/src/measure/channels.rs   resolve every channel by name; the pre-flight check
+crates/vagcan/src/measure/session.rs    the state machine and run assembly — no I/O
+crates/vagcan/src/measure/derive.rs     t0, the accel series, peaks, shifts, distance — pure
+crates/vagcan/src/measure/power.rs      the dynamics model and air density
+crates/vagcan/src/measure/carfile.rs    the per-VIN car file: read, write, precedence
+crates/vagcan/src/measure/setup.rs      the interview and the driving script — I/O only
+crates/vagcan/src/measure/coastdown.rs  pass detection and the road-load fit — pure
+crates/vagcan/src/measure/ui.rs         the live screen: drawing and keys
+crates/vagcan/src/measure/report.rs     the results table
+crates/vagcan/src/measure/view.rs       thirty lines: template plus substitution
+crates/vagcan/src/measure/view.html     the page itself
 ```
 
 Eleven files rather than seven, and the reason is that the first split put two of them on a
@@ -1420,7 +1420,7 @@ terminals, which is what makes almost every test below runnable without a car.
 
 ## 7a. What this reuses, and the two extractions it needs
 
-`race` is a third live loop in a crate that already has two. Almost everything it needs is
+`measure` is a third live loop in a crate that already has two. Almost everything it needs is
 written; what is missing is that the useful parts are private or inline.
 
 **Reusable unchanged:** `plan::Channel`, `plan::Batch`, `plan::plan`, `plan::BATCH`,
@@ -1446,7 +1446,7 @@ pub async fn identify<B: vag_can::CanBackend>(
 
 The second matters more than it looks: the gateway walk, the 300 ms probe, and the rule that
 the powertrain is never in the gateway's list and so is added rather than discovered, all
-live inline in `watch::run` today. `race` needs them and `race setup` needs them. Copied,
+live inline in `watch::run` today. `measure` needs them and `measure setup` needs them. Copied,
 they drift.
 
 **Do not write a second least squares, and do not write a second R² number.** The repository
@@ -1520,7 +1520,7 @@ testable with no CAN at all and costs nothing. Then a `FakeCar` in `vag-can`, ga
 `(request id, identifier)` it was asked for — about 120 lines, most of it ISO-TP framing. It
 pays for itself beyond `race`: `watch`'s loop, `faults` and `survey` are equally untestable
 today.
-| profile round trip | `race setup` writes a profile the next run reads, and the run then needs no flags |
+| profile round trip | `measure setup` writes a profile the next run reads, and the run then needs no flags |
 | provenance | every parameter in the file names its source, and none of them may be a guess |
 | precedence | a flag beats the profile, and the file names the winner |
 | coastdown fit | synthetic coastdown data with known `CdA`/`Crr` recovers both; a one-way pass is refused; two passes that disagree are rejected |
@@ -1528,7 +1528,7 @@ today.
 | one time base | a derived value whose engine-speed input is a cycle stale is interpolated onto the leading grid, and one that is beyond the bound is suppressed |
 | degradation | a run whose rate falls below the floor is flagged, and the flag reaches both the screen and the file |
 | page | the placeholder is substituted, the embedded JSON parses back to the session, and neither template nor output contains an external URL. **Nothing asserts the chart draws** |
-| schema | `race view` refuses an unknown `schema` by name instead of half-reading the file |
+| schema | `measure view` refuses an unknown `schema` by name instead of half-reading the file |
 | columnar round trip | a session survives write-then-read with every channel's own timestamps intact |
 | stale cache | a `derived` block whose `stamp` does not match the current maths is ignored and recomputed |
 | channels by name | resolution succeeds against a catalog whose identifiers differ from the reference car's, and the leading unit follows the finest speed channel rather than a fixed unit |

@@ -1,11 +1,11 @@
 //! What this car is, as far as the bus cannot say — and where each number came
 //! from.
 //!
-//! Almost everything `race` needs is on the bus every run: speed, engine speed,
+//! Almost everything `measure` needs is on the bus every run: speed, engine speed,
 //! gear, pedal, boost, and the barometer and ambient sensor the air density
 //! comes from. A handful of things are not. The mass is on a registration
 //! document, the tyre size is on the sidewall, and `CdA` and `Crr` are on no
-//! document at all — they are measured on the road by the coastdown `race setup`
+//! document at all — they are measured on the road by the coastdown `measure setup`
 //! ends with. Those live here, one file per car, written once.
 //!
 //! **Every parameter carries its provenance and there is no `default`.** A
@@ -250,7 +250,7 @@ impl CarFile {
     }
 
     /// Where this tool keeps the file for one car: `car.json` inside that car's
-    /// own directory, beside its saved races and its reports.
+    /// own directory, beside its saved measurements and its reports.
     ///
     /// `description` is what a unit said about itself — the engine's component
     /// string — and only makes the directory readable; the VIN is what makes it
@@ -316,7 +316,7 @@ impl CarFile {
             missing.push("the engine inertia");
         }
         if self.cda.is_none() {
-            missing.push("drag area (CdA), which the coastdown in `vagcan race setup` measures");
+            missing.push("drag area (CdA), which the coastdown in `vagcan measure setup` measures");
         }
         if self.crr.is_none() {
             missing.push("rolling resistance (Crr), from that same coastdown");

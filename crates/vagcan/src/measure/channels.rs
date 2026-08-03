@@ -19,7 +19,7 @@
 //! load-bearing, because more than one unit answers to those names.
 //!
 //! **A channel that will not resolve is a channel this command does without.**
-//! `race` is an instrument, not a search: an unproven byte cannot be timed,
+//! `measure` is an instrument, not a search: an unproven byte cannot be timed,
 //! integrated or differentiated. So a row is admitted only when its meaning is
 //! whole — a fully linear scaling for a quantity, an enumeration for a state —
 //! and a required role that finds none is a refusal naming what it tried, never
@@ -525,7 +525,7 @@ mod tests {
     impl Synthetic {
         fn new(tag: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "vagcan-race-channels-{tag}-{}-{:?}",
+                "vagcan-measure-channels-{tag}-{}-{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));

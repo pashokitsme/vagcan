@@ -39,7 +39,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
     let names: Vec<&str> = missing.iter().map(|m| m.key).collect();
     let _ = writeln!(
         out,
-        "race needs {}, and this car's catalogs do not have {}.\n",
+        "measure needs {}, and this car's catalogs do not have {}.\n",
         names.join(", "),
         if names.len() == 1 { "it" } else { "them" }
     );
@@ -56,7 +56,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
     let _ = writeln!(
         out,
         "\n\
-         There is no stopwatch without a speed channel, and race will not guess one\n\
+         There is no stopwatch without a speed channel, and measure will not guess one\n\
          from raw bytes. To find it:\n    \
          vagcan survey --out parked.jsonl      then, after a drive:\n    \
          vagcan survey --out driving.jsonl\n    \
@@ -83,7 +83,7 @@ pub fn full_without_car_file(known: &[(&str, String)], missing: &[&str]) -> Stri
     let _ = writeln!(
         out,
         "\n\
-         Park the car and run:  vagcan race setup\n\
+         Park the car and run:  vagcan measure setup\n\
          It keeps what you already answered and asks only for what is left.\n\n\
          Running without --full: every time, every mark, acceleration, distance and\n\
          shift cost. Only the power column is absent."
@@ -146,7 +146,7 @@ pub fn fit_rejected(
          • a calmer day; above roughly 2 m/s the wind alone shifts Crr by 2 %\n  \
          • warm the car first: cold tyres and cold gearbox oil read a higher rolling\n    \
            resistance than the car will have on a run\n\n\
-         Nothing else is lost. Mass and tyre size are saved. Re-run vagcan race setup\n\
+         Nothing else is lost. Mass and tyre size are saved. Re-run vagcan measure setup\n\
          and it asks only for the passes."
     );
     out
@@ -189,7 +189,7 @@ pub fn wrong_car(file_vin: &str, car_vin: &str) -> String {
     format!(
         "that car file is for {file_vin} and this car says {car_vin}.\n\
          Ignoring it: mass and road load belong to one specific car. Run\n\
-         vagcan race setup for this one, or pass --car with the right file."
+         vagcan measure setup for this one, or pass --car with the right file."
     )
 }
 
@@ -206,7 +206,7 @@ pub fn unsaved_on_quit(runs: usize) -> String {
 pub fn no_car_file(vin: &str) -> String {
     format!(
         "no car file for {vin} — default mode: times, speeds and telemetry,\n\
-         no power. Park, then run: vagcan race setup"
+         no power. Park, then run: vagcan measure setup"
     )
 }
 

@@ -983,7 +983,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
     // would only ever show the engine, because a unit with no identity
     // contributes no channels and so no tab — which is what "switching between
     // units does nothing" looked like. The walk lives in `crate::units`,
-    // because `race` makes the same one.
+    // because `measure` makes the same one.
     let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
     wanted.push(plan::ENGINE);
     let mut progress = crate::progress::Line::new();

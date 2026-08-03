@@ -4,7 +4,7 @@
 //! itself — its part number, and the ODX file it names — so the walk that
 //! collects those answers is the first thing any live command does. It was
 //! written inside `watch`, where a second live command cannot reach it; both
-//! `race` and its setup need the same walk, and a copy of it would drift from
+//! `measure` and its setup need the same walk, and a copy of it would drift from
 //! this one the first time either learned something.
 //!
 //! Nothing here changes a unit: three identifiers are read and no session is

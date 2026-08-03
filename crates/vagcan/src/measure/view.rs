@@ -1,4 +1,4 @@
-//! `race view` — the chart page.
+//! `measure view` — the chart page.
 //!
 //! Almost nothing happens here on purpose. The page is [`view.html`], a real
 //! file with the CSS, the JavaScript and the SVG scaffold in it, and this
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn the_page_lands_beside_the_session() {
-        let dir = std::env::temp_dir().join(format!("vagcan-race-view-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("vagcan-measure-view-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("drive.json");
         std::fs::write(&input, SAMPLE).unwrap();

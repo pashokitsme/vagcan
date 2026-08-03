@@ -1,12 +1,12 @@
-//! `vagcan race` — time an acceleration run from the car's own speed signal.
+//! `vagcan measure` — time an acceleration run from the car's own speed signal.
 //!
-//! The design is `docs/superpowers/specs/2026-08-03-race-design.md`; the two
+//! The design is `docs/superpowers/specs/2026-08-03-measure-design.md`; the two
 //! rules that shape every module here are worth repeating at the door.
 //!
 //! **Two kinds of number, and only two.** Everything shown is either *read* — a
 //! value that was on the bus and whose meaning is proven by a catalog row or by
 //! SAE J1979 — or *derived*, computed here from read values. The `(raw)` class
-//! the rest of this crate deals with does not exist in `race`: an unproven byte
+//! the rest of this crate deals with does not exist in `measure`: an unproven byte
 //! cannot be timed, integrated or differentiated, and a channel that will not
 //! resolve is a channel this command does without.
 //!

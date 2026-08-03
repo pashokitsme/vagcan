@@ -250,7 +250,7 @@ impl Ratios {
     /// `engine_rad_s` is angular speed (see [`omega_from_rpm`]) and `speed_ms`
     /// is m/s; both must be, since the plateau is their quotient. Samples are
     /// taken on the speed channel's grid — the leading one — with the engine
-    /// interpolated onto it, which is the rule every derived figure in `race`
+    /// interpolated onto it, which is the rule every derived figure in `measure`
     /// follows.
     ///
     /// The statistic is the median, and a gear is kept only if most of its

@@ -133,7 +133,7 @@ const BRAKING_STEP_FACTOR: f64 = 2.5;
 /// One accepted coast: speed against time, and the conditions it happened in.
 ///
 /// `speed` is **m/s** on the leading channel's own timestamps, like every other
-/// number in `race` that is not being shown to someone. `rho` and `mass_kg` are
+/// number in `measure` that is not being shown to someone. `rho` and `mass_kg` are
 /// not optional decoration: the fit returns `½ρ·CdA`, so a `CdA` without the `ρ`
 /// that was in the air is meaningless, and it scales with the mass used in the
 /// fit — which is that day's load, not the run's. Both go in the car file
@@ -760,7 +760,7 @@ fn in_neutral(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::race::power::Inertias;
+    use crate::measure::power::Inertias;
 
     /// A mid-size car, invented for these tests. Nothing in the module knows any
     /// of it — mass, density and `δ₁` are all arguments — and `δ₁` in particular
