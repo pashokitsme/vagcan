@@ -43,7 +43,7 @@ pub enum Tool {
     /// `--part`, `--block`, `--odx`, or `--from-car` to say what to look up.
     ///
     /// OUT: the resolved label file and its measurements, on stdout. The cache
-    /// is written under `catalogs/label-cache/`.
+    /// is written under `~/.vagcan/label-cache/`.
     Labels {
         /// VCDS install root, or any directory below it.
         #[arg(value_name = "DIR")]

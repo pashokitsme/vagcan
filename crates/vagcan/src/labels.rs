@@ -26,7 +26,19 @@ use vag_data::{scan_corpus, CorpusScan, LabelDb, Measurement};
 /// cache is keyed by the directory it was built from, so the English and the
 /// Russian install each keep their own — switching language is a matter of
 /// pointing at the other directory, not of rebuilding anything.
-const CACHE_DIR: &str = "catalogs/label-cache";
+///
+/// It lives under `~/.vagcan`, not in `catalogs/`. A cache is something this
+/// tool generated on this machine and can regenerate at any time; `catalogs/`
+/// is a checked-in corpus of evidence. Keeping a rebuildable database next to
+/// measurements that took a drive to establish invites treating the two as one
+/// kind of thing, and they are not.
+fn cache_dir() -> PathBuf {
+    crate::datadir::vagcan_dir()
+        .map(|d| d.join("label-cache"))
+        // With nowhere to write, the working directory is a poor cache but a
+        // better failure than refusing to read a corpus at all.
+        .unwrap_or_else(|_| PathBuf::from("label-cache"))
+}
 
 /// The cache file for a corpus directory.
 fn cache_path_for(dir: &Path) -> PathBuf {
@@ -38,7 +50,7 @@ fn cache_path_for(dir: &Path) -> PathBuf {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
     let key = key.trim_matches('-').to_string();
-    Path::new(CACHE_DIR).join(format!("{key}.sqlite"))
+    cache_dir().join(format!("{key}.sqlite"))
 }
 
 /// Load a corpus, using the SQLite cache when it is usable and building it when

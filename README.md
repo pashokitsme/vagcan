@@ -116,7 +116,7 @@ no name→DID join, so a name is a lead, not a binding.
 The `.rod` per-record IV brute force is behind the `rod-crack` cargo feature
 (`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`).
 `vagcan vcds labels` reads the cached results from `catalogs/rod-iv-cache.json` and caches the
-parsed corpus to SQLite under `catalogs/label-cache/` (`--refresh` rebuilds).
+parsed corpus to SQLite under `~/.vagcan/label-cache/` (`--refresh` rebuilds).
 
 ## Scope boundary
 
