@@ -333,7 +333,7 @@ fn neighbourhood_peak(track: &Track, tau: Seconds) -> Option<Reading> {
 /// [`AMBIENT_BAR`] puts a whole bar above zero — so the run's own minimum
 /// answers the question without a table, and half a bar separates the two cases
 /// with room to spare.
-fn boost_reference(minimum_bar: f64) -> &'static str {
+pub(super) fn boost_reference(minimum_bar: f64) -> &'static str {
     match minimum_bar > AMBIENT_BAR / 2.0 {
         true => "abs",
         false => "gauge",

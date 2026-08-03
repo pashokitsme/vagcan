@@ -195,13 +195,21 @@ pub struct Start {
 /// launch always reads short — sound for the linear estimator and false for the
 /// quadratic one that paragraph then specified.
 ///
-/// **`latest` is clamped above at the first moving sample and `earliest` has no
-/// lower clamp.** The lower clamp an earlier draft proposed — into
-/// `(last zero, first non-zero]` — sounds conservative and is the opposite:
-/// under the dead band the true launch lies *before* that window, so the clamp
-/// bounds the estimate into a region that provably excludes the answer, and it
-/// fires on every run. `earliest` is held at or below `latest` only so that the
-/// pair is an interval and its midpoint means something.
+/// **Both are clamped above at the first moving sample, and neither has a lower
+/// clamp.** The upper clamp is a fact rather than an estimate: the car was
+/// observed moving at that sample, so no launch time after it is possible. The
+/// lower clamp an earlier draft proposed — into `(last zero, first non-zero]` —
+/// sounds conservative and is the opposite: under the dead band the true launch
+/// lies *before* that window, so the clamp bounds the estimate into a region
+/// that provably excludes the answer, and it fires on every run.
+///
+/// **Where the two estimators cross, the interval is ordered and not
+/// collapsed.** The quadratic normally reaches back further, but on a noisy
+/// wake it can land after the linear one, and an earlier version answered that
+/// by pulling `earliest` down to `latest` — turning a disagreement between two
+/// estimators into a zero-width interval, which is the one thing the pair exists
+/// to avoid. `8.94 … 8.94 s` reads as a number known exactly, and it would have
+/// been printed exactly when the two methods agreed least.
 pub fn start(track: &Track) -> Option<Start> {
     let first = (0..track.len()).find(|&i| track.v[i] > 0.0)?;
     let second = ((first + 1)..track.len()).find(|&i| track.v[i] > 0.0)?;
@@ -216,7 +224,8 @@ pub fn start(track: &Track) -> Option<Start> {
         t_first
     };
 
-    let earliest = constant_jerk_launch(track, first, t_first)?.min(latest);
+    let quadratic = constant_jerk_launch(track, first, t_first)?.min(t_first);
+    let (earliest, latest) = (quadratic.min(latest), quadratic.max(latest));
     Some(Start { t: 0.5 * (earliest + latest), earliest, latest })
 }
 
@@ -706,19 +715,22 @@ mod tests {
         // A launch that builds faster than constant jerk makes the quadratic
         // fit say otherwise. Here v = 100·(t−0.20)³, so √v is convex rather
         // than straight and the least-squares line through it reaches zero at
-        // 0.256 s — after the first moving sample, and after the two-point
-        // bound at 0.243. The bracket collapses onto the sound end rather than
-        // inverting.
+        // 0.256 s — after the first moving sample at 0.25, and after the
+        // two-point bound at 0.243. The impossible part is cut by the one hard
+        // fact available (the car was seen moving at 0.25) and the two ends are
+        // then ordered, so the two estimators disagreeing widens the interval
+        // instead of collapsing it.
         let mut track = Track::default();
         for i in 0..20 {
             let t = 0.20 + i as f64 * 0.05;
             track.push(t, 100.0 * (t - 0.20).powi(3));
         }
         let launch = start(&track).unwrap();
-        assert!(launch.latest <= 0.25, "{launch:?}");
-        assert!((launch.latest - 0.242_857).abs() < 1e-5, "{launch:?}");
-        assert_eq!(launch.earliest, launch.latest, "{launch:?}");
-        assert_eq!(launch.t, launch.latest);
+        assert!((launch.earliest - 0.242_857).abs() < 1e-5, "{launch:?}");
+        assert!((launch.latest - 0.25).abs() < 1e-9, "{launch:?}");
+        assert!(launch.earliest < launch.latest, "a disagreement is not a certainty: {launch:?}");
+        assert!(launch.latest <= 0.25, "never after a sample that showed movement: {launch:?}");
+        assert!((launch.t - 0.5 * (launch.earliest + launch.latest)).abs() < 1e-12);
     }
 
     #[test]

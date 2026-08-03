@@ -1019,6 +1019,11 @@ async fn drive<R: BatchReader>(
     let mut cycles = 0u64;
     let mut speed_kmh = 0.0f64;
     let mut clock = 0.0f64;
+    // The lowest boost reading of the whole session, which is what says whether
+    // the channel is absolute or gauge. Kept outside the chart buffers on
+    // purpose: those are trimmed to the last few seconds and cleared at every
+    // launch, and by then the car has not been at ambient for a while.
+    let mut boost_floor: Option<f64> = None;
     let mut density: Option<(f64, bool)> = opts.air_density.map(|rho| (rho, false));
 
     let mut terminal = match full_screen {
@@ -1051,7 +1056,7 @@ async fn drive<R: BatchReader>(
                 session.degraded().then(|| session.hz().unwrap_or(0.0)),
             ),
             banner: (!banner.is_empty()).then(|| banner.clone()),
-            rows: value_rows(&values, &charts, &meta),
+            rows: value_rows(&values, &charts, &meta, boost_floor),
             marks: mark_rows(&opts.marks, &closed),
             chart: controls.chart.min(series.len().saturating_sub(1)),
             series,
@@ -1112,6 +1117,11 @@ async fn drive<R: BatchReader>(
         }
         if let Some((_, ms, _)) = set.speed {
             speed_kmh = ms * opts.speed_scale * power::KMH_PER_MS;
+        }
+        for (key, _, value) in &set.others {
+            if *key == "boost actual" && value.is_finite() {
+                boost_floor = Some(boost_floor.map_or(*value, |floor| floor.min(*value)));
+            }
         }
         accumulate(&mut charts, &set, opts.speed_scale, clock, opts.accel_window_s);
 
@@ -1413,12 +1423,38 @@ fn series_of(charts: &BTreeMap<String, Track>) -> Vec<ui::Series> {
     out
 }
 
+/// `/min` is what a label file calls engine speed and `rpm` is what a driver
+/// calls it. The results table already prints `rpm`, and a live screen that
+/// said something else for the same channel would read as a different reading.
+///
+/// Only that one substitution, and only as a whole word: the units here come
+/// from the label corpus, so rewriting them generally would be this tool
+/// deciding what a car's own data means.
+fn spoken(text: &str) -> String {
+    text.replace("/min", "rpm")
+}
+
+/// Whether a boost channel is absolute or gauge, from the lowest reading seen.
+///
+/// Nothing on the bus says which one it is, and the difference is a whole
+/// atmosphere: 1.6 bar absolute is part throttle and 1.6 bar gauge is a car at
+/// full load. A stationary engine reads ambient, so the floor separates them —
+/// near 1 bar it is absolute, near 0 it is gauge.
+///
+/// The same rule the results table uses, in [`report`], so the two cannot
+/// disagree about one run. `None` until a reading has arrived: the qualifier is
+/// omitted rather than guessed, because a wrong one is worse than none.
+fn boost_sense(floor: Option<f64>) -> Option<&'static str> {
+    floor.map(report::boost_reference)
+}
+
 /// The value table: every channel that answered, and every figure derived from
 /// one, each saying which it is.
 fn value_rows(
     values: &BTreeMap<&'static str, String>,
     charts: &BTreeMap<String, Track>,
     meta: &Meta,
+    boost_floor: Option<f64>,
 ) -> Vec<ui::ValueRow> {
     let mut rows: Vec<ui::ValueRow> = Vec::new();
     // The order a driver reads them in, not the order they were resolved.
@@ -1432,17 +1468,19 @@ fn value_rows(
         if let Some(value) = values.get(role) {
             rows.push(ui::ValueRow {
                 name: name.to_string(),
-                value: value.clone(),
+                value: spoken(value),
                 origin: ui::Origin::Bus,
             });
         }
     }
     // Actual before specified, the order `watch` already uses, and on one line
-    // because the gap between them is the whole diagnostic.
+    // because the gap between them is the whole diagnostic. The qualifier goes
+    // once at the end, where it covers both.
     if let Some(actual) = values.get("boost actual") {
+        let sense = boost_sense(boost_floor).map(|s| format!(" {s}")).unwrap_or_default();
         let pair = match values.get("boost specified") {
-            Some(specified) => format!("{actual} / {specified} (act/spec)"),
-            None => actual.clone(),
+            Some(specified) => format!("{actual} / {specified}{sense} (act/spec)"),
+            None => format!("{actual}{sense}"),
         };
         rows.push(ui::ValueRow { name: "boost".into(), value: pair, origin: ui::Origin::Bus });
     }
@@ -1508,6 +1546,61 @@ mod tests {
         assert!(parse_marks("0-0").is_err());
         // The documented default is what the flag actually parses.
         assert_eq!(parse_marks(DEFAULT_MARKS).unwrap().0.len(), 6);
+    }
+
+    /// Just enough of a `Meta` to draw a value table.
+    fn bare_meta() -> Meta {
+        Meta {
+            vin: None,
+            units: Vec::new(),
+            marks: Vec::new(),
+            speed_source: String::new(),
+            speed_scale: 1.0,
+            accel_window_s: 0.3,
+            setting: report::Setting::default(),
+            grade_percent: 0.0,
+            headwind_ms: 0.0,
+            car_file: None,
+            channels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_bar_of_boost_never_appears_without_saying_which_bar_it_is() {
+        // 1.6 absolute is part throttle; 1.6 gauge is a car at full load. The
+        // floor of the session decides it — the engine sat at ambient before
+        // the first launch — and the driver reads the answer, not the rule.
+        let values = BTreeMap::from([
+            ("boost actual", "1.60 bar".to_string()),
+            ("boost specified", "1.72 bar".to_string()),
+        ]);
+        let charts = BTreeMap::new();
+        let meta = bare_meta();
+
+        let row = |floor| {
+            value_rows(&values, &charts, &meta, floor)
+                .into_iter()
+                .find(|row| row.name == "boost")
+                .expect("the boost row is drawn whenever the channel answered")
+                .value
+        };
+        assert_eq!(row(Some(0.98)), "1.60 bar / 1.72 bar abs (act/spec)");
+        assert_eq!(row(Some(0.02)), "1.60 bar / 1.72 bar gauge (act/spec)");
+        // Before any reading there is nothing to decide it with, and a guessed
+        // qualifier is worse than a missing one.
+        assert_eq!(row(None), "1.60 bar / 1.72 bar (act/spec)");
+    }
+
+    #[test]
+    fn the_live_screen_and_the_results_table_call_engine_speed_the_same_thing() {
+        // The label corpus says `/min`; `report` prints `rpm`; a screen that
+        // said both would read as two different channels.
+        let values = BTreeMap::from([("engine speed", "6456 /min".to_string())]);
+        let rows = value_rows(&values, &BTreeMap::new(), &bare_meta(), None);
+        let engine = rows.iter().find(|row| row.name == "engine").unwrap();
+        assert_eq!(engine.value, "6456 rpm");
+        // And nothing else is rewritten: the units come from the car's own data.
+        assert_eq!(spoken("21.4 g/s"), "21.4 g/s");
     }
 
     #[test]
