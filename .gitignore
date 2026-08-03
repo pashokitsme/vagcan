@@ -44,3 +44,6 @@ research/logs/
 # Ross-Tech VCDS installations: proprietary software and label data, ~300 MB.
 # Present for offline research only; never committed.
 research/VCDS-*/
+
+# Browser session artifacts from Playwright — logs and DOM snapshots, never source.
+.playwright-mcp/
