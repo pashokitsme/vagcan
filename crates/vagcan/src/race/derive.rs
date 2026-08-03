@@ -146,50 +146,87 @@ pub fn accel_series(track: &Track, window: Seconds, scheme: Scheme) -> Vec<Slope
 /// inside first gear. A property of the estimator, not of any car.
 pub const START_FIT_S: Seconds = 0.4;
 
-/// The launch instant, and the one-signed band on it.
+/// The launch instant, as an interval rather than a number.
 ///
-/// `bias_low` and `bias_high` are magnitudes, both `≥ 0`, and they describe an
-/// **asymmetric** band: the reported elapsed time may be up to `bias_high`
-/// longer than the truth and is not expected to be shorter, which is why a mark
-/// prints as `6.12 s +0.30/−0.00` rather than `6.12 ± 0.15`. A symmetric ± on a
-/// one-signed error is the most misleading form available — it claims the tool
-/// might be pessimistic, which it is not.
+/// The two estimators available **bracket** the answer instead of agreeing on
+/// it, so the pair is the result and neither half is. A caller prints a 0-based
+/// mark as `6.03 … 6.38 s`, and the width of that is an uncertainty derived from
+/// this run's own samples rather than a tolerance copied from a table.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Start {
+    /// The estimate to use — the midpoint of the bracket.
     pub t: Seconds,
-    pub bias_low: Seconds,
-    pub bias_high: Seconds,
+    /// The constant-jerk fit: it reaches back too far, so it is the earliest
+    /// launch worth believing.
+    pub earliest: Seconds,
+    /// The two-point linear extrapolation: it falls short, so it is the latest.
+    pub latest: Seconds,
 }
 
-/// When the car actually started moving, from the first [`START_FIT_S`] of
-/// movement.
+/// When the car actually started moving, bracketed by two estimators that miss
+/// it from opposite sides.
 ///
 /// **Not the first non-zero sample.** A wheel-speed signal has a low-speed dead
 /// band — at a few dozen teeth per revolution the pulse interval at walking pace
-/// is longer than the unit's own update — so it reports zero for the first
-/// tenths of a second of a launch that is already under way. The estimate is a
-/// least-squares fit of the constant-jerk shape `v = ½j(t − t₀)²` over the
-/// samples that do exist, extrapolated back to `v = 0`.
+/// is longer than the unit's own update — so it reports zero through the first
+/// tenths of a second of a launch that is already under way. Whatever is done
+/// here is an extrapolation into a stretch nobody observed, and the honest form
+/// of that is an interval.
 ///
-/// The fit is done on `√v`, which is exactly linear in `t` under that model, so
-/// it is closed-form and has exactly one root. Fitting `v` itself by search
-/// over `t₀` lands within a few milliseconds of it on every trace tried here;
-/// the linearisation weights the slow samples more heavily, which is the right
-/// way round when what is wanted is where the curve reaches zero.
+/// **`earliest` is a constant-jerk fit**, `v = ½j(t − t₀)²` over the first
+/// [`START_FIT_S`] of movement, extrapolated back to `v = 0`. It is done on
+/// `√v`, which is exactly linear in `t` under that model, so it is closed-form
+/// and has exactly one root. It overshoots: the model forces
+/// `v/v̇ = (t − t₀)/2`, so wherever the acceleration has already saturated by
+/// the time the signal wakes — which is most launches — it reaches back about
+/// twice as far as it should. Simulated across ramp and exponential launches
+/// with dead bands from 1 to 3 km/h, it lands 0.02 to 0.27 s early.
 ///
-/// **Bounded above by the first moving sample, and not bounded below.** The
-/// lower clamp an earlier draft proposed — into `(last zero, first non-zero]` —
-/// sounds conservative and is the opposite: under the dead band the true launch
-/// lies *before* that window, so the clamp bounds the estimate into a region
-/// that provably excludes the answer, and it fires on every run.
+/// **`latest` is a two-point linear extrapolation** through the first two
+/// moving samples. A launch is convex, so a straight line drawn through it runs
+/// under the true curve and reaches zero late; the two samples nearest the wake
+/// are the ones least contaminated by the saturated stretch, which is what makes
+/// this the tightest late bound available. It lands 0.10 to 0.25 s late over the
+/// same set.
 ///
-/// `bias_high` is the stretch the fit had to extrapolate across, which is the
-/// stretch nobody observed; `bias_low` is zero. See
-/// `off_its_own_model_the_launch_fit_overshoots_backwards_rather_than_falling_short`
-/// for the one place this module's own simulations disagree with that framing.
+/// The truth was between the two on every trace tried, which is the whole
+/// argument for reporting both. An earlier draft reported the constant-jerk fit
+/// alone with a one-signed `+x/−0.00` band, on the reasoning that a convex
+/// launch always reads short — sound for the linear estimator and false for the
+/// quadratic one that paragraph then specified.
+///
+/// **`latest` is clamped above at the first moving sample and `earliest` has no
+/// lower clamp.** The lower clamp an earlier draft proposed — into
+/// `(last zero, first non-zero]` — sounds conservative and is the opposite:
+/// under the dead band the true launch lies *before* that window, so the clamp
+/// bounds the estimate into a region that provably excludes the answer, and it
+/// fires on every run. `earliest` is held at or below `latest` only so that the
+/// pair is an interval and its midpoint means something.
 pub fn start(track: &Track) -> Option<Start> {
     let first = (0..track.len()).find(|&i| track.v[i] > 0.0)?;
+    let second = ((first + 1)..track.len()).find(|&i| track.v[i] > 0.0)?;
     let t_first = track.t[first];
+
+    let (rise, step) = (track.v[second] - track.v[first], track.t[second] - track.t[first]);
+    let latest = if rise > 0.0 && step > 0.0 {
+        (t_first - track.v[first] * step / rise).min(t_first)
+    } else {
+        // Two readings that gain nothing extrapolate to nowhere; what is still
+        // known is that the car was already moving at the first of them.
+        t_first
+    };
+
+    let earliest = constant_jerk_launch(track, first, t_first)?.min(latest);
+    Some(Start { t: 0.5 * (earliest + latest), earliest, latest })
+}
+
+/// Where `v = ½j(t − t₀)²` puts the launch, fitted as a straight line through
+/// `√v` over the first [`START_FIT_S`] of movement.
+///
+/// `None` when the window holds fewer than three moving samples, or when the
+/// car gained no speed across it and there is nothing for the model to reach
+/// back through.
+fn constant_jerk_launch(track: &Track, first: usize, t_first: Seconds) -> Option<Seconds> {
     let last = track.t.partition_point(|probe| *probe <= t_first + START_FIT_S);
 
     let mut xs = Vec::new();
@@ -218,13 +255,9 @@ pub fn start(track: &Track) -> Option<Start> {
     }
     let gradient = sxy / sxx;
     if gradient <= 0.0 {
-        // The car was not gathering speed over the fit window, so there is no
-        // launch for the model to reach back through.
         return None;
     }
-
-    let t = (x_bar - y_bar / gradient).min(t_first);
-    Some(Start { t, bias_low: 0.0, bias_high: (t_first - t).max(0.0) })
+    Some(x_bar - y_bar / gradient)
 }
 
 /// The peak of an acceleration series, and where it was.
@@ -295,13 +328,19 @@ pub const SHIFT_PAD_S: Seconds = 0.35;
 /// `speed_deficit_ms` is metres per second of speed the change gave up;
 /// `cost_on_mark_s` is what that is worth in seconds on a mark whose upper
 /// endpoint the car reaches at a stated acceleration.
+///
+/// The cost is an `Option` rather than a number that might be NaN. A deficit
+/// costs no measurable time on a car that is not gaining speed at the mark, and
+/// this figure goes straight into the session file, where a NaN either fails the
+/// write or lands as `null` depending on the path. `None` survives the round
+/// trip and says the same thing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shift {
     pub t: Seconds,
     pub from: String,
     pub to: String,
     pub speed_deficit_ms: f64,
-    pub cost_on_mark_s: f64,
+    pub cost_on_mark_s: Option<Seconds>,
 }
 
 /// Every gearchange in the run, located from the gear channel and costed
@@ -337,8 +376,8 @@ pub struct Shift {
 /// own and are read as labels: the codes behind them are neither contiguous nor
 /// ordered by ratio, which is the bug this project already made once.
 ///
-/// `cost_on_mark_s` is NaN when `accel_at_mark_top` is not positive: there is no
-/// time a speed deficit costs on a car that is not gaining speed at the mark.
+/// `cost_on_mark_s` is `None` when `accel_at_mark_top` is not positive: there is
+/// no time a speed deficit costs on a car that is not gaining speed at the mark.
 pub fn shifts(gear: &States, accel: &[Slope], accel_at_mark_top: f64) -> Vec<Shift> {
     let t: Vec<Seconds> = accel.iter().map(|s| s.t).collect();
     let a: Vec<f64> = accel.iter().map(|s| s.a).collect();
@@ -356,11 +395,8 @@ pub fn shifts(gear: &States, accel: &[Slope], accel_at_mark_top: f64) -> Vec<Shi
         };
         let against_baseline: Vec<f64> = a.iter().map(|value| a_post - value).collect();
         let speed_deficit_ms = trapezoid(&t, &against_baseline, opens, closes);
-        let cost_on_mark_s = if accel_at_mark_top > 0.0 {
-            speed_deficit_ms / accel_at_mark_top
-        } else {
-            f64::NAN
-        };
+        let cost_on_mark_s =
+            (accel_at_mark_top > 0.0).then(|| speed_deficit_ms / accel_at_mark_top);
         out.push(Shift { t: when, from, to, speed_deficit_ms, cost_on_mark_s });
     }
     out
@@ -635,45 +671,61 @@ mod tests {
     fn the_launch_reaches_back_past_the_last_zero_sample() {
         // Constant jerk of 8 m/s³ from rest at t = 0, with everything under
         // 2 km/h suppressed. The signal wakes at 0.40 s, so the last zero
-        // sample is at 0.35 — and the answer is 0.00, before both. A clamp
-        // into (last zero, first non-zero] would bound the estimate into a
-        // region that provably excludes the truth, which is why there is none.
+        // sample is at 0.35 — and the truth is 0.00, before both. A clamp into
+        // (last zero, first non-zero] would bound the bracket into a region
+        // that provably excludes the answer, which is why there is none.
         //
-        // Constant acceleration is deliberately not this test: linear
-        // extrapolation is exact there and it would prove nothing about the
-        // shape this estimator assumes.
+        // On its own model the constant-jerk fit is exact, so here it lands on
+        // the truth and forms the early end of the bracket. Constant
+        // acceleration is deliberately not this test: linear extrapolation is
+        // exact there and it would prove nothing about either estimator.
         let track = under_dead_band(2.0, |t| 0.5 * 8.0 * t * t);
         let launch = start(&track).unwrap();
-        assert!((launch.t - 0.0).abs() < 1e-6, "{launch:?}");
-        assert!(launch.t < 0.35, "the last zero sample is at 0.35: {launch:?}");
+        assert!((launch.earliest - 0.0).abs() < 1e-6, "{launch:?}");
+        assert!(launch.earliest < 0.35, "the last zero sample is at 0.35: {launch:?}");
+        assert!(launch.latest > launch.earliest, "{launch:?}");
     }
 
     #[test]
-    fn the_launch_is_never_placed_after_the_first_moving_sample() {
-        // The upper bound, which is the one bound that is sound: the car was
-        // seen moving at 0.25 s, so it was already under way by then, whatever
-        // the fit says.
+    fn the_reported_launch_is_the_middle_of_the_bracket() {
+        let track = under_dead_band(2.0, |t| 0.5 * 8.0 * t * t);
+        let launch = start(&track).unwrap();
+        assert!((launch.t - 0.5 * (launch.earliest + launch.latest)).abs() < 1e-12);
+        // And the bracket's width is what a caller prints as an interval: the
+        // dead band cost the run something between nothing and a fifth of a
+        // second that nobody watched.
+        assert!(launch.latest - launch.earliest > 0.15, "{launch:?}");
+    }
+
+    #[test]
+    fn the_late_bound_is_never_placed_after_the_first_moving_sample() {
+        // The one bound that is sound rather than modelled: the car was seen
+        // moving at 0.25 s, so it was already under way by then whatever any
+        // fit says.
         //
-        // A launch that builds faster than constant jerk makes the fit say
-        // otherwise. Here v = 100·(t−0.20)³, so √v is convex rather than
-        // straight and the least-squares line through it reaches zero at
-        // 0.256 s — after the first moving sample. That is the case the clamp
-        // exists for.
+        // A launch that builds faster than constant jerk makes the quadratic
+        // fit say otherwise. Here v = 100·(t−0.20)³, so √v is convex rather
+        // than straight and the least-squares line through it reaches zero at
+        // 0.256 s — after the first moving sample, and after the two-point
+        // bound at 0.243. The bracket collapses onto the sound end rather than
+        // inverting.
         let mut track = Track::default();
         for i in 0..20 {
             let t = 0.20 + i as f64 * 0.05;
             track.push(t, 100.0 * (t - 0.20).powi(3));
         }
         let launch = start(&track).unwrap();
-        assert_eq!(launch.t, 0.25, "clamped to the first moving sample");
-        assert_eq!(launch.bias_high, 0.0, "nothing was extrapolated across");
+        assert!(launch.latest <= 0.25, "{launch:?}");
+        assert!((launch.latest - 0.242_857).abs() < 1e-5, "{launch:?}");
+        assert_eq!(launch.earliest, launch.latest, "{launch:?}");
+        assert_eq!(launch.t, launch.latest);
     }
 
     #[test]
     fn a_car_that_gains_no_speed_over_the_fit_window_has_no_launch() {
         // A trace that jumps to a steady speed and holds it has no rise for
-        // the model to reach back through, and inventing one from a flat line
-        // would put the answer wherever the arithmetic overflowed to.
+        // either estimator to reach back through, and inventing one from a flat
+        // line would put the answer wherever the arithmetic overflowed to.
         let mut track = Track::default();
         for i in 0..20 {
             let t = i as f64 * 0.05;
@@ -683,46 +735,32 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_band_is_one_signed_and_covers_the_stretch_nobody_saw() {
-        let track = under_dead_band(2.0, |t| 0.5 * 8.0 * t * t);
-        let launch = start(&track).unwrap();
-        assert_eq!(launch.bias_low, 0.0);
-        assert!(launch.bias_high >= 0.0);
-        // The band is the dead band: 0.40 s of movement happened before the
-        // signal admitted to any. That is the 0.10–0.35 s the design's error
-        // budget quotes, and it is one-signed because everything unmodelled in
-        // that stretch — an acceleration still climbing towards its plateau —
-        // makes it longer rather than shorter.
-        assert!((launch.bias_high - (0.40 - launch.t)).abs() < 1e-12);
-        assert!(launch.bias_high > 0.3 && launch.bias_high < 0.45, "{launch:?}");
-    }
-
-    #[test]
-    fn off_its_own_model_the_launch_fit_overshoots_backwards_rather_than_falling_short() {
-        // Worth pinning down, because it is the one place this module's
-        // simulations disagree with the design's prose. The design argues that
-        // a convex launch makes backwards extrapolation reach zero *late*, and
-        // that is true of a *linear* extrapolation. It is not true of the
-        // constant-jerk fit the same paragraph then specifies.
+    fn the_bracket_holds_the_launch_between_two_estimators_that_each_miss_it() {
+        // The pair is the answer and neither half is. The design used to argue
+        // that a convex launch makes backwards extrapolation reach zero *late*,
+        // so the error is one-signed and flatters; that is sound for a
+        // **linear** extrapolation and false for the constant-jerk fit the same
+        // paragraph then specified. The quadratic model forces
+        // v/v̇ = (t − t₀)/2, so it overshoots backwards by about twice what a
+        // straight line undershoots, and the truth sits between them.
         //
-        // Here jerk is 8 m/s³ until acceleration saturates at 4 m/s² after
-        // 0.5 s, and the 2 km/h dead band hides everything before 0.40 s — so
-        // the fit sees a stretch that is already nearly straight. The model
-        // forces v/v̇ = (t − t₀)/2, which overshoots backwards by twice what a
-        // straight line undershoots: the answer lands at −0.08 s against a
-        // truth of 0.00, where linear extrapolation would have said +0.24 s.
-        // The truth is between the two.
-        //
-        // So `bias_low = 0` is the design's claim about the error budget, not
-        // something this estimator can be shown to satisfy off-model. It is
-        // left as the design specifies and recorded here for whoever revisits
-        // it.
-        let track = under_dead_band(2.0, |t| {
+        // Both shapes below start from rest at exactly t = 0 and hide
+        // everything under 2 km/h, which is where a toothed wheel wakes up.
+        let saturating = under_dead_band(2.0, |t| {
+            // Jerk 8 m/s³ until the acceleration saturates at 4 m/s².
             if t <= 0.5 { 0.5 * 8.0 * t * t } else { 1.0 + 4.0 * (t - 0.5) }
         });
-        let launch = start(&track).unwrap();
-        assert!(launch.t < 0.0, "{launch:?}");
-        assert!((launch.t + 0.081).abs() < 0.01, "{launch:?}");
+        let exponential = under_dead_band(2.0, |t| {
+            // a = 4.5·(1 − e^(−t/0.35)), integrated in closed form.
+            4.5 * (t - 0.35 * (1.0 - (-t / 0.35).exp()))
+        });
+
+        for (name, track) in [("saturating", saturating), ("exponential", exponential)] {
+            let launch = start(&track).unwrap();
+            assert!(launch.earliest < 0.0, "{name}: the quadratic overshoots: {launch:?}");
+            assert!(launch.latest > 0.0, "{name}: the straight line falls short: {launch:?}");
+            assert!(launch.t > launch.earliest && launch.t < launch.latest, "{name}");
+        }
     }
 
     #[test]
@@ -864,7 +902,7 @@ mod tests {
         //   [2.20,2.35]  0                  =  0
         //                                     = 0.70 m/s
         assert!((shift.speed_deficit_ms - 0.70).abs() < 1e-9, "{shift:?}");
-        assert!((shift.cost_on_mark_s - 0.70 / 2.5).abs() < 1e-9, "{shift:?}");
+        assert!((shift.cost_on_mark_s.unwrap() - 0.70 / 2.5).abs() < 1e-9, "{shift:?}");
     }
 
     #[test]
@@ -887,10 +925,10 @@ mod tests {
         // understates the cost by nearly a factor of three here, and by about
         // two on a real 0-100.
         let (gear, accel) = upshift_trace();
-        let at_the_top = shifts(&gear, &accel, 1.5).remove(0);
-        let at_the_shift = shifts(&gear, &accel, 4.0).remove(0);
-        assert!((at_the_top.cost_on_mark_s - 0.70 / 1.5).abs() < 1e-9);
-        assert!(at_the_top.cost_on_mark_s > 2.5 * at_the_shift.cost_on_mark_s);
+        let at_the_top = shifts(&gear, &accel, 1.5).remove(0).cost_on_mark_s.unwrap();
+        let at_the_shift = shifts(&gear, &accel, 4.0).remove(0).cost_on_mark_s.unwrap();
+        assert!((at_the_top - 0.70 / 1.5).abs() < 1e-9);
+        assert!(at_the_top > 2.5 * at_the_shift);
     }
 
     #[test]
@@ -941,10 +979,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cost_on_a_car_that_is_not_gaining_speed_is_not_a_number() {
+    fn a_cost_on_a_car_that_is_not_gaining_speed_is_absent_rather_than_a_nan() {
+        // The deficit is still a measurement; what it is worth in seconds is
+        // not, and this figure is serialised into the session file, where a NaN
+        // either fails the write or arrives as `null` depending on the path.
         let (gear, accel) = upshift_trace();
         let shift = shifts(&gear, &accel, 0.0).remove(0);
-        assert!(shift.cost_on_mark_s.is_nan());
+        assert_eq!(shift.cost_on_mark_s, None);
         assert!((shift.speed_deficit_ms - 0.70).abs() < 1e-9);
     }
 
