@@ -44,7 +44,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///   cars/
 ///     1.8l-R4-TFSI-XW8AD4NE9JH008917/ one directory per car
 ///       car.json                      mass, tyre, measured road load
-///       races/2026-08-04-1241.json     one saved session per file
+///       measures/2026-08-04-1241.json  one saved session per file
 ///       reports/                       surveys, fault dumps, whatever is kept
 /// ```
 ///
@@ -82,12 +82,12 @@ pub fn car_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> 
     Ok(vagcan_dir()?.join("cars").join(car_folder(vin, description)?))
 }
 
-/// Where a car's saved race sessions go.
-// Called once `race` writes sessions; the directory layout is settled here so
+/// Where a car's saved measurement sessions go.
+// Called once `measure` writes sessions; the directory layout is settled here so
 // that the command does not invent its own.
 #[allow(dead_code)]
-pub fn races_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
-    Ok(car_dir(vin, description)?.join("races"))
+pub fn measures_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
+    Ok(car_dir(vin, description)?.join("measures"))
 }
 
 /// Where the readings a car is asked for end up when nobody named a file — a
@@ -256,7 +256,7 @@ mod tests {
         // the working directory a command happened to be run in.
         let vin = "XW8AD4NE9JH008917";
         let car = car_dir(vin, Some("1.8l R4 TFSI")).unwrap();
-        assert_eq!(races_dir(vin, Some("1.8l R4 TFSI")).unwrap(), car.join("races"));
+        assert_eq!(measures_dir(vin, Some("1.8l R4 TFSI")).unwrap(), car.join("measures"));
         assert_eq!(reports_dir(vin, Some("1.8l R4 TFSI")).unwrap(), car.join("reports"));
     }
 

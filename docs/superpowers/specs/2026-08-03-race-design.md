@@ -511,12 +511,30 @@ Idle ──speed 0 held for 1 s──► Armed ──first sample v > 0──►
   it reports zero. Against that, quadratic and linear extrapolation differ by less than their
   own scatter (164 ms versus 156 ms at a 1 km/h cutoff). The quadratic is kept because it is
   the right shape, not because it buys accuracy.
-- **So the launch bias is printed as what it is: one-signed.** `0-100  6.12 s  +0.30/−0.00`,
-  not `6.12 ± 0.1`. A symmetric ± on an error that only ever runs one way is the single most
-  misleading way to present it: it claims the tool might be pessimistic, which it never is.
-  The magnitude is 0.10–0.35 s depending on where this car's signal wakes up. Rolling marks
-  like `50-100` print to hundredths with a genuine ±, because there both endpoints are
-  interpolated crossings and the staleness bias cancels (§3).
+- **The bias is not one-signed after all, and the two estimators bracket it.** An earlier
+  draft of this section argued that a convex launch makes every 0-based mark read *short*.
+  That is true of the linear extrapolation it was arguing against, and false of the
+  constant-jerk fit it then specified: `v = ½jt²` forces `v/v̇ = (t−t₀)/2`, so on a real
+  launch — which is already straightening out inside the fit window — it reaches back **too
+  far** and the mark reads *long*. Simulated on ramp and exponential torque build-ups with
+  the dead band in place:
+
+  | launch | dead band | constant-jerk fit | linear fit | truth |
+  |---|---|---|---|---|
+  | ramp to 4 m/s² over 0.5 s | 2 km/h | **−0.06 s** | +0.20 s | 0 |
+  | exponential, τ = 0.2 s | 2 km/h | **−0.19 s** | +0.13 s | 0 |
+  | ramp over 0.3 s | 3 km/h | **−0.14 s** | +0.25 s | 0 |
+
+  The truth sits **between them**, every time, because the two models err in opposite
+  directions by construction.
+
+- **So both are computed, and the pair is the answer.** `t₀` is reported as a bracket —
+  earliest from the quadratic fit, latest from the linear one — with the mark time printed as
+  the interval that follows from it: `0-100  6.12 … 6.38 s`. That is an uncertainty derived
+  from this run's own samples rather than a tolerance copied out of a table, and it is honest
+  in both directions instead of confidently wrong in one. Rolling marks like `50-100` still
+  print to hundredths with a genuine ±, because there both endpoints are interpolated
+  crossings and the staleness bias cancels (§3).
 - **A ring buffer of the 3 s before t0** is written into the run: pedal, engine speed and
   selector *before* the start are half of what explains a bad one.
 - A run ends at the highest mark, at `Esc`, or when speed returns to zero. The last is
@@ -942,7 +960,7 @@ a ≈ 2.5 m/s², total ≈ 120 kW):
 | speed scale wrong by ±2 % | ±4.8 kW ≈ ±6.5 PS | either way, and it moves the times too |
 | inertias generic to ±30 % | ±2 % of power in top, **±12 % in 1st** | either way |
 | `Crr` uncertain by ±0.002 | ±0.76 kW | either way |
-| t0 before the speed signal wakes up | 0.10–0.35 s on any 0-based mark | **flatters** — the run looks shorter |
+| t0 before the speed signal wakes up | 0.15–0.45 s of bracket on any 0-based mark | **either way** — the two fits straddle the truth, so the mark is printed as an interval |
 | road speed is the car's own signal, which regulation forbids to under-read | ~0.2–0.3 s on a 7 s 0-100 | **flatters** |
 | driven-wheel slip during the launch, 2–5 % in 1st and 2nd | tenths on early marks, 1–3 m on distance | **flatters** |
 | unknown grade, ±1 % | ±3.8 kW ≈ 5 PS | downhill **flatters** |
@@ -1063,14 +1081,15 @@ blocks under their own headings rather than one list:
 ```
   Run 2 — measured
     mark (km/h)   time                average acceleration
-    0-10          1.03 … 1.13 s       2.8 m/s²
-    0-100         6.12 … 6.42 s       4.5 m/s²
+    0-10          0.94 … 1.13 s       2.8 m/s²
+    0-100         6.03 … 6.38 s       4.5 m/s²
     50-100        3.24 s ± 0.02       4.28 m/s²
 
-    Marks from a standstill read short: the car is already rolling before its own
-    speed signal wakes up, and no arithmetic recovers that. The true time is at the
-    top of each range, never below it. 50-100 starts from a real crossing and has
-    no such bias.
+    Marks from a standstill are a range, not a number: the car is already rolling
+    before its own speed signal wakes up, and where inside that gap it started
+    cannot be recovered. The two ways of extrapolating back to zero err in
+    opposite directions, so the answer is between them. 50-100 starts from a real
+    crossing and has no such gap.
     peak engine speed   6480 /min at 5.9 s
   Run 2 — computed   (mass 1400 kg, tyre 205/55R16, CdA 0.65 m², Crr 0.012,
                       ρ 1.19 kg/m³ measured, grade 0 %, window 0.30 s, central)
@@ -1240,8 +1259,8 @@ so it stays deliberate. `q` quits both, and here it argues back when there is un
                   "series": { "speed":  { "t": [-2.94, -2.89], "v": [0.0, 0.0] },
                               "gear":   { "t": [-2.94],        "v": ["not engaged"] } },
                   "marks":   [ { "from": 0, "to": 100, "seconds": 6.12, "from_t0": true,
-                                 "bias_s": { "low": 0.10, "high": 0.35,
-                                             "sense": "reads-short" },
+                                 "bracket_s": { "earliest": 6.03, "latest": 6.38,
+                                                "from": "quadratic-and-linear-t0" },
                                  "avg_accel_ms2": 4.54 } ],
                   "derived": { "stamp": "t0=quadratic-fit accel=central-least-squares/0.3 \
 peak=mean-0.2s",
