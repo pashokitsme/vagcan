@@ -1,0 +1,446 @@
+//! Decoder for Ross-Tech VCDS `Codes.dat` — the fault-text store.
+//!
+//! `Codes.dat` (and its translations, e.g. `Code-RUS.dat`) is a flat keyed
+//! record store. Each record is one line:
+//!
+//! ```text
+//! record := <8 ASCII digits: key> ' ' <u8 cipher_len> <u8 text_len> <cipher> "\r\n"
+//! ```
+//!
+//! `cipher_len` is `text_len` rounded up to a multiple of 8, and the payload
+//! is TEA-CBC under the same `KEY_ROD` the `.rod` files use ([`crate::rod`]).
+//! What was missing until now was the per-record first-block IV, which is why
+//! earlier passes lost the first eight characters of every text. It is
+//! derived from the key's own decimal spelling and one file-wide byte — see
+//! [`block0_iv`] and [`CodesDb::file_constant`].
+//!
+//! ## What the keys are, and what they are not
+//!
+//! Two disjoint bands, and telling them apart matters more than reading them:
+//!
+//! * **below 65 536** — a legacy 5-digit VAG fault-code space (KWP-era). Sparse.
+//! * **90 000 and above** — the 24-bit ISO/SAE DTC, `system:2 | code:14 | failure_type:8`,
+//!   read as one big-endian number. `B1168` with failure type `0xF2` is
+//!   `0x9168F2` = 9 529 586.
+//!
+//! **A VW-internal fault number is neither.** The number a VAG control unit
+//! puts in a UDS `0x19` response — 229 504, 7 680, 291 104 on the reference
+//! car — is not a key here, and the two spaces overlap numerically, so a
+//! lookup that ignores the distinction returns a wrong answer rather than no
+//! answer. Nothing in this module accepts a VW fault number; callers must
+//! supply an ISO DTC. See `research/codes-dat.md`.
+
+use std::collections::BTreeMap;
+
+use crate::rod::{KS, MT, OFF_ROD};
+use crate::tea::tea_cbc_decrypt;
+
+/// The lowest key Ross-Tech uses for the 24-bit ISO/SAE DTC band. Below this
+/// (and below 65 536 in practice) the keys are legacy 5-digit fault codes in
+/// an unrelated numbering.
+pub const ISO_BAND_START: u32 = 90_000;
+
+/// The first-block IV for one record, given the file-wide constant.
+///
+/// The same construction the `.rod` sections use — `KS` supplies a per-byte
+/// addend, `MT` a per-position multiplier — with three differences, all read
+/// off the ARM64 build's record fetch (`fcn.1400e1400` in `VCDS-ARM.exe`
+/// 26.3, `0x1400e1908`–`0x1400e19dc`):
+///
+/// * the seed is the key's own `"%08d"` spelling, all eight bytes, where a
+///   `.rod` section seeds from its tag;
+/// * the `KS` index is driven by seed byte **5**, not byte 1, and the
+///   multiplier offsets are [`OFF_ROD`] **in reverse**;
+/// * a file-wide byte is added alongside the `KS` term. VCDS holds it in a
+///   global it fills at load time, so it is not in the file and has to be
+///   recovered — see [`CodesDb::file_constant`]. It is 0 for the English
+///   `Codes.dat` and 208 for `Code-RUS.dat`.
+///
+/// Verified against the reference car: key 9 529 586 with constant 0 gives
+/// `47 02 c8 cd 6c 50 dc d3`, which decrypts to text beginning `Steering`.
+pub fn block0_iv(key: u32, file_constant: u8) -> [u8; 8] {
+    let seed = format!("{key:08}").into_bytes();
+    let m = seed[5] as usize;
+    let mut iv = [0u8; 8];
+    for (i, slot) in iv.iter_mut().enumerate() {
+        let s = seed[i]
+            .wrapping_add(KS[(m * (i + 2)) & 0xff])
+            .wrapping_add(file_constant);
+        *slot = s.wrapping_mul(MT[OFF_ROD[7 - i]]);
+    }
+    iv
+}
+
+/// One record as the container framed it, before decryption.
+struct RawRecord {
+    key: u32,
+    text_len: usize,
+    cipher: Vec<u8>,
+}
+
+/// Recover the file-wide constant (0..=255, not stored in the file).
+///
+/// The constant only feeds the IV, and the IV is XOR'd in *after* the TEA
+/// decrypt, so blocks 1.. are already correct whatever it is. That gives a
+/// scoring model for free and without assuming a language: take the byte
+/// distribution of everything past the first eight characters, and pick the
+/// candidate whose first blocks look most like the rest of the same file.
+/// Printability alone does not separate them — on `Code-RUS.dat` two
+/// candidates give fully printable first blocks and only one gives Cyrillic.
+fn recover_file_constant(records: &[RawRecord]) -> u8 {
+    let key_rod = crate::rod::KEY_ROD;
+    let mut counts = [0u64; 256];
+    for rec in records {
+        // Block 0 needs the IV; every later block does not.
+        if rec.cipher.len() > 8 {
+            let tail = tea_cbc_decrypt(
+                &rec.cipher[8..],
+                &key_rod,
+                rec.cipher[..8].try_into().unwrap(),
+            );
+            for &b in tail.iter().take(rec.text_len.saturating_sub(8)) {
+                counts[b as usize] += 1;
+            }
+        }
+    }
+    let total: u64 = counts.iter().sum();
+    if total == 0 {
+        return 0;
+    }
+    let logp: Vec<f64> = counts
+        .iter()
+        .map(|&n| ((n as f64 + 0.5) / (total as f64 + 128.0)).ln())
+        .collect();
+
+    // The first block's TEA decrypt does not depend on the candidate, so do
+    // it once per record instead of once per (candidate, record) pair.
+    let firsts: Vec<(u32, usize, [u8; 8])> = records
+        .iter()
+        .filter(|r| r.cipher.len() >= 8 && r.text_len >= 8)
+        .map(|r| {
+            let dec = tea_cbc_decrypt(&r.cipher[..8], &key_rod, [0u8; 8]);
+            (
+                r.key,
+                r.text_len,
+                dec.try_into().expect("one block in, one out"),
+            )
+        })
+        .collect();
+
+    let mut best = 0u8;
+    let mut best_score = f64::NEG_INFINITY;
+    for candidate in 0..=255u8 {
+        let mut score = 0.0;
+        for (key, _, dec) in &firsts {
+            let iv = block0_iv(*key, candidate);
+            for i in 0..8 {
+                score += logp[(dec[i] ^ iv[i]) as usize];
+            }
+        }
+        if score > best_score {
+            best_score = score;
+            best = candidate;
+        }
+    }
+    best
+}
+
+/// Every record in a `Codes.dat`, keyed by its 8-digit id.
+///
+/// Malformed records are skipped rather than guessed at; a truncated file
+/// yields the records that did parse.
+#[derive(Debug, Clone, Default)]
+pub struct CodesDb {
+    texts: BTreeMap<u32, String>,
+    file_constant: u8,
+}
+
+impl CodesDb {
+    /// Parse and decrypt a whole `Codes.dat`, recovering the file-wide IV
+    /// constant on the way.
+    pub fn parse(data: &[u8]) -> Self {
+        let raw = Self::frame(data);
+        let file_constant = recover_file_constant(&raw);
+        let texts = raw
+            .into_iter()
+            .filter_map(|r| {
+                let plain = tea_cbc_decrypt(
+                    &r.cipher,
+                    &crate::rod::KEY_ROD,
+                    block0_iv(r.key, file_constant),
+                );
+                (r.text_len <= plain.len()).then(|| {
+                    (
+                        r.key,
+                        plain[..r.text_len].iter().map(|&b| b as char).collect(),
+                    )
+                })
+            })
+            .collect();
+        Self {
+            texts,
+            file_constant,
+        }
+    }
+
+    /// The file-wide IV byte recovered by [`CodesDb::parse`]. 0 for the
+    /// English `Codes.dat`, 208 for `Code-RUS.dat`.
+    pub fn file_constant(&self) -> u8 {
+        self.file_constant
+    }
+
+    /// Walk the container into records without decrypting anything.
+    fn frame(data: &[u8]) -> Vec<RawRecord> {
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        while pos < data.len() {
+            // Header: 8 digits, a space, cipher_len, text_len. The cipher is
+            // binary and may contain CRLF, so records are walked by their
+            // declared length, never by splitting on newlines.
+            if pos + 11 > data.len() {
+                break;
+            }
+            let head = &data[pos..pos + 8];
+            if !head.iter().all(u8::is_ascii_digit) || data[pos + 8] != b' ' {
+                break;
+            }
+            let cipher_len = data[pos + 9] as usize;
+            let text_len = data[pos + 10] as usize;
+            let start = pos + 11;
+            if cipher_len % 8 != 0 || text_len > cipher_len || start + cipher_len > data.len() {
+                break;
+            }
+            let key: u32 = match std::str::from_utf8(head).ok().and_then(|s| s.parse().ok()) {
+                Some(key) => key,
+                None => break,
+            };
+            out.push(RawRecord {
+                key,
+                text_len,
+                cipher: data[start..start + cipher_len].to_vec(),
+            });
+            // Skip the record's trailing CRLF when it is there.
+            pos = start + cipher_len;
+            if data[pos..].starts_with(b"\r\n") {
+                pos += 2;
+            }
+        }
+        out
+    }
+
+    /// The text stored under a raw key, whichever band it falls in.
+    pub fn get(&self, key: u32) -> Option<&str> {
+        self.texts.get(&key).map(String::as_str)
+    }
+
+    /// The text for a 24-bit ISO/SAE DTC as a control unit reports it —
+    /// three bytes, big-endian, failure type last.
+    ///
+    /// Refuses anything below [`ISO_BAND_START`]: down there the file holds
+    /// legacy 5-digit codes in a different numbering, and answering from them
+    /// would be a confident wrong name rather than an honest absence.
+    pub fn iso_dtc(&self, dtc: [u8; 3]) -> Option<&str> {
+        let key = u32::from_be_bytes([0, dtc[0], dtc[1], dtc[2]]);
+        (key >= ISO_BAND_START).then(|| self.get(key)).flatten()
+    }
+
+    pub fn len(&self) -> usize {
+        self.texts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.texts.is_empty()
+    }
+
+    /// Every `(key, text)` pair, in ascending key order.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.texts.iter().map(|(k, v)| (*k, v.as_str()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tea::tea_decrypt_block;
+
+    /// The IV recovered from the reference car's own fault text. Key
+    /// 9 529 586 is `B1168` failure type `0xF2` — the steering-angle-sensor
+    /// initialisation fault the reference car stores — and its record begins
+    /// `Steering`, which is exactly the eight bytes an unknown IV used to
+    /// destroy.
+    #[test]
+    fn block0_iv_matches_the_vector_recovered_from_the_car() {
+        assert_eq!(
+            block0_iv(9_529_586, 0),
+            [0x47, 0x02, 0xc8, 0xcd, 0x6c, 0x50, 0xdc, 0xd3]
+        );
+    }
+
+    /// The IV depends on the whole key, not just the digit at each position:
+    /// two keys sharing seven of eight digits differ in more than one IV byte
+    /// when the differing digit is the one that drives the `KS` index.
+    #[test]
+    fn block0_iv_is_driven_by_seed_byte_five() {
+        // "09529586" vs "09529686" differ only in seed byte 5, and that byte
+        // selects the KS index for every position, so all eight IV bytes move.
+        let a = block0_iv(9_529_586, 0);
+        let b = block0_iv(9_529_686, 0);
+        assert_eq!(a.iter().zip(b.iter()).filter(|(x, y)| x != y).count(), 8);
+        // Changing only the last digit moves only the last IV byte.
+        let c = block0_iv(9_529_587, 0);
+        assert_eq!(a[..7], c[..7]);
+        assert_ne!(a[7], c[7]);
+    }
+
+    fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(plain.len());
+        let mut prev = iv;
+        for chunk in plain.chunks_exact(8) {
+            let mut block = [0u8; 8];
+            for i in 0..8 {
+                block[i] = chunk[i] ^ prev[i];
+            }
+            // TEA encrypt = the decrypt rounds run backwards; easier here to
+            // invert the known-good decrypt by search-free algebra: encrypt is
+            // written out directly.
+            let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
+            let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
+            let mut s = 0u32;
+            for _ in 0..32 {
+                s = s.wrapping_add(crate::tea::DELTA);
+                v0 = v0.wrapping_add(
+                    (v1 << 4).wrapping_add(key[0])
+                        ^ v1.wrapping_add(s)
+                        ^ (v1 >> 5).wrapping_add(key[1]),
+                );
+                v1 = v1.wrapping_add(
+                    (v0 << 4).wrapping_add(key[2])
+                        ^ v0.wrapping_add(s)
+                        ^ (v0 >> 5).wrapping_add(key[3]),
+                );
+            }
+            let mut cipher = [0u8; 8];
+            cipher[0..4].copy_from_slice(&v0.to_le_bytes());
+            cipher[4..8].copy_from_slice(&v1.to_le_bytes());
+            out.extend_from_slice(&cipher);
+            prev = cipher;
+        }
+        out
+    }
+
+    /// The encrypt helper above has to be the exact inverse of the shipped
+    /// decrypt, or the container test below would be testing itself.
+    #[test]
+    fn encrypt_helper_inverts_the_shipped_decrypt() {
+        let block = *b"Steering";
+        let cipher = tea_cbc_encrypt(&block, &crate::rod::KEY_ROD, [0u8; 8]);
+        let back = tea_decrypt_block(cipher[..8].try_into().unwrap(), &crate::rod::KEY_ROD);
+        assert_eq!(back, block);
+    }
+
+    fn record_c(key: u32, text: &str, file_constant: u8) -> Vec<u8> {
+        let mut plain = text.as_bytes().to_vec();
+        let text_len = plain.len();
+        plain.resize(text_len.div_ceil(8) * 8, 0);
+        let cipher = tea_cbc_encrypt(&plain, &crate::rod::KEY_ROD, block0_iv(key, file_constant));
+        let mut out = format!("{key:08} ").into_bytes();
+        out.push(cipher.len() as u8);
+        out.push(text_len as u8);
+        out.extend_from_slice(&cipher);
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    fn record(key: u32, text: &str) -> Vec<u8> {
+        record_c(key, text, 0)
+    }
+
+    #[test]
+    fn container_round_trips_and_keeps_the_first_eight_characters() {
+        let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+        file.extend(record(10_489_840, "Internal Fault: - "));
+        let db = CodesDb::parse(&file);
+        assert_eq!(db.len(), 2);
+        assert_eq!(
+            db.get(9_529_586),
+            Some("Steering Angle Sensor: Not Initialized")
+        );
+        assert_eq!(db.get(10_489_840), Some("Internal Fault: - "));
+    }
+
+    /// A record whose ciphertext happens to contain `\r\n` must not split the
+    /// container. Records are walked by declared length for exactly this
+    /// reason, and the real file does contain such records.
+    #[test]
+    fn a_crlf_inside_the_ciphertext_does_not_end_a_record() {
+        let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+        // Splice a CRLF into the middle of the first record's ciphertext.
+        file[20] = b'\r';
+        file[21] = b'\n';
+        file.extend(record(10_489_840, "Internal Fault: - "));
+        let db = CodesDb::parse(&file);
+        assert_eq!(db.len(), 2, "the second record must still be found");
+        assert_eq!(db.get(10_489_840), Some("Internal Fault: - "));
+    }
+
+    /// `iso_dtc` must refuse the legacy band rather than answer from it.
+    /// Fault 297 is the case that made this rule: the file holds
+    /// "Gearbox Speed Sensor (G38)" under key 297, and a control unit
+    /// reporting DTC `00 01 29` does not mean that.
+    #[test]
+    fn iso_dtc_refuses_the_legacy_band() {
+        let file = record(297, "Gearbox Speed Sensor (G38)");
+        let db = CodesDb::parse(&file);
+        assert_eq!(db.get(297), Some("Gearbox Speed Sensor (G38)"));
+        assert_eq!(db.iso_dtc([0x00, 0x01, 0x29]), None);
+    }
+
+    #[test]
+    fn iso_dtc_reads_three_bytes_big_endian() {
+        let file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+        let db = CodesDb::parse(&file);
+        assert_eq!(
+            db.iso_dtc([0x91, 0x68, 0xf2]),
+            Some("Steering Angle Sensor: Not Initialized")
+        );
+    }
+
+    /// A translated file uses a different file-wide constant, and it is not in
+    /// the file. Build one with a nonzero constant and check the recovery
+    /// finds it from the text alone.
+    #[test]
+    fn the_file_wide_constant_is_recovered_from_the_text() {
+        const C: u8 = 208;
+        let lines = [
+            "Steering Angle Sensor: Not Initialized",
+            "Steering Angle Sensor: Rate of Change to High",
+            "Steering Angle Sensor: Synchronization Failed",
+            "Transmission Control Unit: Internal Fault Detected",
+            "Control Module for Airbag Deployment: No Communication",
+            "Sensor for Engine Coolant Temperature: Implausible Signal",
+        ];
+        let mut file = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            file.extend(record_c(9_529_580 + i as u32, line, C));
+        }
+        let db = CodesDb::parse(&file);
+        assert_eq!(db.file_constant(), C);
+        assert_eq!(db.get(9_529_580), Some(lines[0]));
+        assert_eq!(db.get(9_529_585), Some(lines[5]));
+    }
+
+    /// A truncated file gives back the records that did parse, and no panic.
+    #[test]
+    fn truncated_input_yields_what_parsed() {
+        let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+        let whole = file.len();
+        file.extend(record(10_489_840, "Internal Fault: - "));
+        file.truncate(whole + 14);
+        let db = CodesDb::parse(&file);
+        assert_eq!(db.len(), 1);
+        assert_eq!(
+            db.get(9_529_586),
+            Some("Steering Angle Sensor: Not Initialized")
+        );
+    }
+}

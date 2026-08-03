@@ -7,6 +7,7 @@
 
 pub mod catalog;
 pub mod clb;
+pub mod codes;
 pub mod corpus;
 pub mod db;
 pub mod glyphs;
@@ -20,6 +21,7 @@ mod tea;
 
 pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
 pub use clb::decrypt_clb;
+pub use codes::{CodesDb, ISO_BAND_START};
 pub use corpus::{find_rod_by_odx_name, load_corpus, scan_corpus, CorpusLoad, CorpusScan};
 pub use db::LabelDb;
 pub use label::{parse_label, LabelFile, Measurement, Record};

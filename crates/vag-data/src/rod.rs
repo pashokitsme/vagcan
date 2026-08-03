@@ -19,11 +19,11 @@
 
 use crate::tea::tea_cbc_decrypt;
 
-const KEY_ROD: [u32; 4] = [0x029b_76a4, 0xcb6d_b50a, 0x7139_5d29, 0x0dbc_09c2];
-const OFF_ROD: [usize; 8] = [0x07, 0xca, 0x22, 0x99, 0x3e, 0x88, 0xc3, 0x76];
+pub(crate) const KEY_ROD: [u32; 4] = [0x029b_76a4, 0xcb6d_b50a, 0x7139_5d29, 0x0dbc_09c2];
+pub(crate) const OFF_ROD: [usize; 8] = [0x07, 0xca, 0x22, 0x99, 0x3e, 0x88, 0xc3, 0x76];
 
-static MT: &[u8; 256] = include_bytes!("rod_mt.bin");
-static KS: &[u8; 256] = include_bytes!("rod_ks.bin");
+pub(crate) static MT: &[u8; 256] = include_bytes!("rod_mt.bin");
+pub(crate) static KS: &[u8; 256] = include_bytes!("rod_ks.bin");
 
 /// How a [`RodSection`]'s payload was decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
