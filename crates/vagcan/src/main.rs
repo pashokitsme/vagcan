@@ -19,6 +19,7 @@ mod labels;
 mod names;
 mod progress;
 mod props;
+mod race;
 mod recording;
 mod render;
 mod safety;
