@@ -126,12 +126,27 @@ button { font: inherit; color: inherit; cursor: pointer; }
   box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
 .seg button:disabled { opacity: .38; cursor: not-allowed; }
 
+/* A chip is a checkbox, and has to look like one. Several runs can be on at
+   once — that is the whole point of drawing them over each other — but the
+   earlier styling marked "on" with a border colour and a bolder weight, which
+   at a glance is exactly how the segmented controls beside it mark the *one*
+   tab that is active. Same picture, opposite rule. So an on chip is now filled
+   and carries a tick, and the label says how many can be on. */
 .chip {
   display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line);
   background: var(--panel); border-radius: 999px; padding: 4px 11px 4px 8px; font-size: 13px;
   color: var(--ink-2);
 }
-.chip[aria-pressed="true"] { border-color: currentColor; color: var(--ink); font-weight: 600; }
+.chip::before {
+  content: "\2713"; font-size: 11px; line-height: 1; width: 12px; height: 12px;
+  border: 1px solid var(--line); border-radius: 3px; display: inline-flex;
+  align-items: center; justify-content: center; color: transparent; flex: none;
+}
+.chip[aria-pressed="true"] {
+  border-color: var(--ink); background: var(--ink); color: var(--panel); font-weight: 600;
+}
+.chip[aria-pressed="true"]::before { border-color: var(--panel); color: var(--panel); }
+.chip[aria-pressed="true"] .ab { color: var(--panel); opacity: .75; }
 .chip .swatch { width: 10px; height: 10px; border-radius: 3px; background: var(--s1); flex: none; }
 .chip .ab { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--s2); }
 
@@ -238,7 +253,7 @@ svg { display: block; width: 100%; user-select: none; }
 
   <section class="controls" id="controls" hidden>
     <div class="row">
-      <div class="grp"><span class="lbl">Runs</span><span id="runchips" class="grp"></span></div>
+      <div class="grp"><span class="lbl">Draw runs</span><span id="runchips" class="grp"></span></div>
       <span class="hint" id="runhint"></span>
     </div>
     <div class="row">
@@ -688,6 +703,10 @@ function buildControls() {
     var b = document.createElement("button");
     b.type = "button";
     b.className = "chip";
+    // A checkbox, not a tab: `aria-pressed` on a toggle button is announced as
+    // pressed/not, which is what the segmented controls beside it use for a
+    // one-of-many choice. This is many-of-many and says so.
+    b.setAttribute("role", "checkbox");
     b.dataset.run = String(r.index);
     b.innerHTML = '<span class="swatch"></span>run ' + esc(r.index) +
       (r.aborted ? ' <span class="ab">aborted</span>' : "");
@@ -744,7 +763,9 @@ function toggleRun(ix) {
     elRunHint.textContent = "Four runs is the limit — any more and the chart is mud.";
     return;
   }
-  elRunHint.textContent = "";
+  elRunHint.textContent = state.runs.length > 1
+    ? state.runs.length + " runs drawn over each other."
+    : "";
   state.zoom = null;
   sync();
 }
@@ -780,6 +801,7 @@ function sync() {
   Array.prototype.forEach.call(elRunChips.children, function (b) {
     var on = state.runs.indexOf(parseInt(b.dataset.run, 10)) >= 0;
     b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-checked", on ? "true" : "false");
     var i = state.runs.indexOf(parseInt(b.dataset.run, 10));
     var sw = b.querySelector(".swatch");
     sw.style.opacity = on ? String(RUN_OPACITY[i]) : "0.25";
