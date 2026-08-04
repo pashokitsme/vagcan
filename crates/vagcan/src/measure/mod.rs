@@ -186,9 +186,11 @@ pub enum Tool {
 
     /// Open a saved session as a chart page. Offline — no adapter.
     View {
-        /// A session file written by `--out` or by pressing `s`.
+        /// A session file written by `--out` or by pressing `s`. Omit it and
+        /// this tool's own directory is offered: a car, then one of its
+        /// sessions.
         #[arg(value_name = "FILE")]
-        file: String,
+        file: Option<String>,
     },
 }
 
@@ -693,6 +695,31 @@ fn now() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
+/// `measure view` with nothing to open — offer what has been recorded.
+///
+/// A car, then one of its sessions, newest first: a session is named for the
+/// minute it was driven, so a list in name order puts the drive somebody just
+/// finished at the bottom, which is the wrong end for the reason they are
+/// looking.
+pub fn view_picked() -> Result<()> {
+    let cars = crate::datadir::vagcan_dir()?.join("cars");
+    let levels = [
+        crate::picker::Level::directories("car")
+            .filled_by("vagcan measure   records one"),
+        crate::picker::Level::files("session")
+            .within("measures")
+            .ending(".json")
+            .newest_first()
+            .filled_by("vagcan measure   then press `s` to keep the drive"),
+    ];
+    let mut chooser = crate::picker::Console::new("vagcan measure view FILE.json");
+    match crate::picker::pick_path(&mut chooser, &cars, &levels)? {
+        Some(path) => open_view(&path.to_string_lossy()),
+        // Backing out of the first list is an answer, not a failure.
+        None => Ok(()),
+    }
+}
+
 /// `measure view FILE.json` — open a saved session as a chart page.
 ///
 /// Touches no adapter. The schema is checked before anything else, by name: a
@@ -1017,6 +1044,7 @@ async fn drive<R: BatchReader>(
     full_screen: bool,
 ) -> Result<()> {
     let Prepared { plan, mut meta, banner, full } = prepared;
+    let units = chart_units(&plan);
     let mut session = session::Session::new(opts.marks.clone(), RING_SECONDS, opts.speed_scale);
     let mut controls = ui::Controls::default();
     let mut recorded: Vec<Recorded> = Vec::new();
@@ -1054,17 +1082,18 @@ async fn drive<R: BatchReader>(
             session.state(),
             session::State::Arming { .. } | session::State::Armed | session::State::Paused
         );
-        let series = series_of(&charts);
-        controls.charts = series.len();
+        let series = series_of(&charts, &units);
+        // What `←`/`→` walks is pages of overlaid series, not series.
+        controls.charts = ui::pages(&series).len();
         let screen = ui::Screen {
             band: ui::band(
                 &ui::phase_of(session.state(), speed_kmh, clock, last_outcome.as_ref()),
                 session.degraded().then(|| session.hz().unwrap_or(0.0)),
             ),
             banner: (!banner.is_empty()).then(|| banner.clone()),
-            rows: value_rows(&values, &charts, &meta),
+            rows: value_rows(&values, &charts),
             marks: mark_rows(&opts.marks, &closed),
-            chart: controls.chart.min(series.len().saturating_sub(1)),
+            chart: controls.chart.min(controls.charts.saturating_sub(1)),
             series,
             hz: session.hz(),
             file: opts.out.map(str::to_string),
@@ -1124,7 +1153,14 @@ async fn drive<R: BatchReader>(
         if let Some((_, ms, _)) = set.speed {
             speed_kmh = ms * opts.speed_scale * power::KMH_PER_MS;
         }
-        accumulate(&mut charts, &set, opts.speed_scale, clock, opts.accel_window_s);
+        accumulate(
+            &mut charts,
+            &set,
+            opts.speed_scale,
+            clock,
+            opts.accel_window_s,
+            meta.setting.model.as_ref(),
+        );
 
         for event in session.on_sample(clock, set) {
             match event {
@@ -1373,18 +1409,35 @@ fn accumulate(
     speed_scale: f64,
     now: Seconds,
     window: Seconds,
+    model: Option<&report::Model>,
 ) {
     if let Some((t, ms, _)) = set.speed {
-        let speed = charts.entry("speed".to_string()).or_default();
+        let speed = charts.entry(SPEED_CHART.to_string()).or_default();
         speed.push(t, ms * speed_scale * power::KMH_PER_MS);
         let last = speed.len() - 1;
         let slope = derive::slope(speed, last, window, derive::Scheme::Causal);
         if let Some(slope) = slope {
-            // The chart carries km/h, so its slope is km/h per second.
-            charts
-                .entry("accel".to_string())
-                .or_default()
-                .push(slope.t, slope.a / power::KMH_PER_MS);
+            // The chart carries km/h, so its slope is km/h per second, and the
+            // buffer is in m/s² like everything else derived here.
+            let accel = slope.a / power::KMH_PER_MS;
+            charts.entry(ACCEL_CHART.to_string()).or_default().push(slope.t, accel);
+            // Power needs a car that was measured rather than assumed, so
+            // without a finished car file the series is absent — not zero, and
+            // not computed against a generic drag figure. Kept beside the other
+            // two so that the table and the chart quote one number, not two.
+            if let Some(model) = model {
+                let watts = power::power(
+                    ms * speed_scale,
+                    accel,
+                    None,
+                    &model.load,
+                    &model.conditions,
+                );
+                charts
+                    .entry(POWER_CHART.to_string())
+                    .or_default()
+                    .push(slope.t, watts.wheel_w / 1000.0);
+            }
         }
     }
     if let Some((t, rpm)) = set.engine_speed {
@@ -1403,22 +1456,61 @@ fn accumulate(
     }
 }
 
+/// What each chart buffer is measured in, which is what decides the scales the
+/// chart puts its lines on.
+///
+/// The catalog's own word for every channel that resolved — never a table of
+/// this car's units — and the unit the arithmetic produces for the three keys
+/// this module computes rather than reads.
+fn chart_units(plan: &Plan) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for channel in plan.by_address.values() {
+        out.entry(channel.key.to_string())
+            .or_insert_with(|| channel.def.unit.trim().to_string());
+    }
+    // Speed is converted on the way into the buffer, so the buffer is in km/h
+    // whatever unit the catalog wrote the channel down in (ISO 80000-3); the
+    // other two are computed here and are in SI by §3.
+    out.insert(SPEED_CHART.into(), "km/h".into());
+    out.insert(ACCEL_CHART.into(), "m/s²".into());
+    out.insert(POWER_CHART.into(), "kW".into());
+    out
+}
+
+/// The chart buffers this module fills in itself rather than reading.
+const SPEED_CHART: &str = "speed";
+const ACCEL_CHART: &str = "accel";
+const POWER_CHART: &str = "power";
+
 /// The series on offer, in a stable order so the arrow keys mean the same thing
-/// from one cycle to the next. Speed opens; acceleration is next along.
-fn series_of(charts: &BTreeMap<String, Track>) -> Vec<ui::Series> {
+/// from one cycle to the next.
+///
+/// The order is the one the driver asked for them in — speed, engine speed,
+/// power, acceleration — and it is what [`ui::pages`] then cuts into pages: the
+/// first two share a page, and the two computed ones share the next.
+fn series_of(charts: &BTreeMap<String, Track>, units: &BTreeMap<String, String>) -> Vec<ui::Series> {
+    let origin = |name: &str| match name {
+        // Live, the slope can only be causal: the future half of a centred
+        // window has not been read yet.
+        ACCEL_CHART => ui::Origin::Computed("trailing"),
+        POWER_CHART => ui::Origin::Computed("estimate"),
+        _ => ui::Origin::Bus,
+    };
+    let series = |name: &str, track: &Track| ui::Series {
+        label: name.to_string(),
+        unit: units.get(name).cloned().unwrap_or_default(),
+        points: track.clone(),
+        origin: origin(name),
+    };
     let mut out: Vec<ui::Series> = Vec::new();
-    for name in ["speed", "accel", "engine speed", "pedal"] {
+    for name in [SPEED_CHART, "engine speed", POWER_CHART, ACCEL_CHART, "pedal"] {
         if let Some(track) = charts.get(name) {
-            out.push(ui::Series {
-                label: name.to_string(),
-                points: track.clone(),
-                causal: name == "accel",
-            });
+            out.push(series(name, track));
         }
     }
     for (name, track) in charts {
-        if !out.iter().any(|series| &series.label == name) {
-            out.push(ui::Series { label: name.clone(), points: track.clone(), causal: false });
+        if !out.iter().any(|s| &s.label == name) {
+            out.push(series(name, track));
         }
     }
     out
@@ -1429,7 +1521,6 @@ fn series_of(charts: &BTreeMap<String, Track>) -> Vec<ui::Series> {
 fn value_rows(
     values: &BTreeMap<&'static str, String>,
     charts: &BTreeMap<String, Track>,
-    meta: &Meta,
 ) -> Vec<ui::ValueRow> {
     let mut rows: Vec<ui::ValueRow> = Vec::new();
     // The order a driver reads them in, not the order they were resolved.
@@ -1465,7 +1556,7 @@ fn value_rows(
         });
     }
 
-    if let Some(accel) = charts.get("accel").and_then(|track| track.v.last()) {
+    if let Some(accel) = charts.get(ACCEL_CHART).and_then(|track| track.v.last()) {
         rows.push(ui::ValueRow {
             name: "accel".into(),
             value: format!("{:.2} g", accel / power::G),
@@ -1474,17 +1565,12 @@ fn value_rows(
     }
     // Live power needs an air density, and under `--full` the car's own is only
     // read at the end of a run. Until one exists the row is absent rather than
-    // computed against a guess.
-    if let (Some(model), Some(speed), Some(accel)) = (
-        &meta.setting.model,
-        charts.get("speed").and_then(|track| track.v.last()),
-        charts.get("accel").and_then(|track| track.v.last()),
-    ) {
-        let watts =
-            power::power(speed / power::KMH_PER_MS, *accel, None, &model.load, &model.conditions);
+    // computed against a guess. It is read out of the same buffer the chart
+    // draws, so the row and the line can never quote different numbers.
+    if let Some(kw) = charts.get(POWER_CHART).and_then(|track| track.v.last()) {
         rows.push(ui::ValueRow {
             name: "power".into(),
-            value: report::power_figure(watts.wheel_w / 1000.0),
+            value: report::power_figure(*kw),
             origin: ui::Origin::Computed("estimate"),
         });
     }

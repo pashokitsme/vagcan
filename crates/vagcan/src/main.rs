@@ -485,9 +485,10 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Measure { tool: Some(measure::Tool::View { file }), .. } => {
-            measure::open_view(&file)
-        }
+        Command::Measure { tool: Some(measure::Tool::View { file }), .. } => match file {
+            Some(file) => measure::open_view(&file),
+            None => measure::view_picked(),
+        },
         Command::Measure {
             tool: Some(measure::Tool::Setup { device, coast_from, coast_to, catalogs, car }),
             ..
