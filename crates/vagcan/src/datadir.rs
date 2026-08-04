@@ -154,7 +154,16 @@ fn car_folder(vin: &str, description: Option<&str>) -> anyhow::Result<String> {
 /// at anything. The folder name is decoration and the VIN is identity, so a
 /// mismatch costs a slightly stale name and nothing else. Someone who wants the
 /// nicer name can `mv` the directory, and this function will follow it.
-fn car_folder_in(cars: &Path, vin: &str, description: Option<&str>) -> anyhow::Result<String> {
+///
+/// Reachable from the crate so that a caller's tests can assert what a car gets
+/// *named* without asking what it is *called now* — the second question needs
+/// the owner's real `~/.vagcan` and answers differently on a car that already
+/// has a directory, which is the whole point of this function.
+pub(crate) fn car_folder_in(
+    cars: &Path,
+    vin: &str,
+    description: Option<&str>,
+) -> anyhow::Result<String> {
     let wanted = car_folder(vin, description)?;
     Ok(existing_folder(cars, &wanted, vin).unwrap_or(wanted))
 }
