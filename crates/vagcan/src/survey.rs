@@ -29,6 +29,7 @@ use vag_protocol::uds::UdsError;
 use vag_protocol::{gateway, AsyncUdsClient, RawDtc};
 use vag_transport::CanId;
 
+use crate::render::hex_packed;
 use crate::scan::{self, DidHit};
 
 /// The identifier pages observed in use on this car, across every unit seen in
@@ -445,15 +446,15 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
                 "unit": address.label(),
                 "batched": batched,
                 "ident": report.ident.iter().map(|(did, data)| {
-                    serde_json::json!({ "did": format!("{did:04X}"), "data": hex(data) })
+                    serde_json::json!({ "did": format!("{did:04X}"), "data": hex_packed(data) })
                 }).collect::<Vec<_>>(),
                 "dids": report.hits.iter().map(|h| {
-                    serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex(&h.data) })
+                    serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex_packed(&h.data) })
                 }).collect::<Vec<_>>(),
                 "confirmed_faults": report.confirmed(),
                 "dtcs": report.dtcs.iter().map(|d| {
                     serde_json::json!({
-                        "code": hex(&d.code),
+                        "code": hex_packed(&d.code),
                         "status": format!("{:02X}", d.status),
                     })
                 }).collect::<Vec<_>>(),
@@ -484,10 +485,6 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +498,22 @@ mod tests {
         assert_eq!(changed[0].0, 0x7E0);
         assert_eq!(changed[0].1, 0x206E);
         assert_eq!((changed[0].2.as_str(), changed[0].3.as_str()), ("02BD", "0CC8"));
+    }
+
+    #[test]
+    fn a_survey_file_writes_its_bytes_with_no_separator_between_them() {
+        // The file format, not a preference. `--diff` compares these strings
+        // as text, and every dump already on disk was written packed — so a
+        // separator arriving here would report every identifier in an old pair
+        // of files as having moved. The writer and the reader are asserted
+        // together for that reason.
+        assert_eq!(hex_packed(&[0x0B, 0x34]), "0B34");
+        let line = |data: &[u8]| {
+            format!("{{\"request\":\"7E0\",\"dids\":[{{\"did\":\"2029\",\"data\":\"{}\"}}]}}", hex_packed(data))
+        };
+        let changed = diff(&line(&[0x0B, 0x34]), &line(&[0x0C, 0x40]));
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!((changed[0].2.as_str(), changed[0].3.as_str()), ("0B34", "0C40"));
     }
 
     #[test]

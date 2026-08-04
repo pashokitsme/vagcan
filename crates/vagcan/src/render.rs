@@ -81,9 +81,24 @@ pub fn plural(n: usize, singular: &str) -> String {
     }
 }
 
-/// Hex for a raw response body.
-fn hex(bytes: &[u8]) -> String {
+/// Bytes for a person to read: `0B 34`.
+///
+/// Everything shown on a screen uses this. The gap is what makes a byte
+/// countable against a datasheet or a VCDS window, which is what anybody
+/// looking at raw bytes is doing.
+pub fn hex_spaced(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Bytes for a file: `0B34`.
+///
+/// Separate from [`hex_spaced`] rather than a parameter of it, because this one
+/// is a **format on disk**. `survey` writes it and `survey --diff` compares the
+/// strings as text, so adding a separator here would report every identifier in
+/// an existing pair of dumps as having moved. The two are not the same function
+/// with a flag; they have different readers and only one of them can change.
+pub fn hex_packed(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 /// One `vagcan sensors` row: name, value, and a unit only when there is one.
@@ -101,7 +116,7 @@ pub fn render_sensor_row(reading: &Reading, width: usize) -> String {
     let Some(value) = reading.value else {
         // The identifier answered but the bytes did not fit the form; the unit
         // belongs to the value that could not be formed, so it is not printed.
-        return format!("  {name:<width$}  {:>10} (raw)", hex(&reading.raw));
+        return format!("  {name:<width$}  {:>10} (raw)", hex_spaced(&reading.raw));
     };
     if reading.unit.is_empty() {
         let text = match value.fract() == 0.0 {
@@ -181,7 +196,7 @@ pub fn render_sensors(unit_label: &str, lines: &[SensorLine]) -> String {
                     format!("   ({got} {}, standard says {expected})", plural(*got, "byte"))
                 }
             };
-            out.push_str(&format!("  {did:04X}  {:>10}{note}\n", hex(bytes)));
+            out.push_str(&format!("  {did:04X}  {:>10}{note}\n", hex_spaced(bytes)));
         }
     }
     out.push_str(&format!("\n{converted} of {} standard sensors converted", lines.len()));

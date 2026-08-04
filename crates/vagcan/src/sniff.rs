@@ -70,20 +70,16 @@ fn id_text(raw: u32) -> String {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
-}
-
 /// One display line for a completed PDU.
 ///
 /// Long payloads are cut for the terminal; the capture file always holds every
 /// byte, so nothing is lost by shortening what scrolls past on the car.
 pub fn format_pdu(ts_us: u64, pdu: &SnifferPdu) -> String {
     let secs = ts_us as f64 / 1e6;
-    let mut body = hex(&pdu.data);
+    let mut body = crate::render::hex_spaced(&pdu.data);
     let full_len = pdu.data.len();
     if full_len > 16 {
-        body = format!("{} …", hex(&pdu.data[..16]));
+        body = format!("{} …", crate::render::hex_spaced(&pdu.data[..16]));
     }
     let tail = if pdu.frames > 1 {
         format!("   ({full_len}B, {} frames)", pdu.frames)

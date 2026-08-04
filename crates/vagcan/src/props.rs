@@ -65,7 +65,7 @@ impl Property {
     }
 
     pub fn hex(&self) -> String {
-        self.data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
+        crate::render::hex_spaced(&self.data)
     }
 }
 
@@ -115,9 +115,11 @@ impl Property {
         if self.data.len() <= 12 {
             return self.hex();
         }
-        let head: Vec<String> =
-            self.data[..12].iter().map(|b| format!("{b:02X}")).collect();
-        format!("{} … ({} bytes)", head.join(" "), self.data.len())
+        format!(
+            "{} … ({} bytes)",
+            crate::render::hex_spaced(&self.data[..12]),
+            self.data.len()
+        )
     }
 }
 
@@ -146,6 +148,17 @@ mod tests {
         // Printable, but two bytes of binary read as text by coincidence.
         assert_eq!(prop(0xA058, &[0x55, 0x55]).text(), None);
         assert_eq!(prop(0xF1DF, &[0x40]).text(), None);
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_are_printed_a_byte_at_a_time() {
+        // A person reads these against a datasheet or a VCDS screen, both of
+        // which group by byte. Whatever renders them has to keep the gaps.
+        let p = prop(0xF19A, &[0x00, 0x01, 0xFE, 0x2D]);
+        assert_eq!(p.hex(), "00 01 FE 2D");
+        // Long ones are cut, and the part that is shown is still spaced.
+        let long = prop(0xF1AB, &(0..20u8).collect::<Vec<_>>());
+        assert_eq!(long.hex_short(), "00 01 02 03 04 05 06 07 08 09 0A 0B … (20 bytes)");
     }
 
     #[test]
