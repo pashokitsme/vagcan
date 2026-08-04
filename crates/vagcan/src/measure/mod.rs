@@ -662,6 +662,10 @@ fn run_json(meta: &Meta, recorded: &Recorded) -> Value {
                 .map(|shift| json!({
                     "t": round3(shift.t), "from": shift.from, "to": shift.to,
                     "speed_deficit_ms": round3(shift.speed_deficit_ms),
+                    // The floor travels with the figure, so the page can say
+                    // "not resolved" for the same rows the text report does
+                    // rather than reprint a sign the session never measured.
+                    "deficit_sigma_ms": round3(shift.deficit_sigma_ms),
                     "cost_on_mark_s": shift.cost_on_mark_s.map(round3),
                 }))
                 .collect::<Vec<_>>()

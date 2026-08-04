@@ -243,7 +243,7 @@ pub fn recompute(run: &Run, setting: &Setting) -> Derived {
     let cost_mark = top.map(|mark| (mark.from_kmh, mark.to_kmh));
     let accel_at_mark_top =
         top.and_then(|mark| accel_track.at(mark.closed_at)).unwrap_or(0.0);
-    let shifts = derive::shifts(&run.samples.gear, &accel, accel_at_mark_top);
+    let shifts = derive::shifts(&run.samples.gear, &accel, accel_at_mark_top, window);
 
     let peak_engine_speed = highest(&run.samples.engine_speed);
     let boost = run.samples.others.get("boost actual");
@@ -287,7 +287,16 @@ pub fn recompute(run: &Run, setting: &Setting) -> Derived {
 /// Recording the vintage of the maths beside it is what makes an old file
 /// comparable to a new one rather than merely readable.
 fn stamp(window: Seconds, tau: Seconds) -> String {
-    format!("t0=quadratic-and-linear accel=central-least-squares/{window:.2} peak=mean-{tau:.1}s")
+    // The shift cost is named here because it changed after files were already
+    // written: a session recorded before it carries deficits taken against a
+    // baseline that was never checked for steadiness, downshifts costed as
+    // though they were shifts, and signs below the session's own noise. A
+    // reader comparing this string against its own knows to recompute rather
+    // than believe the `derived` block.
+    format!(
+        "t0=quadratic-and-linear accel=central-least-squares/{window:.2} peak=mean-{tau:.1}s \
+         shift=steady-baseline-upshift-2sigma"
+    )
 }
 
 fn window_of(setting: &Setting) -> Seconds {
@@ -570,13 +579,26 @@ fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
         );
     }
     for shift in &derived.shifts {
+        // A deficit that does not clear the session's own noise is printed as
+        // the noise and not as itself: at 14 Hz the reference car's 1→2 came out
+        // at −0.04 m/s against a ±0.03 floor, and "−0.1 km/h" reads as a
+        // measured sign where there is none.
+        let sigma = shift.deficit_sigma_ms * KMH_PER_MS;
+        if !shift.resolved() {
+            let _ = writeln!(
+                out,
+                "    shift {}→{}           cost below this session's noise, ±{sigma:.2} km/h at 1σ",
+                shift.from, shift.to
+            );
+            continue;
+        }
         let cost = match (shift.cost_on_mark_s, derived.cost_mark) {
             (Some(seconds), Some((from, to))) => format!(", {seconds:.2} s on the {from}-{to}"),
             _ => String::new(),
         };
         let _ = writeln!(
             out,
-            "    shift {}→{}           cost {:.1} km/h{cost}",
+            "    shift {}→{}           cost {:.1} ±{sigma:.1} km/h{cost}",
             shift.from,
             shift.to,
             shift.speed_deficit_ms * KMH_PER_MS

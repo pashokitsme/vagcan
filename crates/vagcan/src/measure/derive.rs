@@ -325,12 +325,61 @@ pub fn peak(series: &[Slope], tau: Seconds, window: Seconds) -> Option<Peak> {
 /// second — and not about any one gearbox, which is what keeps it admissible
 /// here at all.
 ///
-/// It is deliberately **symmetric**. The stretch before the change belongs to
+/// It is deliberately **symmetric**, and there are now two reasons rather than
+/// one.
+///
+/// The first is the counterfactual. The stretch before the change belongs to
 /// the old and shorter gear, where the car was accelerating harder than the new
 /// gear's baseline, so it enters the integral as a credit. Cropping it away
 /// would leave a window containing only the dip, which is the same
 /// positive-by-construction mistake as finding the window by threshold.
+///
+/// The second is the estimator's reach. A first-order least-squares slope over
+/// a window `W` is the true acceleration convolved with the parabolic kernel
+/// `k(τ) = 3/(2W) − 6τ²/W³` on `|τ| ≤ W/2` — the derivative of the fit's own
+/// weights, integrated by parts. That kernel has **unit area**, so an
+/// interruption of duration `D` comes back spread over `D + W`: shallower, and
+/// in the same place. Each pad therefore has to clear the dip's own half-width
+/// *plus* `W/2`, or the integral clips the smeared edge — and cropping the
+/// pre-shift pad would clip the leading edge as well as delete the credit.
+///
+/// Unit area is also why a slow session does not bias this figure. The deficit
+/// is the dip's **area**, not its depth, and convolution conserves area:
+/// simulated on a 0.15 s interruption sampled from 200 Hz down to 10 Hz, the
+/// recovered depth wanders between 55 % and 85 % of the truth while the deficit
+/// stays 0.150 m/s at every rate and every sampling phase. What a slow session
+/// costs is resolution, not accuracy, and that is reported as
+/// [`Shift::deficit_sigma_ms`] rather than assumed away.
 pub const SHIFT_PAD_S: Seconds = 0.35;
+
+/// How far the stretch after a gearchange may wander, in multiples of the
+/// session's own noise floor, and still be called the new gear's baseline.
+///
+/// The baseline window is meant to hold *one* number sampled several times. Its
+/// fits overlap heavily — at a 0.3 s window and 14 Hz consecutive fits share
+/// four of five samples — so under a genuinely steady baseline they scatter by
+/// **less** than one fit's own standard error, not more. Twice the noise floor
+/// is therefore already generous: it is there to absorb the sampling noise of a
+/// standard deviation taken over the four or five fits a pad holds, not to
+/// tolerate the car doing something different.
+///
+/// What it catches is the driver, and that is the defect it was written for. A
+/// lift inside the settling time drags the "baseline" below everything in the
+/// shift window, and the deficit then comes out large and *negative* — a
+/// gearchange that made the car quicker, which is not a thing.
+pub const BASELINE_STEADY_SIGMAS: f64 = 2.0;
+
+/// How many σ a deficit must clear before it is printed as a number with a sign
+/// on it rather than as a floor.
+///
+/// Two and not one, for two reasons. A one-σ result carries the wrong sign about
+/// one time in six, and a sign is the whole of what the reader takes from this
+/// row — "the shift cost you" against "the shift gained you" is not a difference
+/// of degree. And [`Shift::deficit_sigma_ms`] covers only the estimator's own
+/// scatter: it does not know that the gear channel places the change to within
+/// its own refresh period, which slides both the window and the baseline. Two σ
+/// is the smallest bar that survives what the σ leaves out.
+pub const DEFICIT_RESOLVED_SIGMAS: f64 = 2.0;
 
 /// One gearchange and what it cost.
 ///
@@ -343,13 +392,32 @@ pub const SHIFT_PAD_S: Seconds = 0.35;
 /// this figure goes straight into the session file, where a NaN either fails the
 /// write or lands as `null` depending on the path. `None` survives the round
 /// trip and says the same thing.
+///
+/// `deficit_sigma_ms` is what this session could have resolved at all, and it
+/// travels with the number rather than being left to the reader. A deficit
+/// smaller than it is a zero written with a sign — see [`Shift::resolved`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shift {
     pub t: Seconds,
     pub from: String,
     pub to: String,
     pub speed_deficit_ms: f64,
+    /// The 1σ this session's own noise puts on `speed_deficit_ms`.
+    pub deficit_sigma_ms: f64,
     pub cost_on_mark_s: Option<Seconds>,
+}
+
+impl Shift {
+    /// Whether the deficit clears [`DEFICIT_RESOLVED_SIGMAS`] of the noise it
+    /// was measured through.
+    ///
+    /// A shift that fails this is not a shift that cost nothing — it is one this
+    /// session could not weigh, and the two read very differently to whoever
+    /// opens the table. Printing `−0.1 km/h` for a run whose floor is ±0.1 hands
+    /// a sign to a number that has none.
+    pub fn resolved(&self) -> bool {
+        self.speed_deficit_ms.abs() > DEFICIT_RESOLVED_SIGMAS * self.deficit_sigma_ms
+    }
 }
 
 /// Every gearchange in the run, located from the gear channel and costed
@@ -383,54 +451,159 @@ pub struct Shift {
 /// Transitions into or out of a level that is not a numbered gear — "not
 /// engaged", "R" — are not shifts and are skipped. The labels are the catalog's
 /// own and are read as labels: the codes behind them are neither contiguous nor
-/// ordered by ratio, which is the bug this project already made once.
+/// ordered by ratio, which is the bug this project already made once. What is
+/// asked of them is only whether they parse, and then which is larger.
+///
+/// Three things make a gearchange unreportable, and each of them printed a
+/// number on the reference car's own session before it was checked:
+///
+/// - **A downshift is not a shift with a cost.** Coasting to a standstill walks
+///   the gearbox back down, and each step of it used to enter the table with a
+///   positive "cost" — but there is no counterfactual to charge it against. The
+///   driver did not give up speed to change gear; he was braking, and the
+///   gearbox followed. Only `to > from` is costed, and the numbers to compare
+///   are the labels' own.
+/// - **The baseline must be a baseline.** `a_post` is the mean over the pad
+///   after the shift window, and nothing in that average knows whether the car
+///   was still doing the same thing. On the reference car a driver lifted 0.35 s
+///   after a 2→3, the "steady value of third" came out at 0.30 m/s² against a
+///   real 2.2, and every sample in the shift window then sat above it — a
+///   −1.33 m/s deficit, an upshift that made the car quicker. The pad is now
+///   required to be steady to [`BASELINE_STEADY_SIGMAS`] of the session's own
+///   noise, which the earlier end-of-run guard could not see: that guard asked
+///   whether samples *existed*, not whether they agreed.
+/// - **A deficit under the noise is not a small deficit.** It is carried with
+///   [`Shift::deficit_sigma_ms`] beside it and flagged by [`Shift::resolved`].
 ///
 /// `cost_on_mark_s` is `None` when `accel_at_mark_top` is not positive: there is
 /// no time a speed deficit costs on a car that is not gaining speed at the mark.
-pub fn shifts(gear: &States, accel: &[Slope], accel_at_mark_top: f64) -> Vec<Shift> {
+pub fn shifts(
+    gear: &States,
+    accel: &[Slope],
+    accel_at_mark_top: f64,
+    window: Seconds,
+) -> Vec<Shift> {
     let t: Vec<Seconds> = accel.iter().map(|s| s.t).collect();
     let a: Vec<f64> = accel.iter().map(|s| s.a).collect();
+    let Some(floor) = noise_floor(accel) else {
+        return Vec::new();
+    };
+    let deficit_sigma_ms = deficit_sigma(floor, window);
 
     let mut out = Vec::new();
     for (when, from, to) in gear.transitions() {
-        if !is_numbered_gear(&from) || !is_numbered_gear(&to) {
+        let (Some(left), Some(entered)) = (gear_number(&from), gear_number(&to)) else {
+            continue;
+        };
+        if entered <= left {
             continue;
         }
         let (opens, closes) = (when - SHIFT_PAD_S, when + SHIFT_PAD_S);
-        let Some(a_post) = mean_between(&t, &a, closes, closes + SHIFT_PAD_S) else {
-            // The run ended inside the new gear's settling time, so there is
-            // no baseline and nothing honest to report.
+        let Some(a_post) = steady_mean(&t, &a, closes, closes + SHIFT_PAD_S, floor) else {
+            // Either the run ended inside the new gear's settling time, or the
+            // car did not spend it in the new gear. Both leave no baseline, and
+            // a baseline invented from the second is worse than none.
             continue;
         };
         let against_baseline: Vec<f64> = a.iter().map(|value| a_post - value).collect();
         let speed_deficit_ms = trapezoid(&t, &against_baseline, opens, closes);
         let cost_on_mark_s =
             (accel_at_mark_top > 0.0).then(|| speed_deficit_ms / accel_at_mark_top);
-        out.push(Shift { t: when, from, to, speed_deficit_ms, cost_on_mark_s });
+        out.push(Shift {
+            t: when,
+            from,
+            to,
+            speed_deficit_ms,
+            deficit_sigma_ms,
+            cost_on_mark_s,
+        });
     }
     out
 }
 
-/// Whether a gear label names a numbered gear at all.
+/// Which numbered gear a label names, if it names one at all.
 ///
 /// By parsing, not by matching a list of words: "not engaged" and "R" are this
 /// car's labels and the next car's are its own. What travels between cars is
-/// that a gear a ratio can be measured in is written as a number.
-fn is_numbered_gear(label: &str) -> bool {
-    label.trim().parse::<f64>().is_ok()
+/// that a gear a ratio can be measured in is written as a number — and that the
+/// numbers rise with the ratio, which is what makes `to > from` an upshift
+/// without a table saying so.
+fn gear_number(label: &str) -> Option<f64> {
+    label.trim().parse::<f64>().ok()
 }
 
-/// The mean of a series over a time range, or `None` if it holds no samples.
-fn mean_between(t: &[Seconds], v: &[f64], from: Seconds, to: Seconds) -> Option<f64> {
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    for i in 0..t.len() {
-        if t[i] >= from && t[i] <= to {
-            sum += v[i];
-            count += 1;
-        }
+/// The session's own 1σ on a single acceleration estimate, as the median of the
+/// fits' standard errors.
+///
+/// The median and not the mean, and over the whole run and not over the window
+/// in question. A fit's `sigma` is its residual scatter, so wherever the true
+/// acceleration is *changing* the fit absorbs the change into its own error bar
+/// — exactly at the moments this figure is used to judge. Taken locally it
+/// would grow to meet whatever it was asked about and never flag anything; taken
+/// as a median over a run that is mostly steady, it is what the estimator does
+/// when nothing is happening.
+///
+/// `None` on an empty series: a run with no fits has no noise to speak of and no
+/// shift to report either.
+fn noise_floor(accel: &[Slope]) -> Option<f64> {
+    median(accel.iter().map(|s| s.sigma).collect())
+}
+
+/// The 1σ this session puts on a shift's speed deficit, `σ_a·√(2·W·pad)`.
+///
+/// The deficit is `a_post·2·pad − ∫a dt`: a baseline averaged over one pad, and
+/// an integral over two, both built from the same overlapping fits and therefore
+/// correlated with each other in the direction that *cancels* noise rather than
+/// compounding it. A propagation that ignored the correlation over-reads the
+/// answer by about 1.8×, which is why the coefficient is measured instead of
+/// derived — Monte-Carlo over 250 noisy traces at each point of a grid spanning
+/// 13.5…100 Hz, windows of 0.2…0.5 s and pads of 0.25…0.5 s, where this form
+/// lands within about a third of the observed spread and errs high at the
+/// default 0.3 s / 0.35 s.
+///
+/// It scales as `√(W·pad)` and not as `1/√n` in the samples, because widening
+/// either the window or the pad buys independent information at the rate the
+/// overlap allows, not at the rate the sample count suggests.
+fn deficit_sigma(noise_floor: f64, window: Seconds) -> f64 {
+    noise_floor * (2.0 * window.max(0.0) * SHIFT_PAD_S).sqrt()
+}
+
+/// The mean of a series over a time range, but only where the range holds one
+/// value rather than a change of state.
+///
+/// `None` when the range is empty, when it holds a single sample — one reading
+/// cannot show whether it was steady — or when the samples scatter by more than
+/// [`BASELINE_STEADY_SIGMAS`] of `floor`. The dispersion is the plain sample
+/// standard deviation of the fits in the range, which is the right comparison
+/// against a *single* fit's error precisely because the fits overlap: they are
+/// several looks at one number, so under a steady stretch they must agree more
+/// closely than any one of them is known.
+fn steady_mean(
+    t: &[Seconds],
+    v: &[f64],
+    from: Seconds,
+    to: Seconds,
+    floor: f64,
+) -> Option<f64> {
+    let inside: Vec<f64> =
+        (0..t.len()).filter(|&i| t[i] >= from && t[i] <= to).map(|i| v[i]).collect();
+    if inside.len() < 2 {
+        return None;
     }
-    (count > 0).then(|| sum / count as f64)
+    let count = inside.len() as f64;
+    let mean = inside.iter().sum::<f64>() / count;
+    let variance = inside.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (count - 1.0);
+    (variance.sqrt() <= BASELINE_STEADY_SIGMAS * floor).then_some(mean)
+}
+
+/// The middle value of a set, or `None` if it is empty. Sorted by `total_cmp`,
+/// so a NaN orders rather than poisoning the comparison.
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    Some(values[values.len() / 2])
 }
 
 /// Trapezoidal integration over each interval's **own** step, clipped to
@@ -513,8 +686,7 @@ pub fn refresh_bound(track: &Track) -> Option<Seconds> {
     if intervals.len() < MIN_REFRESH_INTERVALS {
         return None;
     }
-    intervals.sort_by(f64::total_cmp);
-    Some(intervals[intervals.len() / 2])
+    median(intervals)
 }
 
 /// The 1σ uncertainty of a rolling mark, `√2·T_refresh/√12`.
@@ -897,10 +1069,15 @@ mod tests {
         (gear, accel)
     }
 
+    /// The window used everywhere below. The pipeline's own default lives in
+    /// `report`, and passing it explicitly is what lets a test say what a
+    /// different one would do.
+    const W: Seconds = 0.3;
+
     #[test]
     fn a_shift_is_located_from_the_gear_channel_and_costed_against_the_gear_entered() {
         let (gear, accel) = upshift_trace();
-        let found = shifts(&gear, &accel, 2.5);
+        let found = shifts(&gear, &accel, 2.5, W);
         assert_eq!(found.len(), 1);
         let shift = &found[0];
         assert_eq!((shift.from.as_str(), shift.to.as_str()), ("1", "2"));
@@ -924,7 +1101,7 @@ mod tests {
         // 0.70 m/s becomes 1.40, doubling the cost on this trace and
         // overstating a realistic one by about a third.
         let (gear, accel) = upshift_trace();
-        let shift = shifts(&gear, &accel, 2.5).remove(0);
+        let shift = shifts(&gear, &accel, 2.5, W).remove(0);
         let against_the_old_gear = shift.speed_deficit_ms + (4.0 - 3.0) * 2.0 * SHIFT_PAD_S;
         assert!((against_the_old_gear - 1.40).abs() < 1e-9);
         assert!(shift.speed_deficit_ms < against_the_old_gear);
@@ -937,8 +1114,8 @@ mod tests {
         // understates the cost by nearly a factor of three here, and by about
         // two on a real 0-100.
         let (gear, accel) = upshift_trace();
-        let at_the_top = shifts(&gear, &accel, 1.5).remove(0).cost_on_mark_s.unwrap();
-        let at_the_shift = shifts(&gear, &accel, 4.0).remove(0).cost_on_mark_s.unwrap();
+        let at_the_top = shifts(&gear, &accel, 1.5, W).remove(0).cost_on_mark_s.unwrap();
+        let at_the_shift = shifts(&gear, &accel, 4.0, W).remove(0).cost_on_mark_s.unwrap();
         assert!((at_the_top - 0.70 / 1.5).abs() < 1e-9);
         assert!(at_the_top > 2.5 * at_the_shift);
     }
@@ -953,7 +1130,7 @@ mod tests {
         for i in 0..70 {
             gear.push(i as f64 * 0.05, "3");
         }
-        assert!(shifts(&gear, &accel, 2.5).is_empty());
+        assert!(shifts(&gear, &accel, 2.5, W).is_empty());
     }
 
     #[test]
@@ -969,14 +1146,30 @@ mod tests {
             let t = i as f64 * 0.05;
             gear.push(t, if t < 2.0 { "not engaged" } else { "R" });
         }
-        assert!(shifts(&gear, &accel, 2.5).is_empty());
+        assert!(shifts(&gear, &accel, 2.5, W).is_empty());
 
         let mut half = States::default();
         for i in 0..70 {
             let t = i as f64 * 0.05;
             half.push(t, if t < 2.0 { "not engaged" } else { "1" });
         }
-        assert!(shifts(&half, &accel, 2.5).is_empty());
+        assert!(shifts(&half, &accel, 2.5, W).is_empty());
+    }
+
+    #[test]
+    fn a_downshift_is_not_a_shift_with_a_cost() {
+        // Coasting to a standstill walks the gearbox back down, and on the
+        // reference car's own session those steps entered the table as positive
+        // "costs" of +0.43 and +1.34 m/s. There is nothing there to charge: the
+        // driver was braking and the gearbox followed, so there is no
+        // counterfactual in which he kept the tall gear and arrived sooner.
+        let (_, accel) = upshift_trace();
+        let mut gear = States::default();
+        for i in 0..70 {
+            let t = i as f64 * 0.05;
+            gear.push(t, if t < 2.0 { "2" } else { "1" });
+        }
+        assert!(shifts(&gear, &accel, 2.5, W).is_empty());
     }
 
     #[test]
@@ -987,7 +1180,67 @@ mod tests {
             let t = i as f64 * 0.05;
             gear.push(t, if t < 3.30 { "1" } else { "2" });
         }
-        assert!(shifts(&gear, &accel, 2.5).is_empty());
+        assert!(shifts(&gear, &accel, 2.5, W).is_empty());
+    }
+
+    /// A 2→3 upshift at t = 2.0 into a steady 2.2 m/s², optionally with the
+    /// driver lifting 0.4 s later — the shape the reference car's second run
+    /// actually had, with its measured 0.09 m/s² fit error on every slope.
+    ///
+    /// Without the lift the baseline pad holds one value; with it the pad runs
+    /// 2.26 → −1.27, which is the trace that produced a −1.33 m/s deficit and an
+    /// upshift that made the car quicker.
+    fn lift_trace(lift: bool) -> (States, Vec<Slope>) {
+        let profile = move |t: Seconds| {
+            let base = if t <= 1.90 {
+                2.6
+            } else if t <= 2.10 {
+                0.6
+            } else {
+                2.2
+            };
+            match lift && t > 2.40 {
+                true => 2.2 - 11.6 * (t - 2.40),
+                false => base,
+            }
+        };
+        let mut accel = Vec::new();
+        let mut gear = States::default();
+        for i in 0..70 {
+            let t = i as f64 * 0.05;
+            accel.push(Slope { a: profile(t), t, span: W, sigma: 0.09 });
+            gear.push(t, if t < 2.0 { "2" } else { "3" });
+        }
+        (gear, accel)
+    }
+
+    #[test]
+    fn a_lift_inside_the_new_gears_settling_time_is_not_a_baseline() {
+        // The defect on real data: `mean_between` averaged whatever was in the
+        // pad and called it third gear. Once the pad has to agree with itself to
+        // the session's own noise, the run with the lift has no baseline at all
+        // — which is the honest answer, because the car stopped doing the thing
+        // the baseline was supposed to describe.
+        let (gear, steady) = lift_trace(false);
+        let held = shifts(&gear, &steady, 2.5, W);
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!(held[0].speed_deficit_ms > 0.0, "an upshift costs speed: {held:?}");
+
+        let (gear, lifted) = lift_trace(true);
+        assert!(shifts(&gear, &lifted, 2.5, W).is_empty());
+    }
+
+    #[test]
+    fn a_baseline_of_one_sample_cannot_be_shown_to_be_steady() {
+        // One reading says nothing about whether the pad held one value, and the
+        // old guard let it through because it asked whether samples existed.
+        let (gear, accel) = lift_trace(false);
+        let thinned: Vec<Slope> = accel
+            .iter()
+            .filter(|s| s.t < 2.34 || (2.39..2.41).contains(&s.t) || s.t > 2.71)
+            .copied()
+            .collect();
+        assert!(shifts(&gear, &thinned, 2.5, W).is_empty());
     }
 
     #[test]
@@ -996,9 +1249,93 @@ mod tests {
         // not, and this figure is serialised into the session file, where a NaN
         // either fails the write or arrives as `null` depending on the path.
         let (gear, accel) = upshift_trace();
-        let shift = shifts(&gear, &accel, 0.0).remove(0);
+        let shift = shifts(&gear, &accel, 0.0, W).remove(0);
         assert_eq!(shift.cost_on_mark_s, None);
         assert!((shift.speed_deficit_ms - 0.70).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_deficit_smaller_than_the_session_could_resolve_is_not_resolved() {
+        // The reference car's second run: a 1→2 at −0.041 m/s against a floor of
+        // ±0.05, printed as "−0.1 km/h". The figure is kept — it is still the
+        // integral that was measured — but it no longer claims a sign.
+        let (gear, accel) = lift_trace(false);
+        let noisy: Vec<Slope> =
+            accel.iter().map(|s| Slope { sigma: 10.0 * s.sigma, ..*s }).collect();
+        let quiet = shifts(&gear, &noisy, 2.5, W).remove(0);
+        let sharp = shifts(&gear, &accel, 2.5, W).remove(0);
+
+        // Same trace, same deficit — only the noise it was seen through differs.
+        assert!((quiet.speed_deficit_ms - sharp.speed_deficit_ms).abs() < 1e-12);
+        assert!((quiet.deficit_sigma_ms - 10.0 * sharp.deficit_sigma_ms).abs() < 1e-12);
+        assert!(sharp.resolved(), "{sharp:?}");
+        assert!(!quiet.resolved(), "{quiet:?}");
+    }
+
+    #[test]
+    fn the_sessions_floor_is_the_median_fit_error_not_the_local_one() {
+        // A fit's own sigma grows exactly where the acceleration is changing,
+        // because the change lands in its residuals. A floor taken locally would
+        // therefore rise to meet whatever it was asked about and never flag
+        // anything; the median over a run that is mostly steady is what the
+        // estimator does when nothing is happening.
+        let mut series: Vec<Slope> =
+            (0..20).map(|i| Slope { a: 3.0, t: i as f64 * 0.05, span: W, sigma: 0.05 }).collect();
+        series[7].sigma = 9.0;
+        series[8].sigma = 9.0;
+        assert_eq!(noise_floor(&series), Some(0.05));
+        assert_eq!(noise_floor(&[]), None);
+    }
+
+    #[test]
+    fn the_deficit_is_an_area_and_a_slow_session_does_not_shrink_it() {
+        // The claim under [`SHIFT_PAD_S`]: the least-squares slope is the true
+        // acceleration through a unit-area kernel, so a 0.3 s window smears a
+        // short interruption without deleting it. The depth is destroyed — at
+        // 13.5 Hz the dip never gets near the 0.6 m/s² it really reaches — and
+        // the area survives, which is the only thing the deficit integrates.
+        //
+        // Closed form: 2.6 m/s² to 1.90, 0.6 to 2.10, 2.2 after, shift at 2.00.
+        //   [1.65,1.90]  (2.2−2.6)·0.25 = −0.10
+        //   [1.90,2.10]  (2.2−0.6)·0.20 = +0.32
+        //   [2.10,2.35]  0              =  0
+        //                                 = 0.22 m/s
+        let truth = 0.22;
+        let mut answers = Vec::new();
+        for hz in [13.5, 50.0, 200.0] {
+            let track = sampled(hz, 5.0, |t| {
+                let ramp = 2.6 * t.min(1.90);
+                let dip = 0.6 * (t.clamp(1.90, 2.10) - 1.90);
+                let after = 2.2 * (t.max(2.10) - 2.10);
+                // A real speed signal arrives quantised, and a trace without
+                // that has residuals of 1e-16 and therefore no noise floor to
+                // judge a baseline against.
+                let v: f64 = ramp + dip + after;
+                (v / 0.02).round() * 0.02
+            });
+            let accel = accel_series(&track, W, Scheme::Central);
+            let mut gear = States::default();
+            for &t in &track.t {
+                gear.push(t, if t < 2.0 { "2" } else { "3" });
+            }
+            let found = shifts(&gear, &accel, 2.5, W);
+            assert_eq!(found.len(), 1, "at {hz} Hz: {found:?}");
+            let deepest = accel
+                .iter()
+                .filter(|s| (1.65..=2.35).contains(&s.t))
+                .map(|s| s.a)
+                .fold(f64::INFINITY, f64::min);
+            answers.push((hz, found[0].speed_deficit_ms, deepest, found[0].deficit_sigma_ms));
+        }
+        for (hz, deficit, deepest, sigma) in &answers {
+            assert!((deficit - truth).abs() < 0.04, "at {hz} Hz: {deficit} vs {truth}");
+            // What a slow session loses is the shape, not the area.
+            assert!(*deepest > 0.6, "at {hz} Hz the dip's floor was reached: {deepest}");
+            assert!(*sigma > 0.0);
+        }
+        // And what it loses instead is resolution: the floor grows as the rate
+        // falls, on the same trace and the same maths.
+        assert!(answers[0].3 > answers[2].3, "{answers:?}");
     }
 
     // ---- distance -----------------------------------------------------

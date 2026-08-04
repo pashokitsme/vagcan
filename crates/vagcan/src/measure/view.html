@@ -1571,6 +1571,10 @@ var elResults = document.getElementById("results");
    here works in watts; this is the last step before the eye, because a car is
    sold and argued about in PS and leading with kW makes the reader divide. */
 var PS_W = 735.49875;
+
+/* How many σ a shift's deficit must clear before its sign means anything.
+   `derive::DEFICIT_RESOLVED_SIGMAS`, and the two must not drift apart. */
+var RESOLVED_SIGMAS = 2;
 function powerFigure(kw) {
   return (kw * 1000 / PS_W).toFixed(0) + " PS (" + kw.toFixed(1) + " kW)";
 }
@@ -1657,11 +1661,29 @@ function renderResults() {
     if (typeof d.peak_power_shaft_kw === "number")
       comp.push(row("peak power, shaft", powerFigure(d.peak_power_shaft_kw),
         "estimate, engine-side inertia included"));
+    /* A deficit smaller than the session's own floor is a zero with a sign on
+       it. Older files carry no floor at all, and those keep the bare figure —
+       absent is not the same as zero. */
     (d.shifts || []).forEach(function (s) {
+      var at = (typeof s.t === "number" ? "  at " + s.t.toFixed(2) + " s" : "");
+      var sigma = (typeof s.deficit_sigma_ms === "number" ? s.deficit_sigma_ms * 3.6 : null);
+      if (typeof s.speed_deficit_ms !== "number") {
+        comp.push(row("shift " + s.from + "→" + s.to, "—", at));
+        return;
+      }
+      var kmh = s.speed_deficit_ms * 3.6;
+      // The same two σ `derive::Shift::resolved` uses, and it has to be the
+      // same: a row printed as a measured sign here and as noise in the results
+      // table would be one run described two ways.
+      if (sigma !== null && Math.abs(kmh) <= RESOLVED_SIGMAS * sigma) {
+        comp.push(row("shift " + s.from + "→" + s.to,
+          "under ±" + (RESOLVED_SIGMAS * sigma).toFixed(1) + " km/h",
+          "not resolved at this session's rate" + at));
+        return;
+      }
       comp.push(row("shift " + s.from + "→" + s.to,
-        (typeof s.speed_deficit_ms === "number" ? (s.speed_deficit_ms * 3.6).toFixed(1) + " km/h" : "—"),
-        (typeof s.cost_on_mark_s === "number" ? s.cost_on_mark_s.toFixed(2) + " s on the mark" : "") +
-        (typeof s.t === "number" ? "  at " + s.t.toFixed(2) + " s" : "")));
+        kmh.toFixed(1) + (sigma !== null ? " ±" + sigma.toFixed(1) : "") + " km/h",
+        (typeof s.cost_on_mark_s === "number" ? s.cost_on_mark_s.toFixed(2) + " s on the mark" : "") + at));
     });
 
     var peaks = [];
