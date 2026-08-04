@@ -51,6 +51,14 @@ pub enum Source {
     Uncorrected,
     /// Read from the car's own sensors, or measured by this tool as it ran.
     Measured,
+    /// The ISO 2533 standard atmosphere — 101.325 kPa and 15 °C, ρ = 1.2250
+    /// kg/m³ — used because the car publishes no barometer and no ambient
+    /// sensor and nobody said what the air was doing. A property of a published
+    /// standard rather than of any car, and never a measurement: air density
+    /// enters drag linearly, so a real day away from standard moves every figure
+    /// resting on this one. It is spelled out so that it can never be mistaken
+    /// for a reading.
+    StandardAtmosphere,
 }
 
 impl Source {
@@ -63,10 +71,14 @@ impl Source {
             Source::WongTypical => "wong-typical",
             Source::Uncorrected => "uncorrected",
             Source::Measured => "measured",
+            Source::StandardAtmosphere => "standard-atmosphere",
         }
     }
 
-    fn parse(text: &str) -> Option<Source> {
+    /// The inverse of [`Source::as_str`]. Public because a scratch file written
+    /// mid-setup carries a provenance too, and it has to come back as the same
+    /// kind of claim it went out as.
+    pub fn parse(text: &str) -> Option<Source> {
         Some(match text {
             "stated" => Source::Stated,
             "coastdown" => Source::Coastdown,
@@ -74,6 +86,7 @@ impl Source {
             "wong-typical" => Source::WongTypical,
             "uncorrected" => Source::Uncorrected,
             "measured" => Source::Measured,
+            "standard-atmosphere" => Source::StandardAtmosphere,
             _ => return None,
         })
     }
@@ -859,13 +872,46 @@ mod tests {
         // No unit broadcasts a make or a model, so the readable half of the
         // path is either what the owner said or what the engine said about
         // itself — never something this tool decoded out of a VIN.
-        let mut car = CarFile::new("XW8AD4NE9JH008917");
-        let unnamed = car.path(Some("1.8l R4 TFSI")).unwrap();
-        assert!(unnamed.ends_with("1.8l-R4-TFSI-XW8AD4NE9JH008917/car.json"), "{unnamed:?}");
+        //
+        // Asked of an empty `cars/` on purpose. `CarFile::path` answers the
+        // *other* question — what is this car called right now — and on a car
+        // that already has a directory the answer is that directory, whatever
+        // it is named, because the VIN is the identity and the name is
+        // decoration. Testing the naming rule through `path` would therefore
+        // pass on a fresh machine and fail on the owner's, which is exactly
+        // what it did.
+        let vin = "XW8AD4NE9JH008917";
+        let cars = std::env::temp_dir().join(format!("vagcan-naming-{}", std::process::id()));
+        std::fs::create_dir_all(&cars).unwrap();
 
-        car.name = Some(Sourced::new("Škoda Octavia III".to_string(), Source::Stated));
-        let named = car.path(Some("1.8l R4 TFSI")).unwrap();
-        assert!(named.ends_with("koda-Octavia-III-XW8AD4NE9JH008917/car.json"), "{named:?}");
+        let unnamed = crate::datadir::car_folder_in(&cars, vin, Some("1.8l R4 TFSI")).unwrap();
+        assert_eq!(unnamed, "1.8l-R4-TFSI-XW8AD4NE9JH008917");
+
+        let named = crate::datadir::car_folder_in(&cars, vin, Some("Škoda Octavia III")).unwrap();
+        assert_eq!(named, "koda-Octavia-III-XW8AD4NE9JH008917");
+
+        std::fs::remove_dir_all(&cars).ok();
+    }
+
+    #[test]
+    fn a_car_that_has_a_directory_keeps_it_whatever_it_is_now_called() {
+        // The bug this pair exists for: `measure setup` passed the engine's
+        // component string and `measure` passed nothing, so one car got two
+        // directories and the car file written by the first was invisible to
+        // the second — which is how `--full` came to refuse on a car that had
+        // been set up.
+        let vin = "XW8AD4NE9JH008917";
+        let cars = std::env::temp_dir().join(format!("vagcan-existing-{}", std::process::id()));
+        std::fs::create_dir_all(cars.join(format!("1.8l-R4-TFSI-{vin}"))).unwrap();
+
+        for description in [None, Some("something else entirely")] {
+            assert_eq!(
+                crate::datadir::car_folder_in(&cars, vin, description).unwrap(),
+                format!("1.8l-R4-TFSI-{vin}"),
+                "{description:?} was given a second directory"
+            );
+        }
+        std::fs::remove_dir_all(&cars).ok();
     }
 
     #[test]

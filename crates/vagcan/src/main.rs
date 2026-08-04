@@ -17,6 +17,7 @@ mod discover;
 mod faults;
 mod labels;
 mod names;
+mod picker;
 mod progress;
 mod props;
 mod measure;
