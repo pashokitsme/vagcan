@@ -1108,4 +1108,25 @@ mod tests {
         assert!((rolling_mark_sigma(0.10) - 2.0 * rolling_mark_sigma(0.05)).abs() < 1e-12);
         assert_eq!(rolling_mark_sigma(0.0), 0.0);
     }
+
+    #[test]
+    fn a_slow_poll_widens_the_printed_uncertainty_instead_of_hiding_it() {
+        // Grounded in a drive this tool actually recorded. `watch` was given a
+        // list of about 150 identifiers, so each channel came back **every
+        // 0.78 s** — 1.28 Hz on the shaft speeds and the pedal alike, measured
+        // over 755 s. That is what a generous channel list costs, and it is
+        // why `measure` polls a small leading batch instead.
+        //
+        // A refresh cannot be observed faster than it is polled, so the bound
+        // at that cadence is the cadence, and the ± that reaches the table is
+        // fifteen times the one a 20 Hz run earns. The point is that the
+        // number moves: a slow session prints times that say plainly how much
+        // to believe them, rather than the same two decimals as a fast one.
+        let recorded = refresh_bound(&held(0.78, 0.78, 60.0)).unwrap();
+        assert!((recorded - 0.78).abs() < 1e-9, "{recorded}");
+
+        let slow = rolling_mark_sigma(recorded);
+        assert!((slow - 0.318_5).abs() < 1e-3, "{slow}");
+        assert!(slow > 15.0 * rolling_mark_sigma(0.05), "{slow}");
+    }
 }
