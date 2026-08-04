@@ -162,7 +162,10 @@ pub enum Decision {
     /// Delete the file on this row — after asking, and only where a level
     /// offers files.
     Delete(usize),
-    /// Show this row where this system shows files.
+    /// Put this row's path on the clipboard — `o`. The path is what a person
+    /// actually wants: it pastes into a `cd`, an editor, a message.
+    Copy(usize),
+    /// Show this row where this system shows files — `O`.
     Reveal(usize),
     /// Up a level — `←`. At the top level there is nothing above, so it leaves.
     Back,
@@ -188,6 +191,9 @@ pub trait Chooser {
 
     /// Say one line: what was taken, what was deleted, why it was not.
     fn say(&mut self, line: &str) -> Result<()>;
+
+    /// Put `path` on the clipboard, saying whether it got there.
+    fn copy(&mut self, path: &Path) -> Result<()>;
 
     /// Show `path` where this system shows files.
     fn reveal(&mut self, path: &Path) -> Result<()>;
@@ -253,7 +259,10 @@ impl Chooser for Console {
                 KeyCode::Enter | KeyCode::Right => break Decision::Take(at),
                 KeyCode::Left => break Decision::Back,
                 KeyCode::Char('d') if level.kind == Kind::Files => break Decision::Delete(at),
-                KeyCode::Char('o') => break Decision::Reveal(at),
+                // Lower case for the thing wanted ten times as often, and the
+                // shifted one for the thing that takes over the screen.
+                KeyCode::Char('o') => break Decision::Copy(at),
+                KeyCode::Char('O') => break Decision::Reveal(at),
                 KeyCode::Char('q') | KeyCode::Esc => break Decision::Quit,
                 // Raw mode swallows the interrupt, so the key has to be honoured
                 // by hand or there is no way out of here.
@@ -290,6 +299,11 @@ impl Chooser for Console {
         writeln!(out, "{line}")?;
         out.flush()?;
         Ok(())
+    }
+
+    fn copy(&mut self, path: &Path) -> Result<()> {
+        let line = copied(path);
+        self.say(&line)
     }
 
     fn reveal(&mut self, path: &Path) -> Result<()> {
@@ -367,6 +381,7 @@ pub struct Scripted {
     /// Every line it was told to say.
     pub said: Vec<String>,
     /// Every path it was asked to show in the file manager.
+    pub copied: Vec<PathBuf>,
     pub revealed: Vec<PathBuf>,
 }
 
@@ -379,6 +394,7 @@ impl Scripted {
             seen: Vec::new(),
             highlights: Vec::new(),
             said: Vec::new(),
+            copied: Vec::new(),
             revealed: Vec::new(),
         }
     }
@@ -425,6 +441,11 @@ impl Chooser for Scripted {
 
     fn say(&mut self, line: &str) -> Result<()> {
         self.said.push(line.to_string());
+        Ok(())
+    }
+
+    fn copy(&mut self, path: &Path) -> Result<()> {
+        self.copied.push(path.to_path_buf());
         Ok(())
     }
 
@@ -578,7 +599,8 @@ fn walk(
         // A chooser that names a row outside the list has named nothing; ask
         // again rather than index into a panic.
         let aimed = match decision {
-            Decision::Take(row) | Decision::Delete(row) | Decision::Reveal(row) => {
+            Decision::Take(row) | Decision::Delete(row) | Decision::Copy(row)
+            | Decision::Reveal(row) => {
                 match choices.get(row) {
                     Some(choice) => {
                         *at = row;
@@ -592,6 +614,7 @@ fn walk(
         };
         match decision {
             Decision::Take(_) => return Ok(Step::Down(aimed.path)),
+            Decision::Copy(_) => io.copy(&aimed.path)?,
             Decision::Reveal(_) => io.reveal(&aimed.path)?,
             Decision::Delete(_) => delete(io, level, &aimed)?,
             Decision::Back | Decision::Quit => unreachable!("answered above"),
@@ -657,7 +680,51 @@ fn delete(io: &mut impl Chooser, level: &Level<'_>, choice: &Choice) -> Result<(
     Ok(())
 }
 
-/// What `o` honestly does.
+/// What `o` does: the path onto the clipboard, and onto the screen either way.
+///
+/// The path is what a person is actually after — it pastes into a `cd`, an
+/// editor, a message to somebody. `pbcopy` on macOS, `wl-copy` or `xclip`
+/// where they exist; where none does, the path is printed and that is the whole
+/// of the answer rather than a failure. It is written to the copier's stdin,
+/// never spliced into a command line: these names come out of a directory named
+/// after a VIN read off the bus.
+fn copied(path: &Path) -> String {
+    let target = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let shown = target.display();
+    match to_clipboard(&target) {
+        Some(with) => format!("{shown}\ncopied to the clipboard (by {with})"),
+        None => format!("{shown}\n(nothing on this system copies for me — select the line above)"),
+    }
+}
+
+/// The first clipboard program that takes the path, and its name.
+fn to_clipboard(path: &Path) -> Option<&'static str> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    for (program, args) in
+        [("pbcopy", &[][..]), ("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+    {
+        let Ok(mut child) = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut pipe| pipe.write_all(path.as_os_str().as_encoded_bytes()).is_ok());
+        if child.wait().is_ok_and(|status| status.success()) && wrote {
+            return Some(program);
+        }
+    }
+    None
+}
+
+/// What `O` honestly does.
 ///
 /// Not `cd`: a child process cannot move its parent shell, which is a property
 /// of how processes work and not a gap to paper over. The nearest true thing on
@@ -825,13 +892,13 @@ fn keys(level: &Level<'_>) -> String {
     if level.kind == Kind::Files {
         let _ = write!(out, "   d delete");
     }
-    // Never "cd": see `revealed`. The word on screen is the word for what
-    // actually happens.
+    // Never "cd": see `copied` and `revealed`. The word on screen is the word
+    // for what actually happens.
     let _ = write!(
         out,
-        "   o {}   q quit",
+        "   o copy path   O {}   q quit",
         match cfg!(target_os = "macos") {
-            true => "reveal in Finder",
+            true => "in Finder",
             false => "show folder",
         }
     );
@@ -1226,6 +1293,39 @@ mod tests {
         pick_path(&mut io, &cars.0, &car_then_session()).unwrap();
         assert_eq!(io.revealed, [cars.0.join("XW8-second")]);
         assert_eq!(io.seen.len(), 2, "revealing does not end the list");
+    }
+
+    #[test]
+    fn copying_hands_over_the_path_and_leaves_the_list_up() {
+        // `o` is the one wanted often — a path pastes into a `cd`, an editor, a
+        // message — so it is the unshifted key, and like a reveal it answers the
+        // question without ending the list.
+        let cars = two_cars("copy");
+        let mut io = Scripted::new([Decision::Copy(1), Decision::Quit]);
+        pick_path(&mut io, &cars.0, &car_then_session()).unwrap();
+        assert_eq!(io.copied, [cars.0.join("XW8-second")]);
+        assert!(io.revealed.is_empty(), "copying is not revealing");
+        assert_eq!(io.seen.len(), 2, "copying does not end the list");
+    }
+
+    #[test]
+    fn the_legend_names_both_keys_and_promises_neither_a_cd_nor_a_copy_it_cannot_do() {
+        let legend = keys(&Level::files("session"));
+        assert!(legend.contains("o copy path"), "{legend}");
+        assert!(legend.contains("O "), "the shifted key is discoverable too: {legend}");
+        assert!(!legend.contains("cd"), "{legend}");
+    }
+
+    #[test]
+    fn a_path_that_could_not_be_copied_is_still_shown() {
+        // A system with no clipboard program is not a failure: the path on the
+        // screen is the whole of the answer, and saying so beats an error.
+        let line = copied(Path::new("/cars/XW8/measures/a.json"));
+        assert!(line.contains("/cars/XW8/measures/a.json"), "{line}");
+        assert!(
+            line.contains("copied to the clipboard") || line.contains("select the line above"),
+            "{line}"
+        );
     }
 
     #[test]
