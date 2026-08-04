@@ -537,12 +537,14 @@ fn document(
     if let Some(path) = &meta.car_file {
         config.insert("car_file".into(), json!(path));
     }
-    if let Some(rho) = recorded.iter().rev().find_map(|r| r.rho) {
-        config.insert("air_density_kg_m3".into(), json!(round3(rho.0)));
-        config.insert(
-            "air_density_source".into(),
-            json!(if rho.1 { "measured" } else { "stated" }),
-        );
+    // Whatever density the power model actually used, and where it came from.
+    // Taken off the setting rather than off `Recorded::rho`, because that field
+    // is `None` in the one case worth recording most: a car with no barometer,
+    // where the figure is the ISO 2533 standard atmosphere and the file used to
+    // say nothing at all about the number every power figure in it rests on.
+    if let Some(model) = &meta.setting.model {
+        config.insert("air_density_kg_m3".into(), json!(round3(model.conditions.rho)));
+        config.insert("air_density_source".into(), json!(meta.setting.rho_from.as_str()));
     }
     if let Some(refresh) = recorded.iter().rev().find_map(|r| r.derived.refresh_s) {
         config.insert("refresh_estimate_s".into(), json!(round3(refresh)));
@@ -871,7 +873,14 @@ fn prepare(
                 radius_m: conditions.radius_m,
             },
         });
-        setting.rho_measured = opts.air_density.is_none();
+        // Whatever it starts as, a barometer read at the end of the first run
+        // replaces it and says so. It is only the *opening* claim that has to
+        // be honest: a car with no barometer never gets that replacement, and
+        // saying "measured" here left it standing for the whole drive.
+        setting.rho_from = match opts.air_density {
+            Some(_) => carfile::Source::Stated,
+            None => carfile::Source::StandardAtmosphere,
+        };
         String::new()
     } else {
         match (&car, &vin) {
@@ -1226,10 +1235,17 @@ async fn drive<R: BatchReader>(
                     {
                         density = Some((measured, true));
                     }
-                    if let Some((rho, _)) = density
+                    if let Some((rho, measured)) = density
                         && let Some(model) = meta.setting.model.as_mut()
                     {
                         model.conditions.rho = rho;
+                        // The heading follows the number. A stated density is
+                        // already what it says it is; a read one has just
+                        // stopped being the standard atmosphere.
+                        meta.setting.rho_from = match measured {
+                            true => carfile::Source::Measured,
+                            false => carfile::Source::Stated,
+                        };
                     }
                     last_outcome = Some(match run.aborted {
                         true => ui::Outcome::Aborted {
@@ -2052,7 +2068,10 @@ mod tests {
             run,
             derived,
             at: "2026-08-04T01:00:00+03:00".into(),
-            rho: Some((1.19, true)),
+            // No model in this session, so no density: `--air-density` is
+            // refused without `--full`, and a density with nothing to divide is
+            // a state this tool cannot be in.
+            rho: None,
         }];
         (meta, recorded)
     }
@@ -2081,6 +2100,12 @@ mod tests {
             "crr_source",
             "mass_kg",
             "tyre",
+            // Same reason, one step removed: the air density is what the power
+            // model divides by, so it is written exactly when there is a model
+            // to use it. `--air-density` is refused without `--full` at parse
+            // time, so a density with no model is not a state this tool has.
+            "air_density_kg_m3",
+            "air_density_source",
             // The bracket and the ± are exclusive by construction: a mark has
             // one or the other, never both, and the page reads both names.
             "sigma_s",

@@ -27,6 +27,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use super::carfile;
 use super::derive::{self, Scheme, Slope};
 use super::power::{self, Conditions, EngineState, KMH_PER_MS, RoadLoad};
 use super::session::{Mark, Run};
@@ -82,8 +83,14 @@ pub struct Setting {
     pub model: Option<Model>,
     /// As written on the sidewall, for the heading.
     pub tyre: Option<String>,
-    /// Whether the air density in `model` was read off the car or stated.
-    pub rho_measured: bool,
+    /// Where the air density in `model` came from.
+    ///
+    /// Three states and not two. A `bool` had room for *measured* and *stated*
+    /// only, so a car that publishes no barometer — where the density is the
+    /// ISO 2533 standard atmosphere and nothing was read at all — was written
+    /// down as measured. Density enters drag linearly, so that is a figure the
+    /// weather can move several percent labelled as one the car reported.
+    pub rho_from: carfile::Source,
     /// One raw step of the pedal channel, which is what a kickdown threshold is
     /// measured in. A percentage written here would be one unit's scaling in
     /// disguise: the reference car's pedal reads 102 % at full travel.
@@ -127,7 +134,7 @@ impl Default for Setting {
             peak_tau_s: PEAK_TAU_S,
             model: None,
             tyre: None,
-            rho_measured: false,
+            rho_from: carfile::Source::StandardAtmosphere,
             pedal_step: None,
             units: BTreeMap::new(),
         }
@@ -596,7 +603,7 @@ fn conditions(setting: &Setting, derived: &Derived) -> String {
         parts.push(format!(
             "ρ {:.2} kg/m³ {}",
             model.conditions.rho,
-            if setting.rho_measured { "measured" } else { "stated" }
+            setting.rho_from.as_str()
         ));
         parts.push(format!("grade {:.0} %", model.conditions.grade_percent));
     }
@@ -807,7 +814,7 @@ mod tests {
                 },
             }),
             tyre: Some("205/55R16".to_string()),
-            rho_measured: true,
+            rho_from: carfile::Source::Measured,
             ..Setting::default()
         };
         let derived = recompute(&run, &setting);
