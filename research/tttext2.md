@@ -34,6 +34,7 @@ Companion to `research/rod-labels.md` (§1 for the crypto) and `research/label-l
 | Does anything in it link a measurement to a read identifier? | **unanswered.** Not "no": unanswered. See §6 before quoting this file as a closed question | — |
 | Is `MUX.rod` blocked the same way? | **No** — it is in the classic regime and is crackable with today's tooling | certain (§6.1) |
 | Anything shippable fall out? | yes, incidentally: the `product` is per **file**, not per section, so a classic file needs **one** search and not one per section | **very high** (16/16 exact, §3.6) |
+| Does `label-linkage.md` §3's per-ECU negative survive the 40 % it never scanned? | **Yes** — 169/169 measurements listed in both regimes carry byte-identical `(text-id, code)`; but its "global function of the text-id" is really *(section kind, text-id)* | high (§6.2a) |
 
 ---
 
@@ -450,10 +451,44 @@ But `label-linkage.md` §3 — "scanning **all 16,576** `.rod` files in `UDS_EV`
 every section that opens with `product = 0`" — could only ever have read the classic ones. In a
 shifted file the sole section that opens is `[CMP]`, which carries no measurement rows. So the
 100.00 % result behind the decisive per-ECU negative ("the 2-char code is a global function of
-the text-id") rests on a **60 % sample that was believed to be the whole corpus**. That does
-not overturn it — a counter-example would have to be systematically confined to the shifted
-files — but a 40 % blind spot is exactly where one would hide, and the census should be re-run
-once these files open.
+the text-id") rested on a **60 % sample that was believed to be the whole corpus**.
+
+### 6.2a The blind spot has now been sampled, and §3 survives it
+
+The shifted files do not have to be cracked to be read from, because **CBC only corrupts the
+first eight bytes**. In an *uncompressed* section every record after the first is exact today,
+with no key and no shift correction — the damage is confined to record one. That is enough to
+run §3's test on the far side of the wall.
+
+Parsing strictly (whole line must match `^\d{6},XX$`, code drawn from the proven 40-symbol
+alphabet, any section with one bad line dropped entire) over all 20,091 files gives **5,699
+rows from 4,763 sections — 2,302 of those rows from 1,725 sections of shifted files that §3
+could not see at all**. Three tests:
+
+| test | result |
+|---|---|
+| within one section kind, text-ids in ≥ 2 files carrying exactly one code | **429 / 429 (100.00 %)** |
+| the same, restricted to **shifted** files only | **211 / 211 (100.00 %)** |
+| a (kind, text-id) seen in **both** regimes carrying the same single code | **169 / 169 (100.00 %)**, zero disagreements |
+
+**§3's rule holds in the 40 % it never covered.** The third row is the one that matters: 169
+times, a measurement listed in a classic file and in a shifted file carries byte-identical
+`(text-id, code)`. The shifted files are shifted, not different.
+
+**One correction to §3, found on the way.** Its phrasing — "the code is a **global** function of
+the text-id, full stop" — is slightly too strong. Pooling across section kinds produces 12
+apparent counter-examples, and they are real: of 13 text-ids appearing in two or more section
+kinds, **12 carry a different code in each kind**. The code is a function of *(section kind,
+text-id)*, not of the text-id alone. §3's own numbers are unaffected because its table is
+already computed per kind — but the sentence under the table would let a reader join `GES` and
+`ADP` rows on the text-id and get the wrong code. That trap is now measured, not latent.
+
+**What this does not cover.** Only uncompressed sections are reachable this way; the 14,997
+compressed sections in shifted files stay closed without keys, and `MWB` — the measurement list,
+and the section the question is really about — is compressed in almost every file (11 of the
+429 text-ids come from an `MWB`). So this is a genuine sample of the blind spot, not an
+exhaustive scan of it, and it is a smaller sample than §3's 10,583. It says the wall hides
+nothing unusual; it cannot say the wall hides nothing at all.
 
 ### 6.3 The honest state of the central question
 
