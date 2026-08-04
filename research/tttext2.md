@@ -26,7 +26,8 @@ Companion to `research/rod-labels.md` (§1 for the crypto) and `research/label-l
 | Why? | its `[TXT]` first block does not decrypt to the zlib magic `78 da`, which the searcher requires as its anchor | certain |
 | Is that specific to this file? | **No — 7,830 of 20,091 files** and **14,997 of 37,104** compressed sections are in the same regime | high (whole-corpus census, §3.1) |
 | Is it the compression that differs, or the IV? | **the IV** — uncompressed `TEA` sections in the same files are hit identically | **very high** (237/237 vs 144/146, §3.2) |
-| What is the deviation? | a **per-file XOR constant on the first-block IV**, applying to every section *after* `[CMP]` | **very high** (149/149 against a 13.8 % null, §3.3) |
+| What is the deviation? | a **per-file XOR constant on the first-block IV**, applying to every section *after* `[CMP]` | **certain** — measured at 149/149 against a 13.8 % null (§3.3), then read off the binary (§3.3a) |
+| Can `D` be derived from the file? | **No, and provably not.** VCDS XORs the finished IV with an 8-byte **runtime global**, skipped when the tag is literally `"CMP"` | **certain** (disassembly, §3.3a) |
 | How wide is it? | **all eight IV bytes.** Bytes 0–2 by measurement (§3.3, §3.4), `IV[3:8]` first statistically (§3.5) then directly from a cracked key (§4.1) — so the searcher's 2³⁶ reduction is invalid on these files and the space is 2⁴⁰ | **very high** |
 | Can a shifted section be opened at all? | **Yes — one was.** `EV_HCP4Contr2OBDAU41X_BY64.rod [FFMUX]` inflates to exactly its declared 55,121 bytes of `<text-id>,<code>` rows | certain (§4.1) |
 | What is inside `TTTEXT2.ROD`? | **unknown — the file is not open**, and the sweep that would open it is 5–11 h of CPU that §8 argues should be spent differently first | — |
@@ -183,11 +184,63 @@ containers have no slack bytes at all, every byte lying inside a `[TAG]…[/TAG]
 
 `[CMP]` is exempt. Over 467 shifted files with an uncompressed `[CMP]`, its id digits read
 correctly **as-is** in 467 and correctly **under `D`** in 2 (records where both readings happen
-to be digits). So `D` is state that exists only after the first section has been read — which
-is consistent with `rod-labels.md` §1.1's finding that the `product` term comes from a runtime
-buffer, and suggests `D` comes from the same machinery. It has **not** been derived, only
-measured: `D` is uniform per file and matches nothing structural (`MT`/`KS` adjacency, ratio,
-sum and XOR of its two bytes were all tested against 242 files and all came back flat).
+to be digits). So `D` is state that exists only after the first section has been read.
+
+### 3.3a The construction, read off the binary — and why it cannot be derived
+
+Everything above was measured. It is also written down in VCDS, and reading it settles the one
+question the statistics could not: where `D` comes from. `VCDS-arm64-unpacked.exe`
+(ARM64 PE, ImageBase `0x140000000`, the build `rod-labels.md` §1.1 used), in the `.rod` IV
+routine, immediately **after** the multiply that `rod-labels.md` §1.1 documents:
+
+```asm
+0x140033aa8  ; IV[i] = s[i] * MT[OFF_ROD[i]]  — the documented construction, offsets
+0x140033ab0  ;   07 ca 22 99 3e 88 c3 76 in order, exactly OFF_ROD
+…
+0x140033b38  ldr  x0, [x21]                ; the section tag
+0x140033b40  add  x1, x8, 0x160            ; -> the literal string "CMP"
+0x140033b44  bl   0x14014f100
+0x140033b48  cbz  w0, 0x140033b88          ; tag is CMP -> skip everything below
+0x140033b50  ldr  w8, [x27, x8]            ; a runtime global
+0x140033b54  ldr  w9, 0x140033d48          ; = 0x000f423f = 999999
+0x140033b5c  b.le 0x140033b88              ; global <= 999999 -> skip
+0x140033b64  add  x10, x27, x8             ; -> an 8-byte runtime global
+0x140033b68  mov  w8, 8
+0x140033b70  ldrsb w14, [x10], 1           ; mask byte
+0x140033b78  ldrsb w11, [x9], 1            ; IV byte
+0x140033b7c  eor   w11, w14, w11           ; IV[i] ^= mask[i]
+0x140033b80  sturb w11, [x9, -1]
+0x140033b84  cbnz  w8, 0x140033b70         ; eight times
+```
+
+Four things fall out, and each one matches a measurement above that was made before the
+disassembly was read:
+
+* the deviation is an **XOR**, applied to the finished IV rather than folded into the seed —
+  which is why the cross-tag XOR is constant and the cross-tag difference is not (§3.3);
+* it is **exactly eight bytes wide**, so it reaches `IV[3:8]` — §3.5 measured that
+  statistically and §4.1 confirmed it from a cracked key;
+* it is skipped when the tag is the literal **`"CMP"`** — §3.3 measured 467/467;
+* the mask is a **runtime global**. It is not a field of the file, not a function of the file
+  name, not a checksum. It is filled elsewhere in the process, exactly like the `product` term
+  `rod-labels.md` §1.1 found to be "a runtime buffer — not any field of the file".
+
+**So `D` cannot be derived offline, and that is a property of the design rather than a gap in
+this analysis.** The corpus is not self-describing here; VCDS knows something the files do not
+say. That closes the question the cheapest way it could have been closed — the alternative was
+a search for a rule that is not there.
+
+There is a second, unrelated find in the same routine worth recording: when the ODX name is
+`TTTEXT` or `UNIT`, a file-wide byte from the global at `0x140552ba4` is added to every seed
+byte (`0x140033a8c`). That is the same global and the same construction `research/codes-dat.md`
+§2.2 calls `C`. Both of those files decode with `C = 0`, so nothing here depends on it, but a
+future corpus where it is nonzero would break them in a way that looks like the shift and is
+not.
+
+`D` is otherwise uniform per file — 348 distinct values over 349 shifted files sampled — and
+matches nothing structural (`MT`/`KS` adjacency, ratio, sum and XOR of its two bytes were all
+tested against 242 files and all came back flat), which is what a runtime global should look
+like from the outside.
 
 ### 3.4 The shift reaches at least byte 2, which is exactly the byte that costs
 
@@ -468,12 +521,10 @@ throwaway `git worktree`, not in `crates/`.
    kept `TTTEXT2.ROD` closed through four writeups that each named it as the next thing to try.
    A section that decrypts to something other than `78 da` should say so. This is the one
    change in `crates/` that this pass actually justifies.
-3. **Find where `D` comes from — this is worth more than any amount of CPU.** It is a per-file
-   XOR that is not in the file, is not derived from `MT`/`KS` by any relation tested here, and
-   is not applied to the first section, so it is runtime state — most likely the same `product`
-   machinery `rod-labels.md` §1.1 located at `+0x33910`, which the disassembly has already been
-   through once. A derivation opens 7,830 files at once and reduces every one of them to the
-   ordinary 2³⁶ search. Brute force opens them one at a time at 16× the price.
+3. ~~**Find where `D` comes from**~~ — **done, §3.3a, and the answer is that it cannot be
+   derived.** It is an 8-byte runtime global. Do not spend more time looking for a rule; there
+   isn't one to find. What is left is recovery from known plaintext, which §3.3 already does
+   for two of its bytes for free.
 4. **If it must be brute-forced, budget 5–11 h and run it unattended.** The recipe is proven
    (§4.1): take `D[0:2]` free from the section prefix, sweep all 60 legal anchor bytes, use the
    full 2⁴⁰ candidate sets. The measured penalty over the reduced search is 6.5×, not 16×.
