@@ -104,16 +104,6 @@ pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
     Ok(car_dir(vin)?.join("measures"))
 }
 
-/// Where the readings a car is asked for end up when nobody named a file — a
-/// survey, a fault dump. They belong to the car, not to the working directory
-/// the command happened to be run from.
-// Called once `survey` defaults its output here — `todo/README.md` carries that
-// item; the layout is settled now so the command does not invent its own.
-#[allow(dead_code)]
-pub fn reports_dir(vin: &str) -> anyhow::Result<PathBuf> {
-    Ok(car_dir(vin)?.join("reports"))
-}
-
 /// The VIN, checked hard enough to be a directory name.
 ///
 /// It arrives from the bus, so it is not trusted as a path: a unit answering
@@ -394,12 +384,11 @@ mod tests {
 
     #[test]
     fn a_cars_files_all_live_under_that_car() {
-        // Sessions and reports belong to the car they were read from, not to
-        // the working directory a command happened to be run in.
+        // Sessions belong to the car they were read from, not to the working
+        // directory a command happened to be run in.
         let vin = "XW8AD4NE9JH008917";
         let car = car_dir(vin).unwrap();
         assert_eq!(measures_dir(vin).unwrap(), car.join("measures"));
-        assert_eq!(reports_dir(vin).unwrap(), car.join("reports"));
     }
 
     #[test]

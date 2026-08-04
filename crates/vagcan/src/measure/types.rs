@@ -118,10 +118,6 @@ impl States {
         self.t.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.t.is_empty()
-    }
-
     /// What was in force at `t` — a step function held until the next reading.
     /// `None` before the first sample, because nothing was established yet.
     pub fn at(&self, t: Seconds) -> Option<&str> {

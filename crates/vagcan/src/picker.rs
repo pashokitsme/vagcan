@@ -471,22 +471,14 @@ pub fn entries(dir: &Path, level: &Level<'_>) -> Vec<Choice> {
     choices
 }
 
-/// Pick one entry of `dir`, or `None` if the person left without one.
+/// Pick down a tree, one level at a time: a car, then a session in it. One
+/// level is the ordinary case and needs no other entry point — a lone level has
+/// nothing above it, so `←` and `q` both mean "never mind" there.
 ///
 /// Nothing to pick from is an `Err` rather than a `None`: a command that
 /// silently does nothing is indistinguishable from one that failed, and the
 /// message is the useful half of this module for anyone before their first
 /// drive.
-pub fn pick(io: &mut impl Chooser, dir: &Path, level: &Level<'_>) -> Result<Option<PathBuf>> {
-    let mut at = 0;
-    // Nothing is above a lone level, so `←` and `q` mean the same thing here.
-    match walk(io, dir, level, &mut at, false)? {
-        Step::Down(path) => Ok(Some(path)),
-        Step::Back | Step::Quit => Ok(None),
-    }
-}
-
-/// Pick down a tree, one level at a time: a car, then a session in it.
 ///
 /// `←` from a level below the first goes back up rather than giving up — the
 /// wrong car is a thing to notice at the moment its sessions appear, and
@@ -1070,7 +1062,7 @@ mod tests {
             .ending(".csv")
             .filled_by("vagcan watch --out drive.csv   records one");
         let mut io = Scripted::new([]);
-        let why = pick(&mut io, &dir.0, &level).unwrap_err().to_string();
+        let why = pick_path(&mut io, &dir.0, &[level]).unwrap_err().to_string();
         assert!(why.contains("no recordings"), "{why}");
         assert!(why.contains("vagcan watch --out"), "{why}");
         assert!(io.seen.is_empty(), "nobody was asked to choose from an empty list");
@@ -1082,7 +1074,7 @@ mod tests {
         // the same state as an empty one, not an error about a missing path.
         let dir = TempDir::new("missing");
         let level = Level::files("session").filled_by("vagcan measure");
-        let why = pick(&mut Scripted::new([]), &dir.0.join("measures"), &level)
+        let why = pick_path(&mut Scripted::new([]), &dir.0.join("measures"), &[level])
             .unwrap_err()
             .to_string();
         assert!(why.contains("no sessions"), "{why}");

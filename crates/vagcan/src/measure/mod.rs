@@ -411,8 +411,6 @@ struct Recorded {
     run: session::Run,
     derived: report::Derived,
     at: String,
-    /// The air density in force, and whether it was measured or stated.
-    rho: Option<(f64, bool)>,
 }
 
 /// What the whole session was recorded under.
@@ -538,10 +536,11 @@ fn document(
         config.insert("car_file".into(), json!(path));
     }
     // Whatever density the power model actually used, and where it came from.
-    // Taken off the setting rather than off `Recorded::rho`, because that field
-    // is `None` in the one case worth recording most: a car with no barometer,
-    // where the figure is the ISO 2533 standard atmosphere and the file used to
-    // say nothing at all about the number every power figure in it rests on.
+    // Taken off the setting rather than off what a run happened to read, because
+    // a run reads nothing in the one case worth recording most: a car with no
+    // barometer, where the figure is the ISO 2533 standard atmosphere and the
+    // file used to say nothing at all about the number every power figure in it
+    // rests on.
     if let Some(model) = &meta.setting.model {
         config.insert("air_density_kg_m3".into(), json!(round3(model.conditions.rho)));
         config.insert("air_density_source".into(), json!(meta.setting.rho_from.as_str()));
@@ -1259,7 +1258,7 @@ async fn drive<R: BatchReader>(
                     });
                     let derived = report::recompute(&run, &meta.setting);
                     let text = report::results(&run, &derived, &meta.setting);
-                    recorded.push(Recorded { run: *run, derived, at: now(), rho: density });
+                    recorded.push(Recorded { run: *run, derived, at: now() });
                     match terminal.is_some() {
                         true => table = Some(text),
                         false => println!("{text}"),
@@ -2065,10 +2064,6 @@ mod tests {
             run,
             derived,
             at: "2026-08-04T01:00:00+03:00".into(),
-            // No model in this session, so no density: `--air-density` is
-            // refused without `--full`, and a density with nothing to divide is
-            // a state this tool cannot be in.
-            rho: None,
         }];
         (meta, recorded)
     }

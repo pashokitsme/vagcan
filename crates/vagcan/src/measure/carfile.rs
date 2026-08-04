@@ -263,11 +263,6 @@ impl CarFile {
         Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str())?.join("car.json"))
     }
 
-    /// Where this car's own file is.
-    pub fn path(&self) -> anyhow::Result<PathBuf> {
-        CarFile::path_for(&self.vin)
-    }
-
     /// Read a car file. Anything it cannot vouch for is an error naming the
     /// field, because a quietly half-read file becomes a wrong power figure.
     pub fn load(path: &Path) -> anyhow::Result<CarFile> {

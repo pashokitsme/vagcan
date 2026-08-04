@@ -303,15 +303,6 @@ impl Ratios {
         self.0.get(gear).copied()
     }
 
-    /// How many gears have a plateau.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Whether the clutch is slipping — that is, whether the engine-side power
     /// term has to be thrown away for this sample.
     ///
@@ -540,7 +531,9 @@ mod tests {
         // The level that is not a gear has no plateau, and no label was named
         // to arrive at that: its samples simply do not agree with each other.
         assert_eq!(ratios.plateau("not engaged"), None);
-        assert_eq!(ratios.len(), 2);
+        // And nothing else was learned — counted through the map itself, because
+        // no measurement outside this test has a use for a count of gears.
+        assert_eq!(ratios.0.len(), 2);
     }
 
     #[test]
