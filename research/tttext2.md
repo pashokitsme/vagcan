@@ -32,7 +32,8 @@ Companion to `research/rod-labels.md` (§1 for the crypto) and `research/label-l
 | Can a shifted section be opened at all? | **Yes — one was.** `EV_HCP4Contr2OBDAU41X_BY64.rod [FFMUX]` inflates to exactly its declared 55,121 bytes of `<text-id>,<code>` rows | certain (§4.1) |
 | What is inside `TTTEXT2.ROD`? | **unknown — the file is not open**, and the sweep that would open it is 5–11 h of CPU that §8 argues should be spent differently first | — |
 | Does anything in it link a measurement to a read identifier? | **unanswered.** Not "no": unanswered. See §6 before quoting this file as a closed question | — |
-| Is `MUX.rod` blocked the same way? | **No** — it is in the classic regime and is crackable with today's tooling | certain (§6.1) |
+| Is `MUX.rod` blocked the same way? | **No** — classic, and since opened by another pass (`research/mux.md`); it holds no read identifier, so `TTTEXT2` is now the last file standing | certain (§6.1) |
+| Can a shifted file be opened in practice? | **Yes, one file at a time.** `D[0:2]` free for all 7,827; the anchor free for 970 of them and a ×60 sweep for the rest; ~18 min per anchor, and ×1 instead of ×60 for every later section of the same file | measured (§6.2b) |
 | Anything shippable fall out? | yes, incidentally: the `product` is per **file**, not per section, so a classic file needs **one** search and not one per section | **very high** (16/16 exact, §3.6) |
 | Does `label-linkage.md` §3's per-ECU negative survive the 40 % it never scanned? | **Yes** — 169/169 measurements listed in both regimes carry byte-identical `(text-id, code)`; but its "global function of the text-id" is really *(section kind, text-id)* | high (§6.2a) |
 
@@ -490,6 +491,34 @@ and the section the question is really about — is compressed in almost every f
 exhaustive scan of it, and it is a smaller sample than §3's 10,583. It says the wall hides
 nothing unusual; it cannot say the wall hides nothing at all.
 
+### 6.2b What it costs to open a shifted file, per file
+
+`D` cannot be derived (§3.3a), so it has to be recovered. How much of it comes free depends on
+what else the file contains, and the corpus splits sharply:
+
+| what is needed | how it is got | cost |
+|---|---|---|
+| `D[0]`, `D[1]` | the section's own zlib magic — `prefix ⊕ 78da` | **free**, for all **7,827** shifted files with a compressed section |
+| `D[2]` (the deflate anchor) | narrowed by the file's text sections (§3.4) | free, but only **970** files have any, and only **184** get to ≤ 8 candidates |
+| `D[2]`, otherwise | swept | ×60 searches, for the remaining **6,857** files |
+| `iv[3:8]` | the full 2⁴⁰ search | ~18 min per anchor on a 20 KB section (measured, §4.1) |
+| every **further** section of the same file | the anchor is now known (`cccfcea`) | ×1 search, not ×60 |
+
+So a shifted file with no text sections costs **up to ~18 hours** for its first compressed
+section and ~18 minutes for each one after; a file whose text sections pin the anchor to two
+candidates costs about **35 minutes**. 4,184 of the 7,827 have exactly one compressed section,
+so the propagation helps 3,643 files and not the rest.
+
+**This does not scale to the corpus** — 14,997 shifted sections at even 18 minutes each is
+years — and it is not meant to. It scales to *a file you have a reason to open*, which is the
+actual use: `vagcan labels --from-car` resolves one ECU's `.rod` by the identifier the unit
+reports, and one file is a day of CPU at worst. Opening all 7,830 needs the mask derived, and
+§3.3a says that needs the value out of a running VCDS, not more analysis of the files.
+
+**The 64 files with no compressed section at all** lose nothing by this: they have no section
+that a key would open. Their text sections already decode, minus the eight bytes of their first
+record, exactly as they always did.
+
 ### 6.3 The honest state of the central question
 
 The `.rod` corpus is **not** yet proven to be names-and-lists-only. `label-linkage.md` §7 item
@@ -548,22 +577,27 @@ throwaway `git worktree`, not in `crates/`.
 
 ## 8. What to do next, in order of value
 
-1. **Open `MUX.rod`.** It is classic, it is minutes of CPU, and it is one of the two files
-   `label-linkage.md` §5.5 said could still hold a global registry. There is no reason it is
-   not already done.
-2. **Stop reporting a failed precondition as `UNDECODABLE`.** `decode_rod_recover` collapses
-   "this cannot be read" and "the searcher declined to look" into one status, and that is what
-   kept `TTTEXT2.ROD` closed through four writeups that each named it as the next thing to try.
-   A section that decrypts to something other than `78 da` should say so. This is the one
-   change in `crates/` that this pass actually justifies.
+1. ~~**Open `MUX.rod`**~~ — **done by another pass**, `research/mux.md`. It is the ODX
+   multiplexer table and it holds no read identifier, so `label-linkage.md` §7 item 3 now rests
+   on `TTTEXT2.ROD` alone.
+2. ~~**Stop reporting a failed precondition as `UNDECODABLE`**~~ — **done**, `ed334f7`
+   (`RodStatus::SearchDeclined`, printed as `NO CRIB`), and the sections it names now open from
+   a key (`707b376`) with the anchor propagated across a file (`cccfcea`).
 3. ~~**Find where `D` comes from**~~ — **done, §3.3a, and the answer is that it cannot be
    derived.** It is an 8-byte runtime global. Do not spend more time looking for a rule; there
    isn't one to find. What is left is recovery from known plaintext, which §3.3 already does
    for two of its bytes for free.
-4. **If it must be brute-forced, budget 5–11 h and run it unattended.** The recipe is proven
-   (§4.1): take `D[0:2]` free from the section prefix, sweep all 60 legal anchor bytes, use the
-   full 2⁴⁰ candidate sets. The measured penalty over the reduced search is 6.5×, not 16×.
-5. **Use §3.6 on the classic files.** One search per file instead of one per section.
-6. **Do not** re-run: the reduced-candidate-set search on any shifted section (§3.5, §4.1), the
-   `IV[5]` reachability test (§3.5), or any attempt to read `D` out of the container bytes
-   (§3.3 — there are none).
+4. **`TTTEXT2.ROD` is now the whole of the open question, and it is affordable.** It is a
+   60-anchor sweep at ~11 min each — 5–11 h, unattended, on the recipe proven in §4.1 and
+   shipped in `707b376`. It has no text section to narrow the anchor (§3.4) and one compressed
+   section, so neither shortcut applies. Nothing else in the corpus is now known to be able to
+   answer whether the `.rod` files carry a read identifier.
+5. **Use §3.6 on the classic files.** One search per file instead of one per section — still
+   not implemented, and free CPU.
+6. **The only route to the other 7,829 files is the mask itself**, and §3.3a says it is a
+   runtime global. That means reading it out of a running VCDS (a breakpoint at
+   `0x140033b64` and eight bytes), not more analysis of the corpus. Recorded as the boundary of
+   what offline work can reach, not as a plan.
+7. **Do not** re-run: the reduced-candidate-set search on any shifted section (§3.5, §4.1), the
+   `IV[5]` reachability test (§3.5), any attempt to read `D` out of the container bytes
+   (§3.3 — there are none), or a hunt for a rule generating `D` (§3.3a — there is none).
