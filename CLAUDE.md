@@ -12,6 +12,23 @@
 - Keep the `Claude-Session:` trailer line as well.
 - Use Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`…).
 
+## The dead-code check is `--workspace`, never `--all-targets`
+
+```
+RUSTFLAGS="--force-warn dead_code" cargo check --workspace
+```
+
+`--force-warn` sees through any `#[allow(dead_code)]`; `--workspace` alone is
+what makes the answer true. **Adding `--all-targets` recompiles the binary a
+second time as a test harness**, where `main` is unreachable by construction and
+only what a unit test calls looks live — so it reports `fn main is never used`
+and ~140 items where the real build reports none. That is a test-reachability
+map, not dead code, and acting on it deletes the program.
+
+Before deleting anything it does report: a function nobody calls that was
+*written to be called* is a missing call site, not dead code
+(`measure::messages::MissingChannel::tried` was exactly that).
+
 ## Safety (MANDATORY — read [`SAFETY.md`](SAFETY.md))
 
 This tool only reads, and it has still cost the reference car its power steering: an
