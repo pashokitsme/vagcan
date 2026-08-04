@@ -155,22 +155,40 @@ pub struct ValueRow {
 
 /// One line of the marks panel.
 ///
-/// A launch-based mark carries a trailing `+` here and its interval waits for
-/// the results table: there is room for one number on this screen and no time to
-/// read a second.
+/// A launch-based mark leads with `≈` and its interval waits for the results
+/// table: there is room for one number on this screen and no time to read a
+/// second.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MarkRow {
     pub name: String,
     /// `None` until it closes, drawn as a placeholder rather than left blank —
     /// a gap reads as a mark that was not asked for.
+    ///
+    /// For a launch mark this is the **midpoint of the bracket**, the same
+    /// number `report::mark_time` leads with, so the panel and the table can
+    /// never disagree about what the run did.
     pub seconds: Option<Seconds>,
     pub from_launch: bool,
 }
 
 impl MarkRow {
+    /// How a mark is spelled with one column to spell it in.
+    ///
+    /// The retracted spelling was `1.2+ s`. It is wrong twice over: on the car
+    /// it reads as a line that was cut off, and the `+` is the one-signed launch
+    /// bias this project withdrew — the launch is *bracketed* between two
+    /// estimators that miss it from opposite sides, so a launch time is not
+    /// "1.2 or more" and never was.
+    ///
+    /// `≈` is what is left once the interval will not fit: it says the number is
+    /// an estimate without saying which way it leans, and it cannot be read as
+    /// "at least". The interval it came from — `6.94 s (6.85 … 7.04)` — is on the
+    /// results table a moment later, which is where a driver has time to read
+    /// two numbers. Both are printed to hundredths, so the panel's figure is the
+    /// table's figure and not a rounder cousin of it.
     fn value(&self) -> String {
         match (self.seconds, self.from_launch) {
-            (Some(seconds), true) => format!("{seconds:.1}+ s"),
+            (Some(seconds), true) => format!("≈{seconds:.2} s"),
             (Some(seconds), false) => format!("{seconds:.2} s"),
             (None, _) => "·".to_string(),
         }
@@ -1045,15 +1063,46 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_mark_carries_a_plus_on_screen_and_an_open_one_a_placeholder() {
+    fn a_launch_mark_is_an_estimate_on_screen_and_never_a_lower_bound() {
         // There is room for one number here and no time to read a second; the
         // interval waits for the results table.
         let closed = MarkRow { name: "0-10".into(), seconds: Some(1.04), from_launch: true };
-        assert_eq!(closed.value(), "1.0+ s");
+        assert_eq!(closed.value(), "≈1.04 s");
         let rolling = MarkRow { name: "50-100".into(), seconds: Some(3.24), from_launch: false };
         assert_eq!(rolling.value(), "3.24 s");
         let open = MarkRow { name: "0-100".into(), seconds: None, from_launch: true };
         assert_eq!(open.value(), "·");
+    }
+
+    #[test]
+    fn no_mark_is_spelled_as_a_lower_bound_anywhere_on_the_screen() {
+        // `1.2+ s` was the retracted one-signed launch model, and on the car it
+        // read as a line that had been cut off. Neither may come back by way of
+        // a helper nobody re-checked.
+        for seconds in [0.0, 1.04, 9.087, 123.4] {
+            for from_launch in [true, false] {
+                let row = MarkRow { name: "0-100".into(), seconds: Some(seconds), from_launch };
+                assert!(!row.value().contains('+'), "{:?}", row.value());
+            }
+        }
+        let screen = demo_screen();
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = screen_text(&screen, w, h);
+            assert!(!text.contains("+ s"), "{w}×{h}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_marks_panel_prints_every_mark_whole_at_every_size_it_claims_to_fit() {
+        // The panel takes its width from what it is about to print, so the two
+        // have to be checked against each other rather than assumed to agree.
+        let screen = demo_screen();
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = screen_text(&screen, w, h);
+            for expected in ["0-10", "≈1.04 s", "50-100", "3.24 s", "0-100"] {
+                assert!(text.contains(expected), "{w}×{h} lost {expected}:\n{text}");
+            }
+        }
     }
 
     #[test]
@@ -1189,7 +1238,7 @@ mod tests {
         let line = plain_line(&screen);
         assert!(line.starts_with("RUN  4.31 s"), "{line}");
         assert!(line.contains("speed 62.4 km/h"), "{line}");
-        assert!(line.contains("0-10 1.0+ s"), "{line}");
+        assert!(line.contains("0-10 ≈1.04 s"), "{line}");
         assert!(!line.contains("0-100"), "an open mark has nothing to report yet: {line}");
     }
 
