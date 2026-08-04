@@ -1048,6 +1048,8 @@ async fn drive<R: BatchReader>(
     let mut session = session::Session::new(opts.marks.clone(), RING_SECONDS, opts.speed_scale);
     let mut controls = ui::Controls::default();
     let mut recorded: Vec<Recorded> = Vec::new();
+    // Events a keystroke caused, waiting for this cycle's one event pass.
+    let mut pending: Vec<session::Event> = Vec::new();
     let mut charts: BTreeMap<String, Track> = BTreeMap::new();
     let mut values: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut closed: BTreeMap<(u32, u32), Seconds> = BTreeMap::new();
@@ -1108,14 +1110,16 @@ async fn drive<R: BatchReader>(
         }
 
         // Between batches, never around one: a read can sit out a unit's
-        // two-second deadline and `Esc` must not wait with it.
+        // two-second deadline and a cancel must not wait with it.
         let mut quit = false;
         let mut set = session::SampleSet::default();
         let mut answered_leading = false;
         let mut records: Records = Vec::new();
 
         for (index, batch) in due(&plan, cycles).into_iter().enumerate() {
-            if terminal.is_some() && drain(&mut controls, &mut session, &mut warning, &mut quit)? {
+            if terminal.is_some()
+                && drain(&mut controls, &mut session, &mut warning, &mut pending, &mut quit)?
+            {
                 break;
             }
             let (at, outcome) = reader.read(batch).await;
@@ -1133,10 +1137,6 @@ async fn drive<R: BatchReader>(
             merge(&mut set, sample_set(&plan, &batch_records, at));
             records.extend(batch_records);
         }
-        if quit {
-            break Ok(());
-        }
-
         // A car that stops answering is not a car that is standing still.
         silent = match answered_leading {
             true => 0,
@@ -1144,7 +1144,7 @@ async fn drive<R: BatchReader>(
         };
         if silent == SILENT_CYCLES {
             warning = Some(messages::car_silent(session.runs().len()));
-            session.on_command(session::Command::Cancel);
+            pending.extend(session.on_command(session::Command::Cancel));
         }
 
         for (key, text) in rendered(&plan, &records) {
@@ -1162,7 +1162,22 @@ async fn drive<R: BatchReader>(
             meta.setting.model.as_ref(),
         );
 
-        for event in session.on_sample(clock, set) {
+        // The keyboard's second drain of the cycle, here rather than after the
+        // events, so that everything a key caused is recorded in the same pass
+        // as everything the car caused. A key handled after this point would
+        // have to wait a cycle for its events to be looked at, and a quit in
+        // that window used to drop them entirely.
+        if terminal.is_some() {
+            drain(&mut controls, &mut session, &mut warning, &mut pending, &mut quit)?;
+        }
+
+        // **Every event is handled, whatever produced it.** The events a
+        // command returns used to be thrown away here, which is how `Esc`
+        // came to "do nothing": the run really was cancelled, but with no tone,
+        // no band, no results table and — worse — no entry in `recorded`, so a
+        // cancelled run was counted as unsaved and could never be written.
+        pending.extend(session.on_sample(clock, set));
+        for event in std::mem::take(&mut pending) {
             match event {
                 session::Event::Started(_) => {
                     closed.clear();
@@ -1227,9 +1242,6 @@ async fn drive<R: BatchReader>(
             }
         }
 
-        if terminal.is_some() && drain(&mut controls, &mut session, &mut warning, &mut quit)? {
-            break Ok(());
-        }
         if controls.take_save() {
             match save(opts.out, &meta, &recorded, &session) {
                 Ok(path) => {
@@ -1238,6 +1250,9 @@ async fn drive<R: BatchReader>(
                 }
                 Err(why) => warning = Some(format!("{why:#}")),
             }
+        }
+        if quit {
+            break Ok(());
         }
         cycles += 1;
     };
@@ -1359,8 +1374,17 @@ fn drain(
     controls: &mut ui::Controls,
     session: &mut session::Session,
     warning: &mut Option<String>,
+    events: &mut Vec<session::Event>,
     quit: &mut bool,
 ) -> Result<bool> {
+    // Zero, and it is not the reason a cancel ever went missing. A lone `Esc`
+    // is the prefix of every ANSI sequence, so the suspicion was that
+    // crossterm's parser holds it back waiting for the rest and never emits it
+    // under a zero timeout. Measured through a pty against crossterm 0.28.1, it
+    // does not: `parse_event` only waits when `input_available`, which
+    // `source/unix/mio.rs` sets from `read_count == TTY_BUFFER_SIZE` (1024), so
+    // a one-byte read of `0x1B` is delivered at once at 0 ms exactly as it is
+    // at 5 ms. A timeout here would buy nothing and cost the loop its cycle.
     while event::poll(Duration::from_millis(0))? {
         if let TermEvent::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
@@ -1368,8 +1392,18 @@ fn drain(
             match ui::on_key(controls, key.code, session.unsaved()) {
                 ui::Action::Nothing => {}
                 ui::Action::Session(command) => {
-                    session.on_command(command);
-                    *warning = None;
+                    // Handed back rather than swallowed: a cancel closes a run,
+                    // and the run it closed is in the events.
+                    let caused = session.on_command(command);
+                    // Cancel is the one command here that can legitimately do
+                    // nothing — it only acts on a run that is under way — and a
+                    // key that does nothing reads as a key that was not
+                    // received, which is how this was reported from the car.
+                    *warning = match caused.is_empty() && command == session::Command::Cancel {
+                        true => Some(ui::nothing_to_cancel()),
+                        false => None,
+                    };
+                    events.extend(caused);
                 }
                 ui::Action::Save => controls.ask_save(),
                 ui::Action::Refuse(text) => *warning = Some(text),

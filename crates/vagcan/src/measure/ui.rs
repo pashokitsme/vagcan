@@ -351,12 +351,29 @@ pub enum Action {
     Refuse(String),
 }
 
+/// What to say when `c` or `Esc` arrives with no run under way.
+///
+/// A key that does nothing at all reads as a key that was not received, which
+/// is precisely how the cancel bug was described from the driver's seat.
+pub fn nothing_to_cancel() -> String {
+    "nothing to cancel — no run is under way. The stopwatch starts itself when \
+     the car moves off from a standstill."
+        .to_string()
+}
+
 /// Handle one key.
 ///
 /// `Esc` cancels a run here and quits in `watch`. That is a deliberate
 /// divergence rather than an oversight — a stopwatch needs a cheap "throw this
 /// one away" and `watch` has nothing to throw away — and it is written down so
 /// that it stays deliberate.
+///
+/// **`c` cancels as well, and it is the one in the hints.** A control a driver
+/// needs mid-run must not depend on the terminal agreeing about escape
+/// sequences: `Esc` is the prefix of every one of them, so what a parser makes
+/// of a lone `0x1B` is a property of the terminal and the crate rather than of
+/// this program. It happens to work here — measured, not assumed, see `drain` —
+/// and a plain letter costs nothing and cannot stop working.
 pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action {
     // Any key that is not a second `q` disarms the guard: a driver who pressed
     // `q`, thought better of it and pressed `s` must not then lose the drive to
@@ -372,7 +389,7 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
             }
         },
         KeyCode::Char('p') => Action::Session(session::Command::PauseTrigger),
-        KeyCode::Esc => Action::Session(session::Command::Cancel),
+        KeyCode::Esc | KeyCode::Char('c') => Action::Session(session::Command::Cancel),
         KeyCode::Char('s') => Action::Save,
         KeyCode::Left if charts > 0 => {
             controls.chart = (controls.chart + charts - 1) % charts;
@@ -388,8 +405,7 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
 
 /// The key hints, which are the keys the design gives this command and no
 /// others.
-const HINTS: &str =
-    " [p] pause trigger  [esc] cancel run  [s] save  [←→] series  [q] quit";
+const HINTS: &str = " [p]ause [c]ancel [s]ave [←→]chart [q]uit";
 
 /// Draw the whole screen.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
@@ -422,7 +438,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
             outer[2],
         );
         frame.render_widget(
-            Paragraph::new(status_line(screen)).block(Block::default().borders(Borders::ALL)),
+            Paragraph::new(status_line(screen, outer[3].width.saturating_sub(2) as usize))
+                .block(Block::default().borders(Borders::ALL)),
             outer[3],
         );
         return;
@@ -450,20 +467,32 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     draw_marks(frame, screen, middle[1]);
 
     frame.render_widget(
-        Paragraph::new(status_line(screen)).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(status_line(screen, outer[3].width.saturating_sub(2) as usize))
+            .block(Block::default().borders(Borders::ALL)),
         outer[3],
     );
 }
 
 /// The footer: the achieved rate, whether a file is open, and the keys.
-fn status_line(screen: &Screen) -> String {
+///
+/// The keys are the part that has to survive a narrow terminal — they are the
+/// only thing on screen a driver cannot work out for themselves — so the two
+/// pieces of running commentary are dropped in turn until what is left fits,
+/// rather than letting the line truncate wherever it happens to reach.
+fn status_line(screen: &Screen, width: usize) -> String {
     if let Some(warning) = &screen.warning {
         return warning.clone();
     }
     let rate = screen.hz.map(|hz| format!("{hz:.1} Hz · ")).unwrap_or_default();
     let file =
         screen.file.as_deref().map(|path| format!("  ·  writing {path}")).unwrap_or_default();
-    format!(" {rate}{}{file}", HINTS.trim_start())
+    let keys = HINTS.trim_start();
+    for line in [format!(" {rate}{keys}{file}"), format!(" {rate}{keys}"), format!(" {keys}")] {
+        if line.chars().count() <= width {
+            return line;
+        }
+    }
+    format!(" {keys}")
 }
 
 fn draw_values(frame: &mut Frame, screen: &Screen, area: Rect) {
@@ -1060,6 +1089,33 @@ mod tests {
             on_key(&mut controls, KeyCode::Char('p'), 0),
             Action::Session(session::Command::PauseTrigger)
         );
+    }
+
+    #[test]
+    fn cancel_has_a_plain_letter_as_well_and_it_is_the_one_on_screen() {
+        // A control a driver needs mid-run must not rest on the terminal
+        // agreeing about escape sequences. `Esc` keeps working; `c` is the one
+        // the hints name, because it is the one that cannot stop working.
+        let mut controls = Controls::default();
+        assert_eq!(
+            on_key(&mut controls, KeyCode::Char('c'), 0),
+            Action::Session(session::Command::Cancel)
+        );
+        assert!(HINTS.contains("[c]ancel"), "{HINTS}");
+    }
+
+    #[test]
+    fn the_footer_keeps_the_keys_when_it_has_to_drop_something() {
+        // The keys are the only thing on the footer a driver cannot work out
+        // for themselves, so the rate and the file name go first.
+        let screen = demo_screen();
+        let wide = status_line(&screen, 200);
+        assert!(wide.contains("21.4 Hz") && wide.contains("drive.json"), "{wide}");
+        for width in [60usize, 45, 30] {
+            let line = status_line(&screen, width);
+            assert!(line.contains("[c]ancel"), "{width}: {line}");
+        }
+        assert!(!status_line(&screen, 60).contains("drive.json"), "the file goes first");
     }
 
     #[test]
