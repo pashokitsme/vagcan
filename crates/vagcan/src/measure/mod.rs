@@ -702,16 +702,16 @@ fn now() -> String {
 pub fn view_picked() -> Result<()> {
     let cars = crate::datadir::vagcan_dir()?.join("cars");
     let levels = [
-        crate::picker::Level::directories("car")
+        crate::ui::picker::Level::directories("car")
             .filled_by("vagcan measure   records one"),
-        crate::picker::Level::files("session")
+        crate::ui::picker::Level::files("session")
             .within("measures")
             .ending(".json")
             .newest_first()
             .filled_by("vagcan measure   then press `s` to keep the drive"),
     ];
-    let mut chooser = crate::picker::Console::new("vagcan measure view FILE.json");
-    match crate::picker::pick_path(&mut chooser, &cars, &levels)? {
+    let mut chooser = crate::ui::picker::Console::new("vagcan measure view FILE.json");
+    match crate::ui::picker::pick_path(&mut chooser, &cars, &levels)? {
         Some(path) => open_view(&path.to_string_lossy()),
         // Backing out of the first list is an answer, not a failure.
         None => Ok(()),

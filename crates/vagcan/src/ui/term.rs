@@ -10,7 +10,7 @@
 //! person at the keyboard as a tool that broke their terminal. On `measure` that
 //! happens in the middle of a drive.
 //!
-//! So the restore hangs off `Drop`, the way [`picker`](crate::picker) already
+//! So the restore hangs off `Drop`, the way [`picker`](crate::ui::picker) already
 //! did it: `?` unwinds through this, and so does a panic.
 //!
 //! **Nothing is put back that was not switched on.** A [`Guard`] holds the list

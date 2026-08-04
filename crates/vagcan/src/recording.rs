@@ -13,7 +13,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::{analyse, calibrate, discover, picker};
+use crate::ui::picker;
+use crate::{analyse, calibrate, discover};
 
 #[derive(Subcommand)]
 pub enum Tool {
