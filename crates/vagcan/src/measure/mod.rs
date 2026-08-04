@@ -1787,6 +1787,142 @@ mod tests {
         }
     }
 
+    /// A session with one launch mark, one rolling mark, and a car described
+    /// well enough that the computed block exists.
+    fn recorded_session() -> (Meta, Vec<Recorded>) {
+        use session::{Mark, Run, Samples, Span};
+
+        let mut samples = Samples::default();
+        let mut t = -1.0;
+        while t <= 8.0 {
+            let v: f64 = if t <= 0.0 { 0.0 } else { 4.0 * t };
+            samples.speed.push(t, v);
+            samples.engine_speed.push(t, 1000.0 + 200.0 * v.min(20.0));
+            samples.pedal.push(t, if t < 0.0 { 0.0 } else { 102.0 });
+            samples.gear.push(t, if t < 3.0 { "1" } else { "2" });
+            t += 0.05;
+        }
+        let run = Run {
+            index: 1,
+            samples,
+            launch: None,
+            marks: vec![
+                Mark {
+                    from_kmh: 0,
+                    to_kmh: 100,
+                    closed_at: 6.944,
+                    seconds: 6.944,
+                    bracket: Some(Span { earliest: 6.85, latest: 7.04 }),
+                },
+                Mark { from_kmh: 50, to_kmh: 100, closed_at: 6.944, seconds: 3.472, bracket: None },
+            ],
+            aborted: false,
+            degraded: false,
+        };
+        let setting = report::Setting::default();
+        let derived = report::recompute(&run, &setting);
+        let meta = Meta {
+            vin: Some("TMBJJ7NE1J0000000".into()),
+            units: Vec::new(),
+            marks: vec![(0, 100), (50, 100)],
+            speed_source: "7E1:F40D".into(),
+            speed_scale: 1.0,
+            accel_window_s: 0.3,
+            setting,
+            grade_percent: 0.0,
+            headwind_ms: 0.0,
+            car_file: None,
+            channels: Vec::new(),
+        };
+        let recorded = vec![Recorded {
+            run,
+            derived,
+            at: "2026-08-04T01:00:00+03:00".into(),
+            rho: Some((1.19, true)),
+        }];
+        (meta, recorded)
+    }
+
+    #[test]
+    fn the_page_reads_the_field_names_the_writer_writes() {
+        // This is the defect that already happened: the page was written
+        // against `bias_s` — the one-signed launch model — while the writer
+        // emitted `bracket_s`, so `measure view` silently dropped the interval
+        // and printed a bare midpoint. Both sides were valid on their own, and
+        // nothing failed; only opening the page in a browser showed it.
+        //
+        // So the contract is asserted directly: every field the page reads off
+        // a mark or off the config must be one the writer emits.
+        let page = include_str!("view.html");
+        let (meta, recorded) = recorded_session();
+        let document = document(&meta, &recorded, false, Some(21.3), Some(0.047));
+
+        // Fields legitimately absent from *this* session, each for a reason
+        // that is about the run and not about the contract.
+        let absent: &[&str] = &[
+            // Only a car file supplies the road load, and none is set here.
+            "cda",
+            "cda_source",
+            "crr",
+            "crr_source",
+            "mass_kg",
+            "tyre",
+            // The bracket and the ± are exclusive by construction: a mark has
+            // one or the other, never both, and the page reads both names.
+            "sigma_s",
+        ];
+
+        let config = document["config"].as_object().expect("a config object");
+        for name in accessors(page, "CFG") {
+            assert!(
+                config.contains_key(&name) || absent.contains(&name.as_str()),
+                "the page reads CFG.{name} and the writer never writes it"
+            );
+        }
+
+        let marks = document["runs"][0]["marks"].as_array().expect("marks");
+        let written: std::collections::BTreeSet<String> = marks
+            .iter()
+            .filter_map(|mark| mark.as_object())
+            .flat_map(|mark| mark.keys().cloned())
+            .collect();
+        for name in accessors(page, "m") {
+            assert!(
+                written.contains(&name) || absent.contains(&name.as_str()),
+                "the page reads m.{name} off a mark and the writer never writes it"
+            );
+        }
+        // The test is worthless if it found nothing to check.
+        assert!(written.contains("bracket_s"), "{written:?}");
+        assert!(config.contains_key("speed_source"), "{config:?}");
+    }
+
+    /// Every `<object>.<field>` the page reads, for one object name.
+    ///
+    /// Deliberately not applied to the page's `d` (the derived block): `d` is
+    /// also the parameter name of an unrelated callback over dropped series, so
+    /// scanning for it would assert against fields that are not the writer's to
+    /// provide. `CFG` and `m` are used for one thing each.
+    fn accessors(page: &str, object: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        let needle = format!("{object}.");
+        for (at, _) in page.match_indices(&needle) {
+            // `.foo` inside `bar.CFG.foo` is not an access on `CFG`.
+            let before = page[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            let rest = &page[at + needle.len()..];
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            if end > 0 {
+                out.insert(rest[..end].to_string());
+            }
+        }
+        out
+    }
+
     #[test]
     fn a_session_refuses_a_schema_it_does_not_know_by_name() {
         let dir = std::env::temp_dir().join(format!("vagcan-measure-{}", std::process::id()));
