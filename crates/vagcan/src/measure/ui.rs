@@ -993,7 +993,7 @@ mod tests {
                 },
                 ValueRow {
                     name: "power".into(),
-                    value: "108 kW (147 PS)".into(),
+                    value: crate::measure::report::power_figure(108.0),
                     origin: Origin::Computed("estimate"),
                 },
             ],
