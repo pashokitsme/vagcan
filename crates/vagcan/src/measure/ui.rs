@@ -13,9 +13,14 @@
 //! current speed for one specific reason: arming needs a true zero, and a car
 //! creeping at 0.4 km/h would otherwise sit there looking broken.
 //!
-//! **The table carries every value; the chart carries one.** Ten rows are
-//! readable and ten series are not, so one series is drawn at a time, switched
-//! with the arrow keys and named in its own border.
+//! **The table carries every value; the chart carries a few.** Ten rows are
+//! readable and ten lines are not, so the chart takes them three at a time on
+//! at most two scales, overlaid rather than paged one by one — a driver asked
+//! for speed, engine speed, power and acceleration on the same picture, and one
+//! series at a time cannot answer "where did it lose the time". What will not
+//! fit on a page is one `←`/`→` away, and every line says in the key what it is,
+//! what it is measured in, and whether it was read off the bus or worked out
+//! here.
 //!
 //! **A tone marks each closed mark**, because the screen is unreadable at the
 //! moment the information arrives. The player is spawned and never waited on: a
@@ -175,12 +180,87 @@ impl MarkRow {
 /// One series the chart can show.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Series {
-    /// What the border calls it.
+    /// What the key calls it.
     pub label: String,
+    /// What it is measured in — the catalog's own word for a channel it
+    /// resolved, or the unit the computation produces for one this tool worked
+    /// out. It is what groups lines onto a scale, so a series without one has a
+    /// scale of its own by definition.
+    pub unit: String,
     pub points: Track,
-    /// A derived series' running end is causal by construction, and the border
-    /// says so rather than leaving it to be assumed.
-    pub causal: bool,
+    /// Where the line came from, the same distinction the value table draws.
+    ///
+    /// The chart is the one place it would be easiest to drop, and a line whose
+    /// origin is not stated is indistinguishable from a measurement. A derived
+    /// series' running end is causal by construction, which is what
+    /// `Computed("trailing")` says.
+    pub origin: Origin,
+}
+
+impl Series {
+    fn computed(&self) -> bool {
+        matches!(self.origin, Origin::Computed(_))
+    }
+
+    /// The lowest and highest value in the series, or `None` when there is
+    /// nothing to bound — an empty series, or one that has not moved.
+    fn span(&self) -> Option<(f64, f64)> {
+        let low = self.points.v.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = self.points.v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (low.is_finite() && high.is_finite()).then_some((low, high))
+    }
+}
+
+/// How many lines one chart carries, and how many scales it puts them on.
+///
+/// The browser page caps a hand-picked set at three series and two Y axes, and
+/// says why: rpm at 6480 beside boost at 2.1 bar destroys both scales, and
+/// dropping one quietly is worse than saying so. A terminal has a fraction of
+/// the room and **no second Y axis to draw on at all** — `ratatui::Chart` has
+/// one — so the cap here is the same three lines and a stricter two units: one
+/// drawn on the axis in its own numbers, the other folded onto that axis and
+/// printed in the key with the range it was folded from. A curve whose axis is
+/// not shown would be decoration; the range is that axis, in words.
+///
+/// What does not fit is one `←`/`→` away, and the key says which page this is.
+const MAX_LINES: usize = 3;
+const MAX_UNITS: usize = 2;
+
+/// One colour per line, in a fixed order so a series does not change colour from
+/// one cycle to the next.
+///
+/// Colour is how a driver tells three lines apart at a glance. It is not the
+/// only way they are told apart — a computed line is drawn with a different
+/// marker and named with a different glyph in the key — because a terminal that
+/// will not colour, or an eye that will not separate these three, must still be
+/// able to read the chart.
+const LINE_COLOURS: [Color; MAX_LINES] = [Color::Cyan, Color::Magenta, Color::Yellow];
+
+/// Which series share one chart, in the order [`Series`] came in.
+///
+/// Greedy and stable: a page takes series until it would exceed [`MAX_LINES`]
+/// or [`MAX_UNITS`], then a new page starts. Stable matters more than clever —
+/// `←`/`→` has to mean the same thing on the next cycle as it did on this one,
+/// and a page that reshuffles itself as a channel starts answering is a page
+/// nobody can navigate at 100 km/h.
+pub fn pages(series: &[Series]) -> Vec<Vec<usize>> {
+    let mut pages: Vec<Vec<usize>> = Vec::new();
+    for (i, next) in series.iter().enumerate() {
+        let fits = pages.last().is_some_and(|page: &Vec<usize>| {
+            if page.len() >= MAX_LINES {
+                return false;
+            }
+            let mut units: Vec<&str> = page.iter().map(|j| series[*j].unit.as_str()).collect();
+            units.sort_unstable();
+            units.dedup();
+            units.contains(&next.unit.as_str()) || units.len() < MAX_UNITS
+        });
+        match fits {
+            true => pages.last_mut().expect("a page to add to").push(i),
+            false => pages.push(vec![i]),
+        }
+    }
+    pages
 }
 
 /// Everything the screen draws, assembled by the poll loop each cycle.
@@ -194,6 +274,7 @@ pub struct Screen {
     pub rows: Vec<ValueRow>,
     pub marks: Vec<MarkRow>,
     pub series: Vec<Series>,
+    /// Which page of overlaid series is up, as [`pages`] divides them.
     pub chart: usize,
     /// The achieved rate, measured. There is no `--hz`, and a rate printed
     /// before the loop ran would be a setting pretending to be a measurement.
@@ -214,9 +295,10 @@ pub struct Screen {
 #[derive(Clone, Debug, Default)]
 pub struct Controls {
     pub chart: usize,
-    /// How many series there are to walk. Kept here rather than passed in, so
-    /// that a caller cannot hold the keyboard state and the count at once and
-    /// have them disagree.
+    /// How many chart pages there are to walk — [`pages`]`(…).len()`, not the
+    /// number of series. Kept here rather than passed in, so that a caller
+    /// cannot hold the keyboard state and the count at once and have them
+    /// disagree.
     pub charts: usize,
     /// Set by the first `q` with unsaved runs, cleared by anything else. Two
     /// keystrokes to throw away a drive, one to keep it.
@@ -396,50 +478,222 @@ fn draw_values(frame: &mut Frame, screen: &Screen, area: Rect) {
     frame.render_widget(table, area);
 }
 
-/// One series, named in its own border.
+/// A number as a person reads it off an axis: as many decimals as its size
+/// leaves room to mean anything, and no more.
+fn tick(value: f64) -> String {
+    match value.abs() {
+        v if v >= 100.0 => format!("{value:.0}"),
+        v if v >= 10.0 => format!("{value:.1}"),
+        _ => format!("{value:.2}"),
+    }
+}
+
+/// One page's lines, overlaid, with the key that makes them readable.
 ///
 /// Drawn from the accumulated run buffer rather than from the last point alone,
 /// so the shape of the run is visible while it is happening.
+///
+/// **The lines have wildly different scales** — 100 km/h against 6000 rpm — so
+/// one unit owns the drawn axis and everything else is folded onto it. Folding
+/// is what keeps a 6000-rpm line from flattening the speed trace into a stripe
+/// along the bottom, and the price of it is that the folded line's numbers are
+/// not on the axis. They are in the key instead, as the range the fold came
+/// from, because a curve whose axis is nowhere is decoration rather than data.
 fn draw_chart(frame: &mut Frame, screen: &Screen, area: Rect) {
-    let Some(series) = screen.series.get(screen.chart) else {
-        frame.render_widget(Block::default().borders(Borders::ALL), area);
+    let pages = pages(&screen.series);
+    let Some(page) = pages.get(screen.chart.min(pages.len().saturating_sub(1))) else {
+        frame.render_widget(
+            Block::default().borders(Borders::ALL).title(" chart — nothing read yet "),
+            area,
+        );
         return;
     };
-    let points: Vec<(f64, f64)> =
-        (0..series.points.len()).map(|i| (series.points.t[i], series.points.v[i])).collect();
-    let bounds = |values: &[f64]| {
-        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
-        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        match low.is_finite() && high.is_finite() && high > low {
-            true => [low, high],
-            // A flat or empty series still needs an axis, or the chart draws
-            // nothing and looks like a failure to read the car.
-            false => [0.0, 1.0],
-        }
-    };
-    let x = bounds(&series.points.t);
-    let y = bounds(&series.points.v);
 
-    let causal = if series.causal { " (trailing)" } else { "" };
-    let title = format!(" {}{causal} ── ← → to change ", series.label);
-    let data = [Dataset::default()
-        .marker(Marker::Braille)
-        .graph_type(GraphType::Line)
-        .style(Style::default().fg(Color::Cyan))
-        .data(&points)];
-    let chart = Chart::new(data.to_vec())
-        .block(Block::default().borders(Borders::ALL).title(title))
+    // The key has to fit or it is not a key. Lines come off the tail of the page
+    // until it does, and the count that went is printed rather than left for the
+    // driver to notice: a screen that drops a series must say it dropped it.
+    let room = area.width.saturating_sub(2) as usize;
+    let mut drawn: Vec<usize> = page.clone();
+    let mut dropped = 0usize;
+    while drawn.len() > 1 && key_line(screen, &drawn, dropped, pages.len(), screen.chart).width() > room
+    {
+        drawn.pop();
+        dropped += 1;
+    }
+
+    // The unit that came first owns the axis; the second is folded onto it.
+    let mut units: Vec<&str> = Vec::new();
+    for i in &drawn {
+        let unit = screen.series[*i].unit.as_str();
+        if !units.contains(&unit) {
+            units.push(unit);
+        }
+    }
+    let group_span = |unit: &str| {
+        drawn
+            .iter()
+            .filter(|i| screen.series[**i].unit == unit)
+            .filter_map(|i| screen.series[*i].span())
+            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+    };
+    // A flat or empty group still needs bounds, or the chart draws nothing and
+    // looks like a failure to read the car.
+    let widen = |span: Option<(f64, f64)>| match span {
+        Some((lo, hi)) if hi > lo => (lo, hi),
+        Some((lo, _)) => (lo - 0.5, lo + 0.5),
+        None => (0.0, 1.0),
+    };
+    let axis = widen(group_span(units[0]));
+
+    // Time is the same for every line, and it is drawn from the oldest sample
+    // kept rather than from the session clock: the buffer is emptied at each
+    // launch, so during a run this reads as seconds since the car set off.
+    let t0 = drawn
+        .iter()
+        .filter_map(|i| screen.series[*i].points.t.first().copied())
+        .fold(f64::INFINITY, f64::min);
+    let t1 = drawn
+        .iter()
+        .filter_map(|i| screen.series[*i].points.t.last().copied())
+        .fold(f64::NEG_INFINITY, f64::max);
+    let (t0, t1) = match t0.is_finite() && t1 > t0 {
+        true => (t0, t1),
+        false => (0.0, 1.0),
+    };
+
+    let mut plotted: Vec<Vec<(f64, f64)>> = Vec::new();
+    for i in &drawn {
+        let series = &screen.series[*i];
+        let (lo, hi) = widen(group_span(&series.unit));
+        let fold = series.unit != units[0];
+        plotted.push(
+            (0..series.points.len())
+                .map(|n| {
+                    let y = series.points.v[n];
+                    let y = match fold {
+                        true => axis.0 + (y - lo) / (hi - lo) * (axis.1 - axis.0),
+                        false => y,
+                    };
+                    (series.points.t[n] - t0, y)
+                })
+                .collect(),
+        );
+    }
+
+    let data: Vec<Dataset> = drawn
+        .iter()
+        .zip(&plotted)
+        .enumerate()
+        .map(|(n, (i, points))| {
+            let series = &screen.series[*i];
+            Dataset::default()
+                // A computed line is dotted where a read one is solid, so the
+                // distinction survives a terminal that will not colour.
+                .marker(match series.computed() {
+                    true => Marker::Dot,
+                    false => Marker::Braille,
+                })
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(LINE_COLOURS[n % LINE_COLOURS.len()]))
+                .data(points)
+        })
+        .collect();
+
+    let chart = Chart::new(data)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(key_line(screen, &drawn, dropped, pages.len(), screen.chart))
+                .title_bottom(notes_line(screen, &drawn, units.len(), pages.len())),
+        )
         .x_axis(
             Axis::default()
-                .bounds(x)
-                .labels([format!("{:.0}s", x[0]), format!("{:.0}s", x[1])]),
+                .title("time")
+                .bounds([0.0, t1 - t0])
+                .labels(["0s".to_string(), format!("{:.1}s", t1 - t0)]),
         )
         .y_axis(
             Axis::default()
-                .bounds(y)
-                .labels([format!("{:.1}", y[0]), format!("{:.1}", y[1])]),
+                .title(units[0].to_string())
+                .bounds([axis.0, axis.1])
+                .labels([tick(axis.0), tick(axis.1)]),
         );
     frame.render_widget(chart, area);
+}
+
+/// The key: what each line is, in its own colour, with the range of any line
+/// that had to be folded onto somebody else's axis.
+fn key_line<'a>(
+    screen: &Screen,
+    drawn: &[usize],
+    dropped: usize,
+    pages: usize,
+    page: usize,
+) -> Line<'a> {
+    let mut spans = vec![Span::raw(" ")];
+    let first_unit = drawn.first().map(|i| screen.series[*i].unit.clone()).unwrap_or_default();
+    for (n, i) in drawn.iter().enumerate() {
+        let series = &screen.series[*i];
+        if n > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        }
+        let mut text = String::new();
+        if series.computed() {
+            text.push('⋯');
+        }
+        text.push_str(&series.label);
+        // Only a folded line carries a range, which is what makes the range the
+        // marker: the axis says everything about the line that owns it.
+        if series.unit != first_unit
+            && let Some((lo, hi)) = series.span()
+        {
+            text.push_str(&format!(" [{}…{} {}]", tick(lo), tick(hi), series.unit));
+        }
+        if let Origin::Computed(note) = series.origin {
+            text.push(' ');
+            text.push_str(note);
+        }
+        spans.push(Span::styled(
+            text,
+            Style::default().fg(LINE_COLOURS[n % LINE_COLOURS.len()]),
+        ));
+    }
+    if dropped > 0 {
+        spans.push(Span::styled(
+            format!("  +{dropped} no room"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    if pages > 1 {
+        spans.push(Span::styled(
+            format!("  {}/{pages}", page.min(pages - 1) + 1),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+/// The bottom border: what the glyphs on this particular chart mean, and
+/// nothing about the ones it is not carrying.
+fn notes_line<'a>(screen: &Screen, drawn: &[usize], units: usize, pages: usize) -> Line<'a> {
+    let mut notes: Vec<String> = Vec::new();
+    if drawn.iter().any(|i| screen.series[*i].computed()) {
+        notes.push("⋯ computed".to_string());
+    }
+    if units > 1 {
+        notes.push("[ ] own scale".to_string());
+    }
+    if pages > 1 {
+        notes.push("←→ chart".to_string());
+    }
+    match notes.is_empty() {
+        true => Line::default(),
+        false => Line::styled(
+            format!(" {} ", notes.join(" · ")),
+            Style::default().fg(Color::DarkGray),
+        ),
+    }
 }
 
 fn draw_marks(frame: &mut Frame, screen: &Screen, area: Rect) {
@@ -555,6 +809,128 @@ fn bell() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Draw a screen and hand back what a person would see, one line per row.
+    ///
+    /// Asserting on the rendered text rather than on the widgets is the only
+    /// way to catch the things that actually went wrong on the car: a column
+    /// too narrow for what it prints, a title truncated to nonsense, a series
+    /// silently missing from a legend.
+    fn screen_lines(screen: &Screen, w: u16, h: u16) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                let line: String =
+                    (0..w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<Vec<_>>().concat();
+                line.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn screen_text(screen: &Screen, w: u16, h: u16) -> String {
+        screen_lines(screen, w, h).join("\n")
+    }
+
+    /// A run in progress on a car with a profile: the busiest the live screen
+    /// gets, which is the case every size has to survive.
+    fn demo_screen() -> Screen {
+        // Two shapes, not one scaled twice: a speed that rises through the run
+        // and an engine speed that saws up and back at each shift. Two curves of
+        // the same shape would overlap exactly once folded, and a chart test
+        // that cannot tell one line from two proves nothing.
+        let ramp = |scale: f64, offset: f64| {
+            let mut track = Track::default();
+            for i in 0..60 {
+                let t = f64::from(i) * 0.05;
+                track.push(t, offset + scale * t * t);
+            }
+            track
+        };
+        let saw = |low: f64, high: f64| {
+            let mut track = Track::default();
+            for i in 0..60 {
+                let t = f64::from(i) * 0.05;
+                track.push(t, low + (high - low) * ((t * 1.2) % 1.0));
+            }
+            track
+        };
+        Screen {
+            band: band(&Phase::Running { elapsed_s: 4.31 }, None),
+            banner: None,
+            rows: vec![
+                ValueRow { name: "speed".into(), value: "62.4 km/h".into(), origin: Origin::Bus },
+                ValueRow { name: "engine".into(), value: "4310 /min".into(), origin: Origin::Bus },
+                ValueRow { name: "gear".into(), value: "3".into(), origin: Origin::Bus },
+                ValueRow {
+                    name: "boost".into(),
+                    value: "2.06 / 2.15 bar (act/spec)".into(),
+                    origin: Origin::Bus,
+                },
+                ValueRow {
+                    name: "accel".into(),
+                    value: "0.41 g".into(),
+                    origin: Origin::Computed("trailing"),
+                },
+                ValueRow {
+                    name: "power".into(),
+                    value: "108 kW (147 PS)".into(),
+                    origin: Origin::Computed("estimate"),
+                },
+            ],
+            marks: vec![
+                MarkRow { name: "0-10".into(), seconds: Some(1.04), from_launch: true },
+                MarkRow { name: "50-100".into(), seconds: Some(3.24), from_launch: false },
+                MarkRow { name: "0-100".into(), seconds: None, from_launch: true },
+            ],
+            series: vec![
+                Series {
+                    label: "speed".into(),
+                    unit: "km/h".into(),
+                    points: ramp(4.0, 0.0),
+                    origin: Origin::Bus,
+                },
+                Series {
+                    label: "engine speed".into(),
+                    unit: "/min".into(),
+                    points: saw(1800.0, 6400.0),
+                    origin: Origin::Bus,
+                },
+                Series {
+                    label: "power".into(),
+                    unit: "kW".into(),
+                    points: ramp(9.0, 4.0),
+                    origin: Origin::Computed("estimate"),
+                },
+                Series {
+                    label: "accel".into(),
+                    unit: "m/s²".into(),
+                    points: ramp(0.2, 3.0),
+                    origin: Origin::Computed("trailing"),
+                },
+            ],
+            chart: 0,
+            hz: Some(21.4),
+            file: Some("drive.json".into()),
+            warning: None,
+            table: None,
+        }
+    }
+
+    #[test]
+    #[ignore = "not an assertion — prints the screen so a person can read it"]
+    fn show() {
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            println!("\n=== {w}×{h} ===");
+            println!("{}", screen_text(&demo_screen(), w, h));
+            let mut second = demo_screen();
+            second.chart = 1;
+            println!("--- page 2 ---");
+            println!("{}", screen_text(&second, w, h));
+        }
+    }
 
     #[test]
     fn every_state_the_machine_can_be_in_has_a_band() {
@@ -681,6 +1057,84 @@ mod tests {
     }
 
     #[test]
+    fn a_page_stops_at_three_lines_and_two_scales_and_the_rest_gets_its_own_page() {
+        let series = |label: &str, unit: &str| Series {
+            label: label.into(),
+            unit: unit.into(),
+            points: Track::default(),
+            origin: Origin::Bus,
+        };
+        // Four units: two per page, in the order they were offered.
+        let four = [
+            series("speed", "km/h"),
+            series("engine speed", "/min"),
+            series("power", "kW"),
+            series("accel", "m/s²"),
+        ];
+        assert_eq!(pages(&four), vec![vec![0, 1], vec![2, 3]]);
+
+        // Series that share a unit share a scale, so three of them are one page
+        // — and a fourth starts another even though it costs no new scale.
+        let same = [
+            series("boost actual", "bar"),
+            series("boost specified", "bar"),
+            series("boost peak", "bar"),
+            series("boost held", "bar"),
+        ];
+        assert_eq!(pages(&same), vec![vec![0, 1, 2], vec![3]]);
+
+        assert!(pages(&[]).is_empty(), "nothing read is no pages, not one empty one");
+    }
+
+    #[test]
+    fn the_chart_says_what_it_is_plotting_in_what_unit_and_where_it_came_from() {
+        // "Я не сразу понял что означает график": a border reading `speed` and
+        // two bare numbers is not enough to read a chart from.
+        let screen = demo_screen();
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = screen_text(&screen, w, h);
+            assert!(text.contains("speed"), "{w}×{h} does not name the line:\n{text}");
+            assert!(text.contains("engine speed"), "{w}×{h} plots one line, not two:\n{text}");
+            assert!(text.contains("km/h"), "{w}×{h} drops the axis unit:\n{text}");
+            assert!(text.contains("time"), "{w}×{h} does not say what it is over:\n{text}");
+            // The folded line's own numbers are not on the axis, so they are in
+            // the key: a curve whose axis is nowhere is decoration.
+            assert!(text.contains("/min]"), "{w}×{h} folds a line and hides its scale:\n{text}");
+            assert!(
+                text.contains("own scale"),
+                "{w}×{h} folds a line without admitting it:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_computed_line_never_passes_for_a_measured_one() {
+        // Power and live acceleration were never on the bus. The value table
+        // says so in a column of its own and the chart must not be the one
+        // place the distinction is dropped.
+        let mut screen = demo_screen();
+        screen.chart = 1;
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = screen_text(&screen, w, h);
+            assert!(text.contains("⋯power"), "{w}×{h}:\n{text}");
+            assert!(text.contains("⋯ computed"), "{w}×{h} draws it with no key:\n{text}");
+            assert!(text.contains("estimate"), "{w}×{h} loses the qualifier:\n{text}");
+            assert!(text.contains("trailing"), "{w}×{h} loses the causal note:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_chart_with_no_room_for_a_line_says_it_dropped_it() {
+        // Degrading is allowed; degrading quietly is not.
+        let screen = demo_screen();
+        let narrow = screen_text(&screen, 44, 20);
+        assert!(narrow.contains("no room"), "{narrow}");
+        // And the line that is left is still named, so the chart never becomes
+        // an unlabelled curve again.
+        assert!(narrow.contains("speed"), "{narrow}");
+    }
+
+    #[test]
     fn a_row_says_whether_its_number_was_on_the_bus() {
         // A number that was never on the bus must not look like one that was.
         assert_eq!(Origin::Bus.columns(), ("bus", ""));
@@ -762,10 +1216,20 @@ mod tests {
             ],
             marks: vec![MarkRow { name: "0-100".into(), seconds: None, from_launch: true }],
             series: vec![
-                Series { label: "speed".into(), points: speed, causal: false },
+                Series {
+                    label: "speed".into(),
+                    unit: "km/h".into(),
+                    points: speed,
+                    origin: Origin::Bus,
+                },
                 // A series with nothing in it yet, which is every series for the
                 // first cycle of every run.
-                Series { label: "accel".into(), points: Track::default(), causal: true },
+                Series {
+                    label: "accel".into(),
+                    unit: "m/s²".into(),
+                    points: Track::default(),
+                    origin: Origin::Computed("trailing"),
+                },
             ],
             chart: 1,
             hz: Some(21.4),
