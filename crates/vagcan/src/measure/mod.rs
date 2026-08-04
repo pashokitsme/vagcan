@@ -1050,6 +1050,17 @@ async fn drive<R: BatchReader>(
     let mut recorded: Vec<Recorded> = Vec::new();
     // Events a keystroke caused, waiting for this cycle's one event pass.
     let mut pending: Vec<session::Event> = Vec::new();
+    // Where the session was last written, so a discard can rewrite it. `--out`
+    // fixes it up front; `s` and Enter set it to wherever `save` chose.
+    let mut written_to: Option<String> = opts.out.map(str::to_string);
+    // Runs thrown away that had not been written.
+    //
+    // `Session` counts the runs the stopwatch closed and has no notion of one
+    // being taken back, so the difference is held here. `recorded` is what the
+    // writer writes, so it is `recorded` that decides what is unsaved — and a
+    // save clears this to nothing, because after one there is neither an
+    // unsaved run nor a discard still owed against the count.
+    let mut discarded_unsaved = 0usize;
     let mut charts: BTreeMap<String, Track> = BTreeMap::new();
     let mut values: BTreeMap<&'static str, String> = BTreeMap::new();
     let mut closed: BTreeMap<(u32, u32), Seconds> = BTreeMap::new();
@@ -1117,8 +1128,16 @@ async fn drive<R: BatchReader>(
         let mut records: Records = Vec::new();
 
         for (index, batch) in due(&plan, cycles).into_iter().enumerate() {
+            let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
             if terminal.is_some()
-                && drain(&mut controls, &mut session, &mut warning, &mut pending, &mut quit)?
+                && drain(
+                    &mut controls,
+                    &mut session,
+                    unsaved,
+                    &mut warning,
+                    &mut pending,
+                    &mut quit,
+                )?
             {
                 break;
             }
@@ -1168,7 +1187,8 @@ async fn drive<R: BatchReader>(
         // have to wait a cycle for its events to be looked at, and a quit in
         // that window used to drop them entirely.
         if terminal.is_some() {
-            drain(&mut controls, &mut session, &mut warning, &mut pending, &mut quit)?;
+            let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
+            drain(&mut controls, &mut session, unsaved, &mut warning, &mut pending, &mut quit)?;
         }
 
         // **Every event is handled, whatever produced it.** The events a
@@ -1236,6 +1256,7 @@ async fn drive<R: BatchReader>(
                     if let Some(path) = opts.out {
                         write_session(path, &meta, &recorded, &session)?;
                         session.on_command(session::Command::Save);
+                        discarded_unsaved = 0;
                     }
                 }
                 session::Event::Armed => {}
@@ -1246,9 +1267,62 @@ async fn drive<R: BatchReader>(
             match save(opts.out, &meta, &recorded, &session) {
                 Ok(path) => {
                     session.on_command(session::Command::Save);
+                    discarded_unsaved = 0;
                     warning = Some(messages::saved(&path, recorded.len()));
+                    written_to = Some(path);
                 }
                 Err(why) => warning = Some(format!("{why:#}")),
+            }
+        }
+
+        // `d` — throw the run whose results are on screen away. It leaves
+        // `recorded`, which is what the writer writes, so it leaves the file
+        // and the unsaved count with it.
+        if controls.take_discard() {
+            match table.is_some().then(|| recorded.pop()).flatten() {
+                None => warning = Some(ui::nothing_to_discard()),
+                Some(dropped) => {
+                    // Runs are recorded in order and saved in one go, so the
+                    // last one is unwritten exactly when anything is.
+                    let written = session.unsaved().saturating_sub(discarded_unsaved) == 0;
+                    let rewritten = match written {
+                        true => written_to.clone(),
+                        false => {
+                            discarded_unsaved += 1;
+                            None
+                        }
+                    };
+                    if let Some(path) = &rewritten {
+                        write_session(path, &meta, &recorded, &session)?;
+                    }
+                    warning = Some(ui::discarded(
+                        dropped.run.index,
+                        rewritten.as_deref(),
+                        recorded.len(),
+                    ));
+                    start_screen(&mut table, &mut closed, &mut charts);
+                }
+            }
+        }
+
+        // Enter — keep it and go again. The next launch has to begin on the
+        // screen the first one began on, and until now the results table was
+        // still up when the car moved off, which reads as a run nobody noticed.
+        if controls.take_keep() {
+            match table.is_some() {
+                false => warning = Some(ui::nothing_to_keep()),
+                true => match save(opts.out, &meta, &recorded, &session) {
+                    Ok(path) => {
+                        session.on_command(session::Command::Save);
+                        discarded_unsaved = 0;
+                        warning = Some(ui::kept(&path, recorded.len()));
+                        written_to = Some(path);
+                        start_screen(&mut table, &mut closed, &mut charts);
+                    }
+                    // The results stay up: a run whose save failed is a run the
+                    // driver still has to decide about.
+                    Err(why) => warning = Some(format!("{why:#}")),
+                },
             }
         }
         if quit {
@@ -1265,8 +1339,9 @@ async fn drive<R: BatchReader>(
             println!("{}", report::results(&record.run, &record.derived, &meta.setting));
         }
     }
-    if session.unsaved() > 0 {
-        println!("{}", messages::unsaved_on_quit(session.unsaved()));
+    let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
+    if unsaved > 0 {
+        println!("{}", messages::unsaved_on_quit(unsaved));
     }
     result
 }
@@ -1373,6 +1448,7 @@ fn merge(into: &mut session::SampleSet, from: session::SampleSet) {
 fn drain(
     controls: &mut ui::Controls,
     session: &mut session::Session,
+    unsaved: usize,
     warning: &mut Option<String>,
     events: &mut Vec<session::Event>,
     quit: &mut bool,
@@ -1389,7 +1465,7 @@ fn drain(
         if let TermEvent::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
-            match ui::on_key(controls, key.code, session.unsaved()) {
+            match ui::on_key(controls, key.code, unsaved) {
                 ui::Action::Nothing => {}
                 ui::Action::Session(command) => {
                     // Handed back rather than swallowed: a cancel closes a run,
@@ -1406,6 +1482,8 @@ fn drain(
                     events.extend(caused);
                 }
                 ui::Action::Save => controls.ask_save(),
+                ui::Action::Discard => controls.ask_discard(),
+                ui::Action::KeepGoing => controls.ask_keep(),
                 ui::Action::Refuse(text) => *warning = Some(text),
                 ui::Action::Quit => {
                     *quit = true;
@@ -1415,6 +1493,22 @@ fn drain(
         }
     }
     Ok(false)
+}
+
+/// Put the screen back the way a run finds it: no results table, no marks from
+/// the last run, an empty chart.
+///
+/// The stopwatch re-arms by itself, so this is only about what is drawn — but
+/// what is drawn is the whole of what a driver has to go on, and a post-run
+/// table still up as the car moves off reads as a run that was not noticed.
+fn start_screen(
+    table: &mut Option<String>,
+    closed: &mut BTreeMap<(u32, u32), Seconds>,
+    charts: &mut BTreeMap<String, Track>,
+) {
+    *table = None;
+    closed.clear();
+    charts.clear();
 }
 
 /// What each channel last read, as the catalog's own `describe` renders it.

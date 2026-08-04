@@ -324,6 +324,12 @@ pub struct Controls {
     /// Set by `s`. The write itself is deferred out of the key handler, so that
     /// a file is never created between two batches of one cycle.
     save_requested: bool,
+    /// Set by `d`. Deferred for the same reason as a save, and for one more:
+    /// what a discard has to reach — the recorded runs and the file — is the
+    /// loop's, not the keyboard's.
+    discard_requested: bool,
+    /// Set by Enter.
+    keep_requested: bool,
 }
 
 impl Controls {
@@ -336,6 +342,22 @@ impl Controls {
     pub fn take_save(&mut self) -> bool {
         std::mem::take(&mut self.save_requested)
     }
+
+    pub fn ask_discard(&mut self) {
+        self.discard_requested = true;
+    }
+
+    pub fn take_discard(&mut self) -> bool {
+        std::mem::take(&mut self.discard_requested)
+    }
+
+    pub fn ask_keep(&mut self) {
+        self.keep_requested = true;
+    }
+
+    pub fn take_keep(&mut self) -> bool {
+        std::mem::take(&mut self.keep_requested)
+    }
 }
 
 /// What a keystroke asked for.
@@ -346,6 +368,12 @@ pub enum Action {
     Session(session::Command),
     /// Write the session out, then tell the state machine it is saved.
     Save,
+    /// Throw the finished run away. It leaves the session, so it leaves both
+    /// what `Save` would write and the count of what is still unsaved.
+    Discard,
+    /// Keep the finished run and go again: save, then put the screen back the
+    /// way the first run found it.
+    KeepGoing,
     Quit,
     /// `q` with unsaved runs: the message to put on screen, and no quit.
     Refuse(String),
@@ -359,6 +387,45 @@ pub fn nothing_to_cancel() -> String {
     "nothing to cancel — no run is under way. The stopwatch starts itself when \
      the car moves off from a standstill."
         .to_string()
+}
+
+/// What a discard did, and — the part that matters — what it did to the file.
+///
+/// A run already written to `--out` is on disk by the time anybody decides they
+/// did not want it, so "discarded" would be a half-truth on its own: the file
+/// is rewritten without it and the message says which file and how many runs
+/// are left in it. A run that was never written says that instead, because
+/// "rewritten" would be just as misleading the other way.
+pub fn discarded(index: usize, rewritten: Option<&str>, left: usize) -> String {
+    match rewritten {
+        Some(path) => format!(
+            "run {index} discarded. It had already been written, so {path} has been \
+             rewritten without it — {left} run(s) left in the file."
+        ),
+        None => format!(
+            "run {index} discarded. It was never written anywhere, so there is nothing \
+             to undo."
+        ),
+    }
+}
+
+/// `d` with no finished run on screen.
+pub fn nothing_to_discard() -> String {
+    "nothing to discard — [d] throws away the run whose results are on screen, and \
+     none are."
+        .to_string()
+}
+
+/// Enter with no finished run on screen.
+pub fn nothing_to_keep() -> String {
+    "nothing to keep yet — [↵] saves the run whose results are on screen and puts the \
+     screen back for the next one."
+        .to_string()
+}
+
+/// Enter, done: the run is on disk and the screen is the one a run starts on.
+pub fn kept(path: &str, runs: usize) -> String {
+    format!("{runs} run(s) saved to {path}. Ready for the next one.")
 }
 
 /// Handle one key.
@@ -391,6 +458,8 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
         KeyCode::Char('p') => Action::Session(session::Command::PauseTrigger),
         KeyCode::Esc | KeyCode::Char('c') => Action::Session(session::Command::Cancel),
         KeyCode::Char('s') => Action::Save,
+        KeyCode::Char('d') => Action::Discard,
+        KeyCode::Enter => Action::KeepGoing,
         KeyCode::Left if charts > 0 => {
             controls.chart = (controls.chart + charts - 1) % charts;
             Action::Nothing
@@ -405,7 +474,8 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
 
 /// The key hints, which are the keys the design gives this command and no
 /// others.
-const HINTS: &str = " [p]ause [c]ancel [s]ave [←→]chart [q]uit";
+const HINTS: &str =
+    " [p]ause [c]ancel [d]iscard [↵]keep&next [s]ave [←→]chart [q]uit";
 
 /// Draw the whole screen.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
@@ -976,6 +1046,19 @@ mod tests {
             second.chart = 1;
             println!("--- page 2 ---");
             println!("{}", screen_text(&second, w, h));
+            let done = Screen {
+                band: band(&Phase::Done { seconds: Some(6.12) }, None),
+                table: Some(
+                    "  Run 1 — measured\n    0-10    1.04 s (0.94 … 1.13)\n    \
+                     0-100   6.12 s (6.03 … 6.38)\n    50-100  3.24 s ± 0.02\n"
+                        .into(),
+                ),
+                hz: Some(21.4),
+                file: Some("drive.json".into()),
+                ..Screen::default()
+            };
+            println!("--- after the run ---");
+            println!("{}", screen_text(&done, w, h));
         }
     }
 
@@ -1102,6 +1185,55 @@ mod tests {
             Action::Session(session::Command::Cancel)
         );
         assert!(HINTS.contains("[c]ancel"), "{HINTS}");
+    }
+
+    #[test]
+    fn a_finished_run_can_be_thrown_away_or_kept_and_both_are_deferred() {
+        // Neither may happen inside the key handler: what a discard has to
+        // reach — the recorded runs and the file — belongs to the loop, and a
+        // file must never appear between two batches of one cycle.
+        let mut controls = Controls::default();
+        assert_eq!(on_key(&mut controls, KeyCode::Char('d'), 0), Action::Discard);
+        assert_eq!(on_key(&mut controls, KeyCode::Enter, 0), Action::KeepGoing);
+        assert!(HINTS.contains("[d]iscard") && HINTS.contains("[↵]keep&next"), "{HINTS}");
+
+        // And they are on the screen they are for — the one a run ends on,
+        // which is the whole of what is up while the driver decides.
+        let done = Screen {
+            band: band(&Phase::Done { seconds: Some(6.12) }, None),
+            table: Some("  Run 1 — measured\n    0-100  6.12 s (6.03 … 6.38)\n".into()),
+            hz: Some(21.4),
+            ..Screen::default()
+        };
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = screen_text(&done, w, h);
+            assert!(text.contains("[d]iscard"), "{w}×{h}:\n{text}");
+            assert!(text.contains("[↵]keep&next"), "{w}×{h}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_discard_says_whether_anything_had_already_been_written() {
+        // "Discarded" on its own is a half-truth for a run `--out` already put
+        // on disk, and "rewritten" is a half-truth the other way for one that
+        // was never written at all.
+        let written = discarded(3, Some("drive.json"), 2);
+        assert!(written.contains("drive.json") && written.contains("rewritten"), "{written}");
+        assert!(written.contains("2 run"), "{written}");
+        let never = discarded(3, None, 0);
+        assert!(never.contains("never written"), "{never}");
+        assert!(!never.contains("rewritten"), "{never}");
+    }
+
+    #[test]
+    fn a_key_that_needs_a_finished_run_says_so_when_there_is_none() {
+        // Silence is what made the cancel bug unreadable from the driver's
+        // seat; the same family of keys does not get to repeat it.
+        for text in [nothing_to_discard(), nothing_to_keep(), nothing_to_cancel()] {
+            assert!(!text.is_empty());
+        }
+        assert!(nothing_to_discard().contains("[d]"));
+        assert!(nothing_to_keep().contains("[↵]"));
     }
 
     #[test]
