@@ -33,7 +33,9 @@ pub struct ChannelFound {
 ///
 /// Naming the survey commands matters more than naming the missing channel: a
 /// person whose car is not in the catalogs cannot do anything with "speed is
-/// missing", but `survey --diff` is exactly the tool that finds it.
+/// missing", but `survey --diff` is exactly the tool that finds it. The names
+/// the resolution looked under come between the two, because they are what
+/// somebody reading their own corpus can check against without driving.
 pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> String {
     let mut out = String::new();
     let names: Vec<&str> = missing.iter().map(|m| m.key).collect();
@@ -52,6 +54,14 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
             f.key,
             if f.ok { "ok" } else { "not in the catalog" }
         );
+    }
+    // The words, because they are the half of this the reader can act on
+    // without a survey: a car whose corpus calls the channel something else is
+    // the ordinary reason for this refusal, and the only useful thing to tell
+    // its owner is which names their catalogs would have to use.
+    for m in missing.iter().filter(|m| !m.tried.is_empty()) {
+        let names: Vec<String> = m.tried.iter().map(|n| format!("\"{n}\"")).collect();
+        let _ = writeln!(out, "\n    {} was looked for under {}", m.key, names.join(", "));
     }
     let _ = writeln!(
         out,
@@ -370,5 +380,21 @@ mod tests {
         );
         assert!(text.contains("0CW300041G"), "{text}");
         assert!(text.contains("survey --diff"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_channel_says_which_names_were_looked_under() {
+        // The resolution carried them all the way here and then dropped them.
+        // For a car this project has never seen, the words its corpus would
+        // have to use are the only thing the owner can check by reading.
+        let text = missing_channels(
+            &[],
+            &[MissingChannel {
+                key: "speed",
+                tried: vec!["vehicle speed".into(), "road speed".into()],
+            }],
+        );
+        assert!(text.contains("\"vehicle speed\""), "{text}");
+        assert!(text.contains("\"road speed\""), "{text}");
     }
 }
