@@ -128,21 +128,46 @@ fn inflate_with_iv(sc: &SectionCipher<'_>, iv: [u8; 8]) -> Option<Vec<u8>> {
 /// This is cheap (sixty decrypt-and-inflate attempts, most of which die in the
 /// Huffman header) and it is the reason the key cache needs no new format: a
 /// shifted section is openable from the same five bytes as a classic one.
-fn decode_shifted(tag_str: &str, sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> Option<RodSection> {
+///
+/// Also returns the file's `D[2]` — the third byte of the mask, which the
+/// winning anchor pins. It is worth carrying because the mask is a property of
+/// the **file**: knowing it turns the sixty-anchor sweep into a single known
+/// anchor for every other section of the same file, and on the *search* side
+/// that is a 60× saving on hours, not on milliseconds.
+fn decode_shifted(
+    tag_str: &str,
+    tag: &[u8],
+    sc: &SectionCipher<'_>,
+    iv3to8: [u8; 5],
+) -> Option<(RodSection, u8)> {
     let first: [u8; 8] = sc.cipher.get(0..8)?.try_into().ok()?;
     let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
     let mut iv = [0u8; 8];
     iv[0] = t[0] ^ 0x78;
     iv[1] = t[1] ^ 0xda;
     iv[3..8].copy_from_slice(&iv3to8);
+    let model2 = rod_block0_iv(tag)[2];
     deflate_anchors().find_map(|d0| {
         iv[2] = t[2] ^ d0;
-        inflate_with_iv(sc, iv).map(|bytes| RodSection {
-            tag: tag_str.to_string(),
-            status: RodStatus::Zlib,
-            text: Some(decode_latin1(&bytes)),
+        inflate_with_iv(sc, iv).map(|bytes| {
+            let section = RodSection {
+                tag: tag_str.to_string(),
+                status: RodStatus::Zlib,
+                text: Some(decode_latin1(&bytes)),
+            };
+            (section, iv[2] ^ model2)
         })
     })
+}
+
+/// The deflate anchor for a shifted section, once the file's `D[2]` is known.
+///
+/// `plaintext[2] = t[2] ^ IV[2]` and `IV[2] = IV_model[2] ^ D[2]`, so the byte
+/// the searcher would otherwise have to guess sixty times is simple arithmetic.
+fn anchor_from_shift(tag: &[u8], cipher: &[u8], shift2: u8) -> Option<u8> {
+    let first: [u8; 8] = cipher.get(0..8)?.try_into().ok()?;
+    let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
+    Some(t[2] ^ rod_block0_iv(tag)[2] ^ shift2)
 }
 
 /// Decode raw Latin-1 bytes into a `String`, one byte per `char`. Matches
@@ -384,7 +409,7 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
     if !sc.compressed {
         return None;
     }
-    crack::recover_iv3to8(tag, sc.cipher, sc.plainlen)
+    crack::recover_iv3to8(tag, sc.cipher, sc.plainlen, None)
 }
 
 /// Whether the key search has anything to search against.
@@ -424,6 +449,9 @@ pub fn decode_rod_recover(
 ) -> Vec<RodSection> {
     let mut sections = Vec::new();
     let mut pos = 0usize;
+    // The IV shift is a property of the file, so the first shifted section to
+    // open hands its third mask byte to every section after it.
+    let mut shift2: Option<u8> = None;
     while let Some((tag, payload_start)) = find_next_tag(data, pos) {
         match find_close(data, payload_start, &tag) {
             Some((payload_end, next_pos)) => {
@@ -437,8 +465,11 @@ pub fn decode_rod_recover(
                             let recovered = cache.get(file, &tag_str).or_else(|| {
                                 #[cfg(feature = "rod-crack")]
                                 if run_crack {
-                                    let iv =
-                                        crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen);
+                                    let anchor = shift2
+                                        .and_then(|d2| anchor_from_shift(&tag, sc.cipher, d2));
+                                    let iv = crack::recover_iv3to8(
+                                        &tag, sc.cipher, sc.plainlen, anchor,
+                                    );
                                     if let Some(v) = iv {
                                         cache.insert(file, &tag_str, v);
                                     }
@@ -456,8 +487,11 @@ pub fn decode_rod_recover(
                                     section = decode_with_iv(&tag_str, &sc, iv);
                                 }
                                 Some(iv3to8) => {
-                                    if let Some(s) = decode_shifted(&tag_str, &sc, iv3to8) {
+                                    if let Some((s, d2)) =
+                                        decode_shifted(&tag_str, &tag, &sc, iv3to8)
+                                    {
                                         section = s;
+                                        shift2 = Some(d2);
                                     }
                                 }
                                 // Say which of the two happened. A search that
@@ -607,7 +641,7 @@ mod tests {
 
     /// Build a zlib section encrypted under an IV that has been XORed with a
     /// per-file mask, the way 40 % of the corpus is.
-    fn shifted_section(tag: &[u8], mask: [u8; 8]) -> (Vec<u8>, Vec<u8>, [u8; 5]) {
+    fn shifted_section(tag: &[u8], mask: [u8; 8]) -> (Vec<u8>, Vec<u8>, [u8; 5], u8) {
         // Skewed text, so miniz emits a dynamic-Huffman block (BTYPE 2).
         let plain: Vec<u8> = (0..4096u32)
             .map(|i| 0x20 + ((i.wrapping_mul(7).wrapping_add(i / 13)) % 60) as u8)
@@ -627,7 +661,7 @@ mod tests {
         payload.extend_from_slice(&(cipher.len() as u32).to_be_bytes()[1..]); // read1
         payload.extend_from_slice(&(plain.len() as u32).to_be_bytes()[1..]); // read2
         payload.extend_from_slice(&cipher);
-        (payload, plain, iv[3..8].try_into().unwrap())
+        (payload, plain, iv[3..8].try_into().unwrap(), z[2])
     }
 
     #[test]
@@ -636,7 +670,7 @@ mod tests {
         // search cannot start here, which is not the same as the section being
         // beyond reach. A mask over the IV destroys the known plaintext.
         let tag = b"MWB";
-        let (payload, _, _) = shifted_section(tag, [0x5e, 0xe6, 0x10, 1, 2, 3, 4, 5]);
+        let (payload, _, _, _) = shifted_section(tag, [0x5e, 0xe6, 0x10, 1, 2, 3, 4, 5]);
         let sc = parse_section_cipher(&payload).unwrap();
         assert!(!search_has_a_crib(tag, sc.cipher));
         assert_eq!(decode_section(tag, &payload).status, RodStatus::Undecodable);
@@ -649,12 +683,16 @@ mod tests {
         // swept. So the key cache needs no new format.
         let tag = b"MWB";
         let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
-        let (payload, plain, iv3to8) = shifted_section(tag, mask);
+        let (payload, plain, iv3to8, _) = shifted_section(tag, mask);
         let sc = parse_section_cipher(&payload).unwrap();
 
-        let opened = decode_shifted("MWB", &sc, iv3to8).expect("the anchor sweep must find it");
+        let (opened, d2) =
+            decode_shifted("MWB", tag, &sc, iv3to8).expect("the anchor sweep must find it");
         assert_eq!(opened.status, RodStatus::Zlib);
         assert_eq!(opened.text.unwrap().len(), plain.len());
+        // The sweep also hands back the file's third mask byte, which is what
+        // spares every later section of the same file its own sixty searches.
+        assert_eq!(d2, mask[2]);
     }
 
     #[test]
@@ -664,12 +702,29 @@ mod tests {
         // length exactly.
         let tag = b"MWB";
         let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
-        let (payload, _, iv3to8) = shifted_section(tag, mask);
+        let (payload, _, iv3to8, _) = shifted_section(tag, mask);
         let sc = parse_section_cipher(&payload).unwrap();
 
         let mut wrong = iv3to8;
         wrong[0] ^= 0xff;
-        assert!(decode_shifted("MWB", &sc, wrong).is_none());
+        assert!(decode_shifted("MWB", tag, &sc, wrong).is_none());
+    }
+
+    #[test]
+    fn one_opened_section_spares_the_rest_of_the_file_their_own_sweep() {
+        // The mask belongs to the file, not the section. Two sections under
+        // one mask: the third mask byte learned from the first must give the
+        // second its deflate anchor outright, which is what turns 60 full-space
+        // searches into 1 for every section after the first.
+        let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+        let (pa, _, iv_a, _) = shifted_section(b"MWB", mask);
+        let (pb, _, _, anchor_b) = shifted_section(b"DTC", mask);
+
+        let sc_a = parse_section_cipher(&pa).unwrap();
+        let (_, d2) = decode_shifted("MWB", b"MWB", &sc_a, iv_a).expect("first section opens");
+
+        let sc_b = parse_section_cipher(&pb).unwrap();
+        assert_eq!(anchor_from_shift(b"DTC", sc_b.cipher, d2), Some(anchor_b));
     }
 
     #[test]
@@ -836,7 +891,8 @@ mod tests {
         let iv = iv_for_product(tag, [0x11, 0x22, 0x33, 0x44, 0x55]);
         let cipher = tea_cbc_encrypt(&z, &KEY_ROD, iv);
         let recovered =
-            crack::recover_iv3to8(tag, &cipher, plain.len()).expect("full search should find it");
+            crack::recover_iv3to8(tag, &cipher, plain.len(), None)
+                .expect("full search should find it");
         assert_eq!(recovered, [iv[3], iv[4], iv[5], iv[6], iv[7]]);
     }
 }

@@ -85,10 +85,11 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
     let declined = sections.iter().filter(|s| s.status == RodStatus::SearchDeclined).count();
     if declined > 0 {
         println!(
-            "{declined} section(s) marked NO CRIB: the key search needs the zlib header as \
-             known plaintext and this file does not present it. Around 40 % of the corpus \
-             carries a per-file XOR on the first-block IV of every section after [CMP], which \
-             this tool does not yet recover — see research/tttext2.md. Not a damaged file."
+            "{declined} section(s) marked NO CRIB: no cached key, and this file is one of the \
+             40 % that XOR a per-file mask over the first-block IV of every section after \
+             [CMP] (research/tttext2.md). Such a section opens fine once its key is known — \
+             what it cannot have is a cheap search, because the mask costs a sweep of the \
+             deflate anchor against the full candidate space. Not a damaged file."
         );
     }
     Ok(())

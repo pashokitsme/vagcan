@@ -687,7 +687,18 @@ impl Search<'_> {
 ///   it — what is lost is only deflate byte 0, which is swept over the values a
 ///   dynamic-Huffman header admits, against the full candidate sets. Up to 60
 ///   searches at ~6.5× each: hours, not minutes.
-pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Option<[u8; 5]> {
+///
+/// `known_anchor` short-circuits the sweep. The mask is a property of the file,
+/// so once any one of its sections has been opened the anchor for the rest is
+/// arithmetic — and skipping 59 of 60 full-space searches is the difference
+/// between a multi-section shifted file being openable in principle and in
+/// practice.
+pub(crate) fn recover_iv3to8(
+    tag: &[u8],
+    cipher: &[u8],
+    plainlen: usize,
+    known_anchor: Option<u8>,
+) -> Option<[u8; 5]> {
     if cipher.len() < 8 || cipher.len() % 8 != 0 {
         return None;
     }
@@ -700,9 +711,12 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Opti
     // exact, so the anchor comes for free and the reduced sets are valid.
     let classic = t[0] ^ iv0[0] == 0x78 && t[1] ^ iv0[1] == 0xda;
     let tail = Arc::new(tail);
-    match classic {
-        true => search_anchor(tag, &t, &tail, plainlen, t[2] ^ iv0[2], false),
-        false => super::deflate_anchors()
+    if classic {
+        return search_anchor(tag, &t, &tail, plainlen, t[2] ^ iv0[2], false);
+    }
+    match known_anchor {
+        Some(d0) => search_anchor(tag, &t, &tail, plainlen, d0, true),
+        None => super::deflate_anchors()
             .find_map(|d0| search_anchor(tag, &t, &tail, plainlen, d0, true)),
     }
 }
