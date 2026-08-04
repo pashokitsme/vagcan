@@ -165,6 +165,9 @@ table.t td.k { color: var(--ink-2); padding-right: 10px; white-space: nowrap; }
 table.t td.v { text-align: right; white-space: nowrap; }
 table.t td.v2 { text-align: right; color: var(--ink-2); padding-left: 12px;
   font-size: 11.5px; line-height: 1.35; overflow-wrap: anywhere; }
+/* A mark the car never reached. Dimmed whole, so a row of dashes reads as "the
+   run ended before here" and not as a number the page failed to render. */
+table.t tr.open td { color: var(--ink-3); }
 .cond { font-size: 11.5px; color: var(--ink-3); margin: -4px 0 8px; line-height: 1.45; }
 .note { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin-top: 8px;
         border-left: 2px solid var(--line); padding-left: 9px; }
@@ -304,7 +307,35 @@ if (SESSION.schema !== 1) {
 
 var CFG = SESSION.config || {};
 var RUNS = SESSION.runs.filter(function (r) { return r && r.series; });
-if (!RUNS.length) { fatal("The session holds no runs."); return; }
+
+/* The header runs before the no-run bail-out below, so a session with nothing
+   in it still says which car and which drive it came from. A page that only
+   says "no runs" leaves the reader wondering whether he opened the wrong file. */
+(function header() {
+  var car = SESSION.car || {};
+  var bits = [];
+  if (car.vin) bits.push("VIN " + car.vin);
+  if (SESSION.recorded_at) bits.push(String(SESSION.recorded_at).replace("T", " "));
+  bits.push(RUNS.length + (RUNS.length === 1 ? " run" : " runs"));
+  if (CFG.hz) bits.push(CFG.hz.toFixed(1) + " Hz");
+  if (CFG.speed_source) bits.push("speed " + CFG.speed_source);
+  document.getElementById("hdr-sub").innerHTML =
+    bits.map(esc).join('<span class="dot">·</span>');
+})();
+
+/* An empty session is a normal outcome, not a broken file: the driver armed
+   `measure`, drove, and never gave it a launch from a standstill to time. Say
+   that, rather than leaving a page that looks like it failed to load. */
+if (!RUNS.length) {
+  fatal(SESSION.runs.length
+    ? "This session lists " + SESSION.runs.length + " run(s) and not one of them carries " +
+      "samples, so there is nothing to time and nothing to plot."
+    : "No run was recorded. A run starts when the car pulls away from a standstill and " +
+      "ends when it comes back to one; this drive never gave `measure` such a stretch, so " +
+      "the file holds the car and the settings and no times. Nothing is broken — there is " +
+      "simply nothing to show.");
+  return;
+}
 
 /* ===========================================================================
    1. Channels — keys are normalised, so `engine speed` and `engine_speed`
@@ -793,7 +824,6 @@ function sync() {
     if (state.gear !== null) elGearSel.value = state.gear;
   }
 
-  renderResults();
   draw();
 }
 
@@ -1536,8 +1566,17 @@ function markName(m) { return m.from + "–" + m.to; }
    that was wrong in both directions.
 
    A rolling mark starts and ends on the same signal, so that error cancels and
-   it prints one number with a real ±. */
+   it prints one number with a real ±.
+
+   A mark the car never reached has no `seconds` at all — the writer lists it
+   anyway, so that a run that died at 80 says so by having `0–100` present and
+   empty. There is no number to invent for it: a zero would read as an instant
+   crossing and a blank as a page that failed. It gets a dash, and the row it
+   sits in is dimmed. Reading `.toFixed` off that missing field is what used to
+   throw out of `renderResults`, which back then ran inside `sync()` on the line
+   before `draw()`: one unreached mark blanked the entire page, chart included. */
 function markTime(m) {
+  if (typeof m.seconds !== "number") return "—";
   if (m.bracket_s) {
     return m.seconds.toFixed(2) + " s (" + m.bracket_s.earliest.toFixed(2) +
       " … " + m.bracket_s.latest.toFixed(2) + ")";
@@ -1548,18 +1587,38 @@ function markTime(m) {
   return m.seconds.toFixed(2) + " s";
 }
 
+function closedMark(m) { return typeof m.seconds === "number"; }
+
 function renderResults() {
   var html = "";
-  selectedRuns().forEach(function (run) {
+  /* Every run in the file, not only the ones the chart is drawing. The two
+     selections are deliberately not the same one: the chips cap the chart at
+     four curves because a fifth turns it to mud, but a card is a record of the
+     drive, and a driver who did five runs wants five sets of times. Keeping the
+     cards behind the chart's selection is what made an aborted session look
+     empty — the numbers were there, behind a control nobody had pressed. */
+  RUNS.forEach(function (run) {
     var d = run.derived || {};
-    var rows = (run.marks || []).map(function (m) {
-      return '<tr><td class="k mono">' + esc(markName(m)) + '</td><td class="v num">' +
+    var marks = run.marks || [];
+    var closed = marks.filter(closedMark);
+    var rows = marks.map(function (m) {
+      return "<tr" + (closedMark(m) ? "" : ' class="open"') + '><td class="k mono">' +
+        esc(markName(m)) + '</td><td class="v num">' +
         esc(markTime(m)) + '</td><td class="v2 num">' +
         (typeof m.avg_accel_ms2 === "number" ? esc(m.avg_accel_ms2.toFixed(2)) + " m/s²" : "—") +
         "</td></tr>";
     }).join("");
 
-    var anyZero = (run.marks || []).some(function (m) { return m.from_t0; });
+    /* Only a mark that closed carries a bracket, so only a closed one calls for
+       the paragraph explaining what the bracket means. */
+    var anyZero = closed.some(function (m) { return m.from_t0; });
+
+    /* What the run was asked for comes from the config, not from the run's own
+       list: the writer lists an unreached mark with no time, but older files
+       left it out entirely, and a card must not go quiet about a mark just
+       because the run never got near it. */
+    var asked = (CFG.marks || []).map(function (p) { return p[1]; });
+    if (!asked.length) asked = marks.map(function (m) { return m.to; });
 
     var comp = [];
     if (typeof d.distance_m === "number")
@@ -1593,10 +1652,28 @@ function renderResults() {
         "</span>" : "") + "</div>";
 
     html += '<div class="blk"><h3>Measured</h3>';
-    html += rows
-      ? '<table class="t"><tr><th>mark (km/h)</th><th style="text-align:right">time</th>' +
-        '<th style="text-align:right">average acceleration</th></tr>' + rows + "</table>"
-      : '<p class="hint">No mark closed in this run.</p>';
+    if (rows) {
+      html += '<table class="t"><tr><th>mark (km/h)</th><th style="text-align:right">time</th>' +
+        '<th style="text-align:right">average acceleration</th></tr>' + rows + "</table>";
+    } else if (!asked.length) {
+      html += '<p class="hint">No mark was asked for in this run.</p>';
+    }
+
+    /* A card that is short, or mostly dashes, has to say why — otherwise it
+       reads as a page that failed rather than as a run that ended early. */
+    if (closed.length < asked.length) {
+      html += '<p class="note">' +
+        (run.aborted ? "The run was aborted — the car came back to a standstill, or it was " +
+          "cancelled at the keyboard, before the last mark. Whatever closed is kept. " : "") +
+        (closed.length
+          ? closed.length + " of " + asked.length + " marks closed; the rest have no time, " +
+            "because the car never got to them."
+          : "Not one of the " + asked.length + " marks closed — the car never reached even " +
+            asked.reduce(function (a, b) { return Math.min(a, b); }) + " km/h, the lowest end " +
+            "speed asked for. The samples were recorded all the same, so the run is still " +
+            "on the chart.") +
+        "</p>";
+    }
     if (peaks.length) html += '<table class="t" style="margin-top:6px">' + peaks.join("") + "</table>";
     if (anyZero) {
       html += '<p class="note">A mark from a standstill carries a range because the moment the ' +
@@ -1638,20 +1715,9 @@ function conditionLine() {
 }
 
 /* ===========================================================================
-   14. Header, footer, theme
+   14. Footer, theme — the header is written in §0, where it can still speak
+       for a session that holds no runs at all.
    =========================================================================== */
-
-(function header() {
-  var car = SESSION.car || {};
-  var bits = [];
-  if (car.vin) bits.push("VIN " + car.vin);
-  if (SESSION.recorded_at) bits.push(String(SESSION.recorded_at).replace("T", " "));
-  bits.push(RUNS.length + (RUNS.length === 1 ? " run" : " runs"));
-  if (CFG.hz) bits.push(CFG.hz.toFixed(1) + " Hz");
-  if (CFG.speed_source) bits.push("speed " + CFG.speed_source);
-  document.getElementById("hdr-sub").innerHTML =
-    bits.map(esc).join('<span class="dot">·</span>');
-})();
 
 (function footer() {
   var f = document.getElementById("foot");
@@ -1685,7 +1751,12 @@ document.getElementById("theme").addEventListener("click", function () {
    =========================================================================== */
 
 buildControls();
+/* The chart first, the cards after. The cards no longer depend on the chart's
+   selection, so they need drawing once rather than on every control change —
+   and in this order a mistake in them cannot leave the page with no chart,
+   which is exactly how the last one was found. */
 sync();
+renderResults();
 
 var redrawTimer = null;
 window.addEventListener("resize", function () {
