@@ -49,10 +49,10 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// ~/.vagcan/
 ///   config.json                       settings that are not about one car
 ///   cars/
-///     1.8l-R4-TFSI-XW8AD4NE9JH008917/ one directory per car
+///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
 ///       car.json                      mass, tyre, measured road load
-///       measures/2026-08-04-1241.json  one saved session per file
-///       reports/                       surveys, fault dumps, whatever is kept
+///       measures/2026-08-04-1241.json one saved session per file
+///       reports/                      surveys, fault dumps, whatever is kept
 /// ```
 ///
 /// One dot-directory rather than each platform's convention.
@@ -74,29 +74,25 @@ pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
     vagcan_dir_in(dirs::home_dir())
 }
 
-/// Everything this tool keeps about one car.
+/// Everything this tool keeps about one car, under its VIN and nothing else.
 ///
-/// The directory is named for what the car said about itself and then its VIN:
-/// `1.8l-R4-TFSI-XW8AD4NE9JH008917`. The VIN alone is unambiguous and
-/// unreadable; the description alone is neither unique nor stable. Together the
-/// owner of two cars can tell them apart at a glance, and the tool can still
-/// find the right one by matching the tail.
+/// **The VIN is the whole name.** It is the one thing that identifies a car,
+/// every unit that answers `F190` agrees on it, and it is the same seventeen
+/// characters on the windscreen, the logbook and the invoice — so it is what a
+/// person searching for their own files will actually type.
 ///
-/// **The VIN identifies the car; the description only decorates the folder.**
-/// A directory whose name already ends in this VIN *is* this car's directory,
-/// whatever the caller happens to know about the car this time — because the
-/// callers do not know the same things. `measure setup` has the engine's
-/// component string in hand and `measure` did not ask for it, and naming the
-/// folder from each in turn gave one car two directories: the car file in one,
-/// the sessions in the other, and `--full` refusing on a car that had been set
-/// up. Matching the tail is what the paragraph above always promised.
+/// A readable half used to be prefixed — `1.8l-R4-TFSI-XW8AD4NE9JH008917`, from
+/// whatever the engine called itself. It bought little and cost a real bug:
+/// `measure setup` had the component string in hand and `measure` had not asked
+/// for it, so one car got two directories, the car file in one and the sessions
+/// in the other, and `--full` refused on a car that had been set up. A name
+/// assembled from what each caller happens to know is not a name.
 ///
-/// `description` is what a control unit reported — the engine's component
-/// string, usually. No make or model appears here, because a car does not
-/// broadcast one and this tool does not invent data it was not given.
-pub fn car_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
+/// Directories named the old way are still found and still used — see
+/// [`car_folder_in`]. Nothing is renamed.
+pub fn car_dir(vin: &str) -> anyhow::Result<PathBuf> {
     let cars = vagcan_dir()?.join("cars");
-    let folder = car_folder_in(&cars, vin, description)?;
+    let folder = car_folder_in(&cars, vin)?;
     Ok(cars.join(folder))
 }
 
@@ -104,8 +100,8 @@ pub fn car_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> 
 // Called once `measure` writes sessions; the directory layout is settled here so
 // that the command does not invent its own.
 #[allow(dead_code)]
-pub fn measures_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
-    Ok(car_dir(vin, description)?.join("measures"))
+pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
+    Ok(car_dir(vin)?.join("measures"))
 }
 
 /// Where the readings a car is asked for end up when nobody named a file — a
@@ -114,31 +110,23 @@ pub fn measures_dir(vin: &str, description: Option<&str>) -> anyhow::Result<Path
 // Called once `survey` defaults its output here — `todo/README.md` carries that
 // item; the layout is settled now so the command does not invent its own.
 #[allow(dead_code)]
-pub fn reports_dir(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
-    Ok(car_dir(vin, description)?.join("reports"))
+pub fn reports_dir(vin: &str) -> anyhow::Result<PathBuf> {
+    Ok(car_dir(vin)?.join("reports"))
 }
 
-/// The folder name for one car, safe to write and readable to a person.
+/// The VIN, checked hard enough to be a directory name.
 ///
-/// The VIN arrives from the bus and the description does too, so neither is
-/// trusted as a path: a unit answering with a separator or a `..` would
-/// otherwise choose where this tool writes. Anything that is not a letter, a
-/// digit or `.` becomes a hyphen, runs of hyphens collapse, and the VIN must
-/// still be the ISO 3779 alphabet after that.
-fn car_folder(vin: &str, description: Option<&str>) -> anyhow::Result<String> {
+/// It arrives from the bus, so it is not trusted as a path: a unit answering
+/// with a separator or a `..` would otherwise choose where this tool writes.
+/// Nothing is sanitised into shape — a VIN that is not the ISO 3779 alphabet is
+/// refused, because a mangled one would silently file a car under a name no
+/// later run could reproduce.
+fn car_folder(vin: &str) -> anyhow::Result<String> {
     let vin = vin.trim();
     if vin.is_empty() || !vin.chars().all(|c| c.is_ascii_alphanumeric()) {
         anyhow::bail!("{vin:?} is not a VIN this tool will turn into a directory name");
     }
-    let mut name = String::new();
-    if let Some(text) = description {
-        name = slug(text);
-        if !name.is_empty() {
-            name.push('-');
-        }
-    }
-    name.push_str(vin);
-    Ok(name)
+    Ok(vin.to_string())
 }
 
 /// The folder this car already has, or the one it would be given.
@@ -147,40 +135,32 @@ fn car_folder(vin: &str, description: Option<&str>) -> anyhow::Result<String> {
 /// without writing into the owner's own — the same reason [`vagcan_dir_in`]
 /// takes a home directory.
 ///
-/// **An existing folder is never renamed to match a new description.** A rename
-/// under a running tool is the one operation here that can lose data: `watch`
-/// may have a file open in that directory, a second `vagcan` may be writing a
-/// session into it, and every path any of them resolved earlier stops pointing
-/// at anything. The folder name is decoration and the VIN is identity, so a
-/// mismatch costs a slightly stale name and nothing else. Someone who wants the
-/// nicer name can `mv` the directory, and this function will follow it.
-///
-/// Reachable from the crate so that a caller's tests can assert what a car gets
-/// *named* without asking what it is *called now* — the second question needs
-/// the owner's real `~/.vagcan` and answers differently on a car that already
-/// has a directory, which is the whole point of this function.
-pub(crate) fn car_folder_in(
-    cars: &Path,
-    vin: &str,
-    description: Option<&str>,
-) -> anyhow::Result<String> {
-    let wanted = car_folder(vin, description)?;
-    Ok(existing_folder(cars, &wanted, vin).unwrap_or(wanted))
+/// **A directory named the old way is used, not renamed.** Anyone who ran this
+/// tool before the name became the bare VIN has a `1.8l-R4-TFSI-<VIN>` holding
+/// their car file and their drives, and a rename under a running tool is the
+/// one operation here that can lose data: `watch` may have a file open in that
+/// directory, a second `vagcan` may be writing a session into it, and every
+/// path either of them resolved earlier stops pointing at anything. So the tail
+/// is still matched, the old directory still wins, and `mv` still works for
+/// anyone who wants the tidier name — this function will follow it.
+pub(crate) fn car_folder_in(cars: &Path, vin: &str) -> anyhow::Result<String> {
+    let wanted = car_folder(vin)?;
+    Ok(existing_folder(cars, &wanted).unwrap_or(wanted))
 }
 
 /// A directory this VIN already has, whatever it happens to be called.
 ///
-/// The names are `<slug>-<VIN>` or the bare VIN, so the tail is matched on the
-/// whole VIN with its separator: a VIN is fixed-length and one car's must never
-/// match another's.
+/// The names are the bare VIN or, from before, `<slug>-<VIN>`, so the tail is
+/// matched on the whole VIN with its separator: a VIN is fixed-length and one
+/// car's must never match another's.
 ///
-/// More than one is the state this bug left behind on cars that were set up
-/// before it was fixed, so the order is decided rather than left to the
-/// filesystem: the folder holding the car file is the car — that file is what
-/// makes a car *described*, and losing sight of it is the failure being fixed —
-/// then the name that was asked for, then the first by name so that two runs
-/// with nothing to choose between them still agree.
-fn existing_folder(cars: &Path, wanted: &str, vin: &str) -> Option<String> {
+/// More than one is the state the two-directory bug left behind, so the order
+/// is decided rather than left to the filesystem: the folder holding the car
+/// file is the car — that file is what makes a car *described*, and losing
+/// sight of it is the failure being fixed — then the bare VIN, which is what a
+/// fresh run would create, then the first by name so that two runs with nothing
+/// to choose between them still agree.
+fn existing_folder(cars: &Path, vin: &str) -> Option<String> {
     let tail = format!("-{vin}");
     let Ok(entries) = std::fs::read_dir(cars) else { return None };
     let mut found: Vec<String> = entries
@@ -193,23 +173,11 @@ fn existing_folder(cars: &Path, wanted: &str, vin: &str) -> Option<String> {
     found
         .iter()
         .find(|name| cars.join(name).join(CAR_FILE).is_file())
-        .or_else(|| found.iter().find(|name| *name == wanted))
+        .or_else(|| found.iter().find(|name| *name == vin))
         .or_else(|| found.first())
         .cloned()
 }
 
-/// Readable, and safe as one path component.
-fn slug(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric() || c == '.' {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches(['-', '.']).to_string()
-}
 
 /// The rule behind [`vagcan_dir`], with the home directory passed in so it can
 /// be tested without a process-wide `set_var` that the other tests would race.
@@ -292,35 +260,34 @@ mod tests {
         let cars = TempDir::new("second");
         let vin = "XW8AD4NE9JH008917";
         cars.car(vin);
-        let folder = car_folder_in(&cars.0, vin, Some("1.8l R4 TFSI")).unwrap();
+        let folder = car_folder_in(&cars.0, vin).unwrap();
         assert_eq!(folder, vin);
         std::fs::create_dir_all(cars.0.join(&folder)).unwrap();
         assert_eq!(std::fs::read_dir(&cars.0).unwrap().count(), 1, "one car, one directory");
     }
 
     #[test]
-    fn a_directory_is_never_renamed_to_match_a_later_description() {
-        // A rename under a running tool can lose data; a stale folder name
-        // cannot. The description decorates, the VIN identifies.
+    fn a_directory_from_before_the_rename_is_used_rather_than_orphaned() {
+        // Anyone who ran this tool before the folder name became the bare VIN
+        // has their car file and their drives under the old name. A rename
+        // under a running tool can lose a drive somebody is recording; a stale
+        // folder name costs nothing.
         let cars = TempDir::new("rename");
         let vin = "XW8AD4NE9JH008917";
         cars.car("old-name-XW8AD4NE9JH008917");
         assert_eq!(
-            car_folder_in(&cars.0, vin, Some("Škoda Octavia III")).unwrap(),
+            car_folder_in(&cars.0, vin).unwrap(),
             "old-name-XW8AD4NE9JH008917"
         );
     }
 
     #[test]
-    fn a_car_with_no_directory_yet_is_named_for_what_it_said_about_itself() {
+    fn a_car_with_no_directory_yet_is_named_for_its_vin() {
         let cars = TempDir::new("first");
-        assert_eq!(
-            car_folder_in(&cars.0, "XW8AD4NE9JH008917", Some("1.8l R4 TFSI")).unwrap(),
-            "1.8l-R4-TFSI-XW8AD4NE9JH008917"
-        );
+        assert_eq!(car_folder_in(&cars.0, "XW8AD4NE9JH008917").unwrap(), "XW8AD4NE9JH008917");
         // And a `cars/` that does not exist yet is simply a car nobody has met.
         assert_eq!(
-            car_folder_in(&cars.0.join("not-created"), "XW8AD4NE9JH008917", None).unwrap(),
+            car_folder_in(&cars.0.join("not-created"), "XW8AD4NE9JH008917").unwrap(),
             "XW8AD4NE9JH008917"
         );
     }
@@ -332,10 +299,10 @@ mod tests {
         let cars = TempDir::new("tail");
         cars.car("1.8l-R4-TFSI-XW8AD4NE9JH008917");
         assert_eq!(
-            car_folder_in(&cars.0, "XW8AD4NE9JH008918", None).unwrap(),
+            car_folder_in(&cars.0, "XW8AD4NE9JH008918").unwrap(),
             "XW8AD4NE9JH008918"
         );
-        assert_eq!(car_folder_in(&cars.0, "JH008917", None).unwrap(), "JH008917");
+        assert_eq!(car_folder_in(&cars.0, "JH008917").unwrap(), "JH008917");
     }
 
     #[test]
@@ -348,9 +315,9 @@ mod tests {
         cars.car(vin);
         let described = cars.car("1.8l-R4-TFSI-XW8AD4NE9JH008917");
         std::fs::write(described.join(CAR_FILE), "{}").unwrap();
-        assert_eq!(car_folder_in(&cars.0, vin, None).unwrap(), "1.8l-R4-TFSI-XW8AD4NE9JH008917");
+        assert_eq!(car_folder_in(&cars.0, vin).unwrap(), "1.8l-R4-TFSI-XW8AD4NE9JH008917");
         assert_eq!(
-            car_folder_in(&cars.0, vin, Some("1.8l R4 TFSI")).unwrap(),
+            car_folder_in(&cars.0, vin).unwrap(),
             "1.8l-R4-TFSI-XW8AD4NE9JH008917"
         );
     }
@@ -390,7 +357,7 @@ mod tests {
     fn a_car_file_never_lands_inside_the_repository() {
         // The whole point of the writer-side sibling: a VIN-keyed file must not
         // end up in a checkout, one `git add` away from being published.
-        let dir = car_dir("XW8AD4NE9JH008917", Some("1.8l R4 TFSI"))
+        let dir = car_dir("XW8AD4NE9JH008917")
             .expect("a home directory exists in any environment that runs tests");
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
         assert!(!dir.starts_with(&repo), "{dir:?} is inside {repo:?}");
@@ -404,29 +371,25 @@ mod tests {
     }
 
     #[test]
-    fn a_car_folder_reads_as_the_car_and_ends_in_its_vin() {
-        // Both halves earn their place: the VIN is unambiguous and unreadable,
-        // the description is readable and neither unique nor stable.
-        assert_eq!(
-            car_folder("XW8AD4NE9JH008917", Some("1.8l R4 TFSI")).unwrap(),
-            "1.8l-R4-TFSI-XW8AD4NE9JH008917"
-        );
-        // A car that would not describe itself still gets a directory.
-        assert_eq!(
-            car_folder("XW8AD4NE9JH008917", None).unwrap(),
-            "XW8AD4NE9JH008917"
-        );
+    fn a_car_folder_is_its_vin_and_nothing_else() {
+        // The readable prefix is gone. It was assembled from whatever the
+        // caller happened to know about the car, which is how one car came to
+        // have two directories; and the VIN is what a person looking for their
+        // own files reads off the windscreen anyway.
+        assert_eq!(car_folder("XW8AD4NE9JH008917").unwrap(), "XW8AD4NE9JH008917");
+        assert_eq!(car_folder("  XW8AD4NE9JH008917  ").unwrap(), "XW8AD4NE9JH008917");
     }
 
     #[test]
     fn nothing_off_the_bus_gets_to_choose_where_this_tool_writes() {
-        // A unit is free to answer with anything at all, including a path.
-        assert!(car_folder("../../etc", Some("x")).is_err());
-        assert!(car_folder("XW8AD4NE9JH00 8917", None).is_err());
-        assert!(car_folder("", None).is_err());
-        let folder = car_folder("XW8AD4NE9JH008917", Some("../../etc/passwd")).unwrap();
-        assert!(!folder.contains('/'), "{folder}");
-        assert!(!folder.contains(".."), "{folder}");
+        // A unit is free to answer with anything at all, including a path. A
+        // VIN that is not the ISO 3779 alphabet is refused rather than
+        // sanitised: a mangled one would file the car under a name no later run
+        // could reproduce, which loses it as surely as writing outside the
+        // directory would.
+        for not_a_vin in ["../../etc", "XW8AD4NE9JH00 8917", "", "XW8/AD4", "a\\b"] {
+            assert!(car_folder(not_a_vin).is_err(), "{not_a_vin:?} was accepted");
+        }
     }
 
     #[test]
@@ -434,9 +397,9 @@ mod tests {
         // Sessions and reports belong to the car they were read from, not to
         // the working directory a command happened to be run in.
         let vin = "XW8AD4NE9JH008917";
-        let car = car_dir(vin, Some("1.8l R4 TFSI")).unwrap();
-        assert_eq!(measures_dir(vin, Some("1.8l R4 TFSI")).unwrap(), car.join("measures"));
-        assert_eq!(reports_dir(vin, Some("1.8l R4 TFSI")).unwrap(), car.join("reports"));
+        let car = car_dir(vin).unwrap();
+        assert_eq!(measures_dir(vin).unwrap(), car.join("measures"));
+        assert_eq!(reports_dir(vin).unwrap(), car.join("reports"));
     }
 
     #[test]

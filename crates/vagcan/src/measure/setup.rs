@@ -275,22 +275,7 @@ fn ask_yes_no(io: &mut impl Interview, question: &str, default: bool) -> Result<
 /// The order is the design's: what to call the car, then the mass in two parts,
 /// then the tyre. `description` is what the engine said about itself, which is
 /// the nearest thing to a name anything on the bus offers.
-pub fn interview(
-    io: &mut impl Interview,
-    car: &mut CarFile,
-    description: Option<&str>,
-    today: &str,
-) -> Result<()> {
-    if car.name.is_none() {
-        io.say(&screens::name_intro());
-        let default = description.unwrap_or("").trim().to_string();
-        let answer = io.ask(&screens::name_question(&default), Some(default.as_str()))?;
-        let name = answer.trim();
-        if !name.is_empty() {
-            car.name = Some(Sourced::on(name.to_string(), Source::Stated, today));
-        }
-    }
-
+pub fn interview(io: &mut impl Interview, car: &mut CarFile, today: &str) -> Result<()> {
     if car.mass.is_none() {
         io.say(&screens::mass_intro());
         // Three questions and one sum, rather than one question and a sum the
@@ -852,12 +837,6 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
         .clone()
         .filter(|v| !v.trim().is_empty())
         .context("the engine did not report a VIN, and a car file is keyed by the car")?;
-    let description = identities
-        .iter()
-        .find(|i| i.request == plan::ENGINE)
-        .and_then(|i| i.component.clone())
-        .or_else(|| engine.component.clone());
-
     let mut io = Console;
 
     // 2. The channel check, at a standstill, so a missing channel is found with
@@ -896,7 +875,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     //    rather than applied: mass and road load belong to one car.
     let path = match opts.car {
         Some(path) => PathBuf::from(path),
-        None => CarFile::path_for(&vin, description.as_deref())?,
+        None => CarFile::path_for(&vin)?,
     };
     let mut car = if path.exists() {
         let existing = CarFile::load(&path)?;
@@ -925,7 +904,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     }
 
     // 4. The questions. All of them, here, parked.
-    interview(&mut io, &mut car, description.as_deref(), &today)?;
+    interview(&mut io, &mut car, &today)?;
     car.save(&path)?;
     io.say(&screens::answers_saved(&path));
 
@@ -1156,26 +1135,6 @@ impl Reader {
 /// road briefing, the resumed-setup banner and the closing screen.
 mod screens {
     use super::*;
-
-    pub fn name_intro() -> String {
-        "\nNo control unit broadcasts a make or a model. The engine describes itself and\n\
-         every unit reports a part number; the rest is yours to say, and it becomes the\n\
-         readable half of this car's own directory."
-            .to_string()
-    }
-
-    /// The name question, with the shape of an answer and what Enter does.
-    ///
-    /// The example is a different car from any default on purpose: an owner in a
-    /// hurry reads one line, and a suggestion he could accept by pressing Enter
-    /// has to be the bracketed default and nothing else.
-    pub fn name_question(engine_says: &str) -> String {
-        let enter = match engine_says.is_empty() {
-            true => "Enter alone leaves it unnamed".to_string(),
-            false => format!("Enter alone keeps the engine's own words, {engine_says:?}"),
-        };
-        format!("what do you call this car — make, model, generation, e.g. \"Volkswagen Golf VII\"? ({enter})")
-    }
 
     /// One numeric question as a person reads it: what is wanted, in what unit,
     /// shaped like what, and what will be accepted.
@@ -1704,7 +1663,6 @@ mod tests {
 
     fn a_described_car() -> CarFile {
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        car.name = Some(Sourced::on("Škoda Octavia III".into(), Source::Stated, "2026-08-03"));
         car.mass = Some(Sourced::on(
             Mass { running_order_kg: 1395.0, includes_driver: true, aboard_kg: 80.0 },
             Source::Stated,
@@ -1804,9 +1762,9 @@ mod tests {
         // document says 1395 kg, which under Regulation 1230/2012 already carries
         // a 75 kg driver; a passenger and some luggage, 80 kg, are aboard on top
         // of it.
-        let mut io = Scripted::new(["Škoda Octavia III", "1395", "y", "80", "205/55R16"]);
+        let mut io = Scripted::new(["1395", "y", "80", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
 
         let mass = car.mass.as_ref().unwrap();
         assert_eq!(mass.value.total(), 1475.0);
@@ -1822,23 +1780,11 @@ mod tests {
     fn a_stated_mass_without_a_driver_gains_exactly_one() {
         // The same car with the same load, described the other way round, has to
         // come out at the same total.
-        let mut io = Scripted::new(["", "1320", "n", "80", "205/55R16"]);
+        let mut io = Scripted::new(["1320", "n", "80", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
         assert_eq!(car.mass.as_ref().unwrap().value.total(), 1475.0);
         assert!(io.transcript().contains("75 kg driver"), "{}", io.transcript());
-    }
-
-    #[test]
-    fn the_engine_describes_itself_and_the_owner_names_the_car() {
-        // No unit broadcasts a make or a model, so an empty answer keeps the
-        // engine's own words rather than inventing a marque.
-        let mut io = Scripted::new(["", "1395", "y", "0", "205/55R16"]);
-        let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
-        let name = car.name.as_ref().unwrap();
-        assert_eq!(name.value, "1.8l R4 TFSI");
-        assert_eq!(name.source, Source::Stated);
     }
 
     #[test]
@@ -1853,7 +1799,7 @@ mod tests {
             "205/55R16",
         ]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
         assert_eq!(car.mass.as_ref().unwrap().value.running_order_kg, 1395.0);
         assert_eq!(car.tyre.as_ref().unwrap().value, "205/55R16");
         assert!(io.transcript().contains("not a number"), "{}", io.transcript());
@@ -1865,12 +1811,12 @@ mod tests {
         // The owner's report: he could not tell what shape a tyre size was meant
         // to take. Nothing here may be answerable two ways — so every question
         // carries an example of its format, and every numeric one its unit.
-        let mut io = Scripted::new(["", "1395", "", "", "205/55R16"]);
+        let mut io = Scripted::new(["1395", "", "", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
 
         let asked = io.asked.clone();
-        assert_eq!(asked.len(), 5, "the interview changed shape: {asked:#?}");
+        assert_eq!(asked.len(), 4, "the interview changed shape: {asked:#?}");
         // Every question shows the shape of its answer: an example of the format,
         // or — where the answers are countable — the whole set of them.
         for question in &asked {
@@ -1879,25 +1825,19 @@ mod tests {
                 "no example of the form:\n{question}"
             );
         }
-        // The name: an example that is plainly not this car, and the default
-        // spelled out rather than left to the brackets.
-        assert!(asked[0].contains("make, model, generation"), "{}", asked[0]);
-        assert!(asked[0].contains("Volkswagen Golf VII"), "{}", asked[0]);
-        assert!(asked[0].contains("Enter alone keeps the engine's own words"), "{}", asked[0]);
-        assert!(asked[0].contains("[1.8l R4 TFSI]"), "{}", asked[0]);
         // The mass: a unit, a range, and — deliberately — no default at all.
-        assert!(asked[1].contains("in kg"), "{}", asked[1]);
-        assert!(asked[1].contains("between 300 and 5000"), "{}", asked[1]);
-        assert!(!asked[1].contains("Enter alone"), "a mass must not have a default: {}", asked[1]);
-        assert!(!asked[1].contains('['), "{}", asked[1]);
+        assert!(asked[0].contains("in kg"), "{}", asked[0]);
+        assert!(asked[0].contains("between 300 and 5000"), "{}", asked[0]);
+        assert!(!asked[0].contains("Enter alone"), "a mass must not have a default: {}", asked[0]);
+        assert!(!asked[0].contains('['), "{}", asked[0]);
         // The driver question: both words, and what Enter does.
-        assert!(asked[2].contains("yes or no"), "{}", asked[2]);
-        assert!(asked[2].contains("Enter alone means yes"), "{}", asked[2]);
+        assert!(asked[1].contains("yes or no"), "{}", asked[1]);
+        assert!(asked[1].contains("Enter alone means yes"), "{}", asked[1]);
         // What is aboard: a default of nothing, said in words.
-        assert!(asked[3].contains("Enter alone means 0 kg"), "{}", asked[3]);
+        assert!(asked[2].contains("Enter alone means 0 kg"), "{}", asked[2]);
         // The tyre: the shape, and no default it could be mistaken for.
-        assert!(asked[4].contains("205/55R16"), "{}", asked[4]);
-        assert!(!asked[4].contains('['), "{}", asked[4]);
+        assert!(asked[3].contains("205/55R16"), "{}", asked[3]);
+        assert!(!asked[3].contains('['), "{}", asked[3]);
     }
 
     #[test]
@@ -1906,7 +1846,7 @@ mod tests {
         // shown in the refusal — after the mistake.
         let mut io = Scripted::new(["a car", "1395", "y", "0", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
         let tyre = io.asked.last().unwrap();
         assert!(tyre.contains("width/aspect then the rim"), "{tyre}");
         assert!(tyre.contains("205/55R16"), "{tyre}");
@@ -1919,7 +1859,7 @@ mod tests {
     fn a_refusal_states_the_accepted_form_rather_than_only_that_this_was_not_it() {
         let mut io = Scripted::new(["a car", "1.4 tonnes", "1395", "maybe", "y", "0", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
         let transcript = io.transcript();
         assert!(transcript.contains("Write it the way 1450 is written"), "{transcript}");
         assert!(transcript.contains("without the kg"), "{transcript}");
@@ -1932,10 +1872,10 @@ mod tests {
         // `CLAUDE.md`'s hard line: a format may be shown, a value belonging to
         // one car may not. So no example may double as a default, and the one
         // question whose answer only a document has must have no default at all.
-        let mut io = Scripted::new(["", "1395", "", "", "205/55R16"]);
+        let mut io = Scripted::new(["1395", "", "", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
-        let mass_question = &io.asked[1];
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
+        let mass_question = &io.asked[0];
         assert!(mass_question.contains("like 1450"), "{mass_question}");
         // Shown as a shape, and impossible to accept by pressing Enter.
         assert!(!mass_question.contains("[1450]"), "{mass_question}");
@@ -1961,7 +1901,7 @@ mod tests {
     fn the_tyre_size_becomes_a_radius_that_says_where_it_came_from() {
         let mut io = Scripted::new(["a car", "1395", "y", "0", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
-        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        interview(&mut io, &mut car, "2026-08-03").unwrap();
         let radius = car.rolling_radius_m.as_ref().unwrap();
         assert!((radius.value - 0.31595).abs() < 1e-9);
         assert_eq!(radius.source, Source::DerivedFromTyre);
@@ -1977,7 +1917,7 @@ mod tests {
         // owner through the registration document again.
         let mut io = Scripted::new(std::iter::empty::<&str>());
         let mut car = a_described_car();
-        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-04").unwrap();
+        interview(&mut io, &mut car, "2026-08-04").unwrap();
         assert!(io.asked.is_empty(), "asked again: {:?}", io.asked);
         assert_eq!(car.mass.as_ref().unwrap().at.as_deref(), Some("2026-08-03"));
     }

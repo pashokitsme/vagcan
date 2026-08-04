@@ -219,14 +219,6 @@ pub struct CarConditions {
 pub struct CarFile {
     /// The key. The car names itself, and its file is found by that name.
     pub vin: String,
-    /// What the owner calls this car — "Škoda Octavia III", "the blue one".
-    ///
-    /// It has to be asked for, because **no control unit broadcasts a make or a
-    /// model**. The engine reports a description of itself (`1.8l R4 TFSI`) and
-    /// every unit reports a part number; a marque and a generation would have to
-    /// come from a table this project does not have and would not be allowed to
-    /// invent. So it is `Stated`, like the mass, by the one person who knows.
-    pub name: Option<Sourced<String>>,
     pub units: Vec<UnitRef>,
     pub mass: Option<Sourced<Mass>>,
     pub tyre: Option<Sourced<String>>,
@@ -247,7 +239,6 @@ impl CarFile {
     pub fn new(vin: impl Into<String>) -> CarFile {
         CarFile {
             vin: vin.into(),
-            name: None,
             units: Vec::new(),
             mass: None,
             tyre: None,
@@ -265,23 +256,16 @@ impl CarFile {
     /// Where this tool keeps the file for one car: `car.json` inside that car's
     /// own directory, beside its saved measurements and its reports.
     ///
-    /// `description` is what a unit said about itself — the engine's component
-    /// string — and only makes the directory readable; the VIN is what makes it
-    /// unique. Both arrive from the bus, so neither is trusted as a path: a
-    /// unit answering with a separator or a `..` would otherwise choose where
-    /// this tool writes.
-    pub fn path_for(vin: &str, description: Option<&str>) -> anyhow::Result<PathBuf> {
-        Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str(), description)?.join("car.json"))
+    /// The directory is the VIN. It arrives from the bus, so it is not trusted
+    /// as a path: a unit answering with a separator or a `..` would otherwise
+    /// choose where this tool writes.
+    pub fn path_for(vin: &str) -> anyhow::Result<PathBuf> {
+        Ok(crate::datadir::car_dir(checked_vin(vin)?.as_str())?.join("car.json"))
     }
 
-    /// Where this car's own file is, using whatever it is called.
-    ///
-    /// The owner's name when there is one, the engine's description of itself
-    /// when there is not. Both only make the directory readable; the VIN is
-    /// what makes it unique.
-    pub fn path(&self, description: Option<&str>) -> anyhow::Result<PathBuf> {
-        let label = self.name.as_ref().map(|n| n.value.as_str()).or(description);
-        CarFile::path_for(&self.vin, label)
+    /// Where this car's own file is.
+    pub fn path(&self) -> anyhow::Result<PathBuf> {
+        CarFile::path_for(&self.vin)
     }
 
     /// Read a car file. Anything it cannot vouch for is an error naming the
@@ -868,59 +852,49 @@ mod tests {
     }
 
     #[test]
-    fn a_car_is_filed_under_what_its_owner_calls_it() {
-        // No unit broadcasts a make or a model, so the readable half of the
-        // path is either what the owner said or what the engine said about
-        // itself — never something this tool decoded out of a VIN.
+    fn a_car_is_filed_under_its_vin_and_keeps_the_directory_it_has() {
+        // The readable prefix is gone: it was assembled from whatever each
+        // caller happened to know, and `measure setup` knew the engine's
+        // component string where `measure` did not — which gave one car two
+        // directories, the car file in one and the drives in the other.
         //
-        // Asked of an empty `cars/` on purpose. `CarFile::path` answers the
-        // *other* question — what is this car called right now — and on a car
-        // that already has a directory the answer is that directory, whatever
-        // it is named, because the VIN is the identity and the name is
-        // decoration. Testing the naming rule through `path` would therefore
-        // pass on a fresh machine and fail on the owner's, which is exactly
-        // what it did.
+        // Asked of a temporary `cars/` on purpose. `CarFile::path` answers the
+        // *other* question — where does this car's file live *now* — and on a
+        // machine that already has a directory the answer is that directory,
+        // whatever it is called. Testing the naming rule through `path` would
+        // pass on a fresh machine and fail on the owner's, which is what it did.
         let vin = "XW8AD4NE9JH008917";
         let cars = std::env::temp_dir().join(format!("vagcan-naming-{}", std::process::id()));
         std::fs::create_dir_all(&cars).unwrap();
+        assert_eq!(crate::datadir::car_folder_in(&cars, vin).unwrap(), vin);
 
-        let unnamed = crate::datadir::car_folder_in(&cars, vin, Some("1.8l R4 TFSI")).unwrap();
-        assert_eq!(unnamed, "1.8l-R4-TFSI-XW8AD4NE9JH008917");
-
-        let named = crate::datadir::car_folder_in(&cars, vin, Some("Škoda Octavia III")).unwrap();
-        assert_eq!(named, "koda-Octavia-III-XW8AD4NE9JH008917");
-
-        std::fs::remove_dir_all(&cars).ok();
-    }
-
-    #[test]
-    fn a_car_that_has_a_directory_keeps_it_whatever_it_is_now_called() {
-        // The bug this pair exists for: `measure setup` passed the engine's
-        // component string and `measure` passed nothing, so one car got two
-        // directories and the car file written by the first was invisible to
-        // the second — which is how `--full` came to refuse on a car that had
-        // been set up.
-        let vin = "XW8AD4NE9JH008917";
-        let cars = std::env::temp_dir().join(format!("vagcan-existing-{}", std::process::id()));
+        // And a directory from before the rename is used rather than orphaned.
+        // Nothing is moved: a rename under a running tool is the one operation
+        // here that can lose a drive somebody is in the middle of recording.
         std::fs::create_dir_all(cars.join(format!("1.8l-R4-TFSI-{vin}"))).unwrap();
-
-        for description in [None, Some("something else entirely")] {
-            assert_eq!(
-                crate::datadir::car_folder_in(&cars, vin, description).unwrap(),
-                format!("1.8l-R4-TFSI-{vin}"),
-                "{description:?} was given a second directory"
-            );
-        }
+        assert_eq!(
+            crate::datadir::car_folder_in(&cars, vin).unwrap(),
+            format!("1.8l-R4-TFSI-{vin}")
+        );
         std::fs::remove_dir_all(&cars).ok();
     }
 
     #[test]
     fn a_vin_off_the_bus_never_chooses_where_this_tool_writes() {
-        assert!(CarFile::path_for("../../catalogs/vehicles/8V0906264H", None).is_err());
-        assert!(CarFile::path_for("", None).is_err());
-        assert!(CarFile::path_for("XW8/AD4", None).is_err());
-        let path = CarFile::path_for("XW8AD4NE9JH008917", Some("1.8l R4 TFSI")).unwrap();
-        assert!(path.ends_with("1.8l-R4-TFSI-XW8AD4NE9JH008917/car.json"), "{path:?}");
+        assert!(CarFile::path_for("../../catalogs/vehicles/8V0906264H").is_err());
+        assert!(CarFile::path_for("").is_err());
+        assert!(CarFile::path_for("XW8/AD4").is_err());
+
+        // What a real VIN produces is asserted only as far as this machine can
+        // promise: the directory this car already has may be named the old way,
+        // so the *shape* is what holds everywhere — one directory under `cars/`,
+        // ending in the VIN, with the car file inside it. The naming rule itself
+        // is pinned against a temporary `cars/` in the test above.
+        let path = CarFile::path_for("XW8AD4NE9JH008917").unwrap();
+        assert!(path.ends_with("car.json"), "{path:?}");
+        let folder = path.parent().unwrap().file_name().unwrap().to_string_lossy();
+        assert!(folder.ends_with("XW8AD4NE9JH008917"), "{path:?}");
+        assert_eq!(path.parent().unwrap().parent().unwrap().file_name().unwrap(), "cars");
     }
 
     #[test]

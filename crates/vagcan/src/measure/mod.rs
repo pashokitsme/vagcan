@@ -834,7 +834,7 @@ fn prepare(
         )
     })?;
 
-    let (car, car_path) = load_car_file(vin.as_deref(), identities, opts);
+    let (car, car_path) = load_car_file(vin.as_deref(), opts);
     let mut setting = report::Setting {
         accel_window_s: opts.accel_window_s,
         tyre: opts
@@ -965,18 +965,11 @@ fn pedal_step(set: &channels::Set) -> Option<f64> {
 /// another one's is the false comparison this design spends its length avoiding.
 fn load_car_file(
     vin: Option<&str>,
-    identities: &[crate::watch::plan::UnitIdentity],
     opts: &Options<'_>,
 ) -> (Option<carfile::CarFile>, Option<String>) {
-    let description = identities
-        .iter()
-        .find(|unit| unit.request == crate::watch::plan::ENGINE)
-        .and_then(|unit| unit.component.clone());
     let path = match opts.car {
         Some(path) => std::path::PathBuf::from(path),
-        None => match vin.and_then(|vin| {
-            carfile::CarFile::path_for(vin, description.as_deref()).ok()
-        }) {
+        None => match vin.and_then(|vin| carfile::CarFile::path_for(vin).ok()) {
             Some(path) => path,
             None => return (None, None),
         },
@@ -1392,7 +1385,7 @@ fn save(
     let path = match (out, &meta.vin) {
         (Some(path), _) => path.to_string(),
         (None, Some(vin)) => {
-            let dir = crate::datadir::measures_dir(vin, None)?;
+            let dir = crate::datadir::measures_dir(vin)?;
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("creating {}", dir.display()))?;
             dir.join(format!("{}.json", chrono::Local::now().format("%Y-%m-%d-%H%M%S")))
