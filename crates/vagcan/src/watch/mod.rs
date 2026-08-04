@@ -19,13 +19,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
+use crate::ui::term;
 use plan::Channel;
 
 /// Which screen has the keyboard.
@@ -739,12 +737,10 @@ pub async fn run_recording(
         }
     }
 
-    enable_raw_mode().map_err(|e| {
+    let screen = term::full_screen().with_mouse().enter().map_err(|e| {
         anyhow::anyhow!("`watch` needs an interactive terminal (it draws a full-screen view): {e}")
     })?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let mut app = App::new(channels);
     app.open_first_populated();
@@ -840,13 +836,11 @@ pub async fn run_recording(
         }
     };
 
-    disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    // The line below belongs on the screen this was started from, so the
+    // alternate screen goes before it rather than at the end of the function.
+    // ratatui's `Drop` shows the cursor it hid while drawing, so it goes first.
+    drop(terminal);
+    drop(screen);
     println!(
         "replayed {recording_path} — {:.0}s of driving, {} columns, {} of which ever changed",
         duration,
@@ -1093,16 +1087,14 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 
     // A full-screen view needs a terminal; without one crossterm fails with a
     // bare errno that says nothing about why.
-    enable_raw_mode().map_err(|e| {
+    let screen = term::full_screen().with_mouse().enter().map_err(|e| {
         anyhow::anyhow!(
             "`watch` needs an interactive terminal (it draws a full-screen view). \
              Without one, use `--for SECONDS`, which polls the same channels and \
              writes CSV: {e}"
         )
     })?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let result = loop {
         terminal.draw(|f| match app.screen {
             Screen::Live => draw_live(f, &mut app),
@@ -1201,13 +1193,10 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
         }
     };
 
-    disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
+    // Off the alternate screen before the summary is printed, for the same
+    // reason as in the replay path above.
+    drop(terminal);
+    drop(screen);
     if let Some(w) = sink.as_mut() {
         w.flush()?;
     }

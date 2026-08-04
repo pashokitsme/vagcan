@@ -33,9 +33,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event as TermEvent, KeyEventKind};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use ratatui::prelude::*;
 use serde_json::{Map, Value, json};
 
@@ -52,6 +49,7 @@ pub mod types;
 pub mod ui;
 pub mod view;
 
+use crate::ui::term;
 use channels::Resolved;
 use types::{Seconds, Track};
 
@@ -1073,18 +1071,20 @@ async fn drive<R: BatchReader>(
     let mut clock = 0.0f64;
     let mut density: Option<(f64, bool)> = opts.air_density.map(|rho| (rho, false));
 
-    let mut terminal = match full_screen {
-        true => {
-            enable_raw_mode().map_err(|e| {
-                anyhow::anyhow!(
-                    "`measure` needs an interactive terminal (it draws a full-screen view). \
-                     Without one it prints a line per cycle instead: {e}"
-                )
-            })?;
-            let mut stdout = io::stdout();
-            crossterm::execute!(stdout, EnterAlternateScreen)?;
-            Some(Terminal::new(CrosstermBackend::new(stdout))?)
-        }
+    // Held for the length of the drive, and given back by `Drop`: every `?`
+    // below this line is a run that ended badly on somebody's dashboard, and it
+    // must not also be a shell left with no echo and no cursor.
+    let screen = match full_screen {
+        true => Some(term::full_screen().enter().map_err(|e| {
+            anyhow::anyhow!(
+                "`measure` needs an interactive terminal (it draws a full-screen view). \
+                 Without one it prints a line per cycle instead: {e}"
+            )
+        })?),
+        false => None,
+    };
+    let mut terminal = match screen.is_some() {
+        true => Some(Terminal::new(CrosstermBackend::new(io::stdout()))?),
         false => None,
     };
 
@@ -1338,10 +1338,13 @@ async fn drive<R: BatchReader>(
         cycles += 1;
     };
 
-    if let Some(mut terminal) = terminal {
-        disable_raw_mode()?;
-        crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-        terminal.show_cursor()?;
+    if terminal.is_some() {
+        // Given back here rather than at the end of the function: the results
+        // belong on the screen the command was started from, not on one that is
+        // about to be thrown away. ratatui's own `Drop` shows the cursor it hid
+        // while drawing, so it goes first and this guard leaves the screen after.
+        drop(terminal);
+        drop(screen);
         for record in &recorded {
             println!("{}", report::results(&record.run, &record.derived, &meta.setting));
         }

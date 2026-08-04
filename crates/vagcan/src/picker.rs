@@ -29,8 +29,8 @@
 //! its output redirected, and a prompt that blocks on a stdin nobody is typing
 //! into is a hang with no explanation. Raw mode makes that stricter rather than
 //! looser: the terminal is checked *before* it is switched, and it is switched
-//! back by a guard that runs on every way out of the list, error and panic
-//! included.
+//! back by [`ui::term`](crate::ui::term)'s guard, which runs on every way out of
+//! the list, error and panic included.
 //!
 //! No new dependency: `crossterm` is already what `measure` and `watch` read
 //! their keys with. There is no alternate screen — this is a list of eighteen
@@ -46,6 +46,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::Attribute;
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::{cursor, execute, terminal};
+
+use crate::ui::term;
 
 /// One thing that can be picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -221,7 +223,7 @@ impl Chooser for Console {
         let mut out = std::io::stdout();
         // Everything below this line can leave through a `?` or a panic, and
         // both of those have to hand the terminal back the way they found it.
-        let _raw = RawMode::enter()?;
+        let _raw = term::in_place().enter()?;
         let mut drawn = 0usize;
         let decision = loop {
             // A terminal that answers 0 does not know how big it is — a pty
@@ -304,31 +306,6 @@ impl Chooser for Console {
     fn reveal(&mut self, path: &Path) -> Result<()> {
         let line = revealed(path);
         self.say(&line)
-    }
-}
-
-/// Raw mode, and the promise to give it back.
-///
-/// The list reads single keys, which means the terminal stops echoing and stops
-/// line-buffering. Leaving it that way turns a shell into something that looks
-/// broken, so the restore hangs off `Drop` rather than off remembering to call
-/// it: `?` in the middle of the loop unwinds through this, and so does a panic.
-struct RawMode;
-
-impl RawMode {
-    fn enter() -> Result<RawMode> {
-        terminal::enable_raw_mode()?;
-        let guard = RawMode;
-        // Hidden after the guard exists, so that a failure here still restores.
-        execute!(std::io::stdout(), cursor::Hide)?;
-        Ok(guard)
-    }
-}
-
-impl Drop for RawMode {
-    fn drop(&mut self) {
-        let _ = execute!(std::io::stdout(), cursor::Show);
-        let _ = terminal::disable_raw_mode();
     }
 }
 
