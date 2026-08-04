@@ -672,8 +672,21 @@ impl Search<'_> {
 
 /// Recover the raw first-block `iv[3..8]` for a `product != 0` zlib section.
 /// `cipher` is the full section ciphertext; `plainlen` the declared
-/// decompressed length. Returns `None` if the first block is not zlib-magic
-/// (`78 da`) or the search finds no candidate inflating to `plainlen`.
+/// decompressed length. Returns `None` if the search finds no candidate
+/// inflating to exactly `plainlen`.
+///
+/// Two regimes, and the difference is expensive (`research/tttext2.md`):
+///
+/// * **classic** — the tag-derived IV is exact, so `plaintext[0..3]` reads
+///   `78 da <anchor>` and the anchor is free. One search over the reduced
+///   candidate sets, ~2 minutes.
+/// * **shifted** — the file XORs a runtime 8-byte mask over the finished IV
+///   (§3.3a), so neither the anchor nor the multiplicative structure of
+///   `iv[3..8]` survives. The magic itself still does, because it is
+///   *plaintext* and the searcher substitutes it directly rather than deriving
+///   it — what is lost is only deflate byte 0, which is swept over the values a
+///   dynamic-Huffman header admits, against the full candidate sets. Up to 60
+///   searches at ~6.5× each: hours, not minutes.
 pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Option<[u8; 5]> {
     if cipher.len() < 8 || cipher.len() % 8 != 0 {
         return None;
@@ -683,17 +696,38 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize) -> Opti
     let tail = tea_cbc_decrypt(&cipher[8..], &KEY_ROD, first);
 
     let iv0 = rod_block0_iv(tag);
-    // plaintext[0..3] = t[0..3] ^ iv[0..3]; iv[0..3] is exact (product-independent).
-    let p0 = t[0] ^ iv0[0];
-    let p1 = t[1] ^ iv0[1];
-    let d0 = t[2] ^ iv0[2];
-    if p0 != 0x78 || p1 != 0xda {
-        return None; // not a zlib stream / wrong IV prefix
-    }
-
-    let sets = candidate_sets(tag[1], &t);
-
+    // plaintext[0..3] = t[0..3] ^ iv[0..3]; for a classic file iv[0..3] is
+    // exact, so the anchor comes for free and the reduced sets are valid.
+    let classic = t[0] ^ iv0[0] == 0x78 && t[1] ^ iv0[1] == 0xda;
     let tail = Arc::new(tail);
+    match classic {
+        true => search_anchor(tag, &t, &tail, plainlen, t[2] ^ iv0[2], false),
+        false => super::deflate_anchors()
+            .find_map(|d0| search_anchor(tag, &t, &tail, plainlen, d0, true)),
+    }
+}
+
+/// One full search for a single assumed deflate byte 0.
+///
+/// `full_sets` widens `iv[3..8]` from the multiplicatively-reachable values to
+/// all 256 per byte. That reduction is a property of the *documented* IV
+/// construction, and a shifted file XORs a mask over its output — so on those
+/// files the true bytes sit outside the reduced sets and a reduced search
+/// returns a clean miss however long it runs.
+fn search_anchor(
+    tag: &[u8],
+    t: &[u8; 8],
+    tail: &Arc<Vec<u8>>,
+    plainlen: usize,
+    d0: u8,
+    full_sets: bool,
+) -> Option<[u8; 5]> {
+    let sets: [Vec<u8>; 5] = match full_sets {
+        true => std::array::from_fn(|k| (0..=255u8).map(|v| t[k + 3] ^ v).collect()),
+        false => candidate_sets(tag[1], t),
+    };
+
+    let tail = Arc::clone(tail);
     let sets = Arc::new(sets);
     let found = Arc::new(AtomicBool::new(false));
     let result: Arc<Mutex<Option<[u8; 5]>>> = Arc::new(Mutex::new(None));

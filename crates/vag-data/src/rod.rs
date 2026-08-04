@@ -93,6 +93,58 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
     iv
 }
 
+/// Every value deflate byte 0 can take at the head of a zlib stream in this
+/// corpus: `BTYPE = 2` (dynamic Huffman), `HLIT ≤ 29`, either `BFINAL`.
+///
+/// Sixty values, and they matter because a shifted file (`research/tttext2.md`
+/// §3.3) destroys exactly this byte. The layout is RFC 1951 §3.2.7:
+/// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored blocks and fixed-Huffman blocks
+/// are excluded deliberately — no section in the corpus uses either, and
+/// admitting them would double a search that is already the expensive part.
+fn deflate_anchors() -> impl Iterator<Item = u8> {
+    (0..=29u8).flat_map(|hlit| [0b100 | (hlit << 3), 0b101 | (hlit << 3)])
+}
+
+/// Decrypt and inflate a section under `iv`, insisting the result is exactly
+/// the declared length.
+///
+/// The length check is what makes the anchor sweep below safe: a wrong anchor
+/// almost always fails to inflate at all, but "almost always" is not a decoder
+/// guarantee, and a stream that inflates to the wrong size is a wrong stream.
+fn inflate_with_iv(sc: &SectionCipher<'_>, iv: [u8; 8]) -> Option<Vec<u8>> {
+    let dec = tea_cbc_decrypt(sc.cipher, &KEY_ROD, iv);
+    let out = miniz_oxide::inflate::decompress_to_vec_zlib(&dec).ok()?;
+    (out.len() == sc.plainlen).then_some(out)
+}
+
+/// Decode a compressed section whose first-block IV carries the per-file XOR of
+/// `research/tttext2.md` §3.3, given the recovered `iv[3..8]`.
+///
+/// Two of the three shifted bytes cost nothing, because the plaintext there is
+/// known: `iv[0] = t[0] ^ 0x78` and `iv[1] = t[1] ^ 0xda`. The third sits under
+/// deflate byte 0, which nothing pins — so it is swept over
+/// [`deflate_anchors`] and the value that inflates to the declared length wins.
+///
+/// This is cheap (sixty decrypt-and-inflate attempts, most of which die in the
+/// Huffman header) and it is the reason the key cache needs no new format: a
+/// shifted section is openable from the same five bytes as a classic one.
+fn decode_shifted(tag_str: &str, sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> Option<RodSection> {
+    let first: [u8; 8] = sc.cipher.get(0..8)?.try_into().ok()?;
+    let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
+    let mut iv = [0u8; 8];
+    iv[0] = t[0] ^ 0x78;
+    iv[1] = t[1] ^ 0xda;
+    iv[3..8].copy_from_slice(&iv3to8);
+    deflate_anchors().find_map(|d0| {
+        iv[2] = t[2] ^ d0;
+        inflate_with_iv(sc, iv).map(|bytes| RodSection {
+            tag: tag_str.to_string(),
+            status: RodStatus::Zlib,
+            text: Some(decode_latin1(&bytes)),
+        })
+    })
+}
+
 /// Decode raw Latin-1 bytes into a `String`, one byte per `char`. Matches
 /// `label::parse_label`'s internal decoding, and `clb`'s test helper of the
 /// same name.
@@ -396,9 +448,17 @@ pub fn decode_rod_recover(
                                 None
                             });
                             match recovered {
-                                Some(iv3to8) => {
+                                // A classic section's IV[0..3] is tag-derived;
+                                // a shifted one's is not, and has to be read
+                                // back off the known plaintext instead.
+                                Some(iv3to8) if search_has_a_crib(&tag, sc.cipher) => {
                                     let iv = rod_block0_iv_recovered(&tag, iv3to8);
                                     section = decode_with_iv(&tag_str, &sc, iv);
+                                }
+                                Some(iv3to8) => {
+                                    if let Some(s) = decode_shifted(&tag_str, &sc, iv3to8) {
+                                        section = s;
+                                    }
                                 }
                                 // Say which of the two happened. A search that
                                 // ran and lost and a search that never started
@@ -543,6 +603,88 @@ mod tests {
         assert_eq!(&spliced[3..8], &[1, 2, 3, 4, 5]); // recovered tail
     }
 
+    // --- the per-file IV shift (`research/tttext2.md`) ----------------------
+
+    /// Build a zlib section encrypted under an IV that has been XORed with a
+    /// per-file mask, the way 40 % of the corpus is.
+    fn shifted_section(tag: &[u8], mask: [u8; 8]) -> (Vec<u8>, Vec<u8>, [u8; 5]) {
+        // Skewed text, so miniz emits a dynamic-Huffman block (BTYPE 2).
+        let plain: Vec<u8> = (0..4096u32)
+            .map(|i| 0x20 + ((i.wrapping_mul(7).wrapping_add(i / 13)) % 60) as u8)
+            .collect();
+        let mut z = miniz_oxide::deflate::compress_to_vec_zlib(&plain, 9);
+        z[0] = 0x78;
+        z[1] = 0xda;
+        while z.len() % 8 != 0 {
+            z.push(0);
+        }
+        let mut iv = rod_block0_iv(tag);
+        for i in 0..8 {
+            iv[i] ^= mask[i];
+        }
+        let cipher = tea_cbc_encrypt(&z, &KEY_ROD, iv);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(cipher.len() as u32).to_be_bytes()[1..]); // read1
+        payload.extend_from_slice(&(plain.len() as u32).to_be_bytes()[1..]); // read2
+        payload.extend_from_slice(&cipher);
+        (payload, plain, iv[3..8].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_shifted_section_presents_no_crib_and_is_not_called_undecodable() {
+        // The distinction the whole of `research/tttext2.md` turns on: the
+        // search cannot start here, which is not the same as the section being
+        // beyond reach. A mask over the IV destroys the known plaintext.
+        let tag = b"MWB";
+        let (payload, _, _) = shifted_section(tag, [0x5e, 0xe6, 0x10, 1, 2, 3, 4, 5]);
+        let sc = parse_section_cipher(&payload).unwrap();
+        assert!(!search_has_a_crib(tag, sc.cipher));
+        assert_eq!(decode_section(tag, &payload).status, RodStatus::Undecodable);
+    }
+
+    #[test]
+    fn a_shifted_section_opens_from_the_same_five_bytes_a_classic_one_needs() {
+        // The mask is eight bytes, but only three of them cost anything to
+        // undo: two are read straight off the zlib magic and the third is
+        // swept. So the key cache needs no new format.
+        let tag = b"MWB";
+        let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+        let (payload, plain, iv3to8) = shifted_section(tag, mask);
+        let sc = parse_section_cipher(&payload).unwrap();
+
+        let opened = decode_shifted("MWB", &sc, iv3to8).expect("the anchor sweep must find it");
+        assert_eq!(opened.status, RodStatus::Zlib);
+        assert_eq!(opened.text.unwrap().len(), plain.len());
+    }
+
+    #[test]
+    fn the_shifted_path_refuses_a_wrong_key_rather_than_inventing_a_section() {
+        // A wrong tail must not be rescued by one of the sixty anchors: the
+        // sweep is only safe because the inflate has to land on the declared
+        // length exactly.
+        let tag = b"MWB";
+        let mask = [0x5e, 0xe6, 0x10, 0x51, 0x77, 0x19, 0x40, 0x8c];
+        let (payload, _, iv3to8) = shifted_section(tag, mask);
+        let sc = parse_section_cipher(&payload).unwrap();
+
+        let mut wrong = iv3to8;
+        wrong[0] ^= 0xff;
+        assert!(decode_shifted("MWB", &sc, wrong).is_none());
+    }
+
+    #[test]
+    fn the_anchors_are_exactly_the_dynamic_huffman_headers() {
+        let anchors: Vec<u8> = deflate_anchors().collect();
+        assert_eq!(anchors.len(), 60);
+        for a in &anchors {
+            assert_eq!((a >> 1) & 0b11, 2, "BTYPE must be dynamic Huffman");
+            assert!(a >> 3 <= 29, "HLIT + 257 must not exceed 286 literals");
+        }
+        // A classic section's real anchor has to be in the set, or the sweep
+        // would miss the very streams it is modelled on. `STRUC.rod`'s is 0x8c.
+        assert!(anchors.contains(&0x8c));
+    }
+
     // --- Stage 1: recovered-IV cache round-trip ----------------------------
 
     #[test]
@@ -561,7 +703,6 @@ mod tests {
     // --- Stage 1: end-to-end offline crack on a synthetic blocked section ---
 
     /// TEA encrypt one 8-byte block (inverse of [`crate::tea::tea_decrypt_block`]).
-    #[cfg(feature = "rod-crack")]
     fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
         let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
         let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
@@ -581,7 +722,6 @@ mod tests {
         out
     }
 
-    #[cfg(feature = "rod-crack")]
     fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(plain.len());
         let mut prev = iv;
