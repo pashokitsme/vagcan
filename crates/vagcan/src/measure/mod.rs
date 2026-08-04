@@ -49,7 +49,7 @@ pub mod types;
 pub mod ui;
 pub mod view;
 
-use crate::ui::term;
+use crate::ui::{chart, term};
 use channels::Resolved;
 use types::{Seconds, Track};
 
@@ -1097,7 +1097,7 @@ async fn drive<R: BatchReader>(
         );
         let series = series_of(&charts, &units);
         // What `←`/`→` walks is pages of overlaid series, not series.
-        controls.charts = ui::pages(&series).len();
+        controls.charts = chart::pages(&series).len();
         let screen = ui::Screen {
             band: ui::band(
                 &ui::phase_of(session.state(), speed_kmh, clock, last_outcome.as_ref()),
@@ -1624,23 +1624,25 @@ const POWER_CHART: &str = "power";
 /// from one cycle to the next.
 ///
 /// The order is the one the driver asked for them in — speed, engine speed,
-/// power, acceleration — and it is what [`ui::pages`] then cuts into pages: the
+/// power, acceleration — and it is what [`chart::pages`] then cuts into pages: the
 /// first two share a page, and the two computed ones share the next.
-fn series_of(charts: &BTreeMap<String, Track>, units: &BTreeMap<String, String>) -> Vec<ui::Series> {
+fn series_of(charts: &BTreeMap<String, Track>, units: &BTreeMap<String, String>) -> Vec<chart::Series> {
     let origin = |name: &str| match name {
         // Live, the slope can only be causal: the future half of a centred
         // window has not been read yet.
-        ACCEL_CHART => ui::Origin::Computed("trailing"),
-        POWER_CHART => ui::Origin::Computed("estimate"),
-        _ => ui::Origin::Bus,
+        ACCEL_CHART => chart::Origin::Computed("trailing"),
+        POWER_CHART => chart::Origin::Computed("estimate"),
+        _ => chart::Origin::Bus,
     };
-    let series = |name: &str, track: &Track| ui::Series {
+    let series = |name: &str, track: &Track| chart::Series {
         label: name.to_string(),
         unit: units.get(name).cloned().unwrap_or_default(),
-        points: track.clone(),
+        // A `Track` is a numerics buffer and a chart wants a list of points, so
+        // this is where one becomes the other. It was already a copy per cycle.
+        points: track.t.iter().copied().zip(track.v.iter().copied()).collect(),
         origin: origin(name),
     };
-    let mut out: Vec<ui::Series> = Vec::new();
+    let mut out: Vec<chart::Series> = Vec::new();
     for name in [SPEED_CHART, "engine speed", POWER_CHART, ACCEL_CHART, "pedal"] {
         if let Some(track) = charts.get(name) {
             out.push(series(name, track));
@@ -1673,7 +1675,7 @@ fn value_rows(
             rows.push(ui::ValueRow {
                 name: name.to_string(),
                 value: value.clone(),
-                origin: ui::Origin::Bus,
+                origin: chart::Origin::Bus,
             });
         }
     }
@@ -1684,13 +1686,13 @@ fn value_rows(
             Some(specified) => format!("{actual} / {specified} (act/spec)"),
             None => actual.clone(),
         };
-        rows.push(ui::ValueRow { name: "boost".into(), value: pair, origin: ui::Origin::Bus });
+        rows.push(ui::ValueRow { name: "boost".into(), value: pair, origin: chart::Origin::Bus });
     }
     if let Some(value) = values.get("air mass") {
         rows.push(ui::ValueRow {
             name: "air mass".into(),
             value: value.clone(),
-            origin: ui::Origin::Bus,
+            origin: chart::Origin::Bus,
         });
     }
 
@@ -1698,7 +1700,7 @@ fn value_rows(
         rows.push(ui::ValueRow {
             name: "accel".into(),
             value: format!("{:.2} g", accel / power::G),
-            origin: ui::Origin::Computed("trailing"),
+            origin: chart::Origin::Computed("trailing"),
         });
     }
     // Live power needs an air density, and under `--full` the car's own is only
@@ -1709,7 +1711,7 @@ fn value_rows(
         rows.push(ui::ValueRow {
             name: "power".into(),
             value: report::power_figure(*kw),
-            origin: ui::Origin::Computed("estimate"),
+            origin: chart::Origin::Computed("estimate"),
         });
     }
     rows
