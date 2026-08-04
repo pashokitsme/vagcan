@@ -27,11 +27,6 @@
 //!   known identifiers with `0x22` and nothing else. `SAFETY.md` is about what a
 //!   sweep can provoke; this is `watch` with a stopwatch.
 
-// Tasks 12 to 14 are still landing, so a few proven items here have no caller
-// yet — a coastdown reject variant, a `Ratios` accessor. They are kept because
-// they are tested and because the module that will use them is written next.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::io;
 use std::time::{Duration, Instant};

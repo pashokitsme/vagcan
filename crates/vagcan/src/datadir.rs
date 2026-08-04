@@ -97,9 +97,6 @@ pub fn car_dir(vin: &str) -> anyhow::Result<PathBuf> {
 }
 
 /// Where a car's saved measurement sessions go.
-// Called once `measure` writes sessions; the directory layout is settled here so
-// that the command does not invent its own.
-#[allow(dead_code)]
 pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
     Ok(car_dir(vin)?.join("measures"))
 }

@@ -37,11 +37,6 @@
 //! files, and the lines it prints while working (what was taken, what was
 //! deleted) should still be on the screen afterwards.
 
-// Not every level shape and helper here has a caller yet — the commands that
-// will are wired separately, and a module written a command ahead of its
-// callers is the shape `datadir` already uses for the same reason.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
