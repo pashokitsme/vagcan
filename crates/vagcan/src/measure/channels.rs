@@ -178,6 +178,16 @@ struct RoleSpec {
 /// request holds, the ones lower down are what goes. Cross-check speeds follow
 /// the leading speed immediately, because a second speed is what makes the
 /// leading one's refresh period observable.
+/// Every role this command knows how to fill, by the key the session file uses.
+///
+/// Reachable so that a reader can turn a file's channel names back into the
+/// roles they came from. A reader that carried its own list would drift from
+/// the writer's the first time a role was added, and the drift would show up as
+/// a channel quietly missing from a recomputed run rather than as a failure.
+pub fn known_roles() -> impl Iterator<Item = &'static str> {
+    ROLES.iter().map(|spec| spec.key)
+}
+
 const ROLES: &[RoleSpec] = &[
     RoleSpec {
         key: SPEED,

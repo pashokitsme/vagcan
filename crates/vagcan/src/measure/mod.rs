@@ -43,6 +43,7 @@ pub mod derive;
 pub mod messages;
 pub mod power;
 pub mod report;
+pub mod reread;
 pub mod session;
 pub mod setup;
 pub mod types;
@@ -562,6 +563,56 @@ fn document(
     })
 }
 
+/// The `derived` block: the cache of everything computed over a finished run.
+///
+/// Split out of [`run_json`] so that [`refresh_derived`] can rebuild exactly
+/// this and nothing else. Two builders would drift, and the drift would show
+/// as a figure that changes when a session is re-opened.
+fn derived_json(derived: &report::Derived) -> Map<String, Value> {
+    let mut block = Map::new();
+    block.insert("stamp".into(), json!(derived.stamp));
+    block.insert("distance_m".into(), json!(round3(derived.distance_m)));
+    if let Some(peak) = derived.peak_engine_speed {
+        block.insert("peak_rpm".into(), json!(round3(peak.value)));
+    }
+    if let Some(peak) = derived.peak_accel {
+        block.insert("peak_accel_ms2".into(), json!(round3(peak.value)));
+        block.insert("peak_accel_t".into(), json!(round3(peak.t)));
+        block.insert("peak_accel_sigma".into(), json!(round3(peak.sigma)));
+    }
+    if let Some(gear) = &derived.peak_accel_gear {
+        block.insert("peak_accel_gear".into(), json!(gear));
+    }
+    if let Some(kw) = derived.peak_power_wheel_kw {
+        block.insert("peak_power_wheel_kw".into(), json!(round3(kw)));
+    }
+    if let Some(kw) = derived.peak_power_shaft_kw {
+        block.insert("peak_power_shaft_kw".into(), json!(round3(kw)));
+    }
+    if let Some(reference) = derived.boost_reference {
+        block.insert("boost_reference".into(), json!(reference));
+    }
+    block.insert(
+        "shifts".into(),
+        json!(
+            derived
+                .shifts
+                .iter()
+                .map(|shift| json!({
+                    "t": round3(shift.t), "from": shift.from, "to": shift.to,
+                    "speed_deficit_ms": round3(shift.speed_deficit_ms),
+                    // The floor travels with the figure, so the page can say
+                    // "not resolved" for the same rows the text report does
+                    // rather than reprint a sign the session never measured.
+                    "deficit_sigma_ms": round3(shift.deficit_sigma_ms),
+                    "cost_on_mark_s": shift.cost_on_mark_s.map(round3),
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+    block
+}
+
 fn run_json(meta: &Meta, recorded: &Recorded) -> Value {
     let run = &recorded.run;
     let derived = &recorded.derived;
@@ -622,48 +673,7 @@ fn run_json(meta: &Meta, recorded: &Recorded) -> Value {
         })
         .collect();
 
-    let mut block = Map::new();
-    block.insert("stamp".into(), json!(derived.stamp));
-    block.insert("distance_m".into(), json!(round3(derived.distance_m)));
-    if let Some(peak) = derived.peak_engine_speed {
-        block.insert("peak_rpm".into(), json!(round3(peak.value)));
-    }
-    if let Some(peak) = derived.peak_accel {
-        block.insert("peak_accel_ms2".into(), json!(round3(peak.value)));
-        block.insert("peak_accel_t".into(), json!(round3(peak.t)));
-        block.insert("peak_accel_sigma".into(), json!(round3(peak.sigma)));
-    }
-    if let Some(gear) = &derived.peak_accel_gear {
-        block.insert("peak_accel_gear".into(), json!(gear));
-    }
-    if let Some(kw) = derived.peak_power_wheel_kw {
-        block.insert("peak_power_wheel_kw".into(), json!(round3(kw)));
-    }
-    if let Some(kw) = derived.peak_power_shaft_kw {
-        block.insert("peak_power_shaft_kw".into(), json!(round3(kw)));
-    }
-    if let Some(reference) = derived.boost_reference {
-        block.insert("boost_reference".into(), json!(reference));
-    }
-    block.insert(
-        "shifts".into(),
-        json!(
-            derived
-                .shifts
-                .iter()
-                .map(|shift| json!({
-                    "t": round3(shift.t), "from": shift.from, "to": shift.to,
-                    "speed_deficit_ms": round3(shift.speed_deficit_ms),
-                    // The floor travels with the figure, so the page can say
-                    // "not resolved" for the same rows the text report does
-                    // rather than reprint a sign the session never measured.
-                    "deficit_sigma_ms": round3(shift.deficit_sigma_ms),
-                    "cost_on_mark_s": shift.cost_on_mark_s.map(round3),
-                }))
-                .collect::<Vec<_>>()
-        ),
-    );
-
+    let block = derived_json(derived);
     json!({
         "index": run.index,
         "t0_wall": recorded.at,
@@ -739,8 +749,59 @@ pub fn open_view(path: &str) -> Result<()> {
             "{path} carries no `schema` field, so it is not a session this tool wrote."
         ),
     }
+    let mut session = session;
+    refresh_derived(&mut session);
     view::write_and_open(std::path::Path::new(path), &session)?;
     Ok(())
+}
+
+/// Re-derive every run from its own samples, so an old file is read by today's
+/// maths rather than shown yesterday's answers.
+///
+/// The `derived` block is a cache over `series`, and `stamp` exists so a reader
+/// can tell it was computed by something else — `report`'s module doc says so.
+/// This is that reader. Without it a session recorded before the shift cost was
+/// corrected kept showing costs taken against a baseline that could land on a
+/// lift, downshifts charged as though they were shifts, and signs below the
+/// session's own noise.
+///
+/// **A run that cannot be rebuilt faithfully keeps what it has.** Recomputing
+/// over samples this build did not fully understand would replace one wrong
+/// answer with a different one, so the reader refuses instead ([`reread`]) and
+/// the stamp goes on saying which maths produced what is shown.
+///
+/// The power block is deliberately not recomputed. It needs the car's mass and
+/// road load, and those live in a car file that may have been edited, replaced
+/// or measured again since — so a power figure is left exactly as it was
+/// computed, with the conditions the file records beside it.
+fn refresh_derived(session: &mut Value) {
+    let setting = report::Setting {
+        accel_window_s: session["config"]["accel_window_s"].as_f64().unwrap_or_default(),
+        peak_tau_s: report::PEAK_TAU_S,
+        ..report::Setting::default()
+    };
+    let Some(runs) = session.get_mut("runs").and_then(Value::as_array_mut) else { return };
+    for value in runs.iter_mut() {
+        let Some(run) = reread::run(value) else { continue };
+        // Only the block that is a cache. Everything else in the run — the
+        // samples, the marks, when it was driven — is evidence and is left
+        // exactly as the drive left it.
+        merge_derived(value, Value::Object(derived_json(&report::recompute(&run, &setting))));
+    }
+}
+
+/// Replace the cached block, keeping any figure this build could not recompute.
+///
+/// Power is the case that matters: it is absent from a recomputed block because
+/// no car file was loaded, and dropping it would silently delete a figure the
+/// drive really did produce.
+fn merge_derived(run: &mut Value, fresh: Value) {
+    let (Some(old), Some(new)) = (run["derived"].as_object(), fresh.as_object()) else { return };
+    let mut merged = old.clone();
+    for (key, value) in new {
+        merged.insert(key.clone(), value.clone());
+    }
+    run["derived"] = Value::Object(merged);
 }
 
 /// Run the command against a car.
