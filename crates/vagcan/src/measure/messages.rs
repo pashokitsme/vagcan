@@ -91,6 +91,36 @@ pub fn full_without_car_file(known: &[(&str, String)], missing: &[&str]) -> Stri
     out
 }
 
+/// The car publishes no barometer, or no ambient air temperature.
+///
+/// This used to be a refusal, and it was the wrong shape: the reading is
+/// legislated but not universal, and a car that simply does not expose it was
+/// being sent home from a job the standard atmosphere can do. So the fallback is
+/// announced, priced, and offered as a question instead — because a person who
+/// can see a forecast can do better than a standard, and one who cannot should
+/// still get a car file.
+///
+/// It states the cost in the terms the fit is actually sensitive to. `ρ` enters
+/// drag linearly and the fit returns `½·ρ·CdA`, so an error in `ρ` is the same
+/// error in `CdA`, one for one: about 3 % per 30 hPa and 3 % per 10 °C, and a
+/// real day is often both.
+pub fn no_barometer() -> String {
+    "\nThis car publishes no barometer, or no outside air temperature — SAE J1979's\n\
+     PIDs 0x33 and 0x46 — and the coastdown fit returns ½·ρ·CdA, so a drag area\n\
+     without a density is not a number.\n\n\
+     That is not a reason to stop. The ISO 2533 standard atmosphere is 1013.25 hPa at\n\
+     15 °C, which is 1.2250 kg/m³, and the car file will say plainly that is where the\n\
+     density came from. What it costs: density enters the drag term linearly, so a day\n\
+     30 hPa and 10 °C away from standard puts about 6 % on the aerodynamic half of the\n\
+     fit, and every power figure computed from it afterwards carries the same 6 %.\n\n\
+     So the next two questions are worth answering if you can. A forecast, a weather\n\
+     app or an airport METAR has both numbers; press Enter twice if you have neither\n\
+     and the standard atmosphere will be used and recorded as such.\n\n\
+     If this car does answer those readings under other names, this will find them:\n    \
+     vagcan survey --out parked.jsonl"
+        .to_string()
+}
+
 /// A coastdown pass was thrown away.
 ///
 /// The direction sentence is the load-bearing part. The tool cannot tell which
@@ -260,6 +290,7 @@ mod tests {
             wrong_car("XW8AD4NE9JH008917", "XW8AD4NE9JH000123"),
             unsaved_on_quit(4),
             no_car_file("XW8AD4NE9JH008917"),
+            no_barometer(),
         ];
         for text in texts {
             assert!(ends_with_something_to_do(&text), "no way out offered:\n{text}");
@@ -307,6 +338,23 @@ mod tests {
         // the path leaves the driver to go looking for their own drive.
         assert_eq!(saved("/tmp/drive.json", 1), "saved 1 run to /tmp/drive.json");
         assert!(saved("/tmp/drive.json", 4).contains("4 runs"));
+    }
+
+    #[test]
+    fn a_car_with_no_barometer_is_told_the_price_of_the_standard_atmosphere() {
+        // The owner's question was "what do I do if the car has no barometer" —
+        // and the answer has to be a way forward with its cost attached, not a
+        // refusal and not a silent substitution.
+        let text = no_barometer();
+        assert!(text.contains("ISO 2533"), "{text}");
+        assert!(text.contains("1013.25 hPa"), "{text}");
+        assert!(text.contains("1.2250 kg/m³"), "{text}");
+        // What it costs, in the units the fit is sensitive to.
+        assert!(text.contains("linearly"), "{text}");
+        assert!(text.contains("6 %"), "{text}");
+        // And the escape: he can state the real value himself.
+        assert!(text.contains("next two questions"), "{text}");
+        assert!(!text.contains("cannot continue"), "{text}");
     }
 
     #[test]

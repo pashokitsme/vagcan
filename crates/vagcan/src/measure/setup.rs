@@ -119,6 +119,34 @@ const PRESSURE_RANGE_KPA: std::ops::RangeInclusive<f64> = 50.0..=115.0;
 /// See [`PRESSURE_RANGE_KPA`].
 const AMBIENT_RANGE_C: std::ops::RangeInclusive<f64> = -60.0..=90.0;
 
+/// The ISO 2533 standard atmosphere at sea level, in the units a person reads
+/// them in: **1013.25 hPa** and **15 °C**, which is `ρ = 1.2250 kg/m³`.
+///
+/// A published reference atmosphere, not a fact about any car — the same
+/// standard [`power::air_density`] takes its gas constant from — which is why it
+/// may be a literal here at all. It is the last resort for a car that publishes
+/// no barometer: a density had to come from somewhere, and a named standard that
+/// the file records as such is the only honest somewhere left.
+///
+/// Weather reports and aviation give pressure in hPa (= mbar); SAE J1979 PID
+/// 0x33 gives kPa. The interview asks in the former because that is what a
+/// person can look up, and [`hpa_to_kpa`] is the whole of the difference.
+const STANDARD_PRESSURE_HPA: f64 = 1013.25;
+/// See [`STANDARD_PRESSURE_HPA`].
+const STANDARD_AMBIENT_C: f64 = 15.0;
+
+/// What a barometer reading a person can look up may plausibly be, in hPa.
+///
+/// The record extremes on this planet are about 870 and 1085 hPa, so anything
+/// outside this is a typo — most likely kPa typed into an hPa question, which
+/// would put the density out by a factor of ten and the drag area with it.
+const STATED_PRESSURE_RANGE_HPA: std::ops::RangeInclusive<f64> = 800.0..=1100.0;
+
+/// One hectopascal in kilopascals. A unit conversion, not a calibration.
+fn hpa_to_kpa(hpa: f64) -> f64 {
+    hpa / 10.0
+}
+
 /// What `measure setup` was asked for.
 pub struct Options<'a> {
     pub device: Option<&'a str>,
@@ -151,16 +179,26 @@ pub trait Interview {
     fn say(&mut self, text: &str);
 }
 
+/// The line a person actually sees: the question, and the default in brackets.
+///
+/// Shared with the test double on purpose. A question is only as good as the
+/// line on the screen, so a transcript assertion has to be an assertion about
+/// that line — including the default, which is the part an owner in a hurry
+/// reads first and the part a prompt string alone does not carry.
+pub fn prompt_line(prompt: &str, default: Option<&str>) -> String {
+    match default {
+        Some(value) if !value.is_empty() => format!("  {prompt} [{value}] "),
+        _ => format!("  {prompt} "),
+    }
+}
+
 /// The interview as a person has it: stdout and stdin.
 pub struct Console;
 
 impl Interview for Console {
     fn ask(&mut self, prompt: &str, default: Option<&str>) -> Result<String> {
         let mut out = std::io::stdout();
-        match default {
-            Some(value) if !value.is_empty() => write!(out, "  {prompt} [{value}] ")?,
-            _ => write!(out, "  {prompt} ")?,
-        }
+        write!(out, "{}", prompt_line(prompt, default))?;
         out.flush()?;
         let mut line = String::new();
         // Zero bytes read is the end of input, which is not an empty answer: a
@@ -183,32 +221,51 @@ impl Interview for Console {
 
 /// Ask until the answer is a number in range.
 ///
+/// `unit` and `example` are not decoration. The owner's own report of this
+/// command was that he could not tell what shape an answer was meant to take,
+/// and a question that does not show its form is a question answered twice — so
+/// every numeric prompt carries the unit, an example of the *format*, and the
+/// range that will be accepted, and the refusal repeats all three rather than
+/// saying "invalid".
+///
+/// The example is never a value this tool is suggesting. It shows the shape, the
+/// way `205/55R16` shows the shape of a tyre size; anything that would be
+/// accepted by pressing Enter is a `default` instead, and is shown as one.
+///
 /// Re-asked rather than refused: a typo in a mass is the commonest thing that
 /// happens here, and it happens with the car parked and the person present.
 fn ask_number(
     io: &mut impl Interview,
-    prompt: &str,
+    question: &str,
+    unit: &str,
+    example: &str,
     default: Option<&str>,
     range: std::ops::RangeInclusive<f64>,
 ) -> Result<f64> {
+    let prompt = screens::number_prompt(question, unit, example, default, &range);
     loop {
-        let answer = io.ask(prompt, default)?;
+        let answer = io.ask(&prompt, default)?;
         match answer.trim().replace(',', ".").parse::<f64>() {
             Ok(value) if value.is_finite() && range.contains(&value) => return Ok(value),
-            _ => io.say(&screens::not_a_number(&answer, &range)),
+            _ => io.say(&screens::not_a_number(&answer, unit, example, &range)),
         }
     }
 }
 
 /// Ask a question whose answer is yes or no.
-fn ask_yes_no(io: &mut impl Interview, prompt: &str, default: bool) -> Result<bool> {
+///
+/// The prompt spells out both words and what Enter alone does, because "yes or
+/// no" only looks obvious to the person who wrote it: `y`, `n` and Enter are
+/// three different keystrokes and only two of them are guessable.
+fn ask_yes_no(io: &mut impl Interview, question: &str, default: bool) -> Result<bool> {
     let spelled = if default { "yes" } else { "no" };
+    let prompt = format!("{question} (yes or no; Enter alone means {spelled})");
     loop {
-        let answer = io.ask(prompt, Some(spelled))?.trim().to_lowercase();
+        let answer = io.ask(&prompt, Some(spelled))?.trim().to_lowercase();
         match answer.as_str() {
             "y" | "yes" => return Ok(true),
             "n" | "no" => return Ok(false),
-            _ => io.say("  yes or no."),
+            _ => io.say(&screens::not_yes_or_no(&answer, spelled)),
         }
     }
 }
@@ -227,7 +284,7 @@ pub fn interview(
     if car.name.is_none() {
         io.say(&screens::name_intro());
         let default = description.unwrap_or("").trim().to_string();
-        let answer = io.ask("what do you call this car?", Some(default.as_str()))?;
+        let answer = io.ask(&screens::name_question(&default), Some(default.as_str()))?;
         let name = answer.trim();
         if !name.is_empty() {
             car.name = Some(Sourced::on(name.to_string(), Source::Stated, today));
@@ -242,19 +299,25 @@ pub fn interview(
         // mass lands on the inertial term, some 90 % of the power figure.
         let running_order_kg = ask_number(
             io,
-            "mass in running order, in kg (EU field G, \"mass in service\" on a V5C)?",
+            "mass in running order — EU field G, \"mass in service\" on a V5C",
+            "kg",
+            "1450",
+            // No default: this figure is on a document in the owner's hand, and
+            // a default would be this tool guessing at a car it has never
+            // weighed. Nothing here may be answered by pressing Enter.
             None,
             300.0..=5000.0,
         )?;
         let includes_driver = ask_yes_no(
             io,
-            "does that figure already include a driver (an EU field G does)?",
+            "does that figure already include a driver — an EU field G does",
             true,
         )?;
         let aboard_kg = ask_number(
             io,
-            "what else will be aboard, in kg — passengers, luggage, and your own \
-             difference from 75 kg?",
+            "anything else aboard — passengers, luggage, and your own difference from 75 kg",
+            "kg",
+            "80",
             Some("0"),
             -200.0..=2000.0,
         )?;
@@ -264,8 +327,9 @@ pub fn interview(
     }
 
     if car.tyre.is_none() {
+        io.say(&screens::tyre_intro());
         loop {
-            let answer = io.ask("tyre size, as written on the sidewall?", None)?;
+            let answer = io.ask(screens::TYRE_QUESTION, None)?;
             let Some(radius) = rolling_radius_m(&answer) else {
                 io.say(&screens::not_a_tyre(&answer));
                 continue;
@@ -292,6 +356,99 @@ pub fn interview(
         car.speed_scale = Some(Sourced::new(1.0, Source::Uncorrected));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The air the road load is measured in
+// ---------------------------------------------------------------------------
+
+/// The density the coastdown will be fitted against, and what kind of number it
+/// is.
+///
+/// The fit returns `½·ρ·CdA`, so a density is not optional — but a car that
+/// publishes no barometer is not a car this tool should send home. Three sources
+/// in falling order of authority, and the file records which one it was:
+///
+/// | source | when |
+/// |---|---|
+/// | [`Source::Measured`] | the car answered PID 0x33 and PID 0x46 |
+/// | [`Source::Stated`] | it did not, and the owner said what the air is doing |
+/// | [`Source::StandardAtmosphere`] | it did not, and neither did he |
+///
+/// The fallback is offered rather than imposed: density enters drag linearly, so
+/// a day 30 hPa and 10 °C away from standard moves the aerodynamic half of the
+/// fit by about 6 %, and every power figure that later rests on this `CdA`
+/// carries it. That is worth a person's two lines at a standstill, and it is why
+/// the questions come with the cost attached rather than after it.
+///
+/// `stated` is whatever a flag supplied and skips the questions entirely.
+pub fn air_density(
+    io: &mut impl Interview,
+    measured: Option<f64>,
+    stated: Option<f64>,
+) -> Result<Sourced<f64>> {
+    if let Some(rho) = measured {
+        return Ok(Sourced::new(rho, Source::Measured));
+    }
+    if let Some(rho) = stated {
+        io.say(&screens::air_density_stated(rho));
+        return Ok(Sourced::new(rho, Source::Stated));
+    }
+
+    io.say(&messages::no_barometer());
+    let hpa = ask_number(
+        io,
+        "air pressure now, as a forecast or a weather app gives it",
+        "hPa",
+        "1004",
+        Some(&format!("{STANDARD_PRESSURE_HPA}")),
+        STATED_PRESSURE_RANGE_HPA,
+    )?;
+    let celsius = ask_number(
+        io,
+        "outside air temperature now",
+        "°C",
+        "18",
+        Some(&format!("{STANDARD_AMBIENT_C}")),
+        AMBIENT_RANGE_C,
+    )?;
+    // An answer that is the standard atmosphere *is* the standard atmosphere,
+    // whether it arrived by pressing Enter or by typing it out. Calling it
+    // `stated` because of which keys were pressed would be exactly the fallback
+    // wearing a measurement's clothes.
+    let source = if hpa == STANDARD_PRESSURE_HPA && celsius == STANDARD_AMBIENT_C {
+        Source::StandardAtmosphere
+    } else {
+        Source::Stated
+    };
+    let rho = power::air_density(hpa_to_kpa(hpa), celsius);
+    let answer = Sourced::new(rho, source);
+    io.say(&screens::air_density_settled(&answer));
+    Ok(answer)
+}
+
+/// Whether an answer to [`screens::KEEP_QUESTION`] throws the earlier pass away.
+///
+/// Anything that is not a discard keeps, because keeping is the recoverable
+/// mistake: a pass wrongly kept is caught by the two-pass disagreement, and a
+/// pass wrongly discarded is a kilometre of road driven again.
+fn discards(answer: &str) -> bool {
+    matches!(answer.trim().to_lowercase().as_str(), "d" | "discard" | "r" | "redo")
+}
+
+/// The weaker of two claims about where a density came from.
+///
+/// A pair of coastdown passes is one measurement, and a pair whose air was read
+/// off the car once and guessed at once is only as good as the guess. Ordering
+/// them is the whole of what is needed: measured, then stated, then the standard
+/// atmosphere.
+fn weaker(a: Source, b: Source) -> Source {
+    let rank = |source: Source| match source {
+        Source::Measured => 2,
+        Source::Stated => 1,
+        _ => 0,
+    };
+    if rank(b) < rank(a) { b } else { a }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +495,11 @@ pub struct KeptPass {
     pub at: String,
     pub seconds: f64,
     pub rho: f64,
-    /// Whether `rho` came off the car's own sensors or from somewhere else.
-    pub rho_measured: bool,
+    /// Where `rho` came from — the car's own sensors, the owner, or the standard
+    /// atmosphere. It travels with the pass because a `CdA` is only as good as
+    /// the density it was divided by, and a pass driven on a guessed density
+    /// must not be averaged into one driven on a read.
+    pub rho_source: Source,
     pub mass_kg: f64,
 }
 
@@ -356,7 +516,7 @@ pub struct Coastdown {
     to_kmh: f64,
     delta1: f64,
     rho: f64,
-    rho_measured: bool,
+    rho_source: Source,
     mass_kg: f64,
     at: String,
     accepted: Vec<KeptPass>,
@@ -369,25 +529,26 @@ pub struct Coastdown {
 
 impl Coastdown {
     /// `already` is whatever an earlier attempt got as far as, so a resumed setup
-    /// owes one pass rather than two. `conditions` is the air and the load every
-    /// pass will be fitted against — `(ρ, ρ was measured, mass)` — stated once,
-    /// because neither changes over a coastdown.
+    /// owes one pass rather than two. `rho` is the air every pass will be fitted
+    /// against, with the provenance [`air_density`] settled on, and `mass_kg` the
+    /// load — stated once, because neither changes over a coastdown.
     pub fn new(
         from_kmh: f64,
         to_kmh: f64,
-        conditions: (f64, bool, f64),
+        rho: &Sourced<f64>,
+        mass_kg: f64,
         delta1: f64,
         already: Vec<KeptPass>,
         at: impl Into<String>,
     ) -> Coastdown {
-        let (rho, rho_measured, mass_kg) = conditions;
+        let (rho, rho_source) = (rho.value, rho.source);
         Coastdown {
             detector: Detector::new(from_kmh, to_kmh).with_conditions(rho, mass_kg),
             from_kmh,
             to_kmh,
             delta1,
             rho,
-            rho_measured,
+            rho_source,
             mass_kg,
             at: at.into(),
             accepted: already,
@@ -452,7 +613,7 @@ impl Coastdown {
                             at: self.at.clone(),
                             seconds,
                             rho: self.rho,
-                            rho_measured: self.rho_measured,
+                            rho_source: self.rho_source,
                             mass_kg: self.mass_kg,
                         });
                         notes.push(Note::Said(messages::pass_accepted(
@@ -521,7 +682,10 @@ pub fn finish(
     car.fit = Some(FitConditions {
         passes: passes.len() as u32,
         rho_at_fit: first.rho,
-        rho_source: if first.rho_measured { Source::Measured } else { Source::Stated },
+        // The weakest of the passes, not the first: a pair is one measurement,
+        // and a `CdA` averaged over a read density and a standard one is only as
+        // good as the standard one.
+        rho_source: passes.iter().fold(Source::Measured, |worst, p| weaker(worst, p.rho_source)),
         mass_at_fit_kg: first.mass_kg,
         wind_estimate_ms: Some(result.implied_wind_ms),
         grade_estimate_percent: Some(result.implied_grade_percent),
@@ -578,12 +742,20 @@ pub fn load_passes(path: &Path) -> Vec<KeptPass> {
         let (Some(rho), Some(mass_kg)) = (number("rho"), number("mass_kg")) else {
             return Vec::new();
         };
+        // Nor can a pass whose density has no provenance: the whole point of
+        // recording it is that a `CdA` fitted on the standard atmosphere must
+        // never come back as one fitted on a reading.
+        let Some(rho_source) =
+            entry.get("rho_source").and_then(Value::as_str).and_then(Source::parse)
+        else {
+            return Vec::new();
+        };
         out.push(KeptPass {
             fit: Fit { cda, crr, rms_kmh, mean_speed_ms },
             at: entry.get("at").and_then(Value::as_str).unwrap_or_default().to_string(),
             seconds: number("seconds").unwrap_or_default(),
             rho,
-            rho_measured: entry.get("rho_measured").and_then(Value::as_bool).unwrap_or(false),
+            rho_source,
             mass_kg,
         });
     }
@@ -610,7 +782,7 @@ pub fn save_passes(path: &Path, passes: &[KeptPass]) -> Result<()> {
             json!({
                 "cda": p.fit.cda, "crr": p.fit.crr, "rms_kmh": p.fit.rms_kmh,
                 "mean_speed_ms": p.fit.mean_speed_ms, "at": p.at, "seconds": p.seconds,
-                "rho": p.rho, "rho_measured": p.rho_measured, "mass_kg": p.mass_kg,
+                "rho": p.rho, "rho_source": p.rho_source.as_str(), "mass_kg": p.mass_kg,
             })
         })
         .collect();
@@ -743,12 +915,11 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     let mut kept = load_passes(&passes_path(&path));
     if car.mass.is_some() || car.tyre.is_some() || !kept.is_empty() {
         io.say(&screens::resuming(&car, &kept));
-        if !kept.is_empty()
-            && io
-                .ask("keep the pass already driven, or discard it?", Some("keep"))?
-                .trim()
-                .eq_ignore_ascii_case("r")
-        {
+        // The old prompt asked "keep or discard?" and then acted on the letter
+        // `r` alone — a question with an unguessable answer, which is the same
+        // fault the format hints above exist to fix. Both words work now, and
+        // both are on the screen.
+        if !kept.is_empty() && discards(&io.ask(screens::KEEP_QUESTION, Some("keep"))?) {
             kept.clear();
         }
     }
@@ -758,18 +929,18 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     car.save(&path)?;
     io.say(&screens::answers_saved(&path));
 
-    // 5. The air the road load will be measured in, read before anything moves.
+    // 5. The air the road load will be measured in, read before anything moves —
+    //    and, on a car that publishes no barometer, asked for or fallen back to
+    //    the standard atmosphere rather than refused. Still parked: nothing below
+    //    the briefing asks the driver anything.
     let mut reader = Reader::new(&set);
     let started = Instant::now();
     let mut backend = Some(adapter);
     reader.cycle(&mut backend, started).await;
-    let Some(rho) = reader.air_density(&set) else {
-        io.say(&screens::no_air_density());
-        bail!("no air density: the fit returns ½·ρ·CdA, and there is no CdA without ρ");
-    };
+    let rho = air_density(&mut io, reader.air_density(&set), None)?;
     let mass_kg = car.mass_total_kg().context("the mass was answered just above")?;
     let delta1 = delta1(&car).context("the car file describes this car by now")?;
-    let (kept, dropped) = still_valid(kept, rho, mass_kg);
+    let (kept, dropped) = still_valid(kept, rho.value, mass_kg);
     if let Some(note) = dropped {
         io.say(&note);
     }
@@ -777,14 +948,15 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 
     // 6. The road part, explained while the car is still parked, because none of
     //    it can be explained at 120 km/h.
-    io.say(&screens::road_briefing(opts.coast_from_kmh, opts.coast_to_kmh, rho));
-    io.ask("press Enter when you have read that and are ready to set off", Some(""))?;
+    io.say(&screens::road_briefing(opts.coast_from_kmh, opts.coast_to_kmh, &rho));
+    io.ask(screens::READY_QUESTION, Some(""))?;
 
     // 7. The drive. Nothing below this line asks the driver anything.
     let mut stage = Coastdown::new(
         opts.coast_from_kmh,
         opts.coast_to_kmh,
-        (rho, true, mass_kg),
+        &rho,
+        mass_kg,
         delta1,
         kept,
         &today,
@@ -992,6 +1164,97 @@ mod screens {
             .to_string()
     }
 
+    /// The name question, with the shape of an answer and what Enter does.
+    ///
+    /// The example is a different car from any default on purpose: an owner in a
+    /// hurry reads one line, and a suggestion he could accept by pressing Enter
+    /// has to be the bracketed default and nothing else.
+    pub fn name_question(engine_says: &str) -> String {
+        let enter = match engine_says.is_empty() {
+            true => "Enter alone leaves it unnamed".to_string(),
+            false => format!("Enter alone keeps the engine's own words, {engine_says:?}"),
+        };
+        format!("what do you call this car — make, model, generation, e.g. \"Volkswagen Golf VII\"? ({enter})")
+    }
+
+    /// One numeric question as a person reads it: what is wanted, in what unit,
+    /// shaped like what, and what will be accepted.
+    ///
+    /// The example is a format, never a suggestion — the design's own rule about
+    /// car-specific data, applied to prose: this tool has never weighed this car
+    /// and has no business proposing a mass for it. Where pressing Enter really
+    /// does answer the question, the default says so in words as well as in
+    /// brackets, because the brackets alone read as decoration.
+    pub fn number_prompt(
+        question: &str,
+        unit: &str,
+        example: &str,
+        default: Option<&str>,
+        range: &std::ops::RangeInclusive<f64>,
+    ) -> String {
+        let enter = match default {
+            Some(value) if !value.is_empty() => format!(", Enter alone means {value} {unit}"),
+            _ => String::new(),
+        };
+        format!(
+            "{question}, in {unit}: a plain number like {example}, between {} and {}{enter}?",
+            trim_zeros(*range.start()),
+            trim_zeros(*range.end())
+        )
+    }
+
+    /// A bound as a person would write it: `1100`, not `1100.0`.
+    fn trim_zeros(value: f64) -> String {
+        let text = format!("{value}");
+        text.strip_suffix(".0").unwrap_or(&text).to_string()
+    }
+
+    pub fn not_a_number(
+        answer: &str,
+        unit: &str,
+        example: &str,
+        range: &std::ops::RangeInclusive<f64>,
+    ) -> String {
+        // Says the accepted form rather than only that this one was not it: a
+        // refusal that repeats the question without the answer is how a person
+        // ends up typing the same thing twice.
+        format!(
+            "  {answer:?} is not a number I can read. Write it the way {example} is written: \
+             digits\n  only, without the {unit}, a point or a comma for the decimal, and between \
+             {} and\n  {}.",
+            trim_zeros(*range.start()),
+            trim_zeros(*range.end())
+        )
+    }
+
+    pub fn not_yes_or_no(answer: &str, default: &str) -> String {
+        format!("  {answer:?} is not yes or no. Type y or n, or press Enter for {default}.")
+    }
+
+    /// What a tyre size looks like, said before it is asked for rather than only
+    /// after a wrong answer. This is the question the owner could not answer.
+    pub fn tyre_intro() -> String {
+        "\nThe tyre size is moulded into the sidewall: the section width in mm, a slash,\n\
+         the aspect ratio, then the construction letter and the rim in inches. Copy it as\n\
+         it is written there — 205/55R16, 225/40ZR18, 195/65 R15 all read the same to me.\n\
+         It is the front tyres that matter, and it is the only thing here that describes\n\
+         the car's hardware."
+            .to_string()
+    }
+
+    /// Asked as a constant so the question and the tests quote the same words.
+    pub const TYRE_QUESTION: &str =
+        "tyre size, exactly as written on the sidewall — width/aspect then the rim, \
+         e.g. 205/55R16?";
+
+    pub const KEEP_QUESTION: &str =
+        "keep the pass already driven, or discard it and drive both again? \
+         (type keep or discard; Enter alone keeps it)";
+
+    pub const READY_QUESTION: &str =
+        "press Enter when you have read that and are ready to set off (nothing else is \
+         needed here)";
+
     pub fn mass_intro() -> String {
         "\nThe mass, in two parts, so the arithmetic is mine rather than yours. A\n\
          registration document's mass in running order already includes a 75 kg driver\n\
@@ -1013,14 +1276,6 @@ mod screens {
             mass.running_order_kg,
             mass.aboard_kg,
             mass.total()
-        )
-    }
-
-    pub fn not_a_number(answer: &str, range: &std::ops::RangeInclusive<f64>) -> String {
-        format!(
-            "  {answer:?} is not a number between {:.0} and {:.0}. Try again.",
-            range.start(),
-            range.end()
         )
     }
 
@@ -1094,14 +1349,33 @@ mod screens {
         ))
     }
 
-    pub fn no_air_density() -> String {
-        "\nThis car published no barometer, or no ambient air temperature, and the coastdown\n\
-         fit returns ½·ρ·CdA — a drag area without the air it was measured in is not a\n\
-         number. Nothing is lost: the answers are saved.\n\n\
-         The two readings are SAE J1979's PIDs 0x33 and 0x46. If this car answers them\n\
-         under other names, `vagcan survey --diff` will find them:\n    \
-         vagcan survey --out parked.jsonl"
-            .to_string()
+    /// A density that arrived from a flag rather than from the car.
+    pub fn air_density_stated(rho: f64) -> String {
+        format!(
+            "\nusing the air density you gave: {rho:.3} kg/m³. Recorded as stated, not as\n\
+             measured — the car was not asked."
+        )
+    }
+
+    /// What the two questions settled on, and which kind of number it is.
+    ///
+    /// The distinction is the point: a `CdA` is `½·ρ·CdA` divided by this, so a
+    /// figure that later rests on a standard atmosphere has to be able to say so
+    /// years afterwards.
+    pub fn air_density_settled(rho: &Sourced<f64>) -> String {
+        let what = match rho.source {
+            Source::StandardAtmosphere => {
+                "the ISO 2533 standard atmosphere — not\n  \
+                 this day's air. The car file records it as standard-atmosphere, so nothing\n  \
+                 downstream can read it as a measurement."
+            }
+            _ => {
+                "what you stated. Recorded as stated: a\n  \
+                 weaker claim than a reading off the car, and a much stronger one than a\n  \
+                 standard."
+            }
+        };
+        format!("\n  air density {:.4} kg/m³, from {what}", rho.value)
     }
 
     pub fn answers_saved(path: &Path) -> String {
@@ -1140,7 +1414,7 @@ mod screens {
             let _ = writeln!(
                 out,
                 "  Drive the return pass on the same stretch. If you no longer know which way\n  \
-                 the first pass went, answer r to discard it and drive both again."
+                 the first pass went, answer discard to the next question and drive both again."
             );
         }
         out
@@ -1158,7 +1432,24 @@ mod screens {
 
     /// The road part, explained while the car is still parked, because none of it
     /// can be explained at 120 km/h.
-    pub fn road_briefing(from_kmh: f64, to_kmh: f64, rho: f64) -> String {
+    pub fn road_briefing(from_kmh: f64, to_kmh: f64, rho: &Sourced<f64>) -> String {
+        // Where the air came from belongs in the last line rather than in a
+        // footnote: it is the one number in this briefing the driver could still
+        // improve, and after this screen nothing is asked of him again.
+        let air = match rho.source {
+            Source::Measured => {
+                format!("The air is {:.3} kg/m³ by this car's own barometer.", rho.value)
+            }
+            Source::Stated => {
+                format!("The air is {:.3} kg/m³, from what you stated.", rho.value)
+            }
+            _ => format!(
+                "The air is taken as {:.3} kg/m³ — the ISO 2533 standard, not\n\
+                 today's, because this car publishes no barometer.",
+                rho.value
+            ),
+        };
+        let rho = format!("{air} Wind is the one thing");
         format!(
             "\nThe road part needs about a kilometre of clear, flat, dry road with no traffic\n\
              behind you — twice, once in each direction. Coasting from {from_kmh:.0} to \
@@ -1171,7 +1462,7 @@ mod screens {
              reading its speed. Decide about neutral before the pass, not during it: I will\n\
              not ask you anything while you are moving.\n\n\
              You can stop at any point. Everything answered and every accepted pass is kept.\n\n\
-             The air is {rho:.3} kg/m³ by this car's own barometer, and wind is the one thing\n\
+             {rho}\n\
              that does not cancel between the two directions: above about 2 m/s it puts 2 %\n\
              on the rolling resistance whichever way you drive."
         )
@@ -1291,12 +1582,24 @@ mod screens {
             // ½·ρ·CdA, and it scales with the mass it was fitted at.
             let _ = writeln!(
                 out,
-                "  ρ {:.3} kg/m³ and {:.0} kg at fit time, wind ≈ {:.1} m/s, slope ≈ {:.1} %",
+                "  ρ {:.3} kg/m³ ({}) and {:.0} kg at fit time, wind ≈ {:.1} m/s, \
+                 slope ≈ {:.1} %",
                 fit.rho_at_fit,
+                fit.rho_source.as_str(),
                 fit.mass_at_fit_kg,
                 result.implied_wind_ms.abs(),
                 result.implied_grade_percent.abs()
             );
+            // A CdA divided by a standard atmosphere is a CdA with a several-per-cent
+            // offset baked into it, and this is the last screen anybody reads.
+            if fit.rho_source == Source::StandardAtmosphere {
+                let _ = writeln!(
+                    out,
+                    "  The density was the ISO 2533 standard, not this day's air, so this CdA\n  \
+                     carries whatever the real air differed by — about 3 % per 30 hPa and 3 %\n  \
+                     per 10 °C, linearly, and every power figure resting on it inherits that."
+                );
+            }
         }
         let _ = writeln!(
             out,
@@ -1375,7 +1678,10 @@ mod tests {
 
     impl Interview for Scripted {
         fn ask(&mut self, prompt: &str, default: Option<&str>) -> Result<String> {
-            self.asked.push(prompt.to_string());
+            // The rendered line, not the prompt string: a default a person can
+            // see is part of the question, and a transcript that omits it would
+            // let a question ship without saying what Enter does.
+            self.asked.push(prompt_line(prompt, default));
             let answer = self
                 .answers
                 .pop_front()
@@ -1418,7 +1724,7 @@ mod tests {
             at: "2026-08-04".into(),
             seconds: 38.2,
             rho: RHO,
-            rho_measured: true,
+            rho_source: Source::Measured,
             mass_kg: MASS_KG,
         }
     }
@@ -1455,7 +1761,8 @@ mod tests {
         Coastdown::new(
             COAST_FROM_KMH,
             COAST_TO_KMH,
-            (RHO, true, MASS_KG),
+            &Sourced::new(RHO, Source::Measured),
+            MASS_KG,
             delta1_of(car),
             already,
             "2026-08-04",
@@ -1554,6 +1861,103 @@ mod tests {
     }
 
     #[test]
+    fn every_question_shows_the_form_of_the_answer_it_wants() {
+        // The owner's report: he could not tell what shape a tyre size was meant
+        // to take. Nothing here may be answerable two ways — so every question
+        // carries an example of its format, and every numeric one its unit.
+        let mut io = Scripted::new(["", "1395", "", "", "205/55R16"]);
+        let mut car = CarFile::new("XW8AD4NE9JH008917");
+        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
+
+        let asked = io.asked.clone();
+        assert_eq!(asked.len(), 5, "the interview changed shape: {asked:#?}");
+        // Every question shows the shape of its answer: an example of the format,
+        // or — where the answers are countable — the whole set of them.
+        for question in &asked {
+            assert!(
+                ["e.g.", "like ", "yes or no"].iter().any(|hint| question.contains(hint)),
+                "no example of the form:\n{question}"
+            );
+        }
+        // The name: an example that is plainly not this car, and the default
+        // spelled out rather than left to the brackets.
+        assert!(asked[0].contains("make, model, generation"), "{}", asked[0]);
+        assert!(asked[0].contains("Volkswagen Golf VII"), "{}", asked[0]);
+        assert!(asked[0].contains("Enter alone keeps the engine's own words"), "{}", asked[0]);
+        assert!(asked[0].contains("[1.8l R4 TFSI]"), "{}", asked[0]);
+        // The mass: a unit, a range, and — deliberately — no default at all.
+        assert!(asked[1].contains("in kg"), "{}", asked[1]);
+        assert!(asked[1].contains("between 300 and 5000"), "{}", asked[1]);
+        assert!(!asked[1].contains("Enter alone"), "a mass must not have a default: {}", asked[1]);
+        assert!(!asked[1].contains('['), "{}", asked[1]);
+        // The driver question: both words, and what Enter does.
+        assert!(asked[2].contains("yes or no"), "{}", asked[2]);
+        assert!(asked[2].contains("Enter alone means yes"), "{}", asked[2]);
+        // What is aboard: a default of nothing, said in words.
+        assert!(asked[3].contains("Enter alone means 0 kg"), "{}", asked[3]);
+        // The tyre: the shape, and no default it could be mistaken for.
+        assert!(asked[4].contains("205/55R16"), "{}", asked[4]);
+        assert!(!asked[4].contains('['), "{}", asked[4]);
+    }
+
+    #[test]
+    fn the_tyre_question_shows_the_shape_before_it_is_answered_wrongly() {
+        // It was the one that caught the owner out, and the shape was only ever
+        // shown in the refusal — after the mistake.
+        let mut io = Scripted::new(["a car", "1395", "y", "0", "205/55R16"]);
+        let mut car = CarFile::new("XW8AD4NE9JH008917");
+        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        let tyre = io.asked.last().unwrap();
+        assert!(tyre.contains("width/aspect then the rim"), "{tyre}");
+        assert!(tyre.contains("205/55R16"), "{tyre}");
+        // And the intro said it too, before the question.
+        assert!(io.said.iter().any(|s| s.contains("moulded into the sidewall")), "{:?}", io.said);
+        assert!(io.said.iter().any(|s| s.contains("225/40ZR18")), "{:?}", io.said);
+    }
+
+    #[test]
+    fn a_refusal_states_the_accepted_form_rather_than_only_that_this_was_not_it() {
+        let mut io = Scripted::new(["a car", "1.4 tonnes", "1395", "maybe", "y", "0", "205/55R16"]);
+        let mut car = CarFile::new("XW8AD4NE9JH008917");
+        interview(&mut io, &mut car, None, "2026-08-03").unwrap();
+        let transcript = io.transcript();
+        assert!(transcript.contains("Write it the way 1450 is written"), "{transcript}");
+        assert!(transcript.contains("without the kg"), "{transcript}");
+        assert!(transcript.contains("between 300 and 5000"), "{transcript}");
+        assert!(transcript.contains("Type y or n, or press Enter for yes"), "{transcript}");
+    }
+
+    #[test]
+    fn no_example_in_the_interview_is_a_number_this_tool_could_not_know() {
+        // `CLAUDE.md`'s hard line: a format may be shown, a value belonging to
+        // one car may not. So no example may double as a default, and the one
+        // question whose answer only a document has must have no default at all.
+        let mut io = Scripted::new(["", "1395", "", "", "205/55R16"]);
+        let mut car = CarFile::new("XW8AD4NE9JH008917");
+        interview(&mut io, &mut car, Some("1.8l R4 TFSI"), "2026-08-03").unwrap();
+        let mass_question = &io.asked[1];
+        assert!(mass_question.contains("like 1450"), "{mass_question}");
+        // Shown as a shape, and impossible to accept by pressing Enter.
+        assert!(!mass_question.contains("[1450]"), "{mass_question}");
+        assert_eq!(car.mass.as_ref().unwrap().value.running_order_kg, 1395.0);
+    }
+
+    #[test]
+    fn the_question_about_a_kept_pass_names_the_words_that_answer_it() {
+        // It asked "keep or discard?" and acted on the letter `r` alone — the
+        // same fault as the tyre size, in the question that throws away a
+        // kilometre of driving.
+        assert!(screens::KEEP_QUESTION.contains("type keep or discard"), "{}", screens::KEEP_QUESTION);
+        assert!(screens::KEEP_QUESTION.contains("Enter alone keeps"), "{}", screens::KEEP_QUESTION);
+        for keeps in ["", "keep", "k", "yes", "  KEEP  "] {
+            assert!(!discards(keeps), "{keeps:?} threw the pass away");
+        }
+        for throws in ["d", "discard", "DISCARD", "r", "redo"] {
+            assert!(discards(throws), "{throws:?} did not throw the pass away");
+        }
+    }
+
+    #[test]
     fn the_tyre_size_becomes_a_radius_that_says_where_it_came_from() {
         let mut io = Scripted::new(["a car", "1395", "y", "0", "205/55R16"]);
         let mut car = CarFile::new("XW8AD4NE9JH008917");
@@ -1586,8 +1990,10 @@ mod tests {
         assert!(text.contains("answered 2026-08-03"), "{text}");
         assert!(text.contains("1 of 2 passes done (2026-08-04, 38.2 s)"), "{text}");
         // The tool cannot see direction, so a driver who has lost track of which
-        // way the first pass went has to be given a way out.
-        assert!(text.contains("discard it and drive both again"), "{text}");
+        // way the first pass went has to be given a way out — in the word the
+        // next question will actually accept.
+        assert!(text.contains("answer discard to the next question"), "{text}");
+        assert!(discards("discard"), "the banner names a word the question refuses");
     }
 
     // -- the road stage ---------------------------------------------------
@@ -1756,6 +2162,167 @@ mod tests {
         // A CdA with no air behind it is not a pass either.
         std::fs::write(&path, r#"{"passes":[{"cda":0.63,"crr":0.0114}]}"#).unwrap();
         assert!(load_passes(&path).is_empty());
+        // Nor is a pass whose density has no provenance: it could have been the
+        // car's own barometer or the standard atmosphere, and the difference is
+        // several per cent of the CdA it produced.
+        std::fs::write(
+            &path,
+            r#"{"passes":[{"cda":0.63,"crr":0.0114,"rms_kmh":0.2,"mean_speed_ms":22.3,
+                "rho":1.2,"mass_kg":1475}]}"#,
+        )
+        .unwrap();
+        assert!(load_passes(&path).is_empty());
+    }
+
+    // -- the air the fit is divided by -------------------------------------
+
+    #[test]
+    fn a_car_that_answers_the_barometer_is_asked_nothing_about_the_air() {
+        let mut io = Scripted::new(std::iter::empty::<&str>());
+        let rho = air_density(&mut io, Some(1.183), None).unwrap();
+        assert_eq!(rho.value, 1.183);
+        assert_eq!(rho.source, Source::Measured);
+        assert!(io.asked.is_empty(), "asked anyway: {:?}", io.asked);
+    }
+
+    #[test]
+    fn a_car_with_no_barometer_falls_back_to_the_standard_atmosphere_rather_than_refusing() {
+        // The owner's own question. Pressing Enter twice has to produce a usable
+        // density and a car file that admits where it came from.
+        let mut io = Scripted::new(["", ""]);
+        let rho = air_density(&mut io, None, None).unwrap();
+        assert!((rho.value - 1.2250).abs() < 5e-5, "ISO 2533 sea level: {}", rho.value);
+        assert_eq!(rho.source, Source::StandardAtmosphere);
+        let transcript = io.transcript();
+        // Said plainly, with the cost, before the questions rather than after.
+        assert!(transcript.contains("ISO 2533"), "{transcript}");
+        assert!(transcript.contains("6 %"), "{transcript}");
+        assert!(transcript.contains("standard-atmosphere"), "{transcript}");
+    }
+
+    #[test]
+    fn a_person_who_knows_todays_air_states_it_and_it_is_recorded_as_stated() {
+        // 1004 hPa and 27 °C — a warm low-pressure day, some 5 % below standard,
+        // which is 5 % on the drag half of the fit.
+        let mut io = Scripted::new(["1004", "27"]);
+        let rho = air_density(&mut io, None, None).unwrap();
+        assert!((rho.value - power::air_density(100.4, 27.0)).abs() < 1e-12);
+        assert!(rho.value < 1.2250 * 0.96, "a warm low is not the standard atmosphere");
+        assert_eq!(rho.source, Source::Stated);
+        assert!(io.transcript().contains("Recorded as stated"), "{}", io.transcript());
+    }
+
+    #[test]
+    fn both_air_questions_show_their_unit_their_shape_and_what_enter_does() {
+        let mut io = Scripted::new(["", ""]);
+        air_density(&mut io, None, None).unwrap();
+        let pressure = &io.asked[0];
+        assert!(pressure.contains("in hPa"), "{pressure}");
+        assert!(pressure.contains("like 1004"), "{pressure}");
+        assert!(pressure.contains("Enter alone means 1013.25 hPa"), "{pressure}");
+        assert!(pressure.contains("[1013.25]"), "{pressure}");
+        let temperature = &io.asked[1];
+        assert!(temperature.contains("in °C"), "{temperature}");
+        assert!(temperature.contains("like 18"), "{temperature}");
+        assert!(temperature.contains("Enter alone means 15 °C"), "{temperature}");
+    }
+
+    #[test]
+    fn a_pressure_typed_in_kilopascals_is_refused_with_the_form_that_is_wanted() {
+        // 100 is the same pressure in the unit the *bus* uses, and a factor of
+        // ten in the density that would follow.
+        let mut io = Scripted::new(["100", "1004", ""]);
+        let rho = air_density(&mut io, None, None).unwrap();
+        assert_eq!(rho.source, Source::Stated);
+        let transcript = io.transcript();
+        assert!(transcript.contains("is not a number I can read"), "{transcript}");
+        assert!(transcript.contains("the way 1004 is written"), "{transcript}");
+        assert!(transcript.contains("between 800 and 1100"), "{transcript}");
+    }
+
+    #[test]
+    fn a_flag_that_states_the_density_skips_the_questions_and_is_not_a_measurement() {
+        // What `--air-density` will feed once it exists on `setup`.
+        let mut io = Scripted::new(std::iter::empty::<&str>());
+        let rho = air_density(&mut io, None, Some(1.19)).unwrap();
+        assert_eq!(rho.value, 1.19);
+        assert_eq!(rho.source, Source::Stated);
+        assert!(io.asked.is_empty(), "asked anyway: {:?}", io.asked);
+        assert!(io.transcript().contains("not as\nmeasured"), "{}", io.transcript());
+    }
+
+    #[test]
+    fn a_fallback_density_never_reaches_the_car_file_as_a_measurement() {
+        let mut car = a_described_car();
+        let d1 = delta1_of(&car);
+        let standard = power::air_density(101.325, 15.0);
+        let mut stage = Coastdown::new(
+            COAST_FROM_KMH,
+            COAST_TO_KMH,
+            &Sourced::new(standard, Source::StandardAtmosphere),
+            MASS_KG,
+            d1,
+            Vec::new(),
+            "2026-08-04",
+        );
+        drive(&mut stage, TRUE_CDA, TRUE_CRR, 0.0, d1);
+        drive(&mut stage, TRUE_CDA, TRUE_CRR, 600.0, d1);
+        finish(&mut car, stage.accepted(), d1, "2026-08-04").unwrap();
+        let fit = car.fit.as_ref().unwrap();
+        assert_eq!(fit.rho_source, Source::StandardAtmosphere);
+        assert_eq!(fit.rho_source.as_str(), "standard-atmosphere");
+        // And it survives the file, because the admission is worth nothing if it
+        // is only on the screen.
+        let dir = TempDir::new("standard-rho");
+        let path = dir.0.join("car.json");
+        car.save(&path).unwrap();
+        assert_eq!(
+            CarFile::load(&path).unwrap().fit.unwrap().rho_source,
+            Source::StandardAtmosphere
+        );
+    }
+
+    #[test]
+    fn a_pair_of_passes_is_only_as_good_as_the_weaker_of_its_two_densities() {
+        // Half the coastdown driven on a read density and half on a standard is
+        // not a measurement of anything, and the file must not claim it is.
+        let mut car = a_described_car();
+        let d1 = delta1_of(&car);
+        let measured = a_kept_pass(TRUE_CRR);
+        let guessed = KeptPass { rho_source: Source::StandardAtmosphere, ..a_kept_pass(TRUE_CRR) };
+        finish(&mut car, &[measured, guessed], d1, "2026-08-04").unwrap();
+        assert_eq!(car.fit.as_ref().unwrap().rho_source, Source::StandardAtmosphere);
+    }
+
+    #[test]
+    fn the_closing_screen_prices_a_standard_atmosphere_instead_of_hiding_it() {
+        let mut car = a_described_car();
+        car.cda = Some(Sourced::on(0.63, Source::Coastdown, "2026-08-04"));
+        car.crr = Some(Sourced::on(0.0114, Source::Coastdown, "2026-08-04"));
+        car.fit = Some(FitConditions {
+            passes: 2,
+            rho_at_fit: 1.2250,
+            rho_source: Source::StandardAtmosphere,
+            mass_at_fit_kg: MASS_KG,
+            wind_estimate_ms: Some(0.8),
+            grade_estimate_percent: Some(0.3),
+        });
+        let result =
+            RoadLoadResult { cda: 0.63, crr: 0.0114, implied_grade_percent: 0.3, implied_wind_ms: 0.8 };
+        let text = screens::complete(&car, Path::new("/tmp/cars/x/car.json"), &result);
+        assert!(text.contains("(standard-atmosphere)"), "{text}");
+        assert!(text.contains("not this day's air"), "{text}");
+        assert!(text.contains("3 % per 30 hPa"), "{text}");
+    }
+
+    #[test]
+    fn the_briefing_says_which_air_the_fit_will_be_divided_by() {
+        let measured = screens::road_briefing(120.0, 40.0, &Sourced::new(1.183, Source::Measured));
+        assert!(measured.contains("by this car's own barometer"), "{measured}");
+        let standard =
+            screens::road_briefing(120.0, 40.0, &Sourced::new(1.2250, Source::StandardAtmosphere));
+        assert!(standard.contains("the ISO 2533 standard, not"), "{standard}");
+        assert!(standard.contains("publishes no barometer"), "{standard}");
     }
 
     #[test]
@@ -1776,7 +2343,11 @@ mod tests {
 
     #[test]
     fn the_road_is_explained_while_the_car_is_still_parked() {
-        let text = screens::road_briefing(COAST_FROM_KMH, COAST_TO_KMH, 1.183);
+        let text = screens::road_briefing(
+            COAST_FROM_KMH,
+            COAST_TO_KMH,
+            &Sourced::new(1.183, Source::Measured),
+        );
         for promise in [
             "kilometre of clear, flat, dry road",
             "once in each direction",
