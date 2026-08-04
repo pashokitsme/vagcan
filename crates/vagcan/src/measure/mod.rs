@@ -1697,6 +1697,96 @@ mod tests {
         assert!((rho - 1.2211).abs() < 1e-3, "{rho}");
     }
 
+    /// A car that answers reads and remembers every byte it was sent.
+    ///
+    /// Below the [`BatchReader`] seam on purpose. `Fake` proves what the loop
+    /// *asks* for; this proves what actually reaches the wire, which is the
+    /// only level at which "no service outside the allowlist" can be checked.
+    struct FakeCar {
+        /// The service byte of every request, however it was framed.
+        services: Vec<u8>,
+        /// Set by a first frame, cleared once the flow control is handed back.
+        owes_flow_control: bool,
+        /// Where the last request went, so the answer comes back on the id
+        /// that unit actually answers on. Replying on one fixed id makes the
+        /// client discard every frame and spin until its timeout.
+        addressed: Option<u16>,
+    }
+
+    impl vag_can::CanBackend for FakeCar {
+        async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), vag_can::CanError> {
+            self.addressed = u16::try_from(id).ok();
+            // ISO 15765-2: the high nibble of byte 0 is the frame type. The
+            // service byte follows the length in a single frame (type 0) and
+            // the two-byte length in a first frame (type 1). A consecutive
+            // frame carries no service and must not be counted as one.
+            match data.first().map(|pci| pci >> 4) {
+                Some(0) => self.services.extend(data.get(1)),
+                Some(1) => {
+                    self.services.extend(data.get(2));
+                    self.owes_flow_control = true;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        async fn recv_frame(
+            &mut self,
+            _timeout: std::time::Duration,
+        ) -> Result<(u32, Vec<u8>), vag_can::CanError> {
+            // A batch of eight identifiers does not fit one frame, so the car
+            // has to clear the sender to continue before it can answer at all.
+            let from = self
+                .addressed
+                .and_then(vag_protocol::address::UnitAddress::from_request)
+                .map(|unit| u32::from(unit.response))
+                .unwrap_or(0x7E8);
+            if std::mem::take(&mut self.owes_flow_control) {
+                return Ok((from, vec![0x30, 0x00, 0x00]));
+            }
+            // Then refuse. What was asked is the whole point here, and a car is
+            // free to say no: `7F 22 31` is request-out-of-range, the ordinary
+            // answer to an identifier a unit does not carry.
+            Ok((from, vec![0x03, 0x7F, 0x22, 0x31]))
+        }
+    }
+
+    #[tokio::test]
+    async fn nothing_measure_can_ask_for_leaves_the_read_allowlist() {
+        // `SAFETY.md`: this tool has already cost the reference car its power
+        // steering, permanently, without ever writing anything. `0x10`
+        // — DiagnosticSessionControl — is what a sweep opens with, and it is
+        // the service that must never appear on a bus this command owns.
+        //
+        // Both plans, because `--full` adds units and a whole extra batch.
+        for full in [false, true] {
+            let plan = plan_for(full, false);
+            let mut car =
+                Some(FakeCar { services: Vec::new(), owes_flow_control: false, addressed: None });
+            let started = std::time::Instant::now();
+
+            let batches: Vec<_> = std::iter::once(plan.leading.clone())
+                .chain(plan.background.iter().cloned())
+                .chain(plan.density.iter().cloned())
+                .collect();
+            assert!(!batches.is_empty());
+            for batch in &batches {
+                let _ = crate::watch::plan::read_batch(&mut car, batch, started).await;
+            }
+
+            let services = car.expect("handed back").services;
+            assert!(!services.is_empty(), "the test proves nothing if nothing was sent");
+            for service in &services {
+                assert_eq!(
+                    *service, 0x22,
+                    "measure sent service 0x{service:02X} (full = {full}); the allowlist is \
+                     0x22, 0x19, 0x10, 0x3E and this command needs only the first"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_session_refuses_a_schema_it_does_not_know_by_name() {
         let dir = std::env::temp_dir().join(format!("vagcan-measure-{}", std::process::id()));
