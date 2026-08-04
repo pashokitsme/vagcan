@@ -164,6 +164,9 @@ fn decode_shifted(
 ///
 /// `plaintext[2] = t[2] ^ IV[2]` and `IV[2] = IV_model[2] ^ D[2]`, so the byte
 /// the searcher would otherwise have to guess sixty times is simple arithmetic.
+///
+/// Only the search has a use for it, and the search is behind `rod-crack`.
+#[cfg(feature = "rod-crack")]
 fn anchor_from_shift(tag: &[u8], cipher: &[u8], shift2: u8) -> Option<u8> {
     let first: [u8; 8] = cipher.get(0..8)?.try_into().ok()?;
     let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
@@ -450,7 +453,11 @@ pub fn decode_rod_recover(
     let mut sections = Vec::new();
     let mut pos = 0usize;
     // The IV shift is a property of the file, so the first shifted section to
-    // open hands its third mask byte to every section after it.
+    // open hands its third mask byte to every section after it — which is what
+    // spares the rest of the file its own sweep. Only the search consumes it,
+    // so without `rod-crack` it does not exist at all rather than sitting there
+    // written and unread.
+    #[cfg(feature = "rod-crack")]
     let mut shift2: Option<u8> = None;
     while let Some((tag, payload_start)) = find_next_tag(data, pos) {
         match find_close(data, payload_start, &tag) {
@@ -491,7 +498,11 @@ pub fn decode_rod_recover(
                                         decode_shifted(&tag_str, &tag, &sc, iv3to8)
                                     {
                                         section = s;
-                                        shift2 = Some(d2);
+                                        #[cfg(feature = "rod-crack")]
+                                        {
+                                            shift2 = Some(d2);
+                                        }
+                                        let _ = d2;
                                     }
                                 }
                                 // Say which of the two happened. A search that
@@ -710,6 +721,8 @@ mod tests {
         assert!(decode_shifted("MWB", tag, &sc, wrong).is_none());
     }
 
+    // What it spares is a search, and the search is behind `rod-crack`.
+    #[cfg(feature = "rod-crack")]
     #[test]
     fn one_opened_section_spares_the_rest_of_the_file_their_own_sweep() {
         // The mask belongs to the file, not the section. Two sections under
