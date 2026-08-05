@@ -58,7 +58,31 @@ Done since the last update:
    `vag_protocol::dtc::CarTime` and `research/whole-car-survey.md` §2.3. What is *not* a
    protocol fact: this car's clock runs four days behind real time.
 
-## Status (2026-08-01)
+## Status (2026-08-05)
+
+Two things closed since 2026-08-02, and both are worth stating before the older text
+below, which remains true about scaling and stale about nothing else.
+
+**Fault names ship.** `vagcan faults --labels <VCDS install>` prints VW's own words. The
+chain and every refutation on the way to it are in `research/fault-naming-hop.md`;
+`research/codes-dat.md` covers the text store it ends in. Zero wrong answers across every
+check made, which is the property that matters more than the hit rate.
+
+**`vagcan measure` exists** — an acceleration stopwatch: marks timed from the car's own
+speed signal, a live full-screen view, a results table, a browser chart page, and a
+`setup` that measures this car's road load by coastdown. Spec
+`docs/superpowers/specs/2026-08-03-measure-design.md`, plan
+`docs/superpowers/plans/2026-08-03-measure.md`. **It has had exactly one real drive**
+(2026-08-04), which found seven defects — all fixed, none re-verified on the road. It is
+code that should work, not code that is known to.
+
+**Architecture, measured rather than guessed**:
+`docs/superpowers/specs/2026-08-05-architecture-design.md`. Phases 0–2 are done — an RAII
+terminal guard, the dead-code sweep, `hex` in one place, `src/ui/` with `picker`, `term`
+and `chart` in it. Its own arithmetic was corrected in the doing: the guard cost +328
+lines, not −40, because a tested guard costs 150 lines of test.
+
+---
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
 built and merged. The offline path to measurement *scaling* is **refuted, not just stalled**:
@@ -82,6 +106,8 @@ open-work list at the end of this file.
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan vcds labels` | ✅ done |
 | **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **16 catalog rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
+| M4 | fault **names** — number → `RD.rod` → row → `Codes.dat` → text | ✅ **done 2026-08-05**; 11 of this car's 15 confirmed codes, word-for-word with VCDS on all four both name, zero wrong |
+| M5 | `vagcan measure` — acceleration timing, power, chart page | 🟡 **built, one drive**; seven defects found and fixed on 2026-08-04, none re-verified on the road |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
@@ -394,6 +420,28 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   (`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3/§5).
 - **OBD-II Mode 01 as the product path** — dropped. The standard sensors survive as
   `vagcan sensors` and as calibration references, not as the measurement model.
+- **`MUX.rod` as the measurement registry** — opened 2026-08-04 and it is not one. It is
+  the ODX multiplexer table, a leaf of the `STRUC` subgraph a car cannot enter, with no
+  read identifier by four independent tests and a median table of three rows.
+  `research/mux.md`. No decoder ships: the only way in is a `STRUC` id and nothing a
+  control unit reports yields one.
+- **Pooling the `RD.rod` digit substitution across tables** — refuted 2026-08-05, then
+  made irrelevant. 95 solved tables have 95 distinct alphabets, so there was nothing to
+  intersect; the alphabet turned out to be *generated* from the table key by
+  `srand(key)` and two shuffles, read off `VCDS-ARM.exe`
+  (`research/fault-naming-hop.md`).
+
+### Open, and bounded
+
+- **`TTTEXT2.ROD`** is the whole of `research/label-linkage.md` §7 item 3 — whether the
+  `.rod` corpus is names-and-lists-only. It is now a **bounded 5–11 h unattended sweep**
+  rather than an unknown: its `[CMP]` section is exempt from the shifted-IV regime, so its
+  anchor byte cannot be narrowed and all 60 legal values need the full space
+  (`research/tttext2.md` §4.2). Nobody has started it.
+- **A per-car cache of learned unit pairings.** Which CAN request id answers a unit number
+  is in no label file — the two numberings are unrelated — so it is learned per car by
+  `units --identify --labels` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
+  where it would live.
 
 ## Parked (designed, not being implemented now)
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan under

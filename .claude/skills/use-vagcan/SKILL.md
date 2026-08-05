@@ -33,11 +33,13 @@ from the repository root; the commands are written bare for readability.
 | Which control units does it have? | `vagcan units --identify` |
 | What does one unit say about itself? | `vagcan properties --ecu 01` |
 | Fault codes, one unit | `vagcan faults --ecu 01` |
-| Fault codes, whole car | `vagcan faults` |
+| Fault codes, whole car, **named** | `vagcan faults --labels <VCDS install>` |
 | Standard OBD-II sensors | `vagcan sensors --ecu 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
 | Everything one unit exposes | `vagcan survey --only 01 --out unit01.jsonl` |
+| Time an acceleration run | `vagcan measure` |
+| Open a saved run as a chart page | `vagcan measure view` (offline) |
 
 Naming a unit: a short number (`01` engine, `02` gearbox, `09`, `16`, `17`) or a
 request id (`713`, `70E`). `vagcan units` lists this car's. The two id blocks answer
@@ -71,10 +73,26 @@ happen.
 ## Faults, per unit
 
 ```bash
-vagcan faults --ecu 01          # one unit
-vagcan faults --ecu 01,02,713   # several
-vagcan faults                   # every unit the gateway lists
+vagcan faults --labels ~/vcds     # named, whole car — the form to prefer
+vagcan faults --ecu 01            # one unit
+vagcan faults --ecu 01,02,713     # several
+vagcan faults                     # every unit, codes only
 ```
+
+**Pass `--labels` whenever a VCDS installation is at hand.** Without it the output is
+bare numbers; with it each code carries its SAE code and the text VCDS itself would
+print — `000129 → B1168 F2 Steering Angle Sensor: Not Initialized`. On the reference
+car 11 of 15 confirmed codes name.
+
+A code stays a number when the chain cannot reach it, and the reason is printed above
+the unit: no ODX file of that name in the corpus, or no file of its family carrying a
+fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
+the one thing this path refuses to do, and it has held at zero wrong answers across
+every check (`research/fault-naming-hop.md`).
+
+The first run against an installation recovers the encryption keys of the `.rod`
+catalogues, which costs about 95 s of every core per unit file. They are cached — the
+project's own cache is `catalogs/rod-iv-cache.json` — so only the first run pays.
 
 Only codes the unit has **confirmed** are shown. `--all` adds the hundreds of tests
 that have merely never run since the memory was last cleared; they are not faults and
@@ -86,6 +104,28 @@ date as the bound the tool states it as — the car's own clock is the source an
 this car it runs days behind.
 
 Clearing faults is a write. This tool cannot do it and must not gain the ability.
+
+## Timing an acceleration run
+
+`vagcan measure` arms itself when the car stands still, starts when it moves, and
+times every mark on the way up. No keystroke is needed for a run to be measured and
+nothing prompts the driver while the car is moving.
+
+- `measure` alone gives times, speeds, telemetry and shift costs.
+- `measure --full` adds power, and is **refused** without a car file rather than
+  falling back to generic road-load numbers. `measure setup` writes that file: an
+  interview at a standstill, then a coastdown from 120 to 40 km/h, driven twice in
+  opposite directions over the same stretch.
+- `measure view` opens a saved session as a chart page, offline. With no path it
+  offers a car and then one of its sessions.
+
+Two spellings of a time, and they mean different things. A mark from a standstill
+prints `9.09 s (8.94 … 9.24)` — the launch instant was never observed, so the figure
+in front is the midpoint of a bracket and no better known than the bracket. A rolling
+mark prints `5.17 s ± 0.02`, a real ± from the unit's own refresh period. **Never
+restate a bracket as a ±.**
+
+Sessions live under `~/.vagcan/cars/<VIN>/measures/`.
 
 ## Finding out what a unit exposes
 
