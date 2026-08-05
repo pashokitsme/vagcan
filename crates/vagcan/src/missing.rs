@@ -51,7 +51,7 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
          They are recovered from a VCDS installation, in one command:\n    \
          vagcan setup /path/to/VCDS\n\n\
          That is offline — no adapter, no car — and it takes a few minutes over the\n\
-         whole corpus. It writes everything under ~/.vagcan/labels/.\n\n\
+         whole corpus. It writes everything under ~/.vagcan/data/extracted/.\n\n\
          If you have no VCDS installation: this project cannot ship the data, because\n\
          it is Ross-Tech's. {VCDS_DOWNLOAD}"
     );
@@ -78,7 +78,7 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
          {}\n\n\
          The last step fits each unknown identifier against a reading already trusted —\n\
          the standard OBD-II parameters, or a row proven earlier — and writes the ones\n\
-         that hold as a catalog under ~/.vagcan/labels/data/.",
+         that hold as a catalog under ~/.vagcan/data/measured/.",
         calibration_path()
     );
     out

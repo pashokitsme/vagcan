@@ -84,7 +84,7 @@ pub enum Tool {
         /// section can be read. A section with no key here is reported as
         /// unreadable rather than guessed, and the command that recovers one is
         /// printed against the section that needs it.
-        /// Default: `~/.vagcan/labels/rod-keys.json`, written by `vagcan setup`.
+        /// Default: `~/.vagcan/data/extracted/rod-keys.json`, written by `vagcan setup`.
         #[arg(long, value_name = "FILE")]
         iv_cache: Option<String>,
         /// Adapter to use with --from-car.
@@ -111,7 +111,7 @@ pub enum Tool {
         limit: usize,
         /// Names file to search. Recovered from a VCDS installation, so a
         /// different installation means a different file.
-        /// Default: `~/.vagcan/labels/names.json`, written by `vagcan setup`.
+        /// Default: `~/.vagcan/data/extracted/names.json`, written by `vagcan setup`.
         #[arg(long, value_name = "FILE")]
         catalog: Option<String>,
     },
@@ -172,7 +172,7 @@ pub enum Tool {
         no_crack: bool,
         /// Where recovered keys are read and written. Default: next to the
         /// input, as `<FILE>.ivcache.json`. The cache `vagcan setup` fills is
-        /// `~/.vagcan/labels/rod-keys.json`.
+        /// `~/.vagcan/data/extracted/rod-keys.json`.
         #[arg(long, value_name = "PATH")]
         cache: Option<String>,
         /// Also write each decoded section to `DIR/<TAG>.bin`. This is how the

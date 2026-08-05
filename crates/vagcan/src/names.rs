@@ -1,7 +1,7 @@
 //! `vagcan vcds names` — search the measurement names recovered from the label
 //! corpus.
 //!
-//! `~/.vagcan/labels/names.json` holds the names `vagcan setup` recovered by
+//! `~/.vagcan/data/extracted/names.json` holds the names `vagcan setup` recovered by
 //! breaking `TTTEXT.ROD`'s per-record substitution cipher
 //! (`research/labels/tttext-codec.md`). They are keyed by the corpus's own text id,
 //! **not** by data identifier: the join from a name to the identifier that

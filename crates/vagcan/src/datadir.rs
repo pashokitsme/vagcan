@@ -47,11 +47,12 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///
 /// ```text
 /// ~/.vagcan/
-///   labels/
-///     cache.sqlite                    the label corpus, queryable
-///     names.json                      measurement names recovered from TTTEXT
-///     rod-keys.json                   recovered .rod section keys
-///     data/                           proven measurement rows, one file per
+///   data/
+///     extracted/                      parsed from a VCDS install by `setup`:
+///       cache.sqlite                    the label corpus, queryable
+///       names.json                      measurement names recovered from TTTEXT
+///       rod-keys.json                   recovered .rod section keys
+///     measured/                       proven measurement rows, one file per
 ///                                     part number, plus unit-numbers.json
 ///   config.json                       settings that are not about one car
 ///   cars/
@@ -66,12 +67,14 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// `~/Library/Application Support`, which is right for an application bundle
 /// and wrong for a tool whose files a person opens, reads and edits by hand.
 ///
-/// `labels/` holds what `vagcan setup` parsed out of a VCDS installation, all of
-/// it rebuildable from that installation in minutes. `labels/data/` holds the
-/// `(identifier, raw form, factor, offset)` rows this project proved on a
-/// vehicle; the label corpus provably cannot supply those
+/// `data/extracted/` holds what `vagcan setup` parsed out of a VCDS
+/// installation, all of it rebuildable from that installation in minutes.
+/// `data/measured/` holds the `(identifier, raw form, factor, offset)` rows this
+/// project proved on a vehicle; the label corpus provably cannot supply those
 /// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
-/// them.
+/// them. The two live side by side under `data/` because the split — extracted
+/// from someone else's files versus measured on the car — is the one distinction
+/// a reader of the tree needs.
 ///
 /// Deliberately not built on [`resolve`]. That walks parent directories looking
 /// for something that already exists, which is right for a path someone typed
@@ -81,9 +84,10 @@ pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
     vagcan_dir_in(dirs::home_dir())
 }
 
-/// Everything the label corpus contributes, and the rows measured against it.
-pub fn labels_dir() -> anyhow::Result<PathBuf> {
-    Ok(vagcan_dir()?.join("labels"))
+/// Everything `vagcan setup` parses out of a VCDS installation — the label
+/// cache, the recovered names, the `.rod` keys.
+pub fn extracted_dir() -> anyhow::Result<PathBuf> {
+    Ok(vagcan_dir()?.join("data").join("extracted"))
 }
 
 /// The measurement names recovered from `TTTEXT.ROD`.
@@ -93,7 +97,7 @@ pub fn labels_dir() -> anyhow::Result<PathBuf> {
 /// the corpus's own text id and has nothing to do with UDS — and it read as a
 /// file name only its author could parse.
 pub fn names_catalog() -> anyhow::Result<PathBuf> {
-    Ok(labels_dir()?.join("names.json"))
+    Ok(extracted_dir()?.join("names.json"))
 }
 
 /// The recovered `.rod` per-section keys.
@@ -101,7 +105,7 @@ pub fn names_catalog() -> anyhow::Result<PathBuf> {
 /// Was `rod-iv-cache.json`. "IV cache" is the decoder's word for it; the thing
 /// a reader wants from a file name is what it unlocks.
 pub fn rod_keys() -> anyhow::Result<PathBuf> {
-    Ok(labels_dir()?.join("rod-keys.json"))
+    Ok(extracted_dir()?.join("rod-keys.json"))
 }
 
 /// The SQLite cache of the parsed label corpus.
@@ -111,7 +115,7 @@ pub fn rod_keys() -> anyhow::Result<PathBuf> {
 /// rule that decides whether a cache is current cannot tell "older than the
 /// corpus" from "built from a different corpus".
 pub fn label_cache() -> anyhow::Result<PathBuf> {
-    Ok(labels_dir()?.join("cache.sqlite"))
+    Ok(extracted_dir()?.join("cache.sqlite"))
 }
 
 /// Which corpus directory [`label_cache`] was built from, one line of text.
@@ -123,8 +127,8 @@ pub fn label_cache() -> anyhow::Result<PathBuf> {
 pub const LABEL_CACHE_SOURCE: &str = "cache.from";
 
 /// Where the proven measurement rows live, one file per part number.
-pub fn data_dir() -> anyhow::Result<PathBuf> {
-    Ok(labels_dir()?.join("data"))
+pub fn measured_dir() -> anyhow::Result<PathBuf> {
+    Ok(vagcan_dir()?.join("data").join("measured"))
 }
 
 /// A path the user gave, or this tool's own default for it.
@@ -462,7 +466,7 @@ mod tests {
             label_cache().unwrap(),
             names_catalog().unwrap(),
             rod_keys().unwrap(),
-            data_dir().unwrap(),
+            measured_dir().unwrap(),
         ] {
             assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
             assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
@@ -470,18 +474,20 @@ mod tests {
     }
 
     #[test]
-    fn the_vcds_derived_files_sit_together_and_the_measured_rows_sit_under_them() {
-        let labels = labels_dir().unwrap();
+    fn the_vcds_derived_files_sit_together_under_extracted() {
+        let extracted = extracted_dir().unwrap();
         for path in [label_cache().unwrap(), names_catalog().unwrap(), rod_keys().unwrap()] {
-            assert_eq!(path.parent(), Some(labels.as_path()), "{path:?}");
+            assert_eq!(path.parent(), Some(extracted.as_path()), "{path:?}");
         }
-        assert_eq!(data_dir().unwrap(), labels.join("data"));
+        // Extracted-from-VCDS and measured-on-the-car are siblings under `data/`.
+        let data = extracted.parent().unwrap();
+        assert_eq!(measured_dir().unwrap(), data.join("measured"));
         // The one path under here this crate does not own: `vag_protocol` reads
         // the number-to-id override itself, and the two have to agree about
         // where it is or a file somebody wrote by hand is silently ignored.
         let override_dir =
             std::path::Path::new(vag_protocol::address::OVERRIDE_PATH).parent().unwrap();
-        assert!(data_dir().unwrap().ends_with(override_dir), "{override_dir:?}");
+        assert!(measured_dir().unwrap().ends_with(override_dir), "{override_dir:?}");
     }
 
     #[test]

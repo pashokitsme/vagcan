@@ -178,7 +178,7 @@ const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] =
 /// for in the checkout and every parent of it, which meant the same command
 /// behaved differently depending on where the shell was standing, and put a
 /// file describing somebody's car inside a repository.
-pub const OVERRIDE_PATH: &str = ".vagcan/labels/data/unit-numbers.json";
+pub const OVERRIDE_PATH: &str = ".vagcan/data/measured/unit-numbers.json";
 
 /// Read the override file, when the user has written one.
 ///

@@ -109,7 +109,7 @@ enum Command {
         /// Giving it also answers the download question, for a script.
         #[arg(long, value_name = "LANG", value_parser = setup::vendor::LANGUAGES.to_vec())]
         lang: Option<String>,
-        /// Redo every step, whatever is already in `~/.vagcan/labels/`.
+        /// Redo every step, whatever is already in `~/.vagcan/data/extracted/`.
         #[arg(long)]
         refresh: bool,
     },
@@ -255,7 +255,7 @@ enum Command {
         /// Where the proven measurement rows live. Each file is named after the
         /// part number or ODX name of the control unit it describes, so a car
         /// this tool has not seen before simply finds none.
-        /// Default: `~/.vagcan/labels/data`.
+        /// Default: `~/.vagcan/data/measured`.
         #[arg(long, value_name = "DIR")]
         data: Option<String>,
     },
@@ -309,7 +309,7 @@ enum Command {
         #[arg(long)]
         quiet: bool,
         /// Where the proven measurement rows live.
-        /// Default: `~/.vagcan/labels/data`.
+        /// Default: `~/.vagcan/data/measured`.
         #[arg(long, value_name = "DIR")]
         data: Option<String>,
         /// Mass in kilograms, overriding the car file for this run.
@@ -413,7 +413,7 @@ enum Command {
         /// Where the recovered `.rod` section keys are cached. A fault
         /// catalogue is sealed with one, and recovering one costs ~95 s of
         /// every core — so they are kept as data, not searched for per run.
-        /// Default: `~/.vagcan/labels/rod-keys.json`, written by `vagcan setup`.
+        /// Default: `~/.vagcan/data/extracted/rod-keys.json`, written by `vagcan setup`.
         #[arg(long, value_name = "FILE")]
         iv_cache: Option<String>,
         /// Name the faults in a survey this tool already recorded, instead of
@@ -676,11 +676,11 @@ async fn main() -> Result<()> {
 
 /// Where the proven measurement rows are for this run.
 ///
-/// `--data` if it was given, `~/.vagcan/labels/data` otherwise. Never a path
+/// `--data` if it was given, `~/.vagcan/data/measured` otherwise. Never a path
 /// relative to the working directory: that is what made these commands work in
 /// a checkout and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
-    Ok(datadir::or_default(given, datadir::data_dir)?.to_string_lossy().into_owned())
+    Ok(datadir::or_default(given, datadir::measured_dir)?.to_string_lossy().into_owned())
 }
 
 /// Where the recovered `.rod` section keys are, for this run.

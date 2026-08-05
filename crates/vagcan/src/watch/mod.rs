@@ -1679,13 +1679,13 @@ mod tests {
     /// The reference car's own proven rows, when this machine has any.
     ///
     /// They used to be committed under `catalogs/vehicles/` and are now one
-    /// owner's measured data under `~/.vagcan/labels/data`, like everybody
+    /// owner's measured data under `~/.vagcan/data/measured`, like everybody
     /// else's — nothing measured on a vehicle lives in the checkout any more.
     /// So a machine that has never calibrated a car has nothing to assert
     /// against, and these tests say so rather than failing over data they were
     /// never entitled to assume.
     fn measured_rows() -> Option<std::path::PathBuf> {
-        let dir = crate::datadir::data_dir().ok()?;
+        let dir = crate::datadir::measured_dir().ok()?;
         let any = std::fs::read_dir(&dir)
             .ok()?
             .flatten()
@@ -1700,7 +1700,7 @@ mod tests {
                 Some(dir) => dir,
                 None => {
                     eprintln!(
-                        "skipped: no proven rows in ~/.vagcan/labels/data — \
+                        "skipped: no proven rows in ~/.vagcan/data/measured — \
                          drive and calibrate a car to get some"
                     );
                     return;
@@ -1889,11 +1889,11 @@ mod tests {
         let text = coverage_report(
             &identities,
             &channels,
-            "/x/labels/data",
+            "/x/data/measured",
             &SurveySource::Missing { cache: None },
         );
         assert!(text.contains("no proven measurement rows"), "{text}");
-        assert!(text.contains("/x/labels/data"), "{text}");
+        assert!(text.contains("/x/data/measured"), "{text}");
         assert!(text.contains("vagcan recording calibrate"), "{text}");
         assert!(text.contains("not something `vagcan setup` can fix"), "{text}");
     }

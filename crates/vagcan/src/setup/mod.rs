@@ -10,9 +10,9 @@
 //!
 //! | what | how | where it lands |
 //! |---|---|---|
-//! | the label corpus, parsed | [`crate::labels::load_cached`] | `~/.vagcan/labels/cache.sqlite` |
-//! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/labels/names.json` |
-//! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/labels/rod-keys.json` |
+//! | the label corpus, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
+//! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/data/extracted/names.json` |
+//! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/data/extracted/rod-keys.json` |
 //!
 //! Nothing here is new work — this module runs the three in order, with the
 //! arguments they want, and says what happened. That matters more than it
@@ -137,7 +137,7 @@ enum Step {
 pub fn run(opts: Options<'_>) -> Result<()> {
     let Some(root) = installation(&opts)? else { return Ok(()) };
     let root = root.as_path();
-    let target = crate::datadir::labels_dir()?;
+    let target = crate::datadir::extracted_dir()?;
     std::fs::create_dir_all(&target)
         .with_context(|| format!("creating {}", target.display()))?;
 
@@ -359,17 +359,17 @@ mod tests {
         let steps = vec![
             Step::Wrote {
                 what: "the label corpus",
-                path: PathBuf::from("/home/x/.vagcan/labels/cache.sqlite"),
+                path: PathBuf::from("/home/x/.vagcan/data/extracted/cache.sqlite"),
                 detail: "3035 label files".to_string(),
             },
             Step::Skipped {
                 what: "the measurement names",
-                path: PathBuf::from("/home/x/.vagcan/labels/names.json"),
+                path: PathBuf::from("/home/x/.vagcan/data/extracted/names.json"),
                 why: "newer than the text table it came from",
             },
         ];
         let r = report(&steps);
-        assert!(r.contains("/home/x/.vagcan/labels/cache.sqlite"), "{r}");
+        assert!(r.contains("/home/x/.vagcan/data/extracted/cache.sqlite"), "{r}");
         assert!(r.contains("3035 label files"), "{r}");
         // A skipped step is reported, not silently absent: a run that took a
         // second when minutes were expected reads as a failure otherwise.

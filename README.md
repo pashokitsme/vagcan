@@ -61,7 +61,7 @@ vagcan setup /path/to/VCDS      # an installation you have
 vagcan setup                    # or be offered one to download
 ```
 
-This parses the label corpus into `~/.vagcan/labels/` — the names of measurements and
+This parses the label corpus into `~/.vagcan/data/extracted/` — the names of measurements and
 faults, the unit numbering, the keys that open VW's encrypted `.rod` files. It is
 offline, it takes a few minutes, and it is the only setup step there is. Running it
 again on an unchanged installation does nothing and says so.
@@ -102,11 +102,12 @@ car rather than of yours.
 
 ```
 ~/.vagcan/
-  labels/
-    cache.sqlite      the parsed label corpus, queryable
-    names.json        measurement names recovered from VCDS's text table
-    rod-keys.json     recovered .rod section keys
-    data/             proven measurement rows, one file per part number
+  data/
+    extracted/        parsed from VCDS by `vagcan setup`:
+      cache.sqlite      the label corpus, queryable
+      names.json        measurement names recovered from VCDS's text table
+      rod-keys.json     recovered .rod section keys
+    measured/         proven measurement rows, one file per part number
   cars/<VIN>/
     car.json          mass, tyre, measured road load
     survey.jsonl      what this car answered when it was last swept
@@ -114,8 +115,8 @@ car rather than of yours.
   config.json
 ```
 
-`labels/` is rebuilt by `vagcan setup` in minutes and can be deleted at any time.
-`labels/data/` and `cars/` cannot be rebuilt without a vehicle.
+`data/extracted/` is rebuilt by `vagcan setup` in minutes and can be deleted at any
+time. `data/measured/` and `cars/` cannot be rebuilt without a vehicle.
 
 ---
 

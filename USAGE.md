@@ -28,7 +28,7 @@ VCDS's own files; neither touches a vehicle.
 
 ### `vagcan setup`
 
-Parses a VCDS installation into `~/.vagcan/labels/`. Offline — no adapter, no car.
+Parses a VCDS installation into `~/.vagcan/data/extracted/`. Offline — no adapter, no car.
 Run it once.
 
 ```sh
@@ -42,10 +42,10 @@ say what it is doing:
 
 ```
 Reading the VCDS installation at /Users/you/vcds-en
-Writing everything to /Users/you/.vagcan/labels
+Writing everything to /Users/you/.vagcan/data/extracted
 
 [1/3] Label corpus — parsing every .lbl and decrypting every .clb.
-cached 3035 label files (101241 measurements) in …/labels/cache.sqlite
+cached 3035 label files (101241 measurements) in …/data/extracted/cache.sqlite
 [2/3] Measurement names — opening TTTEXT.ROD, then reading its cipher.
       This is the slow part: every record is under its own substitution, and the
       attack bootstraps over several passes. Minutes, not seconds.
@@ -54,11 +54,11 @@ cached 3035 label files (101241 measurements) in …/labels/cache.sqlite
 Done.
 
   the label corpus: 3035 label files
-    /Users/you/.vagcan/labels/cache.sqlite
+    /Users/you/.vagcan/data/extracted/cache.sqlite
   the measurement names: 3987 names
-    /Users/you/.vagcan/labels/names.json
+    /Users/you/.vagcan/data/extracted/names.json
   the .rod section keys: 11 keys
-    /Users/you/.vagcan/labels/rod-keys.json
+    /Users/you/.vagcan/data/extracted/rod-keys.json
 ```
 
 **Run it again and it does almost nothing.** Each step is skipped when what it would
@@ -359,7 +359,7 @@ vagcan recording calibrate --log drive.csv --out 8V0906264H.json
 
 Nothing under R² 0.995 over 20 points and 4 distinct raw values is accepted.
 
-**5. Install and name.** Move the file to `~/.vagcan/labels/data/`, named for the
+**5. Install and name.** Move the file to `~/.vagcan/data/measured/`, named for the
 part number the unit reports for itself (`vagcan properties --ecu 01` shows it). The
 rows arrive keyed by identifier and unnamed, because a fit proves what the bytes mean
 and not what the quantity is called — `vagcan vcds names <word>` is where the wording

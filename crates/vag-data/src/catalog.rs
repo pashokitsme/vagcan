@@ -296,7 +296,7 @@ mod tests {
     /// A tiny catalog written to a temp directory, so the store's own mechanism
     /// — reading a file, keying it by part number, and refusing to merge two
     /// units — can be tested without shipping any car's proven rows. A real
-    /// vehicle's catalogs live under `~/.vagcan/labels/data` after a drive, not
+    /// vehicle's catalogs live under `~/.vagcan/data/measured` after a drive, not
     /// in the repository; asserting their contents is a job for the machine that
     /// measured them.
     fn synthetic_store() -> (tempfile::TempDir, CatalogStore) {

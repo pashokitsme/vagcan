@@ -171,7 +171,7 @@ pub enum Tool {
         #[arg(long, default_value_t = setup::COAST_TO_KMH, value_name = "KMH")]
         coast_to: f64,
         /// Where the proven measurement rows live.
-        /// Default: `~/.vagcan/labels/data`.
+        /// Default: `~/.vagcan/data/measured`.
         #[arg(long, value_name = "DIR")]
         data: Option<String>,
         /// Write the car file here instead of into this tool's own directory.
@@ -1818,7 +1818,7 @@ mod tests {
     ///
     /// **Synthetic, not the reference car.** The proven rows a real vehicle
     /// yields are no longer in the repository — they live under
-    /// `~/.vagcan/labels/data` once a drive establishes them, and asserting their
+    /// `~/.vagcan/data/measured` once a drive establishes them, and asserting their
     /// exact values is a job for the machine that measured them. What these tests
     /// need is not those numbers but a plan with the right *shape*: a required
     /// speed and gear, a pedal, a boost pair, and — on an emissions unit — the

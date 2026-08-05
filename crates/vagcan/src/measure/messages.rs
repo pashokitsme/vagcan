@@ -80,7 +80,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
          drive with them on screen and fit them against a reading already trusted:\n    \
          vagcan watch --did <the identifiers> --out drive.csv\n    \
          vagcan recording calibrate --log drive.csv --out <part-number>.json\n\
-         Move that file to ~/.vagcan/labels/data/ — the file name is the unit's own\n\
+         Move that file to ~/.vagcan/data/measured/ — the file name is the unit's own\n\
          F187 part number — and name its rows so this command can find them:\n\
          `speed` and `gear` are what it looks for.\n\n\
          None of this is what `vagcan setup` does. A label corpus carries names and no\n\
@@ -424,7 +424,7 @@ mod tests {
         for step in ["survey --diff", "watch --did", "recording calibrate"] {
             assert!(text.contains(step), "{step} missing from:\n{text}");
         }
-        assert!(text.contains("~/.vagcan/labels/data/"), "where the file goes:\n{text}");
+        assert!(text.contains("~/.vagcan/data/measured/"), "where the file goes:\n{text}");
         // And it rules out the other shortage explicitly, because "the tool has
         // no data" is the same sentence for both and only one of them is true
         // here.

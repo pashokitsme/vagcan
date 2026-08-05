@@ -43,7 +43,7 @@ pub enum Tool {
         #[arg(long, default_value_t = 20, value_name = "N")]
         min_points: usize,
         /// Write the proven scalings as a measurement catalog. Put the file in
-        /// `~/.vagcan/labels/data/<part number>.json` and `watch` and `measure`
+        /// `~/.vagcan/data/measured/<part number>.json` and `watch` and `measure`
         /// read it from then on.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,

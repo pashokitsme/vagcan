@@ -24,7 +24,7 @@ use vag_data::{scan_corpus, CorpusScan, LabelDb, Measurement};
 /// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
 /// slow part of every lookup, and the corpus does not change between runs.
 ///
-/// One file, `~/.vagcan/labels/cache.sqlite`, beside the other two things
+/// One file, `~/.vagcan/data/extracted/cache.sqlite`, beside the other two things
 /// `vagcan setup` recovers from an installation. It used to be one file per
 /// corpus directory, named after the flattened path, which kept the English and
 /// the Russian install apart at the cost of a directory nobody could read. The

@@ -31,7 +31,7 @@ So the tool has two sources and they are not interchangeable:
 | names, unit numbers, fault text | a VCDS installation, via `vagcan setup` | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
-`~/.vagcan/labels/` holds the first. `~/.vagcan/labels/data/` holds the second. A
+`~/.vagcan/data/extracted/` holds the first. `~/.vagcan/data/measured/` holds the second. A
 tool short of one of them is in a completely different situation from a tool short of
 the other, and the messages it prints say which.
 
@@ -53,7 +53,7 @@ car* (not fine — it comes from the corpus, or from a read).
 ### The catalog schema
 
 One file per control unit, named for the part number that unit reports for itself
-(`F187`) or its ODX file name (`F19E`), in `~/.vagcan/labels/data/`. A row:
+(`F187`) or its ODX file name (`F19E`), in `~/.vagcan/data/measured/`. A row:
 
 ```json
 {"name":"Input shaft speed","unit":"/min","address":{"Uds":14346},
@@ -124,7 +124,7 @@ disassembling VCDS rather than guessed at.
 A section whose `product` field is nonzero cannot be decrypted from the file alone:
 five bytes of its first-block IV are missing and have to be searched for, at about a
 minute of every core per section. That is why the recovered keys are cached — the
-live path reads the answer out of `~/.vagcan/labels/rod-keys.json` and never
+live path reads the answer out of `~/.vagcan/data/extracted/rod-keys.json` and never
 searches.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
@@ -159,7 +159,7 @@ cluster, and words read off solved records become vocabulary for the next pass. 
 
 ## What `vagcan setup` actually does
 
-One command, three steps, everything under `~/.vagcan/labels/`.
+One command, three steps, everything under `~/.vagcan/data/extracted/`.
 
 **1. The corpus → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather

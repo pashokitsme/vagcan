@@ -31,6 +31,6 @@ tempfile = "3"
 [features]
 # Recovering the key of a `.rod` section that VW's encryption blocks. Off by
 # default because it costs about a minute of every core per section and the
-# live path only ever reads the *answer* out of `~/.vagcan/labels/rod-keys.json`.
+# live path only ever reads the *answer* out of `~/.vagcan/data/extracted/rod-keys.json`.
 # Turn it on to run `vagcan vcds rod` against a section not in the cache.
 rod-crack = ["vag-data/rod-crack"]
