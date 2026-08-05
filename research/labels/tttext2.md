@@ -601,3 +601,151 @@ throwaway `git worktree`, not in `crates/`.
 7. **Do not** re-run: the reduced-candidate-set search on any shifted section (§3.5, §4.1), the
    `IV[5]` reachability test (§3.5), any attempt to read `D` out of the container bytes
    (§3.3 — there are none), or a hunt for a rule generating `D` (§3.3a — there is none).
+
+---
+
+# Part II — the sweep of §8 item 4, run
+
+Everything above is the 2026-08-04 pass, which established *why* `TTTEXT2.ROD` is expensive and
+stopped short of paying. This part is the payment: the 60-anchor, full-space sweep §4.2
+prescribed, run to a verdict, with the tooling and the two preconditions that had to hold first.
+
+Tooling: `research/labels/tttext2-sweep/` (Rust driver + `rodread.py` + `textinspect.py`).
+
+---
+
+## 9. The driver, and why it is not a re-implementation
+
+Twice in this project a `.rod` conclusion has had to be reopened because a research script and
+the shipped decoder disagreed. So the sweep driver compiles **the shipped code**: `build.rs`
+stages `crates/vag-data/src/{tea.rs,rod.rs}` and `crates/vag-data/src/rod/crack.rs` into
+`OUT_DIR` and `src/main.rs` `include!`s them. Two mechanical edits are applied and no others —
+`//!` at the start of a line becomes `//` (an inner attribute may not arrive from a macro
+expansion, E0753) and the two `include_bytes!` paths are made absolute. That is checkable, and
+was checked:
+
+```
+$ diff crates/vag-data/src/rod/crack.rs <staged>/crack.rs | grep -Ev '^[<>] //'
+                                                       # (nothing)
+$ diff crates/vag-data/src/rod.rs      <staged>/rod.rs  | grep -Ev '^[<>] //'
+< pub(crate) static MT: &[u8; 256] = include_bytes!("rod_mt.bin");
+< pub(crate) static KS: &[u8; 256] = include_bytes!("rod_ks.bin");
+> …  = include_bytes!("/…/crates/vag-data/src/rod_mt.bin");
+> …  = include_bytes!("/…/crates/vag-data/src/rod_ks.bin");
+```
+
+The searcher is therefore byte-identical to the one `vagcan vcds rod --features rod-crack`
+runs. What the driver adds is the thing the CLI cannot do: it calls
+`crack::recover_iv3to8(tag, cipher, plainlen, Some(d0))` once **per anchor** and writes a line
+per anchor, so "no key" and "not finished" are different words. It also re-derives the framing
+through the shipped `find_next_tag` / `find_close` / `parse_section_cipher` rather than parsing
+the container again.
+
+Cross-check that the driver sees the same corpus the earlier pass did: it counts
+**20,093 files, 22,107 classic compressed sections, 14,997 shifted, 7,830 shifted files** —
+§3.1's numbers exactly, none of which it was given.
+
+---
+
+## 10. The control: a published vector, reproduced from cold
+
+§4.1 opened one shifted section and recorded the answer. Re-running it through this driver is
+the only cheap way to prove that a *miss* in the sweep below will mean "not this anchor" and
+not "the harness is broken":
+
+```
+$ tttext2_sweep sweep …/EV_HCP4Contr2OBDAU41X_BY64.rod FFMUX --order 0x4d
+[ 1/60] anchor 0x4d (BFINAL=1 BTYPE=2 HLIT=266) …
+HIT anchor=0x4d iv3to8=b1 a4 81 5c a3 elapsed=1285.9s
+INFLATED 55121 bytes (declared 55121) D[0:3]=b0 bf 10 iv=56 c3 e8 b1 a4 81 5c a3
+```
+
+`b1 a4 81 5c a3`, `D = b0 bf 10`, 55,121 bytes — **§4.1's vector, byte for byte**, recovered
+from nothing but the file. The wall time is 1,285.9 s against §4.1's 1,089 s for the same
+search; that is the machine and the thread split, not a difference in the work, and it is the
+number to budget the sweep with.
+
+---
+
+## 11. Two free results the sweep needed first
+
+### 11.1 The mask is redrawn per file — now measured on all 7,830, not 349
+
+§3.3 sampled 349 shifted files, found `D` uniform, and concluded correctly that no rule
+generates it. That leaves a question the sample was too small to ask, and which would have made
+the sweep unnecessary: **does `D` repeat?** A runtime global is not obliged to be redrawn per
+file, and if `TTTEXT2.ROD`'s mask belonged to some other file whose text sections pin its anchor
+(§3.4), that file would be a 35-minute crack that hands the mask over.
+
+Reading `D[0:2] = prefix ⊕ 78da` off every shifted section of every file in `UDS_EV`:
+
+| | |
+|---|---|
+| shifted files | **7,830** |
+| shifted compressed sections | **14,997** |
+| files whose sections **disagree** on `D[0:2]` | **0** |
+| distinct `D[0:2]` values | 7,375 |
+| files sharing a value: pairs / triples / quads | 430 / 11 / 1 |
+| coincident pairs observed | **469** |
+| coincident pairs expected if `D[0:2]` is uniform | **467.7** |
+
+Two things fall out. The **"one mask per file"** model of §3.3, previously carried by 149
+sections, is now carried by all 14,997 — not one file in the corpus disagrees with itself.
+And `D` is **redrawn per file**: 469 collisions against 467.7 expected is uniformity to two
+significant figures, so the repeats are birthday coincidences and not a shared value.
+
+`TTTEXT2.ROD`'s `D[0:2] = dd c0` is **unique in the corpus**. There is no twin to borrow from,
+and the file has one compressed section and no text section (`§3.4`), so neither shortcut
+applies. The sweep is the only route, which is what §4.2 said and is now measured rather than
+assumed.
+
+### 11.2 The anchor prior — the corpus says which byte to try first, and one thing it says is a correction
+
+The sweep must cover all 60 anchors, but nothing obliges it to try them in numeric order, and
+for a **classic** section deflate byte 0 is exact and free. Over all 22,107 classic sections:
+
+| anchor | count | ≥ 1 MiB | BFINAL | BTYPE | HLIT |
+|---|---|---|---|---|---|
+| `0x0d` | 4,878 | 0 | 1 | 2 | 258 |
+| `0x45` | 4,828 | 0 | 1 | 2 | 265 |
+| `0x3d` | 3,067 | 0 | 1 | 2 | 264 |
+| `0x2d` | 2,894 | 0 | 1 | 2 | 262 |
+| `0x35` | 1,899 | 0 | 1 | 2 | 263 |
+| **`0x33`** | **1,559** | 0 | 1 | **1** | — |
+| `0x15` | 923 | 0 | 1 | 2 | 259 |
+| … | | | | | |
+| `0xac` | 5 | **3** | 0 | 2 | 278 |
+| `0x8c` | 2 | **1** | 0 | 2 | 274 |
+| `0x54`, `0x64`, `0x84` | 1 each | **1** each | 0 | 2 | 267, 269, 273 |
+
+**The correction first.** `rod.rs::deflate_anchors` emits the 60 dynamic-Huffman headers and its
+comment justifies excluding stored and fixed blocks with *"no section in the corpus uses
+either"*. That is **false**: `0x33` and `0xb3` are `BTYPE = 1`, a **fixed**-Huffman first block,
+and **1,561 of 22,107 classic sections (7.1 %)** open with one. The consequence is bounded but
+real — a shifted section whose first block is fixed-Huffman cannot be opened by the 60-anchor
+sweep *or* by `decode_shifted`'s cheap 60-anchor retry from a cached key, so on the order of a
+thousand of the 14,997 shifted sections are closed to today's tooling for a reason nobody has
+recorded. The driver therefore carries `--all-btypes`, which widens the universe to every first
+byte a deflate stream may legally have: 60 dynamic + 64 fixed (the upper five bits are
+compressed data, hence free) + 2 stored (the upper bits are padding RFC 1951 requires to be
+zero) = 126.
+
+**And the prior.** Every classic section whose plaintext exceeds 64 KiB is `BFINAL = 0`,
+`BTYPE = 2` — fixed Huffman only ever appears on sections small enough that a dynamic header
+would not pay for itself. The twelve largest are unanimous:
+
+```
+  13677949  0xac  HLIT=278  RM.rod [MWB]        3524175  0x64  HLIT=269  TTDOP.rod [DOP]
+   7620128  0x54  HLIT=267  TTTEXT.ROD [TXT]    2188449  0xac  HLIT=278  MUX.rod [MUX]
+   6577695  0x8c  HLIT=274  RD.rod [DTC]        1271170  0x84  HLIT=273  ReDir.rod [DIR]
+   4323186  0xac  HLIT=278  RA.rod [ADP]         938298  0xac  HLIT=278  RF.rod [FFMUX]
+    728966  0x9c  HLIT=276  RX.rod [XPL]         528283  0xa4  HLIT=277  RS.rod [SOT]
+    468309  0xac  HLIT=278  RG.rod [GES]         297499  0x8c  HLIT=274  STRUC.rod [STRUC]
+```
+
+`TTTEXT2.ROD [TXT]` declares 5,887,861 plaintext bytes, so its anchor is almost certainly one of
+`{0xac, 0x54, 0x8c, 0x64, 0x84, 0x9c, 0xa4, 0x44}` — with `0x54` carrying extra weight as the
+byte its own sibling `TTTEXT.ROD` uses. The sweep is ordered by that prior, then the remaining
+`BFINAL = 0` anchors, then the `BFINAL = 1` half. **This changes nothing about coverage** — all
+60 are tried and the driver appends anything the order left out — only about when it is likely
+to stop.
