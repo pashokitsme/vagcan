@@ -145,16 +145,31 @@ fn keep_best_miss(held: &mut Option<Rejected>, candidate: Rejected) {
 /// two ways and `None` is returned. A mis-split attributes one measurement's
 /// bytes to another identifier, which is worse than having no sample.
 pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>> {
-    let mut best = Best { budget: SPLIT_BUDGET, ..Best::default() };
+    split_within(payload, dids, SPLIT_BUDGET).0
+}
+
+/// The split, and how much of the budget was left when it finished.
+///
+/// The remainder is what the guard is tested through. Timing the call instead
+/// would assert on how loaded the machine is: the same search that takes a
+/// millisecond alone takes far longer when the rest of the suite is running
+/// beside it, and a test that fails for that reason teaches nothing.
+fn split_within(
+    payload: &[u8],
+    dids: &[u16],
+    budget: u32,
+) -> (Option<Vec<(u16, Vec<u8>)>>, u32) {
+    let mut best = Best { budget, ..Best::default() };
     parse_from(payload, dids, 0, &mut Vec::new(), &mut best);
-    match (best.budget, best.ties) {
+    let records = match (best.budget, best.ties) {
         // Out of budget is not "no reading" — it is a response this function
         // did not finish examining, and calling that a unique parse would ship
         // whichever reading it happened to find first.
         (0, _) => None,
         (_, 1) => best.records(payload),
         _ => None,
-    }
+    };
+    (records, best.budget)
 }
 
 /// How many placements the split may try before giving up on a response.
@@ -989,6 +1004,34 @@ mod tests {
     }
 
     #[test]
+    fn the_engine_batch_that_measure_actually_sends_splits() {
+        // The exact request `measure` makes of the engine unit on the reference
+        // car: boost specified, boost actual, engine speed, road speed, and the
+        // mass air flow — standard PID 10, which this car does not implement
+        // and never answers. Everything but the last is in the response.
+        //
+        // Values from a saved session: 1.15 bar specified as 0x047E, 1.13 bar
+        // actual as 0x0468, 4284 /min as 0x10BC, 87 km/h as 0x57.
+        let dids = [0x2029, 0x202A, 0x206E, 0xF40D, 0xF410];
+        let payload = [
+            0x20, 0x29, 0x04, 0x7E, //
+            0x20, 0x2A, 0x04, 0x68, //
+            0x20, 0x6E, 0x10, 0xBC, //
+            0xF4, 0x0D, 0x57,
+        ];
+        assert_eq!(
+            split_records(&payload, &dids),
+            Some(vec![
+                (0x2029, vec![0x04, 0x7E]),
+                (0x202A, vec![0x04, 0x68]),
+                (0x206E, vec![0x10, 0xBC]),
+                (0xF40D, vec![0x57]),
+            ]),
+            "this is the read that produced `engine_speed: 0 points` in eleven sessions"
+        );
+    }
+
+    #[test]
     fn a_response_that_genuinely_reads_two_ways_is_still_refused() {
         // Tolerating an unanswered identifier must not become tolerating a
         // guess. Here `F187`'s header occurs twice, so there are two ways to
@@ -1008,12 +1051,16 @@ mod tests {
         // a unique reading.
         let dids: Vec<u16> = (0..8).map(|i| 0xF100 + i).collect();
         let payload: Vec<u8> = (0..300).flat_map(|i| [0xF1u8, (i % 8) as u8]).collect();
-        let started = std::time::Instant::now();
-        assert_eq!(split_records(&payload, &dids), None);
-        // One cycle of the poll loop at the rate the reference car achieves is
-        // about 77 ms. Giving up has to cost less than that or the guard is
-        // itself the stall.
-        assert!(started.elapsed().as_secs_f64() < 0.077, "{:?}", started.elapsed());
+        let (records, left) = split_within(&payload, &dids, SPLIT_BUDGET);
+        assert_eq!(left, 0, "the search finished, so the guard was never the reason it stopped");
+        assert_eq!(records, None, "and giving up reports no reading, not the first one found");
+
+        // The same payload with a budget it can afford returns the same answer
+        // by exhausting the search rather than by running out — the two paths
+        // to `None` are different and only one of them is the guard.
+        let short: Vec<u16> = dids[..2].to_vec();
+        let (_, left) = split_within(&payload[..8], &short, SPLIT_BUDGET);
+        assert!(left > 0, "a real response must never come near the ceiling");
     }
 
     #[test]
