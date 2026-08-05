@@ -5,7 +5,7 @@
 //! the clear. That is the crib the measurement work has been missing: prior
 //! captures were taken on the HEX clone's USB link, where the payload is
 //! ciphered and multi-frame group reads never decoded
-//! (`research/rod-labels.md` §4.0a–§4.0c).
+//! (`research/labels/rod-labels.md` §4.0a–§4.0c).
 //!
 //! This module holds the session logic — frame filtering, capture writing,
 //! display formatting — with the I/O passed in, so it is testable without an

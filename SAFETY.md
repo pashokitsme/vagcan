@@ -27,8 +27,8 @@ refusing to assist. The commissioning dataset at identifier `1923` read
 refill over a subsequent drive. Restoring it needs a factory procedure this
 tool cannot and will not perform.
 
-The full write-up is `research/eps-j500-report-ru.md`; the technical detail is
-in `research/whole-car-survey.md` §3b.
+The full write-up is `research/eps/eps-j500-report-ru.md`; the technical detail is
+in `research/car/whole-car-survey.md` §3b.
 
 ---
 

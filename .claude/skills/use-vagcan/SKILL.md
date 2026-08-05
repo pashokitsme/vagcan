@@ -88,7 +88,7 @@ A code stays a number when the chain cannot reach it, and the reason is printed 
 the unit: no ODX file of that name in the corpus, or no file of its family carrying a
 fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
 the one thing this path refuses to do, and it has held at zero wrong answers across
-every check (`research/fault-naming-hop.md`).
+every check (`research/labels/fault-naming-hop.md`).
 
 The first run against an installation recovers the encryption keys of the `.rod`
 catalogues, which costs about 95 s of every core per unit file. They are cached — the

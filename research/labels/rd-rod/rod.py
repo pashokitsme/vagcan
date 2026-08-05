@@ -2,7 +2,7 @@
 
 Research tooling only. It exists because the workspace binary is not always
 buildable while other agents edit it, and because the attacks in
-`research/codes-dat.md` §5 want to sweep 110 000 tables, which is a script's job.
+`research/labels/codes-dat.md` §5 want to sweep 110 000 tables, which is a script's job.
 
 Nothing here is authoritative: `rod.rs` is. If the two disagree, `rod.rs` wins.
 """
@@ -110,7 +110,7 @@ def decode_section(tag, payload, iv3to8=None):
         ivs.append(base)
     else:
         ivs.append(bytes(base[:3]) + bytes(iv3to8))
-        # the shifted-IV regime (research/tttext2.md §3.3)
+        # the shifted-IV regime (research/labels/tttext2.md §3.3)
         if compressed and len(cipher) >= 8:
             t = tea_decrypt_block(cipher[:8])
             for d0 in _anchors():

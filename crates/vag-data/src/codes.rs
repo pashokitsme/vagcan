@@ -28,7 +28,7 @@
 //! car — is not a key here, and the two spaces overlap numerically, so a
 //! lookup that ignores the distinction returns a wrong answer rather than no
 //! answer. Nothing in this module accepts a VW fault number; callers must
-//! supply an ISO DTC. See `research/codes-dat.md`.
+//! supply an ISO DTC. See `research/labels/codes-dat.md`.
 
 use std::collections::BTreeMap;
 
@@ -123,7 +123,7 @@ const LONG_BAND_START: u32 = 1_000_000;
 /// * **`100 000 + <16-bit DTC>`** — the 20 059 six-digit keys, none of which
 ///   falls outside `100 000..=165 535`. These name a *component* and carry no
 ///   failure type of their own; the failure type comes from the registry row
-///   (`research/fault-naming-hop.md` §3). 137 973 is `100 000 + 0x9455` and
+///   (`research/labels/fault-naming-hop.md` §3). 137 973 is `100 000 + 0x9455` and
 ///   VCDS prints `B1455` for it.
 /// * **the 24-bit DTC outright** — every key of seven digits or more, i.e.
 ///   `<16-bit DTC> << 8 | <failure type>`. 9 529 586 is `0x9168F2` and VCDS
@@ -134,7 +134,7 @@ const LONG_BAND_START: u32 = 1_000_000;
 /// rows whose key is a million or more, and for 0.3 % of the rest — chance.
 ///
 /// The 16-bit value is `system:2 | code:14`, the split ISO 14229-1 uses and
-/// which `research/codes-dat.md` §3.1 measured on this file: 22 045 `P`,
+/// which `research/labels/codes-dat.md` §3.1 measured on this file: 22 045 `P`,
 /// 5 917 `B`, 1 830 `C`, 99 `U`, with the texts matching the letter.
 ///
 /// Returns `None` below 100 000 — the legacy five-digit band and the block of
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn a_key_spells_the_sae_code_vcds_prints() {
         // Every one of these is a pair VCDS printed itself, on one of the two
-        // cars in research/rd-rod/pairs.tsv — six-digit component keys on the
+        // cars in research/labels/rd-rod/pairs.tsv — six-digit component keys on the
         // left of the band boundary and 24-bit DTCs on the right.
         assert_eq!(sae_code(137_973).as_deref(), Some("B1455"));
         assert_eq!(sae_code(137_375).as_deref(), Some("B11FF"));

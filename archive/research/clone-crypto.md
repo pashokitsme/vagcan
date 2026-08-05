@@ -7,7 +7,7 @@ and `PATH2-vmprotect-dynamic-x86.md`.
 
 Wire format, opcode vocabulary, the link cipher (`plain = cipher ^ KS`), `IV_TABLE`,
 the `cid = (msg_type+1)&0xf` selector, off14/off15 rules, and the ISO-TP layer are all in
-**`research/vag-hex-framing.md`** — not repeated here. This doc is only the *auth /
+**`archive/research/vag-hex-framing.md`** — not repeated here. This doc is only the *auth /
 session-key* problem.
 
 > **One-line status.** The clone speaks the **OLD (b6/b7-derived) scheme**, whose

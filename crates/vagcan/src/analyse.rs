@@ -4,7 +4,7 @@
 //! displayed at the same moment. Crossing them gives
 //! `(read identifier → raw bytes → engineering value)` directly, without
 //! needing the `.rod` field codec that blocks the offline route
-//! (`research/rod-labels.md` §4.0c).
+//! (`research/labels/rod-labels.md` §4.0c).
 //!
 //! Two rules keep this honest, because breaking them is exactly how the
 //! earlier attempts produced results that later evaporated:

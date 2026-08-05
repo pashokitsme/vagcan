@@ -4,7 +4,7 @@
 plaintext bytes, using a DFS deflate dynamic-Huffman-header validator with
 incremental Kraft-inequality pruning.
 
-Background (see research/rod-labels.md):
+Background (see research/labels/rod-labels.md):
   A .rod section is TEA-CBC(KEY_ROD) with an 8-byte IV. IV[0:3] is derived from
   the section tag (always exact). IV[3:8] carries the low 5 bytes of a runtime
   `product` term -- NOT in the file bytes. Only the FIRST cipher block's 8

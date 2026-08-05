@@ -1,6 +1,6 @@
 """The per-table substitution alphabet, generated from the table's key.
 
-`research/fault-naming-hop.md` §11. Every numeric field in a `.rod` table is written
+`research/labels/fault-naming-hop.md` §11. Every numeric field in a `.rod` table is written
 in a substitution alphabet that `§5.1` measured as per-table — 95 solved tables, 95
 distinct alphabets, nothing to pool. It is not a secret: **VCDS derives it from the
 table's own key with the C runtime's `rand()`**, and this is that derivation.

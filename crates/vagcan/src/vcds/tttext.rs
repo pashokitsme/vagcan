@@ -265,7 +265,7 @@ fn recheck(
 
 /// Whether a reading is the kind a catalog would consider at all.
 ///
-/// Three of the five filters of `research/tttext-codec.md` §7: enough letters
+/// Three of the five filters of `research/labels/tttext-codec.md` §7: enough letters
 /// to be sure of, no unresolved letter, and every word of length >= 3 a word
 /// the vocabulary knows. The other two — the ambiguity margin and the framing
 /// rule — are not reimplemented here; this is a sampling filter, not the gate.

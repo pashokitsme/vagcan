@@ -6,7 +6,7 @@
 //! record**, acting on three disjoint alphabets — the 26 letters (case
 //! preserved, so `a`–`z` and `A`–`Z` share one permutation), a 14-glyph
 //! numeric class (`0`–`9`, `,`, `.`, `_`, `-`), and everything else, which
-//! passes through untouched. `research/tttext-codec.md` establishes that from
+//! passes through untouched. `research/labels/tttext-codec.md` establishes that from
 //! the frequency bands and from cribs.
 //!
 //! Ninety characters of ciphertext under an unknown 26-letter permutation is
@@ -21,7 +21,7 @@
 //!
 //! **Nothing here decides that a name is right.** It proposes readings and
 //! scores them. What may be written into a catalog is settled by the gate in
-//! `research/tttext-codec.md` §7 — two independent constraints agreeing — and
+//! `research/labels/tttext-codec.md` §7 — two independent constraints agreeing — and
 //! this project has already retracted decodings that looked fluent and were
 //! wrong.
 
@@ -86,7 +86,7 @@ impl Key {
     ///
     /// Characters outside the letter class are passed through, including the
     /// numeric glyphs: that class has its own permutation and is not broken
-    /// (`research/tttext-codec.md` §6), so its symbols are shown as they came
+    /// (`research/labels/tttext-codec.md` §6), so its symbols are shown as they came
     /// rather than as digits nobody established.
     pub fn decode(&self, cipher: &str) -> String {
         cipher

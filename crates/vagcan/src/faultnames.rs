@@ -1,6 +1,6 @@
 //! Turning a fault number into VW's own words for it.
 //!
-//! The chain and its evidence are `research/fault-naming-hop.md`; the decoders
+//! The chain and its evidence are `research/labels/fault-naming-hop.md`; the decoders
 //! are [`vag_data::dtc`] and [`vag_data::CodesDb`]. This module is what holds
 //! the three files open at once and answers one question per fault:
 //!
@@ -14,7 +14,7 @@
 //! files to open, in what order, and — the part that matters — **what to say
 //! when the chain breaks**. Every break has its own answer here, because
 //! "047120" with a reason beside it is a result and "047120 — Fuel Pump" is a
-//! wrong one. `research/fault-naming-hop.md` has stayed at zero wrong answers
+//! wrong one. `research/labels/fault-naming-hop.md` has stayed at zero wrong answers
 //! through five passes and this module is where that is kept.
 
 use std::collections::BTreeMap;

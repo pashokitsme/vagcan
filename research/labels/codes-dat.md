@@ -8,7 +8,7 @@ Cross-checked against `research/VCDS-RUS/Code-RUS.dat` (the Russian translation 
 file) and against `research/VCDS-25.12.0/`. Nothing third-party is committed; the decoder is
 `crates/vag-data/src/codes.rs`.
 
-Read `research/whole-car-survey.md` §3 first — this file finishes what it started and
+Read `research/car/whole-car-survey.md` §3 first — this file finishes what it started and
 **supersedes two of its statements**, listed in §6.
 
 ---
@@ -24,7 +24,7 @@ Read `research/whole-car-survey.md` §3 first — this file finishes what it sta
 | Did a known fault code produce its known text? | **Yes** — `B1168 F2` → "Steering Angle Sensor: Not Initialized" — §3.2 | very high |
 | Can `vagcan faults` name what this car reports? | **No — one hop still missing** — §4 | high, and it is a clean negative |
 | Does it finish the `RD.rod` chain? | **The naming half, yes** — §5 | high (47/48 against an 8.2 % baseline) |
-| Is the missing hop still missing? | **No — closed, and the command ships** — §7 | see `research/fault-naming-hop.md` §11–§12 |
+| Is the missing hop still missing? | **No — closed, and the command ships** — §7 | see `research/labels/fault-naming-hop.md` §11–§12 |
 
 The headline is §3 together with §4. The file is completely open, including the eight
 characters per record that the previous pass wrote off as lost — but its keys are **ISO/SAE
@@ -184,7 +184,7 @@ right reading and not a story:
 
 ### 3.2 The reference car's own faults, named
 
-`research/eps-j500-report-ru.md` records the three codes the steering assist has stored since
+`research/eps/eps-j500-report-ru.md` records the three codes the steering assist has stored since
 the sweep, with their failure-type bytes. All three resolve:
 
 | code | key | `Codes.dat` (EN) | `Code-RUS.dat` |
@@ -213,7 +213,7 @@ actually reports, and every number VCDS printed in its own scan of it, is absent
 | number | where it came from | in `Codes.dat`? |
 |---|---|---|
 | 229 504, 7 680, 19 716, 20 228 | the EPS unit's `0x19` response, `research/dumps/eps-fault-229504-before-clear.txt` | no |
-| 16 136, 291 104 | the same car, `research/eps-j500-report-ru.md` and the VCDS scan | no |
+| 16 136, 291 104 | the same car, `research/eps/eps-j500-report-ru.md` and the VCDS scan | no |
 | 17 178, 15 187, 16 275, 12 289, 26 885, 197 225, 589 825 | `research/VCDS-RUS/Scans/…20260731…` — VCDS named every one of these | no |
 
 So the file is not a fault-number dictionary, and `vagcan faults` cannot be wired to it as it
@@ -289,7 +289,7 @@ plausible wrong answer.
 
 ## 7. What it took to wire this into `vagcan faults` — done
 
-**Step 1 below is closed and the command ships.** `research/fault-naming-hop.md` found the
+**Step 1 below is closed and the command ships.** `research/labels/fault-naming-hop.md` found the
 hop and it is not the one this section guessed at: the join is `UDS_EV/RD.rod`'s `[DTC]`
 registry, keyed by the raw VW number in decimal, with the row chosen by the unit's own
 `.rod` and the row's fields read through a substitution the table key generates

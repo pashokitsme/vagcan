@@ -7,7 +7,7 @@
 //! `research/clb-crack/rod_struc_decode.py`. Feature-gated (`rod-crack`): it is
 //! CPU-heavy and kept out of the default build.
 //!
-//! Approach (see `research/rod-labels.md` §1): a `.rod` section is
+//! Approach (see `research/labels/rod-labels.md` §1): a `.rod` section is
 //! TEA-CBC(`KEY_ROD`) with an 8-byte IV. `IV[0..3]` is tag-derived (exact);
 //! `IV[3..8]` carries the low 5 bytes of the runtime `product`. Only the first
 //! cipher block's plaintext depends on the IV (CBC), so the zlib magic
@@ -675,7 +675,7 @@ impl Search<'_> {
 /// decompressed length. Returns `None` if the search finds no candidate
 /// inflating to exactly `plainlen`.
 ///
-/// Two regimes, and the difference is expensive (`research/tttext2.md`):
+/// Two regimes, and the difference is expensive (`research/labels/tttext2.md`):
 ///
 /// * **classic** — the tag-derived IV is exact, so `plaintext[0..3]` reads
 ///   `78 da <anchor>` and the anchor is free. One search over the reduced

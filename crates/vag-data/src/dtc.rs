@@ -1,7 +1,7 @@
 //! Naming a VW fault number, end to end.
 //!
 //! A VAG control unit answers `0x19` with a **VW-internal 24-bit number**, and
-//! `Codes.dat` is keyed by an ISO/SAE DTC. `research/fault-naming-hop.md` is
+//! `Codes.dat` is keyed by an ISO/SAE DTC. `research/labels/fault-naming-hop.md` is
 //! the whole of how the two are joined; this module is that chain as code:
 //!
 //! ```text
@@ -25,7 +25,7 @@
 //! **What this module will not do is guess.** Every failure has its own
 //! variant in [`UnitLookup`] and [`FaultName`] so the caller can say *why* a
 //! code went unnamed, and a code whose chain breaks anywhere comes back as a
-//! number. `research/fault-naming-hop.md` has stayed at zero wrong answers and
+//! number. `research/labels/fault-naming-hop.md` has stayed at zero wrong answers and
 //! that is the property worth keeping.
 
 use std::collections::BTreeMap;
@@ -188,7 +188,7 @@ impl UnitCatalogue {
     /// rejects.
     ///
     /// It is the same test that settled 1-based against 0-based indexing
-    /// (`research/fault-naming-hop.md` §10.1), turned into a runtime guard,
+    /// (`research/labels/fault-naming-hop.md` §10.1), turned into a runtime guard,
     /// and it is here because a shifted catalogue does not fail to answer: it
     /// answers with another fault's name.
     pub fn is_consistent_with_registry(&self) -> bool {

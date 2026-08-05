@@ -1,7 +1,7 @@
 //! rod_crack -- multithreaded brute-forcer for a .rod zlib section's corrupted
 //! first-block plaintext bytes (deflate bytes 1..5 = plaintext[3..8]).
 //!
-//! See research/rod-labels.md and research/label-linkage.md.
+//! See research/labels/rod-labels.md and research/labels/label-linkage.md.
 //! Reads `crack_input.bin` produced by the Python prep step:
 //!   u32 plainlen | u8 d0 | 5x (u16 nset, nset bytes) | u32 taillen, tail bytes
 //! Deflate stream = [d0] ++ [d1..d5 unknown] ++ tail ; zlib stream = 78 da ++ deflate.

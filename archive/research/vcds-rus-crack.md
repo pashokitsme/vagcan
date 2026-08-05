@@ -8,7 +8,7 @@ Session 2026-07-05/06. The owner runs **VCDS-RUS 24.7.1.0** (cracked Russian bui
 20240617 DS356.3) in an ARM Win11 VM (x86-on-ARM WOW64, `xtajit.dll`), cable passed through.
 A full Auto-Scan succeeded → gave us ground-truth vehicle data AND 5 process memory dumps +
 the crack's dropped files. This is the dynamic-attack material for recovering the OLD-scheme
-link key `K_epoch` (see `research/clone-crypto.md`).
+link key `K_epoch` (see `archive/research/clone-crypto.md`).
 
 ---
 
@@ -61,7 +61,7 @@ needed for any renewed dynamic work.)*
     oleaut32 VariantCopy; user32 IsWindow; version VerQueryValueW). **Analyse the UNPACKED copy
     carved from a mid-scan dump at `0x1a730000`** (code-section entropy 6.61, all 291 pages
     present, MZ/PE intact), not the packed on-disk drop.
-  - **The shim contains NO cryptography** (see `research/clone-crypto.md §3.4` for the full
+  - **The shim contains NO cryptography** (see `archive/research/clone-crypto.md §3.4` for the full
     characterisation): no AES S-box/T-tables, no SHA init/RCON, no bcrypt/CNG/CryptoAPI imports;
     the `FT_*` handlers are `ret`-stubs / a detour pointer table. **FT_Read/FT_Write do not
     compute or inject `K_epoch`; the hook does NOT shortcut the KDF — the link key stays
@@ -71,7 +71,7 @@ needed for any renewed dynamic work.)*
 The process links **Windows CNG/bcrypt** (`bcryptprimitives.dll`, handles on `\Device\CNG`,
 `\Device\KsecDD`, `rsaenh.dll`) — AES/key material may pass through BCrypt* APIs (round keys in
 a `BCRYPT_KEY` object) in addition to / instead of LibTomCrypt. This is the basis of the
-Tier-A CNG breakpoint plan in `research/clone-crypto.md §4.2`.
+Tier-A CNG breakpoint plan in `archive/research/clone-crypto.md §4.2`.
 
 ### Open questions the dumps were meant to answer (all now resolved — see `clone-crypto.md §3`)
 1. Does the shim intercept/modify FT_Read/FT_Write to inject the key? → **No — pure proxy +
@@ -209,7 +209,7 @@ binary.
 ---
 
 ## Cross-references
-- `research/clone-crypto.md` — the encrypted-link crack, the dump memory-scan results, the full
+- `archive/research/clone-crypto.md` — the encrypted-link crack, the dump memory-scan results, the full
   `vcds_hook.dll` characterisation, and the live probes.
 - `research/vag-hex-framing.md` — wire format + link cipher.
 - memory `[[vcds-cable-detect-re]]` — cable-detect RE + the cipher/auth facts.

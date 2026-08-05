@@ -3,7 +3,7 @@
 //! Everything this project can read live has so far come from two control
 //! units, because those are the two the ISO addressing block reaches. The
 //! gateway's installation list names fifteen more
-//! (`research/other-ecus.md` §3), each answering on VW's own block, and each
+//! (`research/car/other-ecus.md` §3), each answering on VW's own block, and each
 //! with an identifier space nobody here has swept.
 //!
 //! This command does the pass that document calls for: read the installation
@@ -33,7 +33,7 @@ use crate::render::hex_packed;
 use crate::scan::{self, DidHit};
 
 /// The identifier pages observed in use on this car, across every unit seen in
-/// the two captures (`research/other-ecus.md` §6.3): identification and coding
+/// the two captures (`research/car/other-ecus.md` §6.3): identification and coding
 /// (`02xx`, `06xx`, `F1xx`), the BCM's group records (`19xx`), the powertrain
 /// measurement bands (`20xx`–`22xx`, `38xx`), the gateway's lists (`2Axx`,
 /// `2Bxx`) and the OBD-II mirror (`F4xx`).

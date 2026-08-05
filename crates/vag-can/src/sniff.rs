@@ -8,7 +8,7 @@
 //!
 //! This is the component that turns VCDS's **group reads** into readable PDUs.
 //! Those responses span multiple frames, which is exactly why they never
-//! decoded from the earlier USB captures (`research/rod-labels.md` §4.0b) and
+//! decoded from the earlier USB captures (`research/labels/rod-labels.md` §4.0b) and
 //! why RPM / vehicle speed / coolant could not be fitted.
 //!
 //! No I/O and no clock of its own: [`IsoTpSniffer::observe_at`] takes the

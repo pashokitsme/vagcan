@@ -44,7 +44,7 @@
 //!   lags 34–90 s) — the signature of spurious window-matching, not tracking. So
 //!   the ADVMB display values are computed from raw the decodable channels do not
 //!   expose; a further capture cannot settle this by rev range alone. See
-//!   `research/rod-labels.md §4` for the full negative.
+//!   `research/labels/rod-labels.md §4` for the full negative.
 //! - **Coolant temp.** Same capture: `IDE00025` rises 99 → 104 °C (slow, monotonic);
 //!   the only slowly-drifting DID (`7450`) *falls* `0xDE → 0xC5` and anti-correlates
 //!   (`r ≈ −0.66`), and the standard `raw·0.75 − 48` maps it to 118 → 99 °C (wrong
@@ -52,7 +52,7 @@
 //!   the logged coolant. No clean fit.
 //!
 //! [`LinearScale`] + [`RawForm`] are the reusable runtime machinery (mirroring
-//! the `MeasurementDef`/`Compu::Linear` model sketched in `research/rod-labels.md
+//! the `MeasurementDef`/`Compu::Linear` model sketched in `research/labels/rod-labels.md
 //! §5`); car-specific `(factor, offset)` rows drop in here as they are proven.
 
 /// How to read an integer out of an RDBI response's data bytes (the bytes after

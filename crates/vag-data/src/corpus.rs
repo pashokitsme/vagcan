@@ -152,7 +152,7 @@ pub enum OdxMatch {
 /// `F19E = EV_Brake1UDSContiMK100ESP` with `F1A2 = 036010` is
 /// `EV_Brake1UDSContiMK100ESP_036.rod`. Both halves come off the car, so this
 /// stays a lookup the vehicle answers rather than a table about one vehicle
-/// (`research/fault-naming-hop.md` §10.4).
+/// (`research/labels/fault-naming-hop.md` §10.4).
 ///
 /// Returns every candidate paired with how it matched, best match first. More
 /// than one is normal and is not an error — a family keeps one file per

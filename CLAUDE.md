@@ -33,7 +33,7 @@ Before deleting anything it does report: a function nobody calls that was
 
 This tool only reads, and it has still cost the reference car its power steering: an
 identifier sweep crashed the steering assist unit, twice, the second time permanently
-(`research/eps-j500-report-ru.md`). Read-only bounds what can be *changed* about a car,
+(`research/eps/eps-j500-report-ru.md`). Read-only bounds what can be *changed* about a car,
 not what can be *provoked*.
 
 - **Never add a write service.** No coding, no adaptation, no clearing faults, no
@@ -92,16 +92,24 @@ crates/          the Rust workspace
                    Offline work is grouped by what its input is: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's files —
                    labels, names, analyse, rod, corpus, tttext)
-research/        RE writeups + tooling (NOT shipped). Key reads:
-  rod-labels.md        the .rod crack + the STRUC refutation (why scaling is live-only)
-  tttext-codec.md      the TTTEXT name codec crack → catalogs/names-uds.json
+research/        RE writeups + tooling (NOT shipped), one directory per subject:
+  labels/              VW's label corpus — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
+                       name codec, `Codes.dat`, and the fault-naming chain. Key reads:
+                       `rod-labels.md` (the crack + the STRUC refutation, i.e. why
+                       scaling is live-only), `tttext-codec.md` (→ names-uds.json),
+                       `fault-naming-hop.md` (number → words, end to end)
+  car/                 what the reference car answers: identifier map, the units
+                       outside the powertrain, the whole-car survey, gearbox state
+  eps/                 the steering-assist incident — read with SAFETY.md
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
 catalogs/        proven measurement rows + recovered names (see catalogs/README.md)
 archive/         retired paths kept as evidence: research/ (HEX-clone framing, clone
-                 crypto — negative results, do not retry) and specs/ (superseded designs)
+                 crypto — negative results, do not retry), specs/ (superseded designs)
+                 and tasks/done/ (finished task files)
 docs/            active specs (docs/superpowers/specs/*.md, e.g. the CAN sniffer design)
-todo/  done/     task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/stack/workflow)
+todo/            task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/stack/workflow);
+                 finished task files retire to archive/tasks/done/
 ```
 
 Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
-[`research/rod-labels.md`](research/rod-labels.md).
+[`research/labels/rod-labels.md`](research/labels/rod-labels.md).

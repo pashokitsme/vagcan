@@ -87,7 +87,7 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
         println!(
             "{declined} section(s) marked NO CRIB: no cached key, and this file is one of the \
              40 % that XOR a per-file mask over the first-block IV of every section after \
-             [CMP] (research/tttext2.md). Such a section opens fine once its key is known — \
+             [CMP] (research/labels/tttext2.md). Such a section opens fine once its key is known — \
              what it cannot have is a cheap search, because the mask costs a sweep of the \
              deflate anchor against the full candidate space. Not a damaged file."
         );

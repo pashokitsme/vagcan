@@ -4,7 +4,7 @@
 //! alphabet: ten glyphs drawn from `0-9`, `.`, `-` and `_`, in an order that
 //! differs from table to table. Every earlier attempt on it — frequency
 //! analysis, known-plaintext from the car, the two-character code beside each
-//! row — failed, and `research/label-linkage.md` §2.4 recorded it as the
+//! row — failed, and `research/labels/label-linkage.md` §2.4 recorded it as the
 //! blocker it was.
 //!
 //! **The substitution is order-revealing, and the rows are sorted.** Rows in a
@@ -14,7 +14,7 @@
 //! order the whole alphabet; no plaintext is needed anywhere.
 //!
 //! Evidence, each with the value that would have refuted it
-//! (`research/whole-car-survey.md` §3):
+//! (`research/car/whole-car-survey.md` §3):
 //!
 //! * the constraint graph is acyclic in **10 916 of 10 916** tables of the
 //!   global fault registry — the same rows shuffled give 7 258 cycles;
@@ -63,7 +63,7 @@ impl CrtRand {
 
 /// A `.rod` table's substitution, generated from the table's own key.
 ///
-/// `research/fault-naming-hop.md` §5.1 measured the substitution as per-table
+/// `research/labels/fault-naming-hop.md` §5.1 measured the substitution as per-table
 /// — 95 solved tables, 95 distinct alphabets — and concluded there was nothing
 /// to pool. There is not, because the alphabet is *generated*: VCDS seeds the
 /// C runtime's `rand()` with the table key and Fisher-Yates-shuffles both

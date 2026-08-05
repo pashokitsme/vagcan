@@ -12,7 +12,7 @@ driving recordings. Vehicle: Škoda Octavia III (MQB), VIN `XW8AD4NE9JH008917`, 
 | **HYPOTHESIS** | consistent with the numbers, *not* proven. Do not ship a scaling on this basis |
 | **UNEXPLAINED** | says so |
 
-Nothing in this document was obtained from `.rod` label files. Per `research/rod-labels.md` §4.0c
+Nothing in this document was obtained from `.rod` label files. Per `research/labels/rod-labels.md` §4.0c
 they do not contain the read identifiers; that path stays closed.
 
 ---

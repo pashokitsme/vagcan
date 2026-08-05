@@ -11,7 +11,7 @@ enumerating on macOS as `/dev/cu.usbmodem*`.
 VCDS's displayed measurements. Every prior crib came from **USB captures of the HEX clone**,
 where the link cipher hides the payload and — decisively — where VCDS's **group reads**
 (`G004/G006/G009/…`, the source of RPM / vehicle speed / coolant) never decoded
-(`research/rod-labels.md` §4.0a–§4.0c).
+(`research/labels/rod-labels.md` §4.0a–§4.0c).
 
 A second adapter on the same OBD-II bus removes that whole layer. CAN is multi-drop: the
 CANable can sit on the bus in **listen-only** mode while VCDS runs a normal session, and

@@ -1,13 +1,13 @@
 # `MUX.rod` — opened, read, and it is not the registry
 
-One of the two files `research/label-linkage.md` §5.5 named as the last places a **global
+One of the two files `research/labels/label-linkage.md` §5.5 named as the last places a **global
 measurement registry**, and with it the per-ECU read identifier, could still hide. It opens
 in under a minute, its record grammar falls out cleanly, and its seventeen fields all have
 identifiable roles. **None of them is a read identifier**, and the file's shape rules out
 its being a per-ECU registry at all.
 
-Companion to `research/rod-labels.md` (§4.0c, §5) and `research/label-linkage.md` (§2, §3,
-§5.5). `research/tttext2.md` covers the other candidate and is not this work.
+Companion to `research/labels/rod-labels.md` (§4.0c, §5) and `research/labels/label-linkage.md` (§2, §3,
+§5.5). `research/labels/tttext2.md` covers the other candidate and is not this work.
 
 Working data: a VCDS 26.3 English installation at `~/vcds-en/` (read-only, never
 committed). Nothing under `crates/` was changed for this work.

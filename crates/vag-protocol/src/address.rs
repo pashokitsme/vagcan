@@ -10,7 +10,7 @@
 //!   other unit in the gateway's installation list.
 //!
 //! Both rules are established from captures of the reference car
-//! (`research/other-ecus.md` §1): eight units were observed answering, each on
+//! (`research/car/other-ecus.md` §1): eight units were observed answering, each on
 //! the id its rule predicts.
 //!
 //! The short numbers people use for units (`01` engine, `17` instruments) are a
@@ -163,7 +163,7 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 /// carries the numbers and the names and no CAN id anywhere, and the two
 /// numberings are genuinely unrelated (VCDS's `17` answers on `0x714`, whose
 /// own UDS address is `0x14`; VCDS's `19` answers on `0x710`, address `0x10` —
-/// `research/other-ecus.md` §3). So the id half is established either by
+/// `research/car/other-ecus.md` §3). So the id half is established either by
 /// reading the car through the corpus (`vagcan units --identify --labels`, which
 /// asks each id for its part number and asks the corpus whose part number that
 /// is) or by a user writing it down in [`OVERRIDE_PATH`].

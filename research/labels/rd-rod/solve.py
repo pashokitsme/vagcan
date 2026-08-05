@@ -8,7 +8,7 @@ over-determined, and the row-ordering constraints prune what is left.
 
 Field 0 is `<component>`; the row is `f0 <sep> f1(2-char code) <sep> f2 <sep> …`, seven
 fields. Only field 0 is used — field 2 lives in a different id space
-(`research/whole-car-survey.md` §3).
+(`research/car/whole-car-survey.md` §3).
 
 Two escapes are deliberate and both are reported rather than hidden:
 

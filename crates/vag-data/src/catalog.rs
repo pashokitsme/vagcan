@@ -1,6 +1,6 @@
 //! A data-driven measurement catalog: [`MeasurementDef`] rows that join a UDS
 //! read address to its raw byte form, scaling, unit and name — the model the
-//! roadmap (`todo/README.md` §M3, `research/rod-labels.md` §5) sketches for
+//! roadmap (`todo/README.md` §M3, `research/labels/rod-labels.md` §5) sketches for
 //! turning `UDS 22 <DID>` responses into `name = value unit`.
 //!
 //! ## Provenance — why this catalog is hand-seeded, not machine-built
@@ -9,12 +9,12 @@
 //! `STRUC`/`TTDOP` tables for the read DID + byte spec + scaling + unit, and to
 //! `TTTEXT` for the name. That automatic path is **blocked**: the `STRUC`/`DOP`
 //! records are a proven base-14 packed codec whose **field segmentation is not
-//! reversed** (`research/rod-labels.md` §2–§3), and — newly established here by
+//! reversed** (`research/labels/rod-labels.md` §2–§3), and — newly established here by
 //! crossing the owner's engine-running capture crib (real valid DIDs) against
 //! the decoded `STRUC` table — **the read DID is not stored in `STRUC` at all**
 //! in any tested encoding (u16 BE/LE or a base-14 field at any offset), so the
 //! `code → STRUC-id → DID` chain the roadmap hypothesised does not hold as
-//! written. See the module tests and `research/rod-labels.md` for the evidence.
+//! written. See the module tests and `research/labels/rod-labels.md` for the evidence.
 //!
 //! Therefore this catalog is currently seeded **only with rows proven
 //! empirically** from the owner's capture (see [`crate::measure`]): nothing is
@@ -147,7 +147,7 @@ fn round(value: f64) -> String {
 }
 
 /// The engine-ECU **ignition-angle family**, the one measurement group proven
-/// against the owner's engine-running capture (`research/rod-labels.md` §4.0a):
+/// against the owner's engine-running capture (`research/labels/rod-labels.md` §4.0a):
 /// each DID returns raw `0x5555` (big-endian `u16`) for a displayed **0.00°**,
 /// cross-validated four ways. The per-cylinder pairing of these four DIDs to
 /// `IDE00155/156/157/158` is **not individually determined** (all four read a
@@ -508,7 +508,7 @@ mod tests {
     }
 
     /// Road speed, `22D2`: proven by timing against a VCDS log in
-    /// `research/other-ecus.md` §4.1 over 0–5 km/h, and corroborated at 53 km/h
+    /// `research/car/other-ecus.md` §4.1 over 0–5 km/h, and corroborated at 53 km/h
     /// by the 2026-08-02 driving surveys — where the metre odometer says the
     /// car covered 4 856 m in the 497 s between the two cluster reads, a mean
     /// of 35 km/h that brackets the 5 and 53 km/h read at the ends.

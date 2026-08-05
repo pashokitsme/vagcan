@@ -3,10 +3,10 @@
 //!
 //! `catalogs/names-uds.json` holds 17,009 names, recovered by breaking
 //! `TTTEXT.ROD`'s per-record substitution cipher
-//! (`research/tttext-codec.md`). They are keyed by the corpus's own text id,
+//! (`research/labels/tttext-codec.md`). They are keyed by the corpus's own text id,
 //! **not** by data identifier: the join from a name to the identifier that
 //! carries it was shown to be structurally absent from the label files
-//! (`research/label-linkage.md` §3), and no amount of decryption puts it back.
+//! (`research/labels/label-linkage.md` §3), and no amount of decryption puts it back.
 //!
 //! So this command cannot name a scan result for you. What it can do is answer
 //! "does this car's corpus have a name that sounds like the thing I am
@@ -45,7 +45,7 @@ pub fn run(needle: &str, limit: usize, path: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| {
         format!(
             "reading the names catalog {path:?} — it is recovered from a VCDS \
-             installation, see research/tttext-codec.md"
+             installation, see research/labels/tttext-codec.md"
         )
     })?;
     let catalog: serde_json::Value =
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn the_recovered_catalog_parses_and_is_the_size_the_research_claims() {
-        // research/tttext-codec.md §7: 17,009 names recovered. Read from disk,
+        // research/labels/tttext-codec.md §7: 17,009 names recovered. Read from disk,
         // because that is where the command reads it from too.
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../").join(DEFAULT_PATH);

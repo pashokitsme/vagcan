@@ -794,7 +794,7 @@ STRUC.rod [STRUC]: plaintext[3:8] = 9d 69 92 24 29 → 293,560 bytes inflated.
 ## 5. The numbers inside STRUC and TTDOP (2026-08-02)
 
 The per-table digit substitution is broken — by row order, not by cribs; the method and
-its evidence are in `research/whole-car-survey.md` §3 and the decoder is
+its evidence are in `research/car/whole-car-survey.md` §3 and the decoder is
 `crates/vag-data/src/glyphs.rs`. Applying it to the two structure tables settles what
 they hold.
 

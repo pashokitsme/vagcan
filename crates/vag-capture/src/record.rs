@@ -18,7 +18,7 @@ pub enum CapturePayload {
     /// `ts_us` is monotonic from the start of the capture, which says nothing
     /// about *when* the capture happened. Correlating a capture with a VCDS
     /// CSV log needs an absolute reference, and guessing that offset after the
-    /// fact has already cost two capture sessions (`research/rod-labels.md`
+    /// fact has already cost two capture sessions (`research/labels/rod-labels.md`
     /// §4.0a/§4.0b: the lag had to be fitted at ≈52 s, and several apparent
     /// correlations turned out to be window-fishing at wrong lags). The anchor
     /// makes the alignment arithmetic.

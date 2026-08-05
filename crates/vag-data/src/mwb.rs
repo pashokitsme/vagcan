@@ -22,7 +22,7 @@
 //! = 40 constants there are struct-field offsets, e.g. in the TTDOP/MUX loader
 //! `fcn.140028e28`, not a radix). So this module deliberately exposes only the
 //! proven row parse; it does **not** provide a `code → STRUC-id` function, which
-//! would be an invented mapping. See `research/rod-labels.md` for the full
+//! would be an invented mapping. See `research/labels/rod-labels.md` for the full
 //! table graph (MWB → STRUC → TTDOP/DOP, all base-14 packed).
 
 /// The 40 distinct symbols observed in `MWB` 2-char codes (`0-9 A-Z , . - _`).

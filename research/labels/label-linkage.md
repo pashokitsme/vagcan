@@ -4,7 +4,7 @@ An attempt, using the first full offline VCDS installation plus the 16 measureme
 **proven on the car** (`catalogs/*.json`), to recover from VW's own label files what the car
 cannot tell us: **names** for our measurements, and — if it exists — the stored **scaling**.
 
-Companion to `research/rod-labels.md`. That file records what is already refuted; this one
+Companion to `research/labels/rod-labels.md`. That file records what is already refuted; this one
 records what a fresh attack from the *known* end found. Read `rod-labels.md` §2, §3, §4.0c
 and §4.3 first.
 
@@ -265,7 +265,7 @@ a unit, a display class, or a structure. Which one cannot be settled without §2
 
 ## 4. Names (task 2) — NOT DELIVERED *at the time of writing*, and the reason is worth stating precisely
 
-> **Update:** superseded by `research/tttext-codec.md`. `TTTEXT`'s codec was subsequently
+> **Update:** superseded by `research/labels/tttext-codec.md`. `TTTEXT`'s codec was subsequently
 > broken and `catalogs/names-uds.json` now exists — 17,009 names, keyed by text-id exactly
 > as this section prescribes (not by identifier, for the reason given below, which stands).
 > The `ENG######` lead at the end of this section is also settled there: it **is** the
@@ -309,7 +309,7 @@ matters because `vagcan analyse` proves `IDE00022 ↔ 7E9/380A` at `R² = 1.0000
 `text-id ↔ proven identifier` pair — the join this whole exercise is missing.
 
 Status of that lead *when written*: **suggestive, not established** — since settled as
-**established** by `research/tttext-codec.md` §2 (four records solved blind all match the
+**established** by `research/labels/tttext-codec.md` §2 (four records solved blind all match the
 log's names). Of the 15 distinct `ENG######` numbers
 in our gearbox logs, 6 appear among the 43,781 text-ids the corpus references — against an
 18.2 % density baseline in that numeric window, so 40 % vs 18 %, `p ≈ 0.05` at `n = 15`. That

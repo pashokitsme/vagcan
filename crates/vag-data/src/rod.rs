@@ -39,7 +39,7 @@ pub enum RodStatus {
     /// `78 da` under the tag-derived IV, or there is nothing to search against.
     /// In **40 % of the corpus** they do not — those files carry a per-file XOR
     /// on the first-block IV of every section after `[CMP]`
-    /// (`research/tttext2.md`).
+    /// (`research/labels/tttext2.md`).
     ///
     /// Reported apart from [`RodStatus::Undecodable`] because the two say
     /// opposite things. A file that is undecodable has been tried; one that is
@@ -96,7 +96,7 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
 /// Every value deflate byte 0 can take at the head of a zlib stream in this
 /// corpus: `BTYPE = 2` (dynamic Huffman), `HLIT ≤ 29`, either `BFINAL`.
 ///
-/// Sixty values, and they matter because a shifted file (`research/tttext2.md`
+/// Sixty values, and they matter because a shifted file (`research/labels/tttext2.md`
 /// §3.3) destroys exactly this byte. The layout is RFC 1951 §3.2.7:
 /// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored blocks and fixed-Huffman blocks
 /// are excluded deliberately — no section in the corpus uses either, and
@@ -118,7 +118,7 @@ fn inflate_with_iv(sc: &SectionCipher<'_>, iv: [u8; 8]) -> Option<Vec<u8>> {
 }
 
 /// Decode a compressed section whose first-block IV carries the per-file XOR of
-/// `research/tttext2.md` §3.3, given the recovered `iv[3..8]`.
+/// `research/labels/tttext2.md` §3.3, given the recovered `iv[3..8]`.
 ///
 /// Two of the three shifted bytes cost nothing, because the plaintext there is
 /// known: `iv[0] = t[0] ^ 0x78` and `iv[1] = t[1] ^ 0xda`. The third sits under
@@ -425,7 +425,7 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 ///
 /// A section that answers `false` here is not corrupt: 40 % of the corpus
 /// carries a per-file XOR on this IV, and one of those files was opened by
-/// deriving it (`research/tttext2.md`). Nothing in this crate recovers that
+/// deriving it (`research/labels/tttext2.md`). Nothing in this crate recovers that
 /// XOR yet, which is exactly why the two cases are reported apart.
 fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
     if tag.len() < 3 || cipher.len() < 8 {
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(&spliced[3..8], &[1, 2, 3, 4, 5]); // recovered tail
     }
 
-    // --- the per-file IV shift (`research/tttext2.md`) ----------------------
+    // --- the per-file IV shift (`research/labels/tttext2.md`) ----------------------
 
     /// Build a zlib section encrypted under an IV that has been XORed with a
     /// per-file mask, the way 40 % of the corpus is.
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn a_shifted_section_presents_no_crib_and_is_not_called_undecodable() {
-        // The distinction the whole of `research/tttext2.md` turns on: the
+        // The distinction the whole of `research/labels/tttext2.md` turns on: the
         // search cannot start here, which is not the same as the section being
         // beyond reach. A mask over the IV destroys the known plaintext.
         let tag = b"MWB";

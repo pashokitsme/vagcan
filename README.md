@@ -36,13 +36,13 @@ Milestones (see `todo/README.md` for the live task list):
 
 **Where it stands (M3):** the method works and is producing rows. Scaling does **not** come
 from the label corpus — the read DID is provably not stored in `STRUC`
-(`research/rod-labels.md` §4.0c, `research/label-linkage.md` §3) — it comes from the car:
+(`research/labels/rod-labels.md` §4.0c, `research/labels/label-linkage.md` §3) — it comes from the car:
 `vagcan sniff` records a listen-only capture alongside a live VCDS session, `vagcan vcds analyse`
 crosses it against the VCDS CSV and accepts only exact linear fits, and `vagcan recording calibrate`
 extends coverage offline by fitting unknown raw columns against already-trusted references
 in the same `watch` recording. Proven rows live in `catalogs/vehicles/<part number>.json`, one file per
 control unit, keyed by what that unit reports about itself. Names come from the corpus: `TTTEXT.ROD` is cracked and `catalogs/names-uds.json`
-carries 17,009 measurement names (`research/tttext-codec.md`) — but the corpus holds no
+carries 17,009 measurement names (`research/labels/tttext-codec.md`) — but the corpus holds no
 name→DID join, so a name match is a hypothesis to test on the car, not an answer.
 
 Open: whole-car coverage — the units `vagcan survey` walks but the catalogs do not cover
@@ -114,7 +114,7 @@ the VCDS binary (static analysis; no protection was circumvented and no software
 - **`.rod`** — TEA-CBC with `KEY_ROD` (section-tag IV), compressed sections zlib-deflated.
 
 `.rod` MWB rows are the UDS measurement *ID* index; human names live in `TTTEXT.ROD`,
-whose glyph-substitution codec is broken (`research/tttext-codec.md`) — 17,009 names are
+whose glyph-substitution codec is broken (`research/labels/tttext-codec.md`) — 17,009 names are
 shipped in `catalogs/names-uds.json` and searchable with `vagcan vcds names`. The corpus holds
 no name→DID join, so a name is a lead, not a binding.
 

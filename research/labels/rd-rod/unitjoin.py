@@ -1,6 +1,6 @@
 """The row selector: a control unit's own `.rod` says which `RD.rod` row is its fault.
 
-`research/fault-naming-hop.md` §5.2 left the chain with one row too many — table
+`research/labels/fault-naming-hop.md` §5.2 left the chain with one row too many — table
 `000297` has 36 rows and nothing inside `RD.rod` picks between them. The selector is
 external and it is the unit's own ODX file:
 

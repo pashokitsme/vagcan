@@ -133,7 +133,7 @@ pub fn describe_status(status: u8) -> String {
 
 /// The identifiers by which a unit names its own description file: the ODX
 /// name, and the coding index whose first three digits pick the variant
-/// (`research/fault-naming-hop.md` §10.4). Both come off the car.
+/// (`research/labels/fault-naming-hop.md` §10.4). Both come off the car.
 const ODX_NAME: u16 = 0xF19E;
 const ODX_VERSION: u16 = 0xF1A2;
 
@@ -148,7 +148,7 @@ fn ident_text(bytes: &[u8]) -> String {
 /// hold — the fault codes, and the two identifiers that pick each unit's
 /// description file — so it runs offline against a recorded file. That is what
 /// makes the whole chain testable without the adapter, and it is how the
-/// figures in `research/fault-naming-hop.md` §11.3 are reproduced.
+/// figures in `research/labels/fault-naming-hop.md` §11.3 are reproduced.
 pub fn run_named(
     survey_path: &str,
     labels_dir: &str,

@@ -7,14 +7,14 @@ inferred from a table.
 
 Sources: `research/dumps/survey-parked.jsonl` (one JSON object per unit, parked, ignition
 on), the car's own VCDS auto-scans under `research/VCDS-RUS/Scans/` as an independent
-oracle, and `research/other-ecus.md` for the addressing rules this builds on.
+oracle, and `research/car/other-ecus.md` for the addressing rules this builds on.
 
 ---
 
 ## 1. The inventory
 
 15 of 18 addresses answered. Every unit that had been "unidentified" in
-`research/other-ecus.md` §1 named itself the moment it was asked for `F187`/`F197` —
+`research/car/other-ecus.md` §1 named itself the moment it was asked for `F187`/`F197` —
 no reverse engineering was needed, only addressing it correctly.
 
 | request | part number | component (`F197`) | identifiers | confirmed faults |
@@ -36,7 +36,7 @@ no reverse engineering was needed, only addressing it correctly.
 | `773` | `5E0035871C` | `MU-E--ER` (media) | 49 | 0 |
 
 `0x700`, `0x776` and `0x777` did not answer at all — consistent with
-`research/other-ecus.md` §3's warning that the last two are response ids appearing in the
+`research/car/other-ecus.md` §3's warning that the last two are response ids appearing in the
 installation list rather than addressable units.
 
 1206 identifiers in total, up from the ~350 the two powertrain units account for. The
@@ -265,7 +265,7 @@ position in a per-ECU `[DTC]` list, and that most of those lists' text-ids point
 the part of `TTTEXT.ROD` that has been recovered.
 
 **Worth doing next:** the same ordering attack on `STRUC.rod`, which is the blocker
-`research/label-linkage.md` §2.4 named for *measurement* scaling rather than fault names.
+`research/labels/label-linkage.md` §2.4 named for *measurement* scaling rather than fault names.
 A first pass gives 384 of 585 tables acyclic field-wise against 217 on shuffled controls
 — real signal, and its rows are probably sorted on a subset of their eleven fields.
 

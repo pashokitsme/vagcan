@@ -7,8 +7,8 @@ here. The MVP task breakdown lives in `todo/README.md`.
 
 Read the **whole car over CAN** and show measurements by name/value/unit. Names come from
 VW's own label files (`catalogs/names-uds.json`); scaling is proven **live on the car** —
-the corpus provably does not carry the read identifier (`research/rod-labels.md` §4.0c,
-`research/label-linkage.md` §3). Extensible foundation first; UI later.
+the corpus provably does not carry the read identifier (`research/labels/rod-labels.md` §4.0c,
+`research/labels/label-linkage.md` §3). Extensible foundation first; UI later.
 
 **Done and verified on the car (2026-08-01):** `vagcan info` prints the VIN and the engine
 and gearbox passports, read live over a generic slcan USB-CAN adapter; 16 measurement rows
@@ -49,5 +49,5 @@ USB-CAN adapter reaches the same bus with no crypto at all.
   (e.g. init handshake works; VIN read works), STOP and ask the user to verify on
   hardware before continuing.
 - **Task tracking:** active tasks live in `todo/<subsystem>/<task>.md`; when a
-  task is done+reviewed+merged, move its file to `done/<subsystem>/<task>.md`
+  task is done+reviewed+merged, move its file to `archive/tasks/done/<subsystem>/<task>.md`
   (preserve the subsystem subdir). Each subsystem dir may carry a short `README.md`.

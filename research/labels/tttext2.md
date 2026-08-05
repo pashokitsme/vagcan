@@ -11,7 +11,7 @@ cracked happened to sit on the right side of it. So the interesting result here 
 `TTTEXT2.ROD` at all; it is that 7,830 files have been silently reported as unreadable, and
 that one of them was opened here to prove they are not.
 
-Companion to `research/rod-labels.md` (§1 for the crypto) and `research/label-linkage.md`
+Companion to `research/labels/rod-labels.md` (§1 for the crypto) and `research/labels/label-linkage.md`
 (§5.5 for why this file was picked). Working data is the English VCDS 26.3 install at
 `~/vcds-en/`, plus the 25.12 copy under `research/VCDS-25.12.0/`; neither is committed.
 
@@ -32,7 +32,7 @@ Companion to `research/rod-labels.md` (§1 for the crypto) and `research/label-l
 | Can a shifted section be opened at all? | **Yes — one was.** `EV_HCP4Contr2OBDAU41X_BY64.rod [FFMUX]` inflates to exactly its declared 55,121 bytes of `<text-id>,<code>` rows | certain (§4.1) |
 | What is inside `TTTEXT2.ROD`? | **unknown — the file is not open**, and the sweep that would open it is 5–11 h of CPU that §8 argues should be spent differently first | — |
 | Does anything in it link a measurement to a read identifier? | **unanswered.** Not "no": unanswered. See §6 before quoting this file as a closed question | — |
-| Is `MUX.rod` blocked the same way? | **No** — classic, and since opened by another pass (`research/mux.md`); it holds no read identifier, so `TTTEXT2` is now the last file standing | certain (§6.1) |
+| Is `MUX.rod` blocked the same way? | **No** — classic, and since opened by another pass (`research/labels/mux.md`); it holds no read identifier, so `TTTEXT2` is now the last file standing | certain (§6.1) |
 | Can a shifted file be opened in practice? | **Yes, one file at a time.** `D[0:2]` free for all 7,827; the anchor free for 970 of them and a ×60 sweep for the rest; ~18 min per anchor, and ×1 instead of ×60 for every later section of the same file | measured (§6.2b) |
 | Anything shippable fall out? | yes, incidentally: the `product` is per **file**, not per section, so a classic file needs **one** search and not one per section | **very high** (16/16 exact, §3.6) |
 | Does `label-linkage.md` §3's per-ECU negative survive the 40 % it never scanned? | **Yes** — 169/169 measurements listed in both regimes carry byte-identical `(text-id, code)`; but its "global function of the text-id" is really *(section kind, text-id)* | high (§6.2a) |
@@ -234,7 +234,7 @@ a search for a rule that is not there.
 
 There is a second, unrelated find in the same routine worth recording: when the ODX name is
 `TTTEXT` or `UNIT`, a file-wide byte from the global at `0x140552ba4` is added to every seed
-byte (`0x140033a8c`). That is the same global and the same construction `research/codes-dat.md`
+byte (`0x140033a8c`). That is the same global and the same construction `research/labels/codes-dat.md`
 §2.2 calls `C`. Both of those files decode with `C = 0`, so nothing here depends on it, but a
 future corpus where it is nonzero would break them in a way that looks like the shift and is
 not.
@@ -577,7 +577,7 @@ throwaway `git worktree`, not in `crates/`.
 
 ## 8. What to do next, in order of value
 
-1. ~~**Open `MUX.rod`**~~ — **done by another pass**, `research/mux.md`. It is the ODX
+1. ~~**Open `MUX.rod`**~~ — **done by another pass**, `research/labels/mux.md`. It is the ODX
    multiplexer table and it holds no read identifier, so `label-linkage.md` §7 item 3 now rests
    on `TTTEXT2.ROD` alone.
 2. ~~**Stop reporting a failed precondition as `UNDECODABLE`**~~ — **done**, `ed334f7`

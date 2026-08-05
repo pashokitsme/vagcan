@@ -58,7 +58,7 @@ pub fn parse_ranges(spec: &str) -> Result<Vec<RangeInclusive<u16>>, String> {
 }
 
 /// The bands the existing capture crib already showed to be live on this car's
-/// engine ECU (`research/rod-labels.md` §4.0a/§4.0b), plus the standard
+/// engine ECU (`research/labels/rod-labels.md` §4.0a/§4.0b), plus the standard
 /// identification block. The default, because a full `0000-FFFF` sweep is
 /// 65,536 requests — minutes at best, and most of it is refusals.
 ///

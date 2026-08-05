@@ -1,6 +1,6 @@
 """`Codes.dat` / `Code-RUS.dat` reader — the Python twin of `crates/vag-data/src/codes.rs`.
 
-Container and per-record IV are `research/codes-dat.md` §1–§2. Research tooling only.
+Container and per-record IV are `research/labels/codes-dat.md` §1–§2. Research tooling only.
 """
 
 from pathlib import Path

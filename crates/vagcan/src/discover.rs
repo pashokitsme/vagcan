@@ -3,7 +3,7 @@
 //! Gear, gearbox mode, a turn signal, a brake switch: none of these can be
 //! found by fitting a straight line. A gear takes seven values and a switch
 //! takes two, and two points define a line exactly — which is precisely how a
-//! false "proof" got through once already (`research/rod-labels.md` §4.3).
+//! false "proof" got through once already (`research/labels/rod-labels.md` §4.3).
 //!
 //! The right question for discrete state is not *what scale is this* but
 //! **which identifier changed when the thing changed**. So this reads a

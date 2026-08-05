@@ -34,7 +34,7 @@ the **VMProtect-packed** VCDS. All offline routes to it are exhausted (static / 
 memory-dump / the `vcds_hook.dll` crack). The clone cannot be driven end-to-end without
 defeating VMProtect. → product pivots to the generic USB-CAN bypass (`vag-can`); clone
 crack deferred (Track B). Full analysis: `research/clone-crypto.md`,
-`research/vcds-rus-crack.md`.
+`archive/research/vcds-rus-crack.md`.
 
 ## Tests / quality
 vag-hex + vagcan unit tests green, `cargo clippy --all-targets -- -D warnings` clean.

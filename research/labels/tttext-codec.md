@@ -6,7 +6,7 @@ looked like word-shaped gibberish. **They are enciphered, per record, with a sim
 substitution.** The letter half is broken and 92,420 of the 192,469 records now read as
 fluent English. The numeric half is not broken, and §6 says exactly what was ruled out.
 
-Companion to `research/label-linkage.md` (read §2 and §4 first) and `research/rod-labels.md`.
+Companion to `research/labels/label-linkage.md` (read §2 and §4 first) and `research/labels/rod-labels.md`.
 Working data lives outside the repo; nothing under `research/VCDS-*` or `crates/` was touched.
 
 ---

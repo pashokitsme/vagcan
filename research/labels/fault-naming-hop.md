@@ -1,6 +1,6 @@
 # The last hop: naming a VW fault number
 
-`research/codes-dat.md` §4 left one thing between this tool and a named fault: a VAG
+`research/labels/codes-dat.md` §4 left one thing between this tool and a named fault: a VAG
 control unit answers `0x19` with a **VW-internal 24-bit number**, and `Codes.dat` is keyed
 by something else. This file identifies the hop, verifies it end to end on ten independent
 faults across two cars, records two obstacles that made it unshippable, and then closes
@@ -10,7 +10,7 @@ It is kept in the order it was written, obstacles and refutations included, beca
 of the things that looked like dead ends were the shape of the answer. Read §11 and §12
 for what is true now; read §5 for what it cost.
 
-Read `research/codes-dat.md` §5 and `research/whole-car-survey.md` §3 first. This file
+Read `research/labels/codes-dat.md` §5 and `research/car/whole-car-survey.md` §3 first. This file
 **supersedes three of their statements** (§7) and refutes two proposals that looked cheap.
 
 ---
@@ -56,7 +56,7 @@ names a fault through exactly one text source, and the display is component + sy
 Extracting every such pair gives **38 distinct `(raw VW number, SAE code, failure type,
 component text)` quadruples over 15 control units and two cars**. That is the crib set,
 it needed no reverse engineering, and it is what the rest of this file is measured
-against. It is reproduced in `research/rd-rod/pairs.tsv`.
+against. It is reproduced in `research/labels/rd-rod/pairs.tsv`.
 
 Two facts it settles immediately:
 
@@ -93,7 +93,7 @@ Table sizes are the whole problem: 61 100 tables have one row, 25 415 two, 10 71
 
 The payload is written in a per-table substitution alphabet over the 14 glyphs
 `0-9 . - _ ,` — ten are digits, one is the separator, three are unused
-(`research/label-linkage.md` §2.4). **The separator is the glyph occurring exactly six
+(`research/labels/label-linkage.md` §2.4). **The separator is the glyph occurring exactly six
 times in every row of the table**, which identifies it in 108 819 of 110 767 tables and
 splits each row into **seven fields**:
 
@@ -122,7 +122,7 @@ stronger constraint: every `f0` must be one of the 34 716 keys of `Codes.dat`** 
 of six digits, 3 107 of seven, 4 739 of eight. A table with a handful of distinct `f0`
 values is then over-determined, and the ordering constraints prune what is left.
 
-The solver is `research/rd-rod/solve.py`: a DFS over `f0` values longest-first, each
+The solver is `research/labels/rd-rod/solve.py`: a DFS over `f0` values longest-first, each
 placed against a real key, with the ordering constraints as a filter. Two escapes are
 explicit and both are reported — one `f0` is allowed not to be a key (`codes-dat.md` §5
 measured 47 of 48 present), and a node budget that is hit is reported as *not exhausted*
@@ -155,7 +155,7 @@ VW's own files: **`713` fault `000129` → "Steering Angle Sensor: Not Initializ
 The reference car's EPS codes resolve too, once their table is solved: `007680`'s rows
 carry `10489840` = "Internal Fault" and `229504`'s single `f0` fits `140960` = "Internal
 Control Module Memory Check Sum Error" — which are exactly `B200F F0` and `B2000 00`, the
-codes `research/eps-j500-report-ru.md` records VCDS naming on this car.
+codes `research/eps/eps-j500-report-ru.md` records VCDS naming on this car.
 
 ---
 
@@ -298,7 +298,7 @@ What would refute the whole model: a table whose unique alphabet places an `f0` 
 
 ## 9. Reproducing
 
-Nothing here needs the car. `research/rd-rod/` holds standalone Python — deliberately not
+Nothing here needs the car. `research/labels/rd-rod/` holds standalone Python — deliberately not
 shipped code, and `crates/vag-data/src/rod.rs` and `codes.rs` remain authoritative:
 
 * `rod.py` — `.rod` container, TEA-CBC, the block-0 IV, the shifted-IV regime;
@@ -577,7 +577,7 @@ decode failure.
 §5.1 is **closed, not narrowed**. There is no ambiguity left to report: every table has
 exactly one alphabet, it costs about forty multiplications to compute, and the DFS crib
 solver of §4 — the node budget, the `misses` escape, the "search not exhausted" refusal —
-is no longer needed for anything. It stays in `research/rd-rod/` as the record of how the
+is no longer needed for anything. It stays in `research/labels/rd-rod/` as the record of how the
 alphabet was first read without the key.
 
 §10.3's table becomes, for the reference car's **every** stored fault on the three units
@@ -597,14 +597,14 @@ crib pair 291 104 → `B1455 01`, and which is what VCDS printed for this exact 
 
 ### 11.4 Reproducing
 
-`research/rd-rod/alphabet.py` is the derivation, twenty lines, no dependencies. The
+`research/labels/rd-rod/alphabet.py` is the derivation, twenty lines, no dependencies. The
 shipped implementation is `crates/vag-data/src/glyphs.rs::DigitOrder::for_key`.
 
 ---
 
 ## 12. Shipped: `vagcan faults --labels`
 
-By this project's own rule (`research/mux.md`) the writeup ends here and the feature
+By this project's own rule (`research/labels/mux.md`) the writeup ends here and the feature
 begins. What was merged, and what it answers on the reference car.
 
 ```

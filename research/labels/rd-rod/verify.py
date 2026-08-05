@@ -1,4 +1,4 @@
-"""Reproduce `research/fault-naming-hop.md` §4: the chain against VCDS's own answers.
+"""Reproduce `research/labels/fault-naming-hop.md` §4: the chain against VCDS's own answers.
 
 For every crib pair in `pairs.tsv`, look up the raw number's `RD.rod [DTC]` table, break
 its substitution against `Codes.dat`, and check whether a row's field 0 lands on the text

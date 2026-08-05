@@ -104,7 +104,7 @@ session repeats the experiment.
   skipped. `mwb.rs` is the worked example of failing it: exported from `lib.rs`,
   called by nothing but its own tests — and still not dead, because the MWB→TTTEXT
   name join it is held for is recorded as a live prediction
-  (`research/label-linkage.md` §5, `todo/README.md`). Uncalled is half a case.
+  (`research/labels/label-linkage.md` §5, `todo/README.md`). Uncalled is half a case.
 - **The top level of the CLI is for commands used with the car in front of you.**
   That is the whole test: if it needs an adapter and a running vehicle, it is a
   top-level command. Everything that reads static files — a VCDS installation, a

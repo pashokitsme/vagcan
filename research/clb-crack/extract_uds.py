@@ -2,7 +2,7 @@
 """Extract + classify the UDS traffic in reading-ecus.pcapng, to test whether it
 carries a (DID -> raw -> engineering value) measurement crib.
 
-Result (see research/rod-labels.md 4): it does NOT. The capture is an engine-OFF
+Result (see research/labels/rod-labels.md 4): it does NOT. The capture is an engine-OFF
 identification scan — VIN + ECU SW-version + security-access reads (which match
 the Auto-Scan identity ground truth, confirming the decoder), plus 43
 TesterPresent keep-alive channels. Only one engine measurement DID (0x7458) is
