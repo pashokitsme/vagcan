@@ -10,6 +10,7 @@ pub mod clb;
 pub mod codes;
 pub mod corpus;
 pub mod db;
+pub mod dtc;
 pub mod glyphs;
 pub mod label;
 pub mod measure;
@@ -22,6 +23,7 @@ mod tea;
 pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
 pub use clb::decrypt_clb;
 pub use codes::{CodesDb, ISO_BAND_START};
+pub use dtc::{DtcRegistry, DtcRow, FaultName, UnitCatalogue, UnitLookup};
 pub use corpus::{
     find_rod_by_odx_name, find_rod_by_odx_variant, load_corpus, scan_corpus, CorpusLoad,
     CorpusScan, OdxMatch,

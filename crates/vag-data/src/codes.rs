@@ -109,6 +109,49 @@ const CP1251_HIGH: [char; 64] = [
 /// an unrelated numbering.
 pub const ISO_BAND_START: u32 = 90_000;
 
+/// Where the two-byte-DTC band starts: a key of `100 000 + <16-bit DTC>`.
+const SHORT_BAND_START: u32 = 100_000;
+
+/// Where the three-byte-DTC band starts: the key **is** the 24-bit DTC.
+const LONG_BAND_START: u32 = 1_000_000;
+
+/// The SAE code VCDS prints beside a fault, read out of the key itself.
+///
+/// A `Codes.dat` key spells its own code, in one of two ways, and which one
+/// is decided by magnitude:
+///
+/// * **`100 000 + <16-bit DTC>`** — the 20 059 six-digit keys, none of which
+///   falls outside `100 000..=165 535`. These name a *component* and carry no
+///   failure type of their own; the failure type comes from the registry row
+///   (`research/fault-naming-hop.md` §3). 137 973 is `100 000 + 0x9455` and
+///   VCDS prints `B1455` for it.
+/// * **the 24-bit DTC outright** — every key of seven digits or more, i.e.
+///   `<16-bit DTC> << 8 | <failure type>`. 9 529 586 is `0x9168F2` and VCDS
+///   prints `B1168 F2`.
+///
+/// The boundary is not a guess: across the whole global fault registry, the
+/// row's own failure-type field equals `key & 0xFF` for **19 765 of 19 765**
+/// rows whose key is a million or more, and for 0.3 % of the rest — chance.
+///
+/// The 16-bit value is `system:2 | code:14`, the split ISO 14229-1 uses and
+/// which `research/codes-dat.md` §3.1 measured on this file: 22 045 `P`,
+/// 5 917 `B`, 1 830 `C`, 99 `U`, with the texts matching the letter.
+///
+/// Returns `None` below 100 000 — the legacy five-digit band and the block of
+/// user-interface strings above it are not DTCs, and naming one would be the
+/// same class of wrong answer [`CodesDb::iso_dtc`] refuses.
+pub fn sae_code(key: u32) -> Option<String> {
+    let short = match key {
+        k if k >= LONG_BAND_START => ((k >> 8) & 0xFFFF) as u16,
+        k if (SHORT_BAND_START..SHORT_BAND_START + 0x1_0000).contains(&k) => {
+            (k - SHORT_BAND_START) as u16
+        }
+        _ => return None,
+    };
+    let system = ['P', 'C', 'B', 'U'][(short >> 14) as usize];
+    Some(format!("{system}{:04X}", short & 0x3FFF))
+}
+
 /// The first-block IV for one record, given the file-wide constant.
 ///
 /// The same construction the `.rod` sections use — `KS` supplies a per-byte
@@ -472,6 +515,31 @@ mod tests {
     /// Fault 297 is the case that made this rule: the file holds
     /// "Gearbox Speed Sensor (G38)" under key 297, and a control unit
     /// reporting DTC `00 01 29` does not mean that.
+    #[test]
+    fn a_key_spells_the_sae_code_vcds_prints() {
+        // Every one of these is a pair VCDS printed itself, on one of the two
+        // cars in research/rd-rod/pairs.tsv — six-digit component keys on the
+        // left of the band boundary and 24-bit DTCs on the right.
+        assert_eq!(sae_code(137_973).as_deref(), Some("B1455"));
+        assert_eq!(sae_code(137_375).as_deref(), Some("B11FF"));
+        assert_eq!(sae_code(120_669).as_deref(), Some("C10BD"));
+        assert_eq!(sae_code(153_539).as_deref(), Some("U1123"));
+        assert_eq!(sae_code(101_089).as_deref(), Some("P0441"));
+        assert_eq!(sae_code(9_529_586).as_deref(), Some("B1168"));
+        assert_eq!(sae_code(10_485_833).as_deref(), Some("B2000"));
+        assert_eq!(sae_code(149_253).as_deref(), Some("U0065"));
+    }
+
+    #[test]
+    fn a_key_that_is_not_a_dtc_gets_no_code_rather_than_a_wrong_one() {
+        // 90 000..99 999 is a block of user-interface strings ("ADP. Run",
+        // "Term 15 On"), and below 65 536 are the legacy five-digit codes.
+        // Neither is a DTC and neither may be spelled as one.
+        assert_eq!(sae_code(90_001), None);
+        assert_eq!(sae_code(297), None);
+        assert_eq!(sae_code(0), None);
+    }
+
     #[test]
     fn iso_dtc_refuses_the_legacy_band() {
         let file = record(297, "Gearbox Speed Sensor (G38)");

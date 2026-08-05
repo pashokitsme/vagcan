@@ -15,6 +15,7 @@ mod datadir;
 mod device;
 mod discover;
 mod faults;
+mod faultnames;
 mod labels;
 mod names;
 mod progress;
@@ -367,6 +368,21 @@ enum Command {
         /// assisting while it is in one.
         #[arg(long)]
         extended: bool,
+        /// VCDS installation to name the faults out of. Needs `Codes.dat` and
+        /// `UDS_EV/RD.rod`, and each unit's own `.rod` — which the unit names
+        /// itself. Without it the codes are printed unnamed.
+        #[arg(long, value_name = "DIR")]
+        labels: Option<String>,
+        /// Where the recovered `.rod` section keys are cached. A fault
+        /// catalogue is sealed with one, and recovering one costs ~95 s of
+        /// every core — so they are kept as data, not searched for per run.
+        #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
+        iv_cache: String,
+        /// Name the faults in a survey this tool already recorded, instead of
+        /// reading the car. Offline, and needs `--labels`.
+        #[arg(long, value_name = "FILE", requires = "labels",
+              conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
+        from: Option<String>,
     },
 
     /// Sweep EVERY control unit the car has — `scan` for the whole car. Slow:
@@ -557,7 +573,13 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Command::Faults { device, ecu, details, all, supported, extended } => {
+        Command::Faults { from: Some(survey), labels, iv_cache, all, .. } => faults::run_named(
+            &survey,
+            labels.as_deref().expect("--from requires --labels"),
+            &iv_cache,
+            all,
+        ),
+        Command::Faults { device, ecu, details, all, supported, extended, labels, iv_cache, .. } => {
             faults::run(
                 &device::resolve(device.as_deref())?,
                 ADAPTER_BAUD,
@@ -566,6 +588,8 @@ async fn main() -> Result<()> {
                 all,
                 supported,
                 extended,
+                labels.as_deref(),
+                &iv_cache,
             )
             .await
         }
@@ -942,6 +966,26 @@ mod tests {
         let help = flag_help(&["vcds", "labels"], "iv_cache");
         assert!(!help.contains("cargo"), "{help}");
         assert!(help.contains(".rod"), "{help}");
+    }
+
+    #[test]
+    fn naming_faults_offline_cannot_be_asked_to_touch_the_car() {
+        // `faults --from` reads a recorded survey. Letting it keep --device or
+        // --extended would offer a command that half-reads the car, and
+        // --extended is the flag guarded by the road-speed check.
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(["vagcan", "faults"].iter().chain(args).collect::<Vec<_>>())
+        };
+        assert!(parse(&["--from", "s.jsonl", "--labels", "d"]).is_ok());
+        for (flag, value) in
+            [("--device", Some("/dev/x")), ("--extended", None), ("--supported", None), ("--ecu", Some("713"))]
+        {
+            let mut args = vec!["--from", "s.jsonl", "--labels", "d", flag];
+            args.extend(value);
+            assert!(parse(&args).is_err(), "--from should refuse {flag}");
+        }
+        // And it cannot name anything without being told where the texts are.
+        assert!(parse(&["--from", "s.jsonl"]).is_err(), "--from needs --labels");
     }
 
     #[test]

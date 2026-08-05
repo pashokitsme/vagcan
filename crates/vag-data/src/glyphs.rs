@@ -23,8 +23,137 @@
 //!   one value is reached identically by 42 different keys;
 //! * of 2 143 decoded values read as 24-bit fault codes, **66.5 % end in
 //!   `0xF0`** and 95 % in `0xF0..0xF7`, against 0.2 % for random maps.
+//!
+//! That attack still stands, and it is how the substitution was first read.
+//! It is no longer how a table is opened: [`TableAlphabet`] generates the
+//! alphabet from the table's key outright, which works on a one-row table
+//! where the ordering attack needs ten.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The plaintext alphabets, in the order the substitution permutes them.
+///
+/// Both are string constants in VCDS (`0x140189890` and `0x1401898b0` in the
+/// 26.3 ARM64 build) and both are read by one function, which shuffles them
+/// under the table's key. The *positions* carry the roles and the shuffle does
+/// not move them: `DIGITS[0..10]` are the ten decimal digits, `DIGITS[10]` is
+/// the field separator, and `DIGITS[11..14]` are the three glyphs a table has
+/// nothing to write with. That is why the separator is never one of the ten.
+const PLAIN_LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
+const PLAIN_DIGITS: &[u8; 14] = b"0123456789,.-_";
+
+/// Where the separator sits in [`PLAIN_DIGITS`] — the comma.
+const SEPARATOR_SLOT: usize = 10;
+
+/// The C runtime's `rand()`, which is what generates the substitution.
+///
+/// `seed = seed * 0x343FD + 0x269EC3`, result `(seed >> 16) & 0x7fff`; `srand`
+/// stores the seed verbatim. Microsoft's pair, statically linked into VCDS at
+/// `0x140132528` / `0x140132568`. Reproduced rather than called because the
+/// values are part of the file format, not of whatever libc happens to be
+/// underneath.
+struct CrtRand(u32);
+
+impl CrtRand {
+    fn next(&mut self) -> u32 {
+        self.0 = self.0.wrapping_mul(0x343FD).wrapping_add(0x269EC3);
+        (self.0 >> 16) & 0x7FFF
+    }
+}
+
+/// A `.rod` table's substitution, generated from the table's own key.
+///
+/// `research/fault-naming-hop.md` §5.1 measured the substitution as per-table
+/// — 95 solved tables, 95 distinct alphabets — and concluded there was nothing
+/// to pool. There is not, because the alphabet is *generated*: VCDS seeds the
+/// C runtime's `rand()` with the table key and Fisher-Yates-shuffles both
+/// plaintext alphabets from that one stream (`fcn.1400e6f80`, 26 swaps then
+/// 14). Reading a row is then a lookup, and a one-row table opens as easily as
+/// a fifty-row one.
+///
+/// The two shuffles **share the stream**, so the letters must be shuffled
+/// first even by a caller that only wants digits.
+///
+/// Checked against everything there was to check it against (§11.2): the 95
+/// alphabets the ordering attack had recovered, the separator of 110 765 of
+/// the 110 766 well-formed tables of the global fault registry, every one of
+/// its 219 490 non-empty name fields decoding within the alphabet with 98.99 %
+/// of them landing on a real `Codes.dat` key, and 11 189 of 11 189 rows whose
+/// failure-type field agrees with the byte their own name field encodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableAlphabet {
+    letters: [u8; 26],
+    digits: [u8; 14],
+}
+
+impl TableAlphabet {
+    /// The alphabet a table key generates.
+    pub fn for_key(key: u32) -> Self {
+        let mut rand = CrtRand(key);
+        let mut letters = *PLAIN_LETTERS;
+        let mut digits = *PLAIN_DIGITS;
+        for i in 0..letters.len() {
+            let j = rand.next() as usize % letters.len();
+            letters.swap(i, j);
+        }
+        for i in 0..digits.len() {
+            let j = rand.next() as usize % digits.len();
+            digits.swap(i, j);
+        }
+        Self { letters, digits }
+    }
+
+    /// The glyph this table writes its field separator as.
+    pub fn separator(&self) -> char {
+        self.digits[SEPARATOR_SLOT] as char
+    }
+
+    /// Read one enciphered field back to plaintext.
+    ///
+    /// Digits go through the digit alphabet and letters through the letter
+    /// alphabet, case preserved — which is what VCDS's own reader does
+    /// (`strchr` into the shuffled alphabet, index into the plaintext one).
+    /// `None` if any character belongs to neither, since a partly-decoded
+    /// field is a wrong field.
+    pub fn decode(&self, field: &str) -> Option<String> {
+        let mut out = String::with_capacity(field.len());
+        for glyph in field.chars() {
+            let lower = glyph.to_ascii_lowercase() as u8;
+            if let Some(at) = self.digits.iter().position(|g| *g == lower) {
+                out.push(PLAIN_DIGITS[at] as char);
+            } else if let Some(at) = self.letters.iter().position(|g| *g == lower) {
+                let plain = PLAIN_LETTERS[at] as char;
+                out.push(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain });
+            } else {
+                return None;
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// Read one enciphered field as a decimal number.
+    pub fn number(&self, field: &str) -> Option<u64> {
+        let plain = self.decode(field)?;
+        plain.chars().all(|c| c.is_ascii_digit()).then(|| plain.parse().ok())?
+    }
+
+    /// Read one enciphered field as a two-character hexadecimal byte.
+    pub fn hex_byte(&self, field: &str) -> Option<u8> {
+        let plain = self.decode(field)?;
+        (plain.len() == 2).then(|| u8::from_str_radix(&plain, 16).ok())?
+    }
+
+    /// The ten digits as a [`DigitOrder`], for the readers built around one.
+    pub fn digit_order(&self) -> DigitOrder {
+        DigitOrder {
+            map: self.digits[..10]
+                .iter()
+                .enumerate()
+                .map(|(digit, glyph)| (*glyph as char, digit as u8))
+                .collect(),
+        }
+    }
+}
 
 /// The glyphs a numeric field can be written with. Anything else in a row is
 /// structure — a separator or a field the substitution does not cover.
@@ -267,6 +396,68 @@ mod tests {
         // real file and never once on the file as shipped.
         let cyclic = vec!["0", ".", "-", "0", ".", "-", "8", "3", "2", "1", "5", "7", "4"];
         assert!(digit_order(&cyclic, &[]).is_none());
+    }
+
+    #[test]
+    fn the_key_generates_the_alphabet_the_ordering_attack_recovers() {
+        // Table 531 of the global fault registry, whose alphabet
+        // `table_531()` above records as recovered from row order alone.
+        // Generating it from the key has to agree glyph for glyph, and the
+        // separator — which the ordering attack cannot see at all — has to be
+        // the comma slot.
+        let generated = TableAlphabet::for_key(531);
+        let from_order = digit_order(&table_531(), &[]).unwrap();
+        for glyph in table_531() {
+            let glyph = glyph.chars().next().unwrap();
+            assert_eq!(
+                generated.digit_order().digit(glyph),
+                from_order.digit(glyph),
+                "glyph {glyph}"
+            );
+        }
+        assert_eq!(generated.separator(), ',');
+        assert_eq!(generated.number(".-0238"), Some(120_543));
+        assert_eq!(generated.number(".0374730"), Some(10_489_840));
+    }
+
+    #[test]
+    fn the_two_shuffles_share_one_stream() {
+        // The digit alphabet is drawn after the letter alphabet has consumed
+        // 26 values. Shuffling only the digits gives a different, wrong
+        // answer — this pins that the letters are not optional.
+        let mut rand = CrtRand(531);
+        let mut digits = *PLAIN_DIGITS;
+        for i in 0..digits.len() {
+            let j = rand.next() as usize % digits.len();
+            digits.swap(i, j);
+        }
+        assert_ne!(digits, TableAlphabet::for_key(531).digits);
+    }
+
+    #[test]
+    fn letters_decode_through_their_own_alphabet_with_the_case_kept() {
+        // Row `.-0238,3P,,,,,` of table 531: the name field is 120543 and the
+        // failure-type field is two characters that must read as hex. An
+        // eight-digit name encodes its own failure type in its low byte, and
+        // that invariant holds on 11 189 of 11 189 such rows — here on a row
+        // whose name is 10 489 840 = 0xA00FF0, failure type F0.
+        let alphabet = TableAlphabet::for_key(531);
+        let f1 = &".0374730,F0,,,,,"[9..11];
+        assert_eq!(alphabet.hex_byte(f1), Some(0xF0));
+        assert_eq!(alphabet.number(".0374730").unwrap() as u8, 0xF0);
+        // Case is carried through, not folded.
+        let upper = alphabet.decode(&f1.to_ascii_uppercase()).unwrap();
+        assert_eq!(upper, upper.to_ascii_uppercase());
+    }
+
+    #[test]
+    fn a_glyph_outside_both_alphabets_makes_the_answer_none() {
+        let alphabet = TableAlphabet::for_key(531);
+        assert_eq!(alphabet.decode("!"), None);
+        assert_eq!(alphabet.decode(""), None);
+        // A field of letters is not a number, and must not be read as one.
+        assert_eq!(alphabet.number("F0"), None);
+        assert_eq!(alphabet.hex_byte(".0374730"), None, "seven characters are not a byte");
     }
 
     #[test]

@@ -131,7 +131,120 @@ pub fn describe_status(status: u8) -> String {
     if set.is_empty() { format!("{status:02X}") } else { set.join(", ") }
 }
 
+/// The identifiers by which a unit names its own description file: the ODX
+/// name, and the coding index whose first three digits pick the variant
+/// (`research/fault-naming-hop.md` §10.4). Both come off the car.
+const ODX_NAME: u16 = 0xF19E;
+const ODX_VERSION: u16 = 0xF1A2;
+
+/// Read one identifier value as the padded ASCII these units store.
+fn ident_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim_end_matches(['\0', ' ']).to_string()
+}
+
+/// Name the faults in a survey this tool recorded (`vagcan faults --from`).
+///
+/// The naming chain needs nothing from the car that a survey does not already
+/// hold — the fault codes, and the two identifiers that pick each unit's
+/// description file — so it runs offline against a recorded file. That is what
+/// makes the whole chain testable without the adapter, and it is how the
+/// figures in `research/fault-naming-hop.md` §11.3 are reproduced.
+pub fn run_named(
+    survey_path: &str,
+    labels_dir: &str,
+    iv_cache: &str,
+    all_codes: bool,
+) -> Result<()> {
+    let text = std::fs::read_to_string(survey_path)
+        .with_context(|| format!("reading {survey_path:?}"))?;
+    let root = crate::datadir::resolve(labels_dir);
+    let mut namer = crate::faultnames::Namer::open(&root, &crate::datadir::resolve(iv_cache))?;
+    println!(
+        "{} rows of fault registry, {} texts, from {}\n",
+        namer.registry_rows(),
+        namer.codes_texts(),
+        root.display()
+    );
+
+    let (mut named, mut unnamed) = (0usize, 0usize);
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Some(codes) = value["dtcs"].as_array() else { continue };
+        let codes: Vec<(RawDtc, u8)> = codes
+            .iter()
+            .filter_map(|d| {
+                let code = parse_code(d["code"].as_str()?)?;
+                let status = u8::from_str_radix(d["status"].as_str()?, 16).ok()?;
+                Some((RawDtc { code, status }, status))
+            })
+            .filter(|(dtc, _)| all_codes || dtc.status & CONFIRMED != 0)
+            .collect();
+        if codes.is_empty() {
+            continue;
+        }
+        let unit = value["unit"].as_str().unwrap_or("--").to_string();
+        let ident = |did: u16| -> String {
+            value["ident"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|f| f["did"].as_str() == Some(&format!("{did:04X}")))
+                .and_then(|f| f["data"].as_str())
+                .and_then(hex_bytes)
+                .map(|b| ident_text(&b))
+                .unwrap_or_default()
+        };
+        let (odx, version) = (ident(ODX_NAME), ident(ODX_VERSION));
+        println!("{unit}  {odx}");
+        let lookup = namer.unit(&odx, &version);
+        if let Some(note) = crate::faultnames::unit_note(&lookup) {
+            println!("  ({note})");
+        }
+        let catalogue = match &lookup {
+            vag_data::UnitLookup::Found { catalogue, .. } => Some(catalogue),
+            _ => None,
+        };
+        for (dtc, _) in &codes {
+            let naming = catalogue.map(|c| namer.name(c, dtc.code));
+            let named_here =
+                matches!(naming, Some(crate::faultnames::Naming::Named { .. }));
+            if named_here {
+                named += 1;
+            } else {
+                unnamed += 1;
+            }
+            println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
+            if let Some(line) = naming.as_ref().and_then(|n| n.line()) {
+                println!("      {line}");
+            }
+        }
+        println!();
+    }
+    println!(
+        "{named} of {} {} named.",
+        named + unnamed,
+        crate::render::plural(named + unnamed, "code")
+    );
+    Ok(())
+}
+
+fn parse_code(text: &str) -> Option<[u8; 3]> {
+    let bytes = hex_bytes(text)?;
+    (bytes.len() == 3).then(|| [bytes[0], bytes[1], bytes[2]])
+}
+
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    (text.len() % 2 == 0)
+        .then(|| {
+            (0..text.len() / 2)
+                .map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok())
+                .collect::<Option<Vec<u8>>>()
+        })
+        .flatten()
+}
+
 /// Read faults from the car (see the module docs).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     device_path: &str,
     baud: u32,
@@ -140,9 +253,21 @@ pub async fn run(
     all_codes: bool,
     supported: bool,
     extended: bool,
+    labels_dir: Option<&str>,
+    iv_cache: &str,
 ) -> Result<()> {
     // Arguments first: the adapter is a single-user resource, so a typo in
     // --ecu must not cost the port before it is reported.
+    // The corpus is opened before the port for the same reason: a missing
+    // `Codes.dat` is a mistake to report, not one to make after taking the
+    // adapter and reading the whole car.
+    let mut namer = match labels_dir {
+        Some(dir) => Some(crate::faultnames::Namer::open(
+            &crate::datadir::resolve(dir),
+            &crate::datadir::resolve(iv_cache),
+        )?),
+        None => None,
+    };
     let requested = match only {
         Some(spec) => Some(
             vag_protocol::address::parse_list(spec)
@@ -204,8 +329,13 @@ pub async fn run(
         println!(
             "Stored codes are a record that something happened once — not a diagnosis, and \n\
              not necessarily a fault present now. Only codes marked \"failed now\" are \n\
-             currently failing. This tool cannot translate a code to text yet, so nothing \n\
-             below is named.\n"
+             currently failing.{}\n",
+            match &namer {
+                // Where a code cannot be named the reason is printed beside
+                // it, so this line does not have to promise anything.
+                Some(_) => "",
+                None => "\nNothing below is named: pass --labels <VCDS install> to name them.",
+            }
         );
     }
 
@@ -291,8 +421,34 @@ pub async fn run(
                 "\n{number}  {request:03X}  {}",
                 unit.component.clone().unwrap_or_default()
             );
+            // The unit names its own description file, so the catalogue is
+            // fetched only once something has to be named out of it.
+            let lookup = match &mut namer {
+                Some(namer) => {
+                    let read = |data: Option<Vec<u8>>| data.map(|b| ident_text(&b)).unwrap_or_default();
+                    let odx = read(uds.read_data_by_identifier(ODX_NAME).await.ok());
+                    let version = read(uds.read_data_by_identifier(ODX_VERSION).await.ok());
+                    Some(namer.unit(&odx, &version))
+                }
+                None => None,
+            };
+            if let Some(note) = lookup.as_ref().and_then(crate::faultnames::unit_note) {
+                println!("  ({note})");
+            }
+            let catalogue = match &lookup {
+                Some(vag_data::UnitLookup::Found { catalogue, .. }) => Some(catalogue),
+                _ => None,
+            };
             for dtc in &show {
                 println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
+                // The name goes under the code, never instead of it: the
+                // number is what the car said and the name is this project's
+                // reading of it.
+                if let (Some(namer), Some(catalogue)) = (&namer, catalogue) {
+                    if let Some(line) = namer.name(catalogue, dtc.code).line() {
+                        println!("      {line}");
+                    }
+                }
                 // Extended data carries when it happened: the odometer at the
                 // time and how often. Read for every fault, since that is the
                 // question a stored code raises.
