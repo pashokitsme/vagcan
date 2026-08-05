@@ -824,9 +824,9 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 
     let mut progress = crate::progress::Line::new();
     let (mut adapter, identities) =
-        crate::units::identify(adapter, &[crate::watch::plan::ENGINE], &mut progress).await;
+        crate::units::identify(adapter, &[crate::watch::plan::ENGINE], &[], &mut progress).await;
     progress.update("reading the vehicle identification number");
-    let (back, vin) = read_vin(adapter).await;
+    let (back, vin) = crate::units::read_vin(adapter).await;
     adapter = back;
     progress.finish();
 
@@ -844,27 +844,6 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     let reader = LiveReader { backend: Some(adapter), started: Instant::now() };
     let full_screen = std::io::IsTerminal::is_terminal(&std::io::stdout());
     drive(reader, prepared, &opts, full_screen).await
-}
-
-/// Read the VIN off the engine, and hand the adapter back.
-///
-/// The VIN is what a car file is keyed by and what the session file records, and
-/// a car that will not say is not a failure — it simply has no file of its own.
-async fn read_vin<B: vag_can::CanBackend>(backend: B) -> (B, Option<String>) {
-    use vag_protocol::{AsyncUdsClient, UdsReadExt};
-    use vag_transport::CanId;
-
-    let Some(engine) = vag_protocol::address::UnitAddress::from_request(crate::watch::plan::ENGINE)
-    else {
-        return (backend, None);
-    };
-    let mut uds = AsyncUdsClient::new(vag_can::IsoTpCan::new(
-        backend,
-        CanId::Standard(engine.request),
-        CanId::Standard(engine.response),
-    ));
-    let vin = uds.read_identity().await.vin.filter(|text| !text.trim().is_empty());
-    (uds.into_transport().into_backend(), vin)
 }
 
 /// Resolve the channels, settle what mode the run is in, and say so.

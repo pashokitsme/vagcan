@@ -22,7 +22,11 @@ use crate::AsyncUdsClient;
 
 /// Data identifiers we read for the identification block. ASCII-valued unless
 /// noted. Values mirror the VW/UDS standard identifiers VCDS surfaces.
-mod did {
+///
+/// Public because a caller that wants one field has no business paying for
+/// seven reads to get it, and because the alternative — each caller writing
+/// `0xF190` again — is how the same number ends up spelled three ways.
+pub mod did {
     /// VIN (ISO 14229 standard identifier). 17 ASCII chars.
     pub const VIN: u16 = 0xF190;
     /// VW spare part number (e.g. `8V0906264H`).

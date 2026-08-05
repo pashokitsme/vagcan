@@ -21,12 +21,20 @@ use crate::watch::plan::{self, UnitIdentity};
 /// Ask the car which control units it has, then ask each of them what it is.
 ///
 /// `also` is the units the caller wants identified whatever the gateway says —
-/// what it means to poll, in practice. The adapter comes back out because it is
-/// a single-user resource with no way to borrow it across an await, so it is
-/// handed over and handed back rather than shared.
+/// what it means to poll, in practice. `known` is what the caller already has
+/// an identification block for, from a survey it loaded; those are skipped, and
+/// only they are. **The gateway is asked either way.** Trusting a loaded survey
+/// to be the whole car instead was a trap: a survey of one unit — the thing
+/// `SAFETY.md` recommends — would then have left `watch` seeing that unit and
+/// the engine, with the other thirteen silently absent.
+///
+/// The adapter comes back out because it is a single-user resource with no way
+/// to borrow it across an await, so it is handed over and handed back rather
+/// than shared.
 pub async fn identify<B: vag_can::CanBackend>(
     backend: B,
     also: &[u16],
+    known: &[UnitIdentity],
     progress: &mut crate::progress::Line,
 ) -> (B, Vec<UnitIdentity>) {
     let mut wanted: Vec<u16> = also.to_vec();
@@ -54,17 +62,52 @@ pub async fn identify<B: vag_can::CanBackend>(
     wanted.push(0x7E1);
     let backend = uds.into_transport().into_backend();
 
-    identify_listed(backend, &wanted, &[], progress).await
+    identify_listed(backend, &wanted, known, progress).await
+}
+
+/// Read the vehicle identification number off the engine.
+///
+/// The VIN is what every per-car file this tool keeps is named after — the car
+/// file, the saved sessions, the cached survey — so more than one live command
+/// needs it, and the read lives here rather than being copied into each of
+/// them. Only `0xF190` is asked for: `read_identity` would answer the same
+/// question with seven requests and throw six of the answers away.
+///
+/// A car that will not say is not a failure; it simply has no files of its own.
+pub async fn read_vin<B: vag_can::CanBackend>(backend: B) -> (B, Option<String>) {
+    let Some(engine) = UnitAddress::from_request(plan::ENGINE) else {
+        return (backend, None);
+    };
+    let mut uds = AsyncUdsClient::new(vag_can::IsoTpCan::new(
+        backend,
+        CanId::Standard(engine.request),
+        CanId::Standard(engine.response),
+    ));
+    let vin = uds
+        .read_data_by_identifier(vag_protocol::identity::did::VIN)
+        .await
+        .ok()
+        // VW pads its text fields with a trailing space or NUL; a VIN is
+        // seventeen printable characters and nothing else.
+        .map(|bytes| {
+            String::from_utf8_lossy(&bytes)
+                .trim_matches(|c: char| c.is_control() || c == ' ')
+                .to_string()
+        })
+        .filter(|text| !text.is_empty());
+    (uds.into_transport().into_backend(), vin)
 }
 
 /// Identify a named list of units, skipping the ones already accounted for.
 ///
-/// Split out from [`identify`] for the caller that has another source for the
-/// list: a survey recording already asked every unit for its identification
-/// block, so re-reading those costs a probe apiece for an answer in hand — but
-/// whatever the survey did *not* cover still has to be asked. Only the units
-/// newly identified come back, so the caller keeps the order it had.
-pub async fn identify_listed<B: vag_can::CanBackend>(
+/// The walk [`identify`] performs once it knows the list. Kept separate because
+/// the two halves answer different questions — *which units are there* is one
+/// read of the gateway, *what each of them is* is a probe apiece — and because
+/// a survey already asked the second question of every unit it visited, so
+/// re-reading those would cost a probe each for an answer already in hand.
+/// Only the units newly identified come back, so the caller keeps the order it
+/// had.
+async fn identify_listed<B: vag_can::CanBackend>(
     mut backend: B,
     requests: &[u16],
     known: &[UnitIdentity],

@@ -825,7 +825,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
     //    identification block per unit, then the VIN off the engine. The same
     //    reads `watch` makes, and no session change in any of them.
     let mut progress = crate::progress::Line::new();
-    let (back, identities) = crate::units::identify(adapter, &[plan::ENGINE], &mut progress).await;
+    let (back, identities) = crate::units::identify(adapter, &[plan::ENGINE], &[], &mut progress).await;
     adapter = back;
     progress.update("asking the engine for the VIN");
     let (back, engine) = read_engine_identity(adapter).await;

@@ -101,6 +101,27 @@ pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
     Ok(car_dir(vin)?.join("measures"))
 }
 
+/// The whole-car survey a car keeps for itself.
+///
+/// Named here for the same reason [`CAR_FILE`] is: two commands have to agree
+/// on it or the cache is written where nothing reads it.
+pub const SURVEY_FILE: &str = "survey.jsonl";
+
+/// The survey `vagcan survey` last recorded off this car.
+///
+/// **Per car, not per part number.** Which identifiers a control unit answers
+/// is a fact about that unit as it is built, coded and installed in *this* car;
+/// `catalogs/` is the opposite — a proven scaling for a part number is true of
+/// every car carrying that part. So this belongs beside the car file, keyed by
+/// VIN, and never in the checkout.
+///
+/// It exists so that `watch` can offer every identifier the car answers without
+/// the user having to remember a file name from an eight-minute sweep they ran
+/// last week.
+pub fn survey_cache(vin: &str) -> anyhow::Result<PathBuf> {
+    Ok(car_dir(vin)?.join(SURVEY_FILE))
+}
+
 /// The VIN, checked hard enough to be a directory name.
 ///
 /// It arrives from the bus, so it is not trusted as a path: a unit answering
@@ -386,6 +407,22 @@ mod tests {
         let vin = "XW8AD4NE9JH008917";
         let car = car_dir(vin).unwrap();
         assert_eq!(measures_dir(vin).unwrap(), car.join("measures"));
+        assert_eq!(survey_cache(vin).unwrap(), car.join(SURVEY_FILE));
+    }
+
+    #[test]
+    fn a_survey_is_cached_per_car_because_identifiers_are_per_car() {
+        // Which identifiers a unit answers is a fact about that unit in that
+        // car, so the cache is keyed the same way everything else about a car
+        // is — by VIN, outside the checkout.
+        let a = survey_cache("XW8AD4NE9JH008917").unwrap();
+        let b = survey_cache("XW8AD4NE9JH008918").unwrap();
+        assert_ne!(a, b);
+        assert!(a.ends_with("XW8AD4NE9JH008917/survey.jsonl"), "{a:?}");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        assert!(!a.starts_with(&repo), "{a:?} is inside the checkout");
+        // A VIN off the bus never chooses where this tool writes.
+        assert!(survey_cache("../../etc").is_err());
     }
 
     #[test]

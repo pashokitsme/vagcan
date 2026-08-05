@@ -2,9 +2,17 @@
 //!
 //! Values are picked on a selection screen rather than by flags, and several
 //! control units appear together: each is addressed in turn over the one
-//! serial link and they share a single table. The catalogs cover the engine,
-//! the gearbox and the instrument cluster; `--survey` adds every identifier a
-//! `vagcan survey` run found on any other unit, shown as raw bytes.
+//! serial link and they share a single table.
+//!
+//! **Every unit the car has is watchable, not only the three with catalogs.**
+//! The catalogs cover the engine, the gearbox and the instrument cluster, and
+//! for a long time those were the only units with anything on screen: the rest
+//! needed `vagcan survey --out FILE` and then `watch --survey FILE`, two
+//! commands and a remembered file name, which in practice meant twelve units
+//! nobody ever looked at. So a survey is now kept per car — see
+//! [`crate::datadir::survey_cache`] — and loaded with no flag at all, which
+//! puts every identifier the car answers on offer as raw bytes.
+//! `--survey FILE` still wins over the cache.
 //!
 //! The previous version drew with carriage returns, which only works on a
 //! terminal that honours them — piped or resized, it left a trail of new lines
@@ -912,6 +920,127 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
     Ok(())
 }
 
+/// Where the identifiers beyond the proven catalogs are coming from.
+///
+/// The catalogs cover three control units of this car's fifteen. Everything the
+/// other twelve answer is watchable only because some sweep wrote down what
+/// they answered — so which sweep that was is worth naming on screen, and worth
+/// saying when there is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SurveySource {
+    /// `--survey FILE`: the user was explicit, so nothing overrides it.
+    Given(String),
+    /// The survey this car cached the last time it was swept.
+    Cached(std::path::PathBuf),
+    /// Nothing to load. `cache` is where one would go, when the car said which
+    /// car it is; `None` when it did not, in which case there is no per-car
+    /// path to name and the advice has to be the `--out`/`--survey` pair.
+    Missing { cache: Option<std::path::PathBuf> },
+}
+
+/// Decide which survey a run uses.
+///
+/// Split out from [`run`] because the precedence is the whole point and it is
+/// two lines of it: a file the user named beats a file this tool wrote for
+/// itself, always, and a cache that is not there is not an error.
+fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> SurveySource {
+    if let Some(path) = given {
+        return SurveySource::Given(path.to_string());
+    }
+    match cache {
+        Some(path) if path.is_file() => SurveySource::Cached(path),
+        cache => SurveySource::Missing { cache },
+    }
+}
+
+/// What answered, what of it can be shown, and what to do about the rest.
+///
+/// Printed before the screen takes over. The count and the list used to
+/// disagree — eleven units counted, three listed — because the count came from
+/// what identified itself and the list from what had catalog rows. They are one
+/// set here, and the units with nothing to show are a line of their own, since
+/// "the tool cannot name this unit's identifiers" and "the tool did not find
+/// this unit" look identical on screen and are not the same problem.
+fn coverage_report(
+    identities: &[plan::UnitIdentity],
+    channels: &[Channel],
+    catalogs: &str,
+    source: &SurveySource,
+) -> String {
+    let list = |units: &[u16]| {
+        units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ")
+    };
+    let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
+    let has = |request: u16, proven: bool| {
+        channels.iter().any(|c| c.request == request && c.def.is_some() == proven)
+    };
+    let proven: Vec<u16> = units.iter().copied().filter(|r| has(*r, true)).collect();
+    let raw: Vec<u16> = units.iter().copied().filter(|r| has(*r, false)).collect();
+    let silent: Vec<u16> =
+        units.iter().copied().filter(|r| !has(*r, true) && !has(*r, false)).collect();
+
+    // "answered" would be a claim about *this* run, and with a cached survey
+    // loaded it is not one: those units answered the sweep that wrote the
+    // cache, and this run took its word for it rather than paying a probe per
+    // unit again. What is true either way is that the car has them.
+    let mut out = format!(
+        "{} control {} on this car: {}\n",
+        units.len(),
+        crate::render::plural(units.len(), "unit"),
+        list(&units)
+    );
+    if !proven.is_empty() {
+        out.push_str(&format!("  measurements this project has proven: {}\n", list(&proven)));
+    }
+    if !raw.is_empty() {
+        let from = match source {
+            SurveySource::Given(path) => path.clone(),
+            SurveySource::Cached(path) => path.display().to_string(),
+            // Nothing was loaded, so nothing can be raw-only; kept total
+            // rather than reached-for so a later change cannot make it lie.
+            SurveySource::Missing { .. } => "an earlier sweep".to_string(),
+        };
+        out.push_str(&format!("  raw identifiers from {from}: {}\n", list(&raw)));
+    }
+    if !silent.is_empty() {
+        // Every line that carries a list or a path ends with it: these are as
+        // long as the car makes them, and a hard wrap placed before one lands
+        // in a different place on every car.
+        out.push_str(&format!("nothing to show for {}\n", list(&silent)));
+        out.push_str(&format!(
+            "  — they answer, but no catalog in {catalogs} matches their part numbers.\n"
+        ));
+        out.push_str(&match source {
+            SurveySource::Missing { cache: Some(path) } => format!(
+                "  Sweep this car once, parked — about 8 minutes — and every later run \n  \
+                 offers their identifiers as raw bytes, with no flag:\n    \
+                 vagcan survey\n  \
+                 writes {}\n",
+                path.display()
+            ),
+            // No VIN, so this tool has nowhere of its own to put a survey: the
+            // file has to be named by hand at both ends.
+            SurveySource::Missing { cache: None } => {
+                "  The car did not report a VIN, so it has no files of its own. Sweep it \n  \
+                 once, parked — about 8 minutes — and name the file at both ends:\n    \
+                 vagcan survey --out FILE\n    \
+                 vagcan watch --survey FILE\n"
+                    .to_string()
+            }
+            // A survey is loaded and these units are not in it — an older
+            // sweep, or one that was interrupted. Re-reading a named unit
+            // costs seconds and is the habit `SAFETY.md` asks for anyway.
+            _ => format!(
+                "  The survey in use does not cover them. Re-reading named units costs \n  \
+                 seconds each and adds them to this car's cache:\n    \
+                 vagcan survey --only {}\n",
+                silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(",")
+            ),
+        });
+    }
+    out
+}
+
 /// How the values are shown.
 ///
 /// Two modes rather than one flag, because "which view" and "for how long" are
@@ -944,7 +1073,10 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
     // means the recording is created here too, not once the car is answering —
     // an unwritable --out path is the same typo as an unreadable --survey one.
     let store = vag_data::catalog::CatalogStore::open(catalogs);
-    let survey_text = match survey {
+    // Named surveys are read here, before the adapter: an unreadable one is a
+    // typo, and a typo should not cost the port. The car's own cache cannot be
+    // — it is found by VIN, and the VIN comes off the car.
+    let given_text = match survey {
         Some(path) => Some(
             std::fs::read_to_string(path)
                 .with_context(|| format!("reading the survey {path:?}"))?,
@@ -960,6 +1092,37 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
         None => None,
     };
 
+    let mut adapter =
+        SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
+            .await
+            .with_context(|| crate::device::open_failure(device_path))?;
+
+    // Which car this is, so its own survey can be found. One identifier read,
+    // and a car that will not say simply has no cache — everything below still
+    // works, with the catalogs alone.
+    let mut progress = crate::progress::Line::new();
+    progress.update("reading the vehicle identification number");
+    let (back, vin) = crate::units::read_vin(adapter).await;
+    adapter = back;
+
+    // The whole reason a car keeps a survey: without one, the twelve units no
+    // catalog covers have nothing on screen, and the only way to see them was
+    // to remember the file name of a sweep run some other day. The cache is
+    // loaded with no flag; `--survey` still overrides it.
+    let source = choose_survey(
+        survey,
+        vin.as_deref().and_then(|vin| crate::datadir::survey_cache(vin).ok()),
+    );
+    let survey_text = match &source {
+        // Already read above, before the port was taken.
+        SurveySource::Given(_) => given_text,
+        SurveySource::Cached(path) => Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("reading the survey {}", path.display()))?,
+        ),
+        SurveySource::Missing { .. } => None,
+    };
+
     // Which scalings apply is decided by what each unit says it is, never by
     // its address. A survey already asked; without one, the units to be polled
     // are asked directly below.
@@ -968,11 +1131,6 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
         None => Vec::new(),
     };
 
-    let mut adapter =
-        SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
-            .await
-            .with_context(|| crate::device::open_failure(device_path))?;
-
     // Which units the car has, and what each of them is. Without this the view
     // would only ever show the engine, because a unit with no identity
     // contributes no channels and so no tab — which is what "switching between
@@ -980,53 +1138,29 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
     // because `measure` makes the same one.
     let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
     wanted.push(plan::ENGINE);
-    let mut progress = crate::progress::Line::new();
-    let found = if survey_text.is_some() {
-        // A survey already asked the whole car, so the gateway has nothing left
-        // to say; only what the survey did not cover is worth a probe.
-        let (back, found) =
-            crate::units::identify_listed(adapter, &wanted, &identities, &mut progress).await;
-        adapter = back;
-        found
-    } else {
-        let (back, found) = crate::units::identify(adapter, &wanted, &mut progress).await;
-        adapter = back;
-        found
-    };
+    // A survey already asked every unit it visited for its identification
+    // block, so those are not asked again; everything else still is.
+    let (back, found) = crate::units::identify(adapter, &wanted, &identities, &mut progress).await;
+    adapter = back;
     identities.extend(found);
 
     progress.finish();
-    // Say what the car answered and what could be shown, before the screen
-    // takes over. A unit that identified itself but has no catalog contributes
-    // no measurements and so no tab — which looks like the tool failing to
-    // find it, and is worth distinguishing from that.
     let mut channels = plan::available(&store, &identities);
-    {
-        let with_rows: Vec<String> = identities
-            .iter()
-            .filter(|i| channels.iter().any(|c| c.request == i.request))
-            .map(|i| format!("{:03X}", i.request))
-            .collect();
-        let without: Vec<String> = identities
-            .iter()
-            .filter(|i| !channels.iter().any(|c| c.request == i.request))
-            .map(|i| format!("{:03X}", i.request))
-            .collect();
-        println!("{} control units answered: {}", identities.len(), with_rows.join(" "));
-        if !without.is_empty() {
-            println!(
-                "no measurements known for {} — they answer, but {catalogs} holds no \n\
-                 catalog for their part numbers. `vagcan survey --out FILE` then \n\
-                 `watch --survey FILE` offers their identifiers as raw bytes.",
-                without.join(" ")
-            );
-        }
-    }
     if let Some(text) = &survey_text {
         // Everything a survey found becomes watchable, on every unit — which
         // is the only way the units outside the catalogs get on screen at all.
         channels = plan::with_survey(channels, text);
     }
+    // Say what the car has and what of it can be shown, before the screen takes
+    // over. A unit that identified itself but has no catalog contributes no
+    // measurements and so no tab — which looks like the tool failing to find
+    // it, and is worth distinguishing from that. Reported after the survey is
+    // folded in, or it would describe a screen nobody is about to see.
+    //
+    // On stderr, because in the plain-console view stdout is the CSV: a
+    // paragraph of prose in front of the header is not something a reader of
+    // that stream can be asked to skip. It is still the terminal either way.
+    eprint!("{}", coverage_report(&identities, &channels, catalogs, &source));
     for (request, did) in preselect {
         match channels.iter_mut().find(|c| c.request == *request && c.did == *did) {
             Some(c) => c.selected = true,
@@ -1246,6 +1380,134 @@ mod tests {
         channels[0].selected = true;
         channels[1].selected = true;
         App::new(channels)
+    }
+
+    /// The reference car's fifteen units, as `vagcan units` lists them — a
+    /// fixture, not a table the code carries. Only three have catalogs.
+    fn reference_identities() -> Vec<plan::UnitIdentity> {
+        let ident = |request, part: Option<&str>| plan::UnitIdentity {
+            request,
+            part_number: part.map(str::to_string),
+            odx_name: None,
+            component: None,
+        };
+        vec![
+            ident(0x700, None),
+            ident(0x70A, None),
+            ident(0x70C, None),
+            ident(0x70E, None),
+            ident(0x712, None),
+            ident(0x713, None),
+            ident(0x714, Some("5E0920740D")),
+            ident(0x715, None),
+            ident(0x746, None),
+            ident(0x74A, None),
+            ident(0x74B, None),
+            ident(0x767, None),
+            ident(0x773, None),
+            ident(0x7E0, Some("8V0906264H")),
+            ident(0x7E1, Some("0CW300041G")),
+        ]
+    }
+
+    fn store() -> vag_data::catalog::CatalogStore {
+        vag_data::catalog::CatalogStore::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
+        )
+    }
+
+    #[test]
+    fn the_count_and_the_list_name_the_same_control_units() {
+        // The reported defect: "11 control units answered: 714 7E0 7E1" — a
+        // count of everything that answered set against a list of the three
+        // with catalogs. Whatever else the summary says, those two must agree.
+        let identities = reference_identities();
+        let channels = plan::available(&store(), &identities);
+        let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing {
+            cache: None,
+        });
+        let first = text.lines().next().unwrap().to_string();
+        let (count, listed) = first.split_once(':').unwrap();
+        let count: usize = count.split_whitespace().next().unwrap().parse().unwrap();
+        assert_eq!(count, identities.len());
+        assert_eq!(listed.split_whitespace().count(), count, "{first}");
+    }
+
+    #[test]
+    fn without_a_survey_the_summary_names_the_one_command_that_fixes_it() {
+        // A unit with no catalog and no survey has nothing on screen at all,
+        // and the tool has to say which single command changes that.
+        let identities = reference_identities();
+        let channels = plan::available(&store(), &identities);
+        let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing {
+            cache: Some(std::path::PathBuf::from("/somewhere/survey.jsonl")),
+        });
+        assert!(text.contains("vagcan survey"), "{text}");
+        assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
+        // The identifiers a survey would offer are raw bytes and are said to
+        // be — this project does not invent a scaling for them.
+        assert!(text.contains("raw"), "{text}");
+    }
+
+    #[test]
+    fn a_cached_survey_puts_every_unit_on_offer_and_the_summary_says_where_from() {
+        // The point of the cache: with one on disk, no unit is left with
+        // nothing to show and no flag was needed to get there.
+        let identities = reference_identities();
+        // A sweep answers on every unit, including the twelve no catalog
+        // covers — one identifier each is enough to make the point.
+        let survey: String = identities
+            .iter()
+            .map(|i| {
+                format!(
+                    "{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"1001\",\"data\":\"0224\"}}]}}\n",
+                    i.request
+                )
+            })
+            .collect();
+        let channels = plan::with_survey(plan::available(&store(), &identities), &survey);
+        assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
+        let cache = std::path::PathBuf::from("/somewhere/survey.jsonl");
+        let text =
+            coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Cached(cache));
+        assert!(text.contains("survey.jsonl"), "{text}");
+        assert!(text.contains("713"), "{text}");
+        // No unit is left with nothing on screen, so there is nothing to
+        // advise about and no advice.
+        assert!(!text.contains("nothing to show"), "{text}");
+        assert!(!text.contains("vagcan survey"), "{text}");
+    }
+
+    #[test]
+    fn a_named_survey_wins_over_the_one_this_car_cached() {
+        // `--survey FILE` is the user being explicit; a cache must never
+        // silently override it.
+        let dir = std::env::temp_dir().join(format!(
+            "vagcan-watch-survey-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("survey.jsonl");
+        std::fs::write(&cache, "{}\n").unwrap();
+
+        assert!(matches!(
+            choose_survey(Some("named.jsonl"), Some(cache.clone())),
+            SurveySource::Given(ref path) if path == "named.jsonl"
+        ));
+        assert!(matches!(
+            choose_survey(None, Some(cache.clone())),
+            SurveySource::Cached(ref path) if *path == cache
+        ));
+        // A car that has never been swept, and a car that would not say which
+        // car it is, both come out as nothing to load.
+        std::fs::remove_file(&cache).unwrap();
+        assert!(matches!(
+            choose_survey(None, Some(cache.clone())),
+            SurveySource::Missing { cache: Some(_) }
+        ));
+        assert!(matches!(choose_survey(None, None), SurveySource::Missing { cache: None }));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
