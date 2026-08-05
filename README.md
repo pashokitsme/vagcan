@@ -35,13 +35,23 @@ blaming the software.
 
 ---
 
-## Build
+## Install
+
+One command, if you have Rust:
 
 ```sh
-git clone <this repo> && cd vcds
-cargo build --release
-./target/release/vagcan devices
+cargo install --git https://github.com/pashokitsme/vagcan
 ```
+
+That builds `vagcan` and puts it on your `PATH`, so every example below is just
+`vagcan …`. To work on the tool instead, clone it and install from the checkout:
+
+```sh
+git clone https://github.com/pashokitsme/vagcan && cd vagcan
+cargo install --path crates/vagcan
+```
+
+Check it found your adapter:
 
 ```
 $ vagcan devices
@@ -79,14 +89,15 @@ why [`USAGE.md`](USAGE.md) has a section on proving one against your own car.
 ## Read the car
 
 ```sh
-vagcan info                            # VIN, engine, gearbox
-vagcan units --identify                # every control unit the gateway knows about
-vagcan faults --labels /path/to/VCDS   # stored fault codes, in VW's own words
-vagcan survey                          # once, parked, ~8 min: what every unit answers
-vagcan watch                           # live values from several units at once
+vagcan info               # VIN, engine, gearbox
+vagcan units --identify   # every control unit the gateway knows about
+vagcan faults             # stored fault codes, in VW's own words (after setup)
+vagcan survey             # once, parked, ~8 min: what every unit answers
+vagcan watch              # live values from several units at once
 ```
 
-Every command and every flag is in [`USAGE.md`](USAGE.md).
+Once `setup` has run, `faults` names the codes with no extra flags — the labels are
+already in `~/.vagcan`. Every command and every flag is in [`USAGE.md`](USAGE.md).
 
 What the tool deliberately does not do is guess. A value with no proven scaling is
 shown as raw bytes and tagged as raw. This project has twice caught itself believing a

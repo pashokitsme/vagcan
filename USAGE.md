@@ -112,26 +112,28 @@ One read of the gateway's own installation list, rather than sweeping every addr
 and waiting out a timeout for each one the car does not have.
 
 ```sh
-vagcan units                                    # just the ids
-vagcan units --identify                         # each unit names itself; slower
-vagcan units --identify --labels /path/to/VCDS  # and the corpus names it too
+vagcan units                          # just the ids
+vagcan units --identify               # each unit names itself; slower
 ```
 
-With `--labels`, a part number the car reports is resolved against the corpus, which
-supplies the unit's diagnostic number and name — and pairs that number with the CAN id
-that answered. Neither half is written in this program.
+After `setup`, `--identify` also resolves each part number against the corpus, which
+supplies the unit's diagnostic number and name and pairs that number with the CAN id
+that answered — none of it written in this program. Pass `--labels /other/VCDS` only to
+point at an installation other than the one `setup` used.
 
 ### `vagcan faults` — what is wrong with it?
 
 ```sh
-vagcan faults                          # every unit, confirmed codes only
-vagcan faults --labels /path/to/VCDS   # …in VW's own words
+vagcan faults                          # every unit, confirmed codes, named
 vagcan faults --ecu 01,713 --details   # two units, with the raw freeze frames
 vagcan faults --all                    # every code, not only the confirmed ones
 ```
 
+After `setup`, the codes come out in VW's own words with no extra flag — the labels are
+in `~/.vagcan`. (Pass `--labels /other/VCDS` to use a different installation.)
+
 ```
-$ vagcan faults --labels ~/vcds-en
+$ vagcan faults
 --  713  ESC
   000129  (297)   confirmed
       B1168 F2  Steering Angle Sensor: Not Initialized
@@ -311,7 +313,7 @@ vagcan setup /path/to/VCDS         # once, offline
 vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
-vagcan faults --labels /path/to/VCDS
+vagcan faults                      # what is wrong, in VW's words
 vagcan survey                      # once, parked, ~8 min
 vagcan watch                       # now every unit is on offer
 ```
