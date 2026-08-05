@@ -22,9 +22,14 @@ Read `research/codes-dat.md` §5 and `research/whole-car-survey.md` §3 first. T
 | Pool ordering constraints across tables? | **Refuted** — the alphabet is per-table — §5.1 | very high (95 tables → 95 alphabets) |
 | A different `RD.rod` section? | **No such thing** — the file has two sections — §5.3 | certain |
 | Ship the units that "already answer ISO DTCs"? | **Refuted — it names nothing** — §6 | very high |
+| Which row of the table is *this* car's? | **The unit's own `.rod` says: its `[DTC]` ids are 1-based `RD.rod` row numbers** — §10 | very high (22/22, 33/33, 2/2) |
+| Does that also break the substitution? | **No. Untouched** — §10.3 | very high |
 
 The chain is **identified and verified**. It is not **reachable**, which by this project's
 own rule (`research/mux.md`) means this is a writeup and not a feature.
+
+**§10 closes obstacle 5.2 outright** and leaves 5.1 exactly where it was. Read §10 before
+§8, which it corrects.
 
 ---
 
@@ -257,6 +262,11 @@ mode exactly. Not written.
 
 In order of cost, and the first two are the whole of it:
 
+*(Item 1 was done and it worked — but not the way it is described here. **§10 supersedes
+it**: the per-unit ids are not `RD.rod` table keys, they are `RD.rod` row numbers, and the
+"180 of 274" below is a coincidence. Item 2 stands untouched and is now the whole of what
+is left. The paragraph is kept as written so the correction has something to point at.)*
+
 1. **The row selector — the per-unit ODX join.** VCDS knows which unit it is talking to
    (`EV_Brake1UDSContiMK100ESP 036010`) and this is the only thing it has that we do not.
    The per-unit `.rod` files carry a `[DTC]` section of `<6-digit id>,<2-char code>` rows
@@ -292,4 +302,162 @@ shipped code, and `crates/vag-data/src/rod.rs` and `codes.rs` remain authoritati
 * `tables.py` — `[DTC]` as tables, plus the ordering attack;
 * `sweep.py` — §5.1, the 95-alphabets refutation;
 * `solve.py` — §4, the `Codes.dat` crib solver;
+* `unitjoin.py` — §10, the row selector: unit `.rod` `[DTC]` index → `RD.rod` row → name;
 * `pairs.tsv` — the 38 crib pairs from the owner's own scans.
+
+---
+
+## 10. The row selector, found: a unit `.rod` `[DTC]` id is an `RD.rod` **row number**
+
+§8.1 was right that the selector is the per-unit ODX file and wrong about how it points.
+The pointer is not an identifier in any shared id space — it is a **1-based row index
+into `RD.rod`'s `[DTC]` section**, and it names one row, not a set.
+
+```
+raw 24-bit DTC ──▶ RD.rod [DTC] table (key = the number in decimal, zero-padded)
+                        │  … 2 to 50 rows, and nothing inside the file picks one
+unit's F19E ──▶ EV_*.rod [DTC] ──▶ <index>,<2-char code>
+                        │  index-1 IS the row, and its table key IS the raw DTC
+                        ▼
+                     f0 ──▶ Codes.dat ──▶ the text
+```
+
+### 10.1 The evidence
+
+Four unit files cracked (§10.4). For each, every `[DTC]` id was resolved as
+`RD.rod` row `index - 1`, and the table key of that row was compared with what the car
+actually reported in `research/dumps/survey-parked.jsonl`:
+
+| unit | file | `[DTC]` rows | distinct table keys | reported by the car | covered |
+|---|---|---|---|---|---|
+| `70C` steering column | `EV_SMLSVALEOMQBLRH.rod` | 85 | **85** | 22 | **22** |
+| `713` ESP | `EV_Brake1UDSContiMK100ESP_036.rod` | 518 | **518** | 33 | **33** |
+| `712` power steering | `EV_SteerAssisMQB_013.rod` | 750 | 750 | 2 | **2** |
+| `70A` parking aid | `EV_EPHVA14AU3700000_VW26.rod` † | 139 | 139 | 131 | 50 |
+
+† the family's base file, picked by hand — the parking aid's *own* variant has no `[DTC]`
+(§10.5), so this row is not a clean test and its 50/131 is not evidence either way.
+
+Three things fall out at once and each is a check the reading had to pass:
+
+* **1-based, not 0-based.** Read 0-based, the steering column's 85 ids collapse to 79
+  distinct table keys — two ids landing on the same fault is not something a catalogue
+  does — and cover only 20 of the 22 reported faults. Read 1-based: 85 ids, 85 keys, 22
+  of 22. The ESP: 468 keys and 29/33 against 518 keys and 33/33.
+* **A catalogue is a superset of what is stored.** 85 ids for a steering column module,
+  518 for an ESP, 750 for an EPS — the right order of magnitude, and every fault the car
+  had stored was in it.
+* **One row.** The index is a row, so §5.2's 36 candidates for fault `297` become one.
+  Obstacle 5.2 is closed, not narrowed.
+
+### 10.2 …and the reading §8.1 proposed is refuted
+
+§8.1 recorded that *"180 of the DQ200's 274 ids are `RD.rod` table keys"* and read that as
+the join. It is a coincidence, and a structural one: row indices and table keys of the
+low, dense band are numbers of the same magnitude — `RD.rod`'s six-digit keys are 78 %
+dense below 50 000 — so an index there usually *is* also a key, meaning nothing.
+
+The direct refutation needs no statistics. Taking the ids as table keys:
+
+| unit | ids that "are" table keys | the unit's own reported faults found |
+|---|---|---|
+| `713` ESP | 345 of 518 (66.6 %) | **0 of 33** |
+| `70C` steering column | 2 of 85 (2.4 %) | **0 of 22** |
+
+A catalogue that omits every fault its own unit is currently storing is not a catalogue.
+Two further readings were tried and are dead: the ids are **not** `Codes.dat` keys
+(`Codes.dat` has *no* key at all between 130 700 and 130 900, where the steering column
+puts 43 of its 85 ids), and they are **not** the unit's raw DTC numbers under any digit
+substitution — searched exhaustively, the best any alphabet achieves is 2 of the steering
+column's 22 reported faults and 8 of the ESP's 33, i.e. noise.
+
+### 10.3 It does not touch the substitution
+
+Restricting a table to one row removes the *selection* freedom, not the *decoding*
+freedom: the row's `f0` still has to be read through the per-table alphabet, and §5.1's
+finding that the alphabet is per-table is unaffected. Measured on the reference car's own
+confirmed faults, running `unitjoin.name` on the row the unit selected:
+
+| unit | fault | result |
+|---|---|---|
+| `713` | `00004B` | **120508 — "Rear Left Wheel Speed Sensor", FTB 07** |
+| `713` | `00005B` | **120509 — "Rear Right Wheel Speed Sensor", FTB 07** |
+| `713` | `000129` | **9 529 586 — "Steering Angle Sensor: Not Initialized"** |
+| `70C` | `047120` | 86 candidate names (10 126 alphabets) |
+| `712` | `004F04` | 35 candidate names |
+| `712` | `004D04` | 94 candidate names |
+| `70A` | `D01721 D01722 D0172E D0172F D01732` | 94 candidate names each |
+| `710` | `010405` | no `.rod` `[DTC]` reachable (§10.5) |
+| `09` | `000107 000213 060901` | no `.rod` at all (§10.5) |
+
+`713 000129` is crib pair `297` and the answer is **exactly what VCDS printed** —
+`B1168 F2`, *"Датчик угла поворота рулевого колеса: отсутствует инициализация"*. Three of
+the car's fifteen parked-survey confirmed faults are named end to end, from VW's own files,
+with the row chosen by the car rather than by the crib.
+
+The other eight stay unnamed, and the model is not contradicted by any of them: the true
+answer is **inside** the candidate set every time it is known — `047120`'s 86 candidates
+contain 137 973 *"Temperature Sensor for Heated Steering Wheel"* and `D01732`'s 94 contain
+153 539 *"Databus"*, which are the two the crib knows. Zero wrong, as before.
+
+One further constraint was tried and does not bite. An eight-digit `Codes.dat` key encodes
+its own failure type — 9 529 586 is `0x9168F2` and VCDS prints `B1168 F2`, so
+`f1` must be `f0 & 0xFF` — which pins two more glyphs per such row. **None of the reference
+car's tables has a row with an eight-digit `f0`**, so the filter (kept in `unitjoin.py`,
+it is a real invariant) removes no alphabet here.
+
+### 10.4 Finding the file the way a tool would have to
+
+The file name comes off the car, not out of a table: `F19E` gives the ODX base name and
+`F1A2`'s **first three digits** give the variant number, with a brand/platform suffix
+(`SK37`, `VW37`, `VW48`, …) selecting the localisation —
+`EV_Brake1UDSContiMK100ESP` + `036010` → `EV_Brake1UDSContiMK100ESP_036.rod`, and
+`EV_SteerAssisMQB` + `013144` → `EV_SteerAssisMQB_013.rod`. Twelve of the reference car's
+fifteen units resolve to at least one candidate that way.
+
+`vag_data::corpus::find_rod_by_odx_name` matches the file **stem exactly**, so it finds
+only the units whose ODX name happens to have no variant suffix — two of the fifteen.
+Teaching it the `_<F1A2[0..3]>` and brand-suffix forms is the one code change this section
+strictly requires, and it is independent of everything else here.
+
+IV tails recovered for this section (`rod_crack` output, i.e. what
+`rod_crack_prep.py decode` wants), ~95 s wall each on ten cores:
+
+| file | tag | `plaintext[3:8]` | inflated |
+|---|---|---|---|
+| `EV_SMLSVALEOMQBLRH.rod` | DTC | `d34b6e5d31` | 935 B |
+| `EV_Brake1UDSContiMK100ESP_036.rod` | DTC | `9849722b31` | 5 698 B |
+| `EV_SteerAssisMQB_013.rod` | DTC | `99496e3331` | 8 250 B |
+| `EV_EPHVA14AU3700000_VW26.rod` | DTC | `d44b722331` | 1 529 B |
+
+### 10.5 Why some units have no `[DTC]` — and the one that has no file
+
+§8.1's caveat — *"the parking aid's own `.rod` has no `[DTC]` section at all"* — is
+explained rather than fatal. Within an ODX family exactly one file carries the section and
+the variants carry an **`INC`** section instead: 14 parking-aid files, one with `[DTC]`
+(`_VW26`) and thirteen with `INC`; 11 gateway files, none with `[DTC]`, all with `INC`.
+`INC`'s payload is itself enciphered, and partially decoding
+`EV_SteerAssisMQB_013.rod`'s shows two rows whose repeated-letter shape is the same string
+under two alphabets and reads as `SteerAssisMQB…` — so `INC` is an ODX-name reference and
+following it is the remaining piece of file resolution. It was not chased here.
+
+Across the fifteen units of the reference car, **nine** have a family file with a `[DTC]`
+section and six do not (engine, gateway, BCM, both door modules, infotainment) — for those
+the `INC` chain leaves the family.
+
+And one is simply absent: `09`'s `F19E` is `EV_BCMMQB` and **no file in the English corpus
+starts with that name**, so its three confirmed faults (`000107`, `000213`, `060901`) are
+unreachable for a reason that has nothing to do with any of the above.
+
+### 10.6 What is left
+
+Exactly one thing, and it is §5.1 unchanged: **the per-table substitution on small
+tables.** The selector is solved; the decoder is not. §8.2's two leads stand —
+`f2`'s valid set, and reversing the `MT`/`KS` routine that generates a table's alphabet
+from its key, now checkable instantly against the 95 solved `(key, alphabet)` pairs *and*
+against every row a unit file selects.
+
+Worth adding to that list, because §10 makes it newly usable: `f2` is 190 000–450 000 and
+`RD.rod [DTC]` has **236 755 rows**. Now that one id space in these files is known to be a
+row number, `f2` being a row number into some other registry is a cheap thing to test, and
+a known valid range would prune alphabets on every table at once.
