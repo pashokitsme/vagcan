@@ -2,13 +2,36 @@
 
 **Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
 definitions as **data, not code**: names from VW's own label files
-(`~/.vagcan/labels/names.json`), read address + scaling + unit **proven live on the car**
-(`~/.vagcan/labels/data/<part number>.json`, keyed by what the unit reports about itself) —
-the corpus provably does not carry them
-(`research/labels/rod-labels.md` §4.0c, `research/labels/label-linkage.md` §3). Any value a unit
+(`~/.vagcan/data/extracted/names.json`), read address + scaling + unit **proven live on the car**
+(`~/.vagcan/data/measured/<part number>.json`, keyed by what the unit reports about itself).
+The corpus carries the scaling *values* but not the join from a measurement to its
+scaling or read DID, so scaling is still proven live — the full audit, including which
+earlier refutation rested on a broken decode, is in
+`research/labels/scaling-audit.md` (2026-08-06). Any value a unit
 exposes is selectable from config, with no hardcoded addresses or formulas in Rust.
 Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
 for the locked stack and `todo/GOAL.md` for the goal statement.
+
+## Status (2026-08-06) — prepared to go public
+
+**Nothing the tool reads at run time lives in the repository any more.** `catalogs/` is
+gone: the label cache, the recovered names and the `.rod` keys are rebuilt by
+`vagcan setup` into `~/.vagcan/data/extracted/`, and the rows proven on a car live in
+`~/.vagcan/data/measured/`. The two VCDS installations are vendored under `vendor/`
+(zipped, Git LFS) so `setup` can fetch one when the user has none.
+
+**`vagcan setup` is the whole install.** One command parses a VCDS installation — a path
+you give it, or one it downloads (en/ru, with a progress bar) — into `~/.vagcan`, and
+copies the raw label corpus in (`UDS_EV/`, `Labels/`, `Codes.dat`, ~122 MB) so the
+installation can then be deleted and `vagcan faults` names codes with no `--labels` flag.
+
+**Docs are split for a newcomer**: `README.md` (start here, install, first commands),
+`USAGE.md` (every command with output), `ARCHITECTURE.md` (why, and VCDS's file formats),
+`SAFETY.md`. A naive-user review signed off on the install path and the cross-links.
+
+**`measure` second drive + the engine-channel fix**, and the **scaling audit** (corpus
+carries the values, not the join) are detailed in the 2026-08-05 status and the header
+above. Research is reorganised by subject: `research/{labels,car,eps}/`.
 
 
 ## Where it stands after the whole-car pass (2026-08-02)
@@ -26,8 +49,8 @@ Done since the last update:
 | whole-car sweep | `vagcan survey` | gateway list → every unit; identification, fault codes, nine identifier pages; `--diff` compares a parked and a driving run |
 | fault reader | `vagcan faults` | confirmed codes only, sorted with what is failing now first, occurrence count, odometer, time of day, and a date stated as a bound |
 | fault **names** | `vagcan faults --labels` | VW's own words for a fault, out of `RD.rod` + `Codes.dat`; every code that cannot be named prints the reason instead (2026-08-05) |
-| unit addressing | `vag-protocol::address` | two id blocks with different response rules; unit-number pairings live in `catalogs/unit-numbers.json`, not in the source |
-| catalogs as data | `vag_data::catalog::CatalogStore` | one file per control unit under `~/.vagcan/labels/data/`, keyed by the part number the unit reports; nothing car-specific compiled in |
+| unit addressing | `vag-protocol::address` | two id blocks with different response rules; unit-number pairings live in `~/.vagcan/data/measured/unit-numbers.json`, not in the source |
+| catalogs as data | `vag_data::catalog::CatalogStore` | one file per control unit under `~/.vagcan/data/measured/`, keyed by the part number the unit reports; nothing car-specific compiled in |
 | corpus unit labels | `LabelDb::unit_for_part` | `; Component: … (#02)` headers give an address and a name for 987 of 3035 label files |
 | live view | `vagcan watch` | ratatui, several units at once, `/` filter over everything a survey found, actual/specified pairs on one line |
 
@@ -79,9 +102,14 @@ check made, which is the property that matters more than the hit rate.
 speed signal, a live full-screen view, a results table, a browser chart page, and a
 `setup` that measures this car's road load by coastdown. Spec
 `docs/superpowers/specs/2026-08-03-measure-design.md`, plan
-`docs/superpowers/plans/2026-08-03-measure.md`. **It has had exactly one real drive**
-(2026-08-04), which found seven defects — all fixed, none re-verified on the road. It is
-code that should work, not code that is known to.
+`docs/superpowers/plans/2026-08-03-measure.md`. **It has had two real drives** — the
+first (2026-08-04) found seven defects; the second (2026-08-05) surfaced an eighth, the
+one that mattered most: every engine channel was being dropped because one unsupported
+identifier in a batch voided the whole read (`split_records`, fixed 2026-08-06), so every
+saved session before then reads `engine_speed: 0`. All fixed; the live screen also
+became bars rather than a chart and the results table now reports every channel. None of
+those latest fixes has been re-driven. It is code that should work, not code that is
+known to.
 
 **Architecture, measured rather than guessed**:
 `docs/superpowers/specs/2026-08-05-architecture-design.md`. Phases 0–2 are done — an RAII
@@ -92,14 +120,20 @@ lines, not −40, because a tested guard costs 150 lines of test.
 ---
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
-built and merged. The offline path to measurement *scaling* is **refuted, not just stalled**:
-the read DID provably does not live in the corpus (`research/labels/rod-labels.md` §4.0c,
-`research/labels/label-linkage.md` §3 — a structural impossibility, do not retry). Scaling comes
-from the car: the parallel-VCDS capture session ran, `vagcan vcds analyse` and `vagcan recording calibrate`
-turn recordings into proven rows, and `~/.vagcan/labels/data/` holds 16 of them across engine,
-gearbox and cluster. Names come from the corpus after all — `TTTEXT.ROD` is cracked
-(`research/labels/tttext-codec.md`) and `~/.vagcan/labels/names.json` carries 17,009 names, but the
-corpus has **no name→DID join**, so `vagcan vcds names` output is a hypothesis to test live.
+built and merged. The offline path to measurement *scaling* is **audited to a sharper
+conclusion** (2026-08-06, `research/labels/scaling-audit.md`): the corpus **does** carry
+the scaling values — MUX/DOP rows hold every proven factor and offset, and the earlier
+"§4.0c: scaling is live-only" rested on a broken base-14 decode — but the **join** from a
+measurement to its scaling or read DID is absent, and the read DID itself is not in the
+corpus under the *corrected* decode either. So scaling still comes from the car:
+`vagcan vcds analyse` and `vagcan recording calibrate` turn recordings into proven rows,
+and `~/.vagcan/data/measured/` holds 23 of them across engine, gearbox and cluster. Names
+come from the corpus — `TTTEXT.ROD` is cracked (`research/labels/tttext-codec.md`) — but
+they are no longer shipped: `vagcan setup` rebuilds `names.json` from the installation.
+The current parser recovers ~3,987 of the ~17,009 the original solver found; restoring
+its word-frequency prior is open work. The corpus has **no name→DID join**, so a
+`vagcan vcds names` hit is a hypothesis to test live. The one door still unopened is
+`TTTEXT2.ROD` (a bounded multi-hour sweep).
 
 The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, `vagcan survey`
 walks every unit the gateway lists (identification, stored DTCs, identifier sweep), and
@@ -114,7 +148,7 @@ open-work list at the end of this file.
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan vcds labels` | ✅ done |
 | **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **23 catalog rows proven (engine 3, gearbox 12, cluster 8) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
 | M4 | fault **names** — number → `RD.rod` → row → `Codes.dat` → text | ✅ **done 2026-08-05**; 11 of this car's 15 confirmed codes, word-for-word with VCDS on all four both name, zero wrong |
-| M5 | `vagcan measure` — acceleration timing, power, chart page | 🟡 **built, one drive**; seven defects found and fixed on 2026-08-04, none re-verified on the road |
+| M5 | `vagcan measure` — acceleration timing, power, chart page | 🟡 **built, two drives** (2026-08-04/05); eight defects found and fixed — incl. every engine channel dropped by `split_records` until 2026-08-06 — latest fixes not re-driven |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
 
 ### Done (merged to `master`, tests green, clippy clean)
@@ -130,12 +164,12 @@ open-work list at the end of this file.
 | label-corpus | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_corpus`/`scan_corpus` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vagcan vcds rod`); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
-| labels-cli | vagcan | `vagcan vcds labels` — corpus inventory + `--part` / `--block` lookup; SQLite cache at `~/.vagcan/labels/cache.sqlite` (`--refresh` rebuilds); the IV brute force is behind the `rod-crack` feature (`vagcan vcds rod` only) |
+| labels-cli | vagcan | `vagcan vcds labels` — corpus inventory + `--part` / `--block` lookup; SQLite cache at `~/.vagcan/data/extracted/cache.sqlite` (`--refresh` rebuilds); the IV brute force is behind the `rod-crack` feature (`vagcan vcds rod` only) |
 | addressing | vag-protocol | `address.rs` — `UnitAddress`: ISO block `7E0..7E7` → +8, VW block `700..7BF` → +0x6A; fixes `--ecu 17` resolving to `0x7F0` (nothing) instead of the cluster `0x714`; short numbers only for evidenced units (01/02/09/16/17), everything else by request id |
 | survey | vagcan | `vagcan survey` — walk the gateway's installation list (plus engine/gearbox/gateway, which it never contains): identification, stored DTCs (`19 02 FF`), then the identifier bands in use on this car; JSON lines per unit; silent units skipped after ident |
 | watch-tui | vagcan | `vagcan watch` — full-screen ratatui TUI, multi-unit, reconfigurable in place (`c`); `--survey FILE` offers everything a survey found; actual/specified pairs on one line; unconverted CSV columns suffixed `_raw` |
 | calibrate | vagcan | `vagcan recording calibrate` — offline; fits `_raw` columns against trusted reference columns in the same `watch --out` recording |
-| names | vagcan | `vagcan vcds names` — substring search over `~/.vagcan/labels/names.json` (17,009 TTTEXT names); a match is a hypothesis, the corpus has no name→DID join |
+| names | vagcan | `vagcan vcds names` — substring search over `~/.vagcan/data/extracted/names.json`, the names `vagcan setup` recovered from TTTEXT; a match is a hypothesis, the corpus has no name→DID join |
 | cli-app | vagcan | Top level, all needing the car: `devices` / `info` / `units` / `properties` / `sniff` / `sensors` / `watch` / `scan` / `survey` / `faults`. Offline work is grouped by what its input is — `recording calibrate|discover` over our own recordings, `vcds labels|names|analyse|rod|corpus|tttext` over VCDS's files (2026-08-03) |
 
 ## M3 — measurements (the current work)
@@ -266,7 +300,7 @@ in `research/logs/`, and crossing it with them now gives:
 | `LOG-02-IDE00022ENG103074_&11.CSV` | 59 | 10 (gearbox) |
 
 **No new catalog row comes out of it, and that is the point.** All 18 are already shipped:
-ten gearbox and three engine rows are in `~/.vagcan/labels/data/`, and the other five are
+ten gearbox and three engine rows are in `~/.vagcan/data/measured/`, and the other five are
 standard OBD-II PIDs mirrored at `F400 + PID`, already in `vag_data::obd` and correctly
 *not* in any car file — `F405` = PID 05 coolant `raw − 40`, `F40D` = 0D speed, `F40F` = 0F
 intake air `raw − 40`, `F423` = 23 fuel rail `raw × 10`, `F446` = 46 ambient `raw − 40`.
@@ -305,8 +339,11 @@ corpus holds **no linear coefficients**, its values are base-10 under a per-tabl
 substitution, and the `MWB` code is a global function of the text-id with no per-ECU degree
 of freedom. So the corpus is for **names and per-ECU lists**, nothing more.
 
-The name table itself is cracked (`research/labels/tttext-codec.md`): **17,009 names** shipped in
-`~/.vagcan/labels/names.json`, searchable with `vagcan vcds names <text>`. The `ENG######` question
+The name table itself is cracked (`research/labels/tttext-codec.md`): the original solver
+recovered **17,009 names**, and `vagcan setup` now rebuilds `~/.vagcan/data/extracted/names.json`
+from the installation rather than shipping the file — the in-tool parser currently
+recovers ~3,987, and restoring its word-frequency prior is open. Searchable with
+`vagcan vcds names <text>`. The `ENG######` question
 is settled — the number **is** the `TTTEXT` text-id, proven four for four on records solved
 blind (`research/labels/tttext-codec.md` §2, superseding `research/labels/label-linkage.md` §4's
 "suggestive, not established"), and the recovered names are English text — the
@@ -328,7 +365,7 @@ gearbox mode, switches and lamps cannot be fitted: a two-level value fits any li
 exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
 continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
 coincide. The gear (`0x3816`, η² = 0.972 against the proven shaft-speed ratio) and the
-selector lever (`0x3809`) are identified and in `~/.vagcan/labels/data/0CW300041G.json` as enums.
+selector lever (`0x3809`) are identified and in `~/.vagcan/data/measured/0CW300041G.json` as enums.
 Still to do: the drive mode (D/S/manual — never selected during the recording, so the
 stimulus is missing, not the signal), and the same treatment for the other units.
 

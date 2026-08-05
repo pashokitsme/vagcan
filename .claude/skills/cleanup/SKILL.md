@@ -44,7 +44,7 @@ the file that survives a context reset **for that kind of fact**:
 
 | what was learned | where it belongs |
 |---|---|
-| a proven measurement — read address, scaling, unit | `~/.vagcan/labels/data/<part number>.json` |
+| a proven measurement — read address, scaling, unit | `~/.vagcan/data/measured/<part number>.json` |
 | how something was proven, or refuted, and with what data | `research/<topic>.md` |
 | current state, milestones, what to do next | `todo/README.md` |
 | goal, stack, workflow | `todo/GOAL.md` |
@@ -187,7 +187,10 @@ Five things, and no more:
 ## Red flags — stop
 
 - About to type `git add -A`.
-- About to run `git rm` on anything under `research/`, `catalogs/` or `crates/*/bin/`.
+- About to run `git rm` on anything under `research/`, `vendor/` (the LFS-tracked VCDS
+  archives) or `crates/*/bin/`. (Proven measurement rows no longer live in the repo at
+  all — they are in `~/.vagcan/data/measured/`, outside git; deleting one there is just
+  as unrecoverable, and just as forbidden.)
 - Writing "recently", "last session", "currently" into a status document.
 - A cleanup diff that touches `safety.rs`, `address.rs` or the UDS allowlist.
 - `cargo test` not run since the pass began.
