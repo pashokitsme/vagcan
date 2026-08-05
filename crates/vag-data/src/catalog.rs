@@ -6,19 +6,29 @@
 //! ## Provenance — why this catalog is hand-seeded, not machine-built
 //! The *intended* source of these rows is a decoded engine `.rod`: its `MWB`
 //! list (`<text-id>,<code>` rows — see [`crate::mwb`]) joined to the global
-//! `STRUC`/`TTDOP` tables for the read DID + byte spec + scaling + unit, and to
-//! `TTTEXT` for the name. That automatic path is **blocked**: the `STRUC`/`DOP`
-//! records are a proven base-14 packed codec whose **field segmentation is not
-//! reversed** (`research/labels/rod-labels.md` §2–§3), and — newly established here by
-//! crossing the owner's engine-running capture crib (real valid DIDs) against
-//! the decoded `STRUC` table — **the read DID is not stored in `STRUC` at all**
-//! in any tested encoding (u16 BE/LE or a base-14 field at any offset), so the
-//! `code → STRUC-id → DID` chain the roadmap hypothesised does not hold as
-//! written. See the module tests and `research/labels/rod-labels.md` for the evidence.
+//! `STRUC`/`TTDOP`/`MUX` tables for the byte spec + scaling + unit, and to
+//! `TTTEXT` for the name. The **codec is now fully decoded** — the per-table
+//! substitution of [`crate::glyphs`] reads `STRUC`/`MUX`/`TTDOP` at 100 %
+//! coverage, and the scalings this project proved by driving (`0.4`, `0.01`,
+//! `0.001`, `1.0`, …) are all present in the corpus. So the earlier "base-14,
+//! field segmentation not reversed" blocker is gone (`research/labels/scaling-audit.md`).
+//!
+//! Two things still block the *automatic* path, and both were re-confirmed under
+//! that correct decode (not the retired base-14 one):
+//! - **The read DID is not in the corpus.** Re-running the DID search over the
+//!   correctly-decoded fields reproduces `rod-labels.md` §4.0c's chance-level
+//!   negative; `label-linkage.md` §3 / `tttext2.md` §6.2a add that the per-ECU
+//!   payload has no per-ECU degree of freedom to hold it. The corpus never says
+//!   which DID a measurement is read at.
+//! - **The measurement→structure join is unproven.** A car's ADVMB measurement
+//!   text-ids are not name-reachable in the global tables, and where a name is
+//!   present it resolves to the *self-test* DOP with a different scaling (engine
+//!   speed `×0.25` in MUX vs the proven ADVMB `×1`) — a name-join is a trap. The
+//!   per-ECU `code → structure id` edge stays refuted (`scaling-audit.md` §4).
 //!
 //! Therefore this catalog is currently seeded **only with rows proven
 //! empirically** from the owner's capture (see [`crate::measure`]): nothing is
-//! read out of the unreversed codec, and no scaling slope is invented. As more
+//! read out of the corpus, and no scaling slope is invented. As more
 //! measurements are validated against the capture/CSV crib, they are added here
 //! as data rows — the extensible foundation the roadmap calls for (add a
 //! parameter = add a row, never a new match arm).
