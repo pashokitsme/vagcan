@@ -128,6 +128,97 @@ pub fn find_rod_by_odx_name(root: &Path, odx_name: &str) -> io::Result<Vec<PathB
     Ok(hits)
 }
 
+/// How closely a `.rod` file name answers a control unit's own identification.
+///
+/// Ordered best-first: `Exact` beats `Version` beats `Family`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OdxMatch {
+    /// The stem *is* the ODX name — the unit's file has no variant suffix.
+    Exact,
+    /// `<odx name>_<version>` or `<odx name>_<version>_<localisation>`, where
+    /// `<version>` is the leading three digits of the unit's `F1A2`.
+    Version,
+    /// `<odx name>_<something else>` — the right family, an unconfirmed variant.
+    Family,
+}
+
+/// Find the `.rod` files for a control unit from what the unit itself reports.
+///
+/// [`find_rod_by_odx_name`] matches the stem exactly, which finds only those
+/// units whose ODX name happens to carry no suffix — two of the fifteen on the
+/// reference car. The corpus spells the rest as `<odx name>_<vvv>` and
+/// `<odx name>_<vvv>_<localisation>`, where `vvv` is the **first three digits of
+/// `F1A2`** and the localisation is a brand/platform tag (`SK37`, `VW48`, …):
+/// `F19E = EV_Brake1UDSContiMK100ESP` with `F1A2 = 036010` is
+/// `EV_Brake1UDSContiMK100ESP_036.rod`. Both halves come off the car, so this
+/// stays a lookup the vehicle answers rather than a table about one vehicle
+/// (`research/fault-naming-hop.md` §10.4).
+///
+/// Returns every candidate paired with how it matched, best match first. More
+/// than one is normal and is not an error — a family keeps one file per
+/// localisation, and only the caller knows whether it can tell them apart.
+/// `version` may be empty or short, in which case no candidate ranks `Version`.
+pub fn find_rod_by_odx_variant(
+    root: &Path,
+    odx_name: &str,
+    version: &str,
+) -> io::Result<Vec<(OdxMatch, PathBuf)>> {
+    let wanted = odx_name.trim_end_matches(['\0', ' ']).to_ascii_uppercase();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let version: String = version.trim_end_matches(['\0', ' ']).chars().take(3).collect();
+    let version = if version.len() == 3 && version.chars().all(|c| c.is_ascii_digit()) {
+        Some(version)
+    } else {
+        None
+    };
+
+    let mut hits = Vec::new();
+    collect_rod_family(root, &wanted, version.as_deref(), &mut hits);
+    hits.sort();
+    Ok(hits)
+}
+
+fn collect_rod_family(
+    dir: &Path,
+    wanted: &str,
+    version: Option<&str>,
+    hits: &mut Vec<(OdxMatch, PathBuf)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rod_family(&path, wanted, version, hits);
+            continue;
+        }
+        if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("rod"))
+        {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let stem = stem.to_ascii_uppercase();
+        if stem == wanted {
+            hits.push((OdxMatch::Exact, path));
+            continue;
+        }
+        // Only a `_` starts a variant: `EV_TCMDQ2000210` is a different unit
+        // from `EV_TCMDQ200021`, not a variant of it.
+        let Some(rest) = stem.strip_prefix(wanted).and_then(|r| r.strip_prefix('_')) else {
+            continue;
+        };
+        let versioned = version.is_some_and(|v| {
+            rest.strip_prefix(v).is_some_and(|tail| tail.is_empty() || tail.starts_with('_'))
+        });
+        hits.push((if versioned { OdxMatch::Version } else { OdxMatch::Family }, path));
+    }
+}
+
 fn collect_rod_matches(dir: &Path, wanted: &str, hits: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return; // unreadable subtree: skip, never fatal (as elsewhere here)
@@ -397,5 +488,59 @@ mod odx_lookup_tests {
         // EV_TCMDQ200021 must not be answered by EV_TCMDQ2000210.
         let root = corpus(&["EV_TCMDQ2000210.rod"]);
         assert!(find_rod_by_odx_name(&root, "EV_TCMDQ200021").unwrap().is_empty());
+    }
+
+    #[test]
+    fn f1a2_picks_the_variant_out_of_the_family() {
+        // Both identifiers as the reference car's ESP reports them.
+        let root = corpus(&[
+            "EV_Brake1UDSContiMK100ESP_035.rod",
+            "EV_Brake1UDSContiMK100ESP_036.rod",
+            "EV_Brake1UDSContiMK100ESP_037.rod",
+        ]);
+        let hits =
+            find_rod_by_odx_variant(&root, "EV_Brake1UDSContiMK100ESP", "036010").unwrap();
+        assert_eq!(hits.len(), 3, "the whole family is offered: {hits:?}");
+        assert_eq!(hits[0].0, OdxMatch::Version);
+        assert!(hits[0].1.ends_with("EV_Brake1UDSContiMK100ESP_036.rod"), "{hits:?}");
+        assert!(hits[1..].iter().all(|(m, _)| *m == OdxMatch::Family));
+    }
+
+    #[test]
+    fn the_localisation_suffix_rides_along_with_the_version() {
+        let root = corpus(&[
+            "EV_EPHVA14AU3700000_009_SK37.rod",
+            "EV_EPHVA14AU3700000_009_VW48.rod",
+            "EV_EPHVA14AU3700000_VW26.rod",
+        ]);
+        let hits = find_rod_by_odx_variant(&root, "EV_EPHVA14AU3700000", "009029").unwrap();
+        assert_eq!(hits.iter().filter(|(m, _)| *m == OdxMatch::Version).count(), 2);
+        assert_eq!(hits.iter().filter(|(m, _)| *m == OdxMatch::Family).count(), 1);
+    }
+
+    #[test]
+    fn an_unsuffixed_name_still_matches_exactly_and_ranks_first() {
+        let root = corpus(&["EV_SMLSVALEOMQBLRH.rod", "EV_SMLSVALEOMQBLRH_002.rod"]);
+        let hits = find_rod_by_odx_variant(&root, "EV_SMLSVALEOMQBLRH\0", "001007").unwrap();
+        assert_eq!(hits[0].0, OdxMatch::Exact);
+        assert!(hits[0].1.ends_with("EV_SMLSVALEOMQBLRH.rod"), "{hits:?}");
+    }
+
+    #[test]
+    fn a_variant_lookup_does_not_widen_into_a_prefix_match() {
+        // Same rule as the exact lookup: a longer name is a different unit.
+        let root = corpus(&["EV_TCMDQ2000210.rod", "EV_TCMDQ2000210_001.rod"]);
+        assert!(find_rod_by_odx_variant(&root, "EV_TCMDQ200021", "001001").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_version_that_is_not_three_digits_ranks_nothing() {
+        let root = corpus(&["EV_GATEWNF_SK37.rod", "EV_GATEWNF_013.rod"]);
+        // No F1A2 read (or a short one): the family is still offered, unranked.
+        let hits = find_rod_by_odx_variant(&root, "EV_GatewNF", "").unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|(m, _)| *m == OdxMatch::Family));
+        // An empty ODX name must not match the whole tree, as for the exact lookup.
+        assert!(find_rod_by_odx_variant(&root, "  \0", "013020").unwrap().is_empty());
     }
 }
