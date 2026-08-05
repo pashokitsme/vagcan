@@ -19,6 +19,7 @@
 //! instead of updating one. A full-screen renderer has no such failure mode,
 //! and it can also show a name in full instead of eliding it to fit a column.
 
+pub mod history;
 pub mod plan;
 pub mod replay;
 
@@ -31,8 +32,58 @@ use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
+use crate::ui::chart;
 use crate::ui::term;
 use plan::Channel;
+
+/// How many lines the chart draws, however many are marked for it.
+///
+/// The widget puts three lines and two scales on a page and says why, so six is
+/// two full pages when the marked channels agree on their units and six pages
+/// when none of them do. That is the number of times `←`/`→` can be pressed
+/// before a reader is lost, and it is the reason there is a cap at all: with
+/// thirty selected channels — an ordinary `watch` session — the pages run to
+/// fifteen and paging stops being navigation.
+///
+/// The widget is not told about it. Which series, in what order, is the
+/// caller's half of that seam, and a cap passed inwards would be the beginning
+/// of the configuration language `docs/superpowers/specs/2026-08-05-architecture-design.md`
+/// §5 refuses.
+const CHART_CHANNELS: usize = 6;
+
+/// Whether a channel can ever put a number on a chart.
+///
+/// Two ways it cannot, and they are different facts about the car. A channel
+/// with no proven scaling is shown as raw bytes: there is no float in it, only
+/// a byte string, and `watch`'s whole purpose is to show those so they can be
+/// found. A state has a definition and still has no number — the gear codes are
+/// neither contiguous nor ordered by ratio, and two of them are not gears at
+/// all, so a line drawn through them would be a picture of the encoding rather
+/// than of the car.
+///
+/// Either way the channel keeps its row in the table. It is the chart that
+/// declines it, and it says so.
+fn plottable(channel: &Channel) -> bool {
+    match &channel.def {
+        None => false,
+        Some(def) => !matches!(def.scaling, vag_data::catalog::Scaling::Enum { .. }),
+    }
+}
+
+/// What the chart is drawing, and what it would not draw.
+///
+/// The two exclusions are counted rather than dropped quietly, because a driver
+/// who marks a channel and sees nothing appear concludes the tool is broken.
+/// They are said on `watch`'s own line under the chart and not through the
+/// widget: an `excluded` parameter on `plot` would be a parameter that exists
+/// for one caller, and this is a sentence about *this* screen's selection.
+struct Charted {
+    series: Vec<chart::Series>,
+    /// Marked, and with nothing a chart can hold — see [`plottable`].
+    no_number: usize,
+    /// Marked, plottable, and past [`CHART_CHANNELS`].
+    over_cap: usize,
+}
 
 /// Which screen has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +112,18 @@ pub struct App {
     pub channels: Vec<Channel>,
     /// Latest response body per `(request id, did)`, with when it arrived.
     pub latest: std::collections::BTreeMap<(u16, u16), (f64, Vec<u8>)>,
+    /// The last [`history::WINDOW_SECONDS`] of every channel that answered with
+    /// a number, which is what the chart is drawn from. `latest` cannot serve:
+    /// it is one body per identifier and a chart is a shape over time.
+    history: history::History,
+    /// Which channels the chart holds — a second choice over the same list,
+    /// because what belongs on a table of thirty values and what belongs on a
+    /// chart of three lines are different questions.
+    charted: std::collections::BTreeSet<(u16, u16)>,
+    /// Whether the chart has the bottom of the live screen.
+    chart_shown: bool,
+    /// Which page of overlaid lines is up, as `chart::pages` divides them.
+    chart_page: usize,
     screen: Screen,
     cursor: usize,
     /// Substring the selection screen is narrowed to. With a survey loaded
@@ -115,6 +178,10 @@ impl App {
         App {
             channels,
             latest: std::collections::BTreeMap::new(),
+            history: history::History::new(history::WINDOW_SECONDS),
+            charted: std::collections::BTreeSet::new(),
+            chart_shown: false,
+            chart_page: 0,
             screen: Screen::Live,
             cursor: 0,
             filter: String::new(),
@@ -282,6 +349,136 @@ impl App {
         }
     }
 
+    /// Take in one answer: the body for the table, and a number for the chart
+    /// when there is honestly one to take.
+    ///
+    /// Both live loops go through here rather than writing `latest` themselves,
+    /// so that a recording drawn back through the same screen cannot end up
+    /// with a different idea of what was measured than the car did.
+    fn observe(&mut self, request: u16, did: u16, at: f64, data: Vec<u8>) {
+        let value = self
+            .channels
+            .iter()
+            .find(|c| c.request == request && c.did == did)
+            .and_then(|c| c.def.as_ref())
+            .and_then(|def| def.interpret(&data));
+        // `interpret` is the one thing that decides, and it declines exactly
+        // what must be declined: bytes too short for the form, a state, and an
+        // anchored row away from its anchor, where the slope is unknown and no
+        // honest value exists.
+        if let Some(value) = value {
+            self.history.push((request, did), at, value);
+        }
+        self.latest.insert((request, did), (at, data));
+    }
+
+    /// The lines the chart is to draw, in the order the table shows them.
+    ///
+    /// Selection order, so that `←`/`→` means the same thing on the next cycle
+    /// as it did on this one. `pages` is a pure function of what it is handed
+    /// and cannot do better than the order it gets.
+    fn charted(&self) -> Charted {
+        let marked: Vec<&Channel> = self
+            .shown()
+            .into_iter()
+            .filter(|c| self.charted.contains(&(c.request, c.did)))
+            .collect();
+        let no_number = marked.iter().filter(|c| !plottable(c)).count();
+        let drawable: Vec<&Channel> =
+            marked.iter().copied().filter(|c| plottable(c)).collect();
+        let over_cap = drawable.len().saturating_sub(CHART_CHANNELS);
+        // Two units on one chart mean two lines that can be called the same
+        // thing — an engine speed on the engine and on the gearbox — and a key
+        // that names two lines alike explains neither. With one unit the prefix
+        // would be noise on every line.
+        let units: std::collections::BTreeSet<u16> =
+            drawable.iter().take(CHART_CHANNELS).map(|c| c.request).collect();
+        let series = drawable
+            .iter()
+            .take(CHART_CHANNELS)
+            .map(|c| chart::Series {
+                label: match units.len() > 1 {
+                    true => format!("{} {}", c.unit(), c.label()),
+                    false => c.label(),
+                },
+                unit: c.unit_of_measure().to_string(),
+                points: self.history.points((c.request, c.did)),
+                // Everything on this screen came off the bus. `watch` reads and
+                // does not compute, and the day it does the distinction is
+                // already drawn here.
+                origin: chart::Origin::Bus,
+            })
+            .collect();
+        Charted { series, no_number, over_cap }
+    }
+
+    /// Show or hide the chart, seeding it the first time from what is already
+    /// on screen.
+    ///
+    /// A chart that opens empty on the one key that opens it teaches nobody
+    /// that it exists, and the marks are one keypress each to change
+    /// afterwards. What it seeds from is the table's own order, capped at what
+    /// the chart draws and skipping anything with no number in it.
+    fn toggle_chart(&mut self) {
+        self.chart_shown = !self.chart_shown;
+        if !self.chart_shown || !self.charted.is_empty() {
+            return;
+        }
+        let seed: Vec<(u16, u16)> = self
+            .shown()
+            .into_iter()
+            .filter(|c| plottable(c))
+            .take(CHART_CHANNELS)
+            .map(|c| (c.request, c.did))
+            .collect();
+        self.charted.extend(seed);
+    }
+
+    /// Mark or unmark the channel under the cursor.
+    ///
+    /// Marking selects it too: a line the poll loop is not feeding can never
+    /// have a point in it, and would sit in the key with nothing under it for
+    /// the whole run.
+    fn toggle_charted(&mut self, index: usize) {
+        let Some(channel) = self.channels.get_mut(index) else { return };
+        let key = (channel.request, channel.did);
+        if !self.charted.remove(&key) {
+            self.charted.insert(key);
+            channel.selected = true;
+        }
+        self.chart_page = 0;
+    }
+
+    /// Drop chart marks for channels that are no longer polled.
+    ///
+    /// Called after anything that can deselect. A marked channel that stopped
+    /// being polled draws a line that stops dead and then, a minute later,
+    /// nothing — and looks exactly like a control unit that went quiet.
+    fn prune_charted(&mut self) {
+        let selected: std::collections::BTreeSet<(u16, u16)> =
+            self.channels.iter().filter(|c| c.selected).map(|c| (c.request, c.did)).collect();
+        let before = self.charted.len();
+        self.charted.retain(|key| selected.contains(key));
+        if self.charted.len() != before {
+            self.chart_page = 0;
+        }
+    }
+
+    /// Step to the next or previous page of lines, wrapping.
+    ///
+    /// The count comes from the widget, because how many series share a page is
+    /// the widget's decision and a second opinion here would be a second answer.
+    fn step_chart(&mut self, forward: bool) {
+        let pages = chart::pages(&self.charted().series).len();
+        if pages == 0 {
+            return;
+        }
+        self.chart_page = match forward {
+            true => (self.chart_page + 1) % pages,
+            false => (self.chart_page + pages - 1) % pages,
+        };
+    }
+
     fn age(&self, at: f64) -> String {
         format!("{:.1}s", (self.clock - at).max(0.0))
     }
@@ -359,8 +556,64 @@ fn draw_units(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     split[1]
 }
 
+/// Where the chart goes, and what stands in for it before anything is marked.
+///
+/// Every decision inside the frame is [`chart::plot`]'s and every stroke is
+/// [`chart::draw`]'s — the paging, the fold, the key, the palette, which line
+/// comes off when the terminal is narrow. What is left here is the sentence for
+/// the empty case, which is about this screen's selection rather than about a
+/// plot, which is exactly why `plot` hands that case back to its caller.
+fn draw_chart(frame: &mut Frame, page: usize, charted: &Charted, area: Rect) {
+    let Some(plotted) = chart::plot(&charted.series, page, area.width) else {
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" chart — nothing marked: [c] configure, then [g] on a measurement "),
+            area,
+        );
+        return;
+    };
+    chart::draw(frame, &plotted, area);
+}
+
+/// What `watch` has to say about its own chart, which the widget cannot.
+///
+/// The window, because a chart whose extent is a secret is a chart nobody can
+/// read; and the two ways a marked channel does not reach the screen, because a
+/// driver who marks one and sees nothing appear concludes the tool is broken.
+///
+/// It goes on a line of its own under the chart rather than into the footer
+/// with the key hints. Not taste: the footer is one row inside a border and
+/// these sentences are as long as the selection makes them, so in there the
+/// last of them is the one that gets clipped — and the one that gets clipped is
+/// the one that says what is missing.
+fn chart_note(charted: &Charted) -> String {
+    let mut note = format!(" last {:.0}s", history::WINDOW_SECONDS);
+    if charted.over_cap > 0 {
+        note.push_str(&format!(" · {} more marked than it draws", charted.over_cap));
+    }
+    if charted.no_number > 0 {
+        note.push_str(&format!(" · {} marked with no proven number", charted.no_number));
+    }
+    note
+}
+
 fn draw_live(frame: &mut Frame, app: &mut App) {
-    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
+    // Built before anything is drawn, because the chart is what decides how
+    // much of the screen the table gets.
+    let charted = app.chart_shown.then(|| app.charted());
+    let layout = match charted.is_some() {
+        // A chart in a few lines is a smear, and a chart that takes the screen
+        // leaves no table to read the numbers off. Two fifths is the split that
+        // keeps both readable at the 24 rows a terminal is still allowed to be.
+        true => Layout::vertical([
+            Constraint::Min(3),
+            Constraint::Percentage(40),
+            Constraint::Length(3),
+        ])
+        .split(frame.area()),
+        false => Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area()),
+    };
     let table_area = layout[0];
     let shown = app.rows();
     // Grouped by control unit, with a line naming each: values from several
@@ -438,6 +691,16 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
     .block(Block::default().borders(Borders::ALL).title(" vagcan watch "));
     frame.render_widget(table, table_area);
 
+    if let Some(charted) = &charted {
+        let split =
+            Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).split(layout[1]);
+        draw_chart(frame, app.chart_page, charted, split[0]);
+        frame.render_widget(
+            Paragraph::new(chart_note(charted)).style(Style::default().fg(Color::DarkGray)),
+            split[1],
+        );
+    }
+
     let rate = match app.live {
         true => format!("{:.1} Hz · ", app.poll_rate()),
         false => String::new(),
@@ -449,20 +712,25 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
         None => String::new(),
     };
     let help = format!(
-        " {rate}{} of {} shown · [tab] unit  [c] configure  [q] quit{}{waiting}",
+        " {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [q] quit{}{waiting}",
         shown.len(),
         app.channels.iter().filter(|c| c.selected).count(),
         app.status
     );
     frame.render_widget(
         Paragraph::new(help).block(Block::default().borders(Borders::ALL)),
-        layout[1],
+        *layout.last().expect("the footer is the last row of the layout"),
     );
 }
 
 /// Draw the selection screen.
 fn draw_select(frame: &mut Frame, app: &mut App) {
-    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area());
+    // Two rows for the hints, and they wrap. This screen has the most keys of
+    // any in the tool and its hint line was already longer than a hundred
+    // columns before the chart mark was added to it — which meant `[enter]
+    // back`, the key that leaves the screen, was clipped off the end of it on
+    // an ordinary terminal.
+    let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).split(frame.area());
     let table_area = draw_units(frame, app, layout[0]);
     let visible = app.visible();
     let rows: Vec<Row> = visible
@@ -470,12 +738,20 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
         .map(|i| {
             let c = &app.channels[*i];
             let mark = if c.selected { "[x]" } else { "[ ]" };
+            // The chart mark is a word rather than a second box: two boxes side
+            // by side on one row is a puzzle, and this one is the rarer choice
+            // of the two.
+            let charted = match app.charted.contains(&(c.request, c.did)) {
+                true => "chart",
+                false => "",
+            };
             Row::new(vec![
                 Cell::from(mark),
                 Cell::from(c.unit()),
                 Cell::from(format!("{:04X}", c.did)),
                 Cell::from(c.label()),
                 Cell::from(c.unit_of_measure().to_string()),
+                Cell::from(charted).style(Style::default().fg(Color::Cyan)),
             ])
         })
         .collect();
@@ -498,6 +774,7 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
             Constraint::Length(5),
             Constraint::Length(name_w),
             Constraint::Length(9),
+            Constraint::Length(5),
         ],
     )
     .row_highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
@@ -515,12 +792,14 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
     let help = if app.typing_filter {
         format!(" filter: {}▏ [enter] apply  [esc] clear ", app.filter)
     } else {
-        " [space]/click toggle  [↑↓ pgup/pgdn] move  [tab] unit  [/] filter  [a] all  [n] none  \
-         [enter] back "
+        " [space]/click toggle  [g] chart  [↑↓ pgup/pgdn] move  [tab] unit  [/] filter  \
+         [a] all  [n] none  [enter] back "
             .to_string()
     };
     frame.render_widget(
-        Paragraph::new(help).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(help)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL)),
         layout[1],
     );
 }
@@ -581,6 +860,9 @@ fn on_mouse(app: &mut App, event: crossterm::event::MouseEvent) {
             if let Some(channel) = visible.get(index) {
                 app.cursor = *channel;
                 app.channels[*channel].selected = !app.channels[*channel].selected;
+                // A click deselects exactly as `space` does, so it drops a
+                // chart mark exactly as `space` does.
+                app.prune_charted();
             }
         }
         MouseEventKind::ScrollDown => {
@@ -608,9 +890,18 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
         _ => {}
     }
     match app.screen {
+        // `Esc` quits here where in `measure` it cancels a run. The divergence
+        // is deliberate and predates the chart: a stopwatch needs a cheap
+        // "throw this one away" and `watch` has nothing to throw away.
         Screen::Live => match code {
             KeyCode::Char('q') | KeyCode::Esc => return false,
             KeyCode::Char('c') => app.screen = Screen::Select,
+            KeyCode::Char('g') => app.toggle_chart(),
+            // `←`/`→` are the chart's own advertised keys — its bottom border
+            // prints `←→ chart` when there is more than one page — so they
+            // belong to it, and to nothing while it is down.
+            KeyCode::Left if app.chart_shown => app.step_chart(false),
+            KeyCode::Right if app.chart_shown => app.step_chart(true),
             _ => {}
         },
         // While a filter is being typed the letters belong to it, or `n` would
@@ -663,8 +954,12 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
                         app.channels[*i].selected = false;
                     }
                 }
+                KeyCode::Char('g') => app.toggle_charted(app.cursor),
                 _ => {}
             }
+            // Anything above can have deselected a channel, and a chart mark
+            // outliving the poll that feeds it is a line that stops dead.
+            app.prune_charted();
         }
     }
     true
@@ -783,13 +1078,24 @@ pub async fn run_recording(
                 let channel = &app.channels[hit.channel];
                 let (request, did) = (channel.request, channel.did);
                 if let Some(bytes) = replay::cell_to_bytes(cell, channel, hit.raw) {
-                    app.latest.insert((request, did), (playhead, bytes));
+                    app.observe(request, did, playhead, bytes);
                 }
             }
         }
         app.clock = playhead;
+        // The clock here is the playhead, which wraps at the end of the
+        // recording and jumps when somebody seeks. `History` is written to
+        // survive that; this is where it happens.
+        app.history.trim(playhead);
+        // `←`/`→` seek, and they page the chart while it is up. One key cannot
+        // mean two things at once, so the hint says which of the two it means
+        // now rather than advertising a key that will not do what it says.
+        let seek = match app.chart_shown {
+            true => "  [g] chart off to seek",
+            false => "  [←→] seek",
+        };
         app.status = format!(
-            " · [space] pause  [←→] seek  [+-] speed · {:.0}/{:.0}s ×{speed:.2}{}",
+            " · [space] pause{seek}  [+-] speed · {:.0}/{:.0}s ×{speed:.2}{}",
             playhead,
             duration,
             if paused { " PAUSED" } else { "" }
@@ -824,11 +1130,14 @@ pub async fn run_recording(
                                 speed = (speed / 2.0).max(0.05);
                                 continue;
                             }
-                            KeyCode::Left => {
+                            // Seeking only while the chart is down. With it up
+                            // the arrows are the chart's, which is what its own
+                            // border says they are.
+                            KeyCode::Left if !app.chart_shown => {
                                 playhead = (playhead - 10.0).max(0.0);
                                 continue;
                             }
-                            KeyCode::Right => {
+                            KeyCode::Right if !app.chart_shown => {
                                 playhead = (playhead + 10.0).min(duration);
                                 continue;
                             }
@@ -879,8 +1188,12 @@ async fn poll_batch<B: vag_can::CanBackend>(
     };
     app.clock = at;
     for (did, data) in records {
-        app.latest.insert((batch.request, did), (at, data));
+        app.observe(batch.request, did, at, data);
     }
+    // Sweeping every channel and not only the ones just answered: a channel
+    // that was deselected mid-run stops being polled, and its last minute would
+    // otherwise sit in memory for the rest of the drive.
+    app.history.trim(at);
 }
 
 /// One CSV row of whatever is selected, writing the header first.
@@ -1781,6 +2094,359 @@ mod tests {
         step_tab(&mut a, true);
         let visible = a.visible();
         assert!(visible.contains(&a.cursor), "{:?} not in the open tab", a.cursor);
+    }
+
+    /// A channel with a scaling this project proved, for the chart tests. A
+    /// fixture: the numbers are a linear scale and a unit string, not a row
+    /// copied out of one car's catalog.
+    fn proven(request: u16, did: u16, name: &'static str, unit: &'static str) -> Channel {
+        use std::borrow::Cow;
+        use vag_data::catalog::{ReadId, Scaling};
+        use vag_data::measure::{LinearScale, RawForm};
+        Channel {
+            request,
+            did,
+            def: Some(vag_data::catalog::MeasurementDef {
+                name: Cow::Borrowed(name),
+                unit: Cow::Borrowed(unit),
+                address: ReadId::Uds(did),
+                raw_form: RawForm::U16Be,
+                scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
+            }),
+            selected: true,
+        }
+    }
+
+    /// A state — a gear, a selector lever. It has a definition and it has no
+    /// number: the codes are neither ordered nor contiguous.
+    fn state(request: u16, did: u16, name: &'static str) -> Channel {
+        use std::borrow::Cow;
+        use vag_data::catalog::{ReadId, Scaling};
+        use vag_data::measure::RawForm;
+        Channel {
+            request,
+            did,
+            def: Some(vag_data::catalog::MeasurementDef {
+                name: Cow::Borrowed(name),
+                unit: Cow::Borrowed(""),
+                address: ReadId::Uds(did),
+                raw_form: RawForm::U8First,
+                scaling: Scaling::Enum { levels: vec![(5, "4".to_string()), (12, "R".to_string())] },
+            }),
+            selected: true,
+        }
+    }
+
+    fn raw(request: u16, did: u16) -> Channel {
+        Channel { request, did, def: None, selected: true }
+    }
+
+    /// The live screen as a person sees it.
+    fn live_text(app: &mut App, w: u16, h: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| draw_live(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn select_text(app: &mut App, w: u16, h: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|frame| draw_select(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The live screen with a chart on it, at every size a terminal is still
+    /// allowed to be.
+    #[test]
+    #[ignore = "not an assertion — prints the screen so a person can read it"]
+    fn show() {
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let mut a = App::new(vec![
+                proven(0x7E0, 0x202A, "Boost pressure", "bar"),
+                proven(0x7E0, 0x206E, "Engine speed", "/min"),
+                raw(0x7E0, 0x38F0),
+            ]);
+            a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
+            for (i, did) in [0x202Au16, 0x206E].iter().enumerate() {
+                a.charted.insert((0x7E0, *did));
+                for step in 0..40u16 {
+                    let value = 1000 + step * 40 * (i as u16 + 1);
+                    a.observe(0x7E0, *did, step as f64 * 0.25, value.to_be_bytes().to_vec());
+                }
+            }
+            a.charted.insert((0x7E0, 0x38F0));
+            a.observe(0x7E0, 0x38F0, 9.75, vec![0x0B, 0x34]);
+            a.clock = 9.75;
+            a.chart_shown = true;
+            println!("\n=== {w}×{h} ===");
+            println!("{}", live_text(&mut a, w, h));
+            a.screen = Screen::Select;
+            println!("{}", select_text(&mut a, w, h));
+        }
+    }
+
+    #[test]
+    fn a_channel_with_no_proven_scaling_stays_raw_and_unplotted() {
+        // The whole of `watch`'s reason for existing is to show the identifiers
+        // nobody has proven yet, so the chart has to be able to say no to one.
+        // There is no float in a raw channel — there is a byte string — and
+        // inventing one is the mistake this project has twice caught itself at.
+        let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar"), raw(0x7E0, 0x38F0)]);
+        a.observe(0x7E0, 0x202A, 1.0, vec![0x03, 0xE8]);
+        a.observe(0x7E0, 0x38F0, 1.0, vec![0x0B, 0x34]);
+        assert_eq!(a.history.points((0x7E0, 0x202A)), vec![(1.0, 1.0)]);
+        assert!(a.history.points((0x7E0, 0x38F0)).is_empty());
+        // The table still shows it, because that is what `watch` is for.
+        assert_eq!(a.latest.get(&(0x7E0, 0x38F0)).map(|(_, d)| d.clone()), Some(vec![0x0B, 0x34]));
+
+        // A state has a definition and still no number: the gear codes are
+        // neither ordered nor contiguous, so a line through them would draw the
+        // encoding rather than the car.
+        let mut a = App::new(vec![state(0x7E1, 0x3816, "Selected gear")]);
+        a.observe(0x7E1, 0x3816, 1.0, vec![0x05]);
+        assert!(a.history.points((0x7E1, 0x3816)).is_empty());
+    }
+
+    #[test]
+    fn marking_a_channel_for_the_chart_also_puts_it_on_the_poll_plan() {
+        // A line that is charted but not polled can never have a point in it,
+        // and would be a name in the key with nothing under it forever.
+        let mut a = App::new(vec![Channel {
+            selected: false,
+            ..proven(0x7E0, 0x202A, "Boost pressure", "bar")
+        }]);
+        a.screen = Screen::Select;
+        a.cursor = 0;
+        assert!(plan::plan(&a.channels).is_empty());
+        on_key(&mut a, KeyCode::Char('g'));
+        assert!(a.charted.contains(&(0x7E0, 0x202A)));
+        assert!(a.channels[0].selected, "marking for the chart selects it");
+        assert!(!plan::plan(&a.channels).is_empty());
+
+        // And unselecting it takes the chart mark with it, rather than leaving
+        // a line the loop has stopped feeding.
+        on_key(&mut a, KeyCode::Char(' '));
+        assert!(!a.channels[0].selected);
+        assert!(a.charted.is_empty(), "{:?}", a.charted);
+    }
+
+    #[test]
+    fn the_chart_draws_what_was_marked_and_says_what_it_would_not_draw() {
+        // A screen that drops a series has to say it dropped it, and the two
+        // reasons it can drop one are different sentences: too many marked, and
+        // marked with nothing to plot.
+        let mut channels: Vec<Channel> =
+            (0..8).map(|i| proven(0x7E0, 0x2000 + i, "boost", "bar")).collect();
+        channels.push(raw(0x7E0, 0x38F0));
+        let mut a = App::new(channels);
+        for c in &a.channels {
+            a.charted.insert((c.request, c.did));
+        }
+        let charted = a.charted();
+        assert_eq!(charted.series.len(), CHART_CHANNELS);
+        assert_eq!(charted.over_cap, 8 - CHART_CHANNELS);
+        assert_eq!(charted.no_number, 1);
+
+        // Nothing unmarked is on it, whatever else is selected.
+        let mut a = App::new(vec![
+            proven(0x7E0, 0x2029, "Boost pressure, specified", "bar"),
+            proven(0x7E0, 0x202A, "Boost pressure, actual", "bar"),
+        ]);
+        a.charted.insert((0x7E0, 0x202A));
+        let charted = a.charted();
+        assert_eq!(charted.series.len(), 1);
+        assert_eq!(charted.series[0].label, "Boost pressure, actual");
+        assert_eq!(charted.series[0].unit, "bar");
+        // Everything `watch` draws came off the bus; it computes nothing.
+        assert_eq!(charted.series[0].origin, crate::ui::chart::Origin::Bus);
+    }
+
+    #[test]
+    fn a_line_from_a_second_control_unit_says_which_unit_it_came_from() {
+        // Two units publish an engine speed and a shaft speed under names that
+        // can read alike, and a key that names two lines the same way is a key
+        // that explains nothing.
+        let mut a = App::new(vec![
+            proven(0x7E0, 0x206E, "Engine speed", "/min"),
+            proven(0x7E1, 0x380A, "Engine speed", "/min"),
+        ]);
+        a.charted.insert((0x7E0, 0x206E));
+        let one = a.charted();
+        assert_eq!(one.series[0].label, "Engine speed", "one unit needs no prefix");
+        a.charted.insert((0x7E1, 0x380A));
+        let two = a.charted();
+        assert_eq!(two.series[0].label, "01 Engine speed");
+        assert_eq!(two.series[1].label, "02 Engine speed");
+    }
+
+    #[test]
+    fn opening_the_chart_with_nothing_marked_seeds_it_from_what_is_on_screen() {
+        // The one key that opens the chart must not open an empty one: a
+        // feature whose first press shows nothing teaches nobody it exists.
+        // What it seeds from is what is already on the screen, in the order the
+        // table shows it, and no more than the chart draws.
+        let mut channels: Vec<Channel> =
+            (0..9).map(|i| proven(0x7E0, 0x2000 + i, "boost", "bar")).collect();
+        channels.push(raw(0x7E0, 0x38F0));
+        let mut a = App::new(channels);
+        assert!(!a.chart_shown);
+        on_key(&mut a, KeyCode::Char('g'));
+        assert!(a.chart_shown);
+        assert_eq!(a.charted.len(), CHART_CHANNELS);
+        assert!(!a.charted.contains(&(0x7E0, 0x38F0)), "nothing raw is seeded");
+
+        // Hiding and showing it again keeps the marks: the seed is for an empty
+        // selection, not for every press.
+        on_key(&mut a, KeyCode::Char('g'));
+        a.charted.remove(&(0x7E0, 0x2000));
+        on_key(&mut a, KeyCode::Char('g'));
+        assert_eq!(a.charted.len(), CHART_CHANNELS - 1);
+    }
+
+    #[test]
+    fn the_arrow_keys_page_the_chart_only_while_it_is_up_and_escape_still_quits() {
+        // `←`/`→` are the widget's own advertised keys, so they page the chart —
+        // and they do nothing at all while there is no chart, because a key
+        // advertised and inert is worse than no key.
+        //
+        // `Esc` quits here where in `measure` it cancels a run. That divergence
+        // is deliberate: a stopwatch needs a cheap "throw this one away" and
+        // `watch` has nothing to throw away.
+        let mut a = App::new(vec![
+            proven(0x7E0, 0x2029, "boost", "bar"),
+            proven(0x7E0, 0x206E, "engine speed", "/min"),
+            proven(0x7E0, 0x2000, "coolant", "°C"),
+        ]);
+        for c in &a.channels {
+            a.charted.insert((c.request, c.did));
+        }
+        on_key(&mut a, KeyCode::Right);
+        assert_eq!(a.chart_page, 0, "nothing to page while the chart is down");
+
+        a.chart_shown = true;
+        // Three units over two pages, because two scales is all one page holds
+        // — the widget's rule, and this side does not get a second opinion on
+        // it.
+        on_key(&mut a, KeyCode::Right);
+        assert_eq!(a.chart_page, 1);
+        on_key(&mut a, KeyCode::Right);
+        assert_eq!(a.chart_page, 0, "wraps rather than running off the end");
+        on_key(&mut a, KeyCode::Left);
+        assert_eq!(a.chart_page, 1, "and wraps backwards too");
+
+        // Changing what is marked renumbers the pages, so the page index goes
+        // back to the first one. The key prints `1/3`, which is what says so.
+        a.screen = Screen::Select;
+        a.cursor = 0;
+        on_key(&mut a, KeyCode::Char('g'));
+        assert_eq!(a.chart_page, 0);
+
+        assert!(!on_key(&mut a, KeyCode::Char('q')));
+        let mut a = App::new(vec![proven(0x7E0, 0x2029, "boost", "bar")]);
+        assert!(!on_key(&mut a, KeyCode::Esc));
+    }
+
+    #[test]
+    fn the_chart_names_its_lines_its_axis_and_the_window_it_covers() {
+        // "Я не сразу понял что означает график": a frame with two bare numbers
+        // in it is not something a chart can be read from. The window is this
+        // screen's own sentence — a chart whose extent is a secret is a chart
+        // nobody can read — so `watch` prints it where `watch` prints its other
+        // sentences.
+        let mut a = App::new(vec![
+            proven(0x7E0, 0x202A, "Boost pressure", "bar"),
+            proven(0x7E0, 0x206E, "Engine speed", "/min"),
+            raw(0x7E0, 0x38F0),
+        ]);
+        for (i, did) in [0x202Au16, 0x206E].iter().enumerate() {
+            a.charted.insert((0x7E0, *did));
+            for step in 0..5 {
+                let raw_value = 1000 + step * 500 * (i as u16 + 1);
+                a.observe(0x7E0, *did, step as f64 * 0.2, raw_value.to_be_bytes().to_vec());
+            }
+        }
+        a.charted.insert((0x7E0, 0x38F0));
+        a.chart_shown = true;
+
+        // Every size a terminal is still allowed to be. The table and the chart
+        // share the screen, so a chart that only reads at 120 columns is one
+        // that does not read.
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = live_text(&mut a, w, h);
+            assert!(text.contains("Boost pressure"), "{w}×{h} does not name the line:\n{text}");
+            assert!(text.contains("Engine speed"), "{w}×{h} plots one line, not two:\n{text}");
+            assert!(text.contains("time"), "{w}×{h} does not say what it is over:\n{text}");
+            // The folded line's own numbers are not on the axis, so they are in
+            // the key: a curve whose axis is nowhere is decoration, not data.
+            assert!(text.contains("/min]"), "{w}×{h} folds a line and hides its scale:\n{text}");
+            assert!(text.contains("last 60s"), "{w}×{h} keeps the window a secret:\n{text}");
+            assert!(text.contains("[g] chart"), "{w}×{h}:\n{text}");
+            // The marked channel with nothing to plot is accounted for rather
+            // than silently missing, or a driver concludes the tool is broken.
+            assert!(text.contains("no proven number"), "{w}×{h}:\n{text}");
+        }
+
+        // With the chart down the table has the screen to itself.
+        a.chart_shown = false;
+        let text = live_text(&mut a, 110, 30);
+        assert!(!text.contains("/min]"), "{text}");
+        assert!(!text.contains("last 60s"), "no chart, so no window to describe: {text}");
+        assert!(text.contains("[g] chart"), "the key is still offered: {text}");
+    }
+
+    #[test]
+    fn nothing_marked_says_which_two_keys_fix_it_rather_than_drawing_an_empty_frame() {
+        // What an empty chart should say is a sentence about this screen, which
+        // is why `chart::plot` hands the empty case back to its caller.
+        let mut a = App::new(vec![raw(0x7E0, 0x38F0)]);
+        a.chart_shown = true;
+        let text = live_text(&mut a, 110, 30);
+        assert!(text.contains("nothing marked"), "{text}");
+    }
+
+    #[test]
+    fn the_selection_screen_shows_which_channels_the_chart_holds() {
+        // The mark is a second choice over the same list — what is on the table
+        // and what is on the chart are different questions — so it needs to be
+        // visible on the screen where it is made.
+        let mut a = App::new(vec![
+            proven(0x7E0, 0x2029, "Boost pressure", "bar"),
+            proven(0x7E0, 0x206E, "Engine speed", "/min"),
+        ]);
+        a.charted.insert((0x7E0, 0x206E));
+        a.screen = Screen::Select;
+        let text = select_text(&mut a, 110, 12);
+        let charted_row = text
+            .lines()
+            .find(|l| l.contains("Engine speed"))
+            .expect("the marked row is on screen")
+            .to_string();
+        let plain_row =
+            text.lines().find(|l| l.contains("Boost pressure")).expect("the other row").to_string();
+        assert!(charted_row.contains("chart"), "{charted_row:?}");
+        assert!(!plain_row.contains("chart"), "{plain_row:?}");
+
+        // And every key this screen has is on it, at the narrowest a terminal
+        // is allowed to be. The hints outgrew one row when the chart mark was
+        // added and `[enter] back` — the key that leaves the screen — fell off
+        // the end of the line.
+        for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+            let text = select_text(&mut a, w, h);
+            for key in ["[g] chart", "[a] all", "[n] none", "[enter] back"] {
+                assert!(text.contains(key), "{w}×{h} hides {key}:\n{text}");
+            }
+        }
     }
 
     #[test]
