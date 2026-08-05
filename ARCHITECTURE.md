@@ -1,7 +1,10 @@
 # Architecture
 
-Why this tool is built the way it is. For usage, see [`USAGE.md`](USAGE.md); for the
-rules that were paid for in a broken control unit, [`SAFETY.md`](SAFETY.md).
+Why this tool is built the way it is. **This one is for the curious and for anyone
+working on the code** — you do not need it to use `vagcan` (that is [`USAGE.md`](USAGE.md)).
+The `research/…` files it links go deeper still, into the reverse-engineering: they are
+developer notes, not instructions. For the rules that were paid for in a broken control
+unit, [`SAFETY.md`](SAFETY.md).
 
 ---
 

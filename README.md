@@ -1,9 +1,11 @@
 # vagcan
 
 A command-line diagnostics tool for VW / Audi / Škoda / SEAT cars, written in Rust.
-It plugs into the OBD-II port through a USB-CAN adapter and reads the car: which
-control units it has, what they call themselves, what they measure, what faults they
-have stored, and — with `vagcan measure` — how fast the thing actually accelerates.
+It plugs into the OBD-II port — the diagnostics socket every car built since the
+mid-2000s has, usually under the dashboard — through a small USB-CAN adapter, and reads
+the car: which computers (VW calls them *control units*) it has, what they call
+themselves, what they measure, what faults they have stored, and — with
+`vagcan measure` — how fast the thing actually accelerates.
 It **only reads**. There is no coding, no adaptation, no clearing faults, no flashing,
 and there never will be; the UDS service allowlist is four entries long and it is
 short by policy rather than by omission. A read-only tool is still not a harmless one,
@@ -40,11 +42,13 @@ blaming the software.
 One command, if you have Rust:
 
 ```sh
-cargo install --git https://github.com/pashokitsme/vagcan
+cargo install --git https://github.com/pashokitsme/vagcan vagcan
 ```
 
-That builds `vagcan` and puts it on your `PATH`, so every example below is just
-`vagcan …`. To work on the tool instead, clone it and install from the checkout:
+(The trailing `vagcan` is the package name — the repository is a workspace of several,
+and this is the one with the `vagcan` command.) That puts `vagcan` on your `PATH`, so
+every example below is just `vagcan …`. To work on the tool instead, clone it and
+install from the checkout:
 
 ```sh
 git clone https://github.com/pashokitsme/vagcan && cd vagcan
@@ -102,6 +106,11 @@ already in `~/.vagcan`. Every command and every flag is in [`USAGE.md`](USAGE.md
 What the tool deliberately does not do is guess. A value with no proven scaling is
 shown as raw bytes and tagged as raw. This project has twice caught itself believing a
 number it had invented, and the guards are the scar tissue.
+
+**No car or adapter yet?** You can still do plenty offline: `vagcan setup` (above),
+`vagcan vcds names <text>` to search VW's measurement names, and `vagcan recording …`
+to read back a drive someone else recorded. The offline commands are grouped under
+`vcds` and `recording` in [`USAGE.md`](USAGE.md).
 
 ---
 

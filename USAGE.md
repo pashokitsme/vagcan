@@ -187,8 +187,10 @@ vagcan survey --out driving.jsonl
 vagcan survey --diff parked.jsonl driving.jsonl
 ```
 
-The identifiers whose bytes moved are the live measurements. That list needs no label
-file at all.
+The identifiers whose bytes moved are the live measurements. (An **identifier** is the
+numbered address of one value inside a control unit — like `2029` for boost pressure;
+you read it and get back raw bytes, and the job is to learn what those bytes mean.)
+That list needs no label file at all.
 
 ---
 
