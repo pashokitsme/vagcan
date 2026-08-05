@@ -24,12 +24,13 @@ Read `research/codes-dat.md` §5 and `research/whole-car-survey.md` §3 first. T
 | Ship the units that "already answer ISO DTCs"? | **Refuted — it names nothing** — §6 | very high |
 | Which row of the table is *this* car's? | **The unit's own `.rod` says: its `[DTC]` ids are 1-based `RD.rod` row numbers** — §10 | very high (22/22, 33/33, 2/2) |
 | Does that also break the substitution? | **No. Untouched** — §10.3 | very high |
+| Is the per-table alphabet derivable from the key? | **Yes — `srand(key)` and two Fisher-Yates shuffles** — §11 | certain (95/95, then 110 765/110 766) |
 
-The chain is **identified and verified**. It is not **reachable**, which by this project's
-own rule (`research/mux.md`) means this is a writeup and not a feature.
+The chain is **identified, verified and now reachable**. §11 removes the last obstacle
+and the writeup ends as a feature: `vagcan faults` names this car's faults.
 
-**§10 closes obstacle 5.2 outright** and leaves 5.1 exactly where it was. Read §10 before
-§8, which it corrects.
+**§10 closes obstacle 5.2 outright and §11 closes 5.1.** Read §10 and §11 before §5 and
+§8, which they correct.
 
 ---
 
@@ -479,3 +480,109 @@ Worth adding to that list, because §10 makes it newly usable: `f2` is 190 000�
 `RD.rod [DTC]` has **236 755 rows**. Now that one id space in these files is known to be a
 row number, `f2` being a row number into some other registry is a cheap thing to test, and
 a known valid range would prune alphabets on every table at once.
+
+---
+
+## 11. The substitution, broken: the alphabet is `srand(table key)`
+
+§5.1 measured that the alphabet is per-table and concluded there was nothing to pool.
+That was right and it was the wrong thing to want. The alphabet is not pooled because it
+is *generated*, and §10.6 named the lead correctly: reverse the routine.
+
+### 11.1 The routine
+
+`VCDS-ARM.exe` 26.3 (`research/VCDS-25.12.0/` is 25.12; the 26.3 binaries come out of the
+installer). Two constants sit next to each other in `.rdata`:
+
+```
+0x140189890  "abcdefghijklmnopqrstuvwxyz"
+0x1401898b0  "0123456789,.-_"
+```
+
+Both are read by exactly one function, `fcn.1400e1400` — **the same function
+`codes-dat.md` §2.2 read the `Codes.dat` per-record IV out of.** It copies them onto the
+stack and calls three helpers:
+
+```
+0x1400e16c8   mov  w1, w19            ; the record's key
+0x1400e16cc   bl   0x1400e6f80        ; shuffle both alphabets under that key
+0x1400e16dc   bl   0x1400e6f70        ; read the numeric fields through the digit alphabet
+0x1400e16ec   bl   0x1400e6f60        ; and the letters through the letter alphabet
+```
+
+`fcn.1400e6f80` is the whole secret, and it is nine instructions of loop body:
+
+```c
+srand(key);
+for (i = 0; i < 26; i++) { j = rand() % 26; swap(letters[i], letters[j]); }
+for (i = 0; i < 14; i++) { j = rand() % 14; swap(digits [i], digits [j]); }
+```
+
+`rand`/`srand` are the Microsoft CRT pair, statically linked at `0x140132528` and
+`0x140132568` — `seed = seed * 0x343FD + 0x269EC3`, result `(seed >> 16) & 0x7fff`,
+`srand` storing the seed verbatim. Nothing is hashed, salted or table-driven; `MT`, `KS`
+and `OFF_ROD` are not involved at all, which is why the §5.1 attacks never smelled them.
+
+Three consequences worth stating, because each is a check the reading passed:
+
+* **The two shuffles share one stream.** The digit alphabet depends on the 26 draws the
+  letter shuffle consumed first, so implementing only the digits gives noise. It is also
+  why the answer could never have been fitted from the digit data alone.
+* **The roles are positional in the *plaintext* alphabet, not in the shuffled one.**
+  `digits[10]` is `,` — so the enciphered separator is `shuffled[10]`, which is exactly
+  why §3's "the glyph occurring six times in every row" is never one of the ten digits.
+  `.`, `-` and `_` are `digits[11..14]`, the three glyphs a table leaves unused.
+* **Decoding is `strchr`.** `fcn.1400e6ea0` lowercases the input glyph, finds it in the
+  shuffled alphabet, emits the plaintext alphabet's character at that index, and restores
+  the case. So `shuffled[d]` *is* the glyph digit `d` is written as, and the `DigitOrder`
+  this project recovers by hand is literally the first ten bytes of `shuffled`.
+
+### 11.2 It fits everything, immediately
+
+Checked in the order that would have killed it fastest.
+
+| check | result |
+|---|---|
+| the 95 solved `(key, alphabet)` pairs of §5.1 | **95 / 95**, and the separator too |
+| every table of `RD.rod [DTC]`: does `shuffled[10]` split every row into 7 fields? | **110 765 / 110 766** |
+| every `f0` in the file: is it decodable, i.e. are its glyphs all in `shuffled[0..10]`? | **219 490 / 219 490** (17 264 rows have an empty `f0`) |
+| …and is the decoded value a `Codes.dat` key? | **217 271 / 219 490 = 98.99 %** (§5's baseline: 8.2 %) |
+| the letter alphabet: for an 8-digit `f0`, is `f1` its own low byte (§10.3)? | **11 189 / 11 189 = 100 %** |
+| the 38 crib pairs of §1, end to end to VCDS's own Russian text | **38 / 38** |
+
+The one table that fails the separator check is `1866506087652`, one of the two malformed
+keys §2 counted. Not one row anywhere carries a glyph outside its own generated alphabet —
+across 219 490 fields that is the check that had no way to pass by accident.
+
+The 1.01 % of `f0` values that are not `Codes.dat` keys are 757 distinct numbers, led by
+140 975 (421 rows) and 165 535 (168) — the same drift `codes-dat.md` §5 measured as 47 of
+48, an English `Codes.dat` from 26.3 against a label corpus of another vintage, not a
+decode failure.
+
+### 11.3 What that does to §5 and §10.3
+
+§5.1 is **closed, not narrowed**. There is no ambiguity left to report: every table has
+exactly one alphabet, it costs about forty multiplications to compute, and the DFS crib
+solver of §4 — the node budget, the `misses` escape, the "search not exhausted" refusal —
+is no longer needed for anything. It stays in `research/rd-rod/` as the record of how the
+alphabet was first read without the key.
+
+§10.3's table becomes, for the reference car's **every** stored fault on the three units
+whose `.rod` resolves soundly:
+
+| unit | stored | named |
+|---|---|---|
+| `713` ESP | 33 | **33** |
+| `70C` steering column | 22 | **22** |
+| `712` power steering | 2 | **2** |
+
+**57 of 57**, against §10.3's 21 of 57. The six that §10.3 could not name are named now,
+and every one of them agrees with the crib where the crib knows the answer:
+`70C 047120` → 137 973 *"Temperature Sensor for Heated Steering Wheel"* FTB `01`, which is
+crib pair 291 104 → `B1455 01`, and which is what VCDS printed for this exact fault in
+`Scan-XW8AD4NE9JH008917-20260731-1522-212722km.txt`. Still zero wrong.
+
+### 11.4 Reproducing
+
+`research/rd-rod/alphabet.py` is the derivation, twenty lines, no dependencies. The
+shipped implementation is `crates/vag-data/src/glyphs.rs::DigitOrder::for_key`.
