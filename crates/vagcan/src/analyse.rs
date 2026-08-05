@@ -124,71 +124,161 @@ fn keep_best_miss(held: &mut Option<Rejected>, candidate: Rejected) {
 
 /// Split a positive `ReadDataByIdentifier` response into per-identifier records.
 ///
-/// The server does not state record lengths, so a multi-identifier response is
-/// only separable when each requested identifier appears, in the order asked,
-/// as a record header. When that does not hold the response is **skipped**
-/// rather than guessed at — a mis-split would attribute one measurement's bytes
-/// to another identifier, which is worse than having no sample.
+/// The server does not state record lengths, so the only thing marking a
+/// boundary is the next identifier's own bytes appearing. Everything here
+/// follows from that.
+///
+/// **An identifier that was asked for need not be in the answer.** A control
+/// unit answers a multi-identifier request with only the identifiers it
+/// supports — measured on the reference car and recorded in `todo/README.md`,
+/// and the reason a sweep can group-test at all. This function used to require
+/// all of them, so one unsupported identifier in a batch discarded the whole
+/// response. That is not a hypothetical: `measure` asks the engine unit for the
+/// mass air flow (`F410`, standard PID 10), which the reference car does not
+/// implement, and so lost engine speed, both boost channels and the air mass
+/// together, on every cycle of every run. Eleven saved sessions carry
+/// `engine_speed: 0 points` for that reason and nothing else.
+///
+/// **What is still refused is a guess.** Among the ways of reading a response,
+/// the one accounting for the most identifiers is the better explanation and
+/// wins; if two readings account for equally many, the response genuinely reads
+/// two ways and `None` is returned. A mis-split attributes one measurement's
+/// bytes to another identifier, which is worse than having no sample.
 pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>> {
-    let mut found = Vec::new();
-    parse_from(payload, dids, 0, &mut Vec::new(), &mut found);
-    // Exactly one way to read the response is a reading; two ways is a guess.
-    match found.len() {
-        1 => found.pop(),
+    let mut best = Best { budget: SPLIT_BUDGET, ..Best::default() };
+    parse_from(payload, dids, 0, &mut Vec::new(), &mut best);
+    match (best.budget, best.ties) {
+        // Out of budget is not "no reading" — it is a response this function
+        // did not finish examining, and calling that a unique parse would ship
+        // whichever reading it happened to find first.
+        (0, _) => None,
+        (_, 1) => best.records(payload),
         _ => None,
+    }
+}
+
+/// How many placements the split may try before giving up on a response.
+///
+/// The search is small on anything a control unit actually sends — eight
+/// identifiers, a few hundred bytes, and a header occurring in a handful of
+/// places. It is not small in the worst case: a payload whose bytes look like
+/// identifier headers throughout branches at every position of every level. The
+/// caller is a poll loop timing an acceleration run, so an unbounded search is
+/// a stall on a moving car; this bounds it at a cost far above any real
+/// response and well below anything a driver would notice.
+///
+/// The number comes from both ends. A real response branches two or three ways
+/// per identifier — a header rarely occurs inside another record's data — so
+/// eight of them cost a few thousand placements at most. A placement itself is
+/// a push of two integers, because the search carries byte *ranges* and only
+/// the winning parse is ever copied out; that keeps the ceiling in the
+/// low milliseconds, well inside one cycle of the poll loop.
+const SPLIT_BUDGET: u32 = 20_000;
+
+/// The best reading of a response so far, and whether anything ties with it.
+///
+/// Kept as a running maximum rather than a list of every parse: the search is
+/// bounded but not tiny, and only the top rank and the size of its tie can
+/// change the answer.
+#[derive(Default)]
+struct Best {
+    /// Where the held parse cut the payload, as `(identifier, start, end)`.
+    /// Ranges rather than bytes: the search offers a candidate at every leaf it
+    /// reaches, and copying each one out made the cost of a placement scale
+    /// with the size of the response — which is exactly backwards for a
+    /// pathological payload, the case the budget exists to survive.
+    parse: Option<Vec<(u16, usize, usize)>>,
+    /// How many identifiers the held parse places. A parse placing more
+    /// replaces it outright.
+    placed: usize,
+    /// How many parses place exactly `placed` identifiers. Anything but one
+    /// means the response does not read a single way.
+    ties: usize,
+    /// Placements left before the search gives up. See [`SPLIT_BUDGET`].
+    budget: u32,
+}
+
+impl Best {
+    fn offer(&mut self, parse: &[(u16, usize, usize)]) {
+        match parse.len().cmp(&self.placed) {
+            std::cmp::Ordering::Greater => {
+                self.placed = parse.len();
+                self.parse = Some(parse.to_vec());
+                self.ties = 1;
+            }
+            std::cmp::Ordering::Equal => self.ties += 1,
+            std::cmp::Ordering::Less => {}
+        }
+    }
+
+    /// The held parse with its bytes, once the search has finished and there is
+    /// exactly one of it.
+    fn records(&self, payload: &[u8]) -> Option<Vec<(u16, Vec<u8>)>> {
+        Some(
+            self.parse
+                .as_ref()?
+                .iter()
+                .map(|(did, from, to)| (*did, payload[*from..*to].to_vec()))
+                .collect(),
+        )
     }
 }
 
 /// Enumerate every self-consistent way to cut `payload` into records.
 ///
-/// The server states no record lengths, so a boundary is only known by the
-/// next identifier's bytes appearing — and those bytes can occur inside a
-/// record's data by coincidence, which little-endian gearbox values do
-/// readily. Requiring each boundary to be unique would throw away perfectly
-/// readable responses; requiring the whole *parse* to be unique keeps them
-/// while still refusing when the response genuinely reads two ways.
+/// Two choices are open at each identifier: the unit answered it, and its
+/// record starts here; or the unit did not implement it and there is nothing to
+/// place. The second is what makes a partial answer readable.
 ///
-/// At most eight identifiers per request and a few hundred bytes, so the
-/// search is cheap.
+/// A record's end is only ever a position where **some still-unplaced
+/// identifier's** header sits, or the end of the payload — which is what keeps
+/// the search cheap. Trying every byte position instead would be exponential in
+/// the payload length rather than in the handful of places a header occurs, and
+/// those bytes do occur inside a record's data by coincidence, which
+/// little-endian gearbox values do readily.
+///
+/// At most eight identifiers per request and a few hundred bytes.
 fn parse_from(
     payload: &[u8],
     dids: &[u16],
     at: usize,
-    prefix: &mut Vec<(u16, Vec<u8>)>,
-    found: &mut Vec<Vec<(u16, Vec<u8>)>>,
+    prefix: &mut Vec<(u16, usize, usize)>,
+    best: &mut Best,
 ) {
-    // More than a couple of readings already means ambiguity; stop searching.
-    if found.len() > 1 {
-        return;
+    match best.budget.checked_sub(1) {
+        Some(left) => best.budget = left,
+        None => return,
     }
     let Some((&did, rest)) = dids.split_first() else {
-        // Every identifier placed, and the payload is fully consumed.
+        // Every identifier accounted for — placed or absent — and the payload
+        // fully consumed. A parse that leaves bytes over has mis-read one of
+        // the records it did place.
         if at == payload.len() {
-            found.push(prefix.clone());
+            best.offer(prefix);
         }
         return;
     };
+
+    // The unit did not answer this one. Nothing is consumed, and the next
+    // identifier is tried at the same position.
+    parse_from(payload, rest, at, prefix, best);
+
     let head = [(did >> 8) as u8, (did & 0xFF) as u8];
     if payload.get(at..at + 2) != Some(&head[..]) {
         return;
     }
     let body = at + 2;
 
-    let Some((&next, _)) = rest.split_first() else {
-        // The last record runs to the end of the payload.
-        prefix.push((did, payload[body..].to_vec()));
-        parse_from(payload, rest, payload.len(), prefix, found);
-        prefix.pop();
-        return;
-    };
-
-    let next_head = [(next >> 8) as u8, (next & 0xFF) as u8];
-    let boundaries: Vec<usize> = (body..payload.len().saturating_sub(1))
-        .filter(|i| payload[*i..*i + 2] == next_head)
-        .collect();
+    let heads: Vec<[u8; 2]> =
+        rest.iter().map(|d| [(*d >> 8) as u8, (*d & 0xFF) as u8]).collect();
+    let boundaries = (body..payload.len().saturating_sub(1))
+        .filter(|i| heads.iter().any(|h| payload[*i..*i + 2] == *h))
+        // The record can also be the last one in the response, whether or not
+        // it is the last one requested.
+        .chain(std::iter::once(payload.len()));
     for end in boundaries {
-        prefix.push((did, payload[body..end].to_vec()));
-        parse_from(payload, rest, end, prefix, found);
+        prefix.push((did, body, end));
+        parse_from(payload, rest, end, prefix, best);
         prefix.pop();
     }
 }
@@ -863,12 +953,82 @@ mod tests {
     }
 
     #[test]
-    fn an_unsplittable_response_is_skipped_not_guessed() {
-        // The unit answered only some of what was asked; without lengths there
-        // is no way to attribute bytes, and a wrong attribution is worse than
-        // no sample at all.
+    fn an_identifier_the_unit_does_not_support_costs_only_itself() {
+        // A control unit answers a multi-identifier request with **only the
+        // identifiers it supports** — established on this car and recorded in
+        // `todo/README.md`: asking for `F190` together with something the unit
+        // does not implement returns just `F190`.
+        //
+        // This used to return `None`, which threw the whole response away. It
+        // cost every telemetry channel on the engine unit for eleven recorded
+        // sessions: `measure` asks it for the mass air flow (`F410`, standard
+        // PID 10) which this car does not implement, so all five identifiers in
+        // that batch — engine speed included — were discarded every cycle, and
+        // every saved run carries `engine_speed: 0 points`.
         let payload = [0xF1, 0x90, b'X', b'W'];
-        assert_eq!(split_records(&payload, &[0xF190, 0xF187]), None);
+        assert_eq!(
+            split_records(&payload, &[0xF190, 0xF187]),
+            Some(vec![(0xF190, b"XW".to_vec())]),
+            "the identifier that was answered is still readable"
+        );
+
+        // The omission can fall anywhere in the request, including first.
+        let payload = [0xF1, 0x87, b'8', b'V'];
+        assert_eq!(
+            split_records(&payload, &[0xF190, 0xF187]),
+            Some(vec![(0xF187, b"8V".to_vec())])
+        );
+
+        // And in the middle of three, which is the shape that loses a whole
+        // batch: the two that answered still split on the requested order.
+        let payload = [0xF1, 0x86, 0x01, 0xF1, 0x89, b'0', b'5'];
+        assert_eq!(
+            split_records(&payload, &[0xF186, 0xF187, 0xF189]),
+            Some(vec![(0xF186, vec![0x01]), (0xF189, b"05".to_vec())])
+        );
+    }
+
+    #[test]
+    fn a_response_that_genuinely_reads_two_ways_is_still_refused() {
+        // Tolerating an unanswered identifier must not become tolerating a
+        // guess. Here `F187`'s header occurs twice, so there are two ways to
+        // place it and both place the same number of identifiers — nothing
+        // distinguishes them, and a mis-split attributes one measurement's
+        // bytes to another.
+        let payload = [0xF1, 0x86, 0xF1, 0x87, 0x01, 0xF1, 0x87, 0x02];
+        assert_eq!(split_records(&payload, &[0xF186, 0xF187]), None);
+    }
+
+    #[test]
+    fn a_payload_built_to_explode_the_search_returns_rather_than_hangs() {
+        // Every byte pair in this payload is one of the requested headers, so
+        // every position of every level branches. The caller is the poll loop
+        // of a stopwatch running on a moving car: the guarantee that matters is
+        // that this returns, and that it does not call whatever it found first
+        // a unique reading.
+        let dids: Vec<u16> = (0..8).map(|i| 0xF100 + i).collect();
+        let payload: Vec<u8> = (0..300).flat_map(|i| [0xF1u8, (i % 8) as u8]).collect();
+        let started = std::time::Instant::now();
+        assert_eq!(split_records(&payload, &dids), None);
+        // One cycle of the poll loop at the rate the reference car achieves is
+        // about 77 ms. Giving up has to cost less than that or the guard is
+        // itself the stall.
+        assert!(started.elapsed().as_secs_f64() < 0.077, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn the_parse_that_places_the_most_identifiers_wins() {
+        // `F187`'s header also appears inside `F186`'s data, so the response
+        // can be read as one record or as two. Reading it as two accounts for
+        // an identifier that was asked for and is therefore the better
+        // explanation — and it is the reading this code has always taken. The
+        // ranking exists to keep it that way now that a short parse is legal
+        // at all.
+        let payload = [0xF1, 0x86, 0xF1, 0x87, 0x01];
+        assert_eq!(
+            split_records(&payload, &[0xF186, 0xF187]),
+            Some(vec![(0xF186, vec![]), (0xF187, vec![0x01])])
+        );
     }
 
     #[test]
