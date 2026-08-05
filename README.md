@@ -141,9 +141,9 @@ catalog is filed under, so a car sharing one inherits everything proven for it. 
 VIN `vagcan info` also prints identifies one physical car and helps nobody else, so it
 is not listed here.)
 
-| Make / model | Year | Platform | Engine | Gearbox |
-|---|---|---|---|---|
-| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) |
+| Make / model | Year | Platform | Engine | Gearbox | Adapter |
+|---|---|---|---|---|---|
+| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) | MKS CANable V2.0 Pro (slcan) |
 
 ---
 
