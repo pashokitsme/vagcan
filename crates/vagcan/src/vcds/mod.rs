@@ -23,8 +23,13 @@
 //! ```
 
 mod corpus;
-mod rod;
-mod tttext;
+// `vagcan setup` chains these two the way this module's own help documents —
+// `rod --dump` writes the text section, `tttext` reads it — so it needs them by
+// name rather than through the subcommand enum.
+pub mod rod;
+pub mod tttext;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -79,8 +84,9 @@ pub enum Tool {
         /// section can be read. A section with no key here is reported as
         /// unreadable rather than guessed, and the command that recovers one is
         /// printed against the section that needs it.
-        #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
-        iv_cache: String,
+        /// Default: `~/.vagcan/labels/rod-keys.json`, written by `vagcan setup`.
+        #[arg(long, value_name = "FILE")]
+        iv_cache: Option<String>,
         /// Adapter to use with --from-car.
         #[arg(long, value_name = "PATH")]
         device: Option<String>,
@@ -105,8 +111,9 @@ pub enum Tool {
         limit: usize,
         /// Names file to search. Recovered from a VCDS installation, so a
         /// different installation means a different file.
-        #[arg(long, default_value = names::DEFAULT_PATH, value_name = "FILE")]
-        catalog: String,
+        /// Default: `~/.vagcan/labels/names.json`, written by `vagcan setup`.
+        #[arg(long, value_name = "FILE")]
+        catalog: Option<String>,
     },
 
     /// Cross a bus capture with a VCDS log to prove measurement scalings.
@@ -164,8 +171,8 @@ pub enum Tool {
         #[arg(long)]
         no_crack: bool,
         /// Where recovered keys are read and written. Default: next to the
-        /// input, as `<FILE>.ivcache.json`. The project's own committed cache
-        /// is `catalogs/rod-iv-cache.json`.
+        /// input, as `<FILE>.ivcache.json`. The cache `vagcan setup` fills is
+        /// `~/.vagcan/labels/rod-keys.json`.
         #[arg(long, value_name = "PATH")]
         cache: Option<String>,
         /// Also write each decoded section to `DIR/<TAG>.bin`. This is how the
@@ -230,6 +237,12 @@ pub enum Tool {
         /// Write the readings here instead of stdout.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
+        /// Write the readings that clear the catalog gate as a
+        /// `{"<text id>": "<name>"}` JSON file — the form `vagcan vcds names`
+        /// searches. Far fewer than `--out`: a reading with an ambiguous word,
+        /// a guessed digit or a doubtful ending is dropped rather than shipped.
+        #[arg(long, value_name = "FILE")]
+        catalog: Option<String>,
         /// Also write the readings that still hold an unresolved letter, for
         /// inspection. They are never part of the main output.
         #[arg(long, value_name = "FILE")]
@@ -261,7 +274,7 @@ pub enum Outcome {
     /// `labels --from-car`: read F19E off the unit, then resolve it. No
     /// `refresh`: resolving an ODX name goes at the `.rod` file directly, not
     /// through the part-number cache that flag rebuilds.
-    FromCar { dir: String, ecu: String, iv_cache: String, device: Option<String> },
+    FromCar { dir: String, ecu: String, iv_cache: PathBuf, device: Option<String> },
 }
 
 pub fn run(tool: Tool) -> Result<Outcome> {
@@ -273,10 +286,12 @@ pub fn run(tool: Tool) -> Result<Outcome> {
             if !std::path::Path::new(&dir).is_dir() {
                 anyhow::bail!("{dir:?} is not a directory — point it at the VCDS install root");
             }
+            let iv_cache = datadir::or_default(iv_cache.as_deref(), datadir::rod_keys)?;
             Ok(Outcome::FromCar { dir, ecu, iv_cache, device })
         }
         Tool::Labels { dir, odx: Some(name), iv_cache, .. } => {
-            labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())?;
+            let keys = datadir::or_default(iv_cache.as_deref(), datadir::rod_keys)?;
+            labels::resolve_odx(&dir, &name, &keys)?;
             Ok(Outcome::Done)
         }
         Tool::Labels { dir, part, block, field, refresh, .. } => {
@@ -284,7 +299,8 @@ pub fn run(tool: Tool) -> Result<Outcome> {
             Ok(Outcome::Done)
         }
         Tool::Names { text, limit, catalog } => {
-            names::run(&text, limit, &datadir::resolve(&catalog).to_string_lossy())?;
+            let path = datadir::or_default(catalog.as_deref(), datadir::names_catalog)?;
+            names::run(&text, limit, &path)?;
             Ok(Outcome::Done)
         }
         Tool::Analyse { capture, log, out, min_r2, min_points } => {
@@ -304,12 +320,13 @@ pub fn run(tool: Tool) -> Result<Outcome> {
             corpus::run(&dir, out.as_deref())?;
             Ok(Outcome::Done)
         }
-        Tool::Tttext { file, words, names, out, partial, passes, steps, check, gated } => {
+        Tool::Tttext { file, words, names, out, catalog, partial, passes, steps, check, gated } => {
             tttext::run(tttext::Options {
                 file: &file,
                 words: &words,
                 names: names.as_deref(),
                 out: out.as_deref(),
+                catalog: catalog.as_deref(),
                 partial: partial.as_deref(),
                 passes,
                 steps,

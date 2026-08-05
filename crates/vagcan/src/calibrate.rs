@@ -239,7 +239,46 @@ pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, Strin
 }
 
 /// `vagcan recording calibrate` — see the module docs.
-pub fn run(log: &str, limits: Thresholds) -> anyhow::Result<()> {
+/// The identifier a raw column was recorded from.
+///
+/// `watch --out` heads an unconverted column with the identifier in hex and the
+/// `_raw` marker. A column that is not that shape — somebody's own heading, or
+/// a converted channel — has no address to write into a catalog, and inventing
+/// one would file a proven scaling under an identifier nothing answers.
+fn identifier_of(column: &str) -> Option<u16> {
+    let name = column.strip_suffix(RAW_SUFFIX).unwrap_or(column);
+    (name.len() == 4).then(|| u16::from_str_radix(name, 16).ok())?
+}
+
+/// The fits, as the catalog `watch` and `measure` read.
+///
+/// **Unnamed on purpose.** A fit proves what an identifier's bytes mean, not
+/// what the quantity is called; the corpus is where names come from, and
+/// putting the reference's name on the row would claim the unknown *is* the
+/// reference rather than proportional to it. So the row is keyed by the
+/// identifier, and naming it is a separate, manual act.
+fn to_catalog(fits: &[Calibrated]) -> (vag_data::catalog::MeasurementCatalog, Vec<&str>) {
+    use std::borrow::Cow;
+    use vag_data::catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling};
+
+    let mut rows = Vec::new();
+    let mut unaddressed = Vec::new();
+    for f in fits {
+        match identifier_of(&f.unknown) {
+            Some(did) => rows.push(MeasurementDef {
+                name: Cow::Owned(format!("{did:04X}")),
+                unit: Cow::Borrowed(""),
+                address: ReadId::Uds(did),
+                raw_form: f.form,
+                scaling: Scaling::Linear(f.scale),
+            }),
+            None => unaddressed.push(f.unknown.as_str()),
+        }
+    }
+    (MeasurementCatalog::new(rows), unaddressed)
+}
+
+pub fn run(log: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
     let csv = std::fs::read_to_string(log)
@@ -267,6 +306,40 @@ pub fn run(log: &str, limits: Thresholds) -> anyhow::Result<()> {
     println!(
         "\nThese are scalings, not names: what a value IS still comes from the label \n\
          corpus, via a VCDS log's IDE/ENG numbers."
+    );
+
+    // Without this the path we tell people to walk — survey, drive, calibrate —
+    // ends at a list of numbers they have to hand-copy into JSON. `vcds analyse`
+    // has had `--out` since it existed; this is the same step for the route
+    // that needs no VCDS at all.
+    let Some(path) = out else {
+        println!(
+            "\nTo keep them: re-run with `--out <part-number>.json`, then move that file to\n\
+             ~/.vagcan/labels/data/ — the unit's own F187 part number is the file name, and\n\
+             `vagcan properties` reads it off the car."
+        );
+        return Ok(());
+    };
+    let (catalog, unaddressed) = to_catalog(&fits);
+    std::fs::write(path, catalog.to_json()?)
+        .with_context(|| format!("writing the catalog {path:?}"))?;
+    println!("\nwrote {} catalog rows to {path}", catalog.len());
+    if !unaddressed.is_empty() {
+        // A fit against a column whose heading is not an identifier is real,
+        // and there is still nowhere to put it: a catalog row is addressed.
+        println!(
+            "  {} fit(s) left out — {} is not an identifier heading, so there is no \n  \
+             address to file the row under.",
+            unaddressed.len(),
+            unaddressed[0]
+        );
+    }
+    println!(
+        "  The rows are keyed by identifier and carry no name: a fit proves what the\n  \
+         bytes mean, not what the quantity is called. Name them by hand, or look the\n  \
+         wording up with `vagcan vcds names <word>`.\n  \
+         Put the file in ~/.vagcan/labels/data/<part number>.json to have `watch` and\n  \
+         `measure` use it."
     );
     Ok(())
 }

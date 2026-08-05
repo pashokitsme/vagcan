@@ -53,6 +53,12 @@ between algorithm and data:
   (`.rod` / `.lbl` / `.clb`), cached in SQLite, resolved per car through what the car
   itself reports (`F187` part number, `F19E` ODX file name, the gateway's installation
   list).
+- **Nothing the tool reads at run time lives in the checkout.** The label data is
+  Ross-Tech's and may not be redistributed; the proven measurement rows are one
+  owner's car. Both are under `~/.vagcan/` — see `crates/vagcan/src/datadir.rs`, which
+  owns the layout — and `catalogs/` is gitignored. A new default path that resolves
+  relative to the working directory is a bug: it works in a checkout and nowhere else,
+  and after `cargo install` there is no checkout.
 - **An offset or a magic number is a red flag.** Before writing one, establish whether
   it is a property of the *protocol* (ISO/UDS/OBD-II — fine, cite the standard) or of
   *this car* (not fine — it has to come from the corpus or from a read).
@@ -96,13 +102,12 @@ research/        RE writeups + tooling (NOT shipped), one directory per subject:
   labels/              VW's label corpus — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
                        name codec, `Codes.dat`, and the fault-naming chain. Key reads:
                        `rod-labels.md` (the crack + the STRUC refutation, i.e. why
-                       scaling is live-only), `tttext-codec.md` (→ names-uds.json),
+                       scaling is live-only), `tttext-codec.md` (→ names.json),
                        `fault-naming-hop.md` (number → words, end to end)
   car/                 what the reference car answers: identifier map, the units
                        outside the powertrain, the whole-car survey, gearbox state
   eps/                 the steering-assist incident — read with SAFETY.md
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
-catalogs/        proven measurement rows + recovered names (see catalogs/README.md)
 archive/         retired paths kept as evidence: research/ (HEX-clone framing, clone
                  crypto — negative results, do not retry), specs/ (superseded designs)
                  and tasks/done/ (finished task files)
@@ -112,4 +117,10 @@ todo/            task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/
 ```
 
 Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
-[`research/labels/rod-labels.md`](research/labels/rod-labels.md).
+[`ARCHITECTURE.md`](ARCHITECTURE.md), [`research/labels/rod-labels.md`](research/labels/rod-labels.md).
+
+The three front-page documents split by audience and must stay split:
+[`README.md`](README.md) is "is this for me, and how do I start" and nothing else;
+[`USAGE.md`](USAGE.md) is every command with worked output and the multi-command
+flows; [`ARCHITECTURE.md`](ARCHITECTURE.md) is why — the file formats, the setup
+pipeline, the catalog schema, the crate layout.

@@ -85,6 +85,16 @@ impl Namer {
     /// and `Codes.dat` are searched for by name, since a corpus copied out of
     /// an installation keeps the layout but not always the root.
     pub fn open(root: &Path, iv_cache: &Path) -> Result<Self> {
+        // No keys at all is not "the registry did not decode" — it is that
+        // nobody has run `vagcan setup` on this machine, and the reader needs
+        // that named rather than a decode failure they cannot act on.
+        if !iv_cache.is_file() {
+            anyhow::bail!(crate::missing::no_label_data(
+                "The .rod section keys",
+                "naming faults",
+                iv_cache
+            ));
+        }
         let cache = IvCache::load(iv_cache);
         let (_, registry) = dtc::load_registry(root, &cache).with_context(|| {
             format!(

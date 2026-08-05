@@ -92,7 +92,7 @@ every check (`research/labels/fault-naming-hop.md`).
 
 The first run against an installation recovers the encryption keys of the `.rod`
 catalogues, which costs about 95 s of every core per unit file. They are cached — the
-project's own cache is `catalogs/rod-iv-cache.json` — so only the first run pays.
+project's own cache is `~/.vagcan/labels/rod-keys.json` — so only the first run pays.
 
 Only codes the unit has **confirmed** are shown. `--all` adds the hundreds of tests
 that have merely never run since the memory was last cleared; they are not faults and

@@ -22,11 +22,19 @@ use vag_data::tttext::{self, Dictionary, Limits, Record};
 /// dropped, which is the direction to err in.
 const MARGIN: f32 = 20.0;
 
+/// How many letters a reading must have before it is worth keeping.
+///
+/// `research/labels/tttext-codec.md` §7. Under a dozen there is too little
+/// evidence for the vocabulary check to mean anything, and the acronyms that
+/// dominate below it are not names.
+const MIN_LETTERS: usize = 12;
+
 pub struct Options<'a> {
     pub file: &'a str,
     pub words: &'a [String],
     pub names: Option<&'a str>,
     pub out: Option<&'a str>,
+    pub catalog: Option<&'a str>,
     pub partial: Option<&'a str>,
     pub passes: usize,
     pub steps: Option<u32>,
@@ -65,20 +73,48 @@ pub fn run(opts: Options<'_>) -> Result<()> {
                 Some((path, weight)) => (path, weight),
                 None => (spec.as_str(), 8.0f32),
             };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            eprintln!("skipping {path}: unreadable");
+        let files = word_files(std::path::Path::new(path));
+        if files.is_empty() {
+            eprintln!("skipping {path}: nothing readable there");
             continue;
-        };
+        }
         let before = known.len();
-        for word in text.split(|c: char| !c.is_ascii_alphabetic()) {
-            if word.len() >= 2 && known.insert(word.to_ascii_lowercase()) {
-                dict.insert(word, weight);
+        for file in &files {
+            // Read as bytes, not as a string. A VCDS `Labels/` directory is
+            // Latin-1 and holds umlauts, so `read_to_string` refuses the whole
+            // file — which silently cost the run its entire in-domain
+            // vocabulary and left an English word list deciding what VW calls
+            // things. Only the ASCII letters are wanted anyway.
+            let Ok(bytes) = std::fs::read(file) else { continue };
+            for word in bytes.split(|b| !b.is_ascii_alphabetic()) {
+                if word.len() < 2 {
+                    continue;
+                }
+                let word = String::from_utf8_lossy(word).to_ascii_lowercase();
+                if known.insert(word.clone()) {
+                    dict.insert(&word, weight);
+                }
             }
         }
-        eprintln!("{} words from {path} at weight {weight}", known.len() - before);
+        eprintln!(
+            "{} words from {path} ({} file(s)) at weight {weight}",
+            known.len() - before,
+            files.len()
+        );
     }
     dict.finish();
     anyhow::ensure!(!dict.is_empty(), "no vocabulary: pass --names and/or --words");
+
+    // The vocabulary as it stands *before* the bootstrap, kept for the catalog
+    // gate. This is not a micro-optimisation, it is the difference between a
+    // check and a tautology: the passes below feed words read off solved
+    // records back into the dictionary at weight 300, so a wrong decode teaches
+    // the gate its own misreadings and then passes them. Measured on the
+    // reference corpus, gating against the grown dictionary let
+    // `Ejzc xjpx dyjje agrope acpcj cgijfbc` through as a name; against the
+    // seed it is six words nothing has ever attested and the record is dropped.
+    let seed_dict = dict.clone();
+    let seed_words = known.clone();
 
     // Records sharing the repetition pattern of their *letter runs* hold the
     // same words under different keys, so one solve serves the cluster. The
@@ -174,18 +210,29 @@ pub fn run(opts: Options<'_>) -> Result<()> {
         eprintln!("{} partial readings written to {path}", partials.len());
     }
 
-    let mut sink: Box<dyn Write> = match opts.out {
-        Some(path) => Box::new(std::io::BufWriter::new(
+    if let Some(path) = opts.catalog {
+        write_catalog(path, &records, &solved, &seed_dict, &seed_words)?;
+    }
+
+    // Readings go to stdout when nobody said where to put them — unless a
+    // catalog was asked for, in which case the gated names *are* the answer and
+    // a hundred thousand ungated lines scrolling past them is not a default
+    // anyone wants.
+    let mut sink: Option<Box<dyn Write>> = match (opts.out, opts.catalog) {
+        (Some(path), _) => Some(Box::new(std::io::BufWriter::new(
             std::fs::File::create(path)
                 .with_context(|| format!("creating the output file {path:?}"))?,
-        )),
-        None => Box::new(std::io::stdout().lock()),
+        ))),
+        (None, Some(_)) => None,
+        (None, None) => Some(Box::new(std::io::stdout().lock())),
     };
     let mut ordered: Vec<(u32, &String)> =
         solved.iter().map(|(index, plain)| (records[*index].id, plain)).collect();
     ordered.sort_unstable();
-    for (id, plain) in &ordered {
-        writeln!(sink, "{id:06}\t{plain}")?;
+    if let Some(sink) = sink.as_mut() {
+        for (id, plain) in &ordered {
+            writeln!(sink, "{id:06}\t{plain}")?;
+        }
     }
     eprintln!(
         "{} of {} records read ({:.1} %)",
@@ -261,6 +308,216 @@ fn recheck(
     for (id, transferred, fresh) in &examples {
         eprintln!("  {id:06} transferred {transferred:?} != re-solved {fresh:?}");
     }
+}
+
+/// Every file a `--words` argument names: the file itself, or a directory's
+/// worth.
+///
+/// A directory is the ordinary case now that `vagcan setup` passes the VCDS
+/// `Labels/` tree straight in. The recursion is what makes that work on an
+/// install root as well as on `Labels/` itself.
+fn word_files(at: &std::path::Path) -> Vec<std::path::PathBuf> {
+    if at.is_file() {
+        return vec![at.to_path_buf()];
+    }
+    let Ok(entries) = std::fs::read_dir(at) else { return Vec::new() };
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push(path);
+        } else {
+            out.push(path);
+        }
+    }
+    // Sorted, so two runs over one corpus build the same dictionary and read
+    // the same names out of it.
+    out.sort();
+    dirs.sort();
+    for dir in dirs {
+        out.extend(word_files(&dir));
+    }
+    out
+}
+
+/// Write the readings that clear §7's gate as a `{"<text id>": "<name>"}`
+/// catalog.
+///
+/// **The gate is the product, not the decode.** 61 % of the section decodes;
+/// what a name catalog may contain is far less than that, because a fluent
+/// wrong reading is indistinguishable from a right one at the point of use.
+/// `research/labels/tttext-codec.md` §7 states the filters and this applies
+/// them: the framing rule, no unresolved letter, no digit, at least
+/// [`MIN_LETTERS`] letters, every word of length ≥ 3 a word the vocabulary
+/// knows, the [`MARGIN`] ambiguity check per token, and no name twice.
+fn write_catalog(
+    path: &str,
+    records: &[Record],
+    solved: &HashMap<usize, String>,
+    dict: &Dictionary,
+    known: &HashSet<String>,
+) -> Result<()> {
+    // By name first: two records reading the same way is the signature of a
+    // truncated enumeration (`… of cylinder 4` losing its digit), so both go.
+    let mut by_name: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for (index, plain) in solved {
+        let Some(name) = gated_name(&records[*index].cipher, plain, dict, known) else { continue };
+        by_name.entry(name).or_default().push(records[*index].id);
+    }
+
+    let mut catalog: BTreeMap<String, String> = BTreeMap::new();
+    let mut duplicated = 0usize;
+    for (name, ids) in by_name {
+        if ids.len() > 1 {
+            duplicated += ids.len();
+            continue;
+        }
+        catalog.insert(format!("{:06}", ids[0]), name);
+    }
+
+    if let Some(parent) = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&catalog)?)
+        .with_context(|| format!("writing the name catalog {path:?}"))?;
+    eprintln!(
+        "{} names written to {path} ({} dropped for reading the same as another record)",
+        catalog.len(),
+        duplicated
+    );
+    Ok(())
+}
+
+/// The name a record contributes to the catalog, or nothing.
+///
+/// Nothing is the ordinary answer. A partial reading is not a weaker result but
+/// an unmarked guess, and the same is true of an ambiguous one — see
+/// [`unambiguous`].
+fn gated_name(
+    cipher: &str,
+    plain: &str,
+    dict: &Dictionary,
+    known: &HashSet<String>,
+) -> Option<String> {
+    if plain.contains('?') {
+        return None;
+    }
+    let name = framed(plain)?;
+    // Digits are not recovered at all (§6): the glyph class that carries them
+    // is unbroken, so a name containing one contains a guess.
+    if name.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if name.chars().filter(|c| c.is_ascii_alphabetic()).count() < MIN_LETTERS {
+        return None;
+    }
+    if !name
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| w.len() >= 3)
+        .all(|w| known.contains(&w.to_ascii_lowercase()))
+    {
+        return None;
+    }
+    unambiguous(cipher, plain, dict, MARGIN).then_some(name)
+}
+
+/// The name, with the record's trailing field run removed.
+///
+/// A record is `<name><sep><digit><sep><number>` and the tail is inside the
+/// glyph class, so it survives the decode as noise. Stripping the trailing run
+/// of non-letters is right — unless the *name itself* ended in a digit, in
+/// which case the digit is inside the run and gets eaten, silently turning
+/// `… of cylinder 4` into `… of cylinder`. The guard is that the run's first
+/// character must recur later in it: that is what makes it a separator rather
+/// than the end of the name.
+fn framed(plain: &str) -> Option<String> {
+    let cut = plain.trim_end().len()
+        - plain
+            .trim_end()
+            .chars()
+            .rev()
+            .take_while(|c| !c.is_ascii_alphabetic() && *c != ' ')
+            .map(char::len_utf8)
+            .sum::<usize>();
+    let (name, run) = plain.trim_end().split_at(cut);
+    let mut run = run.chars();
+    let first = run.next()?;
+    run.any(|c| c == first).then(|| name.trim_end().to_string())
+}
+
+/// Whether every word of the reading beats its best alternative by `margin`.
+///
+/// This is §7's ambiguity filter and it is the one that matters. `Hill bytes to
+/// maintain backward compatibility` is fluent, dictionary-clean and stable
+/// across keys, and the word is `Fill`: a letter occurring once in a record is
+/// pinned by nothing but the dictionary. So each token is re-read against every
+/// word of its pattern class that the *rest of the record* allows, and a token
+/// whose winner does not outweigh the runner-up by `margin` costs the record.
+///
+/// It is deliberately re-derived here rather than trusted from the solve. The
+/// search stops at its best-scoring reading and has no opinion about how close
+/// second place was.
+fn unambiguous(cipher: &str, plain: &str, dict: &Dictionary, margin: f32) -> bool {
+    let ciphered = tttext::tokens(cipher);
+    let read = tttext::tokens(plain);
+    if ciphered.len() != read.len() {
+        return false;
+    }
+    for (at, token) in ciphered.iter().enumerate() {
+        // Short tokens are not dictionary-checked anywhere in §7 — there is no
+        // vocabulary at two letters, only noise.
+        if token.len() < 3 {
+            continue;
+        }
+        let Some(rest) = pinned_by_others(&ciphered, &read, at) else { return false };
+        let (mut chosen, mut runner_up) = (0.0f32, 0.0f32);
+        for (word, weight) in dict.candidates(token) {
+            if !fits(token, word, rest) {
+                continue;
+            }
+            if word.eq_ignore_ascii_case(read[at]) {
+                chosen = chosen.max(*weight);
+            } else {
+                runner_up = runner_up.max(*weight);
+            }
+        }
+        // A reading the dictionary does not contain at all cannot be defended;
+        // one the dictionary ranks below an alternative is a coin toss.
+        if chosen == 0.0 || (runner_up > 0.0 && chosen < margin * runner_up) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The letter mapping every token *except* `at` forces.
+fn pinned_by_others(ciphered: &[&str], read: &[&str], at: usize) -> Option<tttext::Key> {
+    let mut key = tttext::Key::default();
+    for (index, token) in ciphered.iter().enumerate() {
+        if index == at {
+            continue;
+        }
+        for (c, p) in token.bytes().zip(read[index].bytes()) {
+            let (c, p) = (c.to_ascii_lowercase(), p.to_ascii_lowercase());
+            if !c.is_ascii_lowercase() || !p.is_ascii_lowercase() || !key.insert(c - b'a', p - b'a')
+            {
+                return None;
+            }
+        }
+    }
+    Some(key)
+}
+
+/// Whether `word` can be this token's reading given the letters already pinned.
+fn fits(token: &str, word: &str, mut pinned: tttext::Key) -> bool {
+    token.len() == word.len()
+        && token.bytes().zip(word.bytes()).all(|(c, p)| {
+            let (c, p) = (c.to_ascii_lowercase(), p.to_ascii_lowercase());
+            c.is_ascii_lowercase() && p.is_ascii_lowercase() && pinned.insert(c - b'a', p - b'a')
+        })
 }
 
 /// Whether a reading is the kind a catalog would consider at all.
@@ -363,5 +620,85 @@ mod tests {
     #[test]
     fn a_line_without_an_id_is_dropped_rather_than_guessed() {
         assert!(parse(b"not a record\n").is_empty());
+    }
+
+    #[test]
+    fn the_trailing_field_run_is_cut_only_where_it_is_really_a_separator() {
+        // `<name><sep><digit><sep><number>`: the separator recurs, so the run
+        // is the record's tail and the name is what precedes it.
+        assert_eq!(framed("Intake air temperature-4-23513").as_deref(), Some("Intake air temperature"));
+        assert_eq!(framed("Engine speed.5.245,1").as_deref(), Some("Engine speed"));
+        // A name that genuinely ends in a digit is the failure this guards:
+        // the digit is inside the run, and cutting it would ship
+        // `… of cylinder` six times over. One non-recurring character is not a
+        // separator, so the record is dropped instead.
+        assert_eq!(framed("Pressure of cylinder 4"), None);
+        assert_eq!(framed("Nothing after the letters"), None);
+    }
+
+    #[test]
+    fn a_word_pinned_by_nothing_but_the_dictionary_costs_the_record() {
+        // The documented case: `Hill` and `Fill` differ in one letter that the
+        // record uses once, so the rest of the record has no opinion and the
+        // reading is a coin toss. Both are ordinary words, so the vocabulary
+        // check passes it and only the margin catches it.
+        let mut dict = Dictionary::default();
+        for word in ["hill", "fill", "bytes", "backward"] {
+            dict.insert(word, 100.0);
+        }
+        dict.finish();
+        // A cipher whose first token maps to `hill` under a key that the other
+        // tokens fix; `q`→`h`/`f` is the letter nothing else pins.
+        assert!(!unambiguous("qill bytes", "hill bytes", &dict, MARGIN));
+        // The same record with one reading far ahead of the other survives.
+        let mut skewed = Dictionary::default();
+        skewed.insert("hill", 1000.0);
+        skewed.insert("fill", 1.0);
+        skewed.insert("bytes", 100.0);
+        skewed.finish();
+        assert!(unambiguous("qill bytes", "hill bytes", &skewed, MARGIN));
+    }
+
+    #[test]
+    fn the_gate_keeps_a_clean_reading_and_drops_the_four_kinds_of_unclean_one() {
+        let mut dict = Dictionary::default();
+        let mut known = HashSet::new();
+        for word in ["intake", "air", "temperature", "bank"] {
+            dict.insert(word, 100.0);
+            known.insert(word.to_string());
+        }
+        dict.finish();
+        let keep = |cipher: &str, plain: &str| gated_name(cipher, plain, &dict, &known);
+
+        // Nothing in this reading is guessed: every letter resolved, every word
+        // known, one candidate per pattern, and a real trailing field run.
+        assert_eq!(
+            keep("intake air temperature-4-2", "intake air temperature-4-2").as_deref(),
+            Some("intake air temperature")
+        );
+        // An unresolved letter.
+        assert_eq!(keep("intake air temper?ture-4-2", "intake air temper?ture-4-2"), None);
+        // A word the vocabulary does not have.
+        assert_eq!(keep("intake air tempxrature-4-2", "intake air tempxrature-4-2"), None);
+        // Too few letters to be sure of.
+        assert_eq!(keep("air bank-4-2", "air bank-4-2"), None);
+        // No trailing run at all, so the framing cannot be shown to be clean.
+        assert_eq!(keep("intake air temperature", "intake air temperature"), None);
+    }
+
+    #[test]
+    fn a_directory_of_word_files_is_read_whole() {
+        // `vagcan setup` hands the VCDS `Labels/` tree straight in, and the
+        // corpus's own language is the strongest prior the attack has.
+        let dir = std::env::temp_dir().join(format!("vagcan-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("a.lbl"), "one").unwrap();
+        std::fs::write(dir.join("nested/b.lbl"), "two").unwrap();
+        let files = word_files(&dir);
+        assert_eq!(files.len(), 2, "{files:?}");
+        assert_eq!(word_files(&dir.join("a.lbl")).len(), 1);
+        assert!(word_files(&dir.join("absent")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

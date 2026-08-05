@@ -1,16 +1,16 @@
 //! Finding the data files, wherever the command was run from.
 //!
-//! Catalogs, recovered names and per-car tables all live in `catalogs/`. Every
-//! default path used to be written relative to the working directory, so the
-//! tool worked from the repository root and quietly did nothing anywhere else
-//! — `watch` in particular showed an empty screen and left the impression the
-//! car was at fault.
+//! **Nothing this tool reads lives in the checkout any more.** Every default
+//! used to be a path relative to the working directory — `catalogs/…` — which
+//! meant the tool worked from the repository root and quietly did nothing
+//! anywhere else, and after `cargo install` did nothing at all. It also meant
+//! that two kinds of file nobody may publish, one derived from a proprietary
+//! VCDS installation and one measured off somebody's own car, sat inside a
+//! repository one `git add` away from being shared.
 //!
-//! The rule here: a path the user typed is used exactly as typed. A *default*
-//! is looked for next to the working directory, then upwards from it, then
-//! next to the executable — the three places the data actually is, whether
-//! the tool is run from a checkout, from a subdirectory of one, or from an
-//! installed copy.
+//! So there is one directory, `~/.vagcan`, and [`vagcan_dir`] describes its
+//! shape. The rule for a path the user typed is unchanged: it is used exactly
+//! as typed, and [`resolve`] is what a *relative* one is looked up through.
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,12 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///
 /// ```text
 /// ~/.vagcan/
+///   labels/
+///     cache.sqlite                    the label corpus, queryable
+///     names.json                      measurement names recovered from TTTEXT
+///     rod-keys.json                   recovered .rod section keys
+///     data/                           proven measurement rows, one file per
+///                                     part number, plus unit-numbers.json
 ///   config.json                       settings that are not about one car
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
@@ -60,18 +66,82 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// `~/Library/Application Support`, which is right for an application bundle
 /// and wrong for a tool whose files a person opens, reads and edits by hand.
 ///
-/// Not `catalogs/`. That is a checked-in corpus keyed by part number, where a
-/// measurement proven on one `0CW300041G` is true of every `0CW300041G` in the
-/// world. Everything here is the opposite in kind — a personal identifier, one
-/// owner's answers, one physical car — and this repository already works to
-/// keep VINs out of git.
+/// `labels/` holds what `vagcan setup` parsed out of a VCDS installation, all of
+/// it rebuildable from that installation in minutes. `labels/data/` holds the
+/// `(identifier, raw form, factor, offset)` rows this project proved on a
+/// vehicle; the label corpus provably cannot supply those
+/// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
+/// them.
 ///
 /// Deliberately not built on [`resolve`]. That walks parent directories looking
-/// for something that already exists, which is right for *reading* the corpus
-/// and wrong for *writing*: it would put a car's files in whichever checkout
-/// the shell happened to be standing in.
+/// for something that already exists, which is right for a path someone typed
+/// and wrong for the tool's own directory: it would put a car's files in
+/// whichever checkout the shell happened to be standing in.
 pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
     vagcan_dir_in(dirs::home_dir())
+}
+
+/// Everything the label corpus contributes, and the rows measured against it.
+pub fn labels_dir() -> anyhow::Result<PathBuf> {
+    Ok(vagcan_dir()?.join("labels"))
+}
+
+/// The measurement names recovered from `TTTEXT.ROD`.
+///
+/// Named `names.json` rather than the `names-uds.json` it was called when it
+/// lived in the checkout: `uds` was never true of it — the catalog is keyed by
+/// the corpus's own text id and has nothing to do with UDS — and it read as a
+/// file name only its author could parse.
+pub fn names_catalog() -> anyhow::Result<PathBuf> {
+    Ok(labels_dir()?.join("names.json"))
+}
+
+/// The recovered `.rod` per-section keys.
+///
+/// Was `rod-iv-cache.json`. "IV cache" is the decoder's word for it; the thing
+/// a reader wants from a file name is what it unlocks.
+pub fn rod_keys() -> anyhow::Result<PathBuf> {
+    Ok(labels_dir()?.join("rod-keys.json"))
+}
+
+/// The SQLite cache of the parsed label corpus.
+///
+/// One file, not one per corpus directory as before. Which install it was built
+/// from is remembered beside it in [`LABEL_CACHE_SOURCE`], because the mtime
+/// rule that decides whether a cache is current cannot tell "older than the
+/// corpus" from "built from a different corpus".
+pub fn label_cache() -> anyhow::Result<PathBuf> {
+    Ok(labels_dir()?.join("cache.sqlite"))
+}
+
+/// Which corpus directory [`label_cache`] was built from, one line of text.
+///
+/// The freshness rule is an mtime comparison, and an mtime cannot tell "older
+/// than the corpus" from "built from a different corpus" — which matters as
+/// soon as somebody has both the English and the Russian install and points the
+/// tool at each in turn.
+pub const LABEL_CACHE_SOURCE: &str = "cache.from";
+
+/// Where the proven measurement rows live, one file per part number.
+pub fn data_dir() -> anyhow::Result<PathBuf> {
+    Ok(labels_dir()?.join("data"))
+}
+
+/// A path the user gave, or this tool's own default for it.
+///
+/// The two halves are treated differently on purpose. What somebody typed is
+/// used exactly as typed — [`resolve`] only fills in a relative path from the
+/// places data is actually kept. A default is `~/.vagcan`'s and nothing else,
+/// because a default that followed the working directory is what made these
+/// commands work in a checkout and nowhere else.
+pub fn or_default(
+    given: Option<&str>,
+    default: impl FnOnce() -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    match given {
+        Some(path) => Ok(resolve(path)),
+        None => default(),
+    }
 }
 
 /// Everything this tool keeps about one car, under its VIN and nothing else.
@@ -339,43 +409,87 @@ mod tests {
     }
 
     #[test]
-    fn a_default_is_found_from_a_subdirectory() {
-        // The failure this module exists for: `catalogs/…` resolves from the
-        // repository root and from anywhere inside it, because that is where
-        // the data is regardless of where the shell happens to be.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let deep = root.join("crates/vagcan/src");
+    fn a_relative_path_someone_typed_is_found_from_a_subdirectory() {
+        // What `resolve` is still for. It is no longer how any *default* is
+        // found — those are all under `~/.vagcan` now — but a path typed at a
+        // shell standing three directories deep still has to mean what it
+        // looks like it means.
+        let deep = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let found = deep
             .canonicalize()
             .map(|dir| {
                 let mut roots = Vec::new();
                 push_with_parents(&mut roots, &dir);
-                roots.iter().any(|r| r.join("catalogs").exists())
+                roots.iter().any(|r| r.join("crates").exists())
             })
             .unwrap_or(false);
-        assert!(found, "catalogs/ must be reachable by walking up from a source directory");
+        assert!(found, "crates/ must be reachable by walking up from a source directory");
     }
 
     #[test]
     fn a_missing_file_comes_back_unchanged_so_the_error_names_it() {
-        assert_eq!(resolve("catalogs/definitely-not-here.json").to_str(), Some("catalogs/definitely-not-here.json"));
+        assert_eq!(
+            resolve("nowhere/definitely-not-here.json").to_str(),
+            Some("nowhere/definitely-not-here.json")
+        );
     }
 
     #[test]
     fn a_car_file_never_lands_inside_the_repository() {
-        // The whole point of the writer-side sibling: a VIN-keyed file must not
-        // end up in a checkout, one `git add` away from being published.
+        // A VIN-keyed file must not end up in a checkout, one `git add` away
+        // from being published.
         let dir = car_dir("XW8AD4NE9JH008917")
             .expect("a home directory exists in any environment that runs tests");
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
         assert!(!dir.starts_with(&repo), "{dir:?} is inside {repo:?}");
-        assert!(!dir.iter().any(|part| part == "catalogs"), "{dir:?} is in the shared corpus");
     }
 
     #[test]
     fn everything_this_tool_writes_lives_in_one_dot_directory() {
         let dir = vagcan_dir_in(Some(PathBuf::from("/home/someone"))).unwrap();
         assert_eq!(dir, Path::new("/home/someone/.vagcan"));
+    }
+
+    #[test]
+    fn nothing_the_tool_reads_by_default_is_looked_for_in_a_checkout() {
+        // The failure this layout exists for. Every one of these used to be a
+        // path relative to the working directory, so the tool worked from the
+        // repository root and nowhere else — and after `cargo install` there is
+        // no repository root at all.
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let home = vagcan_dir().unwrap();
+        for path in [
+            label_cache().unwrap(),
+            names_catalog().unwrap(),
+            rod_keys().unwrap(),
+            data_dir().unwrap(),
+        ] {
+            assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
+            assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
+        }
+    }
+
+    #[test]
+    fn the_vcds_derived_files_sit_together_and_the_measured_rows_sit_under_them() {
+        let labels = labels_dir().unwrap();
+        for path in [label_cache().unwrap(), names_catalog().unwrap(), rod_keys().unwrap()] {
+            assert_eq!(path.parent(), Some(labels.as_path()), "{path:?}");
+        }
+        assert_eq!(data_dir().unwrap(), labels.join("data"));
+        // The one path under here this crate does not own: `vag_protocol` reads
+        // the number-to-id override itself, and the two have to agree about
+        // where it is or a file somebody wrote by hand is silently ignored.
+        let override_dir =
+            std::path::Path::new(vag_protocol::address::OVERRIDE_PATH).parent().unwrap();
+        assert!(data_dir().unwrap().ends_with(override_dir), "{override_dir:?}");
+    }
+
+    #[test]
+    fn a_path_the_user_gave_beats_the_default_and_is_not_second_guessed() {
+        let typed = or_default(Some("Cargo.toml"), || unreachable!("the default was consulted"))
+            .unwrap();
+        assert!(typed.ends_with("Cargo.toml"), "{typed:?}");
+        assert_eq!(or_default(None, names_catalog).unwrap(), names_catalog().unwrap());
     }
 
     #[test]

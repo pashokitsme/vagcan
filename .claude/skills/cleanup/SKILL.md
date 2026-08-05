@@ -44,7 +44,7 @@ the file that survives a context reset **for that kind of fact**:
 
 | what was learned | where it belongs |
 |---|---|
-| a proven measurement — read address, scaling, unit | `catalogs/vehicles/<part number>.json` |
+| a proven measurement — read address, scaling, unit | `~/.vagcan/labels/data/<part number>.json` |
 | how something was proven, or refuted, and with what data | `research/<topic>.md` |
 | current state, milestones, what to do next | `todo/README.md` |
 | goal, stack, workflow | `todo/GOAL.md` |

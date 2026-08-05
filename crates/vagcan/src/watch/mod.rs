@@ -1304,6 +1304,13 @@ fn coverage_report(
     );
     if !proven.is_empty() {
         out.push_str(&format!("  measurements this project has proven: {}\n", list(&proven)));
+    } else if !units.is_empty() {
+        // Not one unit of this car has a catalog. That is the ordinary state of
+        // every car but the one this project was developed on, and it is worth
+        // a paragraph rather than a silence: everything on the screen will be
+        // hex, and the reason is that nobody has driven this car with the tool
+        // recording yet.
+        out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
     }
     if !raw.is_empty() {
         let from = match source {
@@ -1314,6 +1321,14 @@ fn coverage_report(
             SurveySource::Missing { .. } => "an earlier sweep".to_string(),
         };
         out.push_str(&format!("  raw identifiers from {from}: {}\n", list(&raw)));
+        // Why they are raw, and what turns them into numbers. Without this the
+        // screen is a wall of hex with no way to learn that it is fixable —
+        // and the fix is a drive, not a `setup`, which is the distinction a
+        // reader has no way to guess.
+        let unproven = channels.iter().filter(|c| c.def.is_none()).count();
+        for line in crate::missing::raw_channels_note(unproven).lines() {
+            out.push_str(&format!("  {line}\n"));
+        }
     }
     if !silent.is_empty() {
         // Every line that carries a list or a path ends with it: these are as
@@ -1660,12 +1675,44 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 mod tests {
     use super::*;
 
-    /// The reference car's catalogs and identities — test fixtures, not a
-    /// table the code carries.
-    fn reference_channels() -> Vec<Channel> {
-        let store = vag_data::catalog::CatalogStore::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
-        );
+
+    /// The reference car's own proven rows, when this machine has any.
+    ///
+    /// They used to be committed under `catalogs/vehicles/` and are now one
+    /// owner's measured data under `~/.vagcan/labels/data`, like everybody
+    /// else's — nothing measured on a vehicle lives in the checkout any more.
+    /// So a machine that has never calibrated a car has nothing to assert
+    /// against, and these tests say so rather than failing over data they were
+    /// never entitled to assume.
+    fn measured_rows() -> Option<std::path::PathBuf> {
+        let dir = crate::datadir::data_dir().ok()?;
+        let any = std::fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"));
+        any.then_some(dir)
+    }
+
+    /// Give up on a test that needs rows this machine has not got.
+    macro_rules! need_rows {
+        () => {
+            match measured_rows() {
+                Some(dir) => dir,
+                None => {
+                    eprintln!(
+                        "skipped: no proven rows in ~/.vagcan/labels/data — \
+                         drive and calibrate a car to get some"
+                    );
+                    return;
+                }
+            }
+        };
+    }
+
+    /// The reference car's rows and identities — a fixture, not a table the
+    /// code carries.
+    fn reference_channels(dir: std::path::PathBuf) -> Vec<Channel> {
+        let store = vag_data::catalog::CatalogStore::open(dir);
         let ident = |request, part: &str| plan::UnitIdentity {
             request,
             part_number: Some(part.to_string()),
@@ -1688,8 +1735,8 @@ mod tests {
         app.tab = app.tabs().iter().position(|r| *r == request).expect("the unit has a tab");
     }
 
-    fn app() -> App {
-        let mut channels = reference_channels();
+    fn app(dir: std::path::PathBuf) -> App {
+        let mut channels = reference_channels(dir);
         channels[0].selected = true;
         channels[1].selected = true;
         App::new(channels)
@@ -1723,10 +1770,8 @@ mod tests {
         ]
     }
 
-    fn store() -> vag_data::catalog::CatalogStore {
-        vag_data::catalog::CatalogStore::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
-        )
+    fn store(dir: std::path::PathBuf) -> vag_data::catalog::CatalogStore {
+        vag_data::catalog::CatalogStore::open(dir)
     }
 
     #[test]
@@ -1735,7 +1780,7 @@ mod tests {
         // count of everything that answered set against a list of the three
         // with catalogs. Whatever else the summary says, those two must agree.
         let identities = reference_identities();
-        let channels = plan::available(&store(), &identities);
+        let channels = plan::available(&store(need_rows!()), &identities);
         let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing {
             cache: None,
         });
@@ -1751,7 +1796,7 @@ mod tests {
         // A unit with no catalog and no survey has nothing on screen at all,
         // and the tool has to say which single command changes that.
         let identities = reference_identities();
-        let channels = plan::available(&store(), &identities);
+        let channels = plan::available(&store(need_rows!()), &identities);
         let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing {
             cache: Some(std::path::PathBuf::from("/somewhere/survey.jsonl")),
         });
@@ -1778,7 +1823,7 @@ mod tests {
                 )
             })
             .collect();
-        let channels = plan::with_survey(plan::available(&store(), &identities), &survey);
+        let channels = plan::with_survey(plan::available(&store(need_rows!()), &identities), &survey);
         assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
         let cache = std::path::PathBuf::from("/somewhere/survey.jsonl");
         let text =
@@ -1788,7 +1833,69 @@ mod tests {
         // No unit is left with nothing on screen, so there is nothing to
         // advise about and no advice.
         assert!(!text.contains("nothing to show"), "{text}");
-        assert!(!text.contains("vagcan survey"), "{text}");
+        assert!(!text.contains("vagcan survey\n"), "{text}");
+    }
+
+    #[test]
+    fn a_screen_of_hex_says_why_it_is_hex_and_what_turns_it_into_numbers() {
+        // The reported gap: twelve of fifteen units show raw bytes, the tool
+        // tags each value `(raw)`, and nothing anywhere says the scaling is
+        // missing rather than the car being odd — let alone that a drive fixes
+        // it. Said once, in the summary, not per row: this is read at an open
+        // driver's door.
+        let identities = reference_identities();
+        let survey: String = identities
+            .iter()
+            .map(|i| {
+                format!(
+                    "{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"1001\",\"data\":\"0224\"}}]}}\n",
+                    i.request
+                )
+            })
+            .collect();
+        let channels = plan::with_survey(plan::available(&store(need_rows!()), &identities), &survey);
+        let text = coverage_report(
+            &identities,
+            &channels,
+            "/x/data",
+            &SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
+        );
+        assert!(text.contains("no proven scaling for this car yet"), "{text}");
+        assert!(text.contains("recording calibrate"), "{text}");
+        // And never the other shortage's fix as an instruction: a scaling is
+        // not in any label corpus, so pointing at `setup` here sends a reader
+        // nowhere.
+        assert!(!text.contains("vagcan setup /path"), "{text}");
+    }
+
+    #[test]
+    fn a_car_with_no_catalog_at_all_is_told_what_makes_one() {
+        // The screen is about to be entirely hex, and silence would read as the
+        // car being unusual rather than as a step nobody has taken yet.
+        //
+        // The units here are deliberately outside `0x7E0..0x7E7`: a car whose
+        // engine sits in the ISO block always has the standard OBD-II rows,
+        // which are SAE J1979's rather than anybody's measurement, so `proven`
+        // is not empty there however uncalibrated the car is.
+        let ident = |request| plan::UnitIdentity {
+            request,
+            part_number: Some(format!("{request:03X}0000000")),
+            odx_name: None,
+            component: None,
+        };
+        let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
+        let empty = vag_data::catalog::CatalogStore::open("/definitely/not/here");
+        let channels = plan::available(&empty, &identities);
+        let text = coverage_report(
+            &identities,
+            &channels,
+            "/x/labels/data",
+            &SurveySource::Missing { cache: None },
+        );
+        assert!(text.contains("no proven measurement rows"), "{text}");
+        assert!(text.contains("/x/labels/data"), "{text}");
+        assert!(text.contains("vagcan recording calibrate"), "{text}");
+        assert!(text.contains("not something `vagcan setup` can fix"), "{text}");
     }
 
     #[test]
@@ -1825,7 +1932,7 @@ mod tests {
 
     #[test]
     fn the_configure_key_switches_screens_and_q_stops() {
-        let mut a = app();
+        let mut a = app(need_rows!());
         assert_eq!(a.screen, Screen::Live);
         assert!(on_key(&mut a, KeyCode::Char('c')));
         assert_eq!(a.screen, Screen::Select);
@@ -1836,7 +1943,7 @@ mod tests {
 
     #[test]
     fn toggling_changes_what_is_polled_without_a_restart() {
-        let mut a = app();
+        let mut a = app(need_rows!());
         let before = plan::plan(&a.channels).len();
         a.screen = Screen::Select;
         open(&mut a, 0x7E0);
@@ -1860,7 +1967,7 @@ mod tests {
 
     #[test]
     fn the_cursor_stays_inside_the_list() {
-        let mut a = app();
+        let mut a = app(need_rows!());
         a.screen = Screen::Select;
         open(&mut a, 0x7E0);
         let visible = a.visible();
@@ -1885,7 +1992,7 @@ mod tests {
     fn a_filter_narrows_the_list_and_the_cursor_follows_it() {
         // With a survey loaded there are over a thousand candidates; stepping
         // to one by arrow key is not a way to find anything.
-        let mut a = app();
+        let mut a = app(need_rows!());
         a.screen = Screen::Select;
         open(&mut a, 0x7E0);
         let in_tab = a.visible().len();
@@ -1912,7 +2019,7 @@ mod tests {
     fn select_all_applies_to_what_is_on_screen_not_to_everything() {
         // "All" with a filter up must not silently select a thousand channels
         // the user cannot see.
-        let mut a = app();
+        let mut a = app(need_rows!());
         a.screen = Screen::Select;
         open(&mut a, 0x7E0);
         on_key(&mut a, KeyCode::Char('/'));
@@ -1932,7 +2039,7 @@ mod tests {
     #[test]
     fn typing_a_filter_does_not_trigger_the_command_keys() {
         // `n` clears the selection; typing "engine" must not.
-        let mut a = app();
+        let mut a = app(need_rows!());
         a.screen = Screen::Select;
         a.channels[3].selected = true;
         on_key(&mut a, KeyCode::Char('/'));
@@ -1951,7 +2058,7 @@ mod tests {
     fn a_specified_value_shares_a_line_with_its_actual() {
         // Boost is published twice: 2029 is what the engine asked for, 202A is
         // what it got. Side by side the gap is readable at a glance.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         open(&mut a, 0x7E0);
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && (c.did == 0x2029 || c.did == 0x202A) {
@@ -1977,7 +2084,7 @@ mod tests {
     fn half_a_pair_still_draws_a_line() {
         // Selecting only the actual value must not hide it waiting for a
         // partner that was never asked for.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         open(&mut a, 0x7E0);
         for c in a.channels.iter_mut() {
             if c.request == 0x7E0 && c.did == 0x202A {
@@ -1998,7 +2105,7 @@ mod tests {
         // The point of choosing measurements from several units is to watch
         // them together, so the live table is never filtered by the open unit.
         // The configure screen's list is.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         a.channels.iter_mut().for_each(|c| c.selected = true);
         let units = a.tabs();
         assert!(units.len() > 1, "the reference car has more than one unit: {units:02X?}");
@@ -2026,7 +2133,7 @@ mod tests {
         // Separators are written where the unit changes, so a unit that
         // reappeared later would get a second heading and the table would read
         // as if there were two of it.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         a.channels.iter_mut().for_each(|c| c.selected = true);
         let order: Vec<u16> = a.rows().iter().map(|r| r.any().request).collect();
         let mut seen: Vec<u16> = Vec::new();
@@ -2044,7 +2151,7 @@ mod tests {
         // The screen is drawn before the request, so whether this one will be
         // slow is not knowable; whether the last one was, is. A prompt unit
         // must not put a spinner on screen at every redraw.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         assert!(a.slow.is_empty());
         assert_eq!(a.slow.contains(&0x7E0).then_some(0x7E0), None);
         a.slow.insert(0x7E0);
@@ -2054,7 +2161,7 @@ mod tests {
     #[test]
     fn the_live_table_says_which_unit_each_group_came_from() {
         // Values from several units on one screen are unreadable without it.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
         assert_eq!(a.unit_heading(0x7E0), "01 1.8l R4 TFSI");
         assert_eq!(a.unit_heading(0x714), "17", "a unit that said nothing is not named");
@@ -2065,7 +2172,7 @@ mod tests {
         // Tabs are in id order and the lowest id is rarely the interesting
         // one; opening there shows an empty table at the moment a person
         // first sees the tool.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         for c in a.channels.iter_mut() {
             if c.request == 0x7E1 {
                 c.selected = true;
@@ -2078,7 +2185,7 @@ mod tests {
 
     #[test]
     fn a_tab_is_labelled_by_what_the_unit_said_about_itself() {
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
         assert_eq!(a.tab_label(0x7E0), "01 1.8l R4 TFSI");
         // A unit that said nothing goes by its number, not by an invented name.
@@ -2089,7 +2196,7 @@ mod tests {
     #[test]
     fn the_cursor_moves_with_the_tab_it_belongs_to() {
         // Leaving it behind makes the arrow keys walk a row nobody can see.
-        let mut a = App::new(reference_channels());
+        let mut a = App::new(reference_channels(need_rows!()));
         a.screen = Screen::Select;
         step_tab(&mut a, true);
         let visible = a.visible();
@@ -2452,7 +2559,7 @@ mod tests {
     #[test]
     fn rows_are_ordered_the_same_way_the_plan_polls_them() {
         // A table whose rows move between cycles cannot be read.
-        let mut a = app();
+        let mut a = app(need_rows!());
         a.channels.iter_mut().for_each(|c| c.selected = true);
         let order: Vec<(u16, u16)> = a.shown().iter().map(|c| (c.request, c.did)).collect();
         let mut sorted = order.clone();
