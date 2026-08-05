@@ -412,12 +412,19 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
 
 ## The open work (M3 coverage and beyond)
 
-- **A car keeps its own files.** `~/.vagcan/cars/<description>-<VIN>/` now exists
-  (`crate::datadir`), holding `car.json`, `races/` and `reports/`. What is left is to point
-  the commands at it: **`survey` with no `--out` should write into that car's `reports/`**
-  with a timestamped name and say where it went, instead of printing a run nobody kept. The
-  same applies to `faults --details`. The directory is named for what the car said about
-  itself plus its VIN — no make or model, because a car does not broadcast one.
+- **A car keeps its own files.** `~/.vagcan/cars/<VIN>/` (`crate::datadir`) holds
+  `car.json`, `measures/` and, since 2026-08-05, **`survey.jsonl`** — the whole-car survey,
+  written by every `survey` run whether or not `--out` was given, and loaded by `watch` with
+  no flag. That closes the defect where `watch` showed three control units of fifteen:
+  the other twelve were only reachable through `survey --out FILE` plus `watch --survey
+  FILE`, which is two commands and a remembered file name, so nobody ran them. A run with
+  `--only` **merges** into the cache rather than replacing it (`survey::merge_survey`), so
+  the one-unit-at-a-time habit `SAFETY.md` asks for does not cost the other fourteen.
+  Still open: **`faults --details` keeps nothing** — it should file its dump under the car
+  the same way. `watch` deliberately does **not** offer to run the sweep itself: it holds
+  the adapter open and a sweep is the one operation on this car that has hurt it, so it
+  prints the single command instead (`vagcan survey`, parked) and leaves the decision with
+  the driver.
 
 - **Whole-car measurement coverage.** The catalogs cover engine, gearbox and cluster; the
   survey reaches every unit, and the 2026-08-02 driving diffs already say **which** of its

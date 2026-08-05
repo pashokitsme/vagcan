@@ -243,6 +243,56 @@ pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Fold the units this run read into the survey the car already had.
+///
+/// The cache is a whole-car file and a run need not be a whole-car run:
+/// `SAFETY.md` says to sweep one unit at a time where possible, so `--only 713`
+/// is the *recommended* habit and must not cost the other fourteen units. A
+/// unit this run visited is replaced by what it just said; every other unit is
+/// left exactly as it was.
+///
+/// Keyed by request id, which is also how [`crate::watch::plan::with_survey`]
+/// reads the file back — so a line that names no unit is dropped rather than
+/// carried forward: nothing can replace it and nothing can watch it.
+pub fn merge_survey(cached: &str, fresh: &[String]) -> String {
+    let request_of = |line: &str| -> Option<u16> {
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        u16::from_str_radix(value["request"].as_str()?, 16).ok()
+    };
+    let mut units: std::collections::BTreeMap<u16, String> = std::collections::BTreeMap::new();
+    for line in cached.lines().filter(|l| !l.trim().is_empty()) {
+        if let Some(request) = request_of(line) {
+            units.insert(request, line.to_string());
+        }
+    }
+    for line in fresh {
+        if let Some(request) = request_of(line) {
+            units.insert(request, line.clone());
+        }
+    }
+    units.values().map(|line| format!("{line}\n")).collect()
+}
+
+/// Write the merged survey where `watch` looks for it, and say where that was.
+///
+/// Best effort, and deliberately at the *end* of the run: a sweep is eight
+/// minutes long and interrupting one is a normal thing to do (`SAFETY.md` says
+/// to stop the moment anything changes). Streaming into the cache would let a
+/// Ctrl-C two units in replace a complete cache with two units of it, which is
+/// worse than not writing at all. `--out` is still written line by line, so an
+/// interrupted run keeps its evidence there.
+fn cache_survey(vin: &str, fresh: &[String]) -> Result<std::path::PathBuf> {
+    let path = crate::datadir::survey_cache(vin)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let cached = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::write(&path, merge_survey(&cached, fresh))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
 /// What a survey run was asked to do.
 ///
 /// Bundled rather than passed positionally: four of these are booleans, and
@@ -324,6 +374,12 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
         };
     }
 
+    // Which car this is, so the result can be filed under it. Read after the
+    // guards and before the sweep: it is one ordinary identifier read, and a
+    // car that will not answer it simply gets no cache.
+    let (back, vin) = crate::units::read_vin(backend).await;
+    backend = back;
+
     let order = match requested {
         Some(ids) => ids,
         None => {
@@ -356,6 +412,8 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 
     let started = Instant::now();
     let mut reports = Vec::new();
+    // One JSON line per unit this run read, for the car's own cache.
+    let mut fresh: Vec<String> = Vec::new();
     let total = order.len();
     let mut progress = crate::progress::Line::new();
     for (at, request) in order.into_iter().enumerate() {
@@ -438,30 +496,35 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 
         progress.finish();
         println!("{}", report.summary());
+        // Built whether or not anyone asked for a file: this is also what goes
+        // into the car's own cache, and a run that has to be repeated with
+        // `--out` to be kept is a run nobody keeps.
+        let line = serde_json::json!({
+            "request": format!("{request:03X}"),
+            "unit": address.label(),
+            "batched": batched,
+            "ident": report.ident.iter().map(|(did, data)| {
+                serde_json::json!({ "did": format!("{did:04X}"), "data": hex_packed(data) })
+            }).collect::<Vec<_>>(),
+            "dids": report.hits.iter().map(|h| {
+                serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex_packed(&h.data) })
+            }).collect::<Vec<_>>(),
+            "confirmed_faults": report.confirmed(),
+            "dtcs": report.dtcs.iter().map(|d| {
+                serde_json::json!({
+                    "code": hex_packed(&d.code),
+                    "status": format!("{:02X}", d.status),
+                })
+            }).collect::<Vec<_>>(),
+        })
+        .to_string();
         if let Some(w) = sink.as_mut() {
             // JSON lines: a survey interrupted halfway keeps every unit it
             // finished.
-            let line = serde_json::json!({
-                "request": format!("{request:03X}"),
-                "unit": address.label(),
-                "batched": batched,
-                "ident": report.ident.iter().map(|(did, data)| {
-                    serde_json::json!({ "did": format!("{did:04X}"), "data": hex_packed(data) })
-                }).collect::<Vec<_>>(),
-                "dids": report.hits.iter().map(|h| {
-                    serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex_packed(&h.data) })
-                }).collect::<Vec<_>>(),
-                "confirmed_faults": report.confirmed(),
-                "dtcs": report.dtcs.iter().map(|d| {
-                    serde_json::json!({
-                        "code": hex_packed(&d.code),
-                        "status": format!("{:02X}", d.status),
-                    })
-                }).collect::<Vec<_>>(),
-            });
             writeln!(w, "{line}")?;
             w.flush()?;
         }
+        fresh.push(line);
         reports.push(report);
         backend = uds.into_transport().into_backend();
     }
@@ -474,20 +537,85 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
         started.elapsed().as_secs_f64()
     );
     if let Some(path) = out {
-        println!(
-            "written to {path}\n\n\
-             Run this once parked and once driving, then compare:\n  \
-             vagcan survey --diff parked.jsonl driving.jsonl\n\
-             The identifiers whose bytes differ are the live measurements, and that list \n\
-             needs no label file."
-        );
+        println!("written to {path}");
     }
+    // The car keeps its own copy whether or not `--out` was given, because the
+    // thing that made these units invisible was never the sweep — it was having
+    // to remember the file name of one afterwards. With this on disk, `watch`
+    // offers every identifier this car answers, on every unit, with no flag.
+    match (&vin, fresh.is_empty()) {
+        // Nothing answered, so there is nothing to file and nothing to say
+        // about a cache that would be unchanged either way.
+        (_, true) => {}
+        (Some(vin), false) => match cache_survey(vin, &fresh) {
+            Ok(path) => println!(
+                "`vagcan watch` now offers every identifier above, on every unit, as \n\
+                 raw bytes — no flag needed. Filed under this car in\n  {}",
+                path.display()
+            ),
+            // Not fatal: the sweep is the expensive part and it is done. Say
+            // what was lost rather than throwing the run away over a file.
+            Err(e) => println!("could not cache the survey for this car: {e:#}"),
+        },
+        (None, false) => println!(
+            "the engine did not report a VIN, so this survey could not be filed under \n\
+             the car. Pass --out FILE to keep it, and `watch --survey FILE` to use it."
+        ),
+    }
+    println!(
+        "\nRun this once parked and once driving, then compare:\n  \
+         vagcan survey --out parked.jsonl\n  \
+         vagcan survey --out driving.jsonl\n  \
+         vagcan survey --diff parked.jsonl driving.jsonl\n\
+         The identifiers whose bytes differ are the live measurements, and that list \n\
+         needs no label file."
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One survey line, as the writer below emits it.
+    fn line(request: &str, did: &str) -> String {
+        format!(
+            "{{\"request\":\"{request}\",\"dids\":[{{\"did\":\"{did}\",\"data\":\"0B34\"}}]}}"
+        )
+    }
+
+    #[test]
+    fn re_surveying_one_unit_keeps_the_rest_of_the_car_in_the_cache() {
+        // `--only 713` costs seconds and is the recommended way to re-read a
+        // unit (SAFETY.md). If that overwrote the cache, the safe habit would
+        // silently cost `watch` the other fourteen units.
+        let cached = format!("{}\n{}\n", line("7E0", "2029"), line("713", "1001"));
+        let fresh = vec![line("713", "1002")];
+        let merged = merge_survey(&cached, &fresh);
+        assert!(merged.contains("7E0"), "{merged}");
+        assert!(merged.contains("1002"), "the re-read unit is the new one: {merged}");
+        assert!(!merged.contains("1001"), "and not the old one: {merged}");
+        assert_eq!(merged.lines().count(), 2);
+    }
+
+    #[test]
+    fn a_car_with_no_cache_yet_gets_exactly_what_this_run_read() {
+        let fresh = vec![line("7E0", "2029")];
+        assert_eq!(merge_survey("", &fresh), format!("{}\n", fresh[0]));
+        // And a run that read nothing leaves what was there — an interrupted
+        // sweep must not be able to empty a good cache.
+        let cached = format!("{}\n", line("7E0", "2029"));
+        assert_eq!(merge_survey(&cached, &[]), cached);
+    }
+
+    #[test]
+    fn a_line_that_names_no_unit_is_dropped_rather_than_kept_unattributable() {
+        // `watch` reads the cache by request id; a line without one can neither
+        // be replaced by a later run nor watched, so keeping it would only make
+        // the file grow.
+        let merged = merge_survey("not json\n{\"dids\":[]}\n", &[line("7E0", "2029")]);
+        assert_eq!(merged.lines().count(), 1, "{merged}");
+    }
 
     #[test]
     fn a_diff_reports_only_what_actually_moved() {

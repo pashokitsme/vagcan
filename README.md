@@ -74,11 +74,15 @@ vagcan units        ask the gateway which control units the car has
 vagcan properties   everything a control unit says about itself, named
 vagcan sniff        listen-only bus capture (runs alongside VCDS)
 vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
-vagcan watch        live values, full-screen TUI, multi-unit; `c` reconfigures in place
+vagcan watch        live values, full-screen TUI, every unit; `c` reconfigures in place
 vagcan scan         every data identifier a control unit answers
 vagcan faults       stored fault codes from every unit; --labels names them in VW's
                     own words; --details adds extended data
-vagcan survey       walk every unit: identification, stored faults, identifier sweep
+vagcan survey       walk every unit: identification, stored faults, identifier sweep.
+                    Run once, parked: the result is filed under this car in
+                    `~/.vagcan/cars/<VIN>/survey.jsonl`, and from then on `watch`
+                    offers every identifier the car answers, on every unit, as raw
+                    bytes — the units with no proven scaling included
 ```
 
 The top level is only what is worth having with the car in front of you. Everything

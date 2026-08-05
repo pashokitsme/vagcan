@@ -64,6 +64,7 @@ const ADAPTER_BAUD: u32 = 115_200;
                   LOOK AT THE CAR\n  \
                   faults / properties / sensors\n\n\
                   WATCH IT LIVE\n  \
+                  survey                    once, parked: what every unit answers\n  \
                   watch                     values from several units, chosen on screen\n  \
                   sniff                     the bus itself, listen-only\n\n\
                   FIND NEW MEASUREMENTS\n  \
@@ -175,10 +176,12 @@ enum Command {
 
     /// Live view of the car — configured from inside, not by flags.
     ///
-    /// Shows values from several control units at once. The catalogs cover
-    /// the engine, gearbox and instrument cluster; pass `--survey` to offer
-    /// every identifier a survey found on any other unit as well. Press `c`
-    /// to choose what appears.
+    /// Shows values from several control units at once. The catalogs cover the
+    /// engine, gearbox and instrument cluster with proven scalings; every other
+    /// unit is shown from this car's own cached survey, as raw bytes. Run
+    /// `vagcan survey` once, parked, and the cache is written — after that
+    /// `watch` offers every identifier the car answers, on every unit, with no
+    /// flag. Press `c` to choose what appears.
     Watch {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
@@ -194,8 +197,10 @@ enum Command {
         /// Also record to CSV.
         #[arg(long, value_name = "FILE")]
         out: Option<String>,
-        /// Offer everything a `vagcan survey` run found, on every unit it
-        /// found it on — not just the measurements already proven.
+        /// Use this survey file instead of the one kept for this car. Without
+        /// it, the survey `vagcan survey` last recorded off this car is loaded
+        /// from `~/.vagcan/cars/<VIN>/survey.jsonl` — offering every identifier
+        /// the car answers, on every unit, as raw bytes.
         #[arg(long, value_name = "FILE")]
         survey: Option<String>,
         /// Replay a recording written by `--out` instead of reading a car.
@@ -393,6 +398,11 @@ enum Command {
     /// this car. Run it once parked and once driving — the identifiers whose
     /// bytes differ between the two runs are the live measurements, and that
     /// list needs no label file.
+    ///
+    /// The result is always filed under this car in
+    /// `~/.vagcan/cars/<VIN>/survey.jsonl`, whether or not `--out` was given,
+    /// and that is what makes every control unit watchable: run this once and
+    /// `vagcan watch` offers all of them from then on.
     Survey {
         /// Adapter to use. Omit it when only one is connected.
         #[arg(long, value_name = "PATH")]
@@ -986,6 +996,18 @@ mod tests {
         }
         // And it cannot name anything without being told where the texts are.
         assert!(parse(&["--from", "s.jsonl"]).is_err(), "--from needs --labels");
+    }
+
+    #[test]
+    fn watch_says_where_the_units_beyond_the_catalogs_come_from() {
+        // `--survey` used to be the only way to see the twelve control units
+        // no catalog covers, and its help said so as if that were fine. It is
+        // an override now; the default is this car's own cached survey, and a
+        // flag that does not say which file it is overriding is a flag nobody
+        // knows they can omit.
+        let help = flag_help(&["watch"], "survey");
+        assert!(help.contains("instead of"), "{help}");
+        assert!(help.contains("survey.jsonl"), "{help}");
     }
 
     #[test]
