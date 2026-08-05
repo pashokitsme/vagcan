@@ -442,12 +442,21 @@ strictly requires, and it is independent of everything else here.
 IV tails recovered for this section (`rod_crack` output, i.e. what
 `rod_crack_prep.py decode` wants), ~95 s wall each on ten cores:
 
-| file | tag | `plaintext[3:8]` | inflated |
-|---|---|---|---|
-| `EV_SMLSVALEOMQBLRH.rod` | DTC | `d34b6e5d31` | 935 B |
-| `EV_Brake1UDSContiMK100ESP_036.rod` | DTC | `9849722b31` | 5 698 B |
-| `EV_SteerAssisMQB_013.rod` | DTC | `99496e3331` | 8 250 B |
-| `EV_EPHVA14AU3700000_VW26.rod` | DTC | `d44b722331` | 1 529 B |
+| file | tag | `plaintext[3:8]` | `IV[3:8]` | inflated |
+|---|---|---|---|---|
+| `EV_SMLSVALEOMQBLRH.rod` | DTC | `d34b6e5d31` | `bc86d860dc` | 935 B |
+| `EV_Brake1UDSContiMK100ESP_036.rod` | DTC | `9849722b31` | `bca6b88e2c` | 5 698 B |
+| `EV_SteerAssisMQB_013.rod` | DTC | `99496e3331` | `bcbca00568` | 8 250 B |
+| `EV_EPHVA14AU3700000_VW26.rod` | DTC | `d44b722331` | `bca6b8d4db` | 1 529 B |
+
+**The two columns are different numbers and the second is the one
+`catalogs/rod-iv-cache.json` stores** — `IV[i] = TEA⁻¹(cipher[0..8])[i] ^ plaintext[i]`.
+`label-linkage.md` §6 warns about exactly this and a pass still lost twenty minutes to it:
+the recovered tails were pasted into the cache as written above, every section refused to
+open, and nothing about the failure said which of the two conventions was wrong. All five
+entries are now in the cache in the second convention, each verified to inflate to the
+size in the last column. `RD.rod`'s own `[DTC]` is `5cb048d43f`, which §2 already recorded
+as an `IV`, and which is why *it* worked first time.
 
 ### 10.5 Why some units have no `[DTC]` — and the one that has no file
 
@@ -586,3 +595,107 @@ crib pair 291 104 → `B1455 01`, and which is what VCDS printed for this exact 
 
 `research/rd-rod/alphabet.py` is the derivation, twenty lines, no dependencies. The
 shipped implementation is `crates/vag-data/src/glyphs.rs::DigitOrder::for_key`.
+
+---
+
+## 12. Shipped: `vagcan faults --labels`
+
+By this project's own rule (`research/mux.md`) the writeup ends here and the feature
+begins. What was merged, and what it answers on the reference car.
+
+```
+vagcan faults --labels ~/vcds/                        # live, off the car
+vagcan faults --from survey.jsonl --labels ~/vcds/    # offline, from a recorded survey
+```
+
+* `crates/vag-data/src/glyphs.rs` — `TableAlphabet::for_key`, §11.
+* `crates/vag-data/src/dtc.rs` — the registry, the row selector, the row grammar.
+* `crates/vag-data/src/codes.rs` — `sae_code`, §12.2.
+* `crates/vagcan/src/faultnames.rs` — the policy: which files, in what order, and what to
+  say when the chain breaks.
+* `catalogs/rod-iv-cache.json` — the five recovered `[DTC]` keys, as data (§10.4).
+
+### 12.1 What it says about this car
+
+Its own parked survey, named by the binary rather than by a script:
+
+```
+16  EV_SMLSVALEOMQBLRH
+  047120  (291104)   confirmed
+      B1455 01  Temperature Sensor for Heated Steering Wheel
+
+713  EV_Brake1UDSContiMK100ESP
+  00004B  (75)    confirmed      C101C 07  Rear Left Wheel Speed Sensor
+  00005B  (91)    confirmed      C101D 07  Rear Right Wheel Speed Sensor
+  000129  (297)   confirmed      B1168 F2  Steering Angle Sensor: Not Initialized
+
+70A  EV_EPHVA14AU3700000
+  D01721 D01722 D0172E D0172F D01732   confirmed
+      U1123 00  Databus: Received Error Message
+
+712  EV_SteerAssisMQB
+  004F04  (20228)  confirmed     U1123 00  Databus: Received Error Message
+  004D04  (19716)  confirmed     U1123 00  Databus: Received Error Message
+
+09  EV_BCMMQB    (the corpus has no ODX file of the name this unit gives — codes only)
+  000107  000213  060901
+
+710  EV_GatewNF   (none of the 4 ODX files of this family carries a fault catalogue)
+  010405
+```
+
+**11 of the car's 15 confirmed codes, and 57 of 57 across the three units whose `.rod`
+resolves soundly** (`16` 22/22, `712` 2/2, `713` 33/33 with `--all`). The four that stay
+numbers are the two units §10.5 already accounted for.
+
+Against VCDS, which is the acceptance test: every code both name is named identically.
+`Scan-XW8AD4NE9JH008917-20260731-1522-212722km.txt` prints `291104 — Датчик температуры
+подогрева рулевого колеса / B1455 01` and `0297 — Датчик угла поворота рулевого колеса /
+B1168 F2`; this prints `B1455 01 Temperature Sensor for Heated Steering Wheel` and
+`B1168 F2 Steering Angle Sensor: Not Initialized`. Its scan of unit `10` prints
+`13637426 — Шина данных / U1123 00`, and this prints `U1123 00 Databus: Received Error
+Message` for `D01732`. **Four of four, still zero wrong.**
+
+### 12.2 A `Codes.dat` key spells its own SAE code
+
+Not needed to name a fault, needed to print what VCDS prints, and it fell out of the crib
+set once the alphabet was derivable. A key is its code in one of two ways:
+
+| keys | reading | example |
+|---|---|---|
+| 100 000 … 165 535 (20 059, all six-digit) | `100 000 + <16-bit DTC>`; the text is a *component* and the failure type comes from the row's `f1` | 137 973 = `100 000 + 0x9455` → `B1455` |
+| ≥ 1 000 000 (7 847) | the 24-bit DTC outright, `<16-bit DTC> << 8 \| <failure type>` | 9 529 586 = `0x9168F2` → `B1168 F2` |
+
+The 16 bits are `system:2 | code:14` with `system` in `P C B U`, the split
+`codes-dat.md` §3.1 measured. The boundary is not a choice: the row's own failure-type
+field equals `key & 0xFF` for **19 765 of 19 765** rows whose key is a million or more,
+and for 0.3 % of the rows below — chance. Below 100 000 `sae_code` returns nothing, for
+the reason `iso_dtc` refuses that band: 90 000–99 999 is a block of user-interface strings
+(*"ADP. Run"*, *"Term 15 On"*) and below 65 536 are the legacy five-digit codes.
+
+### 12.3 The guard that replaced the ambiguity
+
+§11 removed every "this table has 94 candidate names" from the output, which removes the
+thing that used to make a wrong answer visible. One failure mode remains and it is silent:
+**a unit `.rod` read against an `RD.rod` of a different vintage.** The rows shift, the ids
+still resolve, and every name is confidently wrong.
+
+It is detectable for free, by the same test that settled 1-based indexing in §10.1: a
+unit's ids name distinct faults, so they must land on distinct table keys.
+
+| unit file | registry | ids | distinct table keys |
+|---|---|---|---|
+| `EV_SMLSVALEOMQBLRH` 26.x | 26.x | 85 | **85** |
+| `EV_SMLSVALEOMQBLRH` 26.x | 25.12 | 85 | 63 |
+| `EV_Brake1UDSContiMK100ESP_036` 26.x | 26.x | 518 | **518** |
+| `EV_Brake1UDSContiMK100ESP_036` 26.x | 25.12 | 518 | 457 |
+
+A matched pair is *exactly* injective and a mismatched one never is, so
+`UnitCatalogue::is_consistent_with_registry` refuses anything short of exact and the unit
+falls back to printing codes with the reason. Pointed at a deliberately mixed corpus the
+tool names **0 of 15** rather than 15 wrong — which is the behaviour this whole file has
+been arguing for since §5.
+
+Worth recording as its own result: the two corpora are genuinely different files (2 186 214
+vs 2 094 094 bytes of `RD.rod`, 236 755 vs 228 393 rows) and each, read against **its own**
+unit files, produces the same names. The chain is not tuned to one snapshot of the corpus.
