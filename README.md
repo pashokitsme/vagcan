@@ -131,8 +131,19 @@ same process yet.
 defects found and fixed on the first. Treat its numbers as good until a third drive
 says otherwise.
 
-Reference vehicle throughout: Škoda Octavia III facelift, 1.8 TSI, 2017, DQ200. The
-tool is written to work on any VAG car. It has been *proven* on one.
+The tool is written to work on any VAG car. It has been *proven* on the ones below.
+
+## Tested on
+
+Run `vagcan info` on your car and add a row. The columns are what other owners can
+match against — the engine and gearbox **part numbers** are the keys a measurement
+catalog is filed under, so a car sharing one inherits everything proven for it. (The
+VIN `vagcan info` also prints identifies one physical car and helps nobody else, so it
+is not listed here.)
+
+| Make / model | Year | Platform | Engine | Gearbox |
+|---|---|---|---|---|
+| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) |
 
 ---
 
