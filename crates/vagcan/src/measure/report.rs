@@ -541,6 +541,46 @@ fn measured_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
             peak.t
         );
     }
+    other_peaks(out, run, setting);
+}
+
+/// The peak of every other channel the run recorded.
+///
+/// Engine speed and boost have lines of their own above, because each says
+/// something a reader acts on — one is where the shift points were, the other is
+/// whether the turbo made its pressure. Everything else the car answered had no
+/// line at all, so a run that polled eight channels reported two of them.
+///
+/// **Which channels those are is not decided here.** The list is whatever
+/// `channels::resolve` found on this car, in the order the file keeps them, with
+/// the catalog's own name and the catalog's own unit. A hand-picked set would be
+/// this Škoda's telemetry written into the source, and the roles differ between
+/// cars precisely because the catalogs do.
+///
+/// Two things are left out, both because a peak of them means nothing: a channel
+/// with fewer than two samples — the barometer and the ambient sensor are read
+/// once per run by design, not polled — and the ones already reported above.
+fn other_peaks(out: &mut String, run: &Run, setting: &Setting) {
+    const REPORTED_ABOVE: [&str; 2] = ["boost actual", "speed"];
+
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for (role, track) in &run.samples.others {
+        if REPORTED_ABOVE.contains(role) || track.v.len() < 2 {
+            continue;
+        }
+        let Some(peak) = highest(track) else { continue };
+        rows.push((
+            (*role).to_string(),
+            format!("{:.2}{} at {:.1} s", peak.value, setting.unit_suffix(role), peak.t),
+        ));
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let name_w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+    for (role, figure) in rows {
+        let _ = writeln!(out, "    peak {role:<name_w$}   {figure}");
+    }
 }
 
 /// Figures this tool worked out, under a heading naming what it worked them out
@@ -814,6 +854,41 @@ mod tests {
         let row = table.lines().find(|l| l.contains("peak engine speed")).expect("the row is there");
         assert!(row.contains(" at "), "{row}");
         assert!(!row.contains("rpm") && !row.contains("/min"), "{row}");
+    }
+
+    #[test]
+    fn every_channel_the_run_recorded_gets_its_peak_and_not_just_the_two_with_lines() {
+        // A run that polls eight channels used to report two of them. Which
+        // channels these are is whatever `channels::resolve` found on the car —
+        // no list here decides it, because the roles a catalog offers differ
+        // between cars.
+        let mut run = run();
+        for (t, v) in [(0.0, 4.0), (1.0, 61.0), (2.0, 48.0)] {
+            run.samples.others.entry("air mass").or_default().push(t, v);
+        }
+        let setting = Setting {
+            units: [("air mass", "g/s".to_string())].into_iter().collect(),
+            ..setting_with_units()
+        };
+        let derived = recompute(&run, &setting);
+        let table = results(&run, &derived, &setting);
+        assert!(table.contains("peak air mass"), "{table}");
+        assert!(table.contains("61.00 g/s at 1.0 s"), "{table}");
+        // Boost keeps its own line above and is not repeated here.
+        assert_eq!(table.matches("boost").count(), 1, "{table}");
+    }
+
+    #[test]
+    fn a_channel_read_once_a_run_has_no_peak_to_report() {
+        // The barometer and the ambient sensor are read at the start of a run
+        // and at the end of it, by design — they do not move in seven seconds.
+        // The largest of two readings of a constant is not a peak, and printing
+        // it as one would put a measurement where there is only a sample.
+        let mut run = run();
+        run.samples.others.entry("barometer").or_default().push(0.0, 99.0);
+        let setting = setting_with_units();
+        let table = results(&run, &recompute(&run, &setting), &setting);
+        assert!(!table.contains("barometer"), "{table}");
     }
 
     #[test]
