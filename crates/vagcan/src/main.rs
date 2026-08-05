@@ -139,9 +139,10 @@ enum Command {
         /// and a unit that does not answer is reported as such.
         #[arg(long)]
         identify: bool,
-        /// VCDS label directory. With one, each unit's part number is resolved
-        /// against the corpus, which supplies the diagnostic address and the
-        /// corpus's name for it — data, not a table in this program.
+        /// VCDS label directory. Each unit's part number is resolved against the
+        /// corpus, which supplies the diagnostic address and the corpus's name
+        /// for it — data, not a table in this program. Defaults to what `vagcan
+        /// setup` extracted into ~/.vagcan; a dir given here overrides it.
         #[arg(long, value_name = "DIR", requires = "identify")]
         labels: Option<String>,
     },
@@ -407,7 +408,8 @@ enum Command {
         extended: bool,
         /// VCDS installation to name the faults out of. Needs `Codes.dat` and
         /// `UDS_EV/RD.rod`, and each unit's own `.rod` — which the unit names
-        /// itself. Without it the codes are printed unnamed.
+        /// itself. Defaults to what `vagcan setup` copied into ~/.vagcan; where
+        /// neither has the labels, the codes are printed unnamed.
         #[arg(long, value_name = "DIR")]
         labels: Option<String>,
         /// Where the recovered `.rod` section keys are cached. A fault
@@ -417,8 +419,9 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         iv_cache: Option<String>,
         /// Name the faults in a survey this tool already recorded, instead of
-        /// reading the car. Offline, and needs `--labels`.
-        #[arg(long, value_name = "FILE", requires = "labels",
+        /// reading the car. Offline; names them from `--labels`, or from what
+        /// `vagcan setup` copied into ~/.vagcan when `--labels` is omitted.
+        #[arg(long, value_name = "FILE",
               conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
         from: Option<String>,
     },
@@ -624,7 +627,7 @@ async fn main() -> Result<()> {
         }
         Command::Faults { from: Some(survey), labels, iv_cache, all, .. } => faults::run_named(
             &survey,
-            labels.as_deref().expect("--from requires --labels"),
+            labels.as_deref(),
             &rod_keys(iv_cache.as_deref())?,
             all,
         ),
@@ -823,12 +826,22 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
     const GATEWAY_REQUEST: u16 = 0x710;
     const VW_RESPONSE_OFFSET: u16 = 0x6A;
 
-    // The corpus, when one was given: it turns a part number the car reports
-    // into the unit's diagnostic address and name, for any VAG car rather than
-    // for a list written here.
-    let corpus = match labels_dir {
+    // The corpus turns a part number the car reports into the unit's diagnostic
+    // address and name, for any VAG car rather than for a list written here.
+    // `--labels` defaults to what `vagcan setup` extracted into ~/.vagcan, so
+    // `units --identify` resolves names with no flag; a dir given wins, and a
+    // machine that has not run setup simply identifies without corpus names.
+    let corpus_dir = match labels_dir {
+        Some(dir) => Some(datadir::resolve(dir)),
+        None if identify => {
+            let extracted = datadir::extracted_dir()?;
+            labels::has_corpus(&extracted).then_some(extracted)
+        }
+        None => None,
+    };
+    let corpus = match &corpus_dir {
         Some(dir) => {
-            let db = labels::load_cached(std::path::Path::new(dir), false)?;
+            let db = labels::load_cached(dir, false)?;
             // The corpus's numbering, in force for the rest of the run: what
             // each number *is*. Which id answers it is learned below, from the
             // car.
@@ -923,11 +936,12 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
         }
         backend = unit.into_transport().into_backend();
     }
-    if let Some(dir) = labels_dir {
+    if let Some(dir) = &corpus_dir {
         // Silence here would read as "the corpus agrees"; it usually means the
         // corpus has no entry for these part numbers.
         println!(
-            "\n{resolved} of {identified} part numbers resolved against the corpus at {dir}."
+            "\n{resolved} of {identified} part numbers resolved against the corpus at {}.",
+            dir.display()
         );
     }
     Ok(())
@@ -1047,8 +1061,9 @@ mod tests {
             args.extend(value);
             assert!(parse(&args).is_err(), "--from should refuse {flag}");
         }
-        // And it cannot name anything without being told where the texts are.
-        assert!(parse(&["--from", "s.jsonl"]).is_err(), "--from needs --labels");
+        // --labels is optional now: with none, `faults --from` names from what
+        // `vagcan setup` copied into ~/.vagcan, so it must parse on its own.
+        assert!(parse(&["--from", "s.jsonl"]).is_ok(), "--from defaults --labels to ~/.vagcan");
     }
 
     #[test]

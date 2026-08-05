@@ -6,19 +6,26 @@
 //! has to run once. This is that step, and it is deliberately one command with
 //! one argument.
 //!
-//! Three things come out of an installation, and each already had a tool:
+//! Four things happen, and after them the installation can be deleted:
 //!
 //! | what | how | where it lands |
 //! |---|---|---|
+//! | the raw corpus, copied | [`copy_corpus`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
 //! | the label corpus, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
 //! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/data/extracted/names.json` |
 //! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/data/extracted/rod-keys.json` |
 //!
-//! Nothing here is new work — this module runs the three in order, with the
-//! arguments they want, and says what happened. That matters more than it
-//! sounds: each was reachable only by knowing it existed, what to feed it, and
-//! what it left behind, which is a poor thing to ask of somebody who has just
-//! cloned a repository.
+//! The copy is what makes the installation disposable. Fault naming reads label
+//! files straight off disk at run time — `UDS_EV/` (every `.rod`, incl. the
+//! `RD.rod` registry and `MUX.rod`), `Labels/` (the pre-UDS `.lbl`/`.clb`) and
+//! `Codes.dat` (the fault text store) — so those ~122 MB have to outlive the
+//! ~145 MB install, and the owner accepted that cost so the rest can go. The
+//! copy runs **first**, and the three derivations then read from the copy, so
+//! `~/.vagcan` is the one corpus everything afterwards points at.
+//!
+//! The three derivations are not new work — each already had a tool, reachable
+//! only by knowing it existed, what to feed it, and what it left behind, which
+//! is a poor thing to ask of somebody who has just cloned a repository.
 //!
 //! **Offline.** No adapter is opened and no car is addressed.
 //!
@@ -45,6 +52,19 @@ const ODX_DIR: &str = "UDS_EV";
 
 /// The global text table every measurement name comes out of.
 const TEXT_TABLE: &str = "TTTEXT.ROD";
+
+/// The fault text store, one file in the install root beside `Labels/`.
+const CODES_FILE: &str = "Codes.dat";
+
+/// What is copied out of the installation so it can then be deleted.
+///
+/// The exact set fault naming and label lookup read off disk at run time:
+/// `UDS_EV/` holds every `.rod` (the `RD.rod` registry, the shared `MUX.rod`,
+/// and each unit's own file, named by its `F19E`), `Labels/` the pre-UDS
+/// `.lbl`/`.clb`, and `Codes.dat` the fault text. Directories are copied whole
+/// so the per-unit `.rod` a given car will name — unknowable here — are all
+/// there. Nothing else in an install is read at run time.
+const CORPUS_INPUTS: &[&str] = &[ODX_DIR, "Labels", CODES_FILE];
 
 /// Corpus-wide `.rod` files whose keys every car needs.
 ///
@@ -128,6 +148,7 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 /// A step that was skipped is worth as much as one that ran: somebody who
 /// expected minutes and got seconds needs to be told why, or they will assume
 /// it failed.
+#[derive(Debug)]
 enum Step {
     Wrote { what: &'static str, path: PathBuf, detail: String },
     Skipped { what: &'static str, path: PathBuf, why: &'static str },
@@ -144,16 +165,103 @@ pub fn run(opts: Options<'_>) -> Result<()> {
     println!("Reading the VCDS installation at {}", root.display());
     println!("Writing everything to {}\n", target.display());
 
-    let steps =
-        [label_cache(root, opts.refresh)?, names(root, opts.refresh)?, rod_keys(root)?];
+    // The copy runs first, and the derivations then read from it: after this,
+    // `~/.vagcan` is the one corpus everything points at, and the install can go.
+    let steps = [
+        copy_corpus(root, &target, opts.refresh)?,
+        label_cache(&target, opts.refresh)?,
+        names(&target, opts.refresh)?,
+        rod_keys(&target)?,
+    ];
 
     println!("\n{}", report(&steps));
     Ok(())
 }
 
-/// Step 1: parse the corpus into the SQLite cache.
+/// Step 1: copy the raw corpus in, so the installation is disposable.
+///
+/// The three inputs [`CORPUS_INPUTS`] names, copied preserving their layout, so
+/// afterwards `~/.vagcan/data/extracted/` holds `UDS_EV/`, `Labels/` and
+/// `Codes.dat`. Idempotent and freshness-gated per file, the same rule the rest
+/// of setup follows: a file is copied only when it is missing from the
+/// destination or newer than what is there, and `--refresh` copies the lot.
+fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
+    println!(
+        "[1/4] Raw corpus — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
+         installation can be deleted afterwards."
+    );
+    let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for name in CORPUS_INPUTS {
+        let src = root.join(name);
+        if !src.exists() {
+            // A stripped or partial installation still yields whatever it has;
+            // a missing input is reported, not fatal.
+            println!("      {name}: not in this installation, skipped");
+            continue;
+        }
+        collect_copies(&src, &target.join(name), &mut plan)?;
+    }
+    if plan.is_empty() {
+        return Ok(Step::Missing {
+            what: "the raw corpus",
+            why: format!("none of {CORPUS_INPUTS:?} is under {}", root.display()),
+        });
+    }
+
+    let total = plan.len();
+    let (mut copied, mut skipped) = (0usize, 0usize);
+    let mut progress = crate::progress::Line::new();
+    for (at, (src, dst)) in plan.iter().enumerate() {
+        if !refresh && is_newer(dst, src) {
+            skipped += 1;
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        progress.update(&format!("copying — {} of {total}", at + 1));
+        std::fs::copy(src, dst)
+            .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+        copied += 1;
+    }
+    progress.finish();
+    Ok(Step::Wrote {
+        what: "the raw corpus",
+        path: target.to_path_buf(),
+        detail: format!("{copied} files copied, {skipped} already current"),
+    })
+}
+
+/// Every file under `src`, paired with where it lands under `dst`.
+///
+/// A file (`Codes.dat`) is one pair; a directory is walked. The plan is built
+/// before anything is written, so the copy can report progress against a known
+/// total and an unreadable directory fails before it has half-copied a tree.
+fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+    if src.is_file() {
+        plan.push((src.to_path_buf(), dst.to_path_buf()));
+        return Ok(());
+    }
+    if src.is_dir() {
+        for entry in
+            std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))?
+        {
+            let entry = entry?;
+            collect_copies(&entry.path(), &dst.join(entry.file_name()), plan)?;
+        }
+    }
+    Ok(())
+}
+
+/// Step 2: parse the copied corpus into the SQLite cache.
+///
+/// Reads the copy under `~/.vagcan`, not the installation, so the source it
+/// records is the one the runtime default (`--labels` omitted) later passes —
+/// otherwise the first `units --identify` after setup would rebuild the cache
+/// from a directory whose name no longer matched.
 fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
-    println!("[1/3] Label corpus — parsing every .lbl and decrypting every .clb.");
+    println!("[2/4] Label corpus — parsing every .lbl and decrypting every .clb.");
     let db = crate::labels::load_cached(root, refresh)?;
     Ok(Step::Wrote {
         what: "the label corpus",
@@ -162,7 +270,7 @@ fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
     })
 }
 
-/// Step 2: recover the measurement names from the global text table.
+/// Step 3: recover the measurement names from the global text table.
 ///
 /// Two of the existing tools, chained the way `vagcan vcds`'s own help
 /// documents: `rod --dump` writes the decrypted, inflated `[TXT]` section, and
@@ -178,7 +286,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
         });
     }
     if !refresh && is_newer(&out, &source) {
-        println!("[2/3] Measurement names — already recovered from this installation.");
+        println!("[3/4] Measurement names — already recovered from this installation.");
         return Ok(Step::Skipped {
             what: "the measurement names",
             path: out,
@@ -187,7 +295,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
     }
 
     println!(
-        "[2/3] Measurement names — opening {TEXT_TABLE}, then reading its cipher.\n      \
+        "[3/4] Measurement names — opening {TEXT_TABLE}, then reading its cipher.\n      \
          This is the slow part: every record is under its own substitution, and the\n      \
          attack bootstraps over several passes. Minutes, not seconds."
     );
@@ -243,7 +351,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
     })
 }
 
-/// Step 3: recover the keys of the `.rod` sections every car needs.
+/// Step 4: recover the keys of the `.rod` sections every car needs.
 fn rod_keys(root: &Path) -> Result<Step> {
     let cache = crate::datadir::rod_keys()?;
     let present: Vec<PathBuf> = SHARED_ROD_FILES
@@ -261,14 +369,14 @@ fn rod_keys(root: &Path) -> Result<Step> {
         // Silence here would look like the sections are genuinely unreadable,
         // which is the one conclusion that must never be reached by accident.
         println!(
-            "[3/3] .rod section keys — this build has no key search, so only keys already\n      \
+            "[4/4] .rod section keys — this build has no key search, so only keys already\n      \
              cached are used. To recover the missing ones:\n          \
              cargo install --path crates/vagcan --features rod-crack\n      \
              then run this again."
         );
     } else {
         println!(
-            "[3/3] .rod section keys — searching for the ones not already cached.\n      \
+            "[4/4] .rod section keys — searching for the ones not already cached.\n      \
              About a minute of every core per blocked section."
         );
     }
@@ -340,7 +448,7 @@ fn report(steps: &[Step]) -> String {
         out,
         "\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
-         vagcan faults --labels <VCDS-DIR>    stored faults, named\n\n\
+         vagcan faults       stored faults, named — the labels are copied in now\n\n\
          Scalings are a separate thing and no installation carries them — the corpus \n\
          has names, not numbers. Those are measured: `vagcan survey`, then \n\
          `vagcan watch --out drive.csv`, then `vagcan recording calibrate`."
@@ -414,6 +522,101 @@ mod tests {
         // And the other way in, since it is the whole point of the argument
         // being optional.
         assert!(text.contains("offers to download"), "{text}");
+    }
+
+    /// A throwaway directory tree, removed on drop. Tests must not write into a
+    /// real `~/.vagcan`, so the copy is exercised against a tiny synthetic
+    /// install rather than the 122 MB one.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            let path = std::env::temp_dir().join(format!(
+                "vagcan-setup-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            TempDir(path)
+        }
+        fn write(&self, rel: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            path
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A stand-in for a VCDS install: one of each thing the copy must carry.
+    fn synthetic_install(tag: &str) -> TempDir {
+        let install = TempDir::new(tag);
+        install.write("UDS_EV/RD.rod", b"registry");
+        install.write("UDS_EV/EV_ECM.rod", b"a unit's own file");
+        install.write("Labels/part.lbl", b"001,1,Engine Speed,,");
+        install.write("Codes.dat", b"texts");
+        install
+    }
+
+    fn detail(step: &Step) -> String {
+        match step {
+            Step::Wrote { detail, .. } => detail.clone(),
+            other => panic!("expected a written step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_copy_carries_the_three_inputs_preserving_their_layout() {
+        // After it, ~/.vagcan holds the exact tree fault naming reads off disk —
+        // UDS_EV/ (registry and each unit's own .rod), Labels/, Codes.dat.
+        let install = synthetic_install("layout");
+        let target = TempDir::new("layout-out");
+        let step = copy_corpus(&install.0, &target.0, false).unwrap();
+        assert!(detail(&step).starts_with("4 files copied"), "{}", detail(&step));
+        for rel in ["UDS_EV/RD.rod", "UDS_EV/EV_ECM.rod", "Labels/part.lbl", "Codes.dat"] {
+            assert!(target.0.join(rel).is_file(), "{rel} did not land under the target");
+        }
+    }
+
+    #[test]
+    fn copying_is_idempotent_and_freshness_gated_per_file() {
+        // The rule the rest of setup follows: a second run has nothing to do,
+        // one changed file recopies only itself, and --refresh copies the lot.
+        let install = synthetic_install("fresh");
+        let target = TempDir::new("fresh-out");
+
+        let first = copy_corpus(&install.0, &target.0, false).unwrap();
+        assert_eq!(detail(&first), "4 files copied, 0 already current");
+
+        let second = copy_corpus(&install.0, &target.0, false).unwrap();
+        assert_eq!(detail(&second), "0 files copied, 4 already current", "a no-op rerun");
+
+        // One destination made to look stale: only it is copied again.
+        let stale = target.0.join("Codes.dat");
+        let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
+        let third = copy_corpus(&install.0, &target.0, false).unwrap();
+        assert_eq!(detail(&third), "1 files copied, 3 already current");
+
+        // --refresh copies everything regardless of mtimes.
+        let forced = copy_corpus(&install.0, &target.0, true).unwrap();
+        assert_eq!(detail(&forced), "4 files copied, 0 already current");
+    }
+
+    #[test]
+    fn an_install_missing_every_input_is_reported_not_a_crash() {
+        let empty = TempDir::new("empty");
+        let target = TempDir::new("empty-out");
+        let step = copy_corpus(&empty.0, &target.0, false).unwrap();
+        match step {
+            Step::Missing { why, .. } => assert!(why.contains("UDS_EV"), "{why}"),
+            other => panic!("expected Missing, got {other:?}"),
+        }
     }
 
     #[test]

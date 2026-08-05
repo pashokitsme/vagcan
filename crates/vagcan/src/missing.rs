@@ -58,6 +58,33 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
     out
 }
 
+/// Fault codes read fine, but this machine has nothing to name them with.
+///
+/// A third shortage, and it must not be mistaken for either of the other two.
+/// It is **not** [`no_catalog`] — a drive cannot invent a fault name — and it is
+/// its own message rather than [`no_label_data`] because the fix is now sharper:
+/// since `vagcan setup` copies the label files into `~/.vagcan`, this is the
+/// machine where that copy has not happened. Setup was never run, or was run by
+/// a build from before it copied them, and either way one command fixes it.
+///
+/// Deliberately says the codes are still shown: a reader looking at bare numbers
+/// needs to know the numbers are real and only the names are missing.
+pub fn no_fault_labels(looked_in: &Path) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Codes below are shown as numbers: no fault-name labels on this machine.");
+    let _ = writeln!(out, "\nLooked in: {}", looked_in.display());
+    let _ = writeln!(
+        out,
+        "\n\
+         The names come from a VCDS installation, and `vagcan setup` copies them in:\n    \
+         vagcan setup /path/to/VCDS\n\n\
+         That is offline, and it leaves the labels under ~/.vagcan/data/extracted/ so the\n\
+         installation can then be deleted. If you have no VCDS installation: this project\n\
+         cannot ship the data, because it is Ross-Tech's. {VCDS_DOWNLOAD}"
+    );
+    out
+}
+
 /// No proven measurement rows for the car in front of the tool.
 ///
 /// Deliberately does **not** mention `setup`. A VCDS installation supplies
@@ -142,6 +169,22 @@ mod tests {
         assert!(!label.contains("calibrate"), "{label}");
         assert!(catalog.contains("vagcan recording calibrate"));
         assert!(!catalog.contains("vagcan setup /path"), "{catalog}");
+    }
+
+    #[test]
+    fn the_fault_label_shortage_names_setup_the_copy_and_never_a_drive() {
+        // The message for a car whose codes read but cannot be named: setup has
+        // not copied the labels in yet. It must send the reader to `setup`, name
+        // the directory it looked in, and never to a drive — the numbers are
+        // real, only the names are absent, so `calibrate` would be the wrong loop.
+        let m = no_fault_labels(Path::new("/home/x/.vagcan/data/extracted"));
+        assert!(m.contains("vagcan setup /path/to/VCDS"), "{m}");
+        assert!(m.contains("/home/x/.vagcan/data/extracted"), "the reader must see where it looked:\n{m}");
+        assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
+        assert!(m.contains("copies them in"), "the point is that setup now copies the labels:\n{m}");
+        // The one thing it must never do is send a reader driving.
+        assert!(!m.contains("calibrate"), "a missing name is not fixed by a drive:\n{m}");
+        assert!(!m.contains("measurement rows"), "{m}");
     }
 
     #[test]

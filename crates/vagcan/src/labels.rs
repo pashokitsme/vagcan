@@ -91,6 +91,17 @@ fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
     )
 }
 
+/// Whether a directory holds a label corpus this tool could load.
+///
+/// The same shape [`load_cached`] needs — a `Labels/` of `.lbl`/`.clb`, or a
+/// directory that already is one — asked cheaply so the `~/.vagcan` default can
+/// degrade to "no corpus" instead of an error on a machine that has not run
+/// `vagcan setup`. Only used for that default: a directory the user named is
+/// loaded outright, so a wrong path still reports itself.
+pub fn has_corpus(dir: &Path) -> bool {
+    label_dir_under(dir).is_ok()
+}
+
 /// Whether the cache on disk can be believed for this corpus directory.
 ///
 /// Two questions, and an mtime only answers the first. **Is it stale?** — the
