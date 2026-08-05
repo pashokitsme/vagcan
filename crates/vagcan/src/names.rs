@@ -1,8 +1,8 @@
 //! `vagcan vcds names` — search the measurement names recovered from the label
 //! corpus.
 //!
-//! `catalogs/names-uds.json` holds 17,009 names, recovered by breaking
-//! `TTTEXT.ROD`'s per-record substitution cipher
+//! `~/.vagcan/labels/names.json` holds the names `vagcan setup` recovered by
+//! breaking `TTTEXT.ROD`'s per-record substitution cipher
 //! (`research/labels/tttext-codec.md`). They are keyed by the corpus's own text id,
 //! **not** by data identifier: the join from a name to the identifier that
 //! carries it was shown to be structurally absent from the label files
@@ -14,14 +14,6 @@
 //! on the car. The pairing still has to be earned by making the value move.
 
 use anyhow::{Context, Result};
-
-/// Where the recovered names live by default.
-///
-/// Loaded at run time, not compiled in: this file is one corpus's worth of
-/// names — the corpus that happened to be installed here — and a different
-/// VCDS installation will have a different one. Data belongs on disk where it
-/// can be replaced without a rebuild.
-pub const DEFAULT_PATH: &str = "catalogs/names-uds.json";
 
 /// Every name whose text contains `needle`, case-insensitively, with its text
 /// id.
@@ -41,13 +33,21 @@ pub fn search<'a>(catalog: &'a serde_json::Value, needle: &str) -> Vec<(&'a str,
 }
 
 /// Run the command (see the module docs).
-pub fn run(needle: &str, limit: usize, path: &str) -> Result<()> {
-    let text = std::fs::read_to_string(path).with_context(|| {
-        format!(
-            "reading the names catalog {path:?} — it is recovered from a VCDS \
-             installation, see research/labels/tttext-codec.md"
-        )
-    })?;
+pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
+    // The ordinary reason this file is absent is that nobody has run `vagcan
+    // setup` yet, and "No such file or directory" leaves a reader with nothing
+    // to do about it. The catalog cannot ship with the tool — it is derived
+    // from Ross-Tech's product — so a fresh checkout not having it is expected,
+    // and saying which command makes it is the whole job here.
+    if !path.is_file() {
+        anyhow::bail!(crate::missing::no_label_data(
+            "The measurement names",
+            "`vagcan vcds names`",
+            path
+        ));
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the names catalog {}", path.display()))?;
     let catalog: serde_json::Value =
         serde_json::from_str(&text).context("parsing the names catalog")?;
     let hits = search(&catalog, needle);
@@ -110,15 +110,16 @@ mod tests {
     }
 
     #[test]
-    fn the_recovered_catalog_parses_and_is_the_size_the_research_claims() {
-        // research/labels/tttext-codec.md §7: 17,009 names recovered. Read from disk,
-        // because that is where the command reads it from too.
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../").join(DEFAULT_PATH);
-        let catalog: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(catalog.as_object().unwrap().len(), 17_009);
-        // A name that came out of the crack, spot-checked in the research doc.
-        assert!(!search(&catalog, "rear lid unlocking").is_empty());
+    fn a_catalog_nobody_has_recovered_yet_is_a_message_not_an_errno() {
+        // This used to assert 17,009 names against a file committed to the
+        // repository. The file is derived from a VCDS installation and no
+        // longer ships, so the interesting behaviour is what happens on a
+        // machine where `vagcan setup` has not been run — which is every fresh
+        // checkout.
+        let err = run("boost", 40, std::path::Path::new("/definitely/not/here/names.json"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("vagcan setup"), "{err}");
+        assert!(err.contains("/definitely/not/here/names.json"), "{err}");
     }
 }

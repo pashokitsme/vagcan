@@ -173,21 +173,22 @@ const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] =
 /// Where a car's own number-to-id pairings are read from, when it has them:
 /// a JSON object of `{"03": "713"}` — decimal-looking unit number to hex
 /// request id, both as the user writes them.
-pub const OVERRIDE_PATH: &str = "catalogs/unit-numbers.json";
+///
+/// Under the tool's own directory, not the working one. It used to be looked
+/// for in the checkout and every parent of it, which meant the same command
+/// behaved differently depending on where the shell was standing, and put a
+/// file describing somebody's car inside a repository.
+pub const OVERRIDE_PATH: &str = ".vagcan/labels/data/unit-numbers.json";
 
-/// Read the override file from the working directory or any parent of it, so
-/// the tool behaves the same wherever it is run from.
+/// Read the override file, when the user has written one.
+///
+/// The home directory is resolved from the environment rather than through a
+/// crate: this layer has no business growing a dependency to find one path, and
+/// a machine with no `HOME` simply has no override.
 fn read_override() -> std::io::Result<String> {
-    let mut at = std::env::current_dir().ok();
-    for _ in 0..6 {
-        let Some(dir) = at else { break };
-        let candidate = dir.join(OVERRIDE_PATH);
-        if candidate.exists() {
-            return std::fs::read_to_string(candidate);
-        }
-        at = dir.parent().map(|p| p.to_path_buf());
-    }
-    std::fs::read_to_string(OVERRIDE_PATH)
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| std::io::Error::other("no HOME, so no override file"))?;
+    std::fs::read_to_string(std::path::Path::new(&home).join(OVERRIDE_PATH))
 }
 
 /// The pairings [`OVERRIDE_PATH`] states, or nothing when there is no such file.

@@ -201,9 +201,6 @@ impl CatalogStore {
         CatalogStore { dir: dir.into() }
     }
 
-    /// Where the catalogs live by default, relative to the working directory.
-    pub const DEFAULT_DIR: &'static str = "catalogs/vehicles";
-
     /// The rows known for a unit, given what it reported about itself.
     ///
     /// The part number is tried first and the ODX name second; a unit that

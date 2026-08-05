@@ -22,35 +22,25 @@ use vag_data::{scan_corpus, CorpusScan, LabelDb, Measurement};
 /// Where a parsed corpus is cached between runs.
 ///
 /// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
-/// slow part of every lookup, and the corpus does not change between runs. The
-/// cache is keyed by the directory it was built from, so the English and the
-/// Russian install each keep their own — switching language is a matter of
-/// pointing at the other directory, not of rebuilding anything.
+/// slow part of every lookup, and the corpus does not change between runs.
 ///
-/// It lives under `~/.vagcan`, not in `catalogs/`. A cache is something this
-/// tool generated on this machine and can regenerate at any time; `catalogs/`
-/// is a checked-in corpus of evidence. Keeping a rebuildable database next to
-/// measurements that took a drive to establish invites treating the two as one
-/// kind of thing, and they are not.
-fn cache_dir() -> PathBuf {
-    crate::datadir::vagcan_dir()
-        .map(|d| d.join("label-cache"))
+/// One file, `~/.vagcan/labels/cache.sqlite`, beside the other two things
+/// `vagcan setup` recovers from an installation. It used to be one file per
+/// corpus directory, named after the flattened path, which kept the English and
+/// the Russian install apart at the cost of a directory nobody could read. The
+/// same property is kept more cheaply by [`crate::datadir::LABEL_CACHE_SOURCE`]:
+/// the cache records which directory it was built from, and a cache built from
+/// another one is rebuilt rather than trusted.
+fn cache_path() -> PathBuf {
+    crate::datadir::label_cache()
         // With nowhere to write, the working directory is a poor cache but a
         // better failure than refusing to read a corpus at all.
-        .unwrap_or_else(|_| PathBuf::from("label-cache"))
+        .unwrap_or_else(|_| PathBuf::from("cache.sqlite"))
 }
 
-/// The cache file for a corpus directory.
-fn cache_path_for(dir: &Path) -> PathBuf {
-    // The directory's own name, with anything awkward flattened — readable in
-    // a listing, and distinct per install.
-    let key: String = dir
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let key = key.trim_matches('-').to_string();
-    cache_dir().join(format!("{key}.sqlite"))
+/// The note recording which corpus [`cache_path`] holds.
+fn cache_source_path() -> PathBuf {
+    cache_path().with_file_name(crate::datadir::LABEL_CACHE_SOURCE)
 }
 
 /// The directory the label files are actually in.
@@ -101,23 +91,36 @@ fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
     )
 }
 
+/// Whether the cache on disk can be believed for this corpus directory.
+///
+/// Two questions, and an mtime only answers the first. **Is it stale?** — the
+/// file must be newer than the directory it was built from. **Is it even about
+/// this corpus?** — one cache file now serves every install, so a cache built
+/// from the Russian tree is not stale for the English one, it is wrong, and its
+/// mtime says nothing about that. Hence the recorded source directory.
+fn cache_is_current(cache: &Path, dir: &Path) -> bool {
+    let built_from = std::fs::read_to_string(cache_source_path()).unwrap_or_default();
+    if built_from.trim() != dir.to_string_lossy() {
+        return false;
+    }
+    match (std::fs::metadata(cache), std::fs::metadata(dir)) {
+        (Ok(c), Ok(d)) => match (c.modified(), d.modified()) {
+            (Ok(c), Ok(d)) => c >= d,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Load a corpus, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
-/// A stale cache is worse than none, so the file is only trusted when it is
-/// newer than the corpus directory it was built from. `refresh` forces a
-/// rebuild regardless.
+/// A stale cache is worse than none, so it is only trusted when
+/// [`cache_is_current`] says so. `refresh` forces a rebuild regardless.
 pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
     let dir = &label_dir_under(dir)?;
-    let cache = cache_path_for(dir);
-    let fresh = !refresh
-        && match (std::fs::metadata(&cache), std::fs::metadata(dir)) {
-            (Ok(c), Ok(d)) => match (c.modified(), d.modified()) {
-                (Ok(c), Ok(d)) => c >= d,
-                _ => false,
-            },
-            _ => false,
-        };
+    let cache = cache_path();
+    let fresh = !refresh && cache_is_current(&cache, dir);
     if fresh {
         match vag_db::load_db(&cache) {
             Ok(db) => return Ok(db),
@@ -133,6 +136,11 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
     }
     let stats = vag_db::build_db(dir, &cache)
         .map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?;
+    // Written after the build, not before: a note claiming a corpus the build
+    // then failed to finish would make the next run trust a half-written file.
+    if let Err(e) = std::fs::write(cache_source_path(), dir.to_string_lossy().as_bytes()) {
+        eprintln!("warning: could not record which corpus the cache came from: {e}");
+    }
     eprintln!(
         "cached {} label files ({} measurements) in {}",
         stats.files,
@@ -274,7 +282,7 @@ fn render_measurement_row(m: &Measurement) -> String {
 /// being a part-number guess: the car answers the question. Reports what the
 /// file contains, marking sections whose payload did not decode rather than
 /// implying the whole file was read.
-pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Result<()> {
+pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Result<()> {
     use vag_data::rod::{decode_rod_recover, IvCache, RodStatus};
 
     let hits = vag_data::find_rod_by_odx_name(std::path::Path::new(dir), odx_name)?;
@@ -291,7 +299,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &str) -> anyhow::Resul
     // that fills it costs minutes of every core and lives in a separate tool
     // (`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`),
     // so reading a car never links it.
-    let mut cache = IvCache::load(std::path::Path::new(cache_path));
+    let mut cache = IvCache::load(cache_path);
     for path in &hits {
         println!("{}", path.display());
         let bytes = match std::fs::read(path) {

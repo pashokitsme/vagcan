@@ -170,9 +170,10 @@ pub enum Tool {
         /// The speed a coastdown pass closes at.
         #[arg(long, default_value_t = setup::COAST_TO_KMH, value_name = "KMH")]
         coast_to: f64,
-        /// Where the measurement catalogs live.
-        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
-        catalogs: String,
+        /// Where the proven measurement rows live.
+        /// Default: `~/.vagcan/labels/data`.
+        #[arg(long, value_name = "DIR")]
+        data: Option<String>,
         /// Write the car file here instead of into this tool's own directory.
         #[arg(long, value_name = "FILE")]
         car: Option<String>,

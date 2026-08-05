@@ -42,6 +42,11 @@ pub enum Tool {
         /// 0.995, ≥ 20 points over ≥ 4 distinct raw values).
         #[arg(long, default_value_t = 20, value_name = "N")]
         min_points: usize,
+        /// Write the proven scalings as a measurement catalog. Put the file in
+        /// `~/.vagcan/labels/data/<part number>.json` and `watch` and `measure`
+        /// read it from then on.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
     },
 
     /// Find which identifiers carry discrete state — a gear, a mode, a switch.
@@ -104,12 +109,16 @@ fn recordings() -> picker::Level<'static> {
 
 pub fn run(tool: Tool) -> Result<()> {
     match tool {
-        Tool::Calibrate { log, min_r2, min_points } => {
+        Tool::Calibrate { log, min_r2, min_points, out } => {
             let Some(log) = pick_when_absent(log, "vagcan recording calibrate --log FILE.csv")?
             else {
                 return Ok(());
             };
-            calibrate::run(&log, analyse::Thresholds { min_r2, min_points, ..Default::default() })
+            calibrate::run(
+                &log,
+                out.as_deref(),
+                analyse::Thresholds { min_r2, min_points, ..Default::default() },
+            )
         }
         Tool::Discover { log, pairs } => {
             let Some(log) = pick_when_absent(log, "vagcan recording discover --log FILE.csv")?

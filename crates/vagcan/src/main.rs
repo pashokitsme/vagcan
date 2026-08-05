@@ -21,10 +21,12 @@ mod names;
 mod progress;
 mod props;
 mod measure;
+mod missing;
 mod recording;
 mod render;
 mod safety;
 mod scan;
+mod setup;
 mod sniff;
 mod survey;
 mod ui;
@@ -58,6 +60,7 @@ const ADAPTER_BAUD: u32 = 115_200;
                   Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
                   and the adapter's termination jumper OFF.\n\n\
                   START HERE\n  \
+                  vagcan setup <VCDS-DIR>   once: parse a VCDS install for names\n  \
                   vagcan devices            is the adapter connected?\n  \
                   vagcan info               which car is this?\n  \
                   vagcan units              which control units does it have?\n\n\
@@ -84,6 +87,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Parse a VCDS installation into `~/.vagcan`. Run once. Offline.
+    ///
+    /// Everything the label corpus contributes — the parsed corpus itself, the
+    /// measurement names, the `.rod` section keys — is derived from a VCDS
+    /// installation and cannot be shipped with this tool, because it is
+    /// Ross-Tech's data. This recovers all three from an installation you have.
+    ///
+    /// It takes minutes over a full corpus, mostly in the name recovery, and it
+    /// touches no car. Running it again on an unchanged installation does
+    /// nothing and says so.
+    ///
+    /// No VCDS installation: https://www.ross-tech.com/vcds/download/
+    Setup {
+        /// The VCDS installation root — the directory holding `Labels/` and
+        /// `UDS_EV/`. Leave it out and an installation is offered for download.
+        #[arg(value_name = "VCDS-DIR")]
+        dir: Option<String>,
+        /// Which language build to download: the label text is translated, so
+        /// this decides whether the car reads in English or in Russian.
+        /// Giving it also answers the download question, for a script.
+        #[arg(long, value_name = "LANG", value_parser = setup::vendor::LANGUAGES.to_vec())]
+        lang: Option<String>,
+        /// Redo every step, whatever is already in `~/.vagcan/labels/`.
+        #[arg(long)]
+        refresh: bool,
+    },
+
     /// List connected USB-CAN adapters.
     ///
     /// Start here if a command says it cannot find an adapter.
@@ -222,11 +252,12 @@ enum Command {
         /// asked for, running until interrupted.
         #[arg(long = "for", value_name = "SECONDS", value_parser = duration_arg, conflicts_with = "replay")]
         r#for: Option<Duration>,
-        /// Where the measurement catalogs live. Each file is named after the
+        /// Where the proven measurement rows live. Each file is named after the
         /// part number or ODX name of the control unit it describes, so a car
         /// this tool has not seen before simply finds none.
-        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
-        catalogs: String,
+        /// Default: `~/.vagcan/labels/data`.
+        #[arg(long, value_name = "DIR")]
+        data: Option<String>,
     },
 
     /// Time an acceleration run from the car's own speed signal.
@@ -277,9 +308,10 @@ enum Command {
         /// No tone on a closed mark.
         #[arg(long)]
         quiet: bool,
-        /// Where the measurement catalogs live.
-        #[arg(long, default_value = vag_data::catalog::CatalogStore::DEFAULT_DIR, value_name = "DIR")]
-        catalogs: String,
+        /// Where the proven measurement rows live.
+        /// Default: `~/.vagcan/labels/data`.
+        #[arg(long, value_name = "DIR")]
+        data: Option<String>,
         /// Mass in kilograms, overriding the car file for this run.
         #[arg(long, value_name = "KG")]
         mass: Option<f64>,
@@ -381,8 +413,9 @@ enum Command {
         /// Where the recovered `.rod` section keys are cached. A fault
         /// catalogue is sealed with one, and recovering one costs ~95 s of
         /// every core — so they are kept as data, not searched for per run.
-        #[arg(long, default_value = "catalogs/rod-iv-cache.json", value_name = "FILE")]
-        iv_cache: String,
+        /// Default: `~/.vagcan/labels/rod-keys.json`, written by `vagcan setup`.
+        #[arg(long, value_name = "FILE")]
+        iv_cache: Option<String>,
         /// Name the faults in a survey this tool already recorded, instead of
         /// reading the car. Offline, and needs `--labels`.
         #[arg(long, value_name = "FILE", requires = "labels",
@@ -459,6 +492,12 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Setup { dir, lang, refresh } => setup::run(setup::Options {
+            dir: dir.as_deref(),
+            lang: lang.as_deref(),
+            refresh,
+            archive_base: setup::vendor::ARCHIVE_BASE,
+        }),
         Command::Devices => {
             println!("{}", device::render_list(&device::list()?));
             Ok(())
@@ -473,16 +512,16 @@ async fn main() -> Result<()> {
                 .await
         }
         Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
-        Command::Watch { replay: Some(path), catalogs, survey, speed, .. } => {
+        Command::Watch { replay: Some(path), data, survey, speed, .. } => {
             watch::run_recording(
                 &path,
-                &datadir::resolve(&catalogs).to_string_lossy(),
+                &data_dir(data.as_deref())?,
                 survey.as_deref(),
                 speed,
             )
             .await
         }
-        Command::Watch { device, did, hz, out, survey, catalogs, r#for, .. } => {
+        Command::Watch { device, did, hz, out, survey, data, r#for, .. } => {
             let preselect = match did.as_deref() {
                 Some(spec) => watch::plan::parse_spec(spec)
                     .map_err(|e| anyhow::anyhow!("--did: {e}"))?,
@@ -505,7 +544,7 @@ async fn main() -> Result<()> {
                     hz,
                     out: out.as_deref(),
                     survey: survey.as_deref(),
-                    catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                    catalogs: &data_dir(data.as_deref())?,
                     view,
                 },
             )
@@ -516,12 +555,12 @@ async fn main() -> Result<()> {
             None => measure::view_picked(),
         },
         Command::Measure {
-            tool: Some(measure::Tool::Setup { device, coast_from, coast_to, catalogs, car }),
+            tool: Some(measure::Tool::Setup { device, coast_from, coast_to, data, car }),
             ..
         } => {
             measure::setup::run(measure::setup::Options {
                 device: device.as_deref(),
-                catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                catalogs: &data_dir(data.as_deref())?,
                 coast_from_kmh: coast_from,
                 coast_to_kmh: coast_to,
                 car: car.as_deref(),
@@ -537,7 +576,7 @@ async fn main() -> Result<()> {
             accel_window,
             out,
             quiet,
-            catalogs,
+            data,
             mass,
             tyre,
             cda,
@@ -552,7 +591,7 @@ async fn main() -> Result<()> {
             measure::run(measure::Options {
                 device: device.as_deref(),
                 car: car.as_deref(),
-                catalogs: &datadir::resolve(&catalogs).to_string_lossy(),
+                catalogs: &data_dir(data.as_deref())?,
                 full,
                 minimal,
                 marks: marks.0,
@@ -586,7 +625,7 @@ async fn main() -> Result<()> {
         Command::Faults { from: Some(survey), labels, iv_cache, all, .. } => faults::run_named(
             &survey,
             labels.as_deref().expect("--from requires --labels"),
-            &iv_cache,
+            &rod_keys(iv_cache.as_deref())?,
             all,
         ),
         Command::Faults { device, ecu, details, all, supported, extended, labels, iv_cache, .. } => {
@@ -599,7 +638,7 @@ async fn main() -> Result<()> {
                 supported,
                 extended,
                 labels.as_deref(),
-                &iv_cache,
+                &rod_keys(iv_cache.as_deref())?,
             )
             .await
         }
@@ -629,10 +668,24 @@ async fn main() -> Result<()> {
             vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
                 let name = odx_name_from_car(device.as_deref(), &ecu).await?;
                 println!("control unit {ecu} names its label file {name:?}\n");
-                labels::resolve_odx(&dir, &name, &datadir::resolve(&iv_cache).to_string_lossy())
+                labels::resolve_odx(&dir, &name, &iv_cache)
             }
         },
     }
+}
+
+/// Where the proven measurement rows are for this run.
+///
+/// `--data` if it was given, `~/.vagcan/labels/data` otherwise. Never a path
+/// relative to the working directory: that is what made these commands work in
+/// a checkout and nowhere else.
+fn data_dir(given: Option<&str>) -> Result<String> {
+    Ok(datadir::or_default(given, datadir::data_dir)?.to_string_lossy().into_owned())
+}
+
+/// Where the recovered `.rod` section keys are, for this run.
+fn rod_keys(given: Option<&str>) -> Result<String> {
+    Ok(datadir::or_default(given, datadir::rod_keys)?.to_string_lossy().into_owned())
 }
 
 /// A duration in seconds, rejected here rather than at the point of use.

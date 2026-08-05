@@ -63,15 +63,28 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
         let names: Vec<String> = m.tried.iter().map(|n| format!("\"{n}\"")).collect();
         let _ = writeln!(out, "\n    {} was looked for under {}", m.key, names.join(", "));
     }
+    // Through to the end, not as far as the diff. "The identifiers whose bytes
+    // moved are the live measurements" tells a reader what they have found and
+    // stops there — leaving them holding a list of hex with no way to learn
+    // that the next two commands turn it into the catalog this refusal is
+    // about. That gap is the whole distance between a refusal and a fix.
     let _ = writeln!(
         out,
         "\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
-         from raw bytes. To find it:\n    \
+         from raw bytes. The whole way there:\n    \
          vagcan survey --out parked.jsonl      then, after a drive:\n    \
          vagcan survey --out driving.jsonl\n    \
          vagcan survey --diff parked.jsonl driving.jsonl\n\
-         The identifiers whose bytes moved are the live measurements."
+         The identifiers whose bytes moved are the live measurements. Then record a\n\
+         drive with them on screen and fit them against a reading already trusted:\n    \
+         vagcan watch --did <the identifiers> --out drive.csv\n    \
+         vagcan recording calibrate --log drive.csv --out <part-number>.json\n\
+         Move that file to ~/.vagcan/labels/data/ — the file name is the unit's own\n\
+         F187 part number — and name its rows so this command can find them:\n\
+         `speed` and `gear` are what it looks for.\n\n\
+         None of this is what `vagcan setup` does. A label corpus carries names and no\n\
+         scaling at all, so no installation of VCDS can supply what is missing here."
     );
     out
 }
@@ -396,5 +409,25 @@ mod tests {
         );
         assert!(text.contains("\"vehicle speed\""), "{text}");
         assert!(text.contains("\"road speed\""), "{text}");
+    }
+
+    #[test]
+    fn the_refusal_goes_all_the_way_to_a_catalog_rather_than_to_a_list_of_hex() {
+        // It used to end at `survey --diff`, which finds the identifiers and
+        // says nothing about what to do with them. A reader who follows it to
+        // the letter is left holding a list of hex and no catalog — and the
+        // catalog is what this command refused for.
+        let text = missing_channels(
+            &[],
+            &[MissingChannel { key: "speed", tried: vec!["vehicle speed".into()] }],
+        );
+        for step in ["survey --diff", "watch --did", "recording calibrate"] {
+            assert!(text.contains(step), "{step} missing from:\n{text}");
+        }
+        assert!(text.contains("~/.vagcan/labels/data/"), "where the file goes:\n{text}");
+        // And it rules out the other shortage explicitly, because "the tool has
+        // no data" is the same sentence for both and only one of them is true
+        // here.
+        assert!(text.contains("None of this is what `vagcan setup` does"), "{text}");
     }
 }
