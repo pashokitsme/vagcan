@@ -256,7 +256,11 @@ fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 /// 3. **the built-in fallback** — the five pairings proven on the reference
 ///    car, so a run with neither of the above still works as it always did.
 fn short_numbers() -> Vec<UnitNumber> {
-    let installed = INSTALLED.read().unwrap_or_else(PoisonError::into_inner).clone();
+    // Borrow the installed list under the read guard rather than cloning it:
+    // `pairings_in_force` only reads its inputs, and neither `override_pairings`
+    // nor `built_in_pairings` touches `INSTALLED`, so holding the read lock here
+    // cannot deadlock against the one writer (`install`).
+    let installed = INSTALLED.read().unwrap_or_else(PoisonError::into_inner);
     pairings_in_force(&[&override_pairings(), &installed, &built_in_pairings()])
 }
 

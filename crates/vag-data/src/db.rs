@@ -241,26 +241,32 @@ impl LabelDb {
 
     /// Memoizing front-end for [`Self::resolve_uncached`].
     fn resolve_idx(&self, part_no: &str) -> Option<usize> {
-        // Try each spelling the corpus might use; the first that resolves wins.
-        let candidates = part_number_candidates(part_no);
-        let pn = candidates
-            .iter()
-            .find(|c| self.resolve_one(c).is_some())
-            .cloned()
-            .unwrap_or_else(|| normalize(part_no));
-        let cache = self
-            .resolve_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(&hit) = cache.get(&pn) {
-            return hit;
+        // The cache is checked first, under the caller's own key, because that
+        // is the whole point of it. It used to be keyed by the *resolved*
+        // spelling, which cannot be known without running the resolution — so
+        // every call paid for `resolve_one` across all candidate spellings
+        // before it ever looked at the cache, and the memo saved nothing. A
+        // unit asks for its own part number over and over, so the input string
+        // is the key that actually repeats.
+        {
+            let cache = self
+                .resolve_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(&hit) = cache.get(part_no) {
+                return hit;
+            }
         }
-        drop(cache); // don't hold the lock across the actual resolution
-        let result = self.resolve_one(&pn);
+        // Miss: try each spelling the corpus might use, first that resolves
+        // wins. `normalize(part_no)` is always the first candidate, so the old
+        // fallback to it added nothing — a run that resolves nothing is `None`.
+        let result = part_number_candidates(part_no)
+            .iter()
+            .find_map(|c| self.resolve_one(c));
         self.resolve_cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(pn, result);
+            .insert(part_no.to_string(), result);
         result
     }
 

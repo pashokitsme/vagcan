@@ -43,13 +43,16 @@ pub fn encode_frame(id: u32, data: &[u8]) -> Result<String, CanError> {
     if data.len() > 8 {
         return Err(CanError::Unsupported("classic CAN frame data must be <= 8 bytes"));
     }
+    use std::fmt::Write;
     let mut line = if id & CAN_EFF_FLAG != 0 {
         format!("T{:08X}{:X}", id & CAN_EFF_MASK, data.len())
     } else {
         format!("t{:03X}{:X}", id & CAN_SFF_MASK, data.len())
     };
+    // Into the line directly rather than a fresh `String` per byte — this is on
+    // the send path of every frame, and a sweep sends thousands.
     for b in data {
-        line.push_str(&format!("{b:02X}"));
+        let _ = write!(line, "{b:02X}");
     }
     line.push('\r');
     Ok(line)
