@@ -1136,8 +1136,6 @@ async fn drive<R: BatchReader>(
             session::State::Arming { .. } | session::State::Armed | session::State::Paused
         );
         let series = series_of(&charts, &units);
-        // What `←`/`→` walks is pages of overlaid series, not series.
-        controls.charts = chart::pages(&series).len();
         let screen = ui::Screen {
             band: ui::band(
                 &ui::phase_of(session.state(), speed_kmh, clock, last_outcome.as_ref()),
@@ -1146,7 +1144,6 @@ async fn drive<R: BatchReader>(
             banner: (!banner.is_empty()).then(|| banner.clone()),
             rows: value_rows(&values, &charts),
             marks: mark_rows(&opts.marks, &closed),
-            chart: controls.chart.min(controls.charts.saturating_sub(1)),
             series,
             hz: session.hz(),
             file: opts.out.map(str::to_string),

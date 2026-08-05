@@ -35,7 +35,8 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use super::messages;
 use super::session::{self, ARMING_HOLD_S};
 use super::types::Seconds;
-use crate::ui::chart::{self, Origin, Series};
+use crate::ui::bars;
+use crate::ui::chart::{Origin, Series};
 
 /// Where the stopwatch stands, with what the band has to say about it.
 ///
@@ -198,8 +199,6 @@ pub struct Screen {
     pub rows: Vec<ValueRow>,
     pub marks: Vec<MarkRow>,
     pub series: Vec<Series>,
-    /// Which page of overlaid series is up, as [`pages`] divides them.
-    pub chart: usize,
     /// The achieved rate, measured. There is no `--hz`, and a rate printed
     /// before the loop ran would be a setting pretending to be a measurement.
     pub hz: Option<f64>,
@@ -218,12 +217,6 @@ pub struct Screen {
 /// The keyboard's own state: which chart is up, and whether `q` is armed.
 #[derive(Clone, Debug, Default)]
 pub struct Controls {
-    pub chart: usize,
-    /// How many chart pages there are to walk — [`pages`]`(…).len()`, not the
-    /// number of series. Kept here rather than passed in, so that a caller
-    /// cannot hold the keyboard state and the count at once and have them
-    /// disagree.
-    pub charts: usize,
     /// Set by the first `q` with unsaved runs, cleared by anything else. Two
     /// keystrokes to throw away a drive, one to keep it.
     quit_armed: bool,
@@ -352,7 +345,6 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
     // `q`, thought better of it and pressed `s` must not then lose the drive to
     // a later stray `q`.
     let armed = std::mem::take(&mut controls.quit_armed);
-    let charts = controls.charts;
     match code {
         KeyCode::Char('q') => match unsaved == 0 || armed {
             true => Action::Quit,
@@ -366,22 +358,13 @@ pub fn on_key(controls: &mut Controls, code: KeyCode, unsaved: usize) -> Action 
         KeyCode::Char('s') => Action::Save,
         KeyCode::Char('d') => Action::Discard,
         KeyCode::Enter => Action::KeepGoing,
-        KeyCode::Left if charts > 0 => {
-            controls.chart = (controls.chart + charts - 1) % charts;
-            Action::Nothing
-        }
-        KeyCode::Right if charts > 0 => {
-            controls.chart = (controls.chart + 1) % charts;
-            Action::Nothing
-        }
         _ => Action::Nothing,
     }
 }
 
 /// The key hints, which are the keys the design gives this command and no
 /// others.
-const HINTS: &str =
-    " [p]ause [c]ancel [d]iscard [↵]keep&next [s]ave [←→]chart [q]uit";
+const HINTS: &str = " [p]ause [c]ancel [d]iscard [↵]keep&next [s]ave [q]uit";
 
 /// Draw the whole screen.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
@@ -439,7 +422,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     .split(middle[0]);
 
     draw_values(frame, screen, left[0]);
-    draw_chart(frame, screen, left[1]);
+    draw_bars(frame, screen, left[1]);
     draw_marks(frame, screen, middle[1]);
 
     frame.render_widget(
@@ -501,22 +484,29 @@ fn draw_values(frame: &mut Frame, screen: &Screen, area: Rect) {
     frame.render_widget(table, area);
 }
 
-/// Where the chart goes on this screen, and what stands in for it before the
-/// car has said anything.
+/// How many bars the live panel carries.
 ///
-/// All of the deciding is [`chart::plot`]'s and all of the drawing is
-/// [`chart::draw`]'s. What is left here is the sentence in the empty case,
-/// which is about the car rather than about a plot and so belongs to the
-/// command that is reading one.
-fn draw_chart(frame: &mut Frame, screen: &Screen, area: Rect) {
-    let Some(plotted) = chart::plot(&screen.series, screen.chart, area.width) else {
-        frame.render_widget(
-            Block::default().borders(Borders::ALL).title(" chart — nothing read yet "),
-            area,
-        );
-        return;
-    };
-    chart::draw(frame, &plotted, area);
+/// The five a driver asked for — road speed, engine speed, power, acceleration,
+/// pedal — which is exactly what [`super::series_of`] puts at the front of the
+/// list. The number lives here rather than there because it is a property of
+/// this screen's height, and the order lives there because it is the order the
+/// quantities are read in.
+const LIVE_BARS: usize = 5;
+
+/// The live panel: a few quantities against the biggest each has reached.
+///
+/// This was a chart until it was driven. A terminal chart has one Y axis for
+/// values that are 100 km/h beside 6000 /min, needs paging keys because three
+/// lines is all that fits, and answers a question — *what was the shape of the
+/// last few seconds* — that nobody has while the car is still accelerating. The
+/// question a driver does have is where a number is against the best it has
+/// been, which is what a bar is. The chart is still how a finished run is read;
+/// that is the browser page's job, and it keeps it.
+///
+/// All of the deciding is [`bars::bars`]'s and all of the drawing is
+/// [`bars::draw`]'s.
+fn draw_bars(frame: &mut Frame, screen: &Screen, area: Rect) {
+    bars::draw(frame, &bars::bars(&screen.series, LIVE_BARS), area);
 }
 
 fn draw_marks(frame: &mut Frame, screen: &Screen, area: Rect) {
@@ -734,7 +724,6 @@ mod tests {
                     origin: Origin::Computed("trailing"),
                 },
             ],
-            chart: 0,
             hz: Some(21.4),
             file: Some("drive.json".into()),
             warning: None,
@@ -748,10 +737,6 @@ mod tests {
         for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
             println!("\n=== {w}×{h} ===");
             println!("{}", screen_text(&demo_screen(), w, h));
-            let mut second = demo_screen();
-            second.chart = 1;
-            println!("--- page 2 ---");
-            println!("{}", screen_text(&second, w, h));
             let done = Screen {
                 band: band(&Phase::Done { seconds: Some(6.12) }, None),
                 table: Some(
@@ -834,7 +819,7 @@ mod tests {
     #[test]
     fn quitting_with_unsaved_runs_does_not_quit_and_a_second_q_discards() {
         // Two keystrokes to throw away a drive, one to keep it.
-        let mut controls = Controls { charts: 2, ..Controls::default() };
+        let mut controls = Controls::default();
         let refused = on_key(&mut controls, KeyCode::Char('q'), 4);
         assert!(matches!(refused, Action::Refuse(ref text) if text.contains("[s] save")), "{refused:?}");
         assert_eq!(on_key(&mut controls, KeyCode::Char('q'), 4), Action::Quit);
@@ -854,25 +839,21 @@ mod tests {
     }
 
     #[test]
-    fn the_arrow_keys_walk_the_charts_and_wrap() {
-        let mut controls = Controls { charts: 3, ..Controls::default() };
+    fn an_arrow_key_does_nothing_now_that_there_are_no_pages_to_walk() {
+        // The live panel shows every quantity at once, so there is nothing left
+        // for `←`/`→` to page between. They are gone from the hints as well: a
+        // key advertised and inert is worse than no key.
+        let mut controls = Controls::default();
         assert_eq!(on_key(&mut controls, KeyCode::Right, 0), Action::Nothing);
-        assert_eq!(controls.chart, 1);
-        on_key(&mut controls, KeyCode::Left, 0);
-        assert_eq!(controls.chart, 0);
-        on_key(&mut controls, KeyCode::Left, 0);
-        assert_eq!(controls.chart, 2, "wraps rather than running off the end");
-        // With nothing to show there is nothing to switch between.
-        controls.charts = 0;
-        on_key(&mut controls, KeyCode::Right, 0);
-        assert_eq!(controls.chart, 2);
+        assert_eq!(on_key(&mut controls, KeyCode::Left, 0), Action::Nothing);
+        assert!(!HINTS.contains('←'), "{HINTS}");
     }
 
     #[test]
     fn escape_cancels_the_run_here_rather_than_quitting() {
         // A deliberate divergence from `watch`: a stopwatch needs a cheap
         // "throw this one away", and `watch` has nothing to throw away.
-        let mut controls = Controls { charts: 1, ..Controls::default() };
+        let mut controls = Controls::default();
         assert_eq!(on_key(&mut controls, KeyCode::Esc, 0), Action::Session(session::Command::Cancel));
         assert_eq!(
             on_key(&mut controls, KeyCode::Char('p'), 0),
@@ -1000,51 +981,43 @@ mod tests {
     }
 
     #[test]
-    fn the_chart_says_what_it_is_plotting_in_what_unit_and_where_it_came_from() {
+    fn the_live_panel_names_each_quantity_its_unit_and_the_peak_it_is_drawn_against() {
         // "Я не сразу понял что означает график": a border reading `speed` and
-        // two bare numbers is not enough to read a chart from.
+        // two bare numbers was not enough to read from. A bar has the same
+        // obligation — a proportion whose reference is invisible says nothing —
+        // so the peak it is scaled against is printed beside it.
         let screen = demo_screen();
         for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
             let text = screen_text(&screen, w, h);
-            assert!(text.contains("speed"), "{w}×{h} does not name the line:\n{text}");
-            assert!(text.contains("engine speed"), "{w}×{h} plots one line, not two:\n{text}");
-            assert!(text.contains("km/h"), "{w}×{h} drops the axis unit:\n{text}");
-            assert!(text.contains("time"), "{w}×{h} does not say what it is over:\n{text}");
-            // The folded line's own numbers are not on the axis, so they are in
-            // the key: a curve whose axis is nowhere is decoration.
-            assert!(text.contains("/min]"), "{w}×{h} folds a line and hides its scale:\n{text}");
-            assert!(
-                text.contains("own scale"),
-                "{w}×{h} folds a line without admitting it:\n{text}"
-            );
+            assert!(text.contains("speed"), "{w}×{h} does not name the quantity:\n{text}");
+            assert!(text.contains("engine speed"), "{w}×{h} shows one bar, not five:\n{text}");
+            assert!(text.contains("km/h"), "{w}×{h} drops the unit:\n{text}");
+            assert!(text.contains("peak"), "{w}×{h} scales against a number it hides:\n{text}");
         }
     }
 
     #[test]
-    fn a_computed_line_never_passes_for_a_measured_one() {
+    fn a_computed_bar_never_passes_for_a_measured_one() {
         // Power and live acceleration were never on the bus. The value table
-        // says so in a column of its own and the chart must not be the one
-        // place the distinction is dropped.
-        let mut screen = demo_screen();
-        screen.chart = 1;
+        // says so in a column of its own and the live panel must not be the one
+        // place the distinction is dropped: the fill character differs.
+        let screen = demo_screen();
         for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
             let text = screen_text(&screen, w, h);
-            assert!(text.contains("⋯power"), "{w}×{h}:\n{text}");
-            assert!(text.contains("⋯ computed"), "{w}×{h} draws it with no key:\n{text}");
-            assert!(text.contains("estimate"), "{w}×{h} loses the qualifier:\n{text}");
-            assert!(text.contains("trailing"), "{w}×{h} loses the causal note:\n{text}");
+            assert!(text.contains("power"), "{w}×{h}:\n{text}");
+            assert!(text.contains('█'), "{w}×{h} has no measured fill:\n{text}");
+            assert!(text.contains('▒'), "{w}×{h} fills an estimate like a reading:\n{text}");
         }
     }
 
     #[test]
-    fn a_chart_with_no_room_for_a_line_says_it_dropped_it() {
-        // Degrading is allowed; degrading quietly is not.
-        let screen = demo_screen();
-        let narrow = screen_text(&screen, 44, 20);
-        assert!(narrow.contains("no room"), "{narrow}");
-        // And the line that is left is still named, so the chart never becomes
-        // an unlabelled curve again.
+    fn a_panel_too_narrow_for_a_bar_still_carries_the_numbers() {
+        // Degrading is allowed; losing the measurement to keep the decoration
+        // is not. The bar is a way of comparing numbers, so the numbers go
+        // last.
+        let narrow = screen_text(&demo_screen(), 44, 20);
         assert!(narrow.contains("speed"), "{narrow}");
+        assert!(narrow.contains("peak"), "{narrow}");
     }
 
     #[test]
@@ -1142,7 +1115,6 @@ mod tests {
                     origin: Origin::Computed("trailing"),
                 },
             ],
-            chart: 1,
             hz: Some(21.4),
             file: Some("drive.json".into()),
             warning: None,
