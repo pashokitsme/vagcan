@@ -1,136 +1,367 @@
-# vagcan — VAG CAN-bus diagnostics (Rust)
+# vagcan
 
-> **Read [`SAFETY.md`](SAFETY.md) before pointing this at a car you care about.**
-> It only reads, and it has still cost one car its power steering.
+A command-line diagnostics tool for VW / Audi / Škoda / SEAT cars, written in Rust.
+It plugs into the OBD-II port through a cheap USB-CAN adapter and reads the car:
+which control units it has, what they call themselves, what they measure, what
+faults they have stored, and — with `vagcan measure` — how fast the thing actually
+accelerates.
 
+It **only reads**. There is no coding, no adaptation, no clearing faults, no
+flashing, and there never will be. The UDS service allowlist is four entries long,
+and it is short by policy rather than by omission.
 
-A from-scratch, CLI-first diagnostics tool for VAG-group cars (VW / Audi / Škoda / SEAT),
-targeting the **MQB** platform. Goal: talk to the car directly over the OBD-II cable — live
-monitoring and fault-code reading — as an open alternative to VCDS / "Vasya".
+> ### Read [SAFETY.md](SAFETY.md) first
+>
+> A read-only tool is not a harmless tool. An identifier sweep on the reference car
+> crashed its power steering unit twice — the second time permanently, needing a
+> replacement. Read-only bounds what you can *change* about a car, not what you can
+> *provoke*. The full account is in [`research/eps/eps-j500-report-ru.md`](research/eps/eps-j500-report-ru.md).
+>
+> Everything in `SAFETY.md` is there because something went wrong once.
 
-Reference vehicle: Škoda Octavia III facelift, 1.8 TSI, 2017 (MQB, CAN/UDS).
+---
 
-Goal, stack and workflow: [`todo/GOAL.md`](todo/GOAL.md); live roadmap: [`todo/README.md`](todo/README.md).
-(The original 2026-07-02 PRD is superseded and archived under `archive/specs/`.)
+## What it does, honestly
 
-## Status (2026-08-01)
+Most of this works. Some of it is two drives old. The table says which.
 
-Goal: read the **whole car over CAN**, with measurement definitions as **data, not code**:
-names from VW's own label files (`.lbl`/`.clb`/`.rod`), read address / scaling / unit
-proven live on the car — so any value a block exposes is selectable, no hardcoded
-addresses or formulas in Rust. Live product path = the **generic USB-CAN adapter**
-(`vag-can`, slcan).
-The HEX-clone cable is retired: its session KDF is VMProtect-sealed and dead, the
-`vag-hex` crate and the vendored FTDI driver are deleted, and the research writeups
-live on as negative results under `archive/research/`.
+| | |
+|---|---|
+| Identify the car — VIN, engine and gearbox passports | works, matches a VCDS Auto-Scan |
+| List every control unit, from the gateway's own installation list | works — 15 units on the reference car |
+| Read stored fault codes, with occurrence counts, odometer and date | works |
+| **Name** those faults in VW's own words | works, from your own VCDS installation |
+| Sweep a unit for every identifier it answers | works |
+| Live multi-unit view, with charts | works |
+| Time an acceleration run, with power and shift costs | built; two drives so far |
+| Standard OBD-II sensors | works, on any OBD-II car |
 
-Milestones (see `todo/README.md` for the live task list):
+What it deliberately does not do is guess. A value with no proven scaling is shown as
+raw bytes and tagged as raw. This project has twice caught itself believing a number
+it had invented, and the guards are the scar tissue.
 
-| M | Component | State |
-|---|---|---|
-| M0 | ISO-TP + UDS + transport stack (read-only) | ✅ done |
-| M1 | ECU identity + `vagcan info` (VIN + Engine/Gearbox passport, UDS RDBI) | ✅ **verified on the real car 2026-08-01** (VIN + both passports match the Auto-Scan oracle) |
-| M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB all cracked; base-14 codec proven; `vagcan vcds labels` corpus tool | ✅ done |
-| **M3** | **Measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable** | 🟡 **the method works — 16 catalog rows proven across engine, gearbox and cluster; whole-car coverage is the open work** |
-| HW | Generic USB-CAN (MKS CANable, slcan) bring-up on the car | ✅ live on the car — reads and writes at 500 kbit/s |
+---
 
-**Where it stands (M3):** the method works and is producing rows. Scaling does **not** come
-from the label corpus — the read DID is provably not stored in `STRUC`
-(`research/labels/rod-labels.md` §4.0c, `research/labels/label-linkage.md` §3) — it comes from the car:
-`vagcan sniff` records a listen-only capture alongside a live VCDS session, `vagcan vcds analyse`
-crosses it against the VCDS CSV and accepts only exact linear fits, and `vagcan recording calibrate`
-extends coverage offline by fitting unknown raw columns against already-trusted references
-in the same `watch` recording. Proven rows live in `catalogs/vehicles/<part number>.json`, one file per
-control unit, keyed by what that unit reports about itself. Names come from the corpus: `TTTEXT.ROD` is cracked and `catalogs/names-uds.json`
-carries 17,009 measurement names (`research/labels/tttext-codec.md`) — but the corpus holds no
-name→DID join, so a name match is a hypothesis to test on the car, not an answer.
+## Getting started
 
-Open: whole-car coverage — the units `vagcan survey` walks but the catalogs do not cover
-yet (body control `0x70E`, cluster cold-start for the coolant scaling, the unidentified
-units, deeper engine/gearbox) — and sourcing unit addresses from the corpus instead of a
-table in code. See `todo/README.md`.
+### 1. Hardware
 
-## Workspace
+Any **slcan** USB-CAN adapter. Development was done on an MKS CANable V2.0 Pro
+(STM32G431 with an isolated transceiver, about €25). It enumerates as a serial
+device, so there is no driver to install on macOS or Linux.
 
-```
-vag-transport   CAN frame + traits (RawCanTransport / IsoTpTransport) + scripted mock
-vag-capture     JSON-lines capture format + ReplayCan (record-once / replay-forever testing)
-vag-protocol    software ISO-TP (15765-2) + UDS client (14229), read-only allowlist
-vag-can         slcan USB-CAN backend, listen-only mode, passive ISO-TP reassembly
-vag-data        .lbl/.clb/.rod parsing+decrypt, TEA, LabelDb lookup, ODX file resolution
-vag-db          SQLite cache of the label corpus (rusqlite)
-```
+Wire it to the OBD-II port:
 
-Binaries: `vagcan` (the CLI) and `vag-db` (`build`/`lookup`/`stats`/`rod`). The
-one-shot corpus tools that used to be separate binaries are subcommands now —
-`vagcan vcds rod`, `vagcan vcds corpus`, `vagcan vcds tttext`.
+| OBD-II pin | Adapter |
+|---|---|
+| 6 | CAN-H |
+| 14 | CAN-L |
+| 5 (or 4) | GND |
+| 16 | **leave unconnected** |
 
-## The CLI
+**Open the adapter's 120 Ω termination jumper.** The vehicle bus is already
+terminated at both ends (~60 Ω); a third resistor drags it to 40 Ω, and you will
+spend an evening blaming the software.
 
-```
-vagcan devices      list connected USB-CAN adapters
-vagcan info         VIN + engine and gearbox passports
-vagcan units        ask the gateway which control units the car has
-vagcan properties   everything a control unit says about itself, named
-vagcan sniff        listen-only bus capture (runs alongside VCDS)
-vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
-vagcan watch        live values, full-screen TUI, every unit; `c` reconfigures in place
-vagcan scan         every data identifier a control unit answers
-vagcan faults       stored fault codes from every unit; --labels names them in VW's
-                    own words; --details adds extended data
-vagcan survey       walk every unit: identification, stored faults, identifier sweep.
-                    Run once, parked: the result is filed under this car in
-                    `~/.vagcan/cars/<VIN>/survey.jsonl`, and from then on `watch`
-                    offers every identifier the car answers, on every unit, as raw
-                    bytes — the units with no proven scaling included
+### 2. Build
+
+```sh
+git clone <this repo> && cd vcds
+cargo build --release
+./target/release/vagcan devices
 ```
 
-The top level is only what is worth having with the car in front of you. Everything
-offline is grouped by what its input is:
+Rust stable, edition 2024, no system dependencies.
 
 ```
-vagcan recording calibrate   fit raw columns against trusted ones in a watch recording
-vagcan recording discover    identifiers carrying discrete state (gear, mode, switches)
-
-vagcan vcds labels           label lookup; --from-car resolves the ODX file a unit names
-vagcan vcds names            search the 17,009 measurement names recovered from the corpus
-vagcan vcds analyse          prove scalings from a capture + a VCDS log
-vagcan vcds rod              decrypt + inflate a `.rod`, recovering blocked section keys
-vagcan vcds corpus           parse a whole Labels/ directory into one JSON file
-vagcan vcds tttext           recover names from the corpus's global text table
+$ vagcan devices
+/dev/cu.usbmodem206E37A148451  CANable 2.0 (slcan)
 ```
 
-`--device` is optional: a recognised adapter is selected automatically. Read-only
-throughout — the UDS allowlist admits no writes. `watch` draws a full-screen view on a
-terminal and prints CSV without one; `--for SECONDS` picks the plain mode explicitly.
+If it reports nothing and you know the adapter is plugged in, unplug and replug it.
+It can enumerate on USB without the OS attaching a serial node, and then there is
+genuinely nothing to open. That is a USB-stack hang, not a bus fault.
 
-## Label ciphers (reverse-engineered for interoperability)
+### 3. Read the car
 
-Ross-Tech's compiled label formats are undocumented. To read the owner's own vehicle's
-measurement/DTC/adaptation definitions, the cipher was recovered from an **unpacked** build of
-the VCDS binary (static analysis; no protection was circumvented and no software was patched):
+```sh
+vagcan info      # VIN, engine, gearbox
+vagcan units     # every control unit the gateway knows about
+vagcan faults    # stored fault codes
+```
 
-- **`.clb` (modern)** — TEA (32-round, CBC) with `KEY_CLB` and a per-record IV.
-- **`.rod`** — TEA-CBC with `KEY_ROD` (section-tag IV), compressed sections zlib-deflated.
+That is the whole of the required setup. Everything below is optional, and makes the
+output more readable rather than more complete.
 
-`.rod` MWB rows are the UDS measurement *ID* index; human names live in `TTTEXT.ROD`,
-whose glyph-substitution codec is broken (`research/labels/tttext-codec.md`) — 17,009 names are
-shipped in `catalogs/names-uds.json` and searchable with `vagcan vcds names`. The corpus holds
-no name→DID join, so a name is a lead, not a binding.
+### 4. Optional: label files, for names instead of numbers
 
-The `.rod` per-record IV brute force is behind the `rod-crack` cargo feature
-(`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`).
-`vagcan vcds labels` reads the cached results from `catalogs/rod-iv-cache.json` and caches the
-parsed corpus to SQLite under `~/.vagcan/label-cache/` (`--refresh` rebuilds).
+Out of the box a fault reads `000127 (295)` and a measurement reads `2029 → 04 7E`.
+Those are the car's own words, and they are not good words.
 
-## Scope boundary
+The names live in the label files that ship with **VCDS**, Ross-Tech's commercial
+diagnostic software. This repository ships none of that data and cannot — it is
+Ross-Tech's, and you need your own copy.
 
-This project does **file-format and hardware-protocol interoperability** — reading the owner's
-own car data with our own tool.
+Get it from Ross-Tech: **<https://www.ross-tech.com/vcds/download/>**
 
-## Build / test
+Then point `vagcan` at the installation once. It parses the corpus into a SQLite
+cache under `~/.vagcan/label-cache/`, and lookups are instant after that:
+
+```sh
+vagcan vcds labels /path/to/VCDS --part 8V0906264H
+vagcan faults --labels /path/to/VCDS
+```
 
 ```
-cargo test --workspace
-cargo clippy --workspace --all-targets
+16  70C  Lenks.Modul
+  047120  (291104)   confirmed
+      B1455 01  Temperature Sensor for Heated Steering Wheel
+      212869 km, 111×
 ```
+
+`--refresh` rebuilds the cache after a VCDS update. The cache is derived data and
+lives outside the repository on purpose.
+
+### 5. Optional: a survey, so every unit is watchable
+
+`vagcan watch` can only offer measurements it knows a unit has. Run the sweep once,
+parked; the result is filed under that car's own directory
+(`~/.vagcan/cars/<VIN>/survey.jsonl`), and from then on `watch` picks it up with no
+flags at all:
+
+```sh
+vagcan survey     # about 8 minutes, parked; engine off is fine
+vagcan watch
+```
+
+**A sweep is the most invasive thing here.** Structurally it is a fuzz test of a
+diagnostic server, and it is what damaged the reference car's steering unit. It
+refuses to run on a moving car. Read `SAFETY.md` before the first one.
+
+---
+
+## Examples
+
+**What is this car?**
+
+```sh
+$ vagcan info
+VIN      XW8ZZZ…
+Engine   8V0906264H  1.8l R4 TFSI   HW 06K907425B
+Gearbox  0CW300041G  GSG DQ200G2_M  SW 1003
+```
+
+**What is wrong with it?**
+
+```sh
+$ vagcan faults --labels ~/VCDS
+--  713  ESC
+  000129  (297)   confirmed
+      B1168 F2  Steering Angle Sensor: Not Initialized
+      212869 km, 1×
+      2026-07-30 18:15:06 by the car's own clock
+```
+
+A stored code is a record that something happened once — not a diagnosis, and not
+necessarily a fault present now. Only codes marked *failed now* are currently
+failing, and the tool says so above every listing.
+
+**Watch it live.** A full-screen view of several units at once, configured from
+inside with `c` rather than by flags. `/` filters across everything the survey found;
+`g` marks a channel for the chart.
+
+```sh
+vagcan watch
+```
+
+**What does this unit expose?**
+
+```sh
+vagcan properties --ecu 01      # its identification block, named
+vagcan scan --ecu 01            # every identifier it answers
+vagcan sensors                  # the standard OBD-II parameters
+```
+
+**Time a run.** It arms itself when the car stands still, starts when it moves, and
+times every mark on the way up. No keystroke is needed for a run to be measured, and
+nothing prompts the driver while the car is moving.
+
+```sh
+vagcan measure --full
+```
+
+```
+  Run 2 — measured
+    mark (km/h)   time                   average acceleration
+    0-100         9.09 s (8.94 … 9.24)   3.06 m/s²
+    peak engine speed   6308 /min at 8.4 s
+  Run 2 — computed   (mass 1575 kg, CdA 2.21 m², ρ 1.188 kg/m³ measured)
+    peak power, wheel   193 PS (142.1 kW)    estimate
+```
+
+`--full` wants the car measured once first: `vagcan measure setup` walks you through
+a coastdown and works out its actual drag area and rolling resistance instead of
+assuming typical values. `vagcan measure view` opens a saved session as a chart page
+in the browser.
+
+A mark from a standstill carries a **range**, not a `±`. The car is already rolling
+before its own speed signal wakes up, and where inside that gap it started cannot be
+recovered; the two ways of extrapolating back to zero err in opposite directions, so
+the answer is somewhere between them. Nothing there is more likely in the centre,
+which is why it is not written as a tolerance.
+
+**Offline, with no car attached:**
+
+```sh
+vagcan recording calibrate drive.csv     # fit unproven columns against trusted ones
+vagcan vcds names "boost"                # search the recovered measurement names
+vagcan vcds analyse --capture c.jsonl --log vcds.csv
+```
+
+---
+
+## Architecture
+
+A Rust workspace. The seam that matters is between **algorithm and data**: no
+measurement scaling, identifier number, unit name or part number is written in Rust.
+They come from the label corpus and from what the car reports about itself. Adding a
+parameter is a row in a JSON file, never a new `match` arm.
+
+```
+crates/
+  vag-transport   the transport trait — the seam every backend implements
+  vag-can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
+  vag-protocol    UDS client, ISO-TP framing, unit addressing
+  vag-data        label parsers and decoders (.lbl/.clb/.rod), ODX resolution
+  vag-db          SQLite cache over the label corpus
+  vag-capture     capture and replay transport, so tests need no hardware
+  vagcan          the CLI
+```
+
+**Two addressing conventions are live on the same car.** ISO 15765-4 pairs
+`0x7E0..0x7E7` with `+8`, so the engine answers `0x7E0 → 0x7E8`. VW's own block
+answers at `+0x6A`, so the instrument cluster is `0x714 → 0x77E`. Assuming only the
+first makes every unit outside the powertrain invisible, which is exactly what
+happened before it was measured.
+
+**Sweeping is group testing, not 65,536 reads.** A multi-identifier request comes
+back with only the identifiers the unit supports, and is refused outright when it
+supports none of them — so one request is a presence test for a whole batch. That is
+what turns a full sweep from hours into minutes.
+
+**The CLI is split by what a command needs.** The top level is for commands that need
+a car in front of you. `recording …` reads back drives this tool recorded, and
+`vcds …` reads VCDS's own files. A top level crowded with offline analysis is a top
+level nobody can scan while standing at an open driver's door.
+
+Design documents are in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+
+---
+
+## VCDS's file formats
+
+This is the part that took longest, so here is what those files actually are. Full
+writeups are under [`research/labels/`](research/labels/).
+
+**`.lbl` — plain text.** The old format, still shipped for older control units. One
+file per part number, human readable, with a `; Component: … (#02)` header naming the
+unit and its number, then measuring-block and field names. Nothing to crack.
+
+**`.clb` — the encrypted `.lbl`.** Same content in a container; decrypted in-tool by
+`vag-data`.
+
+**`.rod` — the ODX container, and the interesting one.** This is where modern
+(UDS-era) label data lives. Each file is TEA-CBC encrypted with a per-record IV and
+the plaintext is zlib-deflated. Inside are several tables:
+
+| Table | What is in it |
+|---|---|
+| `STRUC` | measurement structures — 1,221 of them |
+| `DOP` / `TTDOP` | computation methods and scaling — 17,636 entries |
+| `TTTEXT` | the global text table: every name, in every language |
+| `MWB` | the engine measuring-block rows |
+| `[DTC]` | the fault-code table, in `RD.rod` |
+
+Payloads are encoded in **base-14** over the charset `0123456789,.-_`, which was
+established by disassembling VCDS rather than guessed at.
+
+**A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
+file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan vcds labels --from-car`
+finds the right file with no lookup table in the middle.
+
+**`Codes.dat` — the fault-code text store.** A fault number does not resolve to words
+directly. The chain is: the raw 24-bit code → the `[DTC]` table in `RD.rod` → the row
+the unit's own `.rod` selects → a key into `Codes.dat` → the text. Each `RD.rod`
+table's digits are substituted under a per-table alphabet, and that alphabet turned
+out to be *generated* from the table key by `srand(key)` and two Fisher-Yates
+shuffles sharing one stream — read off the binary, not inferred. 95 of 95 alphabets,
+219,490 of 219,490 name fields, zero wrong.
+See [`research/labels/fault-naming-hop.md`](research/labels/fault-naming-hop.md).
+
+**What the corpus does *not* hold is the scaling.** This is the most expensive
+negative result in the project, and it is structural rather than a matter of not
+having looked hard enough. The read identifier is not stored in `STRUC` under any
+encoding, and `MWB` carries no per-ECU identifier — so there is no route from "this
+unit's boost pressure" to "read `0x202A`, two bytes big-endian, ×0.001 bar" through
+any file Ross-Tech ships. Do not go looking; the reasoning is in
+[`research/labels/rod-labels.md`](research/labels/rod-labels.md) §4.0c and
+[`research/labels/label-linkage.md`](research/labels/label-linkage.md) §3.
+
+Scaling comes from the car instead. `vagcan sniff` records the bus listen-only while
+VCDS runs an ordinary session beside it, and `vagcan vcds analyse` crosses that
+capture with VCDS's own CSV export, fitting `(identifier, raw form, factor, offset)`
+by least squares and accepting nothing under R² 0.995 over 20 points. The corpus
+supplies names and per-unit lists. That is what it is for.
+
+---
+
+## Where things are kept
+
+```
+crates/         the Rust workspace
+catalogs/       proven measurement rows and recovered names — checked-in evidence
+  vehicles/       one file per control unit, keyed by the part number it reports
+research/       reverse-engineering writeups and tooling, one directory per subject
+  labels/         VW's label corpus: the .rod crack, the name codec, fault naming
+  car/            what the reference car answers: identifier map, units, surveys
+  eps/            the steering-assist incident — read alongside SAFETY.md
+  clb-crack/      the RE scripts themselves
+archive/        retired paths, kept as evidence
+  research/       dead ends that are still true — do not retry them
+  specs/          superseded designs
+  tasks/          finished task files
+docs/           active design specs
+todo/           the roadmap and the goal statement
+```
+
+Two conventions are worth knowing, because they are why the tree looks like this.
+
+**Nothing is deleted; things are moved.** Most of what this project knows was
+measured on one car, once, and several of its most valuable documents are records of
+things that did *not* work. A refutation you throw away is one you pay for twice.
+`archive/` exists so that "we tried that, here is why it failed" survives a year.
+
+**A measurement is not a cache.** `catalogs/` holds rows that took a drive to
+establish and cannot be re-collected without the car. Anything the tool can
+regenerate by itself — the label database, a survey, a car's own files — lives under
+`~/.vagcan/` and is not in the repository.
+
+Start here: [`todo/README.md`](todo/README.md) for where things stand,
+[`todo/GOAL.md`](todo/GOAL.md) for the goal and the stack, and
+[`research/labels/rod-labels.md`](research/labels/rod-labels.md) for the format work.
+
+---
+
+## Status
+
+The tool reads the whole car and names its faults. What is still open is **coverage**:
+23 measurement rows are proven across engine, gearbox and instrument cluster, while
+the brakes, the body control module and half a dozen other units have not been
+through the same process yet. The roadmap tracks it.
+
+`vagcan measure` is the newest piece and the least proven — two real drives, with
+seven defects found and fixed on the first. Treat its numbers as good until a third
+drive says otherwise.
+
+Reference vehicle throughout: Škoda Octavia III facelift, 1.8 TSI, 2017, DQ200. The
+tool is written to work on any VAG car. It has been *proven* on one.
