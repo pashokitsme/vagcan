@@ -585,9 +585,15 @@ fn computed_block(out: &mut String, run: &Run, derived: &Derived, setting: &Sett
         // measured sign where there is none.
         let sigma = shift.deficit_sigma_ms * KMH_PER_MS;
         if !shift.resolved() {
+            // The bar, not the σ. `resolved` clears at two σ and the browser
+            // page prints the same doubled figure, so printing one σ here left
+            // the two saying 0.10 and 0.20 about one shift with no way for a
+            // reader to tell they agreed.
+            let bar = sigma * derive::DEFICIT_RESOLVED_SIGMAS;
             let _ = writeln!(
                 out,
-                "    shift {}→{}           cost below this session's noise, ±{sigma:.2} km/h at 1σ",
+                "    shift {}→{}           cost under ±{bar:.2} km/h — below what this \
+                 session could resolve",
                 shift.from, shift.to
             );
             continue;
@@ -733,6 +739,17 @@ mod tests {
             aborted: false,
             degraded: false,
         }
+    }
+
+    #[test]
+    fn an_unresolved_shift_prints_the_same_bar_the_page_does() {
+        // Both sides say a shift is unresolved below two σ, and both must print
+        // the same number for it. Printing one σ here and two on the page left
+        // the text report saying 0.10 km/h and the page 0.20 about one shift,
+        // with nothing on either to say they agreed.
+        let page = include_str!("view.html");
+        assert!(page.contains("var RESOLVED_SIGMAS = 2;"), "the page's bar moved");
+        assert_eq!(derive::DEFICIT_RESOLVED_SIGMAS, 2.0, "and the code's bar moved with it");
     }
 
     #[test]
