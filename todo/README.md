@@ -33,9 +33,16 @@ Done since the last update:
 
 ### The open work
 
-1. **Drive with the survey running.** One parked pass exists; `survey --diff parked.jsonl
-   driving.jsonl` names the identifiers that moved, and those are the live measurements.
-   Cheapest large win available, needs no label file.
+1. ~~**Drive with the survey running.**~~ **The drive happened — 2026-08-02.** Two driving
+   passes and their diffs are on disk (`research/dumps/survey-driving-20260802-{0314,0322}
+   .jsonl`, `survey-diff-20260802-*.txt`): **272 identifiers moved** between parked and
+   driving, across **13 units** — `70A 70E 710 712 713 714 746 74A 74B 767 773 7E0 7E1`,
+   which includes the body control module and every unit listed as unidentified below.
+   Per unit: `7E1` 96, `7E0` 77, `70E` 25, `714` 23, `710` 15, `746` 7, `712`/`767` 6,
+   `773` 5, `74A`/`74B` 4, `70A` 3, **`713` only 1** — so the brakes are the one unit the
+   drive did *not* open up, and they still need their own stimulus. What is left is not
+   another blind drive but **mining what this produced**: a diff says an identifier is
+   live, not what it means, and scaling still needs a reference for the unit in question.
 2. ~~**Fault names.**~~ **Done (2026-08-05).** `vagcan faults --labels <VCDS install>`
    names them. The chain is fault number → `UDS_EV/RD.rod [DTC]` table → the row the
    unit's own `.rod` selects → a `Codes.dat` key; the per-table digit substitution that
@@ -105,7 +112,7 @@ open-work list at the end of this file.
 | M0 | ISO-TP + UDS + transport stack (read-only allowlist) | ✅ done |
 | M1 | `vagcan info` — VIN + Engine/Gearbox identity (UDS RDBI) | ✅ **verified on the real car 2026-08-01** |
 | M2 | `.rod` decrypt+inflate in-tool; STRUC/DOP/TTTEXT/MWB cracked; base-14 codec proven; `vagcan vcds labels` | ✅ done |
-| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **16 catalog rows proven (engine, gearbox, cluster) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
+| **M3** | measurements → `MeasurementDef` catalog → generic CAN reader → config-selectable | 🟡 **23 catalog rows proven (engine 3, gearbox 12, cluster 8) + three OBD-II services decoded from the standard; the gear and selector are read as states; open work = whole-car coverage** |
 | M4 | fault **names** — number → `RD.rod` → row → `Codes.dat` → text | ✅ **done 2026-08-05**; 11 of this car's 15 confirmed codes, word-for-word with VCDS on all four both name, zero wrong |
 | M5 | `vagcan measure` — acceleration timing, power, chart page | 🟡 **built, one drive**; seven defects found and fixed on 2026-08-04, none re-verified on the road |
 | HW | generic USB-CAN (MKS CANable) bring-up on the car | ✅ live on the car: reads + writes at 500k |
@@ -246,10 +253,35 @@ alongside a live VCDS session; `vagcan vcds analyse` proved three scalings, one 
 (coolant = `raw − 40`) reproduces the standard OBD-II PID 05 formula and thereby validates
 the whole pipeline. Details in `research/rod-labels.md` §4.3.
 
-**1a. More coverage — the next session.** The logs were only ~20 s each, giving 14–16
-matched points against a 20-point default. Record VCDS logging for **several minutes** per
-group, covering the measurements that matter (boost, load, throttle, speed), with a wide
-sustained rev. Everything else is already built.
+**1a. More coverage — DONE, and it was already on disk (established 2026-08-05).** The
+claim this item used to make — "the logs were only ~20 s each, giving 14–16 matched points
+against a 20-point default, so record several minutes per group" — was **wrong about the
+data, not about the bar**. The short logs were crossed; the long ones were not. A 956 s
+capture, `research/logs/1.jsonl` (01:47:48 → 02:03:44 on 2026-08-01), spans four VCDS logs
+in `research/logs/`, and crossing it with them now gives:
+
+| log | matched points | scalings at R² = 1.00000 |
+|---|---|---|
+| `LOG-01-IDE00025_&10.CSV` | 102 | 8 (engine) |
+| `LOG-02-IDE00022ENG103074_&11.CSV` | 59 | 10 (gearbox) |
+
+**No new catalog row comes out of it, and that is the point.** All 18 are already shipped:
+ten gearbox and three engine rows are in `catalogs/vehicles/`, and the other five are
+standard OBD-II PIDs mirrored at `F400 + PID`, already in `vag_data::obd` and correctly
+*not* in any car file — `F405` = PID 05 coolant `raw − 40`, `F40D` = 0D speed, `F40F` = 0F
+intake air `raw − 40`, `F423` = 23 fuel rail `raw × 10`, `F446` = 46 ambient `raw − 40`.
+So the run is an independent reconfirmation of the whole pipeline against VCDS's own
+displayed values at 102 points, not new coverage.
+
+What the archive genuinely cannot supply, and why more logging alone will not fix it:
+- **The cluster log has zero overlap** with the capture (`LOG-17-IDE00025_&3.CSV`), and
+  `1.csv` — 12 engine measurements including fuel pressure, throttle mass flow, accelerator
+  pedal and atmospheric pressure — starts 210 s **before** the capture. Both are orphaned:
+  a log with no capture beside it proves nothing.
+- **Three measurements need a stimulus, not a longer log.** Control-unit temperature
+  (3 distinct values), atmospheric pressure (2 — it needs a change of altitude) and
+  `IDE00588` (3) never varied enough to fit. Same for the cluster's coolant, flat at
+  `90.00` across all 45 samples — that is the cold-start item, not a logging-length item.
 
 **2. `vagcan vcds analyse` — BUILT (2026-08-01).** The offline tool that turns a capture into
 scalings, written before the session so the data can be checked while the car is available.
@@ -388,12 +420,19 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   itself plus its VIN — no make or model, because a car does not broadcast one.
 
 - **Whole-car measurement coverage.** The catalogs cover engine, gearbox and cluster; the
-  survey reaches every unit. Specifically:
-  - body control module `0x70E` — lights, doors, indicators;
+  survey reaches every unit, and the 2026-08-02 driving diffs already say **which** of its
+  identifiers are live — 272 of them across 13 units (§"The open work" item 1). So for most
+  of the list below the missing step is a **scaling reference**, not another sweep:
+  - body control module `0x70E` — lights, doors, indicators; 25 identifiers moved on the
+    drive, and these are the signals a driver can provoke on demand, so a `watch --out`
+    recording with deliberate stimulus can scale them without VCDS at all;
   - cluster `0x714` — a **cold start** while polling `0x22D0`, the one action that turns
-    its coolant scaling from "consistent with" into measured;
+    its coolant scaling from "consistent with" into measured. Not obtainable from any
+    archive: every cluster sample on disk reads a flat `90.00 °C`;
   - the unidentified units `0x712` / `0x713` / `0x715` / `0x746` / `0x74A` / `0x74B` /
-    `0x767` / `0x773` (`research/other-ecus.md`) — identify, then sweep;
+    `0x767` / `0x773` (`research/other-ecus.md`) — all but `0x715` already appear in the
+    driving diff, so what they answer and what of it is live is known; naming and scaling
+    are what is left;
   - deeper engine and gearbox coverage (the `3820–38FF` gearbox block while driving, the
     engine re-swept with the engine running).
 - **Unit addresses from the corpus.** Done for the half the corpus can answer: the
