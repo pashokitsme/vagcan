@@ -895,10 +895,21 @@ Named explicitly, because these are the things that will be broken by accident:
   `measure view` helper wearing a trait and should be treated as one.
 - **How large a `Track` can `watch` afford?** 10 Hz × 4 hours × 30 channels is
   ~4.3 M points. The trim policy is a real design decision and this document
-  does not make it.
+  does not make it. **Answered** (`watch/history.rs`): a fixed window of sixty
+  seconds, and not a fixed number of samples. `watch`'s poll rate is not a
+  constant — one identifier on one unit answers at tens of hertz and thirty
+  across four units cost a request and a deadline each — so N samples is a
+  window of unknown length whose extent changes under the reader every time
+  somebody presses `c`. The window is printed under the chart for the same
+  reason the fold's range is printed in the key.
 - **Is `vag-measure` worth a `Cargo.toml`?** Argued both ways in §3 on purpose.
   The invariant it enforces already holds; the crate makes it a compiler's job
   instead of a reviewer's. That is a judgement about how much the project
   distrusts its future self.
 - **Guessed, not measured:** that `watch`'s chart selection can reuse
   `draw_select`'s checkbox column cheaply. I read the function; I did not try it.
+  **Tried, and it holds** — with one correction: the mark is a sixth column
+  reading `chart` rather than a second `[x]`, because two boxes side by side on
+  one row is a puzzle rather than a choice. What it did cost was a second row of
+  hints: that screen's key line was already longer than a hundred columns, and
+  one more key pushed `[enter] back` off the end of it.
