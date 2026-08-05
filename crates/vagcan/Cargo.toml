@@ -23,9 +23,14 @@ ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
 
+[dev-dependencies]
+# Synthetic catalog fixtures for the poll-scheduler tests write to a temp dir,
+# now that the proven rows they used to read live under ~/.vagcan, not the repo.
+tempfile = "3"
+
 [features]
 # Recovering the key of a `.rod` section that VW's encryption blocks. Off by
 # default because it costs about a minute of every core per section and the
-# live path only ever reads the *answer* out of `catalogs/rod-iv-cache.json`.
+# live path only ever reads the *answer* out of `~/.vagcan/labels/rod-keys.json`.
 # Turn it on to run `vagcan vcds rod` against a section not in the cache.
 rod-crack = ["vag-data/rod-crack"]

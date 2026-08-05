@@ -293,28 +293,55 @@ impl MeasurementCatalog {
 mod tests {
     use super::*;
 
-    /// The reference car's catalogs, read from the repository's store.
-    ///
-    /// These files are evidence, not a shipped table: they are keyed by the
-    /// part number each control unit reports, and the tests below check that
-    /// the numbers still reproduce the readings that justified them.
-    fn reference_store() -> CatalogStore {
-        CatalogStore::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../catalogs/vehicles"),
-        )
+    /// A tiny catalog written to a temp directory, so the store's own mechanism
+    /// — reading a file, keying it by part number, and refusing to merge two
+    /// units — can be tested without shipping any car's proven rows. A real
+    /// vehicle's catalogs live under `~/.vagcan/labels/data` after a drive, not
+    /// in the repository; asserting their contents is a job for the machine that
+    /// measured them.
+    fn synthetic_store() -> (tempfile::TempDir, CatalogStore) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let write = |part: &str, defs: Vec<MeasurementDef>| {
+            let cat = MeasurementCatalog::new(defs);
+            std::fs::write(dir.path().join(format!("{part}.json")), cat.to_json().unwrap())
+                .unwrap();
+        };
+        let linear = |name: &str, did: u16, factor: f64| MeasurementDef {
+            name: Cow::Owned(name.to_string()),
+            unit: Cow::Borrowed("x"),
+            address: ReadId::Uds(did),
+            raw_form: RawForm::U8First,
+            scaling: Scaling::Linear(LinearScale { factor, offset: 0.0 }),
+        };
+        // Two units that both answer 0xF40D, at different factors, to prove the
+        // sets are kept apart rather than merged.
+        write("AAA111", vec![linear("engine speed", 0xF40D, 1.0)]);
+        write("BBB222", vec![linear("road speed", 0xF40D, 2.0)]);
+        let store = CatalogStore::open(dir.path());
+        (dir, store)
     }
 
-    fn reference_engine() -> Vec<MeasurementDef> {
-        reference_store().load("8V0906264H").expect("the reference engine catalog is present")
+    #[test]
+    fn the_store_reads_a_catalog_off_disk_keyed_by_the_part_number() {
+        let (_dir, store) = synthetic_store();
+        assert_eq!(store.load("AAA111").expect("the file is there").len(), 1);
+        // Padding and spacing in a reported part number must not matter —
+        // control units pad these strings to a fixed width.
+        assert_eq!(store.for_unit(Some("AAA 111 "), None).len(), 1);
+        // A part this store has never seen gets nothing, not another unit's rows.
+        assert!(store.for_unit(Some("NOSUCHPART"), None).is_empty());
     }
 
-    fn reference_gearbox() -> Vec<MeasurementDef> {
-        reference_store().load("0CW300041G").expect("the reference gearbox catalog is present")
-    }
-
-    fn reference_cluster() -> Vec<MeasurementDef> {
-        reference_store().load("5E0920740D").expect("the reference cluster catalog is present")
+    #[test]
+    fn the_same_identifier_on_two_units_is_kept_apart() {
+        // The property that made per-unit files necessary: 0xF40D means one byte
+        // of one thing on the first unit and another factor on the second.
+        // Merging the sets would silently make one of them wrong.
+        let (_dir, store) = synthetic_store();
+        let a = store.load("AAA111").unwrap();
+        let b = store.load("BBB222").unwrap();
+        assert_eq!(a[0].interpret(&[0x0A]), Some(10.0));
+        assert_eq!(b[0].interpret(&[0x0A]), Some(20.0));
     }
 
     #[test]
@@ -412,178 +439,12 @@ mod tests {
     }
 
     #[test]
-    fn a_measured_quantity_still_describes_itself_with_its_unit() {
-        let rpm = &reference_engine()[0];
-        assert_eq!(rpm.describe(&[0x02, 0xBD]).as_deref(), Some("701 /min"));
-    }
-
-    #[test]
-    fn catalogs_are_data_on_disk_keyed_by_what_a_unit_calls_itself() {
-        // Nothing car-specific is compiled in. A unit is looked up by the part
-        // number it reports, so a car this project has never seen gets an
-        // empty catalog instead of another car's scalings.
-        assert_eq!(reference_engine().len(), 3, "engine rows come from the file");
-        assert_eq!(reference_gearbox().len(), 12, "gearbox rows come from the file");
-        assert_eq!(reference_cluster().len(), 8, "cluster rows come from the file");
-        // Padding and spacing in a reported part number must not matter —
-        // control units pad these strings to a fixed width.
-        assert_eq!(reference_store().for_unit(Some("5E0 920 740 D "), None).len(), 8);
-        assert!(reference_store().for_unit(Some("NOSUCHPART"), None).is_empty());
-        // The odometer reproduces the exact reading that justified it.
-        assert_eq!(reference_cluster()[0].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
-    }
-
-    /// One row per cluster DID: `watch` keeps a single channel per (unit, DID)
-    /// and the last definition wins, so a duplicate would silently shadow.
-    #[test]
-    fn the_cluster_catalog_has_one_row_per_identifier() {
-        let mut dids: Vec<u16> = reference_cluster()
-            .iter()
-            .map(|d| match d.address {
-                ReadId::Uds(did) => did,
-            })
-            .collect();
-        let before = dids.len();
-        dids.sort_unstable();
-        dids.dedup();
-        assert_eq!(dids.len(), before);
-    }
-
-    /// The metre-resolution odometer, pinned to the three readings that proved
-    /// it: `22B8 / 1000` truncates to the `2203` odometer at every snapshot of
-    /// the 2026-08-01/02 surveys, across a drive that moved both.
-    ///
-    /// A single wrong byte order, width or factor breaks all three at once —
-    /// `U24Be` would read 212 805 188 as 13 300 262, and little-endian as
-    /// 1 143 705 356.
-    #[test]
-    fn the_fine_odometer_agrees_with_the_kilometre_odometer_at_every_snapshot() {
-        let cluster = reference_cluster();
-        let coarse = &cluster[0];
-        let fine = &cluster[1];
-        assert_eq!(fine.raw_form, RawForm::U32Be);
-        for (km, metres) in [
-            ([0x03u8, 0x3F, 0x45], [0x0Cu8, 0xAF, 0x26, 0x44]), // parked
-            ([0x03, 0x3F, 0x45], [0x0C, 0xAF, 0x26, 0x95]),     // driving, sweep 1
-            ([0x03, 0x3F, 0x4A], [0x0C, 0xAF, 0x39, 0x8D]),     // driving, sweep 2
-        ] {
-            let coarse_km = coarse.interpret(&km).expect("the odometer reads");
-            let fine_m = fine.interpret(&metres).expect("the fine odometer reads");
-            assert_eq!((fine_m / 1000.0).floor(), coarse_km);
-        }
-        // 212 805.188 km, and the drive moved it 4 856 m while the kilometre
-        // odometer stepped by 5.
-        assert_eq!(fine.interpret(&[0x0C, 0xAF, 0x26, 0x44]), Some(212_805_188.0));
-        assert_eq!(fine.unit, "m");
-    }
-
-    /// The car's own clock, as five identifiers that reassemble into the two
-    /// block identifiers `2216` (`hh mm ss`) and `2217` (`yyyy mm dd`).
-    ///
-    /// Values are the reference car's parked survey: the cluster displayed
-    /// 23:51:32 on the car's calendar day 2026-07-28, which landed within
-    /// 4 s of the host clock's own reading of when that identifier was read.
-    #[test]
-    fn the_clock_rows_read_the_time_the_cluster_displayed() {
-        let cluster = reference_cluster();
-        let by_did = |did: u16| {
-            cluster
-                .iter()
-                .find(|d| d.address == ReadId::Uds(did))
-                .unwrap_or_else(|| panic!("the cluster set carries {did:#06X}"))
-                .clone()
-        };
-        // 2216 read `17 33 20`, and 2238/2239 read its first two bytes.
-        assert_eq!(by_did(0x2238).interpret(&[0x17]), Some(23.0));
-        assert_eq!(by_did(0x2239).interpret(&[0x33]), Some(51.0));
-        // 2217 read `07EA 07 1C`, and 223A/223B/223C read its three fields.
-        assert_eq!(by_did(0x223A).interpret(&[0x07, 0xEA]), Some(2026.0));
-        assert_eq!(by_did(0x223B).interpret(&[0x07]), Some(7.0));
-        assert_eq!(by_did(0x223C).interpret(&[0x1C]), Some(28.0));
-        // Little-endian would have read the year as 60 167, not 2026.
-        assert_eq!(by_did(0x223A).raw_form, RawForm::U16Be);
-    }
-
-    /// Road speed, `22D2`: proven by timing against a VCDS log in
-    /// `research/car/other-ecus.md` §4.1 over 0–5 km/h, and corroborated at 53 km/h
-    /// by the 2026-08-02 driving surveys — where the metre odometer says the
-    /// car covered 4 856 m in the 497 s between the two cluster reads, a mean
-    /// of 35 km/h that brackets the 5 and 53 km/h read at the ends.
-    ///
-    /// A ×0.01 factor would make that drive 49 m long, and ×10 would make it
-    /// 49 km; both are refuted by the odometer in the same response set.
-    #[test]
-    fn the_cluster_road_speed_is_kilometres_per_hour_at_factor_one() {
-        let speed = reference_cluster()
-            .into_iter()
-            .find(|d| d.address == ReadId::Uds(0x22D2))
-            .expect("the cluster set carries road speed");
-        assert_eq!(speed.interpret(&[0x00, 0x00]), Some(0.0));
-        assert_eq!(speed.interpret(&[0x00, 0x05]), Some(5.0));
-        assert_eq!(speed.interpret(&[0x00, 0x35]), Some(53.0));
-        assert_eq!(speed.unit, "km/h");
-    }
-
-    #[test]
-    fn the_proven_rows_reproduce_the_values_the_car_displayed() {
-        // Spot values lifted straight from the 2026-08-01 session, so the
-        // catalog cannot drift away from the evidence that justified it.
-        let engine = reference_engine();
-        let rpm = &engine[0];
-        assert_eq!(rpm.interpret(&[0x02, 0xBD]), Some(701.0));
-
-        // Boost came out at exactly ×0.001 bar over two big-endian bytes.
-        let boost = &engine[2];
-        assert_eq!(boost.interpret(&[0x03, 0xDF]), Some(0.991));
-        assert_eq!(boost.unit, "bar");
-
-        // The gearbox reports little-endian: `B2 02` is 690 /min, not 45570.
-        let gearbox = reference_gearbox();
-        let input = &gearbox[0];
-        assert_eq!(input.interpret(&[0xB2, 0x02]), Some(690.0));
-        assert_eq!(input.interpret(&[0xCC, 0x08]), Some(2252.0));
-        assert_eq!(input.interpret(&[0x7A, 0x0E]), Some(3706.0));
-    }
-
-    #[test]
-    fn the_gear_row_matches_the_evidence_that_proved_it() {
-        // Proven by ratio arithmetic against the already-proven shaft speeds:
-        // from standstill the code stepped 02→03→…→08 in strict order, seven
-        // consecutive codes on a seven-speed box, so gear = code − 1. Reverse
-        // sits at 0C, outside any arithmetic.
-        let gear = reference_gearbox()
-            .into_iter()
-            .find(|d| d.address == ReadId::Uds(0x3816))
-            .expect("the gearbox set carries the gear");
-        assert_eq!(gear.describe(&[0x02]).as_deref(), Some("1"));
-        assert_eq!(gear.describe(&[0x08]).as_deref(), Some("7"));
-        assert_eq!(gear.describe(&[0x0C]).as_deref(), Some("R"));
-        assert_eq!(gear.describe(&[0x00]).as_deref(), Some("not engaged"));
-        // 0x01 was never observed; it is not "gear 0".
-        assert_eq!(gear.describe(&[0x01]), None);
-    }
-
-    #[test]
-    fn the_two_units_disagree_about_f40d_and_the_catalogs_keep_them_apart() {
-        // On the engine F40D is the OBD-II mirror: one byte of km/h. On the
-        // gearbox it is two little-endian bytes at x0.01. Merging the sets
-        // would silently make one of them wrong.
-        assert!(!reference_engine().iter().any(|d| d.address == ReadId::Uds(0xF40D)));
-        let gearbox_speed = reference_gearbox()
-            .into_iter()
-            .find(|d| d.address == ReadId::Uds(0xF40D))
-            .expect("the gearbox set carries its own F40D");
-        assert_eq!(gearbox_speed.raw_form, RawForm::U16Le);
-        assert_eq!(gearbox_speed.interpret(&[0x0A, 0x1E]), Some(76.9)); // 0x1E0A = 7690
-    }
-
-    #[test]
     fn catalog_round_trips_through_json_config() {
-        // The user-facing config: a catalog (mix of proven anchor + a fully
+        // The user-facing config: a catalog (a proven anchor family plus a fully
         // linear row) survives save→load byte-for-byte, so config selection is
-        // pure data.
-        let mut cat = MeasurementCatalog::for_unit(&reference_store(), Some("8V0906264H"), None);
-        cat.defs.extend(ignition_angle());
+        // pure data. Seeded from synthetic defs rather than a car's file — this
+        // is a test of the serialization, not of any vehicle.
+        let mut cat = MeasurementCatalog::new(ignition_angle());
         cat.defs.push(MeasurementDef {
             name: Cow::Owned("Engine RPM".to_string()),
             unit: Cow::Owned("/min".to_string()),
@@ -596,9 +457,9 @@ mod tests {
         let back = MeasurementCatalog::from_json(&json).expect("deserialize");
 
         assert_eq!(back, cat);
-        assert_eq!(back.len(), 8); // 3 engine + 4 ignition + 1 RPM
+        assert_eq!(back.len(), 5); // 4 ignition + 1 RPM
         // The linear row interprets a real raw after the round-trip.
-        let rpm = &back.defs[7];
+        let rpm = &back.defs[4];
         assert_eq!(rpm.interpret(&[0x0B, 0x34]), Some(717.0)); // 0x0B34=2868 *0.25
     }
 }

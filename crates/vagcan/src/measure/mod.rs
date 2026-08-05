@@ -1812,12 +1812,91 @@ mod tests {
         assert_eq!(file_key("cross-check speed"), "cross_check_speed");
     }
 
-    /// The reference car's catalogs and identities — fixtures, not a table the
-    /// code carries, in the style `watch::plan`'s own tests use.
+    /// A three-unit fixture with the roles these scheduling tests reason about
+    /// — engine, gearbox and cluster — written to a temp directory as synthetic
+    /// catalogs.
+    ///
+    /// **Synthetic, not the reference car.** The proven rows a real vehicle
+    /// yields are no longer in the repository — they live under
+    /// `~/.vagcan/labels/data` once a drive establishes them, and asserting their
+    /// exact values is a job for the machine that measured them. What these tests
+    /// need is not those numbers but a plan with the right *shape*: a required
+    /// speed and gear, a pedal, a boost pair, and — on an emissions unit — the
+    /// barometer and ambient sensor the density batch is built from. Round
+    /// numbers serve that, and keep the poll scheduler and the read-only
+    /// allowlist under test without shipping a car's data to do it.
+    ///
+    /// The requests are kept at `0x7E0`/`0x7E1`/`0x714` because emissions
+    /// addressing (`0x7E0..=0x7E7`) is what makes the OBD-II PIDs — speed,
+    /// barometer, ambient, air mass — appear on the powertrain units at all.
     fn reference() -> (vag_data::catalog::CatalogStore, Vec<crate::watch::plan::UnitIdentity>) {
-        let store = vag_data::catalog::CatalogStore::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalogs/vehicles"),
-        );
+        use std::borrow::Cow;
+        use vag_data::catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling};
+        use vag_data::measure::{LinearScale, RawForm};
+
+        // Held for the life of the test process: the store reads the files
+        // lazily, so the directory has to outlive every `reference()` call.
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let dir = DIR.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("a temp dir for the fixture catalogs");
+            let linear = |name: &str, unit: &str, did: u16, form: RawForm, factor: f64| {
+                MeasurementDef {
+                    name: Cow::Owned(name.to_string()),
+                    unit: Cow::Owned(unit.to_string()),
+                    address: ReadId::Uds(did),
+                    raw_form: form,
+                    scaling: Scaling::Linear(LinearScale { factor, offset: 0.0 }),
+                }
+            };
+            let enumeration = |name: &str, did: u16, levels: Vec<(i32, &str)>| MeasurementDef {
+                name: Cow::Owned(name.to_string()),
+                unit: Cow::Borrowed(""),
+                address: ReadId::Uds(did),
+                raw_form: RawForm::U8First,
+                scaling: Scaling::Enum {
+                    levels: levels.into_iter().map(|(c, s)| (c, s.to_string())).collect(),
+                },
+            };
+            let write = |part: &str, defs: Vec<MeasurementDef>| {
+                let json = MeasurementCatalog::new(defs).to_json().unwrap();
+                std::fs::write(dir.path().join(format!("{part}.json")), json).unwrap();
+            };
+
+            // Engine: the two roles OBD-II does not carry — engine speed and the
+            // boost pair. Speed, barometer, ambient and air mass arrive from the
+            // OBD PIDs because the unit is emissions-addressed.
+            write("ENG00001", vec![
+                linear("Engine speed", "/min", 0x8302, RawForm::U16Be, 1.0),
+                linear("Boost pressure, specified", "bar", 0x8233, RawForm::U16Be, 0.001),
+                linear("Boost pressure, actual", "bar", 0x8234, RawForm::U16Be, 0.001),
+            ]);
+            // Gearbox: the shafts, the pedal, the selector, the gear, and its own
+            // finer vehicle-speed row that outranks the OBD byte.
+            write("GBX00002", vec![
+                linear("Input shaft speed", "/min", 0x380A, RawForm::U16Le, 1.0),
+                linear("Output shaft speed", "/min", 0x380B, RawForm::U16Le, 1.0),
+                linear("Accelerator pedal position", "%", 0x3804, RawForm::U8First, 0.4),
+                linear("Vehicle speed", "km/h", 0xF40D, RawForm::U16Le, 0.01),
+                enumeration("Selector lever", 0x3809, vec![(0x05, "D"), (0x06, "R")]),
+                enumeration("Selected gear", 0x3816, vec![
+                    (0x00, "not engaged"),
+                    (0x02, "1"),
+                    (0x03, "2"),
+                    (0x0C, "R"),
+                ]),
+            ]);
+            // Cluster: a second speed, so a cross-check channel exists.
+            write("CLU00003", vec![linear(
+                "Road speed",
+                "km/h",
+                0x22D2,
+                RawForm::U16Be,
+                1.0,
+            )]);
+            dir
+        });
+
+        let store = vag_data::catalog::CatalogStore::open(dir.path());
         let ident = |request, part: &str| crate::watch::plan::UnitIdentity {
             request,
             part_number: Some(part.to_string()),
@@ -1827,9 +1906,9 @@ mod tests {
         (
             store,
             vec![
-                ident(0x7E0, "8V0906264H"),
-                ident(0x7E1, "0CW300041G"),
-                ident(0x714, "5E0920740D"),
+                ident(0x7E0, "ENG00001"),
+                ident(0x7E1, "GBX00002"),
+                ident(0x714, "CLU00003"),
             ],
         )
     }

@@ -11,6 +11,7 @@ miniz_oxide = "0.7"
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = "3"
 
 [features]
 # The `.rod` IV brute force. Off by default: it is minutes of CPU per section,
