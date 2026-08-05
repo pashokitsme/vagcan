@@ -3,8 +3,12 @@
 `research/codes-dat.md` §4 left one thing between this tool and a named fault: a VAG
 control unit answers `0x19` with a **VW-internal 24-bit number**, and `Codes.dat` is keyed
 by something else. This file identifies the hop, verifies it end to end on ten independent
-faults across two cars, and then says precisely why it is still **not shippable** — which
-is the honest half.
+faults across two cars, records two obstacles that made it unshippable, and then closes
+both. `vagcan faults --labels` names this car's faults — §12.
+
+It is kept in the order it was written, obstacles and refutations included, because three
+of the things that looked like dead ends were the shape of the answer. Read §11 and §12
+for what is true now; read §5 for what it cost.
 
 Read `research/codes-dat.md` §5 and `research/whole-car-survey.md` §3 first. This file
 **supersedes three of their statements** (§7) and refutes two proposals that looked cheap.

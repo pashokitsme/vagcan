@@ -24,6 +24,7 @@ Read `research/whole-car-survey.md` §3 first — this file finishes what it sta
 | Did a known fault code produce its known text? | **Yes** — `B1168 F2` → "Steering Angle Sensor: Not Initialized" — §3.2 | very high |
 | Can `vagcan faults` name what this car reports? | **No — one hop still missing** — §4 | high, and it is a clean negative |
 | Does it finish the `RD.rod` chain? | **The naming half, yes** — §5 | high (47/48 against an 8.2 % baseline) |
+| Is the missing hop still missing? | **No — closed, and the command ships** — §7 | see `research/fault-naming-hop.md` §11–§12 |
 
 The headline is §3 together with §4. The file is completely open, including the eight
 characters per record that the previous pass wrote off as lost — but its keys are **ISO/SAE
@@ -286,7 +287,29 @@ plausible wrong answer.
 
 ---
 
-## 7. What it would take to wire this into `vagcan faults`
+## 7. What it took to wire this into `vagcan faults` — done
+
+**Step 1 below is closed and the command ships.** `research/fault-naming-hop.md` found the
+hop and it is not the one this section guessed at: the join is `UDS_EV/RD.rod`'s `[DTC]`
+registry, keyed by the raw VW number in decimal, with the row chosen by the unit's own
+`.rod` and the row's fields read through a substitution the table key generates
+(`srand(key)`, that file's §11). Candidate (c) — read it off the ARM64 binary — was the
+one that paid, again, and in the same function §2.2 read the record IV out of.
+
+Two things this section got right and one it got wrong, worth keeping:
+
+* right: reading the binary is cheaper than attacking it, twice now;
+* right: **step 3.** `iso_dtc`'s refusal below 90 000 was never on the shipped path in the
+  end — the key comes out of a registry row, not out of a fault number — but the *rule*
+  is what `vag_data::codes::sae_code` now enforces at the same boundary, and what
+  `UnitCatalogue::is_consistent_with_registry` enforces one hop earlier;
+* wrong: **step 2 has not been needed.** `Codes.dat` parses in well under a second and
+  `vagcan faults` opens it once per run, so the SQLite slot was never built. The cost that
+  did need caching was elsewhere — the `[DTC]` section keys, in `catalogs/rod-iv-cache.json`.
+
+The rest of this section is left as written, for the record.
+
+---
 
 The decoder is shipped: `vag_data::CodesDb` — `parse`, `get`, `iso_dtc`, `file_constant`.
 `crates/vagcan/src/faults.rs::format_code` already computes the exact key shape

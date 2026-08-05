@@ -76,7 +76,8 @@ vagcan sniff        listen-only bus capture (runs alongside VCDS)
 vagcan sensors      read the standard OBD-II sensors (27 live on the reference car)
 vagcan watch        live values, full-screen TUI, multi-unit; `c` reconfigures in place
 vagcan scan         every data identifier a control unit answers
-vagcan faults       stored fault codes from every unit; --details adds extended data
+vagcan faults       stored fault codes from every unit; --labels names them in VW's
+                    own words; --details adds extended data
 vagcan survey       walk every unit: identification, stored faults, identifier sweep
 ```
 
