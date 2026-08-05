@@ -29,6 +29,19 @@ use vag_data::CodesDb;
 /// `Codes.dat`'s own file name inside a VCDS installation.
 const CODES_FILE: &str = "Codes.dat";
 
+/// Whether a directory holds the two files fault naming cannot start without —
+/// the registry and the text store.
+///
+/// Cheap: two breadth-first name searches, no decode, resolved exactly the way
+/// [`Namer::open`] will. It tells the ordinary "`vagcan setup` has not copied
+/// the labels in yet" (show the codes as numbers, point at setup) apart from a
+/// dir the user named that is genuinely broken (a real error worth surfacing) —
+/// so the default `~/.vagcan` path can degrade quietly while an explicit
+/// `--labels` still reports what it could not open.
+pub fn has_fault_labels(root: &Path) -> bool {
+    dtc::find_named(root, dtc::REGISTRY_FILE).is_some() && dtc::find_named(root, CODES_FILE).is_some()
+}
+
 /// What one fault resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Naming {
@@ -219,6 +232,28 @@ mod tests {
             assert!(!line.is_empty());
         }
         assert!(Naming::NoText { codes_key: 140_975 }.line().unwrap().contains("140975"));
+    }
+
+    #[test]
+    fn fault_labels_are_present_only_once_both_files_are_there() {
+        // The gate that decides whether `faults` names or degrades: the registry
+        // and the text store, resolved by name the way `Namer::open` does. One
+        // of the two missing is still "not ready" — a registry with no texts
+        // names nothing.
+        let base = std::env::temp_dir().join(format!(
+            "vagcan-faultnames-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let odx = base.join("UDS_EV");
+        std::fs::create_dir_all(&odx).unwrap();
+        assert!(!has_fault_labels(&base), "empty dir has no labels");
+        std::fs::write(odx.join(dtc::REGISTRY_FILE), b"x").unwrap();
+        assert!(!has_fault_labels(&base), "registry alone is not enough");
+        std::fs::write(base.join(CODES_FILE), b"x").unwrap();
+        assert!(has_fault_labels(&base), "both files present — found by name, at any depth");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

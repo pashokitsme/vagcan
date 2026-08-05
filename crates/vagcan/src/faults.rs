@@ -151,13 +151,21 @@ fn ident_text(bytes: &[u8]) -> String {
 /// figures in `research/labels/fault-naming-hop.md` §11.3 are reproduced.
 pub fn run_named(
     survey_path: &str,
-    labels_dir: &str,
+    labels_dir: Option<&str>,
     iv_cache: &str,
     all_codes: bool,
 ) -> Result<()> {
     let text = std::fs::read_to_string(survey_path)
         .with_context(|| format!("reading {survey_path:?}"))?;
-    let root = crate::datadir::resolve(labels_dir);
+    // `--labels` defaults to what `vagcan setup` copied into ~/.vagcan; a dir
+    // named on the command line still wins.
+    let root = crate::datadir::or_default(labels_dir, crate::datadir::extracted_dir)?;
+    // Naming a recorded survey with nothing to name from is nothing this can do,
+    // so an empty default is a clear stop pointing at `vagcan setup` rather than
+    // a bare "the registry did not decode".
+    if labels_dir.is_none() && !crate::faultnames::has_fault_labels(&root) {
+        anyhow::bail!(crate::missing::no_fault_labels(&root));
+    }
     let mut namer = crate::faultnames::Namer::open(&root, &crate::datadir::resolve(iv_cache))?;
     println!(
         "{} rows of fault registry, {} texts, from {}\n",
@@ -261,12 +269,18 @@ pub async fn run(
     // The corpus is opened before the port for the same reason: a missing
     // `Codes.dat` is a mistake to report, not one to make after taking the
     // adapter and reading the whole car.
-    let mut namer = match labels_dir {
-        Some(dir) => Some(crate::faultnames::Namer::open(
-            &crate::datadir::resolve(dir),
-            &crate::datadir::resolve(iv_cache),
-        )?),
-        None => None,
+    //
+    // `--labels` now defaults to what `vagcan setup` copied into ~/.vagcan, so
+    // faults are named without pointing at an installation every time; a dir on
+    // the command line still wins. A dir the user named is opened outright —
+    // `Namer::open` says which file it could not find. The default being empty
+    // is the ordinary "setup has not run yet" case: the codes are still read and
+    // shown as numbers, with a note that names `vagcan setup`.
+    let naming_source = crate::datadir::or_default(labels_dir, crate::datadir::extracted_dir)?;
+    let mut namer = if labels_dir.is_some() || crate::faultnames::has_fault_labels(&naming_source) {
+        Some(crate::faultnames::Namer::open(&naming_source, &crate::datadir::resolve(iv_cache))?)
+    } else {
+        None
     };
     let requested = match only {
         Some(spec) => Some(
@@ -329,14 +343,14 @@ pub async fn run(
         println!(
             "Stored codes are a record that something happened once — not a diagnosis, and \n\
              not necessarily a fault present now. Only codes marked \"failed now\" are \n\
-             currently failing.{}\n",
-            match &namer {
-                // Where a code cannot be named the reason is printed beside
-                // it, so this line does not have to promise anything.
-                Some(_) => "",
-                None => "\nNothing below is named: pass --labels <VCDS install> to name them.",
-            }
+             currently failing.\n"
         );
+        // Where a namer opened, each code names itself or says why it could not,
+        // so nothing is owed here. Where it did not, the labels have not been
+        // copied in yet — the codes read fine, and the note says how to name them.
+        if namer.is_none() {
+            println!("{}\n", crate::missing::no_fault_labels(&naming_source));
+        }
     }
 
     let mut total = 0usize;
@@ -504,6 +518,16 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_default_to_the_setup_directory_and_a_given_one_still_wins() {
+        // The whole point of the copy: after `vagcan setup`, `faults` names codes
+        // with no `--labels`, because the labels now live under ~/.vagcan. The
+        // resolution both `run` and `run_named` use is `or_default(.., extracted)`.
+        use crate::datadir::{extracted_dir, or_default};
+        assert_eq!(or_default(None, extracted_dir).unwrap(), extracted_dir().unwrap());
+        assert!(or_default(Some("Cargo.toml"), extracted_dir).unwrap().ends_with("Cargo.toml"));
+    }
 
     #[test]
     fn only_confirmed_codes_count_as_faults() {
