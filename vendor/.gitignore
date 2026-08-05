@@ -1,0 +1,6 @@
+# Everything in vendor/ is a Ross-Tech VCDS installation, unpacked for local
+# development. Only the LFS archives are tracked; the unpacked installs are
+# Ross-Tech's software and stay on the machine that unpacked them.
+*
+!.gitignore
+!*.zip

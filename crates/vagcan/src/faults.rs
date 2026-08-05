@@ -56,7 +56,7 @@ impl UnitFaults {
 /// wrong: `00 01 29` is fault 297, not fault 1 symptom 0x29. The refutation is
 /// this car's own VCDS scan, which prints `0297` beside the brake unit's code
 /// and `291104` beside the steering column's `04 71 20`
-/// (`research/VCDS-RUS/Scans/`), matching the 24-bit reading in all four cases
+/// (`vendor/vcds-ru/Scans/`), matching the 24-bit reading in all four cases
 /// checked and the 16-bit one in none.
 pub fn format_code(code: [u8; 3]) -> String {
     let number = u32::from_be_bytes([0, code[0], code[1], code[2]]);
