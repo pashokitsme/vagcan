@@ -144,9 +144,12 @@ fn keep_best_miss(held: &mut Option<Rejected>, candidate: Rejected) {
 /// wins; if two readings account for equally many, the response genuinely reads
 /// two ways and `None` is returned. A mis-split attributes one measurement's
 /// bytes to another identifier, which is worse than having no sample.
-pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>> {
+pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Records> {
     split_within(payload, dids, SPLIT_BUDGET).0
 }
+
+/// One response, cut into the identifiers it answered and their bytes.
+type Records = Vec<(u16, Vec<u8>)>;
 
 /// The split, and how much of the budget was left when it finished.
 ///
@@ -154,11 +157,7 @@ pub fn split_records(payload: &[u8], dids: &[u16]) -> Option<Vec<(u16, Vec<u8>)>
 /// would assert on how loaded the machine is: the same search that takes a
 /// millisecond alone takes far longer when the rest of the suite is running
 /// beside it, and a test that fails for that reason teaches nothing.
-fn split_within(
-    payload: &[u8],
-    dids: &[u16],
-    budget: u32,
-) -> (Option<Vec<(u16, Vec<u8>)>>, u32) {
+fn split_within(payload: &[u8], dids: &[u16], budget: u32) -> (Option<Records>, u32) {
     let mut best = Best { budget, ..Best::default() };
     parse_from(payload, dids, 0, &mut Vec::new(), &mut best);
     let records = match (best.budget, best.ties) {
@@ -228,7 +227,7 @@ impl Best {
 
     /// The held parse with its bytes, once the search has finished and there is
     /// exactly one of it.
-    fn records(&self, payload: &[u8]) -> Option<Vec<(u16, Vec<u8>)>> {
+    fn records(&self, payload: &[u8]) -> Option<Records> {
         Some(
             self.parse
                 .as_ref()?
