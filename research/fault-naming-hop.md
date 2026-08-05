@@ -324,7 +324,8 @@ unit's F19E ──▶ EV_*.rod [DTC] ──▶ <index>,<2-char code>
 
 ### 10.1 The evidence
 
-Four unit files cracked (§10.4). For each, every `[DTC]` id was resolved as
+Four unit files cracked (§10.4), plus the DQ200 whose IV was already in the cache. For
+each, every `[DTC]` id was resolved as
 `RD.rod` row `index - 1`, and the table key of that row was compared with what the car
 actually reported in `research/dumps/survey-parked.jsonl`:
 
@@ -334,6 +335,7 @@ actually reported in `research/dumps/survey-parked.jsonl`:
 | `713` ESP | `EV_Brake1UDSContiMK100ESP_036.rod` | 518 | **518** | 33 | **33** |
 | `712` power steering | `EV_SteerAssisMQB_013.rod` | 750 | 750 | 2 | **2** |
 | `70A` parking aid | `EV_EPHVA14AU3700000_VW26.rod` † | 139 | 139 | 131 | 50 |
+| `02` gearbox | `EV_TCMDQ200021.rod` (IV already cached) | 274 | **274** | 0 | — |
 
 † the family's base file, picked by hand — the parking aid's *own* variant has no `[DTC]`
 (§10.5), so this row is not a clean test and its 50/131 is not evidence either way.
@@ -343,7 +345,9 @@ Three things fall out at once and each is a check the reading had to pass:
 * **1-based, not 0-based.** Read 0-based, the steering column's 85 ids collapse to 79
   distinct table keys — two ids landing on the same fault is not something a catalogue
   does — and cover only 20 of the 22 reported faults. Read 1-based: 85 ids, 85 keys, 22
-  of 22. The ESP: 468 keys and 29/33 against 518 keys and 33/33.
+  of 22. The ESP: 468 keys and 29/33 against 518 keys and 33/33. The DQ200, five files
+  in and with nothing of its own stored to check against: 265 keys for its 274 ids
+  0-based, **274 for 274** 1-based.
 * **A catalogue is a superset of what is stored.** 85 ids for a steering column module,
   518 for an ESP, 750 for an EPS — the right order of magnitude, and every fault the car
   had stored was in it.
@@ -367,7 +371,7 @@ The direct refutation needs no statistics. Taking the ids as table keys:
 A catalogue that omits every fault its own unit is currently storing is not a catalogue.
 Two further readings were tried and are dead: the ids are **not** `Codes.dat` keys
 (`Codes.dat` has *no* key at all between 130 700 and 130 900, where the steering column
-puts 43 of its 85 ids), and they are **not** the unit's raw DTC numbers under any digit
+puts 46 of its 85 ids), and they are **not** the unit's raw DTC numbers under any digit
 substitution — searched exhaustively, the best any alphabet achieves is 2 of the steering
 column's 22 reported faults and 8 of the ESP's 33, i.e. noise.
 
@@ -399,6 +403,20 @@ The other eight stay unnamed, and the model is not contradicted by any of them: 
 answer is **inside** the candidate set every time it is known — `047120`'s 86 candidates
 contain 137 973 *"Temperature Sensor for Heated Steering Wheel"* and `D01732`'s 94 contain
 153 539 *"Databus"*, which are the two the crib knows. Zero wrong, as before.
+
+Widened from the confirmed faults to **every** fault the three soundly-resolved units had
+stored — 57 codes, all 57 in their unit's catalogue, none missing — the rate is **21 named,
+36 ambiguous**. Among the 21 are `D01600` → 153 539 *"Databus: Received Error Message"*,
+which is crib pair `13637120` → `U1123 00` from the *other* car's scan, reached here from
+the reference car's own parking aid. So the model keeps agreeing with VCDS wherever it
+speaks at all.
+
+That measurement enforces one rule that has to be stated because it is the difference
+between a result and a wrong answer: **a node budget that was hit is not an answer.** A
+truncated DFS returns an incomplete alphabet set, and an incomplete set can have one
+element; `unitjoin.name` therefore refuses any table whose search did not exhaust, rather
+than reporting its survivor. (It changed nothing here — the 21 are the same 21 — which is
+the only reason it is safe to say so.)
 
 One further constraint was tried and does not bite. An eight-digit `Codes.dat` key encodes
 its own failure type — 9 529 586 is `0x9168F2` and VCDS prints `B1168 F2`, so

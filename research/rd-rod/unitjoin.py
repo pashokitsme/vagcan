@@ -93,6 +93,11 @@ def name(key, selected, budget=4_000_000, misses=1, ftb_filter=True):
     sols, exhausted = solve.Solver(KEYLEN, cons, misses=misses, budget=budget).solve(
         solve.field0s(rows, sep)
     )
+    # A search that hit its node budget has an *incomplete* alphabet set, and an
+    # incomplete set can be a set of one. That would be a plausible wrong name,
+    # which this project ranks below an honest absence — so refuse it outright.
+    if not exhausted:
+        return None, "search not exhausted"
     if ftb_filter:
         sols = [s for s in sols if _ftb_consistent(rows, sep, s[0])]
     if not sols:
