@@ -24,10 +24,20 @@
   --band:         rgba(11, 11, 11, 0.055);
   --band-alt:     rgba(11, 11, 11, 0.018);
   --mark:         rgba(11, 11, 11, 0.34);
+  /* Eight hues, and they are walked in this order because eight is how many
+     series the chart will overlay. They are spread around the circle rather
+     than shaded off one another: a ramp of blues is not a legend anybody can
+     read at a glance. A dash is not available as a second dimension — it
+     already means "derived", and a channel must not change what it claims
+     about itself by being the seventh one picked. */
   --s1: #2a78d6;  /* blue    */
   --s2: #eb6834;  /* orange  */
   --s3: #1baf7a;  /* aqua    */
   --s4: #4a3aa7;  /* violet  */
+  --s5: #b0349b;  /* magenta */
+  --s6: #8a6f00;  /* olive   */
+  --s7: #0e8ea6;  /* cyan    */
+  --s8: #c0392b;  /* crimson */
   --shadow: 0 1px 2px rgba(11,11,11,.06), 0 8px 24px rgba(11,11,11,.05);
 }
 @media (prefers-color-scheme: dark) {
@@ -49,6 +59,10 @@
     --s2: #d95926;
     --s3: #199e70;
     --s4: #9085e9;
+    --s5: #d977c6;
+    --s6: #bda12f;
+    --s7: #34a9c2;
+    --s8: #e2645a;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
   }
 }
@@ -70,6 +84,10 @@
   --s2: #d95926;
   --s3: #199e70;
   --s4: #9085e9;
+  --s5: #d977c6;
+  --s6: #bda12f;
+  --s7: #34a9c2;
+  --s8: #e2645a;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
 }
 
@@ -163,6 +181,11 @@ select {
 .warn { font-size: 12px; color: var(--s2); }
 
 /* ---- results --------------------------------------------------------- */
+/* The cards sit under the chart, so they need a heading of their own: without
+   one they read as a continuation of the plot rather than as the record of the
+   drive they are. */
+.secthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+            margin: 24px 0 10px; }
 .results { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
            margin-bottom: 16px; }
 .res { padding: 14px 16px 16px; }
@@ -171,6 +194,10 @@ select {
 .res .head .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
   border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; color: var(--ink-3); }
 .res .head .badge.ab { color: var(--s2); border-color: var(--s2); }
+/* A degraded run reached its last mark, so it is not aborted and the filter
+   keeps it; its poll rate collapsed on the way, so its times are noisier than
+   the rest. The badge is what stops that distinction from being invisible. */
+.res .head .badge.dg { color: var(--s6); border-color: var(--s6); }
 .blk + .blk { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.t th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 11px;
@@ -254,11 +281,16 @@ svg { display: block; width: 100%; user-select: none; }
   <section class="controls" id="controls" hidden>
     <div class="row">
       <div class="grp"><span class="lbl">Draw runs</span><span id="runchips" class="grp"></span></div>
+      <div class="checks">
+        <label id="onlyoklabel"><input type="checkbox" id="onlyok">only successful runs</label>
+      </div>
+      <span class="hint" id="filterhint"></span>
       <span class="hint" id="runhint"></span>
     </div>
     <div class="row">
       <div class="grp"><span class="lbl">Against</span><span class="seg" id="axisseg"></span></div>
       <div class="grp"><span class="lbl">Series</span><span class="seg" id="setseg"></span></div>
+      <div class="grp"><span class="lbl">Scale</span><span class="seg" id="scaleseg"></span></div>
       <div class="grp" id="gearpick" hidden>
         <span class="lbl">Gear</span><select id="gearsel"></select>
       </div>
@@ -278,8 +310,9 @@ svg { display: block; width: 100%; user-select: none; }
     </div>
   </section>
 
-  <section class="results" id="results"></section>
-
+  <!-- The chart comes before the cards: it is the thing the page is opened to
+       look at, and the cards are the reference that is scrolled to once a curve
+       has raised a question. -->
   <section class="card chartcard" id="chartcard" hidden>
     <div class="chart-head">
       <h2 id="charttitle"></h2>
@@ -291,6 +324,12 @@ svg { display: block; width: 100%; user-select: none; }
     </div>
     <div class="legend" id="legend"></div>
   </section>
+
+  <div class="secthead" id="secthead" hidden>
+    <h2>Runs</h2>
+    <span class="hint" id="resultshint"></span>
+  </div>
+  <section class="results" id="results"></section>
 
   <div class="foot" id="foot"></div>
 </div>
@@ -322,6 +361,25 @@ if (SESSION.schema !== 1) {
 
 var CFG = SESSION.config || {};
 var RUNS = SESSION.runs.filter(function (r) { return r && r.series; });
+
+/* What "successful" means on this page — read off the file, not guessed.
+   `measure` closes a run as `aborted` in exactly one situation: the car came
+   back to a standstill, or the driver cancelled at the keyboard, *before the
+   highest mark asked for closed*. `aborted === false` is therefore the writer's
+   own statement that the run went the whole way, and that is the definition the
+   checkbox filters on.
+
+   Two neighbouring fields deliberately stay out of it. `degraded` says the poll
+   rate collapsed somewhere during the run: its times carry more uncertainty,
+   but it did reach its last mark and it is not a failed run, so it keeps its
+   place and is marked with a badge on its card instead. And a `marks` entry
+   with `seconds: null` is the same fact seen from the other end rather than an
+   independent one — a run with an unclosed mark is the run that was aborted.
+   Filtering on the marks instead would also throw away a run whose last mark
+   closed while a lower one did not, which cannot happen on a rising pass and
+   would be a file disagreeing with itself if it ever did. */
+function successful(r) { return r.aborted !== true; }
+var SUCCESSES = RUNS.filter(successful).length;
 
 /* The header runs before the no-run bail-out below, so a session with nothing
    in it still says which car and which drive it came from. A page that only
@@ -472,13 +530,66 @@ SETS.forEach(function (s) {
 var AVAIL_SETS = SETS.filter(function (s) { return s.available; });
 
 /* Colours are fixed per channel, not per position, so a channel keeps its hue
-   between sets. The assignment is collision-free inside every set above. */
+   between sets. The assignment is collision-free inside every preset set above
+   — but not inside an arbitrary custom pick, where speed, pedal, boost and
+   wheel power all prefer slot 1 and would all draw blue. */
 var SLOT = {
   speed: 1, accel: 2, engine_speed: 3, boost_actual: 1, boost_specified: 4,
   air_mass: 2, pedal: 1, kickdown: 2, gear: 3, input_shaft_speed: 2,
   output_shaft_speed: 4, power_wheel: 1, power_shaft: 4, distance: 3, selector: 4
 };
-function slotOf(k, i) { return SLOT[k] || ((i % 4) + 1); }
+
+/* How many series one plot will carry, which is how many hues the stylesheet
+   defines. Past that the eye is being asked to hold a key it cannot hold, and
+   dropping the rest with a message beats drawing a colour twice. */
+var PALETTE = 8;
+
+/* Hue per key for one drawn set: the preference above when it is still free,
+   the lowest unused slot otherwise. Computed for the whole set at once so that
+   the answer does not depend on which run happened to carry the channel. */
+function colourSlots(keys) {
+  var used = {}, map = {};
+  keys.forEach(function (k) {
+    var s = SLOT[k];
+    if (s && !used[s]) { used[s] = true; map[k] = s; }
+  });
+  var next = 1;
+  keys.forEach(function (k) {
+    if (map[k]) return;
+    while (used[next] && next < PALETTE) next++;
+    map[k] = next;
+    used[next] = true;
+  });
+  return map;
+}
+
+/* How the Y axis is shared out, which is the whole difficulty of putting more
+   than two or three channels on one plot: km/h, /min, %, m/s², kW and bar have
+   no common scale, and a single axis fitted to all of them draws the boost as a
+   flat line along the bottom of the engine speed.
+
+   Two honest answers, and the reader picks:
+
+   * **Units** — one Y axis per unit, drawn as its own column with its own
+     ticks. Every number stays readable off the chart, which is what a
+     measurement page is for; the cost is that only a few columns fit before the
+     plot is all margin, so a pick that needs more says which channels it left
+     out rather than quietly overlaying them on a foreign scale.
+   * **Normalised** — every channel drawn against its own span over the visible
+     window, on one 0–100 % axis. Nothing is dropped and the shapes line up, so
+     "the boost plateaus where the pedal comes off" is one glance; the cost is
+     that height is no longer a value. The legend prints the span each channel
+     was stretched over and the tooltip keeps quoting real units, so a height
+     can always be converted back.
+
+   Units is the default because it is what the page already did and because a
+   number one can read is worth more than a shape one cannot misread. */
+var SCALES = [
+  { id: "units", label: "Units",
+    hint: "One Y axis per unit — real numbers, a few channels." },
+  { id: "norm", label: "Normalised",
+    hint: "Every channel over its own span, 0–100 % — shapes, any number of channels." }
+];
 
 /* ===========================================================================
    3. X axes
@@ -633,15 +744,31 @@ var state = {
   custom: [],
   bg: "none",
   gear: null,
-  zoom: null
+  zoom: null,
+  /* The filter is off on load: a page that opened already hiding runs would
+     have to be understood before it could be read. */
+  onlySuccess: false,
+  /* "units" keeps every number on an axis of its own unit; "norm" puts every
+     series on its own 0–100 % of its own span. See §11. */
+  scale: "units"
 };
+
+/* The one filter, and both halves of the page read from it — the chart draws
+   these runs and the cards are built from these runs. A control that emptied
+   the chart and left the cards alone would be a page contradicting itself. */
+function visibleRuns() {
+  return state.onlySuccess ? RUNS.filter(successful) : RUNS;
+}
+function isVisible(ix) {
+  return visibleRuns().some(function (r) { return r.index === ix; });
+}
 
 function selectedRuns() {
   return state.runs.map(function (ix) {
     return RUNS.filter(function (r) { return r.index === ix; })[0];
-  }).filter(Boolean);
+  }).filter(Boolean).filter(function (r) { return isVisible(r.index); });
 }
-function refRun() { return selectedRuns()[0] || RUNS[0]; }
+function refRun() { return selectedRuns()[0] || visibleRuns()[0] || RUNS[0]; }
 
 var BG_OPTIONS = [{ id: "none", label: "none" }];
 if (hasKey("gear")) BG_OPTIONS.push({ id: "gear", label: "by gear" });
@@ -684,8 +811,14 @@ function unitSuffix(u) { return u ? " " + pretty(u) : ""; }
 var elControls = document.getElementById("controls");
 var elRunChips = document.getElementById("runchips");
 var elRunHint  = document.getElementById("runhint");
+var elOnlyOk   = document.getElementById("onlyok");
+var elOnlyOkLabel = document.getElementById("onlyoklabel");
+var elFilterHint = document.getElementById("filterhint");
+var elSectHead = document.getElementById("secthead");
+var elResultsHint = document.getElementById("resultshint");
 var elAxisSeg  = document.getElementById("axisseg");
 var elSetSeg   = document.getElementById("setseg");
+var elScaleSeg = document.getElementById("scaleseg");
 var elGearPick = document.getElementById("gearpick");
 var elGearSel  = document.getElementById("gearsel");
 var elBgSel    = document.getElementById("bgsel");
@@ -727,6 +860,16 @@ function buildControls() {
     b.addEventListener("click", function () { state.set = s.id; sync(); });
     elSetSeg.appendChild(b);
   });
+
+  SCALES.forEach(function (s) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = s.label; b.dataset.scale = s.id;
+    b.title = s.hint;
+    b.addEventListener("click", function () { state.scale = s.id; sync(); });
+    elScaleSeg.appendChild(b);
+  });
+
+  elOnlyOk.addEventListener("change", function () { setFilter(elOnlyOk.checked); });
 
   BG_OPTIONS.forEach(function (o) {
     var op = document.createElement("option");
@@ -776,15 +919,51 @@ function toggleCustom(k) {
   sync();
 }
 
-/* At most three series and two Y axes: rpm at 6480 beside boost at 2.1 bar
-   destroys both scales, and silently dropping one is worse than saying so. */
+/* The checkbox says what it will do before it is pressed, and refuses when
+   pressing it would leave the page empty — a session where nothing was
+   completed has nothing to filter to, and hiding all eleven runs to prove it
+   would only look like a page that broke. */
+function syncFilter() {
+  var hidden = RUNS.length - SUCCESSES;
+  elOnlyOk.checked = state.onlySuccess;
+  elOnlyOk.disabled = SUCCESSES === 0;
+  elOnlyOkLabel.className = SUCCESSES === 0 ? "off" : "";
+  elFilterHint.textContent = SUCCESSES === 0
+    ? "Not one run reached its last mark, so there is nothing to filter down to."
+    : !state.onlySuccess
+      ? SUCCESSES + " of " + RUNS.length + " runs reached the last mark."
+      : hidden === 0
+        ? "Every run reached its last mark — nothing is hidden."
+        : hidden + (hidden === 1 ? " aborted run is" : " aborted runs are") +
+          " hidden — from the chart and from the cards below.";
+}
+
+/* Turning the filter on or off moves both halves of the page, so it is the one
+   place that redraws the cards as well as the chart. The chart is redrawn
+   first, deliberately: if anything in the cards throws, the page is still a
+   page with a chart on it, which is how the last defect in them was found. */
+function setFilter(on) {
+  state.onlySuccess = !!on;
+  state.runs = state.runs.filter(isVisible);
+  var vis = visibleRuns();
+  if (!state.runs.length && vis.length) state.runs = [vis[0].index];
+  state.zoom = null;
+  sync();
+  renderResults();
+}
+
+/* The one cap left on the picker is the palette: a ninth series would have to
+   repeat a colour, and two channels drawn in the same hue is not a chart with
+   nine series on it, it is a chart with a mistake in it. The old caps — three
+   series, two Y axes — were the axis problem being solved at the wrong end,
+   and are now solved where the axes are, in §11. */
 function customSelection() {
-  var picked = [], axes = [], dropped = [];
+  var picked = [], dropped = [];
   state.custom.forEach(function (k) {
-    var ax = axisKeyOf(k);
-    if (picked.length >= 3) { dropped.push({ k: k, why: "three series" }); return; }
-    if (axes.indexOf(ax) < 0 && axes.length >= 2) { dropped.push({ k: k, why: "two Y axes" }); return; }
-    if (axes.indexOf(ax) < 0) axes.push(ax);
+    if (picked.length >= PALETTE) {
+      dropped.push({ k: k, why: PALETTE + " series is what the palette holds" });
+      return;
+    }
     picked.push(k);
   });
   return { picked: picked, dropped: dropped };
@@ -798,19 +977,27 @@ function drawnKeys() {
 }
 
 function sync() {
+  /* A chip for a run the filter has hidden goes away with it, rather than
+     staying on screen as a control that does nothing. */
   Array.prototype.forEach.call(elRunChips.children, function (b) {
-    var on = state.runs.indexOf(parseInt(b.dataset.run, 10)) >= 0;
+    var ix = parseInt(b.dataset.run, 10);
+    b.hidden = !isVisible(ix);
+    var i = state.runs.indexOf(ix);
+    var on = i >= 0;
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.setAttribute("aria-checked", on ? "true" : "false");
-    var i = state.runs.indexOf(parseInt(b.dataset.run, 10));
     var sw = b.querySelector(".swatch");
     sw.style.opacity = on ? String(RUN_OPACITY[i]) : "0.25";
   });
+  syncFilter();
   Array.prototype.forEach.call(elAxisSeg.children, function (b) {
     b.setAttribute("aria-pressed", b.dataset.axis === state.axis ? "true" : "false");
   });
   Array.prototype.forEach.call(elSetSeg.children, function (b) {
     b.setAttribute("aria-pressed", b.dataset.set === state.set ? "true" : "false");
+  });
+  Array.prototype.forEach.call(elScaleSeg.children, function (b) {
+    b.setAttribute("aria-pressed", b.dataset.scale === state.scale ? "true" : "false");
   });
 
   elCustomRow.hidden = state.set !== "custom";
@@ -824,7 +1011,7 @@ function sync() {
     if (sel.dropped.length) {
       elCustomWarn.hidden = false;
       elCustomWarn.textContent = sel.dropped.map(function (d) {
-        return chName(d.k) + " is not drawn — " + d.why + " is the cap.";
+        return chName(d.k) + " is not drawn — " + d.why + ".";
       }).join("  ");
     } else { elCustomWarn.hidden = true; }
   }
@@ -891,11 +1078,12 @@ function buildSeries() {
   var runs = selectedRuns();
   var stateKeys = keys.filter(function (k) { return STATE[k]; });
   var sc = stateKeys.length ? stateScale(stateKeys, runs) : null;
+  var hue = colourSlots(keys);
   var out = [];
 
   runs.forEach(function (run, ri) {
     var xf = xMapper(run);
-    keys.forEach(function (k, ki) {
+    keys.forEach(function (k) {
       var tr = run._s[k];
       if (!tr) return;
       var pts = [], lastX = -Infinity;
@@ -921,7 +1109,7 @@ function buildSeries() {
         key: k, run: run, runOrder: ri, pts: pts,
         state: STATE[k], step: STATE[k] || FLAG[k],
         derived: isDerived(k), axisKey: axisKeyOf(k),
-        color: "var(--s" + slotOf(k, ki) + ")",
+        color: "var(--s" + hue[k] + ")",
         opacity: RUN_OPACITY[ri], width: RUN_WIDTH[ri]
       });
     });
@@ -1015,6 +1203,7 @@ var view = null;   /* everything the cursor needs, recomputed on every draw */
 function draw() {
   var built = buildSeries();
   var series = built.series;
+  var norm = state.scale === "norm";
   elChartCard.hidden = false;
 
   var W = Math.max(320, wrap.clientWidth || 800);
@@ -1035,6 +1224,8 @@ function draw() {
   }
   if (state.axis === "time") caps.push("From −0.5 s; the run carries a longer pre-launch buffer.");
   if (state.axis === "dist" && !hasKey("distance")) caps.push("Distance integrated here from speed.");
+  if (norm) caps.push("Height is % of each channel's own span here, not a value — the tooltip " +
+                      "and the legend keep the units.");
   caps.push("Drag to zoom, double-click to reset.");
   elChartCap.textContent = caps.join("  ·  ");
 
@@ -1050,28 +1241,42 @@ function draw() {
   }
 
   /* --- axes ---------------------------------------------------------- */
+  /* In units mode a group is a unit, shared by every channel that reports in
+     it — that is what lets input and output shaft speed be read against each
+     other. In normalised mode a group is a channel, shared by the runs drawn of
+     it: two runs of the same channel must keep one scale or laying them over
+     each other says nothing at all. */
+  series.forEach(function (s) { s.groupKey = norm ? "norm:" + s.key : s.axisKey; });
   var groups = [];
   series.forEach(function (s) {
-    var g = groups.filter(function (x) { return x.key === s.axisKey; })[0];
-    if (!g) { g = { key: s.axisKey, series: [], state: s.state, flag: !s.state && FLAG[s.key] }; groups.push(g); }
+    var g = groups.filter(function (x) { return x.key === s.groupKey; })[0];
+    if (!g) { g = { key: s.groupKey, series: [], state: s.state, flag: !s.state && FLAG[s.key] }; groups.push(g); }
     g.series.push(s);
   });
-  var dropped = groups.slice(3);
-  groups = groups.slice(0, 3);
+
+  /* How many axis columns fit is a property of the window, not a constant: at
+     1180 px four columns still leave the plot most of the width, at 600 px two
+     do not. Normalised mode has one axis whatever is drawn, so it drops
+     nothing — which is the point of it. */
+  var maxAxes = norm ? groups.length : W < 640 ? 2 : W < 900 ? 3 : 4;
+  var dropped = groups.slice(maxAxes);
+  groups = groups.slice(0, maxAxes);
   var kept = {};
   groups.forEach(function (g) { kept[g.key] = true; });
-  series = series.filter(function (s) { return kept[s.axisKey]; });
+  series = series.filter(function (s) { return kept[s.groupKey]; });
 
   var ext = extentX(series);
   var x0 = state.zoom ? state.zoom[0] : ext[0];
   var x1 = state.zoom ? state.zoom[1] : ext[1];
 
-  var mL = 54, mR = 14 + Math.max(0, groups.length - 1) * 52, mT = 16, mB = 34;
+  var mL = 54, mR = norm ? 14 : 14 + Math.max(0, groups.length - 1) * 52, mT = 16, mB = 34;
   var pw = Math.max(40, W - mL - mR), ph = Math.max(60, H - mT - mB);
   var sx = function (x) { return mL + (x - x0) / (x1 - x0) * pw; };
 
   groups.forEach(function (g) {
-    if (g.state) {
+    if (g.state && !norm) {
+      /* Every state channel shares the label scale built in §5, so its axis is
+         ticked with what the car reported and not with the codes behind it. */
       var ts = built.scale ? built.scale.ticks : [];
       var lo = ts.length ? ts[0].y : 0, hi = ts.length ? ts[ts.length - 1].y : 1;
       g.lo = lo - 0.6; g.hi = hi + 0.6;
@@ -1088,7 +1293,12 @@ function draw() {
         });
       });
       if (!isFinite(lo2)) { lo2 = 0; hi2 = 1; }
-      if (lo2 > 0 && lo2 < (hi2 - lo2) * 0.6) lo2 = 0;
+      /* A scale that nearly reaches zero is taken to zero, so a reading is read
+         against nothing rather than against an arbitrary floor. Normalised mode
+         does the opposite deliberately: there the span *is* the axis, and an
+         engine speed that never leaves 2000–6000 has to fill the plot or its
+         shape cannot be compared with the pedal's. */
+      if (!norm && lo2 > 0 && lo2 < (hi2 - lo2) * 0.6) lo2 = 0;
       if (hi2 <= lo2) hi2 = lo2 + 1;
       var pad = (hi2 - lo2) * 0.08;
       g.lo = lo2 - pad; g.hi = hi2 + pad;
@@ -1099,15 +1309,23 @@ function draw() {
       g.ticks = g.flag
         ? [{ y: 0, label: "off" }, { y: 1, label: "on" }]
         : niceTicks(g.lo, g.hi, 5).map(function (v) { return { y: v, label: fmtTick(v) }; });
-      g.title = pretty(g.unit);
+      g.title = norm ? chName(g.series[0].key) : pretty(g.unit);
+      /* What the legend prints in normalised mode, so that a height on the
+         plot can always be turned back into a number. */
+      g.span = { lo: lo2, hi: hi2 };
     }
     g.sy = (function (glo, ghi) {
       return function (y) { return mT + ph - (y - glo) / (ghi - glo) * ph; };
     })(g.lo, g.hi);
-    g.color = g.series.length === 1 ? g.series[0].color : "var(--ink-3)";
+    /* The axis title takes the colour of its channel when there is only one
+       channel on it, whichever mode put it there; two channels sharing a unit
+       leave it neutral, because a title in one of their colours would claim the
+       other belongs to something else. */
+    var oneHue = g.series.every(function (s) { return s.color === g.series[0].color; });
+    g.color = oneHue ? g.series[0].color : "var(--ink-3)";
   });
   series.forEach(function (s) {
-    s.group = groups.filter(function (g) { return g.key === s.axisKey; })[0];
+    s.group = groups.filter(function (g) { return g.key === s.groupKey; })[0];
   });
 
   /* --- markup -------------------------------------------------------- */
@@ -1121,14 +1339,24 @@ function draw() {
   out.push(backgroundMarkup(refRun(), sx, mT, ph, x0, x1));
   out.push("</g>");
 
-  /* grid off the first axis */
-  var g0 = groups[0];
-  g0.ticks.forEach(function (t) {
-    var y = g0.sy(t.y);
-    if (y < mT - 1 || y > mT + ph + 1) return;
-    out.push('<line x1="' + mL + '" y1="' + y.toFixed(1) + '" x2="' + (mL + pw) +
-             '" y2="' + y.toFixed(1) + '" stroke="var(--line-soft)" stroke-width="1"/>');
-  });
+  /* grid off the first axis — or, normalised, off the percentage scale, which
+     is then the only scale on the plot and belongs to none of the channels */
+  var PCT = [0, 25, 50, 75, 100];
+  function pctY(p) { return mT + ph - p / 100 * ph; }
+  function gridline(y) {
+    return '<line x1="' + mL + '" y1="' + y.toFixed(1) + '" x2="' + (mL + pw) +
+           '" y2="' + y.toFixed(1) + '" stroke="var(--line-soft)" stroke-width="1"/>';
+  }
+  if (norm) {
+    PCT.forEach(function (p) { out.push(gridline(pctY(p))); });
+  } else {
+    var g0 = groups[0];
+    g0.ticks.forEach(function (t) {
+      var y = g0.sy(t.y);
+      if (y < mT - 1 || y > mT + ph + 1) return;
+      out.push(gridline(y));
+    });
+  }
 
   /* frame */
   out.push('<line x1="' + mL + '" y1="' + (mT + ph) + '" x2="' + (mL + pw) + '" y2="' + (mT + ph) +
@@ -1149,21 +1377,31 @@ function draw() {
            '" text-anchor="end" font-size="10.5" fill="var(--ink-3)">' +
            esc(axis.label + (axis.unit ? " (" + axis.unit + ")" : "")) + '</text>');
 
-  /* y axes: first on the left, the rest stacked to the right */
-  groups.forEach(function (g, gi) {
-    var xpos = gi === 0 ? mL - 8 : mL + pw + 8 + (gi - 1) * 52;
-    var anchor = gi === 0 ? "end" : "start";
-    g.ticks.forEach(function (t) {
-      var y = g.sy(t.y);
-      if (y < mT - 4 || y > mT + ph + 4) return;
-      out.push('<text x="' + xpos + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="' + anchor +
-               '" font-size="10.5" fill="var(--ink-3)">' + esc(t.label) + '</text>');
+  /* y axes: first on the left, the rest stacked to the right — or, normalised,
+     one percentage axis that belongs to every channel equally */
+  if (norm) {
+    PCT.forEach(function (p) {
+      out.push('<text x="' + (mL - 8) + '" y="' + (pctY(p) + 3.5).toFixed(1) +
+               '" text-anchor="end" font-size="10.5" fill="var(--ink-3)">' + p + '</text>');
     });
-    var lx = gi === 0 ? mL - 8 : mL + pw + 8 + (gi - 1) * 52;
-    out.push('<text x="' + lx + '" y="' + (mT - 4) + '" text-anchor="' + anchor +
-             '" font-size="10" font-weight="600" fill="' + g.color + '">' +
-             esc(g.title || "") + '</text>');
-  });
+    out.push('<text x="2" y="' + (mT - 4) +
+             '" text-anchor="start" font-size="10" font-weight="600" fill="var(--ink-3)">' +
+             '% of own span</text>');
+  } else {
+    groups.forEach(function (g, gi) {
+      var xpos = gi === 0 ? mL - 8 : mL + pw + 8 + (gi - 1) * 52;
+      var anchor = gi === 0 ? "end" : "start";
+      g.ticks.forEach(function (t) {
+        var y = g.sy(t.y);
+        if (y < mT - 4 || y > mT + ph + 4) return;
+        out.push('<text x="' + xpos + '" y="' + (y + 3.5).toFixed(1) + '" text-anchor="' + anchor +
+                 '" font-size="10.5" fill="var(--ink-3)">' + esc(t.label) + '</text>');
+      });
+      out.push('<text x="' + xpos + '" y="' + (mT - 4) + '" text-anchor="' + anchor +
+               '" font-size="10" font-weight="600" fill="' + g.color + '">' +
+               esc(g.title || "") + '</text>');
+    });
+  }
 
   /* the lines */
   out.push('<g clip-path="url(#' + clipId + ')" fill="none" stroke-linejoin="round" stroke-linecap="round">');
@@ -1221,7 +1459,7 @@ function draw() {
     dropped: dropped
   };
 
-  renderLegend(series, groups, dropped);
+  renderLegend(series, groups, dropped, norm);
 }
 
 function pathOf(pts, sx, sy, step) {
@@ -1333,7 +1571,7 @@ function crossingTime(run, kmh) {
 
 /* --- legend ------------------------------------------------------------ */
 
-function renderLegend(series, groups, dropped) {
+function renderLegend(series, groups, dropped, norm) {
   var seen = {}, read = [], derived = [];
   series.forEach(function (s) {
     if (seen[s.key]) return;
@@ -1353,10 +1591,20 @@ function renderLegend(series, groups, dropped) {
       if (c.request && c.did) meta.push(c.request + ":" + c.did);
       else if (c.request) meta.push(String(c.request));
     }
+    /* Normalised, the bottom of the plot is this channel's own minimum and the
+       top is its own maximum, so the two numbers are printed here. Without them
+       the reader is left with a shape he has no way of turning back into a
+       reading, and a shape is not what this tool measures. A state channel gets
+       none: its heights are positions on a label scale, not values. */
+    var span = norm && !s.state && s.group && s.group.span
+      ? fmtTick(s.group.span.lo) + " … " + fmtTick(s.group.span.hi) +
+        (unitOf(s.key) ? " " + unitOf(s.key) : "")
+      : null;
     return '<div class="it"><span class="sw' + (s.derived ? " d" : "") +
       '" style="border-top-color:' + s.color + '"></span><span><span class="nm">' +
       esc(chName(s.key)) + (chUnit(s.key) ? ' <span class="mt">' + esc(unitOf(s.key)) + "</span>" : "") +
-      '</span>' + (meta.length ? '<div class="mt">' + esc(meta.join(" · ")) + "</div>" : "") +
+      '</span>' + (span ? '<div class="mt">' + esc(span) + "</div>" : "") +
+      (meta.length ? '<div class="mt">' + esc(meta.join(" · ")) + "</div>" : "") +
       "</span></div>";
   }
   var html = "";
@@ -1365,10 +1613,19 @@ function renderLegend(series, groups, dropped) {
   html += '<div><div class="ttl">Derived — computed here (dashed)</div>' +
           (derived.length ? derived.map(item).join("") : '<p class="mt">none in this set</p>') + "</div>";
   if (dropped && dropped.length) {
+    /* By channel, not by series: a group holds one series per run drawn, and
+       "Acceleration, Acceleration" reads as two channels that were left out. */
+    var names = [];
+    dropped.forEach(function (g) {
+      g.series.forEach(function (s) {
+        var nm = chName(s.key);
+        if (names.indexOf(nm) < 0) names.push(nm);
+      });
+    });
     html += '<div><div class="ttl">Not drawn</div><p class="mt">' +
-      esc(dropped.map(function (g) {
-        return g.series.map(function (s) { return chName(s.key); }).join(", ");
-      }).join("; ")) + " — three Y axes is what the plot can carry.</p></div>";
+      esc(names.join(", ")) + " — " + groups.length + " Y " + (groups.length === 1 ? "axis is" : "axes are") +
+      " what a plot this wide can carry with the numbers still readable. Switch the scale to " +
+      "normalised to draw all of them on one axis.</p></div>";
   }
   if (selectedRuns().length > 1) {
     var swatch = series.length ? series[0].color : "var(--s1)";
@@ -1617,13 +1874,24 @@ function closedMark(m) { return typeof m.seconds === "number"; }
 
 function renderResults() {
   var html = "";
-  /* Every run in the file, not only the ones the chart is drawing. The two
-     selections are deliberately not the same one: the chips cap the chart at
-     four curves because a fifth turns it to mud, but a card is a record of the
+  var shown = visibleRuns();
+  elSectHead.hidden = false;
+  var all = RUNS.length + (RUNS.length === 1 ? " run" : " runs");
+  elResultsHint.textContent = !state.onlySuccess
+    ? all + ", aborted ones included."
+    : shown.length === RUNS.length
+      ? all + ", and every one of them reached its last mark."
+      : shown.length + " of " + RUNS.length + " runs — the aborted ones are hidden with the filter above.";
+  /* Every run the filter leaves, not only the ones the chart is drawing. Those
+     two selections are deliberately different: the chips cap the chart at four
+     curves because a fifth turns it to mud, but a card is a record of the
      drive, and a driver who did five runs wants five sets of times. Keeping the
      cards behind the chart's selection is what made an aborted session look
-     empty — the numbers were there, behind a control nobody had pressed. */
-  RUNS.forEach(function (run) {
+     empty — the numbers were there, behind a control nobody had pressed. The
+     filter is the exception, and has to be: it is one control that says which
+     runs this page is about, and a page that hid a run from the chart while
+     still carrying its card would be arguing with itself. */
+  shown.forEach(function (run) {
     var d = run.derived || {};
     var marks = run.marks || [];
     var closed = marks.filter(closedMark);
@@ -1692,6 +1960,10 @@ function renderResults() {
 
     html += '<div class="card res"><div class="head"><span class="rn">Run ' + esc(run.index) +
       "</span>" + (run.aborted ? '<span class="badge ab">aborted</span>' : "") +
+      /* Degraded is not aborted: the run went the whole way and the filter
+         keeps it, its poll rate just collapsed somewhere along it. Said here
+         so that "successful" does not quietly come to mean "trustworthy". */
+      (run.degraded ? '<span class="badge dg">degraded</span>' : "") +
       (run.t0_wall ? '<span class="badge">' + esc(String(run.t0_wall).replace("T", " ").slice(0, 19)) +
         "</span>" : "") + "</div>";
 
@@ -1795,10 +2067,11 @@ document.getElementById("theme").addEventListener("click", function () {
    =========================================================================== */
 
 buildControls();
-/* The chart first, the cards after. The cards no longer depend on the chart's
-   selection, so they need drawing once rather than on every control change —
-   and in this order a mistake in them cannot leave the page with no chart,
-   which is exactly how the last one was found. */
+/* The chart first, the cards after — on the page and in the code both. The
+   cards do not depend on the chart's selection, so they are drawn here and
+   again only when the successful-runs filter moves, not on every control
+   change; and in this order a mistake in them cannot leave the page with no
+   chart, which is exactly how the last one was found. */
 sync();
 renderResults();
 
