@@ -567,6 +567,21 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   system is in a catalog yet.
 
 ## Dead and archived (kept as negative results — do not retry)
+
+- **Measurement names from a masked (`shifted`) text table — 2026-08-06.** Not slow:
+  out of reach. Such files XOR an 8-byte mask over the finished IV, and that mask is a
+  **runtime global inside VCDS** — read off the binary at `0x140033b70`, and confirmed
+  from the outside by 348 distinct values across 349 files matching nothing structural.
+  The files do not carry it, so no amount of analysis recovers it. Because the mask is
+  8 bytes it reaches `IV[3..8]`, which costs both the free deflate anchor and the
+  multiplicative reduction of the candidate sets: 60 anchors against the full 2⁴⁰ space,
+  ~960× the work, hours per file. Measured corpus-wide: the unmasked half is ~39 h of
+  CPU, the masked half ~5.2 years. **The Russian build's `TTText-RUS.rod` is masked**,
+  so that build gives fault text and labels but no measurement names, and `vagcan setup`
+  now says so up front instead of spinning. The only route that would change this is
+  lifting the mask out of a running VCDS process, which is a Windows-debugger job and
+  not an offline one (`research/labels/tttext2.md` §3.3a, §3.5).
+
 - **HEX-clone live UDS** — the session KDF is VMProtect-sealed and dead. The `vag-hex`
   crate and the vendored FTDI D2XX driver are **deleted**; the research writeups moved to
   `archive/research/` (`vag-hex-framing.md`, `clone-crypto.md`, `vcds-rus-crack.md`) and

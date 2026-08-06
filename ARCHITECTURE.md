@@ -125,10 +125,42 @@ Payloads are encoded in **base-14** over the charset `0123456789,.-_`, establish
 disassembling VCDS rather than guessed at.
 
 A section whose `product` field is nonzero cannot be decrypted from the file alone:
-five bytes of its first-block IV are missing and have to be searched for, at about a
-minute of every core per section. That is why the recovered keys are cached — the
+five bytes of its first-block IV are missing and have to be searched for — about
+fourteen seconds a section on a laptop. That is why the recovered keys are cached: the
 live path reads the answer out of `~/.vagcan/data/extracted/rod-keys.json` and never
 searches.
+
+**Two fifths of the corpus are searchable in principle and not in practice, and the
+reason is worth knowing.** Some files XOR an eight-byte mask over the *finished* IV,
+read off VCDS's own code (`0x140033b70`) rather than guessed at. Three facts about that
+mask decide everything:
+
+- **It is a runtime global.** Not a field of the file, not a function of its name, not a
+  checksum — a value filled elsewhere in VCDS's process. Measured from the outside it
+  looks exactly like that: 348 distinct values across 349 such files, matching nothing
+  structural. The files are simply not self-describing here; VCDS knows something they
+  do not say.
+- **It is eight bytes wide, so it reaches `IV[3..8]`.** Provable without cracking
+  anything: byte 6 of a `<6-digit id>,<2-char code>` record is a comma, its multiplier
+  is odd so the map inverts uniquely, and the value it yields is a property of the whole
+  file — so two sections of one file must agree. Across the corpus the unmasked files
+  agree 292 times out of 292, and the masked ones disagree 179 times out of 196.
+- **It is skipped for the `CMP` tag** (467 of 467), and it is one mask per file — so
+  opening any one section hands the rest of that file over for free.
+
+The cost follows from the second point. An ordinary file's deflate anchor is free
+(the tag-derived IV is exact) and its candidate bytes are reduced by the multiplicative
+construction to about 6.9 × 10¹⁰. A masked file loses both: every one of 60 legal
+anchors must be tried against the full 2⁴⁰ space, roughly 960× more work — hours per
+file rather than seconds. Cracking every masked file in the corpus would take about
+five years; the unmasked ones would take a weekend.
+
+**This is why the Russian VCDS build recovers no measurement names.** `TTTEXT.ROD` is
+unmasked and opens in minutes; `TTText-RUS.rod` is masked, so `vagcan setup` checks
+before it starts and says so rather than spinning for a day. Fault text and labels are
+unaffected — only the names are out of reach, and the one thing that would change that
+is reading the mask out of a running VCDS, not out of the files.
+[`research/labels/tttext2.md`](research/labels/tttext2.md) has the full argument.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
 file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan vcds labels
