@@ -76,9 +76,17 @@ found and closed, not a plan:
   `vagcan vcds corpus` is `vagcan vcds dump`, since `labels` already meant the
   single-lookup command.
 
-**Measured while doing it, and worth keeping:** recovering one `.rod` section key is
-**160 s** on an M4 (`EV_SMLSVALEOMQBLRH.rod` `[DTC]`, classic regime), and those
-sections are *classic*, not shifted — minutes, not the hours a shifted file costs.
+**Measured while doing it, and worth keeping:** those sections are *classic*, not
+shifted — minutes, not the hours a shifted file costs. Opening all five sealed
+sections of `EV_SMLSVALEOMQBLRH.rod` cost **483 s** at the start of the day and
+**70.8 s** at the end, on the same M4, for **byte-identical keys** (compared as JSON
+against the pre-change cache). Two independent wins: handing threads work from a
+shared cursor instead of fixed slices, and — the larger one — noticing that the cheap
+filter reads HDIST out of deflate byte 1 and then discards it, so the 128 candidates
+are 8 groups of 16 differing only in bits the filter ignores, and the cascade was
+being walked 16 times over. Measured on this machine: 192.9 s → 70.8 s for the second
+alone (`research/labels/tttext2-sweep` grew a `classic <file> <TAG>` command to time
+one section directly).
 Decoding with a cached key is ~20 ms for the 2.2 MB `RD.rod` and below timer
 resolution for a typical 1 KB per-unit file, so nothing on the live path is worth
 caching further.
