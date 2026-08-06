@@ -168,6 +168,9 @@ pub fn run_named(survey_path: &str, labels_dir: Option<&str>, iv_cache: &str, al
 	);
 
 	let (mut named, mut unnamed) = (0usize, 0usize);
+	// Every sealed catalogue this car names, asked about once at the end rather
+	// than printed as a command under each unit that hit one.
+	let mut sealed: Vec<std::path::PathBuf> = Vec::new();
 	for line in text.lines() {
 		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
 			continue;
@@ -200,6 +203,11 @@ pub fn run_named(survey_path: &str, labels_dir: Option<&str>, iv_cache: &str, al
 		let (odx, version) = (ident(ODX_NAME), ident(ODX_VERSION));
 		println!("{unit}  {odx}");
 		let lookup = namer.unit(&odx, &version);
+		if let vag_data::UnitLookup::Locked { file } = &lookup {
+			if !sealed.contains(file) {
+				sealed.push(file.clone());
+			}
+		}
 		if let Some(note) = crate::faultnames::unit_note(&lookup) {
 			println!("  ({note})");
 		}
@@ -223,6 +231,7 @@ pub fn run_named(survey_path: &str, labels_dir: Option<&str>, iv_cache: &str, al
 		println!();
 	}
 	println!("{named} of {} {} named.", named + unnamed, crate::render::plural(named + unnamed, "code"));
+	crate::faultnames::offer_to_unseal(&sealed, &crate::datadir::resolve(iv_cache))?;
 	Ok(())
 }
 
@@ -339,6 +348,7 @@ pub async fn run(
 	}
 
 	let mut total = 0usize;
+	let mut sealed: Vec<std::path::PathBuf> = Vec::new();
 	let mut failing_now = 0usize;
 	let count = order.len();
 	let mut progress = crate::progress::Line::new();
@@ -428,6 +438,11 @@ pub async fn run(
 				}
 				None => None,
 			};
+			if let Some(vag_data::UnitLookup::Locked { file }) = lookup.as_ref() {
+				if !sealed.contains(file) {
+					sealed.push(file.clone());
+				}
+			}
 			if let Some(note) = lookup.as_ref().and_then(crate::faultnames::unit_note) {
 				println!("  ({note})");
 			}
@@ -494,6 +509,7 @@ pub async fn run(
 			n => format!("{n} are failing now; the rest are history."),
 		}
 	);
+	crate::faultnames::offer_to_unseal(&sealed, &crate::datadir::resolve(iv_cache))?;
 	Ok(())
 }
 

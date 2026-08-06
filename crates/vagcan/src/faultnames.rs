@@ -18,6 +18,7 @@
 //! through five passes and this module is where that is kept.
 
 use std::collections::BTreeMap;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -199,8 +200,7 @@ pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
 			"none of the {candidates} ODX files of this family carries a fault catalogue — codes only"
 		)),
 		UnitLookup::Locked { file } => Some(format!(
-			"the fault catalogue in {} is still sealed — recover its key with \
-             `vagcan vcds rod` — codes only",
+			"the fault catalogue in {} is still sealed — codes only",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 		UnitLookup::Mismatched { file, listed, distinct } => Some(format!(
@@ -209,6 +209,53 @@ pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 	}
+}
+
+/// Offer to open the fault catalogues this car needs and nobody has opened yet.
+///
+/// VW encrypts each `.rod` section under a key that is not in the file, and
+/// recovering one is a search: **about three minutes per file** on an M4,
+/// measured rather than estimated. The answer is then cached for good, so the
+/// price is one-off per car, not per run.
+///
+/// That is too long to spend without asking, and too useful to leave as a
+/// command printed under each unit for somebody to copy out — a car with four
+/// sealed catalogues printed it four times. So it is asked once, at the end,
+/// for all of them together.
+///
+/// Never asks when stdin is not a terminal: a script gets the command it would
+/// have to run, and no prompt nobody is there to answer.
+pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
+	if files.is_empty() {
+		return Ok(());
+	}
+	let n = files.len();
+	let each = crate::render::plural(n, "catalogue");
+	println!("\n{n} fault {each} on this car {} sealed.", if n == 1 { "is" } else { "are" });
+	for file in files {
+		println!("    {}", file.file_name().and_then(|f| f.to_str()).unwrap_or_default());
+	}
+	println!(
+		"Opening them recovers the words behind the numbers above. It is a key search:\n\
+         about three minutes each, once — the result is cached and every later run reads it."
+	);
+	if !std::io::stdin().is_terminal() {
+		println!("\nTo do it:\n    vagcan vcds rod <file>   (once per file above)");
+		return Ok(());
+	}
+	print!("\nRecover them now? [y/N] ");
+	let _ = std::io::stdout().flush();
+	let mut answer = String::new();
+	if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+		println!("Left sealed. When you want them:\n    vagcan vcds rod <file>   (once per file above)");
+		return Ok(());
+	}
+	for (at, file) in files.iter().enumerate() {
+		println!("\n[{}/{n}] {}", at + 1, file.file_name().and_then(|f| f.to_str()).unwrap_or_default());
+		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
+	}
+	println!("\nDone. Run `vagcan faults` again and those codes will read in words.");
+	Ok(())
 }
 
 #[cfg(test)]
