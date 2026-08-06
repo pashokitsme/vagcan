@@ -1,0 +1,7 @@
+# Licensed VW/Bosch factory firmware and anything extracted from it — kept on
+# disk for study, never committed.
+*.frf
+*.odx
+*.bin
+*.sgo
+*.frfscope.html

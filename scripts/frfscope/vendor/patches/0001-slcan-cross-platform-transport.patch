@@ -1,0 +1,139 @@
+diff --git a/VW_Flash.py b/VW_Flash.py
+index e2005d3..66ea772 100644
+--- a/VW_Flash.py
++++ b/VW_Flash.py
+@@ -52,6 +52,11 @@ logger.info("Starting VW_Flash.py")
+ 
+ if sys.platform == "win32":
+     defaultInterface = "J2534"
++elif sys.platform == "darwin":
++    # macOS has neither SocketCAN (a Linux kernel subsystem) nor a working
++    # J2534 layer (j2534.py is stdcall/WINFUNCTYPE + a hardcoded .dll), so the
++    # serial slcan path is the only native option.
++    defaultInterface = "SLCAN"
+ else:
+     defaultInterface = "SocketCAN"
+ 
+@@ -156,7 +161,7 @@ parser.add_argument(
+ parser.add_argument(
+     "--interface",
+     help="specify an interface type",
+-    choices=["J2534", "SocketCAN", "USBISOTP", "TEST"],
++    choices=["J2534", "SocketCAN", "SLCAN", "USBISOTP", "TEST"],
+     default=defaultInterface,
+ )
+ 
+@@ -166,6 +171,14 @@ parser.add_argument(
+     default="can0",
+ )
+ 
++parser.add_argument(
++    "--slcan_device",
++    help="Serial device of an slcan CAN adapter, for --interface SLCAN (works on "
++    "macOS/Windows/Linux, no kernel SocketCAN needed). Example: "
++    "/dev/tty.usbmodem1101 . List devices using python -m serial.tools.list_ports",
++    default=None,
++)
++
+ parser.add_argument(
+     "--usb_name",
+     help="Pass a serial port identifier for the USB ISOTP A0 Firmware. Find one using python -m serial.tools.list_ports",
+@@ -237,6 +250,14 @@ if args.interface == "USBISOTP":
+ if args.interface == "SocketCAN":
+     args.interface = "SocketCAN_" + args.can_channel
+ 
++if args.interface == "SLCAN":
++    if args.slcan_device is None:
++        logger.error(
++            "Cannot use SLCAN without specifying a serial device using --slcan_device . List serial devices using python -m serial.tools.list_ports"
++        )
++        exit()
++    args.interface = "SLCAN_" + args.slcan_device
++
+ 
+ def input_blocks_from_frf(frf_path: str) -> dict[str, BlockData]:
+     frf_data = Path(frf_path).read_bytes()
+diff --git a/lib/connections/connection_setup.py b/lib/connections/connection_setup.py
+index ecd15f6..3891722 100644
+--- a/lib/connections/connection_setup.py
++++ b/lib/connections/connection_setup.py
+@@ -1,4 +1,5 @@
+ import math
++import time
+ 
+ from udsoncan.connections import IsoTPSocketConnection
+ from .fake_connection import FakeConnection
+@@ -13,6 +14,33 @@ except Exception as e:
+ from lib import constants
+ 
+ 
++def enforce_min_separation(bus, sep_s: float):
++    """Make `bus.send` wait so consecutive frames are at least `sep_s` apart.
++
++    The SocketCAN path forces its transmit separation with the kernel's
++    `tx_stmin`, which overrides whatever STmin the ECU asks for in flow control.
++    can-isotp 1.9's pure-Python stack has no equivalent option (no
++    `override_receiver_stmin`), so this reproduces that floor at the frame level.
++
++    The override is installed on the instance, so the object stays a genuine
++    python-can `BusABC` — `isotp.CanStack` type-checks for one.
++    """
++    original_send = bus.send
++    state = {"next_ok": 0.0}
++
++    def send(msg, timeout=None):
++        now = time.monotonic()
++        if now < state["next_ok"]:
++            time.sleep(state["next_ok"] - now)
++        try:
++            return original_send(msg, timeout) if timeout is not None else original_send(msg)
++        finally:
++            state["next_ok"] = time.monotonic() + sep_s
++
++    bus.send = send
++    return bus
++
++
+ def stmin_to_isotp(st_min):
+     if st_min > 1000000:
+         # Greater than 1ms; divide by ms and pass through
+@@ -43,6 +71,39 @@ def connection_setup(
+             can_interface = parts[1] if len(parts) > 1 else "can0"
+         conn = IsoTPSocketConnection(can_interface, rxid=rxid, txid=txid, params=params)
+         conn.tpsock.set_opts(txpad=0x55, tx_stmin=st_min)
++    elif interface.startswith("SLCAN"):
++        # Cross-platform (macOS included) path: python-can's serial 'slcan'
++        # backend + the pure-Python ISO-TP stack, instead of Linux kernel
++        # SocketCAN. Channel comes from --interface_path or SLCAN_<channel>,
++        # e.g. /dev/tty.usbmodem1101 (append @<baud> for a non-default rate).
++        import can
++        import isotp
++        from udsoncan.connections import PythonIsoTpConnection
++
++        if interface_path:
++            channel = interface_path
++        else:
++            parts = interface.split("_", 1)
++            channel = parts[1] if len(parts) > 1 else "/dev/ttyACM0"
++
++        bitrate = int(constants.slcan_bitrate) if hasattr(constants, "slcan_bitrate") else 500000
++        # st_min is in NANOseconds despite the "# st_min is in us" comment above:
++        # stmin_to_isotp() divides by 1e6 to get milliseconds, and the USBISOTP
++        # branch divides by 1e3 to get microseconds. Default 350000 = 350 us.
++        bus = can.Bus(interface="slcan", channel=channel, bitrate=bitrate)
++        enforce_min_separation(bus, st_min / 1_000_000_000.0)
++        address = isotp.Address(isotp.AddressingMode.Normal_11bits, txid=txid, rxid=rxid)
++        stack = isotp.CanStack(
++            bus=bus,
++            address=address,
++            params={
++                "tx_padding": 0x55,
++                "stmin": stmin_to_isotp(st_min),
++                "blocksize": 0,
++                "squash_stmin_requirement": False,
++            },
++        )
++        conn = PythonIsoTpConnection(stack)
+     elif interface == "J2534":
+         if interface_path:
+             conn = J2534Connection(

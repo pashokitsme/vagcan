@@ -1,26 +1,20 @@
 # vagcan
 
 A command-line diagnostics tool for VW / Audi / Škoda / SEAT cars, written in Rust.
-It plugs into the OBD-II port — the diagnostics socket every car built since the
-mid-2000s has, usually under the dashboard — through a small USB-CAN adapter, and reads
-the car: which computers (VW calls them *control units*) it has, what they call
+It plugs into the diagnostics (OBD-II port) socket and reads
+the car's control units: which units it has, what they call
 themselves, what they measure, what faults they have stored, and — with
-`vagcan measure` — how fast the thing actually accelerates.
-It **only reads**. There is no coding, no adaptation, no clearing faults, no flashing,
-and there never will be; the UDS service allowlist is four entries long and it is
-short by policy rather than by omission. A read-only tool is still not a harmless one,
-so read [`SAFETY.md`](SAFETY.md) before pointing it at a car you care about.
+`vagcan measure` — how fast the car actually accelerates.
+The tools designed to be read-only, as for now.
 
----
 
-## What you need
+## Dependencies
 
-- **Rust stable**, edition 2024. No system dependencies.
+- **Rust stable**, edition 2024
 - **An slcan USB-CAN adapter.** Development was done on an MKS CANable V2.0 Pro
   (STM32G431 with an isolated transceiver). It enumerates as a serial device, so
   there is no driver to install on macOS or Linux.
-- **VW's label data**, for names instead of numbers — without it a fault reads
-  `000127 (295)` and a measurement reads `2029 → 04 7E`. It comes from a VCDS
+- **VW's label data**, for names instead of numbers. It comes from a VCDS
   installation, but you do not need to have one: `vagcan setup` will download a copy if
   you don't point it at your own (see below).
 
@@ -33,28 +27,37 @@ Wire the adapter to the OBD-II port:
 | 5 (or 4) | GND |
 | 16 | **leave unconnected** |
 
-**Open the adapter's 120 Ω termination jumper.** The vehicle bus is already terminated
+**Open the adapter's 120 Ω termination jumper.** The vehicle bus is probably already terminated
 at both ends (~60 Ω); a third resistor drags it to 40 Ω, and you will spend an evening
 blaming the software.
 
----
+## Tested on
+
+Run `vagcan info` on your car and add a row. The columns are what other owners can
+match against — the engine and gearbox **part numbers** are the keys a measurement
+catalog is filed under, so a car sharing one inherits everything proven for it. (The
+VIN `vagcan info` also prints identifies one physical car and helps nobody else, so it
+is not listed here.)
+
+| Make / model | Year | Platform | Engine | Gearbox | Adapter |
+|---|---|---|---|---|---|
+| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) | MKS CANable V2.0 Pro (slcan) |
+
+# Usage
 
 ## Install
 
-One command, if you have Rust:
+From cargo:
 
 ```sh
 cargo install --git https://github.com/pashokitsme/vagcan vagcan
 ```
 
-(The trailing `vagcan` is the package name — the repository is a workspace of several,
-and this is the one with the `vagcan` command.) That puts `vagcan` on your `PATH`, so
-every example below is just `vagcan …`. To work on the tool instead, clone it and
-install from the checkout:
+From local repository:
 
 ```sh
-git clone https://github.com/pashokitsme/vagcan && cd vagcan
-cargo install --path crates/vagcan
+git clone https://github.com/pashokitsme/vagcan
+cargo install --path vagcan/crates/vagcan
 ```
 
 Check it found your adapter:
@@ -68,31 +71,28 @@ If it reports nothing and the adapter is definitely plugged in, unplug and replu
 It can enumerate on USB without the OS attaching a serial node, and then there is
 genuinely nothing to open.
 
----
 
-## Set up, once
+## Setting up
 
 ```sh
 vagcan setup /path/to/VCDS      # an installation you have
 vagcan setup                    # or be offered one to download
 ```
 
-This parses the label corpus into `~/.vagcan/data/extracted/` — the names of measurements and
+This parses the label data into `~/.vagcan/data/extracted/` — the names of measurements and
 faults, the unit numbering, the keys that open VW's encrypted `.rod` files. It needs no
 car, takes a few minutes, and is the only setup step there is. Running it again on an
 unchanged installation does nothing and says so.
 
 **VCDS is Ross-Tech's software**, free to download from
-<https://www.ross-tech.com/vcds/download/> and redistributed here unmodified. So
+<https://www.ross-tech.com/vcds/download/> and redistributed here unmodified, for convenient install only. So
 `vagcan setup` with no path offers to fetch a copy — English or Russian — and unpacks
-it for you; point it at your own installation instead if you already have one. Either
-way, only the label data inside is read, and none of it is baked into the tool.
+it for you Either way, only the label data inside is read once, and none of it is baked into the tool.
 
-What `setup` does *not* give you is measurement scalings. No label corpus carries
+What `setup` does *not* give you is measurement scalings. No label data carries
 them — that is the single most expensive negative result in this project, and it is
 why [`USAGE.md`](USAGE.md) has a section on proving one against your own car.
 
----
 
 ## Read the car
 
@@ -116,7 +116,6 @@ number it had invented, and the guards are the scar tissue.
 to read back a drive someone else recorded. The offline commands are grouped under
 `vcds` and `recording` in [`USAGE.md`](USAGE.md).
 
----
 
 ## Where your files go
 
@@ -129,7 +128,7 @@ rather than of yours.
 ~/.vagcan/
   data/
     extracted/        parsed from VCDS by `vagcan setup`:
-      cache.sqlite      the label corpus, queryable
+      cache.sqlite      the label data, queryable
       names.json        measurement names recovered from VCDS's text table
       rod-keys.json     recovered .rod section keys
     measured/         proven measurement rows, one file per part number
@@ -143,7 +142,7 @@ rather than of yours.
 `data/extracted/` is rebuilt by `vagcan setup` in minutes and can be deleted at any
 time. `data/measured/` and `cars/` cannot be rebuilt without a vehicle.
 
----
+# Info
 
 ## Status
 
@@ -158,22 +157,6 @@ says otherwise.
 
 The tool is written to work on any VAG car. It has been *proven* on the ones below.
 
-## Tested on
+## Code quality
 
-Run `vagcan info` on your car and add a row. The columns are what other owners can
-match against — the engine and gearbox **part numbers** are the keys a measurement
-catalog is filed under, so a car sharing one inherits everything proven for it. (The
-VIN `vagcan info` also prints identifies one physical car and helps nobody else, so it
-is not listed here.)
-
-| Make / model | Year | Platform | Engine | Gearbox | Adapter |
-|---|---|---|---|---|---|
-| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) | MKS CANable V2.0 Pro (slcan) |
-
----
-
-- [`USAGE.md`](USAGE.md) — every command, with worked output
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — why it is built this way, and what VCDS's file
-  formats actually are
-- [`SAFETY.md`](SAFETY.md) — what a read-only tool can still break, and the rules that
-  came out of it
+The whole project is built by Claude, and I don't really care about the code it produced. Althrough, the UX of the tool and test coverage is very important part and must be considered firstly

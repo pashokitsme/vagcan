@@ -71,3 +71,5 @@ catalogs/
 # themselves are LFS objects and are carried; an unpacked copy is 300 MB of the
 # same bytes.
 vendor/vcds-*/
+
+.worktrees/
