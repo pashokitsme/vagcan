@@ -19,8 +19,10 @@ so read [`SAFETY.md`](SAFETY.md) before pointing it at a car you care about.
 - **An slcan USB-CAN adapter.** Development was done on an MKS CANable V2.0 Pro
   (STM32G431 with an isolated transceiver). It enumerates as a serial device, so
   there is no driver to install on macOS or Linux.
-- **A VCDS installation**, for names instead of numbers. Optional, but without one a
-  fault reads `000127 (295)` and a measurement reads `2029 → 04 7E`.
+- **VW's label data**, for names instead of numbers — without it a fault reads
+  `000127 (295)` and a measurement reads `2029 → 04 7E`. It comes from a VCDS
+  installation, but you do not need to have one: `vagcan setup` will download a copy if
+  you don't point it at your own (see below).
 
 Wire the adapter to the OBD-II port:
 
@@ -76,13 +78,15 @@ vagcan setup                    # or be offered one to download
 ```
 
 This parses the label corpus into `~/.vagcan/data/extracted/` — the names of measurements and
-faults, the unit numbering, the keys that open VW's encrypted `.rod` files. It is
-offline, it takes a few minutes, and it is the only setup step there is. Running it
-again on an unchanged installation does nothing and says so.
+faults, the unit numbering, the keys that open VW's encrypted `.rod` files. It needs no
+car, takes a few minutes, and is the only setup step there is. Running it again on an
+unchanged installation does nothing and says so.
 
-**The data cannot ship with this tool.** It is Ross-Tech's, derived from their
-commercial product, and this repository has none of it. Get VCDS from
-<https://www.ross-tech.com/vcds/download/>.
+**VCDS is Ross-Tech's software**, free to download from
+<https://www.ross-tech.com/vcds/download/> and redistributed here unmodified. So
+`vagcan setup` with no path offers to fetch a copy — English or Russian — and unpacks
+it for you; point it at your own installation instead if you already have one. Either
+way, only the label data inside is read, and none of it is baked into the tool.
 
 What `setup` does *not* give you is measurement scalings. No label corpus carries
 them — that is the single most expensive negative result in this project, and it is
@@ -116,9 +120,10 @@ to read back a drive someone else recorded. The offline commands are grouped und
 
 ## Where your files go
 
-Nothing the tool reads at run time lives in this repository — not the label data,
-which is not ours to redistribute, and not the measured rows, which are true of one
-car rather than of yours.
+Nothing the tool reads at run time lives in this repository. The label data is rebuilt
+into `~/.vagcan` by `setup` — the raw VCDS archives it parses are Ross-Tech's, vendored
+under `vendor/` and redistributed unmodified — and the measured rows are true of one car
+rather than of yours.
 
 ```
 ~/.vagcan/

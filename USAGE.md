@@ -389,10 +389,10 @@ Nothing has been parsed out of a VCDS installation yet.
 vagcan setup /path/to/VCDS
 ```
 
-Offline, one command, no car. If you have no VCDS installation, run `vagcan setup`
-with no path and it offers to download one, or get it from Ross-Tech directly:
-<https://www.ross-tech.com/vcds/download/>. This project cannot ship the data — it is
-Ross-Tech's.
+One command, no car. If you have no VCDS installation, run `vagcan setup` with no path
+and it offers to download one (English or Russian) — that copy is Ross-Tech's software,
+redistributed unmodified; you can also get it from them directly at
+<https://www.ross-tech.com/vcds/download/> and point `setup` at it.
 
 ### "This car has no proven measurement rows" / a screen full of `(raw)`
 
