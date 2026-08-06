@@ -24,75 +24,19 @@
 use std::io::Write as _;
 use std::time::Instant;
 
-mod tea {
-	include!(concat!(env!("OUT_DIR"), "/tea.rs"));
-}
+// The shipped TEA and `.rod` code, compiled into this crate as ordinary
+// modules pointed at the real files. Not a copy and not a text transform: the
+// searcher `mod rod` declares (`rod/crack.rs`) resolves natively beside it, and
+// `include_bytes!("rod_mt.bin")` resolves next to its own source, as it should.
+// If the shipped searcher is wrong, this driver is wrong in the same way —
+// which is the point.
+#[path = "../../../../crates/vag-data/src/tea.rs"]
+mod tea;
 
-/// The shipped `.rod` decoder, included rather than copied.
-///
-/// `include!` instead of `#[path] mod` for one reason: the searcher lives in
-/// `rod/crack.rs` behind a feature this crate does not define, and its `use
-/// crate::rod::{KEY_ROD, MT, OFF_ROD, rod_block0_iv}` needs those items — three
-/// of which are `pub(crate)` and one of which is private to the module. Nesting
-/// `crack` inside this `rod` module makes it a child, and a child sees its
-/// ancestors' privates.
-mod rod {
-	include!(concat!(env!("OUT_DIR"), "/rod.rs"));
+#[path = "../../../../crates/vag-data/src/rod/mod.rs"]
+mod rod;
 
-	#[allow(clippy::all)]
-	pub mod crack {
-		include!(concat!(env!("OUT_DIR"), "/crack.rs"));
-	}
-
-	/// One framed section: tag, zlib-vs-plain-TEA, declared plaintext length,
-	/// ciphertext. Uses the shipped `find_next_tag` / `find_close` /
-	/// `parse_section_cipher`, so the framing cannot drift from the CLI's.
-	pub struct Framed {
-		pub tag: String,
-		pub compressed: bool,
-		pub plainlen: usize,
-		pub cipher: Vec<u8>,
-	}
-
-	pub fn framed(data: &[u8]) -> Vec<Framed> {
-		let mut out = Vec::new();
-		let mut pos = 0usize;
-		while let Some((tag, start)) = find_next_tag(data, pos) {
-			let Some((end, next)) = find_close(data, start, &tag) else { break };
-			if let Some(sc) = parse_section_cipher(&data[start..end]) {
-				out.push(Framed {
-					tag: decode_latin1(&tag),
-					compressed: sc.compressed,
-					plainlen: sc.plainlen,
-					cipher: sc.cipher.to_vec(),
-				});
-			}
-			pos = next;
-		}
-		out
-	}
-
-	/// The tag-derived ("model") IV — exact for a classic file, and for the
-	/// `[CMP]` section of every file.
-	pub fn model_iv(tag: &[u8]) -> [u8; 8] {
-		rod_block0_iv(tag)
-	}
-
-	/// Raw ECB decryption of the first cipher block: `plaintext[i] = t[i] ^ iv[i]`.
-	pub fn first_block(cipher: &[u8]) -> [u8; 8] {
-		crate::tea::tea_decrypt_block(cipher[0..8].try_into().unwrap(), &KEY_ROD)
-	}
-
-	pub fn cbc(cipher: &[u8], iv: [u8; 8]) -> Vec<u8> {
-		crate::tea::tea_cbc_decrypt(cipher, &KEY_ROD, iv)
-	}
-
-	/// The 60 values deflate byte 0 can take: `BTYPE = 2`, `HLIT ≤ 29`, either
-	/// `BFINAL`.
-	pub fn anchors() -> Vec<u8> {
-		deflate_anchors().collect()
-	}
-}
+mod raw;
 
 fn read(path: &str) -> Vec<u8> {
 	std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"))
@@ -100,8 +44,8 @@ fn read(path: &str) -> Vec<u8> {
 
 /// `plaintext[0..3]` of a section's first block under the tag-derived IV.
 fn model_prefix(tag: &str, cipher: &[u8]) -> [u8; 3] {
-	let t = rod::first_block(cipher);
-	let iv = rod::model_iv(tag.as_bytes());
+	let t = raw::first_block(cipher);
+	let iv = raw::model_iv(tag.as_bytes());
 	[t[0] ^ iv[0], t[1] ^ iv[1], t[2] ^ iv[2]]
 }
 
@@ -141,7 +85,7 @@ fn cmd_anchors(dir: &str) {
 		}
 		let Ok(data) = std::fs::read(&p) else { continue };
 		files += 1;
-		for s in rod::framed(&data) {
+		for s in raw::framed(&data) {
 			if !s.compressed || s.cipher.len() < 8 {
 				continue;
 			}
@@ -190,13 +134,10 @@ fn cmd_anchors(dir: &str) {
 
 	// The line the sweep consumes: every legal anchor, most-frequent first,
 	// with the ones the corpus never emits at the back rather than dropped.
-	let anchors = rod::anchors();
+	let anchors = raw::anchors();
 	let mut ranked = anchors.clone();
 	ranked.sort_by_key(|&a| (std::cmp::Reverse(big[a as usize]), std::cmp::Reverse(hist[a as usize]), a));
-	println!(
-		"\norder={}",
-		ranked.iter().map(|a| format!("{a:#04x}")).collect::<Vec<_>>().join(",")
-	);
+	println!("\norder={}", ranked.iter().map(|a| format!("{a:#04x}")).collect::<Vec<_>>().join(","));
 	assert_eq!(anchors.len(), 60);
 }
 
@@ -229,7 +170,7 @@ fn cmd_shifts(dir: &str) {
 			continue;
 		}
 		let Ok(data) = std::fs::read(&p) else { continue };
-		let secs = rod::framed(&data);
+		let secs = raw::framed(&data);
 		let mut d16: Option<u16> = None;
 		let mut zn = 0usize;
 		let mut zsmall = usize::MAX;
@@ -275,7 +216,7 @@ fn cmd_shifts(dir: &str) {
 fn cmd_probe(path: &str) {
 	let data = read(path);
 	println!("{path}: {} bytes", data.len());
-	for s in rod::framed(&data) {
+	for s in raw::framed(&data) {
 		let pre = model_prefix(&s.tag, &s.cipher);
 		let kind = if s.compressed { "zlib" } else { "tea " };
 		let regime = match (s.compressed, pre[0] == 0x78 && pre[1] == 0xda) {
@@ -304,7 +245,7 @@ fn cmd_probe(path: &str) {
 /// sets, which is what §3.5 says is required.
 fn cmd_sweep(path: &str, want_tag: &str, order: Option<&str>, out: &str, all_btypes: bool) {
 	let data = read(path);
-	let sections = rod::framed(&data);
+	let sections = raw::framed(&data);
 	let s = sections
 		.iter()
 		.find(|s| s.tag == want_tag)
@@ -333,9 +274,9 @@ fn cmd_sweep(path: &str, want_tag: &str, order: Option<&str>, out: &str, all_bty
 	// RFC 1951 requires to be zero (2). Every big section in the corpus is
 	// dynamic, so this is the fallback, not the first pass.
 	let all: Vec<u8> = match all_btypes {
-		false => rod::anchors(),
+		false => raw::anchors(),
 		true => {
-			let mut v = rod::anchors();
+			let mut v = raw::anchors();
 			v.extend((0..=255u8).filter(|b| b & 0x06 == 0x02));
 			v.extend([0x00u8, 0x01]);
 			v
@@ -395,17 +336,21 @@ fn cmd_sweep(path: &str, want_tag: &str, order: Option<&str>, out: &str, all_bty
 				// Prove it here rather than trusting the searcher's own oracle:
 				// rebuild the whole first-block IV the way the shipped
 				// `decode_shifted` does and inflate the entire section.
-				let t = rod::first_block(&s.cipher);
+				let t = raw::first_block(&s.cipher);
 				let mut iv8 = [0u8; 8];
 				iv8[0] = t[0] ^ 0x78;
 				iv8[1] = t[1] ^ 0xda;
 				iv8[2] = t[2] ^ d0;
 				iv8[3..8].copy_from_slice(&iv);
-				let dec = rod::cbc(&s.cipher, iv8);
+				let dec = raw::cbc(&s.cipher, iv8);
 				match miniz_oxide::inflate::decompress_to_vec_zlib(&dec) {
 					Ok(bytes) => {
-						let model2 = rod::model_iv(want_tag.as_bytes())[2];
-						let d = [iv8[0] ^ rod::model_iv(want_tag.as_bytes())[0], iv8[1] ^ rod::model_iv(want_tag.as_bytes())[1], iv8[2] ^ model2];
+						let model2 = raw::model_iv(want_tag.as_bytes())[2];
+						let d = [
+							iv8[0] ^ raw::model_iv(want_tag.as_bytes())[0],
+							iv8[1] ^ raw::model_iv(want_tag.as_bytes())[1],
+							iv8[2] ^ model2,
+						];
 						let line = format!(
 							"INFLATED {} bytes (declared {}) D[0:3]={:02x} {:02x} {:02x} iv={}\n",
 							bytes.len(),

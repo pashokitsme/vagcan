@@ -113,7 +113,7 @@ impl Namer {
                  The chain needs UDS_EV/{} and the key for its [DTC] section. \
                  The key lives in {} — if the file is there and the key is not, \
                  recover it with:\n    \
-                 cargo run --release -p vagcan --features rod-crack -- vcds rod <path to {}>",
+                 cargo run --release -p vagcan -- vcds rod <path to {}>",
 				root.display(),
 				dtc::REGISTRY_FILE,
 				iv_cache.display(),
@@ -193,7 +193,7 @@ pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
 		)),
 		UnitLookup::Locked { file } => Some(format!(
 			"the fault catalogue in {} is still sealed — recover its key with \
-             `vagcan vcds rod --features rod-crack` — codes only",
+             `vagcan vcds rod` — codes only",
 			file.file_name().and_then(|n| n.to_str()).unwrap_or_default()
 		)),
 		UnitLookup::Mismatched { file, listed, distinct } => Some(format!(

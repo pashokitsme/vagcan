@@ -247,7 +247,7 @@ pub enum UnitLookup {
 	NoSection { candidates: usize },
 	/// The `[DTC]` section is there and its first-block key is not in the
 	/// cache. Recoverable, at about 95 s of every core, by
-	/// `vagcan vcds rod --features rod-crack`.
+	/// `vagcan vcds rod`.
 	Locked { file: PathBuf },
 	/// The catalogue opened and does not belong to this registry: its ids do
 	/// not land on distinct faults

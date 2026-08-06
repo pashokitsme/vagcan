@@ -6,7 +6,7 @@
 //! - `--part <PART_NO>` — resolve an ECU part number through the `REDIRECT`
 //!   chain to its terminal label file and list that file's measurements
 //!   (the same resolution `vagcan info`'s label path uses).
-//! - `--block <N> [--field <F>]` — a cross-corpus scan: every label file that
+//! - `--block <N> [--field <F>]` — a cross-label-file scan: every label file that
 //!   defines measuring block `N` (optionally narrowed to field `F`), with the
 //!   measurement's name and unit.
 //!
@@ -19,14 +19,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use vag_data::{CorpusScan, LabelDb, Measurement, scan_corpus};
 
-/// Where a parsed corpus is cached between runs.
+/// Where a parsed label file set is cached between runs.
 ///
 /// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
 /// slow part of every lookup, and the corpus does not change between runs.
 ///
 /// One file, `~/.vagcan/data/extracted/cache.sqlite`, beside the other two things
 /// `vagcan setup` recovers from an installation. It used to be one file per
-/// corpus directory, named after the flattened path, which kept the English and
+/// label file directory, named after the flattened path, which kept the English and
 /// the Russian install apart at the cost of a directory nobody could read. The
 /// same property is kept more cheaply by [`crate::datadir::LABEL_CACHE_SOURCE`]:
 /// the cache records which directory it was built from, and a cache built from
@@ -38,7 +38,7 @@ fn cache_path() -> PathBuf {
 		.unwrap_or_else(|_| PathBuf::from("cache.sqlite"))
 }
 
-/// The note recording which corpus [`cache_path`] holds.
+/// The note recording which label file set [`cache_path`] holds.
 fn cache_source_path() -> PathBuf {
 	cache_path().with_file_name(crate::datadir::LABEL_CACHE_SOURCE)
 }
@@ -102,7 +102,7 @@ pub fn has_corpus(dir: &Path) -> bool {
 	label_dir_under(dir).is_ok()
 }
 
-/// Whether the cache on disk can be believed for this corpus directory.
+/// Whether the cache on disk can be believed for this label file directory.
 ///
 /// Two questions, and an mtime only answers the first. **Is it stale?** — the
 /// file must be newer than the directory it was built from. **Is it even about
@@ -161,7 +161,7 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 
 /// Hand the corpus's unit numbering to the address layer.
 ///
-/// `vag-protocol` cannot read a label file — it is the protocol layer, and a
+/// `vag-protocol` cannot read a label file — it is the protocol layer, and
 /// corpus is not a protocol — so the numbering is pushed in from here, where
 /// both crates are already in scope. What crosses the seam is plain numbers and
 /// strings.
@@ -242,7 +242,7 @@ fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
 				}
 			}
 		}
-		None => out.push_str(&format!("no match in corpus of {} parsed file(s)\n", db.len())),
+		None => out.push_str(&format!("no match in {} parsed label file(s)\n", db.len())),
 	}
 	out
 }
@@ -294,7 +294,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 
 	// Recovered initialisation vectors come from the cache only. The search
 	// that fills it costs minutes of every core and lives in a separate tool
-	// (`cargo run -p vagcan --features rod-crack -- vcds rod <file.rod>`),
+	// (`cargo run -p vagcan -- vcds rod <file.rod>`),
 	// so reading a car never links it.
 	let mut cache = IvCache::load(cache_path);
 	for path in &hits {
@@ -320,7 +320,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 				// cannot search for one.
 				RodStatus::Undecodable => {
 					"encrypted (recover with: cargo run -p vagcan \
-                     --features rod-crack -- vcds rod <file.rod>)"
+                     -- vcds rod <file.rod>)"
 				}
 				// Pointing at the recovery command here would waste an hour of
 				// every core: the search cannot start on this file at all.
@@ -380,7 +380,7 @@ mod tests {
 	}
 
 	#[test]
-	fn block_lookup_spans_the_corpus_and_field_narrows() {
+	fn block_lookup_spans_all_label_files_and_field_narrows() {
 		let a = parse_label("AAA.LBL", b"002,1,Engine Speed,,Range: 0...6500 RPM");
 		let b = parse_label("BBB.LBL", b"002,1,Vehicle Speed,,Range: 0...300 km/h\n002,2,Coolant,,");
 		let db = LabelDb::new(vec![a, b]);

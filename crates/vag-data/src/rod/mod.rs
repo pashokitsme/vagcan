@@ -66,7 +66,7 @@ pub struct RodSection {
 /// `tag` must be at least 3 bytes (all real section tags are 2-4 uppercase
 /// ASCII letters, so this always holds for tags accepted by the framing
 /// scanner below).
-fn rod_block0_iv(tag: &[u8]) -> [u8; 8] {
+pub(crate) fn rod_block0_iv(tag: &[u8]) -> [u8; 8] {
 	let m = tag[1] as usize;
 	// seed = tag[0:3] ++ 5 zero bytes (product = 0)
 	let mut seed = [0u8; 8];
@@ -101,7 +101,7 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
 /// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored blocks and fixed-Huffman blocks
 /// are excluded deliberately — no section in the corpus uses either, and
 /// admitting them would double a search that is already the expensive part.
-fn deflate_anchors() -> impl Iterator<Item = u8> {
+pub(crate) fn deflate_anchors() -> impl Iterator<Item = u8> {
 	(0..=29u8).flat_map(|hlit| [0b100 | (hlit << 3), 0b101 | (hlit << 3)])
 }
 
@@ -160,8 +160,7 @@ fn decode_shifted(tag_str: &str, tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8
 /// `plaintext[2] = t[2] ^ IV[2]` and `IV[2] = IV_model[2] ^ D[2]`, so the byte
 /// the searcher would otherwise have to guess sixty times is simple arithmetic.
 ///
-/// Only the search has a use for it, and the search is behind `rod-crack`.
-#[cfg(feature = "rod-crack")]
+/// Only the search has a use for it.
 fn anchor_from_shift(tag: &[u8], cipher: &[u8], shift2: u8) -> Option<u8> {
 	let first: [u8; 8] = cipher.get(0..8)?.try_into().ok()?;
 	let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
@@ -171,7 +170,7 @@ fn anchor_from_shift(tag: &[u8], cipher: &[u8], shift2: u8) -> Option<u8> {
 /// Decode raw Latin-1 bytes into a `String`, one byte per `char`. Matches
 /// `label::parse_label`'s internal decoding, and `clb`'s test helper of the
 /// same name.
-fn decode_latin1(bytes: &[u8]) -> String {
+pub(crate) fn decode_latin1(bytes: &[u8]) -> String {
 	bytes.iter().map(|&b| b as char).collect()
 }
 
@@ -186,7 +185,7 @@ fn be24(b: &[u8]) -> u32 {
 /// The upper bound was widened from 4 to 8 to admit the 5-letter `STRUC`
 /// container tag (`STRUC.rod`); all shorter tags (`CMP`, `MWB`, `TXT`, …)
 /// still match.
-fn find_next_tag(data: &[u8], from: usize) -> Option<(Vec<u8>, usize)> {
+pub(crate) fn find_next_tag(data: &[u8], from: usize) -> Option<(Vec<u8>, usize)> {
 	let mut i = from;
 	while i < data.len() {
 		if data[i] == b'[' {
@@ -209,7 +208,7 @@ fn find_next_tag(data: &[u8], from: usize) -> Option<(Vec<u8>, usize)> {
 /// next_scan_pos)`: `payload_end` is the index right before the closing
 /// marker's leading `\r\n`, `next_scan_pos` is the index right after the
 /// whole closing marker.
-fn find_close(data: &[u8], from: usize, tag: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn find_close(data: &[u8], from: usize, tag: &[u8]) -> Option<(usize, usize)> {
 	let mut marker = Vec::with_capacity(tag.len() + 6);
 	marker.extend_from_slice(b"\r\n[/");
 	marker.extend_from_slice(tag);
@@ -224,18 +223,18 @@ fn find_close(data: &[u8], from: usize, tag: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// A parsed `.rod` section header + the ciphertext slice it frames.
-struct SectionCipher<'a> {
+pub(crate) struct SectionCipher<'a> {
 	/// zlib-compressed (`read1` flag clear) vs plain TEA.
-	compressed: bool,
+	pub(crate) compressed: bool,
 	/// Declared decompressed / plaintext length.
-	plainlen: usize,
+	pub(crate) plainlen: usize,
 	/// The `storedlen`-byte ciphertext (already length/alignment-validated).
-	cipher: &'a [u8],
+	pub(crate) cipher: &'a [u8],
 }
 
 /// Parse the standard 6-byte `.rod` section header (two BE24 ints) and return
 /// the framed ciphertext slice, or `None` if the framing is malformed.
-fn parse_section_cipher(payload: &[u8]) -> Option<SectionCipher<'_>> {
+pub(crate) fn parse_section_cipher(payload: &[u8]) -> Option<SectionCipher<'_>> {
 	if payload.len() < 6 {
 		return None;
 	}
@@ -285,8 +284,7 @@ fn decode_with_iv(tag_str: &str, sc: &SectionCipher<'_>, iv: [u8; 8]) -> RodSect
 /// Decode one section's raw payload bytes (as captured between the `[TAG]`
 /// and `[/TAG]` markers) into a [`RodSection`], using the `product = 0` IV.
 /// Sections whose per-record `product` term is nonzero come back
-/// `Undecodable`; use `decode_rod_recover` (feature `rod-crack`) to recover
-/// those offline.
+/// `Undecodable`; use `decode_rod_recover` to recover those offline.
 fn decode_section(tag: &[u8], payload: &[u8]) -> RodSection {
 	let tag_str = decode_latin1(tag);
 	if tag.len() < 3 {
@@ -338,7 +336,7 @@ pub fn decode_rod(data: &[u8]) -> Vec<RodSection> {
 }
 
 // ---------------------------------------------------------------------------
-// Recovered-IV cache + `product != 0` recovery (feature `rod-crack`)
+// Recovered-IV cache + `product != 0` recovery
 // ---------------------------------------------------------------------------
 
 /// A persistent cache of recovered first-block `iv[3..8]` values, keyed by
@@ -376,21 +374,19 @@ impl IvCache {
 	}
 }
 
-/// The brute-force IV recovery, compiled only into the tool that needs it.
+/// The brute-force IV recovery.
 ///
 /// Recovery costs about a minute of every core per section, and nothing in the
 /// live path can use it: reading a car needs the *answer*, which is a five-byte
 /// value in `catalogs/rod-iv-cache.json`, not the search that produced it. So
-/// the search ships in `vagcan vcds rod` (`--features rod-crack`) and the CLI
-/// links only the cache lookup.
-#[cfg(feature = "rod-crack")]
-mod crack;
+/// the search ships in `vagcan vcds rod` and the CLI links only the cache lookup
+/// on the live path.
+pub(crate) mod crack;
 
 /// Recover the first-block `iv[3..8]` for a single `product != 0` zlib section,
 /// given its raw framed payload (the bytes between `[TAG]` and `[/TAG]`).
 /// Returns `None` if the section is not a compressed section, is malformed, or
 /// the search fails. CPU-heavy (multithreaded brute force, ~1 min per section).
-#[cfg(feature = "rod-crack")]
 pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 	if tag.len() < 3 {
 		return None;
@@ -428,18 +424,13 @@ fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 /// decode AND is a zlib section, recover the missing `iv[3..8]` offline
 /// (brute force) and retry. Recovered values are read from / written to
 /// `cache` under the key `(file, tag)`; pass the file's display name as
-/// `file`. Set `run_crack = false` to only use already-cached values; without
-/// the `rod-crack` feature that is the only behaviour available, and the flag
-/// is accepted so callers do not need two spellings.
+/// `file`. Set `run_crack = false` to only use already-cached values.
 pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crack: bool) -> Vec<RodSection> {
 	let mut sections = Vec::new();
 	let mut pos = 0usize;
 	// The IV shift is a property of the file, so the first shifted section to
 	// open hands its third mask byte to every section after it — which is what
-	// spares the rest of the file its own sweep. Only the search consumes it,
-	// so without `rod-crack` it does not exist at all rather than sitting there
-	// written and unread.
-	#[cfg(feature = "rod-crack")]
+	// spares the rest of the file its own sweep. Only the search consumes it.
 	let mut shift2: Option<u8> = None;
 	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
 		match find_close(data, payload_start, &tag) {
@@ -452,7 +443,6 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 					if let Some(sc) = parse_section_cipher(payload) {
 						if sc.compressed {
 							let recovered = cache.get(file, &tag_str).or_else(|| {
-								#[cfg(feature = "rod-crack")]
 								if run_crack {
 									let anchor = shift2.and_then(|d2| anchor_from_shift(&tag, sc.cipher, d2));
 									let iv = crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, anchor);
@@ -461,7 +451,6 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 									}
 									return iv;
 								}
-								let _ = run_crack;
 								None
 							});
 							match recovered {
@@ -475,11 +464,7 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 								Some(iv3to8) => {
 									if let Some((s, d2)) = decode_shifted(&tag_str, &tag, &sc, iv3to8) {
 										section = s;
-										#[cfg(feature = "rod-crack")]
-										{
-											shift2 = Some(d2);
-										}
-										let _ = d2;
+										shift2 = Some(d2);
 									}
 								}
 								// Say which of the two happened. A search that
@@ -694,8 +679,7 @@ mod tests {
 		assert!(decode_shifted("MWB", tag, &sc, wrong).is_none());
 	}
 
-	// What it spares is a search, and the search is behind `rod-crack`.
-	#[cfg(feature = "rod-crack")]
+	// What it spares is a search.
 	#[test]
 	fn one_opened_section_spares_the_rest_of_the_file_their_own_sweep() {
 		// The mask belongs to the file, not the section. Two sections under
@@ -774,7 +758,6 @@ mod tests {
 	/// Build the full first-block IV for a chosen (nonzero) 5-byte product,
 	/// mirroring `rod_block0_iv` but with a nonzero seed tail — so the produced
 	/// `iv[3..8]` is guaranteed to lie in the reachable candidate space.
-	#[cfg(feature = "rod-crack")]
 	fn iv_for_product(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
 		let m = tag[1] as usize;
 		let mut seed = [0u8; 8];
@@ -790,9 +773,7 @@ mod tests {
 
 	/// Build a synthetic `product != 0` zlib section, then prove the offline
 	/// cracker recovers the exact `iv[3..8]` and the section decodes.
-	// Both of these exercise the brute force itself, so they build only with
-	// the feature that compiles it.
-	#[cfg(feature = "rod-crack")]
+	// Both of these exercise the brute force itself.
 	#[test]
 	fn recovers_product_blocked_zlib_section() {
 		// ~4 KB of skewed-alphabet text -> miniz emits a dynamic-Huffman block,
@@ -847,7 +828,6 @@ mod tests {
 	/// The full multithreaded brute force, on the same synthetic section.
 	/// `#[ignore]`d because it sweeps a ~2^36 space (minutes). Run with
 	/// `cargo test -p vag-data --lib -- --ignored recovers_via_full_search`.
-	#[cfg(feature = "rod-crack")]
 	#[test]
 	#[ignore = "multi-minute brute force; run explicitly"]
 	fn recovers_via_full_search() {

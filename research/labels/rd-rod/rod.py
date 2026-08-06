@@ -14,7 +14,7 @@ from pathlib import Path
 KEY_ROD = [0x029B76A4, 0xCB6DB50A, 0x71395D29, 0x0DBC09C2]
 OFF_ROD = [0x07, 0xCA, 0x22, 0x99, 0x3E, 0x88, 0xC3, 0x76]
 
-_SRC = Path(__file__).resolve().parents[2] / "crates" / "vag-data" / "src"
+_SRC = Path(__file__).resolve().parents[2] / "crates" / "vag-data" / "src" / "rod"
 MT = _SRC.joinpath("rod_mt.bin").read_bytes()
 KS = _SRC.joinpath("rod_ks.bin").read_bytes()
 

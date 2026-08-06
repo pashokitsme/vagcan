@@ -5,7 +5,6 @@ It plugs into the diagnostics (OBD-II port) socket and reads
 the car's control units: which units it has, what they call
 themselves, what they measure, what faults they have stored, and — with
 `vagcan measure` — how fast the car actually accelerates.
-The tools designed to be read-only, as for now.
 
 
 ## Dependencies
@@ -55,7 +54,8 @@ From local repository:
 
 ```sh
 git clone https://github.com/pashokitsme/vagcan
-cargo install --path vagcan/crates/vagcan
+cd vagcan
+cargo install --path crates/vagcan
 ```
 
 Check it found your adapter:
@@ -85,7 +85,7 @@ unchanged installation does nothing and says so.
 **VCDS is Ross-Tech's software**, free to download from
 <https://www.ross-tech.com/vcds/download/> and redistributed here unmodified, for convenient install only. So
 `vagcan setup` with no path offers to fetch a copy — English or Russian — and unpacks
-it for you Either way, only the label data inside is read once, and none of it is baked into the tool.
+it for you. Either way, only the label data inside is read once, and none of it is baked into the tool.
 
 What `setup` does *not* give you is measurement scalings. No label data carries
 them — that is the single most expensive negative result in this project, and it is

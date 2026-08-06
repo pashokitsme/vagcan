@@ -56,7 +56,18 @@ pub struct Options<'a> {
 	pub gated: bool,
 }
 
-pub fn run(opts: Options<'_>) -> Result<()> {
+/// How much of the text table a run actually read.
+///
+/// The attack is expected to fall short — a record with one unresolved letter
+/// is withheld rather than guessed. So "it finished" and "it got everything"
+/// are different facts, and a caller that reports success has to be able to
+/// tell them apart.
+pub struct Coverage {
+	pub read: usize,
+	pub total: usize,
+}
+
+pub fn run(opts: Options<'_>) -> Result<Coverage> {
 	let mut limits = Limits::default();
 	if let Some(steps) = opts.steps {
 		limits.steps = steps;
@@ -92,7 +103,7 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 			continue;
 		}
 		let before = known.len();
-		// Count occurrences, but spend them carefully (below). The label corpus
+		// Count occurrences, but spend them carefully (below). The corpus
 		// says `voltage` where it never says `boltage`, and that is the prior
 		// that keeps the search off English rarities — but its raw counts are
 		// dominated by *enum literals*, the `OK`/`ON`/`LC` status values that
@@ -303,7 +314,10 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 		records.len(),
 		100.0 * ordered.len() as f32 / records.len() as f32
 	);
-	Ok(())
+	Ok(Coverage {
+		read: ordered.len(),
+		total: records.len(),
+	})
 }
 
 /// Word frequency over a set of decoded records — the prior.
@@ -950,8 +964,8 @@ mod tests {
 	///
 	/// `#[ignore]` because it needs the decrypted `[TXT]` section, which is
 	/// minutes of key search to produce and is not in the checkout. Dump it once
-	/// (`vagcan vcds rod vendor/vcds-en/UDS_EV/TTTEXT.ROD --dump DIR`, built with
-	/// `--features rod-crack`) and point the test at it:
+	/// (`vagcan vcds rod vendor/vcds-en/UDS_EV/TTTEXT.ROD --dump DIR`) and point
+	/// the test at it:
 	///
 	/// ```text
 	/// VAGCAN_TTTEXT_TXT=DIR/TXT.bin \

@@ -150,9 +150,30 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 /// it failed.
 #[derive(Debug)]
 enum Step {
-	Wrote { what: &'static str, path: PathBuf, detail: String },
-	Skipped { what: &'static str, path: PathBuf, why: &'static str },
-	Missing { what: &'static str, why: String },
+	Wrote {
+		what: &'static str,
+		path: PathBuf,
+		detail: String,
+	},
+	Skipped {
+		what: &'static str,
+		path: PathBuf,
+		why: &'static str,
+	},
+	/// Wrote something, but not all of it. Distinct from `Wrote` because a
+	/// number on its own reads as a total: "124,294 names" looks complete until
+	/// you know the table held 195,910. Distinct from `Missing` because what it
+	/// did write is real and usable.
+	Partial {
+		what: &'static str,
+		path: PathBuf,
+		detail: String,
+		why: String,
+	},
+	Missing {
+		what: &'static str,
+		why: String,
+	},
 }
 
 pub fn run(opts: Options<'_>) -> Result<()> {
@@ -305,9 +326,10 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	let text = scratch.join("TXT.bin");
 	if !text.is_file() {
 		let _ = std::fs::remove_dir_all(&scratch);
+		let why = format!("the [TXT] section of {} did not decode — see the section listing above", source.display());
 		return Ok(Step::Missing {
 			what: "the measurement names",
-			why: format!("the [TXT] section of {} did not decode — see the section listing above", source.display()),
+			why,
 		});
 	}
 
@@ -315,7 +337,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	if Path::new(SYSTEM_WORDS).exists() {
 		words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
 	}
-	crate::vcds::tttext::run(crate::vcds::tttext::Options {
+	let coverage = crate::vcds::tttext::run(crate::vcds::tttext::Options {
 		file: &text.to_string_lossy(),
 		words: &words,
 		names: None,
@@ -336,6 +358,24 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
 		.and_then(|v| v.as_object().map(|m| m.len()))
 		.unwrap_or(0);
+	// The attack withholds any record it could not read outright, so falling
+	// short is the expected outcome, not a failure — but it has to be said. A
+	// bare "124294 names" reads as the whole table to somebody who has no idea
+	// how big the table is.
+	if coverage.read < coverage.total {
+		let pct = 100.0 * coverage.read as f32 / coverage.total.max(1) as f32;
+		return Ok(Step::Partial {
+			what: "the measurement names",
+			path: out,
+			detail: format!("{count} names"),
+			why: format!(
+				"{} of {} records in the text table were read ({pct:.1} %). The rest held a letter \
+				 the attack could not settle, and a half-read name is worse than none, so they are \
+				 withheld rather than guessed",
+				coverage.read, coverage.total
+			),
+		});
+	}
 	Ok(Step::Wrote {
 		what: "the measurement names",
 		path: out,
@@ -357,21 +397,10 @@ fn rod_keys(root: &Path) -> Result<Step> {
 			why: format!("none of {SHARED_ROD_FILES:?} is under {}", root.join(ODX_DIR).display()),
 		});
 	}
-	if !cfg!(feature = "rod-crack") {
-		// Silence here would look like the sections are genuinely unreadable,
-		// which is the one conclusion that must never be reached by accident.
-		println!(
-			"[4/4] .rod section keys — this build has no key search, so only keys already\n      \
-             cached are used. To recover the missing ones:\n          \
-             cargo install --path crates/vagcan --features rod-crack\n      \
-             then run this again."
-		);
-	} else {
-		println!(
-			"[4/4] .rod section keys — searching for the ones not already cached.\n      \
-             About a minute of every core per blocked section."
-		);
-	}
+	println!(
+		"[4/4] .rod section keys — searching for the ones not already cached.\n      \
+         About a minute of every core per blocked section."
+	);
 	for file in &present {
 		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
 	}
@@ -410,7 +439,12 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 fn report(steps: &[Step]) -> String {
 	use std::fmt::Write as _;
 
-	let mut out = String::from("Done.\n\n");
+	// "Done." on its own reads as full success; when an artefact is missing the
+	// header has to say so, or a reader takes the fast finish for a complete one.
+	// A partial artefact counts as a gap too: a run that recovered 63 % of the
+	// names finished successfully and is still not what "Done." promises.
+	let any_gap = steps.iter().any(|s| matches!(s, Step::Missing { .. } | Step::Partial { .. }));
+	let mut out = String::from(if any_gap { "Done, with gaps.\n\n" } else { "Done.\n\n" });
 	for step in steps {
 		match step {
 			Step::Wrote { what, path, detail } => {
@@ -418,6 +452,9 @@ fn report(steps: &[Step]) -> String {
 			}
 			Step::Skipped { what, path, why } => {
 				let _ = writeln!(out, "  {what}: unchanged, {why}\n    {}", path.display());
+			}
+			Step::Partial { what, path, detail, why } => {
+				let _ = writeln!(out, "  {what}: {detail} — PARTIAL\n    {why}\n    {}", path.display());
 			}
 			Step::Missing { what, why } => {
 				let _ = writeln!(out, "  {what}: NOT recovered — {why}");

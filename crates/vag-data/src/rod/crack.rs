@@ -4,8 +4,8 @@
 //!
 //! Ported from `research/clb-crack/rod_crack/src/main.rs` (multithreaded Rust
 //! brute-forcer) and the framing/prep logic in
-//! `research/clb-crack/rod_struc_decode.py`. Feature-gated (`rod-crack`): it is
-//! CPU-heavy and kept out of the default build.
+//! `research/clb-crack/rod_struc_decode.py`. CPU-heavy, so nothing on the live
+//! path runs it — only `vagcan vcds rod` does.
 //!
 //! Approach (see `research/labels/rod-labels.md` §1): a `.rod` section is
 //! TEA-CBC(`KEY_ROD`) with an 8-byte IV. `IV[0..3]` is tag-derived (exact);
@@ -52,7 +52,7 @@
 //!
 //! Net on `STRUC.rod`: ~306 CPU-seconds to ~35, the answer unchanged.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -572,21 +572,25 @@ impl Scratch {
 	}
 }
 
-/// One worker's slice of the search tree.
+/// The read-only search context shared by every worker.
+///
+/// Workers no longer own a contiguous slice of the first branch point. They
+/// pull one deflate-byte-1 value at a time off a shared cursor (see
+/// [`search_anchor`]), so the tree is split at run time by who is free rather
+/// than up front by index — the fix for the idle cores a fixed partition left
+/// when one worker drew a slice of cheap (fast-rejecting) subtrees and another
+/// a slice of deep ones.
 struct Search<'a> {
 	d0: u8,
 	tail: &'a [u8],
 	sets: &'a [Vec<u8>; 5],
-	/// Candidates for the *first* branch point (deflate byte 1), narrowed to
-	/// this worker's share so threads walk disjoint subtrees.
-	d1slice: &'a [u8],
 	found: &'a AtomicBool,
 }
 
 impl Search<'_> {
 	#[inline]
 	fn set_for(&self, idx: usize) -> &[u8] {
-		if idx == 1 { self.d1slice } else { &self.sets[idx - 1] }
+		&self.sets[idx - 1]
 	}
 
 	/// Probe with what is assigned so far; branch only where the header
@@ -701,33 +705,49 @@ fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &Arc<Vec<u8>>, plainlen: usize, 
 	let found = Arc::new(AtomicBool::new(false));
 	let result: Arc<Mutex<Option<[u8; 5]>>> = Arc::new(Mutex::new(None));
 	let nthreads = thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-	let d1set = sets[0].clone();
-	let chunk = d1set.len().div_ceil(nthreads).max(1);
+	// The work unit is one first-branch byte (deflate byte 1): every worker
+	// pulls the next index off this shared cursor and walks that whole subtree,
+	// then comes back for another. A subtree can reject at the header or open
+	// deep, so their costs differ by orders of magnitude; handing them out on
+	// demand keeps every core busy until the space is exhausted, where a fixed
+	// contiguous partition left the workers that drew cheap slices idle while
+	// one ground through a deep one.
+	let d1len = sets[0].len();
+	let cursor = Arc::new(AtomicUsize::new(0));
 
 	let mut handles = Vec::new();
-	for t_idx in 0..nthreads {
-		let lo = t_idx * chunk;
-		if lo >= d1set.len() {
-			break;
-		}
-		let hi = usize::min(lo + chunk, d1set.len());
-		let d1slice: Vec<u8> = d1set[lo..hi].to_vec();
+	for _ in 0..nthreads {
 		let sets = Arc::clone(&sets);
 		let tail = Arc::clone(&tail);
 		let found = Arc::clone(&found);
 		let result = Arc::clone(&result);
+		let cursor = Arc::clone(&cursor);
 		handles.push(thread::spawn(move || {
 			let search = Search {
 				d0,
 				tail: &tail,
 				sets: &sets,
-				d1slice: &d1slice,
 				found: &found,
 			};
 			// One set of buffers per worker, reused for every confirmation.
 			let mut scratch = Scratch::new(d0, &tail, plainlen);
-			if let Some(hit) = search.dfs(&mut [0u8; 5], 0, None, &mut scratch) {
-				*result.lock().unwrap() = Some(hit);
+			loop {
+				if found.load(Ordering::Relaxed) {
+					return;
+				}
+				let k = cursor.fetch_add(1, Ordering::Relaxed);
+				if k >= d1len {
+					return;
+				}
+				// Pin deflate byte 1 to this work unit and search the rest. The
+				// header always reads byte 1, so this is exactly the subtree the
+				// old top-level branch over `sets[0]` explored for that value.
+				let mut guess = [0u8; 5];
+				guess[0] = search.sets[0][k];
+				if let Some(hit) = search.dfs(&mut guess, 0b0_0001, None, &mut scratch) {
+					*result.lock().unwrap() = Some(hit);
+					return;
+				}
 			}
 		}));
 	}
@@ -816,15 +836,16 @@ mod dfs_tests {
 			s
 		});
 		let found = AtomicBool::new(false);
-		let d1 = sets[0].clone();
 		let search = Search {
 			d0: z[2],
 			tail: &z[8..],
 			sets: &sets,
-			d1slice: &d1,
 			found: &found,
 		};
 		let mut scratch = Scratch::new(z[2], &z[8..], plain.len());
+		// known=0 lets the dfs itself branch the first byte over sets[0]; the
+		// threaded path instead pins byte 1 per work unit, but the tree walked
+		// is the same, which is what this single-threaded check pins down.
 		assert_eq!(search.dfs(&mut [0u8; 5], 0, None, &mut scratch), Some(truth));
 	}
 

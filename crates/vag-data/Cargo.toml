@@ -13,12 +13,6 @@ miniz_oxide = "0.7"
 criterion = { workspace = true }
 tempfile = "3"
 
-[features]
-# The `.rod` IV brute force. Off by default: it is minutes of CPU per section,
-# and every consumer of the *result* reads the cached five bytes instead. Only
-# `vagcan vcds rod` turns it on, through `vagcan`'s feature of the same name.
-rod-crack = []
-
 [[bench]]
 name = "lookup"
 harness = false

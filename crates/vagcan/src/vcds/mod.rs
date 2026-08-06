@@ -97,7 +97,7 @@ pub enum Tool {
 	/// FOR: finding what VW calls something, when all you have is a word.
 	///
 	/// IN: a substring, and the recovered name catalog (`--catalog`, by default
-	/// the one committed with this project).
+	/// the `~/.vagcan/data/extracted/names.json` that `vagcan setup` writes).
 	///
 	/// OUT: matching names on stdout. They are keyed by the corpus's own text
 	/// id, not by data identifier — that join does not exist in the label files

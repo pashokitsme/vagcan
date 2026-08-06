@@ -28,7 +28,7 @@ DELTA = 0x9E3779B9
 SUM0 = 0xC6EF3720
 M32 = 0xFFFFFFFF
 
-_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "crates", "vag-data", "src")
+_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "crates", "vag-data", "src", "rod")
 with open(os.path.join(_SRC, "rod_mt.bin"), "rb") as fh:
 	MT = fh.read()
 with open(os.path.join(_SRC, "rod_ks.bin"), "rb") as fh:

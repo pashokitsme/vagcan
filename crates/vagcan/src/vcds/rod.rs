@@ -7,9 +7,8 @@
 //! in the live path runs it — the live path reads the *answer* out of
 //! `catalogs/rod-iv-cache.json`. This command is where that answer comes from.
 //!
-//! Was the `vag-rod` binary; the search still lives behind the `rod-crack`
-//! feature, so a build without it reads the cache and reports what it could not
-//! open rather than pretending the section is empty.
+//! Was the `vag-rod` binary. With `run_crack` off it reads the cache and reports
+//! what it could not open rather than pretending the section is empty.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -23,15 +22,6 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
 		.map(|s| s.to_string_lossy().into_owned())
 		.unwrap_or_else(|| path.to_string());
 	let cache_path = cache.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{path}.ivcache.json")));
-
-	if run_crack && !cfg!(feature = "rod-crack") {
-		// Silence here would look like "this section is genuinely unreadable",
-		// which is the one conclusion that must never be reached by accident.
-		eprintln!(
-			"note: built without the key search — reading cached keys only.\n      \
-             To search: cargo run -p vagcan --features rod-crack -- vcds rod {path}"
-		);
-	}
 
 	let mut cache_data = IvCache::load(&cache_path);
 	let sections = decode_rod_recover(&data, &file_name, &mut cache_data, run_crack);

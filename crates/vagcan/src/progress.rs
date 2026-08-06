@@ -13,7 +13,7 @@
 //! Neither is decoration: both say **what** is being waited for, because
 //! "working…" and a blank screen carry the same information.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 /// How long a wait has to last before it is worth reporting.
@@ -46,6 +46,11 @@ pub struct Line {
 	/// Whether anything was drawn, so [`Line::finish`] knows if there is a
 	/// line to clear.
 	drawn: bool,
+	/// Whether stderr is a terminal. A rewriting `\r` line is meaningless once
+	/// it is redirected to a file — every frame becomes another line of scroll,
+	/// and a copy of 23 000 files leaves half a megabyte of spinner. Off a
+	/// terminal the report draws nothing.
+	tty: bool,
 	/// When the operation began. Nothing is written until it has been running
 	/// longer than [`THRESHOLD`].
 	started: Instant,
@@ -63,6 +68,7 @@ impl Line {
 			step: 0,
 			width: 0,
 			drawn: false,
+			tty: std::io::stderr().is_terminal(),
 			started: Instant::now(),
 		}
 	}
@@ -75,7 +81,7 @@ impl Line {
 	/// long the wait has actually been.
 	pub fn update(&mut self, message: &str) {
 		self.step += 1;
-		if self.started.elapsed() < THRESHOLD {
+		if !self.tty || self.started.elapsed() < THRESHOLD {
 			return;
 		}
 		let text = format!("{} {message}", frame(self.step));
@@ -146,8 +152,24 @@ mod tests {
 	}
 
 	#[test]
+	fn off_a_terminal_nothing_is_ever_drawn() {
+		// Redirected to a file, a rewriting line turns every frame into scroll —
+		// a 23 000-file copy left half a megabyte of spinner. The spinner still
+		// tracks the calls; it just never writes.
+		let mut line = Line::new();
+		line.tty = false;
+		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
+		for _ in 0..5 {
+			line.update("copying");
+		}
+		assert!(!line.drawn, "a non-terminal must stay clean");
+		assert_eq!(line.step, 5, "but the calls were still counted");
+	}
+
+	#[test]
 	fn a_wait_past_the_threshold_is_drawn() {
 		let mut line = Line::new();
+		line.tty = true; // the test harness's stderr is not a terminal
 		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
 		line.update("identifying control units");
 		assert!(line.drawn);
@@ -159,6 +181,7 @@ mod tests {
 		// A short message after a long one must cover the tail of the long
 		// one, or the screen keeps characters nobody wrote.
 		let mut line = Line::new();
+		line.tty = true; // the test harness's stderr is not a terminal
 		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
 		line.update("identifying control units 12 of 15");
 		let long = line.width;

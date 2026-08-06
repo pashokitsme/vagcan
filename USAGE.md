@@ -66,12 +66,10 @@ write is newer than what it would read; a second run on an unchanged installatio
 takes about a second and says which steps it skipped. `--refresh` forces the lot —
 what you want after updating VCDS.
 
-**Recovering `.rod` keys needs the key search compiled in.** It is behind a feature
-because it costs about a minute of every core per blocked section:
-
-```sh
-cargo install --path crates/vagcan --features rod-crack
-```
+**Recovering `.rod` keys costs about a minute of every core per blocked section.**
+The search is built in — there is no flag to pass — and `setup` only ever runs it for
+the two files every car needs (`RD.rod`, `MUX.rod`). Nothing on the live path searches:
+a section with no cached key is reported as unreadable rather than paid for again.
 
 Without it, setup uses the keys already cached and says so rather than pretending the
 sections are empty.
@@ -414,8 +412,8 @@ above.
 **"is not a directory"** from `setup` — the path is not a VCDS installation root. That
 is the directory holding `Labels/` and `UDS_EV/`.
 
-**"encrypted (recover with …)"** against a `.rod` section — no cached key for it, and
-this build has no key search. Reinstall with `--features rod-crack`.
+**"encrypted (recover with …)"** against a `.rod` section — no cached key for it. Run
+the search against that file: `vagcan vcds rod <file.rod>`.
 
 **"NO CRIB"** against a `.rod` section — no cached key, and the search cannot start on
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not
