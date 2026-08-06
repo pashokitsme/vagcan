@@ -55,10 +55,10 @@ const SEPARATOR_SLOT: usize = 10;
 struct CrtRand(u32);
 
 impl CrtRand {
-    fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(0x343FD).wrapping_add(0x269EC3);
-        (self.0 >> 16) & 0x7FFF
-    }
+	fn next(&mut self) -> u32 {
+		self.0 = self.0.wrapping_mul(0x343FD).wrapping_add(0x269EC3);
+		(self.0 >> 16) & 0x7FFF
+	}
 }
 
 /// A `.rod` table's substitution, generated from the table's own key.
@@ -82,77 +82,77 @@ impl CrtRand {
 /// failure-type field agrees with the byte their own name field encodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableAlphabet {
-    letters: [u8; 26],
-    digits: [u8; 14],
+	letters: [u8; 26],
+	digits: [u8; 14],
 }
 
 impl TableAlphabet {
-    /// The alphabet a table key generates.
-    pub fn for_key(key: u32) -> Self {
-        let mut rand = CrtRand(key);
-        let mut letters = *PLAIN_LETTERS;
-        let mut digits = *PLAIN_DIGITS;
-        for i in 0..letters.len() {
-            let j = rand.next() as usize % letters.len();
-            letters.swap(i, j);
-        }
-        for i in 0..digits.len() {
-            let j = rand.next() as usize % digits.len();
-            digits.swap(i, j);
-        }
-        Self { letters, digits }
-    }
+	/// The alphabet a table key generates.
+	pub fn for_key(key: u32) -> Self {
+		let mut rand = CrtRand(key);
+		let mut letters = *PLAIN_LETTERS;
+		let mut digits = *PLAIN_DIGITS;
+		for i in 0..letters.len() {
+			let j = rand.next() as usize % letters.len();
+			letters.swap(i, j);
+		}
+		for i in 0..digits.len() {
+			let j = rand.next() as usize % digits.len();
+			digits.swap(i, j);
+		}
+		Self { letters, digits }
+	}
 
-    /// The glyph this table writes its field separator as.
-    pub fn separator(&self) -> char {
-        self.digits[SEPARATOR_SLOT] as char
-    }
+	/// The glyph this table writes its field separator as.
+	pub fn separator(&self) -> char {
+		self.digits[SEPARATOR_SLOT] as char
+	}
 
-    /// Read one enciphered field back to plaintext.
-    ///
-    /// Digits go through the digit alphabet and letters through the letter
-    /// alphabet, case preserved — which is what VCDS's own reader does
-    /// (`strchr` into the shuffled alphabet, index into the plaintext one).
-    /// `None` if any character belongs to neither, since a partly-decoded
-    /// field is a wrong field.
-    pub fn decode(&self, field: &str) -> Option<String> {
-        let mut out = String::with_capacity(field.len());
-        for glyph in field.chars() {
-            let lower = glyph.to_ascii_lowercase() as u8;
-            if let Some(at) = self.digits.iter().position(|g| *g == lower) {
-                out.push(PLAIN_DIGITS[at] as char);
-            } else if let Some(at) = self.letters.iter().position(|g| *g == lower) {
-                let plain = PLAIN_LETTERS[at] as char;
-                out.push(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain });
-            } else {
-                return None;
-            }
-        }
-        (!out.is_empty()).then_some(out)
-    }
+	/// Read one enciphered field back to plaintext.
+	///
+	/// Digits go through the digit alphabet and letters through the letter
+	/// alphabet, case preserved — which is what VCDS's own reader does
+	/// (`strchr` into the shuffled alphabet, index into the plaintext one).
+	/// `None` if any character belongs to neither, since a partly-decoded
+	/// field is a wrong field.
+	pub fn decode(&self, field: &str) -> Option<String> {
+		let mut out = String::with_capacity(field.len());
+		for glyph in field.chars() {
+			let lower = glyph.to_ascii_lowercase() as u8;
+			if let Some(at) = self.digits.iter().position(|g| *g == lower) {
+				out.push(PLAIN_DIGITS[at] as char);
+			} else if let Some(at) = self.letters.iter().position(|g| *g == lower) {
+				let plain = PLAIN_LETTERS[at] as char;
+				out.push(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain });
+			} else {
+				return None;
+			}
+		}
+		(!out.is_empty()).then_some(out)
+	}
 
-    /// Read one enciphered field as a decimal number.
-    pub fn number(&self, field: &str) -> Option<u64> {
-        let plain = self.decode(field)?;
-        plain.chars().all(|c| c.is_ascii_digit()).then(|| plain.parse().ok())?
-    }
+	/// Read one enciphered field as a decimal number.
+	pub fn number(&self, field: &str) -> Option<u64> {
+		let plain = self.decode(field)?;
+		plain.chars().all(|c| c.is_ascii_digit()).then(|| plain.parse().ok())?
+	}
 
-    /// Read one enciphered field as a two-character hexadecimal byte.
-    pub fn hex_byte(&self, field: &str) -> Option<u8> {
-        let plain = self.decode(field)?;
-        (plain.len() == 2).then(|| u8::from_str_radix(&plain, 16).ok())?
-    }
+	/// Read one enciphered field as a two-character hexadecimal byte.
+	pub fn hex_byte(&self, field: &str) -> Option<u8> {
+		let plain = self.decode(field)?;
+		(plain.len() == 2).then(|| u8::from_str_radix(&plain, 16).ok())?
+	}
 
-    /// The ten digits as a [`DigitOrder`], for the readers built around one.
-    pub fn digit_order(&self) -> DigitOrder {
-        DigitOrder {
-            map: self.digits[..10]
-                .iter()
-                .enumerate()
-                .map(|(digit, glyph)| (*glyph as char, digit as u8))
-                .collect(),
-        }
-    }
+	/// The ten digits as a [`DigitOrder`], for the readers built around one.
+	pub fn digit_order(&self) -> DigitOrder {
+		DigitOrder {
+			map: self.digits[..10]
+				.iter()
+				.enumerate()
+				.map(|(digit, glyph)| (*glyph as char, digit as u8))
+				.collect(),
+		}
+	}
 }
 
 /// The glyphs a numeric field can be written with. Anything else in a row is
@@ -162,81 +162,81 @@ pub const NUMERIC_GLYPHS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8
 /// A recovered alphabet: glyph → digit.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DigitOrder {
-    map: BTreeMap<char, u8>,
+	map: BTreeMap<char, u8>,
 }
 
 impl DigitOrder {
-    /// The digit a glyph stands for.
-    pub fn digit(&self, glyph: char) -> Option<u8> {
-        self.map.get(&glyph).copied()
-    }
+	/// The digit a glyph stands for.
+	pub fn digit(&self, glyph: char) -> Option<u8> {
+		self.map.get(&glyph).copied()
+	}
 
-    /// How many glyphs are pinned. Ten is a complete alphabet; fewer means the
-    /// table did not exercise the rest.
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
+	/// How many glyphs are pinned. Ten is a complete alphabet; fewer means the
+	/// table did not exercise the rest.
+	pub fn len(&self) -> usize {
+		self.map.len()
+	}
 
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
+	pub fn is_empty(&self) -> bool {
+		self.map.is_empty()
+	}
 
-    /// Read one enciphered field as an integer.
-    ///
-    /// `None` if any glyph is unaccounted for — a partly-decoded number is a
-    /// wrong number, and this project has a rule about those. **A field
-    /// carrying a decimal point or a minus sign is not an integer and is
-    /// refused here**; use [`DigitOrder::decode_field`], which reads them.
-    pub fn decode(&self, text: &str) -> Option<u64> {
-        let mut out = 0u64;
-        for glyph in text.chars() {
-            out = out.checked_mul(10)?.checked_add(self.digit(glyph)? as u64)?;
-        }
-        (!text.is_empty()).then_some(out)
-    }
+	/// Read one enciphered field as an integer.
+	///
+	/// `None` if any glyph is unaccounted for — a partly-decoded number is a
+	/// wrong number, and this project has a rule about those. **A field
+	/// carrying a decimal point or a minus sign is not an integer and is
+	/// refused here**; use [`DigitOrder::decode_field`], which reads them.
+	pub fn decode(&self, text: &str) -> Option<u64> {
+		let mut out = 0u64;
+		for glyph in text.chars() {
+			out = out.checked_mul(10)?.checked_add(self.digit(glyph)? as u64)?;
+		}
+		(!text.is_empty()).then_some(out)
+	}
 
-    /// Read one enciphered field, punctuation included.
-    ///
-    /// The substitution covers `.` and `-` alongside the ten digits: a scaling
-    /// numerator can be `0.125` and an offset can be `-48`, and both are
-    /// written in the table's own alphabet like everything else. Reading such
-    /// a field as an integer silently drops the point and the sign — `0.125`
-    /// becomes `125` and `-8` becomes `8`, which are exactly the numbers a
-    /// caller would then use to scale a measurement.
-    ///
-    /// Which glyph is which comes from where it may appear, established over
-    /// the 116 tables that use more than eleven glyphs: a point sits only
-    /// inside a field and at most once, a minus sign only at its start. Those
-    /// two roles have to be supplied by the caller, because a single field in
-    /// isolation cannot tell them apart from digits.
-    pub fn decode_field(&self, text: &str, point: Option<char>, minus: Option<char>) -> Option<f64> {
-        let (negative, body) = match minus {
-            Some(sign) => match text.strip_prefix(sign) {
-                Some(rest) => (true, rest),
-                None => (false, text),
-            },
-            None => (false, text),
-        };
-        if body.is_empty() {
-            return None;
-        }
-        let (whole, fraction) = match point.and_then(|p| body.split_once(p)) {
-            Some((a, b)) => (a, Some(b)),
-            None => (body, None),
-        };
-        // A point with nothing after it, or a second point, is not a number.
-        if fraction.is_some_and(|f| f.is_empty() || point.is_some_and(|p| f.contains(p))) {
-            return None;
-        }
-        let mut value = match whole.is_empty() {
-            true => 0.0,
-            false => self.decode(whole)? as f64,
-        };
-        if let Some(fraction) = fraction {
-            value += self.decode(fraction)? as f64 / 10f64.powi(fraction.len() as i32);
-        }
-        Some(if negative { -value } else { value })
-    }
+	/// Read one enciphered field, punctuation included.
+	///
+	/// The substitution covers `.` and `-` alongside the ten digits: a scaling
+	/// numerator can be `0.125` and an offset can be `-48`, and both are
+	/// written in the table's own alphabet like everything else. Reading such
+	/// a field as an integer silently drops the point and the sign — `0.125`
+	/// becomes `125` and `-8` becomes `8`, which are exactly the numbers a
+	/// caller would then use to scale a measurement.
+	///
+	/// Which glyph is which comes from where it may appear, established over
+	/// the 116 tables that use more than eleven glyphs: a point sits only
+	/// inside a field and at most once, a minus sign only at its start. Those
+	/// two roles have to be supplied by the caller, because a single field in
+	/// isolation cannot tell them apart from digits.
+	pub fn decode_field(&self, text: &str, point: Option<char>, minus: Option<char>) -> Option<f64> {
+		let (negative, body) = match minus {
+			Some(sign) => match text.strip_prefix(sign) {
+				Some(rest) => (true, rest),
+				None => (false, text),
+			},
+			None => (false, text),
+		};
+		if body.is_empty() {
+			return None;
+		}
+		let (whole, fraction) = match point.and_then(|p| body.split_once(p)) {
+			Some((a, b)) => (a, Some(b)),
+			None => (body, None),
+		};
+		// A point with nothing after it, or a second point, is not a number.
+		if fraction.is_some_and(|f| f.is_empty() || point.is_some_and(|p| f.contains(p))) {
+			return None;
+		}
+		let mut value = match whole.is_empty() {
+			true => 0.0,
+			false => self.decode(whole)? as f64,
+		};
+		if let Some(fraction) = fraction {
+			value += self.decode(fraction)? as f64 / 10f64.powi(fraction.len() as i32);
+		}
+		Some(if negative { -value } else { value })
+	}
 }
 
 /// Recover a table's alphabet from the order its rows are stored in.
@@ -248,228 +248,220 @@ impl DigitOrder {
 /// Returns `None` when the constraints do not pin all ten digits: a partial
 /// order would decode some rows and silently mis-decode others.
 pub fn digit_order(rows: &[&str], ignore: &[char]) -> Option<DigitOrder> {
-    let mut greater: BTreeMap<char, BTreeSet<char>> = BTreeMap::new();
-    let mut seen: BTreeSet<char> = BTreeSet::new();
+	let mut greater: BTreeMap<char, BTreeSet<char>> = BTreeMap::new();
+	let mut seen: BTreeSet<char> = BTreeSet::new();
 
-    for pair in rows.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        // The first position where consecutive rows differ orders those two
-        // glyphs: the rows are sorted, so the earlier row's glyph is smaller.
-        let Some((x, y)) = a.chars().zip(b.chars()).find(|(x, y)| x != y) else {
-            continue;
-        };
-        if ignore.contains(&x) || ignore.contains(&y) {
-            continue;
-        }
-        if !NUMERIC_GLYPHS.contains(&x) || !NUMERIC_GLYPHS.contains(&y) {
-            continue;
-        }
-        seen.insert(x);
-        seen.insert(y);
-        greater.entry(x).or_default().insert(y);
-    }
+	for pair in rows.windows(2) {
+		let (a, b) = (pair[0], pair[1]);
+		// The first position where consecutive rows differ orders those two
+		// glyphs: the rows are sorted, so the earlier row's glyph is smaller.
+		let Some((x, y)) = a.chars().zip(b.chars()).find(|(x, y)| x != y) else {
+			continue;
+		};
+		if ignore.contains(&x) || ignore.contains(&y) {
+			continue;
+		}
+		if !NUMERIC_GLYPHS.contains(&x) || !NUMERIC_GLYPHS.contains(&y) {
+			continue;
+		}
+		seen.insert(x);
+		seen.insert(y);
+		greater.entry(x).or_default().insert(y);
+	}
 
-    if seen.len() != 10 {
-        return None;
-    }
+	if seen.len() != 10 {
+		return None;
+	}
 
-    // Kahn's algorithm. A cycle means the rows were not sorted the way this
-    // rests on, and the answer would be an invention.
-    let mut incoming: BTreeMap<char, usize> = seen.iter().map(|g| (*g, 0)).collect();
-    for targets in greater.values() {
-        for target in targets {
-            *incoming.entry(*target).or_default() += 1;
-        }
-    }
-    let mut ready: Vec<char> = incoming
-        .iter()
-        .filter(|(_, n)| **n == 0)
-        .map(|(g, _)| *g)
-        .collect();
-    let mut order = Vec::new();
-    while let Some(glyph) = ready.pop() {
-        order.push(glyph);
-        if let Some(targets) = greater.get(&glyph) {
-            for target in targets {
-                let count = incoming.get_mut(target).expect("every target was seen");
-                *count -= 1;
-                if *count == 0 {
-                    ready.push(*target);
-                }
-            }
-        }
-        // More than one glyph ready at once means the order is not total, and
-        // the digits it would assign are a guess between them.
-        if ready.len() > 1 {
-            return None;
-        }
-    }
-    if order.len() != 10 {
-        return None;
-    }
+	// Kahn's algorithm. A cycle means the rows were not sorted the way this
+	// rests on, and the answer would be an invention.
+	let mut incoming: BTreeMap<char, usize> = seen.iter().map(|g| (*g, 0)).collect();
+	for targets in greater.values() {
+		for target in targets {
+			*incoming.entry(*target).or_default() += 1;
+		}
+	}
+	let mut ready: Vec<char> = incoming.iter().filter(|(_, n)| **n == 0).map(|(g, _)| *g).collect();
+	let mut order = Vec::new();
+	while let Some(glyph) = ready.pop() {
+		order.push(glyph);
+		if let Some(targets) = greater.get(&glyph) {
+			for target in targets {
+				let count = incoming.get_mut(target).expect("every target was seen");
+				*count -= 1;
+				if *count == 0 {
+					ready.push(*target);
+				}
+			}
+		}
+		// More than one glyph ready at once means the order is not total, and
+		// the digits it would assign are a guess between them.
+		if ready.len() > 1 {
+			return None;
+		}
+	}
+	if order.len() != 10 {
+		return None;
+	}
 
-    Some(DigitOrder {
-        map: order.iter().enumerate().map(|(digit, glyph)| (*glyph, digit as u8)).collect(),
-    })
+	Some(DigitOrder {
+		map: order.iter().enumerate().map(|(digit, glyph)| (*glyph, digit as u8)).collect(),
+	})
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    /// A table whose alphabet is the one recovered from the global registry's
-    /// fault-531 table: `0 . - 8 3 2 1 5 7 4` standing for `0123456789`.
-    ///
-    /// The rows are the ten one-digit values in ascending plaintext order,
-    /// which is how such a table appears in the file, and is exactly the
-    /// evidence the method uses.
-    fn table_531() -> Vec<&'static str> {
-        vec!["0", ".", "-", "8", "3", "2", "1", "5", "7", "4"]
-    }
+	/// A table whose alphabet is the one recovered from the global registry's
+	/// fault-531 table: `0 . - 8 3 2 1 5 7 4` standing for `0123456789`.
+	///
+	/// The rows are the ten one-digit values in ascending plaintext order,
+	/// which is how such a table appears in the file, and is exactly the
+	/// evidence the method uses.
+	fn table_531() -> Vec<&'static str> {
+		vec!["0", ".", "-", "8", "3", "2", "1", "5", "7", "4"]
+	}
 
-    #[test]
-    fn the_order_of_the_rows_gives_the_order_of_the_digits() {
-        let order = digit_order(&table_531(), &[]).expect("ten glyphs, one total order");
-        assert_eq!(order.len(), 10);
-        assert_eq!(order.digit('0'), Some(0));
-        assert_eq!(order.digit('.'), Some(1));
-        assert_eq!(order.digit('-'), Some(2));
-        assert_eq!(order.digit('4'), Some(9));
-    }
+	#[test]
+	fn the_order_of_the_rows_gives_the_order_of_the_digits() {
+		let order = digit_order(&table_531(), &[]).expect("ten glyphs, one total order");
+		assert_eq!(order.len(), 10);
+		assert_eq!(order.digit('0'), Some(0));
+		assert_eq!(order.digit('.'), Some(1));
+		assert_eq!(order.digit('-'), Some(2));
+		assert_eq!(order.digit('4'), Some(9));
+	}
 
-    #[test]
-    fn the_recovered_alphabet_reproduces_the_worked_values() {
-        // Three values decoded by hand from this table when the method was
-        // first established. If the mapping drifts, these stop matching.
-        let order = digit_order(&table_531(), &[]).unwrap();
-        assert_eq!(order.decode(".0374730"), Some(10_489_840));
-        assert_eq!(order.decode("4527503"), Some(9_758_704));
-        assert_eq!(order.decode(".-0238"), Some(120_543));
-    }
+	#[test]
+	fn the_recovered_alphabet_reproduces_the_worked_values() {
+		// Three values decoded by hand from this table when the method was
+		// first established. If the mapping drifts, these stop matching.
+		let order = digit_order(&table_531(), &[]).unwrap();
+		assert_eq!(order.decode(".0374730"), Some(10_489_840));
+		assert_eq!(order.decode("4527503"), Some(9_758_704));
+		assert_eq!(order.decode(".-0238"), Some(120_543));
+	}
 
-    #[test]
-    fn a_field_carrying_punctuation_is_read_as_a_number_not_as_digits() {
-        // The substitution covers `.` and `-` with the digits. Reading such a
-        // field as an integer turns 0.125 into 125 and −8 into 8 — the exact
-        // numbers a caller would then scale a measurement with.
-        let order = digit_order(&table_531(), &[]).unwrap();
-        // In this alphabet `8` stands for 3 and `3` stands for 4.
-        assert_eq!(order.decode_field("083", Some(','), Some('9')), Some(34.0));
-        assert_eq!(order.decode_field("0,83", Some(','), Some('9')), Some(0.34));
-        assert_eq!(order.decode_field("9083", Some(','), Some('9')), Some(-34.0));
-        assert_eq!(order.decode_field("90,83", Some(','), Some('9')), Some(-0.34));
-        // Without the roles named, punctuation is simply an unknown glyph.
-        assert_eq!(order.decode_field("0,83", None, None), None);
-    }
+	#[test]
+	fn a_field_carrying_punctuation_is_read_as_a_number_not_as_digits() {
+		// The substitution covers `.` and `-` with the digits. Reading such a
+		// field as an integer turns 0.125 into 125 and −8 into 8 — the exact
+		// numbers a caller would then scale a measurement with.
+		let order = digit_order(&table_531(), &[]).unwrap();
+		// In this alphabet `8` stands for 3 and `3` stands for 4.
+		assert_eq!(order.decode_field("083", Some(','), Some('9')), Some(34.0));
+		assert_eq!(order.decode_field("0,83", Some(','), Some('9')), Some(0.34));
+		assert_eq!(order.decode_field("9083", Some(','), Some('9')), Some(-34.0));
+		assert_eq!(order.decode_field("90,83", Some(','), Some('9')), Some(-0.34));
+		// Without the roles named, punctuation is simply an unknown glyph.
+		assert_eq!(order.decode_field("0,83", None, None), None);
+	}
 
-    #[test]
-    fn a_malformed_field_is_refused_rather_than_repaired() {
-        let order = digit_order(&table_531(), &[]).unwrap();
-        assert_eq!(order.decode_field("08,", Some(','), None), None, "a point with no fraction");
-        assert_eq!(order.decode_field("0,8,3", Some(','), None), None, "two points");
-        assert_eq!(order.decode_field("9", None, Some('9')), None, "a sign with no number");
-        assert_eq!(order.decode_field("", Some(','), Some('9')), None);
-    }
+	#[test]
+	fn a_malformed_field_is_refused_rather_than_repaired() {
+		let order = digit_order(&table_531(), &[]).unwrap();
+		assert_eq!(order.decode_field("08,", Some(','), None), None, "a point with no fraction");
+		assert_eq!(order.decode_field("0,8,3", Some(','), None), None, "two points");
+		assert_eq!(order.decode_field("9", None, Some('9')), None, "a sign with no number");
+		assert_eq!(order.decode_field("", Some(','), Some('9')), None);
+	}
 
-    #[test]
-    fn a_glyph_the_table_never_ordered_makes_the_answer_none() {
-        // Refusing beats decoding eight digits of ten: a number with one
-        // wrong digit reads exactly like a right one.
-        let order = digit_order(&table_531(), &[]).unwrap();
-        assert_eq!(order.decode("0.9"), None, "9 is not in this table's alphabet");
-        assert_eq!(order.decode(""), None);
-    }
+	#[test]
+	fn a_glyph_the_table_never_ordered_makes_the_answer_none() {
+		// Refusing beats decoding eight digits of ten: a number with one
+		// wrong digit reads exactly like a right one.
+		let order = digit_order(&table_531(), &[]).unwrap();
+		assert_eq!(order.decode("0.9"), None, "9 is not in this table's alphabet");
+		assert_eq!(order.decode(""), None);
+	}
 
-    #[test]
-    fn a_table_that_does_not_pin_ten_digits_is_refused() {
-        // Two rows cannot order ten glyphs, and guessing the rest would be an
-        // invention with no evidence behind it.
-        assert!(digit_order(&["00000", "0000."], &[]).is_none());
-        assert!(digit_order(&[], &[]).is_none());
-    }
+	#[test]
+	fn a_table_that_does_not_pin_ten_digits_is_refused() {
+		// Two rows cannot order ten glyphs, and guessing the rest would be an
+		// invention with no evidence behind it.
+		assert!(digit_order(&["00000", "0000."], &[]).is_none());
+		assert!(digit_order(&[], &[]).is_none());
+	}
 
-    #[test]
-    fn rows_out_of_order_are_refused_rather_than_answered() {
-        // The whole method rests on the rows being sorted. Contradictory
-        // constraints make the graph cyclic, and that must come back as "no
-        // answer" — the check that failed 7 258 times on shuffled rows of the
-        // real file and never once on the file as shipped.
-        let cyclic = vec!["0", ".", "-", "0", ".", "-", "8", "3", "2", "1", "5", "7", "4"];
-        assert!(digit_order(&cyclic, &[]).is_none());
-    }
+	#[test]
+	fn rows_out_of_order_are_refused_rather_than_answered() {
+		// The whole method rests on the rows being sorted. Contradictory
+		// constraints make the graph cyclic, and that must come back as "no
+		// answer" — the check that failed 7 258 times on shuffled rows of the
+		// real file and never once on the file as shipped.
+		let cyclic = vec!["0", ".", "-", "0", ".", "-", "8", "3", "2", "1", "5", "7", "4"];
+		assert!(digit_order(&cyclic, &[]).is_none());
+	}
 
-    #[test]
-    fn the_key_generates_the_alphabet_the_ordering_attack_recovers() {
-        // Table 531 of the global fault registry, whose alphabet
-        // `table_531()` above records as recovered from row order alone.
-        // Generating it from the key has to agree glyph for glyph, and the
-        // separator — which the ordering attack cannot see at all — has to be
-        // the comma slot.
-        let generated = TableAlphabet::for_key(531);
-        let from_order = digit_order(&table_531(), &[]).unwrap();
-        for glyph in table_531() {
-            let glyph = glyph.chars().next().unwrap();
-            assert_eq!(
-                generated.digit_order().digit(glyph),
-                from_order.digit(glyph),
-                "glyph {glyph}"
-            );
-        }
-        assert_eq!(generated.separator(), ',');
-        assert_eq!(generated.number(".-0238"), Some(120_543));
-        assert_eq!(generated.number(".0374730"), Some(10_489_840));
-    }
+	#[test]
+	fn the_key_generates_the_alphabet_the_ordering_attack_recovers() {
+		// Table 531 of the global fault registry, whose alphabet
+		// `table_531()` above records as recovered from row order alone.
+		// Generating it from the key has to agree glyph for glyph, and the
+		// separator — which the ordering attack cannot see at all — has to be
+		// the comma slot.
+		let generated = TableAlphabet::for_key(531);
+		let from_order = digit_order(&table_531(), &[]).unwrap();
+		for glyph in table_531() {
+			let glyph = glyph.chars().next().unwrap();
+			assert_eq!(generated.digit_order().digit(glyph), from_order.digit(glyph), "glyph {glyph}");
+		}
+		assert_eq!(generated.separator(), ',');
+		assert_eq!(generated.number(".-0238"), Some(120_543));
+		assert_eq!(generated.number(".0374730"), Some(10_489_840));
+	}
 
-    #[test]
-    fn the_two_shuffles_share_one_stream() {
-        // The digit alphabet is drawn after the letter alphabet has consumed
-        // 26 values. Shuffling only the digits gives a different, wrong
-        // answer — this pins that the letters are not optional.
-        let mut rand = CrtRand(531);
-        let mut digits = *PLAIN_DIGITS;
-        for i in 0..digits.len() {
-            let j = rand.next() as usize % digits.len();
-            digits.swap(i, j);
-        }
-        assert_ne!(digits, TableAlphabet::for_key(531).digits);
-    }
+	#[test]
+	fn the_two_shuffles_share_one_stream() {
+		// The digit alphabet is drawn after the letter alphabet has consumed
+		// 26 values. Shuffling only the digits gives a different, wrong
+		// answer — this pins that the letters are not optional.
+		let mut rand = CrtRand(531);
+		let mut digits = *PLAIN_DIGITS;
+		for i in 0..digits.len() {
+			let j = rand.next() as usize % digits.len();
+			digits.swap(i, j);
+		}
+		assert_ne!(digits, TableAlphabet::for_key(531).digits);
+	}
 
-    #[test]
-    fn letters_decode_through_their_own_alphabet_with_the_case_kept() {
-        // Row `.-0238,3P,,,,,` of table 531: the name field is 120543 and the
-        // failure-type field is two characters that must read as hex. An
-        // eight-digit name encodes its own failure type in its low byte, and
-        // that invariant holds on 11 189 of 11 189 such rows — here on a row
-        // whose name is 10 489 840 = 0xA00FF0, failure type F0.
-        let alphabet = TableAlphabet::for_key(531);
-        let f1 = &".0374730,F0,,,,,"[9..11];
-        assert_eq!(alphabet.hex_byte(f1), Some(0xF0));
-        assert_eq!(alphabet.number(".0374730").unwrap() as u8, 0xF0);
-        // Case is carried through, not folded.
-        let upper = alphabet.decode(&f1.to_ascii_uppercase()).unwrap();
-        assert_eq!(upper, upper.to_ascii_uppercase());
-    }
+	#[test]
+	fn letters_decode_through_their_own_alphabet_with_the_case_kept() {
+		// Row `.-0238,3P,,,,,` of table 531: the name field is 120543 and the
+		// failure-type field is two characters that must read as hex. An
+		// eight-digit name encodes its own failure type in its low byte, and
+		// that invariant holds on 11 189 of 11 189 such rows — here on a row
+		// whose name is 10 489 840 = 0xA00FF0, failure type F0.
+		let alphabet = TableAlphabet::for_key(531);
+		let f1 = &".0374730,F0,,,,,"[9..11];
+		assert_eq!(alphabet.hex_byte(f1), Some(0xF0));
+		assert_eq!(alphabet.number(".0374730").unwrap() as u8, 0xF0);
+		// Case is carried through, not folded.
+		let upper = alphabet.decode(&f1.to_ascii_uppercase()).unwrap();
+		assert_eq!(upper, upper.to_ascii_uppercase());
+	}
 
-    #[test]
-    fn a_glyph_outside_both_alphabets_makes_the_answer_none() {
-        let alphabet = TableAlphabet::for_key(531);
-        assert_eq!(alphabet.decode("!"), None);
-        assert_eq!(alphabet.decode(""), None);
-        // A field of letters is not a number, and must not be read as one.
-        assert_eq!(alphabet.number("F0"), None);
-        assert_eq!(alphabet.hex_byte(".0374730"), None, "seven characters are not a byte");
-    }
+	#[test]
+	fn a_glyph_outside_both_alphabets_makes_the_answer_none() {
+		let alphabet = TableAlphabet::for_key(531);
+		assert_eq!(alphabet.decode("!"), None);
+		assert_eq!(alphabet.decode(""), None);
+		// A field of letters is not a number, and must not be read as one.
+		assert_eq!(alphabet.number("F0"), None);
+		assert_eq!(alphabet.hex_byte(".0374730"), None, "seven characters are not a byte");
+	}
 
-    #[test]
-    fn an_ignored_glyph_contributes_no_constraint() {
-        // The field separator sits among the digits and would otherwise order
-        // something that is not one. Ignoring a glyph must remove it from the
-        // alphabet entirely, not merely from the output.
-        let rows = table_531();
-        assert!(digit_order(&rows, &[]).is_some());
-        assert!(
-            digit_order(&rows, &['.']).is_none(),
-            "with one glyph ignored the table pins nine digits, which is not an answer"
-        );
-    }
+	#[test]
+	fn an_ignored_glyph_contributes_no_constraint() {
+		// The field separator sits among the digits and would otherwise order
+		// something that is not one. Ignoring a glyph must remove it from the
+		// alphabet entirely, not merely from the output.
+		let rows = table_531();
+		assert!(digit_order(&rows, &[]).is_some());
+		assert!(
+			digit_order(&rows, &['.']).is_none(),
+			"with one glyph ignored the table pins nine digits, which is not an answer"
+		);
+	}
 }

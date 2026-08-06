@@ -29,6 +29,26 @@ Before deleting anything it does report: a function nobody calls that was
 *written to be called* is a missing call site, not dead code
 (`measure::messages::MissingChannel::tried` was exactly that).
 
+## Formatting
+
+The tree is `rustfmt`-formatted and CI enforces it (`cargo fmt --all -- --check`
+is a blocking job). The style lives in [`rustfmt.toml`](rustfmt.toml): hard tabs,
+`tab_spaces = 2`, `max_width = 150`, Unix newlines. Run `cargo fmt --all` before
+committing, or just let the hook below do it.
+
+**Auto-format hook.** [`.claude/settings.json`](.claude/settings.json) carries a
+`PostToolUse` hook that runs `rustfmt` on every `.rs` file an `Edit`/`Write`
+touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
+
+- It passes **`--edition 2024`** explicitly. `rustfmt.toml` sets no `edition`, so
+  a bare `rustfmt <file>` would default to 2015 and error on `async fn` (silently
+  formatting nothing). `cargo fmt` is unaffected — it injects the edition itself.
+- It ships tracked, via a `!.claude/settings.json` exception in `.gitignore`
+  (the rest of `.claude/*` is ignored), so every clone formats on edit.
+- It only fires inside **Claude Code**. Other editors/agents (Codex, etc.) do not
+  run it — for them the CI `fmt` job is the backstop. Needs `jq` and `rustfmt` on
+  `PATH`; if either is missing the hook no-ops rather than failing the edit.
+
 ## Safety (MANDATORY — read [`SAFETY.md`](SAFETY.md))
 
 This tool only reads, and it has still cost the reference car its power steering: an

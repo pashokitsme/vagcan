@@ -36,79 +36,103 @@ pub const MWB_CODE_SYMBOLS: &[u8; 40] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ,.
 /// to ~152,526).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MwbEntry {
-    /// Decimal text-id: a pointer into the `TTTEXT` name table (the name).
-    pub text_id: u32,
-    /// The 2-character code (structure/scaling reference — mapping unproven).
-    pub code: String,
+	/// Decimal text-id: a pointer into the `TTTEXT` name table (the name).
+	pub text_id: u32,
+	/// The 2-character code (structure/scaling reference — mapping unproven).
+	pub code: String,
 }
 
 /// Parse a decoded engine `MWB` section into its rows. Lines that are empty or
 /// not of the form `NNNNNN,<code>` (numeric text-id) are skipped. Accepts `\r\n`
 /// or `\n` line endings.
 pub fn parse_mwb(text: &str) -> Vec<MwbEntry> {
-    let mut out = Vec::new();
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.is_empty() {
-            continue;
-        }
-        let Some((id_str, code)) = line.split_once(',') else {
-            continue;
-        };
-        let Ok(text_id) = id_str.parse::<u32>() else {
-            continue;
-        };
-        out.push(MwbEntry {
-            text_id,
-            code: code.to_string(),
-        });
-    }
-    out
+	let mut out = Vec::new();
+	for line in text.split('\n') {
+		let line = line.strip_suffix('\r').unwrap_or(line);
+		if line.is_empty() {
+			continue;
+		}
+		let Some((id_str, code)) = line.split_once(',') else {
+			continue;
+		};
+		let Ok(text_id) = id_str.parse::<u32>() else {
+			continue;
+		};
+		out.push(MwbEntry {
+			text_id,
+			code: code.to_string(),
+		});
+	}
+	out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn parses_text_id_and_code() {
-        // Exact rows from the decoded VW48 MWB section (not proprietary data).
-        let text = "043439,4.\r\n043900,_5\r\n095490,23\r\n011809,B_\r\n";
-        let rows = parse_mwb(text);
-        assert_eq!(
-            rows,
-            vec![
-                MwbEntry { text_id: 43439, code: "4.".into() },
-                MwbEntry { text_id: 43900, code: "_5".into() },
-                MwbEntry { text_id: 95490, code: "23".into() },
-                MwbEntry { text_id: 11809, code: "B_".into() },
-            ]
-        );
-    }
+	#[test]
+	fn parses_text_id_and_code() {
+		// Exact rows from the decoded VW48 MWB section (not proprietary data).
+		let text = "043439,4.\r\n043900,_5\r\n095490,23\r\n011809,B_\r\n";
+		let rows = parse_mwb(text);
+		assert_eq!(
+			rows,
+			vec![
+				MwbEntry {
+					text_id: 43439,
+					code: "4.".into()
+				},
+				MwbEntry {
+					text_id: 43900,
+					code: "_5".into()
+				},
+				MwbEntry {
+					text_id: 95490,
+					code: "23".into()
+				},
+				MwbEntry {
+					text_id: 11809,
+					code: "B_".into()
+				},
+			]
+		);
+	}
 
-    #[test]
-    fn text_id_exceeding_u16_is_kept() {
-        // Engine text-ids exceed u16::MAX (65535); must not truncate/overflow.
-        let rows = parse_mwb("152526,ZB\n");
-        assert_eq!(rows, vec![MwbEntry { text_id: 152526, code: "ZB".into() }]);
-    }
+	#[test]
+	fn text_id_exceeding_u16_is_kept() {
+		// Engine text-ids exceed u16::MAX (65535); must not truncate/overflow.
+		let rows = parse_mwb("152526,ZB\n");
+		assert_eq!(
+			rows,
+			vec![MwbEntry {
+				text_id: 152526,
+				code: "ZB".into()
+			}]
+		);
+	}
 
-    #[test]
-    fn skips_malformed_lines() {
-        let rows = parse_mwb("junk\n\n042989,3Q\nno-comma\n");
-        assert_eq!(rows, vec![MwbEntry { text_id: 42989, code: "3Q".into() }]);
-    }
+	#[test]
+	fn skips_malformed_lines() {
+		let rows = parse_mwb("junk\n\n042989,3Q\nno-comma\n");
+		assert_eq!(
+			rows,
+			vec![MwbEntry {
+				text_id: 42989,
+				code: "3Q".into()
+			}]
+		);
+	}
 
-    #[test]
-    fn code_symbol_set_is_the_expected_40() {
-        assert_eq!(MWB_CODE_SYMBOLS.len(), 40);
-        // digits + A-Z + the four base-14 punctuation symbols, all distinct.
-        let mut seen = std::collections::BTreeSet::new();
-        for &b in MWB_CODE_SYMBOLS {
-            assert!(seen.insert(b), "duplicate symbol {}", b as char);
-        }
-        for &b in b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ,.-_" {
-            assert!(seen.contains(&b));
-        }
-    }
+	#[test]
+	fn code_symbol_set_is_the_expected_40() {
+		assert_eq!(MWB_CODE_SYMBOLS.len(), 40);
+		// digits + A-Z + the four base-14 punctuation symbols, all distinct.
+		let mut seen = std::collections::BTreeSet::new();
+		for &b in MWB_CODE_SYMBOLS {
+			assert!(seen.insert(b), "duplicate symbol {}", b as char);
+		}
+		for &b in b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ,.-_" {
+			assert!(seen.contains(&b));
+		}
+	}
 }

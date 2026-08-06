@@ -14,22 +14,19 @@ pub mod dtc;
 pub mod glyphs;
 pub mod label;
 pub mod measure;
-pub mod obd;
 pub mod mwb;
+pub mod obd;
 pub mod rod;
-pub mod tttext;
 mod tea;
+pub mod tttext;
 
-pub use catalog::{ignition_angle, MeasurementCatalog, MeasurementDef, ReadId, Scaling};
+pub use catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling, ignition_angle};
 pub use clb::decrypt_clb;
 pub use codes::{CodesDb, ISO_BAND_START};
-pub use dtc::{DtcRegistry, DtcRow, FaultName, UnitCatalogue, UnitLookup};
-pub use corpus::{
-    find_rod_by_odx_name, find_rod_by_odx_variant, load_corpus, scan_corpus, CorpusLoad,
-    CorpusScan, OdxMatch,
-};
+pub use corpus::{CorpusLoad, CorpusScan, OdxMatch, find_rod_by_odx_name, find_rod_by_odx_variant, load_corpus, scan_corpus};
 pub use db::LabelDb;
-pub use label::{parse_label, LabelFile, Measurement, Record};
-pub use measure::{LinearScale, RawForm, IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW};
-pub use mwb::{parse_mwb, MwbEntry};
-pub use rod::{decode_rod, RodSection, RodStatus};
+pub use dtc::{DtcRegistry, DtcRow, FaultName, UnitCatalogue, UnitLookup};
+pub use label::{LabelFile, Measurement, Record, parse_label};
+pub use measure::{IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW, LinearScale, RawForm};
+pub use mwb::{MwbEntry, parse_mwb};
+pub use rod::{RodSection, RodStatus, decode_rod};

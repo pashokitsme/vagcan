@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The 469 MB of VCDS archives under vendor/*.zip and driver/** live in Git LFS.
+# No crate reads them (test fixtures are bundled via include_bytes!/include_str!
+# under crates/), so every job checks out WITHOUT LFS — no smudge, no bandwidth.
+# If a future job genuinely parses a shipped archive, give that one job `lfs: true`
+# on its own; do not turn it on here.
+env:
+  GIT_LFS_SKIP_SMUDGE: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # --all-targets is correct HERE: clippy should lint tests, benches and
+      # examples too. It is only wrong for the dead-code job below.
+      - name: cargo clippy --workspace --all-targets -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  dead-code:
+    name: dead-code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # MANDATORY (CLAUDE.md): --workspace, NEVER --all-targets. --all-targets
+      # recompiles the binary as a test harness where `main` is unreachable and
+      # reports ~140 false positives ("fn main is never used"). --force-warn
+      # sees through any #[allow(dead_code)]. The lints only WARN (exit 0), so we
+      # fail the job ourselves when the check reports anything dead.
+      - name: cargo check --workspace with --force-warn dead_code
+        run: |
+          set -o pipefail
+          log="$(RUSTFLAGS='--force-warn dead_code' cargo check --workspace 2>&1 | tee /dev/stderr)"
+          if grep -qE 'never (used|read|constructed)|dead_code' <<<"$log"; then
+            echo "::error::dead-code detected — a symbol nobody calls. If it was written to be called, the fix is the missing call site, not deletion (see CLAUDE.md)."
+            exit 1
+          fi

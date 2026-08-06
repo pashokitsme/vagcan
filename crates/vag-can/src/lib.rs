@@ -14,7 +14,7 @@ pub mod sniff;
 pub use backend::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, from_raw_id, to_raw_id};
 pub use error::CanError;
 pub use isotp::IsoTpCan;
-pub use slcan::{SlcanBackend, SlcanBitrate, SlcanMode};
 #[cfg(feature = "slcan")]
-pub use slcan::{list_adapters, AdapterInfo, SerialSlcan};
-pub use sniff::{IsoTpSniffer, SnifferPdu, DEFAULT_ASSEMBLY_TIMEOUT};
+pub use slcan::{AdapterInfo, SerialSlcan, list_adapters};
+pub use slcan::{SlcanBackend, SlcanBitrate, SlcanMode};
+pub use sniff::{DEFAULT_ASSEMBLY_TIMEOUT, IsoTpSniffer, SnifferPdu};

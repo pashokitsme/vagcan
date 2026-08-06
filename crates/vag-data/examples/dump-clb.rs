@@ -4,11 +4,11 @@
 //! way the parser sees it is worth a permanent example rather than a throwaway
 //! script.
 fn main() {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: dump-clb <file.clb>");
-        std::process::exit(2);
-    };
-    let bytes = std::fs::read(&path).expect("reading the label file");
-    let text = vag_data::clb::decrypt_clb(&bytes);
-    print!("{}", String::from_utf8_lossy(&text));
+	let Some(path) = std::env::args().nth(1) else {
+		eprintln!("usage: dump-clb <file.clb>");
+		std::process::exit(2);
+	};
+	let bytes = std::fs::read(&path).expect("reading the label file");
+	let text = vag_data::clb::decrypt_clb(&bytes);
+	print!("{}", String::from_utf8_lossy(&text));
 }

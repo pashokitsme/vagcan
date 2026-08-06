@@ -60,61 +60,59 @@
 /// orders occur, so the interpretation is part of each measurement's definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawForm {
-    /// First data byte as unsigned 8-bit.
-    U8First,
-    /// Second data byte as unsigned 8-bit.
-    U8Second,
-    /// Two data bytes, unsigned 16-bit big-endian (`data[0] << 8 | data[1]`).
-    U16Be,
-    /// Two data bytes, unsigned 16-bit little-endian (`data[1] << 8 | data[0]`).
-    U16Le,
-    /// Two data bytes, signed 16-bit big-endian.
-    I16Be,
-    /// Three data bytes, unsigned 24-bit big-endian. An odometer in kilometres
-    /// needs more than 16 bits and does not warrant 32.
-    U24Be,
-    /// Four data bytes, unsigned 32-bit big-endian. Needed by counters that
-    /// genuinely exceed 24 bits — the reference cluster's metre-resolution
-    /// odometer reads 212 810 125, which 24 bits cannot hold.
-    ///
-    /// The carrier is `i32`, so a value above [`i32::MAX`] reads as `None`
-    /// rather than as a negative number. That ceiling is 2 147 483 647, i.e.
-    /// 2.1 million kilometres for a metre counter — beyond any odometer — and
-    /// refusing is the honest answer for anything that does exceed it.
-    U32Be,
+	/// First data byte as unsigned 8-bit.
+	U8First,
+	/// Second data byte as unsigned 8-bit.
+	U8Second,
+	/// Two data bytes, unsigned 16-bit big-endian (`data[0] << 8 | data[1]`).
+	U16Be,
+	/// Two data bytes, unsigned 16-bit little-endian (`data[1] << 8 | data[0]`).
+	U16Le,
+	/// Two data bytes, signed 16-bit big-endian.
+	I16Be,
+	/// Three data bytes, unsigned 24-bit big-endian. An odometer in kilometres
+	/// needs more than 16 bits and does not warrant 32.
+	U24Be,
+	/// Four data bytes, unsigned 32-bit big-endian. Needed by counters that
+	/// genuinely exceed 24 bits — the reference cluster's metre-resolution
+	/// odometer reads 212 810 125, which 24 bits cannot hold.
+	///
+	/// The carrier is `i32`, so a value above [`i32::MAX`] reads as `None`
+	/// rather than as a negative number. That ceiling is 2 147 483 647, i.e.
+	/// 2.1 million kilometres for a metre counter — beyond any odometer — and
+	/// refusing is the honest answer for anything that does exceed it.
+	U32Be,
 }
 
 impl RawForm {
-    /// Extract the raw integer from `data` (the response bytes after the DID
-    /// echo). Returns `None` if `data` is too short for this form.
-    pub fn read(self, data: &[u8]) -> Option<i32> {
-        match self {
-            RawForm::U8First => data.first().map(|&b| b as i32),
-            RawForm::U8Second => data.get(1).map(|&b| b as i32),
-            RawForm::U16Be => match data {
-                [hi, lo, ..] => Some(((*hi as i32) << 8) | *lo as i32),
-                _ => None,
-            },
-            RawForm::U24Be => match data {
-                [hi, mid, lo, ..] => {
-                    Some(((*hi as i32) << 16) | ((*mid as i32) << 8) | *lo as i32)
-                }
-                _ => None,
-            },
-            RawForm::U16Le => match data {
-                [lo, hi, ..] => Some(((*hi as i32) << 8) | *lo as i32),
-                _ => None,
-            },
-            RawForm::I16Be => match data {
-                [hi, lo, ..] => Some((((*hi as u16) << 8 | *lo as u16) as i16) as i32),
-                _ => None,
-            },
-            RawForm::U32Be => match data {
-                [a, b, c, d, ..] => i32::try_from(u32::from_be_bytes([*a, *b, *c, *d])).ok(),
-                _ => None,
-            },
-        }
-    }
+	/// Extract the raw integer from `data` (the response bytes after the DID
+	/// echo). Returns `None` if `data` is too short for this form.
+	pub fn read(self, data: &[u8]) -> Option<i32> {
+		match self {
+			RawForm::U8First => data.first().map(|&b| b as i32),
+			RawForm::U8Second => data.get(1).map(|&b| b as i32),
+			RawForm::U16Be => match data {
+				[hi, lo, ..] => Some(((*hi as i32) << 8) | *lo as i32),
+				_ => None,
+			},
+			RawForm::U24Be => match data {
+				[hi, mid, lo, ..] => Some(((*hi as i32) << 16) | ((*mid as i32) << 8) | *lo as i32),
+				_ => None,
+			},
+			RawForm::U16Le => match data {
+				[lo, hi, ..] => Some(((*hi as i32) << 8) | *lo as i32),
+				_ => None,
+			},
+			RawForm::I16Be => match data {
+				[hi, lo, ..] => Some((((*hi as u16) << 8 | *lo as u16) as i16) as i32),
+				_ => None,
+			},
+			RawForm::U32Be => match data {
+				[a, b, c, d, ..] => i32::try_from(u32::from_be_bytes([*a, *b, *c, *d])).ok(),
+				_ => None,
+			},
+		}
+	}
 }
 
 /// A linear COMPU-METHOD: `engineering = raw * factor + offset`. This is the VAG
@@ -122,23 +120,23 @@ impl RawForm {
 /// / table methods are not modelled yet (none is proven for this car).
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearScale {
-    /// Multiplier applied to the raw integer.
-    pub factor: f64,
-    /// Additive offset.
-    pub offset: f64,
+	/// Multiplier applied to the raw integer.
+	pub factor: f64,
+	/// Additive offset.
+	pub offset: f64,
 }
 
 impl LinearScale {
-    /// Apply the scaling to a raw integer.
-    pub fn apply(self, raw: i32) -> f64 {
-        raw as f64 * self.factor + self.offset
-    }
+	/// Apply the scaling to a raw integer.
+	pub fn apply(self, raw: i32) -> f64 {
+		raw as f64 * self.factor + self.offset
+	}
 
-    /// Read `data` per `form` and apply the scaling. `None` if `data` is too
-    /// short for `form`.
-    pub fn apply_bytes(self, form: RawForm, data: &[u8]) -> Option<f64> {
-        form.read(data).map(|r| self.apply(r))
-    }
+	/// Read `data` per `form` and apply the scaling. `None` if `data` is too
+	/// short for `form`.
+	pub fn apply_bytes(self, form: RawForm, data: &[u8]) -> Option<f64> {
+		form.read(data).map(|r| self.apply(r))
+	}
 }
 
 /// Unit string of the ignition-angle measurements (degrees crank).
@@ -158,82 +156,85 @@ pub const IGNITION_ANGLE_ZERO_DIDS: &[u16] = &[0xA058, 0xA059, 0xA05E, 0xA05F];
 
 #[cfg(test)]
 mod u24_tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn a_24_bit_reading_recovers_the_cars_odometer_exactly() {
-        // The instrument cluster answered 0x03 0x3F 0x18 while a VCDS log
-        // recorded 212760 km at the same moment. An exact hit on a six-figure
-        // value is not something a wrong byte order or width reaches.
-        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18]), Some(212_760));
-        // Trailing bytes are ignored, missing ones are not invented.
-        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18, 0xFF]), Some(212_760));
-        assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F]), None);
-    }
+	#[test]
+	fn a_24_bit_reading_recovers_the_cars_odometer_exactly() {
+		// The instrument cluster answered 0x03 0x3F 0x18 while a VCDS log
+		// recorded 212760 km at the same moment. An exact hit on a six-figure
+		// value is not something a wrong byte order or width reaches.
+		assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18]), Some(212_760));
+		// Trailing bytes are ignored, missing ones are not invented.
+		assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F, 0x18, 0xFF]), Some(212_760));
+		assert_eq!(RawForm::U24Be.read(&[0x03, 0x3F]), None);
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn raw_form_reads_each_interpretation() {
-        let d = [0x57u8, 0xE9];
-        assert_eq!(RawForm::U8First.read(&d), Some(0x57));
-        assert_eq!(RawForm::U8Second.read(&d), Some(0xE9));
-        assert_eq!(RawForm::U16Be.read(&d), Some(0x57E9));
-        assert_eq!(RawForm::U16Le.read(&d), Some(0xE957));
-        assert_eq!(RawForm::I16Be.read(&[0xFF, 0xFE]), Some(-2));
-        assert_eq!(RawForm::U16Be.read(&[0x01]), None);
-        assert_eq!(RawForm::U8Second.read(&[0x01]), None);
-    }
+	#[test]
+	fn raw_form_reads_each_interpretation() {
+		let d = [0x57u8, 0xE9];
+		assert_eq!(RawForm::U8First.read(&d), Some(0x57));
+		assert_eq!(RawForm::U8Second.read(&d), Some(0xE9));
+		assert_eq!(RawForm::U16Be.read(&d), Some(0x57E9));
+		assert_eq!(RawForm::U16Le.read(&d), Some(0xE957));
+		assert_eq!(RawForm::I16Be.read(&[0xFF, 0xFE]), Some(-2));
+		assert_eq!(RawForm::U16Be.read(&[0x01]), None);
+		assert_eq!(RawForm::U8Second.read(&[0x01]), None);
+	}
 
-    #[test]
-    fn a_thirty_two_bit_form_reads_wide_counters_and_refuses_to_go_negative() {
-        // The reference cluster's metre odometer: 212 810 125 m. Read as 24
-        // bits it would be 11 483 021, so the width is not cosmetic.
-        assert_eq!(RawForm::U32Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(212_810_125));
-        assert_eq!(RawForm::U24Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(0x0CAF39));
-        assert_eq!(RawForm::U32Be.read(&[0x7F, 0xFF, 0xFF, 0xFF]), Some(i32::MAX));
-        // Above i32::MAX there is no honest answer, so there is no answer —
-        // never a value that has silently wrapped to negative.
-        assert_eq!(RawForm::U32Be.read(&[0x80, 0x00, 0x00, 0x00]), None);
-        assert_eq!(RawForm::U32Be.read(&[0x01, 0x02, 0x03]), None);
-    }
+	#[test]
+	fn a_thirty_two_bit_form_reads_wide_counters_and_refuses_to_go_negative() {
+		// The reference cluster's metre odometer: 212 810 125 m. Read as 24
+		// bits it would be 11 483 021, so the width is not cosmetic.
+		assert_eq!(RawForm::U32Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(212_810_125));
+		assert_eq!(RawForm::U24Be.read(&[0x0C, 0xAF, 0x39, 0x8D]), Some(0x0CAF39));
+		assert_eq!(RawForm::U32Be.read(&[0x7F, 0xFF, 0xFF, 0xFF]), Some(i32::MAX));
+		// Above i32::MAX there is no honest answer, so there is no answer —
+		// never a value that has silently wrapped to negative.
+		assert_eq!(RawForm::U32Be.read(&[0x80, 0x00, 0x00, 0x00]), None);
+		assert_eq!(RawForm::U32Be.read(&[0x01, 0x02, 0x03]), None);
+	}
 
-    #[test]
-    fn linear_scale_arithmetic() {
-        // The machinery itself: a textbook VAG coolant-temp style scale.
-        let temp = LinearScale { factor: 0.75, offset: -48.0 };
-        assert!((temp.apply(0x80) - 48.0).abs() < 1e-9); // 128*0.75-48 = 48.0
-        // And through raw bytes (single-byte form).
-        assert!((temp.apply_bytes(RawForm::U8First, &[0x80]).unwrap() - 48.0).abs() < 1e-9);
-    }
+	#[test]
+	fn linear_scale_arithmetic() {
+		// The machinery itself: a textbook VAG coolant-temp style scale.
+		let temp = LinearScale { factor: 0.75, offset: -48.0 };
+		assert!((temp.apply(0x80) - 48.0).abs() < 1e-9); // 128*0.75-48 = 48.0
+		// And through raw bytes (single-byte form).
+		assert!((temp.apply_bytes(RawForm::U8First, &[0x80]).unwrap() - 48.0).abs() < 1e-9);
+	}
 
-    #[test]
-    fn ignition_zero_point_matches_capture_and_log() {
-        // Captured raw data bytes (after the `62 A0 xx` echo) for every ignition-
-        // angle-family DID, for the whole engine-running session, are these two
-        // literal bytes; VCDS displayed 0.00° for the matching logged channels.
-        // (Bytes/values are the crib, not the gitignored capture itself.)
-        let captured_raw: [u8; 2] = [0x55, 0x55];
-        let vcds_displayed_deg = 0.00_f64;
+	#[test]
+	fn ignition_zero_point_matches_capture_and_log() {
+		// Captured raw data bytes (after the `62 A0 xx` echo) for every ignition-
+		// angle-family DID, for the whole engine-running session, are these two
+		// literal bytes; VCDS displayed 0.00° for the matching logged channels.
+		// (Bytes/values are the crib, not the gitignored capture itself.)
+		let captured_raw: [u8; 2] = [0x55, 0x55];
+		let vcds_displayed_deg = 0.00_f64;
 
-        let raw = RawForm::U16Be.read(&captured_raw).unwrap();
-        assert_eq!(raw as u16, IGNITION_ANGLE_ZERO_RAW);
+		let raw = RawForm::U16Be.read(&captured_raw).unwrap();
+		assert_eq!(raw as u16, IGNITION_ANGLE_ZERO_RAW);
 
-        // The proven COMPU zero point: this raw maps to 0.00° for each DID. The
-        // slope is unproven, but ANY linear scale through this zero point (i.e.
-        // offset = -factor*0x5555) reproduces the displayed value here.
-        for &did in IGNITION_ANGLE_ZERO_DIDS {
-            assert!((0xA058..=0xA05F).contains(&did));
-            let factor = 0.01; // arbitrary; the zero point is what is asserted
-            let scale = LinearScale { factor, offset: -factor * IGNITION_ANGLE_ZERO_RAW as f64 };
-            let got = scale.apply(raw);
-            assert!(
-                (got - vcds_displayed_deg).abs() < 1e-6,
-                "DID {did:#06X}: raw {raw:#06X} -> {got}, expected {vcds_displayed_deg}"
-            );
-        }
-    }
+		// The proven COMPU zero point: this raw maps to 0.00° for each DID. The
+		// slope is unproven, but ANY linear scale through this zero point (i.e.
+		// offset = -factor*0x5555) reproduces the displayed value here.
+		for &did in IGNITION_ANGLE_ZERO_DIDS {
+			assert!((0xA058..=0xA05F).contains(&did));
+			let factor = 0.01; // arbitrary; the zero point is what is asserted
+			let scale = LinearScale {
+				factor,
+				offset: -factor * IGNITION_ANGLE_ZERO_RAW as f64,
+			};
+			let got = scale.apply(raw);
+			assert!(
+				(got - vcds_displayed_deg).abs() < 1e-6,
+				"DID {did:#06X}: raw {raw:#06X} -> {got}, expected {vcds_displayed_deg}"
+			);
+		}
+	}
 }

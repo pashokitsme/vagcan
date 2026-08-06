@@ -12,6 +12,11 @@ Cargo.lock
 # The parent is `.claude/*` and not `.claude/`: git does not descend into an
 # excluded directory, so a negation under one never matches.
 !.claude/skills/
+# …and the shared project settings, which carry the PostToolUse auto-rustfmt
+# hook (see CLAUDE.md → Formatting). It has to ship so every clone formats on
+# edit, not just this machine. Same `.claude/*`-not-`.claude/` rule as above:
+# re-including a single file under an excluded-by-glob parent works.
+!.claude/settings.json
 
 # --- research working dir: exclude junk + third-party/proprietary content ---
 # Regenerable tooling state

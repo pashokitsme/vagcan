@@ -96,16 +96,16 @@ const CORPUS_WORD_WEIGHT: &str = "8";
 const GENERAL_WORD_WEIGHT: &str = "1";
 
 pub struct Options<'a> {
-    /// The VCDS installation root. Without one, an installation is offered for
-    /// download and the run continues into the same parse.
-    pub dir: Option<&'a str>,
-    /// Which language build to download, when one is being downloaded.
-    pub lang: Option<&'a str>,
-    /// Redo every step, whatever is already on disk.
-    pub refresh: bool,
-    /// Where the archives are served from. A parameter so the download path is
-    /// testable against a local file rather than the network.
-    pub archive_base: &'a str,
+	/// The VCDS installation root. Without one, an installation is offered for
+	/// download and the run continues into the same parse.
+	pub dir: Option<&'a str>,
+	/// Which language build to download, when one is being downloaded.
+	pub lang: Option<&'a str>,
+	/// Redo every step, whatever is already on disk.
+	pub refresh: bool,
+	/// Where the archives are served from. A parameter so the download path is
+	/// testable against a local file rather than the network.
+	pub archive_base: &'a str,
 }
 
 /// The installation this run will read, fetching one if that is the answer.
@@ -114,33 +114,33 @@ pub struct Options<'a> {
 /// the download has been told where to get VCDS themselves, and a non-zero exit
 /// would be this tool disagreeing with a decision it offered them.
 fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
-    if let Some(dir) = opts.dir {
-        let root = Path::new(dir);
-        anyhow::ensure!(
-            root.is_dir(),
-            "{dir:?} is not a directory.\n\n\
+	if let Some(dir) = opts.dir {
+		let root = Path::new(dir);
+		anyhow::ensure!(
+			root.is_dir(),
+			"{dir:?} is not a directory.\n\n\
              Point this at a VCDS installation root — the directory holding \
              `Labels/` and `{ODX_DIR}/`.\n\
              With no path at all, `vagcan setup` offers to download one.\n\
              Ross-Tech's own: {}",
-            crate::missing::VCDS_DOWNLOAD
-        );
-        return Ok(Some(root.to_path_buf()));
-    }
-    // A language on the command line is somebody who has already decided;
-    // asking them again is a prompt with one answer.
-    if opts.lang.is_none() && !vendor::confirm_download()? {
-        println!(
-            "Nothing downloaded.\n\n\
+			crate::missing::VCDS_DOWNLOAD
+		);
+		return Ok(Some(root.to_path_buf()));
+	}
+	// A language on the command line is somebody who has already decided;
+	// asking them again is a prompt with one answer.
+	if opts.lang.is_none() && !vendor::confirm_download()? {
+		println!(
+			"Nothing downloaded.\n\n\
              Point at an installation you have:\n    \
              vagcan setup /path/to/VCDS\n\n\
              Ross-Tech's own download page: {}",
-            crate::missing::VCDS_DOWNLOAD
-        );
-        return Ok(None);
-    }
-    let lang = vendor::choose_language(opts.lang)?;
-    Ok(Some(vendor::fetch(&lang, opts.archive_base)?))
+			crate::missing::VCDS_DOWNLOAD
+		);
+		return Ok(None);
+	}
+	let lang = vendor::choose_language(opts.lang)?;
+	Ok(Some(vendor::fetch(&lang, opts.archive_base)?))
 }
 
 /// What one step of the run did, for the closing report.
@@ -150,32 +150,31 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 /// it failed.
 #[derive(Debug)]
 enum Step {
-    Wrote { what: &'static str, path: PathBuf, detail: String },
-    Skipped { what: &'static str, path: PathBuf, why: &'static str },
-    Missing { what: &'static str, why: String },
+	Wrote { what: &'static str, path: PathBuf, detail: String },
+	Skipped { what: &'static str, path: PathBuf, why: &'static str },
+	Missing { what: &'static str, why: String },
 }
 
 pub fn run(opts: Options<'_>) -> Result<()> {
-    let Some(root) = installation(&opts)? else { return Ok(()) };
-    let root = root.as_path();
-    let target = crate::datadir::extracted_dir()?;
-    std::fs::create_dir_all(&target)
-        .with_context(|| format!("creating {}", target.display()))?;
+	let Some(root) = installation(&opts)? else { return Ok(()) };
+	let root = root.as_path();
+	let target = crate::datadir::extracted_dir()?;
+	std::fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
 
-    println!("Reading the VCDS installation at {}", root.display());
-    println!("Writing everything to {}\n", target.display());
+	println!("Reading the VCDS installation at {}", root.display());
+	println!("Writing everything to {}\n", target.display());
 
-    // The copy runs first, and the derivations then read from it: after this,
-    // `~/.vagcan` is the one corpus everything points at, and the install can go.
-    let steps = [
-        copy_corpus(root, &target, opts.refresh)?,
-        label_cache(&target, opts.refresh)?,
-        names(&target, opts.refresh)?,
-        rod_keys(&target)?,
-    ];
+	// The copy runs first, and the derivations then read from it: after this,
+	// `~/.vagcan` is the one corpus everything points at, and the install can go.
+	let steps = [
+		copy_corpus(root, &target, opts.refresh)?,
+		label_cache(&target, opts.refresh)?,
+		names(&target, opts.refresh)?,
+		rod_keys(&target)?,
+	];
 
-    println!("\n{}", report(&steps));
-    Ok(())
+	println!("\n{}", report(&steps));
+	Ok(())
 }
 
 /// Step 1: copy the raw corpus in, so the installation is disposable.
@@ -186,51 +185,49 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 /// of setup follows: a file is copied only when it is missing from the
 /// destination or newer than what is there, and `--refresh` copies the lot.
 fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
-    println!(
-        "[1/4] Raw corpus — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
+	println!(
+		"[1/4] Raw corpus — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
          installation can be deleted afterwards."
-    );
-    let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for name in CORPUS_INPUTS {
-        let src = root.join(name);
-        if !src.exists() {
-            // A stripped or partial installation still yields whatever it has;
-            // a missing input is reported, not fatal.
-            println!("      {name}: not in this installation, skipped");
-            continue;
-        }
-        collect_copies(&src, &target.join(name), &mut plan)?;
-    }
-    if plan.is_empty() {
-        return Ok(Step::Missing {
-            what: "the raw corpus",
-            why: format!("none of {CORPUS_INPUTS:?} is under {}", root.display()),
-        });
-    }
+	);
+	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
+	for name in CORPUS_INPUTS {
+		let src = root.join(name);
+		if !src.exists() {
+			// A stripped or partial installation still yields whatever it has;
+			// a missing input is reported, not fatal.
+			println!("      {name}: not in this installation, skipped");
+			continue;
+		}
+		collect_copies(&src, &target.join(name), &mut plan)?;
+	}
+	if plan.is_empty() {
+		return Ok(Step::Missing {
+			what: "the raw corpus",
+			why: format!("none of {CORPUS_INPUTS:?} is under {}", root.display()),
+		});
+	}
 
-    let total = plan.len();
-    let (mut copied, mut skipped) = (0usize, 0usize);
-    let mut progress = crate::progress::Line::new();
-    for (at, (src, dst)) in plan.iter().enumerate() {
-        if !refresh && is_newer(dst, src) {
-            skipped += 1;
-            continue;
-        }
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        progress.update(&format!("copying — {} of {total}", at + 1));
-        std::fs::copy(src, dst)
-            .with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
-        copied += 1;
-    }
-    progress.finish();
-    Ok(Step::Wrote {
-        what: "the raw corpus",
-        path: target.to_path_buf(),
-        detail: format!("{copied} files copied, {skipped} already current"),
-    })
+	let total = plan.len();
+	let (mut copied, mut skipped) = (0usize, 0usize);
+	let mut progress = crate::progress::Line::new();
+	for (at, (src, dst)) in plan.iter().enumerate() {
+		if !refresh && is_newer(dst, src) {
+			skipped += 1;
+			continue;
+		}
+		if let Some(parent) = dst.parent() {
+			std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+		}
+		progress.update(&format!("copying — {} of {total}", at + 1));
+		std::fs::copy(src, dst).with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+		copied += 1;
+	}
+	progress.finish();
+	Ok(Step::Wrote {
+		what: "the raw corpus",
+		path: target.to_path_buf(),
+		detail: format!("{copied} files copied, {skipped} already current"),
+	})
 }
 
 /// Every file under `src`, paired with where it lands under `dst`.
@@ -239,19 +236,17 @@ fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 /// before anything is written, so the copy can report progress against a known
 /// total and an unreadable directory fails before it has half-copied a tree.
 fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
-    if src.is_file() {
-        plan.push((src.to_path_buf(), dst.to_path_buf()));
-        return Ok(());
-    }
-    if src.is_dir() {
-        for entry in
-            std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))?
-        {
-            let entry = entry?;
-            collect_copies(&entry.path(), &dst.join(entry.file_name()), plan)?;
-        }
-    }
-    Ok(())
+	if src.is_file() {
+		plan.push((src.to_path_buf(), dst.to_path_buf()));
+		return Ok(());
+	}
+	if src.is_dir() {
+		for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+			let entry = entry?;
+			collect_copies(&entry.path(), &dst.join(entry.file_name()), plan)?;
+		}
+	}
+	Ok(())
 }
 
 /// Step 2: parse the copied corpus into the SQLite cache.
@@ -261,13 +256,13 @@ fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) ->
 /// otherwise the first `units --identify` after setup would rebuild the cache
 /// from a directory whose name no longer matched.
 fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
-    println!("[2/4] Label corpus — parsing every .lbl and decrypting every .clb.");
-    let db = crate::labels::load_cached(root, refresh)?;
-    Ok(Step::Wrote {
-        what: "the label corpus",
-        path: crate::datadir::label_cache()?,
-        detail: format!("{} label files", db.len()),
-    })
+	println!("[2/4] Label corpus — parsing every .lbl and decrypting every .clb.");
+	let db = crate::labels::load_cached(root, refresh)?;
+	Ok(Step::Wrote {
+		what: "the label corpus",
+		path: crate::datadir::label_cache()?,
+		detail: format!("{} label files", db.len()),
+	})
 }
 
 /// Step 3: recover the measurement names from the global text table.
@@ -277,127 +272,119 @@ fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
 /// `tttext` reads it. The intermediate file is this function's business and
 /// nobody else's, so it goes in a scratch directory and is removed again.
 fn names(root: &Path, refresh: bool) -> Result<Step> {
-    let source = root.join(ODX_DIR).join(TEXT_TABLE);
-    let out = crate::datadir::names_catalog()?;
-    if !source.is_file() {
-        return Ok(Step::Missing {
-            what: "the measurement names",
-            why: format!("{} is not in this installation", source.display()),
-        });
-    }
-    if !refresh && is_newer(&out, &source) {
-        println!("[3/4] Measurement names — already recovered from this installation.");
-        return Ok(Step::Skipped {
-            what: "the measurement names",
-            path: out,
-            why: "newer than the text table it came from",
-        });
-    }
+	let source = root.join(ODX_DIR).join(TEXT_TABLE);
+	let out = crate::datadir::names_catalog()?;
+	if !source.is_file() {
+		return Ok(Step::Missing {
+			what: "the measurement names",
+			why: format!("{} is not in this installation", source.display()),
+		});
+	}
+	if !refresh && is_newer(&out, &source) {
+		println!("[3/4] Measurement names — already recovered from this installation.");
+		return Ok(Step::Skipped {
+			what: "the measurement names",
+			path: out,
+			why: "newer than the text table it came from",
+		});
+	}
 
-    println!(
-        "[3/4] Measurement names — opening {TEXT_TABLE}, then reading its cipher.\n      \
+	println!(
+		"[3/4] Measurement names — opening {TEXT_TABLE}, then reading its cipher.\n      \
          This is the slow part: every record is under its own substitution, and the\n      \
          attack bootstraps over several passes. Minutes, not seconds."
-    );
-    let scratch = out.with_file_name("tttext-scratch");
-    let _ = std::fs::remove_dir_all(&scratch);
-    crate::vcds::rod::run(
-        &source.to_string_lossy(),
-        true,
-        Some(&crate::datadir::rod_keys()?.to_string_lossy()),
-        Some(&scratch.to_string_lossy()),
-    )?;
-    let text = scratch.join("TXT.bin");
-    if !text.is_file() {
-        let _ = std::fs::remove_dir_all(&scratch);
-        return Ok(Step::Missing {
-            what: "the measurement names",
-            why: format!(
-                "the [TXT] section of {} did not decode — see the section listing above",
-                source.display()
-            ),
-        });
-    }
+	);
+	let scratch = out.with_file_name("tttext-scratch");
+	let _ = std::fs::remove_dir_all(&scratch);
+	crate::vcds::rod::run(
+		&source.to_string_lossy(),
+		true,
+		Some(&crate::datadir::rod_keys()?.to_string_lossy()),
+		Some(&scratch.to_string_lossy()),
+	)?;
+	let text = scratch.join("TXT.bin");
+	if !text.is_file() {
+		let _ = std::fs::remove_dir_all(&scratch);
+		return Ok(Step::Missing {
+			what: "the measurement names",
+			why: format!("the [TXT] section of {} did not decode — see the section listing above", source.display()),
+		});
+	}
 
-    let mut words = vec![format!("{}:{CORPUS_WORD_WEIGHT}", root.join("Labels").display())];
-    if Path::new(SYSTEM_WORDS).exists() {
-        words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
-    }
-    crate::vcds::tttext::run(crate::vcds::tttext::Options {
-        file: &text.to_string_lossy(),
-        words: &words,
-        names: None,
-        // The readings themselves are not wanted here — only the ones that
-        // clear the gate, in the form `vagcan vcds names` searches.
-        out: None,
-        catalog: Some(&out.to_string_lossy()),
-        partial: None,
-        passes: 4,
-        steps: None,
-        check: 0,
-        gated: false,
-    })?;
-    let _ = std::fs::remove_dir_all(&scratch);
+	let mut words = vec![format!("{}:{CORPUS_WORD_WEIGHT}", root.join("Labels").display())];
+	if Path::new(SYSTEM_WORDS).exists() {
+		words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
+	}
+	crate::vcds::tttext::run(crate::vcds::tttext::Options {
+		file: &text.to_string_lossy(),
+		words: &words,
+		names: None,
+		// The readings themselves are not wanted here — only the ones that
+		// clear the gate, in the form `vagcan vcds names` searches.
+		out: None,
+		catalog: Some(&out.to_string_lossy()),
+		partial: None,
+		passes: 4,
+		steps: None,
+		check: 0,
+		gated: false,
+	})?;
+	let _ = std::fs::remove_dir_all(&scratch);
 
-    let count = std::fs::read_to_string(&out)
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.as_object().map(|m| m.len()))
-        .unwrap_or(0);
-    Ok(Step::Wrote {
-        what: "the measurement names",
-        path: out,
-        detail: format!("{count} names"),
-    })
+	let count = std::fs::read_to_string(&out)
+		.ok()
+		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+		.and_then(|v| v.as_object().map(|m| m.len()))
+		.unwrap_or(0);
+	Ok(Step::Wrote {
+		what: "the measurement names",
+		path: out,
+		detail: format!("{count} names"),
+	})
 }
 
 /// Step 4: recover the keys of the `.rod` sections every car needs.
 fn rod_keys(root: &Path) -> Result<Step> {
-    let cache = crate::datadir::rod_keys()?;
-    let present: Vec<PathBuf> = SHARED_ROD_FILES
-        .iter()
-        .map(|name| root.join(ODX_DIR).join(name))
-        .filter(|p| p.is_file())
-        .collect();
-    if present.is_empty() {
-        return Ok(Step::Missing {
-            what: "the .rod section keys",
-            why: format!("none of {SHARED_ROD_FILES:?} is under {}", root.join(ODX_DIR).display()),
-        });
-    }
-    if !cfg!(feature = "rod-crack") {
-        // Silence here would look like the sections are genuinely unreadable,
-        // which is the one conclusion that must never be reached by accident.
-        println!(
-            "[4/4] .rod section keys — this build has no key search, so only keys already\n      \
+	let cache = crate::datadir::rod_keys()?;
+	let present: Vec<PathBuf> = SHARED_ROD_FILES
+		.iter()
+		.map(|name| root.join(ODX_DIR).join(name))
+		.filter(|p| p.is_file())
+		.collect();
+	if present.is_empty() {
+		return Ok(Step::Missing {
+			what: "the .rod section keys",
+			why: format!("none of {SHARED_ROD_FILES:?} is under {}", root.join(ODX_DIR).display()),
+		});
+	}
+	if !cfg!(feature = "rod-crack") {
+		// Silence here would look like the sections are genuinely unreadable,
+		// which is the one conclusion that must never be reached by accident.
+		println!(
+			"[4/4] .rod section keys — this build has no key search, so only keys already\n      \
              cached are used. To recover the missing ones:\n          \
              cargo install --path crates/vagcan --features rod-crack\n      \
              then run this again."
-        );
-    } else {
-        println!(
-            "[4/4] .rod section keys — searching for the ones not already cached.\n      \
+		);
+	} else {
+		println!(
+			"[4/4] .rod section keys — searching for the ones not already cached.\n      \
              About a minute of every core per blocked section."
-        );
-    }
-    for file in &present {
-        crate::vcds::rod::run(
-            &file.to_string_lossy(),
-            true,
-            Some(&cache.to_string_lossy()),
-            None,
-        )?;
-    }
-    let keys = std::fs::read_to_string(&cache)
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.as_object().map(|m| m.len()))
-        .unwrap_or(0);
-    Ok(Step::Wrote {
-        what: "the .rod section keys",
-        path: cache,
-        detail: format!("{keys} keys"),
-    })
+		);
+	}
+	for file in &present {
+		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
+	}
+	let keys = std::fs::read_to_string(&cache)
+		.ok()
+		.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+		.and_then(|v| v.as_object().map(|m| m.len()))
+		.unwrap_or(0);
+	Ok(Step::Wrote {
+		what: "the .rod section keys",
+		path: cache,
+		detail: format!("{keys} keys"),
+	})
 }
 
 /// Whether `out` was written after `source` last changed.
@@ -406,13 +393,13 @@ fn rod_keys(root: &Path) -> Result<Step> {
 /// than a directory. Anything unreadable counts as not fresh: redoing work is
 /// cheap next to trusting a file that is not there.
 fn is_newer(out: &Path, source: &Path) -> bool {
-    match (std::fs::metadata(out), std::fs::metadata(source)) {
-        (Ok(o), Ok(s)) => match (o.modified(), s.modified()) {
-            (Ok(o), Ok(s)) => o >= s,
-            _ => false,
-        },
-        _ => false,
-    }
+	match (std::fs::metadata(out), std::fs::metadata(source)) {
+		(Ok(o), Ok(s)) => match (o.modified(), s.modified()) {
+			(Ok(o), Ok(s)) => o >= s,
+			_ => false,
+		},
+		_ => false,
+	}
 }
 
 /// The closing report: what is on disk now, and what to do with it.
@@ -421,209 +408,205 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 /// owed the paths, not a count of successes — and somebody whose run was short
 /// of one artefact needs to see which one without re-reading the scroll.
 fn report(steps: &[Step]) -> String {
-    use std::fmt::Write as _;
+	use std::fmt::Write as _;
 
-    let mut out = String::from("Done.\n\n");
-    for step in steps {
-        match step {
-            Step::Wrote { what, path, detail } => {
-                let _ = writeln!(out, "  {what}: {detail}\n    {}", path.display());
-            }
-            Step::Skipped { what, path, why } => {
-                let _ = writeln!(out, "  {what}: unchanged, {why}\n    {}", path.display());
-            }
-            Step::Missing { what, why } => {
-                let _ = writeln!(out, "  {what}: NOT recovered — {why}");
-            }
-        }
-    }
-    if steps.iter().any(|s| matches!(s, Step::Missing { .. })) {
-        let _ = writeln!(
-            out,
-            "\nThe rest is usable. What is missing above is missing from the installation \n\
+	let mut out = String::from("Done.\n\n");
+	for step in steps {
+		match step {
+			Step::Wrote { what, path, detail } => {
+				let _ = writeln!(out, "  {what}: {detail}\n    {}", path.display());
+			}
+			Step::Skipped { what, path, why } => {
+				let _ = writeln!(out, "  {what}: unchanged, {why}\n    {}", path.display());
+			}
+			Step::Missing { what, why } => {
+				let _ = writeln!(out, "  {what}: NOT recovered — {why}");
+			}
+		}
+	}
+	if steps.iter().any(|s| matches!(s, Step::Missing { .. })) {
+		let _ = writeln!(
+			out,
+			"\nThe rest is usable. What is missing above is missing from the installation \n\
              that was read, so a different or newer VCDS may have it."
-        );
-    }
-    let _ = write!(
-        out,
-        "\nNext:  vagcan devices      is the adapter connected?\n       \
+		);
+	}
+	let _ = write!(
+		out,
+		"\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
          vagcan faults       stored faults, named — the labels are copied in now\n\n\
          Scalings are a separate thing and no installation carries them — the corpus \n\
          has names, not numbers. Those are measured: `vagcan survey`, then \n\
          `vagcan watch --out drive.csv`, then `vagcan recording calibrate`."
-    );
-    out
+	);
+	out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn the_report_names_every_file_it_wrote() {
-        // Somebody who has just waited several minutes is owed the paths. A
-        // count of successes tells them nothing they can open.
-        let steps = vec![
-            Step::Wrote {
-                what: "the label corpus",
-                path: PathBuf::from("/home/x/.vagcan/data/extracted/cache.sqlite"),
-                detail: "3035 label files".to_string(),
-            },
-            Step::Skipped {
-                what: "the measurement names",
-                path: PathBuf::from("/home/x/.vagcan/data/extracted/names.json"),
-                why: "newer than the text table it came from",
-            },
-        ];
-        let r = report(&steps);
-        assert!(r.contains("/home/x/.vagcan/data/extracted/cache.sqlite"), "{r}");
-        assert!(r.contains("3035 label files"), "{r}");
-        // A skipped step is reported, not silently absent: a run that took a
-        // second when minutes were expected reads as a failure otherwise.
-        assert!(r.contains("unchanged"), "{r}");
-        assert!(r.contains("names.json"), "{r}");
-    }
+	#[test]
+	fn the_report_names_every_file_it_wrote() {
+		// Somebody who has just waited several minutes is owed the paths. A
+		// count of successes tells them nothing they can open.
+		let steps = vec![
+			Step::Wrote {
+				what: "the label corpus",
+				path: PathBuf::from("/home/x/.vagcan/data/extracted/cache.sqlite"),
+				detail: "3035 label files".to_string(),
+			},
+			Step::Skipped {
+				what: "the measurement names",
+				path: PathBuf::from("/home/x/.vagcan/data/extracted/names.json"),
+				why: "newer than the text table it came from",
+			},
+		];
+		let r = report(&steps);
+		assert!(r.contains("/home/x/.vagcan/data/extracted/cache.sqlite"), "{r}");
+		assert!(r.contains("3035 label files"), "{r}");
+		// A skipped step is reported, not silently absent: a run that took a
+		// second when minutes were expected reads as a failure otherwise.
+		assert!(r.contains("unchanged"), "{r}");
+		assert!(r.contains("names.json"), "{r}");
+	}
 
-    #[test]
-    fn a_step_that_could_not_run_says_so_without_condemning_the_rest() {
-        let steps = vec![Step::Missing {
-            what: "the .rod section keys",
-            why: "none of them is in this installation".to_string(),
-        }];
-        let r = report(&steps);
-        assert!(r.contains("NOT recovered"), "{r}");
-        assert!(r.contains("The rest is usable"), "{r}");
-    }
+	#[test]
+	fn a_step_that_could_not_run_says_so_without_condemning_the_rest() {
+		let steps = vec![Step::Missing {
+			what: "the .rod section keys",
+			why: "none of them is in this installation".to_string(),
+		}];
+		let r = report(&steps);
+		assert!(r.contains("NOT recovered"), "{r}");
+		assert!(r.contains("The rest is usable"), "{r}");
+	}
 
-    #[test]
-    fn the_report_does_not_promise_scalings_the_corpus_cannot_supply() {
-        // The single most expensive misunderstanding available here: a reader
-        // who has just parsed 300 MB of label files reasonably assumes the
-        // numbers came with the names. They did not, and the closing lines are
-        // the last chance to say so.
-        let r = report(&[]);
-        assert!(r.contains("no installation carries them"), "{r}");
-        assert!(r.contains("recording calibrate"), "{r}");
-    }
+	#[test]
+	fn the_report_does_not_promise_scalings_the_corpus_cannot_supply() {
+		// The single most expensive misunderstanding available here: a reader
+		// who has just parsed 300 MB of label files reasonably assumes the
+		// numbers came with the names. They did not, and the closing lines are
+		// the last chance to say so.
+		let r = report(&[]);
+		assert!(r.contains("no installation carries them"), "{r}");
+		assert!(r.contains("recording calibrate"), "{r}");
+	}
 
-    #[test]
-    fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
-        let err = run(Options {
-            dir: Some("/definitely/not/here"),
-            lang: None,
-            refresh: false,
-            archive_base: vendor::ARCHIVE_BASE,
-        })
-        .unwrap_err();
-        let text = err.to_string();
-        assert!(text.contains(crate::missing::VCDS_DOWNLOAD), "{text}");
-        assert!(text.contains("Labels/"), "{text}");
-        // And the other way in, since it is the whole point of the argument
-        // being optional.
-        assert!(text.contains("offers to download"), "{text}");
-    }
+	#[test]
+	fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
+		let err = run(Options {
+			dir: Some("/definitely/not/here"),
+			lang: None,
+			refresh: false,
+			archive_base: vendor::ARCHIVE_BASE,
+		})
+		.unwrap_err();
+		let text = err.to_string();
+		assert!(text.contains(crate::missing::VCDS_DOWNLOAD), "{text}");
+		assert!(text.contains("Labels/"), "{text}");
+		// And the other way in, since it is the whole point of the argument
+		// being optional.
+		assert!(text.contains("offers to download"), "{text}");
+	}
 
-    /// A throwaway directory tree, removed on drop. Tests must not write into a
-    /// real `~/.vagcan`, so the copy is exercised against a tiny synthetic
-    /// install rather than the 122 MB one.
-    struct TempDir(PathBuf);
+	/// A throwaway directory tree, removed on drop. Tests must not write into a
+	/// real `~/.vagcan`, so the copy is exercised against a tiny synthetic
+	/// install rather than the 122 MB one.
+	struct TempDir(PathBuf);
 
-    impl TempDir {
-        fn new(tag: &str) -> TempDir {
-            let path = std::env::temp_dir().join(format!(
-                "vagcan-setup-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).unwrap();
-            TempDir(path)
-        }
-        fn write(&self, rel: &str, bytes: &[u8]) -> PathBuf {
-            let path = self.0.join(rel);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, bytes).unwrap();
-            path
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+	impl TempDir {
+		fn new(tag: &str) -> TempDir {
+			let path = std::env::temp_dir().join(format!("vagcan-setup-{tag}-{}-{:?}", std::process::id(), std::thread::current().id()));
+			let _ = std::fs::remove_dir_all(&path);
+			std::fs::create_dir_all(&path).unwrap();
+			TempDir(path)
+		}
+		fn write(&self, rel: &str, bytes: &[u8]) -> PathBuf {
+			let path = self.0.join(rel);
+			std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+			std::fs::write(&path, bytes).unwrap();
+			path
+		}
+	}
+	impl Drop for TempDir {
+		fn drop(&mut self) {
+			let _ = std::fs::remove_dir_all(&self.0);
+		}
+	}
 
-    /// A stand-in for a VCDS install: one of each thing the copy must carry.
-    fn synthetic_install(tag: &str) -> TempDir {
-        let install = TempDir::new(tag);
-        install.write("UDS_EV/RD.rod", b"registry");
-        install.write("UDS_EV/EV_ECM.rod", b"a unit's own file");
-        install.write("Labels/part.lbl", b"001,1,Engine Speed,,");
-        install.write("Codes.dat", b"texts");
-        install
-    }
+	/// A stand-in for a VCDS install: one of each thing the copy must carry.
+	fn synthetic_install(tag: &str) -> TempDir {
+		let install = TempDir::new(tag);
+		install.write("UDS_EV/RD.rod", b"registry");
+		install.write("UDS_EV/EV_ECM.rod", b"a unit's own file");
+		install.write("Labels/part.lbl", b"001,1,Engine Speed,,");
+		install.write("Codes.dat", b"texts");
+		install
+	}
 
-    fn detail(step: &Step) -> String {
-        match step {
-            Step::Wrote { detail, .. } => detail.clone(),
-            other => panic!("expected a written step, got {other:?}"),
-        }
-    }
+	fn detail(step: &Step) -> String {
+		match step {
+			Step::Wrote { detail, .. } => detail.clone(),
+			other => panic!("expected a written step, got {other:?}"),
+		}
+	}
 
-    #[test]
-    fn the_copy_carries_the_three_inputs_preserving_their_layout() {
-        // After it, ~/.vagcan holds the exact tree fault naming reads off disk —
-        // UDS_EV/ (registry and each unit's own .rod), Labels/, Codes.dat.
-        let install = synthetic_install("layout");
-        let target = TempDir::new("layout-out");
-        let step = copy_corpus(&install.0, &target.0, false).unwrap();
-        assert!(detail(&step).starts_with("4 files copied"), "{}", detail(&step));
-        for rel in ["UDS_EV/RD.rod", "UDS_EV/EV_ECM.rod", "Labels/part.lbl", "Codes.dat"] {
-            assert!(target.0.join(rel).is_file(), "{rel} did not land under the target");
-        }
-    }
+	#[test]
+	fn the_copy_carries_the_three_inputs_preserving_their_layout() {
+		// After it, ~/.vagcan holds the exact tree fault naming reads off disk —
+		// UDS_EV/ (registry and each unit's own .rod), Labels/, Codes.dat.
+		let install = synthetic_install("layout");
+		let target = TempDir::new("layout-out");
+		let step = copy_corpus(&install.0, &target.0, false).unwrap();
+		assert!(detail(&step).starts_with("4 files copied"), "{}", detail(&step));
+		for rel in ["UDS_EV/RD.rod", "UDS_EV/EV_ECM.rod", "Labels/part.lbl", "Codes.dat"] {
+			assert!(target.0.join(rel).is_file(), "{rel} did not land under the target");
+		}
+	}
 
-    #[test]
-    fn copying_is_idempotent_and_freshness_gated_per_file() {
-        // The rule the rest of setup follows: a second run has nothing to do,
-        // one changed file recopies only itself, and --refresh copies the lot.
-        let install = synthetic_install("fresh");
-        let target = TempDir::new("fresh-out");
+	#[test]
+	fn copying_is_idempotent_and_freshness_gated_per_file() {
+		// The rule the rest of setup follows: a second run has nothing to do,
+		// one changed file recopies only itself, and --refresh copies the lot.
+		let install = synthetic_install("fresh");
+		let target = TempDir::new("fresh-out");
 
-        let first = copy_corpus(&install.0, &target.0, false).unwrap();
-        assert_eq!(detail(&first), "4 files copied, 0 already current");
+		let first = copy_corpus(&install.0, &target.0, false).unwrap();
+		assert_eq!(detail(&first), "4 files copied, 0 already current");
 
-        let second = copy_corpus(&install.0, &target.0, false).unwrap();
-        assert_eq!(detail(&second), "0 files copied, 4 already current", "a no-op rerun");
+		let second = copy_corpus(&install.0, &target.0, false).unwrap();
+		assert_eq!(detail(&second), "0 files copied, 4 already current", "a no-op rerun");
 
-        // One destination made to look stale: only it is copied again.
-        let stale = target.0.join("Codes.dat");
-        let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
-        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
-        let third = copy_corpus(&install.0, &target.0, false).unwrap();
-        assert_eq!(detail(&third), "1 files copied, 3 already current");
+		// One destination made to look stale: only it is copied again.
+		let stale = target.0.join("Codes.dat");
+		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+		std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
+		let third = copy_corpus(&install.0, &target.0, false).unwrap();
+		assert_eq!(detail(&third), "1 files copied, 3 already current");
 
-        // --refresh copies everything regardless of mtimes.
-        let forced = copy_corpus(&install.0, &target.0, true).unwrap();
-        assert_eq!(detail(&forced), "4 files copied, 0 already current");
-    }
+		// --refresh copies everything regardless of mtimes.
+		let forced = copy_corpus(&install.0, &target.0, true).unwrap();
+		assert_eq!(detail(&forced), "4 files copied, 0 already current");
+	}
 
-    #[test]
-    fn an_install_missing_every_input_is_reported_not_a_crash() {
-        let empty = TempDir::new("empty");
-        let target = TempDir::new("empty-out");
-        let step = copy_corpus(&empty.0, &target.0, false).unwrap();
-        match step {
-            Step::Missing { why, .. } => assert!(why.contains("UDS_EV"), "{why}"),
-            other => panic!("expected Missing, got {other:?}"),
-        }
-    }
+	#[test]
+	fn an_install_missing_every_input_is_reported_not_a_crash() {
+		let empty = TempDir::new("empty");
+		let target = TempDir::new("empty-out");
+		let step = copy_corpus(&empty.0, &target.0, false).unwrap();
+		match step {
+			Step::Missing { why, .. } => assert!(why.contains("UDS_EV"), "{why}"),
+			other => panic!("expected Missing, got {other:?}"),
+		}
+	}
 
-    #[test]
-    fn a_missing_output_is_never_mistaken_for_a_current_one() {
-        let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert!(!is_newer(Path::new("/definitely/not/here"), &here));
-        assert!(!is_newer(&here, Path::new("/definitely/not/here")));
-        assert!(is_newer(&here, &here), "a file is not older than itself");
-    }
+	#[test]
+	fn a_missing_output_is_never_mistaken_for_a_current_one() {
+		let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+		assert!(!is_newer(Path::new("/definitely/not/here"), &here));
+		assert!(!is_newer(&here, Path::new("/definitely/not/here")));
+		assert!(is_newer(&here, &here), "a file is not older than itself");
+	}
 }
