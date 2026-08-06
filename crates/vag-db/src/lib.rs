@@ -108,6 +108,19 @@ CREATE INDEX IF NOT EXISTS idx_label_file_name    ON label_file(name);
 CREATE INDEX IF NOT EXISTS idx_redirect_file      ON redirect(file_id);
 CREATE INDEX IF NOT EXISTS idx_adaptation_file    ON adaptation(file_id);
 CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
+-- Which label-file directory this cache was built from. One row, always id 0.
+--
+-- An mtime answers "is this old?" and cannot answer "is this even about these
+-- files?" — and a cache built from the Russian tree is not *stale* for the
+-- English one, it is *wrong*, which is the failure that shows a reader
+-- confident answers in a language they did not ask for. It lives inside the
+-- cache rather than in a note beside it because a cache that cannot say what
+-- it holds is not self-describing, and a loose file recording a path is one
+-- more thing to keep in step with the file it describes.
+CREATE TABLE IF NOT EXISTS source (
+    id  INTEGER PRIMARY KEY CHECK (id = 0),
+    dir TEXT NOT NULL
+);
 "#;
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -298,7 +311,26 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 	let load = load_label_files(labels_dir)?;
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	insert_files(&mut conn, &load.files)
+	let stats = insert_files(&mut conn, &load.files)?;
+	// Recorded after the insert, never before: a cache claiming a directory it
+	// then failed to finish loading would be trusted by the next run.
+	conn.execute(
+		"INSERT INTO source (id, dir) VALUES (0, ?1) ON CONFLICT(id) DO UPDATE SET dir = excluded.dir",
+		[labels_dir.to_string_lossy()],
+	)?;
+	Ok(stats)
+}
+
+/// The label-file directory `db_path` was built from, if it says.
+///
+/// `None` for a cache written before this was recorded, or one that cannot be
+/// opened — both mean "cannot vouch for what this holds", and the caller
+/// rebuilds rather than trusts it.
+pub fn source_of(db_path: &Path) -> Option<String> {
+	let conn = Connection::open(db_path).ok()?;
+	conn
+		.query_row("SELECT dir FROM source WHERE id = 0", [], |row| row.get::<_, String>(0))
+		.ok()
 }
 
 /// Load all label files back out of a SQLite DB into a `Vec<LabelFile>`

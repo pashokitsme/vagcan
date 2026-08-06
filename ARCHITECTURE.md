@@ -166,10 +166,11 @@ One command, three steps, everything under `~/.vagcan/data/extracted/`.
 
 **1. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather
-than a re-parse of 300 MB. The cache records which directory it was built from in
-`cache.from`, because the freshness rule is an mtime comparison and an mtime cannot
-tell "older than the label files" from "built from a *different* label files" — which matters
-as soon as somebody has both the English and the Russian install.
+than a re-parse of 300 MB. The cache records which directory it was built from — inside
+itself, so it is one file that can say what it holds — because the freshness rule is an
+mtime comparison and an mtime cannot tell "older than the label files" from "built from a
+*different* set of label files", which matters as soon as somebody has both the English
+and the Russian install.
 
 **2. `TTTEXT.ROD` → `names.json`.** The `[TXT]` section is decrypted and inflated,
 then the cipher above is attacked with the label files' own label files as the in-domain

@@ -28,19 +28,14 @@ use vag_data::{LabelDb, LabelScan, Measurement, scan_label_files};
 /// `vagcan setup` recovers from an installation. It used to be one file per
 /// label file directory, named after the flattened path, which kept the English and
 /// the Russian install apart at the cost of a directory nobody could read. The
-/// same property is kept more cheaply by [`crate::datadir::LABEL_CACHE_SOURCE`]:
-/// the cache records which directory it was built from, and a cache built from
-/// another one is rebuilt rather than trusted.
+/// same property is kept more cheaply inside the cache itself: it records which
+/// directory it was built from, and a cache built from another one is rebuilt
+/// rather than trusted.
 fn cache_path() -> PathBuf {
 	crate::datadir::label_cache()
 		// With nowhere to write, the working directory is a poor cache but a
 		// better failure than refusing to read label files at all.
 		.unwrap_or_else(|_| PathBuf::from("cache.sqlite"))
-}
-
-/// The note recording which label file set [`cache_path`] holds.
-fn cache_source_path() -> PathBuf {
-	cache_path().with_file_name(crate::datadir::LABEL_CACHE_SOURCE)
 }
 
 /// The directory the label files are actually in.
@@ -108,10 +103,11 @@ pub fn has_label_files(dir: &Path) -> bool {
 /// file must be newer than the directory it was built from. **Is it even about
 /// these label files?** — one cache file now serves every install, so a cache built
 /// from the Russian tree is not stale for the English one, it is wrong, and its
-/// mtime says nothing about that. Hence the recorded source directory.
+/// mtime says nothing about that. Hence the source directory the cache carries.
 fn cache_is_current(cache: &Path, dir: &Path) -> bool {
-	let built_from = std::fs::read_to_string(cache_source_path()).unwrap_or_default();
-	if built_from.trim() != dir.to_string_lossy() {
+	// A cache that does not say what it holds cannot be vouched for — that is
+	// every cache written before this was recorded, and it rebuilds once.
+	if vag_db::source_of(cache).as_deref() != Some(dir.to_string_lossy().as_ref()) {
 		return false;
 	}
 	match (std::fs::metadata(cache), std::fs::metadata(dir)) {
@@ -145,11 +141,6 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 		std::fs::create_dir_all(parent).with_context(|| format!("creating the cache directory {}", parent.display()))?;
 	}
 	let stats = vag_db::build_db(dir, &cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?;
-	// Written after the build, not before: a note claiming label files the build
-	// then failed to finish would make the next run trust a half-written file.
-	if let Err(e) = std::fs::write(cache_source_path(), dir.to_string_lossy().as_bytes()) {
-		eprintln!("warning: could not record which label files the cache came from: {e}");
-	}
 	eprintln!(
 		"cached {} label files ({} measurements) in {}",
 		stats.files,

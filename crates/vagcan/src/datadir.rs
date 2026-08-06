@@ -110,21 +110,13 @@ pub fn rod_keys() -> anyhow::Result<PathBuf> {
 
 /// The SQLite cache of the parsed label files.
 ///
-/// One file, not one per label files directory as before. Which install it was built
-/// from is remembered beside it in [`LABEL_CACHE_SOURCE`], because the mtime
-/// rule that decides whether a cache is current cannot tell "older than the
-/// label files" from "built from a different label files".
+/// One file, not one per label files directory as before. Which directory it was
+/// built from is recorded *inside* it, because the mtime rule that decides
+/// whether a cache is current cannot tell "older than the label files" from
+/// "built from a different set of label files".
 pub fn label_cache() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("cache.sqlite"))
 }
-
-/// Which label files directory [`label_cache`] was built from, one line of text.
-///
-/// The freshness rule is an mtime comparison, and an mtime cannot tell "older
-/// than the label files" from "built from a different label files" — which matters as
-/// soon as somebody has both the English and the Russian install and points the
-/// tool at each in turn.
-pub const LABEL_CACHE_SOURCE: &str = "cache.from";
 
 /// Where the proven measurement rows live, one file per part number.
 pub fn measured_dir() -> anyhow::Result<PathBuf> {

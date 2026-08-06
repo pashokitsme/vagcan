@@ -392,9 +392,61 @@ fn cmd_sweep(path: &str, want_tag: &str, order: Option<&str>, out: &str, all_bty
 	log.write_all(line.as_bytes()).ok();
 }
 
+// -------------------------------------------------------------- `tailkraft`
+//
+// Scratch analysis for the key-search speed work: the code-length-code entries
+// live at fixed absolute bit offsets (17 + 3i), and everything from bit 48 on
+// is the *exact* CBC tail. So for each HCLEN the entries wholly inside the tail
+// have known lengths and a known Kraft contribution — a constant the search
+// could subtract from the budget the five guess bytes are allowed to spend.
+fn cmd_tailkraft(path: &str) {
+	let data = read(path);
+	for s in raw::framed(&data) {
+		if !s.compressed || s.cipher.len() < 16 {
+			continue;
+		}
+		let first: [u8; 8] = s.cipher[0..8].try_into().unwrap();
+		let tail = raw::cbc(&s.cipher[8..], first); // CBC tail: bytes 6.. of the deflate stream
+		let bit = |b: usize| -> u32 {
+			let i = b / 8;
+			if i < 6 {
+				return 9; // guess/anchor territory
+			}
+			match tail.get(i - 6) {
+				Some(v) => ((v >> (b % 8)) & 1) as u32,
+				None => 9,
+			}
+		};
+		print!("[{:<6}] ", s.tag);
+		for h in 4..=19usize {
+			// entries i with 17+3i >= 48, i.e. i >= 11, are pure tail
+			let mut w = 0u32;
+			let mut ok = true;
+			for i in 11..h {
+				let (b0, b1, b2) = (bit(17 + 3 * i), bit(18 + 3 * i), bit(19 + 3 * i));
+				if b0 > 1 || b1 > 1 || b2 > 1 {
+					ok = false;
+					break;
+				}
+				let l = b0 | (b1 << 1) | (b2 << 2);
+				if l > 0 {
+					w += 1 << (7 - l);
+				}
+			}
+			if !ok {
+				print!(" h{h}=?");
+			} else {
+				print!(" h{h}={w}");
+			}
+		}
+		println!();
+	}
+}
+
 fn main() {
 	let args: Vec<String> = std::env::args().collect();
 	match args.get(1).map(String::as_str) {
+		Some("tailkraft") => cmd_tailkraft(&args[2]),
 		Some("anchors") => cmd_anchors(&args[2]),
 		Some("shifts") => cmd_shifts(&args[2]),
 		Some("probe") => cmd_probe(&args[2]),
