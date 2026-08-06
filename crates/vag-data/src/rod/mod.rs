@@ -431,6 +431,55 @@ fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 /// (brute force) and retry. Recovered values are read from / written to
 /// `cache` under the key `(file, tag)`; pass the file's display name as
 /// `file`. Set `run_crack = false` to only use already-cached values.
+/// What it would cost to open a section whose key is not cached yet.
+///
+/// The difference is not a matter of degree. A **classic** section's IV is
+/// tag-derived and exact, so `plaintext[0..2]` reads `78 da` and deflate byte 0
+/// comes free: one search over the multiplicatively-reduced candidate sets, and
+/// a minute or two. A **shifted** file XORs a runtime mask over the finished IV
+/// (`research/labels/tttext2.md` §3.3), which destroys both the anchor and the
+/// reduction — so the only route is every legal anchor against the full space,
+/// sixty searches wide, and that is hours to days rather than minutes.
+///
+/// Worth asking *before* starting, because the two look identical while running:
+/// a spinner that will stop in ninety seconds and one that will not stop today
+/// are the same spinner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCost {
+	/// Tag-derived IV is exact — one search, minutes.
+	OneSearch,
+	/// The file masks its IV — sixty full-space searches, hours at best.
+	AnchorSweep,
+}
+
+/// What opening `want_tag` in this container would cost, or `None` if the
+/// section is absent, uncompressed, or already readable without a search.
+pub fn key_cost(data: &[u8], want_tag: &str) -> Option<KeyCost> {
+	let mut pos = 0usize;
+	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
+		let (payload_end, next_pos) = find_close(data, payload_start, &tag)?;
+		if decode_latin1(&tag).trim() == want_tag {
+			let payload = &data[payload_start..payload_end];
+			let sc = parse_section_cipher(payload)?;
+			if !sc.compressed || sc.cipher.len() < 8 {
+				return None;
+			}
+			let first: [u8; 8] = sc.cipher[0..8].try_into().ok()?;
+			let t = crate::tea::tea_decrypt_block(first, &KEY_ROD);
+			let iv0 = rod_block0_iv(&tag);
+			// The zlib magic is plaintext, so it survives an exact IV and not a
+			// masked one — which is the whole test.
+			let classic = t[0] ^ iv0[0] == 0x78 && t[1] ^ iv0[1] == 0xda;
+			return Some(match classic {
+				true => KeyCost::OneSearch,
+				false => KeyCost::AnchorSweep,
+			});
+		}
+		pos = next_pos;
+	}
+	None
+}
+
 pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crack: bool) -> Vec<RodSection> {
 	let mut sections = Vec::new();
 	let mut pos = 0usize;

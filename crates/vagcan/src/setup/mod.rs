@@ -186,6 +186,21 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 	crate::ui::picker::pick_path(&mut chooser, dir, &[crate::ui::picker::Level::files(what).ending(suffix)])
 }
 
+/// Whether this text table's key is already in the cache, so no search is due.
+fn keyed_already(source: &Path) -> Result<bool> {
+	let cache = crate::datadir::rod_keys()?;
+	let Ok(text) = std::fs::read_to_string(&cache) else { return Ok(false) };
+	let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+		return Ok(false);
+	};
+	let name = source.file_name().unwrap_or_default().to_string_lossy();
+	Ok(
+		json
+			.as_object()
+			.is_some_and(|m| m.keys().any(|k| k.starts_with(name.as_ref()) && k.ends_with("TXT"))),
+	)
+}
+
 /// Which language build a directory holds, named by the file that says so.
 ///
 /// No marker is written for this: a directory that contains `Code-RUS.dat` and
@@ -412,10 +427,31 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 
 	// How long it takes is the spinner's job to say, and it says it in elapsed
 	// seconds rather than in a sentence nobody can act on.
-	println!(
-		"[3/4] Measurement names — opening {}, then reading its cipher.",
-		source.file_name().unwrap_or_default().to_string_lossy()
-	);
+	// Ask what opening it would cost before starting, because the two cases look
+	// identical while running. A shifted text table has no anchor, so the only
+	// route is sixty full-space searches — hours to days — and a spinner that
+	// will not stop today is indistinguishable from one that stops in ninety
+	// seconds. The Russian build ships exactly such a table.
+	let name = source.file_name().unwrap_or_default().to_string_lossy().into_owned();
+	if !keyed_already(&source)?
+		&& let Ok(bytes) = std::fs::read(&source)
+		&& vag_data::rod::key_cost(&bytes, "TXT") == Some(vag_data::rod::KeyCost::AnchorSweep)
+	{
+		{
+			println!("[3/4] Measurement names — skipped: {name} masks its key.");
+			return Ok(Step::Missing {
+				what: "the measurement names",
+				why: format!(
+					"{name} is a *shifted* container, so its text section has no anchor to search from — \
+                     the only route is every legal anchor against the full space, which is hours to days \
+                     rather than the minute or two an ordinary table costs. Everything else in this \
+                     installation is recovered; only the names are out of reach. See \
+                     research/labels/tttext2.md §3.3"
+				),
+			});
+		}
+	}
+	println!("[3/4] Measurement names — opening {name}, then reading its cipher.");
 	let scratch = out.with_file_name("tttext-scratch");
 	let _ = std::fs::remove_dir_all(&scratch);
 	crate::vcds::rod::run(

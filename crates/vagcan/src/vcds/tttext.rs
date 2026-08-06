@@ -182,7 +182,19 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 		let mut partial = 0usize;
 		partials.clear();
 
-		for members in clusters.values() {
+		// Each pass walks every cluster and says nothing until it ends, which on
+		// the real table is minutes of blank screen. Reported per cluster rather
+		// than by a bare spinner: how far through the pass is the useful number,
+		// and it is the one the loop already has.
+		let total = clusters.len();
+		let mut progress = crate::progress::Line::new();
+		for (at, members) in clusters.values().enumerate() {
+			progress.update(&format!(
+				"pass {pass} of {} — cluster {} of {total}, {} read so far",
+				opts.passes,
+				at + 1,
+				solved.len()
+			));
 			// A cluster already read needs no second look.
 			if members.iter().any(|m| solved.contains_key(m)) {
 				continue;
@@ -231,6 +243,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 			}
 		}
 		dict.finish();
+		progress.finish();
 		eprintln!(
 			"pass {pass}: {fresh} clusters read ({} records), {learned} new words, \
              {partial} rejected for unresolved letters",
