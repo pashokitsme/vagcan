@@ -299,10 +299,7 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 /// follows: a file is copied only when it is missing from the destination or
 /// newer than what is there, and `--refresh` copies the lot.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
-	println!(
-		"[1/4] Raw label files — copying UDS_EV/, Labels/ and the fault text (~122 MB) so\n      \
-         the installation can be deleted afterwards."
-	);
+	println!("[1/4] Raw label files — copying UDS_EV/, Labels/ and the fault text (~122 MB) so the installation can be deleted afterwards.");
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	for name in LABEL_FILE_INPUTS {
 		let src = root.join(name);
@@ -413,10 +410,10 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 		});
 	}
 
+	// How long it takes is the spinner's job to say, and it says it in elapsed
+	// seconds rather than in a sentence nobody can act on.
 	println!(
-		"[3/4] Measurement names — opening {}, then reading its cipher.\n      \
-         This is the slow part: every record is under its own substitution, and the\n      \
-         attack bootstraps over several passes. Minutes, not seconds.",
+		"[3/4] Measurement names — opening {}, then reading its cipher.",
 		source.file_name().unwrap_or_default().to_string_lossy()
 	);
 	let scratch = out.with_file_name("tttext-scratch");
@@ -501,10 +498,7 @@ fn rod_keys(root: &Path) -> Result<Step> {
 			why: format!("none of {SHARED_ROD_FILES:?} is under {}", root.join(ODX_DIR).display()),
 		});
 	}
-	println!(
-		"[4/4] .rod section keys — searching for the ones not already cached.\n      \
-         About a minute of every core per blocked section."
-	);
+	println!("[4/4] .rod section keys — searching for the ones not already cached.");
 	for file in &present {
 		crate::vcds::rod::run(&file.to_string_lossy(), true, Some(&cache.to_string_lossy()), None)?;
 	}
