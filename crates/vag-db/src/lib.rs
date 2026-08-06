@@ -1,11 +1,11 @@
-//! SQLite cache for the VCDS label corpus.
+//! SQLite cache for the VCDS label_files.
 //!
 //! Parsing every `.lbl` and decrypting+parsing every `.clb` file (see
-//! `vag_data::load_corpus`) is the expensive part of loading the corpus; this
+//! `vag_data::load_label_files`) is the expensive part of loading the label_files; this
 //! crate persists the *parsed* result to SQLite so later runs can skip that
 //! work entirely. This is a fast-load cache only: `REDIRECT` chain resolution
 //! stays in the existing, reviewed [`vag_data::LabelDb`] — this crate just
-//! reconstructs the same `Vec<LabelFile>` that `load_corpus` would produce and
+//! reconstructs the same `Vec<LabelFile>` that `load_label_files` would produce and
 //! hands it to `LabelDb::new`.
 //!
 //! `vag-data` stays pure-Rust; this crate is the only place in the workspace
@@ -16,7 +16,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use vag_data::label::{LabelFile, Measurement, Record};
-use vag_data::{LabelDb, load_corpus};
+use vag_data::{LabelDb, load_label_files};
 
 /// Errors from building or loading a vag-db SQLite cache.
 #[derive(Debug)]
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS label_file (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL UNIQUE,
     -- What the file's own header says the unit is: its diagnostic address and
-    -- the corpus's name for it. Cached like everything else here so a lookup
+    -- the label files' name for it. Cached like everything else here so a lookup
     -- costs no re-parse.
     unit_address INTEGER,
     unit_name    TEXT
@@ -104,7 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_redirect_selector  ON redirect(selector);
 CREATE INDEX IF NOT EXISTS idx_label_file_name    ON label_file(name);
 -- read_files() queries each child table `WHERE file_id = ?` once per label
 -- file; without these, redirect/adaptation/long_coding reloads are full
--- table scans per file (O(files x rows) over the ~2900-file corpus).
+-- table scans per file (O(files x rows) over the ~2900-file label_files).
 CREATE INDEX IF NOT EXISTS idx_redirect_file      ON redirect(file_id);
 CREATE INDEX IF NOT EXISTS idx_adaptation_file    ON adaptation(file_id);
 CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
@@ -295,7 +295,7 @@ fn read_files(conn: &Connection) -> Result<Vec<LabelFile>, Error> {
 /// Build (or overwrite) a SQLite DB at `db_path` from a labels directory.
 /// Returns row counts. Wraps all inserts in one transaction for speed.
 pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> {
-	let load = load_corpus(labels_dir)?;
+	let load = load_label_files(labels_dir)?;
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
 	insert_files(&mut conn, &load.files)
@@ -316,7 +316,7 @@ pub fn load_db(db_path: &Path) -> Result<LabelDb, Error> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use vag_data::load_corpus;
+	use vag_data::load_label_files;
 
 	/// Same synthetic 80-byte `.clb` fixture used in `vag_data::clb`'s tests
 	/// (TEA-CBC-encrypted with `KEY_CLB`, `w7 = 7`) — no proprietary data.
@@ -400,11 +400,11 @@ mod tests {
 	}
 
 	#[test]
-	fn round_trip_reconstructs_same_measurements_and_redirects_as_load_corpus() {
+	fn round_trip_reconstructs_same_measurements_and_redirects_as_load_label_files() {
 		let ws = TempWorkspace::new("roundtrip");
 		write_fixture_labels(&ws);
 
-		let live = load_corpus(&ws.labels_dir).expect("load_corpus should succeed");
+		let live = load_label_files(&ws.labels_dir).expect("load_label_files should succeed");
 		assert_eq!(live.files.len(), 3, "sanity: 2 .lbl + 1 .clb parsed");
 
 		let stats = build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
@@ -421,7 +421,7 @@ mod tests {
 			let cached_file = cached
 				.iter()
 				.find(|f| f.source == live_file.source)
-				.unwrap_or_else(|| panic!("{} missing from cached corpus", live_file.source));
+				.unwrap_or_else(|| panic!("{} missing from cached label files", live_file.source));
 
 			let live_m = measurements_of(live_file);
 			let cached_m = measurements_of(cached_file);
@@ -495,7 +495,7 @@ mod tests {
 	fn schema_has_file_id_indices_for_fast_reload() {
 		// `read_files` runs `WHERE file_id = ?` once per label file per child
 		// table; without these indices that is a full table scan per file
-		// (O(files x rows) on the ~2900-file corpus). Assert they exist.
+		// (O(files x rows) on the ~2900-file label_files). Assert they exist.
 		let ws = TempWorkspace::new("indices");
 		write_fixture_labels(&ws);
 		build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
@@ -521,7 +521,7 @@ mod tests {
 
 		build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
 
-		let live_db = LabelDb::new(load_corpus(&ws.labels_dir).unwrap().files);
+		let live_db = LabelDb::new(load_label_files(&ws.labels_dir).unwrap().files);
 		let cached_db = load_db(&ws.db_path).expect("load_db should succeed");
 
 		// The redirect in index.lbl sends "022-906-032-C" to target.lbl.
@@ -538,7 +538,7 @@ mod tests {
 	}
 
 	#[test]
-	fn the_cache_carries_the_corpus_unit_numbering() {
+	fn the_cache_carries_the_label_files_unit_numbering() {
 		// The numbering is what tells the tool that `44` is a power steering
 		// unit on any VAG car. It has to survive the cache, or a second run
 		// would silently fall back to the five built-in pairings.
@@ -556,7 +556,7 @@ mod tests {
 
 		build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");
 		let cached = load_db(&ws.db_path).expect("load_db should succeed");
-		let live = LabelDb::new(load_corpus(&ws.labels_dir).unwrap().files);
+		let live = LabelDb::new(load_label_files(&ws.labels_dir).unwrap().files);
 
 		assert_eq!(cached.unit_numbers(), live.unit_numbers());
 		assert_eq!(cached.unit_name(0x44), Some("J500 - Power Steering"));

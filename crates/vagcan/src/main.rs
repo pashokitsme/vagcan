@@ -89,12 +89,12 @@ struct Cli {
 enum Command {
 	/// Parse a VCDS installation into `~/.vagcan`. Run once. Offline.
 	///
-	/// Everything the label corpus contributes — the parsed corpus itself, the
+	/// Everything the label files contributes — the parsed label files itself, the
 	/// measurement names, the `.rod` section keys — is derived from a VCDS
 	/// installation and cannot be shipped with this tool, because it is
 	/// Ross-Tech's data. This recovers all three from an installation you have.
 	///
-	/// It takes minutes over a full corpus, mostly in the name recovery, and it
+	/// It takes minutes over a full label_files, mostly in the name recovery, and it
 	/// touches no car. Running it again on an unchanged installation does
 	/// nothing and says so.
 	///
@@ -140,7 +140,7 @@ enum Command {
 		#[arg(long)]
 		identify: bool,
 		/// VCDS label directory. Each unit's part number is resolved against the
-		/// corpus, which supplies the diagnostic address and the corpus's name
+		/// label_files, which supplies the diagnostic address and the label files' name
 		/// for it — data, not a table in this program. Defaults to what `vagcan
 		/// setup` extracted into ~/.vagcan; a dir given here overrides it.
 		#[arg(long, value_name = "DIR", requires = "identify")]
@@ -876,23 +876,23 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 	const GATEWAY_REQUEST: u16 = 0x710;
 	const VW_RESPONSE_OFFSET: u16 = 0x6A;
 
-	// The corpus turns a part number the car reports into the unit's diagnostic
+	// The label files turns a part number the car reports into the unit's diagnostic
 	// address and name, for any VAG car rather than for a list written here.
 	// `--labels` defaults to what `vagcan setup` extracted into ~/.vagcan, so
 	// `units --identify` resolves names with no flag; a dir given wins, and a
-	// machine that has not run setup simply identifies without corpus names.
-	let corpus_dir = match labels_dir {
+	// machine that has not run setup simply identifies without label files name.
+	let label_files_dir = match labels_dir {
 		Some(dir) => Some(datadir::resolve(dir)),
 		None if identify => {
 			let extracted = datadir::extracted_dir()?;
-			labels::has_corpus(&extracted).then_some(extracted)
+			labels::has_label_files(&extracted).then_some(extracted)
 		}
 		None => None,
 	};
-	let corpus = match &corpus_dir {
+	let label_files = match &label_files_dir {
 		Some(dir) => {
 			let db = labels::load_cached(dir, false)?;
-			// The corpus's numbering, in force for the rest of the run: what
+			// The label files' numbering, in force for the rest of the run: what
 			// each number *is*. Which id answers it is learned below, from the
 			// car.
 			labels::install_unit_numbers(&db);
@@ -951,15 +951,15 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 			println!("  {id:03X}  (did not answer)");
 		} else {
 			// Two names, both from data: the unit's own component string, and
-			// what the label corpus calls the part number — the latter also
+			// what the label files calls the part number — the latter also
 			// supplying the diagnostic address people use.
 			identified += 1;
-			let name = corpus
+			let name = label_files
 				.as_ref()
 				.and_then(|db| db.unit_for_part(&part))
 				.map(|u| {
 					resolved += 1;
-					// This is the pairing: the corpus says the part number is
+					// This is the pairing: the label files say the part number is
 					// unit 44, the car says 0x712 answered with it. Neither
 					// half is in this program's source, and one read of the
 					// car is what joins them.
@@ -971,7 +971,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 					u.name.clone()
 				})
 				.unwrap_or_default();
-			// The number in force — the override file's, then the corpus's,
+			// The number in force — the override file's, then the label files',
 			// then the built-in fallback's — or the request id when nothing
 			// has paired one with it.
 			let number = vag_protocol::address::UnitAddress::from_request(id)
@@ -981,11 +981,11 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 		}
 		backend = unit.into_transport().into_backend();
 	}
-	if let Some(dir) = &corpus_dir {
-		// Silence here would read as "the corpus agrees"; it usually means the
-		// corpus has no entry for these part numbers.
+	if let Some(dir) = &label_files_dir {
+		// Silence here would read as "the label files agrees"; it usually means the
+		// label files have no entry for these part numbers.
 		println!(
-			"\n{resolved} of {identified} part numbers resolved against the corpus at {}.",
+			"\n{resolved} of {identified} part numbers resolved against the label files at {}.",
 			dir.display()
 		);
 	}

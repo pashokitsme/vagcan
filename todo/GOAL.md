@@ -7,7 +7,7 @@ here. The MVP task breakdown lives in `todo/README.md`.
 
 Read the **whole car over CAN** and show measurements by name/value/unit. Names come from
 VW's own label files (`~/.vagcan/labels/names.json`); scaling is proven **live on the car** —
-the corpus provably does not carry the read identifier (`research/labels/rod-labels.md` §4.0c,
+the label files provably does not carry the read identifier (`research/labels/rod-labels.md` §4.0c,
 `research/labels/label-linkage.md` §3). Extensible foundation first; UI later.
 
 **Done and verified on the car (2026-08-01):** `vagcan info` prints the VIN and the engine
@@ -34,7 +34,7 @@ USB-CAN adapter reaches the same bus with no crypto at all.
   over a serial port (`vag-can`); any future backend implements the same seam.
 - `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
   client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan vcds labels` caches the parsed corpus to SQLite under
+  FAST** — `vagcan vcds labels` caches the parsed label files to SQLite under
   `~/.vagcan/labels/cache.sqlite`.
 - **Host = macOS Apple Silicon (M4).**
 

@@ -13,7 +13,7 @@
 //!   TTText layer, plus the per-record `product` term needed for records
 //!   where it isn't zero (needs a runtime dump to recover), are a documented
 //!   FUTURE step and are NOT built here.
-//! - `.rod` is NOT ingested into [`crate::LabelDb`] / the SQLite corpus: its
+//! - `.rod` is NOT ingested into [`crate::LabelDb`] / the SQLite label files: its
 //!   ID-indexed data model doesn't fit the block/field `.lbl`/`.clb` model.
 //!   [`decode_rod`] is a standalone decoder.
 
@@ -37,7 +37,7 @@ pub enum RodStatus {
 	/// Recovering a blocked first block is a known-plaintext attack and the
 	/// known plaintext is the zlib header: the first two bytes must decrypt to
 	/// `78 da` under the tag-derived IV, or there is nothing to search against.
-	/// In **40 % of the corpus** they do not — those files carry a per-file XOR
+	/// In **40 % of the label files** they do not — those files carry a per-file XOR
 	/// on the first-block IV of every section after `[CMP]`
 	/// (`research/labels/tttext2.md`).
 	///
@@ -94,12 +94,12 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
 }
 
 /// Every value deflate byte 0 can take at the head of a zlib stream in this
-/// corpus: `BTYPE = 2` (dynamic Huffman), `HLIT ≤ 29`, either `BFINAL`.
+/// label files: `BTYPE = 2` (dynamic Huffman), `HLIT ≤ 29`, either `BFINAL`.
 ///
 /// Sixty values, and they matter because a shifted file (`research/labels/tttext2.md`
 /// §3.3) destroys exactly this byte. The layout is RFC 1951 §3.2.7:
 /// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored blocks and fixed-Huffman blocks
-/// are excluded deliberately — no section in the corpus uses either, and
+/// are excluded deliberately — no section in the label files use either, and
 /// admitting them would double a search that is already the expensive part.
 pub(crate) fn deflate_anchors() -> impl Iterator<Item = u8> {
 	(0..=29u8).flat_map(|hlit| [0b100 | (hlit << 3), 0b101 | (hlit << 3)])
@@ -406,7 +406,7 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 /// before any work is done — and if they are not `78 da`, the crib is absent
 /// and the search declines rather than fails.
 ///
-/// A section that answers `false` here is not corrupt: 40 % of the corpus
+/// A section that answers `false` here is not corrupt: 40 % of the label files
 /// carries a per-file XOR on this IV, and one of those files was opened by
 /// deriving it (`research/labels/tttext2.md`). Nothing in this crate recovers that
 /// XOR yet, which is exactly why the two cases are reported apart.
@@ -535,7 +535,7 @@ mod tests {
 	fn a_section_the_search_cannot_start_on_says_so_instead_of_undecodable() {
 		// The search is a known-plaintext attack whose crib is the zlib header.
 		// Corrupt the compressed section's first block and the crib is gone —
-		// which is the shape 40 % of the real corpus has, where the IV carries
+		// which is the shape 40 % of the real label files have, where the IV carries
 		// a per-file XOR nobody had noticed. Reporting that as `Undecodable`
 		// reads as "this file is broken", and it is not.
 		let mut data = hex_decode(FIXTURE_HEX);
@@ -610,7 +610,7 @@ mod tests {
 	// --- the per-file IV shift (`research/labels/tttext2.md`) ----------------------
 
 	/// Build a zlib section encrypted under an IV that has been XORed with a
-	/// per-file mask, the way 40 % of the corpus is.
+	/// per-file mask, the way 40 % of the label files are.
 	fn shifted_section(tag: &[u8], mask: [u8; 8]) -> (Vec<u8>, Vec<u8>, [u8; 5], u8) {
 		// Skewed text, so miniz emits a dynamic-Huffman block (BTYPE 2).
 		let plain: Vec<u8> = (0..4096u32)

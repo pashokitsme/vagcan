@@ -94,7 +94,7 @@ pub enum Role {
 ///
 /// Boost pressure is only the pair this project proved first — a gearbox
 /// publishes specified and actual clutch pressure, an engine specified and
-/// actual throttle angle, and so on. The corpus writes the distinction several
+/// actual throttle angle, and so on. The label files write the distinction several
 /// ways, so more than one spelling is recognised; the first two are what this
 /// project's own catalogs use.
 const ROLE_SUFFIXES: &[(&str, Role)] = &[

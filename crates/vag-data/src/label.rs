@@ -1,4 +1,4 @@
-//! Parser for Ross-Tech VCDS plaintext `.lbl` label files.
+//! Parser for Ross-Tech VCDS plaintext `.lbl` label_files.
 //!
 //! `.lbl` files are ISO-8859-1, CRLF-terminated, `;`-commented. Each content line
 //! is a comma-separated record whose first field selects the record kind:
@@ -7,7 +7,7 @@
 //!
 //! The compiled/encrypted `.clb` sibling format is TEA-CBC encrypted and IS
 //! handled, but not here: see the [`crate::clb`] module (decryption) and the
-//! `vagcan vcds corpus` binary (which feeds decrypted `.clb` bytes back through
+//! `vagcan vcds dump` binary (which feeds decrypted `.clb` bytes back through
 //! `parse_label`). Most MQB-era labels ship only as `.clb`.
 
 use serde::Serialize;
@@ -21,19 +21,19 @@ pub struct LabelFile {
 	/// What the file says the unit is, from its own header comment:
 	/// `; Component: J743 - Transmission Electronic (#02) - …`.
 	///
-	/// This is the corpus's answer to "which control unit is this, and what
+	/// This is the label files' answer to "which control unit is this, and what
 	/// number does the diagnostic world call it" — the alternative being a
 	/// table of one car's units written into the code, which would be wrong
 	/// on every other car.
 	pub unit: Option<UnitLabel>,
 }
 
-/// A control unit as the label corpus describes it.
+/// A control unit as the label files describes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnitLabel {
 	/// The VW diagnostic address, e.g. `0x02` for a gearbox — written `02`.
 	pub address: u8,
-	/// The human name, as the corpus spells it.
+	/// The human name, as the label files spell it.
 	pub name: String,
 }
 
@@ -258,7 +258,7 @@ pub fn parse_label(source: impl Into<String>, bytes: &[u8]) -> LabelFile {
 		}
 		let (content, comment) = split_comment(line);
 		if content.is_empty() {
-			// A full-line comment is where the corpus states which unit the
+			// A full-line comment is where the label files states which unit the
 			// file is for, so it is read rather than discarded.
 			if unit.is_none() {
 				if let Some(text) = comment {
@@ -288,7 +288,7 @@ mod tests {
 		assert_eq!(unit.address, 0x02);
 		assert_eq!(unit.name, "J743 - Transmission Electronic");
 
-		// Addresses are hex in this corpus: 5F is a real one, and reading it
+		// Addresses are hex in these label files: 5F is a real one, and reading it
 		// as decimal would silently land on a different unit.
 		let unit = parse_component_comment(" Component: Information Electr. (#5F)").unwrap();
 		assert_eq!(unit.address, 0x5F);

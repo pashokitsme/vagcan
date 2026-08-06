@@ -52,13 +52,13 @@ pub enum Naming {
 		failure_type: Option<u8>,
 	},
 	/// The unit's catalogue does not list this code. Its file is from a
-	/// different vintage than the corpus's `RD.rod`, or than the unit's own
+	/// different vintage than the label files' `RD.rod`, or than the unit's own
 	/// software.
 	NotListed,
 	/// The registry row is there and does not have a row's shape.
 	Unreadable,
 	/// The row named a `Codes.dat` key this `Codes.dat` does not have — 1.0 %
-	/// of the registry's rows, a corpus/text-file vintage mismatch.
+	/// of the registry's rows, label files/text-file vintage mismatch.
 	NoText { codes_key: u32 },
 }
 
@@ -97,7 +97,7 @@ impl Namer {
 	/// Open a VCDS installation for naming.
 	///
 	/// `root` is the install root or any directory above the files: `RD.rod`
-	/// and `Codes.dat` are searched for by name, since a corpus copied out of
+	/// and `Codes.dat` are searched for by name, since label files copied out of
 	/// an installation keeps the layout but not always the root.
 	pub fn open(root: &Path, iv_cache: &Path) -> Result<Self> {
 		// No keys at all is not "the registry did not decode" — it is that
@@ -136,7 +136,7 @@ impl Namer {
 		})
 	}
 
-	/// How many rows the registry has — the one number that says the corpus
+	/// How many rows the registry has — the one number that says the label files
 	/// opened.
 	pub fn registry_rows(&self) -> usize {
 		self.registry.len()
@@ -187,7 +187,7 @@ impl Namer {
 pub fn unit_note(lookup: &UnitLookup) -> Option<String> {
 	match lookup {
 		UnitLookup::Found { .. } => None,
-		UnitLookup::NoFile => Some("the corpus has no ODX file of the name this unit gives — codes only".to_string()),
+		UnitLookup::NoFile => Some("the label files have no ODX file of the name this unit gives — codes only".to_string()),
 		UnitLookup::NoSection { candidates } => Some(format!(
 			"none of the {candidates} ODX files of this family carries a fault catalogue — codes only"
 		)),
@@ -252,7 +252,7 @@ mod tests {
 	#[test]
 	fn a_units_missing_catalogue_is_explained_rather_than_hidden() {
 		// On the reference car the body control module's F19E is EV_BCMMQB and
-		// no file in the English corpus starts with that name.
+		// no file in the English label files start with that name.
 		assert!(unit_note(&UnitLookup::NoFile).unwrap().contains("no ODX file"));
 		assert!(unit_note(&UnitLookup::NoSection { candidates: 14 }).unwrap().contains("14"));
 		assert!(

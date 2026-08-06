@@ -10,7 +10,7 @@ vag-transport = { path = "../vag-transport", features = ["test-util"] }
 vag-can = { path = "../vag-can", features = ["slcan"] }
 vag-data = { path = "../vag-data" }
 vag-capture = { path = "../vag-capture" }
-# SQLite cache over the label corpus: parse the VCDS install once, load it back
+# SQLite cache over the label files: parse the VCDS install once, load it back
 # in milliseconds on every later run.
 vag-db = { path = "../vag-db" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }

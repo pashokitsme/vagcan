@@ -1,6 +1,6 @@
 //! What the tool says when the data it needs has not been made yet.
 //!
-//! Nothing this tool reads ships with it. The label corpus is Ross-Tech's and
+//! Nothing this tool reads ships with it. The label files are Ross-Tech's and
 //! cannot be redistributed; the measurement rows were proven on a car and
 //! cannot be invented. So a fresh checkout is *expected* to be short of both,
 //! and the only question is whether it says so.
@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// Where a VCDS installation comes from. This project cannot ship the data:
-/// it is Ross-Tech's, and the whole corpus is derived from their product.
+/// it is Ross-Tech's, and all the label files are derived from their product.
 pub const VCDS_DOWNLOAD: &str = "https://www.ross-tech.com/vcds/download/";
 
 /// The three commands that turn raw bytes into proven numbers, in order.
@@ -51,7 +51,7 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
          They are recovered from a VCDS installation, in one command:\n    \
          vagcan setup /path/to/VCDS\n\n\
          That is offline — no adapter, no car — and it takes a few minutes over the\n\
-         whole corpus. It writes everything under ~/.vagcan/data/extracted/.\n\n\
+         whole label_files. It writes everything under ~/.vagcan/data/extracted/.\n\n\
          If you have no VCDS installation: this project cannot ship the data, because\n\
          it is Ross-Tech's. {VCDS_DOWNLOAD}"
 	);
@@ -88,7 +88,7 @@ pub fn no_fault_labels(looked_in: &Path) -> String {
 /// No proven measurement rows for the car in front of the tool.
 ///
 /// Deliberately does **not** mention `setup`. A VCDS installation supplies
-/// names and nothing else — the corpus provably carries no scaling
+/// names and nothing else — the label files provably carries no scaling
 /// (`research/labels/rod-labels.md` §4.0c) — so parsing one again cannot
 /// produce a single row of what is missing here. Only a drive can.
 pub fn no_catalog(subject: &str, dir: &Path) -> String {
@@ -99,7 +99,7 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
 		out,
 		"\n\
          A row says what an identifier's bytes mean — the raw form, the factor and the\n\
-         offset — and every one of them was measured on a car. The label corpus does not\n\
+         offset — and every one of them was measured on a car. The label files do not\n\
          carry scaling and never did, so this is not something `vagcan setup` can fix.\n\n\
          What does fix it is a drive:\n\
          {}\n\n\

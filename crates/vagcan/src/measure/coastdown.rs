@@ -738,9 +738,9 @@ impl Open {
 /// Whether a selector label means neutral.
 ///
 /// The gate's lettering is one of the few things about a car that is not a
-/// corpus question: P-R-N-D is the sequence type approval requires, so `N` is
+/// label files question: P-R-N-D is the sequence type approval requires, so `N` is
 /// what a selector channel spells neutral with, whatever the catalog's language.
-/// Anything else — a manual car with no selector channel at all, a corpus that
+/// Anything else — a manual car with no selector channel at all, label files that
 /// writes something longer — arrives as [`None`] or as a label that is not
 /// neutral, and either way no pass opens, which is the safe direction.
 fn in_neutral(label: &str) -> bool {

@@ -1,11 +1,11 @@
-//! `vagcan vcds corpus` — parse a whole VCDS `Labels/` directory into JSON.
+//! `vagcan vcds dump` — parse a whole VCDS `Labels/` directory into JSON.
 //!
 //! Was the `vag-labels` binary. Its `--lookup` flag is gone rather than ported:
 //! `vagcan vcds labels --part` answers the same question from a SQLite cache
 //! instead of reparsing several thousand files, and two commands for one job
 //! means the next session picks the slower one without knowing it.
 //!
-//! What is left is the thing nothing else does — the whole corpus in one
+//! What is left is the thing nothing else does — all the label files in one
 //! structured file, `.clb` decrypted on the way through, for searching, for
 //! diffing one VCDS version against another, or for handing to a tool that is
 //! not this program.
@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use vag_data::label::{LabelFile, Record};
-use vag_data::load_corpus;
+use vag_data::load_label_files;
 
 #[derive(Default)]
 struct Stats {
@@ -42,7 +42,7 @@ fn tally(stats: &mut Stats, lf: &LabelFile) {
 }
 
 pub fn run(dir: &str, out: Option<&str>) -> Result<()> {
-	let load = load_corpus(Path::new(dir)).with_context(|| format!("reading {dir:?}"))?;
+	let load = load_label_files(Path::new(dir)).with_context(|| format!("reading {dir:?}"))?;
 
 	let mut stats = Stats {
 		lbl_files: load.lbl_count,
@@ -51,18 +51,18 @@ pub fn run(dir: &str, out: Option<&str>) -> Result<()> {
 		read_errors: load.read_errors,
 		..Default::default()
 	};
-	let mut corpus: Vec<LabelFile> = load.files;
-	for lf in &corpus {
+	let mut label_files: Vec<LabelFile> = load.files;
+	for lf in &label_files {
 		tally(&mut stats, lf);
 	}
 
 	// Deterministic ordering, so two runs — or two VCDS versions — diff.
-	corpus.sort_by(|a, b| a.source.cmp(&b.source));
+	label_files.sort_by(|a, b| a.source.cmp(&b.source));
 
 	if let Some(out) = out {
-		let json = serde_json::to_string_pretty(&corpus).context("serialising the corpus")?;
+		let json = serde_json::to_string_pretty(&label_files).context("serialising the label files")?;
 		std::fs::write(out, json).with_context(|| format!("writing {out:?}"))?;
-		eprintln!("wrote {} label files to {out}", corpus.len());
+		eprintln!("wrote {} label files to {out}", label_files.len());
 	}
 
 	print!("{}", render_summary(&stats));
@@ -70,7 +70,7 @@ pub fn run(dir: &str, out: Option<&str>) -> Result<()> {
 }
 
 fn render_summary(s: &Stats) -> String {
-	let mut out = String::from("== VCDS Labels corpus summary ==\nFiles:\n");
+	let mut out = String::from("== VCDS Labels label files summary ==\nFiles:\n");
 	out.push_str(&format!("  .lbl parsed : {}\n", s.lbl_files));
 	out.push_str(&format!("  .clb parsed (decrypted via TEA-CBC) : {}\n", s.clb_files));
 	out.push_str(&format!("  other       : {}\n", s.other_files));
@@ -108,7 +108,7 @@ mod tests {
 	}
 
 	#[test]
-	fn an_empty_corpus_claims_no_coverage() {
+	fn an_empty_label_set_claims_no_coverage() {
 		// "0/0 parsed (100%)" is the kind of line that makes a broken path look
 		// like a working one.
 		assert!(!render_summary(&Stats::default()).contains("Coverage"));

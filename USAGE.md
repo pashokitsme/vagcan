@@ -37,14 +37,14 @@ vagcan setup                    # or be offered one to download
 vagcan setup --lang en          # …and answer the question up front, for a script
 ```
 
-It takes several minutes over a full corpus, almost all of it in step 2. Watch it
+It takes several minutes over a full set of label files, almost all of it in step 2. Watch it
 say what it is doing:
 
 ```
 Reading the VCDS installation at /Users/you/vcds-en
 Writing everything to /Users/you/.vagcan/data/extracted
 
-[1/3] Label corpus — parsing every .lbl and decrypting every .clb.
+[1/3] Label files — parsing every .lbl and decrypting every .clb.
 cached 3035 label files (101241 measurements) in …/data/extracted/cache.sqlite
 [2/3] Measurement names — opening TTTEXT.ROD, then reading its cipher.
       This is the slow part: every record is under its own substitution, and the
@@ -53,7 +53,7 @@ cached 3035 label files (101241 measurements) in …/data/extracted/cache.sqlite
 
 Done.
 
-  the label corpus: 3035 label files
+  the label files: 3035 label files
     /Users/you/.vagcan/data/extracted/cache.sqlite
   the measurement names: 3987 names
     /Users/you/.vagcan/data/extracted/names.json
@@ -114,7 +114,7 @@ vagcan units                          # just the ids
 vagcan units --identify               # each unit names itself; slower
 ```
 
-After `setup`, `--identify` also resolves each part number against the corpus, which
+After `setup`, `--identify` also resolves each part number against the label files, which
 supplies the unit's diagnostic number and name and pairs that number with the CAN id
 that answered — none of it written in this program. Pass `--labels /other/VCDS` only to
 point at an installation other than the one `setup` used.
@@ -293,11 +293,11 @@ vagcan vcds labels /path/to/VCDS --part 8V0906264H
 vagcan vcds labels /path/to/VCDS --block 2 --field 1
 vagcan vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
 vagcan vcds rod TTTEXT.ROD --dump out/         # open a .rod container
-vagcan vcds corpus /path/to/VCDS/Labels --out corpus.json
+vagcan vcds label files /path/to/VCDS/Labels --out label files.json
 vagcan vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
 ```
 
-`vcds names` searches names keyed by the corpus's own **text id**, not by data
+`vcds names` searches names keyed by the label files' own **text id**, not by data
 identifier — that join does not exist in the label files. A match is a hypothesis to
 test against the car, not an identification.
 
@@ -323,7 +323,7 @@ vagcan watch                       # now every unit is on offer
 ## Flow: teaching it a new measurement
 
 This is the loop that turns raw bytes into numbers, and it needs **a car, not a VCDS
-installation**. Nothing in any label corpus carries a scaling.
+installation**. Nothing in any label files carry a scaling.
 
 **1. Find what moves.** Two sweeps, one parked and one after a drive:
 
@@ -395,7 +395,7 @@ redistributed unmodified; you can also get it from them directly at
 ### "This car has no proven measurement rows" / a screen full of `(raw)`
 
 The car has never been calibrated. **`vagcan setup` cannot fix this**, however many
-times you run it: a label corpus carries names and no scaling at all, so no
+times you run it: label files carry names and no scaling at all, so no
 installation of VCDS contains what is missing.
 
 ```sh

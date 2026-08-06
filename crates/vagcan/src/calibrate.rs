@@ -18,7 +18,7 @@
 //! - **Coverage.** VCDS reads the groups it has labels for; `watch` reads
 //!   whatever is asked of it.
 //!
-//! What it cannot do: **name** anything (names come from the label corpus via
+//! What it cannot do: **name** anything (names come from the label files via
 //! a VCDS log's `IDE`/`ENG` numbers), or find a quantity unrelated to
 //! everything already known — with no reference to track, there is nothing to
 //! fit against.
@@ -251,7 +251,7 @@ fn identifier_of(column: &str) -> Option<u16> {
 /// The fits, as the catalog `watch` and `measure` read.
 ///
 /// **Unnamed on purpose.** A fit proves what an identifier's bytes mean, not
-/// what the quantity is called; the corpus is where names come from, and
+/// what the quantity is called; the label files are where names come from, and
 /// putting the reference's name on the row would claim the unknown *is* the
 /// reference rather than proportional to it. So the row is keyed by the
 /// identifier, and naming it is a separate, manual act.
@@ -302,7 +302,7 @@ pub fn run(log: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<(
 	}
 	println!(
 		"\nThese are scalings, not names: what a value IS still comes from the label \n\
-         corpus, via a VCDS log's IDE/ENG numbers."
+         label_files, via a VCDS log's IDE/ENG numbers."
 	);
 
 	// Without this the path we tell people to walk — survey, drive, calibrate —

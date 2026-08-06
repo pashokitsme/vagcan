@@ -1,6 +1,6 @@
 //! Breaking the per-record substitution of `TTTEXT.ROD`.
 //!
-//! The corpus's global text table holds the names of every measurement and
+//! The label files' global text table holds the names of every measurement and
 //! fault, keyed by a six-digit id that is in plain sight. The payloads are not:
 //! each record is enciphered with a substitution **chosen afresh for that
 //! record**, acting on three disjoint alphabets — the 26 letters (case
@@ -10,7 +10,7 @@
 //! the frequency bands and from cribs.
 //!
 //! Ninety characters of ciphertext under an unknown 26-letter permutation is
-//! solvable from a dictionary, and the corpus supplies its own: names already
+//! solvable from a dictionary, and the label files supplies its own: names already
 //! recovered feed the vocabulary that recovers the next ones. This module is
 //! that solver.
 //!
@@ -158,7 +158,7 @@ pub struct Dictionary {
 
 impl Dictionary {
 	/// Add a word with a weight. Higher weights win ties, so in-domain
-	/// vocabulary should outweigh a general word list — the corpus's own
+	/// vocabulary should outweigh a general word list — the label files' own
 	/// language is the strongest prior available.
 	pub fn insert(&mut self, word: &str, weight: f32) {
 		if word.len() < 2 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -209,7 +209,7 @@ pub struct Limits {
 
 impl Default for Limits {
 	fn default() -> Self {
-		// Measured on the reference corpus: raising the step budget past
+		// Measured on the reference label files: raising the step budget past
 		// ~200k changes the outcome for well under 1 % of records while
 		// costing time linearly, and 0.6 coverage is where fluent readings
 		// stop appearing among the rejects.

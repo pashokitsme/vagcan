@@ -1,7 +1,7 @@
 //! Which channels a run reads, chosen by what the catalogs **call** them.
 //!
 //! Nothing here names an identifier. Which identifier carries road speed is a
-//! fact about one car; the words a corpus uses for it are shared, so every
+//! fact about one car; the words label files use for it are shared, so every
 //! channel is found the way [`crate::watch::plan::select_basics`] already finds
 //! the basics — by name, over the rows the car's own units report catalogs for,
 //! plus the legislated SAE J1979 set on the units ISO 15765-4 obliges to answer
@@ -117,7 +117,7 @@ impl Set {
 ///
 /// The names are the whole of the report on purpose: a car this project has
 /// never seen fails here at a standstill, and the only useful thing to tell
-/// its owner is which words their corpus would have to use.
+/// its owner is which words their label files would have to use.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Missing {
 	pub key: &'static str,
@@ -151,7 +151,7 @@ enum Prefer {
 	Proven,
 }
 
-/// One thing a run wants to read, described by the words a corpus would use
+/// One thing a run wants to read, described by the words label files would use
 /// for it rather than by where it lives.
 struct RoleSpec {
 	key: &'static str,
@@ -725,7 +725,7 @@ mod tests {
 	#[test]
 	fn a_store_with_no_speed_channel_says_what_it_looked_for() {
 		// A car this project has never seen: the honest answer is a refusal
-		// naming the words its corpus would have to use, never a number
+		// naming the words its label files would have to use, never a number
 		// borrowed from another car.
 		let synthetic = Synthetic::new("no-speed");
 		synthetic.write("SYN0000009", vec![quantity("Odometer", "km", 0x1010, 1.0)]);

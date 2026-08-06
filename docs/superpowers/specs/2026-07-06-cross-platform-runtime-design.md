@@ -51,7 +51,7 @@ so the seam is abstract enough that future targets slot in without touching the 
 
 ### Non-goals
 
-- Porting the label database (`vag-db`/`vag-data` corpus) to embedded. It stays desktop-only.
+- Porting the label database (`vag-db`/`vag-data` label files) to embedded. It stays desktop-only.
 - Shipping the `vag-runtime-esp` adapter in milestone 1. It is designed here at sketch depth
   and built in milestone 2.
 - Replacing the existing transport traits. They are already the right shape; we build *below*
@@ -62,7 +62,7 @@ so the seam is abstract enough that future targets slot in without touching the 
 On the ESP32-S3 the device runs the **portable core** (transport traits + slcan codec +
 software ISO-TP + UDS client) plus **minimal inline decode only**: VIN is ASCII and part
 numbers are ASCII straight out of UDS reads (`22 F1 90`, `22 F1 87`, …), so basic
-`vagcan info`-style output needs no label corpus. The full label-enrichment path
+`vagcan info`-style output needs no label files. The full label-enrichment path
 (`vag-db`/`vag-data`) stays desktop-only. Therefore `vagcan info` on the S3 yields **raw UDS
 reads + basic decode**, not the label-enriched desktop output. Enriching embedded output
 later (by making `vag-data`'s pure decoders `no_std`+alloc) is out of scope now and noted as
@@ -102,7 +102,7 @@ both desktop std and ESP32-S3:
 |---|---|
 | `vag-hex` | FTDI D2XX clone cable via a native `.dylib`/`.dll` — no embedded equivalent. |
 | `vag-db` | `rusqlite` → the SQLite C library. |
-| `vag-data` | label parsers + on-disk corpus file I/O. (Its *pure decoders* could later go `no_std`+alloc — §9.) |
+| `vag-data` | label parsers + on-disk label files file I/O. (Its *pure decoders* could later go `no_std`+alloc — §9.) |
 | `vag-capture` | replay/test tooling (JSON-lines fixtures, host filesystem). |
 
 **Runtime adapters** — thin; each implements the two portable seams for one platform:
@@ -363,7 +363,7 @@ portable-core code** the desktop uses.
   error variant needed.
 - **Making `vag-data`'s pure decoders `no_std`+alloc (future, out of scope).** To enrich
   embedded output beyond raw ASCII (e.g. run `.clb`/TEA decode on-device), the *pure* decoders
-  could later move to `no_std`+alloc while file/corpus I/O stays desktop-only. Not now.
+  could later move to `no_std`+alloc while file/label files I/O stays desktop-only. Not now.
 
 ---
 

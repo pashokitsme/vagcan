@@ -35,7 +35,7 @@ pub struct ChannelFound {
 /// person whose car is not in the catalogs cannot do anything with "speed is
 /// missing", but `survey --diff` is exactly the tool that finds it. The names
 /// the resolution looked under come between the two, because they are what
-/// somebody reading their own corpus can check against without driving.
+/// somebody reading their own label files can check against without driving.
 pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> String {
 	let mut out = String::new();
 	let names: Vec<&str> = missing.iter().map(|m| m.key).collect();
@@ -56,7 +56,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		);
 	}
 	// The words, because they are the half of this the reader can act on
-	// without a survey: a car whose corpus calls the channel something else is
+	// without a survey: a car whose label files calls the channel something else is
 	// the ordinary reason for this refusal, and the only useful thing to tell
 	// its owner is which names their catalogs would have to use.
 	for m in missing.iter().filter(|m| !m.tried.is_empty()) {
@@ -83,7 +83,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
          Move that file to ~/.vagcan/data/measured/ — the file name is the unit's own\n\
          F187 part number — and name its rows so this command can find them:\n\
          `speed` and `gear` are what it looks for.\n\n\
-         None of this is what `vagcan setup` does. A label corpus carries names and no\n\
+         None of this is what `vagcan setup` does. Label files carry names and no\n\
          scaling at all, so no installation of VCDS can supply what is missing here."
 	);
 	out
@@ -402,7 +402,7 @@ mod tests {
 	#[test]
 	fn a_missing_channel_says_which_names_were_looked_under() {
 		// The resolution carried them all the way here and then dropped them.
-		// For a car this project has never seen, the words its corpus would
+		// For a car this project has never seen, the words its label files would
 		// have to use are the only thing the owner can check by reading.
 		let text = missing_channels(
 			&[],

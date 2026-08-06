@@ -15,7 +15,7 @@
 //! character set is exactly the 40 symbols [`MWB_CODE_SYMBOLS`]
 //! (`0-9 A-Z , . - _`), and a base-40 reading has the right ceiling (40² = 1600,
 //! vs `STRUC.rod`'s 1623 structure ids), but **base-40 `code → STRUC-id` is
-//! unproven**: on the owner-corpus MWB list it lands in-range only ~3σ above the
+//! unproven**: on the owner-label files MWB list it lands in-range only ~3σ above the
 //! chance baseline (≈188/221 vs ≈168 expected, across every alphabet
 //! order/endianness/offset), the code does not echo into the mapped STRUC
 //! record, and no base-40 charset/arithmetic exists in VCDS's binary (the `#0x28`

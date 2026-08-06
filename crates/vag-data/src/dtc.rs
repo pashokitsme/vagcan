@@ -47,7 +47,7 @@ const FIELDS: usize = 7;
 /// `UDS_EV/RD.rod`'s `[DTC]` section: every row of the global fault registry,
 /// in file order, because the order is what a unit file points into.
 ///
-/// 236 755 rows in 110 767 tables on the corpus this was built against. The
+/// 236 755 rows in 110 767 tables on the label files this was built against. The
 /// decoded text is kept whole and rows are offsets into it — a `String` per
 /// row would be a quarter-million allocations for a lookup that touches a
 /// handful.
@@ -170,7 +170,7 @@ pub struct UnitCatalogue {
 impl UnitCatalogue {
 	/// Build the catalogue from a unit's decoded `[DTC]` section.
 	///
-	/// Ids that fall outside the registry are dropped: a file from a corpus of
+	/// Ids that fall outside the registry are dropped: a file from a set of label files of
 	/// a different vintage than `RD.rod` is a real possibility and it must
 	/// narrow the catalogue, not corrupt it. How many were kept is what
 	/// [`UnitCatalogue::is_consistent_with_registry`] then judges.
@@ -236,9 +236,9 @@ impl UnitCatalogue {
 pub enum UnitLookup {
 	/// The catalogue, and the file it came from.
 	Found { file: PathBuf, catalogue: UnitCatalogue },
-	/// No file of that ODX name anywhere in the corpus. On the reference car
+	/// No file of that ODX name anywhere in the label_files. On the reference car
 	/// this is the body control module, whose `F19E` is `EV_BCMMQB` and which
-	/// the English corpus simply does not ship.
+	/// the English label files simply does not ship.
 	NoFile,
 	/// The family is there and no member of it carries a `[DTC]` section.
 	/// Within a family exactly one file does, and the variants carry an `INC`
@@ -262,11 +262,11 @@ pub enum UnitLookup {
 /// `odx_name` is the unit's `F19E` and `version` its `F1A2`; both come off the
 /// car, which is what keeps file selection a lookup the vehicle answers rather
 /// than a table about one vehicle. Candidates are tried best match first
-/// ([`crate::corpus::find_rod_by_odx_variant`]) and the first with a readable
+/// ([`crate::label_files::find_rod_by_odx_variant`]) and the first with a readable
 /// `[DTC]` section wins — which is also how the one file in a family that
 /// carries the section gets picked out, without a list of which one it is.
 pub fn unit_catalogue(root: &Path, odx_name: &str, version: &str, cache: &IvCache, registry: &DtcRegistry) -> UnitLookup {
-	let candidates = crate::corpus::find_rod_by_odx_variant(root, odx_name, version).unwrap_or_default();
+	let candidates = crate::label_files::find_rod_by_odx_variant(root, odx_name, version).unwrap_or_default();
 	if candidates.is_empty() {
 		return UnitLookup::NoFile;
 	}
@@ -310,7 +310,7 @@ enum Section {
 
 /// Decode one file's `[DTC]` section, using the cache and never the search.
 ///
-/// Every `[DTC]` section in this corpus carries a nonzero per-record term, so
+/// Every `[DTC]` section in these label files carry a nonzero per-record term, so
 /// none of them opens without a recovered key — which is why the cache is the
 /// mechanism here and not an optimisation.
 fn section_of(path: &Path, cache: &IvCache) -> Section {
@@ -433,7 +433,7 @@ mod tests {
 
 	#[test]
 	fn an_index_past_the_end_of_the_registry_is_dropped_not_kept() {
-		// A unit file from a corpus of a different vintage than `RD.rod` can
+		// A unit file from a set of label files of a different vintage than `RD.rod` can
 		// point past it. That must shrink the catalogue, never index wrongly.
 		let registry = DtcRegistry::parse(SECTION);
 		let catalogue = UnitCatalogue::parse("9999,F2\r\n1,07\r\n", &registry);

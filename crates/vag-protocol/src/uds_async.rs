@@ -105,7 +105,7 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
 	/// whether or not it has.
 	///
 	/// The interesting part is that this is a *complete list in the unit's own
-	/// order* — which is the shape the label corpus stores fault names in, and
+	/// order* — which is the shape the label files stores fault names in, and
 	/// therefore a candidate for joining the two without a lookup table.
 	pub async fn read_supported_dtcs(&mut self) -> Result<Vec<RawDtc>, UdsError> {
 		let resp = self.request(0x19, &[0x0A]).await?;

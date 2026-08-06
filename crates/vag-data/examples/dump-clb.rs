@@ -1,6 +1,6 @@
 //! Print a `.clb` label file as plain text.
 //!
-//! The corpus is the tool's data source, so being able to look at one file the
+//! The label files are the tool's data source, so being able to look at one file the
 //! way the parser sees it is worth a permanent example rather than a throwaway
 //! script.
 fn main() {

@@ -1,4 +1,4 @@
-//! `vag-db` — build and query a SQLite cache of the parsed VCDS label corpus.
+//! `vag-db` — build and query a SQLite cache of the parsed VCDS label_files.
 //!
 //! Usage:
 //!   vag-db build  <labels-dir> <out.sqlite>
@@ -7,13 +7,13 @@
 //!   vag-db rod    <file.rod>
 //!
 //! `build` walks `<labels-dir>` (parsing every `.lbl` and decrypting+parsing
-//! every `.clb`, see [`vag_data::load_corpus`]) and writes the parsed corpus
+//! every `.clb`, see [`vag_data::load_label_files`]) and writes the parsed label files
 //! to a SQLite file, overwriting any existing tables of the same name.
 //! `lookup` loads that cache into a [`vag_data::LabelDb`] and resolves a part
 //! number exactly like `vagcan vcds labels --part`. `stats` prints row counts per
 //! table. `rod` decodes a `.rod` (UDS/ODX) file's sections and prints each
 //! one's tag, decode status, and text (see [`vag_data::decode_rod`]); `.rod`
-//! is NOT part of the SQLite corpus.
+//! is NOT part of the SQLite label_files.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -84,7 +84,7 @@ fn print_lookup(db: &vag_data::LabelDb, part_no: &str) {
 		}
 		None => {
 			println!("== Lookup {part_no} ==");
-			println!("no match found in corpus of {} file(s)", db.len());
+			println!("no match found across {} label file(s)", db.len());
 		}
 	}
 }

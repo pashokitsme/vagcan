@@ -85,7 +85,7 @@ print — `000129 → B1168 F2 Steering Angle Sensor: Not Initialized`. On the r
 car 11 of 15 confirmed codes name.
 
 A code stays a number when the chain cannot reach it, and the reason is printed above
-the unit: no ODX file of that name in the corpus, or no file of its family carrying a
+the unit: no ODX file of that name in the label files, or no file of its family carrying a
 fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
 the one thing this path refuses to do, and it has held at zero wrong answers across
 every check (`research/labels/fault-naming-hop.md`).
@@ -180,7 +180,7 @@ vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
 
 - A value with no proven scaling is bytes. Say so; do not convert it.
 - A name found with `vagcan vcds names` is a **hypothesis**, not an identification:
-  the corpus carries no name-to-identifier join. Never present one as the meaning of a
+  the label files carry no name-to-identifier join. Never present one as the meaning of a
   reading without a live confirmation.
 - Quote the unit by both its number and what it called itself, because the numbering
   differs between the two addressing blocks.

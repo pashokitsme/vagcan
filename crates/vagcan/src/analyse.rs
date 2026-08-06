@@ -634,7 +634,7 @@ pub fn fit_all(
 /// The row is named by the measurement's own `IDE` identifier, not by the
 /// string VCDS displayed. Two reasons: those strings are Ross-Tech's
 /// localised label text, which this project does not reproduce, and the
-/// architecture sources names from the label corpus anyway. What the car
+/// architecture sources names from the label files anyway. What the car
 /// supplies is the scaling.
 pub fn to_catalog(fits: &[Fitted]) -> vag_data::catalog::MeasurementCatalog {
 	use std::borrow::Cow;

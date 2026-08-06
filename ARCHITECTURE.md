@@ -12,7 +12,7 @@ unit, [`SAFETY.md`](SAFETY.md).
 
 **Names come from VCDS's label files. Scaling cannot.**
 
-Ross-Tech's VCDS ships a 300 MB corpus of label and ODX files, and it holds a great
+Ross-Tech's VCDS ships 300 MB of label and ODX files, and it holds a great
 deal: what every control unit is called, what its measuring blocks are called, which
 fault codes exist and how they read in words. What it does not hold — anywhere, in
 any encoding — is the join from a measurement to the identifier that carries it, or
@@ -51,7 +51,7 @@ indistinguishable, at the call site, from a constant that is true of the ISO
 standard — until somebody points the tool at an Audi and gets confident nonsense. So
 an offset or a magic number is a red flag: before writing one, establish whether it
 is a property of the *protocol* (ISO/UDS/OBD-II, fine, cite the standard) or of *one
-car* (not fine — it comes from the corpus, or from a read).
+car* (not fine — it comes from the label files, or from a read).
 
 ### The catalog schema
 
@@ -164,15 +164,15 @@ cluster, and words read off solved records become vocabulary for the next pass. 
 
 One command, three steps, everything under `~/.vagcan/data/extracted/`.
 
-**1. The corpus → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
+**1. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather
 than a re-parse of 300 MB. The cache records which directory it was built from in
 `cache.from`, because the freshness rule is an mtime comparison and an mtime cannot
-tell "older than the corpus" from "built from a *different* corpus" — which matters
+tell "older than the label files" from "built from a *different* label files" — which matters
 as soon as somebody has both the English and the Russian install.
 
 **2. `TTTEXT.ROD` → `names.json`.** The `[TXT]` section is decrypted and inflated,
-then the cipher above is attacked with the corpus's own label files as the in-domain
+then the cipher above is attacked with the label files' own label files as the in-domain
 vocabulary (weight 8) and the system word list as the general one (weight 1). This is
 the slow step: minutes, mostly single-threaded search.
 
@@ -180,10 +180,10 @@ Then comes the **prior**, and it is the difference between four thousand names a
 seventeen. Weighing every in-domain word alike leaves the search breaking a tie
 between two same-shape words — `of`/`ob`, `oil`/`bil`, `voltage`/`boltage` — by
 alphabetical order, and a cluster leader that guesses wrong pins that letter for
-every record it feeds. The fix is the word's **frequency in the decoded corpus
+every record it feeds. The fix is the word's **frequency in the decoded label files
 itself**: `of` outnumbers `ob` thousands to one, so re-solving every cluster under
 that frequency settles the ties on evidence. It is measured from the decode at parse
-time, never a table baked into the binary. Two wrinkles the reference corpus forced:
+time, never a table baked into the binary. Two wrinkles the reference label files forced:
 the in-domain seed counts a word's label-file occurrences but **saturates** them,
 because a label file lists status literals (`OK`, `ON`, `LC`) thousands of times and
 uncapped they outrank `of` and make the search read `Status ok` for `Status of`; and
@@ -215,7 +215,7 @@ And the vocabulary has to be the *seed*, not the grown one — the bootstrap fee
 words from solved records back in at high weight, so gating against the grown
 dictionary teaches the gate its own misreadings and then passes them.
 
-**3. `RD.rod` and `MUX.rod` → `rod-keys.json`.** The corpus-wide sections whose keys
+**3. `RD.rod` and `MUX.rod` → `rod-keys.json`.** The label files-wide sections whose keys
 every car needs. Per-unit files are deliberately not swept: there are over sixteen
 thousand of them, a blocked section costs about a minute of every core, and which
 handful a given car needs is a question only that car can answer.
@@ -233,13 +233,13 @@ crates/
   vag-can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
   vag-protocol    UDS client, ISO-TP framing, unit addressing
   vag-data        label parsers and decoders (.lbl/.clb/.rod), ODX resolution
-  vag-db          SQLite cache over the label corpus
+  vag-db          SQLite cache over the label files
   vag-capture     capture and replay transport, so tests need no hardware
   vagcan          the CLI
 ```
 
-`vag-protocol` cannot read a label file — it is the protocol layer and a corpus is
-not a protocol — so the corpus's unit numbering is pushed *in* from `vagcan`, and
+`vag-protocol` cannot read a label file — it is the protocol layer and label files are
+not a protocol — so the label files' unit numbering is pushed *in* from `vagcan`, and
 what crosses the seam is plain numbers and strings.
 
 **Two addressing conventions are live on the same car.** ISO 15765-4 pairs
@@ -247,7 +247,7 @@ what crosses the seam is plain numbers and strings.
 answers at `+0x6A`, so the instrument cluster is `0x714 → 0x77E`. Assuming only the
 first makes every unit outside the powertrain invisible, which is exactly what
 happened before it was measured. Which CAN id a *unit number* is answered on is in no
-data file this project has found — the corpus carries the numbers and the names and
+data file this project has found — the label files carry the numbers and the names and
 no CAN id anywhere — so that half is established by reading the car (`vagcan units
 --identify --labels`) or written down by hand.
 
@@ -274,7 +274,7 @@ same as harmless.
 ```
 crates/         the Rust workspace
 research/       reverse-engineering writeups and tooling, one directory per subject
-  labels/         VW's label corpus: the .rod crack, the name codec, fault naming
+  labels/         VW's label files: the .rod crack, the name codec, fault naming
   car/            what the reference car answers: identifier map, units, surveys
   eps/            the steering-assist incident — read alongside SAFETY.md
   clb-crack/      the RE scripts themselves

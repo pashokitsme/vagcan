@@ -1,6 +1,6 @@
 //! `vagcan setup <VCDS-DIR>` — the one command that makes this tool usable.
 //!
-//! Everything the label corpus contributes is derived from a VCDS installation,
+//! Everything the label files contributes is derived from a VCDS installation,
 //! and none of it may be redistributed: it is Ross-Tech's data. So it is not in
 //! this repository and never will be, and the price of that is a step somebody
 //! has to run once. This is that step, and it is deliberately one command with
@@ -10,8 +10,8 @@
 //!
 //! | what | how | where it lands |
 //! |---|---|---|
-//! | the raw corpus, copied | [`copy_corpus`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
-//! | the label corpus, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
+//! | the raw label_files, copied | [`copy_label_files`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
+//! | the label_files, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
 //! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/data/extracted/names.json` |
 //! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/data/extracted/rod-keys.json` |
 //!
@@ -21,7 +21,7 @@
 //! `Codes.dat` (the fault text store) — so those ~122 MB have to outlive the
 //! ~145 MB install, and the owner accepted that cost so the rest can go. The
 //! copy runs **first**, and the three derivations then read from the copy, so
-//! `~/.vagcan` is the one corpus everything afterwards points at.
+//! `~/.vagcan` is the one set of label files everything afterwards points at.
 //!
 //! The three derivations are not new work — each already had a tool, reachable
 //! only by knowing it existed, what to feed it, and what it left behind, which
@@ -33,7 +33,7 @@
 //!
 //! Each step is skipped when what it would write is already newer than what it
 //! would read, and `--refresh` forces the lot. That is [`crate::labels`]'s rule
-//! — a cache is trusted only while it is newer than the corpus it came from —
+//! — a cache is trusted only while it is newer than the label files it came from —
 //! applied to the other two artefacts rather than a second rule invented for
 //! them. It matters because the names step is minutes of CPU: a second
 //! `vagcan setup` on an unchanged installation has nothing to do and should
@@ -64,14 +64,14 @@ const CODES_FILE: &str = "Codes.dat";
 /// `.lbl`/`.clb`, and `Codes.dat` the fault text. Directories are copied whole
 /// so the per-unit `.rod` a given car will name — unknowable here — are all
 /// there. Nothing else in an install is read at run time.
-const CORPUS_INPUTS: &[&str] = &[ODX_DIR, "Labels", CODES_FILE];
+const LABEL_FILE_INPUTS: &[&str] = &[ODX_DIR, "Labels", CODES_FILE];
 
-/// Corpus-wide `.rod` files whose keys every car needs.
+/// Label files-wide `.rod` files whose keys every car needs.
 ///
 /// `RD.rod` is the fault registry — the hop from a unit's own fault number to
 /// the code that names it (`research/labels/fault-naming-hop.md`) — and `MUX.rod`
 /// carries the shared multiplexer tables. Both are one file for the whole
-/// corpus, so recovering their keys once serves every vehicle.
+/// label_files, so recovering their keys once serves every vehicle.
 ///
 /// Per-unit files are deliberately not swept. There are over sixteen thousand
 /// of them, a blocked section costs about a minute of every core, and which
@@ -81,18 +81,18 @@ const SHARED_ROD_FILES: &[&str] = &["RD.rod", "MUX.rod"];
 
 /// A general English word list, where the system has one.
 ///
-/// The attack on the text table is dictionary-driven, and the corpus's own
+/// The attack on the text table is dictionary-driven, and the label files' own
 /// label files are the strong prior; this is the weak one, for the words VW
 /// uses that no label file happens to contain. Absent on many systems, which is
 /// why it is looked for rather than required.
 const SYSTEM_WORDS: &str = "/usr/share/dict/words";
 
-/// Weight of the corpus's own vocabulary against the general list.
+/// Weight of the label files' own vocabulary against the general list.
 ///
-/// The label files are in-domain: when both offer a reading, the corpus's word
+/// The label files are in-domain: when both offer a reading, the label files' word
 /// has to win, or the search prefers an English rarity to the term VW actually
 /// uses.
-const CORPUS_WORD_WEIGHT: &str = "8";
+const LABEL_WORD_WEIGHT: &str = "8";
 const GENERAL_WORD_WEIGHT: &str = "1";
 
 pub struct Options<'a> {
@@ -186,9 +186,9 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 	println!("Writing everything to {}\n", target.display());
 
 	// The copy runs first, and the derivations then read from it: after this,
-	// `~/.vagcan` is the one corpus everything points at, and the install can go.
+	// `~/.vagcan` is the one set of label files everything points at, and the install can go.
 	let steps = [
-		copy_corpus(root, &target, opts.refresh)?,
+		copy_label_files(root, &target, opts.refresh)?,
 		label_cache(&target, opts.refresh)?,
 		names(&target, opts.refresh)?,
 		rod_keys(&target)?,
@@ -198,20 +198,20 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 	Ok(())
 }
 
-/// Step 1: copy the raw corpus in, so the installation is disposable.
+/// Step 1: copy the raw label files in, so the installation is disposable.
 ///
-/// The three inputs [`CORPUS_INPUTS`] names, copied preserving their layout, so
+/// The three inputs [`LABEL_FILE_INPUTS`] names, copied preserving their layout, so
 /// afterwards `~/.vagcan/data/extracted/` holds `UDS_EV/`, `Labels/` and
 /// `Codes.dat`. Idempotent and freshness-gated per file, the same rule the rest
 /// of setup follows: a file is copied only when it is missing from the
 /// destination or newer than what is there, and `--refresh` copies the lot.
-fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
+fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	println!(
-		"[1/4] Raw corpus — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
+		"[1/4] Raw label files — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
          installation can be deleted afterwards."
 	);
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-	for name in CORPUS_INPUTS {
+	for name in LABEL_FILE_INPUTS {
 		let src = root.join(name);
 		if !src.exists() {
 			// A stripped or partial installation still yields whatever it has;
@@ -223,8 +223,8 @@ fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	}
 	if plan.is_empty() {
 		return Ok(Step::Missing {
-			what: "the raw corpus",
-			why: format!("none of {CORPUS_INPUTS:?} is under {}", root.display()),
+			what: "the raw label files",
+			why: format!("none of {LABEL_FILE_INPUTS:?} is under {}", root.display()),
 		});
 	}
 
@@ -245,7 +245,7 @@ fn copy_corpus(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	}
 	progress.finish();
 	Ok(Step::Wrote {
-		what: "the raw corpus",
+		what: "the raw label files",
 		path: target.to_path_buf(),
 		detail: format!("{copied} files copied, {skipped} already current"),
 	})
@@ -270,17 +270,17 @@ fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) ->
 	Ok(())
 }
 
-/// Step 2: parse the copied corpus into the SQLite cache.
+/// Step 2: parse the copied label files into the SQLite cache.
 ///
 /// Reads the copy under `~/.vagcan`, not the installation, so the source it
 /// records is the one the runtime default (`--labels` omitted) later passes —
 /// otherwise the first `units --identify` after setup would rebuild the cache
 /// from a directory whose name no longer matched.
 fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
-	println!("[2/4] Label corpus — parsing every .lbl and decrypting every .clb.");
+	println!("[2/4] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, refresh)?;
 	Ok(Step::Wrote {
-		what: "the label corpus",
+		what: "the label files",
 		path: crate::datadir::label_cache()?,
 		detail: format!("{} label files", db.len()),
 	})
@@ -333,7 +333,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 		});
 	}
 
-	let mut words = vec![format!("{}:{CORPUS_WORD_WEIGHT}", root.join("Labels").display())];
+	let mut words = vec![format!("{}:{LABEL_WORD_WEIGHT}", root.join("Labels").display())];
 	if Path::new(SYSTEM_WORDS).exists() {
 		words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
 	}
@@ -473,7 +473,7 @@ fn report(steps: &[Step]) -> String {
 		"\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
          vagcan faults       stored faults, named — the labels are copied in now\n\n\
-         Scalings are a separate thing and no installation carries them — the corpus \n\
+         Scalings are a separate thing and no installation carries them — the label files \n\
          has names, not numbers. Those are measured: `vagcan survey`, then \n\
          `vagcan watch --out drive.csv`, then `vagcan recording calibrate`."
 	);
@@ -490,7 +490,7 @@ mod tests {
 		// count of successes tells them nothing they can open.
 		let steps = vec![
 			Step::Wrote {
-				what: "the label corpus",
+				what: "the label files",
 				path: PathBuf::from("/home/x/.vagcan/data/extracted/cache.sqlite"),
 				detail: "3035 label files".to_string(),
 			},
@@ -521,7 +521,7 @@ mod tests {
 	}
 
 	#[test]
-	fn the_report_does_not_promise_scalings_the_corpus_cannot_supply() {
+	fn the_report_does_not_promise_scalings_the_label_files_cannot_supply() {
 		// The single most expensive misunderstanding available here: a reader
 		// who has just parsed 300 MB of label files reasonably assumes the
 		// numbers came with the names. They did not, and the closing lines are
@@ -596,7 +596,7 @@ mod tests {
 		// UDS_EV/ (registry and each unit's own .rod), Labels/, Codes.dat.
 		let install = synthetic_install("layout");
 		let target = TempDir::new("layout-out");
-		let step = copy_corpus(&install.0, &target.0, false).unwrap();
+		let step = copy_label_files(&install.0, &target.0, false).unwrap();
 		assert!(detail(&step).starts_with("4 files copied"), "{}", detail(&step));
 		for rel in ["UDS_EV/RD.rod", "UDS_EV/EV_ECM.rod", "Labels/part.lbl", "Codes.dat"] {
 			assert!(target.0.join(rel).is_file(), "{rel} did not land under the target");
@@ -610,21 +610,21 @@ mod tests {
 		let install = synthetic_install("fresh");
 		let target = TempDir::new("fresh-out");
 
-		let first = copy_corpus(&install.0, &target.0, false).unwrap();
+		let first = copy_label_files(&install.0, &target.0, false).unwrap();
 		assert_eq!(detail(&first), "4 files copied, 0 already current");
 
-		let second = copy_corpus(&install.0, &target.0, false).unwrap();
+		let second = copy_label_files(&install.0, &target.0, false).unwrap();
 		assert_eq!(detail(&second), "0 files copied, 4 already current", "a no-op rerun");
 
 		// One destination made to look stale: only it is copied again.
 		let stale = target.0.join("Codes.dat");
 		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
 		std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
-		let third = copy_corpus(&install.0, &target.0, false).unwrap();
+		let third = copy_label_files(&install.0, &target.0, false).unwrap();
 		assert_eq!(detail(&third), "1 files copied, 3 already current");
 
 		// --refresh copies everything regardless of mtimes.
-		let forced = copy_corpus(&install.0, &target.0, true).unwrap();
+		let forced = copy_label_files(&install.0, &target.0, true).unwrap();
 		assert_eq!(detail(&forced), "4 files copied, 0 already current");
 	}
 
@@ -632,7 +632,7 @@ mod tests {
 	fn an_install_missing_every_input_is_reported_not_a_crash() {
 		let empty = TempDir::new("empty");
 		let target = TempDir::new("empty-out");
-		let step = copy_corpus(&empty.0, &target.0, false).unwrap();
+		let step = copy_label_files(&empty.0, &target.0, false).unwrap();
 		match step {
 			Step::Missing { why, .. } => assert!(why.contains("UDS_EV"), "{why}"),
 			other => panic!("expected Missing, got {other:?}"),

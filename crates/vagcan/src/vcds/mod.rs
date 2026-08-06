@@ -6,7 +6,7 @@
 //! is reserved for the commands worth having in front of you at an open driver's
 //! door.
 //!
-//! Three of them — [`Tool::Rod`], [`Tool::Corpus`], [`Tool::Tttext`] — run rarely:
+//! Three of them — [`Tool::Rod`], [`Tool::Dump`], [`Tool::Tttext`] — run rarely:
 //! once per VCDS installation, or once per question about an artefact already
 //! committed. They used to be separate binaries under `vag-data`, which meant
 //! that by the time anyone needed one again nobody remembered it existed, what
@@ -22,7 +22,7 @@
 //! vagcan vcds tttext out/TXT.bin --out names.tsv
 //! ```
 
-mod corpus;
+mod dump;
 // `vagcan setup` chains these two the way this module's own help documents —
 // `rod --dump` writes the text section, `tttext` reads it — so it needs them by
 // name rather than through the subcommand enum.
@@ -92,14 +92,14 @@ pub enum Tool {
 		device: Option<String>,
 	},
 
-	/// Search the measurement names recovered from the label corpus.
+	/// Search the measurement names recovered from the label_files.
 	///
 	/// FOR: finding what VW calls something, when all you have is a word.
 	///
 	/// IN: a substring, and the recovered name catalog (`--catalog`, by default
 	/// the `~/.vagcan/data/extracted/names.json` that `vagcan setup` writes).
 	///
-	/// OUT: matching names on stdout. They are keyed by the corpus's own text
+	/// OUT: matching names on stdout. They are keyed by the label files' own text
 	/// id, not by data identifier — that join does not exist in the label files
 	/// — so a match is a hypothesis to test on the car, not an identification.
 	Names {
@@ -120,7 +120,7 @@ pub enum Tool {
 	///
 	/// FOR: learning what raw bytes mean, by watching VCDS read the same car at
 	/// the same moment and print the engineering value. This is where the
-	/// project's proven scalings come from; the label corpus provably does not
+	/// project's proven scalings come from; the label files provably does not
 	/// carry them.
 	///
 	/// IN: a capture from `vagcan sniff --out`, and the VCDS measuring-blocks
@@ -183,7 +183,7 @@ pub enum Tool {
 
 	/// Parse a whole VCDS `Labels/` directory into one JSON file.
 	///
-	/// FOR: getting the entire label corpus into a single structured file that
+	/// FOR: getting the entire set of label files into a single structured file that
 	/// can be searched, diffed between VCDS versions, or handed to something
 	/// that is not this program. Encrypted `.clb` files are decrypted on the
 	/// way through, so the output holds plaintext and needs no key.
@@ -194,18 +194,18 @@ pub enum Tool {
 	/// label files sorted by source name.
 	///
 	/// To look ONE part number up, use `vagcan vcds labels --part` instead — it
-	/// answers from a cache instead of reparsing the corpus.
-	Corpus {
+	/// answers from a cache instead of reparsing the label_files.
+	Dump {
 		/// VCDS `Labels/` directory, or any directory below it.
 		#[arg(value_name = "DIR")]
 		dir: String,
-		/// Write the parsed corpus here as JSON. Without it, only the summary
+		/// Write the parsed label files here as JSON. Without it, only the summary
 		/// is printed.
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
 	},
 
-	/// Recover names from the corpus's global text table.
+	/// Recover names from the label files' global text table.
 	///
 	/// FOR: turning `TTTEXT.ROD`'s enciphered text into readable names. Every
 	/// record is under its own substitution, so the attack is dictionary-driven
@@ -225,9 +225,9 @@ pub enum Tool {
 		#[arg(value_name = "FILE")]
 		file: String,
 		/// A word list, as `FILE` or `FILE:WEIGHT`. Repeatable. The weight is
-		/// the prior: the corpus's own label files are in-domain and must
+		/// the prior: the label files' own label files are in-domain and must
 		/// outrank a general English list, or the search prefers a rarity to
-		/// the term the corpus actually uses. Default weight 8.
+		/// the term the label files actually uses. Default weight 8.
 		#[arg(long, value_name = "FILE[:WEIGHT]")]
 		words: Vec<String>,
 		/// Names already recovered, as a `{"id": "name"}` catalog. Their words
@@ -292,7 +292,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			device,
 			..
 		} => {
-			// The corpus is checked before the adapter is opened: reading F19E
+			// The label files are checked before the adapter is opened: reading F19E
 			// off the car and only then discovering that the label directory
 			// does not exist costs the port for nothing.
 			if !std::path::Path::new(&dir).is_dir() {
@@ -350,8 +350,8 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			rod::run(&file, !no_crack, cache.as_deref(), dump.as_deref())?;
 			Ok(Outcome::Done)
 		}
-		Tool::Corpus { dir, out } => {
-			corpus::run(&dir, out.as_deref())?;
+		Tool::Dump { dir, out } => {
+			dump::run(&dir, out.as_deref())?;
 			Ok(Outcome::Done)
 		}
 		Tool::Tttext {

@@ -82,10 +82,10 @@ session repeats the experiment.
 
 ### Phase 4 — retire code by relocation
 
-- **A one-shot tool is not dead code.** The `.rod` key search and the corpus dump
+- **A one-shot tool is not dead code.** The `.rod` key search and the label files dump
   each ran once and produced a committed artefact, and each keeps its value for the
-  next corpus, on another machine, or when an artefact is doubted. They were retired
-  into `vagcan vcds rod` and `vagcan vcds corpus` rather than into `git rm`; do the
+  next label files, on another machine, or when an artefact is doubted. They were retired
+  into `vagcan vcds rod` and `vagcan vcds label files` rather than into `git rm`; do the
   same with the next one.
 - **Every one-shot tool states three things in its help text**, because by the time
   it is needed again nobody will remember them: **what it is for** (and what it
@@ -175,7 +175,7 @@ Five things, and no more:
 | Excuse | Reality |
 |---|---|
 | "This research file is obsolete" | Obsolete research is the archive's whole purpose. Move it. |
-| "The tool already ran, its output is committed" | Then it will need to run again on the next corpus. Relocate it, and document its input and output while you still remember them. |
+| "The tool already ran, its output is committed" | Then it will need to run again on the next label files. Relocate it, and document its input and output while you still remember them. |
 | "Both tools work, leaving both is harmless" | Two commands for one job means the next session picks the wrong one. Merge or delete. |
 | "Nothing calls this, so it is dead" | Uncalled is half the test. The other half is that its reason has been refuted. |
 | "The doc says this path is refuted" | Check what refuted it. Once here it was our own bug. |

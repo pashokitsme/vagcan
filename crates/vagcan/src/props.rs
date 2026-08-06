@@ -171,7 +171,7 @@ mod tests {
 		assert!(text.contains("VIN "), "{text}");
 		assert!(text.contains("XW8AD4NE9JH008917"), "{text}");
 		assert!(text.contains("ODX label file"), "{text}");
-		// The label file is the join key to the .rod corpus — it must be legible.
+		// The label file is the join key to the .rod label files — it must be legible.
 		assert!(text.contains("EV_ECM18TFS0208V0906264H"), "{text}");
 		// Unknown identifiers are shown, but under an honest heading.
 		assert!(text.contains("Undocumented identifiers:"), "{text}");

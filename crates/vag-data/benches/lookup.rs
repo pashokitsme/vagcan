@@ -2,8 +2,8 @@
 //! part-number -> label file (`resolve`, incl. REDIRECT chains) and
 //! (part_no, block, field) -> measurement name (`measurement`).
 //!
-//! Uses a synthetic corpus sized like the reference VCDS install
-//! (~2,900 label files, ~3,700 REDIRECT rows, ~43k measurements) so the
+//! Uses a synthetic label files sized like the reference VCDS install
+//! (~2,900 label_files, ~3,700 REDIRECT rows, ~43k measurements) so the
 //! numbers are representative without shipping proprietary data.
 //!
 //! Run: `cargo bench -p vag-data --bench lookup`
@@ -18,7 +18,7 @@ const FILES: usize = 2_900;
 /// Number of wildcard REDIRECT rows on top of the per-file exact ones
 /// (reference install: ~3,739 redirects total).
 const WILDCARD_REDIRECTS: usize = 800;
-/// Measurements per file (~43k total, like the reference `.lbl` corpus).
+/// Measurements per file (~43k total, like the reference `.lbl` label_files).
 const MEASUREMENTS_PER_FILE: usize = 15;
 
 /// Part number for target file `i`, shaped like a real VAG part number.
@@ -26,7 +26,7 @@ fn part_no(i: usize) -> String {
 	format!("{:03}-906-{:03}-AB", i / 500, i % 500)
 }
 
-fn synth_corpus() -> Vec<LabelFile> {
+fn synth_label_files() -> Vec<LabelFile> {
 	let mut files = Vec::with_capacity(FILES + 3);
 	let mut index_src = String::new();
 
@@ -53,7 +53,7 @@ fn synth_corpus() -> Vec<LabelFile> {
 }
 
 fn bench_lookup(c: &mut Criterion) {
-	let db = LabelDb::new(synth_corpus());
+	let db = LabelDb::new(synth_label_files());
 	let exact_pn = part_no(1_234);
 	let wildcard_pn = "912-906-555-AB"; // only the wildcard redirects match
 	let miss_pn = "999-999-999-ZZ";
@@ -77,7 +77,7 @@ fn bench_lookup(c: &mut Criterion) {
 	});
 	g.finish();
 
-	let files = synth_corpus();
+	let files = synth_label_files();
 
 	// Cold (un-memoized) path: a fresh LabelDb per iteration, resolving every
 	// distinct part number exactly once. Per-lookup time = reported time / FILES
@@ -99,7 +99,7 @@ fn bench_lookup(c: &mut Criterion) {
 	});
 	g.finish();
 
-	// Corpus -> LabelDb build cost (startup, not per-lookup).
+	// Label files -> LabelDb build cost (startup, not per-lookup).
 	let mut g = c.benchmark_group("label_db_build");
 	g.sample_size(10);
 	g.bench_function("labeldb_new_2900_files", |b| {

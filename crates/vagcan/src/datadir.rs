@@ -49,7 +49,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// ~/.vagcan/
 ///   data/
 ///     extracted/                      parsed from a VCDS install by `setup`:
-///       cache.sqlite                    the label corpus, queryable
+///       cache.sqlite                    the label_files, queryable
 ///       names.json                      measurement names recovered from TTTEXT
 ///       rod-keys.json                   recovered .rod section keys
 ///     measured/                       proven measurement rows, one file per
@@ -70,7 +70,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// `data/extracted/` holds what `vagcan setup` parsed out of a VCDS
 /// installation, all of it rebuildable from that installation in minutes.
 /// `data/measured/` holds the `(identifier, raw form, factor, offset)` rows this
-/// project proved on a vehicle; the label corpus provably cannot supply those
+/// project proved on a vehicle; the label files provably cannot supply those
 /// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
 /// them. The two live side by side under `data/` because the split — extracted
 /// from someone else's files versus measured on the car — is the one distinction
@@ -94,7 +94,7 @@ pub fn extracted_dir() -> anyhow::Result<PathBuf> {
 ///
 /// Named `names.json` rather than the `names-uds.json` it was called when it
 /// lived in the checkout: `uds` was never true of it — the catalog is keyed by
-/// the corpus's own text id and has nothing to do with UDS — and it read as a
+/// the label files' own text id and has nothing to do with UDS — and it read as a
 /// file name only its author could parse.
 pub fn names_catalog() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("names.json"))
@@ -108,20 +108,20 @@ pub fn rod_keys() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("rod-keys.json"))
 }
 
-/// The SQLite cache of the parsed label corpus.
+/// The SQLite cache of the parsed label_files.
 ///
-/// One file, not one per corpus directory as before. Which install it was built
+/// One file, not one per label files directory as before. Which install it was built
 /// from is remembered beside it in [`LABEL_CACHE_SOURCE`], because the mtime
 /// rule that decides whether a cache is current cannot tell "older than the
-/// corpus" from "built from a different corpus".
+/// label files" from "built from a different label files".
 pub fn label_cache() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("cache.sqlite"))
 }
 
-/// Which corpus directory [`label_cache`] was built from, one line of text.
+/// Which label files directory [`label_cache`] was built from, one line of text.
 ///
 /// The freshness rule is an mtime comparison, and an mtime cannot tell "older
-/// than the corpus" from "built from a different corpus" — which matters as
+/// than the label files" from "built from a different label files" — which matters as
 /// soon as somebody has both the English and the Russian install and points the
 /// tool at each in turn.
 pub const LABEL_CACHE_SOURCE: &str = "cache.from";

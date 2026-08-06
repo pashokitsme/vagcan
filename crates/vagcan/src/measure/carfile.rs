@@ -646,7 +646,7 @@ mod tests {
 	use super::*;
 
 	/// A unique-per-test temp dir, cleaned up on drop — the shape `vag-data`'s
-	/// corpus tests use. Nothing here may write inside a checkout.
+	/// label files tests use. Nothing here may write inside a checkout.
 	struct TempDir(PathBuf);
 
 	impl TempDir {

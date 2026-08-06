@@ -15,7 +15,7 @@
 //!
 //! The short numbers people use for units (`01` engine, `17` instruments) are a
 //! VCDS convention, not something the car transmits, and they are **hex bytes**
-//! — the corpus writes them `(#17)`, `(#4B)`, `(#86)` — so they are parsed and
+//! — the label files write them `(#17)`, `(#4B)`, `(#86)` — so they are parsed and
 //! printed as hex here. Which request id each one is answered on is not a
 //! property of the protocol, so this module does not decide it: it accepts a
 //! table from whoever can establish it ([`install`]) and keeps a small built-in
@@ -90,7 +90,7 @@ impl UnitAddress {
 /// One "short number ↔ request id" pairing, from whichever source established
 /// it.
 ///
-/// Both halves are optional-ish on purpose: a label corpus can say that `44` is
+/// Both halves are optional-ish on purpose: label files can say that `44` is
 /// `J500 - Power Steering` without saying which CAN id answers it, and an
 /// override file can say which id answers `44` without naming it. The tiers are
 /// merged field by field, so a run gets the id from whoever knows the id and
@@ -104,7 +104,7 @@ pub struct UnitNumber {
 	/// that. Nothing derives it from `number`: the two numberings are
 	/// unrelated (`17` answers on `0x714`, `19` on `0x710`).
 	pub request: Option<u16>,
-	/// What the label corpus calls the unit, when a corpus said.
+	/// What the label files calls the unit, when label files said.
 	pub name: Option<String>,
 }
 
@@ -117,15 +117,15 @@ pub struct UnitNumber {
 /// inside those same free functions, so the installed table follows the shape
 /// that is there.
 ///
-/// Nothing about a label corpus reaches this module: the caller does the
-/// corpus work and hands in plain numbers and strings.
+/// Nothing about label files reaches this module: the caller does the
+/// label files work and hands in plain numbers and strings.
 static INSTALLED: std::sync::RwLock<Vec<UnitNumber>> = std::sync::RwLock::new(Vec::new());
 
-/// Install pairings learned at run time — from the label corpus, and from what
+/// Install pairings learned at run time — from the label_files, and from what
 /// the car itself answered.
 ///
 /// Merged into whatever is already installed rather than replacing it, so a
-/// command can install the corpus's numbering up front and add the request ids
+/// command can install the label files' numbering up front and add the request ids
 /// it learns from the car as it goes. **First writer of a field wins**: a name
 /// or an id already established is not silently overwritten by a later,
 /// vaguer source.
@@ -147,10 +147,10 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 }
 
 /// **The fallback, not the table.** The pairings this project has verified on
-/// hardware, kept so a run with no corpus and no override file still reaches
+/// hardware, kept so a run with no label files and no override file still reaches
 /// the units it always could.
 ///
-/// The numbers are hex, as the corpus writes them:
+/// The numbers are hex, as the label files write them:
 ///
 /// * `01`/`02` — engine and gearbox, cross-checked against the car's Auto-Scan.
 /// * `17` — the instrument cluster: a VCDS log names the unit it came from and
@@ -159,13 +159,13 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 ///   by VCDS in the capture where `0x70E` and `0x70C` identified themselves.
 ///
 /// Everything else comes from data at run time. **Which CAN id a number is
-/// answered on is in no data file this project has found** — the label corpus
+/// answered on is in no data file this project has found** — the label files
 /// carries the numbers and the names and no CAN id anywhere, and the two
 /// numberings are genuinely unrelated (VCDS's `17` answers on `0x714`, whose
 /// own UDS address is `0x14`; VCDS's `19` answers on `0x710`, address `0x10` —
 /// `research/car/other-ecus.md` §3). So the id half is established either by
-/// reading the car through the corpus (`vagcan units --identify --labels`, which
-/// asks each id for its part number and asks the corpus whose part number that
+/// reading the car through the label files (`vagcan units --identify --labels`, which
+/// asks each id for its part number and asks the label files whose part number that
 /// is) or by a user writing it down in [`OVERRIDE_PATH`].
 const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)];
 
@@ -233,7 +233,7 @@ fn built_in_pairings() -> Vec<UnitNumber> {
 /// Merge the tiers, field by field: for each number, the request id in force is
 /// the earliest tier that states one, and the name likewise.
 ///
-/// Field by field rather than whole entries, so a corpus that names `17`
+/// Field by field rather than whole entries, so label files that names `17`
 /// without knowing its CAN id adds the name without hiding the built-in id.
 fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 	let mut out: Vec<UnitNumber> = Vec::new();
@@ -256,9 +256,9 @@ fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 /// The pairings in force, in precedence order:
 ///
 /// 1. **the override file** ([`OVERRIDE_PATH`]) — a pairing someone has
-///    evidence for and wrote down; it beats everything, including a corpus
+///    evidence for and wrote down; it beats everything, including label files
 ///    that disagrees;
-/// 2. **the corpus and the car** — whatever [`install`] was handed at startup;
+/// 2. **the label files and the car** — whatever [`install`] was handed at startup;
 /// 3. **the built-in fallback** — the five pairings proven on the reference
 ///    car, so a run with neither of the above still works as it always did.
 fn short_numbers() -> Vec<UnitNumber> {
@@ -281,7 +281,7 @@ pub fn short_number(request: u16) -> Option<u8> {
 	short_numbers().into_iter().find(|e| e.request == Some(request)).map(|e| e.number)
 }
 
-/// What the corpus calls a unit number, when a corpus said. Used to make a
+/// What the label files calls a unit number, when label files said. Used to make a
 /// refusal name the unit it is refusing.
 pub fn name_for_short(number: u8) -> Option<String> {
 	short_numbers().into_iter().find(|e| e.number == number).and_then(|e| e.name)
@@ -302,7 +302,7 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 		let id = u16::from_str_radix(text, 16).map_err(|_| format!("{text:?} is not a hex request id like 714"))?;
 		return UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} is in neither diagnostic block (700-7BF or 7E0-7E7)"));
 	}
-	// A short number is a hex byte, the way the corpus writes it: `4B` is a
+	// A short number is a hex byte, the way the label files write it: `4B` is a
 	// unit, not a typo.
 	let number = u8::from_str_radix(text, 16).map_err(|_| format!("{text:?} is not a control-unit number like 01 or 17"))?;
 	let named = name_for_short(number).map(|n| format!(" ({n})")).unwrap_or_default();
@@ -398,7 +398,7 @@ mod tests {
 	#[test]
 	fn a_number_with_no_known_id_is_refused_rather_than_guessed() {
 		// VW numbering would give an answer for 03 (brakes) and 19 (gateway).
-		// Nothing in the corpus states which CAN id those answer on, so the
+		// Nothing in the label files states which CAN id those answer on, so the
 		// tool says so and points at the file where a user can record it.
 		let err = parse("03").unwrap_err();
 		assert!(err.contains("no known request id"), "{err}");
@@ -418,7 +418,7 @@ mod tests {
 
 	#[test]
 	fn the_built_in_list_is_the_fallback_when_nothing_is_installed() {
-		// No corpus, no override: the five pairings proven on hardware still
+		// No label_files, no override: the five pairings proven on hardware still
 		// answer, so a run on a machine with no VCDS installation reaches the
 		// units it always could.
 		let built_in = built_in_pairings();
@@ -430,36 +430,36 @@ mod tests {
 	}
 
 	#[test]
-	fn the_tiers_are_override_then_corpus_then_built_in() {
+	fn the_tiers_are_override_then_label_files_then_built_in() {
 		// 01: all three tiers claim it, and the override's id is the one that
 		//     survives — someone wrote it down because they had evidence.
-		// 17: the corpus names it but does not know its id; the built-in id
+		// 17: the label files name it but does not know its id; the built-in id
 		//     must still come through, so a name never costs an address.
-		// 44: only the corpus has it — the built-in list is not the source of
+		// 44: only the label files have it — the built-in list is not the source of
 		//     truth any more.
-		// 86: only the corpus, and only a name: a number with no id at all.
+		// 86: only the label_files, and only a name: a number with no id at all.
 		let over = vec![pairing(0x01, Some(0x7E2), None)];
-		let corpus = vec![
-			pairing(0x01, Some(0x70A), Some("corpus engine")),
+		let label_files = vec![
+			pairing(0x01, Some(0x70A), Some("label files engine")),
 			pairing(0x17, None, Some("J285 - Instrument Cluster")),
 			pairing(0x44, Some(0x712), Some("J500 - Power Steering")),
 			pairing(0x86, None, Some("R - Radio")),
 		];
-		let in_force = pairings_in_force(&[&over, &corpus, &built_in_pairings()]);
+		let in_force = pairings_in_force(&[&over, &label_files, &built_in_pairings()]);
 		let at = |n: u8| in_force.iter().find(|e| e.number == n).cloned().expect("present");
 
-		assert_eq!(at(0x01).request, Some(0x7E2), "the override outranks the corpus");
-		assert_eq!(at(0x01).name.as_deref(), Some("corpus engine"), "and still takes its name");
-		assert_eq!(at(0x17).request, Some(0x714), "the built-in id survives a corpus name");
+		assert_eq!(at(0x01).request, Some(0x7E2), "the override outranks the label files");
+		assert_eq!(at(0x01).name.as_deref(), Some("label files engine"), "and still takes its name");
+		assert_eq!(at(0x17).request, Some(0x714), "the built-in id survives label files name");
 		assert_eq!(at(0x17).name.as_deref(), Some("J285 - Instrument Cluster"));
-		assert_eq!(at(0x44).request, Some(0x712), "the corpus outranks the absent built-in");
+		assert_eq!(at(0x44).request, Some(0x712), "the label files outranks the absent built-in");
 		assert_eq!(at(0x86).request, None, "a name is not an address");
 	}
 
 	#[test]
 	fn an_installed_pairing_resolves_a_number_no_built_in_knows() {
 		// The whole point: 44 is not in the built-in list and never will be —
-		// it comes from the corpus, which knows about a hundred numbers this
+		// it comes from the label_files, which knows about a hundred numbers this
 		// code does not. 55 is installed pointing outside both blocks, and has
 		// to be refused rather than turned into traffic no rule predicts.
 		install([
@@ -482,8 +482,8 @@ mod tests {
 	}
 
 	#[test]
-	fn a_short_number_is_a_hex_byte_as_the_corpus_writes_it() {
-		// The corpus writes `(#4B)`, and VCDS calls that unit `4B`. Read as
+	fn a_short_number_is_a_hex_byte_as_the_label_files_write_it() {
+		// The label files write `(#4B)`, and VCDS calls that unit `4B`. Read as
 		// decimal it is not a number at all, and `17` would be 11 hex — a
 		// different unit.
 		assert_eq!(u8::from_str_radix("4B", 16), Ok(0x4B));
@@ -493,16 +493,16 @@ mod tests {
 	}
 
 	#[test]
-	fn this_module_knows_nothing_about_a_label_corpus() {
+	fn this_module_knows_nothing_about_label_files() {
 		// The seam, asserted rather than remembered. The crate depends on
 		// `vag-data` for measurement catalogs (`read.rs`), so a stray `use`
 		// here would compile — and would put "what a label file is" inside the
-		// protocol layer. Everything the corpus knows arrives through
+		// protocol layer. Everything the label files know arrives through
 		// [`install`], as numbers and strings.
 		let source = include_str!("address.rs");
 		let module = source.split("#[cfg(test)]").next().expect("the module body");
 		assert!(!module.contains("vag_data"), "address.rs must not reach into vag-data");
-		assert!(!module.contains("LabelDb"), "address.rs must not know what a corpus is");
+		assert!(!module.contains("LabelDb"), "address.rs must not know what label files are");
 	}
 
 	#[test]

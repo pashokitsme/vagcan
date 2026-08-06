@@ -69,7 +69,7 @@ The tool must work on **any VAG car**, not on this Škoda. That means a hard lin
 between algorithm and data:
 
 - **Never hardcode data that belongs to one car** — measurement scalings, identifier
-  numbers, unit names, part numbers, coding bytes. Those come from the label corpus
+  numbers, unit names, part numbers, coding bytes. Those come from the label files
   (`.rod` / `.lbl` / `.clb`), cached in SQLite, resolved per car through what the car
   itself reports (`F187` part number, `F19E` ODX file name, the gateway's installation
   list).
@@ -81,7 +81,7 @@ between algorithm and data:
   and after `cargo install` there is no checkout.
 - **An offset or a magic number is a red flag.** Before writing one, establish whether
   it is a property of the *protocol* (ISO/UDS/OBD-II — fine, cite the standard) or of
-  *this car* (not fine — it has to come from the corpus or from a read).
+  *this car* (not fine — it has to come from the label files or from a read).
 - **A special case for one control unit or one reading belongs in its own module**, fed
   by data, not sprinkled through the generic path.
 - Facts measured on the reference car are **evidence for a decoder**, not a table to
@@ -111,15 +111,15 @@ crates/          the Rust workspace
   vag-can          slcan USB-CAN backend (the live path), listen-only mode, ISO-TP sniffer
   vag-protocol     UDS client + ISO-TP (transport-agnostic) + unit addressing (address.rs)
   vag-data         label parsers/decoders (.lbl/.clb/.rod) + LabelDb + ODX file resolution
-  vag-db           SQLite cache over the label corpus
+  vag-db           SQLite cache over the label files
   vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
   vagcan           the CLI. Top level = needs the car: devices / info / units /
                    properties / sniff / sensors / watch / scan / faults / survey.
                    Offline work is grouped by what its input is: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's files —
-                   labels, names, analyse, rod, corpus, tttext)
+                   labels, names, analyse, rod, label files, tttext)
 research/        RE writeups + tooling (NOT shipped), one directory per subject:
-  labels/              VW's label corpus — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
+  labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
                        name codec, `Codes.dat`, and the fault-naming chain. Key reads:
                        `rod-labels.md` (the crack + the STRUC refutation, i.e. why
                        scaling is live-only), `tttext-codec.md` (→ names.json),

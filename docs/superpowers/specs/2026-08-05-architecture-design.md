@@ -144,7 +144,7 @@ than code).
 `watch/plan.rs` (425), `scan.rs` (412), `sniff.rs` (364), `vcds/tttext.rs` (348),
 `faults.rs` (347), `labels.rs` (333), `vcds/mod.rs` (322), `calibrate.rs` (273),
 `watch/replay.rs` (272), `datadir.rs` (217), `render.rs` (190), `units.rs` (119),
-`recording.rs` (89), `device.rs` (89), `vcds/corpus.rs` (92), `vcds/rod.rs` (96),
+`recording.rs` (89), `device.rs` (89), `vcds/label files.rs` (92), `vcds/rod.rs` (96),
 `measure/view.rs` (86), `names.rs` (81), `safety.rs` (69).
 
 **Note that B and C overlap badly in two files.** `measure/mod.rs` and
@@ -329,9 +329,9 @@ A `vag-device` crate would be a `Cargo.toml`, a name, and a boundary between a
 If "discover" was meant more broadly — identify the car, resolve what it can
 measure — then the real content is `units.rs` (119) + `props.rs` (123) +
 `labels.rs` (333) + `measure/channels.rs` (487) ≈ 1 060 lines: gateway
-installation list → part numbers → `F19E` ODX name → corpus → resolved channels.
+installation list → part numbers → `F19E` ODX name → label files → resolved channels.
 That *is* non-UX, it *is* cohesive, and it *does* pass the test weakly (it
-firewalls `vag-db` and the corpus lookup away from the loops). But its name is
+firewalls `vag-db` and the label files lookup away from the loops). But its name is
 not `vag-device`; it is `vag-vehicle`, and it should go **after** the crate
 below, because it is the one whose API is least obvious.
 

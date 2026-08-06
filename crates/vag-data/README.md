@@ -20,15 +20,15 @@ label files into human-meaningful measurement names, units, and ranges.
   by `(part_no, block, field)`. Empty-placeholder measurements are filtered here.
   Lookups are indexed at build time (exact-selector `HashMap`, length-bucketed wildcards,
   per-file `(block, field)` maps) and resolutions are memoized: ~30 ns memoized / ~0.6 µs
-  cold per lookup on a 2,900-file corpus (`cargo bench -p vag-data --bench lookup`).
-- **`corpus`** — `load_corpus(dir)`: walk a `Labels/` dir, parse `.lbl`, decrypt+parse
+  cold per lookup on a 2,900-file label files (`cargo bench -p vag-data --bench lookup`).
+- **`label files`** — `load_label_files(dir)`: walk a `Labels/` dir, parse `.lbl`, decrypt+parse
   `.clb`, into a `Vec<LabelFile>`.
 
 ## Binary
 
 ```
-# parse+decrypt a Labels dir into a JSON corpus + coverage summary
-cargo run -p vagcan -- vcds corpus /path/to/VCDS/Labels --out corpus.json
+# parse+decrypt a Labels dir into a JSON label files + coverage summary
+cargo run -p vagcan -- vcds label files /path/to/VCDS/Labels --out label files.json
 
 # resolve a part number to its measurements
 cargo run -p vagcan -- vcds labels /path/to/VCDS/Labels --part 06F-906-056-AXW
@@ -56,6 +56,6 @@ from an unpacked build of the VCDS binary to read the user's own vehicle's label
 The human-readable names live in `TTTEXT.ROD` (same cipher) and require joining on those IDs.
 That TTText name-resolution layer, plus the per-record IV "product" term for the small subset
 of records that need it (one runtime memory dump), are future work — `.rod` is a standalone
-decoder here and is not ingested into `LabelDb`/the SQLite corpus. Readable measurement names
+decoder here and is not ingested into `LabelDb`/the SQLite label files. Readable measurement names
 for MQB engines already come from the cracked `.clb` files, so this gap is a bonus layer, not
 a blocker.

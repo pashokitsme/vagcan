@@ -1,4 +1,4 @@
-//! Label lookup layer: turns a parsed label corpus into a queryable
+//! Label lookup layer: turns a parsed label files into a queryable
 //! [`LabelDb`] that resolves `REDIRECT` chains from ECU part numbers to
 //! the terminal [`LabelFile`] and its [`Measurement`]s.
 //!
@@ -13,14 +13,14 @@ use crate::label::{LabelFile, Measurement, Record};
 /// Maximum number of redirect hops followed before giving up (cycle guard).
 const MAX_DEPTH: usize = 16;
 
-/// A queryable index over a corpus of parsed label files.
+/// A queryable index over parsed label files.
 ///
 /// Owns the [`LabelFile`]s; all accessors return references into them.
 ///
 /// Lookups are the hot path of `vagcan info` (part number -> label file ->
 /// measuring-block names), so everything is indexed at build time:
 ///
-/// - exact (wildcard-free) corpus-wide redirect selectors live in a
+/// - exact (wildcard-free) label files-wide redirect selectors live in a
 ///   `HashMap` (O(1) hit; exact selectors always beat wildcards on the
 ///   wildcard-count tiebreak, so a hit short-circuits),
 /// - wildcard selectors are pre-normalized with their specificity metrics
@@ -40,12 +40,12 @@ pub struct LabelDb {
 	/// files (which usually don't) both resolve. First file to claim a key
 	/// wins ties.
 	file_index: HashMap<String, usize>,
-	/// Corpus-wide exact (no `?`) redirect selectors, normalized. First
+	/// Label files-wide exact (no `?`) redirect selectors, normalized. First
 	/// encountered entry wins duplicate selectors, matching the old
 	/// flattened-scan order tiebreak.
 	exact_redirects: HashMap<String, String>,
-	/// Corpus-wide wildcard redirect selectors, grouped by selector byte
-	/// length. Encounter order within each bucket is corpus order, so the
+	/// Label files-wide wildcard redirect selectors, grouped by selector byte
+	/// length. Encounter order within each bucket is label files order, so the
 	/// specificity tiebreak can use the entry's `order` field.
 	wildcard_redirects: HashMap<usize, Vec<PreparedRedirect>>,
 	/// Per-file prepared redirects (parallel to `files`), for chain-following
@@ -58,8 +58,8 @@ pub struct LabelDb {
 	/// file index (`None` = known miss). Interior mutability keeps the
 	/// lookup API `&self`; `Mutex` keeps `LabelDb: Sync`.
 	resolve_cache: Mutex<HashMap<String, Option<usize>>>,
-	/// The corpus's own unit numbering: diagnostic address -> the name the
-	/// corpus gives it, extracted once here rather than re-derived per lookup
+	/// The label files' own unit numbering: diagnostic address -> the name the
+	/// label files give it, extracted once here rather than re-derived per lookup
 	/// (about a thousand of the three thousand files carry a `Component:`
 	/// header). Sorted by address. See [`Self::unit_numbers`].
 	unit_numbers: Vec<(u8, String)>,
@@ -69,7 +69,7 @@ pub struct LabelDb {
 /// metrics precomputed, so matching a part number allocates nothing.
 #[derive(Clone)]
 struct PreparedRedirect {
-	/// Encounter order (corpus-wide for `wildcard_redirects`, per-file for
+	/// Encounter order (label files-wide for `wildcard_redirects`, per-file for
 	/// `file_redirects`) — the final "first encountered wins" tiebreak.
 	order: usize,
 	/// Normalized redirect target (file name, usually with extension).
@@ -152,9 +152,9 @@ impl LabelDb {
 		}
 	}
 
-	/// The unit numbering the corpus itself states: every diagnostic address
+	/// The unit numbering the label files itself states: every diagnostic address
 	/// that appears in a `; Component: … (#17)` header, with the name the
-	/// corpus gives it, sorted by address.
+	/// label files give it, sorted by address.
 	///
 	/// This is the hundred-odd-row table that would otherwise be written into
 	/// the code — `17` is the instrument cluster on every VAG car, not on this
@@ -166,7 +166,7 @@ impl LabelDb {
 		&self.unit_numbers
 	}
 
-	/// What the corpus calls one diagnostic address.
+	/// What the label files calls one diagnostic address.
 	pub fn unit_name(&self, address: u8) -> Option<&str> {
 		self
 			.unit_numbers
@@ -205,8 +205,8 @@ impl LabelDb {
 		self.resolve_idx(part_no).map(|i| &self.files[i])
 	}
 
-	/// Which control unit a part number belongs to, as the corpus describes it
-	/// — its diagnostic address and the corpus's name for it.
+	/// Which control unit a part number belongs to, as the label files describes it
+	/// — its diagnostic address and the label files' name for it.
 	///
 	/// This is how the tool learns that `0CW300041G` is unit `02` and a
 	/// transmission controller without a table of one car's units in the code.
@@ -247,7 +247,7 @@ impl LabelDb {
 				return hit;
 			}
 		}
-		// Miss: try each spelling the corpus might use, first that resolves
+		// Miss: try each spelling the label files might use, first that resolves
 		// wins. `normalize(part_no)` is always the first candidate, so the old
 		// fallback to it added nothing — a run that resolves nothing is `None`.
 		let result = part_number_candidates(part_no).iter().find_map(|c| self.resolve_one(c));
@@ -259,7 +259,7 @@ impl LabelDb {
 		result
 	}
 
-	/// The actual resolution: corpus-wide initial match (spec step 2), then
+	/// The actual resolution: label files-wide initial match (spec step 2), then
 	/// follow in-file redirect chains (step 3). `pn` is already normalized.
 	/// Resolve one exact spelling (the caller has already normalised it).
 	fn resolve_one(&self, pn: &str) -> Option<usize> {
@@ -300,12 +300,12 @@ impl LabelDb {
 		}
 	}
 
-	/// Every measurement across the WHOLE corpus whose block id is `block`
+	/// Every measurement across the WHOLE set of label files whose block id is `block`
 	/// (and, if `field` is `Some`, whose field matches too). Returns each hit
 	/// as `(file source name, measurement)`; empty-name placeholder records are
 	/// skipped. Results are sorted by `(source, field)` for deterministic output.
 	///
-	/// This is the cross-corpus counterpart to [`Self::measurement`], which is
+	/// This is the cross-label files counterpart to [`Self::measurement`], which is
 	/// scoped to a single resolved part number. Used by `vagcan vcds labels --block`
 	/// to answer "which label files define measuring block N, and what is it?".
 	pub fn measurements_by_block(&self, block: u16, field: Option<u8>) -> Vec<(&str, &Measurement)> {
@@ -339,7 +339,7 @@ impl LabelDb {
 		}
 	}
 
-	/// Find the most specific redirect target across the WHOLE corpus whose
+	/// Find the most specific redirect target across the WHOLE set of label files whose
 	/// selector matches `pn` (already normalized). Used only for the initial
 	/// lookup (step 2). An exact-selector hit wins outright: it has zero
 	/// wildcards, and the wildcard count is the primary specificity key.
@@ -368,12 +368,12 @@ impl LabelDb {
 	}
 }
 
-/// Pull the corpus's unit numbering out of the `Component:` headers.
+/// Pull the label files' unit numbering out of the `Component:` headers.
 ///
 /// A number is named many times over — 108 files call `01` an engine — and not
 /// always with the same words, since the name belongs to a car's own ECU and
-/// the corpus spans two decades of them. The **most frequent** spelling wins,
-/// ties broken alphabetically, so the answer depends on the corpus and not on
+/// the label files spans two decades of them. The **most frequent** spelling wins,
+/// ties broken alphabetically, so the answer depends on the label files and not on
 /// the order its files happened to be read in.
 fn collect_unit_numbers(files: &[LabelFile]) -> Vec<(u8, String)> {
 	let mut counts: HashMap<u8, HashMap<&str, usize>> = HashMap::new();
@@ -399,10 +399,10 @@ fn normalize(s: &str) -> String {
 	s.trim().to_ascii_uppercase()
 }
 
-/// The spellings a VAG part number can appear under in a label corpus.
+/// The spellings a VAG part number can appear under in a label_files.
 ///
 /// A control unit reports its number packed — `0AM927769E`, `06K907425B` —
-/// while the corpus names files in the printed form, grouped and hyphenated,
+/// while the label files name files in the printed form, grouped and hyphenated,
 /// and usually without the index letter: `0AM-927-769.clb`,
 /// `06K-907-425-V1.clb`. Looking up only what the car said therefore finds
 /// nothing, which is exactly what happened on the reference gearbox.
@@ -469,11 +469,11 @@ mod tests {
 	use crate::label::parse_label;
 
 	#[test]
-	fn a_part_number_is_tried_in_the_spellings_a_corpus_uses() {
-		// What the car reports versus how the corpus names its files. The
+	fn a_part_number_is_tried_in_the_spellings_label_files_use() {
+		// What the car reports versus how the label files name its files. The
 		// reference gearbox says 0AM927769E; the file is 0AM-927-769.clb.
 		assert_eq!(part_number_candidates("0AM927769E"), vec!["0AM927769E", "0AM-927-769-E", "0AM-927-769"]);
-		// The engine's hardware number, whose corpus files carry a variant
+		// The engine's hardware number, whose label files files carry a variant
 		// suffix instead of the index letter.
 		assert_eq!(part_number_candidates("06K907425B"), vec!["06K907425B", "06K-907-425-B", "06K-907-425"]);
 		// Already printed: no duplicate spellings.
@@ -633,11 +633,11 @@ mod tests {
 		assert_eq!(real.name, "Vehicle Speed");
 	}
 
-	/// Build a synthetic-but-realistic corpus: `n` target files, an index
+	/// Build a synthetic-but-realistic label files: `n` target files, an index
 	/// file with one exact REDIRECT per target plus a handful of wildcard
 	/// redirects, and a two-hop chain. Part numbers follow the real
 	/// `XXX-XXX-XXX-XX` shape so wildcard matching is exercised for real.
-	fn generated_corpus(n: usize) -> Vec<LabelFile> {
+	fn generated_label_files(n: usize) -> Vec<LabelFile> {
 		let mut files = Vec::with_capacity(n + 3);
 		let mut index_src = String::new();
 		for i in 0..n {
@@ -656,9 +656,9 @@ mod tests {
 	}
 
 	#[test]
-	fn bulk_lookups_over_generated_corpus_resolve_correctly() {
+	fn bulk_lookups_over_generated_label_files_resolve_correctly() {
 		let n = 300;
-		let db = LabelDb::new(generated_corpus(n));
+		let db = LabelDb::new(generated_label_files(n));
 
 		// Two passes: the second exercises any memoized path with identical results.
 		for _pass in 0..2 {
@@ -690,10 +690,10 @@ mod tests {
 	}
 
 	#[test]
-	fn exact_selector_beats_wildcard_in_generated_corpus() {
+	fn exact_selector_beats_wildcard_in_generated_label_files() {
 		// Part number 000-906-042-AB has BOTH an exact redirect (to T0042)
 		// and matches the wildcard 0??-906-???-AB; exact must win.
-		let mut files = generated_corpus(50);
+		let mut files = generated_label_files(50);
 		let index_extra = parse_label("EXTRA.LBL", b"REDIRECT,WRONG.LBL,0??-906-???-AB\n");
 		let wrong = parse_label("WRONG.LBL", b"001,1,Wrong Target,,");
 		files.push(index_extra);
@@ -705,7 +705,7 @@ mod tests {
 	}
 
 	#[test]
-	fn measurements_by_block_scans_the_whole_corpus() {
+	fn measurements_by_block_scans_every_label_file() {
 		// Block 2 appears in two files (fields 1 and 2 in one, field 1 in the
 		// other); block 7 in one. An empty-name block-2 row must be skipped.
 		let a = parse_label(
@@ -715,7 +715,7 @@ mod tests {
 		let b = parse_label("BBB.LBL", b"002,1,Vehicle Speed,,Range: 0...300 km/h\n002,3,,,");
 		let db = LabelDb::new(vec![a, b]);
 
-		// All fields of block 2 across the corpus (empty-name field 3 skipped).
+		// All fields of block 2 across the label files (empty-name field 3 skipped).
 		let all = db.measurements_by_block(2, None);
 		assert_eq!(all.len(), 3);
 		// Sorted by (source, field): AAA(1), AAA(2), BBB(1).
@@ -738,7 +738,7 @@ mod tests {
 	}
 
 	#[test]
-	fn the_corpus_states_its_own_unit_numbering() {
+	fn the_label_files_state_their_own_unit_numbering() {
 		// Three files naming unit 17 — two agreeing, one an older spelling —
 		// and one naming 44, a number no code in this project knows.
 		let header = |address: &str, name: &str| format!("; Component: {name} (#{address})\n001,1,Something,,");
@@ -761,7 +761,7 @@ mod tests {
 		assert_eq!(db.unit_name(0x44), Some("J500 - Power Steering"));
 		assert_eq!(db.unit_name(0x03), None);
 
-		// The number is hex, as the corpus writes it: `(#17)` is 0x17, not 17.
+		// The number is hex, as the label files write it: `(#17)` is 0x17, not 17.
 		assert_eq!(db.unit_numbers()[0].0, 23);
 	}
 

@@ -19,7 +19,7 @@
 //!
 //! The archive is around 90 MB and the interesting failure is not "the download
 //! failed" but "the download stopped". A truncated zip unpacks into a partial
-//! VCDS installation, and the symptom surfaces days later as a corpus that is
+//! VCDS installation, and the symptom surfaces days later as label files that is
 //! quietly missing files. So the length is asked for first and compared against
 //! what arrived, the bytes are checked for a zip's own signature, and anything
 //! short is deleted rather than unpacked.
@@ -40,7 +40,7 @@ pub const ARCHIVE_BASE: &str = "https://github.com/pashokitsme/vagcan/raw/master
 
 /// The language builds on offer.
 ///
-/// The corpus is Ross-Tech's label text, and it is translated: the same control
+/// The label files are Ross-Tech's label text, and it is translated: the same control
 /// unit reads in English out of one install and in Russian out of the other.
 /// Nothing else differs, so this is a choice about reading, not about coverage.
 pub const LANGUAGES: &[&str] = &["en", "ru"];
@@ -184,8 +184,8 @@ fn content_length(url: &str) -> Option<u64> {
 ///
 /// The failure being guarded is not "it did not download" — that is loud — but
 /// "it stopped". A truncated zip unpacks into a VCDS installation missing an
-/// arbitrary tail of its label files, and nothing downstream can tell that from
-/// a corpus that genuinely lacks them.
+/// arbitrary tail of its label_files, and nothing downstream can tell that from
+/// label files that genuinely lacks them.
 pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 	let got = std::fs::metadata(path)
 		.with_context(|| format!("the download {} is not there", path.display()))?
@@ -196,7 +196,7 @@ pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 			anyhow::bail!(
 				"the download stopped: {got} bytes of {want}. Nothing was unpacked — \
                  a partial archive becomes a VCDS installation missing files, and that \
-                 failure surfaces days later as a corpus with holes in it. Run \
+                 failure surfaces days later as label files with holes in it. Run \
                  `vagcan setup` again."
 			);
 		}
@@ -277,7 +277,7 @@ mod tests {
 		// The failure this guard exists for. Ninety megabytes over a phone
 		// tether ends early often enough, and a partial zip becomes a VCDS
 		// installation with an arbitrary tail of its label files missing —
-		// which reads, days later, as a corpus that never had them.
+		// which reads, days later, as label files that never had them.
 		let dir = temp("short");
 		let file = dir.join("vcds-en.zip");
 		std::fs::write(&file, b"PK\x03\x04partial").unwrap();

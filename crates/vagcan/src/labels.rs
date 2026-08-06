@@ -17,12 +17,12 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use vag_data::{CorpusScan, LabelDb, Measurement, scan_corpus};
+use vag_data::{LabelDb, LabelScan, Measurement, scan_label_files};
 
 /// Where a parsed label file set is cached between runs.
 ///
 /// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
-/// slow part of every lookup, and the corpus does not change between runs.
+/// slow part of every lookup, and the label files do not change between runs.
 ///
 /// One file, `~/.vagcan/data/extracted/cache.sqlite`, beside the other two things
 /// `vagcan setup` recovers from an installation. It used to be one file per
@@ -34,7 +34,7 @@ use vag_data::{CorpusScan, LabelDb, Measurement, scan_corpus};
 fn cache_path() -> PathBuf {
 	crate::datadir::label_cache()
 		// With nowhere to write, the working directory is a poor cache but a
-		// better failure than refusing to read a corpus at all.
+		// better failure than refusing to read label files at all.
 		.unwrap_or_else(|_| PathBuf::from("cache.sqlite"))
 }
 
@@ -49,11 +49,11 @@ fn cache_source_path() -> PathBuf {
 /// below it, and people point it at the root, because that is what they have.
 /// The loader reads one directory level, so a root — where the labels sit in
 /// `Labels/` and the ODX files in `UDS_EV/` — used to cache nothing at all and
-/// say so as "cached 0 label files", which reads as an empty corpus rather than
+/// say so as "cached 0 label files", which reads as an empty label files rather than
 /// as a wrong path.
 ///
 /// So the directory is located rather than assumed: the one given if it holds
-/// label files, otherwise the first child that does. Two levels is enough for
+/// label_files, otherwise the first child that does. Two levels is enough for
 /// every layout Ross-Tech ships and shallow enough not to wander into a home
 /// directory.
 fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
@@ -91,14 +91,14 @@ fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
 	)
 }
 
-/// Whether a directory holds a label corpus this tool could load.
+/// Whether a directory holds label files this tool could load.
 ///
 /// The same shape [`load_cached`] needs — a `Labels/` of `.lbl`/`.clb`, or a
 /// directory that already is one — asked cheaply so the `~/.vagcan` default can
-/// degrade to "no corpus" instead of an error on a machine that has not run
+/// degrade to "no label files" instead of an error on a machine that has not run
 /// `vagcan setup`. Only used for that default: a directory the user named is
 /// loaded outright, so a wrong path still reports itself.
-pub fn has_corpus(dir: &Path) -> bool {
+pub fn has_label_files(dir: &Path) -> bool {
 	label_dir_under(dir).is_ok()
 }
 
@@ -106,7 +106,7 @@ pub fn has_corpus(dir: &Path) -> bool {
 ///
 /// Two questions, and an mtime only answers the first. **Is it stale?** — the
 /// file must be newer than the directory it was built from. **Is it even about
-/// this corpus?** — one cache file now serves every install, so a cache built
+/// these label files?** — one cache file now serves every install, so a cache built
 /// from the Russian tree is not stale for the English one, it is wrong, and its
 /// mtime says nothing about that. Hence the recorded source directory.
 fn cache_is_current(cache: &Path, dir: &Path) -> bool {
@@ -123,7 +123,7 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	}
 }
 
-/// Load a corpus, using the SQLite cache when it is usable and building it when
+/// Load label_files, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
 /// A stale cache is worse than none, so it is only trusted when
@@ -145,10 +145,10 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 		std::fs::create_dir_all(parent).with_context(|| format!("creating the cache directory {}", parent.display()))?;
 	}
 	let stats = vag_db::build_db(dir, &cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?;
-	// Written after the build, not before: a note claiming a corpus the build
+	// Written after the build, not before: a note claiming label files the build
 	// then failed to finish would make the next run trust a half-written file.
 	if let Err(e) = std::fs::write(cache_source_path(), dir.to_string_lossy().as_bytes()) {
-		eprintln!("warning: could not record which corpus the cache came from: {e}");
+		eprintln!("warning: could not record which label files the cache came from: {e}");
 	}
 	eprintln!(
 		"cached {} label files ({} measurements) in {}",
@@ -159,10 +159,10 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 	vag_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
 }
 
-/// Hand the corpus's unit numbering to the address layer.
+/// Hand the label files' unit numbering to the address layer.
 ///
 /// `vag-protocol` cannot read a label file — it is the protocol layer, and
-/// corpus is not a protocol — so the numbering is pushed in from here, where
+/// label files are not a protocol — so the numbering is pushed in from here, where
 /// both crates are already in scope. What crosses the seam is plain numbers and
 /// strings.
 ///
@@ -178,13 +178,13 @@ pub fn install_unit_numbers(db: &LabelDb) {
 	}));
 }
 
-/// Entry point for the `labels` subcommand. Loads the corpus once, prints the
+/// Entry point for the `labels` subcommand. Loads the label files once, prints the
 /// summary, then runs whichever lookup(s) were requested.
 pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Option<u8>, refresh: bool) -> anyhow::Result<()> {
 	// The inventory is what someone asking *nothing* wants; with a lookup on
 	// the command line it is six lines of noise before the answer.
 	if part.is_none() && block.is_none() {
-		let scan = scan_corpus(Path::new(dir)).with_context(|| format!("scanning label corpus under {dir:?}"))?;
+		let scan = scan_label_files(Path::new(dir)).with_context(|| format!("scanning label files under {dir:?}"))?;
 		print!("{}", render_summary(&scan));
 	}
 
@@ -202,10 +202,10 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 }
 
 /// Render the file-count summary (`.lbl` / `.clb` / `.rod` + parsed records).
-fn render_summary(scan: &CorpusScan) -> String {
+fn render_summary(scan: &LabelScan) -> String {
 	let mut out = String::new();
 	let total_files = scan.lbl_count + scan.clb_count + scan.rod_count;
-	out.push_str("== VCDS label corpus ==\n");
+	out.push_str("== VCDS label files ==\n");
 	out.push_str(&format!("  .lbl (plaintext)          : {}\n", scan.lbl_count));
 	out.push_str(&format!("  .clb (TEA-CBC decrypted)  : {}\n", scan.clb_count));
 	out.push_str(&format!("  .rod (ODX, counted only)  : {}\n", scan.rod_count));
@@ -226,7 +226,7 @@ fn render_part_lookup(db: &LabelDb, part_no: &str) -> String {
 	match db.resolve(part_no) {
 		Some(file) => {
 			out.push_str(&format!("Resolved file: {}\n", file.source));
-			// Which unit this part number *is*, in the corpus's own numbering —
+			// Which unit this part number *is*, in the label files' own numbering —
 			// the answer `vagcan units --identify` needs to name a unit `44`
 			// rather than `712`.
 			if let Some(unit) = db.unit_for_part(part_no) {
@@ -253,7 +253,7 @@ fn render_block_lookup(db: &LabelDb, block: u16, field: Option<u8>) -> String {
 		Some(f) => format!("block {block} field {f}"),
 		None => format!("block {block}"),
 	};
-	let mut out = format!("== Lookup {scope} (whole corpus) ==\n");
+	let mut out = format!("== Lookup {scope} (whole label_files) ==\n");
 	let hits = db.measurements_by_block(block, field);
 	if hits.is_empty() {
 		out.push_str("no label file defines this block\n");
@@ -286,7 +286,7 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	if hits.is_empty() {
 		println!(
 			"No label file named {odx_name:?} under {dir}.\n\n\
-             The control unit names this file itself, so the corpus is either incomplete or \
+             The control unit names this file itself, so the label files are either incomplete or \
              pointed at the wrong directory — pass the VCDS install root."
 		);
 		return Ok(());
@@ -341,8 +341,8 @@ mod tests {
 	use super::*;
 	use vag_data::parse_label;
 
-	fn scan_with(files: Vec<vag_data::LabelFile>, lbl: usize, clb: usize, rod: usize) -> CorpusScan {
-		CorpusScan {
+	fn scan_with(files: Vec<vag_data::LabelFile>, lbl: usize, clb: usize, rod: usize) -> LabelScan {
+		LabelScan {
 			files,
 			lbl_count: lbl,
 			clb_count: clb,

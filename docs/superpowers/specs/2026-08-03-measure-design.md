@@ -255,7 +255,7 @@ If the run is abandoned before the passes are done, everything already obtained 
 the answers **and any accepted pass** — and `--full` stays unavailable until the rest is
 done. `measure setup` can be re-run; it says where it stands and asks only for what is missing.
 
-**Where the file lives.** Not in `catalogs/`. That directory is a checked-in corpus of shared
+**Where the file lives.** Not in `catalogs/`. That directory is a checked-in set of shared
 knowledge keyed by part number — a measurement row proven on one `0CW300041G` is true of every
 `0CW300041G` in the world. A car file is the opposite on every axis: keyed by a **VIN**, which
 is a personal identifier; holding numbers a person typed and measurements of one physical car
@@ -265,16 +265,16 @@ under `catalogs/` would be one `git add` from undoing that.
 
 It belongs in the user's own data directory. `datadir::resolve` is not it — that function
 walks parent directories looking for something that already exists, which is right for
-*reading* the corpus and wrong for *writing* a file, since it would pick whichever checkout
+*reading* the label files and wrong for *writing* a file, since it would pick whichever checkout
 the shell happens to be standing in. A sibling is needed:
 
 ```rust
-/// Where files this tool writes about *your* car live. Not the corpus.
+/// Where files this tool writes about *your* car live. Not the label files.
 pub fn vagcan_dir() -> anyhow::Result<PathBuf>;   // ~/.vagcan
 pub fn car_dir()    -> anyhow::Result<PathBuf>;   // ~/.vagcan/cars
 ```
 
-`--car FILE` overrides it explicitly, the way `--catalogs DIR` overrides the corpus, and
+`--car FILE` overrides it explicitly, the way `--catalogs DIR` overrides the label files, and
 `measure setup` prints the path it wrote so the file is never a matter of faith.
 
 ```json

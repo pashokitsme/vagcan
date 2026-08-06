@@ -1,15 +1,15 @@
 //! `vagcan vcds names` — search the measurement names recovered from the label
-//! corpus.
+//! label_files.
 //!
 //! `~/.vagcan/data/extracted/names.json` holds the names `vagcan setup` recovered by
 //! breaking `TTTEXT.ROD`'s per-record substitution cipher
-//! (`research/labels/tttext-codec.md`). They are keyed by the corpus's own text id,
+//! (`research/labels/tttext-codec.md`). They are keyed by the label files' own text id,
 //! **not** by data identifier: the join from a name to the identifier that
 //! carries it was shown to be structurally absent from the label files
 //! (`research/labels/label-linkage.md` §3), and no amount of decryption puts it back.
 //!
 //! So this command cannot name a scan result for you. What it can do is answer
-//! "does this car's corpus have a name that sounds like the thing I am
+//! "does this car's label files have a name that sounds like the thing I am
 //! looking at" — which is how a sweep result gets a hypothesis worth testing
 //! on the car. The pairing still has to be earned by making the value move.
 
@@ -48,8 +48,8 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 
 	if hits.is_empty() {
 		println!(
-			"No name in the corpus contains {needle:?}.\n\n\
-             The catalog is one car's label corpus, in English, and it is a list of \n\
+			"No name in the label files contain {needle:?}.\n\n\
+             The catalog is one car's label_files, in English, and it is a list of \n\
              names only — a name it lacks may still exist on another model."
 		);
 		return Ok(());
@@ -64,7 +64,7 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 	}
 	println!(
 		"\n{} of {} names matched.\n\n\
-         These are names, not addresses: the corpus does not record which data \n\
+         These are names, not addresses: the label files do not record which data \n\
          identifier carries which name, so a match here is a hypothesis to test \n\
          against the car, not an identification.",
 		hits.len(),
