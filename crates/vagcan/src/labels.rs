@@ -40,17 +40,16 @@ fn cache_path() -> PathBuf {
 
 /// The directory the label files are actually in.
 ///
-/// `vagcan setup` is documented as taking a VCDS install root *or* any directory
-/// below it, and people point it at the root, because that is what they have.
-/// The loader reads one directory level, so a root — where the labels sit in
-/// `Labels/` and the ODX files in `UDS_EV/` — used to cache nothing at all and
-/// say so as "cached 0 label files", which reads as an empty label files rather than
-/// as a wrong path.
+/// The loader reads one directory level, and what `vagcan setup` extracts is an
+/// install root — labels in `Labels/`, ODX files in `UDS_EV/` — so pointing it
+/// straight at the root would cache nothing and report "cached 0 label files",
+/// which reads as empty rather than as the wrong level.
 ///
 /// So the directory is located rather than assumed: the one given if it holds
-/// label files, otherwise the first child that does. Two levels is enough for
-/// every layout Ross-Tech ships and shallow enough not to wander into a home
-/// directory.
+/// label files, otherwise the first child that does. That also picks
+/// `Labels/RUS/` out of a Russian build, where nothing sits at the top level.
+/// Two levels is enough for every layout Ross-Tech ships and shallow enough not
+/// to wander into a home directory.
 fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
 	fn holds_labels(dir: &Path) -> bool {
 		std::fs::read_dir(dir).is_ok_and(|entries| {
@@ -75,7 +74,9 @@ fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
 	children.sort();
 	for child in &children {
 		if holds_labels(child) {
-			eprintln!("using {} — the label files are there, not in {}", child.display(), given.display());
+			// Silently: this is the layout of what `vagcan setup` wrote, not a
+			// choice the reader made or can act on, and it was being announced
+			// on every single run.
 			return Ok(child.clone());
 		}
 	}
@@ -140,7 +141,12 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 	if let Some(parent) = cache.parent() {
 		std::fs::create_dir_all(parent).with_context(|| format!("creating the cache directory {}", parent.display()))?;
 	}
-	let stats = vag_db::build_db(dir, &cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?;
+	// Three thousand files parsed and decrypted inside one call, with nothing to
+	// report from: the spinner is the only thing between that and a blank screen.
+	let stats = {
+		let _spinner = crate::progress::Spinner::new(format!("parsing the label files in {}", dir.display()));
+		vag_db::build_db(dir, &cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?
+	};
 	eprintln!(
 		"cached {} label files ({} measurements) in {}",
 		stats.files,

@@ -24,7 +24,17 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
 	let cache_path = cache.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{path}.ivcache.json")));
 
 	let mut cache_data = IvCache::load(&cache_path);
-	let sections = decode_rod_recover(&data, &file_name, &mut cache_data, run_crack);
+	// Decoding is milliseconds; recovering a key that is not cached yet is about
+	// three minutes per blocked section, and it happens inside this one call.
+	// Below the spinner's own threshold nothing is drawn, so the fast path stays
+	// silent and the slow one stops looking like a hang.
+	let sections = {
+		let _spinner = crate::progress::Spinner::new(match run_crack {
+			true => format!("opening {file_name} — recovering the key of any sealed section"),
+			false => format!("opening {file_name}"),
+		});
+		decode_rod_recover(&data, &file_name, &mut cache_data, run_crack)
+	};
 	if let Err(e) = cache_data.save(&cache_path) {
 		eprintln!("warning: could not write the key cache {}: {e}", cache_path.display());
 	}

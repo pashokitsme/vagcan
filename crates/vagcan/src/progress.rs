@@ -14,6 +14,9 @@
 //! "working…" and a blank screen carry the same information.
 
 use std::io::{IsTerminal, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// How long a wait has to last before it is worth reporting.
@@ -108,6 +111,65 @@ impl Line {
 		let _ = err.flush();
 		self.drawn = false;
 		self.width = 0;
+	}
+}
+
+/// How often a self-driven spinner redraws.
+///
+/// Fast enough to look alive, slow enough that the thread doing it costs
+/// nothing next to the work it is reporting on.
+const TICK: Duration = Duration::from_millis(80);
+
+/// A spinner that drives itself while one blocking call runs.
+///
+/// [`Line`] is driven by its caller, which is right where there is a loop to
+/// drive it from. The slowest things here are not loops: recovering one `.rod`
+/// section key is about three minutes inside a single call that does not come
+/// back, and parsing three thousand label files is one more. A terminal that
+/// says nothing for that long reads as a hang, and the caller has no loop to
+/// report from — so the reporting moves to a thread of its own.
+///
+/// Held as a guard: it starts on construction and clears the line when it goes
+/// out of scope, so an early return or an error cannot leave it spinning.
+pub struct Spinner {
+	done: Arc<AtomicBool>,
+	worker: Option<JoinHandle<()>>,
+}
+
+impl Spinner {
+	/// Say what is being waited for. Drops below [`THRESHOLD`] draw nothing, and
+	/// nothing is ever drawn off a terminal, both by way of [`Line`].
+	pub fn new(message: impl Into<String>) -> Spinner {
+		let message = message.into();
+		let done = Arc::new(AtomicBool::new(false));
+		let flag = Arc::clone(&done);
+		let worker = thread::spawn(move || {
+			let mut line = Line::new();
+			let started = Instant::now();
+			while !flag.load(Ordering::Relaxed) {
+				// Past a few seconds the elapsed time is the useful part: it is
+				// what tells somebody watching a three-minute search that it is
+				// three minutes in and not stuck.
+				let secs = started.elapsed().as_secs();
+				match secs >= 5 {
+					true => line.update(&format!("{message} — {secs}s")),
+					false => line.update(&message),
+				}
+				thread::sleep(TICK);
+			}
+			// `Line::drop` clears what it drew, here rather than on the caller's
+			// thread, which is why the caller waits for this one to finish.
+		});
+		Spinner { done, worker: Some(worker) }
+	}
+}
+
+impl Drop for Spinner {
+	fn drop(&mut self) {
+		self.done.store(true, Ordering::Relaxed);
+		if let Some(worker) = self.worker.take() {
+			let _ = worker.join();
+		}
 	}
 }
 
