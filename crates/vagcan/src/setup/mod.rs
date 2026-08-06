@@ -494,17 +494,20 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	// short is the expected outcome, not a failure — but it has to be said. A
 	// bare "124294 names" reads as the whole table to somebody who has no idea
 	// how big the table is.
-	if coverage.read < coverage.total {
-		let pct = 100.0 * coverage.read as f32 / coverage.total.max(1) as f32;
+	if coverage.read < coverage.candidates {
+		let pct = 100.0 * coverage.read as f32 / coverage.candidates.max(1) as f32;
+		let short = coverage.total.saturating_sub(coverage.candidates);
 		return Ok(Step::Partial {
 			what: "the measurement names",
 			path: out,
 			detail: format!("{count} names"),
 			why: format!(
-				"{} of {} records in the text table were read ({pct:.1} %). The rest held a letter \
-				 the attack could not settle, and a half-read name is worse than none, so they are \
-				 withheld rather than guessed",
-				coverage.read, coverage.total
+				"{} of {} records long enough to carry a name were read ({pct:.1} %); the rest held a \
+				 letter the attack could not settle, and a half-read name is worse than none, so they \
+				 are withheld rather than guessed. A further {short} records in the table are under a \
+				 dozen letters — acronyms and status codes, which are not names and are not counted \
+				 against this",
+				coverage.read, coverage.candidates
 			),
 		});
 	}

@@ -68,8 +68,12 @@ pub fn vendor_dir() -> Result<PathBuf> {
 /// decision on a phone tether than on a desk, and a progress bar that starts
 /// without being agreed to is how a tool loses trust.
 pub fn confirm_download() -> Result<bool> {
+	// No terminal, no download. This used to answer "yes" here, which was safe
+	// only because the language question came next and refused without a
+	// terminal; removing that question left a script fetching ninety megabytes
+	// nobody asked for. A run with nowhere to ask is told the path form instead.
 	if !std::io::stdin().is_terminal() {
-		return Ok(true);
+		return Ok(false);
 	}
 	print!(
 		"No VCDS installation was given.\n\

@@ -65,6 +65,23 @@ pub struct Options<'a> {
 pub struct Coverage {
 	pub read: usize,
 	pub total: usize,
+	/// Records long enough to be a name at all — the honest denominator.
+	///
+	/// The gate drops any reading under [`MIN_LETTERS`] letters, because below a
+	/// dozen there is too little evidence for the vocabulary check to mean
+	/// anything and what dominates there is acronyms and status codes, not
+	/// names. That is knowable *before* solving anything: the cipher substitutes
+	/// letters for letters and digits for digits, so a record's letter count
+	/// survives encipherment. Reporting against every record instead made a run
+	/// that read four candidates in five look like one that managed a little
+	/// over half.
+	pub candidates: usize,
+}
+
+/// Letters in a record's payload — the same count before and after the cipher.
+fn letters_of(cipher: &str) -> usize {
+	let body = cipher.split_once(',').map_or(cipher, |(_, rest)| rest);
+	body.chars().filter(|c| c.is_ascii_alphabetic()).count()
 }
 
 pub fn run(opts: Options<'_>) -> Result<Coverage> {
@@ -330,6 +347,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 	Ok(Coverage {
 		read: ordered.len(),
 		total: records.len(),
+		candidates: records.iter().filter(|r| letters_of(&r.cipher) >= MIN_LETTERS).count(),
 	})
 }
 
