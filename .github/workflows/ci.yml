@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt
       - name: cargo fmt --check
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo test --workspace
         run: cargo test --workspace
@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96.0
       - uses: Swatinem/rust-cache@v2
       # MANDATORY (CLAUDE.md): --workspace, NEVER --all-targets. --all-targets
       # recompiles the binary as a test harness where `main` is unreachable and
@@ -80,7 +80,12 @@ jobs:
         run: |
           set -o pipefail
           log="$(RUSTFLAGS='--force-warn dead_code' cargo check --workspace 2>&1 | tee /dev/stderr)"
-          if grep -qE 'never (used|read|constructed)|dead_code' <<<"$log"; then
-            echo "::error::dead-code detected — a symbol nobody calls. If it was written to be called, the fix is the missing call site, not deletion (see CLAUDE.md)."
+          # Only OUR crates count. --force-warn via RUSTFLAGS also lints every
+          # dependency, and some (e.g. proc-macro2's cfg-gated probe fns) carry
+          # genuinely-unused code — those warnings point into ~/.cargo/registry,
+          # never into crates/. So a dead-code warning fails the job only when the
+          # `-->` location under it is a workspace crate.
+          if grep -E -A2 'never (used|read|constructed)' <<<"$log" | grep -qE '^\s*-->\s.*crates/'; then
+            echo "::error::dead-code detected in a workspace crate — a symbol nobody calls. If it was written to be called, the fix is the missing call site, not deletion (see CLAUDE.md)."
             exit 1
           fi
