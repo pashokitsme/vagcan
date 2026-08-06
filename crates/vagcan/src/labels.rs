@@ -53,7 +53,7 @@ fn cache_source_path() -> PathBuf {
 /// as a wrong path.
 ///
 /// So the directory is located rather than assumed: the one given if it holds
-/// label_files, otherwise the first child that does. Two levels is enough for
+/// label files, otherwise the first child that does. Two levels is enough for
 /// every layout Ross-Tech ships and shallow enough not to wander into a home
 /// directory.
 fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
@@ -123,7 +123,7 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	}
 }
 
-/// Load label_files, using the SQLite cache when it is usable and building it when
+/// Load label files, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
 /// A stale cache is worse than none, so it is only trusted when

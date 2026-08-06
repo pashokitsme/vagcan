@@ -1,5 +1,5 @@
 //! `vagcan vcds names` — search the measurement names recovered from the label
-//! label_files.
+//! label files.
 //!
 //! `~/.vagcan/data/extracted/names.json` holds the names `vagcan setup` recovered by
 //! breaking `TTTEXT.ROD`'s per-record substitution cipher

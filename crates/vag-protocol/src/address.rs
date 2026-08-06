@@ -104,7 +104,7 @@ pub struct UnitNumber {
 	/// that. Nothing derives it from `number`: the two numberings are
 	/// unrelated (`17` answers on `0x714`, `19` on `0x710`).
 	pub request: Option<u16>,
-	/// What the label files calls the unit, when label files said.
+	/// What the label files call the unit, when label files said.
 	pub name: Option<String>,
 }
 
@@ -117,11 +117,11 @@ pub struct UnitNumber {
 /// inside those same free functions, so the installed table follows the shape
 /// that is there.
 ///
-/// Nothing about label files reaches this module: the caller does the
+/// Nothing about label files reache this module: the caller does the
 /// label files work and hands in plain numbers and strings.
 static INSTALLED: std::sync::RwLock<Vec<UnitNumber>> = std::sync::RwLock::new(Vec::new());
 
-/// Install pairings learned at run time — from the label_files, and from what
+/// Install pairings learned at run time — from the label files, and from what
 /// the car itself answered.
 ///
 /// Merged into whatever is already installed rather than replacing it, so a
@@ -281,7 +281,7 @@ pub fn short_number(request: u16) -> Option<u8> {
 	short_numbers().into_iter().find(|e| e.request == Some(request)).map(|e| e.number)
 }
 
-/// What the label files calls a unit number, when label files said. Used to make a
+/// What the label files call a unit number, when label files said. Used to make a
 /// refusal name the unit it is refusing.
 pub fn name_for_short(number: u8) -> Option<String> {
 	short_numbers().into_iter().find(|e| e.number == number).and_then(|e| e.name)
@@ -398,7 +398,7 @@ mod tests {
 	#[test]
 	fn a_number_with_no_known_id_is_refused_rather_than_guessed() {
 		// VW numbering would give an answer for 03 (brakes) and 19 (gateway).
-		// Nothing in the label files states which CAN id those answer on, so the
+		// Nothing in the label files state which CAN id those answer on, so the
 		// tool says so and points at the file where a user can record it.
 		let err = parse("03").unwrap_err();
 		assert!(err.contains("no known request id"), "{err}");
@@ -418,7 +418,7 @@ mod tests {
 
 	#[test]
 	fn the_built_in_list_is_the_fallback_when_nothing_is_installed() {
-		// No label_files, no override: the five pairings proven on hardware still
+		// No label files, no override: the five pairings proven on hardware still
 		// answer, so a run on a machine with no VCDS installation reaches the
 		// units it always could.
 		let built_in = built_in_pairings();
@@ -437,7 +437,7 @@ mod tests {
 		//     must still come through, so a name never costs an address.
 		// 44: only the label files have it — the built-in list is not the source of
 		//     truth any more.
-		// 86: only the label_files, and only a name: a number with no id at all.
+		// 86: only the label files, and only a name: a number with no id at all.
 		let over = vec![pairing(0x01, Some(0x7E2), None)];
 		let label_files = vec![
 			pairing(0x01, Some(0x70A), Some("label files engine")),
@@ -452,14 +452,14 @@ mod tests {
 		assert_eq!(at(0x01).name.as_deref(), Some("label files engine"), "and still takes its name");
 		assert_eq!(at(0x17).request, Some(0x714), "the built-in id survives label files name");
 		assert_eq!(at(0x17).name.as_deref(), Some("J285 - Instrument Cluster"));
-		assert_eq!(at(0x44).request, Some(0x712), "the label files outranks the absent built-in");
+		assert_eq!(at(0x44).request, Some(0x712), "the label files outrank the absent built-in");
 		assert_eq!(at(0x86).request, None, "a name is not an address");
 	}
 
 	#[test]
 	fn an_installed_pairing_resolves_a_number_no_built_in_knows() {
 		// The whole point: 44 is not in the built-in list and never will be —
-		// it comes from the label_files, which knows about a hundred numbers this
+		// it comes from the label files, which knows about a hundred numbers this
 		// code does not. 55 is installed pointing outside both blocks, and has
 		// to be refused rather than turned into traffic no rule predicts.
 		install([

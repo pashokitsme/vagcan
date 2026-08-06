@@ -1,7 +1,7 @@
-//! SQLite cache for the VCDS label_files.
+//! SQLite cache for the VCDS label files.
 //!
 //! Parsing every `.lbl` and decrypting+parsing every `.clb` file (see
-//! `vag_data::load_label_files`) is the expensive part of loading the label_files; this
+//! `vag_data::load_label_files`) is the expensive part of loading the label files; this
 //! crate persists the *parsed* result to SQLite so later runs can skip that
 //! work entirely. This is a fast-load cache only: `REDIRECT` chain resolution
 //! stays in the existing, reviewed [`vag_data::LabelDb`] — this crate just
@@ -495,7 +495,7 @@ mod tests {
 	fn schema_has_file_id_indices_for_fast_reload() {
 		// `read_files` runs `WHERE file_id = ?` once per label file per child
 		// table; without these indices that is a full table scan per file
-		// (O(files x rows) on the ~2900-file label_files). Assert they exist.
+		// (O(files x rows) on the ~2900-file label files). Assert they exist.
 		let ws = TempWorkspace::new("indices");
 		write_fixture_labels(&ws);
 		build_db(&ws.labels_dir, &ws.db_path).expect("build_db should succeed");

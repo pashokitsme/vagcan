@@ -10,7 +10,7 @@
 //! list, then for every unit in it read the identification block and sweep the
 //! identifier pages that are actually in use on this car. The result is a file
 //! of *what answered*, per unit — the raw material for a measurement catalog,
-//! obtained without the label_files.
+//! obtained without the label files.
 //!
 //! Two runs of this, one parked and one driving, differ exactly in the live
 //! measurements. That difference is the point: an identifier whose bytes never

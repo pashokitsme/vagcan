@@ -60,7 +60,8 @@ const ADAPTER_BAUD: u32 = 115_200;
                   Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
                   and the adapter's termination jumper OFF.\n\n\
                   START HERE\n  \
-                  vagcan setup <VCDS-DIR>   once: parse a VCDS install for names\n  \
+                  vagcan setup              once, offline: read a VCDS install for names.\n                            \
+                  With no path given it offers to download one.\n  \
                   vagcan devices            is the adapter connected?\n  \
                   vagcan info               which car is this?\n  \
                   vagcan units              which control units does it have?\n\n\
@@ -74,11 +75,10 @@ const ADAPTER_BAUD: u32 = 115_200;
                   survey --out parked.jsonl        then, after a drive:\n  \
                   survey --out driving.jsonl       then:\n  \
                   survey --diff parked.jsonl driving.jsonl   what moved = what is live\n\n\
+                  ---- everything above needs a car in front of you (except setup) ----\n\n\
                   AWAY FROM THE CAR\n  \
                   recording ...             read back a `watch --out` drive\n  \
-                  vcds ...                  VCDS's own files: labels, names, logs\n\n\
-                  Everything above this line needs a car in front of you;\n\
-                  everything below it needs only files."
+                  vcds ...                  VCDS's own files: labels, names, logs"
 )]
 struct Cli {
 	#[command(subcommand)]
@@ -89,12 +89,12 @@ struct Cli {
 enum Command {
 	/// Parse a VCDS installation into `~/.vagcan`. Run once. Offline.
 	///
-	/// Everything the label files contributes — the parsed label files itself, the
+	/// Everything the label files contribute — the parsed label files themselves, the
 	/// measurement names, the `.rod` section keys — is derived from a VCDS
 	/// installation and cannot be shipped with this tool, because it is
 	/// Ross-Tech's data. This recovers all three from an installation you have.
 	///
-	/// It takes minutes over a full label_files, mostly in the name recovery, and it
+	/// It takes minutes over a full set of label files, mostly in the name recovery, and it
 	/// touches no car. Running it again on an unchanged installation does
 	/// nothing and says so.
 	///
@@ -140,7 +140,7 @@ enum Command {
 		#[arg(long)]
 		identify: bool,
 		/// VCDS label directory. Each unit's part number is resolved against the
-		/// label_files, which supplies the diagnostic address and the label files' name
+		/// label files, which supplies the diagnostic address and the label files' name
 		/// for it — data, not a table in this program. Defaults to what `vagcan
 		/// setup` extracted into ~/.vagcan; a dir given here overrides it.
 		#[arg(long, value_name = "DIR", requires = "identify")]
@@ -876,7 +876,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 	const GATEWAY_REQUEST: u16 = 0x710;
 	const VW_RESPONSE_OFFSET: u16 = 0x6A;
 
-	// The label files turns a part number the car reports into the unit's diagnostic
+	// The label files turn a part number the car reports into the unit's diagnostic
 	// address and name, for any VAG car rather than for a list written here.
 	// `--labels` defaults to what `vagcan setup` extracted into ~/.vagcan, so
 	// `units --identify` resolves names with no flag; a dir given wins, and a
@@ -951,7 +951,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 			println!("  {id:03X}  (did not answer)");
 		} else {
 			// Two names, both from data: the unit's own component string, and
-			// what the label files calls the part number — the latter also
+			// what the label files call the part number — the latter also
 			// supplying the diagnostic address people use.
 			identified += 1;
 			let name = label_files
@@ -982,7 +982,7 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 		backend = unit.into_transport().into_backend();
 	}
 	if let Some(dir) = &label_files_dir {
-		// Silence here would read as "the label files agrees"; it usually means the
+		// Silence here would read as "the label files agree"; it usually means the
 		// label files have no entry for these part numbers.
 		println!(
 			"\n{resolved} of {identified} part numbers resolved against the label files at {}.",

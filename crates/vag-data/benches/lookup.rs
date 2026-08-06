@@ -3,7 +3,7 @@
 //! (part_no, block, field) -> measurement name (`measurement`).
 //!
 //! Uses a synthetic label files sized like the reference VCDS install
-//! (~2,900 label_files, ~3,700 REDIRECT rows, ~43k measurements) so the
+//! (~2,900 label files, ~3,700 REDIRECT rows, ~43k measurements) so the
 //! numbers are representative without shipping proprietary data.
 //!
 //! Run: `cargo bench -p vag-data --bench lookup`
@@ -18,7 +18,7 @@ const FILES: usize = 2_900;
 /// Number of wildcard REDIRECT rows on top of the per-file exact ones
 /// (reference install: ~3,739 redirects total).
 const WILDCARD_REDIRECTS: usize = 800;
-/// Measurements per file (~43k total, like the reference `.lbl` label_files).
+/// Measurements per file (~43k total, like the reference `.lbl` label files).
 const MEASUREMENTS_PER_FILE: usize = 15;
 
 /// Part number for target file `i`, shaped like a real VAG part number.

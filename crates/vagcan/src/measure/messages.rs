@@ -56,7 +56,7 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		);
 	}
 	// The words, because they are the half of this the reader can act on
-	// without a survey: a car whose label files calls the channel something else is
+	// without a survey: a car whose label files call the channel something else is
 	// the ordinary reason for this refusal, and the only useful thing to tell
 	// its owner is which names their catalogs would have to use.
 	for m in missing.iter().filter(|m| !m.tried.is_empty()) {

@@ -1,4 +1,4 @@
-//! `vag-db` — build and query a SQLite cache of the parsed VCDS label_files.
+//! `vag-db` — build and query a SQLite cache of the parsed VCDS label files.
 //!
 //! Usage:
 //!   vag-db build  <labels-dir> <out.sqlite>
@@ -13,7 +13,7 @@
 //! number exactly like `vagcan vcds labels --part`. `stats` prints row counts per
 //! table. `rod` decodes a `.rod` (UDS/ODX) file's sections and prints each
 //! one's tag, decode status, and text (see [`vag_data::decode_rod`]); `.rod`
-//! is NOT part of the SQLite label_files.
+//! is NOT part of the SQLite label files.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

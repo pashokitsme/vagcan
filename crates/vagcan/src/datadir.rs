@@ -49,7 +49,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// ~/.vagcan/
 ///   data/
 ///     extracted/                      parsed from a VCDS install by `setup`:
-///       cache.sqlite                    the label_files, queryable
+///       cache.sqlite                    the label files, queryable
 ///       names.json                      measurement names recovered from TTTEXT
 ///       rod-keys.json                   recovered .rod section keys
 ///     measured/                       proven measurement rows, one file per
@@ -108,7 +108,7 @@ pub fn rod_keys() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("rod-keys.json"))
 }
 
-/// The SQLite cache of the parsed label_files.
+/// The SQLite cache of the parsed label files.
 ///
 /// One file, not one per label files directory as before. Which install it was built
 /// from is remembered beside it in [`LABEL_CACHE_SOURCE`], because the mtime

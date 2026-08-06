@@ -152,7 +152,7 @@ impl LabelDb {
 		}
 	}
 
-	/// The unit numbering the label files itself states: every diagnostic address
+	/// The unit numbering the label files themselves states: every diagnostic address
 	/// that appears in a `; Component: … (#17)` header, with the name the
 	/// label files give it, sorted by address.
 	///
@@ -166,7 +166,7 @@ impl LabelDb {
 		&self.unit_numbers
 	}
 
-	/// What the label files calls one diagnostic address.
+	/// What the label files call one diagnostic address.
 	pub fn unit_name(&self, address: u8) -> Option<&str> {
 		self
 			.unit_numbers
@@ -205,7 +205,7 @@ impl LabelDb {
 		self.resolve_idx(part_no).map(|i| &self.files[i])
 	}
 
-	/// Which control unit a part number belongs to, as the label files describes it
+	/// Which control unit a part number belongs to, as the label files describe it
 	/// — its diagnostic address and the label files' name for it.
 	///
 	/// This is how the tool learns that `0CW300041G` is unit `02` and a
@@ -372,7 +372,7 @@ impl LabelDb {
 ///
 /// A number is named many times over — 108 files call `01` an engine — and not
 /// always with the same words, since the name belongs to a car's own ECU and
-/// the label files spans two decades of them. The **most frequent** spelling wins,
+/// the label files span two decades of them. The **most frequent** spelling wins,
 /// ties broken alphabetically, so the answer depends on the label files and not on
 /// the order its files happened to be read in.
 fn collect_unit_numbers(files: &[LabelFile]) -> Vec<(u8, String)> {
@@ -399,7 +399,7 @@ fn normalize(s: &str) -> String {
 	s.trim().to_ascii_uppercase()
 }
 
-/// The spellings a VAG part number can appear under in a label_files.
+/// The spellings a VAG part number can appear under in a label files.
 ///
 /// A control unit reports its number packed — `0AM927769E`, `06K907425B` —
 /// while the label files name files in the printed form, grouped and hyphenated,
@@ -473,7 +473,7 @@ mod tests {
 		// What the car reports versus how the label files name its files. The
 		// reference gearbox says 0AM927769E; the file is 0AM-927-769.clb.
 		assert_eq!(part_number_candidates("0AM927769E"), vec!["0AM927769E", "0AM-927-769-E", "0AM-927-769"]);
-		// The engine's hardware number, whose label files files carry a variant
+		// The engine's hardware number, whose label files carry a variant
 		// suffix instead of the index letter.
 		assert_eq!(part_number_candidates("06K907425B"), vec!["06K907425B", "06K-907-425-B", "06K-907-425"]);
 		// Already printed: no duplicate spellings.

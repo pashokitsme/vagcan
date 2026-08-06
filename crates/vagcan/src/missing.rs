@@ -50,10 +50,11 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
 		"\n\
          They are recovered from a VCDS installation, in one command:\n    \
          vagcan setup /path/to/VCDS\n\n\
-         That is offline — no adapter, no car — and it takes a few minutes over the\n\
-         whole label_files. It writes everything under ~/.vagcan/data/extracted/.\n\n\
-         If you have no VCDS installation: this project cannot ship the data, because\n\
-         it is Ross-Tech's. {VCDS_DOWNLOAD}"
+         No VCDS installation? Leave the path off and it offers to fetch one for you:\n    \
+         vagcan setup\n\n\
+         Either way it is offline — no adapter, no car — and takes a few minutes over\n\
+         all the label files. It writes everything under ~/.vagcan/data/extracted/.\n\n\
+         VCDS is Ross-Tech's, and free from them directly: {VCDS_DOWNLOAD}"
 	);
 	out
 }
@@ -78,9 +79,11 @@ pub fn no_fault_labels(looked_in: &Path) -> String {
 		"\n\
          The names come from a VCDS installation, and `vagcan setup` copies them in:\n    \
          vagcan setup /path/to/VCDS\n\n\
+         Haven't got one? Leave the path off and it offers to fetch a copy:\n    \
+         vagcan setup\n\n\
          That is offline, and it leaves the labels under ~/.vagcan/data/extracted/ so the\n\
-         installation can then be deleted. If you have no VCDS installation: this project\n\
-         cannot ship the data, because it is Ross-Tech's. {VCDS_DOWNLOAD}"
+         installation can then be deleted. VCDS is Ross-Tech's, and free from them\n\
+         directly: {VCDS_DOWNLOAD}"
 	);
 	out
 }

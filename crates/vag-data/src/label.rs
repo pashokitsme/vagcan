@@ -1,4 +1,4 @@
-//! Parser for Ross-Tech VCDS plaintext `.lbl` label_files.
+//! Parser for Ross-Tech VCDS plaintext `.lbl` label files.
 //!
 //! `.lbl` files are ISO-8859-1, CRLF-terminated, `;`-commented. Each content line
 //! is a comma-separated record whose first field selects the record kind:
@@ -28,7 +28,7 @@ pub struct LabelFile {
 	pub unit: Option<UnitLabel>,
 }
 
-/// A control unit as the label files describes it.
+/// A control unit as the label files describe it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnitLabel {
 	/// The VW diagnostic address, e.g. `0x02` for a gearbox — written `02`.
@@ -258,7 +258,7 @@ pub fn parse_label(source: impl Into<String>, bytes: &[u8]) -> LabelFile {
 		}
 		let (content, comment) = split_comment(line);
 		if content.is_empty() {
-			// A full-line comment is where the label files states which unit the
+			// A full-line comment is where the label files state which unit the
 			// file is for, so it is read rather than discarded.
 			if unit.is_none() {
 				if let Some(text) = comment {

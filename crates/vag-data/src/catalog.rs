@@ -10,12 +10,12 @@
 //! `TTTEXT` for the name. The **codec is now fully decoded** — the per-table
 //! substitution of [`crate::glyphs`] reads `STRUC`/`MUX`/`TTDOP` at 100 %
 //! coverage, and the scalings this project proved by driving (`0.4`, `0.01`,
-//! `0.001`, `1.0`, …) are all present in the label_files. So the earlier "base-14,
+//! `0.001`, `1.0`, …) are all present in the label files. So the earlier "base-14,
 //! field segmentation not reversed" blocker is gone (`research/labels/scaling-audit.md`).
 //!
 //! Two things still block the *automatic* path, and both were re-confirmed under
 //! that correct decode (not the retired base-14 one):
-//! - **The read DID is not in the label_files.** Re-running the DID search over the
+//! - **The read DID is not in the label files.** Re-running the DID search over the
 //!   correctly-decoded fields reproduces `rod-labels.md` §4.0c's chance-level
 //!   negative; `label-linkage.md` §3 / `tttext2.md` §6.2a add that the per-ECU
 //!   payload has no per-ECU degree of freedom to hold it. The label files never says
@@ -28,7 +28,7 @@
 //!
 //! Therefore this catalog is currently seeded **only with rows proven
 //! empirically** from the owner's capture (see [`crate::measure`]): nothing is
-//! read out of the label_files, and no scaling slope is invented. As more
+//! read out of the label files, and no scaling slope is invented. As more
 //! measurements are validated against the capture/CSV crib, they are added here
 //! as data rows — the extensible foundation the roadmap calls for (add a
 //! parameter = add a row, never a new match arm).

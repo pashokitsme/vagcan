@@ -13,7 +13,7 @@
 //!   the body control module answers 508 codes that way, of which three are
 //!   actual stored faults.
 //! * **A code is printed as a code until something names it.** The texts live
-//!   in the label_files; where this project cannot resolve one, it shows the
+//!   in the label files; where this project cannot resolve one, it shows the
 //!   raw bytes rather than a plausible-sounding invention.
 //!
 //! Read-only: the service issued is `0x19`, which reads. Clearing faults is
@@ -377,7 +377,7 @@ pub async fn run(
 
 		if supported {
 			// The unit's whole catalogue of codes, in its own order — which is
-			// how the label files stores fault names, so the two lists are
+			// how the label files store fault names, so the two lists are
 			// worth comparing.
 			match uds.read_supported_dtcs().await {
 				Ok(list) => {

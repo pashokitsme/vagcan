@@ -35,7 +35,7 @@ const MIN_LETTERS: usize = 12;
 /// The in-domain prior wants a word's label-file frequency — it is what tells
 /// `voltage` from the rarities that share its shape. But a `.lbl` file lists a
 /// few status literals thousands of times (`OK` 5 403, `ON` 7 679, `LC` 5 287
-/// on the reference label_files), enough to outrank `of` (3 947) and drive the
+/// on the reference label files), enough to outrank `of` (3 947) and drive the
 /// search to read `Status ok` for `Status of`. Saturating the count here ties
 /// those giants to one another and to `of` — the tie then breaks on the
 /// decoded-label files frequency, measured off cleaner text — while every genuine
@@ -152,7 +152,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 	// difference between a check and a tautology: the passes below feed words
 	// read off solved records back into the dictionary, so asking the grown
 	// vocabulary whether a word is a word teaches the gate its own misreadings
-	// and then passes them. Measured on the reference label_files, gating membership
+	// and then passes them. Measured on the reference label files, gating membership
 	// against the grown dictionary let `Ejzc xjpx dyjje agrope acpcj cgijfbc`
 	// through as a name; against the seed it is six words nothing has ever
 	// attested and the record is dropped. (The gate's *ambiguity margin* is a
@@ -246,7 +246,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 	// words (`of`/`ob`, `by`/`bf`, the writeup's `oil`/`bil`) by nothing better
 	// than alphabetical order, and a cluster leader that guesses wrong pins that
 	// letter for every member it feeds. The word's frequency *in the decoded
-	// label files itself* is the signal that settles those ties on evidence: `of`
+	// label files themselves* is the signal that settles those ties on evidence: `of`
 	// outnumbers `ob` thousands to one (`research/labels/tttext-codec.md` §7).
 	//
 	// It is measured here from the decode, never a table of words baked into the
@@ -323,7 +323,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 /// Word frequency over a set of decoded records — the prior.
 ///
 /// This is the statistic `research/labels/tttext-codec.md` §7 calls "a
-/// word-frequency prior measured on the decoded label files itself": every word of
+/// word-frequency prior measured on the decoded label files themselves": every word of
 /// every reading, counted. It is what tells `of` from `ob` and `oil` from
 /// `bil` — real words the vocabulary holds at equal footing until their counts
 /// separate them by three orders of magnitude. Two-letter words are counted
@@ -877,7 +877,7 @@ mod tests {
 	#[test]
 	fn the_prior_is_the_word_count_of_the_decoded_names() {
 		// The statistic §7 calls "a word-frequency prior measured on the decoded
-		// label files itself": every word of every reading, two-letter words
+		// label files themselves": every word of every reading, two-letter words
 		// included, since those are the function words a leader misreads.
 		let solved = HashMap::from([(0usize, "oil temperature: oil bank".to_string()), (1usize, "of oil".to_string())]);
 		let freq = word_frequency(&solved);
@@ -891,7 +891,7 @@ mod tests {
 		// `oil` and `bil` share the shape `0 1 2`, and a two-token record pins
 		// neither of the letters that tell them apart, so the seed — which
 		// weighs every in-domain word alike — breaks the tie by alphabet and
-		// reads the record as the wrong word. The decoded label_files, where `oil`
+		// reads the record as the wrong word. The decoded label files, where `oil`
 		// outnumbers `bil` fifty to one, is the evidence that flips it: the
 		// frequency dictionary weighs `oil` far above `bil`, and re-solving
 		// under it reads the record right. This is the machinery whose absence
@@ -960,7 +960,7 @@ mod tests {
 		assert_eq!(voltage.min(SEED_FREQUENCY_CAP), voltage, "a content word is untouched");
 	}
 
-	/// End-to-end pin against the vendored label_files, run on demand.
+	/// End-to-end pin against the vendored label files, run on demand.
 	///
 	/// `#[ignore]` because it needs the decrypted `[TXT]` section, which is
 	/// minutes of key search to produce and is not in the checkout. Dump it once

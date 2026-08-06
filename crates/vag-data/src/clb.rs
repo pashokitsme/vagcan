@@ -1,4 +1,4 @@
-//! Decryption of Ross-Tech VCDS compiled `.clb` label_files.
+//! Decryption of Ross-Tech VCDS compiled `.clb` label files.
 //!
 //! `.clb` files are a per-record-encrypted container: each record's plaintext
 //! is a line of the SAME textual format `label::parse_label` already

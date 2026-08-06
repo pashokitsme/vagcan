@@ -1806,7 +1806,7 @@ mod tests {
 		assert!(text.contains("no proven scaling for this car yet"), "{text}");
 		assert!(text.contains("recording calibrate"), "{text}");
 		// And never the other shortage's fix as an instruction: a scaling is
-		// not in any label_files, so pointing at `setup` here sends a reader
+		// not in any label files, so pointing at `setup` here sends a reader
 		// nowhere.
 		assert!(!text.contains("vagcan setup /path"), "{text}");
 	}

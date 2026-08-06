@@ -26,8 +26,14 @@ use vag_data::codes::sae_code;
 use vag_data::dtc::{self, DtcRegistry, UnitCatalogue, UnitLookup};
 use vag_data::rod::IvCache;
 
-/// `Codes.dat`'s own file name inside a VCDS installation.
-const CODES_FILE: &str = "Codes.dat";
+/// The fault text store's own file name inside a VCDS installation.
+///
+/// One name per language build — see [`crate::setup::CODES_FILES`], which owns
+/// the list. Looked up in that order, so an install carrying both is read the
+/// same way twice running.
+fn find_codes(root: &Path) -> Option<std::path::PathBuf> {
+	crate::setup::CODES_FILES.iter().find_map(|name| dtc::find_named(root, name))
+}
 
 /// Whether a directory holds the two files fault naming cannot start without —
 /// the registry and the text store.
@@ -39,7 +45,7 @@ const CODES_FILE: &str = "Codes.dat";
 /// so the default `~/.vagcan` path can degrade quietly while an explicit
 /// `--labels` still reports what it could not open.
 pub fn has_fault_labels(root: &Path) -> bool {
-	dtc::find_named(root, dtc::REGISTRY_FILE).is_some() && dtc::find_named(root, CODES_FILE).is_some()
+	dtc::find_named(root, dtc::REGISTRY_FILE).is_some() && find_codes(root).is_some()
 }
 
 /// What one fault resolved to.
@@ -120,9 +126,10 @@ impl Namer {
 				dtc::REGISTRY_FILE,
 			)
 		})?;
-		let codes_path = dtc::find_named(root, CODES_FILE).with_context(|| {
+		let codes_path = find_codes(root).with_context(|| {
 			format!(
-				"no {CODES_FILE} under {} — it ships in the VCDS install root, beside Labels/",
+				"none of {:?} under {} — the fault text ships in the VCDS install root, beside Labels/",
+				crate::setup::CODES_FILES,
 				root.display()
 			)
 		})?;
@@ -244,7 +251,7 @@ mod tests {
 		assert!(!has_fault_labels(&base), "empty dir has no labels");
 		std::fs::write(odx.join(dtc::REGISTRY_FILE), b"x").unwrap();
 		assert!(!has_fault_labels(&base), "registry alone is not enough");
-		std::fs::write(base.join(CODES_FILE), b"x").unwrap();
+		std::fs::write(base.join(crate::setup::CODES_FILES[0]), b"x").unwrap();
 		assert!(has_fault_labels(&base), "both files present — found by name, at any depth");
 		let _ = std::fs::remove_dir_all(&base);
 	}

@@ -10,7 +10,7 @@
 //! the frequency bands and from cribs.
 //!
 //! Ninety characters of ciphertext under an unknown 26-letter permutation is
-//! solvable from a dictionary, and the label files supplies its own: names already
+//! solvable from a dictionary, and the label files supply its own: names already
 //! recovered feed the vocabulary that recovers the next ones. This module is
 //! that solver.
 //!

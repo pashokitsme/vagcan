@@ -92,7 +92,7 @@ pub enum Tool {
 		device: Option<String>,
 	},
 
-	/// Search the measurement names recovered from the label_files.
+	/// Search the measurement names recovered from the label files.
 	///
 	/// FOR: finding what VW calls something, when all you have is a word.
 	///
@@ -194,7 +194,7 @@ pub enum Tool {
 	/// label files sorted by source name.
 	///
 	/// To look ONE part number up, use `vagcan vcds labels --part` instead — it
-	/// answers from a cache instead of reparsing the label_files.
+	/// answers from a cache instead of reparsing the label files.
 	Dump {
 		/// VCDS `Labels/` directory, or any directory below it.
 		#[arg(value_name = "DIR")]

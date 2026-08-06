@@ -35,7 +35,7 @@ fn file_name_or(path: &Path, fallback: &str) -> String {
 	path.file_name().and_then(|n| n.to_str()).unwrap_or(fallback).to_string()
 }
 
-/// Walk `dir`, parse every `.lbl`, decrypt+parse every `.clb`, into label_files.
+/// Walk `dir`, parse every `.lbl`, decrypt+parse every `.clb`, into label files.
 /// Non-file entries and other extensions are counted, not parsed. Read errors
 /// are counted (and the file skipped), never fatal.
 pub fn load_label_files(dir: &Path) -> io::Result<LabelFileLoad> {
@@ -228,7 +228,7 @@ fn collect_rod_matches(dir: &Path, wanted: &str, hits: &mut Vec<PathBuf>) {
 }
 
 /// Recursively walk `root`, parsing every `.lbl` and decrypting+parsing every
-/// `.clb` into label_files, and counting `.rod` files (parse not attempted).
+/// `.clb` into label files, and counting `.rod` files (parse not attempted).
 ///
 /// Unlike [`load_label_files`] (single flat dir, `.lbl`/`.clb` only — kept as-is for
 /// `vag-db`), this descends the whole VCDS install tree so a caller can point at

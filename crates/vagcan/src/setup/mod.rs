@@ -1,6 +1,6 @@
 //! `vagcan setup <VCDS-DIR>` — the one command that makes this tool usable.
 //!
-//! Everything the label files contributes is derived from a VCDS installation,
+//! Everything the label files contribute is derived from a VCDS installation,
 //! and none of it may be redistributed: it is Ross-Tech's data. So it is not in
 //! this repository and never will be, and the price of that is a step somebody
 //! has to run once. This is that step, and it is deliberately one command with
@@ -10,8 +10,8 @@
 //!
 //! | what | how | where it lands |
 //! |---|---|---|
-//! | the raw label_files, copied | [`copy_label_files`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
-//! | the label_files, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
+//! | the raw label files, copied | [`copy_label_files`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
+//! | the label files, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
 //! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/data/extracted/names.json` |
 //! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/data/extracted/rod-keys.json` |
 //!
@@ -41,6 +41,7 @@
 
 pub mod vendor;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -51,27 +52,36 @@ use anyhow::{Context, Result};
 const ODX_DIR: &str = "UDS_EV";
 
 /// The global text table every measurement name comes out of.
-const TEXT_TABLE: &str = "TTTEXT.ROD";
+///
+/// **Ross-Tech names it per language build**, and that is not a detail: the
+/// English one ships `TTTEXT.ROD`, the Russian one `TTText-RUS.rod`. Matching
+/// only the English spelling left anyone who chose Russian with an install that
+/// recovered no names at all and never said why. Nothing suggests the list is
+/// closed, so a name nobody here has seen is a question to ask, not a verdict.
+const TEXT_TABLES: &[&str] = &["TTTEXT.ROD", "TTText-RUS.rod"];
 
 /// The fault text store, one file in the install root beside `Labels/`.
-const CODES_FILE: &str = "Codes.dat";
+///
+/// Same story as [`TEXT_TABLES`]: `Codes.dat` in the English build,
+/// `Code-RUS.dat` in the Russian one.
+pub(crate) const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
 
-/// What is copied out of the installation so it can then be deleted.
+/// The directories copied out of the installation so it can then be deleted.
 ///
 /// The exact set fault naming and label lookup read off disk at run time:
 /// `UDS_EV/` holds every `.rod` (the `RD.rod` registry, the shared `MUX.rod`,
-/// and each unit's own file, named by its `F19E`), `Labels/` the pre-UDS
-/// `.lbl`/`.clb`, and `Codes.dat` the fault text. Directories are copied whole
-/// so the per-unit `.rod` a given car will name — unknowable here — are all
-/// there. Nothing else in an install is read at run time.
-const LABEL_FILE_INPUTS: &[&str] = &[ODX_DIR, "Labels", CODES_FILE];
+/// and each unit's own file, named by its `F19E`), and `Labels/` the pre-UDS
+/// `.lbl`/`.clb`. Copied whole, so the per-unit `.rod` a given car will name —
+/// unknowable here — are all there. The fault text file goes with them, under
+/// whichever of [`CODES_FILES`] this build uses.
+const LABEL_FILE_INPUTS: &[&str] = &[ODX_DIR, "Labels"];
 
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
 /// `RD.rod` is the fault registry — the hop from a unit's own fault number to
 /// the code that names it (`research/labels/fault-naming-hop.md`) — and `MUX.rod`
 /// carries the shared multiplexer tables. Both are one file for the whole
-/// label_files, so recovering their keys once serves every vehicle.
+/// label files, so recovering their keys once serves every vehicle.
 ///
 /// Per-unit files are deliberately not swept. There are over sixteen thousand
 /// of them, a blocked section costs about a minute of every core, and which
@@ -143,6 +153,39 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 	Ok(Some(vendor::fetch(&lang, opts.archive_base)?))
 }
 
+/// The file this installation uses for a job, by name or by asking.
+///
+/// `known` is tried first, so an English or Russian install asks nothing. Only
+/// when none of them is there does this offer the directory's own `suffix`
+/// files: the file is almost certainly present under a name from a build
+/// nobody here has seen, and "your installation is broken" would be the wrong
+/// thing to tell somebody looking straight at it.
+///
+/// Nothing is asked when stdin is not a terminal — a script gets `None` and the
+/// step reports what it could not find, rather than blocking on a prompt no one
+/// is there to answer.
+fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option<PathBuf>> {
+	for name in known {
+		let candidate = dir.join(name);
+		if candidate.is_file() {
+			return Ok(Some(candidate));
+		}
+	}
+	if !std::io::stdin().is_terminal() {
+		return Ok(None);
+	}
+	println!(
+		"\n      None of {known:?} is in {}.\n      \
+         Ross-Tech names this file differently in each language build, so pick the\n      \
+         {what} out of what is actually there:",
+		dir.display()
+	);
+	let mut chooser = crate::ui::picker::Console::new(format!(
+		"re-run `vagcan setup` from a terminal, or point --labels at a build whose {what} is one of {known:?}"
+	));
+	crate::ui::picker::pick_path(&mut chooser, dir, &[crate::ui::picker::Level::files(what).ending(suffix)])
+}
+
 /// What one step of the run did, for the closing report.
 ///
 /// A step that was skipped is worth as much as one that ran: somebody who
@@ -200,15 +243,16 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 
 /// Step 1: copy the raw label files in, so the installation is disposable.
 ///
-/// The three inputs [`LABEL_FILE_INPUTS`] names, copied preserving their layout, so
-/// afterwards `~/.vagcan/data/extracted/` holds `UDS_EV/`, `Labels/` and
-/// `Codes.dat`. Idempotent and freshness-gated per file, the same rule the rest
-/// of setup follows: a file is copied only when it is missing from the
-/// destination or newer than what is there, and `--refresh` copies the lot.
+/// The directories [`LABEL_FILE_INPUTS`] names plus this build's fault text
+/// file, copied preserving their layout, so afterwards
+/// `~/.vagcan/data/extracted/` holds `UDS_EV/`, `Labels/` and the fault text.
+/// Idempotent and freshness-gated per file, the same rule the rest of setup
+/// follows: a file is copied only when it is missing from the destination or
+/// newer than what is there, and `--refresh` copies the lot.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	println!(
-		"[1/4] Raw label files — copying UDS_EV/, Labels/ and Codes.dat (~122 MB) so the\n      \
-         installation can be deleted afterwards."
+		"[1/4] Raw label files — copying UDS_EV/, Labels/ and the fault text (~122 MB) so\n      \
+         the installation can be deleted afterwards."
 	);
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	for name in LABEL_FILE_INPUTS {
@@ -220,6 +264,16 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 			continue;
 		}
 		collect_copies(&src, &target.join(name), &mut plan)?;
+	}
+	// The fault text, under whichever name this language build gives it. Copied
+	// under that same name: `faultnames` looks for the whole list too, so the
+	// build stays recognisable rather than being flattened to the English one.
+	match locate(root, CODES_FILES, "fault text file", ".dat")? {
+		Some(codes) => {
+			let name = codes.file_name().unwrap_or_default();
+			collect_copies(&codes, &target.join(name), &mut plan)?;
+		}
+		None => println!("      the fault text file: not in this installation, skipped — faults will read as numbers"),
 	}
 	if plan.is_empty() {
 		return Ok(Step::Missing {
@@ -293,14 +347,14 @@ fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
 /// `tttext` reads it. The intermediate file is this function's business and
 /// nobody else's, so it goes in a scratch directory and is removed again.
 fn names(root: &Path, refresh: bool) -> Result<Step> {
-	let source = root.join(ODX_DIR).join(TEXT_TABLE);
+	let odx = root.join(ODX_DIR);
 	let out = crate::datadir::names_catalog()?;
-	if !source.is_file() {
+	let Some(source) = locate(&odx, TEXT_TABLES, "measurement text table", ".rod")? else {
 		return Ok(Step::Missing {
 			what: "the measurement names",
-			why: format!("{} is not in this installation", source.display()),
+			why: format!("none of {TEXT_TABLES:?} is under {}", odx.display()),
 		});
-	}
+	};
 	if !refresh && is_newer(&out, &source) {
 		println!("[3/4] Measurement names — already recovered from this installation.");
 		return Ok(Step::Skipped {
@@ -311,9 +365,10 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	}
 
 	println!(
-		"[3/4] Measurement names — opening {TEXT_TABLE}, then reading its cipher.\n      \
+		"[3/4] Measurement names — opening {}, then reading its cipher.\n      \
          This is the slow part: every record is under its own substitution, and the\n      \
-         attack bootstraps over several passes. Minutes, not seconds."
+         attack bootstraps over several passes. Minutes, not seconds.",
+		source.file_name().unwrap_or_default().to_string_lossy()
 	);
 	let scratch = out.with_file_name("tttext-scratch");
 	let _ = std::fs::remove_dir_all(&scratch);

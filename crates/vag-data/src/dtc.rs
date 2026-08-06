@@ -236,7 +236,7 @@ impl UnitCatalogue {
 pub enum UnitLookup {
 	/// The catalogue, and the file it came from.
 	Found { file: PathBuf, catalogue: UnitCatalogue },
-	/// No file of that ODX name anywhere in the label_files. On the reference car
+	/// No file of that ODX name anywhere in the label files. On the reference car
 	/// this is the body control module, whose `F19E` is `EV_BCMMQB` and which
 	/// the English label files simply does not ship.
 	NoFile,

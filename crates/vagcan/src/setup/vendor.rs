@@ -184,7 +184,7 @@ fn content_length(url: &str) -> Option<u64> {
 ///
 /// The failure being guarded is not "it did not download" — that is loud — but
 /// "it stopped". A truncated zip unpacks into a VCDS installation missing an
-/// arbitrary tail of its label_files, and nothing downstream can tell that from
+/// arbitrary tail of its label files, and nothing downstream can tell that from
 /// label files that genuinely lacks them.
 pub fn check_archive(path: &Path, expected: Option<u64>) -> Result<()> {
 	let got = std::fs::metadata(path)

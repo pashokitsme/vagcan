@@ -165,7 +165,7 @@ open-work list at the end of this file.
 | can-sniff | vag-can/vagcan | `SlcanMode::Silent`, passive `IsoTpSniffer`, `vagcan sniff` |
 | scan | vagcan | `vagcan scan` — group-testing sweep of the identifier space; `vagcan properties` |
 | odx-link | vag-data/vagcan | `find_rod_by_odx_name` + `labels --from-car`: the unit names its own `.rod` (F19E) |
-| label-label files | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_label_files`/`scan_label_files` |
+| label files | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_label_files`/`scan_label_files` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vagcan vcds rod`); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
 | labels-cli | vagcan | `vagcan vcds labels` — label files inventory + `--part` / `--block` lookup; SQLite cache at `~/.vagcan/data/extracted/cache.sqlite` (`--refresh` rebuilds); the IV brute force is behind the `rod-crack` feature (`vagcan vcds rod` only) |
@@ -354,7 +354,7 @@ blind (`research/labels/tttext-codec.md` §2, superseding `research/labels/label
 "suggestive, not established"), and the recovered names are English text — the
 `ENG`-means-*English* reading, not *engine*. That closes the chain
 *proven identifier → IDE → ENG → name* for gearbox rows whose `IDE` the VCDS log prints —
-but only for those. The label files itself carries **no name→DID join**: `MWB` has no per-ECU
+but only for those. The label files themselves carries **no name→DID join**: `MWB` has no per-ECU
 identifier, so a `vagcan vcds names` hit is a hypothesis to confirm on the car, not a binding.
 `mwb.rs` is deliberately kept for the possible MWB→TTTEXT name join.
 
