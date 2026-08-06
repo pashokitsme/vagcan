@@ -29,6 +29,20 @@ const MARGIN: f32 = 20.0;
 /// dominate below it are not names.
 const MIN_LETTERS: usize = 12;
 
+/// Where a label word's occurrence count stops being usage and starts being
+/// enum-literal noise.
+///
+/// The in-domain prior wants a word's label-file frequency — it is what tells
+/// `voltage` from the rarities that share its shape. But a `.lbl` file lists a
+/// few status literals thousands of times (`OK` 5 403, `ON` 7 679, `LC` 5 287
+/// on the reference corpus), enough to outrank `of` (3 947) and drive the
+/// search to read `Status ok` for `Status of`. Saturating the count here ties
+/// those giants to one another and to `of` — the tie then breaks on the
+/// decoded-corpus frequency, measured off cleaner text — while every genuine
+/// content word, whose count is far below this, keeps its full weight. Not a
+/// property of any car: a property of how label files spell enumerations.
+const SEED_FREQUENCY_CAP: u32 = 1_000;
+
 pub struct Options<'a> {
     pub file: &'a str,
     pub words: &'a [String],
@@ -79,6 +93,13 @@ pub fn run(opts: Options<'_>) -> Result<()> {
             continue;
         }
         let before = known.len();
+        // Count occurrences, but spend them carefully (below). The label corpus
+        // says `voltage` where it never says `boltage`, and that is the prior
+        // that keeps the search off English rarities — but its raw counts are
+        // dominated by *enum literals*, the `OK`/`ON`/`LC` status values that
+        // appear thousands of times, and letting those decide would make the
+        // search read `Status ok` for `Status of`.
+        let mut local: HashMap<String, u32> = HashMap::new();
         for file in &files {
             // Read as bytes, not as a string. A VCDS `Labels/` directory is
             // Latin-1 and holds umlauts, so `read_to_string` refuses the whole
@@ -91,13 +112,24 @@ pub fn run(opts: Options<'_>) -> Result<()> {
                     continue;
                 }
                 let word = String::from_utf8_lossy(word).to_ascii_lowercase();
-                if known.insert(word.clone()) {
-                    dict.insert(&word, weight);
-                }
+                *local.entry(word).or_insert(0) += 1;
             }
         }
+        for (word, count) in local {
+            known.insert(word.clone());
+            // Frequency, saturated. A word's count separates `voltage` from the
+            // rarities that share its shape, which is the whole in-domain prior;
+            // but past [`SEED_FREQUENCY_CAP`] the count stops being usage and
+            // becomes enum-literal noise — the `OK`/`ON`/`LC` status values a
+            // label file lists thousands of times. Saturating there ties those
+            // giants to one another and to `of`, so the search is not driven to
+            // read `Status ok` for `Status of`, while every genuine content word
+            // (whose count is far below the cap) keeps its full weight.
+            let scale = count.min(SEED_FREQUENCY_CAP) as f32;
+            dict.insert(&word, weight * scale);
+        }
         eprintln!(
-            "{} words from {path} ({} file(s)) at weight {weight}",
+            "{} words from {path} ({} file(s)) at weight {weight}×frequency (capped)",
             known.len() - before,
             files.len()
         );
@@ -106,14 +138,16 @@ pub fn run(opts: Options<'_>) -> Result<()> {
     anyhow::ensure!(!dict.is_empty(), "no vocabulary: pass --names and/or --words");
 
     // The vocabulary as it stands *before* the bootstrap, kept for the catalog
-    // gate. This is not a micro-optimisation, it is the difference between a
-    // check and a tautology: the passes below feed words read off solved
-    // records back into the dictionary at weight 300, so a wrong decode teaches
-    // the gate its own misreadings and then passes them. Measured on the
-    // reference corpus, gating against the grown dictionary let
-    // `Ejzc xjpx dyjje agrope acpcj cgijfbc` through as a name; against the
-    // seed it is six words nothing has ever attested and the record is dropped.
-    let seed_dict = dict.clone();
+    // gate's membership check. This is not a micro-optimisation, it is the
+    // difference between a check and a tautology: the passes below feed words
+    // read off solved records back into the dictionary, so asking the grown
+    // vocabulary whether a word is a word teaches the gate its own misreadings
+    // and then passes them. Measured on the reference corpus, gating membership
+    // against the grown dictionary let `Ejzc xjpx dyjje agrope acpcj cgijfbc`
+    // through as a name; against the seed it is six words nothing has ever
+    // attested and the record is dropped. (The gate's *ambiguity margin* is a
+    // separate question, answered by the frequency prior below — a statistic a
+    // lone misreading cannot fake, so it may be measured on the decode.)
     let seed_words = known.clone();
 
     // Records sharing the repetition pattern of their *letter runs* hold the
@@ -195,8 +229,41 @@ pub fn run(opts: Options<'_>) -> Result<()> {
         }
     }
 
+    // The prior. Everything above weighed a word by where it came from — every
+    // in-domain word the same — so the search breaks a tie between two real
+    // words (`of`/`ob`, `by`/`bf`, the writeup's `oil`/`bil`) by nothing better
+    // than alphabetical order, and a cluster leader that guesses wrong pins that
+    // letter for every member it feeds. The word's frequency *in the decoded
+    // corpus itself* is the signal that settles those ties on evidence: `of`
+    // outnumbers `ob` thousands to one (`research/labels/tttext-codec.md` §7).
+    //
+    // It is measured here from the decode, never a table of words baked into the
+    // binary — that would be exactly the car-specific data CLAUDE.md forbids.
+    // The first solve is right for the overwhelming majority of records, so its
+    // word counts are a sound prior; re-solving every cluster leader under them
+    // corrects the ones a flat weight left to chance, and the members it feeds
+    // follow.
+    let prior = corpus_frequency(&solved);
+    eprintln!(
+        "prior: {} word types over {} tokens of the decoded corpus",
+        prior.len(),
+        prior.values().sum::<u32>()
+    );
+    let prior_dict = frequency_dictionary(&known, &prior);
+    let solved = resolve_pass(&records, &clusters, &prior_dict, limits);
+    eprintln!("re-solved under the frequency prior: {} records", solved.len());
+
+    // The gate's ambiguity margin is a ratio of weights, so it too needs the
+    // frequency prior — measured now on the *re-solved* corpus — rather than the
+    // flat seed weights, under which every real-word pair looks 1:1 and the 20×
+    // test drops the record. Membership stays the seed vocabulary (below): a
+    // statistic a lone misreading cannot fake is a fair judge of ambiguity, but
+    // whether a word is a word is not a thing the corpus gets to vote on.
+    let gate_freq = corpus_frequency(&solved);
+    let gate_dict = frequency_dictionary(&known, &gate_freq);
+
     if opts.check > 0 {
-        recheck(&records, &clusters, &solved, &dict, limits, opts.check, opts.gated, &known);
+        recheck(&records, &clusters, &solved, &gate_dict, limits, opts.check, opts.gated, &known);
     }
 
     if let Some(path) = opts.partial {
@@ -211,7 +278,7 @@ pub fn run(opts: Options<'_>) -> Result<()> {
     }
 
     if let Some(path) = opts.catalog {
-        write_catalog(path, &records, &solved, &seed_dict, &seed_words)?;
+        write_catalog(path, &records, &solved, &gate_dict, &seed_words)?;
     }
 
     // Readings go to stdout when nobody said where to put them — unless a
@@ -241,6 +308,88 @@ pub fn run(opts: Options<'_>) -> Result<()> {
         100.0 * ordered.len() as f32 / records.len() as f32
     );
     Ok(())
+}
+
+/// Word frequency over a set of decoded records — the prior.
+///
+/// This is the statistic `research/labels/tttext-codec.md` §7 calls "a
+/// word-frequency prior measured on the decoded corpus itself": every word of
+/// every reading, counted. It is what tells `of` from `ob` and `oil` from
+/// `bil` — real words the vocabulary holds at equal footing until their counts
+/// separate them by three orders of magnitude. Two-letter words are counted
+/// too, because those are exactly the function words (`of`, `by`, `in`) a
+/// leader misreads and pins wrong for a whole cluster.
+fn corpus_frequency(solved: &HashMap<usize, String>) -> HashMap<String, u32> {
+    let mut freq: HashMap<String, u32> = HashMap::new();
+    for plain in solved.values() {
+        for word in plain.split(|c: char| !c.is_ascii_alphabetic()) {
+            if word.len() >= 2 {
+                *freq.entry(word.to_ascii_lowercase()).or_insert(0) += 1;
+            }
+        }
+    }
+    freq
+}
+
+/// A dictionary whose weight *is* each word's decoded-corpus frequency.
+///
+/// The whole vocabulary stays a candidate — a rare-but-real term must not be
+/// lost because it happened not to be decoded — so every known word is present,
+/// at a floor of one. A word the vocabulary never listed but the corpus did
+/// (the two-letter function words the bootstrap's length cut kept out of
+/// `known`) joins at its frequency, which for those words is the entire point.
+fn frequency_dictionary(known: &HashSet<String>, freq: &HashMap<String, u32>) -> Dictionary {
+    let mut dict = Dictionary::default();
+    for word in known {
+        dict.insert(word, *freq.get(word).unwrap_or(&0) as f32 + 1.0);
+    }
+    for (word, count) in freq {
+        // `insert` keeps the larger weight, so this only ever adds words `known`
+        // lacked; the counts already agree for the ones it holds.
+        dict.insert(word, *count as f32 + 1.0);
+    }
+    dict.finish();
+    dict
+}
+
+/// Solve every cluster once under a fixed dictionary — the re-solve.
+///
+/// Unlike the bootstrap loop this learns nothing and runs once: the dictionary
+/// it is handed already carries the frequency prior, so the point is only to
+/// let each cluster leader reconsider its tie-broken tokens with that prior in
+/// hand and to carry the corrected reading to the members it feeds. The leader,
+/// the completion and the transfer are the same three steps the bootstrap runs;
+/// only the weight behind them has changed.
+fn resolve_pass(
+    records: &[Record],
+    clusters: &BTreeMap<Vec<u8>, Vec<usize>>,
+    dict: &Dictionary,
+    limits: Limits,
+) -> HashMap<usize, String> {
+    let mut solved: HashMap<usize, String> = HashMap::new();
+    for members in clusters.values() {
+        let leader = members[0];
+        let cipher = &records[leader].cipher;
+        let Some(solution) = tttext::solve(cipher, dict, limits) else { continue };
+        let key = match solution.key.covers(cipher) {
+            true => solution.key,
+            false => tttext::complete(cipher, &solution.key, dict, MARGIN),
+        };
+        if !key.covers(cipher) {
+            continue;
+        }
+        let plain = key.decode(cipher);
+        solved.insert(leader, plain.clone());
+        let words: Vec<&str> = tttext::tokens(&plain);
+        for member in &members[1..] {
+            let cipher = &records[*member].cipher;
+            let Some(key) = transfer_tokens(cipher, &words) else { continue };
+            if key.covers(cipher) {
+                solved.insert(*member, key.decode(cipher));
+            }
+        }
+    }
+    solved
 }
 
 /// Validation, and it is not optional.
@@ -700,5 +849,179 @@ mod tests {
         assert_eq!(word_files(&dir.join("a.lbl")).len(), 1);
         assert!(word_files(&dir.join("absent")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Encipher with a rotation, standing in for a record's own key.
+    fn encipher(plain: &str, shift: u8) -> String {
+        plain
+            .chars()
+            .map(|c| match c {
+                'a'..='z' => (b'a' + (c as u8 - b'a' + shift) % 26) as char,
+                'A'..='Z' => (b'A' + (c as u8 - b'A' + shift) % 26) as char,
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// A one-record "cluster" table, so [`resolve_pass`] can be driven on a
+    /// single crafted record.
+    fn one_cluster(records: &[Record]) -> BTreeMap<Vec<u8>, Vec<usize>> {
+        let mut clusters = BTreeMap::new();
+        for (index, record) in records.iter().enumerate() {
+            let tokens = tttext::tokens(&record.cipher);
+            clusters.entry(tttext::pattern(&tokens.join("|"))).or_insert_with(Vec::new).push(index);
+        }
+        clusters
+    }
+
+    #[test]
+    fn the_prior_is_the_word_count_of_the_decoded_corpus() {
+        // The statistic §7 calls "a word-frequency prior measured on the decoded
+        // corpus itself": every word of every reading, two-letter words
+        // included, since those are the function words a leader misreads.
+        let solved = HashMap::from([
+            (0usize, "oil temperature: oil bank".to_string()),
+            (1usize, "of oil".to_string()),
+        ]);
+        let freq = corpus_frequency(&solved);
+        assert_eq!(freq["oil"], 3);
+        assert_eq!(freq["temperature"], 1);
+        assert_eq!(freq["of"], 1);
+    }
+
+    #[test]
+    fn the_prior_settles_a_tie_the_seed_left_to_alphabetical_order() {
+        // `oil` and `bil` share the shape `0 1 2`, and a two-token record pins
+        // neither of the letters that tell them apart, so the seed — which
+        // weighs every in-domain word alike — breaks the tie by alphabet and
+        // reads the record as the wrong word. The decoded corpus, where `oil`
+        // outnumbers `bil` fifty to one, is the evidence that flips it: the
+        // frequency dictionary weighs `oil` far above `bil`, and re-solving
+        // under it reads the record right. This is the machinery whose absence
+        // took the catalog from seventeen thousand names to four.
+        let records = vec![Record { id: 7, cipher: encipher("oil level", 3) }];
+        let clusters = one_cluster(&records);
+
+        let seed_words: HashSet<String> =
+            ["oil", "bil", "level"].iter().map(|w| w.to_string()).collect();
+        // Flat seed: both readings weigh the same, and `bil` sorts first.
+        let mut flat = Dictionary::default();
+        for word in &seed_words {
+            flat.insert(word, 8.0);
+        }
+        flat.finish();
+        assert_eq!(
+            resolve_pass(&records, &clusters, &flat, Limits::default()).get(&0).map(String::as_str),
+            Some("bil level"),
+            "without the prior the alphabetically-first word wins",
+        );
+
+        // The prior, measured off a corpus in which `oil` is common and `bil`
+        // is a fluke, reweights the dictionary and the re-solve reads `oil`.
+        let corpus = HashMap::from([("oil".to_string(), 50u32), ("bil".to_string(), 1)]);
+        let prior = frequency_dictionary(&seed_words, &corpus);
+        assert_eq!(
+            resolve_pass(&records, &clusters, &prior, Limits::default())
+                .get(&0)
+                .map(String::as_str),
+            Some("oil level"),
+            "the frequency prior corrects the pick",
+        );
+    }
+
+    #[test]
+    fn the_frequency_dictionary_keeps_a_known_word_the_corpus_never_showed() {
+        // A rare-but-real term must survive at a floor of one, or re-solving
+        // would lose every word that happened not to be decoded the first time.
+        let known: HashSet<String> = ["oil", "reluctance"].iter().map(|w| w.to_string()).collect();
+        let corpus = HashMap::from([("oil".to_string(), 40u32)]);
+        let dict = frequency_dictionary(&known, &corpus);
+        // `abc` shares `oil`'s shape; `reluctance` is its own shape.
+        assert_eq!(dict.candidates("abc").iter().find(|(w, _)| w == "oil").map(|(_, w)| *w), Some(41.0));
+        assert_eq!(
+            dict.candidates("reluctance")
+                .iter()
+                .find(|(w, _)| w == "reluctance")
+                .map(|(_, w)| *w),
+            Some(1.0),
+            "a word the corpus never showed is still a candidate",
+        );
+    }
+
+    #[test]
+    fn a_capped_seed_ties_the_enum_giants_and_keeps_the_content_words() {
+        // The whole point of the cap: on the reference corpus a label file says
+        // `ok` far more often than `of`, purely because `OK` is a status value,
+        // and left uncapped that made the search read `Status ok` for
+        // `Status of`. Above the cap the two are tied and the decoded-corpus
+        // frequency decides; below it a content word keeps its true count. The
+        // `!=` guards the cap from ever being raised above the giants.
+        let (of, ok, voltage) = (3_947u32, 5_403u32, 30u32);
+        assert_ne!(of, ok, "the raw counts really do disagree");
+        assert_eq!(
+            of.min(SEED_FREQUENCY_CAP),
+            ok.min(SEED_FREQUENCY_CAP),
+            "the enum giants must tie once saturated",
+        );
+        assert_eq!(voltage.min(SEED_FREQUENCY_CAP), voltage, "a content word is untouched");
+    }
+
+    /// End-to-end pin against the vendored corpus, run on demand.
+    ///
+    /// `#[ignore]` because it needs the decrypted `[TXT]` section, which is
+    /// minutes of key search to produce and is not in the checkout. Dump it once
+    /// (`vagcan vcds rod vendor/vcds-en/UDS_EV/TTTEXT.ROD --dump DIR`, built with
+    /// `--features rod-crack`) and point the test at it:
+    ///
+    /// ```text
+    /// VAGCAN_TTTEXT_TXT=DIR/TXT.bin \
+    /// VAGCAN_TTTEXT_LABELS=vendor/vcds-en/Labels \
+    ///   cargo test -p vagcan --bin vagcan -- --ignored tttext_reproduces
+    /// ```
+    ///
+    /// It pins the recovered-name count and a sample of id → name pairs so the
+    /// prior cannot silently regress the way it did to 3,987.
+    #[test]
+    #[ignore = "needs the decrypted TTTEXT [TXT] section; see the doc comment"]
+    fn tttext_reproduces_the_reference_corpus() {
+        let (Ok(txt), Ok(labels)) =
+            (std::env::var("VAGCAN_TTTEXT_TXT"), std::env::var("VAGCAN_TTTEXT_LABELS"))
+        else {
+            eprintln!("set VAGCAN_TTTEXT_TXT and VAGCAN_TTTEXT_LABELS to run this");
+            return;
+        };
+        assert!(
+            std::path::Path::new("/usr/share/dict/words").exists(),
+            "the pinned count was measured with the system word list present",
+        );
+        let out = std::env::temp_dir().join(format!("vagcan-tttext-pin-{}.json", std::process::id()));
+        run(Options {
+            file: &txt,
+            words: &[format!("{labels}:8"), "/usr/share/dict/words:1".to_string()],
+            names: None,
+            out: None,
+            catalog: Some(&out.to_string_lossy()),
+            partial: None,
+            passes: 4,
+            steps: None,
+            check: 0,
+            gated: false,
+        })
+        .expect("the run should succeed against the corpus");
+
+        let catalog: BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let _ = std::fs::remove_file(&out);
+
+        assert_eq!(catalog.len(), 14_738, "recovered-name count moved");
+        for (id, name) in [
+            ("000035", "Regulation due to excessive temperature"),
+            ("000080", "Absolute intake pressure"),
+            ("000089", "Activation condition ACC interface"),
+            ("000114", "Speed regulation requested torque"),
+            ("000128", "A/C compressor activation"),
+        ] {
+            assert_eq!(catalog.get(id).map(String::as_str), Some(name), "id {id} moved");
+        }
     }
 }
