@@ -130,10 +130,14 @@ corpus under the *corrected* decode either. So scaling still comes from the car:
 and `~/.vagcan/data/measured/` holds 23 of them across engine, gearbox and cluster. Names
 come from the corpus — `TTTEXT.ROD` is cracked (`research/labels/tttext-codec.md`) — but
 they are no longer shipped: `vagcan setup` rebuilds `names.json` from the installation.
-The current parser recovers ~3,987 of the ~17,009 the original solver found; restoring
-its word-frequency prior is open work. The corpus has **no name→DID join**, so a
-`vagcan vcds names` hit is a hypothesis to test live. The one door still unopened is
-`TTTEXT2.ROD` (a bounded multi-hour sweep).
+The in-tool parser now carries the original solver's **word-frequency prior** (ported
+2026-08-06), recovering **14,738 names** — 98.5 % agreement with the old 17,009-name
+oracle on their ~7,857 shared ids, plus 6,881 the oracle never had. The gap is two
+comparable catalogs differing on known-hard residuals (numeric separators, one-shot
+acronyms, cluster-pattern collisions), not a bug. The corpus has **no name→DID join**,
+so a `vagcan vcds names` hit is a hypothesis to test live. The one door still unopened is
+`TTTEXT2.ROD` (a bounded multi-hour sweep; its driver is committed under
+`research/labels/tttext2-sweep/`, the sweep itself unrun).
 
 The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, `vagcan survey`
 walks every unit the gateway lists (identification, stored DTCs, identifier sweep), and
@@ -339,11 +343,12 @@ corpus holds **no linear coefficients**, its values are base-10 under a per-tabl
 substitution, and the `MWB` code is a global function of the text-id with no per-ECU degree
 of freedom. So the corpus is for **names and per-ECU lists**, nothing more.
 
-The name table itself is cracked (`research/labels/tttext-codec.md`): the original solver
-recovered **17,009 names**, and `vagcan setup` now rebuilds `~/.vagcan/data/extracted/names.json`
-from the installation rather than shipping the file — the in-tool parser currently
-recovers ~3,987, and restoring its word-frequency prior is open. Searchable with
-`vagcan vcds names <text>`. The `ENG######` question
+The name table itself is cracked (`research/labels/tttext-codec.md`): `vagcan setup` now
+rebuilds `~/.vagcan/data/extracted/names.json` from the installation rather than shipping
+the file, and the in-tool parser carries the word-frequency prior (2026-08-06), recovering
+**14,738 names** — comparable to the original solver's 17,009 (98.5 % agreement on shared
+ids, 6,881 the oracle lacked). Searchable with `vagcan vcds names <text>`. The `ENG######`
+question
 is settled — the number **is** the `TTTEXT` text-id, proven four for four on records solved
 blind (`research/labels/tttext-codec.md` §2, superseding `research/labels/label-linkage.md` §4's
 "suggestive, not established"), and the recovered names are English text — the
