@@ -43,8 +43,6 @@ is not listed here.)
 |---|---|---|---|---|---|
 | Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) | MKS CANable V2.0 Pro (slcan) |
 
-# Usage
-
 ## Install
 
 From cargo:
@@ -141,8 +139,6 @@ rather than of yours.
 
 `data/extracted/` is rebuilt by `vagcan setup` in minutes and can be deleted at any
 time. `data/measured/` and `cars/` cannot be rebuilt without a vehicle.
-
-# Info
 
 ## Status
 
