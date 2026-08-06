@@ -22,8 +22,8 @@ gone: the label cache, the recovered names and the `.rod` keys are rebuilt by
 
 **`vagcan setup` is the whole install.** One command parses a VCDS installation — a path
 you give it, or one it downloads (en/ru, with a progress bar) — into `~/.vagcan`, and
-copies the raw label files in (`UDS_EV/`, `Labels/`, `Codes.dat`, ~122 MB) so the
-installation can then be deleted and `vagcan faults` names codes with no `--labels` flag.
+copies the raw label files in (`UDS_EV/`, `Labels/`, the fault text file, ~122 MB) so the
+installation can then be deleted and `vagcan faults` names codes with no flag at all.
 
 **Docs are split for a newcomer**: `README.md` (start here, install, first commands),
 `USAGE.md` (every command with output), `ARCHITECTURE.md` (why, and VCDS's file formats),
@@ -33,6 +33,55 @@ installation can then be deleted and `vagcan faults` names codes with no `--labe
 carries the values, not the join) are detailed in the 2026-08-05 status and the header
 above. Research is reorganised by subject: `research/{labels,car,eps}/`.
 
+
+## Status (2026-08-06, later) — the first run, walked end to end
+
+A pass over what somebody meets before they trust anything, driven by a naive-user
+audit and by the reference car's own output. Every item below is a defect that was
+found and closed, not a plan:
+
+- **`setup` could not recover names at all on a default install.** The `.rod` key
+  search sat behind a `rod-crack` cargo feature that the README never mentioned, so a
+  plain `cargo install` produced no `names.json`, and `vagcan vcds names` then told
+  the reader to run the setup they had just run successfully. The feature carried no
+  dependencies — it only hid code — and is gone.
+- **The Russian build produced a broken installation, silently.** Ross-Tech names two
+  files per language (`Codes.dat`/`Code-RUS.dat`, `TTTEXT.ROD`/`TTText-RUS.rod`) and
+  both were matched by their English spelling alone, so choosing Russian — which
+  `setup` offers as a first-class option — gave no names and no fault text. Both are
+  candidate lists now, and an installation matching neither is offered as a file
+  picker rather than declared broken.
+- **A second installation layered on the first instead of replacing it.** The copy is
+  freshness-gated per file and removed nothing, so the reference machine ended up
+  holding Russian fault text over English labels, with nothing saying which was which.
+  `setup` now reads which build a directory holds off the directory itself and clears
+  it when the incoming one differs.
+- **`--labels` is gone.** It dated from before `setup` copied the label files in, and
+  its own justification ("naming a fault needs the installation's own `RD.rod` and
+  `Codes.dat`, not just the parsed cache") stopped being true that day. What it left
+  was a second place the tool could be reading from without the reader knowing.
+  Switching installation is `vagcan setup` on the other one.
+- **`cache.from` is gone**, and the fact it carried moved inside `cache.sqlite`: the
+  file recorded the directory the cache was built from, which the copy step turned
+  into a constant, and pointed at an installation setup itself says you can delete.
+- **Setup stopped overstating what it achieved.** A run that read 63 % of the text
+  table printed a bare `Done.`; it now reports `Step::Partial` and `Done, with gaps.`
+  A number on its own reads as a total.
+- **The two operations that ran for minutes in silence now spin**, with elapsed
+  seconds: the key search (~160 s per sealed section, measured) and the label parse.
+- **Sealed fault catalogues are offered once, not per unit.** A car with four of them
+  printed the same recovery command four times; the whole set is now offered together
+  after the listing, with the measured cost, and only when there is a terminal to ask.
+- **"corpus" is gone from everything a reader sees** — it reads "label files" — and
+  `vagcan vcds corpus` is `vagcan vcds dump`, since `labels` already meant the
+  single-lookup command.
+
+**Measured while doing it, and worth keeping:** recovering one `.rod` section key is
+**160 s** on an M4 (`EV_SMLSVALEOMQBLRH.rod` `[DTC]`, classic regime), and those
+sections are *classic*, not shifted — minutes, not the hours a shifted file costs.
+Decoding with a cached key is ~20 ms for the 2.2 MB `RD.rod` and below timer
+resolution for a typical 1 KB per-unit file, so nothing on the live path is worth
+caching further.
 
 ## Where it stands after the whole-car pass (2026-08-02)
 
@@ -48,7 +97,7 @@ Done since the last update:
 |---|---|---|
 | whole-car sweep | `vagcan survey` | gateway list → every unit; identification, fault codes, nine identifier pages; `--diff` compares a parked and a driving run |
 | fault reader | `vagcan faults` | confirmed codes only, sorted with what is failing now first, occurrence count, odometer, time of day, and a date stated as a bound |
-| fault **names** | `vagcan faults --labels` | VW's own words for a fault, out of `RD.rod` + `Codes.dat`; every code that cannot be named prints the reason instead (2026-08-05) |
+| fault **names** | `vagcan faults` | VW's own words for a fault, out of `RD.rod` + `Codes.dat`; every code that cannot be named prints the reason instead (2026-08-05) |
 | unit addressing | `vag-protocol::address` | two id blocks with different response rules; unit-number pairings live in `~/.vagcan/data/measured/unit-numbers.json`, not in the source |
 | catalogs as data | `vag_data::catalog::CatalogStore` | one file per control unit under `~/.vagcan/data/measured/`, keyed by the part number the unit reports; nothing car-specific compiled in |
 | label files unit labels | `LabelDb::unit_for_part` | `; Component: … (#02)` headers give an address and a name for 987 of 3035 label files |
@@ -66,7 +115,7 @@ Done since the last update:
    drive did *not* open up, and they still need their own stimulus. What is left is not
    another blind drive but **mining what this produced**: a diff says an identifier is
    live, not what it means, and scaling still needs a reference for the unit in question.
-2. ~~**Fault names.**~~ **Done (2026-08-05).** `vagcan faults --labels <VCDS install>`
+2. ~~**Fault names.**~~ **Done (2026-08-05).** `vagcan faults`
    names them. The chain is fault number → `UDS_EV/RD.rod [DTC]` table → the row the
    unit's own `.rod` selects → a `Codes.dat` key; the per-table digit substitution that
    blocked it is generated by `srand(table key)` and two Fisher-Yates shuffles, read off
@@ -93,7 +142,7 @@ Done since the last update:
 Two things closed since 2026-08-02, and both are worth stating before the older text
 below, which remains true about scaling and stale about nothing else.
 
-**Fault names ship.** `vagcan faults --labels <VCDS install>` prints VW's own words. The
+**Fault names ship.** `vagcan faults` prints VW's own words. The
 chain and every refutation on the way to it are in `research/labels/fault-naming-hop.md`;
 `research/labels/codes-dat.md` covers the text store it ends in. Zero wrong answers across every
 check made, which is the property that matters more than the hit rate.
@@ -168,7 +217,7 @@ open-work list at the end of this file.
 | label files | vag-data/vag-db | `.lbl`/`.clb` parse+decrypt, `.rod` decrypt+inflate, `LabelDb` lookup, `load_label_files`/`scan_label_files` |
 | rod-crack | vag-data | `.rod` TEA-CBC + product/IV recovery in-tool (`vagcan vcds rod`); STRUC/DOP/TTTEXT/MWB inflate; **base-14 codec proven (disasm)** |
 | struc-table | vag-data | `StrucTable`/`StrucRecord` + `decode_base14_be`; `mwb` parser; `measure` (proven ignition `0x5555`→0.0° anchor) |
-| labels-cli | vagcan | `vagcan vcds labels` — label files inventory + `--part` / `--block` lookup; SQLite cache at `~/.vagcan/data/extracted/cache.sqlite` (`--refresh` rebuilds); the IV brute force is behind the `rod-crack` feature (`vagcan vcds rod` only) |
+| labels-cli | vagcan | `vagcan vcds labels` — label files inventory + `--part` / `--block` lookup; SQLite cache at `~/.vagcan/data/extracted/cache.sqlite` (`--refresh` rebuilds); the IV brute force is built in, and only `vagcan vcds rod` and `vagcan setup` run it |
 | addressing | vag-protocol | `address.rs` — `UnitAddress`: ISO block `7E0..7E7` → +8, VW block `700..7BF` → +0x6A; fixes `--ecu 17` resolving to `0x7F0` (nothing) instead of the cluster `0x714`; short numbers only for evidenced units (01/02/09/16/17), everything else by request id |
 | survey | vagcan | `vagcan survey` — walk the gateway's installation list (plus engine/gearbox/gateway, which it never contains): identification, stored DTCs (`19 02 FF`), then the identifier bands in use on this car; JSON lines per unit; silent units skipped after ident |
 | watch-tui | vagcan | `vagcan watch` — full-screen ratatui TUI, multi-unit, reconfigurable in place (`c`); `--survey FILE` offers everything a survey found; actual/specified pairs on one line; unconverted CSV columns suffixed `_raw` |
@@ -454,6 +503,17 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
 
 ## The open work (M3 coverage and beyond)
 
+- **`deflate_anchors` cannot open a fixed-Huffman section (2026-08-06).** Its 60-anchor
+  set covers `BTYPE = 2` only, on a comment that claimed no section used anything else.
+  A census of the whole corpus refuted that: **1,559 of 22,107 classic sections (7.1 %)
+  open with a fixed block** (`0x33`/`0xb3`), so roughly a thousand *shifted* sections are
+  closed to today's tooling — not slow, unopenable, and for an unrecorded reason until
+  now (`research/labels/tttext2.md` §5, `crates/vag-data/src/rod/mod.rs`). The research
+  driver carries `--all-btypes` as the widening; the shipped searcher does not, because
+  admitting them doubles the search. **No car needed.** Cost of being wrong here is that
+  a car naming one of those files gets "sealed" forever with no way to tell it apart from
+  a section that merely has not been searched yet.
+
 - **A car keeps its own files.** `~/.vagcan/cars/<VIN>/` (`crate::datadir`) holds
   `car.json`, `measures/` and, since 2026-08-05, **`survey.jsonl`** — the whole-car survey,
   written by every `survey` run whether or not `--out` was given, and loaded by `watch` with
@@ -492,7 +552,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   the override file and the label files. **Still open:** which CAN request id a number is
   answered on is in *no* label file — the two numberings are unrelated (`17` answers on
   `0x714`, whose own UDS address is `0x14`; `19` on `0x710` — `research/car/other-ecus.md`
-  §3) — so that half is learned per car by `units --identify --labels`, which asks each
+  §3) — so that half is learned per car by `units --identify`, which asks each
   id for its part number and the label files whose part number that is, and is lost when the
   process exits. A per-car cache of learned pairings would keep it.
 - **Electrical-system and brake channels.** Nothing from ABS/brakes or the electrical
@@ -528,7 +588,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   (`research/labels/tttext2.md` §4.2). Nobody has started it.
 - **A per-car cache of learned unit pairings.** Which CAN request id answers a unit number
   is in no label file — the two numberings are unrelated — so it is learned per car by
-  `units --identify --labels` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
+  `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live.
 
 ## Parked (designed, not being implemented now)

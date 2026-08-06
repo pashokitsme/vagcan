@@ -98,9 +98,15 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
 ///
 /// Sixty values, and they matter because a shifted file (`research/labels/tttext2.md`
 /// §3.3) destroys exactly this byte. The layout is RFC 1951 §3.2.7:
-/// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored blocks and fixed-Huffman blocks
-/// are excluded deliberately — no section in the label files use either, and
-/// admitting them would double a search that is already the expensive part.
+/// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored and fixed-Huffman first blocks are
+/// excluded, which **is a known gap, not a property of the data**: this comment
+/// used to claim no section used either, and a census of the whole corpus
+/// refuted it — **1,559 of 22,107 classic sections (7.1 %) open with a fixed
+/// block** (`0x33`/`0xb3`), so roughly a thousand shifted sections cannot be
+/// opened by this sweep at all (`research/labels/tttext2.md` §5). Admitting them
+/// doubles a search that is already the expensive part, which is why the
+/// widening lives behind the research driver's `--all-btypes` rather than here
+/// — but the reason is cost, and it was never that the blocks do not occur.
 pub(crate) fn deflate_anchors() -> impl Iterator<Item = u8> {
 	(0..=29u8).flat_map(|hlit| [0b100 | (hlit << 3), 0b101 | (hlit << 3)])
 }

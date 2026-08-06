@@ -82,10 +82,10 @@ session repeats the experiment.
 
 ### Phase 4 — retire code by relocation
 
-- **A one-shot tool is not dead code.** The `.rod` key search and the label files dump
+- **A one-shot tool is not dead code.** The `.rod` key search and the label-file dump
   each ran once and produced a committed artefact, and each keeps its value for the
   next label files, on another machine, or when an artefact is doubted. They were retired
-  into `vagcan vcds rod` and `vagcan vcds label files` rather than into `git rm`; do the
+  into `vagcan vcds rod` and `vagcan vcds dump` rather than into `git rm`; do the
   same with the next one.
 - **Every one-shot tool states three things in its help text**, because by the time
   it is needed again nobody will remember them: **what it is for** (and what it
@@ -162,6 +162,18 @@ Five things, and no more:
 
 ## Never
 
+- **Run a subagent over the working tree while anything is uncommitted.** Twice in one
+  session an agent "tidied up" with `git reset --hard` and took the session's
+  uncommitted work with it — once mid-rename, once mid-feature. Commit first, or give
+  the agent its own worktree (`isolation: "worktree"`), and tell it in the prompt that
+  `reset --hard`/`checkout --`/`stash`/`clean` are forbidden. An agent that cannot see
+  your work cannot destroy it.
+- **Let a bulk find/replace loose on prose.** A blind `corpus` → `label files` sweep
+  produced `label label files`, `copy_label files`, a merged comment line and
+  `let label files = vec![` — a variable with a space in its name, in code that had
+  compiled a minute earlier. A rename that changes a word's *number* changes its verbs
+  too; drive it from a script with an explicit verb list, then grep for the
+  disagreements it left, then build.
 - `git add -A`, `git add .`, `git commit -a`.
 - Delete a research file, a capture, a recording, or a catalog row measured on the
   car. None of it can be re-collected without the car.
