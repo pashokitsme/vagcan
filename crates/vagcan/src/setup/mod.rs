@@ -181,9 +181,57 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 		dir.display()
 	);
 	let mut chooser = crate::ui::picker::Console::new(format!(
-		"re-run `vagcan setup` from a terminal, or point --labels at a build whose {what} is one of {known:?}"
+		"re-run `vagcan setup` from a terminal, or point it at a build whose {what} is one of {known:?}"
 	));
 	crate::ui::picker::pick_path(&mut chooser, dir, &[crate::ui::picker::Level::files(what).ending(suffix)])
+}
+
+/// Which language build a directory holds, named by the file that says so.
+///
+/// No marker is written for this: a directory that contains `Code-RUS.dat` and
+/// `TTText-RUS.rod` *is* the Russian build, and a note beside it saying so
+/// would be one more thing to keep in step with what is actually there.
+fn build_of(dir: &Path) -> Option<&'static str> {
+	CODES_FILES
+		.iter()
+		.find(|name| dir.join(name).is_file())
+		.or_else(|| TEXT_TABLES.iter().find(|name| dir.join(ODX_DIR).join(name).is_file()))
+		.copied()
+}
+
+/// Clear `target` when what is about to be written is a different build.
+///
+/// The copy is freshness-gated per file, which makes a second run of the same
+/// installation nearly free — and makes a run of a *different* one a disaster:
+/// nothing is ever removed, so the Russian build lands on top of the English
+/// one and the two mix. The label loader then reads whichever directory happens
+/// to be flat, so a reader who asked for Russian keeps getting English names
+/// beside Russian fault text, with nothing anywhere saying so.
+///
+/// Detected from the files themselves rather than from a marker, and only the
+/// mismatch clears: an unchanged installation still costs a second to confirm.
+/// `--refresh` clears unconditionally, which is what it is for.
+fn replace_if_another_build(root: &Path, target: &Path, refresh: bool) -> Result<()> {
+	if !target.exists() {
+		return Ok(());
+	}
+	let (here, incoming) = (build_of(target), build_of(root));
+	let mismatch = matches!((here, incoming), (Some(a), Some(b)) if a != b);
+	if !mismatch && !refresh {
+		return Ok(());
+	}
+	if mismatch {
+		println!(
+			"{} already holds the build that ships {}, and this one ships {}.\n\
+             Clearing it first — layering the two would leave names from one and fault\n\
+             text from the other, with nothing to say which was which.\n",
+			target.display(),
+			here.unwrap_or("?"),
+			incoming.unwrap_or("?")
+		);
+	}
+	std::fs::remove_dir_all(target).with_context(|| format!("clearing {}", target.display()))?;
+	Ok(())
 }
 
 /// What one step of the run did, for the closing report.
@@ -223,6 +271,7 @@ pub fn run(opts: Options<'_>) -> Result<()> {
 	let Some(root) = installation(&opts)? else { return Ok(()) };
 	let root = root.as_path();
 	let target = crate::datadir::extracted_dir()?;
+	replace_if_another_build(root, &target, opts.refresh)?;
 	std::fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
 
 	println!("Reading the VCDS installation at {}", root.display());
@@ -327,7 +376,7 @@ fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) ->
 /// Step 2: parse the copied label files into the SQLite cache.
 ///
 /// Reads the copy under `~/.vagcan`, not the installation, so the source it
-/// records is the one the runtime default (`--labels` omitted) later passes —
+/// records is the one the runtime path later passes —
 /// otherwise the first `units --identify` after setup would rebuild the cache
 /// from a directory whose name no longer matched.
 fn label_cache(root: &Path, refresh: bool) -> Result<Step> {

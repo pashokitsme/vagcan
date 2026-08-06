@@ -44,7 +44,7 @@ fn find_codes(root: &Path) -> Option<std::path::PathBuf> {
 /// the labels in yet" (show the codes as numbers, point at setup) apart from a
 /// dir the user named that is genuinely broken (a real error worth surfacing) —
 /// so the default `~/.vagcan` path can degrade quietly while an explicit
-/// `--labels` still reports what it could not open.
+/// an installation the reader named still reports what it could not open.
 pub fn has_fault_labels(root: &Path) -> bool {
 	dtc::find_named(root, dtc::REGISTRY_FILE).is_some() && find_codes(root).is_some()
 }

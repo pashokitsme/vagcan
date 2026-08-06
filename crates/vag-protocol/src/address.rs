@@ -164,7 +164,7 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 /// numberings are genuinely unrelated (VCDS's `17` answers on `0x714`, whose
 /// own UDS address is `0x14`; VCDS's `19` answers on `0x710`, address `0x10` —
 /// `research/car/other-ecus.md` §3). So the id half is established either by
-/// reading the car through the label files (`vagcan units --identify --labels`, which
+/// reading the car through the label files (`vagcan units --identify`, which
 /// asks each id for its part number and asks the label files whose part number that
 /// is) or by a user writing it down in [`OVERRIDE_PATH`].
 const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)];

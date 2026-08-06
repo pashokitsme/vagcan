@@ -40,7 +40,7 @@ fn cache_path() -> PathBuf {
 
 /// The directory the label files are actually in.
 ///
-/// `--labels` is documented as taking a VCDS install root *or* any directory
+/// `vagcan setup` is documented as taking a VCDS install root *or* any directory
 /// below it, and people point it at the root, because that is what they have.
 /// The loader reads one directory level, so a root — where the labels sit in
 /// `Labels/` and the ODX files in `UDS_EV/` — used to cache nothing at all and

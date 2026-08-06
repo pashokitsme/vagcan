@@ -160,7 +160,7 @@ impl LabelDb {
 	/// the code — `17` is the instrument cluster on every VAG car, not on this
 	/// Škoda. It is **numbers and names only**: no label file anywhere states
 	/// which CAN id a number is answered on, so pairing a number with a request
-	/// id still takes the car (`vagcan units --identify --labels`) or a user's
+	/// id still takes the car (`vagcan units --identify`) or a user's
 	/// own note.
 	pub fn unit_numbers(&self) -> &[(u8, String)] {
 		&self.unit_numbers
