@@ -440,6 +440,40 @@ fn cmd_tailkraft(path: &str) {
 			}
 		}
 		println!();
+
+// ---------------------------------------------------------------- `classic`
+
+/// Time the shipped *classic* search (reduced candidate sets, no anchor sweep)
+/// on one section — the path that `vagcan vcds rod` runs on a `product != 0`
+/// classic file. Calls `recover_iv3to8` with `known_anchor = None`; on a classic
+/// section that goes straight to `search_anchor(full_sets = false)`, so it times
+/// the shipped searcher directly without the whole-file plumbing.
+fn cmd_classic(path: &str, want_tag: &str) {
+	let data = read(path);
+	let sections = raw::framed(&data);
+	let s = sections
+		.iter()
+		.find(|s| s.tag == want_tag)
+		.unwrap_or_else(|| panic!("no [{want_tag}] section in {path}"));
+	assert!(s.compressed, "[{want_tag}] is not a compressed section");
+	let pre = model_prefix(&s.tag, &s.cipher);
+	let classic = pre[0] == 0x78 && pre[1] == 0xda;
+	println!(
+		"{path} [{}]: cipher {} B, plain {} B, {}",
+		s.tag,
+		s.cipher.len(),
+		s.plainlen,
+		if classic { "classic" } else { "SHIFTED" }
+	);
+	let t0 = Instant::now();
+	let hit = rod::crack::recover_iv3to8(want_tag.as_bytes(), &s.cipher, s.plainlen, None);
+	let secs = t0.elapsed().as_secs_f64();
+	match hit {
+		Some(iv) => println!(
+			"HIT iv3to8={} in {secs:.2}s",
+			iv.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+		),
+		None => println!("MISS in {secs:.2}s"),
 	}
 }
 
@@ -448,6 +482,7 @@ fn main() {
 	match args.get(1).map(String::as_str) {
 		Some("tailkraft") => cmd_tailkraft(&args[2]),
 		Some("anchors") => cmd_anchors(&args[2]),
+		Some("classic") => cmd_classic(&args[2], &args[3]),
 		Some("shifts") => cmd_shifts(&args[2]),
 		Some("probe") => cmd_probe(&args[2]),
 		Some("sweep") => {

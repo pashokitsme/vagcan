@@ -4,8 +4,8 @@
 //!
 //! Ported from `research/clb-crack/rod_crack/src/main.rs` (multithreaded Rust
 //! brute-forcer) and the framing/prep logic in
-//! `research/clb-crack/rod_struc_decode.py`. CPU-heavy, so nothing on the live
-//! path runs it — only `vagcan vcds rod` does.
+//! `research/clb-crack/rod_struc_decode.py`. Feature-gated (`rod-crack`): it is
+//! CPU-heavy and kept out of the default build.
 //!
 //! Approach (see `research/labels/rod-labels.md` §1): a `.rod` section is
 //! TEA-CBC(`KEY_ROD`) with an 8-byte IV. `IV[0..3]` is tag-derived (exact);
@@ -51,6 +51,44 @@
 //!    [`parse_full`], reached about once per hundred leaves.
 //!
 //! Net on `STRUC.rod`: ~306 CPU-seconds to ~35, the answer unchanged.
+//!
+//! ## HDIST factorisation — the cheap filter is run 1/16 as often
+//!
+//! Deflate byte 1 carries two independent things: HDIST (its low five bits) and
+//! HCLEN's low three bits (its top three). The cheap filter — [`scan_fresh`] and
+//! [`cl_scan`] — reads HDIST only to *skip* it; nothing in the preamble scan or
+//! the code-length-code walk below it depends on HDIST, only [`parse_full`]'s
+//! `HLIT + HDIST` length decode and the inflate do. Byte 1's reduced candidate
+//! set is 128 values, and grouped by HCLEN-low that is exactly **eight groups of
+//! sixteen** — the sixteen differing only in the HDIST bits the filter throws
+//! away. So the *entire* filter cascade over deflate bytes 2..5 is identical for
+//! all sixteen, and the old search, which branched byte 1 first, walked it 16×.
+//!
+//! [`Search::cascade`] now branches HCLEN-low (a group) instead of byte 1, runs
+//! the cascade **once** per group on a representative byte 1, and only at the
+//! point the code-length code completes ([`Scan::Complete`]) does
+//! [`Search::confirm_hdist`] pin each of the sixteen real byte-1 candidates and
+//! hand them to the HDIST-dependent [`Search::authority`] ([`parse_full`] +
+//! inflate). Because the filter is HDIST-independent, the group's cascade reaches
+//! exactly the code-length completions each real byte 1 would have — so the set
+//! of `(byte1, byte2..5)` combinations handed to `parse_full`, and thence to the
+//! inflate oracle, is **identical**, and the recovered key does not move. What is
+//! gone is the fifteen-sixteenths of the cascade that only ever re-derived the
+//! same rejections for a different HDIST.
+//!
+//! Measured on `EV_SMLSVALEOMQBLRH.rod` (M4, 10 cores), whose five compressed
+//! sections are all `product != 0` classic searches — the cheap-filter node
+//! count on the `[DTC]` search fell 6.4e9 → 1.7e9, and
+//! `vagcan vcds rod <file> --cache <fresh>` end to end went **483.7 s → 83.8 s
+//! (5.8×)** with all five recovered keys byte-identical to the pre-change cache.
+//! The per-section speedup varies with where the true key lands in the new task
+//! order — a key the old byte-1 order happened to hit early can land later here
+//! and vice versa — but the work to *exhaust* a search (the shifted-file worst
+//! case) is a flat 16× less cascade for the same `parse_full`/inflate count.
+//!
+//! Work assigned to threads is now `(group, deflate byte 2)` tasks from a shared
+//! cursor rather than a contiguous byte-1 slice per thread, so the ~2 000 tasks
+//! keep all cores busy even when the true key sits in one cheap subtree.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -83,16 +121,37 @@ enum Stop {
 	Overrun,
 }
 
-/// The verdict on a header parse over a partially assigned guess.
+/// The verdict of the authority parse ([`parse_full`]) over a partially assigned
+/// guess. Unlike [`Scan`] it never resumes — `parse_full` always re-reads from
+/// bit 0 — so `Need` carries only the byte to branch on, no parse state.
 enum Probe {
 	/// Parsed cleanly using only the bytes assigned so far.
 	Valid,
 	/// Impossible — prune this whole subtree.
 	Reject,
-	/// Stalled on unassigned guess byte `idx` (1..=5); branch there. `at` is
-	/// the parse state to hand each child, when the stall happened somewhere
-	/// that can be resumed.
+	/// Stalled on unassigned guess byte `idx` (1..=5); branch there.
+	Need { idx: usize },
+}
+
+/// The verdict of the *cheap filter alone* — [`cl_scan`] over the preamble and
+/// the code-length-code entries, stopping the instant the code-length code is
+/// complete without going on to [`parse_full`].
+///
+/// It exists so the HDIST factorisation can intercept that stopping point (see
+/// [`Search::cascade`]): the whole filter is independent of HDIST, which lives
+/// in deflate byte 1 alongside HCLEN's low bits, so it is run once per HCLEN-low
+/// group and the real HDIST-bearing byte-1 candidates are only substituted here,
+/// at `Complete`, where [`parse_full`] and the inflate — both HDIST-dependent —
+/// take over. The test-only `probe_header` maps `Complete` straight to
+/// `parse_full`, preserving the old "filter then authority" meaning the
+/// agreement tests and `confirm_iv3to8` check against.
+enum Scan {
+	/// Impossible — prune this whole subtree (same rejects `cl_scan` always made).
+	Reject,
+	/// Stalled on unassigned guess byte `idx`; branch there, handing down `at`.
 	Need { idx: usize, at: Option<Resume> },
+	/// The code-length code is complete; hand off to the HDIST-dependent stage.
+	Complete,
 }
 
 /// Parse state captured at a stall inside the code-length-code loop.
@@ -185,8 +244,18 @@ impl<'a> Bits<'a> {
 	#[inline]
 	fn verdict(&self) -> Probe {
 		match self.stop {
-			Some(Stop::Need(i)) => Probe::Need { idx: i, at: None },
+			Some(Stop::Need(i)) => Probe::Need { idx: i },
 			Some(Stop::Overrun) | None => Probe::Reject,
+		}
+	}
+	/// The same verdict as [`Bits::verdict`], as a [`Scan`] — a stall in the
+	/// preamble (before any code-length entry) can only be `Need` with no resume
+	/// state, or a reject.
+	#[inline]
+	fn scan_verdict(&self) -> Scan {
+		match self.stop {
+			Some(Stop::Need(i)) => Scan::Need { idx: i, at: None },
+			Some(Stop::Overrun) | None => Scan::Reject,
 		}
 	}
 }
@@ -197,6 +266,16 @@ macro_rules! rd {
 		match $bs.read($n) {
 			Some(v) => v,
 			None => return $bs.verdict(),
+		}
+	};
+}
+
+/// Like [`rd!`], but the caller returns a [`Scan`] (the cheap-filter path).
+macro_rules! srd {
+	($bs:expr, $n:expr) => {
+		match $bs.read($n) {
+			Some(v) => v,
+			None => return $bs.scan_verdict(),
 		}
 	};
 }
@@ -292,20 +371,35 @@ fn decode_sym(bs: &mut Bits, h: &Huff) -> Option<u16> {
 /// keeps the hot loop in registers, and it is sound in one direction only —
 /// every test here must be one `parse_full` also applies, or the search would
 /// discard an answer it never re-checked.
+///
+/// The search itself no longer calls this: [`Search::cascade`] drives the filter
+/// through [`scan_fresh`] so it can intercept [`Scan::Complete`] for the HDIST
+/// factorisation. It survives as the "filter then authority" composition the
+/// tests and [`confirm_iv3to8`] check against, which is exactly the old meaning.
+#[cfg(test)]
 fn probe_header(d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Probe {
-	let mut bs = Bits::new(d0, guess, known, tail);
-	let _bfinal = rd!(bs, 1);
-	if rd!(bs, 2) != 2 {
-		return Probe::Reject;
+	match scan_fresh(d0, guess, known, tail) {
+		Scan::Reject => Probe::Reject,
+		Scan::Need { idx, .. } => Probe::Need { idx },
+		Scan::Complete => parse_full(d0, guess, known, tail),
 	}
-	let _hlit = rd!(bs, 5);
-	let _hdist = rd!(bs, 5);
-	let hclen = rd!(bs, 4) as usize + 4;
+}
+
+/// The cheap filter from bit 0: preamble, then the code-length-code walk.
+fn scan_fresh(d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Scan {
+	let mut bs = Bits::new(d0, guess, known, tail);
+	let _bfinal = srd!(bs, 1);
+	if srd!(bs, 2) != 2 {
+		return Scan::Reject;
+	}
+	let _hlit = srd!(bs, 5);
+	let _hdist = srd!(bs, 5);
+	let hclen = srd!(bs, 4) as usize + 4;
 	cl_scan(bs, hclen, 0, 0)
 }
 
-/// Continue the filter from where a sibling stalled, with one more byte pinned.
-fn probe_resume(at: &Resume, d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Probe {
+/// Continue the cheap filter from where a sibling stalled, one more byte pinned.
+fn scan_resume(at: &Resume, d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) -> Scan {
 	let mut bs = Bits::new(d0, guess, known, tail);
 	bs.byte = at.byte;
 	bs.nbits = at.nbits;
@@ -314,8 +408,10 @@ fn probe_resume(at: &Resume, d0: u8, guess: &[u8; 5], known: u8, tail: &[u8]) ->
 }
 
 /// Walk code-length-code entries `i..hclen`, carrying the Kraft total `wcl`.
+/// Returns [`Scan::Complete`] at the point the old `cl_scan` handed off to
+/// [`parse_full`]; the caller decides what to do there.
 #[inline]
-fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Probe {
+fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Scan {
 	for i in i0..hclen {
 		let l = match bs.read(3) {
 			Some(v) => v as u32,
@@ -327,10 +423,10 @@ fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Probe {
 				// heuristic — a wrong prune would silently drop the answer.
 				let remaining = (hclen - i) as u32;
 				if wcl + remaining * (CL_KRAFT_FULL / 2) < CL_KRAFT_FULL {
-					return Probe::Reject;
+					return Scan::Reject;
 				}
 				return match bs.stop {
-					Some(Stop::Need(idx)) => Probe::Need {
+					Some(Stop::Need(idx)) => Scan::Need {
 						idx,
 						at: Some(Resume {
 							byte: bs.byte,
@@ -341,14 +437,14 @@ fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Probe {
 							wcl,
 						}),
 					},
-					Some(Stop::Overrun) | None => Probe::Reject,
+					Some(Stop::Overrun) | None => Scan::Reject,
 				};
 			}
 		};
 		if l > 0 {
 			wcl += 1 << (7 - l);
 			if wcl > CL_KRAFT_FULL {
-				return Probe::Reject;
+				return Scan::Reject;
 			}
 		}
 	}
@@ -362,9 +458,9 @@ fn cl_scan(mut bs: Bits, hclen: usize, i0: usize, mut wcl: u32) -> Probe {
 	// non-negative and must total exactly `CL_KRAFT_FULL`, so no prefix of
 	// them can exceed it. The early check is kept because it fires sooner.
 	if wcl != CL_KRAFT_FULL {
-		return Probe::Reject;
+		return Scan::Reject;
 	}
-	parse_full(bs.d0, bs.guess, bs.known, bs.tail)
+	Scan::Complete
 }
 
 /// The complete header parse, and the authority on what is a valid header:
@@ -572,14 +668,26 @@ impl Scratch {
 	}
 }
 
-/// The read-only search context shared by every worker.
+/// The shared read-only state of one search; workers pull `(group, d2)` tasks.
 ///
-/// Workers no longer own a contiguous slice of the first branch point. They
-/// pull one deflate-byte-1 value at a time off a shared cursor (see
-/// [`search_anchor`]), so the tree is split at run time by who is free rather
-/// than up front by index — the fix for the idle cores a fixed partition left
-/// when one worker drew a slice of cheap (fast-rejecting) subtrees and another
-/// a slice of deep ones.
+/// ## Why the search branches HCLEN-low, not deflate byte 1
+///
+/// The cheap filter ([`scan_fresh`]/[`cl_scan`]) reads deflate byte 1 for HDIST
+/// and HCLEN's low three bits, then **discards HDIST** — nothing in the filter,
+/// nor in the CL-entry walk below it, depends on HDIST. Only [`parse_full`]
+/// (which decodes `HLIT + HDIST` lengths) and the inflate do. Byte 1's candidate
+/// set is 128 values; grouped by its top three bits (HCLEN-low) that is exactly
+/// eight groups of sixteen, the sixteen differing only in HDIST. So the whole
+/// filter cascade over deflate bytes 2..5 is *identical* for all sixteen — the
+/// old search ran it once per byte-1 value and thus repeated it 16×.
+///
+/// [`Search::cascade`] runs it once per group on a representative byte 1, and
+/// [`Search::confirm_hdist`] substitutes each real byte-1 candidate only at the
+/// point the CL code completes, where the HDIST-dependent [`Search::authority`]
+/// takes over. The set of `(byte1, byte2..5)` combinations that reach the inflate
+/// oracle is unchanged — every rejection is one the old `parse_full`/`cl_scan`
+/// path also made — so the recovered key is identical; only the wasted 15/16 of
+/// the cascade is gone.
 struct Search<'a> {
 	d0: u8,
 	tail: &'a [u8],
@@ -593,23 +701,71 @@ impl Search<'_> {
 		&self.sets[idx - 1]
 	}
 
-	/// Probe with what is assigned so far; branch only where the header
-	/// actually needs a byte, and only on candidates that survive. `at` is the
-	/// parent's stalled parse state, when it had one to hand down.
-	fn dfs(&self, guess: &mut [u8; 5], known: u8, at: Option<&Resume>, scratch: &mut Scratch) -> Option<[u8; 5]> {
+	/// One `(HCLEN-low group, deflate byte 2)` task: pin byte 1 to a group
+	/// representative and byte 2 to the task value, then run the HDIST-free
+	/// cascade over bytes 3..5. `group[0]` stands in for byte 1 — its HDIST bits
+	/// are read and thrown away by the filter, its HCLEN-low bits are the group.
+	fn run_task(&self, group: &[u8], d2: u8, scratch: &mut Scratch) -> Option<[u8; 5]> {
+		let mut guess = [group[0], d2, 0, 0, 0];
+		self.cascade(&mut guess, 0b0_0011, None, group, scratch)
+	}
+
+	/// The HDIST-free cheap-filter cascade. Branches only bytes the filter needs
+	/// (3..5 — bytes 1 and 2 are pinned by the task), exactly as the old `dfs`
+	/// did through [`Scan`], and on completion hands the whole group to
+	/// [`Search::confirm_hdist`].
+	fn cascade(&self, guess: &mut [u8; 5], known: u8, at: Option<&Resume>, group: &[u8], scratch: &mut Scratch) -> Option<[u8; 5]> {
 		if self.found.load(Ordering::Relaxed) {
 			return None;
 		}
-		let probe = match at {
-			Some(r) => probe_resume(r, self.d0, guess, known, self.tail),
-			None => probe_header(self.d0, guess, known, self.tail),
+		let scan = match at {
+			Some(r) => scan_resume(r, self.d0, guess, known, self.tail),
+			None => scan_fresh(self.d0, guess, known, self.tail),
 		};
-		match probe {
-			Probe::Reject => None,
-			Probe::Need { idx, at: next } => {
+		match scan {
+			Scan::Reject => None,
+			Scan::Need { idx, at: next } => {
 				for &c in self.set_for(idx) {
 					guess[idx - 1] = c;
-					if let Some(hit) = self.dfs(guess, known | (1 << (idx - 1)), next.as_ref(), scratch) {
+					if let Some(hit) = self.cascade(guess, known | (1 << (idx - 1)), next.as_ref(), group, scratch) {
+						return Some(hit);
+					}
+				}
+				None
+			}
+			Scan::Complete => self.confirm_hdist(guess, known, group, scratch),
+		}
+	}
+
+	/// The CL code is complete and the cascade ran once for the group. Now pin
+	/// each real byte-1 candidate in turn — restoring its HDIST — and hand it to
+	/// the HDIST-dependent authority. `known` already flags byte 1 (the cascade
+	/// carried the representative), so overwriting `guess[0]` keeps it consistent.
+	fn confirm_hdist(&self, guess: &mut [u8; 5], known: u8, group: &[u8], scratch: &mut Scratch) -> Option<[u8; 5]> {
+		for &d1 in group {
+			guess[0] = d1;
+			if let Some(hit) = self.authority(guess, known, scratch) {
+				return Some(hit);
+			}
+		}
+		None
+	}
+
+	/// The HDIST-dependent authority: the full header parse ([`parse_full`]) and,
+	/// on a clean parse, the confirming inflate. This is the old `dfs` restricted
+	/// to what runs once the CL code is complete — `parse_full` re-reads from bit
+	/// 0 (so it rebuilds the CL table itself; the cascade's cheap walk is not
+	/// repeated here), and branches any byte it still needs for the length decode.
+	fn authority(&self, guess: &mut [u8; 5], known: u8, scratch: &mut Scratch) -> Option<[u8; 5]> {
+		if self.found.load(Ordering::Relaxed) {
+			return None;
+		}
+		match parse_full(self.d0, guess, known, self.tail) {
+			Probe::Reject => None,
+			Probe::Need { idx } => {
+				for &c in self.set_for(idx) {
+					guess[idx - 1] = c;
+					if let Some(hit) = self.authority(guess, known | (1 << (idx - 1)), scratch) {
 						return Some(hit);
 					}
 				}
@@ -701,23 +857,34 @@ fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &Arc<Vec<u8>>, plainlen: usize, 
 	};
 
 	let tail = Arc::clone(tail);
+
+	// Group deflate byte-1 candidates by HCLEN-low (its top three bits). The
+	// cheap filter reads byte 1 only for HDIST (low five bits, discarded) and
+	// HCLEN-low, so one cascade per group covers every candidate in it; the real
+	// candidates re-enter, HDIST and all, at [`Search::confirm_hdist`]. Empty
+	// groups (a reduced set need not populate all eight) are dropped.
+	let mut groups: Vec<Vec<u8>> = vec![Vec::new(); 8];
+	for &d1 in &sets[0] {
+		groups[(d1 >> 5) as usize].push(d1);
+	}
+	groups.retain(|g| !g.is_empty());
+
 	let sets = Arc::new(sets);
+	let groups = Arc::new(groups);
+	// Task = (group index, deflate byte 2). A shared cursor hands them out so a
+	// cheap subtree does not leave a core idle (thousands of tasks, few cores).
+	let d2set: Vec<u8> = sets[1].clone();
+	let ntasks = groups.len() * d2set.len();
 	let found = Arc::new(AtomicBool::new(false));
 	let result: Arc<Mutex<Option<[u8; 5]>>> = Arc::new(Mutex::new(None));
-	let nthreads = thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-	// The work unit is one first-branch byte (deflate byte 1): every worker
-	// pulls the next index off this shared cursor and walks that whole subtree,
-	// then comes back for another. A subtree can reject at the header or open
-	// deep, so their costs differ by orders of magnitude; handing them out on
-	// demand keeps every core busy until the space is exhausted, where a fixed
-	// contiguous partition left the workers that drew cheap slices idle while
-	// one ground through a deep one.
-	let d1len = sets[0].len();
 	let cursor = Arc::new(AtomicUsize::new(0));
+	let nthreads = thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
 
 	let mut handles = Vec::new();
 	for _ in 0..nthreads {
 		let sets = Arc::clone(&sets);
+		let groups = Arc::clone(&groups);
+		let d2set = d2set.clone();
 		let tail = Arc::clone(&tail);
 		let found = Arc::clone(&found);
 		let result = Arc::clone(&result);
@@ -733,20 +900,18 @@ fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &Arc<Vec<u8>>, plainlen: usize, 
 			let mut scratch = Scratch::new(d0, &tail, plainlen);
 			loop {
 				if found.load(Ordering::Relaxed) {
-					return;
+					break;
 				}
-				let k = cursor.fetch_add(1, Ordering::Relaxed);
-				if k >= d1len {
-					return;
+				let task = cursor.fetch_add(1, Ordering::Relaxed);
+				if task >= ntasks {
+					break;
 				}
-				// Pin deflate byte 1 to this work unit and search the rest. The
-				// header always reads byte 1, so this is exactly the subtree the
-				// old top-level branch over `sets[0]` explored for that value.
-				let mut guess = [0u8; 5];
-				guess[0] = search.sets[0][k];
-				if let Some(hit) = search.dfs(&mut guess, 0b0_0001, None, &mut scratch) {
+				let g = &groups[task / d2set.len()];
+				let d2 = d2set[task % d2set.len()];
+				if let Some(hit) = search.run_task(g, d2, &mut scratch) {
 					*result.lock().unwrap() = Some(hit);
-					return;
+					found.store(true, Ordering::Relaxed);
+					break;
 				}
 			}
 		}));
@@ -843,10 +1008,24 @@ mod dfs_tests {
 			found: &found,
 		};
 		let mut scratch = Scratch::new(z[2], &z[8..], plain.len());
-		// known=0 lets the dfs itself branch the first byte over sets[0]; the
-		// threaded path instead pins byte 1 per work unit, but the tree walked
-		// is the same, which is what this single-threaded check pins down.
-		assert_eq!(search.dfs(&mut [0u8; 5], 0, None, &mut scratch), Some(truth));
+		// Drive the search exactly as `search_anchor` does, single-threaded:
+		// group byte-1 candidates by HCLEN-low, then run every `(group, byte 2)`
+		// task until one recovers the truth.
+		let mut groups: Vec<Vec<u8>> = vec![Vec::new(); 8];
+		for &d1 in &sets[0] {
+			groups[(d1 >> 5) as usize].push(d1);
+		}
+		groups.retain(|g| !g.is_empty());
+		let mut hit = None;
+		'outer: for g in &groups {
+			for &d2 in &sets[1] {
+				if let Some(h) = search.run_task(g, d2, &mut scratch) {
+					hit = Some(h);
+					break 'outer;
+				}
+			}
+		}
+		assert_eq!(hit, Some(truth));
 	}
 
 	/// The cheap filter must agree with the authority. `cl_scan` may only
@@ -938,25 +1117,27 @@ mod dfs_tests {
 			let d0 = (rng() & 0xff) as u8;
 			let guess: [u8; 5] = std::array::from_fn(|_| (rng() & 0xff) as u8);
 			let tail: Vec<u8> = (0..64).map(|_| (rng() & 0xff) as u8).collect();
-			// Walk depth by depth, carrying the resume state the way dfs does.
+			// Walk depth by depth, carrying the resume state the way `cascade`
+			// does. The resume machinery lives in the cheap filter ([`Scan`]), so
+			// it is `scan_fresh`/`scan_resume` that must agree at every stall.
 			let mut at: Option<Resume> = None;
 			for known in [0b0_0001u8, 0b0_0011, 0b0_0111, 0b0_1111, 0b1_1111] {
-				let fresh = probe_header(d0, &guess, known, &tail);
+				let fresh = scan_fresh(d0, &guess, known, &tail);
 				let via = match &at {
 					Some(r) => {
 						resumed += 1;
-						probe_resume(r, d0, &guess, known, &tail)
+						scan_resume(r, d0, &guess, known, &tail)
 					}
-					None => probe_header(d0, &guess, known, &tail),
+					None => scan_fresh(d0, &guess, known, &tail),
 				};
-				let tag = |p: &Probe| match p {
-					Probe::Valid => (0u8, 0usize),
-					Probe::Reject => (1, 0),
-					Probe::Need { idx, .. } => (2, *idx),
+				let tag = |s: &Scan| match s {
+					Scan::Complete => (0u8, 0usize),
+					Scan::Reject => (1, 0),
+					Scan::Need { idx, .. } => (2, *idx),
 				};
 				assert_eq!(tag(&fresh), tag(&via), "d0={d0:#x} guess={guess:02x?}");
 				match via {
-					Probe::Need { at: next, .. } => at = next,
+					Scan::Need { at: next, .. } => at = next,
 					_ => break,
 				}
 			}
