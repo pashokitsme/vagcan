@@ -139,12 +139,6 @@ enum Command {
 		/// and a unit that does not answer is reported as such.
 		#[arg(long)]
 		identify: bool,
-		/// VCDS label directory. Each unit's part number is resolved against the
-		/// label files, which supplies the diagnostic address and the label files' name
-		/// for it — data, not a table in this program. Defaults to what `vagcan
-		/// setup` extracted into ~/.vagcan; a dir given here overrides it.
-		#[arg(long, value_name = "DIR", requires = "identify")]
-		labels: Option<String>,
 	},
 
 	/// List everything a control unit tells about itself.
@@ -406,12 +400,6 @@ enum Command {
 		/// assisting while it is in one.
 		#[arg(long)]
 		extended: bool,
-		/// VCDS installation to name the faults out of. Needs `Codes.dat` and
-		/// `UDS_EV/RD.rod`, and each unit's own `.rod` — which the unit names
-		/// itself. Defaults to what `vagcan setup` copied into ~/.vagcan; where
-		/// neither has the labels, the codes are printed unnamed.
-		#[arg(long, value_name = "DIR")]
-		labels: Option<String>,
 		/// Where the recovered `.rod` section keys are cached. A fault
 		/// catalogue is sealed with one, and recovering one costs ~95 s of
 		/// every core — so they are kept as data, not searched for per run.
@@ -419,8 +407,8 @@ enum Command {
 		#[arg(long, value_name = "FILE")]
 		iv_cache: Option<String>,
 		/// Name the faults in a survey this tool already recorded, instead of
-		/// reading the car. Offline; names them from `--labels`, or from what
-		/// `vagcan setup` copied into ~/.vagcan when `--labels` is omitted.
+		/// reading the car. Offline; names them from what `vagcan setup`
+		/// extracted into ~/.vagcan.
 		#[arg(long, value_name = "FILE",
               conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
 		from: Option<String>,
@@ -507,7 +495,7 @@ async fn main() -> Result<()> {
 		}
 		Command::Info { device } => info(device.as_deref()).await,
 		Command::Properties { device, ecu } => properties(device.as_deref(), &ecu).await,
-		Command::Units { device, identify, labels } => units(device.as_deref(), identify, labels.as_deref()).await,
+		Command::Units { device, identify } => units(device.as_deref(), identify).await,
 		Command::Sniff {
 			device,
 			out,
@@ -660,11 +648,10 @@ async fn main() -> Result<()> {
 		}
 		Command::Faults {
 			from: Some(survey),
-			labels,
 			iv_cache,
 			all,
 			..
-		} => faults::run_named(&survey, labels.as_deref(), &rod_keys(iv_cache.as_deref())?, all),
+		} => faults::run_named(&survey, &rod_keys(iv_cache.as_deref())?, all),
 		Command::Faults {
 			device,
 			ecu,
@@ -672,7 +659,6 @@ async fn main() -> Result<()> {
 			all,
 			supported,
 			extended,
-			labels,
 			iv_cache,
 			..
 		} => {
@@ -684,7 +670,6 @@ async fn main() -> Result<()> {
 				all,
 				supported,
 				extended,
-				labels.as_deref(),
 				&rod_keys(iv_cache.as_deref())?,
 			)
 			.await
@@ -868,7 +853,7 @@ async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<S
 }
 
 /// List the car's control units (see the `Units` subcommand docs).
-async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str>) -> Result<()> {
+async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 	use vag_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
 	use vag_protocol::gateway;
 	use vag_transport::CanId;
@@ -878,16 +863,15 @@ async fn units(device_arg: Option<&str>, identify: bool, labels_dir: Option<&str
 
 	// The label files turn a part number the car reports into the unit's diagnostic
 	// address and name, for any VAG car rather than for a list written here.
-	// `--labels` defaults to what `vagcan setup` extracted into ~/.vagcan, so
-	// `units --identify` resolves names with no flag; a dir given wins, and a
-	// machine that has not run setup simply identifies without label files name.
-	let label_files_dir = match labels_dir {
-		Some(dir) => Some(datadir::resolve(dir)),
-		None if identify => {
+	// They come from what `vagcan setup` extracted, so `units --identify`
+	// resolves names with no flag, and a machine that has not run setup simply
+	// identifies without them.
+	let label_files_dir = match identify {
+		true => {
 			let extracted = datadir::extracted_dir()?;
 			labels::has_label_files(&extracted).then_some(extracted)
 		}
-		None => None,
+		false => None,
 	};
 	let label_files = match &label_files_dir {
 		Some(dir) => {
@@ -1096,20 +1080,20 @@ mod tests {
 		// --extended would offer a command that half-reads the car, and
 		// --extended is the flag guarded by the road-speed check.
 		let parse = |args: &[&str]| Cli::try_parse_from(["vagcan", "faults"].iter().chain(args).collect::<Vec<_>>());
-		assert!(parse(&["--from", "s.jsonl", "--labels", "d"]).is_ok());
+		assert!(parse(&["--from", "s.jsonl"]).is_ok());
 		for (flag, value) in [
 			("--device", Some("/dev/x")),
 			("--extended", None),
 			("--supported", None),
 			("--ecu", Some("713")),
 		] {
-			let mut args = vec!["--from", "s.jsonl", "--labels", "d", flag];
+			let mut args = vec!["--from", "s.jsonl", flag];
 			args.extend(value);
 			assert!(parse(&args).is_err(), "--from should refuse {flag}");
 		}
-		// --labels is optional now: with none, `faults --from` names from what
-		// `vagcan setup` copied into ~/.vagcan, so it must parse on its own.
-		assert!(parse(&["--from", "s.jsonl"]).is_ok(), "--from defaults --labels to ~/.vagcan");
+		// There is no label directory to name: the names come from what
+		// `vagcan setup` extracted, and nowhere else.
+		assert!(parse(&["--from", "s.jsonl", "--labels", "d"]).is_err(), "--labels is gone");
 	}
 
 	#[test]

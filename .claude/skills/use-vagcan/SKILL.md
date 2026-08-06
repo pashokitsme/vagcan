@@ -33,7 +33,7 @@ from the repository root; the commands are written bare for readability.
 | Which control units does it have? | `vagcan units --identify` |
 | What does one unit say about itself? | `vagcan properties --ecu 01` |
 | Fault codes, one unit | `vagcan faults --ecu 01` |
-| Fault codes, whole car, **named** | `vagcan faults --labels <VCDS install>` |
+| Fault codes, whole car, **named** | `vagcan faults` |
 | Standard OBD-II sensors | `vagcan sensors --ecu 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
@@ -73,13 +73,13 @@ happen.
 ## Faults, per unit
 
 ```bash
-vagcan faults --labels ~/vcds     # named, whole car — the form to prefer
+vagcan faults                    # named, whole car — the form to prefer
 vagcan faults --ecu 01            # one unit
 vagcan faults --ecu 01,02,713     # several
 vagcan faults                     # every unit, codes only
 ```
 
-**Pass `--labels` whenever a VCDS installation is at hand.** Without it the output is
+**Run `vagcan setup` once, and faults come out named.** Without it the output is
 bare numbers; with it each code carries its SAE code and the text VCDS itself would
 print — `000129 → B1168 F2 Steering Angle Sensor: Not Initialized`. On the reference
 car 11 of 15 confirmed codes name.

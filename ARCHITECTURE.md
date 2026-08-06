@@ -250,7 +250,7 @@ first makes every unit outside the powertrain invisible, which is exactly what
 happened before it was measured. Which CAN id a *unit number* is answered on is in no
 data file this project has found — the label files carry the numbers and the names and
 no CAN id anywhere — so that half is established by reading the car (`vagcan units
---identify --labels`) or written down by hand.
+--identify`) or written down by hand.
 
 **Sweeping is group testing, not 65,536 reads.** A multi-identifier request comes back
 with only the identifiers the unit supports, and is refused outright when it supports

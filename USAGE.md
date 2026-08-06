@@ -116,8 +116,7 @@ vagcan units --identify               # each unit names itself; slower
 
 After `setup`, `--identify` also resolves each part number against the label files, which
 supplies the unit's diagnostic number and name and pairs that number with the CAN id
-that answered — none of it written in this program. Pass `--labels /other/VCDS` only to
-point at an installation other than the one `setup` used.
+that answered — none of it written in this program.
 
 ### `vagcan faults` — what is wrong with it?
 
@@ -128,7 +127,8 @@ vagcan faults --all                    # every code, not only the confirmed ones
 ```
 
 After `setup`, the codes come out in VW's own words with no extra flag — the labels are
-in `~/.vagcan`. (Pass `--labels /other/VCDS` to use a different installation.)
+in `~/.vagcan`. To read a different installation, run `setup` on it: one is held at a
+time, and a second one replaces the first rather than mixing with it.
 
 ```
 $ vagcan faults
@@ -144,9 +144,6 @@ necessarily a fault present now. Only codes marked *failed now* are currently fa
 and the tool says so above every listing.
 
 Clearing faults is a write. This tool cannot do it and never will.
-
-`--labels` still takes a directory even after `vagcan setup`: naming a fault needs the
-installation's own `RD.rod` and `Codes.dat`, not just the parsed cache.
 
 ### `vagcan properties --ecu 01` — what does this unit say about itself?
 
@@ -419,9 +416,8 @@ the search against that file: `vagcan vcds rod <file.rod>`.
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not
 a damaged file, and not something a retry fixes.
 
-**"no readable fault registry"** — `--labels` is pointing somewhere without
-`UDS_EV/RD.rod` and `Codes.dat`, or the registry's key has not been recovered. Both
-come from `vagcan setup`.
+**"no readable fault registry"** — `~/.vagcan` has no `UDS_EV/RD.rod` or no fault text
+file, or the registry's key has not been recovered. All of it comes from `vagcan setup`.
 
 **Nothing on screen and no error** from `watch` — the car answered nothing. Check
 `vagcan devices`, then the termination jumper.

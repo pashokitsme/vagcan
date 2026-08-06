@@ -148,15 +148,15 @@ fn ident_text(bytes: &[u8]) -> String {
 /// description file — so it runs offline against a recorded file. That is what
 /// makes the whole chain testable without the adapter, and it is how the
 /// figures in `research/labels/fault-naming-hop.md` §11.3 are reproduced.
-pub fn run_named(survey_path: &str, labels_dir: Option<&str>, iv_cache: &str, all_codes: bool) -> Result<()> {
+pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<()> {
 	let text = std::fs::read_to_string(survey_path).with_context(|| format!("reading {survey_path:?}"))?;
-	// `--labels` defaults to what `vagcan setup` copied into ~/.vagcan; a dir
-	// named on the command line still wins.
-	let root = crate::datadir::or_default(labels_dir, crate::datadir::extracted_dir)?;
+	// One installation, the one `vagcan setup` extracted. Reading another means
+	// running setup on it, which replaces this one.
+	let root = crate::datadir::extracted_dir()?;
 	// Naming a recorded survey with nothing to name from is nothing this can do,
 	// so an empty default is a clear stop pointing at `vagcan setup` rather than
 	// a bare "the registry did not decode".
-	if labels_dir.is_none() && !crate::faultnames::has_fault_labels(&root) {
+	if !crate::faultnames::has_fault_labels(&root) {
 		anyhow::bail!(crate::missing::no_fault_labels(&root));
 	}
 	let mut namer = crate::faultnames::Namer::open(&root, &crate::datadir::resolve(iv_cache))?;
@@ -260,7 +260,6 @@ pub async fn run(
 	all_codes: bool,
 	supported: bool,
 	extended: bool,
-	labels_dir: Option<&str>,
 	iv_cache: &str,
 ) -> Result<()> {
 	// Arguments first: the adapter is a single-user resource, so a typo in
@@ -269,14 +268,12 @@ pub async fn run(
 	// `Codes.dat` is a mistake to report, not one to make after taking the
 	// adapter and reading the whole car.
 	//
-	// `--labels` now defaults to what `vagcan setup` copied into ~/.vagcan, so
-	// faults are named without pointing at an installation every time; a dir on
-	// the command line still wins. A dir the user named is opened outright —
-	// `Namer::open` says which file it could not find. The default being empty
-	// is the ordinary "setup has not run yet" case: the codes are still read and
-	// shown as numbers, with a note that names `vagcan setup`.
-	let naming_source = crate::datadir::or_default(labels_dir, crate::datadir::extracted_dir)?;
-	let mut namer = if labels_dir.is_some() || crate::faultnames::has_fault_labels(&naming_source) {
+	// The names come from what `vagcan setup` extracted and from nowhere else:
+	// one installation at a time, switched by running setup again. An empty one
+	// is the ordinary "setup has not run yet" case — the codes are still read
+	// and shown as numbers, with a note that names `vagcan setup`.
+	let naming_source = crate::datadir::extracted_dir()?;
+	let mut namer = if crate::faultnames::has_fault_labels(&naming_source) {
 		Some(crate::faultnames::Namer::open(&naming_source, &crate::datadir::resolve(iv_cache))?)
 	} else {
 		None
@@ -518,13 +515,15 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn labels_default_to_the_setup_directory_and_a_given_one_still_wins() {
+	fn names_come_from_the_one_directory_setup_extracted() {
 		// The whole point of the copy: after `vagcan setup`, `faults` names codes
-		// with no `--labels`, because the labels now live under ~/.vagcan. The
-		// resolution both `run` and `run_named` use is `or_default(.., extracted)`.
-		use crate::datadir::{extracted_dir, or_default};
-		assert_eq!(or_default(None, extracted_dir).unwrap(), extracted_dir().unwrap());
-		assert!(or_default(Some("Cargo.toml"), extracted_dir).unwrap().ends_with("Cargo.toml"));
+		// with no flag, because the labels live under ~/.vagcan. There is no
+		// second place to look — reading another installation is running setup
+		// on it, which replaces this one.
+		assert_eq!(
+			crate::datadir::extracted_dir().unwrap(),
+			crate::datadir::vagcan_dir().unwrap().join("data").join("extracted")
+		);
 	}
 
 	#[test]
