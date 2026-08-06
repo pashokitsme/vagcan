@@ -109,8 +109,6 @@ pub struct Options<'a> {
 	/// The VCDS installation root. Without one, an installation is offered for
 	/// download and the run continues into the same parse.
 	pub dir: Option<&'a str>,
-	/// Which language build to download, when one is being downloaded.
-	pub lang: Option<&'a str>,
 	/// Redo every step, whatever is already on disk.
 	pub refresh: bool,
 	/// Where the archives are served from. A parameter so the download path is
@@ -137,9 +135,7 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 		);
 		return Ok(Some(root.to_path_buf()));
 	}
-	// A language on the command line is somebody who has already decided;
-	// asking them again is a prompt with one answer.
-	if opts.lang.is_none() && !vendor::confirm_download()? {
+	if !vendor::confirm_download()? {
 		println!(
 			"Nothing downloaded.\n\n\
              Point at an installation you have:\n    \
@@ -149,8 +145,7 @@ fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
 		);
 		return Ok(None);
 	}
-	let lang = vendor::choose_language(opts.lang)?;
-	Ok(Some(vendor::fetch(&lang, opts.archive_base)?))
+	Ok(Some(vendor::fetch(opts.archive_base)?))
 }
 
 /// The file this installation uses for a job, by name or by asking.
@@ -669,7 +664,6 @@ mod tests {
 	fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
 		let err = run(Options {
 			dir: Some("/definitely/not/here"),
-			lang: None,
 			refresh: false,
 			archive_base: vendor::ARCHIVE_BASE,
 		})

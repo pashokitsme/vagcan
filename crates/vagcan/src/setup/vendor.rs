@@ -38,12 +38,16 @@ use anyhow::{Context, Result};
 /// token belongs in a program anybody can run.
 pub const ARCHIVE_BASE: &str = "https://github.com/pashokitsme/vagcan/raw/master/vendor";
 
-/// The language builds on offer.
+/// The build this fetches.
 ///
-/// The label files are Ross-Tech's label text, and it is translated: the same control
-/// unit reads in English out of one install and in Russian out of the other.
-/// Nothing else differs, so this is a choice about reading, not about coverage.
-pub const LANGUAGES: &[&str] = &["en", "ru"];
+/// Ross-Tech ship the label text translated, and for a while this offered the
+/// Russian build alongside. It no longer does, because the two are not equal:
+/// the Russian build's text table masks its key, so it yields fault text and
+/// labels but **no measurement names**, and nothing offline recovers them
+/// (`ARCHITECTURE.md`, "The file formats"). Offering it as a peer was offering a
+/// quietly lesser install. Somebody who has that build can still point `setup`
+/// straight at it — and then the tool says which part it cannot give them.
+const BUILD: &str = "en";
 
 /// The zip signature, so a truncated or error-page download is caught before it
 /// is handed to `unzip` (PKWARE APPNOTE §4.3.7).
@@ -56,34 +60,6 @@ const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 /// installation, and this is the installation.
 pub fn vendor_dir() -> Result<PathBuf> {
 	Ok(crate::datadir::vagcan_dir()?.join("vendor"))
-}
-
-/// Ask which language build to fetch, or take the flag's answer.
-///
-/// A terminal is required for the question. Without one — a script, a pipe, a
-/// CI job — there is nobody to answer, and guessing a language would download
-/// ninety megabytes of the wrong one; so it says which flag to pass instead.
-pub fn choose_language(flag: Option<&str>) -> Result<String> {
-	if let Some(lang) = flag {
-		let lang = lang.trim().to_ascii_lowercase();
-		anyhow::ensure!(LANGUAGES.contains(&lang.as_str()), "--lang {lang:?} is not one of {LANGUAGES:?}");
-		return Ok(lang);
-	}
-	anyhow::ensure!(
-		std::io::stdin().is_terminal(),
-		"no VCDS directory was given and there is no terminal to ask on.\n\n\
-         Either point at an installation:\n    \
-         vagcan setup /path/to/VCDS\n\
-         or say which build to download:\n    \
-         vagcan setup --lang en"
-	);
-	print!("Which language build? [{}] ", LANGUAGES.join("/"));
-	std::io::stdout().flush().ok();
-	let mut answer = String::new();
-	std::io::stdin().read_line(&mut answer)?;
-	let answer = answer.trim().to_ascii_lowercase();
-	anyhow::ensure!(LANGUAGES.contains(&answer.as_str()), "{answer:?} is not one of {LANGUAGES:?}");
-	Ok(answer)
 }
 
 /// Ask whether to download at all.
@@ -111,17 +87,17 @@ pub fn confirm_download() -> Result<bool> {
 /// An installation already unpacked is used as it stands: the archive does not
 /// change, and re-downloading ninety megabytes because a later step failed
 /// would be its own reason not to run this again.
-pub fn fetch(lang: &str, base: &str) -> Result<PathBuf> {
+pub fn fetch(base: &str) -> Result<PathBuf> {
 	let dir = vendor_dir()?;
-	let unpacked = dir.join(format!("vcds-{lang}"));
+	let unpacked = dir.join(format!("vcds-{BUILD}"));
 	if unpacked.is_dir() && std::fs::read_dir(&unpacked).is_ok_and(|d| d.count() > 0) {
 		println!("Using the installation already at {}", unpacked.display());
 		return Ok(unpacked);
 	}
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
-	let url = format!("{base}/vcds-{lang}.zip");
-	let archive = dir.join(format!("vcds-{lang}.zip"));
+	let url = format!("{base}/vcds-{BUILD}.zip");
+	let archive = dir.join(format!("vcds-{BUILD}.zip"));
 	download(&url, &archive)?;
 	unpack(&archive, &unpacked)?;
 	Ok(unpacked)
@@ -310,15 +286,6 @@ mod tests {
 		assert!(check_archive(&file, Some(bytes.len() as u64)).is_ok());
 		assert!(file.exists());
 		let _ = std::fs::remove_dir_all(&dir);
-	}
-
-	#[test]
-	fn the_language_flag_is_checked_before_ninety_megabytes_are_fetched() {
-		assert_eq!(choose_language(Some("EN")).unwrap(), "en");
-		assert_eq!(choose_language(Some(" ru ")).unwrap(), "ru");
-		let err = choose_language(Some("de")).unwrap_err().to_string();
-		assert!(err.contains("\"de\""), "{err}");
-		assert!(err.contains("en"), "{err}");
 	}
 
 	#[test]

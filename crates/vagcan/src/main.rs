@@ -104,11 +104,6 @@ enum Command {
 		/// `UDS_EV/`. Leave it out and an installation is offered for download.
 		#[arg(value_name = "VCDS-DIR")]
 		dir: Option<String>,
-		/// Which language build to download: the label text is translated, so
-		/// this decides whether the car reads in English or in Russian.
-		/// Giving it also answers the download question, for a script.
-		#[arg(long, value_name = "LANG", value_parser = setup::vendor::LANGUAGES.to_vec())]
-		lang: Option<String>,
 		/// Redo every step, whatever is already in `~/.vagcan/data/extracted/`.
 		#[arg(long)]
 		refresh: bool,
@@ -483,9 +478,8 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
 	match Cli::parse().command {
-		Command::Setup { dir, lang, refresh } => setup::run(setup::Options {
+		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
-			lang: lang.as_deref(),
 			refresh,
 			archive_base: setup::vendor::ARCHIVE_BASE,
 		}),

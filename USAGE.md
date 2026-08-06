@@ -34,7 +34,6 @@ Run it once.
 ```sh
 vagcan setup /path/to/VCDS      # an installation you already have
 vagcan setup                    # or be offered one to download
-vagcan setup --lang en          # …and answer the question up front, for a script
 ```
 
 It takes several minutes over a full set of label files, almost all of it in step 2. Watch it
@@ -385,7 +384,7 @@ vagcan setup /path/to/VCDS
 ```
 
 One command, no car. If you have no VCDS installation, run `vagcan setup` with no path
-and it offers to download one (English or Russian) — that copy is Ross-Tech's software,
+and it offers to download one — that copy is Ross-Tech's software,
 redistributed unmodified; you can also get it from them directly at
 <https://www.ross-tech.com/vcds/download/> and point `setup` at it.
 
