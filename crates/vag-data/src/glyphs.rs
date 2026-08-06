@@ -121,11 +121,13 @@ impl TableAlphabet {
 			let lower = glyph.to_ascii_lowercase() as u8;
 			if let Some(at) = self.digits.iter().position(|g| *g == lower) {
 				out.push(PLAIN_DIGITS[at] as char);
-			} else if let Some(at) = self.letters.iter().position(|g| *g == lower) {
+			} else {
+				// Not a digit; it must be a letter, or the field is not ours —
+				// `?` returns `None` from `decode`, the partly-decoded field the
+				// doc comment refuses.
+				let at = self.letters.iter().position(|g| *g == lower)?;
 				let plain = PLAIN_LETTERS[at] as char;
 				out.push(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain });
-			} else {
-				return None;
 			}
 		}
 		(!out.is_empty()).then_some(out)
