@@ -173,8 +173,23 @@ then the cipher above is attacked with the corpus's own label files as the in-do
 vocabulary (weight 8) and the system word list as the general one (weight 1). This is
 the slow step: minutes, mostly single-threaded search.
 
+Then comes the **prior**, and it is the difference between four thousand names and
+seventeen. Weighing every in-domain word alike leaves the search breaking a tie
+between two same-shape words — `of`/`ob`, `oil`/`bil`, `voltage`/`boltage` — by
+alphabetical order, and a cluster leader that guesses wrong pins that letter for
+every record it feeds. The fix is the word's **frequency in the decoded corpus
+itself**: `of` outnumbers `ob` thousands to one, so re-solving every cluster under
+that frequency settles the ties on evidence. It is measured from the decode at parse
+time, never a table baked into the binary. Two wrinkles the reference corpus forced:
+the in-domain seed counts a word's label-file occurrences but **saturates** them,
+because a label file lists status literals (`OK`, `ON`, `LC`) thousands of times and
+uncapped they outrank `of` and make the search read `Status ok` for `Status of`; and
+the frequency drives the search and the gate's ambiguity margin, while *membership* —
+whether a word is a word at all — stays the pre-bootstrap seed, so a misreading fed
+back into the vocabulary cannot vouch for itself.
+
 Then the readings pass a **gate**, and the gate is the product rather than the
-decode. About 60 % of records decode; far fewer may be shipped, because a fluent
+decode. About 63 % of records decode; far fewer may be shipped, because a fluent
 wrong reading is indistinguishable from a right one at the point of use. A reading is
 kept only if:
 
