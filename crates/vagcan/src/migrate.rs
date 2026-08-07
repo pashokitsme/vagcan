@@ -47,6 +47,26 @@ pub struct Old {
 	pub measured: PathBuf,
 }
 
+impl Old {
+	/// How many proven-on-car files are waiting to move.
+	///
+	/// The one number worth putting in front of somebody before the move,
+	/// because it is the only class here that no re-parse can reproduce — spec
+	/// §4.5's "the only data proven on the actual car". Everything else in
+	/// `data/` is extracted from a VCDS installation and can be extracted again.
+	///
+	/// Zero is the ordinary answer: a machine that has run `setup` but never
+	/// calibrated a car has nothing here, and nothing irreversible is at stake.
+	pub fn proven(&self) -> usize {
+		plan(self).iter().filter(|(_, kind, _)| *kind == Kind::Measured).count()
+	}
+
+	/// How many files in total would move.
+	pub fn files(&self) -> usize {
+		plan(self).len()
+	}
+}
+
 /// What one migration did, for the run's closing report.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -470,6 +490,23 @@ mod tests {
 		let report = run_into(&old, &p.dir, &pool).unwrap();
 		assert!(report.conflicted.is_empty(), "{report:?}");
 		assert_eq!(report.pooled, 3);
+	}
+
+	#[test]
+	fn what_is_at_stake_is_counted_before_anything_moves() {
+		// The number `setup` puts in front of somebody before asking whose car
+		// this data is. Only the proven rows are irreplaceable; the rest can be
+		// extracted from a VCDS installation again.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		assert_eq!(old.proven(), 1, "the override is not a proven row and does not move");
+		assert_eq!(old.files(), 7);
+
+		// A machine that ran setup but never calibrated a car has nothing
+		// irreversible at stake, and the question can say so.
+		std::fs::remove_file(old.measured.join("04E-906-027-AH.json")).unwrap();
+		assert_eq!(old.proven(), 0);
+		assert!(old.files() > 0, "there is still plenty to move, just nothing unrepeatable");
 	}
 
 	#[test]

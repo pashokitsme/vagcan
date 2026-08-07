@@ -169,6 +169,81 @@ fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Op
 	}))
 }
 
+/// Which project the layout from before projects existed should move into.
+///
+/// **Spec §6 asks this, and the reason is the one irreversible step in the
+/// command.** The move is a move: `data/measured/` holds rows proven by driving
+/// a car, spec §4.5's only data proven on the actual vehicle, and nothing but
+/// another drive can recreate one. Every other file here is extracted from
+/// somebody else's and can be extracted again.
+///
+/// The failure this prevents is not hypothetical, and it is the *first* run
+/// after upgrading: `vagcan setup ~/Downloads/SK37X` for a second car, while
+/// `data/measured/` still holds the first car's rows. Filing them into whichever
+/// project this run happened to choose puts one car's proven data inside
+/// another car's store — and while [`crate::migrate`] copies before it removes,
+/// so nothing is destroyed, by the time the closing report says what moved it
+/// has already moved.
+///
+/// **Asked only when the answer is genuinely open.** A machine with no projects
+/// yet, being set up from a VCDS installation, has exactly one car in play and
+/// one place the data can belong; a question there is a question with one
+/// answer. It is asked when a project was already on disk, or when the source is
+/// an ODIS project — which names a specific vehicle, and so may well not be the
+/// vehicle the old data came from.
+///
+/// A run with no terminal takes the default without blocking
+/// ([`crate::ui::menu::Asker::line`]), which is the project this run chose —
+/// the behaviour there has always been, now stated rather than assumed.
+fn migration_target(io: &mut impl crate::ui::menu::Asker, old: &crate::migrate::Old, chosen: &Chosen) -> Result<crate::project::Project> {
+	let id = migration_target_id(io, old, chosen)?;
+	match id == chosen.project.id {
+		true => Ok(chosen.project.clone()),
+		false => crate::project::open_or_create(&id),
+	}
+}
+
+/// The name half of [`migration_target`], split out so the whole question — what
+/// it says, what it defaults to, what it does with an answer that is not a
+/// directory name — is testable without creating a directory in the owner's own
+/// `~/.vagcan`.
+fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrate::Old, chosen: &Chosen) -> Result<String> {
+	let open = !chosen.existing.is_empty() || matches!(chosen.source, source::Source::Odis { .. });
+	if !open {
+		return Ok(chosen.project.id.clone());
+	}
+
+	io.say(&format!(
+		"\nThere is data here from before vagcan kept one project per car: {} files under {}.",
+		old.files(),
+		old.extracted.parent().unwrap_or(&old.extracted).display()
+	))?;
+	match old.proven() {
+		// The sentence that has to be in front of them before they answer.
+		// Everything else here is extracted and can be extracted again.
+		0 => io.say("None of it is measured-on-a-car data, so nothing about this is unrepeatable — it is only a question of where it lands.")?,
+		n => io.say(&format!(
+			"{n} of them are rows proven by driving a car. Nothing but another drive can recreate one, and \
+             this moves them rather than copying them.\n\
+             If that data is this car's, press Enter. If it is a different car's, give that car a name and \
+             it will be moved there instead."
+		))?,
+	}
+	if !chosen.existing.is_empty() {
+		io.say(&format!("Projects already here: {}", chosen.existing.join(", ")))?;
+	}
+	loop {
+		let typed = io.line("Which car is that data?", &chosen.project.id)?;
+		match crate::project::folder_name(typed.trim()) {
+			Ok(id) => return Ok(id),
+			// Asked again rather than refused: a name is one keystroke, and
+			// losing the run over a slash would be a poor trade — the same rule
+			// `source::project_id` follows for the same question.
+			Err(why) => io.say(&format!("{why}"))?,
+		}
+	}
+}
+
 /// Open an ODIS project, saying how long it will be.
 fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data::odis::Project> {
 	io.say(&format!(
@@ -360,12 +435,13 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 	io.say(&format!("Writing into {}\n", project.dir.display()))?;
 
 	// Before the parse, not after: whatever an older build left in
-	// `~/.vagcan/data/` belongs to this car too, and moving it afterwards would
+	// `~/.vagcan/data/` belongs to a car too, and moving it afterwards would
 	// have this run's rows sitting beside an unmigrated copy of the last one's.
 	if let Some(old) = crate::migrate::pending()? {
-		let report = crate::migrate::run(&old, project)?;
+		let into = migration_target(io, &old, &chosen)?;
+		let report = crate::migrate::run(&old, &into)?;
 		if report.moved() > 0 || report.left_behind.is_some() {
-			io.say(&crate::migrate::describe(&report, project))?;
+			io.say(&crate::migrate::describe(&report, &into))?;
 		}
 	}
 
@@ -907,6 +983,114 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &[]).unwrap(), "SK37X");
 		assert!(!io.all_said().contains("already here"), "{:?}", io.said);
+	}
+
+	/// A `Chosen` as `choose` would have built one. No directory is created:
+	/// only [`migration_target_id`] is under test, and it creates nothing.
+	fn chosen(id: &str, existing: &[&str], odis: bool) -> Chosen {
+		let dir = std::path::PathBuf::from("/nowhere/projects").join(id);
+		Chosen {
+			source: match odis {
+				true => source::Source::Odis {
+					dir: PathBuf::from("/nowhere/SK37X"),
+				},
+				false => source::Source::Vcds {
+					dir: PathBuf::from("/nowhere/VCDS"),
+				},
+			},
+			project: crate::project::Project { id: id.to_string(), dir },
+			existing: existing.iter().map(|s| s.to_string()).collect(),
+			odis: None,
+		}
+	}
+
+	/// A `~/.vagcan/data/` with one proven row in it, in a temporary directory.
+	fn old_layout(root: &Path) -> crate::migrate::Old {
+		let old = crate::migrate::Old {
+			extracted: root.join("data").join("extracted"),
+			measured: root.join("data").join("measured"),
+		};
+		std::fs::create_dir_all(&old.extracted).unwrap();
+		std::fs::create_dir_all(&old.measured).unwrap();
+		std::fs::write(old.extracted.join("names.json"), b"{}").unwrap();
+		std::fs::write(old.measured.join("04E-906-027-AH.json"), b"{}").unwrap();
+		old
+	}
+
+	#[test]
+	fn with_one_car_and_a_vcds_install_there_is_nothing_to_ask() {
+		// A machine with no projects yet, being set up from an installation,
+		// has one car in play and one place the data can belong. A question
+		// there is a question with one answer.
+		let here = TempDir::new("mig-quiet");
+		let old = old_layout(&here.0);
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(migration_target_id(&mut io, &old, &chosen("default", &[], false)).unwrap(), "default");
+		assert!(io.typed.is_empty(), "it asked anyway: {:?}", io.typed);
+		assert!(io.said.is_empty(), "{:?}", io.said);
+	}
+
+	#[test]
+	fn setting_up_a_second_car_asks_whose_the_old_data_is_before_moving_it() {
+		// The failure this exists for, and it is the *first* run after
+		// upgrading: `vagcan setup ~/Downloads/SK37X` for a second car while
+		// `data/measured/` still holds the first car's proven rows. Filing them
+		// into whichever project this run chose puts one car's proven data
+		// inside another car's store.
+		let here = TempDir::new("mig-ask");
+		let old = old_layout(&here.0);
+		let mut io = crate::ui::menu::Scripted::new(vec![crate::ui::menu::Answer::Type("carA".to_string())]);
+		assert_eq!(migration_target_id(&mut io, &old, &chosen("SK37X", &[], true)).unwrap(), "carA");
+
+		let said = io.all_said();
+		assert!(said.contains("proven by driving a car"), "what is at stake is named: {said}");
+		assert!(
+			said.contains("moves them rather than copying them"),
+			"and that it is irreversible: {said}"
+		);
+		// The default is this run's project, so pressing Enter does what the
+		// unprompted version used to do.
+		assert_eq!(io.defaults(), ["SK37X"]);
+	}
+
+	#[test]
+	fn a_project_already_on_disk_is_enough_to_make_the_question_worth_asking() {
+		let here = TempDir::new("mig-existing");
+		let old = old_layout(&here.0);
+		let mut io = crate::ui::menu::Scripted::new(vec![crate::ui::menu::Answer::Type(String::new())]);
+		// An empty line takes the default, which is this run's project.
+		assert_eq!(
+			migration_target_id(&mut io, &old, &chosen("default", &["carA"], false)).unwrap(),
+			"default"
+		);
+		assert!(io.all_said().contains("carA"), "the ones already here are named: {:?}", io.said);
+	}
+
+	#[test]
+	fn with_nothing_unrepeatable_at_stake_the_question_says_so() {
+		// Most machines: `setup` has run, no car has ever been calibrated. The
+		// question is still asked — the data still lands somewhere — but it must
+		// not imply a risk that is not there.
+		let here = TempDir::new("mig-norows");
+		let old = old_layout(&here.0);
+		std::fs::remove_file(old.measured.join("04E-906-027-AH.json")).unwrap();
+		let mut io = crate::ui::menu::Scripted::new(vec![crate::ui::menu::Answer::Type(String::new())]);
+		migration_target_id(&mut io, &old, &chosen("SK37X", &[], true)).unwrap();
+		let said = io.all_said();
+		assert!(said.contains("nothing about this is unrepeatable"), "{said}");
+		assert!(!said.contains("proven by driving"), "it warned about rows that are not there: {said}");
+	}
+
+	#[test]
+	fn an_answer_that_could_not_be_a_folder_is_asked_again_rather_than_losing_the_run() {
+		let here = TempDir::new("mig-badname");
+		let old = old_layout(&here.0);
+		let mut io = crate::ui::menu::Scripted::new(vec![
+			crate::ui::menu::Answer::Type("car A/1".to_string()),
+			crate::ui::menu::Answer::Type("car-A-1".to_string()),
+		]);
+		assert_eq!(migration_target_id(&mut io, &old, &chosen("SK37X", &[], true)).unwrap(), "car-A-1");
+		assert_eq!(io.typed.len(), 2, "it gave up instead of asking again");
 	}
 
 	#[test]
