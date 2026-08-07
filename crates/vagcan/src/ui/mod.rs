@@ -6,5 +6,6 @@
 
 pub mod bars;
 pub mod chart;
+pub mod menu;
 pub mod picker;
 pub mod term;

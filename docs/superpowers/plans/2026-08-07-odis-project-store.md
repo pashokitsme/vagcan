@@ -181,14 +181,28 @@ pub struct Item<'a> { pub label: &'a str, pub detail: &'a str }
 /// uses, so the copy and the ordering are testable with no terminal.
 pub trait Asker {
   /// Show `items` under `question` with row `at` highlighted; `None` is a quit.
+  /// A stdin that is not a terminal is an `Err` naming the command line that
+  /// needs no menu; an empty `items` is an `Err` too, and a caller's bug.
   fn ask(&mut self, question: &str, items: &[Item<'_>], at: usize) -> anyhow::Result<Option<usize>>;
-  /// A free-text answer, with a default taken on an empty line.
+  /// A free-text answer, with a default taken on an empty line. A stdin that is
+  /// not a terminal takes the default silently rather than erroring — a default
+  /// *is* an answer, and this is what keeps `vagcan setup PATH </dev/null`
+  /// working. An empty default therefore comes back as an empty string, which
+  /// the caller reads as "never mind".
   fn line(&mut self, question: &str, default: &str) -> anyhow::Result<String>;
   fn say(&mut self, line: &str) -> anyhow::Result<()>;
 }
 
-pub struct Console;                     // the person's
-pub struct Scripted { /* private */ }   // the tests'
+/// The person's. Built with the command line that answers the question without
+/// a menu — `ui::picker::Console` carries the same string for the same reason:
+/// this module does not know which command it is serving, and the sentence a
+/// redirected stdin gets is only useful if it names one.
+pub struct Console { /* private */ }
+impl Console { pub fn new(instead: impl Into<String>) -> Console; }
+
+/// The tests'. Both are `#[cfg(test)]`: nothing outside a test builds either,
+/// and a non-test `Answer` would be dead code in the workspace check.
+pub struct Scripted { /* private */ }
 impl Scripted { pub fn new(answers: Vec<Answer>) -> Scripted; }
 pub enum Answer { Pick(usize), Type(String), Quit }
 ```
