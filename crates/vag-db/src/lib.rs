@@ -16,7 +16,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use vag_data::label::{LabelFile, Measurement, Record};
-use vag_data::{LabelDb, load_label_files};
+use vag_data::{LabelDb, Scaling, load_label_files};
 
 /// Errors from building or loading a vag-db SQLite cache.
 #[derive(Debug)]
@@ -77,7 +77,11 @@ CREATE TABLE IF NOT EXISTS measurement (
     description TEXT NOT NULL,
     unit        TEXT,
     range_min   REAL,
-    range_max   REAL
+    range_max   REAL,
+    -- Which source put this row here. One cache now holds rows from a VCDS
+    -- installation and from an ODIS project, and a row that cannot say which
+    -- cannot be replaced when that source is parsed again.
+    source_id   INTEGER REFERENCES source(id)
 );
 CREATE TABLE IF NOT EXISTS redirect (
     file_id   INTEGER NOT NULL REFERENCES label_file(id),
@@ -108,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_label_file_name    ON label_file(name);
 CREATE INDEX IF NOT EXISTS idx_redirect_file      ON redirect(file_id);
 CREATE INDEX IF NOT EXISTS idx_adaptation_file    ON adaptation(file_id);
 CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
--- Which label-file directory this cache was built from. One row, always id 0.
+-- Which directory a row came from, and what read it.
 --
 -- An mtime answers "is this old?" and cannot answer "is this even about these
 -- files?" — and a cache built from the Russian tree is not *stale* for the
@@ -117,22 +121,156 @@ CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 -- cache rather than in a note beside it because a cache that cannot say what
 -- it holds is not self-describing, and a loose file recording a path is one
 -- more thing to keep in step with the file it describes.
+--
+-- **One row per source, not one row.** It used to be `CHECK (id = 0)`, because
+-- one cache came from one VCDS installation. A project's cache now holds a
+-- VCDS parse *and* an ODIS parse of the same car, and forcing them into one row
+-- would make the second erase the first's provenance.
 CREATE TABLE IF NOT EXISTS source (
-    id  INTEGER PRIMARY KEY CHECK (id = 0),
-    dir TEXT NOT NULL
+    id   INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    dir  TEXT NOT NULL,
+    UNIQUE (kind, dir)
 );
+-- One readable channel of one ECU variant, as an ODIS project describes it.
+--
+-- **A separate table from `measurement`, deliberately (D1).** `measurement` is
+-- addressed the way VCDS addresses things — a measuring block and a field
+-- within it — and `reading` the way ODIS and UDS do, by identifier. Forcing one
+-- table would mean inventing a block number for a DID or a DID for a block, and
+-- both inventions are car-specific data in code. They coexist; nothing reading
+-- either has to know the other exists.
+CREATE TABLE IF NOT EXISTS reading (
+    id           INTEGER PRIMARY KEY,
+    source_id    INTEGER NOT NULL REFERENCES source(id),
+    -- The ECU variant this channel belongs to. One project describes hundreds,
+    -- and which one a car is comes from what the car answers, not from here.
+    variant      TEXT NOT NULL,
+    did          INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    unit         TEXT,
+    -- Bits into the positive response, after the three-byte `62 hi lo` header.
+    bit_offset   INTEGER NOT NULL,
+    bit_length   INTEGER NOT NULL,
+    signed       INTEGER NOT NULL,
+    text_id      TEXT,
+    -- The scaling, in columns rather than one serialised blob. A blob would
+    -- need a serialiser this crate does not depend on, and a column can be read
+    -- by somebody holding `sqlite3` and no Rust — which is most of what a cache
+    -- being inspectable is worth.
+    scaling      TEXT NOT NULL,
+    factor       REAL,
+    offset       REAL,
+    anchor_raw   INTEGER,
+    anchor_value REAL
+);
+-- The levels of a `TEXTTABLE` scaling: each raw value means one thing, and
+-- there is no scale between them. A child table because a gear selector has as
+-- many rows as it has positions and a linear channel has none.
+CREATE TABLE IF NOT EXISTS reading_level (
+    reading_id INTEGER NOT NULL REFERENCES reading(id),
+    raw        INTEGER NOT NULL,
+    meaning    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reading_lookup ON reading(variant, did);
+CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
 "#;
 
 fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
+	// Migrating *before* the batch, not after, and the order is load-bearing:
+	// the batch creates `reading`, which carries a foreign key to `source`, and
+	// SQLite rewrites such a reference when the table it points at is renamed —
+	// so a `reading` created first would come out pointing at
+	// `source_before_kind`, which the migration then drops. The first insert
+	// after that fails with "no such table: main.source_before_kind", a very
+	// long way from what actually happened. Migrating first leaves nothing
+	// pointing at `source` when it is rebuilt.
+	migrate(conn)?;
 	conn.execute_batch(SCHEMA)
+}
+
+/// Bring a cache written by an older build up to the current schema.
+///
+/// Two changes, both un-doable by `CREATE TABLE IF NOT EXISTS` because the
+/// table is already there under the old shape:
+///
+/// - `source` was one row with a `CHECK (id = 0)` and no `kind`. SQLite cannot
+///   drop a check constraint, so the table is rebuilt and its one row carried
+///   over as `kind = 'vcds'` — which is what it was, since a VCDS installation
+///   was the only source that existed when it was written.
+/// - `measurement` gained `source_id`. Existing rows keep `NULL`: they came from
+///   whatever the single `source` row named, and back-filling a foreign key to
+///   make that explicit would be rewriting history that the rebuilt `source`
+///   row already records.
+///
+/// Idempotent, because it runs on every open and most opens have nothing to do.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+	if columns(conn, "source")?.is_empty() {
+		// A cache that does not exist yet. The batch is about to create it in
+		// the current shape, and there is nothing to carry over.
+		return Ok(());
+	}
+	if !has_column(conn, "source", "kind")? {
+		conn.execute_batch(
+			"ALTER TABLE source RENAME TO source_before_kind;\
+             CREATE TABLE source (\
+                 id   INTEGER PRIMARY KEY,\
+                 kind TEXT NOT NULL,\
+                 dir  TEXT NOT NULL,\
+                 UNIQUE (kind, dir)\
+             );\
+             INSERT INTO source (id, kind, dir) SELECT id, 'vcds', dir FROM source_before_kind;\
+             DROP TABLE source_before_kind;",
+		)?;
+	}
+	let measurement = columns(conn, "measurement")?;
+	if !measurement.is_empty() && !measurement.iter().any(|name| name == "source_id") {
+		conn.execute("ALTER TABLE measurement ADD COLUMN source_id INTEGER REFERENCES source(id)", [])?;
+	}
+	Ok(())
+}
+
+/// Whether a table already has a column, asked of the database rather than of a
+/// version number nobody remembers to bump.
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+	Ok(columns(conn, table)?.iter().any(|name| name == column))
+}
+
+/// A table's column names, or nothing at all if there is no such table.
+fn columns(conn: &Connection, table: &str) -> rusqlite::Result<Vec<String>> {
+	let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+	let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+	names.collect()
+}
+
+/// The kind a source is, as `source.kind` spells it.
+pub const VCDS: &str = "vcds";
+/// The kind an ODIS project is.
+pub const ODIS: &str = "odis";
+
+/// Find or make the `source` row for one directory, and return its id.
+///
+/// `ON CONFLICT` rather than a lookup-then-insert: parsing the same directory
+/// twice must land on the same row, or a project re-read after a `--refresh`
+/// would accumulate one source row per run.
+fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> {
+	conn.execute(
+		"INSERT INTO source (kind, dir) VALUES (?1, ?2) ON CONFLICT(kind, dir) DO UPDATE SET dir = excluded.dir",
+		params![kind, dir],
+	)?;
+	conn.query_row("SELECT id FROM source WHERE kind = ?1 AND dir = ?2", params![kind, dir], |row| row.get(0))
 }
 
 /// Insert every file + its records into `conn`, in one transaction. The
 /// `Record::Other` variant is not persisted — it's non-semantic (comments /
 /// unrecognized record kinds).
-fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats, Error> {
+/// `labels_dir` is recorded as this build's `source` row **inside the same
+/// transaction**, so a cache that failed half way through claims nothing: the
+/// row and the files it describes commit together or neither does.
+fn insert_files(conn: &mut Connection, files: &[LabelFile], labels_dir: &str) -> Result<BuildStats, Error> {
 	let mut stats = BuildStats::default();
 	let tx = conn.transaction()?;
+	let source = source_id(&tx, VCDS, labels_dir)?;
 	{
 		// Idempotent rebuild: clear any existing rows before inserting, so
 		// running `build_db` twice against the same path overwrites cleanly
@@ -149,8 +287,8 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
 		let mut insert_file = tx.prepare("INSERT INTO label_file (name, unit_address, unit_name) VALUES (?1, ?2, ?3)")?;
 		let mut insert_measurement = tx.prepare(
 			"INSERT INTO measurement \
-                (file_id, block, field, name, location, description, unit, range_min, range_max) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (file_id, block, field, name, location, description, unit, range_min, range_max, source_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
 		)?;
 		let mut insert_redirect = tx.prepare("INSERT INTO redirect (file_id, selector, target) VALUES (?1, ?2, ?3)")?;
 		let mut insert_adaptation = tx.prepare(
@@ -185,7 +323,8 @@ fn insert_files(conn: &mut Connection, files: &[LabelFile]) -> Result<BuildStats
 							m.description,
 							m.unit,
 							range_min,
-							range_max
+							range_max,
+							source
 						])?;
 						stats.measurements += 1;
 					}
@@ -311,26 +450,175 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 	let load = load_label_files(labels_dir)?;
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	let stats = insert_files(&mut conn, &load.files)?;
-	// Recorded after the insert, never before: a cache claiming a directory it
-	// then failed to finish loading would be trusted by the next run.
-	conn.execute(
-		"INSERT INTO source (id, dir) VALUES (0, ?1) ON CONFLICT(id) DO UPDATE SET dir = excluded.dir",
-		[labels_dir.to_string_lossy()],
-	)?;
-	Ok(stats)
+	insert_files(&mut conn, &load.files, &labels_dir.to_string_lossy())
 }
 
 /// The label-file directory `db_path` was built from, if it says.
 ///
-/// `None` for a cache written before this was recorded, or one that cannot be
-/// opened — both mean "cannot vouch for what this holds", and the caller
-/// rebuilds rather than trusts it.
+/// `None` for a cache written before this was recorded, one that cannot be
+/// opened, or one holding no VCDS source at all — a pure-ODIS project's cache is
+/// the third case, and it is not stale, it is simply about nothing this question
+/// concerns. The caller decides what to do with that (see the freshness rule in
+/// `vagcan::labels`, which trusts a cache whose source directory is gone).
 pub fn source_of(db_path: &Path) -> Option<String> {
 	let conn = Connection::open(db_path).ok()?;
 	conn
-		.query_row("SELECT dir FROM source WHERE id = 0", [], |row| row.get::<_, String>(0))
+		.query_row("SELECT dir FROM source WHERE kind = ?1 ORDER BY id LIMIT 1", [VCDS], |row| {
+			row.get::<_, String>(0)
+		})
 		.ok()
+}
+
+/// Every source that has ever written into this cache, oldest first.
+pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
+	let conn = Connection::open(db_path)?;
+	let mut stmt = conn.prepare("SELECT kind, dir FROM source ORDER BY id")?;
+	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Replace everything one ODIS source has contributed, and write these readings.
+///
+/// Replace rather than append: a second parse of the same project is a *reread*,
+/// not a second opinion, and appending would double every channel. Scoped to
+/// this source's own rows, so a VCDS parse of the same car is untouched —
+/// design §4.5's "an ODIS parse never deletes VCDS-derived rows or vice versa".
+///
+/// Returns how many channels landed.
+pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: &[vag_data::odis::Reading]) -> Result<usize, Error> {
+	let mut conn = Connection::open(db_path)?;
+	create_schema(&conn)?;
+	let tx = conn.transaction()?;
+	let source = source_id(&tx, ODIS, project_dir)?;
+	tx.execute(
+		"DELETE FROM reading_level WHERE reading_id IN \
+         (SELECT id FROM reading WHERE source_id = ?1 AND variant = ?2)",
+		params![source, variant],
+	)?;
+	tx.execute("DELETE FROM reading WHERE source_id = ?1 AND variant = ?2", params![source, variant])?;
+
+	let mut written = 0usize;
+	{
+		let mut insert = tx.prepare(
+			"INSERT INTO reading \
+                (source_id, variant, did, name, unit, bit_offset, bit_length, signed, text_id, \
+                 scaling, factor, offset, anchor_raw, anchor_value) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+		)?;
+		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
+		for r in readings {
+			let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
+				Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
+				Scaling::Enum { .. } => ("enum", None, None, None, None),
+				Scaling::Anchor { raw, value } => ("anchor", None, None, Some(*raw), Some(*value)),
+			};
+			insert.execute(params![
+				source,
+				variant,
+				r.did,
+				r.name,
+				r.unit,
+				r.bit_offset,
+				r.bit_length,
+				r.signed,
+				r.text_id,
+				kind,
+				factor,
+				offset,
+				anchor_raw,
+				anchor_value
+			])?;
+			let id = tx.last_insert_rowid();
+			if let Scaling::Enum { levels } = &r.scaling {
+				for (raw, meaning) in levels {
+					insert_level.execute(params![id, raw, meaning])?;
+				}
+			}
+			written += 1;
+		}
+	}
+	tx.commit()?;
+	Ok(written)
+}
+
+/// The channels this cache knows for one ECU variant, by identifier.
+pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::Reading>, Error> {
+	let conn = Connection::open(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT id, did, name, unit, bit_offset, bit_length, signed, text_id, \
+                scaling, factor, offset, anchor_raw, anchor_value \
+         FROM reading WHERE variant = ?1 ORDER BY did, bit_offset",
+	)?;
+	let rows: Vec<(
+		i64,
+		u16,
+		String,
+		Option<String>,
+		u32,
+		u32,
+		bool,
+		Option<String>,
+		String,
+		Option<f64>,
+		Option<f64>,
+		Option<i32>,
+		Option<f64>,
+	)> = stmt
+		.query_map(params![variant], |row| {
+			Ok((
+				row.get(0)?,
+				row.get(1)?,
+				row.get(2)?,
+				row.get(3)?,
+				row.get(4)?,
+				row.get(5)?,
+				row.get(6)?,
+				row.get(7)?,
+				row.get(8)?,
+				row.get(9)?,
+				row.get(10)?,
+				row.get(11)?,
+				row.get(12)?,
+			))
+		})?
+		.collect::<rusqlite::Result<_>>()?;
+
+	let mut levels = conn.prepare("SELECT raw, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid")?;
+	let mut out = Vec::with_capacity(rows.len());
+	for (id, did, name, unit, bit_offset, bit_length, signed, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
+		// A row whose scaling columns disagree with its kind is skipped rather
+		// than repaired: a channel reported with a scaling nobody wrote is worse
+		// than a channel not reported at all.
+		let scaling = match (kind.as_str(), factor, offset, anchor_raw, anchor_value) {
+			("linear", Some(factor), Some(offset), _, _) => Scaling::Linear(vag_data::LinearScale { factor, offset }),
+			("anchor", _, _, Some(raw), Some(value)) => Scaling::Anchor { raw, value },
+			("enum", ..) => Scaling::Enum {
+				levels: levels
+					.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?
+					.collect::<rusqlite::Result<_>>()?,
+			},
+			_ => continue,
+		};
+		out.push(vag_data::odis::Reading {
+			did,
+			name,
+			unit,
+			bit_offset,
+			bit_length,
+			signed,
+			scaling,
+			text_id,
+		});
+	}
+	Ok(out)
+}
+
+/// Every ECU variant this cache holds readings for, in name order.
+pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
+	let conn = Connection::open(db_path)?;
+	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM reading ORDER BY variant")?;
+	let rows = stmt.query_map([], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Load all label files back out of a SQLite DB into a `Vec<LabelFile>`
@@ -567,6 +855,149 @@ mod tests {
 		assert_eq!(cached_m.name, "Coolant");
 		assert_eq!(live_m.unit, cached_m.unit);
 		assert_eq!(live_m.range, cached_m.range);
+	}
+
+	/// One channel, in the shape `vag_data::odis` hands them over.
+	fn reading(did: u16, name: &str, scaling: Scaling) -> vag_data::odis::Reading {
+		vag_data::odis::Reading {
+			did,
+			name: name.to_string(),
+			unit: None,
+			bit_offset: 0,
+			bit_length: 16,
+			signed: false,
+			scaling,
+			text_id: Some("000116".to_string()),
+		}
+	}
+
+	#[test]
+	fn an_odis_channel_survives_the_cache_with_every_scaling_shape_intact() {
+		// The three shapes are not interchangeable: a gear selector forced into
+		// a linear scaling reports confident nonsense, and an anchor whose slope
+		// is unproven must not come back as a slope of one.
+		let ws = TempWorkspace::new("readings");
+		let rows = [
+			reading(
+				0x380A,
+				"Getriebe-Eingangsdrehzahl",
+				Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }),
+			),
+			reading(
+				0x2000,
+				"Ganganzeige",
+				Scaling::Enum {
+					levels: vec![(1, "R".to_string()), (2, "N".to_string())],
+				},
+			),
+			reading(0x2001, "Kalibrierpunkt", Scaling::Anchor { raw: 4096, value: 12.5 }),
+		];
+		assert_eq!(put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap(), 3);
+
+		let back = readings_of(&ws.db_path, "EV_ECM").unwrap();
+		assert_eq!(back.len(), 3);
+		// Ordered by identifier, so 0x2000 comes first whatever order they went in.
+		assert_eq!(back[0].did, 0x2000);
+		assert_eq!(
+			back[0].scaling,
+			Scaling::Enum {
+				levels: vec![(1, "R".to_string()), (2, "N".to_string())]
+			}
+		);
+		assert_eq!(back[1].scaling, Scaling::Anchor { raw: 4096, value: 12.5 });
+		// The design's §1 cross-check, round-tripped: DID 0x380A raw.
+		assert_eq!(back[2].did, 0x380A);
+		assert_eq!(back[2].scaling, Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }));
+		assert_eq!(back[2].text_id.as_deref(), Some("000116"), "the join to names.json survives");
+		assert_eq!(reading_variants(&ws.db_path).unwrap(), ["EV_ECM"]);
+	}
+
+	#[test]
+	fn rereading_one_project_replaces_its_channels_rather_than_doubling_them() {
+		let ws = TempWorkspace::new("reread");
+		let rows = [reading(0x380A, "a", Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }))];
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
+		// And one source row, not one per run.
+		assert_eq!(sources_of(&ws.db_path).unwrap(), [("odis".to_string(), "/x/SK37X".to_string())]);
+	}
+
+	#[test]
+	fn both_sources_live_in_one_cache_and_neither_erases_the_other() {
+		// Design §4.5: an ODIS parse never deletes VCDS-derived rows or the
+		// reverse. They are addressed differently — block/field against
+		// identifier — which is why D1 keeps them in two tables.
+		let ws = TempWorkspace::new("both");
+		write_fixture_labels(&ws);
+		build_db(&ws.labels_dir, &ws.db_path).unwrap();
+		let rows = [reading(0x380A, "a", Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }))];
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+
+		// The VCDS side is still queryable exactly as before.
+		let db = load_db(&ws.db_path).unwrap();
+		assert_eq!(db.measurement("022-906-032-C", 2, 2).unwrap().name, "Coolant");
+		// And so is the ODIS side.
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
+
+		let sources = sources_of(&ws.db_path).unwrap();
+		assert_eq!(sources.len(), 2, "{sources:?}");
+		assert!(sources.iter().any(|(kind, _)| kind == VCDS));
+		assert!(sources.iter().any(|(kind, _)| kind == ODIS));
+		// A VCDS row still answers "which label directory was this built from",
+		// which is what the freshness rule asks.
+		assert_eq!(source_of(&ws.db_path).as_deref(), Some(ws.labels_dir.to_string_lossy().as_ref()));
+
+		// Rebuilding the VCDS side leaves the ODIS channels where they are.
+		build_db(&ws.labels_dir, &ws.db_path).unwrap();
+		assert_eq!(
+			readings_of(&ws.db_path, "EV_ECM").unwrap().len(),
+			1,
+			"the rebuild took the ODIS rows with it"
+		);
+	}
+
+	#[test]
+	fn a_cache_from_before_the_schema_split_opens_and_migrates() {
+		// The shape every existing `~/.vagcan` holds: one `source` row under a
+		// `CHECK (id = 0)` SQLite cannot drop, and a `measurement` with no
+		// `source_id`. It has to open, not be rebuilt from an installation that
+		// may well have been deleted (D5).
+		let ws = TempWorkspace::new("oldcache");
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch(
+					"CREATE TABLE label_file (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit_address INTEGER, unit_name TEXT);\
+                     CREATE TABLE measurement (file_id INTEGER NOT NULL, block INTEGER NOT NULL, field INTEGER NOT NULL, \
+                        name TEXT NOT NULL, location TEXT NOT NULL, description TEXT NOT NULL, unit TEXT, range_min REAL, range_max REAL);\
+                     CREATE TABLE source (id INTEGER PRIMARY KEY CHECK (id = 0), dir TEXT NOT NULL);\
+                     INSERT INTO label_file (name) VALUES ('index.lbl');\
+                     INSERT INTO measurement VALUES (1, 1, 1, 'Engine Speed', '(G28)', '', 'RPM', NULL, NULL);\
+                     INSERT INTO source (id, dir) VALUES (0, '/old/Labels');",
+				)
+				.unwrap();
+		}
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			create_schema(&conn).unwrap();
+		}
+		// The one row it had is carried over as what it was: a VCDS parse was
+		// the only source that existed when it was written.
+		assert_eq!(sources_of(&ws.db_path).unwrap(), [("vcds".to_string(), "/old/Labels".to_string())]);
+		assert_eq!(source_of(&ws.db_path).as_deref(), Some("/old/Labels"));
+		// Nothing it already held was lost to the migration.
+		let files = load_files(&ws.db_path).unwrap();
+		assert_eq!(files.len(), 1);
+		assert_eq!(measurements_of(&files[0])[0].name, "Engine Speed");
+		// And ODIS channels can now go in beside them.
+		let rows = [reading(0x380A, "a", Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }))];
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &rows).unwrap();
+		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 2);
+		// Running it again is a no-op, because it runs on every open.
+		let conn = Connection::open(&ws.db_path).unwrap();
+		create_schema(&conn).unwrap();
+		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 2);
 	}
 
 	#[test]
