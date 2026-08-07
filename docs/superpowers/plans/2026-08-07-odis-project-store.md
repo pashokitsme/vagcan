@@ -154,8 +154,9 @@ them without the other being told.
 ```rust
 // crates/vag-data/src/odis/mod.rs  — owner A, consumed by C
 
-/// An extracted ODIS-Service runtime project: a directory of `<pool>.sd.db` /
-/// `<pool>.sd.key` pairs plus `AStringData.data.gz` / `UStringData.data.gz`.
+/// An extracted ODIS-Service runtime project: a directory of
+/// `0.0.0@<name>.<kind>.db` / `.key` pairs — six kinds, not just `.sd` — plus
+/// `AStringData.data.gz` / `UStringData.data.gz` (or their unpacked forms).
 pub struct Project { /* private */ }
 
 /// Everything that can go wrong reading one. Hand-rolled like `vag_db::Error`
@@ -173,8 +174,8 @@ pub enum Error { Io(std::io::Error), Format(String), Missing(String), Refused(&'
 /// One ECU variant an ODIS project describes.
 pub struct Variant {
   pub name: String,          // the ObjectID, e.g. "EV_ECM18TFS02..."
-  pub pool: String,          // which `.sd.db` it came from
-  pub base_variant: Option<String>,
+  pub pool: String,          // which pool it came from (a `.bv`, in practice)
+  pub base_variant: Option<String>,   // None when this *is* a base variant
 }
 
 /// One readable channel of one variant, in this project's terms.
@@ -186,14 +187,26 @@ pub struct Reading {
   pub bit_length: u32,
   pub signed: bool,
   pub scaling: vag_data::Scaling,   // via compu.rs — Linear / Enum / Anchor
+  // Added by owner A in Task 8: the text id of `name`, which is the join to
+  // TTTEXT (`research/labels/odis-crib.md` §3) and therefore what makes an
+  // ODIS-derived name mergeable into `names.json` rather than only printable.
+  pub text_id: Option<String>,
 }
 
 impl Project {
   /// Open a project directory. Reads only the string pools eagerly; pools are
   /// opened lazily, because a project is ~470 files and ~1.1M strings.
   pub fn open(dir: &std::path::Path) -> Result<Project, Error>;
-  /// The directory's own name — the identifier VW's tooling uses (spec §4.1).
+  /// The project's own name — the identifier VW's tooling uses (spec §4.1).
+  /// Taken from `index.xml`'s `<SHORT-NAME>`, falling back to the directory
+  /// name: a folder gets renamed by an unzip (`SK37X (1)`) and the file does not.
   pub fn id(&self) -> &str;
+  /// Added by owner A in Task 8, for `sources.json` (spec §4.4): the converter's
+  /// project version from `DatabaseVersionInfo.txt`. `None` if the file is absent.
+  pub fn version(&self) -> Option<&str>;
+  /// Added by owner A in Task 8: every PoolID this project holds, sorted.
+  /// Not needed by C's assembly; it exists so a failure can name a pool.
+  pub fn pools(&self) -> &[String];
   /// Every ECU variant, across every pool.
   pub fn variants(&self) -> Result<Vec<Variant>, Error>;
   /// The readable channels of one variant.
