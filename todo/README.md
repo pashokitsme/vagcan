@@ -656,6 +656,15 @@ Two things this must not disturb:
   Ross-Tech's. Same position: the user brings their own copy, it lives under
   `~/.vagcan/`, the checkout ships none of it.
 
+**It is also a crib.** Tested the same day against both ciphers in the label files
+(`research/labels/odis-crib.md`): useless against the `.rod` container — the bytes a known
+plaintext would have to predict are already-compressed ones — but the strongest lever yet
+found against the `TTTEXT` substitution. A signature lookup against the ODIS strings as a
+*closed* candidate list read **18,842 new names** at a measured precision of 86.6 %, more
+than doubling the 14,738 the catalog holds, and resolved the 14-glyph numeric class that
+`tttext-codec.md` §6 records as unbroken in 77.1 % of them. It also corrects names already
+shipped (`Overgeneral AT` was `Continental AG`). Next steps are §7 of that file.
+
 The user-facing cost is the real cost: `setup` currently means "point at a VCDS
 installation". Admitting a second, differently-shaped source changes what `setup` asks
 for, what the catalogs hold, what `info`/`sensors` prefer when both are present, and what
