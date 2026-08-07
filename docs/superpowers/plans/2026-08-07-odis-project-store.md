@@ -360,28 +360,63 @@ commit staged by explicit path.
 
 ### Increment 1 — the assembly (owner C, after A and B)
 
-- [ ] **Task 11 — the project store.** `crates/vagcan/src/project.rs` + `datadir.rs`:
+- [x] **Task 11 — the project store.** `crates/vagcan/src/project.rs` + `datadir.rs`:
       the paths above, `sources.json` (spec §4.4), the D6 selection order. Tests
       mirror `datadir.rs`'s existing ones: nothing lands in the checkout, everything
       lands under `~/.vagcan`, a project id off a filesystem is refused as a directory
       name the way a VIN already is.
-- [ ] **Task 12 — the schema.** `crates/vag-db/src/lib.rs`: D1 — `source` gains `kind`
+- [x] **Task 12 — the schema.** `crates/vag-db/src/lib.rs`: D1 — `source` gains `kind`
       and multiple rows, `measurement` gains `source_id`, the new `reading` table, and
       a migration for an existing single-row `source`. Tests: an old cache opens and
       migrates; a DID lookup returns the ODIS row; both sources coexist in one file.
-- [ ] **Task 13 — migration.** Spec §6: `data/{extracted,measured}` → the first named
+- [x] **Task 13 — migration.** Spec §6: `data/{extracted,measured}` → the first named
       project, `.rod` + the fault text to the shared pool, `measured/` →
       `projects/<id>/measurement/`. One-time, one-directional, prompted. Tests build a
       fake old layout in a `tempfile` directory and assert every file arrives, that
       **nothing is deleted that was not copied first**, and that a second run is a
       no-op. D5's rule — a cache whose source directory is gone is trusted, not stale —
       is tested here.
-- [ ] **Task 14 — wiring.** `setup/mod.rs` + `main.rs`: the picker replaces the
+- [x] **Task 14 — wiring.** `setup/mod.rs` + `main.rs`: the picker replaces the
       argument-or-download flow, the VCDS branch writes into the project store, the
       ODIS branch runs `odis::Project` into `cache.sqlite` + `names.json`, `--project`
       lands on the CLI, and every existing reader of `extracted_dir()` (`faults.rs`,
       `faultnames.rs`, `labels.rs`, `main.rs:865`) moves to the project store.
       `setup <PATH>` with a path still works and skips the menu.
+
+### Blocking — found by owner C's acceptance run against `~/Downloads/SK37X`
+
+Tasks 11–14 are done and the store, the migration and both `setup` branches work
+on the real project. **The ODIS branch cannot yet produce a single reading**,
+because `Project::variants()` returns nothing on the real project. Two separate
+causes, both owner A's, both found only by running the Rust against the project
+for the first time:
+
+- [ ] **Task 14a — `DB_PROJECT_DATA` in a base-variant pool hits the refusal
+      list.** All 54 `.bv` pools — the only pools that carry ECU variants —
+      raise `Error::Refused("MCD_ACCESS_KEY")` from
+      `loaders::identity::project_data`. This is exactly the case `Refused` was
+      added for, and it is the one place it is not handled: `Project::variants`
+      propagates with `?`, so one refused type inside one object costs the whole
+      project every variant it has. Skipping the object is not enough either —
+      the variant list *is* that object. The access key has to be stepped over
+      inside `project_data`, the way `scan_for_layer_data` already steps around
+      one for layer data.
+- [ ] **Task 14b — `DB_PROJECT_DATA` is 17 bytes short.** All 166 `.sd` pools'
+      project-data objects are 61 bytes; the loader consumes 44 (2-byte type +
+      42 fields) and `Stream::end` then refuses the remaining 17 before the
+      `23 3E 00` terminator. The parsed content is right as far as it goes —
+      these pools genuinely carry no base variant and no ECU variants — so this
+      is a missing tail in the field list, not a misread. `Project::variants`
+      aborts the whole loop on it for the same reason as 14a.
+
+Neither is worked around in owner C's code: `setup`'s ODIS branch reports the
+error and writes nothing, which is the honest outcome until the parser lands.
+
+**Not yet verified, and it is the claim the spec rests on:** DID `0x380A` coming
+back `IDENTICAL` on the real engine. There is no path to a `Reading` while
+`variants()` returns nothing, so `research/labels/rod-labels.md:433` remains
+cross-checked only against owner A's synthetic fixture. It is the first thing to
+re-run once 14a lands.
 
 ### Increment 2 — the rest of the scope (owner A, then C)
 
