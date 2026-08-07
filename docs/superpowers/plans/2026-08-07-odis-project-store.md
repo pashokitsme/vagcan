@@ -64,9 +64,10 @@ identification (spec §2 rows 1 and 2) — that is what `watch`/`scan`/`survey`/
 need and what everything else is gated behind. Increment 2 is faults and topology
 (rows 3 and 4). Both are in this plan; increment 2 is Tasks 11–12.
 
-**D3 — S42 `project_id` lookup (spec §4.1).** Not built. An ODIS source uses its own
-folder name verbatim; a VCDS-only source asks the user for a free string, defaulting to
-`default`. The S42 document stays unparsed, and no code pretends otherwise.
+**D3 — S42 `project_id` lookup (spec §4.1).** Not built. An ODIS source names itself
+(D7); a VCDS-only source asks the user for a free string, defaulting to the one project
+already on disk, or to `default` where there is none. The S42 document stays unparsed,
+and no code pretends otherwise.
 
 **D4 — Codes.dat and the shared pool.** The spec's §4 tree lists only `.rod` files
 under `~/.vagcan/rod/`, but `faults`/`faultnames` read the fault text file (`Codes.dat`
@@ -87,6 +88,28 @@ would try to rebuild from nothing.
 `VAGCAN_PROJECT` environment variable override it, in that order. Exactly one project
 on disk is selected automatically without config. No project at all is the existing
 "run `vagcan setup` first" error, reworded.
+
+**D7 — an ODIS project names itself, and the name is read twice.** Established against
+the real project during increment 1, and not in the spec: `index.xml` opens with
+`<CATALOG …><SHORT-NAME>SK37X</SHORT-NAME>`, which beats the directory name because an
+unzip produces `SK37X (1)` and `<SHORT-NAME>` survives it. `Project::id()` prefers it
+and falls back to the directory name.
+
+The ordering that follows is **C's to enforce, and nothing in the type system forces
+it**: `setup::source::project_id` runs *before* `odis::Project::open`, so it can only
+see the folder, and it answers with the folder name made into a legal directory name
+(`SK 37X (copy)` → `SK-37X-copy`). If C creates `~/.vagcan/projects/<that>/` and only
+then opens the project, one car's data lands in a store called `SK-37X-copy` while the
+project inside it calls itself `SK37X` — one car in two places, which is the exact
+failure `datadir.rs`'s `existing_folder` was written to undo for cars. **Open the
+project first, compare `Project::id()` against the picker's answer, and prefer
+`Project::id()` before any directory is created.**
+
+Related, and also C's: the version for `sources.json` (spec §4.4) comes from
+`DatabaseVersionInfo.txt` — `VWMCD_ProjectVersionInfo="2610.2.688"`, plus
+`VWMCD_OdxVersionInfo` and `VWMCD_ConverterVersionInfo`, all plain `KEY="value"` lines.
+It is read once after the parse, where the value is already in hand, and deliberately
+not threaded through the picker.
 
 ---
 
