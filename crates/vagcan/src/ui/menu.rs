@@ -230,8 +230,10 @@ fn erase(out: &mut impl std::io::Write, drawn: usize) -> Result<()> {
 ///
 /// Pure, and given its own width rather than asking the terminal for one: what
 /// this draws is most of what this module is, and none of it should need a
-/// terminal to test.
-fn screen(question: &str, items: &[Item<'_>], at: usize, width: u16) -> Vec<String> {
+/// terminal to test. `pub(crate)` so that a caller can measure its own copy
+/// against a terminal width instead of guessing at this function's arithmetic —
+/// a detail line one column too long is cut to `…` and nobody finds out.
+pub(crate) fn screen(question: &str, items: &[Item<'_>], at: usize, width: u16) -> Vec<String> {
 	let width = (width as usize).max(20);
 	let mut lines = vec![clip(&format!("? {question}"), width)];
 	// The details line up under each other, or three sentences at three

@@ -131,6 +131,32 @@ impl Look {
 	}
 }
 
+/// What the menu asks.
+const QUESTION: &str = "What should vagcan learn this car from?";
+
+/// The three sources, in the order somebody standing at a car has them.
+///
+/// Split out from [`choose`] so the copy can be measured: a detail line one
+/// column too long is silently cut to `…` by the renderer, and the first
+/// version of the ODIS line lost the words that said why anyone would pick it.
+/// Eighty columns is the terminal to write for — see the test.
+fn options<'a>() -> [Item<'a>; 3] {
+	[
+		Item {
+			label: "VCDS installation",
+			detail: "the folder holding Labels/ and UDS_EV/ — the usual answer",
+		},
+		Item {
+			label: "ODIS project",
+			detail: "VW's dealer-tool data — a folder like SK37X, with scalings",
+		},
+		Item {
+			label: "Download VCDS",
+			detail: "fetch Ross-Tech's installer, about 90 MB, and read that",
+		},
+	]
+}
+
 /// Run the picker.
 ///
 /// `preselected` is the path `setup` was given on the command line. It skips
@@ -147,21 +173,7 @@ pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<S
 	if let Some(given) = preselected {
 		return Ok(Some(given_path(given)?));
 	}
-	let items = [
-		Item {
-			label: "VCDS installation",
-			detail: "the folder holding Labels/ and UDS_EV/ — the usual answer",
-		},
-		Item {
-			label: "ODIS project",
-			detail: "VW's own dealer-tool data, a folder like SK37X — it carries scalings too",
-		},
-		Item {
-			label: "Download VCDS",
-			detail: "fetch Ross-Tech's installer, about 90 MB, and read that",
-		},
-	];
-	let Some(row) = io.ask("What should vagcan learn this car from?", &items, 0)? else {
+	let Some(row) = io.ask(QUESTION, &options(), 0)? else {
 		return Ok(None);
 	};
 	match row {
@@ -630,6 +642,18 @@ mod tests {
 		assert!(menu.contains("Labels/"), "the VCDS line says how to recognise one: {menu}");
 		assert!(menu.contains("SK37X"), "the ODIS line shows what one is called: {menu}");
 		assert!(menu.contains("90 MB"), "the download says what it costs: {menu}");
+	}
+
+	#[test]
+	fn every_option_fits_the_terminal_somebody_actually_has() {
+		// Found on a real pty, not in a test: at 80 columns the ODIS line came
+		// out as "…it carrie…", losing the words that say why anyone would pick
+		// it. The renderer cuts rather than wraps — it must, or the redraw walks
+		// the menu up the screen — so a line too long simply disappears, and
+		// nothing says so. 80 is the width to write for.
+		let drawn = crate::ui::menu::screen(QUESTION, &options(), 0, 80);
+		let cut: Vec<&String> = drawn.iter().filter(|line| line.contains('…')).collect();
+		assert!(cut.is_empty(), "cut off at 80 columns: {cut:?}");
 	}
 
 	#[test]
