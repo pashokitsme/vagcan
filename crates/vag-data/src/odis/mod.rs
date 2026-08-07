@@ -15,6 +15,7 @@
 //! See `SAFETY.md` and the design's §2.
 
 pub mod hash;
+pub mod keyfile;
 pub mod strings;
 
 /// Everything that can go wrong reading a project.
