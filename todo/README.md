@@ -614,6 +614,61 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live.
 
+## Next up (added 2026-08-07)
+
+### 1. Read ODIS data alongside VCDS
+
+A VW ODIS-Service runtime project (`SK37X`, VW-MCD Converter 26.1.0, ODX 2.0.1) was
+examined on 2026-08-07 and it is **not encrypted**: every `.sd.db` is a store of
+concatenated zlib members (`BL_LIBECM.sd.db` — 2,450 members, 386,843 B inflated), and
+the two string pools sit beside it in the clear —
+
+| file | contents | size inflated |
+|---|---|---|
+| `AStringData.data.gz` | 1,155,437 short names, `u32` length + ASCII | 73 MB |
+| `UStringData.data.gz` | 153,704 texts, `u32` char count + UTF-16LE | 15 MB |
+
+Both parse to the last byte in one pass. The pool carries 8,368 `IDE…` measurement
+identifiers, 255,351 `DOP…` (the objects that hold a scaling), 652 `Unit_…` and 651
+`EV_…` ECU variants. The scaling coefficients themselves are IEEE-754 doubles inside
+`.sd.db`, unobscured — a scan of `BL_LIBECM.sd` turns up `1.0`, `100.0`, `0.01`,
+`0.001` and `3.0517578125e-05` (2⁻¹⁵).
+
+The reference car is covered: `EV_BCMMQB`, `EV_Brake1UDSContiMK100ESP`,
+`EV_DashBoardVDDMQBAB`, `EV_GatewNF`, `EV_SteerAssisMQB`, `EV_TCMDQ200021`,
+`EV_SMLSVALEOMQBLRH` and `EV_ECM18TFS0208V0906264H_001` all appear in the pool.
+
+What this would give is the thing a drive currently pays for — measurement scalings
+straight from the manufacturer — and names with no cipher between us and them.
+
+The work is **not decryption**; it is reverse-engineering the `.sd.db` record layout
+(binary, TLV-shaped, strings referenced by index into the pool). One file solved to the
+level of *identifier → data object → compu coefficients → unit* generalises to the
+other 165 by the same code. If the source `SK37X.pdx` can be obtained instead, it is
+ODX XML in a zip and no RE is needed at all.
+
+Two things this must not disturb:
+
+- **The UDS allowlist stays `0x22`, `0x19`, `0x10`, `0x3E`.** ODIS data describes
+  adaptation, coding and routines. Parsing that data is fine; letting any of it reach an
+  executable path is the one thing `CLAUDE.md` forbids outright.
+- **Nothing goes in the repo.** ODIS data is VW's, exactly as the label files are
+  Ross-Tech's. Same position: the user brings their own copy, it lives under
+  `~/.vagcan/`, the checkout ships none of it.
+
+The user-facing cost is the real cost: `setup` currently means "point at a VCDS
+installation". Admitting a second, differently-shaped source changes what `setup` asks
+for, what the catalogs hold, what `info`/`sensors` prefer when both are present, and what
+every "no data" message says. That is a UX rework, not a parser.
+
+### 2. VNCI adapter support
+
+A VNCI cable is now on hand (2026-08-07). Today the only live transport is the generic
+slcan USB-CAN adapter (`vag-can`); the seam every backend implements is
+`vag-transport`, so this is a new backend behind that trait rather than a change to the
+protocol crates. Listen-only mode and the moving-car guard have to hold on it exactly
+as they do on slcan — read `SAFETY.md` before the first connection.
+
 ## Parked (designed, not being implemented now)
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan under
   `docs/superpowers/{specs,plans}/2026-07-06-cross-platform-*`. Below-the-seam refactor.
