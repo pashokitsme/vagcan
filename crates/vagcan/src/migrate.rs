@@ -1,0 +1,456 @@
+//! Moving `~/.vagcan/data/` into the project store, once.
+//!
+//! Before projects existed there was one `data/extracted/` and one
+//! `data/measured/`, because there was one source and it described one car.
+//! Spec §6 turns that into the first project: the `.rod` files and the fault
+//! text join the shared pool at `~/.vagcan/rod/`, everything else lands under
+//! `~/.vagcan/projects/<id>/`.
+//!
+//! **`measured/` is why this module is careful.** Those rows were proven by
+//! driving a car — the label files provably cannot supply them
+//! (`research/labels/rod-labels.md` §4.0c) — and nothing but another drive can
+//! recreate one. So every file is **copied, verified, and only then removed**,
+//! in that order and per file: a run interrupted half way leaves both copies,
+//! which is untidy, and never leaves neither, which would be unrecoverable.
+//! A second run is a no-op because the first left nothing behind to move.
+//!
+//! **`Labels/` is copied nowhere and deleted by nobody.** D4 drops the
+//! `.lbl`/`.clb` files from what this tool keeps — `cache.sqlite` is their
+//! surviving representation — but "no longer read" is not "safe to delete on
+//! somebody's behalf", and a hundred megabytes of a person's files is not this
+//! command's to throw away. It stays where it is, and the report says it can go.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+/// Below this, a copy is verified by reading both files back and comparing every
+/// byte; above it, by length alone.
+///
+/// The split is honest about what it buys. `measured/` files are a few kilobytes
+/// each and are the ones that cannot be recreated, so they get the real check. A
+/// forty-megabyte `.rod` gets the cheap one, because reading 122 MB twice to
+/// re-derive what `fs::copy` already reported would cost a minute to re-prove
+/// something a failed copy would have raised as an error.
+const FULL_COMPARE: u64 = 4 << 20;
+
+/// The old layout, still on disk.
+#[derive(Debug, Clone)]
+pub struct Old {
+	pub extracted: PathBuf,
+	pub measured: PathBuf,
+}
+
+/// What one migration did, for the run's closing report.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Report {
+	/// Raw VCDS files that went into the shared pool.
+	pub pooled: usize,
+	/// Proven-on-car files that went into the project.
+	pub measured: usize,
+	/// Derived files — the cache, the names, the keys.
+	pub derived: usize,
+	/// Files left where they were because the destination already held
+	/// something of that name with different content. Nothing is overwritten
+	/// and nothing is removed.
+	pub conflicted: Vec<PathBuf>,
+	/// `Labels/`, if it is still there: read by nothing now, deleted by nobody.
+	pub left_behind: Option<PathBuf>,
+}
+
+impl Report {
+	/// Whether anything at all moved.
+	pub fn moved(&self) -> usize {
+		self.pooled + self.measured + self.derived
+	}
+}
+
+/// The old layout, if there is still anything in it worth moving.
+pub fn pending() -> Result<Option<Old>> {
+	Ok(pending_in(&crate::datadir::vagcan_dir()?))
+}
+
+/// The rule behind [`pending`], with `~/.vagcan` passed in so it can be tested
+/// without touching the owner's own.
+fn pending_in(vagcan: &Path) -> Option<Old> {
+	let old = Old {
+		extracted: vagcan.join("data").join("extracted"),
+		measured: vagcan.join("data").join("measured"),
+	};
+	// Asked as "is there anything left to move", not "does `data/` exist": a
+	// finished migration leaves `Labels/` behind, and a `data/` that holds only
+	// that must not offer to run again.
+	(!plan(&old).is_empty()).then_some(old)
+}
+
+/// Where one file is going, and which counter it lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+	/// The shared `~/.vagcan/rod/` pool: a property of a VCDS build.
+	Pooled,
+	/// `projects/<id>/measurement/`: proven on a car, irreplaceable.
+	Measured,
+	/// `projects/<id>/`: the cache, the names, the keys.
+	Derived,
+}
+
+/// Every file the migration would move, and what it is.
+///
+/// Built before anything is written, the way `setup`'s copy plan is, so the
+/// question "is there anything left to do" has one answer used by both
+/// [`pending_in`] and [`run_into`] rather than two that can disagree.
+fn plan(old: &Old) -> Vec<(PathBuf, Kind, PathBuf)> {
+	let mut plan = Vec::new();
+
+	// The derived three, by name, straight into the project.
+	for name in ["cache.sqlite", "names.json", "rod-keys.json"] {
+		let src = old.extracted.join(name);
+		if src.is_file() {
+			plan.push((src, Kind::Derived, PathBuf::from(name)));
+		}
+	}
+
+	// Every `.rod` and this build's fault text, wherever under `extracted/`
+	// they sit, flattened into the shared pool. Flattened because that is what
+	// the pool is: `dtc::find_named` and `find_rod_by_odx_name` search by name
+	// and never by path, so the directory a file sat in was never load-bearing.
+	let mut raw = Vec::new();
+	walk(&old.extracted, &mut raw);
+	for src in raw {
+		let Some(name) = src.file_name().and_then(|n| n.to_str()) else {
+			continue;
+		};
+		let rod = name.to_ascii_lowercase().ends_with(".rod");
+		let codes = crate::setup::CODES_FILES.iter().any(|known| name.eq_ignore_ascii_case(known));
+		if rod || codes {
+			plan.push((src.clone(), Kind::Pooled, PathBuf::from(name)));
+		}
+	}
+
+	// The proven rows, keeping their layout — `vag_protocol::address` reads one
+	// of them by a relative path it owns, so flattening here would break it.
+	let mut proven = Vec::new();
+	walk(&old.measured, &mut proven);
+	for src in proven {
+		let Ok(rel) = src.strip_prefix(&old.measured) else { continue };
+		plan.push((src.clone(), Kind::Measured, rel.to_path_buf()));
+	}
+
+	plan
+}
+
+/// Every file under `dir`, recursively. A directory that is not there is not an
+/// error — it is a machine that never had one.
+fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+	let Ok(entries) = std::fs::read_dir(dir) else { return };
+	for entry in entries.flatten() {
+		let path = entry.path();
+		match path.is_dir() {
+			true => walk(&path, into),
+			false => into.push(path),
+		}
+	}
+}
+
+/// Move the old layout into `project`, copying before removing anything.
+pub fn run(old: &Old, project: &crate::project::Project) -> Result<Report> {
+	run_into(old, &project.dir, &crate::project::rod_pool()?)
+}
+
+/// The rule behind [`run`], with both destinations passed in so the whole move
+/// can be exercised in a temporary directory.
+fn run_into(old: &Old, project_dir: &Path, rod_pool: &Path) -> Result<Report> {
+	let mut report = Report::default();
+	for (src, kind, rel) in plan(old) {
+		let dst = match kind {
+			Kind::Pooled => rod_pool.join(&rel),
+			Kind::Measured => project_dir.join("measurement").join(&rel),
+			Kind::Derived => project_dir.join(&rel),
+		};
+		match carry(&src, &dst)? {
+			true => match kind {
+				Kind::Pooled => report.pooled += 1,
+				Kind::Measured => report.measured += 1,
+				Kind::Derived => report.derived += 1,
+			},
+			false => report.conflicted.push(src),
+		}
+	}
+
+	// Whatever is now empty, tidied away. Only ever empty directories: a
+	// `remove_dir` that finds anything in it fails, which is the check.
+	prune(&old.measured);
+	prune(&old.extracted);
+
+	let labels = old.extracted.join("Labels");
+	if labels.is_dir() {
+		report.left_behind = Some(labels);
+	} else {
+		prune(old.extracted.parent().unwrap_or(&old.extracted));
+	}
+	Ok(report)
+}
+
+/// Copy one file, verify it arrived, then remove the original.
+///
+/// Returns `false` when the destination already holds something else of that
+/// name — the shared pool is shared, and two VCDS builds can ship a same-named
+/// `.rod` with different bytes. Nothing is overwritten and nothing is removed in
+/// that case; the caller reports it and the file stays where it is.
+fn carry(src: &Path, dst: &Path) -> Result<bool> {
+	if dst.exists() {
+		// Already there from an earlier partial run, or from the other build.
+		// The same file is not a conflict, it is a job already done.
+		return match same(src, dst)? {
+			true => {
+				std::fs::remove_file(src).with_context(|| format!("removing {}", src.display()))?;
+				Ok(true)
+			}
+			false => Ok(false),
+		};
+	}
+	if let Some(parent) = dst.parent() {
+		std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+	}
+	std::fs::copy(src, dst).with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
+	// Verified before the original goes, never after, and never on the strength
+	// of `fs::copy` returning `Ok` alone: these are files a drive proved, and
+	// the cost of checking is nothing beside the cost of being wrong.
+	anyhow::ensure!(
+		same(src, dst)?,
+		"{} did not arrive intact at {} — the original is untouched",
+		src.display(),
+		dst.display()
+	);
+	std::fs::remove_file(src).with_context(|| format!("removing {}", src.display()))?;
+	Ok(true)
+}
+
+/// Whether two files hold the same thing.
+///
+/// Every byte for anything small enough to read twice cheaply — which is every
+/// file that cannot be recreated — and the length alone for the rest. See
+/// [`FULL_COMPARE`].
+fn same(a: &Path, b: &Path) -> Result<bool> {
+	let (ma, mb) = (
+		std::fs::metadata(a).with_context(|| format!("reading {}", a.display()))?,
+		std::fs::metadata(b).with_context(|| format!("reading {}", b.display()))?,
+	);
+	if ma.len() != mb.len() {
+		return Ok(false);
+	}
+	if ma.len() > FULL_COMPARE {
+		return Ok(true);
+	}
+	Ok(std::fs::read(a)? == std::fs::read(b)?)
+}
+
+/// Remove a directory if it is empty, and its now-empty parents up to `data/`.
+///
+/// `remove_dir` rather than `remove_dir_all` throughout: it fails on a directory
+/// that still holds something, which is exactly the guard wanted here.
+fn prune(dir: &Path) {
+	let mut at = dir.to_path_buf();
+	for _ in 0..3 {
+		if std::fs::remove_dir(&at).is_err() {
+			return;
+		}
+		let Some(parent) = at.parent() else { return };
+		at = parent.to_path_buf();
+	}
+}
+
+/// What to tell somebody whose data has just moved.
+pub fn describe(report: &Report, project: &crate::project::Project) -> String {
+	use std::fmt::Write as _;
+	let mut out = format!(
+		"Moved the data from before projects existed into `{}`:\n  \
+         {} raw VCDS files into the shared pool\n  \
+         {} proven-on-car files into {}\n  \
+         {} derived files into {}\n",
+		project.id,
+		report.pooled,
+		report.measured,
+		project.measurement_dir().display(),
+		report.derived,
+		project.dir.display()
+	);
+	for path in &report.conflicted {
+		let _ = writeln!(
+			out,
+			"  left where it was, something else of that name is already in the pool: {}",
+			path.display()
+		);
+	}
+	if let Some(labels) = &report.left_behind {
+		let _ = writeln!(
+			out,
+			"  {} is left where it is. Nothing reads it now — the label cache is what\n  \
+             survives of it — so it can be deleted, but that is yours to do, not this\n  \
+             command's.",
+			labels.display()
+		);
+	}
+	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// A `~/.vagcan` as an earlier build left it. **Every byte here is
+	/// synthetic** — no test reads a real installation, a real ODIS project, or
+	/// the owner's own `~/.vagcan`.
+	fn old_layout(vagcan: &Path) -> Old {
+		let extracted = vagcan.join("data").join("extracted");
+		let measured = vagcan.join("data").join("measured");
+		for (rel, bytes) in [
+			("cache.sqlite", b"a label cache".as_slice()),
+			("names.json", b"{}"),
+			("rod-keys.json", b"{}"),
+			("Codes.dat", b"fault text"),
+			("UDS_EV/RD.rod", b"the registry"),
+			("UDS_EV/EV_ECM.rod", b"one unit's own file"),
+			("Labels/part.lbl", b"001,1,Engine Speed,,"),
+		] {
+			let path = extracted.join(rel);
+			std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+			std::fs::write(path, bytes).unwrap();
+		}
+		for (rel, bytes) in [("04E-906-027-AH.json", b"{\"rows\":[]}".as_slice()), ("unit-numbers.json", b"{}")] {
+			std::fs::create_dir_all(&measured).unwrap();
+			std::fs::write(measured.join(rel), bytes).unwrap();
+		}
+		Old { extracted, measured }
+	}
+
+	fn project(root: &Path) -> crate::project::Project {
+		let dir = root.join("projects").join("SK37X");
+		std::fs::create_dir_all(&dir).unwrap();
+		crate::project::Project { id: "SK37X".into(), dir }
+	}
+
+	#[test]
+	fn every_file_arrives_where_the_new_layout_expects_it() {
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let pool = here.path().join("rod");
+
+		let report = run_into(&old, &p.dir, &pool).unwrap();
+		assert_eq!((report.pooled, report.measured, report.derived), (3, 2, 3), "{report:?}");
+
+		// The raw files, flat: nothing searches them by path.
+		for name in ["RD.rod", "EV_ECM.rod", "Codes.dat"] {
+			assert!(pool.join(name).is_file(), "{name} is not in the pool");
+		}
+		for name in ["cache.sqlite", "names.json", "rod-keys.json"] {
+			assert!(p.dir.join(name).is_file(), "{name} is not in the project");
+		}
+		// The proven rows keep their layout — `vag_protocol::address` reads one
+		// of them by a relative path it owns.
+		assert!(p.measurement_dir().join("04E-906-027-AH.json").is_file());
+		assert!(p.measurement_dir().join("unit-numbers.json").is_file());
+		assert_eq!(std::fs::read(p.dir.join("cache.sqlite")).unwrap(), b"a label cache");
+	}
+
+	#[test]
+	fn nothing_is_deleted_that_was_not_copied_first() {
+		// The rule this module exists for. `measured/` holds rows proven by
+		// driving a car and nothing but another drive can recreate one.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let pool = here.path().join("rod");
+
+		let before: Vec<Vec<u8>> = ["04E-906-027-AH.json", "unit-numbers.json"]
+			.iter()
+			.map(|n| std::fs::read(old.measured.join(n)).unwrap())
+			.collect();
+		run_into(&old, &p.dir, &pool).unwrap();
+		let after: Vec<Vec<u8>> = ["04E-906-027-AH.json", "unit-numbers.json"]
+			.iter()
+			.map(|n| std::fs::read(p.measurement_dir().join(n)).unwrap())
+			.collect();
+		assert_eq!(before, after, "a proven row changed on the way across");
+		assert!(!old.measured.exists(), "the old directory is gone once it is empty");
+	}
+
+	#[test]
+	fn a_second_run_is_a_no_op_rather_than_a_second_move() {
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let pool = here.path().join("rod");
+
+		let first = run_into(&old, &p.dir, &pool).unwrap();
+		assert!(first.moved() > 0);
+		let second = run_into(&old, &p.dir, &pool).unwrap();
+		assert_eq!(second.moved(), 0, "{second:?}");
+		// And nothing offers to run it a third time.
+		assert!(pending_in(here.path()).is_none());
+	}
+
+	#[test]
+	fn labels_is_left_where_it_is_rather_than_deleted_on_somebody_s_behalf() {
+		// D4 drops the .lbl/.clb from what this tool keeps, and "no longer read"
+		// is not "safe to throw away" — a hundred megabytes of a person's files
+		// is not this command's to delete.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let report = run_into(&old, &p.dir, &here.path().join("rod")).unwrap();
+		assert_eq!(report.left_behind.as_deref(), Some(old.extracted.join("Labels").as_path()));
+		assert!(old.extracted.join("Labels/part.lbl").is_file(), "it deleted the label files");
+		let said = describe(&report, &p);
+		assert!(said.contains("Labels"), "{said}");
+		assert!(said.contains("yours to do"), "{said}");
+	}
+
+	#[test]
+	fn a_pool_that_already_holds_another_builds_file_of_that_name_keeps_both() {
+		// The pool is shared, and two VCDS builds ship a same-named `.rod` with
+		// different bytes. Overwriting would put one build's file under the
+		// other's key recovery; removing the source would lose it outright.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let pool = here.path().join("rod");
+		std::fs::create_dir_all(&pool).unwrap();
+		std::fs::write(pool.join("RD.rod"), b"another build's registry").unwrap();
+
+		let report = run_into(&old, &p.dir, &pool).unwrap();
+		assert_eq!(report.conflicted, [old.extracted.join("UDS_EV/RD.rod")], "{report:?}");
+		assert_eq!(
+			std::fs::read(pool.join("RD.rod")).unwrap(),
+			b"another build's registry",
+			"it overwrote the pool"
+		);
+		assert!(old.extracted.join("UDS_EV/RD.rod").is_file(), "it removed the source it could not carry");
+	}
+
+	#[test]
+	fn a_file_already_carried_by_an_interrupted_run_is_finished_rather_than_refused() {
+		// A run cut off between the copy and the remove leaves both copies. The
+		// next run has to recognise its own work.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		let pool = here.path().join("rod");
+		std::fs::create_dir_all(&pool).unwrap();
+		std::fs::copy(old.extracted.join("UDS_EV/RD.rod"), pool.join("RD.rod")).unwrap();
+
+		let report = run_into(&old, &p.dir, &pool).unwrap();
+		assert!(report.conflicted.is_empty(), "{report:?}");
+		assert_eq!(report.pooled, 3);
+	}
+
+	#[test]
+	fn a_machine_that_never_had_the_old_layout_has_nothing_to_migrate() {
+		let here = tempfile::tempdir().unwrap();
+		assert!(pending_in(here.path()).is_none());
+		// And one that has it does.
+		old_layout(here.path());
+		assert!(pending_in(here.path()).is_some());
+	}
+}

@@ -18,6 +18,7 @@ mod faultnames;
 mod faults;
 mod labels;
 mod measure;
+mod migrate;
 mod missing;
 mod names;
 mod progress;

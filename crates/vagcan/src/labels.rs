@@ -120,6 +120,39 @@ fn cache_is_current(cache: &Path, dir: &Path) -> bool {
 	}
 }
 
+/// Load a project's label rows out of its cache, with nothing to rebuild from.
+///
+/// **D5, and it is the consequence of D4 rather than a new rule.** The
+/// `.lbl`/`.clb` files are no longer kept — `cache.sqlite` is what survives of
+/// them — so there is no directory to compare an mtime against and no way to
+/// rebuild if the answer came back "stale". A cache whose source directory is
+/// gone is therefore **trusted**, not distrusted: the alternative is that every
+/// run after somebody deletes their VCDS installation tries to rebuild from
+/// nothing and reports a car with no label data at all.
+///
+/// The freshness rule still applies where it can still do something — see
+/// [`load_cached`], which is what a directory somebody *named* goes through.
+pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb> {
+	let cache = project.cache();
+	anyhow::ensure!(
+		cache.is_file(),
+		"the project `{}` has no label cache at {}.\n\n\
+		 Run `vagcan setup` and point it at a VCDS installation or an ODIS project.",
+		project.id,
+		cache.display()
+	);
+	vag_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
+}
+
+/// Whether this project has anything to look a label up in.
+///
+/// Cheap and non-committal, for the callers that degrade rather than fail: a
+/// machine where `vagcan setup` has not run identifies units without names
+/// instead of refusing to identify them.
+pub fn has_project_labels(project: &crate::project::Project) -> bool {
+	project.cache().is_file()
+}
+
 /// Load label files, using the SQLite cache when it is usable and building it when
 /// it is not.
 ///
@@ -337,6 +370,47 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 mod tests {
 	use super::*;
 	use vag_data::parse_label;
+
+	#[test]
+	fn a_cache_whose_label_files_are_gone_is_trusted_rather_than_declared_stale() {
+		// D5. The `.lbl`/`.clb` files are not kept any more, so there is nothing
+		// to compare an mtime against and nothing to rebuild from if the answer
+		// came back "stale". Without this, every run after somebody deletes
+		// their VCDS installation tries to rebuild from nothing.
+		let here = tempfile::tempdir().unwrap();
+		let labels = here.path().join("Labels");
+		std::fs::create_dir_all(&labels).unwrap();
+		std::fs::write(labels.join("index.lbl"), b"001,1,Engine Speed,(G28),Range: 0...6500 RPM").unwrap();
+
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().join("projects").join("SK37X"),
+		};
+		std::fs::create_dir_all(&project.dir).unwrap();
+		vag_db::build_db(&labels, &project.cache()).unwrap();
+
+		// The installation goes, which is the whole point of the copy that
+		// preceded it — and the cache still answers.
+		std::fs::remove_dir_all(&labels).unwrap();
+		assert!(has_project_labels(&project));
+		let db = load_project(&project).unwrap();
+		assert_eq!(db.measurement("index.lbl", 1, 1).map(|m| m.name.as_str()), Some("Engine Speed"));
+	}
+
+	#[test]
+	fn a_project_with_no_cache_says_to_run_setup_rather_than_naming_sqlite() {
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().join("SK37X"),
+		};
+		assert!(!has_project_labels(&project));
+		let why = match load_project(&project) {
+			Err(e) => e.to_string(),
+			Ok(_) => panic!("a project with no cache loaded one"),
+		};
+		assert!(why.contains("vagcan setup"), "{why}");
+	}
 
 	fn scan_with(files: Vec<vag_data::LabelFile>, lbl: usize, clb: usize, rod: usize) -> LabelScan {
 		LabelScan {
