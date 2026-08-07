@@ -111,6 +111,27 @@ impl Pool {
 		self.by_hash.is_empty()
 	}
 
+	/// The hash a `.key` tree would store `name` under, if this pool holds it.
+	///
+	/// Not just [`hash::of_bytes`]: a string that collided when the pool was
+	/// written lives at a probed hash, so the base hash is followed along the
+	/// same `+ 11` chain the writer walked until the stored string *is* the one
+	/// asked for. `None` means the pool does not hold the name at all — which
+	/// is also the answer for a chain that runs longer than any real one, since
+	/// a probe chain cannot outlive the pool it was built in.
+	pub fn hash_of(&self, name: &str) -> Option<u32> {
+		let bytes = to_cp1252(name)?;
+		let mut at = hash::of_bytes(&bytes);
+		for _ in 0..PROBE_LIMIT {
+			match self.get(at) {
+				None => return None,
+				Some(found) if found == name => return Some(at),
+				Some(_) => at = hash::probe(at),
+			}
+		}
+		None
+	}
+
 	/// Every `(hash, string)` this pool holds, in no particular order.
 	pub fn iter(&self) -> impl Iterator<Item = (u32, &str)> {
 		self.by_hash.iter().map(|(&h, s)| (h, s.as_str()))
@@ -129,6 +150,38 @@ impl Pool {
 		self.by_hash.insert(at, string);
 	}
 }
+
+/// How far a collision chain is followed before a name is declared absent.
+///
+/// A bound rather than a loop: a pool built by another tool could in principle
+/// hold a cycle, and a lookup that hung would be worse than one that misses.
+/// Chains this long do not occur — the reference project's longest is 2.
+const PROBE_LIMIT: usize = 64;
+
+/// Encode a `&str` back into Windows-1252, or `None` if it does not fit.
+///
+/// Only ObjectIDs and PoolIDs are ever encoded, and those are ASCII — but a
+/// name that cannot round-trip is reported as absent rather than mangled into
+/// a hash that would silently find the wrong object.
+fn to_cp1252(text: &str) -> Option<Vec<u8>> {
+	text
+		.chars()
+		.map(|c| match c {
+			'\0'..='\u{7f}' | '\u{a0}'..='\u{ff}' => Some(c as u8),
+			_ => HIGH.iter().position(|&h| h == c).map(|i| 0x80 + i as u8),
+		})
+		.collect()
+}
+
+/// The `0x80–0x9F` block of Windows-1252, in order. The five undefined slots
+/// (`0x81 0x8D 0x8F 0x90 0x9D`) map to the matching C1 control, following the
+/// WHATWG encoding standard — they do not occur in the reference project, and
+/// a name is not worth failing a whole project over.
+const HIGH: [char; 32] = [
+	'\u{20AC}', '\u{81}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}',
+	'\u{0152}', '\u{8D}', '\u{017D}', '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+	'\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{9D}', '\u{017E}', '\u{0178}',
+];
 
 /// Read `dir/stem`, falling back to `dir/stem.gz` and inflating it.
 fn read_maybe_gz(dir: &Path, stem: &str) -> Result<Vec<u8>, Error> {

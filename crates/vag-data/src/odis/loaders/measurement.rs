@@ -244,6 +244,8 @@ pub struct Unit {
 	pub long_name: Option<String>,
 	/// What a tester actually prints — `°C`, `/min`. This is the one wanted.
 	pub display_name: Option<String>,
+	/// The text id of [`Unit::long_name`].
+	pub long_name_id: Option<String>,
 }
 
 /// Read a `DB_DIAG_CODED_TYPE`.
@@ -614,7 +616,7 @@ pub fn unit(stream: &mut Stream<'_>) -> Result<Unit, Error> {
 	let long_name = stream.unicode()?.map(str::to_owned);
 	let _description = stream.unicode()?;
 	let _unique_object_id = stream.ascii()?;
-	let _long_name_id = stream.ascii()?;
+	let long_name_id = stream.ascii()?.map(str::to_owned);
 	let _reserved = stream.ascii()?;
 	let display_name = stream.unicode()?.map(str::to_owned);
 	let _factor_si_to_unit = stream.f64()?;
@@ -627,6 +629,7 @@ pub fn unit(stream: &mut Stream<'_>) -> Result<Unit, Error> {
 		short_name,
 		long_name,
 		display_name,
+		long_name_id,
 	})
 }
 
