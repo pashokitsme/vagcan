@@ -42,6 +42,7 @@
 use super::Error;
 use super::object::Stream;
 
+pub mod identity;
 pub mod measurement;
 
 /// The type codes this reader knows, as the MCD kernel numbers them.
@@ -137,6 +138,14 @@ pub mod code {
 	pub const MCD_DB_FLASH_JOB: u16 = 0x00F8;
 	/// `MCD_DB_UNIT` — an engineering unit.
 	pub const MCD_DB_UNIT: u16 = 0x0102;
+	/// `MCD_DB_MATCHING_PATTERNS` — the ways to recognise one ECU variant.
+	pub const MCD_DB_MATCHING_PATTERNS: u16 = 0x0201;
+	/// `MCD_DB_MATCHING_PATTERN` — one of them.
+	pub const MCD_DB_MATCHING_PATTERN: u16 = 0x0202;
+	/// `MCD_DB_MATCHING_PARAMETERS` — the identifiers a pattern reads.
+	pub const MCD_DB_MATCHING_PARAMETERS: u16 = 0x0039;
+	/// `MCD_DB_MATCHING_PARAMETER` — one of them.
+	pub const MCD_DB_MATCHING_PARAMETER: u16 = 0x0038;
 	/// `MCD_DB_STARTCOMMUNICATION` — session control. **Refused.**
 	pub const MCD_DB_STARTCOMMUNICATION: u16 = 0x0107;
 	/// `MCD_DB_STOPCOMMUNICATION` — session control. **Refused.**
@@ -369,6 +378,12 @@ pub enum Object {
 	TableRow(measurement::TableRow),
 	/// `MCD_DB_UNIT` — an engineering unit.
 	Unit(measurement::Unit),
+	/// `DB_PROJECT_DATA` — a pool's index of the variants it holds.
+	ProjectData(identity::ProjectData),
+	/// `DB_LAYER_DATA` — one layer's index of what it can reach.
+	LayerData(identity::LayerData),
+	/// `MCD_DB_ECU_VARIANT` — one control unit's exact software identity.
+	EcuVariant(identity::EcuVariant),
 }
 
 /// Parse one inflated member.
@@ -398,6 +413,9 @@ pub fn load(type_code: u16, stream: &mut Stream<'_>) -> Result<Outcome, Error> {
 		code::MCD_DB_TABLE => Object::Table(measurement::table(stream)?),
 		code::MCD_DB_TABLE_PARAMETER => Object::TableRow(measurement::table_row(stream)?),
 		code::MCD_DB_UNIT => Object::Unit(measurement::unit(stream)?),
+		code::DB_PROJECT_DATA => Object::ProjectData(identity::project_data(stream)?),
+		code::DB_LAYER_DATA => Object::LayerData(identity::layer_data(stream)?),
+		code::MCD_DB_ECU_VARIANT => Object::EcuVariant(identity::ecu_variant(stream)?),
 		other => return Ok(Outcome::Unsupported(other)),
 	};
 	stream.end()?;
