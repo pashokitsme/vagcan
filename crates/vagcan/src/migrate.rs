@@ -34,6 +34,12 @@ use anyhow::{Context, Result};
 /// something a failed copy would have raised as an error.
 const FULL_COMPARE: u64 = 4 << 20;
 
+/// The one file under `measured/` that stays where it is.
+///
+/// `vag_protocol::address::OVERRIDE_PATH` names it, from a crate with no idea
+/// what a project is. See the note in [`plan`].
+const OVERRIDE_FILE: &str = "unit-numbers.json";
+
 /// The old layout, still on disk.
 #[derive(Debug, Clone)]
 pub struct Old {
@@ -127,12 +133,21 @@ fn plan(old: &Old) -> Vec<(PathBuf, Kind, PathBuf)> {
 		}
 	}
 
-	// The proven rows, keeping their layout — `vag_protocol::address` reads one
-	// of them by a relative path it owns, so flattening here would break it.
+	// The proven rows, keeping their layout under `measurement/`.
 	let mut proven = Vec::new();
 	walk(&old.measured, &mut proven);
 	for src in proven {
 		let Ok(rel) = src.strip_prefix(&old.measured) else { continue };
+		// **Except the one file this tool does not own.** `unit-numbers.json` is
+		// not a proven measurement row at all — it is the hand-written
+		// number-to-CAN-id override, and `vag_protocol::address::OVERRIDE_PATH`
+		// reads it by a fixed path from a crate that cannot know which project
+		// this is. Moving it would silently ignore what somebody wrote down,
+		// which is the worst of the outcomes available: their car would go on
+		// answering, with the wrong addresses, and nothing would say why.
+		if rel.as_os_str().to_string_lossy().ends_with(OVERRIDE_FILE) {
+			continue;
+		}
 		plan.push((src.clone(), Kind::Measured, rel.to_path_buf()));
 	}
 
@@ -331,6 +346,26 @@ mod tests {
 	}
 
 	#[test]
+	fn the_hand_written_address_override_is_left_exactly_where_it_is_read_from() {
+		// `vag_protocol` reads it by a fixed path, from a crate that cannot know
+		// which project this is. Moving it would leave somebody's own pairings
+		// silently ignored — their car answering at the wrong addresses with
+		// nothing to say why.
+		let here = tempfile::tempdir().unwrap();
+		let old = old_layout(here.path());
+		let p = project(here.path());
+		run_into(&old, &p.dir, &here.path().join("rod")).unwrap();
+		assert!(
+			old.measured.join(OVERRIDE_FILE).is_file(),
+			"the override moved out from under vag-protocol"
+		);
+		assert!(!p.measurement_dir().join(OVERRIDE_FILE).exists());
+		// And the path it is read from is still the one this module leaves alone.
+		let owned = std::path::Path::new(vag_protocol::address::OVERRIDE_PATH);
+		assert!(owned.ends_with(OVERRIDE_FILE), "{owned:?}");
+	}
+
+	#[test]
 	fn every_file_arrives_where_the_new_layout_expects_it() {
 		let here = tempfile::tempdir().unwrap();
 		let old = old_layout(here.path());
@@ -338,7 +373,7 @@ mod tests {
 		let pool = here.path().join("rod");
 
 		let report = run_into(&old, &p.dir, &pool).unwrap();
-		assert_eq!((report.pooled, report.measured, report.derived), (3, 2, 3), "{report:?}");
+		assert_eq!((report.pooled, report.measured, report.derived), (3, 1, 3), "{report:?}");
 
 		// The raw files, flat: nothing searches them by path.
 		for name in ["RD.rod", "EV_ECM.rod", "Codes.dat"] {
@@ -350,7 +385,6 @@ mod tests {
 		// The proven rows keep their layout — `vag_protocol::address` reads one
 		// of them by a relative path it owns.
 		assert!(p.measurement_dir().join("04E-906-027-AH.json").is_file());
-		assert!(p.measurement_dir().join("unit-numbers.json").is_file());
 		assert_eq!(std::fs::read(p.dir.join("cache.sqlite")).unwrap(), b"a label cache");
 	}
 
@@ -363,17 +397,10 @@ mod tests {
 		let p = project(here.path());
 		let pool = here.path().join("rod");
 
-		let before: Vec<Vec<u8>> = ["04E-906-027-AH.json", "unit-numbers.json"]
-			.iter()
-			.map(|n| std::fs::read(old.measured.join(n)).unwrap())
-			.collect();
+		let before = std::fs::read(old.measured.join("04E-906-027-AH.json")).unwrap();
 		run_into(&old, &p.dir, &pool).unwrap();
-		let after: Vec<Vec<u8>> = ["04E-906-027-AH.json", "unit-numbers.json"]
-			.iter()
-			.map(|n| std::fs::read(p.measurement_dir().join(n)).unwrap())
-			.collect();
+		let after = std::fs::read(p.measurement_dir().join("04E-906-027-AH.json")).unwrap();
 		assert_eq!(before, after, "a proven row changed on the way across");
-		assert!(!old.measured.exists(), "the old directory is gone once it is empty");
 	}
 
 	#[test]

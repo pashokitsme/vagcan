@@ -150,9 +150,10 @@ fn ident_text(bytes: &[u8]) -> String {
 /// figures in `research/labels/fault-naming-hop.md` §11.3 are reproduced.
 pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<()> {
 	let text = std::fs::read_to_string(survey_path).with_context(|| format!("reading {survey_path:?}"))?;
-	// One installation, the one `vagcan setup` extracted. Reading another means
-	// running setup on it, which replaces this one.
-	let root = crate::datadir::extracted_dir()?;
+	// The shared pool of raw VCDS files. Shared across every project because a
+	// `.rod` file is a property of a VCDS *build* and not of a car — the same
+	// registry names the same faults whichever vehicle is in front of you.
+	let root = crate::project::rod_pool()?;
 	// Naming a recorded survey with nothing to name from is nothing this can do,
 	// so an empty default is a clear stop pointing at `vagcan setup` rather than
 	// a bare "the registry did not decode".
@@ -268,11 +269,11 @@ pub async fn run(
 	// `Codes.dat` is a mistake to report, not one to make after taking the
 	// adapter and reading the whole car.
 	//
-	// The names come from what `vagcan setup` extracted and from nowhere else:
-	// one installation at a time, switched by running setup again. An empty one
-	// is the ordinary "setup has not run yet" case — the codes are still read
-	// and shown as numbers, with a note that names `vagcan setup`.
-	let naming_source = crate::datadir::extracted_dir()?;
+	// The names come from the shared pool `vagcan setup` filled, and from
+	// nowhere else. An empty one is the ordinary "setup has not run yet" case —
+	// the codes are still read and shown as numbers, with a note that names
+	// `vagcan setup`.
+	let naming_source = crate::project::rod_pool()?;
 	let mut namer = if crate::faultnames::has_fault_labels(&naming_source) {
 		Some(crate::faultnames::Namer::open(&naming_source, &crate::datadir::resolve(iv_cache))?)
 	} else {
@@ -515,15 +516,13 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn names_come_from_the_one_directory_setup_extracted() {
+	fn names_come_from_the_one_pool_setup_filled() {
 		// The whole point of the copy: after `vagcan setup`, `faults` names codes
-		// with no flag, because the labels live under ~/.vagcan. There is no
-		// second place to look — reading another installation is running setup
-		// on it, which replaces this one.
-		assert_eq!(
-			crate::datadir::extracted_dir().unwrap(),
-			crate::datadir::vagcan_dir().unwrap().join("data").join("extracted")
-		);
+		// with no flag, because the raw files live under ~/.vagcan. The pool is
+		// shared across projects — a fault registry is a property of a VCDS
+		// build, not of one car — while the keys that open it are per project,
+		// because a key is a property of one file's bytes (design §4.2).
+		assert_eq!(crate::datadir::rod_pool_dir().unwrap(), crate::datadir::vagcan_dir().unwrap().join("rod"));
 	}
 
 	#[test]

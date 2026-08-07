@@ -298,7 +298,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			if !std::path::Path::new(&dir).is_dir() {
 				anyhow::bail!("{dir:?} is not a directory — point it at the VCDS install root");
 			}
-			let iv_cache = datadir::or_default(iv_cache.as_deref(), datadir::rod_keys)?;
+			let iv_cache = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
 			Ok(Outcome::FromCar { dir, ecu, iv_cache, device })
 		}
 		Tool::Labels {
@@ -307,7 +307,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			iv_cache,
 			..
 		} => {
-			let keys = datadir::or_default(iv_cache.as_deref(), datadir::rod_keys)?;
+			let keys = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
 			labels::resolve_odx(&dir, &name, &keys)?;
 			Ok(Outcome::Done)
 		}
@@ -323,7 +323,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			Ok(Outcome::Done)
 		}
 		Tool::Names { text, limit, catalog } => {
-			let path = datadir::or_default(catalog.as_deref(), datadir::names_catalog)?;
+			let path = datadir::or_default(catalog.as_deref(), || Ok(crate::project::current()?.names()))?;
 			names::run(&text, limit, &path)?;
 			Ok(Outcome::Done)
 		}

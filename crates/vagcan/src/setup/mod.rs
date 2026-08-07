@@ -1,43 +1,45 @@
-//! `vagcan setup <VCDS-DIR>` — the one command that makes this tool usable.
+//! `vagcan setup` — the one command that makes this tool usable.
 //!
-//! Everything the label files contribute is derived from a VCDS installation,
-//! and none of it may be redistributed: it is Ross-Tech's data. So it is not in
-//! this repository and never will be, and the price of that is a step somebody
-//! has to run once. This is that step, and it is deliberately one command with
-//! one argument.
+//! Everything this tool knows about a car's control units comes from somebody
+//! else's data, and none of it may be redistributed. So it is not in this
+//! repository and never will be, and the price of that is a step somebody has to
+//! run once. This is that step.
 //!
-//! Four things happen, and after them the installation can be deleted:
+//! **Two sources now, so it is a choice rather than an argument.**
+//! [`source::choose`] asks which — a VCDS installation, an extracted
+//! ODIS-Service project, or a download — and `setup <PATH>` still skips the menu
+//! entirely, because the folder itself says which of the two it is.
 //!
-//! | what | how | where it lands |
+//! Both land in one project under `~/.vagcan/projects/<id>/`
+//! ([`crate::project`]), and a second source is **added** to a project rather
+//! than replacing what is in it (design §5). What each branch writes:
+//!
+//! | source | what it gives | where it lands |
 //! |---|---|---|
-//! | the raw label files, copied | [`copy_label_files`] | `~/.vagcan/data/extracted/{UDS_EV,Labels,Codes.dat}` |
-//! | the label files, parsed | [`crate::labels::load_cached`] | `~/.vagcan/data/extracted/cache.sqlite` |
-//! | measurement names | [`crate::vcds::rod`] then [`crate::vcds::tttext`] | `~/.vagcan/data/extracted/names.json` |
-//! | `.rod` section keys | [`crate::vcds::rod`] | `~/.vagcan/data/extracted/rod-keys.json` |
+//! | VCDS | the `.rod` files and the fault text, raw | `~/.vagcan/rod/`, shared |
+//! | VCDS | the label files, parsed | `projects/<id>/cache.sqlite` |
+//! | VCDS | measurement names, out of `TTTEXT.ROD` | `projects/<id>/names.json` |
+//! | VCDS | `.rod` section keys | `projects/<id>/rod-keys.json` |
+//! | ODIS | every variant's channels, by identifier, **with scalings** | `projects/<id>/cache.sqlite` |
+//! | ODIS | every `(text id, name)` pair in the project | `projects/<id>/names.json` |
 //!
-//! The copy is what makes the installation disposable. Fault naming reads label
-//! files straight off disk at run time — `UDS_EV/` (every `.rod`, incl. the
-//! `RD.rod` registry and `MUX.rod`), `Labels/` (the pre-UDS `.lbl`/`.clb`) and
-//! `Codes.dat` (the fault text store) — so those ~122 MB have to outlive the
-//! ~145 MB install, and the owner accepted that cost so the rest can go. The
-//! copy runs **first**, and the three derivations then read from the copy, so
-//! `~/.vagcan` is the one set of label files everything afterwards points at.
-//!
-//! The three derivations are not new work — each already had a tool, reachable
-//! only by knowing it existed, what to feed it, and what it left behind, which
-//! is a poor thing to ask of somebody who has just cloned a repository.
+//! The copy is what makes a VCDS installation disposable: fault naming reads
+//! `.rod` files straight off disk at run time, so those have to outlive the
+//! install. The `.lbl`/`.clb` files are **not** copied (D4) — they are read once,
+//! here, into `cache.sqlite`, and that cache is what survives of them. The
+//! consequence is D5, honoured in [`crate::labels::load_project`]: a cache whose
+//! label files are gone is trusted rather than declared stale, or every run
+//! after somebody deletes their installation would try to rebuild from nothing.
 //!
 //! **Offline.** No adapter is opened and no car is addressed.
 //!
 //! ## Running it twice
 //!
-//! Each step is skipped when what it would write is already newer than what it
-//! would read, and `--refresh` forces the lot. That is [`crate::labels`]'s rule
-//! — a cache is trusted only while it is newer than the label files it came from —
-//! applied to the other two artefacts rather than a second rule invented for
-//! them. It matters because the names step is minutes of CPU: a second
-//! `vagcan setup` on an unchanged installation has nothing to do and should
-//! take a second to establish that.
+//! Each VCDS step is skipped when what it would write is already newer than what
+//! it would read, and `--refresh` forces the lot. That is [`crate::labels`]'s
+//! rule — a cache is trusted only while it is newer than the label files it came
+//! from — applied to the other artefacts rather than a second rule invented for
+//! them. It matters because the names step is minutes of CPU.
 
 pub mod source;
 pub mod vendor;
@@ -66,16 +68,6 @@ const TEXT_TABLES: &[&str] = &["TTTEXT.ROD", "TTText-RUS.rod"];
 /// Same story as [`TEXT_TABLES`]: `Codes.dat` in the English build,
 /// `Code-RUS.dat` in the Russian one.
 pub(crate) const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
-
-/// The directories copied out of the installation so it can then be deleted.
-///
-/// The exact set fault naming and label lookup read off disk at run time:
-/// `UDS_EV/` holds every `.rod` (the `RD.rod` registry, the shared `MUX.rod`,
-/// and each unit's own file, named by its `F19E`), and `Labels/` the pre-UDS
-/// `.lbl`/`.clb`. Copied whole, so the per-unit `.rod` a given car will name —
-/// unknowable here — are all there. The fault text file goes with them, under
-/// whichever of [`CODES_FILES`] this build uses.
-const LABEL_FILE_INPUTS: &[&str] = &[ODX_DIR, "Labels"];
 
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
@@ -117,36 +109,91 @@ pub struct Options<'a> {
 	pub archive_base: &'a str,
 }
 
-/// The installation this run will read, fetching one if that is the answer.
+/// Everything one `setup` run decided before it started reading anything.
 ///
-/// Returning `None` is a complete, successful outcome: somebody who declines
-/// the download has been told where to get VCDS themselves, and a non-zero exit
-/// would be this tool disagreeing with a decision it offered them.
-fn installation(opts: &Options<'_>) -> Result<Option<PathBuf>> {
-	if let Some(dir) = opts.dir {
-		let root = Path::new(dir);
-		anyhow::ensure!(
-			root.is_dir(),
-			"{dir:?} is not a directory.\n\n\
-             Point this at a VCDS installation root — the directory holding \
-             `Labels/` and `{ODX_DIR}/`.\n\
-             With no path at all, `vagcan setup` offers to download one.\n\
-             Ross-Tech's own: {}",
-			crate::missing::VCDS_DOWNLOAD
-		);
-		return Ok(Some(root.to_path_buf()));
+/// **The order in here is the whole point (D7).** `source::project_id` answers
+/// from the folder name, because it runs before anything is opened and the
+/// folder is all there is. An ODIS project names itself inside, in
+/// `index.xml`'s `<SHORT-NAME>`, and that survives what an unzip does to a
+/// folder: `SK37X (1)` on disk is still `SK37X` in there. So the project is
+/// **opened first**, its own name preferred, and only then is a directory
+/// created — otherwise one car's data lands in a store called `SK-37X-copy`
+/// while the project inside it calls itself `SK37X`, which is the two-directory
+/// failure `datadir::existing_folder` was written to undo for cars.
+struct Chosen {
+	source: source::Source,
+	project: crate::project::Project,
+	/// The opened ODIS project, when that is what this is. Opened before the
+	/// directory was created, and kept rather than reopened: it holds 88 MB of
+	/// inflated string pools.
+	odis: Option<vag_data::odis::Project>,
+}
+
+/// Ask what to read, work out what to call it, and open the store.
+fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Option<Chosen>> {
+	let Some(source) = source::choose(io, opts.dir)? else { return Ok(None) };
+	// The download is not a source, it is how one is obtained. Picking it from
+	// the menu *is* the consent — `vendor::confirm_download` asked a second
+	// `[y/N]` for the same decision, and one decision is one question.
+	let source = match source {
+		source::Source::DownloadVcds => source::Source::Vcds {
+			dir: vendor::fetch(opts.archive_base)?,
+		},
+		named => named,
+	};
+
+	let existing = crate::project::list()?;
+	let asked = source::project_id(io, &source, &existing)?;
+	// Opened before a directory exists, so its own name can win.
+	let odis = match &source {
+		source::Source::Odis { dir } => Some(open_odis(io, dir)?),
+		_ => None,
+	};
+	let id = match &odis {
+		Some(project) => prefer_its_own_name(io, project.id(), &asked)?,
+		None => asked,
+	};
+	Ok(Some(Chosen {
+		source,
+		project: crate::project::open_or_create(&id)?,
+		odis,
+	}))
+}
+
+/// Open an ODIS project, saying how long it will be.
+fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data::odis::Project> {
+	io.say(&format!(
+		"Opening the ODIS project at {} — its two string pools are read whole, which takes a moment.",
+		dir.display()
+	))?;
+	let project = vag_data::odis::Project::open(dir).with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
+	io.say(&format!(
+		"{} pools, project version {}.",
+		project.pools().len(),
+		project.version().unwrap_or("unknown")
+	))?;
+	Ok(project)
+}
+
+/// The name the project gives itself, where it can be a directory name.
+///
+/// Falls back to what the folder was called when `<SHORT-NAME>` holds something
+/// a directory cannot be named: nothing is sanitised into shape here, because a
+/// mangled name files a car where no later run would look for it.
+fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str) -> Result<String> {
+	if named == asked {
+		return Ok(asked.to_string());
 	}
-	if !vendor::confirm_download()? {
-		println!(
-			"Nothing downloaded.\n\n\
-             Point at an installation you have:\n    \
-             vagcan setup /path/to/VCDS\n\n\
-             Ross-Tech's own download page: {}",
-			crate::missing::VCDS_DOWNLOAD
-		);
-		return Ok(None);
+	match crate::project::folder_name(named) {
+		Ok(own) => {
+			io.say(&format!(
+				"The project calls itself `{own}` in its own index.xml, so that is what it is filed under — \
+                 not `{asked}`, which is only what the folder happens to be called. One car, one store."
+			))?;
+			Ok(own)
+		}
+		Err(_) => Ok(asked.to_string()),
 	}
-	Ok(Some(vendor::fetch(opts.archive_base)?))
 }
 
 /// The file this installation uses for a job, by name or by asking.
@@ -183,8 +230,8 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 }
 
 /// Whether this text table's key is already in the cache, so no search is due.
-fn keyed_already(source: &Path) -> Result<bool> {
-	let cache = crate::datadir::rod_keys()?;
+fn keyed_already(source: &Path, project: &crate::project::Project) -> Result<bool> {
+	let cache = project.rod_keys();
 	let Ok(text) = std::fs::read_to_string(&cache) else { return Ok(false) };
 	let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
 		return Ok(false);
@@ -279,48 +326,197 @@ enum Step {
 }
 
 pub fn run(opts: Options<'_>) -> Result<()> {
-	let Some(root) = installation(&opts)? else { return Ok(()) };
-	let root = root.as_path();
-	let target = crate::datadir::extracted_dir()?;
-	replace_if_another_build(root, &target, opts.refresh)?;
-	std::fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
+	let mut io = crate::ui::menu::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
+	run_with(&mut io, opts)
+}
 
-	println!("Reading the VCDS installation at {}", root.display());
-	println!("Writing everything to {}\n", target.display());
+/// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] so
+/// the flow is testable without a terminal.
+fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<()> {
+	let Some(chosen) = choose(io, &opts)? else { return Ok(()) };
+	let project = &chosen.project;
+	io.say(&format!("Writing into {}\n", project.dir.display()))?;
 
-	// The copy runs first, and the derivations then read from it: after this,
-	// `~/.vagcan` is the one set of label files everything points at, and the install can go.
-	let steps = [
-		copy_label_files(root, &target, opts.refresh)?,
-		label_cache(&target, opts.refresh)?,
-		names(&target, opts.refresh)?,
-		rod_keys(&target)?,
-	];
+	// Before the parse, not after: whatever an older build left in
+	// `~/.vagcan/data/` belongs to this car too, and moving it afterwards would
+	// have this run's rows sitting beside an unmigrated copy of the last one's.
+	if let Some(old) = crate::migrate::pending()? {
+		let report = crate::migrate::run(&old, project)?;
+		if report.moved() > 0 || report.left_behind.is_some() {
+			io.say(&crate::migrate::describe(&report, project))?;
+		}
+	}
 
+	let steps = match &chosen.source {
+		source::Source::Odis { dir } => {
+			let odis = chosen.odis.as_ref().expect("an ODIS source opens its project in `choose`");
+			read_odis(odis, dir, project)?
+		}
+		source::Source::Vcds { dir } => read_vcds(dir, project, opts.refresh)?,
+		// `choose` turns a download into the installation it fetched.
+		source::Source::DownloadVcds => unreachable!("the download is resolved to an installation before this point"),
+	};
+
+	// Written down so a later command needs no flag. Not a preference — the
+	// answer to "which car did I just set up", which is the one a bare
+	// `vagcan faults` has to be able to reach.
+	crate::project::remember(&project.id)?;
 	println!("\n{}", report(&steps));
 	Ok(())
 }
 
-/// Step 1: copy the raw label files in, so the installation is disposable.
+/// The VCDS branch: the four steps this command has always run, into a project.
+fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Vec<Step>> {
+	let pool = crate::project::rod_pool()?;
+	replace_if_another_build(root, &pool, refresh)?;
+	std::fs::create_dir_all(&pool).with_context(|| format!("creating {}", pool.display()))?;
+	println!("Reading the VCDS installation at {}", root.display());
+
+	// The copy runs first and the derivations then read from it, so afterwards
+	// `~/.vagcan` is the one set of raw files everything points at and the
+	// installation can go.
+	let steps = vec![
+		copy_label_files(root, &pool, refresh)?,
+		label_cache(root, project, refresh)?,
+		names(&pool, root, project, refresh)?,
+		rod_keys(&pool, project)?,
+	];
+	crate::project::record_source(
+		project,
+		crate::project::SourceEntry {
+			kind: vag_db::VCDS,
+			path: root.display().to_string(),
+			version: build_of(root).map(str::to_string),
+			detail: None,
+		},
+	)?;
+	Ok(steps)
+}
+
+/// The ODIS branch: every variant's channels into `cache.sqlite`, every name it
+/// knows into `names.json`.
 ///
-/// The directories [`LABEL_FILE_INPUTS`] names plus this build's fault text
-/// file, copied preserving their layout, so afterwards
-/// `~/.vagcan/data/extracted/` holds `UDS_EV/`, `Labels/` and the fault text.
+/// **A variant that will not read costs itself and nothing else.** A project
+/// describes hundreds of control units, and one whose measurement chain reaches
+/// a refused type ([`vag_data::odis::Error::Refused`] — a flash job, an access
+/// key) or a shape this reader has no loader for must not cost the other
+/// hundreds. The count of what was skipped is reported rather than hidden.
+fn read_odis(odis: &vag_data::odis::Project, dir: &Path, project: &crate::project::Project) -> Result<Vec<Step>> {
+	println!("Reading the ODIS project at {}", dir.display());
+	let source = dir.display().to_string();
+
+	println!("[1/2] Control units — walking each variant's measurement chain.");
+	let variants = odis.variants().with_context(|| format!("listing the variants of {}", dir.display()))?;
+	let (mut with_channels, mut channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
+	let mut progress = crate::progress::Line::new();
+	for (at, variant) in variants.iter().enumerate() {
+		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
+		let readings = match odis.readings(variant) {
+			Ok(readings) => readings,
+			// The refusal list is enforced by the parser and honoured here: a
+			// refused type is a file this tool declines to read, not a broken
+			// one, so the variant is skipped and the rest of the project stands.
+			Err(vag_data::odis::Error::Refused(_)) => {
+				refused += 1;
+				continue;
+			}
+			Err(_) => {
+				unreadable += 1;
+				continue;
+			}
+		};
+		if readings.is_empty() {
+			continue;
+		}
+		channels += vag_db::put_readings(&project.cache(), &source, &variant.name, &readings)
+			.map_err(|e| anyhow::anyhow!("writing {}'s channels to {}: {e}", variant.name, project.cache().display()))?;
+		with_channels += 1;
+	}
+	progress.finish();
+	let mut skipped = String::new();
+	if refused + unreadable > 0 {
+		skipped = format!(", {refused} refused, {unreadable} unreadable");
+	}
+	let units = Step::Wrote {
+		what: "the control units this project describes",
+		path: project.cache(),
+		detail: format!("{with_channels} of {} variants, {channels} channels{skipped}", variants.len()),
+	};
+
+	println!("[2/2] Names — every object in every pool, for the (text id, name) pairs they carry.");
+	let names = {
+		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
+		odis.names().with_context(|| format!("reading the names of {}", dir.display()))?
+	};
+	let merged = merge_names(&project.names(), names)?;
+
+	crate::project::record_source(
+		project,
+		crate::project::SourceEntry {
+			kind: vag_db::ODIS,
+			path: source,
+			version: odis.version().map(str::to_string),
+			detail: Some(format!("{} variants, {} pools", variants.len(), odis.pools().len())),
+		},
+	)?;
+	Ok(vec![
+		units,
+		Step::Wrote {
+			what: "the measurement names",
+			path: project.names(),
+			detail: format!("{merged} names"),
+		},
+	])
+}
+
+/// Fold an ODIS project's names into whatever `names.json` already holds.
+///
+/// **What is already there wins.** `names.json` is keyed by the label files' own
+/// text id, and the two sources agree about what that id means — that is the
+/// whole finding `research/labels/odis-crib.md` rests on. Where they disagree,
+/// the incumbent is what every earlier run of this tool has been reporting, and
+/// silently changing a name under somebody is worse than not adding one.
+fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>) -> Result<usize> {
+	let mut names: std::collections::BTreeMap<String, String> = std::fs::read_to_string(path)
+		.ok()
+		.and_then(|text| serde_json::from_str(&text).ok())
+		.unwrap_or_default();
+	for (id, name) in incoming {
+		names.entry(id).or_insert(name);
+	}
+	if let Some(parent) = path.parent() {
+		std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+	}
+	std::fs::write(path, serde_json::to_string_pretty(&names)?).with_context(|| format!("writing {}", path.display()))?;
+	Ok(names.len())
+}
+
+/// Step 1: copy the raw files into the shared pool, so the installation is
+/// disposable.
+///
+/// **Flat, and only the files something reads at run time.** Fault naming and
+/// ODX lookup search for a file *by name* (`dtc::find_named`,
+/// `find_rod_by_odx_name`) and never by path, so the directory a `.rod` sat in
+/// was never load-bearing — flattening loses nothing and makes one pool
+/// shareable across every project.
+///
+/// **The `.lbl`/`.clb` files are not copied (D4).** They are read once, here,
+/// into `cache.sqlite`, and that cache is what survives of them. The
+/// consequence — a cache that can no longer be rebuilt without the installation
+/// — is D5, and `labels::load_project` is where it is honoured.
+///
 /// Idempotent and freshness-gated per file, the same rule the rest of setup
 /// follows: a file is copied only when it is missing from the destination or
 /// newer than what is there, and `--refresh` copies the lot.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
-	println!("[1/4] Raw label files — copying UDS_EV/, Labels/ and the fault text (~122 MB) so the installation can be deleted afterwards.");
+	println!("[1/4] Raw files — copying the .rod files and the fault text into the shared pool, so the installation can be deleted afterwards.");
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
-	for name in LABEL_FILE_INPUTS {
-		let src = root.join(name);
-		if !src.exists() {
-			// A stripped or partial installation still yields whatever it has;
-			// a missing input is reported, not fatal.
-			println!("      {name}: not in this installation, skipped");
-			continue;
-		}
-		collect_copies(&src, &target.join(name), &mut plan)?;
+	let odx = root.join(ODX_DIR);
+	match odx.is_dir() {
+		true => collect_rod_files(&odx, target, &mut plan)?,
+		// A stripped or partial installation still yields whatever it has; a
+		// missing input is reported, not fatal.
+		false => println!("      {ODX_DIR}: not in this installation, skipped"),
 	}
 	// The fault text, under whichever name this language build gives it. Copied
 	// under that same name: `faultnames` looks for the whole list too, so the
@@ -328,14 +524,14 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	match locate(root, CODES_FILES, "fault text file", ".dat")? {
 		Some(codes) => {
 			let name = codes.file_name().unwrap_or_default();
-			collect_copies(&codes, &target.join(name), &mut plan)?;
+			plan.push((codes.clone(), target.join(name)));
 		}
 		None => println!("      the fault text file: not in this installation, skipped — faults will read as numbers"),
 	}
 	if plan.is_empty() {
 		return Ok(Step::Missing {
-			what: "the raw label files",
-			why: format!("none of {LABEL_FILE_INPUTS:?} is under {}", root.display()),
+			what: "the raw files",
+			why: format!("no {ODX_DIR}/ and no fault text under {}", root.display()),
 		});
 	}
 
@@ -356,43 +552,46 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	}
 	progress.finish();
 	Ok(Step::Wrote {
-		what: "the raw label files",
+		what: "the raw files",
 		path: target.to_path_buf(),
 		detail: format!("{copied} files copied, {skipped} already current"),
 	})
 }
 
-/// Every file under `src`, paired with where it lands under `dst`.
+/// Every `.rod` under `src`, wherever it sits, landing flat in `dst`.
 ///
-/// A file (`Codes.dat`) is one pair; a directory is walked. The plan is built
-/// before anything is written, so the copy can report progress against a known
-/// total and an unreadable directory fails before it has half-copied a tree.
-fn collect_copies(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
-	if src.is_file() {
-		plan.push((src.to_path_buf(), dst.to_path_buf()));
-		return Ok(());
-	}
-	if src.is_dir() {
-		for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
-			let entry = entry?;
-			collect_copies(&entry.path(), &dst.join(entry.file_name()), plan)?;
+/// The plan is built before anything is written, so the copy can report progress
+/// against a known total and an unreadable directory fails before it has
+/// half-copied a tree.
+fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>) -> Result<()> {
+	for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+		let path = entry?.path();
+		if path.is_dir() {
+			collect_rod_files(&path, dst, plan)?;
+			continue;
+		}
+		let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+			continue;
+		};
+		if name.to_ascii_lowercase().ends_with(".rod") {
+			plan.push((path.clone(), dst.join(name)));
 		}
 	}
 	Ok(())
 }
 
-/// Step 2: parse the copied label files into the SQLite cache.
+/// Step 2: parse the installation's label files into the project's cache.
 ///
-/// Reads the copy under `~/.vagcan`, not the installation, so the source it
-/// records is the one the runtime path later passes —
-/// otherwise the first `units --identify` after setup would rebuild the cache
-/// from a directory whose name no longer matched.
-fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
+/// **Reads the installation, not a copy of it**, because there is no longer a
+/// copy: D4 drops the `.lbl`/`.clb` files and this cache is what survives of
+/// them. This is the one moment they are ever read, and after it the
+/// installation can go.
+fn label_cache(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Step> {
 	println!("[2/4] Label files — parsing every .lbl and decrypting every .clb.");
-	let db = crate::labels::load_cached(root, refresh)?;
+	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
 	Ok(Step::Wrote {
 		what: "the label files",
-		path: crate::datadir::label_cache()?,
+		path: project.cache(),
 		detail: format!("{} label files", db.len()),
 	})
 }
@@ -403,9 +602,11 @@ fn label_cache(root: &Path, refresh: bool) -> Result<Step> {
 /// documents: `rod --dump` writes the decrypted, inflated `[TXT]` section, and
 /// `tttext` reads it. The intermediate file is this function's business and
 /// nobody else's, so it goes in a scratch directory and is removed again.
-fn names(root: &Path, refresh: bool) -> Result<Step> {
-	let odx = root.join(ODX_DIR);
-	let out = crate::datadir::names_catalog()?;
+fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh: bool) -> Result<Step> {
+	// The text table is read out of the pool it was just copied into, so the
+	// keys recovered from it match the bytes every later run will open.
+	let odx = pool.to_path_buf();
+	let out = project.names();
 	let Some(source) = locate(&odx, TEXT_TABLES, "measurement text table", ".rod")? else {
 		return Ok(Step::Missing {
 			what: "the measurement names",
@@ -429,7 +630,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	// will not stop today is indistinguishable from one that stops in ninety
 	// seconds. The Russian build ships exactly such a table.
 	let name = source.file_name().unwrap_or_default().to_string_lossy().into_owned();
-	if !keyed_already(&source)?
+	if !keyed_already(&source, project)?
 		&& let Ok(bytes) = std::fs::read(&source)
 		&& vag_data::rod::key_cost(&bytes, "TXT") == Some(vag_data::rod::KeyCost::AnchorSweep)
 	{
@@ -453,7 +654,7 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 	crate::vcds::rod::run(
 		&source.to_string_lossy(),
 		true,
-		Some(&crate::datadir::rod_keys()?.to_string_lossy()),
+		Some(&project.rod_keys().to_string_lossy()),
 		Some(&scratch.to_string_lossy()),
 	)?;
 	let text = scratch.join("TXT.bin");
@@ -466,7 +667,10 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 		});
 	}
 
-	let mut words = vec![format!("{}:{LABEL_WORD_WEIGHT}", root.join("Labels").display())];
+	// The installation's own label files are the strong prior for the attack.
+	// They are read here and copied nowhere (D4) — this is the last moment they
+	// are in reach, which is why the installation is still a parameter.
+	let mut words = vec![format!("{}:{LABEL_WORD_WEIGHT}", install.join("Labels").display())];
 	if Path::new(SYSTEM_WORDS).exists() {
 		words.push(format!("{SYSTEM_WORDS}:{GENERAL_WORD_WEIGHT}"));
 	}
@@ -520,17 +724,13 @@ fn names(root: &Path, refresh: bool) -> Result<Step> {
 }
 
 /// Step 4: recover the keys of the `.rod` sections every car needs.
-fn rod_keys(root: &Path) -> Result<Step> {
-	let cache = crate::datadir::rod_keys()?;
-	let present: Vec<PathBuf> = SHARED_ROD_FILES
-		.iter()
-		.map(|name| root.join(ODX_DIR).join(name))
-		.filter(|p| p.is_file())
-		.collect();
+fn rod_keys(pool: &Path, project: &crate::project::Project) -> Result<Step> {
+	let cache = project.rod_keys();
+	let present: Vec<PathBuf> = SHARED_ROD_FILES.iter().map(|name| pool.join(name)).filter(|p| p.is_file()).collect();
 	if present.is_empty() {
 		return Ok(Step::Missing {
 			what: "the .rod section keys",
-			why: format!("none of {SHARED_ROD_FILES:?} is under {}", root.join(ODX_DIR).display()),
+			why: format!("none of {SHARED_ROD_FILES:?} is in {}", pool.display()),
 		});
 	}
 	println!("[4/4] .rod section keys — searching for the ones not already cached.");
@@ -624,22 +824,68 @@ mod tests {
 		let steps = vec![
 			Step::Wrote {
 				what: "the label files",
-				path: PathBuf::from("/home/x/.vagcan/data/extracted/cache.sqlite"),
+				path: PathBuf::from("/home/x/.vagcan/projects/SK37X/cache.sqlite"),
 				detail: "3035 label files".to_string(),
 			},
 			Step::Skipped {
 				what: "the measurement names",
-				path: PathBuf::from("/home/x/.vagcan/data/extracted/names.json"),
+				path: PathBuf::from("/home/x/.vagcan/projects/SK37X/names.json"),
 				why: "newer than the text table it came from",
 			},
 		];
 		let r = report(&steps);
-		assert!(r.contains("/home/x/.vagcan/data/extracted/cache.sqlite"), "{r}");
+		assert!(r.contains("/home/x/.vagcan/projects/SK37X/cache.sqlite"), "{r}");
 		assert!(r.contains("3035 label files"), "{r}");
 		// A skipped step is reported, not silently absent: a run that took a
 		// second when minutes were expected reads as a failure otherwise.
 		assert!(r.contains("unchanged"), "{r}");
 		assert!(r.contains("names.json"), "{r}");
+	}
+
+	#[test]
+	fn a_project_that_names_itself_beats_the_folder_it_was_unzipped_into() {
+		// D7, and the failure it prevents: an unzip produces `SK37X (1)`, the
+		// picker cleans that to `SK-37X-copy`, and the project inside still
+		// calls itself `SK37X`. Filing it under the folder's name would put one
+		// car in two stores — the two-directory bug `datadir::existing_folder`
+		// was written to undo, arriving by a different door.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy").unwrap(), "SK37X");
+		let said = io.all_said();
+		assert!(said.contains("SK37X"), "{said}");
+		assert!(said.contains("One car, one store"), "it says why: {said}");
+
+		// Agreement is silent — there is nothing to explain.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X").unwrap(), "SK37X");
+		assert!(io.said.is_empty(), "{:?}", io.said);
+
+		// A `<SHORT-NAME>` that could not be a directory falls back rather than
+		// being sanitised: a mangled name files a car where nothing looks for it.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X").unwrap(), "SK37X");
+	}
+
+	#[test]
+	fn a_name_already_in_names_json_is_not_changed_under_somebody() {
+		// The two sources agree about what a text id means — that is the whole
+		// finding `research/labels/odis-crib.md` rests on — so where they do
+		// not, the incumbent is what every earlier run has been reporting.
+		let here = TempDir::new("names");
+		let path = here.write("names.json", br#"{"000116": "Transmission Input Speed"}"#);
+		let incoming = [
+			("000116".to_string(), "Getriebe-Eingangsdrehzahl".to_string()),
+			("000117".to_string(), "Motordrehzahl".to_string()),
+		]
+		.into_iter()
+		.collect();
+		assert_eq!(merge_names(&path, incoming).unwrap(), 2);
+		let back: std::collections::BTreeMap<String, String> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+		assert_eq!(
+			back["000116"], "Transmission Input Speed",
+			"it overwrote a name somebody was already reading"
+		);
+		assert_eq!(back["000117"], "Motordrehzahl");
 	}
 
 	#[test]
@@ -666,11 +912,15 @@ mod tests {
 
 	#[test]
 	fn a_run_against_something_that_is_not_an_installation_says_where_to_get_one() {
-		let err = run(Options {
-			dir: Some("/definitely/not/here"),
-			refresh: false,
-			archive_base: vendor::ARCHIVE_BASE,
-		})
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		let err = run_with(
+			&mut io,
+			Options {
+				dir: Some("/definitely/not/here"),
+				refresh: false,
+				archive_base: vendor::ARCHIVE_BASE,
+			},
+		)
 		.unwrap_err();
 		let text = err.to_string();
 		assert!(text.contains(crate::missing::VCDS_DOWNLOAD), "{text}");
@@ -723,16 +973,21 @@ mod tests {
 	}
 
 	#[test]
-	fn the_copy_carries_the_three_inputs_preserving_their_layout() {
-		// After it, ~/.vagcan holds the exact tree fault naming reads off disk —
-		// UDS_EV/ (registry and each unit's own .rod), Labels/, Codes.dat.
+	fn the_copy_carries_every_rod_and_the_fault_text_flat() {
+		// Fault naming and ODX lookup search by *name* and never by path, so
+		// the directory a `.rod` sat in was never load-bearing — flattening
+		// loses nothing and makes one pool shareable across every project.
+		// The `.lbl`/`.clb` are not copied at all (D4): they are read once,
+		// into `cache.sqlite`, and that cache is what survives of them.
 		let install = synthetic_install("layout");
 		let target = TempDir::new("layout-out");
 		let step = copy_label_files(&install.0, &target.0, false).unwrap();
-		assert!(detail(&step).starts_with("4 files copied"), "{}", detail(&step));
-		for rel in ["UDS_EV/RD.rod", "UDS_EV/EV_ECM.rod", "Labels/part.lbl", "Codes.dat"] {
-			assert!(target.0.join(rel).is_file(), "{rel} did not land under the target");
+		assert!(detail(&step).starts_with("3 files copied"), "{}", detail(&step));
+		for name in ["RD.rod", "EV_ECM.rod", "Codes.dat"] {
+			assert!(target.0.join(name).is_file(), "{name} did not land in the pool");
 		}
+		assert!(!target.0.join("Labels").exists(), "the label files were copied after all");
+		assert!(!target.0.join("UDS_EV").exists(), "the pool is flat");
 	}
 
 	#[test]
@@ -743,21 +998,21 @@ mod tests {
 		let target = TempDir::new("fresh-out");
 
 		let first = copy_label_files(&install.0, &target.0, false).unwrap();
-		assert_eq!(detail(&first), "4 files copied, 0 already current");
+		assert_eq!(detail(&first), "3 files copied, 0 already current");
 
 		let second = copy_label_files(&install.0, &target.0, false).unwrap();
-		assert_eq!(detail(&second), "0 files copied, 4 already current", "a no-op rerun");
+		assert_eq!(detail(&second), "0 files copied, 3 already current", "a no-op rerun");
 
 		// One destination made to look stale: only it is copied again.
 		let stale = target.0.join("Codes.dat");
 		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
 		std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
 		let third = copy_label_files(&install.0, &target.0, false).unwrap();
-		assert_eq!(detail(&third), "1 files copied, 3 already current");
+		assert_eq!(detail(&third), "1 files copied, 2 already current");
 
 		// --refresh copies everything regardless of mtimes.
 		let forced = copy_label_files(&install.0, &target.0, true).unwrap();
-		assert_eq!(detail(&forced), "4 files copied, 0 already current");
+		assert_eq!(detail(&forced), "3 files copied, 0 already current");
 	}
 
 	#[test]
@@ -766,7 +1021,7 @@ mod tests {
 		let target = TempDir::new("empty-out");
 		let step = copy_label_files(&empty.0, &target.0, false).unwrap();
 		match step {
-			Step::Missing { why, .. } => assert!(why.contains("UDS_EV"), "{why}"),
+			Step::Missing { why, .. } => assert!(why.contains(ODX_DIR), "{why}"),
 			other => panic!("expected Missing, got {other:?}"),
 		}
 	}

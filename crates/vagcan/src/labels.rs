@@ -19,25 +19,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use vag_data::{LabelDb, LabelScan, Measurement, scan_label_files};
 
-/// Where a parsed label file set is cached between runs.
-///
-/// Parsing every `.lbl` and decrypting every `.clb` in a VCDS install is the
-/// slow part of every lookup, and the label files do not change between runs.
-///
-/// One file, `~/.vagcan/data/extracted/cache.sqlite`, beside the other two things
-/// `vagcan setup` recovers from an installation. It used to be one file per
-/// label file directory, named after the flattened path, which kept the English and
-/// the Russian install apart at the cost of a directory nobody could read. The
-/// same property is kept more cheaply inside the cache itself: it records which
-/// directory it was built from, and a cache built from another one is rebuilt
-/// rather than trusted.
-fn cache_path() -> PathBuf {
-	crate::datadir::label_cache()
-		// With nowhere to write, the working directory is a poor cache but a
-		// better failure than refusing to read label files at all.
-		.unwrap_or_else(|_| PathBuf::from("cache.sqlite"))
-}
-
 /// The directory the label files are actually in.
 ///
 /// The loader reads one directory level, and what `vagcan setup` extracts is an
@@ -85,17 +66,6 @@ fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
          or the Labels directory itself",
 		given.display()
 	)
-}
-
-/// Whether a directory holds label files this tool could load.
-///
-/// The same shape [`load_cached`] needs — a `Labels/` of `.lbl`/`.clb`, or a
-/// directory that already is one — asked cheaply so the `~/.vagcan` default can
-/// degrade to "no label files" instead of an error on a machine that has not run
-/// `vagcan setup`. Only used for that default: a directory the user named is
-/// loaded outright, so a wrong path still reports itself.
-pub fn has_label_files(dir: &Path) -> bool {
-	label_dir_under(dir).is_ok()
 }
 
 /// Whether the cache on disk can be believed for this label file directory.
@@ -158,12 +128,17 @@ pub fn has_project_labels(project: &crate::project::Project) -> bool {
 ///
 /// A stale cache is worse than none, so it is only trusted when
 /// [`cache_is_current`] says so. `refresh` forces a rebuild regardless.
-pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
+/// `cache` is the file to build into — a project's `cache.sqlite`. It used to
+/// be one file per label directory, named after the flattened path, which kept
+/// the English and the Russian install apart at the cost of a directory nobody
+/// could read. The same property is kept more cheaply inside the cache itself:
+/// it records which directory it was built from, and a cache built from another
+/// one is rebuilt rather than trusted.
+pub fn load_cached(dir: &Path, cache: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 	let dir = &label_dir_under(dir)?;
-	let cache = cache_path();
-	let fresh = !refresh && cache_is_current(&cache, dir);
+	let fresh = !refresh && cache_is_current(cache, dir);
 	if fresh {
-		match vag_db::load_db(&cache) {
+		match vag_db::load_db(cache) {
 			Ok(db) => return Ok(db),
 			// A corrupt or half-written cache is a reason to rebuild, not to
 			// fail the command.
@@ -178,7 +153,7 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 	// report from: the spinner is the only thing between that and a blank screen.
 	let stats = {
 		let _spinner = crate::progress::Spinner::new(format!("parsing the label files in {}", dir.display()));
-		vag_db::build_db(dir, &cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?
+		vag_db::build_db(dir, cache).map_err(|e| anyhow::anyhow!("building the label cache from {}: {e}", dir.display()))?
 	};
 	eprintln!(
 		"cached {} label files ({} measurements) in {}",
@@ -186,7 +161,7 @@ pub fn load_cached(dir: &Path, refresh: bool) -> anyhow::Result<LabelDb> {
 		stats.measurements,
 		cache.display()
 	);
-	vag_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
+	vag_db::load_db(cache).map_err(|e| anyhow::anyhow!("reading the label cache: {e}"))
 }
 
 /// Hand the label files' unit numbering to the address layer.
@@ -219,7 +194,7 @@ pub fn labels_cmd(dir: &str, part: Option<&str>, block: Option<u16>, field: Opti
 	}
 
 	if part.is_some() || block.is_some() {
-		let db = load_cached(Path::new(dir), refresh)?;
+		let db = load_cached(Path::new(dir), &crate::project::current()?.cache(), refresh)?;
 		install_unit_numbers(&db);
 		if let Some(part_no) = part {
 			print!("\n{}", render_part_lookup(&db, part_no));

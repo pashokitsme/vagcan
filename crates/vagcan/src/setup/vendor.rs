@@ -24,7 +24,6 @@
 //! what arrived, the bytes are checked for a zip's own signature, and anything
 //! short is deleted rather than unpacked.
 
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -61,31 +60,6 @@ const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 pub fn vendor_dir() -> Result<PathBuf> {
 	Ok(crate::datadir::vagcan_dir()?.join("vendor"))
 }
-
-/// Ask whether to download at all.
-///
-/// The size is in the question, because ninety megabytes is a different
-/// decision on a phone tether than on a desk, and a progress bar that starts
-/// without being agreed to is how a tool loses trust.
-pub fn confirm_download() -> Result<bool> {
-	// No terminal, no download. This used to answer "yes" here, which was safe
-	// only because the language question came next and refused without a
-	// terminal; removing that question left a script fetching ninety megabytes
-	// nobody asked for. A run with nowhere to ask is told the path form instead.
-	if !std::io::stdin().is_terminal() {
-		return Ok(false);
-	}
-	print!(
-		"No VCDS installation was given.\n\
-         Download one (about 90 MB) into {}? [y/N] ",
-		vendor_dir()?.display()
-	);
-	std::io::stdout().flush().ok();
-	let mut answer = String::new();
-	std::io::stdin().read_line(&mut answer)?;
-	Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
-}
-
 /// Fetch and unpack an installation, and return the directory it landed in.
 ///
 /// An installation already unpacked is used as it stands: the archive does not

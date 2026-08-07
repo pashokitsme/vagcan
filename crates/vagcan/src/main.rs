@@ -62,8 +62,9 @@ const ADAPTER_BAUD: u32 = 115_200;
                   Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
                   and the adapter's termination jumper OFF.\n\n\
                   START HERE\n  \
-                  vagcan setup              once, offline: read a VCDS install for names.\n                            \
-                  With no path given it offers to download one.\n  \
+                  vagcan setup              once, offline: read a VCDS install or an ODIS\n                            \
+                  project for names and scalings. With no path given it asks\n                            \
+                  which, and offers to download an installation.\n  \
                   vagcan devices            is the adapter connected?\n  \
                   vagcan info               which car is this?\n  \
                   vagcan units              which control units does it have?\n\n\
@@ -83,30 +84,44 @@ const ADAPTER_BAUD: u32 = 115_200;
                   vcds ...                  VCDS's own files: labels, names, logs"
 )]
 struct Cli {
+	/// Which car's data to read — a directory name under `~/.vagcan/projects/`.
+	///
+	/// Only needed with more than one car set up. `vagcan setup` writes down
+	/// the one it just built, `VAGCAN_PROJECT` overrides that for a shell, and
+	/// this overrides both for one command.
+	#[arg(long, global = true, value_name = "ID")]
+	project: Option<String>,
+
 	#[command(subcommand)]
 	command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-	/// Parse a VCDS installation into `~/.vagcan`. Run once. Offline.
+	/// Learn a car from a VCDS installation or an ODIS project. Run once. Offline.
 	///
-	/// Everything the label files contribute — the parsed label files themselves, the
-	/// measurement names, the `.rod` section keys — is derived from a VCDS
-	/// installation and cannot be shipped with this tool, because it is
-	/// Ross-Tech's data. This recovers all three from an installation you have.
+	/// Everything the label files contribute — the parsed label files
+	/// themselves, the measurement names, the `.rod` section keys — is derived
+	/// from somebody else's data and cannot be shipped with this tool. This
+	/// recovers it from what you have.
 	///
-	/// It takes minutes over a full set of label files, mostly in the name recovery, and it
-	/// touches no car. Running it again on an unchanged installation does
-	/// nothing and says so.
+	/// Two sources, and with no path given it asks which. A VCDS installation
+	/// gives names; an extracted ODIS-Service project gives names *and*
+	/// scalings, per identifier, with no drive required. Both land in one
+	/// project under `~/.vagcan/projects/<id>/`, and a second source is added to
+	/// a project rather than replacing what is in it.
+	///
+	/// It takes minutes, mostly in the name recovery, and it touches no car.
+	/// Running it again on an unchanged source does nothing and says so.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
-		/// The VCDS installation root — the directory holding `Labels/` and
-		/// `UDS_EV/`. Leave it out and an installation is offered for download.
-		#[arg(value_name = "VCDS-DIR")]
+		/// What to read: a VCDS installation root (the directory holding
+		/// `Labels/` and `UDS_EV/`) or an extracted ODIS project folder. Leave
+		/// it out and it asks which, offering to download an installation.
+		#[arg(value_name = "DIR")]
 		dir: Option<String>,
-		/// Redo every step, whatever is already in `~/.vagcan/data/extracted/`.
+		/// Redo every step, whatever is already in the project.
 		#[arg(long)]
 		refresh: bool,
 	},
@@ -479,7 +494,14 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-	match Cli::parse().command {
+	let cli = Cli::parse();
+	// Before any command runs, because a dozen leaves consult it and none of
+	// them takes it as an argument — the same reason the label files' unit
+	// numbering is installed rather than threaded through.
+	if let Some(id) = &cli.project {
+		project::select(id);
+	}
+	match cli.command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
 			refresh,
@@ -713,16 +735,28 @@ async fn main() -> Result<()> {
 
 /// Where the proven measurement rows are for this run.
 ///
-/// `--data` if it was given, `~/.vagcan/data/measured` otherwise. Never a path
-/// relative to the working directory: that is what made these commands work in
-/// a checkout and nowhere else.
+/// `--data` if it was given, this run's project otherwise. Never a path relative
+/// to the working directory: that is what made these commands work in a checkout
+/// and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
-	Ok(datadir::or_default(given, datadir::measured_dir)?.to_string_lossy().into_owned())
+	Ok(
+		datadir::or_default(given, || Ok(project::current()?.measurement_dir()))?
+			.to_string_lossy()
+			.into_owned(),
+	)
 }
 
 /// Where the recovered `.rod` section keys are, for this run.
+///
+/// Per project, not shared beside the `.rod` pool: a recovered key is a property
+/// of one file's *bytes*, and two VCDS builds ship a same-named `.rod` with
+/// different content (design §4.2).
 fn rod_keys(given: Option<&str>) -> Result<String> {
-	Ok(datadir::or_default(given, datadir::rod_keys)?.to_string_lossy().into_owned())
+	Ok(
+		datadir::or_default(given, || Ok(project::current()?.rod_keys()))?
+			.to_string_lossy()
+			.into_owned(),
+	)
 }
 
 /// A duration in seconds, rejected here rather than at the point of use.
@@ -863,15 +897,14 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 	// resolves names with no flag, and a machine that has not run setup simply
 	// identifies without them.
 	let label_files_dir = match identify {
-		true => {
-			let extracted = datadir::extracted_dir()?;
-			labels::has_label_files(&extracted).then_some(extracted)
-		}
+		// A machine with no project set up simply identifies without names —
+		// this is the ordinary "setup has not run yet" case, not an error.
+		true => project::current().ok().filter(labels::has_project_labels),
 		false => None,
 	};
 	let label_files = match &label_files_dir {
-		Some(dir) => {
-			let db = labels::load_cached(dir, false)?;
+		Some(project) => {
+			let db = labels::load_project(project)?;
 			// The label files' numbering, in force for the rest of the run: what
 			// each number *is*. Which id answers it is learned below, from the
 			// car.
@@ -961,12 +994,12 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 		}
 		backend = unit.into_transport().into_backend();
 	}
-	if let Some(dir) = &label_files_dir {
+	if let Some(project) = &label_files_dir {
 		// Silence here would read as "the label files agree"; it usually means the
 		// label files have no entry for these part numbers.
 		println!(
-			"\n{resolved} of {identified} part numbers resolved against the label files at {}.",
-			dir.display()
+			"\n{resolved} of {identified} part numbers resolved against the label files of project `{}`.",
+			project.id
 		);
 	}
 	Ok(())

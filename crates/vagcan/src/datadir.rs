@@ -81,14 +81,13 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// `~/Library/Application Support`, which is right for an application bundle
 /// and wrong for a tool whose files a person opens, reads and edits by hand.
 ///
-/// `data/extracted/` holds what `vagcan setup` parsed out of a VCDS
-/// installation, all of it rebuildable from that installation in minutes.
-/// `data/measured/` holds the `(identifier, raw form, factor, offset)` rows this
-/// project proved on a vehicle; the label files provably cannot supply those
+/// A project's `cache.sqlite`, `names.json` and `rod-keys.json` are all
+/// rebuildable from the source they came from, in minutes. Its `measurement/`
+/// holds the `(identifier, raw form, factor, offset)` rows this project proved
+/// on a vehicle; the label files provably cannot supply those
 /// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
-/// them. The two live side by side under `data/` because the split — extracted
-/// from someone else's files versus measured on the car — is the one distinction
-/// a reader of the tree needs.
+/// them. That is the one distinction a reader of the tree needs, and why
+/// `crate::migrate` copies before it removes.
 ///
 /// Deliberately not built on [`resolve`]. That walks parent directories looking
 /// for something that already exists, which is right for a path someone typed
@@ -121,54 +120,6 @@ pub fn rod_pool_dir() -> anyhow::Result<PathBuf> {
 /// Settings that are not about one car — which project a bare command means.
 pub fn config_file() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("config.json"))
-}
-
-/// The single extracted directory from before projects existed.
-///
-/// Kept only so `crate::migrate` can find what is in it and move it into the
-/// first project. Nothing else may read from here: after the move it is gone,
-/// and a reader still pointing at it would silently find nothing on a machine
-/// that had been migrated and everything on one that had not.
-pub fn extracted_dir() -> anyhow::Result<PathBuf> {
-	Ok(vagcan_dir()?.join("data").join("extracted"))
-}
-
-/// The measurement names recovered from `TTTEXT.ROD`.
-///
-/// Named `names.json` rather than the `names-uds.json` it was called when it
-/// lived in the checkout: `uds` was never true of it — the catalog is keyed by
-/// the label files' own text id and has nothing to do with UDS — and it read as a
-/// file name only its author could parse.
-pub fn names_catalog() -> anyhow::Result<PathBuf> {
-	Ok(extracted_dir()?.join("names.json"))
-}
-
-/// The recovered `.rod` per-section keys.
-///
-/// Was `rod-iv-cache.json`. "IV cache" is the decoder's word for it; the thing
-/// a reader wants from a file name is what it unlocks.
-pub fn rod_keys() -> anyhow::Result<PathBuf> {
-	Ok(extracted_dir()?.join("rod-keys.json"))
-}
-
-/// The SQLite cache of the parsed label files.
-///
-/// One file, not one per label files directory as before. Which directory it was
-/// built from is recorded *inside* it, because the mtime rule that decides
-/// whether a cache is current cannot tell "older than the label files" from
-/// "built from a different set of label files".
-pub fn label_cache() -> anyhow::Result<PathBuf> {
-	Ok(extracted_dir()?.join("cache.sqlite"))
-}
-
-/// The proven measurement rows from before projects existed.
-///
-/// Same story as [`extracted_dir`], and a sharper one: **these rows cannot be
-/// recreated.** They were proven by driving a car, and `crate::migrate` copies
-/// them into `projects/<id>/measurement/` and verifies the copy before removing
-/// anything. Nothing else reads from here.
-pub fn measured_dir() -> anyhow::Result<PathBuf> {
-	Ok(vagcan_dir()?.join("data").join("measured"))
 }
 
 /// A path the user gave, or this tool's own default for it.
@@ -484,38 +435,29 @@ mod tests {
 		// no repository root at all.
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
 		let home = vagcan_dir().unwrap();
-		for path in [
-			label_cache().unwrap(),
-			names_catalog().unwrap(),
-			rod_keys().unwrap(),
-			measured_dir().unwrap(),
-		] {
+		for path in [projects_dir().unwrap(), rod_pool_dir().unwrap(), config_file().unwrap()] {
 			assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
 			assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
 		}
 	}
 
 	#[test]
-	fn the_vcds_derived_files_sit_together_under_extracted() {
-		let extracted = extracted_dir().unwrap();
-		for path in [label_cache().unwrap(), names_catalog().unwrap(), rod_keys().unwrap()] {
-			assert_eq!(path.parent(), Some(extracted.as_path()), "{path:?}");
-		}
-		// Extracted-from-VCDS and measured-on-the-car are siblings under `data/`.
-		let data = extracted.parent().unwrap();
-		assert_eq!(measured_dir().unwrap(), data.join("measured"));
-		// The one path under here this crate does not own: `vag_protocol` reads
-		// the number-to-id override itself, and the two have to agree about
-		// where it is or a file somebody wrote by hand is silently ignored.
-		let override_dir = std::path::Path::new(vag_protocol::address::OVERRIDE_PATH).parent().unwrap();
-		assert!(measured_dir().unwrap().ends_with(override_dir), "{override_dir:?}");
+	fn the_one_path_this_crate_does_not_own_is_still_under_the_dot_directory() {
+		// `vag_protocol` reads the number-to-id override itself, by a path it
+		// owns and this crate cannot change without a file somebody wrote by
+		// hand being silently ignored. `crate::migrate` leaves it exactly where
+		// it is for that reason; all that is asserted here is that it is still
+		// inside `~/.vagcan` and not in a checkout.
+		let owned = Path::new(vag_protocol::address::OVERRIDE_PATH);
+		assert!(owned.starts_with(".vagcan"), "{owned:?}");
+		assert!(!owned.is_absolute(), "it is joined onto the home directory: {owned:?}");
 	}
 
 	#[test]
 	fn a_path_the_user_gave_beats_the_default_and_is_not_second_guessed() {
 		let typed = or_default(Some("Cargo.toml"), || unreachable!("the default was consulted")).unwrap();
 		assert!(typed.ends_with("Cargo.toml"), "{typed:?}");
-		assert_eq!(or_default(None, names_catalog).unwrap(), names_catalog().unwrap());
+		assert_eq!(or_default(None, config_file).unwrap(), config_file().unwrap());
 	}
 
 	#[test]
