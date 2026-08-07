@@ -184,6 +184,14 @@ fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Op
 	}))
 }
 
+/// An `s`, when there is more than one of something.
+fn plural(n: usize) -> &'static str {
+	match n {
+		1 => "",
+		_ => "s",
+	}
+}
+
 /// Which project the layout from before projects existed should move into.
 ///
 /// **Spec §6 asks this, and the reason is the one irreversible step in the
@@ -228,15 +236,22 @@ fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrat
 		return Ok(chosen.project.id.clone());
 	}
 
+	let files = old.files();
 	io.say(&format!(
-		"\nThere is data here from before vagcan kept one project per car: {} files under {}.",
-		old.files(),
+		"There is data here from before vagcan kept one project per car: {files} file{} under {}.",
+		plural(files),
 		old.extracted.parent().unwrap_or(&old.extracted).display()
 	))?;
 	match old.proven() {
 		// The sentence that has to be in front of them before they answer.
 		// Everything else here is extracted and can be extracted again.
 		0 => io.say("None of it is measured-on-a-car data, so nothing about this is unrepeatable — it is only a question of where it lands.")?,
+		1 => io.say(
+			"One of them is a row proven by driving a car. Nothing but another drive can recreate it, and \
+             this moves it rather than copying it.\n\
+             If that data is this car's, press Enter. If it is a different car's, give that car a name and \
+             it will be moved there instead.",
+		)?,
 		n => io.say(&format!(
 			"{n} of them are rows proven by driving a car. Nothing but another drive can recreate one, and \
              this moves them rather than copying them.\n\
@@ -1081,10 +1096,10 @@ mod tests {
 
 		let said = io.all_said();
 		assert!(said.contains("proven by driving a car"), "what is at stake is named: {said}");
-		assert!(
-			said.contains("moves them rather than copying them"),
-			"and that it is irreversible: {said}"
-		);
+		assert!(said.contains("rather than copying"), "and that it is irreversible: {said}");
+		// One row is "a row … recreate it", not "1 of them are rows".
+		assert!(said.contains("One of them is a row"), "{said}");
+		assert!(said.contains("2 files under"), "the total is counted too: {said}");
 		// The default is this run's project, so pressing Enter does what the
 		// unprompted version used to do.
 		assert_eq!(io.defaults(), ["SK37X"]);
