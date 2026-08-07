@@ -61,7 +61,18 @@ const ID_EXTRAS: [char; 3] = ['-', '_', '.'];
 const ODIS_STRINGS: [&str; 2] = ["AStringData.data.gz", "AStringData.data"];
 
 /// The ending of one ODIS object pool's index. A project is ~470 of these.
-const ODIS_POOL: &str = ".sd.key";
+///
+/// `.key` and not `.sd.key`, which is what this first matched on. A pool is
+/// named `0.0.0@<PoolID>.<kind>.key`, and `.sd` (service data) is only the
+/// commonest of six kinds counted in a real project — `.bv` base variants, `.fg`
+/// functional groups, `.pr` protocols, `.cp` com params, `.vi` vehicle info. A
+/// project with no `.sd` pool at all cannot be ruled out, and turning a real one
+/// away at the door is the exact failure this recognition exists to prevent.
+///
+/// It is loose on its own — plenty of things end in `.key` — which is why it is
+/// never asked on its own: a directory is a project when it has [`ODIS_STRINGS`]
+/// **and** one of these, and neither half is evidence by itself.
+const ODIS_POOL: &str = ".key";
 
 /// What `setup` was told to learn this car from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +111,7 @@ impl Look {
 	fn expected(self) -> &'static str {
 		match self {
 			Look::Vcds => "A VCDS installation root is the folder holding `Labels/` and `UDS_EV/`.",
-			Look::Odis => "An extracted ODIS project is the folder holding `AStringData.data.gz` and the `<pool>.sd.key` files.",
+			Look::Odis => "An extracted ODIS project is the folder holding `AStringData.data.gz` and the `<pool>.key` files.",
 		}
 	}
 
@@ -206,7 +217,7 @@ fn given_path(given: &str) -> Result<Source> {
 /// Which of the two a directory is, if either.
 ///
 /// Order matters only in that the two tests are exclusive in practice: nothing
-/// holds both a `UDS_EV/` and a pool of `.sd.key` files.
+/// holds both a `UDS_EV/` and an ODIS string pool.
 fn identify(dir: &Path) -> Option<Look> {
 	if !dir.is_dir() {
 		return None;
@@ -422,6 +433,17 @@ fn unescape(text: &str) -> String {
 /// question by taking the default without printing anything ([`Asker::line`]),
 /// and a project name that appears nowhere is a directory somebody finds later
 /// with no idea how it got there.
+///
+/// **The folder name is the fallback, not the authority.** A project names
+/// itself inside, in `index.xml`'s `<CATALOG><SHORT-NAME>`, and that survives
+/// what an unzip does to a folder — `SK37X (1)` on disk is still `SK37X` in
+/// there. `vag_data::odis::Project::id()` is what reads it, and this question is
+/// asked *before* a project is opened, so it cannot. Two consequences the caller
+/// owns: prefer `Project::id()` over this answer once the project is open, and
+/// do not create the directory under this name until they have been compared —
+/// a store at `SK37X-1` holding data that calls itself `SK37X` is one car in two
+/// places. Nothing here reads `index.xml` itself: one rule with two
+/// implementations that can disagree is worse than one that is asked twice.
 pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String]) -> Result<String> {
 	let folder = match source {
 		Source::Odis { dir } => dir.file_name().map(|name| name.to_string_lossy().into_owned()),
@@ -448,6 +470,16 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String]) -> 
 		_ => DEFAULT_ID.to_string(),
 	};
 	io.say("A project is one car's data. A second source is added to it rather than replacing what is there.")?;
+	// A default that appears out of nowhere is worse than no default: somebody
+	// shown `[SK-37X-copy]` with no explanation cannot tell whether the tool
+	// read it somewhere or invented it.
+	if let Some(name) = &folder
+		&& name != &default
+	{
+		io.say(&format!(
+			"The folder is called `{name}`; `{default}` is that name made into one a directory can have."
+		))?;
+	}
 	if !existing.is_empty() {
 		io.say(&format!("Projects already here: {}", existing.join(", ")))?;
 	}
@@ -550,14 +582,22 @@ mod tests {
 	}
 
 	/// A stand-in for an extracted ODIS project: the string pool and one pool
-	/// pair. **No ODIS byte is in this repository** — these are empty files
-	/// under the names the real ones use, which is all the picker looks at.
+	/// pair, named the way a real one is (`0.0.0@<PoolID>.<kind>.key`).
+	/// **No ODIS byte is in this repository** — these are empty files under the
+	/// names the real ones use, which is all the picker looks at.
 	fn odis(root: &Path, name: &str) -> PathBuf {
+		odis_of_kind(root, name, "sd")
+	}
+
+	/// The same, with the pool kind named — `sd` service data, `bv` base
+	/// variants, `fg` functional groups, `pr` protocols, `cp` com params, `vi`
+	/// vehicle info.
+	fn odis_of_kind(root: &Path, name: &str, kind: &str) -> PathBuf {
 		let dir = root.join(name);
 		std::fs::create_dir_all(&dir).unwrap();
 		std::fs::write(dir.join("AStringData.data.gz"), b"").unwrap();
-		std::fs::write(dir.join("BL_LIBECM.sd.key"), b"").unwrap();
-		std::fs::write(dir.join("BL_LIBECM.sd.db"), b"").unwrap();
+		std::fs::write(dir.join(format!("0.0.0@BL_LIBECM.{kind}.key")), b"").unwrap();
+		std::fs::write(dir.join(format!("0.0.0@BL_LIBECM.{kind}.db")), b"").unwrap();
 		dir
 	}
 
@@ -714,6 +754,30 @@ mod tests {
 	}
 
 	#[test]
+	fn a_pool_of_any_kind_makes_a_project_not_just_the_service_data_one() {
+		// This first matched on `.sd.key`, which is only the commonest of the
+		// six kinds a real project carries. A project whose pools happen to be
+		// `.bv`/`.fg`/`.pr`/`.cp`/`.vi` is still a project, and turning a real
+		// one away at the door is the failure this recognition exists to stop.
+		let here = tempfile::tempdir().unwrap();
+		for kind in ["sd", "bv", "fg", "pr", "cp", "vi"] {
+			let project = odis_of_kind(here.path(), &format!("SK37X-{kind}"), kind);
+			assert_eq!(identify(&project), Some(Look::Odis), "a `.{kind}` pool is a pool");
+		}
+	}
+
+	#[test]
+	fn a_directory_of_keys_with_no_string_pool_is_not_a_project() {
+		// `.key` on its own is loose — an SSH directory, a certificate store.
+		// The two halves are only evidence together.
+		let here = tempfile::tempdir().unwrap();
+		let keys = here.path().join("keys");
+		std::fs::create_dir_all(&keys).unwrap();
+		std::fs::write(keys.join("id_rsa.key"), b"").unwrap();
+		assert_eq!(identify(&keys), None);
+	}
+
+	#[test]
 	fn half_an_extraction_is_not_a_project() {
 		// The string pool without a single object pool: `vag_data::odis` would
 		// be sent looking for objects that are not there.
@@ -760,6 +824,11 @@ mod tests {
 		let id = project_id(&mut io, &Source::Odis { dir: project }, &[]).unwrap();
 		assert_eq!(io.defaults(), ["SK-37X-copy"], "the offered default is the folder name, cleaned");
 		assert_eq!(id, "SK-37X-copy");
+		// A default out of nowhere is worse than no default: it has to say
+		// where it came from, or nobody can tell it from an invention.
+		let said = io.all_said();
+		assert!(said.contains("SK 37X (copy)"), "the folder it came from is named: {said}");
+		assert!(said.contains("SK-37X-copy"), "{said}");
 	}
 
 	#[test]
