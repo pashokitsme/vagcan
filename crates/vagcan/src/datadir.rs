@@ -47,20 +47,34 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///
 /// ```text
 /// ~/.vagcan/
-///   data/
-///     extracted/                      parsed from a VCDS install by `setup`:
-///       cache.sqlite                    the label files, queryable
-///       names.json                      measurement names recovered from TTTEXT
+///   rod/                              raw VCDS files read at run time, shared
+///                                     across every project: the .rod files and
+///                                     this build's fault text
+///   projects/
+///     SK37X/                          one directory per car — see `crate::project`
+///       cache.sqlite                    the label and ODIS rows, queryable
+///       names.json                      text id -> name
 ///       rod-keys.json                   recovered .rod section keys
-///     measured/                       proven measurement rows, one file per
-///                                     part number, plus unit-numbers.json
-///   config.json                       settings that are not about one car
+///       measurement/                    proven-on-car rows, one file per part number
+///       sources.json                    where this project's data came from
+///   data/                             the layout before projects existed, moved
+///     extracted/                      into the first project on the next run and
+///     measured/                       then gone — see `crate::migrate`
+///   config.json                       settings that are not about one car,
+///                                     including which project a bare command means
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
 ///       car.json                      mass, tyre, measured road load
 ///       measures/2026-08-04-1241.json one saved session per file
 ///       reports/                      surveys, fault dumps, whatever is kept
 /// ```
+///
+/// **`projects/` and `cars/` are keyed differently on purpose.** A project is
+/// keyed by what the *data source* calls the vehicle (`SK37X`, VW's own project
+/// id) and holds what was extracted from someone else's files; `cars/` is keyed
+/// by the VIN the car itself answers and holds what was read off that one
+/// vehicle. One VCDS installation serves every Škoda of that family; one VIN is
+/// one car.
 ///
 /// One dot-directory rather than each platform's convention.
 /// `dirs::config_dir` would scatter this across `~/.config` and
@@ -84,8 +98,37 @@ pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
 	vagcan_dir_in(dirs::home_dir())
 }
 
-/// Everything `vagcan setup` parses out of a VCDS installation — the label
-/// cache, the recovered names, the `.rod` keys.
+/// One directory per car, each holding everything learned about it.
+///
+/// Named for what the *source* calls the vehicle, not for its VIN: an ODIS
+/// project ships its own identifier (`SK37X`) and a VCDS-only project is named
+/// by the person, and neither of them has ever seen a VIN. `crate::project`
+/// owns what is inside one.
+pub fn projects_dir() -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("projects"))
+}
+
+/// The raw VCDS files every project reads at run time, kept once.
+///
+/// A `.rod` file is a property of a VCDS **build**, not of a car — the same
+/// `TTTEXT.ROD` byte for byte serves every project parsed from that build — so
+/// a copy per project would be tens of megabytes each to hold identical bytes.
+/// `crate::project::rod_pool` is what creates it.
+pub fn rod_pool_dir() -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("rod"))
+}
+
+/// Settings that are not about one car — which project a bare command means.
+pub fn config_file() -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("config.json"))
+}
+
+/// The single extracted directory from before projects existed.
+///
+/// Kept only so `crate::migrate` can find what is in it and move it into the
+/// first project. Nothing else may read from here: after the move it is gone,
+/// and a reader still pointing at it would silently find nothing on a machine
+/// that had been migrated and everything on one that had not.
 pub fn extracted_dir() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("data").join("extracted"))
 }
@@ -118,7 +161,12 @@ pub fn label_cache() -> anyhow::Result<PathBuf> {
 	Ok(extracted_dir()?.join("cache.sqlite"))
 }
 
-/// Where the proven measurement rows live, one file per part number.
+/// The proven measurement rows from before projects existed.
+///
+/// Same story as [`extracted_dir`], and a sharper one: **these rows cannot be
+/// recreated.** They were proven by driving a car, and `crate::migrate` copies
+/// them into `projects/<id>/measurement/` and verifies the copy before removing
+/// anything. Nothing else reads from here.
 pub fn measured_dir() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("data").join("measured"))
 }

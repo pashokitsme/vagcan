@@ -21,6 +21,7 @@ mod measure;
 mod missing;
 mod names;
 mod progress;
+mod project;
 mod props;
 mod recording;
 mod render;
