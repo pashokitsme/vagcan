@@ -39,6 +39,7 @@
 //! `vagcan setup` on an unchanged installation has nothing to do and should
 //! take a second to establish that.
 
+pub mod source;
 pub mod vendor;
 
 use std::io::IsTerminal;

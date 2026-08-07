@@ -114,9 +114,12 @@ on disk is selected automatically without config. No project at all is the exist
 | `crates/vag-db/src/lib.rs` | C | schema D1 |
 | `crates/vagcan/src/main.rs` | C | `--project`, the reworded `setup` help |
 
-Owners A/B/C never edit each other's files. The two shared files are
-`crates/vag-data/src/lib.rs` (A adds one `pub mod odis;` line) and
-`crates/vagcan/src/ui/mod.rs` (B adds one `pub mod menu;` line).
+Owners A/B/C never edit each other's files. The three shared files are
+`crates/vag-data/src/lib.rs` (A adds one `pub mod odis;` line),
+`crates/vagcan/src/ui/mod.rs` (B adds one `pub mod menu;` line) and
+`crates/vagcan/src/setup/mod.rs` (B adds one `pub mod source;` line — a module
+nobody declares is a module nobody compiles, so B's own task cannot go green
+without it; everything else in that file is C's).
 
 ---
 
