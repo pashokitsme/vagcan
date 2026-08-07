@@ -42,6 +42,8 @@
 use super::Error;
 use super::object::Stream;
 
+pub mod measurement;
+
 /// The type codes this reader knows, as the MCD kernel numbers them.
 ///
 /// Only the types reached by the measurement and identification chains, plus
@@ -103,6 +105,10 @@ pub mod code {
 	pub const MCD_DB_RESPONSE: u16 = 0x0091;
 	/// `MCD_DB_RESPONSE_PARAMETERS` — its parameter list.
 	pub const MCD_DB_RESPONSE_PARAMETERS: u16 = 0x0092;
+	/// `MCD_DB_PARAMETERS` — a bare parameter list, as a structure holds one.
+	pub const MCD_DB_PARAMETERS: u16 = 0x006D;
+	/// `MCD_AUDIENCE` — who is allowed to run something.
+	pub const MCD_AUDIENCE: u16 = 0x0115;
 	/// `MCD_DB_PARAMETER_MULTIPLEXER` — a channel whose shape varies.
 	pub const MCD_DB_PARAMETER_MULTIPLEXER: u16 = 0x00A0;
 	/// `MCD_DB_PARAMETER` — one field of a request or a response.
@@ -189,20 +195,213 @@ pub enum Outcome {
 	Unsupported(u16),
 }
 
+/// A reference to another object, by pool and name.
+///
+/// Either half can be absent. A missing `pool` is the common case and means
+/// "look this name up in the layer data's own index" — the writer omits the
+/// pool when the target is reachable from the referring variant's inheritance
+/// chain.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ref {
+	/// The target's ObjectID.
+	pub object: Option<String>,
+	/// The PoolID it lives in, when the writer bothered to say.
+	pub pool: Option<String>,
+}
+
+/// Read a `DbObjectReference`: ObjectID, PoolID, and optionally a third name
+/// and a string vector, both of which vary by call site.
+pub fn reference(stream: &mut Stream<'_>, third: bool, strings: bool) -> Result<Ref, Error> {
+	let object = stream.ascii()?.map(str::to_owned);
+	let pool = stream.ascii()?.map(str::to_owned);
+	if third {
+		let _also = stream.ascii()?;
+	}
+	if strings {
+		string_list(stream)?;
+	}
+	Ok(Ref { object, pool })
+}
+
+/// Read a `DbAttributedObjectReference`: a reference plus a byte-counted list
+/// of attribute names.
+pub fn attributed_reference(stream: &mut Stream<'_>) -> Result<Ref, Error> {
+	let object = stream.ascii()?.map(str::to_owned);
+	let pool = stream.ascii()?.map(str::to_owned);
+	string_list(stream)?;
+	Ok(Ref { object, pool })
+}
+
+/// Read a `DbDiagComObjectReference`: an attributed reference, a number, an
+/// object-type enum, and an optional string vector.
+pub fn diag_com_reference(stream: &mut Stream<'_>) -> Result<Ref, Error> {
+	let target = attributed_reference(stream)?;
+	let _number = stream.u8()?;
+	let _mcd_object_type = stream.u16()?;
+	if stream.flag()? {
+		let count = stream.count()?;
+		for _ in 0..count {
+			let _name = stream.ascii()?;
+		}
+	}
+	Ok(target)
+}
+
+/// Read a byte-counted list of pooled names, discarding them.
+fn string_list(stream: &mut Stream<'_>) -> Result<(), Error> {
+	let count = stream.u8()?;
+	for _ in 0..count {
+		let _name = stream.ascii()?;
+	}
+	Ok(())
+}
+
+/// Read a `DbNamedObjectReferences` collection: `(name, reference)` pairs.
+pub fn named_references(stream: &mut Stream<'_>) -> Result<Vec<(Option<String>, Ref)>, Error> {
+	let count = stream.count()?;
+	let mut out = Vec::with_capacity(count.min(1024));
+	for _ in 0..count {
+		let name = stream.ascii()?.map(str::to_owned);
+		out.push((name, reference(stream, true, false)?));
+	}
+	Ok(out)
+}
+
+/// Read a map from a pooled name to a reference.
+pub fn reference_map(stream: &mut Stream<'_>, strings_in_reference: bool) -> Result<Vec<(Option<String>, Ref)>, Error> {
+	let count = stream.count()?;
+	let mut out = Vec::with_capacity(count.min(4096));
+	for _ in 0..count {
+		let key = stream.ascii()?.map(str::to_owned);
+		out.push((key, reference(stream, false, strings_in_reference)?));
+	}
+	Ok(out)
+}
+
+/// Read a map from a pooled name to a `DbDiagComObjectReference`.
+pub fn diag_com_reference_map(stream: &mut Stream<'_>) -> Result<Vec<(Option<String>, Ref)>, Error> {
+	let count = stream.count()?;
+	let mut out = Vec::with_capacity(count.min(4096));
+	for _ in 0..count {
+		let key = stream.ascii()?.map(str::to_owned);
+		out.push((key, diag_com_reference(stream)?));
+	}
+	Ok(out)
+}
+
+/// Read a map from a pooled name to a list of pooled names, discarding it.
+pub fn string_vector_map(stream: &mut Stream<'_>) -> Result<(), Error> {
+	let count = stream.count()?;
+	for _ in 0..count {
+		let _key = stream.ascii()?;
+		let inner = stream.count()?;
+		for _ in 0..inner {
+			let _name = stream.ascii()?;
+		}
+	}
+	Ok(())
+}
+
+/// Read a list of pooled names.
+pub fn name_list(stream: &mut Stream<'_>) -> Result<Vec<String>, Error> {
+	let count = stream.count()?;
+	let mut out = Vec::with_capacity(count.min(4096));
+	for _ in 0..count {
+		if let Some(name) = stream.ascii()? {
+			out.push(name.to_owned());
+		}
+	}
+	Ok(out)
+}
+
+/// Read an optionally-present nested object of a known type.
+///
+/// The slot is a flag, then — if set — a whole object: its own two-byte type
+/// code, its fields, and its own terminator. `load` is responsible for the
+/// fields and the terminator; this is responsible for the flag, the code and
+/// the refusal check.
+pub fn nested<T>(stream: &mut Stream<'_>, expect: u16, load: impl FnOnce(&mut Stream<'_>) -> Result<T, Error>) -> Result<Option<T>, Error> {
+	nested_any(stream, |found, stream| {
+		if found != expect {
+			return Err(Error::Format(format!(
+				"a nested object is type {found:#06x} where {expect:#06x} was expected"
+			)));
+		}
+		load(stream)
+	})
+}
+
+/// Read an optionally-present nested object whose type is not fixed.
+///
+/// Several slots are polymorphic — a parameter can be any of five types, a
+/// data object property any of three — so the type code decides which loader
+/// runs. A code on [`REFUSED`] stops the parse with [`Error::Refused`]: the
+/// object cannot be skipped (nothing in the stream says how long it is) and it
+/// will not be parsed, so the only honest outcome is to stop and say which
+/// type stopped it.
+pub fn nested_any<T>(stream: &mut Stream<'_>, load: impl FnOnce(u16, &mut Stream<'_>) -> Result<T, Error>) -> Result<Option<T>, Error> {
+	if !stream.flag()? {
+		return Ok(None);
+	}
+	let found = stream.u16()?;
+	if let Some(name) = refused_type_name(found) {
+		return Err(Error::Refused(name));
+	}
+	load(found, stream).map(Some)
+}
+
 /// A parsed object, one variant per type this reader loads.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Object {}
+pub enum Object {
+	/// `DB_DOP_SIMPLE_BASE` — a scalar channel's coded shape and scaling.
+	Dop(measurement::Dop),
+	/// `MCD_DB_PARAMETER` and its four aliases.
+	Parameter(measurement::Parameter),
+	/// `MCD_DB_PARAMETER_STRUCTURE` — a channel's internal layout.
+	Structure(measurement::Structure),
+	/// `MCD_DB_RESPONSE` — a service's positive response.
+	Response(measurement::Response),
+	/// `MCD_DB_SERVICE` — one diagnostic service.
+	Service(measurement::Service),
+	/// `MCD_DB_TABLE` — the set of channels a service can read.
+	Table(measurement::Table),
+	/// `MCD_DB_TABLE_PARAMETER` — one row of such a table.
+	TableRow(measurement::TableRow),
+	/// `MCD_DB_UNIT` — an engineering unit.
+	Unit(measurement::Unit),
+}
 
 /// Parse one inflated member.
 ///
 /// The type code decides everything: a refused type is not read at all — the
 /// stream is left exactly where it was — an unknown one is reported as such,
 /// and a known one is handed to the loader that transcribes its field order.
-pub fn load(type_code: u16, _stream: &mut Stream<'_>) -> Result<Outcome, Error> {
+///
+/// The terminator is consumed **here**, once, for the member as a whole.
+/// Nested objects do not carry one: only the outermost object in a `.db`
+/// member is terminated, and a loader that consumed a terminator of its own
+/// would eat the first bytes of the field after it.
+pub fn load(type_code: u16, stream: &mut Stream<'_>) -> Result<Outcome, Error> {
 	if refused(type_code) {
 		return Ok(Outcome::Refused);
 	}
-	Ok(Outcome::Unsupported(type_code))
+	let object = match type_code {
+		code::DB_DOP_SIMPLE_BASE => Object::Dop(measurement::dop(stream)?),
+		code::MCD_DB_PARAMETER
+		| code::MCD_DB_PARAMETER_SIMPLE
+		| code::MCD_DB_PARAMETER_TABLE_KEY
+		| code::MCD_DB_PARAMETER_TABLESTRUCT
+		| code::MCD_DB_MATCHING_REQUEST_PARAMETER => Object::Parameter(measurement::parameter(stream, type_code)?),
+		code::MCD_DB_PARAMETER_STRUCTURE => Object::Structure(measurement::structure(stream)?),
+		code::MCD_DB_RESPONSE => Object::Response(measurement::response(stream)?),
+		code::MCD_DB_SERVICE => Object::Service(measurement::service(stream)?),
+		code::MCD_DB_TABLE => Object::Table(measurement::table(stream)?),
+		code::MCD_DB_TABLE_PARAMETER => Object::TableRow(measurement::table_row(stream)?),
+		code::MCD_DB_UNIT => Object::Unit(measurement::unit(stream)?),
+		other => return Ok(Outcome::Unsupported(other)),
+	};
+	stream.end()?;
+	Ok(Outcome::Object(object))
 }
 
 #[cfg(test)]

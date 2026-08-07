@@ -160,8 +160,15 @@ pub struct Project { /* private */ }
 
 /// Everything that can go wrong reading one. Hand-rolled like `vag_db::Error`
 /// — `vag-data` has no `anyhow` and gains none here.
+///
+/// `Refused` was added by owner A during Task 6 and is not cosmetic: a type on
+/// the permanent refusal list can appear *inside* another object, where it
+/// cannot be skipped (nothing in the stream says how long it is). `Format`
+/// would say the opposite of what happened — `Format` means the file is wrong,
+/// `Refused` means the file is fine and the tool declines. A caller that wants
+/// the rest of a project matches on `Refused`, skips that object and carries on.
 #[derive(Debug)]
-pub enum Error { Io(std::io::Error), Format(String), Missing(String) }
+pub enum Error { Io(std::io::Error), Format(String), Missing(String), Refused(&'static str) }
 
 /// One ECU variant an ODIS project describes.
 pub struct Variant {

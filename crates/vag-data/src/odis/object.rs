@@ -18,10 +18,15 @@
 //! `23 3C 00` (`#<\0`, 168,819, exactly the `MCD_DB_TABLE_PARAMETER` count).
 //! `ODIS-project-explorer` only documents the first. Both are accepted here.
 //!
-//! A terminator is not always the *last* three bytes of a member: some types
-//! append further named sub-streams after it. So [`Stream::end`] asserts that
-//! the terminator is where the fields stopped, and says nothing about what
-//! follows.
+//! Only the **outermost** object of a member is terminated. A nested one — a
+//! compu method inside a data object property, say — runs straight into the
+//! field that follows it, so a loader that consumed a terminator of its own
+//! would eat the next field's first bytes.
+//!
+//! A terminator is also not always the *last* three bytes of a member: some
+//! types append further named sub-streams after it. So [`Stream::end`] asserts
+//! that the terminator is where the fields stopped, and says nothing about
+//! what follows.
 //!
 //! ## Strings
 //! Most string fields are a four-byte hash into one of the two pools

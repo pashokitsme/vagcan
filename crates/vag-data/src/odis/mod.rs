@@ -14,6 +14,7 @@
 //! cases are refused by name in [`loaders::refused_type_name`], permanently.
 //! See `SAFETY.md` and the design's §2.
 
+pub mod compu;
 pub mod hash;
 pub mod keyfile;
 pub mod loaders;
@@ -38,6 +39,15 @@ pub enum Error {
 	/// Something the project should contain was not there: a pool, a named
 	/// object, a reference's target.
 	Missing(String),
+	/// The object contains a type on [`loaders::REFUSED`], the permanent
+	/// never-parsed list, so it was not parsed at all.
+	///
+	/// Kept apart from [`Error::Format`] because it says the opposite thing: a
+	/// `Format` error means the file is wrong, this means the file is fine and
+	/// the tool declines. A caller that wants the rest of a project should skip
+	/// what raised this and carry on — see the note on the `CASE` family in
+	/// [`loaders`].
+	Refused(&'static str),
 }
 
 impl std::fmt::Display for Error {
@@ -46,6 +56,7 @@ impl std::fmt::Display for Error {
 			Error::Io(e) => write!(f, "io error: {e}"),
 			Error::Format(m) => write!(f, "malformed ODIS project: {m}"),
 			Error::Missing(m) => write!(f, "not in this ODIS project: {m}"),
+			Error::Refused(t) => write!(f, "contains {t}, which this tool never parses"),
 		}
 	}
 }
