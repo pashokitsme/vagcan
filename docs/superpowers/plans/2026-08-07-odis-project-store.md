@@ -412,11 +412,25 @@ for the first time:
 Neither is worked around in owner C's code: `setup`'s ODIS branch reports the
 error and writes nothing, which is the honest outcome until the parser lands.
 
-**Not yet verified, and it is the claim the spec rests on:** DID `0x380A` coming
-back `IDENTICAL` on the real engine. There is no path to a `Reading` while
-`variants()` returns nothing, so `research/labels/rod-labels.md:433` remains
-cross-checked only against owner A's synthetic fixture. It is the first thing to
-re-run once 14a lands.
+- [ ] **Task 14c — `readings()` returns nothing even when handed a variant.**
+      Checked from the other direction, because 14a/14b alone would not have
+      proved the chain works: all 385 `EV_ECM*` names in the project's own ascii
+      string pool were fed to `Project::readings` as a hand-built `Variant`
+      against `0.0.0@BV_EnginContrModul1UDS.bv`, bypassing `variants()`
+      entirely. **Every one returned `Ok(empty)` — no errors, no channels.**
+      An empty list is `readings`'s answer for "this variant lists no
+      `RtGen_DB_LAYER_DATA` measurement service", so either `layer_data` finds
+      nothing for a real variant (both the generated `LD_<variant>` name and the
+      pool scan miss) or the service name constant does not match what this
+      project uses. Fixing 14a will not by itself produce a reading.
+
+**Not verified, and it is the claim the spec rests on:** DID `0x380A` coming
+back `IDENTICAL` on the real engine. There is no path to a `Reading` on this
+project at all — not through `variants()` (14a/14b) and not around it (14c) — so
+`research/labels/rod-labels.md:433` remains cross-checked only against owner A's
+synthetic fixture, which is built to the same understanding of the format that
+the real files have just contradicted. It is the first thing to re-run once the
+chain produces anything.
 
 ### Increment 2 — the rest of the scope (owner A, then C)
 
