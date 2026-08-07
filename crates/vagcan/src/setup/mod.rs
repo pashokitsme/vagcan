@@ -123,6 +123,14 @@ pub struct Options<'a> {
 struct Chosen {
 	source: source::Source,
 	project: crate::project::Project,
+	/// The projects that were already on disk when this run started — read
+	/// before anything was created, so [`Chosen::project`] is not in it.
+	///
+	/// Kept rather than re-read because two later decisions turn on it and both
+	/// would get a different answer afterwards: whether the name this run
+	/// landed on is a merge, and whether the old pre-project layout can be moved
+	/// without asking whose car it is.
+	existing: Vec<String>,
 	/// The opened ODIS project, when that is what this is. Opened before the
 	/// directory was created, and kept rather than reopened: it holds 88 MB of
 	/// inflated string pools.
@@ -150,12 +158,13 @@ fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Op
 		_ => None,
 	};
 	let id = match &odis {
-		Some(project) => prefer_its_own_name(io, project.id(), &asked)?,
+		Some(project) => prefer_its_own_name(io, project.id(), &asked, &existing)?,
 		None => asked,
 	};
 	Ok(Some(Chosen {
 		source,
 		project: crate::project::open_or_create(&id)?,
+		existing,
 		odis,
 	}))
 }
@@ -180,15 +189,28 @@ fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_dat
 /// Falls back to what the folder was called when `<SHORT-NAME>` holds something
 /// a directory cannot be named: nothing is sanitised into shape here, because a
 /// mangled name files a car where no later run would look for it.
-fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str) -> Result<String> {
+///
+/// **`existing` is why this takes four arguments.** `source::project_id` has
+/// already said "New — nothing has been read into it yet" or "added to the one
+/// already there", and it said it about `asked`. Swapping the name here can
+/// turn one into the other, and the case where it does is the ordinary re-run:
+/// a second download unzips to `SK37X (1)`, which cleans to a name no project
+/// has, so the person is told "New" — and then `<SHORT-NAME>` files it into the
+/// `SK37X` that has been there all along. Design §5 makes that a merge, and a
+/// merge nobody was told about is the one this has to say out loud.
+fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str, existing: &[String]) -> Result<String> {
 	if named == asked {
 		return Ok(asked.to_string());
 	}
 	match crate::project::folder_name(named) {
 		Ok(own) => {
+			let merge = match existing.iter().any(|id| *id == own) {
+				true => " That project is already here: this source is added to it, and nothing already in it is replaced.",
+				false => "",
+			};
 			io.say(&format!(
 				"The project calls itself `{own}` in its own index.xml, so that is what it is filed under — \
-                 not `{asked}`, which is only what the folder happens to be called. One car, one store."
+                 not `{asked}`, which is only what the folder happens to be called. One car, one store.{merge}"
 			))?;
 			Ok(own)
 		}
@@ -850,20 +872,41 @@ mod tests {
 		// car in two stores — the two-directory bug `datadir::existing_folder`
 		// was written to undo, arriving by a different door.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy").unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &[]).unwrap(), "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("SK37X"), "{said}");
 		assert!(said.contains("One car, one store"), "it says why: {said}");
 
 		// Agreement is silent — there is nothing to explain.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X").unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X", &[]).unwrap(), "SK37X");
 		assert!(io.said.is_empty(), "{:?}", io.said);
 
 		// A `<SHORT-NAME>` that could not be a directory falls back rather than
 		// being sanitised: a mangled name files a car where nothing looks for it.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X").unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[]).unwrap(), "SK37X");
+	}
+
+	#[test]
+	fn a_name_swap_onto_a_project_that_exists_says_it_is_a_merge_after_all() {
+		// The ordinary re-run, and the one case where the swap changes the
+		// answer somebody was already given: a second download unzips to
+		// `SK37X (1)`, which cleans to a name no project has, so
+		// `source::project_id` says "New — nothing has been read into it yet".
+		// Then `<SHORT-NAME>` files it into the `SK37X` that has been there all
+		// along. Design §5 makes that a merge, and nobody has been told.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		let existing = ["SK37X".to_string()];
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing).unwrap(), "SK37X");
+		let said = io.all_said();
+		assert!(said.contains("already here"), "{said}");
+		assert!(said.contains("nothing already in it is replaced"), "{said}");
+
+		// A swap onto a name nothing holds is still new, and says nothing extra.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &[]).unwrap(), "SK37X");
+		assert!(!io.all_said().contains("already here"), "{:?}", io.said);
 	}
 
 	#[test]
