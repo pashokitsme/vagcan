@@ -16,6 +16,7 @@
 
 pub mod hash;
 pub mod keyfile;
+pub mod pool;
 pub mod strings;
 
 /// Everything that can go wrong reading a project.
