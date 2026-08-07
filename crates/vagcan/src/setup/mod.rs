@@ -33,6 +33,21 @@
 //!
 //! **Offline.** No adapter is opened and no car is addressed.
 //!
+//! ## `vagcan setup` with no terminal now exits 1, and that is deliberate
+//!
+//! It used to print "Nothing downloaded…" and exit **0**: `confirm_download`
+//! answered no on a redirected stdin, and a declined offer is a decision
+//! honoured, which is a success. That reasoning does not survive the menu.
+//! There is no default source any more — with no path and no terminal there is
+//! nothing to decide *with*, and exit 0 would tell a script that setup
+//! succeeded when nothing was set up. The next command then fails with "no car
+//! has been set up yet", one command away from the thing that caused it.
+//!
+//! So the refusal is an error, and it names the command line that needs no menu
+//! ([`crate::ui::menu`]'s `no_terminal`). A script doing `vagcan setup || …`
+//! changes behaviour on upgrade, and changes it to the branch it should always
+//! have taken. `setup <PATH>` is unaffected and still works under `</dev/null`.
+//!
 //! ## Running it twice
 //!
 //! Each VCDS step is skipped when what it would write is already newer than what
@@ -962,6 +977,28 @@ mod tests {
 		// being sanitised: a mangled name files a car where nothing looks for it.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[]).unwrap(), "SK37X");
+	}
+
+	#[test]
+	fn a_run_that_could_not_ask_fails_rather_than_succeeding_at_nothing() {
+		// The exit-code decision, pinned. With no path and no way to ask, there
+		// is nothing to decide with — and `Ok(())` here would tell a script that
+		// setup succeeded when nothing was set up, leaving the real failure to
+		// surface one command later as "no car has been set up yet".
+		//
+		// Driven with an asker that has no answers rather than with a real
+		// terminal check, so what is under test is that `run_with` propagates
+		// the refusal instead of swallowing it.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		let outcome = run_with(
+			&mut io,
+			Options {
+				dir: None,
+				refresh: false,
+				archive_base: vendor::ARCHIVE_BASE,
+			},
+		);
+		assert!(outcome.is_err(), "a run that asked nobody anything reported success");
 	}
 
 	#[test]
