@@ -428,6 +428,14 @@ re-run once 14a lands.
       `MCD_DB_FUNCTIONAL_CLASS`, plus a `Project::units()` accessor.
 - [ ] **Task 17 — wiring increment 2.** `faults` and `units` read the ODIS-derived
       rows where a VCDS row is absent, with `measurement/` still winning (spec §4.5).
+- [ ] **Task 17a — the front-page docs still name the layout that moved.** 29
+      references to `~/.vagcan/data/extracted/` and `~/.vagcan/data/measured/`
+      across `README.md`, `USAGE.md`, `ARCHITECTURE.md`, `todo/README.md` and two
+      skills, all of them now pointing at directories a migrated machine no
+      longer has. Owner C's change created this and did not fix it: the three
+      front-page documents split by audience and rewriting them properly is its
+      own pass, not a `sed`. `USAGE.md`'s worked `setup` output is the sharpest
+      case — it shows a transcript no run produces any more.
 - [ ] **Task 18 — the writeup.** `research/labels/odis-format.md`, which spec §1 names
       as this work's missing document: the three formats as implemented, the
       cross-check against `0x380A`, and what a second ODIS project would test.
