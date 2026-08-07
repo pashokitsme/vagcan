@@ -16,6 +16,7 @@ pub mod label_files;
 pub mod measure;
 pub mod mwb;
 pub mod obd;
+pub mod odis;
 pub mod rod;
 mod tea;
 pub mod tttext;
