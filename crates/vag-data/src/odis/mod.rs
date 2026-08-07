@@ -16,6 +16,7 @@
 
 pub mod hash;
 pub mod keyfile;
+pub mod object;
 pub mod pool;
 pub mod strings;
 

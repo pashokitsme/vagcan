@@ -199,7 +199,7 @@ fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, Error> {
 /// map to the matching C1 control, following the WHATWG encoding standard —
 /// they do not occur in the reference project, and a name is not worth failing
 /// a whole project over.
-fn cp1252(bytes: &[u8]) -> String {
+pub(super) fn cp1252(bytes: &[u8]) -> String {
 	/// The `0x80–0x9F` block, in order. `\u{81}` etc. are the undefined slots.
 	const HIGH: [char; 32] = [
 		'\u{20AC}', '\u{81}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}',
