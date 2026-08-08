@@ -97,6 +97,21 @@ impl<'a> Stream<'a> {
 		self.data.len().saturating_sub(self.at)
 	}
 
+	/// Where the cursor is, so a loader can come back to it.
+	pub fn mark(&self) -> usize {
+		self.at
+	}
+
+	/// Put the cursor back where [`Stream::mark`] said.
+	///
+	/// The one place a loader may move backwards, and it exists for exactly one
+	/// case: an object whose tail this reader cannot follow, where the choice is
+	/// between abandoning the head it *did* read and rewinding to leave the
+	/// stream honest about how far it got. Nothing is re-read; the caller stops.
+	pub fn rewind(&mut self, mark: usize) {
+		self.at = mark.min(self.data.len());
+	}
+
 	/// Consume the terminator that ends an object's fields.
 	///
 	/// Anything else here means the loader and the file disagree about the

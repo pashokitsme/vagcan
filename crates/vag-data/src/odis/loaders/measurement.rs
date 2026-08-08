@@ -416,6 +416,22 @@ pub fn parameter(stream: &mut Stream<'_>, type_code: u16) -> Result<Parameter, E
 	Ok(out)
 }
 
+/// Read an `MCD_DB_PROTOCOL_PARAMETER`: a parameter plus its protocol framing.
+///
+/// Walked for alignment inside a layer's tail, and kept by nobody — a timing or
+/// an addressing mode is the transport's business, and `vag-protocol` already
+/// owns that.
+pub fn protocol_parameter(stream: &mut Stream<'_>, type_code: u16) -> Result<(), Error> {
+	parameter(stream, type_code)?;
+	let _class = stream.u16()?;
+	let _kind = stream.u16()?;
+	nested(stream, code::MCD_DB_PARAMETERS, parameters)?;
+	let _protocol_stack = stream.ascii()?;
+	let _protocol = stream.ascii()?;
+	let _usage = stream.u16()?;
+	Ok(())
+}
+
 /// Read an `MCD_DB_PARAMETERS` / `MCD_DB_RESPONSE_PARAMETERS` collection.
 pub fn parameters(stream: &mut Stream<'_>) -> Result<Vec<Parameter>, Error> {
 	let count = stream.count()?;

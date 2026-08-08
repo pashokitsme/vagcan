@@ -117,6 +117,16 @@ pub struct Reading {
 	pub bit_length: u32,
 	/// Whether those bits are a signed quantity.
 	pub signed: bool,
+	/// Whether the bytes run most-significant first.
+	///
+	/// Not decoration, and not safe to assume. UDS payloads are big-endian by
+	/// convention, and the reference car's own proven row is not: DID `0x380A`
+	/// on the gearbox is `u16` **little-endian**
+	/// (`research/labels/rod-labels.md:433`, established byte by byte against a
+	/// log), and the ODIS file says the same — `is_high_low_byte_order` is
+	/// false for it. A decoder that assumed big-endian would read 690 /min as
+	/// 45570.
+	pub big_endian: bool,
 	/// How the raw value becomes an engineering one.
 	pub scaling: crate::catalog::Scaling,
 	/// The text id of [`Reading::name`] — the join to `TTTEXT`
@@ -194,8 +204,14 @@ impl Project {
 			if type_code != loaders::code::DB_PROJECT_DATA {
 				continue;
 			}
-			let data = loaders::identity::project_data(&mut stream)?;
-			stream.end()?;
+			// A pool whose variant list does not parse is named, not swallowed:
+			// the list is the answer, so there is nothing to carry on with.
+			let data = loaders::identity::project_data(&mut stream)
+				.and_then(|data| stream.end().map(|()| data))
+				.map_err(|e| match e {
+					Error::Format(m) => Error::Format(format!("{pool_id}: {m}")),
+					other => other,
+				})?;
 			let base = data.base_variant.object.clone();
 			if let Some(name) = base.clone() {
 				out.push(Variant {
@@ -446,6 +462,9 @@ impl<'a> Store<'a> {
 		let mut parents = vec![home.to_owned()];
 		parents.extend(layer.parents.iter().cloned());
 		for pool_id in parents {
+			// Best-effort on purpose: a parent layer is consulted only to give a
+			// reference its pool back, and a parent this reader cannot read
+			// costs the lookups that needed it, not the whole variant.
 			if let Ok(Some(loaders::Object::LayerData(data))) = self.named(&pool_id, loaders::identity::LAYER_DATA_ID) {
 				self.inherited.push(data);
 			}
@@ -464,10 +483,13 @@ impl<'a> Store<'a> {
 	fn layer_data(&mut self, variant: &Variant) -> Result<Option<loaders::identity::LayerData>, Error> {
 		let generated = format!("LD_{}", variant.name);
 		for object_id in [generated.as_str(), loaders::identity::LAYER_DATA_ID] {
-			if let Ok(Some(loaders::Object::LayerData(data))) = self.named(&variant.pool, object_id)
-				&& data.variant.object.as_deref() == Some(variant.name.as_str())
-			{
-				return Ok(Some(data));
+			// A name that is simply absent falls through to the next candidate;
+			// a name that is present and does not parse is an error and is said
+			// so. Swallowing it was how a broken layer became an empty channel
+			// list, and an `Ok` with nothing in it says nothing is wrong.
+			match self.named(&variant.pool, object_id)? {
+				Some(loaders::Object::LayerData(data)) if data.variant.object.as_deref() == Some(variant.name.as_str()) => return Ok(Some(data)),
+				_ => continue,
 			}
 		}
 		self.scan_for_layer_data(variant)
@@ -601,6 +623,7 @@ impl<'a> Store<'a> {
 				bit_offset: byte.saturating_mul(8).saturating_add(u32::from(field.bit_position)),
 				bit_length: bits,
 				signed: coded.base.is_signed(),
+				big_endian: coded.high_low_byte_order,
 				scaling,
 				text_id: if structure.fields.len() == 1 {
 					text_id.clone()
@@ -954,26 +977,35 @@ mod tests {
 		// The project data: one base variant, one ECU variant derived from it.
 		let bv = b.a("BV_Test");
 		let ev = b.a("EV_Test");
-		b.put(
-			"#RtGen_DB_PROJECT_DATA",
-			code::DB_PROJECT_DATA,
-			Obj::default()
-				.u16(0) // no location references
-				.u32(0)
-				.u32(0)
-				.u32(0) // no functional group
-				.hash(bv)
-				.hash(pool_hash)
-				.u32(0)
-				.u16(1)
-				.hash(ev)
-				.hash(ev)
-				.hash(pool_hash)
-				.u32(0)
-				.u32(0)
-				.u32(0)
-				.u32(0), // no trailing ECU variant reference
-		);
+		// One location reference carrying an access key, because every real
+		// base-variant pool has them in front of the variant list, and the
+		// point of the fixture is the shape the reader actually meets.
+		let mut pd = Obj::default().u16(1);
+		pd = pd.u32(0).hash(pool_hash).u8(1).u16(code::MCD_ACCESS_KEY);
+		for _ in 0..7 {
+			pd = pd.u32(0);
+		}
+		pd = pd.u16(0x0102).u32(0); // the key's location type and its last name
+		pd = pd
+			.u32(0)
+			.u32(0)
+			.u32(0) // no functional group
+			.hash(bv)
+			.hash(pool_hash)
+			.u32(0) // the base variant reference
+			.u16(1)
+			.hash(ev)
+			.hash(ev)
+			.hash(pool_hash) // one ECU variant: name, object, pool
+			.u32(0)
+			.u32(0)
+			.u32(0) // the trailing ECU variant reference
+			.u32(0)
+			.u32(0)
+			.u32(0) // three names
+			.u16(0) // no functional groups
+			.u16(0); // no nested project data
+		b.put("#RtGen_DB_PROJECT_DATA", code::DB_PROJECT_DATA, pd);
 
 		// The variant's layer data: one service, no inherited indexes.
 		let rdbi = b.a(loaders::identity::RDBI_MEASUREMENT);
@@ -1016,7 +1048,11 @@ mod tests {
 				.u16(0)
 				.u16(0) // four string-vector maps
 				.u16(0)
-				.u16(0), // unit groups, units
+				.u16(0) // unit groups, units
+				.u16(0) // no protocol parameters
+				.u8(0)
+				.u8(0) // the trailing byte, and no special data groups
+				.u16(0), // the final diag-com map
 		);
 
 		// The service and its positive response.
@@ -1044,8 +1080,7 @@ mod tests {
 				.u16(1)
 				.hash(rsp)
 				.hash(rsp)
-				.hash(pool_hash)
-				.u32(0) // one positive response
+				.hash(pool_hash) // one positive response: name, object, pool
 				.u16(0)
 				.u16(0) // no negative responses, no functional classes
 				.u32(0) // semantic
@@ -1268,6 +1303,7 @@ mod tests {
 				bit_offset: 0,
 				bit_length: 16,
 				signed: false,
+				big_endian: true,
 				scaling: Scaling::Linear(LinearScale { factor: 0.25, offset: 0.0 }),
 				text_id: Some("000117".into()),
 			}
@@ -1282,6 +1318,7 @@ mod tests {
 				bit_offset: 0,
 				bit_length: 16,
 				signed: false,
+				big_endian: true,
 				scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
 				text_id: Some("000116".into()),
 			}

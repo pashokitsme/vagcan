@@ -266,12 +266,20 @@ fn string_list(stream: &mut Stream<'_>) -> Result<(), Error> {
 }
 
 /// Read a `DbNamedObjectReferences` collection: `(name, reference)` pairs.
+///
+/// The reference here carries **two** names, not three. `load_reference`'s own
+/// default is three, and transcribing that default into this collection was the
+/// defect that made every `.bv` pool unreadable: the extra four bytes per entry
+/// walked the cursor off the end of a 402-entry list and into the access keys
+/// beyond it. The reference implementation passes `third_string=False` here,
+/// and the real files agree — read three names and entry *n*'s object id is
+/// entry *n-1*'s pool id.
 pub fn named_references(stream: &mut Stream<'_>) -> Result<Vec<(Option<String>, Ref)>, Error> {
 	let count = stream.count()?;
 	let mut out = Vec::with_capacity(count.min(1024));
 	for _ in 0..count {
 		let name = stream.ascii()?.map(str::to_owned);
-		out.push((name, reference(stream, true, false)?));
+		out.push((name, reference(stream, false, false)?));
 	}
 	Ok(out)
 }
@@ -321,6 +329,54 @@ pub fn name_list(stream: &mut Stream<'_>) -> Result<Vec<String>, Error> {
 		}
 	}
 	Ok(out)
+}
+
+/// How many bytes an `MCD_ACCESS_KEY` occupies after its two-byte type code.
+///
+/// Seven pooled names, a two-byte location type, and one more pooled name:
+/// `7*4 + 2 + 4`. A fixed shape with no length field, which is why the number
+/// has to be written down rather than read.
+const ACCESS_KEY_BYTES: usize = 34;
+
+/// Step over an access key without parsing it.
+///
+/// **This is not a loader and must never become one.** It returns `()`. It
+/// builds nothing, keeps nothing, and hands nothing back — the only thing it
+/// changes is the cursor. `MCD_ACCESS_KEY` stays on [`REFUSED`], [`load`] still
+/// answers [`Outcome::Refused`] for it, and no security-access handshake ever
+/// reaches a caller.
+///
+/// It exists because the refusal cannot be enforced by stopping. Every one of
+/// the reference project's 54 base-variant pools embeds access keys inside
+/// `DB_PROJECT_DATA` — the object that holds the ECU variant list — and inside
+/// every `MCD_DB_ECU`. Refusing to move past them refuses the variant list too,
+/// which is not a safety property, just an inability to read the car. The object
+/// stream carries no lengths ([`super::object`]), so "move past" has to be
+/// spelled as a byte count.
+pub fn skip_access_key(stream: &mut Stream<'_>) -> Result<(), Error> {
+	let found = stream.u16()?;
+	if found != code::MCD_ACCESS_KEY {
+		return Err(Error::Format(format!(
+			"an access key slot holds type {found:#06x}, not {:#06x}",
+			code::MCD_ACCESS_KEY
+		)));
+	}
+	stream.bytes(ACCESS_KEY_BYTES)?;
+	Ok(())
+}
+
+/// Step over a location reference's list of access keys.
+///
+/// A location reference is `(ObjectID, PoolID, count)` then that many access
+/// keys. Both `DB_PROJECT_DATA` and `MCD_DB_ECU` carry a list of these.
+pub fn skip_location_reference(stream: &mut Stream<'_>) -> Result<(), Error> {
+	let _object = stream.ascii()?;
+	let _pool = stream.ascii()?;
+	let keys = stream.u8()?;
+	for _ in 0..keys {
+		skip_access_key(stream)?;
+	}
+	Ok(())
 }
 
 /// Read an optionally-present nested object of a known type.
@@ -414,7 +470,12 @@ pub fn load(type_code: u16, stream: &mut Stream<'_>) -> Result<Outcome, Error> {
 		code::MCD_DB_TABLE_PARAMETER => Object::TableRow(measurement::table_row(stream)?),
 		code::MCD_DB_UNIT => Object::Unit(measurement::unit(stream)?),
 		code::DB_PROJECT_DATA => Object::ProjectData(identity::project_data(stream)?),
-		code::DB_LAYER_DATA => Object::LayerData(identity::layer_data(stream)?),
+		// A layer whose tail this reader cannot follow consumed its own
+		// terminator inside the loader, or deliberately did not reach one.
+		code::DB_LAYER_DATA => {
+			let layer = identity::layer_data(stream)?;
+			return Ok(Outcome::Object(Object::LayerData(layer)));
+		}
 		code::MCD_DB_ECU_VARIANT => Object::EcuVariant(identity::ecu_variant(stream)?),
 		other => return Ok(Outcome::Unsupported(other)),
 	};
