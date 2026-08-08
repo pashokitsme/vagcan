@@ -8,7 +8,7 @@ project directory, so `setup` becomes a choice of *source*, not a hardcoded VCDS
 project is built from (Mission-Base's MIT-licensed PBL key-file library, and the ODX
 object schema `ODIS-project-explorer` already reverse-engineered against it) into safe
 Rust, read-only. `setup` gains an arrow-key source picker and writes into
-`~/.vagcan/projects/<project_id>/`, a layout shared between a VCDS-derived and an
+`~/.vagcan/data/<project_id>/`, a layout shared between a VCDS-derived and an
 ODIS-derived parse rather than one per source.
 
 **Tech Stack:** Rust edition 2024, `vag-data` (parsers), `vag-db` (SQLite cache),
@@ -149,7 +149,7 @@ Python file under `object_loaders/`, field for field, against `docs/MCD-2D.md` (
 ASAM MCD-2D/ODX reference bundled in that repository) as the authority for what each
 field means.
 
-## 4. Storage — `~/.vagcan/rod/` and `~/.vagcan/projects/<id>/`
+## 4. Storage — `~/.vagcan/rod/` and `~/.vagcan/data/<id>/`
 
 Two directories, split by what is shared versus what is per-car:
 
@@ -160,18 +160,24 @@ Two directories, split by what is shared versus what is per-car:
     RD.rod                          cache.sqlite and a raw copy adds nothing a
     EV_ECM18TFS0208V0906264H.rod    re-parse couldn't reproduce from the VCDS install.
     …
-  projects/
+  data/
     <project_id>/
       rod-keys.json                 only created if a VCDS source ever contributed —
                                      see §4.2. Per-project: two projects may hold
                                      different VCDS builds of a same-named .rod file.
       cache.sqlite                  unified schema — §4.3
       names.json                    text-id -> name, VCDS TTTEXT ∪ ODIS-crib readings
-      measurement/
+      measurements/
         <PARTNUMBER>.json           proven-on-car catalog rows — unchanged shape
                                      (vag_data::catalog::MeasurementCatalog)
       sources.json                  provenance log — §4.4
 ```
+
+A **project is a VW vehicle platform, not one car** — `SK37X` covers every Octavia III,
+Karoq and Kodiaq VW's own mapping files under it (§4.1). That is why the proven rows sit
+here rather than under a VIN: a proven scaling is a property of a *part number*, true of
+every car carrying that part, and `cars/<VIN>/` goes on holding what is true of one car
+and no other — its car file, its drives, its survey.
 
 `.rod` files are shared because they are a property of a VCDS **build**, not of a car:
 the same `TTTEXT.ROD` byte-for-byte serves any project parsed from that build. Keeping
@@ -193,20 +199,42 @@ literally the folder `ODIS-project-explorer`'s README shows under
 `MCD-Projects-E/VWMCD/<here>`. `setup` reuses this string directly as `project_id` when
 the source is an ODIS project — no renaming, no user prompt.
 
-A VCDS-only project has no such string to read off. `project_id` there is either typed
-by the user at `setup` time, or — where the car's chassis type is already known (the
-`F187` part number's type prefix, or a later live read) — looked up against the S42
-mapping to land on the same identifier an ODIS project for that same car would use.
-This second path is aspirational for this design (the S42 document is long and its
-lookup is not yet built); the immediate requirement is only that `project_id` is a
-free string `setup` can ask for, so a VCDS-only user is never blocked.
+A VCDS-only project has no such string to read off, so `setup` asks for one — defaulting
+to the single project already on disk where there is one, and to `default` where there
+is none.
+
+**The set of names is closed, and the car picks its own.** `S42` maps a fixed list of
+project names to the vehicles each covers, keyed by VW's type code:
+
+```
+SK37X   ← SK326/0EU_K_5EP  Karoq (EU) / A-SUV
+          SK326/1EU_K_55A  Kodiaq (EU) / A-PlusSUV
+          SK371/0RU K_5EU  A7 / Octavia III. (Russland)
+          SK37x/0EU K_5E0  A7 / Octavia III (Limo, Combi)
+```
+
+So a project is a **platform**, covering many models and many cars, and connecting a car
+must land on the project that covers it rather than on whichever one a person last set
+up.
+
+**The source of truth is each project's own `.vi` pool, not that document.** Every ODIS
+project ships exactly one — `0.0.0@VI_SK37X.vi.db`, vehicle information — and a project
+that declares which vehicles it covers is self-describing: no external file has to be
+present, nothing lands in the checkout, and "no car-specific data in code" holds by
+construction rather than by discipline. A sixty-row table of type codes compiled into
+the binary is precisely what that rule forbids.
+
+The S42 document stays unparsed. It is the *authority* for what the names mean — this
+section quotes it — and it is not a runtime input. What it could add later, and cannot
+add now, is naming a project the user does **not** have installed ("this car needs
+`SK37X`"), which no installed project can answer about itself.
 
 ### 4.2 `rod-keys.json` — unchanged content, new location
 
 Same shape as today's `rod-keys.json`/`.ivcache.json`: `{"<filename>\t<tag>":
 [iv3, iv4, iv5, iv6, iv7]}`. Only the path moves, from
 `~/.vagcan/data/extracted/rod-keys.json` to
-`~/.vagcan/projects/<project_id>/rod-keys.json`, and the directory is created lazily —
+`~/.vagcan/data/<project_id>/rod-keys.json`, and the directory is created lazily —
 only when `setup` actually decodes a `.rod` section for this project. A pure-ODIS
 project never has this file.
 
@@ -241,7 +269,7 @@ this project's data come from", the way `git log` answers the same question for 
 
 ### 4.5 Precedence when sources disagree
 
-**A `measurement/` row always wins.** It is the only data proven on the actual car in
+**A `measurements/` row always wins.** It is the only data proven on the actual car in
 front of the tool; both `cache.sqlite` and `names.json` are *extracted* — recovered
 from someone else's files, however good the ODIS cross-check looked in §1 — and fill
 in only what a drive has not yet proven. This is `rod-labels.md` §4.0c's existing rule
@@ -252,7 +280,7 @@ always has been — evidence for a catalog, not the catalog itself, until confir
 Nothing in the read path branches on source at query time. `setup` is the only place
 that ever needs to know which parser produced a row: everything downstream —
 `watch`/`scan`/`survey`/`measure`/`faults`/`properties` — reads `cache.sqlite` and
-`measurement/` and never asks where either came from.
+`measurements/` and never asks where either came from.
 
 ## 5. `setup` — the source picker
 
@@ -272,17 +300,34 @@ replacing the project — consistent with the "one project, sources merge" stora
 decision in §4. The `--replace`-a-build behaviour `setup` already has for "installing a
 different VCDS build over an old one" (`replace_if_another_build`) stays scoped to the
 VCDS branch of the picker; an ODIS parse never deletes VCDS-derived rows or vice versa,
-only `measurement/` rows are ever protected from being overwritten by either.
+only `measurements/` rows are ever protected from being overwritten by either.
 
 ## 6. Migration
 
 Today's single `~/.vagcan/data/{extracted,measured}` becomes the first project under
-`~/.vagcan/projects/`. On first run of a build with this change, if `data/` exists and
-`projects/` does not, `setup` prompts for a `project_id` for the existing data (default
-suggestion: `default`) and moves `data/extracted/*` → the new locations (`.rod` files to
-the shared pool, everything else into the named project) and `data/measured/` →
-`projects/<id>/measurement/`. This is a one-time, one-directional move, not a
-compatibility shim kept around afterward.
+`~/.vagcan/data/`. `setup` asks which car the existing data belongs to — defaulting to
+the project this run chose — and moves `data/extracted/*` to the new locations (`.rod`
+files and the fault text to the shared pool, everything else into the named project) and
+`data/measured/` → `data/<id>/measurements/`. Proven rows are copied, verified and only
+then removed, and a name clash refuses rather than overwrites: nothing a drive produced
+may be lost to a tidying step. One-time and one-directional, not a compatibility shim
+kept around afterward.
+
+**`data/` is now both the old layout and the new one, so the two are told apart by
+name, not by the directory's existence.** `extracted` and `measured` are the old
+layout's two directories; anything else under `data/` is a project. Two consequences
+that have to be enforced rather than assumed:
+
+- Migration is pending when `data/extracted` or `data/measured` exists — **not** when
+  `data/` exists, which is now always true.
+- `extracted` and `measured` are refused as project names. VW's own names cannot
+  collide with them (`SK37X`, `AU21X`, …), so this costs a user nothing and stops a
+  project from being mistaken for the layout it replaced.
+
+One file is deliberately left where it is: `vag_protocol::address::OVERRIDE_PATH` reads
+`data/measured/unit-numbers.json` by a fixed path from a crate that cannot know what a
+project is. Moving it would leave a hand-written CAN-id pairing silently ignored — a car
+answering at the wrong addresses with nothing to say why.
 
 ## 7. What this design explicitly does not settle
 
@@ -291,8 +336,11 @@ whoever writes the first line of code:
 
 - The exact merged `cache.sqlite` schema (§4.3) — needs the DID-vs-block/field
   reconciliation worked out against real data from both sources, not designed on paper.
-- The S42 chassis-type → `project_id` lookup for VCDS-only projects (§4.1) — a real
-  document, not yet parsed into anything the tool can query.
+- ~~The S42 chassis-type → `project_id` lookup~~ — **settled 2026-08-08**: each ODIS
+  project's own `.vi` pool answers which vehicles it covers, so a connected car matches
+  against what is installed rather than against a document (§4.1). What the S42 document
+  could still add, and no installed project can, is naming a project the user does not
+  have.
 - Which of the ~20 in-scope object loaders (§2) ship in the first increment versus a
   follow-up — the measurement chain is the one everything else is gated behind, so it
   goes first; identification, faults and topology can land in any order after it.
