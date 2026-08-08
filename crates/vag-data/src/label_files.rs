@@ -157,21 +157,64 @@ pub enum OdxMatch {
 /// localisation, and only the caller knows whether it can tell them apart.
 /// `version` may be empty or short, in which case no candidate ranks `Version`.
 pub fn find_rod_by_odx_variant(root: &Path, odx_name: &str, version: &str) -> io::Result<Vec<(OdxMatch, PathBuf)>> {
-	let wanted = odx_name.trim_end_matches(['\0', ' ']).to_ascii_uppercase();
-	if wanted.is_empty() {
+	let Some((wanted, version)) = normalise(odx_name, version) else {
 		return Ok(Vec::new());
-	}
-	let version: String = version.trim_end_matches(['\0', ' ']).chars().take(3).collect();
-	let version = if version.len() == 3 && version.chars().all(|c| c.is_ascii_digit()) {
-		Some(version)
-	} else {
-		None
 	};
-
 	let mut hits = Vec::new();
 	collect_rod_family(root, &wanted, version.as_deref(), &mut hits);
 	hits.sort();
 	Ok(hits)
+}
+
+/// How one candidate name answers a control unit's own identification, with no
+/// filesystem involved.
+///
+/// The same rule [`find_rod_by_odx_variant`] applies to `.rod` stems, exposed so
+/// a caller holding names from somewhere else can ask it too. It has two callers
+/// and one implementation on purpose: an ODIS project's ECU variants are spelled
+/// the same way — `EV_ECM18TFS0208V0906264H_001` is `<odx name>_<vvv>` — so a
+/// unit on the car joins to a variant by exactly the rule that joins it to a
+/// label file. A second copy of this rule would be free to drift from the first,
+/// and the failure would be a car matched to the wrong control unit's data.
+///
+/// `odx_name` is the unit's `F19E` and `version` its `F1A2`, both as the car
+/// answers them — trailing NULs and padding, full length. Normalising here
+/// rather than at the call site is the point: a caller that trimmed differently
+/// would be reimplementing the half of the rule it was trying to reuse.
+///
+/// `None` means `candidate` is not this unit's at all.
+pub fn odx_match(candidate: &str, odx_name: &str, version: &str) -> Option<OdxMatch> {
+	let (wanted, version) = normalise(odx_name, version)?;
+	rank(&candidate.trim_end_matches(['\0', ' ']).to_ascii_uppercase(), &wanted, version.as_deref())
+}
+
+/// Bring a car's `F19E`/`F1A2` to the form the rule compares against.
+///
+/// `None` when there is no name to match; a `None` version means only that no
+/// candidate can rank [`OdxMatch::Version`], not that nothing matches.
+fn normalise(odx_name: &str, version: &str) -> Option<(String, Option<String>)> {
+	let wanted = odx_name.trim_end_matches(['\0', ' ']).to_ascii_uppercase();
+	if wanted.is_empty() {
+		return None;
+	}
+	let version: String = version.trim_end_matches(['\0', ' ']).chars().take(3).collect();
+	let version = (version.len() == 3 && version.chars().all(|c| c.is_ascii_digit())).then_some(version);
+	Some((wanted, version))
+}
+
+/// The rule itself, on already-normalised inputs.
+///
+/// One implementation, so the directory walk and a caller's own list of names
+/// cannot answer differently.
+fn rank(candidate: &str, wanted: &str, version: Option<&str>) -> Option<OdxMatch> {
+	if candidate == wanted {
+		return Some(OdxMatch::Exact);
+	}
+	// Only a `_` starts a variant: `EV_TCMDQ2000210` is a different unit from
+	// `EV_TCMDQ200021`, not a variant of it.
+	let rest = candidate.strip_prefix(wanted)?.strip_prefix('_')?;
+	let versioned = version.is_some_and(|v| rest.strip_prefix(v).is_some_and(|tail| tail.is_empty() || tail.starts_with('_')));
+	Some(if versioned { OdxMatch::Version } else { OdxMatch::Family })
 }
 
 fn collect_rod_family(dir: &Path, wanted: &str, version: Option<&str>, hits: &mut Vec<(OdxMatch, PathBuf)>) {
@@ -190,18 +233,9 @@ fn collect_rod_family(dir: &Path, wanted: &str, version: Option<&str>, hits: &mu
 		let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
 			continue;
 		};
-		let stem = stem.to_ascii_uppercase();
-		if stem == wanted {
-			hits.push((OdxMatch::Exact, path));
-			continue;
+		if let Some(how) = rank(&stem.to_ascii_uppercase(), wanted, version) {
+			hits.push((how, path));
 		}
-		// Only a `_` starts a variant: `EV_TCMDQ2000210` is a different unit
-		// from `EV_TCMDQ200021`, not a variant of it.
-		let Some(rest) = stem.strip_prefix(wanted).and_then(|r| r.strip_prefix('_')) else {
-			continue;
-		};
-		let versioned = version.is_some_and(|v| rest.strip_prefix(v).is_some_and(|tail| tail.is_empty() || tail.starts_with('_')));
-		hits.push((if versioned { OdxMatch::Version } else { OdxMatch::Family }, path));
 	}
 }
 
@@ -500,5 +534,75 @@ mod odx_lookup_tests {
 		assert!(hits.iter().all(|(m, _)| *m == OdxMatch::Family));
 		// An empty ODX name must not match the whole tree, as for the exact lookup.
 		assert!(find_rod_by_odx_variant(&root, "  \0", "013020").unwrap().is_empty());
+	}
+
+	/// The rule with no filesystem, which is how a caller holding names from
+	/// somewhere else asks it.
+	#[test]
+	fn odx_match_ranks_a_bare_name() {
+		let m = |c: &str| odx_match(c, "EV_Brake1UDSContiMK100ESP", "036010");
+		assert_eq!(m("EV_Brake1UDSContiMK100ESP"), Some(OdxMatch::Exact));
+		assert_eq!(m("EV_Brake1UDSContiMK100ESP_036"), Some(OdxMatch::Version));
+		assert_eq!(m("EV_Brake1UDSContiMK100ESP_036_SK37"), Some(OdxMatch::Version));
+		assert_eq!(m("EV_Brake1UDSContiMK100ESP_014"), Some(OdxMatch::Family));
+		assert_eq!(m("EV_SomethingElse"), None);
+		// A longer name is a different unit, not a variant of this one.
+		assert_eq!(m("EV_Brake1UDSContiMK100ESPX"), None);
+		assert_eq!(m("EV_Brake1UDSContiMK100ESPX_036"), None);
+	}
+
+	/// An ODIS project spells its ECU variants the same way, which is why this
+	/// rule is exported rather than copied: `EV_ECM18TFS0208V0906264H_001` is
+	/// `<odx name>_<vvv>`, and a unit on the car joins to a variant by exactly
+	/// the rule that joins it to a label file.
+	#[test]
+	fn odx_match_joins_a_car_to_an_odis_variant() {
+		// What the car answers, padding and all.
+		let (name, version) = ("EV_ECM18TFS0208V0906264H\0\0", "001004  ");
+		let variants = [
+			"EV_ECM18TFS0208V0906264H_001",
+			"EV_ECM18TFS0208V0906264H_002",
+			"EV_ECM20TDI01105L906022BN_007",
+		];
+		let ranked: Vec<_> = variants.iter().map(|v| (odx_match(v, name, version), *v)).collect();
+		assert_eq!(ranked[0].0, Some(OdxMatch::Version), "the version the car reports is the best match");
+		assert_eq!(ranked[1].0, Some(OdxMatch::Family), "a sibling version is the right family, unconfirmed");
+		assert_eq!(ranked[2].0, None, "another engine is not this unit at all");
+	}
+
+	/// Padding and case are normalised inside the rule, not at the call site.
+	/// A caller that trimmed differently would be reimplementing the half of it
+	/// they were trying to reuse.
+	#[test]
+	fn odx_match_normalises_what_the_car_pads() {
+		assert_eq!(odx_match("ev_gatewnf_013", "EV_GatewNF\0\0 ", "013020\0"), Some(OdxMatch::Version));
+		// No name to match is no match, never a match against everything.
+		assert_eq!(odx_match("EV_Anything", " \0", "013020"), None);
+	}
+
+	/// The exported rule and the directory walk are one implementation, so they
+	/// cannot answer differently. This is the assertion that keeps them so.
+	#[test]
+	fn odx_match_agrees_with_the_directory_walk() {
+		let stems = [
+			"EV_Brake1UDSContiMK100ESP_036",
+			"EV_Brake1UDSContiMK100ESP_036_SK37",
+			"EV_Brake1UDSContiMK100ESP_014",
+			"EV_TCMDQ200021_001",
+		];
+		let files: Vec<String> = stems.iter().map(|s| format!("{s}.rod")).collect();
+		let root = label_files_at(&files.iter().map(String::as_str).collect::<Vec<_>>());
+		let walked = find_rod_by_odx_variant(&root, "EV_Brake1UDSContiMK100ESP", "036010").unwrap();
+		for (how, path) in &walked {
+			let stem = path.file_stem().and_then(|s| s.to_str()).expect("a stem");
+			assert_eq!(
+				odx_match(stem, "EV_Brake1UDSContiMK100ESP", "036010"),
+				Some(*how),
+				"{stem} ranked differently by the two callers"
+			);
+		}
+		// And what the walk did not return, the rule does not match either.
+		assert_eq!(walked.len(), 3);
+		assert_eq!(odx_match("EV_TCMDQ200021_001", "EV_Brake1UDSContiMK100ESP", "036010"), None);
 	}
 }

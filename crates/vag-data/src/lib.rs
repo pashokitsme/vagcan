@@ -27,7 +27,9 @@ pub use codes::{CodesDb, ISO_BAND_START};
 pub use db::LabelDb;
 pub use dtc::{DtcRegistry, DtcRow, FaultName, UnitCatalogue, UnitLookup};
 pub use label::{LabelFile, Measurement, Record, parse_label};
-pub use label_files::{LabelFileLoad, LabelScan, OdxMatch, find_rod_by_odx_name, find_rod_by_odx_variant, load_label_files, scan_label_files};
+pub use label_files::{
+	LabelFileLoad, LabelScan, OdxMatch, find_rod_by_odx_name, find_rod_by_odx_variant, load_label_files, odx_match, scan_label_files,
+};
 pub use measure::{IGNITION_ANGLE_ZERO_DIDS, IGNITION_ANGLE_ZERO_RAW, LinearScale, RawForm};
 pub use mwb::{MwbEntry, parse_mwb};
 pub use rod::{RodSection, RodStatus, decode_rod};
