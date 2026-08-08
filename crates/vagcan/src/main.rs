@@ -502,6 +502,11 @@ async fn main() -> Result<()> {
 	if let Some(id) = &cli.project {
 		project::select(id);
 	}
+	// Before any command resolves a project, because this one moved a store out
+	// from under people who had already built one. It asks nothing and says
+	// nothing when there is nothing to do, which is every machine but the few
+	// that ran a build from the hours `projects/` existed.
+	migrate::relocate_projects()?;
 	match cli.command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
