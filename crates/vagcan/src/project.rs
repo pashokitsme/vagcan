@@ -214,6 +214,27 @@ pub fn current() -> Result<Project> {
 	)
 }
 
+/// Where to tell somebody to put a file they have just produced, in words.
+///
+/// **A literal path in a printed instruction is a promise, and this one moved.**
+/// `~/.vagcan/data/measured/` was correct for as long as there was one store; it
+/// is now one directory per platform, and the old text told a person on a real
+/// car to put a proven row somewhere that no longer exists. So the instruction
+/// is resolved rather than written out: the actual directory when a project
+/// resolves, and the shape plus what to do about it when none does.
+///
+/// Returned as a `String` because every caller is building a sentence, and a
+/// `Result` here would make each of them decide what to say when there is no
+/// project — which is the question this answers once.
+pub fn measurements_hint() -> String {
+	match current() {
+		Ok(project) => project.measurements_dir().display().to_string(),
+		// Naming the shape is more use than naming nothing: it says a project
+		// is involved, and the sentence after it says how to get one.
+		Err(_) => "~/.vagcan/data/<project>/measurements/ (run `vagcan setup` first — it makes the project)".to_string(),
+	}
+}
+
 /// The project covering the car in front of the tool, once that can be asked.
 ///
 /// Always `None` today, and deliberately a function rather than a `todo!()` or a

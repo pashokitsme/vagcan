@@ -1646,7 +1646,7 @@ mod tests {
 				Some(dir) => dir,
 				None => {
 					eprintln!(
-						"skipped: no proven rows in ~/.vagcan/data/measured — \
+						"skipped: no proven rows in this machine's project — \
                          drive and calibrate a car to get some"
 					);
 					return;

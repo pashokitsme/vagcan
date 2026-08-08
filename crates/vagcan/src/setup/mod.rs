@@ -10,18 +10,18 @@
 //! ODIS-Service project, or a download — and `setup <PATH>` still skips the menu
 //! entirely, because the folder itself says which of the two it is.
 //!
-//! Both land in one project under `~/.vagcan/projects/<id>/`
+//! Both land in one project under `~/.vagcan/data/<id>/`
 //! ([`crate::project`]), and a second source is **added** to a project rather
 //! than replacing what is in it (design §5). What each branch writes:
 //!
 //! | source | what it gives | where it lands |
 //! |---|---|---|
 //! | VCDS | the `.rod` files and the fault text, raw | `~/.vagcan/rod/`, shared |
-//! | VCDS | the label files, parsed | `projects/<id>/cache.sqlite` |
-//! | VCDS | measurement names, out of `TTTEXT.ROD` | `projects/<id>/names.json` |
-//! | VCDS | `.rod` section keys | `projects/<id>/rod-keys.json` |
-//! | ODIS | every variant's channels, by identifier, **with scalings** | `projects/<id>/cache.sqlite` |
-//! | ODIS | every `(text id, name)` pair in the project | `projects/<id>/names.json` |
+//! | VCDS | the label files, parsed | `data/<id>/cache.sqlite` |
+//! | VCDS | measurement names, out of `TTTEXT.ROD` | `data/<id>/names.json` |
+//! | VCDS | `.rod` section keys | `data/<id>/rod-keys.json` |
+//! | ODIS | every variant's channels, by identifier, **with scalings** | `data/<id>/cache.sqlite` |
+//! | ODIS | every `(text id, name)` pair in the project | `data/<id>/names.json` |
 //!
 //! The copy is what makes a VCDS installation disposable: fault naming reads
 //! `.rod` files straight off disk at run time, so those have to outlive the
@@ -952,17 +952,17 @@ mod tests {
 		let steps = vec![
 			Step::Wrote {
 				what: "the label files",
-				path: PathBuf::from("/home/x/.vagcan/projects/SK37X/cache.sqlite"),
+				path: PathBuf::from("/home/x/.vagcan/data/SK37X/cache.sqlite"),
 				detail: "3035 label files".to_string(),
 			},
 			Step::Skipped {
 				what: "the measurement names",
-				path: PathBuf::from("/home/x/.vagcan/projects/SK37X/names.json"),
+				path: PathBuf::from("/home/x/.vagcan/data/SK37X/names.json"),
 				why: "newer than the text table it came from",
 			},
 		];
 		let r = report(&steps);
-		assert!(r.contains("/home/x/.vagcan/projects/SK37X/cache.sqlite"), "{r}");
+		assert!(r.contains("/home/x/.vagcan/data/SK37X/cache.sqlite"), "{r}");
 		assert!(r.contains("3035 label files"), "{r}");
 		// A skipped step is reported, not silently absent: a run that took a
 		// second when minutes were expected reads as a failure otherwise.

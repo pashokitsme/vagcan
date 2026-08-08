@@ -80,11 +80,12 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
          drive with them on screen and fit them against a reading already trusted:\n    \
          vagcan watch --did <the identifiers> --out drive.csv\n    \
          vagcan recording calibrate --log drive.csv --out <part-number>.json\n\
-         Move that file to ~/.vagcan/data/measured/ — the file name is the unit's own\n\
+         Move that file to {} — the file name is the unit's own\n\
          F187 part number — and name its rows so this command can find them:\n\
          `speed` and `gear` are what it looks for.\n\n\
          None of this is what `vagcan setup` does. Label files carry names and no\n\
-         scaling at all, so no installation of VCDS can supply what is missing here."
+         scaling at all, so no installation of VCDS can supply what is missing here.",
+		crate::project::measurements_hint()
 	);
 	out
 }
@@ -431,7 +432,12 @@ mod tests {
 		for step in ["survey --diff", "watch --did", "recording calibrate"] {
 			assert!(text.contains(step), "{step} missing from:\n{text}");
 		}
-		assert!(text.contains("~/.vagcan/data/measured/"), "where the file goes:\n{text}");
+		// Where the file goes, resolved rather than written out: this literal
+		// used to be `~/.vagcan/data/measured/`, and it reached somebody
+		// standing at a car after the store had moved out from under it. A
+		// printed path is a promise, so it is asked rather than remembered.
+		assert!(text.contains("measurements"), "where the file goes:\n{text}");
+		assert!(!text.contains("data/measured/"), "the path this instruction moved off:\n{text}");
 		// And it rules out the other shortage explicitly, because "the tool has
 		// no data" is the same sentence for both and only one of them is true
 		// here.

@@ -53,7 +53,7 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
          No VCDS installation? Leave the path off and it offers to fetch one for you:\n    \
          vagcan setup\n\n\
          Either way it is offline — no adapter, no car — and takes a few minutes over\n\
-         all the label files. It writes everything under ~/.vagcan/data/extracted/.\n\n\
+         all the label files. It writes everything into a project under ~/.vagcan/data/.\n\n\
          VCDS is Ross-Tech's, and free from them directly: {VCDS_DOWNLOAD}"
 	);
 	out
@@ -81,7 +81,7 @@ pub fn no_fault_labels(looked_in: &Path) -> String {
          vagcan setup /path/to/VCDS\n\n\
          Haven't got one? Leave the path off and it offers to fetch a copy:\n    \
          vagcan setup\n\n\
-         That is offline, and it leaves the labels under ~/.vagcan/data/extracted/ so the\n\
+         That is offline, and it leaves what it read under ~/.vagcan/ so the\n\
          installation can then be deleted. VCDS is Ross-Tech's, and free from them\n\
          directly: {VCDS_DOWNLOAD}"
 	);
@@ -108,8 +108,9 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
          {}\n\n\
          The last step fits each unknown identifier against a reading already trusted —\n\
          the standard OBD-II parameters, or a row proven earlier — and writes the ones\n\
-         that hold as a catalog under ~/.vagcan/data/measured/.",
-		calibration_path()
+         that hold as a catalog under {}.",
+		calibration_path(),
+		crate::project::measurements_hint()
 	);
 	out
 }

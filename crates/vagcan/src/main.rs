@@ -84,7 +84,7 @@ const ADAPTER_BAUD: u32 = 115_200;
                   vcds ...                  VCDS's own files: labels, names, logs"
 )]
 struct Cli {
-	/// Which car's data to read — a directory name under `~/.vagcan/projects/`.
+	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
 	///
 	/// Only needed with more than one car set up. `vagcan setup` writes down
 	/// the one it just built, `VAGCAN_PROJECT` overrides that for a shell, and
@@ -108,7 +108,7 @@ enum Command {
 	/// Two sources, and with no path given it asks which. A VCDS installation
 	/// gives names; an extracted ODIS-Service project gives names *and*
 	/// scalings, per identifier, with no drive required. Both land in one
-	/// project under `~/.vagcan/projects/<id>/`, and a second source is added to
+	/// project under `~/.vagcan/data/<id>/`, and a second source is added to
 	/// a project rather than replacing what is in it.
 	///
 	/// It takes minutes, mostly in the name recovery, and it touches no car.
@@ -262,7 +262,7 @@ enum Command {
 		/// Where the proven measurement rows live. Each file is named after the
 		/// part number or ODX name of the control unit it describes, so a car
 		/// this tool has not seen before simply finds none.
-		/// Default: `~/.vagcan/data/measured`.
+		/// Default: this project's `~/.vagcan/data/<project>/measurements`.
 		#[arg(long, value_name = "DIR")]
 		data: Option<String>,
 	},
@@ -316,7 +316,7 @@ enum Command {
 		#[arg(long)]
 		quiet: bool,
 		/// Where the proven measurement rows live.
-		/// Default: `~/.vagcan/data/measured`.
+		/// Default: this project's `~/.vagcan/data/<project>/measurements`.
 		#[arg(long, value_name = "DIR")]
 		data: Option<String>,
 		/// Mass in kilograms, overriding the car file for this run.
@@ -415,7 +415,7 @@ enum Command {
 		/// Where the recovered `.rod` section keys are cached. A fault
 		/// catalogue is sealed with one, and recovering one costs ~95 s of
 		/// every core — so they are kept as data, not searched for per run.
-		/// Default: `~/.vagcan/data/extracted/rod-keys.json`, written by `vagcan setup`.
+		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
 		iv_cache: Option<String>,
 		/// Name the faults in a survey this tool already recorded, instead of

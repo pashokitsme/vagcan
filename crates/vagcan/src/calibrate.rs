@@ -312,8 +312,9 @@ pub fn run(log: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<(
 	let Some(path) = out else {
 		println!(
 			"\nTo keep them: re-run with `--out <part-number>.json`, then move that file to\n\
-             ~/.vagcan/data/measured/ — the unit's own F187 part number is the file name, and\n\
-             `vagcan properties` reads it off the car."
+             {} — the unit's own F187 part number is the file name, and\n\
+             `vagcan properties` reads it off the car.",
+			crate::project::measurements_hint()
 		);
 		return Ok(());
 	};
@@ -334,8 +335,9 @@ pub fn run(log: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<(
 		"  The rows are keyed by identifier and carry no name: a fit proves what the\n  \
          bytes mean, not what the quantity is called. Name them by hand, or look the\n  \
          wording up with `vagcan vcds names <word>`.\n  \
-         Put the file in ~/.vagcan/data/measured/<part number>.json to have `watch` and\n  \
-         `measure` use it."
+         Put the file in {}/<part number>.json to have `watch` and\n  \
+         `measure` use it.",
+		crate::project::measurements_hint()
 	);
 	Ok(())
 }
