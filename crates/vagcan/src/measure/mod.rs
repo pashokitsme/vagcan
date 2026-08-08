@@ -817,7 +817,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	adapter = back;
 	progress.finish();
 
-	let prepared = prepare(&store, &identities, vin.clone(), &opts)?;
+	let prepared = prepare(&store, &crate::extracted::current(), &identities, vin.clone(), &opts)?;
 	if !prepared.banner.is_empty() {
 		println!("{}", prepared.banner);
 	}
@@ -842,11 +842,12 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 /// every one of them goes through [`messages`].
 fn prepare(
 	store: &vag_data::catalog::CatalogStore,
+	extracted: &crate::extracted::Extracted,
 	identities: &[crate::watch::plan::UnitIdentity],
 	vin: Option<String>,
 	opts: &Options<'_>,
 ) -> Result<Prepared> {
-	let set = channels::resolve(store, identities, opts.full).map_err(|missing| {
+	let set = channels::resolve(store, extracted, identities, opts.full).map_err(|missing| {
 		let found = found_report(identities, &missing);
 		anyhow::anyhow!(
 			"{}",
@@ -1843,6 +1844,7 @@ mod tests {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		};
 		(store, vec![ident(0x7E0, "ENG00001"), ident(0x7E1, "GBX00002"), ident(0x714, "CLU00003")])
@@ -1850,7 +1852,7 @@ mod tests {
 
 	fn plan_for(full: bool, minimal: bool) -> Plan {
 		let (store, units) = reference();
-		let set = channels::resolve(&store, &units, full).expect("the reference car resolves");
+		let set = channels::resolve(&store, &crate::extracted::Extracted::none(), &units, full).expect("the reference car resolves");
 		Plan::build(&set, minimal)
 	}
 

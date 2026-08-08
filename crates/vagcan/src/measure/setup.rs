@@ -805,7 +805,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	//    whatever the mode: the barometer and the ambient sensor are what a `CdA`
 	//    means anything against, and this is the measurement that makes runs
 	//    possible rather than a run.
-	let set = match channels::resolve(&store, &identities, true) {
+	let set = match channels::resolve(&store, &crate::extracted::current(), &identities, true) {
 		Ok(set) => set,
 		Err(missing) => {
 			let rows: Vec<ChannelFound> = missing

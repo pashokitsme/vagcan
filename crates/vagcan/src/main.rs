@@ -14,6 +14,7 @@ mod calibrate;
 mod datadir;
 mod device;
 mod discover;
+mod extracted;
 mod faultnames;
 mod faults;
 mod labels;

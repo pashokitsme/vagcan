@@ -35,6 +35,14 @@ pub struct Channel {
 	/// How to read it, when this project has proven or standardised it.
 	/// `None` means the bytes are shown raw.
 	pub def: Option<MeasurementDef>,
+	/// Whether a drive on a car established this scaling.
+	///
+	/// **Not the same question as "is there a `def`".** A channel can be fully
+	/// named and scaled from an ODIS project or from the OBD-II standard and
+	/// still never have been confirmed against the vehicle in front of the tool.
+	/// The coverage report has to tell those apart, or it reports a compu
+	/// formula somebody extracted as something a drive established.
+	pub proven: bool,
 	pub selected: bool,
 }
 
@@ -131,6 +139,13 @@ pub struct UnitIdentity {
 	pub part_number: Option<String>,
 	/// `F19E`, the ODX label file the unit names for itself.
 	pub odx_name: Option<String>,
+	/// `F1A2`, the coding index whose leading three digits pick the variant.
+	///
+	/// Paired with `F19E` and never used alone: together they are what
+	/// `vag_data::label_files::odx_match` ranks a variant name by, and both come
+	/// off the car, so the lookup stays something the vehicle answers rather
+	/// than a table about one vehicle.
+	pub odx_version: Option<String>,
 	/// `F197`, the component string — what the unit calls itself. Used to
 	/// label its tab; a unit that did not say goes by its number alone.
 	pub component: Option<String>,
@@ -147,20 +162,29 @@ pub struct UnitIdentity {
 /// This is what is *known*. Everything else the car answers comes from a
 /// survey file — see [`with_survey`] — because a measurement nobody has
 /// proven still has bytes worth watching.
-pub fn available(store: &CatalogStore, units: &[UnitIdentity]) -> Vec<Channel> {
+pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, units: &[UnitIdentity]) -> Vec<Channel> {
 	let mut out = Vec::new();
 	for p in vag_data::obd::PIDS {
 		out.push(Channel {
 			request: ENGINE,
 			did: vag_data::obd::did_for_pid(p.pid),
 			def: Some(p.to_def()),
+			// The standard's, not this car's: `F40D` is one byte of km/h on the
+			// engine by convention and demonstrably something else elsewhere.
+			proven: false,
 			selected: false,
 		});
 	}
 	for unit in units {
 		let request = unit.request;
-		let defs = store.for_unit(unit.part_number.as_deref(), unit.odx_name.as_deref());
-		for def in defs {
+		let defs = crate::extracted::tagged(
+			store,
+			extracted,
+			unit.part_number.as_deref(),
+			unit.odx_name.as_deref(),
+			unit.odx_version.as_deref(),
+		);
+		for (def, proven) in defs {
 			let ReadId::Uds(did) = def.address;
 			// A control unit's own proven row wins over the standard one at
 			// the same address: they can mean different things. F40D is one
@@ -168,11 +192,13 @@ pub fn available(store: &CatalogStore, units: &[UnitIdentity]) -> Vec<Channel> {
 			// gearbox.
 			if let Some(existing) = out.iter_mut().find(|c| c.request == request && c.did == did) {
 				existing.def = Some(def);
+				existing.proven = proven;
 			} else {
 				out.push(Channel {
 					request,
 					did,
 					def: Some(def),
+					proven,
 					selected: false,
 				});
 			}
@@ -205,6 +231,7 @@ pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
 			request,
 			part_number: field("F187"),
 			odx_name: field("F19E"),
+			odx_version: field("F1A2"),
 			component: field("F197"),
 		});
 	}
@@ -252,6 +279,7 @@ pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
 				request,
 				did,
 				def: None,
+				proven: false,
 				selected: false,
 			});
 		}
@@ -473,6 +501,7 @@ mod tests {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		};
 		(
@@ -483,7 +512,7 @@ mod tests {
 
 	fn reference_channels(dir: std::path::PathBuf) -> Vec<Channel> {
 		let (store, units) = reference(dir);
-		available(&store, &units)
+		available(&store, &crate::extracted::Extracted::none(), &units)
 	}
 
 	fn known(request: u16, did: u16, name: &'static str) -> Channel {
@@ -497,6 +526,7 @@ mod tests {
 				raw_form: RawForm::U16Be,
 				scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
 			}),
+			proven: true,
 			selected: true,
 		}
 	}
@@ -572,6 +602,7 @@ mod tests {
 			request: GEARBOX,
 			did: 0x38F0,
 			def: None,
+			proven: false,
 			selected: true,
 		};
 		assert_eq!(c.label(), "02/38F0");
@@ -582,6 +613,7 @@ mod tests {
 			request: 0x713,
 			did: 0x1234,
 			def: None,
+			proven: false,
 			selected: true,
 		};
 		assert_eq!(brakes.label(), "713/1234");
@@ -600,6 +632,7 @@ mod tests {
 			request: GEARBOX,
 			did: 0x3816,
 			def: Some(gear),
+			proven: false,
 			selected: true,
 		};
 		assert_eq!(c.render(&[0x05]), "4");
@@ -626,7 +659,7 @@ mod tests {
 	#[test]
 	fn the_default_selection_is_what_a_driver_would_look_at_first() {
 		let (store, units) = reference(need_rows!());
-		let mut channels = available(&store, &units);
+		let mut channels = available(&store, &crate::extracted::Extracted::none(), &units);
 		let count = select_basics(&mut channels);
 		assert!(count >= 6, "found only {count}");
 

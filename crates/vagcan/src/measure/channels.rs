@@ -320,7 +320,7 @@ struct Candidate {
 /// demonstrably are not. Where a unit's own catalog covers an address the
 /// standard also names, the unit's row wins: the two can mean different things
 /// at the same identifier, and one of them would otherwise be silently wrong.
-fn candidates(store: &CatalogStore, units: &[UnitIdentity]) -> Vec<Candidate> {
+fn candidates(store: &CatalogStore, extracted: &crate::extracted::Extracted, units: &[UnitIdentity]) -> Vec<Candidate> {
 	let mut out: Vec<Candidate> = Vec::new();
 	for unit in units {
 		let request = unit.request;
@@ -335,7 +335,13 @@ fn candidates(store: &CatalogStore, units: &[UnitIdentity]) -> Vec<Candidate> {
 				});
 			}
 		}
-		for def in store.for_unit(unit.part_number.as_deref(), unit.odx_name.as_deref()) {
+		for def in crate::extracted::for_unit(
+			store,
+			extracted,
+			unit.part_number.as_deref(),
+			unit.odx_name.as_deref(),
+			unit.odx_version.as_deref(),
+		) {
 			let ReadId::Uds(did) = def.address;
 			match out.iter_mut().find(|c| c.request == request && c.did == did) {
 				Some(existing) => {
@@ -422,8 +428,8 @@ fn push(into: &mut Vec<Resolved>, channel: Resolved) {
 /// under `--full`. That is a cadence decision for the poll loop and not a
 /// grouping one: a request addresses one control unit, so a channel cannot
 /// join the leading batch of a unit it does not live on.)
-pub fn resolve(store: &CatalogStore, units: &[UnitIdentity], full: bool) -> Result<Set, Vec<Missing>> {
-	let pool = candidates(store, units);
+pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, units: &[UnitIdentity], full: bool) -> Result<Set, Vec<Missing>> {
+	let pool = candidates(store, extracted, units);
 	let mut found: Vec<Resolved> = Vec::new();
 	let mut missing: Vec<Missing> = Vec::new();
 
@@ -561,6 +567,7 @@ mod tests {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		}
 	}
@@ -640,7 +647,13 @@ mod tests {
 		// by word, nothing below would be found.
 		let synthetic = Synthetic::new("by-name");
 		synthetic.write("SYN0000001", invented_required(0.05));
-		let set = resolve(&synthetic.store(), &[unit(CLUSTER, "SYN0000001")], false).expect("a catalog using the same words needs no code change");
+		let set = resolve(
+			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
+			&[unit(CLUSTER, "SYN0000001")],
+			false,
+		)
+		.expect("a catalog using the same words needs no code change");
 
 		assert_eq!(set.leading.source(), "714:1001");
 		assert_eq!(resolved(&set, "engine speed").unwrap().did, 0x1002);
@@ -655,7 +668,7 @@ mod tests {
 	#[test]
 	fn the_reference_car_leads_on_whichever_unit_owns_its_finest_speed() {
 		let (store, units) = reference(need_rows!());
-		let set = resolve(&store, &units, true).expect("the reference car resolves");
+		let set = resolve(&store, &crate::extracted::Extracted::none(), &units, true).expect("the reference car resolves");
 
 		// Derived, not declared: the gearbox leads because its speed is the
 		// finest one on the car, not because it is the gearbox.
@@ -706,6 +719,7 @@ mod tests {
 
 		let set = resolve(
 			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
 			&[
 				unit(CLUSTER, "SYNCOARSE1"),
 				unit(0x730, "SYNFINE001"),
@@ -731,7 +745,13 @@ mod tests {
 		let synthetic = Synthetic::new("no-speed");
 		synthetic.write("SYN0000009", vec![quantity("Odometer", "km", 0x1010, 1.0)]);
 
-		let missing = resolve(&synthetic.store(), &[unit(CLUSTER, "SYN0000009")], false).expect_err("no speed means no stopwatch");
+		let missing = resolve(
+			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
+			&[unit(CLUSTER, "SYN0000009")],
+			false,
+		)
+		.expect_err("no speed means no stopwatch");
 		let speed = missing
 			.iter()
 			.find(|m| m.key == "speed")
@@ -758,12 +778,12 @@ mod tests {
 		);
 		let units = [unit(CLUSTER, "SYN0000002"), unit(0x730, "SYN0000003")];
 
-		let plain = resolve(&synthetic.store(), &units, false).expect("resolves without them");
+		let plain = resolve(&synthetic.store(), &crate::extracted::Extracted::none(), &units, false).expect("resolves without them");
 		assert!(resolved(&plain, "barometer").is_none());
 		assert!(resolved(&plain, "ambient").is_none());
 		assert!(plain.background.is_empty(), "nothing to read on the other unit");
 
-		let full = resolve(&synthetic.store(), &units, true).expect("resolves with them");
+		let full = resolve(&synthetic.store(), &crate::extracted::Extracted::none(), &units, true).expect("resolves with them");
 		assert_eq!(resolved(&full, "barometer").unwrap().source(), "730:1020");
 		assert_eq!(resolved(&full, "ambient").unwrap().source(), "730:1021");
 		// They are on another unit, so they are read at the background cadence.
@@ -773,7 +793,7 @@ mod tests {
 	#[test]
 	fn a_paired_measurement_resolves_to_the_half_it_says_it_is() {
 		let (store, units) = reference(need_rows!());
-		let set = resolve(&store, &units, false).expect("the reference car resolves");
+		let set = resolve(&store, &crate::extracted::Extracted::none(), &units, false).expect("the reference car resolves");
 		let actual = resolved(&set, "boost actual").unwrap();
 		let specified = resolved(&set, "boost specified").unwrap();
 		assert_eq!(actual.def.name, "Boost pressure, actual");
@@ -784,7 +804,7 @@ mod tests {
 	#[test]
 	fn a_value_comes_through_its_definition_and_never_through_the_raw_fallback() {
 		let (store, units) = reference(need_rows!());
-		let set = resolve(&store, &units, false).expect("the reference car resolves");
+		let set = resolve(&store, &crate::extracted::Extracted::none(), &units, false).expect("the reference car resolves");
 
 		// A quantity is a number, at the resolution its scaling proves.
 		assert_eq!(set.leading.value(&[0x0A, 0x1E]), Some(76.9));
@@ -814,7 +834,13 @@ mod tests {
 				scaling: Scaling::Anchor { raw: 0, value: 0.0 },
 			}],
 		);
-		let missing = resolve(&synthetic.store(), &[unit(CLUSTER, "SYN0000004")], false).expect_err("an anchor is not a speed channel");
+		let missing = resolve(
+			&synthetic.store(),
+			&crate::extracted::Extracted::none(),
+			&[unit(CLUSTER, "SYN0000004")],
+			false,
+		)
+		.expect_err("an anchor is not a speed channel");
 		assert!(missing.iter().any(|m| m.key == "speed"));
 	}
 }

@@ -974,13 +974,14 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 					request: plan::ENGINE,
 					part_number: Some(part.to_string()),
 					odx_name: None,
+					odx_version: None,
 					component: None,
 				});
 			}
 		}
 	}
 
-	let mut channels = plan::available(&store, &identities);
+	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
 	// A recording does not say which unit each column came from. Columns that
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
@@ -1245,10 +1246,23 @@ fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> Surv
 fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], catalogs: &str, source: &SurveySource) -> String {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
-	let has = |request: u16, proven: bool| channels.iter().any(|c| c.request == request && c.def.is_some() == proven);
-	let proven: Vec<u16> = units.iter().copied().filter(|r| has(*r, true)).collect();
-	let raw: Vec<u16> = units.iter().copied().filter(|r| has(*r, false)).collect();
-	let silent: Vec<u16> = units.iter().copied().filter(|r| !has(*r, true) && !has(*r, false)).collect();
+	let any = |request: u16, f: &dyn Fn(&Channel) -> bool| channels.iter().any(|c| c.request == request && f(c));
+	// Three states, not two. A channel can be named and scaled and still never
+	// have been confirmed on this car — an ODIS compu formula or an OBD-II
+	// standard parameter — and calling that "proven" would report somebody
+	// else's arithmetic as this project's measurement.
+	let proven: Vec<u16> = units
+		.iter()
+		.copied()
+		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && c.proven))
+		.collect();
+	let named: Vec<u16> = units
+		.iter()
+		.copied()
+		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && !c.proven) && !proven.contains(r))
+		.collect();
+	let raw: Vec<u16> = units.iter().copied().filter(|r| any(*r, &|c: &Channel| c.def.is_none())).collect();
+	let silent: Vec<u16> = units.iter().copied().filter(|r| !any(*r, &|_| true)).collect();
 
 	// "answered" would be a claim about *this* run, and with a cached survey
 	// loaded it is not one: those units answered the sweep that wrote the
@@ -1261,8 +1275,17 @@ fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], cata
 		list(&units)
 	);
 	if !proven.is_empty() {
-		out.push_str(&format!("  measurements this project has proven: {}\n", list(&proven)));
-	} else if !units.is_empty() {
+		out.push_str(&format!("  measurements proven on a car: {}\n", list(&proven)));
+	}
+	if !named.is_empty() {
+		// Named and scaled without a drive — the whole point of reading an ODIS
+		// project — but said in words that do not claim more than that.
+		out.push_str(&format!(
+			"  named and scaled from this project's source data, not yet confirmed on a car: {}\n",
+			list(&named)
+		));
+	}
+	if proven.is_empty() && named.is_empty() && !units.is_empty() {
 		// Not one unit of this car has a catalog. That is the ordinary state of
 		// every car but the one this project was developed on, and it is worth
 		// a paragraph rather than a silence: everything on the screen will be
@@ -1423,7 +1446,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	identities.extend(found);
 
 	progress.finish();
-	let mut channels = plan::available(&store, &identities);
+	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
 	if let Some(text) = &survey_text {
 		// Everything a survey found becomes watchable, on every unit — which
 		// is the only way the units outside the catalogs get on screen at all.
@@ -1446,6 +1469,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 				request: *request,
 				did: *did,
 				def: None,
+				proven: false,
 				selected: true,
 			}),
 		}
@@ -1663,10 +1687,12 @@ mod tests {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		};
 		plan::available(
 			&store,
+			&crate::extracted::Extracted::none(),
 			&[ident(0x7E0, "8V0906264H"), ident(0x7E1, "0CW300041G"), ident(0x714, "5E0920740D")],
 		)
 	}
@@ -1691,6 +1717,7 @@ mod tests {
 			request,
 			part_number: part.map(str::to_string),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		};
 		vec![
@@ -1722,7 +1749,7 @@ mod tests {
 		// count of everything that answered set against a list of the three
 		// with catalogs. Whatever else the summary says, those two must agree.
 		let identities = reference_identities();
-		let channels = plan::available(&store(need_rows!()), &identities);
+		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing { cache: None });
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
@@ -1736,7 +1763,7 @@ mod tests {
 		// A unit with no catalog and no survey has nothing on screen at all,
 		// and the tool has to say which single command changes that.
 		let identities = reference_identities();
-		let channels = plan::available(&store(need_rows!()), &identities);
+		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(
 			&identities,
 			&channels,
@@ -1768,7 +1795,10 @@ mod tests {
 				)
 			})
 			.collect();
-		let channels = plan::with_survey(plan::available(&store(need_rows!()), &identities), &survey);
+		let channels = plan::with_survey(
+			plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
+			&survey,
+		);
 		assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
 		let cache = std::path::PathBuf::from("/somewhere/survey.jsonl");
 		let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Cached(cache));
@@ -1797,7 +1827,10 @@ mod tests {
 				)
 			})
 			.collect();
-		let channels = plan::with_survey(plan::available(&store(need_rows!()), &identities), &survey);
+		let channels = plan::with_survey(
+			plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
+			&survey,
+		);
 		let text = coverage_report(
 			&identities,
 			&channels,
@@ -1825,11 +1858,12 @@ mod tests {
 			request,
 			part_number: Some(format!("{request:03X}0000000")),
 			odx_name: None,
+			odx_version: None,
 			component: None,
 		};
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data::catalog::CatalogStore::open("/definitely/not/here");
-		let channels = plan::available(&empty, &identities);
+		let channels = plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(&identities, &channels, "/x/data/measured", &SurveySource::Missing { cache: None });
 		assert!(text.contains("no proven measurement rows"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
@@ -2154,6 +2188,7 @@ mod tests {
 				raw_form: RawForm::U16Be,
 				scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
 			}),
+			proven: true,
 			selected: true,
 		}
 	}
@@ -2176,6 +2211,7 @@ mod tests {
 					levels: vec![(5, "4".to_string()), (12, "R".to_string())],
 				},
 			}),
+			proven: true,
 			selected: true,
 		}
 	}
@@ -2185,6 +2221,7 @@ mod tests {
 			request,
 			did,
 			def: None,
+			proven: false,
 			selected: true,
 		}
 	}

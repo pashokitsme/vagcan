@@ -147,10 +147,16 @@ async fn identify_listed<B: vag_can::CanBackend>(
 		// is about what a sweep can provoke; this is not one.
 		let component = text(uds.read_data_by_identifier_within(0xF197, PROBE).await.ok());
 		let odx = text(uds.read_data_by_identifier_within(0xF19E, PROBE).await.ok());
+		// `F1A2` beside `F19E`: the two together pick a unit's variant, and a
+		// name without a version can only ever match a whole family. One more
+		// `0x22` read, on the allowlist, in the identification pass that is
+		// already asking this unit three questions.
+		let version = text(uds.read_data_by_identifier_within(0xF1A2, PROBE).await.ok());
 		identities.push(UnitIdentity {
 			request,
 			part_number: part,
 			odx_name: odx,
+			odx_version: version,
 			component,
 		});
 		backend = uds.into_transport().into_backend();
