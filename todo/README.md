@@ -12,6 +12,55 @@ exposes is selectable from config, with no hardcoded addresses or formulas in Ru
 Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
 for the locked stack and `todo/GOAL.md` for the goal statement.
 
+## Status (2026-08-08) — ODIS is a second source, and the car picks its project
+
+A VW ODIS-Service runtime project is now read natively — no Python, no PBL DLL, no
+Java — and `setup` is a choice of *source* rather than a hardcoded VCDS path. Design in
+`docs/superpowers/specs/2026-08-07-odis-project-store-design.md`, plan in
+`docs/superpowers/plans/2026-08-07-odis-project-store.md`, formats in
+`research/labels/odis-format.md`.
+
+**The claim the whole branch rests on is measured, not asserted.** Three rows this
+project proved *by driving the car* come back identical from the ODIS file with no
+drive — including the endianness split that a single wrong guess would have hidden:
+
+| DID | proven by driving | ODIS says |
+|---|---|---|
+| `F405` | `u8`, `raw − 40`, °C | 8 bits, `Linear{1.0, −40.0}`, °C ✓ |
+| `206E` | `u16` **big**-endian, raw, /min | 16 bits, `be=true` ✓ |
+| `380A` | `u16` **little**-endian, raw, /min | 16 bits, `be=false` ✓ |
+
+**On the reference car, 13 of 15 control units resolve to an ODIS variant**, by the
+`F19E`/`F1A2` join the label files already used — 6,669 channels found, **1,691
+expressible today**. The two misses are real: the car reports `EV_DCUDriveSideEWMAXCONT`
+and the project ships `EV_DCU2DriveSideMAXHCONT`, a different unit rather than a failed
+match. Whole project: 633 of 717 variants yield channels, 310,734 readings.
+
+**The gap between 6,669 and 1,691 is `RawForm`, and it is measured**: 352 channels are
+not byte-aligned, 146 are signed 16-bit **little**-endian (`RawForm` has `I16Be` and no
+`I16Le`), 67 are one-bit flags, 51 are `u32` little-endian. Widening `RawForm` with
+`I16Le`/`U32Le` and a byte offset above 1 is ~200 more channels on the engine and
+gearbox alone and is the obvious next step; bit-field channels need a different carrier
+than `RawForm` and are a decision, not a patch.
+
+**Storage moved.** `~/.vagcan/data/<project_id>/{cache.sqlite, names.json,
+rod-keys.json, measurements/, sources.json}`, with `.rod` files and the fault text in a
+shared `~/.vagcan/rod/`. A project is a **platform** — VW's own mapping puts every
+Octavia III, Karoq and Kodiaq under `SK37X` — so several cars share one, and
+`cars/<VIN>/` still holds what is true of exactly one car.
+
+**Two things recorded rather than resolved**, both cheap to close with the car:
+
+- `catalog.rs` describes this car's reverse gear as `0C`; ODIS says `0C` is *Gear 9* on
+  `0x210F` and reverse is `7`. The `0C` figure is a doc comment and a test, **not a
+  proven row** — no measured file for that channel exists. Settled by selecting reverse
+  and reading `0x210F` on `7E0` and `0x3816` on `7E1` (`research/labels/odis-format.md`
+  §7.1).
+- `watch` reported `measurements this project has proven: 7E0` on a machine holding **no
+  proven rows at all** — the built-in OBD-II standard table was being labelled as
+  proven. Fixed by a `proven` flag on the channel; worth knowing because it made a
+  built-in table look like evidence.
+
 ## Status (2026-08-06) — prepared to go public
 
 **Nothing the tool reads at run time lives in the repository any more.** `catalogs/` is
