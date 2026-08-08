@@ -237,8 +237,15 @@ impl Project {
 	/// Walks the chain in [`loaders::measurement`]'s module note: the variant's
 	/// layer data names its `ReadDataByIdentifier` service, whose positive
 	/// response carries a table key (the DIDs) and a table struct (the
-	/// measurements). A variant that lists no such service has no readings, and
-	/// says so with an empty list rather than an error.
+	/// measurements).
+	///
+	/// **An empty list means one thing: the variant declares no measurement
+	/// service.** That is a fact about the control unit — 44 of the reference
+	/// project's 717 variants are like that — and not a fact about this reader.
+	/// Every way of failing to *find* the chain is an error instead, because an
+	/// empty success is the failure that hides: nothing in a run says anything
+	/// is wrong, and a broken lookup and a unit with no measurements read
+	/// identically to a caller.
 	///
 	/// A channel whose scaling this crate cannot represent honestly, or which
 	/// reaches a refused type, is **skipped**. One unreadable channel must not
