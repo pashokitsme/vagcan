@@ -6,8 +6,7 @@ the car's control units: which units it has, what they call
 themselves, what they measure, what faults they have stored, and — with
 `vagcan measure` — how fast the car actually accelerates.
 
-**This is a hobby project**.
-
+**This is a hobby project** which is **UNDER DEVELOPMENT**. **Things might (and likely will) work wrong and even cause faults on your car**.
 
 ## Dependencies
 
