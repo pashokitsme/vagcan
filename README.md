@@ -114,7 +114,7 @@ number it had invented, and the guards are the scar tissue.
 `vagcan vcds names <text>` to search VW's measurement names, and `vagcan recording …`
 to read back a drive someone else recorded. The offline commands are grouped under
 `vcds` and `recording` in [`USAGE.md`](USAGE.md).
-
+<!--
 
 ## Where your files go
 
@@ -152,7 +152,7 @@ same process yet.
 defects found and fixed on the first. Treat its numbers as good until a third drive
 says otherwise.
 
-The tool is written to work on any VAG car. It has been *proven* on the ones below.
+The tool is written to work on any VAG car. It has been *proven* on the ones below.-->
 
 ## Code quality
 
