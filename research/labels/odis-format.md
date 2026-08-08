@@ -27,7 +27,8 @@ working parse right up until it does not.
 | Do those scalings agree with what driving proved? | **Yes, 3 of 3, including a byte-order split** | §5 |
 | Is `ODIS-project-explorer` a sufficient spec? | **No** — four defects, §3 | §3 |
 | Can the refusal list be honoured on a real project? | **Yes**, but not by refusing to *move* | §6 |
-| Is anything still unexplained? | Yes — 34 layer tails, and a gear conflict | §7 |
+| Does the `.vi` pool say which vehicles a project covers? | **No** — it is bus topology. `PRNR-INFO.xml` does | §6 |
+| Is anything still unexplained? | Yes — 34 layer tails, and a gear conflict | §8 |
 
 ---
 
@@ -275,7 +276,80 @@ proven row is not.
 
 ---
 
-## 6. The refusal list, and how it is enforced
+## 6. The `.vi` pool: how to talk to the car, not which car
+
+A project has to be selectable by the car plugged into it (spec §4.1), and the pool named
+`VI_<project>.vi` is the obvious place to look. **It does not answer that question**, and
+the name is the whole reason anyone would think it does.
+
+`0.0.0@VI_SK37X.vi` holds 62 objects:
+
+```
+0x006A MCD_DB_LOGICAL_LINK                        59   one per control unit
+0x006E MCD_DB_PHYSICAL_VEHICLE_LINK_OR_INTERFACE   1   PhysLink_CAN1
+0x00D4 MCD_DB_VEHICLE_INFORMATION                  1   VI_VINFO_SK37XCAN
+0x0034 DB_VEHICLE_INFO_DATA                        1   points at that one
+```
+
+The single `MCD_DB_VEHICLE_INFORMATION` parses to `short_name = VINFO_SK37XCAN`,
+`long_name = "SK37X CAN"`, 59 logical links, one physical link, and one connector
+(`Diagnostics On CAN Connector`, pins CANH and CANL). It is **named after the project, not
+after a vehicle**, and everything in it is topology: which bus, which links, which pins.
+"Vehicle information" means *how to reach the car*.
+
+Nor do the pools answer it anywhere else. Searched across all 1,155,437 ASCII and 153,704
+Unicode strings: **no `Karoq`, no `Kodiaq`, no `Octavia`, no `SK371`, no `5EP`, no
+`Fahrzeugprojekt`.** `SK326` occurs six times, every one of them free-text prose about a
+single amplifier variant ("*ECU Variant for the GEN_2 AMPLIFIER 16 CH for SK37, SK326*").
+`5E0` occurs only inside part numbers quoted in descriptions. This is a measured negative,
+not an inference from a type name.
+
+### 6.1 `PRNR-INFO.xml` is where it lives
+
+Outside the pools, in the project root:
+
+```xml
+<ODX-PLATFORM>SK37X</ODX-PLATFORM>
+<VEHICLE HAS-PRNR-DIFFERENTIATION="false" IS-DEFAULT="true">
+    <VEHICLE-PROJECT>SK37X/0EU_X</VEHICLE-PROJECT>
+    <NAME>A7 / Octavia III (Limo, Combi)</NAME>
+    <PRODUCT-ID>5E0</PRODUCT-ID>
+</VEHICLE>
+```
+
+Six vehicles for `SK37X`: `5E0` Octavia III, `5EU` Octavia III (Russia), `5EF` Octavia III
+(India), `55A` Kodiaq EU, `5EP` Karoq EU, `55U` Kodiaq RU. VW's `S42 —
+Fahrzeugprojektzuordnung` is a rendering of exactly these fields; an `S42` line is
+`VEHICLE-PROJECT` + `PRODUCT-ID` + `NAME` run together.
+
+The file is one of the 472 entries declared in `rt_index.xml`'s `RUNTIME` block, so it is
+part of **every** extracted project by construction and not by luck of one copy. That is
+what makes depending on it safe, and it is why no table of type codes needs to live in
+this repository.
+
+### 6.2 The car-side key is not settled, and the obvious rule is wrong
+
+A `PRODUCT-ID` is a three-character VW type code. The tempting match is the leading three
+characters of an `F187` part number — and the reference car refutes it:
+
+```
+712 5Q0909144T   713 5Q0614517AQ   714 5E0920740D   715 3Q0959655BE   746 5E0907044AM
+767 3Q0035284    773 5E0035871C    7E0 8V0906264H   7E1 0CW300041G
+```
+
+Three units report `5E0`, which is this project's default vehicle and the right answer.
+But the **engine reports `8V0`** — an Audi platform number sitting in a Škoda — and
+`5Q0`/`3Q0` are MQB-common across the whole group. A part number is evidence about a
+*component*, and only sometimes about the vehicle it is bolted into. Choosing which of
+fifteen answers to believe is a policy over live data, not a property of a file format,
+and `Project::covers()` therefore takes the type code as an argument rather than deriving
+it.
+
+One thing this project cannot establish on its own: **whether `PRODUCT-ID` sets are
+disjoint between projects.** Selection works here because `5E0` is present and specific.
+That is a sample of one, and a second project settles it.
+
+## 7. The refusal list, and how it is enforced
 
 `SAFETY.md` and the design's §2 name ten object types that are never parsed into anything
 executable. Two of them sit directly in the path of reading a car at all, and the way that
@@ -304,9 +378,9 @@ simple data object properties on the engine pool.
 
 ---
 
-## 7. Open questions
+## 8. Open questions
 
-### 7.1 The gear conflict — one drive settles it
+### 8.1 The gear conflict — one drive settles it
 
 `crates/vag-data/src/catalog.rs` records that on this car the gear code is `gear + 1` and
 that **reverse is code `0C`**. The ODIS project says engine DID `0x210F` ("Selected gear",
@@ -328,7 +402,7 @@ see which raw value each returns. If `0x210F` answers `7`, ODIS is right about i
 `catalog.rs`'s `0C` belongs to some other channel — most likely the gearbox's, which is
 where the original measurement was taken.
 
-### 7.2 Thirty-four layer tails that do not parse
+### 8.2 Thirty-four layer tails that do not parse
 
 663 `DB_LAYER_DATA` objects live in the `.bv` pools. All 663 give up their service index;
 **34 end in a tail shape this reader cannot follow.** The implementation splits the type:
@@ -338,7 +412,7 @@ trade, not an oversight: the alternative was 34 control units losing every chann
 protect bookkeeping nobody reads. Someone with a second project should look at what those
 34 have in common.
 
-### 7.3 What a second ODIS project would test
+### 8.3 What a second ODIS project would test
 
 Everything above is one project. The specific things a second one would falsify or
 confirm:
@@ -349,11 +423,13 @@ confirm:
   artefact, and whether an overflow-chain record ever appears;
 - whether the 34 unfollowed tails are a shape or a corruption;
 - whether `MCD_DB_LOCATION_REFERENCES`'s access-key count is ever above 1;
-- whether `23 3C 00` is exclusively `MCD_DB_TABLE_PARAMETER`'s, as it is here.
+- whether `23 3C 00` is exclusively `MCD_DB_TABLE_PARAMETER`'s, as it is here;
+- **whether `PRODUCT-ID` sets are disjoint between projects** (§6.2) — the one thing that
+  decides whether a connected car can select its project from a type code at all.
 
 ---
 
-## 8. Where this lives in the code
+## 9. Where this lives in the code
 
 ```
 crates/vag-data/src/odis/
