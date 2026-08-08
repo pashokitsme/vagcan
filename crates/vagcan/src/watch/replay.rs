@@ -256,6 +256,27 @@ fn encode(count: u64, form: RawForm) -> Option<Vec<u8>> {
 		RawForm::I16Be => be(2),
 		RawForm::U24Be => be(3),
 		RawForm::U32Be => be(4),
+		// The general form, on the same terms as `U8Second`: the bytes before
+		// the field were never recorded, so they are filled with zero and the
+		// reader takes the ones it wants. A width outside 1..=4 is what
+		// `RawForm::read` refuses, and a byte layout for it would be a buffer
+		// nothing can read back.
+		RawForm::Int {
+			byte_offset,
+			byte_length,
+			big_endian,
+			..
+		} => match (1..=4).contains(&byte_length) {
+			false => None,
+			true => be(byte_length as usize).map(|mut field| {
+				if !big_endian {
+					field.reverse();
+				}
+				let mut out = vec![0u8; byte_offset as usize];
+				out.extend(field);
+				out
+			}),
+		},
 	}
 }
 
@@ -359,6 +380,26 @@ mod tests {
 		let channel = rpm_channel();
 		let bytes = cell_to_bytes("690", &channel, false).unwrap();
 		assert_eq!(bytes, vec![0xB2, 0x02]);
+		assert_eq!(channel.def.as_ref().unwrap().interpret(&bytes), Some(690.0));
+	}
+
+	#[test]
+	fn a_field_deep_in_a_response_replays_where_the_reader_will_look_for_it() {
+		// A channel four bytes into its response has no bytes 0..3 in the
+		// recording — a cell holds one value, not the whole answer. They are
+		// filled with zero and the reader takes the ones it wants, exactly as
+		// `U8Second` has always done, so a converted cell survives the round
+		// trip it is written for.
+		let mut channel = rpm_channel();
+		let form = RawForm::Int {
+			byte_offset: 4,
+			byte_length: 2,
+			signed: false,
+			big_endian: true,
+		};
+		channel.def.as_mut().unwrap().raw_form = form;
+		let bytes = cell_to_bytes("690", &channel, false).unwrap();
+		assert_eq!(bytes, vec![0, 0, 0, 0, 0x02, 0xB2]);
 		assert_eq!(channel.def.as_ref().unwrap().interpret(&bytes), Some(690.0));
 	}
 

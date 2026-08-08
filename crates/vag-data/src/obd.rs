@@ -405,6 +405,14 @@ impl ObdPid {
 			RawForm::U16Be | RawForm::U16Le | RawForm::I16Be => 2,
 			RawForm::U24Be => 3,
 			RawForm::U32Be => 4,
+			// No J1979 parameter in [`STANDARD`] uses the general form — the
+			// standard set is one and two byte values at the front of the
+			// response — but the width still has to be right rather than
+			// plausible, because [`conversion_for`] refuses on it. A field of
+			// `byte_length` bytes at `byte_offset` needs the sum to be present.
+			RawForm::Int {
+				byte_offset, byte_length, ..
+			} => byte_offset as usize + byte_length as usize,
 		}
 	}
 }

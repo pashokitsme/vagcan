@@ -438,6 +438,105 @@ mod tests {
 		assert_eq!(round(1.0 / 3.0), "0.333");
 	}
 
+	/// A `measurements/` file exactly as the seven-variant `RawForm` wrote it,
+	/// byte for byte, before [`RawForm::Int`] existed. Kept as a literal so the
+	/// guard below cannot drift with the code it is guarding: regenerating it
+	/// from the current enum would test that today agrees with today.
+	const A_FILE_WRITTEN_BEFORE_THE_WIDENING: &str = r#"{
+  "defs": [
+    { "name": "one", "unit": "x", "address": { "Uds": 4096 },
+      "raw_form": "U8First",  "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "two", "unit": "x", "address": { "Uds": 4097 },
+      "raw_form": "U8Second", "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "three", "unit": "x", "address": { "Uds": 4098 },
+      "raw_form": "U16Be",    "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "four", "unit": "x", "address": { "Uds": 4099 },
+      "raw_form": "U16Le",    "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "five", "unit": "x", "address": { "Uds": 4100 },
+      "raw_form": "I16Be",    "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "six", "unit": "x", "address": { "Uds": 4101 },
+      "raw_form": "U24Be",    "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } },
+    { "name": "seven", "unit": "x", "address": { "Uds": 4102 },
+      "raw_form": "U32Be",    "scaling": { "Linear": { "factor": 1.0, "offset": 0.0 } } }
+  ]
+}"#;
+
+	#[test]
+	fn a_file_written_before_the_widening_still_reads_and_still_means_the_same() {
+		// The rows under `~/.vagcan/data/<project>/measurements/` were proven by
+		// driving a car and can be recreated by nothing else. Widening `RawForm`
+		// by *renaming* its variants — `U16Be` becoming a struct form — would
+		// have made every one of those files unparseable, silently, on the next
+		// run. So the seven names are load-bearing file format, and this is the
+		// test that says so.
+		let back = MeasurementCatalog::from_json(A_FILE_WRITTEN_BEFORE_THE_WIDENING).expect("an old file still parses");
+		let forms: Vec<RawForm> = back.defs.iter().map(|d| d.raw_form).collect();
+		assert_eq!(
+			forms,
+			vec![
+				RawForm::U8First,
+				RawForm::U8Second,
+				RawForm::U16Be,
+				RawForm::U16Le,
+				RawForm::I16Be,
+				RawForm::U24Be,
+				RawForm::U32Be
+			]
+		);
+		// And they still decode what they always decoded — the cluster's odometer
+		// bytes read as 24 and as 32 bits, and a negative through `I16Be`.
+		assert_eq!(back.defs[5].interpret(&[0x03, 0x3F, 0x18]), Some(212_760.0));
+		assert_eq!(back.defs[6].interpret(&[0x0C, 0xAF, 0x39, 0x8D]), Some(212_810_125.0));
+		assert_eq!(back.defs[4].interpret(&[0xFF, 0xFE]), Some(-2.0));
+
+		// A row derived from a project file today lands on the same name, so it
+		// compares equal to the row on disk rather than shadowing it.
+		assert_eq!(RawForm::for_field(0, 16, false, true), Some(back.defs[2].raw_form));
+	}
+
+	#[test]
+	fn a_row_that_needs_the_general_form_survives_the_file_it_is_written_to() {
+		// The other direction: the shapes that were unsayable until now have to
+		// round-trip through the same file, or they are expressible in memory
+		// and lost on save.
+		let def = |name: &str, did: u16, raw_form: RawForm| MeasurementDef {
+			name: Cow::Owned(name.to_string()),
+			unit: Cow::Borrowed("bar"),
+			address: ReadId::Uds(did),
+			raw_form,
+			scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
+		};
+		let cat = MeasurementCatalog::new(vec![
+			def(
+				"signed word, little end first",
+				0x1000,
+				RawForm::Int {
+					byte_offset: 0,
+					byte_length: 2,
+					signed: true,
+					big_endian: false,
+				},
+			),
+			def(
+				"a word four bytes in",
+				0x1001,
+				RawForm::Int {
+					byte_offset: 4,
+					byte_length: 2,
+					signed: false,
+					big_endian: true,
+				},
+			),
+		]);
+		let back = MeasurementCatalog::from_json(&cat.to_json().expect("serialize")).expect("deserialize");
+		assert_eq!(back, cat);
+		// -208 * 0.001 and 0x1234 * 0.001, from the bytes the measure tests
+		// hand-computed; through `describe` because a raw `f64` compare is a
+		// test of binary floating point rather than of the decoder.
+		assert_eq!(back.defs[0].describe(&[0x30, 0xFF]).as_deref(), Some("-0.208 bar"));
+		assert_eq!(back.defs[1].describe(&[0, 0, 0, 0, 0x12, 0x34]).as_deref(), Some("4.66 bar"));
+	}
+
 	#[test]
 	fn catalog_round_trips_through_json_config() {
 		// The user-facing config: a catalog (a proven anchor family plus a fully

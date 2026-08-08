@@ -82,6 +82,37 @@ pub enum RawForm {
 	/// 2.1 million kilometres for a metre counter — beyond any odometer — and
 	/// refusing is the honest answer for anything that does exceed it.
 	U32Be,
+	/// A whole-byte integer **anywhere** in the response, in either byte order
+	/// and either sign — the general case the seven variants above are the
+	/// hand-proven special cases of.
+	///
+	/// The seven exist because they were written one at a time, as a drive
+	/// proved each. Joined to a VW ODIS project that describes every field by
+	/// `(bit offset, bit length, signed, byte order)`, that vocabulary turned
+	/// out to be the binding constraint rather than the car: of 6 669 channels
+	/// the reference car's fifteen units describe, only 1 691 could be said at
+	/// all. 146 of the losses were a signed 16-bit **little**-endian value, 51 a
+	/// 32-bit little-endian one, and the rest sat at a byte offset above 1 —
+	/// none of them exotic, all of them unsayable.
+	///
+	/// Adding this variant rather than replacing the seven is deliberate:
+	/// `measurements/*.json` rows are serialized by name (`"U16Be"`), they are
+	/// proven by driving a car and nothing else can recreate them, and a
+	/// rewrite of the vocabulary would make every one of those files
+	/// unreadable. So the old names keep meaning exactly what they meant, and
+	/// [`RawForm::for_field`] still answers with one of them wherever one fits —
+	/// a row derived today compares equal to the row a drive wrote last year.
+	Int {
+		/// Bytes into the data, counted from the first byte after the DID echo.
+		byte_offset: u8,
+		/// How many bytes wide, 1 to 4. Wider than 4 has no `i32` to land in and
+		/// is refused by [`RawForm::read`] rather than truncated.
+		byte_length: u8,
+		/// Whether the bytes are a two's-complement signed quantity.
+		signed: bool,
+		/// Whether the most significant byte comes first.
+		big_endian: bool,
+	},
 }
 
 impl RawForm {
@@ -111,7 +142,82 @@ impl RawForm {
 				[a, b, c, d, ..] => i32::try_from(u32::from_be_bytes([*a, *b, *c, *d])).ok(),
 				_ => None,
 			},
+			RawForm::Int {
+				byte_offset,
+				byte_length,
+				signed,
+				big_endian,
+			} => {
+				// A width the carrier cannot hold is refused, not clipped: four
+				// bytes is what an `i32` has room for, and a zero-byte field is
+				// not a value at all.
+				if byte_length == 0 || byte_length as usize > 4 {
+					return None;
+				}
+				let start = byte_offset as usize;
+				let field = data.get(start..start + byte_length as usize)?;
+				// Sign-extend from the field's own width, so a one-byte −2 is −2
+				// and not 254. Unsigned stays unsigned, and a four-byte unsigned
+				// value above `i32::MAX` has no honest answer — the same rule
+				// `U32Be` has kept since the cluster's metre odometer needed it.
+				let mut wide: u32 = 0;
+				match big_endian {
+					true => field.iter().for_each(|&b| wide = (wide << 8) | b as u32),
+					false => field.iter().rev().for_each(|&b| wide = (wide << 8) | b as u32),
+				}
+				match signed {
+					true => {
+						let shift = 32 - 8 * byte_length as u32;
+						Some(((wide << shift) as i32) >> shift)
+					}
+					false => i32::try_from(wide).ok(),
+				}
+			}
 		}
+	}
+
+	/// The one form that says a field described as `(bit offset, bit length,
+	/// signed, byte order)` — a VW ODIS project's own terms — or `None` when
+	/// this vocabulary cannot say it exactly.
+	///
+	/// **One answer per shape, and the old names win where they fit.** A shape
+	/// one of the seven original variants names comes back as that variant, so
+	/// a row derived from a project file compares equal to the row a drive
+	/// proved and wrote to disk; everything else comes back as [`RawForm::Int`].
+	/// Two spellings of one shape would make `raw_form == RawForm::U16Le` a
+	/// coin toss for every caller that asks it.
+	///
+	/// `None` is the honest answer for a field that does not start on a byte or
+	/// does not fill whole bytes — a one-bit flag, a 3-bit field at bit 19.
+	/// Approximating one produces a confident wrong number, which is worse than
+	/// the raw bytes a reader gets instead.
+	pub fn for_field(bit_offset: u32, bit_length: u32, signed: bool, big_endian: bool) -> Option<RawForm> {
+		if bit_offset % 8 != 0 || bit_length % 8 != 0 {
+			return None;
+		}
+		let (byte_offset, byte_length) = (bit_offset / 8, bit_length / 8);
+		if byte_length == 0 || byte_length > 4 {
+			return None;
+		}
+		// The shapes that already had a name keep it, so nothing that reads a
+		// `measurements/` file has to learn a second spelling of them. Byte
+		// order is immaterial to a single byte, which is why the `U8` arms
+		// ignore it.
+		Some(match (byte_offset, byte_length, signed, big_endian) {
+			(0, 1, false, _) => RawForm::U8First,
+			(1, 1, false, _) => RawForm::U8Second,
+			(0, 2, false, true) => RawForm::U16Be,
+			(0, 2, false, false) => RawForm::U16Le,
+			(0, 2, true, true) => RawForm::I16Be,
+			(0, 3, false, true) => RawForm::U24Be,
+			(0, 4, false, true) => RawForm::U32Be,
+			_ => RawForm::Int {
+				byte_offset: u8::try_from(byte_offset).ok()?,
+				byte_length: byte_length as u8,
+				signed,
+				big_endian,
+			},
+		})
 	}
 }
 
@@ -197,6 +303,163 @@ mod tests {
 		// never a value that has silently wrapped to negative.
 		assert_eq!(RawForm::U32Be.read(&[0x80, 0x00, 0x00, 0x00]), None);
 		assert_eq!(RawForm::U32Be.read(&[0x01, 0x02, 0x03]), None);
+	}
+
+	#[test]
+	fn a_general_integer_reads_a_field_anywhere_in_the_response() {
+		let word = |signed, big_endian| RawForm::Int {
+			byte_offset: 0,
+			byte_length: 2,
+			signed,
+			big_endian,
+		};
+		let quad = |signed, big_endian| RawForm::Int {
+			byte_offset: 0,
+			byte_length: 4,
+			signed,
+			big_endian,
+		};
+		// A signed 16-bit LITTLE-endian value — the one shape whose absence cost
+		// 146 channels on the reference car's gearbox. Bytes 0x30 0xFF little-end
+		// first are 0xFF30, which as i16 is -208. Read big-endian they would be
+		// 0x30FF = +12543: a wrong byte order here is silently wrong, and wrong in
+		// exactly one direction.
+		assert_eq!(word(true, false).read(&[0x30, 0xFF]), Some(-208));
+		assert_eq!(word(true, true).read(&[0x30, 0xFF]), Some(12543));
+		// The proven little-endian register, expressed the general way: the
+		// gearbox's 0x380A read 690 /min from these bytes, 45570 read the other
+		// way round (`research/labels/rod-labels.md:433`).
+		assert_eq!(word(false, false).read(&[0xB2, 0x02]), Some(690));
+		assert_eq!(RawForm::U16Le.read(&[0xB2, 0x02]), Some(690));
+
+		// A 32-bit LITTLE-endian counter: the reference cluster's metre odometer
+		// with its bytes the other way round.
+		assert_eq!(quad(false, false).read(&[0x8D, 0x39, 0xAF, 0x0C]), Some(212_810_125));
+		assert_eq!(quad(false, false).read(&[0xFF, 0xFF, 0xFF, 0x7F]), Some(i32::MAX));
+		// Above i32::MAX there is no honest answer, exactly as for `U32Be` — never
+		// a value that has silently wrapped negative.
+		assert_eq!(quad(false, false).read(&[0x00, 0x00, 0x00, 0x80]), None);
+		// Signed, the same four bytes are a number the carrier does hold.
+		assert_eq!(quad(true, false).read(&[0x00, 0x00, 0x00, 0x80]), Some(i32::MIN));
+	}
+
+	#[test]
+	fn a_field_past_the_second_byte_is_read_where_it_actually_is() {
+		use RawForm::Int;
+		// Everything the old vocabulary could say lived at byte 0 or byte 1, so a
+		// response carrying several fields could only ever yield its first. These
+		// six bytes hold three 16-bit values; the third is not reachable by any
+		// of the seven original forms.
+		let data = [0x00, 0x01, 0x02, 0x03, 0x12, 0x34];
+		let at = |byte_offset| {
+			Int {
+				byte_offset,
+				byte_length: 2,
+				signed: false,
+				big_endian: true,
+			}
+			.read(&data)
+		};
+		assert_eq!(at(0), Some(0x0001));
+		assert_eq!(at(2), Some(0x0203));
+		assert_eq!(at(4), Some(0x1234));
+		// A single byte deep into the response, and a signed one.
+		assert_eq!(
+			Int {
+				byte_offset: 5,
+				byte_length: 1,
+				signed: false,
+				big_endian: true
+			}
+			.read(&data),
+			Some(0x34)
+		);
+		assert_eq!(
+			Int {
+				byte_offset: 3,
+				byte_length: 1,
+				signed: true,
+				big_endian: true
+			}
+			.read(&[0x00, 0x00, 0x00, 0xFE]),
+			Some(-2)
+		);
+		// A field that runs off the end is not invented, and neither is one whose
+		// offset is past the end entirely.
+		assert_eq!(at(5), None);
+		assert_eq!(at(6), None);
+		// A width this carrier cannot hold is refused rather than truncated: an
+		// `i32` has no room for five bytes, and a zero-byte field is not a value.
+		assert_eq!(
+			Int {
+				byte_offset: 0,
+				byte_length: 5,
+				signed: false,
+				big_endian: true
+			}
+			.read(&[1, 2, 3, 4, 5, 6]),
+			None
+		);
+		assert_eq!(
+			Int {
+				byte_offset: 0,
+				byte_length: 0,
+				signed: false,
+				big_endian: true
+			}
+			.read(&data),
+			None
+		);
+	}
+
+	#[test]
+	fn a_described_field_gets_the_one_form_that_says_it() {
+		// The seven original variants stay canonical for the shapes they name, so
+		// a row written before this widening still compares equal to a row
+		// derived now. Everything else becomes the general form.
+		let f = RawForm::for_field;
+		assert_eq!(f(0, 8, false, true), Some(RawForm::U8First));
+		assert_eq!(f(8, 8, false, false), Some(RawForm::U8Second));
+		assert_eq!(f(0, 16, false, true), Some(RawForm::U16Be));
+		assert_eq!(f(0, 16, false, false), Some(RawForm::U16Le));
+		assert_eq!(f(0, 16, true, true), Some(RawForm::I16Be));
+		assert_eq!(f(0, 24, false, true), Some(RawForm::U24Be));
+		assert_eq!(f(0, 32, false, true), Some(RawForm::U32Be));
+		// The three shapes the reference car's channel count was losing.
+		assert_eq!(
+			f(0, 16, true, false),
+			Some(RawForm::Int {
+				byte_offset: 0,
+				byte_length: 2,
+				signed: true,
+				big_endian: false
+			})
+		);
+		assert_eq!(
+			f(0, 32, false, false),
+			Some(RawForm::Int {
+				byte_offset: 0,
+				byte_length: 4,
+				signed: false,
+				big_endian: false
+			})
+		);
+		assert_eq!(
+			f(16, 16, false, true),
+			Some(RawForm::Int {
+				byte_offset: 2,
+				byte_length: 2,
+				signed: false,
+				big_endian: true
+			})
+		);
+		// A field that does not start on a byte, or does not fill whole bytes, is
+		// not this vocabulary's to describe — see the bit-field note on `RawForm`.
+		assert_eq!(f(19, 3, false, true), None);
+		assert_eq!(f(0, 12, false, true), None);
+		assert_eq!(f(8, 1, false, true), None);
+		// And a field too wide for the carrier is refused rather than clipped.
+		assert_eq!(f(0, 64, false, true), None);
 	}
 
 	#[test]
