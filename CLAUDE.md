@@ -144,3 +144,35 @@ The three front-page documents split by audience and must stay split:
 [`USAGE.md`](USAGE.md) is every command with worked output and the multi-command
 flows; [`ARCHITECTURE.md`](ARCHITECTURE.md) is why — the file formats, the setup
 pipeline, the catalog schema, the crate layout.
+
+## Tech stack & architecture (locked)
+
+- **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
+- **Connection-actor architecture** (NOT `Arc<Mutex<device>>`): one cable = one
+  actor task owning the byte pipe; N async tasks query N ECUs concurrently via
+  bounded `mpsc<Request{pdu, oneshot<Reply>}>`; the actor multiplexes/pipelines
+  over the single serial link, owning seq counter + per-channel link keystream +
+  ISO-TP state + timeouts. Clients get concurrency (latency-hiding), not wire
+  parallelism. Multiple cables later = actor-per-cable.
+- **Pluggable backend, static dispatch:** `trait Backend { async fn read/write }`
+  (native async-fn-in-trait, no `dyn`/`async-trait`). The live backend is `SlcanBackend`
+  over a serial port (`vag-can`); any future backend implements the same seam.
+- `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
+  client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
+  FAST** — `vagcan vcds labels` caches the parsed label files to SQLite under
+  `~/.vagcan/labels/cache.sqlite`.
+- **Host = macOS Apple Silicon (M4).**
+
+## Development workflow
+
+- **TDD wherever possible.** Every task ends with passing tests + `cargo clippy
+  --all-targets -- -D warnings` clean.
+- **Parallel dev with up to 4 subagents**, each on its **own git worktree**
+  (isolation). The controller (main session) splits tasks, reviews each agent's
+  diff/MR against its task brief, verifies, and merges. Never merge un-reviewed.
+- **Hardware checkpoints:** at milestones with visible results on the real car
+  (e.g. init handshake works; VIN read works), STOP and ask the user to verify on
+  hardware before continuing.
+- **Task tracking:** active tasks live in `todo/<subsystem>/<task>.md`; when a
+  task is done+reviewed+merged, move its file to `archive/tasks/done/<subsystem>/<task>.md`
+  (preserve the subsystem subdir). Each subsystem dir may carry a short `README.md`.
