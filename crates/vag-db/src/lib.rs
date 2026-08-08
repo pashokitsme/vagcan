@@ -153,6 +153,16 @@ CREATE TABLE IF NOT EXISTS reading (
     bit_offset   INTEGER NOT NULL,
     bit_length   INTEGER NOT NULL,
     signed       INTEGER NOT NULL,
+    -- Whether the bytes run most-significant first.
+    --
+    -- Stored, not assumed, and not derivable from anything else in the row.
+    -- UDS payloads are big-endian by convention and the reference car's own
+    -- proven row is not: DID 0x380A is `u16` little-endian
+    -- (`research/labels/rod-labels.md:433`, established byte by byte against a
+    -- log), and the ODIS file agrees. A reader that assumed big-endian would
+    -- report 690 /min as 45570 — so a cache that dropped this column would
+    -- throw away the parser's correctness at the storage layer.
+    big_endian   INTEGER NOT NULL DEFAULT 1,
     text_id      TEXT,
     -- The scaling, in columns rather than one serialised blob. A blob would
     -- need a serialiser this crate does not depend on, and a column can be read
@@ -226,6 +236,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 	let measurement = columns(conn, "measurement")?;
 	if !measurement.is_empty() && !measurement.iter().any(|name| name == "source_id") {
 		conn.execute("ALTER TABLE measurement ADD COLUMN source_id INTEGER REFERENCES source(id)", [])?;
+	}
+	// `reading` gained `big_endian` after the first ODIS parses were written.
+	// The default is `1` because that is UDS's convention and so the only
+	// defensible guess for a row nobody recorded it for — but a guess is what it
+	// is, and `setup` re-run against the project replaces the row with the
+	// answer the file actually gives.
+	let reading = columns(conn, "reading")?;
+	if !reading.is_empty() && !reading.iter().any(|name| name == "big_endian") {
+		conn.execute("ALTER TABLE reading ADD COLUMN big_endian INTEGER NOT NULL DEFAULT 1", [])?;
 	}
 	Ok(())
 }
@@ -501,9 +520,9 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 	{
 		let mut insert = tx.prepare(
 			"INSERT INTO reading \
-                (source_id, variant, did, name, unit, bit_offset, bit_length, signed, text_id, \
+                (source_id, variant, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                  scaling, factor, offset, anchor_raw, anchor_value) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
 		)?;
 		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
 		for r in readings {
@@ -521,6 +540,7 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 				r.bit_offset,
 				r.bit_length,
 				r.signed,
+				r.big_endian,
 				r.text_id,
 				kind,
 				factor,
@@ -545,7 +565,7 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::Reading>, Error> {
 	let conn = Connection::open(db_path)?;
 	let mut stmt = conn.prepare(
-		"SELECT id, did, name, unit, bit_offset, bit_length, signed, text_id, \
+		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
          FROM reading WHERE variant = ?1 ORDER BY did, bit_offset",
 	)?;
@@ -556,6 +576,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::
 		Option<String>,
 		u32,
 		u32,
+		bool,
 		bool,
 		Option<String>,
 		String,
@@ -579,13 +600,14 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::
 				row.get(10)?,
 				row.get(11)?,
 				row.get(12)?,
+				row.get(13)?,
 			))
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
 	let mut levels = conn.prepare("SELECT raw, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid")?;
 	let mut out = Vec::with_capacity(rows.len());
-	for (id, did, name, unit, bit_offset, bit_length, signed, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
+	for (id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
 		// A row whose scaling columns disagree with its kind is skipped rather
 		// than repaired: a channel reported with a scaling nobody wrote is worse
 		// than a channel not reported at all.
@@ -606,6 +628,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::
 			bit_offset,
 			bit_length,
 			signed,
+			big_endian,
 			scaling,
 			text_id,
 		});
@@ -866,6 +889,11 @@ mod tests {
 			bit_offset: 0,
 			bit_length: 16,
 			signed: false,
+			// Little-endian, because that is what the reference car's own proven
+			// row is and what a round trip most needs to preserve: the value
+			// that differs from the UDS convention is the one a dropped column
+			// would silently get wrong.
+			big_endian: false,
 			scaling,
 			text_id: Some("000116".to_string()),
 		}
@@ -910,6 +938,56 @@ mod tests {
 		assert_eq!(back[2].scaling, Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }));
 		assert_eq!(back[2].text_id.as_deref(), Some("000116"), "the join to names.json survives");
 		assert_eq!(reading_variants(&ws.db_path).unwrap(), ["EV_ECM"]);
+	}
+
+	#[test]
+	fn byte_order_survives_the_cache_because_the_proven_row_disagrees_with_the_convention() {
+		// UDS payloads are big-endian by convention and the reference car's own
+		// proven row is not: DID 0x380A is `u16` little-endian
+		// (`research/labels/rod-labels.md:433`, established byte by byte against
+		// a log), and the ODIS file agrees. A cache that dropped this column
+		// would throw the parser's correctness away at the storage layer, and a
+		// reader would report 690 /min as 45570.
+		let ws = TempWorkspace::new("endian");
+		let identity = Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 });
+		let mut little = reading(0x380A, "Getriebe-Eingangsdrehzahl", identity.clone());
+		little.big_endian = false;
+		let mut big = reading(0x2000, "Motordrehzahl", identity);
+		big.big_endian = true;
+		put_readings(&ws.db_path, "/x/SK37X", "EV_ECM", &[little, big]).unwrap();
+
+		let back = readings_of(&ws.db_path, "EV_ECM").unwrap();
+		assert_eq!(back.len(), 2);
+		assert_eq!(back[0].did, 0x2000);
+		assert!(back[0].big_endian, "a big-endian channel came back little-endian");
+		assert_eq!(back[1].did, 0x380A);
+		assert!(!back[1].big_endian, "the one channel a drive proved came back the wrong way round");
+	}
+
+	#[test]
+	fn a_reading_written_before_the_column_existed_migrates_to_the_uds_convention() {
+		// Not a fact, a guess — the only defensible one, since big-endian is
+		// what UDS says. `setup` re-run against the project replaces the row
+		// with the answer the file actually gives.
+		let ws = TempWorkspace::new("endian-old");
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			create_schema(&conn).unwrap();
+			conn.execute("ALTER TABLE reading DROP COLUMN big_endian", []).unwrap();
+			conn
+				.execute_batch(
+					"INSERT INTO source (id, kind, dir) VALUES (1, 'odis', '/x/SK37X');\
+                 INSERT INTO reading (source_id, variant, did, name, bit_offset, bit_length, signed, scaling, factor, offset) \
+                 VALUES (1, 'EV_ECM', 14346, 'a', 0, 16, 0, 'linear', 1.0, 0.0);",
+				)
+				.unwrap();
+		}
+		let conn = Connection::open(&ws.db_path).unwrap();
+		create_schema(&conn).unwrap();
+		drop(conn);
+		let back = readings_of(&ws.db_path, "EV_ECM").unwrap();
+		assert_eq!(back.len(), 1);
+		assert!(back[0].big_endian, "a row with no recorded byte order must take UDS's convention");
 	}
 
 	#[test]
