@@ -48,7 +48,7 @@ const MAX_ID: usize = 64;
 
 /// The characters a project name may hold, besides letters and digits.
 ///
-/// A project is a directory under `~/.vagcan/projects/`, so its name is a
+/// A project is a directory under `~/.vagcan/data/`, so its name is a
 /// filesystem name and the interesting question is which characters would make
 /// it something other than one child of that directory.
 const ID_EXTRAS: [char; 3] = ['-', '_', '.'];
@@ -438,7 +438,7 @@ fn unescape(text: &str) -> String {
 ///
 /// Returns the ODIS folder name unasked when the source is ODIS (spec §4.1) —
 /// that string is already the identifier VW's own tooling uses, and asking
-/// would invite a second name for one car. Asks otherwise, because D3 leaves a
+/// would invite a second name for one project. Asks otherwise, because D3 leaves a
 /// VCDS-only project with nothing to derive a name from.
 ///
 /// Either way it says what it settled on. A run with no terminal answers this
@@ -453,8 +453,8 @@ fn unescape(text: &str) -> String {
 /// asked *before* a project is opened, so it cannot. Two consequences the caller
 /// owns: prefer `Project::id()` over this answer once the project is open, and
 /// do not create the directory under this name until they have been compared —
-/// a store at `SK37X-1` holding data that calls itself `SK37X` is one car in two
-/// places. Nothing here reads `index.xml` itself: one rule with two
+/// a store at `SK37X-1` holding data that calls itself `SK37X` is one platform in
+/// two places. Nothing here reads `index.xml` itself: one rule with two
 /// implementations that can disagree is worse than one that is asked twice.
 pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String]) -> Result<String> {
 	let folder = match source {
@@ -475,13 +475,22 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String]) -> 
 		// called.
 		(Some(cleaned), _) if !cleaned.is_empty() => cleaned,
 		// One project already here is almost certainly this car: a second VCDS
-		// build on one laptop is a different build, not a different vehicle.
-		// Offering `default` beside it would split one car in two for the price
-		// of one keystroke.
+		// build on one laptop is a different build, not a different platform —
+		// and a platform is what a project is, so even a genuinely different car
+		// usually belongs in the same one. Offering `default` beside it would
+		// split one platform in two for the price of one keystroke.
 		(_, [only]) => only.clone(),
 		_ => DEFAULT_ID.to_string(),
 	};
-	io.say("A project is one car's data. A second source is added to it rather than replacing what is there.")?;
+	io.say(
+		// Wrapped by hand at the width every other message in this command is
+		// wrapped at. `say` does not clip — it must not, it is not a redraw — so
+		// a sentence left to the terminal comes out as a ragged wall.
+		"A project is a kind of car rather than one car — VW's own naming puts several\n\
+         models under one, so two cars can share it. What is true of exactly one car\n\
+         lives under cars/<VIN>/ instead.\n\
+         A second source is added to a project rather than replacing what is there.",
+	)?;
 	// A default that appears out of nowhere is worse than no default: somebody
 	// shown `[SK-37X-copy]` with no explanation cannot tell whether the tool
 	// read it somewhere or invented it.
@@ -505,12 +514,32 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String]) -> 
 			}
 			// Asked again rather than refused: a name is one keystroke, and
 			// losing the whole run over a slash would be a poor trade.
+			// The resolved path goes last because it is the one part whose
+			// length is unknown here — anywhere else it would push the rest of
+			// the sentence past the width this is wrapped to.
 			Some(why) => io.say(&format!(
 				"`{id}` cannot be a project name — {why}.\n    \
-                 A project is a folder under ~/.vagcan/projects/, so its name may hold letters, \
-                 digits, `-`, `_` and `.` and nothing else."
+                 A name may hold letters, digits, `-`, `_` and `.` and nothing else:\n    \
+                 it is one folder under {}",
+				projects_in()
 			))?,
 		}
+	}
+}
+
+/// Where projects live, in words, for a sentence a person reads.
+///
+/// **A literal path in printed copy is a promise**, and this one has already
+/// broken once: `~/.vagcan/data/measured/` outlived the directory it named and
+/// sent somebody on a real car to put a proven row where nothing was looking for
+/// it. So it is asked of [`crate::datadir`], which owns the layout, rather than
+/// written out here — and falls back to the shape only when there is no home
+/// directory to resolve against, which is the one case where naming a real path
+/// is impossible rather than merely stale.
+fn projects_in() -> String {
+	match crate::datadir::projects_dir() {
+		Ok(dir) => dir.display().to_string(),
+		Err(_) => "~/.vagcan/data/".to_string(),
 	}
 }
 
@@ -530,7 +559,7 @@ fn settled(id: &str, already: bool, from_odis: bool) -> String {
 	}
 }
 
-/// Why this cannot be a directory under `~/.vagcan/projects/`, if it cannot.
+/// Why this cannot be a directory under `~/.vagcan/data/`, if it cannot.
 fn why_not(id: &str) -> Option<String> {
 	if id.is_empty() {
 		return Some("a name with nothing in it is not a name".to_string());
@@ -815,7 +844,7 @@ mod tests {
 	#[test]
 	fn an_odis_project_is_named_by_the_folder_odis_itself_named() {
 		// Spec §4.1: the directory name is already the identifier VW's own
-		// tooling uses. Asking would invite a second name for one car.
+		// tooling uses. Asking would invite a second name for one project.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
@@ -870,7 +899,7 @@ mod tests {
 	fn with_one_project_already_here_that_is_what_pressing_enter_takes() {
 		// Better than `default`: a second VCDS build on the same laptop is
 		// almost always the same car, and `default` beside `SK37X` would split
-		// one car's data across two projects for the price of one keystroke.
+		// one platform's data across two projects for the price of one keystroke.
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
@@ -889,6 +918,42 @@ mod tests {
 		let said = io.all_said();
 		assert!(said.contains("SK37X") && said.contains("default"), "both are on screen: {said}");
 		assert_eq!(io.defaults(), ["default"], "with more than one there is nothing to guess");
+	}
+
+	#[test]
+	fn the_refusal_points_at_the_directory_projects_are_actually_in() {
+		// A literal path in printed copy is a promise, and this one has already
+		// moved once (`projects/` → `data/`). It is resolved from the module
+		// that owns the layout rather than spelled out here, so the next move
+		// cannot leave a person looking for a directory nobody has.
+		let here = tempfile::tempdir().unwrap();
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![Answer::Type("no/pe".to_string()), Answer::Type("ok".to_string())]);
+		project_id(&mut io, &Source::Vcds { dir: install }, &[]).unwrap();
+		let said = io.all_said();
+		assert!(!said.contains(".vagcan/projects"), "the directory that no longer exists: {said}");
+		let real = crate::datadir::projects_dir().unwrap();
+		assert!(
+			said.contains(&real.display().to_string()),
+			"it names where a project really lands: {said}"
+		);
+	}
+
+	#[test]
+	fn the_offer_does_not_call_a_project_one_car() {
+		// A project is a platform — one *kind* of car. VW's own mapping puts
+		// several models under one name, so "one car's data" would promise a
+		// separation that is not there, and somebody would go looking for a
+		// second project for their second Octavia.
+		let here = tempfile::tempdir().unwrap();
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
+		project_id(&mut io, &Source::Vcds { dir: install }, &[]).unwrap();
+		let said = io.all_said();
+		assert!(!said.contains("one car's data"), "{said}");
+		assert!(said.contains("kind of car"), "it says what a project actually covers: {said}");
+		// The one-car store is still a real thing, and it is somewhere else.
+		assert!(said.contains("cars/"), "and where what is true of one car lives: {said}");
 	}
 
 	#[test]
