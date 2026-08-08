@@ -186,6 +186,14 @@ pub struct Reading {
   pub bit_offset: u32,       // within the positive response, after the 3-byte header
   pub bit_length: u32,
   pub signed: bool,
+  // Added by owner A after the first run against the real project. A coded
+  // type's byte order is not something a caller can infer: UDS payloads are
+  // big-endian by convention and the reference car's own proven row is not.
+  // DID 0x380A on the gearbox is u16 *little*-endian (rod-labels.md:433,
+  // established byte by byte against a log) and the ODIS file agrees. A
+  // decoder assuming big-endian reads 690 /min as 45570, so this has to
+  // survive the round trip through cache.sqlite as a column, not be re-guessed.
+  pub big_endian: bool,
   pub scaling: vag_data::Scaling,   // via compu.rs — Linear / Enum / Anchor
   // Added by owner A in Task 8: the text id of `name`, which is the join to
   // TTTEXT (`research/labels/odis-crib.md` §3) and therefore what makes an
