@@ -138,15 +138,15 @@ impl Extracted {
 
 /// One extracted channel as the rest of this tool speaks about channels.
 ///
-/// **`None` for anything [`RawForm`] cannot say exactly.** That vocabulary is
-/// the one the proven catalog uses — a whole number of bytes, at byte 0 or 1, in
-/// one of seven shapes — and an ODX file is free to describe a 3-bit field at
-/// bit 19. Approximating one of those would produce a confident wrong number,
-/// which is worse than the raw bytes the reader gets today. Widening `RawForm`
-/// is what recovers them, and it is a change to the proven catalog's own
-/// vocabulary rather than something to fake here.
+/// **`None` for anything [`RawForm`] cannot say exactly**, which since the
+/// widening means a field that does not start on a byte, does not fill whole
+/// bytes, or is wider than four of them — a one-bit flag, a 3-bit field at bit
+/// 19, a 32-byte block. Approximating one of those would produce a confident
+/// wrong number, which is worse than the raw bytes the reader gets today.
+/// [`RawForm::for_field`] is the whole rule and it lives with the enum, so the
+/// vocabulary is defined in one place rather than half here.
 fn to_def(reading: &vag_data::odis::Reading) -> Option<MeasurementDef> {
-	let form = raw_form(reading)?;
+	let form = RawForm::for_field(reading.bit_offset, reading.bit_length, reading.signed, reading.big_endian)?;
 	Some(MeasurementDef {
 		name: reading.name.clone().into(),
 		unit: reading.unit.clone().unwrap_or_default().into(),
@@ -154,25 +154,6 @@ fn to_def(reading: &vag_data::odis::Reading) -> Option<MeasurementDef> {
 		raw_form: form,
 		scaling: reading.scaling.clone(),
 	})
-}
-
-/// Which [`RawForm`] describes this channel exactly, if any does.
-fn raw_form(r: &vag_data::odis::Reading) -> Option<RawForm> {
-	// Not byte-aligned, so no form in this vocabulary reads it.
-	if r.bit_offset % 8 != 0 {
-		return None;
-	}
-	let byte = r.bit_offset / 8;
-	match (byte, r.bit_length, r.signed, r.big_endian) {
-		(0, 8, false, _) => Some(RawForm::U8First),
-		(1, 8, false, _) => Some(RawForm::U8Second),
-		(0, 16, false, true) => Some(RawForm::U16Be),
-		(0, 16, false, false) => Some(RawForm::U16Le),
-		(0, 16, true, true) => Some(RawForm::I16Be),
-		(0, 24, false, true) => Some(RawForm::U24Be),
-		(0, 32, false, true) => Some(RawForm::U32Be),
-		_ => None,
-	}
 }
 
 /// Put the proven rows on top of the extracted ones, by identifier.
@@ -364,10 +345,11 @@ mod tests {
 
 	#[test]
 	fn a_channel_this_tool_cannot_read_exactly_is_skipped_rather_than_approximated() {
-		// `RawForm` is the proven catalog's vocabulary — whole bytes, at byte 0
-		// or 1, in seven shapes — and an ODX file may describe a 3-bit field at
-		// bit 19. Approximating one produces a confident wrong number, which is
-		// worse than the raw bytes a reader gets today.
+		// `RawForm` is the proven catalog's vocabulary — whole bytes, at a byte
+		// boundary, no wider than four — and an ODX file may describe a 3-bit
+		// field at bit 19 or a 32-byte block. Approximating one produces a
+		// confident wrong number, which is worse than the raw bytes a reader
+		// gets today.
 		let here = tempfile::tempdir().unwrap();
 		let x = cache_with(
 			here.path(),
@@ -378,6 +360,8 @@ mod tests {
 					reading(0x1001, "a whole big-endian word", 0, 16, true),
 					reading(0x1002, "twelve bits", 0, 12, true),
 					reading(0x1003, "a byte at the second position", 8, 8, true),
+					reading(0x1004, "a one-bit flag", 24, 1, true),
+					reading(0x1005, "eight bytes, wider than an i32", 0, 64, true),
 				],
 			)],
 		);
@@ -386,6 +370,61 @@ mod tests {
 		assert_eq!(names, ["a whole big-endian word", "a byte at the second position"], "{defs:#?}");
 		assert_eq!(defs[0].raw_form, RawForm::U16Be);
 		assert_eq!(defs[1].raw_form, RawForm::U8Second);
+	}
+
+	#[test]
+	fn the_shapes_the_old_vocabulary_could_not_say_now_come_through() {
+		// The measured gap on the reference car, in miniature. Each of these
+		// three was found by the project, described exactly, and dropped for
+		// want of a form: 146 channels of the first shape on the gearbox alone,
+		// 51 of the second, and the rest at a byte offset above 1.
+		let here = tempfile::tempdir().unwrap();
+		let mut signed_word = reading(0x2000, "signed word, little end first", 0, 16, false);
+		signed_word.signed = true;
+		let x = cache_with(
+			here.path(),
+			&[(
+				"EV_Test",
+				vec![
+					signed_word,
+					reading(0x2001, "a little-endian counter", 0, 32, false),
+					reading(0x2002, "a word four bytes into the answer", 32, 16, true),
+				],
+			)],
+		);
+		let defs = x.for_unit(Some("EV_Test"), None);
+		assert_eq!(defs.len(), 3, "{defs:#?}");
+		assert_eq!(
+			defs[0].raw_form,
+			RawForm::Int {
+				byte_offset: 0,
+				byte_length: 2,
+				signed: true,
+				big_endian: false
+			}
+		);
+		assert_eq!(
+			defs[1].raw_form,
+			RawForm::Int {
+				byte_offset: 0,
+				byte_length: 4,
+				signed: false,
+				big_endian: false
+			}
+		);
+		assert_eq!(
+			defs[2].raw_form,
+			RawForm::Int {
+				byte_offset: 4,
+				byte_length: 2,
+				signed: false,
+				big_endian: true
+			}
+		);
+		// And they decode, rather than merely existing: -208, and 0x1234 read
+		// where it actually sits (the factor is 1.0 in this fixture).
+		assert_eq!(defs[0].interpret(&[0x30, 0xFF]), Some(-208.0));
+		assert_eq!(defs[2].interpret(&[0, 0, 0, 0, 0x12, 0x34]), Some(4660.0));
 	}
 
 	#[test]
