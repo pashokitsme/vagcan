@@ -222,6 +222,29 @@ impl Project {
   /// Every human-readable name this project knows, keyed by its text id, for
   /// merging into `names.json`.
   pub fn names(&self) -> Result<std::collections::BTreeMap<String, String>, Error>;
+  /// Added by owner A after the `.vi` research. Which vehicles this project
+  /// declares it covers, so a connected car can select its own project
+  /// (spec §4.1). Read from `PRNR-INFO.xml`, **not** from the `.vi` pool —
+  /// that pool describes how to talk to the car, not which cars are covered,
+  /// and the S42 vocabulary appears nowhere in 1.3 M pool strings.
+  /// `Error::Missing` when the file is absent; an unanswerable question and an
+  /// empty answer must not read alike.
+  pub fn vehicles(&self) -> Result<Vec<Vehicle>, Error>;
+  /// The vehicle covered for one type code, case-insensitively. The code is an
+  /// **argument**: deriving it from an `F187` part number is a policy over live
+  /// data (the leading three characters are the platform of the *part* — the
+  /// reference car's engine says `8V0` in a Škoda) and belongs on the vagcan
+  /// side, next to the car's other answers.
+  pub fn covers(&self, type_code: &str) -> Result<Option<Vehicle>, Error>;
+}
+
+/// One vehicle a project declares it covers. `type_code` is `PRODUCT-ID` and is
+/// never optional — an entry without one is unselectable, so it is refused.
+pub struct Vehicle {
+  pub type_code: String,        // "5E0"
+  pub name: String,             // "A7 / Octavia III (Limo, Combi)"
+  pub vehicle_project: String,  // "SK37X/0EU_X" — what S42 keys on
+  pub is_default: bool,
 }
 ```
 

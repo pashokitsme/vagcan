@@ -134,7 +134,80 @@ pub struct Reading {
 	pub text_id: Option<String>,
 }
 
+/// One vehicle a project declares it covers.
+///
+/// Read from `PRNR-INFO.xml` — see [`Project::vehicles`] for why that file and
+/// not the `.vi` pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vehicle {
+	/// `PRODUCT-ID` — VW's three-character type code, `5E0`, `5EP`, `55A`.
+	///
+	/// The key, and never absent: an entry without one names a vehicle nothing
+	/// can select on, so it is refused rather than carried as a `None` for a
+	/// caller to puzzle over.
+	pub type_code: String,
+	/// `NAME` — what a person calls it: `A7 / Octavia III (Limo, Combi)`.
+	pub name: String,
+	/// `VEHICLE-PROJECT` — `SK37X/0EU_X`. The string VW's own `S42`
+	/// (*Fahrzeugprojektzuordnung*) keys on, kept because it is what a reader
+	/// of that document recognises.
+	pub vehicle_project: String,
+	/// Whether the project treats this as its default vehicle.
+	pub is_default: bool,
+}
+
 impl Project {
+	/// Every vehicle this project declares it covers.
+	///
+	/// ## Why `PRNR-INFO.xml` and not the `.vi` pool
+	/// The `.vi` pool looks like the obvious source and is not. Its
+	/// `MCD_DB_VEHICLE_INFORMATION` describes **how to talk to the car** — one
+	/// object per project, named after the project (`VINFO_SK37XCAN`, long name
+	/// "SK37X CAN"), holding the logical links, the physical CAN link and the
+	/// diagnostic connector's pins. There is no vehicle list in it, and none in
+	/// the pools at all: the reference project's 1,155,437 ASCII and 153,704
+	/// Unicode strings contain no `Karoq`, no `Kodiaq`, no `Octavia`, no
+	/// `Fahrzeugprojekt` and no `5EP`. That is a measured negative, not an
+	/// assumption from the name (`research/labels/odis-format.md`).
+	///
+	/// `PRNR-INFO.xml` carries it instead, and carries it in exactly the shape
+	/// `S42` is written in: `VEHICLE-PROJECT`, `NAME`, `PRODUCT-ID`. The file is
+	/// one of the entries declared in `rt_index.xml`'s `RUNTIME` block, so it is
+	/// part of every extracted project by construction rather than by luck of
+	/// this copy — which is what makes reading it safe to depend on.
+	///
+	/// A project without the file is an [`Error::Missing`], not an empty list. A
+	/// project that covers nothing and a project that cannot say must not read
+	/// alike; that is the same rule [`Project::readings`] follows.
+	pub fn vehicles(&self) -> Result<Vec<Vehicle>, Error> {
+		let path = self.dir.join(COVERAGE_FILE);
+		let text = std::fs::read_to_string(&path)
+			.map_err(|_| Error::Missing(format!("{} — the file that says which vehicles this project covers", path.display())))?;
+		parse_coverage(&text)
+	}
+
+	/// The vehicle this project covers for a type code, if any.
+	///
+	/// Case-insensitive: whether a caller has the code upper- or lower-cased is
+	/// not a distinction this format makes.
+	///
+	/// **A type code is an argument, not something this crate derives.** The
+	/// obvious-looking rule — the leading three characters of an `F187` part
+	/// number — does not hold: on the reference car three units report `5E0`
+	/// (this project's default vehicle) but the engine reports `8V0`, an Audi
+	/// platform number sitting in a Škoda, and `5Q0`/`3Q0` are MQB-common across
+	/// the whole group. A part number is evidence about a *component*. Choosing
+	/// which of fifteen answers to believe is a policy over live data and lives
+	/// with the car's other answers, not in a file-format reader.
+	///
+	/// One caution for whoever writes that policy: it is **not established that
+	/// `PRODUCT-ID` sets are disjoint between projects.** Selection works on the
+	/// reference car because `5E0` is present and specific, and that is a sample
+	/// of one project. A second project settles it.
+	pub fn covers(&self, type_code: &str) -> Result<Option<Vehicle>, Error> {
+		Ok(self.vehicles()?.into_iter().find(|v| v.type_code.eq_ignore_ascii_case(type_code)))
+	}
+
 	/// Open a project directory.
 	///
 	/// Every `*.key` with a matching `*.db` is a pool, whatever its kind: the
@@ -710,6 +783,85 @@ fn harvest(object: &loaders::Object, into: &mut std::collections::BTreeMap<Strin
 		| loaders::Object::LayerData(_)
 		| loaders::Object::EcuVariant(_) => {}
 	}
+}
+
+/// The project file that declares which vehicles it covers.
+const COVERAGE_FILE: &str = "PRNR-INFO.xml";
+
+/// Parse `PRNR-INFO.xml` into the vehicles it declares.
+///
+/// Scanned rather than parsed as XML, the way [`project_id`] scans `index.xml`:
+/// the shape is flat and fixed, and `vag-data` gains no dependency for it.
+fn parse_coverage(text: &str) -> Result<Vec<Vehicle>, Error> {
+	let mut out = Vec::new();
+	for entry in entries(text, "VEHICLE") {
+		let field = |tag: &str| element(entry, tag).map(decode_entities);
+		let Some(type_code) = field("PRODUCT-ID") else {
+			return Err(Error::Format(format!(
+				"a vehicle in {COVERAGE_FILE} has no PRODUCT-ID, so nothing can select on it"
+			)));
+		};
+		out.push(Vehicle {
+			type_code,
+			name: field("NAME").unwrap_or_default(),
+			vehicle_project: field("VEHICLE-PROJECT").unwrap_or_default(),
+			// The attribute is simply absent on an entry that is not the default.
+			is_default: opening_tag(entry).contains("IS-DEFAULT=\"true\""),
+		});
+	}
+	Ok(out)
+}
+
+/// The bodies of every `<tag …>…</tag>` element, opening tag included.
+///
+/// Matching on `<tag` alone would take `<VEHICLES>` for a `<VEHICLE>` and lose
+/// every row to its container, so the character after the name has to be a
+/// space or a `>`.
+fn entries<'a>(text: &'a str, tag: &str) -> Vec<&'a str> {
+	let open = format!("<{tag}");
+	let close = format!("</{tag}>");
+	let mut out = Vec::new();
+	let mut at = 0usize;
+	while let Some(found) = text[at..].find(&open) {
+		let start = at + found;
+		let after = start + open.len();
+		let Some(next) = text[after..].chars().next() else { break };
+		at = after;
+		if next != ' ' && next != '>' && next != '\n' && next != '\t' && next != '\r' {
+			continue; // `<VEHICLE-PROJECT>`, not `<VEHICLE>`.
+		}
+		let Some(end) = text[after..].find(&close) else { break };
+		out.push(&text[start..after + end]);
+		at = after + end + close.len();
+	}
+	out
+}
+
+/// The opening tag of an element body, for reading its attributes.
+fn opening_tag(entry: &str) -> &str {
+	entry.find('>').map_or(entry, |end| &entry[..end])
+}
+
+/// The text of the first `<tag>…</tag>` inside `text`.
+fn element<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+	let open = format!("<{tag}>");
+	let close = format!("</{tag}>");
+	let start = text.find(&open)? + open.len();
+	let end = text[start..].find(&close)?;
+	Some(text[start..start + end].trim())
+}
+
+/// Decode XML's five predefined entities.
+///
+/// Nothing else is decoded, because nothing else occurs: these files carry
+/// vehicle names and type codes, not markup.
+fn decode_entities(text: &str) -> String {
+	text
+		.replace("&lt;", "<")
+		.replace("&gt;", ">")
+		.replace("&quot;", "\"")
+		.replace("&apos;", "'")
+		.replace("&amp;", "&")
 }
 
 /// The project's own short name, from `index.xml`, falling back to the
@@ -1339,6 +1491,109 @@ mod tests {
 		let names = project.names().expect("the name pass runs");
 		assert_eq!(names.get("000116").map(String::as_str), Some("Getriebe-Eingangsdrehzahl"));
 		assert_eq!(names.get("000117").map(String::as_str), Some("Motordrehzahl"));
+	}
+
+	/// Write a `PRNR-INFO.xml` of the shape a real project ships.
+	fn prnr_info(dir: &std::path::Path, vehicles: &[(&str, &str, &str, bool)]) {
+		let mut out = String::from(
+			"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<PRNR-INFO VERSION=\"1.0.0\">\n  <REVISION-DATE>2026-06-04T14:38:10</REVISION-DATE>\n  <ODX-PLATFORM>TEST7X</ODX-PLATFORM>\n  <VEHICLES>\n",
+		);
+		for (project, name, code, default) in vehicles {
+			out.push_str(&format!(
+				"    <VEHICLE HAS-PRNR-DIFFERENTIATION=\"false\" IS-DEFAULT=\"{default}\">\n      <VEHICLE-PROJECT>{project}</VEHICLE-PROJECT>\n      <NAME>{name}</NAME>\n      <PRODUCT-ID>{code}</PRODUCT-ID>\n    </VEHICLE>\n"
+			));
+		}
+		out.push_str("  </VEHICLES>\n</PRNR-INFO>\n");
+		std::fs::write(dir.join("PRNR-INFO.xml"), out).expect("the fixture writes");
+	}
+
+	#[test]
+	fn a_project_declares_the_vehicles_it_covers() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path());
+		prnr_info(
+			dir.path(),
+			&[
+				("SK37X/0EU_X", "A7 / Octavia III (Limo, Combi)", "5E0", true),
+				("SK326/0EU_K", "Karoq (EU) / A-SUV", "5EP", false),
+			],
+		);
+		let vehicles = project.vehicles().expect("the coverage file parses");
+		assert_eq!(
+			vehicles,
+			vec![
+				Vehicle {
+					type_code: "5E0".into(),
+					name: "A7 / Octavia III (Limo, Combi)".into(),
+					vehicle_project: "SK37X/0EU_X".into(),
+					is_default: true
+				},
+				Vehicle {
+					type_code: "5EP".into(),
+					name: "Karoq (EU) / A-SUV".into(),
+					vehicle_project: "SK326/0EU_K".into(),
+					is_default: false
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn covers_answers_for_one_type_code() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path());
+		prnr_info(dir.path(), &[("SK37X/0EU_X", "A7 / Octavia III (Limo, Combi)", "5E0", true)]);
+		let hit = project.covers("5E0").expect("the coverage file parses").expect("the project covers 5E0");
+		assert_eq!(hit.name, "A7 / Octavia III (Limo, Combi)");
+		// Case is not a distinction a caller should have to know about.
+		assert!(project.covers("5e0").expect("the coverage file parses").is_some());
+		// A platform this project does not cover is None, not an error.
+		assert_eq!(project.covers("8V0").expect("the coverage file parses"), None);
+	}
+
+	/// A project with no coverage file is a project that cannot say, and that is
+	/// an error rather than an empty list — the same rule `readings` follows.
+	/// An empty answer and an unanswerable question must not read alike.
+	#[test]
+	fn a_project_without_the_coverage_file_says_so() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path());
+		let err = project.vehicles().expect_err("a missing coverage file must be an error");
+		assert!(matches!(err, Error::Missing(_)), "got {err:?}");
+		assert!(matches!(project.covers("5E0"), Err(Error::Missing(_))));
+	}
+
+	/// The type code is the key, so an entry without one is not a vehicle this
+	/// can select on, and dropping it silently would be worse than refusing it.
+	#[test]
+	fn a_vehicle_without_a_type_code_is_refused() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path());
+		std::fs::write(
+			dir.path().join("PRNR-INFO.xml"),
+			"<PRNR-INFO><VEHICLES>\n<VEHICLE IS-DEFAULT=\"true\">\n<VEHICLE-PROJECT>SK37X/0EU_X</VEHICLE-PROJECT>\n<NAME>A7</NAME>\n</VEHICLE>\n</VEHICLES></PRNR-INFO>",
+		)
+		.expect("the fixture writes");
+		let err = project.vehicles().expect_err("a vehicle with no PRODUCT-ID must be refused");
+		let Error::Format(message) = &err else { panic!("got {err:?}") };
+		assert!(message.contains("PRODUCT-ID"), "the refusal must name the missing field; got {message:?}");
+	}
+
+	/// `<VEHICLES>` opens with the same five characters as `<VEHICLE`, and an
+	/// entry may carry no attributes at all. Both are ways to lose every row.
+	#[test]
+	fn the_container_element_is_not_read_as_a_vehicle() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path());
+		std::fs::write(
+			dir.path().join("PRNR-INFO.xml"),
+			"<PRNR-INFO><VEHICLES><VEHICLE><VEHICLE-PROJECT>P</VEHICLE-PROJECT><NAME>Škoda &amp; co</NAME><PRODUCT-ID>5E0</PRODUCT-ID></VEHICLE></VEHICLES></PRNR-INFO>",
+		)
+		.expect("the fixture writes");
+		let vehicles = project.vehicles().expect("the coverage file parses");
+		assert_eq!(vehicles.len(), 1, "the container must not be counted as an entry");
+		assert_eq!(vehicles[0].name, "Škoda & co", "the predefined entities are decoded");
+		assert!(!vehicles[0].is_default, "an entry with no attribute is not the default");
 	}
 
 	#[test]
