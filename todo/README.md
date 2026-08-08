@@ -31,17 +31,32 @@ drive — including the endianness split that a single wrong guess would have hi
 | `380A` | `u16` **little**-endian, raw, /min | 16 bits, `be=false` ✓ |
 
 **On the reference car, 13 of 15 control units resolve to an ODIS variant**, by the
-`F19E`/`F1A2` join the label files already used — 6,669 channels found, **1,691
-expressible today**. The two misses are real: the car reports `EV_DCUDriveSideEWMAXCONT`
-and the project ships `EV_DCU2DriveSideMAXHCONT`, a different unit rather than a failed
-match. Whole project: 633 of 717 variants yield channels, 310,734 readings.
+`F19E`/`F1A2` join the label files already used — 6,669 channels found, **1,959
+expressible** (1,691 before `RawForm` was widened). The two misses are real: the car
+reports `EV_DCUDriveSideEWMAXCONT` and the project ships `EV_DCU2DriveSideMAXHCONT`, a
+different unit rather than a failed match. Whole project: 633 of 717 variants yield
+channels, 310,734 readings.
 
-**The gap between 6,669 and 1,691 is `RawForm`, and it is measured**: 352 channels are
-not byte-aligned, 146 are signed 16-bit **little**-endian (`RawForm` has `I16Be` and no
-`I16Le`), 67 are one-bit flags, 51 are `u32` little-endian. Widening `RawForm` with
-`I16Le`/`U32Le` and a byte offset above 1 is ~200 more channels on the engine and
-gearbox alone and is the obvious next step; bit-field channels need a different carrier
-than `RawForm` and are a decision, not a patch.
+**`RawForm` was the constraint, and the measured part of it is closed.**
+`RawForm::Int { byte_offset, byte_length, signed, big_endian }` says any whole-byte
+field anywhere in a response, in either byte order and either sign — the signed 16-bit
+**little**-endian shape that cost 146 channels, the 51 little-endian `u32`s, and every
+field past byte 1. The seven original variants are kept, not replaced: `measurements/`
+rows serialize by name (`"U16Be"`), a drive proved them and nothing else can recreate
+them, so `RawForm::for_field` still answers with an old name wherever one fits. That is
+1,691 → **1,959**, +219 of it on the engine and gearbox.
+
+**Two things remain unsayable, and both are decisions rather than patches:**
+
+- **2,693 sub-byte fields** — one-bit flags and 3-bit fields at bit 19. `RawForm`
+  returns an `i32` read from whole bytes; a bit field needs a mask and a shift, and a
+  one-bit flag needs a *name for each state* rather than a number, so the carrier
+  question and the `Scaling::Enum` question are the same question.
+- **A response holds several channels, and only the first is offered.**
+  `Extracted::for_unit` and `merge` both key a channel by its DID, so of the 3,878
+  fields now expressible, 1,959 survive. Lifting that is where the other 1,919 are —
+  and it needs `watch`'s history and chart, keyed by `(request, did)` today, to be
+  keyed by channel instead.
 
 **Storage moved.** `~/.vagcan/data/<project_id>/{cache.sqlite, names.json,
 rod-keys.json, measurements/, sources.json}`, with `.rod` files and the fault text in a
