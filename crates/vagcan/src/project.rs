@@ -1,4 +1,4 @@
-//! `~/.vagcan/projects/<id>/` — one car's data, whatever it was learned from.
+//! `~/.vagcan/data/<id>/` — one platform's data, whatever it was learned from.
 //!
 //! There used to be one `data/extracted/`, because there was one source: a VCDS
 //! installation. There are two now — a VCDS installation and an extracted
@@ -14,19 +14,27 @@
 //!                           read at run time (.rod, the fault text). A property
 //!                           of a VCDS *build*, not of a car, so one copy serves
 //!                           every project parsed from it.
-//!   projects/
+//!   data/
 //!     SK37X/
 //!       cache.sqlite        the label/ODIS rows, queryable
 //!       names.json          text id -> name
 //!       rod-keys.json       recovered .rod section keys — per project, because a
 //!                           key is a property of one file's *bytes* and two VCDS
 //!                           builds ship a same-named .rod with different content
-//!       measurement/        proven-on-car rows, one file per part number
+//!       measurements/       proven-on-car rows, one file per part number
 //!       sources.json        where this project's data came from
+//!     extracted/            the layout from before projects existed — siblings of
+//!     measured/             the projects now, and told apart from them by name
 //!   config.json             which project a bare command means
 //! ```
 //!
-//! **`measurement/` is the one directory here that nothing can recreate.** Every
+//! **A project is a platform, not a car** (spec §4.1). `SK37X` is VW's own
+//! project id and it covers every Octavia III, Karoq and Kodiaq — which is why
+//! the proven rows live here: a proven scaling is a property of a *part number*,
+//! true of every car carrying that part. `cars/<VIN>/` goes on holding what is
+//! true of one car and no other.
+//!
+//! **`measurements/` is the one directory here that nothing can recreate.** Every
 //! other file is extracted from somebody else's — a re-parse reproduces it. Those
 //! rows were proven by driving a car (`research/labels/rod-labels.md` §4.0c), and
 //! that is why the migration in [`crate::datadir`] copies before it removes and
@@ -35,7 +43,7 @@
 //! **Nothing here invents a name for a car.** An ODIS project names itself and
 //! [`vag_data::odis::Project::id`] reads it; a VCDS-only project is named by the
 //! person. This module's whole contribution to naming is [`folder_name`], which
-//! refuses one that would not be a single child of `projects/` — the same rule
+//! refuses one that would not be a single child of `data/` — the same rule
 //! `datadir::car_folder` applies to a VIN off the bus, and for the same reason:
 //! `--project ../../etc` is a path, not a name.
 
@@ -45,6 +53,16 @@ use anyhow::{Context, Result, bail};
 
 /// The most a project name may be. A directory name, not a sentence.
 const MAX_ID: usize = 64;
+
+/// The two names the pre-project layout used, which a project may not take.
+///
+/// `~/.vagcan/data/` holds both layouts now (spec §6): `extracted` and
+/// `measured` are the old directories and anything else under it is a project.
+/// VW's own names cannot collide with these — they are `SK37X`, `AU21X` and the
+/// like — so refusing them costs a user nothing, and it stops a project from
+/// being mistaken for the layout it replaced. Compared case-insensitively,
+/// because the filesystem this runs on is.
+const RESERVED: [&str; 2] = ["extracted", "measured"];
 
 /// The environment variable that names the project for one run (D6).
 pub const PROJECT_ENV: &str = "VAGCAN_PROJECT";
@@ -86,8 +104,8 @@ impl Project {
 	}
 
 	/// The proven-on-car rows, one file per part number.
-	pub fn measurement_dir(&self) -> PathBuf {
-		self.dir.join("measurement")
+	pub fn measurements_dir(&self) -> PathBuf {
+		self.dir.join("measurements")
 	}
 
 	/// The provenance log (design §4.4).
@@ -127,7 +145,7 @@ pub fn open_or_create(id: &str) -> Result<Project> {
 	open_or_create_in(&crate::datadir::projects_dir()?, id)
 }
 
-/// The rule behind [`open_or_create`], with `projects/` passed in so it can be
+/// The rule behind [`open_or_create`], with `data/` passed in so it can be
 /// tested without writing into the owner's own — the same reason
 /// `datadir::car_folder_in` takes `cars/`.
 fn open_or_create_in(projects: &Path, id: &str) -> Result<Project> {
@@ -142,7 +160,7 @@ pub fn list() -> Result<Vec<String>> {
 	Ok(list_in(&crate::datadir::projects_dir()?))
 }
 
-/// The rule behind [`list`]. A `projects/` that does not exist is not an error —
+/// The rule behind [`list`]. A `data/` that does not exist is not an error —
 /// it is a machine where `vagcan setup` has not run, which is the ordinary state
 /// of a fresh clone.
 fn list_in(projects: &Path) -> Vec<String> {
@@ -160,24 +178,67 @@ fn list_in(projects: &Path) -> Vec<String> {
 	found
 }
 
-/// The project this run is about (D6).
+/// The project this run is about.
 ///
-/// In order: `--project`, then `VAGCAN_PROJECT`, then `config.json`, then the
-/// only project on disk if there is exactly one. The first three name a project
-/// that must already exist — a typo in a flag must not quietly create an empty
-/// store and then report that the car has no data.
+/// In order: `--project`, then `VAGCAN_PROJECT`, then **the project that covers
+/// the car in front of the tool**, then `config.json`, then the only project on
+/// disk if there is exactly one. Everything that names a project must name one
+/// that already exists — a typo in a flag must not quietly create an empty store
+/// and then report that the car has no data.
+///
+/// **The third step is a seam with nothing plugged into it yet.** Spec §4.1
+/// makes a project a *platform*, not a car: `SK37X` covers every Octavia III,
+/// Karoq and Kodiaq, so connecting a car has to land on the project covering it
+/// rather than on whichever one was last set up. The matching is not built —
+/// owner A is establishing how a project declares its own coverage, out of its
+/// `.vi` pool (`0.0.0@VI_SK37X.vi.db`), which is the source of truth precisely
+/// because a project that describes itself needs no table of type codes compiled
+/// into this binary. When that lands, [`covering`] is what fills this in; until
+/// then it answers `None` and the order below is what it always was.
+///
+/// It sits **below** the flag and the environment variable and **above**
+/// `config.json` on purpose. The two overrides are a person saying "this one,
+/// I mean it", and nothing read off a bus outranks that. `config.json` is only a
+/// note about the last `setup`, and a car actually present says more than a note
+/// does.
 pub fn current() -> Result<Project> {
 	let projects = crate::datadir::projects_dir()?;
 	let env = std::env::var(PROJECT_ENV).ok();
 	let configured = configured()?;
-	current_in(&projects, SELECTED.get().map(String::as_str), env.as_deref(), configured.as_deref())
+	current_in(
+		&projects,
+		SELECTED.get().map(String::as_str),
+		env.as_deref(),
+		covering().as_deref(),
+		configured.as_deref(),
+	)
+}
+
+/// The project covering the car in front of the tool, once that can be asked.
+///
+/// Always `None` today, and deliberately a function rather than a `todo!()` or a
+/// commented-out line: it is the one place the answer will come from, it is
+/// named from [`current`] so the ordering is already decided and tested, and a
+/// reader looking for "where does the car pick its project" finds it here rather
+/// than having to be told.
+///
+/// What goes in it needs two things this crate does not have yet: what the car
+/// answered about itself, and a way to ask an installed project whether it
+/// covers that. Neither is invented here — the second is `vag_data::odis`'s to
+/// provide off the `.vi` pool, and the first arrives from whichever command
+/// opened the adapter. The likely shape is the idiom this crate already uses
+/// twice ([`select`], `vag_protocol::address::install`): whoever reads the car
+/// installs what it said, and this reads it back.
+fn covering() -> Option<String> {
+	None
 }
 
 /// The rule behind [`current`], with every input passed in.
-fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, configured: Option<&str>) -> Result<Project> {
+fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: Option<&str>, configured: Option<&str>) -> Result<Project> {
 	for (given, whose) in [
 		(flag, "--project"),
 		(env, PROJECT_ENV),
+		(covering, "the project covering the car that is connected"),
 		(configured, "the project in ~/.vagcan/config.json"),
 	] {
 		let Some(id) = given.map(str::trim).filter(|id| !id.is_empty()) else {
@@ -307,7 +368,7 @@ fn remember_in(config: &Path, id: &str) -> Result<()> {
 	Ok(())
 }
 
-/// A project id, checked hard enough to be one child of `projects/`.
+/// A project id, checked hard enough to be one child of `data/`.
 ///
 /// Nothing is sanitised into shape. A name is typed by a person or read out of a
 /// project's own `index.xml`, and quietly mangling either one files a car under
@@ -322,6 +383,13 @@ pub fn folder_name(id: &str) -> Result<String> {
 	if id == "." || id == ".." {
 		bail!("{id:?} already names a folder — the one above, or the one it is in");
 	}
+	if RESERVED.iter().any(|reserved| id.eq_ignore_ascii_case(reserved)) {
+		bail!(
+			"{id:?} is what vagcan called part of its layout before it kept one directory per car, \
+			 and that directory still sits beside the projects in ~/.vagcan/data/. Pick another name — \
+			 VW's own are like `SK37X`."
+		);
+	}
 	if id.chars().count() > MAX_ID {
 		bail!(
 			"{id:?} is {} characters, and {MAX_ID} is the most a project name may be",
@@ -331,7 +399,7 @@ pub fn folder_name(id: &str) -> Result<String> {
 	if let Some(bad) = id.chars().find(|c| !allowed(*c)) {
 		bail!(
 			"{id:?} cannot be a project name — {bad:?} is not a character a folder under \
-			 ~/.vagcan/projects/ may hold. Letters, digits, `-`, `_` and `.` and nothing else."
+			 ~/.vagcan/data/ may hold. Letters, digits, `-`, `_` and `.` and nothing else."
 		);
 	}
 	Ok(id.to_owned())
@@ -347,7 +415,7 @@ fn allowed(c: char) -> bool {
 mod tests {
 	use super::*;
 
-	/// A throwaway `projects/` — nothing here may write into the owner's own,
+	/// A throwaway `data/` — nothing here may write into the owner's own,
 	/// which is why every rule above has an `_in` form.
 	fn temp() -> tempfile::TempDir {
 		tempfile::tempdir().expect("a temporary directory")
@@ -359,7 +427,7 @@ mod tests {
 		let p = open_or_create_in(here.path(), "SK37X").unwrap();
 		assert_eq!(p.id, "SK37X");
 		assert!(p.dir.is_dir(), "the directory is created on first open");
-		for path in [p.cache(), p.names(), p.rod_keys(), p.measurement_dir(), p.sources()] {
+		for path in [p.cache(), p.names(), p.rod_keys(), p.measurements_dir(), p.sources()] {
 			assert_eq!(path.parent(), Some(p.dir.as_path()), "{path:?} is not in the project");
 		}
 	}
@@ -384,7 +452,38 @@ mod tests {
 		}
 		let here = temp();
 		assert!(open_or_create_in(here.path(), "../escape").is_err());
-		assert!(!here.path().parent().unwrap().join("escape").exists(), "it wrote outside projects/");
+		assert!(!here.path().parent().unwrap().join("escape").exists(), "it wrote outside data/");
+	}
+
+	#[test]
+	fn the_layout_this_replaced_cannot_be_taken_as_a_project_name() {
+		// Spec §6. `data/` holds both layouts now, so `extracted` and `measured`
+		// are siblings of the projects rather than the whole of it. A project
+		// under either name would be mistaken for the layout it replaced — and
+		// worse, `list` would offer it and `migrate` would still be walking it.
+		for taken in ["extracted", "measured", "Extracted", "MEASURED"] {
+			assert!(folder_name(taken).is_err(), "{taken:?} was accepted");
+		}
+		// It costs a user nothing: VW's own names cannot collide with them.
+		for vw in ["SK37X", "AU21X", "VW37X"] {
+			assert!(folder_name(vw).is_ok(), "{vw:?} was refused");
+		}
+	}
+
+	#[test]
+	fn the_old_layout_is_never_listed_as_a_project_it_sits_beside() {
+		// The consequence of the two living in one directory: `list` reads
+		// `data/`, and without the reserved names it would report the migration
+		// source as a car to choose between.
+		let here = temp();
+		for name in ["extracted", "measured"] {
+			std::fs::create_dir_all(here.path().join(name)).unwrap();
+		}
+		open_or_create_in(here.path(), "SK37X").unwrap();
+		assert_eq!(list_in(here.path()), ["SK37X"]);
+		// And with the old layout still there, one project is still one project
+		// — so a bare command resolves without asking.
+		assert_eq!(current_in(here.path(), None, None, None, None).unwrap().id, "SK37X");
 	}
 
 	#[test]
@@ -401,7 +500,7 @@ mod tests {
 	#[test]
 	fn nothing_set_up_says_to_run_setup_rather_than_naming_a_file() {
 		let here = temp();
-		let why = current_in(here.path(), None, None, None).unwrap_err().to_string();
+		let why = current_in(here.path(), None, None, None, None).unwrap_err().to_string();
 		assert!(why.contains("vagcan setup"), "{why}");
 	}
 
@@ -409,7 +508,7 @@ mod tests {
 	fn one_project_is_not_a_choice_and_is_not_asked_about() {
 		let here = temp();
 		open_or_create_in(here.path(), "SK37X").unwrap();
-		assert_eq!(current_in(here.path(), None, None, None).unwrap().id, "SK37X");
+		assert_eq!(current_in(here.path(), None, None, None, None).unwrap().id, "SK37X");
 	}
 
 	#[test]
@@ -417,7 +516,7 @@ mod tests {
 		let here = temp();
 		open_or_create_in(here.path(), "SK37X").unwrap();
 		open_or_create_in(here.path(), "default").unwrap();
-		let why = current_in(here.path(), None, None, None).unwrap_err().to_string();
+		let why = current_in(here.path(), None, None, None, None).unwrap_err().to_string();
 		assert!(why.contains("SK37X") && why.contains("default"), "{why}");
 		assert!(why.contains("--project"), "{why}");
 	}
@@ -431,11 +530,55 @@ mod tests {
 			open_or_create_in(here.path(), id).unwrap();
 		}
 		assert_eq!(
-			current_in(here.path(), Some("flagged"), Some("envd"), Some("configured")).unwrap().id,
+			current_in(here.path(), Some("flagged"), Some("envd"), None, Some("configured"))
+				.unwrap()
+				.id,
 			"flagged"
 		);
-		assert_eq!(current_in(here.path(), None, Some("envd"), Some("configured")).unwrap().id, "envd");
-		assert_eq!(current_in(here.path(), None, None, Some("configured")).unwrap().id, "configured");
+		assert_eq!(current_in(here.path(), None, Some("envd"), None, Some("configured")).unwrap().id, "envd");
+		assert_eq!(current_in(here.path(), None, None, None, Some("configured")).unwrap().id, "configured");
+	}
+
+	#[test]
+	fn a_connected_car_outranks_the_config_file_and_loses_to_the_two_overrides() {
+		// Spec §4.1: a project is a platform, and connecting a car has to land
+		// on the project covering it rather than on whichever one was last set
+		// up. The matching is owner A's and not built — the ordering it will
+		// plug into is decided and pinned here, so landing it is a one-line
+		// change to `covering()` rather than a decision made under pressure.
+		let here = temp();
+		for id in ["flagged", "envd", "onthebus", "configured"] {
+			open_or_create_in(here.path(), id).unwrap();
+		}
+		// A car present says more than a note about the last `setup` does.
+		assert_eq!(
+			current_in(here.path(), None, None, Some("onthebus"), Some("configured")).unwrap().id,
+			"onthebus"
+		);
+		// It says less than a person who typed which one they meant.
+		assert_eq!(
+			current_in(here.path(), None, Some("envd"), Some("onthebus"), Some("configured"))
+				.unwrap()
+				.id,
+			"envd"
+		);
+		assert_eq!(
+			current_in(here.path(), Some("flagged"), None, Some("onthebus"), Some("configured"))
+				.unwrap()
+				.id,
+			"flagged"
+		);
+	}
+
+	#[test]
+	fn a_car_whose_project_is_not_installed_says_which_car_it_could_not_place() {
+		// The message has to name the step, or "there is no …/SK37X" reads as a
+		// typo somebody made rather than as a project they have not set up.
+		let here = temp();
+		open_or_create_in(here.path(), "AU21X").unwrap();
+		let why = current_in(here.path(), None, None, Some("SK37X"), None).unwrap_err().to_string();
+		assert!(why.contains("covering the car that is connected"), "{why}");
+		assert!(why.contains("SK37X") && why.contains("AU21X"), "{why}");
 	}
 
 	#[test]
@@ -444,7 +587,7 @@ mod tests {
 		// the car has no data — the second message would be true and useless.
 		let here = temp();
 		open_or_create_in(here.path(), "SK37X").unwrap();
-		let why = current_in(here.path(), Some("SK37Y"), None, None).unwrap_err().to_string();
+		let why = current_in(here.path(), Some("SK37Y"), None, None, None).unwrap_err().to_string();
 		assert!(why.contains("SK37Y"), "{why}");
 		assert!(why.contains("SK37X"), "it names the ones that are there: {why}");
 		assert!(!here.path().join("SK37Y").exists(), "it created the project it was complaining about");

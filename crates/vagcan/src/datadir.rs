@@ -50,16 +50,16 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///   rod/                              raw VCDS files read at run time, shared
 ///                                     across every project: the .rod files and
 ///                                     this build's fault text
-///   projects/
-///     SK37X/                          one directory per car — see `crate::project`
+///   data/
+///     SK37X/                          one directory per *platform* — `crate::project`
 ///       cache.sqlite                    the label and ODIS rows, queryable
 ///       names.json                      text id -> name
 ///       rod-keys.json                   recovered .rod section keys
-///       measurement/                    proven-on-car rows, one file per part number
+///       measurements/                   proven-on-car rows, one file per part number
 ///       sources.json                    where this project's data came from
-///   data/                             the layout before projects existed, moved
-///     extracted/                      into the first project on the next run and
-///     measured/                       then gone — see `crate::migrate`
+///     extracted/                      the layout from before projects existed,
+///     measured/                       moved into a project on the next `setup`
+///                                     run and then gone — see `crate::migrate`
 ///   config.json                       settings that are not about one car,
 ///                                     including which project a bare command means
 ///   cars/
@@ -69,12 +69,20 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///       reports/                      surveys, fault dumps, whatever is kept
 /// ```
 ///
-/// **`projects/` and `cars/` are keyed differently on purpose.** A project is
-/// keyed by what the *data source* calls the vehicle (`SK37X`, VW's own project
-/// id) and holds what was extracted from someone else's files; `cars/` is keyed
-/// by the VIN the car itself answers and holds what was read off that one
-/// vehicle. One VCDS installation serves every Škoda of that family; one VIN is
-/// one car.
+/// **`data/` and `cars/` are keyed differently on purpose.** A project is keyed
+/// by VW's own project id (`SK37X`) and that names a **platform**, not a car —
+/// spec §4.1: `SK37X` covers every Octavia III, Karoq and Kodiaq. That is why
+/// the proven rows sit there: a proven scaling is a property of a *part number*,
+/// true of every car carrying that part. `cars/` is keyed by the VIN the car
+/// itself answers and holds what is true of one car and no other — its car
+/// file, its drives, its survey.
+///
+/// **`data/` holds both the old layout and the new one, and they are told apart
+/// by name.** `extracted` and `measured` are the pre-project directories;
+/// anything else under `data/` is a project. Two rules enforce that rather than
+/// assume it: [`crate::migrate::pending`] keys on those two names existing
+/// rather than on `data/` existing, which is now always true, and
+/// [`crate::project::folder_name`] refuses both as project names.
 ///
 /// One dot-directory rather than each platform's convention.
 /// `dirs::config_dir` would scatter this across `~/.config` and
@@ -82,7 +90,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// and wrong for a tool whose files a person opens, reads and edits by hand.
 ///
 /// A project's `cache.sqlite`, `names.json` and `rod-keys.json` are all
-/// rebuildable from the source they came from, in minutes. Its `measurement/`
+/// rebuildable from the source they came from, in minutes. Its `measurements/`
 /// holds the `(identifier, raw form, factor, offset)` rows this project proved
 /// on a vehicle; the label files provably cannot supply those
 /// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
@@ -97,14 +105,20 @@ pub fn vagcan_dir() -> anyhow::Result<PathBuf> {
 	vagcan_dir_in(dirs::home_dir())
 }
 
-/// One directory per car, each holding everything learned about it.
+/// Where the projects live — `~/.vagcan/data/`, one directory per platform.
+///
+/// **The directory is called `data/`, not `projects/`.** It is what a person
+/// opens looking for their car's data, and it is also where the pre-project
+/// `extracted/` and `measured/` sat — so the two layouts are siblings now, and
+/// the note on [`vagcan_dir`] says how they are told apart. The function keeps
+/// the name of the *role* because that is what a caller means by it.
 ///
 /// Named for what the *source* calls the vehicle, not for its VIN: an ODIS
 /// project ships its own identifier (`SK37X`) and a VCDS-only project is named
 /// by the person, and neither of them has ever seen a VIN. `crate::project`
 /// owns what is inside one.
 pub fn projects_dir() -> anyhow::Result<PathBuf> {
-	Ok(vagcan_dir()?.join("projects"))
+	Ok(vagcan_dir()?.join("data"))
 }
 
 /// The raw VCDS files every project reads at run time, kept once.

@@ -435,14 +435,14 @@ mod tests {
 	/// The reference car's own proven rows, when this machine has any.
 	///
 	/// They used to be committed under `catalogs/vehicles/` and are now one
-	/// owner's measured data under `~/.vagcan/projects/<id>/measurement`, like
+	/// owner's measured data under `~/.vagcan/data/<id>/measurements`, like
 	/// everybody
 	/// else's — nothing measured on a vehicle lives in the checkout any more.
 	/// So a machine that has never calibrated a car has nothing to assert
 	/// against, and these tests say so rather than failing over data they were
 	/// never entitled to assume.
 	fn measured_rows() -> Option<std::path::PathBuf> {
-		let dir = crate::project::current().ok()?.measurement_dir();
+		let dir = crate::project::current().ok()?.measurements_dir();
 		let any = std::fs::read_dir(&dir)
 			.ok()?
 			.flatten()

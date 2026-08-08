@@ -4,7 +4,7 @@
 //! `data/measured/`, because there was one source and it described one car.
 //! Spec §6 turns that into the first project: the `.rod` files and the fault
 //! text join the shared pool at `~/.vagcan/rod/`, everything else lands under
-//! `~/.vagcan/projects/<id>/`.
+//! `~/.vagcan/data/<id>/`.
 //!
 //! **`measured/` is why this module is careful.** Those rows were proven by
 //! driving a car — the label files provably cannot supply them
@@ -92,6 +92,15 @@ impl Report {
 }
 
 /// The old layout, if there is still anything in it worth moving.
+///
+/// **Keyed on `extracted`/`measured`, never on `data/` existing** (spec §6).
+/// `data/` is where the projects live now, so its existence says nothing; the
+/// two pre-project directories are named, and only they are looked in.
+///
+/// Stricter than "does either exist", deliberately: it answers *is there
+/// anything left to move*. A finished migration leaves `extracted/Labels/`
+/// behind on purpose, and a rule keyed on existence would offer to migrate
+/// again on every run for ever.
 pub fn pending() -> Result<Option<Old>> {
 	Ok(pending_in(&crate::datadir::vagcan_dir()?))
 }
@@ -114,9 +123,9 @@ fn pending_in(vagcan: &Path) -> Option<Old> {
 enum Kind {
 	/// The shared `~/.vagcan/rod/` pool: a property of a VCDS build.
 	Pooled,
-	/// `projects/<id>/measurement/`: proven on a car, irreplaceable.
+	/// `data/<id>/measurements/`: proven on a car, irreplaceable.
 	Measured,
-	/// `projects/<id>/`: the cache, the names, the keys.
+	/// `data/<id>/`: the cache, the names, the keys.
 	Derived,
 }
 
@@ -153,7 +162,7 @@ fn plan(old: &Old) -> Vec<(PathBuf, Kind, PathBuf)> {
 		}
 	}
 
-	// The proven rows, keeping their layout under `measurement/`.
+	// The proven rows, keeping their layout under `measurements/`.
 	let mut proven = Vec::new();
 	walk(&old.measured, &mut proven);
 	for src in proven {
@@ -199,7 +208,7 @@ fn run_into(old: &Old, project_dir: &Path, rod_pool: &Path) -> Result<Report> {
 	for (src, kind, rel) in plan(old) {
 		let dst = match kind {
 			Kind::Pooled => rod_pool.join(&rel),
-			Kind::Measured => project_dir.join("measurement").join(&rel),
+			Kind::Measured => project_dir.join("measurements").join(&rel),
 			Kind::Derived => project_dir.join(&rel),
 		};
 		match carry(&src, &dst)? {
@@ -306,7 +315,7 @@ pub fn describe(report: &Report, project: &crate::project::Project) -> String {
 		project.id,
 		report.pooled,
 		report.measured,
-		project.measurement_dir().display(),
+		project.measurements_dir().display(),
 		report.derived,
 		project.dir.display()
 	);
@@ -379,7 +388,7 @@ mod tests {
 			old.measured.join(OVERRIDE_FILE).is_file(),
 			"the override moved out from under vag-protocol"
 		);
-		assert!(!p.measurement_dir().join(OVERRIDE_FILE).exists());
+		assert!(!p.measurements_dir().join(OVERRIDE_FILE).exists());
 		// And the path it is read from is still the one this module leaves alone.
 		let owned = std::path::Path::new(vag_protocol::address::OVERRIDE_PATH);
 		assert!(owned.ends_with(OVERRIDE_FILE), "{owned:?}");
@@ -404,7 +413,7 @@ mod tests {
 		}
 		// The proven rows keep their layout — `vag_protocol::address` reads one
 		// of them by a relative path it owns.
-		assert!(p.measurement_dir().join("04E-906-027-AH.json").is_file());
+		assert!(p.measurements_dir().join("04E-906-027-AH.json").is_file());
 		assert_eq!(std::fs::read(p.dir.join("cache.sqlite")).unwrap(), b"a label cache");
 	}
 
@@ -419,7 +428,7 @@ mod tests {
 
 		let before = std::fs::read(old.measured.join("04E-906-027-AH.json")).unwrap();
 		run_into(&old, &p.dir, &pool).unwrap();
-		let after = std::fs::read(p.measurement_dir().join("04E-906-027-AH.json")).unwrap();
+		let after = std::fs::read(p.measurements_dir().join("04E-906-027-AH.json")).unwrap();
 		assert_eq!(before, after, "a proven row changed on the way across");
 	}
 

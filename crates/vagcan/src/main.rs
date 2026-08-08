@@ -740,7 +740,7 @@ async fn main() -> Result<()> {
 /// and nowhere else.
 fn data_dir(given: Option<&str>) -> Result<String> {
 	Ok(
-		datadir::or_default(given, || Ok(project::current()?.measurement_dir()))?
+		datadir::or_default(given, || Ok(project::current()?.measurements_dir()))?
 			.to_string_lossy()
 			.into_owned(),
 	)
