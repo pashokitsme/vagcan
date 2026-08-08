@@ -73,3 +73,10 @@ catalogs/
 vendor/vcds-*/
 
 .worktrees/
+
+# Drive recordings, where `vagcan watch --out drive.csv` leaves them: the shell
+# was standing in the checkout, so that is where the file landed. A recording is
+# one car's readings against a clock — the class of file CLAUDE.md keeps out of
+# git — and it is never deleted, only kept somewhere git does not carry it.
+# Rooted (`/*.csv`, not `*.csv`) so a fixture a test needs is still trackable.
+/*.csv
