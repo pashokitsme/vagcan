@@ -152,7 +152,11 @@ pub struct Vehicle {
 	/// (*Fahrzeugprojektzuordnung*) keys on, kept because it is what a reader
 	/// of that document recognises.
 	pub vehicle_project: String,
-	/// Whether the project treats this as its default vehicle.
+	/// Whether the project marks this as a default vehicle.
+	///
+	/// **Not a tie-breaker.** All six of the reference project's vehicles carry
+	/// `IS-DEFAULT="true"`, so it selects nothing; it is carried because it is
+	/// in the file, not because it is useful for choosing.
 	pub is_default: bool,
 }
 

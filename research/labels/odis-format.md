@@ -322,6 +322,9 @@ Six vehicles for `SK37X`: `5E0` Octavia III, `5EU` Octavia III (Russia), `5EF` O
 Fahrzeugprojektzuordnung` is a rendering of exactly these fields; an `S42` line is
 `VEHICLE-PROJECT` + `PRODUCT-ID` + `NAME` run together.
 
+Note that **all six carry `IS-DEFAULT="true"`**, so that attribute disambiguates nothing
+and no selection should rest on it.
+
 The file is one of the 472 entries declared in `rt_index.xml`'s `RUNTIME` block, so it is
 part of **every** extracted project by construction and not by luck of one copy. That is
 what makes depending on it safe, and it is why no table of type codes needs to live in
