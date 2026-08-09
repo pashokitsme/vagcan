@@ -222,6 +222,12 @@ enum Command {
 	/// `vagcan survey` once, parked, and the cache is written — after that
 	/// `watch` offers every identifier the car answers, on every unit, with no
 	/// flag. Press `c` to choose what appears.
+	///
+	/// A survey also decides what the chooser holds back. A project describes a
+	/// vehicle family and no one car has all of it, so the channels this car was
+	/// asked for and did not answer are kept off the list — along with the ones
+	/// nothing can name — and `u` shows both. Without a survey nothing is hidden
+	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
 		/// Adapter to use. Omit it when only one is connected.
 		#[arg(long, value_name = "PATH")]

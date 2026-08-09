@@ -318,6 +318,73 @@ pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
 	channels
 }
 
+/// What a survey established about which identifiers this car actually answers.
+///
+/// Kept beside the channels rather than on them, because it is a different kind
+/// of statement. A [`Channel`] is what some data source *declares*; this is what
+/// the vehicle *did*, on a particular day, and the two disagree far more than
+/// the design assumed: on the reference car an ODIS project declares 2,251
+/// identifiers across the fifteen units, the car answered 1,198, and only 505
+/// are in both. Nearly two thousand declared channels are on the selection
+/// screen and can never produce a value.
+///
+/// Absence is only evidence about a unit the survey actually visited, which is
+/// why `units` is kept alongside: a unit nobody swept says nothing about its
+/// identifiers, and treating that as silence would hide a whole control unit
+/// on the strength of never having looked at it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Answered {
+	/// Units the survey visited. Only these can be argued about.
+	pub units: std::collections::BTreeSet<u16>,
+	/// `(request, did)` pairs that came back with a body.
+	pub dids: std::collections::BTreeSet<(u16, u16)>,
+}
+
+impl Answered {
+	/// Whether the car has been seen to answer this identifier.
+	///
+	/// `None` when nothing can be said — the unit was never swept — and that is
+	/// deliberately distinct from `Some(false)`. A caller that collapses the two
+	/// hides every channel on every unit the survey did not reach.
+	pub fn saw(&self, request: u16, did: u16) -> Option<bool> {
+		if !self.units.contains(&request) {
+			return None;
+		}
+		Some(self.dids.contains(&(request, did)))
+	}
+}
+
+/// Read [`Answered`] out of a survey file.
+///
+/// A caveat that belongs with the data rather than in a commit message: a
+/// survey line records what *answered*, never what was *asked*. For a full
+/// sweep — blind, or over everything the unit's own data declares — those are
+/// the same question and absence means silence. For a run aimed with
+/// `--blind --range`, they are not, and an identifier outside the range would
+/// be read here as silent when nobody ever asked it. The fix is for a survey to
+/// write down its own range; until it does, this is why the filter is a default
+/// and not a deletion.
+pub fn answered_from_survey(survey: &str) -> Answered {
+	let mut out = Answered::default();
+	for line in survey.lines().filter(|l| !l.trim().is_empty()) {
+		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+			continue;
+		};
+		let Some(request) = value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
+			continue;
+		};
+		let Some(dids) = value["dids"].as_array() else { continue };
+		out.units.insert(request);
+		for entry in dids {
+			let Some(did) = entry["did"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
+				continue;
+			};
+			out.dids.insert((request, did));
+		}
+	}
+	out
+}
+
 /// One request: a control unit and the identifiers to ask it for at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
@@ -747,6 +814,75 @@ mod tests {
 		// unrelated rows would show a comparison nobody established.
 		assert_eq!(split_role("Actual gear"), None);
 		assert_eq!(split_role("Engine speed"), None);
+	}
+
+	#[test]
+	fn what_a_survey_recorded_reads_back_as_answered_and_the_rest_of_that_unit_does_not() {
+		// Two claims and one non-claim, which is the whole of the type: a
+		// listed identifier answered, an unlisted one on a swept unit did not,
+		// and a unit nobody swept is not spoken for.
+		let survey = "\
+{\"request\":\"713\",\"dids\":[{\"did\":\"1001\",\"data\":\"00\"},{\"did\":\"F187\",\"data\":\"00\"}]}
+{\"request\":\"7E1\",\"dids\":[]}
+";
+		let seen = answered_from_survey(survey);
+		assert_eq!(seen.saw(0x713, 0x1001), Some(true));
+		assert_eq!(seen.saw(0x713, 0xF187), Some(true));
+		assert_eq!(seen.saw(0x713, 0x1002), Some(false), "asked, and it said nothing");
+		assert_eq!(
+			seen.saw(0x7E1, 0x1001),
+			Some(false),
+			"a unit that answered none of what it was asked was still asked"
+		);
+		assert_eq!(seen.saw(0x714, 0x1001), None, "nobody swept the cluster, so nothing is claimed about it");
+	}
+
+	#[test]
+	fn a_malformed_survey_line_says_nothing_rather_than_claiming_silence() {
+		// The failure that would matter: a line this parser cannot read must
+		// not register its unit as swept, or every channel on that unit reads
+		// as silent and the unit vanishes from the list.
+		let seen = answered_from_survey("not json\n{\"request\":\"zz\"}\n{\"request\":\"713\"}\n\n");
+		assert!(seen.units.is_empty(), "no unit was established");
+		assert_eq!(seen.saw(0x713, 0x1001), None, "a line with no did array is not a sweep of that unit");
+	}
+
+	#[test]
+	fn this_machines_own_survey_reads_back_consistently() {
+		// Run against the owner's real cached survey where there is one, and
+		// skipped everywhere else. It asserts the relationship rather than the
+		// counts: the numbers belong to one car — 505 of 2,251 declared
+		// identifiers answered, on 2026-08-09 — and a car's numbers are not
+		// something to write into the program.
+		let Some(path) = cached_survey() else {
+			eprintln!("skipped: this machine has no cached survey");
+			return;
+		};
+		let text = std::fs::read_to_string(&path).expect("the survey reads");
+		let seen = answered_from_survey(&text);
+		assert!(!seen.units.is_empty(), "{} has units in it", path.display());
+		assert!(!seen.dids.is_empty(), "{} has identifiers in it", path.display());
+		for (request, did) in &seen.dids {
+			assert_eq!(seen.saw(*request, *did), Some(true), "everything recorded reads back as answered");
+			assert!(seen.units.contains(request), "an answer implies its unit was swept");
+		}
+		// And the whole point: on a unit that was swept, an identifier nobody
+		// recorded is a definite no rather than a shrug.
+		let unit = *seen.units.iter().next().expect("checked above");
+		let absent = (0u16..=u16::MAX)
+			.find(|d| !seen.dids.contains(&(unit, *d)))
+			.expect("no unit answers all 65,536");
+		assert_eq!(seen.saw(unit, absent), Some(false));
+	}
+
+	/// The first cached survey this machine holds, whichever car it belongs to.
+	fn cached_survey() -> Option<std::path::PathBuf> {
+		let cars = crate::datadir::vagcan_dir().ok()?.join("cars");
+		std::fs::read_dir(cars)
+			.ok()?
+			.flatten()
+			.map(|e| e.path().join(crate::datadir::SURVEY_FILE))
+			.find(|p| p.is_file())
 	}
 
 	#[test]

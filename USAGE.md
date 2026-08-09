@@ -328,9 +328,22 @@ vagcan watch --replay drive.csv              # play a recording back, no car
 Output that is not a terminal gets the plain CSV mode whether or not it asked, so this
 works down a pipe or in a log.
 
-**Channels whose only label is their own identifier are hidden by default.** The
-chooser's title says how many, as `choose what to show — 800 · 43 unnamed hidden`, and
-its key line says `43 with no name anywhere are hidden — [u] shows them`. Where a name
+**Two kinds of channel are hidden by default, and `u` brings both back.** The chooser's
+title counts them together, as `choose what to show — 800 · 43 hidden`, and its key line
+splits them by reason, because the two are answered differently:
+
+- **Nothing anywhere has a name for it** — its label would be the identifier printed
+  beside itself. This is the row somebody hunting an unproven measurement wants, which
+  is why it is hidden and not dropped.
+- **This car was asked for it and said nothing.** A project describes a whole vehicle
+  family, and no single car has all of it: on the reference car an ODIS project declares
+  2,251 identifiers across the fifteen units, the car answered 1,198, and only 505 are
+  in both. The other 1,746 are fully named rows that can never produce a value — worse
+  than a nameless one, because they look like they work. Only a survey can establish
+  this, so on a car nobody has surveyed nothing is hidden for it; and only for the units
+  the survey actually visited, since silence is not evidence about a unit nobody asked.
+
+Where a name
 does exist it comes off a chain: a row you proved yourself, then the wording a VCDS
 installation recovered for that channel's text id, then the name the ODIS variant
 carries for it, then the bare identifier. The VCDS link is used only where a VCDS

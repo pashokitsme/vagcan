@@ -762,24 +762,45 @@ What `survey` did, and who owns each part now:
 
 | what it produces | who owns it after the pivot |
 |---|---|
-| which identifiers a unit answers | **the ODIS project** — from file, no car |
+| which identifiers a unit *declares* | **the ODIS project** — from file, no car. Not the same as what it answers: see the next two rows |
 | which of those actually *change* — the parked/driving diff (`survey.rs:229`) | **only `survey`**. The file declares; the car decides. Nothing else can tell a live channel from a declared one |
-| the unit list + identities that give `watch` its tabs | **only `survey`**, and that is the blocker below |
+| the unit list + identities that give `watch` its tabs | **the gateway**, live, every run — `units::identify` reads its installation list. `survey` only saves the probes |
+| which of the declared identifiers this car actually has | **only `survey`** — 1,746 of 2,251 declared are silent on this car, and nothing in a file says which |
 | stored faults on every unit (`survey.rs:532`, mask `0xFF`) | **duplicates `vagcan faults`** — two commands, one job |
 
-So `survey` is not deleted. It is taken apart, in this order — the order matters,
-because today it is load-bearing:
+**A correction, recorded because the first version of this section was wrong.** It
+claimed `watch` could only reach the units a cached survey named, and that wiring the
+gateway walk into it was the step unblocking everything else. It is not: `units::identify`
+already reads the gateway's installation list (`crates/vagcan/src/units.rs:47-58`) and
+`watch` already calls it. The wiring has been there the whole time, and the claim came
+from reading `watch`'s `wanted` list without following the call. Grep the assertion, not
+the memory of it.
 
-1. **`watch` must get its unit list from the gateway, not from a survey.** It walks
-   only `preselect + ENGINE` (`crates/vagcan/src/watch/mod.rs:1882`), so every other
-   unit on screen comes from `~/.vagcan/cars/<VIN>/survey.jsonl`. `crate::units`
-   already reads the gateway's installation list and already identifies units — this
-   is wiring, not new capability. Until it is done, deleting or narrowing `survey`
-   takes fourteen of the fifteen units off the screen with it.
-2. **Then drop the fault read from `survey`** and let `faults` own it. Keep the
-   confirmed-only filter that `faults` has and `survey` lacks.
-3. **Then narrow what is left** to what only a car can answer: the inventory and the
-   diff. That is a command worth keeping and a much smaller one to guard.
+What the measurement did establish is in
+[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.1 — and it cuts
+the other way from what the pivot suggested. Of the 1,198 identifiers this car answers,
+**693 are ones the project never declares**, and the two door units (`74A`, `74B`) have
+zero ODIS coverage against 103 answered identifiers. A survey is not superseded; it is the
+only thing that knows about those.
+
+Worse for the archive: the cached survey that proves it is a **blind** sweep from
+2026-08-08, and the safety change of 2026-08-09 makes that class of data uncollectable by
+construction — a declared-only sweep cannot find an undeclared identifier. That file
+cannot be reproduced. It must not be deleted.
+
+So `survey` is not deleted, and it is not narrowed by much either:
+
+1. **Done (2026-08-09):** the third finding — 1,746 declared identifiers the car answers
+   nothing to — is now what `watch` holds back by default (`plan::Answered`), counted
+   apart from the nameless rows, restored with `u`, and reported by the coverage
+   paragraph. This is the survey's *new* job: confirming the declaration, which is a
+   declared-only sweep and therefore safe.
+2. **Drop the fault read from `survey`** and let `faults` own it. Keep the confirmed-only
+   filter that `faults` has and `survey` lacks.
+3. **Give a survey line the range it was asked over.** Today it records what answered,
+   never what was asked, so a run aimed with `--blind --range` would have its unasked
+   identifiers read as silent. Until then the filter stays a default rather than a
+   deletion.
 
 Two smaller findings from the same look:
 
@@ -844,11 +865,6 @@ done tonight.
    delivers on a VCDS project — how many of the 1,209 text ids get better wording, and
    whether the pooled-text collapse recurs — is unmeasured. One `setup` with an
    installation answers it, offline.
-0c. **Take `watch`'s unit list from the gateway.** The first step of "The command
-   surface after the ODIS pivot" above, and the one that unblocks the rest: while
-   `watch` can only reach fourteen of the fifteen units through a cached survey,
-   `survey` cannot be narrowed at all. Wiring `crate::units`' gateway walk into
-   `watch/mod.rs:1882` is offline work with an offline test.
 1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
    channel by its DID, so of 3,878 expressible fields only 1,959 survive. The other
    1,919 are here, already parsed, and thrown away at the last step. Needs `watch`'s

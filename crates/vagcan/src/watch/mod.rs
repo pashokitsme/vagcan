@@ -119,6 +119,36 @@ impl<'a> DisplayRow<'a> {
 	}
 }
 
+/// How many rows the selection screen is holding back, and why.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Hidden {
+	/// Nothing anywhere has a name for these.
+	unnamed: usize,
+	/// A survey asked this car for these and it said nothing.
+	silent: usize,
+}
+
+impl Hidden {
+	fn total(self) -> usize {
+		self.unnamed + self.silent
+	}
+
+	/// The footer sentence, or `None` when nothing is being held back.
+	///
+	/// One sentence whichever reasons apply, because two lines about a filter
+	/// is more screen than the filter is worth. It always ends with the key,
+	/// since the count is only useful to somebody who can act on it.
+	fn sentence(self) -> Option<String> {
+		let reason = match (self.unnamed, self.silent) {
+			(0, 0) => return None,
+			(n, 0) => format!("{n} with no name anywhere"),
+			(0, n) => format!("{n} this car does not answer"),
+			(u, s) => format!("{u} with no name anywhere and {s} this car does not answer"),
+		};
+		Some(format!("{reason} are hidden — [u] shows them"))
+	}
+}
+
 /// Everything the UI needs to draw itself.
 pub struct App {
 	pub channels: Vec<Channel>,
@@ -160,16 +190,32 @@ pub struct App {
 	/// True while the filter is being typed, so letters go into it instead of
 	/// triggering `a`/`n`/`q`.
 	typing_filter: bool,
-	/// Whether the rows nothing can name are on the list.
+	/// Whether the rows held back for either reason are on the list.
 	///
-	/// Off, because on the reference car 787 of 2,751 channels have no name
-	/// anywhere and their label is the identifier they already sit beside —
-	/// which is two rows of noise for every three rows of list. They are not
-	/// dropped: a nameless identifier is precisely what somebody hunting a new
-	/// measurement is looking for, and `u` puts them back. A selected one is
-	/// always on the list whatever this says, or `--did` could name a channel
+	/// Two reasons, and both are the same complaint — a list two thirds of which
+	/// cannot be used buries the third that can:
+	///
+	/// - **Nothing can name it.** On the reference car 787 of 2,751 channels have
+	///   no name anywhere and their label is the identifier they already sit
+	///   beside.
+	/// - **The car does not answer it.** Measured on the same car: of 2,251
+	///   identifiers an ODIS project declares across the fifteen units, 1,746 were
+	///   asked and said nothing. A named row that can never produce a value is
+	///   worse than a nameless one, because it looks like it works.
+	///
+	/// Neither is dropped. A nameless identifier is precisely what somebody
+	/// hunting a new measurement is looking for, a silent one may answer in a
+	/// state the survey was not taken in, and `u` puts both back. A selected one
+	/// is always on the list whatever this says, or `--did` could name a channel
 	/// that could then never be unticked.
-	show_unnamed: bool,
+	show_hidden: bool,
+	/// What this car was seen to answer, when a survey has been loaded.
+	///
+	/// Empty means nothing is known, and nothing is then filtered on those
+	/// grounds — see [`plan::Answered::saw`], which distinguishes "asked and
+	/// silent" from "never asked" precisely so this cannot hide a unit nobody
+	/// swept.
+	answered: plan::Answered,
 	/// Scroll position of the selection list. Without one, everything past the
 	/// bottom of the terminal is unreachable.
 	select_state: TableState,
@@ -232,7 +278,8 @@ impl App {
 			cursor: 0,
 			filter: String::new(),
 			typing_filter: false,
-			show_unnamed: false,
+			show_hidden: false,
+			answered: plan::Answered::default(),
 			select_state: TableState::default(),
 			series_cursor: 0,
 			series_state: TableState::default(),
@@ -314,7 +361,7 @@ impl App {
 			.iter()
 			.enumerate()
 			.filter(|(_, c)| unit.is_none_or(|u| c.request == u))
-			.filter(|(_, c)| self.show_unnamed || c.is_named() || self.kept(c))
+			.filter(|(_, c)| self.show_hidden || self.usable(c) || self.kept(c))
 			.filter(|(_, c)| {
 				needle.is_empty()
 					|| c.label().to_lowercase().contains(&needle)
@@ -328,6 +375,17 @@ impl App {
 		// find them again in two thousand rows.
 		out.sort_by_key(|i| (!self.favourite(*i), *i));
 		out
+	}
+
+	/// Whether this channel is worth a row on the default list.
+	///
+	/// Both halves have to hold: something has to be able to name it, *and* the
+	/// car must not have been asked for it and stayed silent. The second is the
+	/// half added after the ODIS import — a project declares far more than any
+	/// one car answers, and a named channel that never returns a value spends a
+	/// row saying nothing.
+	fn usable(&self, channel: &Channel) -> bool {
+		channel.is_named() && self.answered.saw(channel.request, channel.did) != Some(false)
 	}
 
 	/// Whether this channel stays on the list however little describes it.
@@ -346,23 +404,33 @@ impl App {
 		self.channels.get(index).is_some_and(|c| self.favourites.contains(&(c.request, c.did)))
 	}
 
-	/// How many of the open tab's channels this screen is holding back.
+	/// How many of the open tab's channels this screen is holding back, split by
+	/// why.
 	///
 	/// Counted rather than left implicit: a list that silently drops two rows
 	/// in three is its own defect, so the footer says how many went and which
-	/// key brings them back.
-	fn hidden(&self) -> usize {
-		if self.show_unnamed {
-			return 0;
+	/// key brings them back. Split by reason because the two are answered
+	/// differently — a nameless row wants a better name source, a silent one
+	/// wants the car in a different state, or wants nothing at all.
+	fn hidden(&self) -> Hidden {
+		if self.show_hidden {
+			return Hidden::default();
 		}
 		let unit = self.open_unit();
-		self
-			.channels
-			.iter()
-			.enumerate()
-			.filter(|(_, c)| unit.is_none_or(|u| c.request == u))
-			.filter(|(_, c)| !c.is_named() && !self.kept(c))
-			.count()
+		let mut out = Hidden::default();
+		for c in self.channels.iter().filter(|c| unit.is_none_or(|u| c.request == u)) {
+			if self.usable(c) || self.kept(c) {
+				continue;
+			}
+			// A row can fail both tests; it is counted under the one a reader can
+			// do something about first. Silence is the stronger statement — the
+			// car was asked — so it wins over a missing name.
+			match self.answered.saw(c.request, c.did) {
+				Some(false) => out.silent += 1,
+				_ => out.unnamed += 1,
+			}
+		}
+		out
 	}
 
 	/// Rows currently on screen, in the order the plan polls them.
@@ -984,8 +1052,8 @@ fn select_title(app: &App, shown: usize) -> String {
 		let _ = write!(title, " of {} matching {:?}", app.channels.len(), app.filter);
 	}
 	let hidden = app.hidden();
-	if hidden > 0 {
-		let _ = write!(title, " · {hidden} unnamed hidden");
+	if hidden.total() > 0 {
+		let _ = write!(title, " · {} hidden", hidden.total());
 	}
 	title.push(' ');
 	title
@@ -1002,14 +1070,13 @@ fn select_keys(app: &App) -> String {
 	// mark landed, and a wrap chosen by the widget put the break in the middle
 	// of `[a] all` — a key spelled across two rows is a key nobody reads.
 	let mut keys = String::from(concat!(
-		" [space]/click toggle  [f] favourite  [g] chart  [u] unnamed  [/] filter\n",
+		" [space]/click toggle  [f] favourite  [g] chart  [u] hidden  [/] filter\n",
 		" [↑↓ pgup/pgdn] move  [tab] unit  [a] all  [n] none  [enter] back"
 	));
-	let hidden = app.hidden();
-	if hidden > 0 {
-		let _ = write!(keys, "\n {hidden} with no name anywhere are hidden — [u] shows them");
-	} else if app.show_unnamed {
-		let _ = write!(keys, "\n [u] hides the rows whose only name is their identifier");
+	if let Some(sentence) = app.hidden().sentence() {
+		let _ = write!(keys, "\n {sentence}");
+	} else if app.show_hidden {
+		let _ = write!(keys, "\n [u] hides the rows with no name and the ones this car does not answer");
 	}
 	if !app.note.is_empty() {
 		let _ = write!(keys, "\n {}", app.note);
@@ -1349,11 +1416,13 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 				}
 				KeyCode::Char('f') => app.toggle_favourite(app.cursor),
 				KeyCode::Char('g') => app.toggle_charted(app.cursor),
-				// The rows nothing can name, back on the list. A person hunting
-				// a measurement nobody has proven wants exactly those, and the
-				// footer is where they learn the key exists.
+				// Everything held back, on the list again: the rows nothing can
+				// name, and the ones this car answered nothing to. A person
+				// hunting a measurement nobody has proven wants the first, and a
+				// person who thinks the survey was taken in the wrong state wants
+				// the second. The footer is where they learn the key exists.
 				KeyCode::Char('u') => {
-					app.show_unnamed = !app.show_unnamed;
+					app.show_hidden = !app.show_hidden;
 					// The cursor may have been standing on a row that just went
 					// away; land it somewhere that still exists.
 					if !app.visible().contains(&app.cursor) {
@@ -1457,6 +1526,12 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
 	let mut app = App::new(channels);
+	// The same filter the live view gets, for the same reason: a replay is what
+	// this interface is shown with, and a demonstration that quietly offers two
+	// thousand channels the car never answers is showing a different tool.
+	if let Some(text) = &survey_text {
+		app.answered = plan::answered_from_survey(text);
+	}
 	app.open_first_populated();
 	app.units = match named_by_survey {
 		true => unit_names(&identities),
@@ -1683,7 +1758,13 @@ fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> Surv
 /// set here, and the units with nothing to show are a line of their own, since
 /// "the tool cannot name this unit's identifiers" and "the tool did not find
 /// this unit" look identical on screen and are not the same problem.
-fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], catalogs: &str, source: &SurveySource) -> String {
+fn coverage_report(
+	identities: &[plan::UnitIdentity],
+	channels: &[Channel],
+	catalogs: &str,
+	source: &SurveySource,
+	answered: &plan::Answered,
+) -> String {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
 	let any = |request: u16, f: &dyn Fn(&Channel) -> bool| channels.iter().any(|c| c.request == request && f(c));
@@ -1750,6 +1831,18 @@ fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], cata
 		for line in crate::missing::raw_channels_note(unproven).lines() {
 			out.push_str(&format!("  {line}\n"));
 		}
+	}
+	// How much of what the source data declares this particular car does not
+	// have. Worth saying out loud rather than leaving as a shorter list: on the
+	// reference car it is 1,746 of 2,251, so a reader who is not told will
+	// count the rows, find a third of what `setup` reported, and conclude the
+	// import was lost.
+	let unanswered = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
+	if unanswered > 0 {
+		out.push_str(&format!(
+			"  {unanswered} declared {} asked and answered nothing — held off the list, [u] shows them.\n",
+			crate::render::plural(unanswered, "channel")
+		));
 	}
 	if !silent.is_empty() {
 		// Every line that carries a list or a path ends with it: these are as
@@ -1887,10 +1980,15 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 
 	progress.finish();
 	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
+	// What the car was seen to answer, so the selection screen can hold back the
+	// channels this project declares and this vehicle does not have. Empty
+	// without a survey, and nothing is then filtered on those grounds.
+	let mut answered = plan::Answered::default();
 	if let Some(text) = &survey_text {
 		// Everything a survey found becomes watchable, on every unit — which
 		// is the only way the units outside the catalogs get on screen at all.
 		channels = plan::with_survey(channels, text);
+		answered = plan::answered_from_survey(text);
 	}
 	// Say what the car has and what of it can be shown, before the screen takes
 	// over. A unit that identified itself but has no catalog contributes no
@@ -1901,7 +1999,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	// On stderr, because in the plain-console view stdout is the CSV: a
 	// paragraph of prose in front of the header is not something a reader of
 	// that stream can be asked to skip. It is still the terminal either way.
-	eprint!("{}", coverage_report(&identities, &channels, catalogs, &source));
+	eprint!("{}", coverage_report(&identities, &channels, catalogs, &source, &answered));
 	for (request, did) in preselect {
 		match channels.iter_mut().find(|c| c.request == *request && c.did == *did) {
 			Some(c) => c.selected = true,
@@ -1919,6 +2017,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	let mut header_written = false;
 
 	let mut app = App::new(channels);
+	app.answered = answered;
 	// This car's own marks, if it has any: the handful somebody watches every
 	// drive, ticked before the screen appears. They come after `--did`, which
 	// is a person being explicit about this one run, and before the basics,
@@ -2206,7 +2305,13 @@ mod tests {
 		// with catalogs. Whatever else the summary says, those two must agree.
 		let identities = reference_identities();
 		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Missing { cache: None });
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"catalogs/vehicles",
+			&SurveySource::Missing { cache: None },
+			&plan::Answered::default(),
+		);
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
 		let count: usize = count.split_whitespace().next().unwrap().parse().unwrap();
@@ -2227,6 +2332,7 @@ mod tests {
 			&SurveySource::Missing {
 				cache: Some(std::path::PathBuf::from("/somewhere/survey.jsonl")),
 			},
+			&plan::Answered::default(),
 		);
 		assert!(text.contains("vagcan survey"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
@@ -2257,7 +2363,13 @@ mod tests {
 		);
 		assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
 		let cache = std::path::PathBuf::from("/somewhere/survey.jsonl");
-		let text = coverage_report(&identities, &channels, "catalogs/vehicles", &SurveySource::Cached(cache));
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"catalogs/vehicles",
+			&SurveySource::Cached(cache),
+			&plan::Answered::default(),
+		);
 		assert!(text.contains("survey.jsonl"), "{text}");
 		assert!(text.contains("713"), "{text}");
 		// No unit is left with nothing on screen, so there is nothing to
@@ -2292,6 +2404,7 @@ mod tests {
 			&channels,
 			"/x/data",
 			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
+			&plan::Answered::default(),
 		);
 		assert!(text.contains("no proven scaling for this car yet"), "{text}");
 		assert!(text.contains("recording calibrate"), "{text}");
@@ -2299,6 +2412,48 @@ mod tests {
 		// not in any label files, so pointing at `setup` here sends a reader
 		// nowhere.
 		assert!(!text.contains("vagcan setup /path"), "{text}");
+	}
+
+	#[test]
+	fn the_report_accounts_for_the_declared_channels_this_car_does_not_have() {
+		// Otherwise the filter looks like a loss. `setup` says it imported
+		// hundreds of thousands of channels, the list shows a fraction, and
+		// nothing on screen connects the two — so the import reads as broken
+		// when what actually happened is that this car is not that project.
+		let identities = reference_identities();
+		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
+		let one = channels.first().expect("the reference store has channels").clone();
+		// One channel asked and answered, and the rest of that unit asked and
+		// silent — which is the shape of the reference car at 505 of 2,251.
+		let survey = format!(
+			"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
+			one.request, one.did
+		);
+		let answered = plan::answered_from_survey(&survey);
+		let quiet = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
+		assert!(quiet > 0, "the fixture has to have something to hold back");
+
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"catalogs/vehicles",
+			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
+			&answered,
+		);
+		assert!(text.contains(&format!("{quiet} declared")), "{text}");
+		assert!(text.contains("answered nothing"), "{text}");
+		assert!(text.contains("[u] shows them"), "the key that undoes it is on the same page: {text}");
+
+		// And nothing of the sort is claimed when no survey was loaded: the
+		// sentence is about identifiers somebody asked for.
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"catalogs/vehicles",
+			&SurveySource::Missing { cache: None },
+			&plan::Answered::default(),
+		);
+		assert!(!text.contains("answered nothing"), "{text}");
 	}
 
 	#[test]
@@ -2320,7 +2475,13 @@ mod tests {
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data::catalog::CatalogStore::open("/definitely/not/here");
 		let channels = plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
-		let text = coverage_report(&identities, &channels, "/x/data/measured", &SurveySource::Missing { cache: None });
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"/x/data/measured",
+			&SurveySource::Missing { cache: None },
+			&plan::Answered::default(),
+		);
 		assert!(text.contains("no proven measurement rows"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
 		assert!(text.contains("vagcan recording calibrate"), "{text}");
@@ -2976,6 +3137,105 @@ mod tests {
 		Channel { selected: false, ..channel }
 	}
 
+	/// A survey line for one unit, listing what it answered.
+	fn surveyed(request: u16, dids: &[u16]) -> String {
+		let entries: Vec<String> = dids.iter().map(|d| format!("{{\"did\":\"{d:04X}\",\"data\":\"00\"}}")).collect();
+		format!("{{\"request\":\"{request:03X}\",\"dids\":[{}]}}\n", entries.join(","))
+	}
+
+	#[test]
+	fn a_named_channel_this_car_does_not_answer_is_held_back_and_says_so() {
+		// Measured on the reference car, and the reason this filter exists: an
+		// ODIS project declares 2,251 identifiers across the fifteen units, the
+		// car answered 1,198, and only 505 are in both. The other 1,746 are
+		// fully named rows that can never produce a value — worse than a
+		// nameless one, because they look like they work.
+		let mut a = App::new(vec![
+			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
+			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
+		]);
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001]));
+		a.screen = Screen::Select;
+
+		assert_eq!(a.visible().len(), 1, "only the one the car answered");
+		assert_eq!(a.hidden(), Hidden { unnamed: 0, silent: 1 });
+
+		let text = select_text(&mut a, 80, 14);
+		assert!(text.contains("Brake pressure"), "{text}");
+		assert!(!text.contains("Declared but silent"), "the silent row is off the list:\n{text}");
+		// Named for what it is. "unnamed" would be a lie about a row that has a
+		// perfectly good name and no value behind it.
+		assert!(text.contains("1 this car does not answer are hidden"), "{text}");
+
+		on_key(&mut a, KeyCode::Char('u'));
+		assert_eq!(
+			a.visible().len(),
+			2,
+			"[u] brings it back — the survey may have caught the car in the wrong state"
+		);
+	}
+
+	#[test]
+	fn a_unit_no_survey_visited_keeps_every_row_it_has() {
+		// The trap this filter has to avoid: silence is only evidence about a
+		// unit somebody actually asked. `SAFETY.md` recommends surveying one
+		// unit at a time, so a survey covering the brakes alone is normal — and
+		// reading it as "the gearbox answers nothing" would take a whole control
+		// unit off the screen on the strength of never having looked at it.
+		let mut a = App::new(vec![
+			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
+			unselected(proven(0x7E1, 0x380A, "Engine speed", "/min")),
+		]);
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001]));
+		a.screen = Screen::Select;
+
+		// One tab per unit, so each is checked on its own tab rather than by a
+		// single count that the tab filter would have shortened anyway.
+		for (tab, request) in a.tabs().into_iter().enumerate() {
+			a.tab = tab;
+			assert_eq!(a.visible().len(), 1, "unit {request:03X} keeps its row");
+			assert_eq!(a.hidden(), Hidden::default(), "unit {request:03X} holds nothing back");
+		}
+		assert_eq!(
+			a.answered.saw(0x7E1, 0x380A),
+			None,
+			"never asked is not the same answer as asked and silent"
+		);
+		assert_eq!(a.answered.saw(0x713, 0x1002), Some(false));
+	}
+
+	#[test]
+	fn with_no_survey_at_all_nothing_is_filtered_for_silence() {
+		// The default on a car nobody has surveyed. An empty `Answered` must
+		// mean "nothing is known", never "nothing answers".
+		let mut a = App::new(vec![unselected(proven(0x713, 0x1001, "Brake pressure", "bar"))]);
+		a.screen = Screen::Select;
+		assert_eq!(a.visible().len(), 1);
+		assert_eq!(a.hidden(), Hidden::default());
+	}
+
+	#[test]
+	fn both_reasons_are_counted_apart_and_read_as_one_sentence() {
+		// They are answered differently — a nameless row wants a better name
+		// source, a silent one wants the car in another state — so a single
+		// number would tell a reader nothing about what to do next.
+		let mut a = App::new(vec![
+			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
+			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
+			unselected(raw(0x713, 0x1003)),
+		]);
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001, 0x1003]));
+		a.screen = Screen::Select;
+
+		assert_eq!(a.hidden(), Hidden { unnamed: 1, silent: 1 });
+		let text = select_text(&mut a, 80, 14);
+		assert!(
+			text.contains("1 with no name anywhere and 1 this car does not answer are hidden"),
+			"{text}"
+		);
+		assert!(text.contains("2 hidden"), "the title counts them together: {text}");
+	}
+
 	#[test]
 	fn the_rows_nothing_can_name_are_hidden_and_the_screen_says_how_many() {
 		// The reported defect: 2,751 rows, and on a unit no project describes
@@ -2990,22 +3250,23 @@ mod tests {
 		]);
 		a.screen = Screen::Select;
 		assert_eq!(a.visible().len(), 1, "only the one anything describes");
-		assert_eq!(a.hidden(), 3);
+		assert_eq!(a.hidden().unnamed, 3);
 
 		let text = select_text(&mut a, 80, 14);
 		assert!(text.contains("Bonnet open"), "{text}");
 		assert!(!text.contains("74B/02BD"), "the nameless row is off the list:\n{text}");
 		// A silently shortened list is its own bug, so the count and the key
 		// that undoes it are on the same screen as the shortening.
-		assert!(text.contains("3 unnamed hidden"), "{text}");
+		assert!(text.contains("3 hidden"), "{text}");
+		assert!(text.contains("3 with no name anywhere are hidden"), "{text}");
 		assert!(text.contains("[u] shows them"), "{text}");
 
 		on_key(&mut a, KeyCode::Char('u'));
 		assert_eq!(a.visible().len(), 4);
-		assert_eq!(a.hidden(), 0, "nothing is held back once they are asked for");
+		assert_eq!(a.hidden().total(), 0, "nothing is held back once they are asked for");
 		let text = select_text(&mut a, 80, 14);
 		assert!(text.contains("74B/02BD"), "{text}");
-		assert!(!text.contains("unnamed hidden"), "{text}");
+		assert!(!text.contains("are hidden"), "no row is being held back now:\n{text}");
 		assert!(text.contains("[u] hides"), "the key still says what it does now: {text}");
 	}
 
@@ -3017,7 +3278,7 @@ mod tests {
 		let mut a = App::new(vec![raw(0x74B, 0x02BD), unselected(raw(0x74B, 0x02C1))]);
 		a.screen = Screen::Select;
 		assert_eq!(a.visible(), vec![0], "the selected one, and only it");
-		assert_eq!(a.hidden(), 1);
+		assert_eq!(a.hidden().unnamed, 1);
 
 		// A favourite is a person saying "this one" about precisely the row the
 		// filter is built to remove, so it outranks the filter too.
@@ -3207,7 +3468,7 @@ mod tests {
 			assert!(text.contains("/min"), "{text}");
 		}
 		// And every key of both screens is still on them at that width.
-		for key in ["[u] unnamed", "[f] favourite", "[a] all", "[enter] back"] {
+		for key in ["[u] hidden", "[f] favourite", "[a] all", "[enter] back"] {
 			assert!(select_text(&mut a, 80, 24).contains(key), "80 columns hides {key}");
 		}
 		a.screen = Screen::Series;

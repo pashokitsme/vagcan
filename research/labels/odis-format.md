@@ -251,6 +251,66 @@ and a scaling.
 
 ---
 
+## 4.1 What the project declares against what the car answers (2026-08-09)
+
+The parser's numbers describe a **vehicle family**. The question nobody had asked is how
+much of that family one car is, and the answer changes what the tool should put on a
+screen.
+
+Measured on the reference car (Škoda Octavia III, VIN `XW8AD4NE9JH008917`) by joining its
+cached survey — fifteen units, each with its `F187`/`F19E`/`F1A2` — against the SK37X
+project in `~/.vagcan/data/SK37X/cache.sqlite`, matching each unit to its variant as
+`<F19E>_<first three digits of F1A2>`:
+
+| | identifiers |
+|---|---|
+| the project declares, across the fifteen units | 2,251 |
+| the car answered | 1,198 |
+| **declared *and* answered** | **505** |
+| **answered, and the project does not declare** | **693** |
+| **declared, and the car said nothing** | **1,746** |
+
+Per unit, declared / answered / both:
+
+```
+70A  EV_EPHVA14AU3700000          109 /  38 /   5      74A  EV_DCUDriveSideEWMAXCONT  0 / 53 / 0
+70C  EV_SMLSVALEOMQBLRH             6 /  39 /   0      74B  EV_DCUPasseSideEWMAXCONT  0 / 50 / 0
+70E  EV_BCMMQB                    168 / 126 /  54      767  EV_OCULowMQBLGE          73 / 50 / 15
+710  EV_GatewNF                   205 / 131 /  66      773  EV_MUEnt4CGen2LGE        67 / 49 /  8
+712  EV_SteerAssisMQB              48 /  48 /  10      7E0  EV_ECM18TFS…264H        809 /160 /126
+713  EV_Brake1UDSContiMK100ESP     50 /  48 /  11      7E1  EV_TCMDQ200021          513 /186 /153
+714  EV_DashBoardVDDMQBAB          65 / 117 /  36
+715  EV_AirbaVW21TS6VW48X          18 /  47 /   1
+746  EV_ACClimaBHBVW37X           120 /  56 /  20
+```
+
+Three things follow.
+
+1. **The two door units have no ODIS coverage at all**, and the car answers 103
+   identifiers between them. They are the two unresolved units of §8, quantified.
+2. **693 of what this car answers — 58% — the project never mentions.** That is what a
+   sweep is *for*, and it is also the class of data the safety change of 2026-08-09 makes
+   uncollectable: a declared-only sweep cannot find an undeclared identifier by
+   construction. The cached survey that produced these numbers is a **blind** sweep from
+   2026-08-08, so it cannot be reproduced under the current rules. Do not delete it.
+3. **1,746 declared identifiers are silent**, and they were on `watch`'s selection screen
+   looking exactly like the working ones. `watch` now holds them back by default
+   (`plan::Answered`, `crates/vagcan/src/watch/plan.rs`), counted separately from the
+   nameless rows and restored with `u`.
+
+**The caveat that limits claim 3.** A survey line records what *answered*, never what was
+*asked*. For a full sweep those are the same question and absence means silence; for a run
+aimed with `--blind --range` they are not, and an identifier outside the range would read
+as silent when nobody ever asked. This is why the filter is a default and not a deletion,
+and the fix is for a survey to write down its own range.
+
+**What is not established.** Why a declared identifier is silent. Wrong variant match,
+another session, a state the car was not in when parked, or an identifier this trim level
+genuinely does not implement — the data here cannot tell them apart, and 1,746 is an upper
+bound on "this car does not have it".
+
+---
+
 ## 5. The cross-check — three rows proven by driving, reproduced from a file
 
 `rod-labels.md` §5 proved three scalings by driving the reference car next to a
