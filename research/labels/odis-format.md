@@ -363,6 +363,38 @@ outside it, and a file without the field supports no verdict at all. The first v
 that fallback assumed the older files were full sweeps; this measurement is what refuted
 it.
 
+**The variant match is not the gap — measured, 2026-08-09.** The obvious suspicion about
+the 238 identifiers this car answers and its variant does not declare is that the wrong
+variant was picked. It was not:
+
+- **13 of the 15 units match at exact version.** The `<F19E>_<first three of F1A2>` the car
+  names is present in the project for every unit but the two doors.
+- **Trying every sibling version of the same unit recovers one identifier of 238.** Not a
+  version-selection problem, and not close to one.
+- **The two door units have no variant in this project under any name.** The car reports
+  `EV_DCUDriveSideEWMAXCONT` / `EV_DCUPasseSideEWMAXCONT`; SK37X's 633 variants carry
+  `EV_DCU2DriveSideMAXHCONT` and its three siblings, which are a different unit family and
+  not another version of this one. No `EWMAX` family exists here at all. That is a project
+  data gap — and the specific thing a second ODIS project would settle, since SK37X is one
+  brand's project and these units may well be described in another's.
+
+**A method note, because the first attempt at this measurement said 118 of 238 rather than
+1.** It asked whether each identifier appeared under *any* variant in the project. A data
+identifier is numbered per control unit — `0x2A30` on the doors and `0x2A30` on the engine
+are unrelated — so that test counted coincidences between unrelated ECUs. The question has
+to be asked within one unit's own family or it is not the question.
+
+**And what the 238 actually are** (sampled from the survey's own payloads): 26 sit in
+`19xx` and 18 of those have the shape of a three-byte fault code followed by a status byte,
+repeated — fault memory, which service `0x19` reads properly and which a *measurement*
+service is right not to declare. The rest are one- to five-byte payloads in `06xx`, `22xx`
+and `2Axx`, the ranges VW uses for coding and status. The `reading` table holds one service,
+`DiagnServi_ReadDataByIdentMeasuValue`; ODIS describes coding, adaptation and faults through
+services this reader does not load. So "the project does not declare it" has been meaning
+"the project's measurement service does not declare it", which for a coding identifier is
+the correct answer rather than a gap. **The number of valid measurements ODIS does not know
+about is plausibly zero**, and no strategy should rest on the opposite.
+
 **What is not established.** Why the 38 that *were* asked stayed silent. Wrong variant
 match, another session, a state the car was not in when parked, or an identifier this trim
 level genuinely does not implement — the data cannot tell them apart. 38 is small enough

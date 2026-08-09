@@ -797,8 +797,33 @@ identification block**, `F1xx` and the `F4xx` OBD-II mirror, which a project's `
 objects were never meant to carry and which the tool reads directly anyway.
 
 In the measurement space the project declares **453 of the 691** identifiers this car
-answers — 66%. The pivot holds. The real gap is the other **238**, plus the **49**
-measurement identifiers on the two door units that resolve to no variant at all.
+answers — 66%. The pivot holds.
+
+And the other **238** are not a gap either, which is the sixth correction. Checked three
+ways on 2026-08-09:
+
+- **The variant match is right.** 13 of the 15 units resolve at exact version; trying every
+  sibling version of the same unit recovers **1** identifier of 238. An earlier figure of
+  118 came from asking whether a DID appeared under *any* variant — DIDs are numbered per
+  control unit, so that counted coincidences between unrelated ECUs.
+- **Most of the 238 are not measurements.** 26 sit in `19xx` and 18 of those are shaped as
+  a three-byte fault code plus a status byte, repeated — fault memory, read properly by
+  service `0x19`. The rest are 1–5 byte payloads in `06xx`, `22xx`, `2Axx`: coding and
+  status.
+- **`reading` holds one service.** `DiagnServi_ReadDataByIdentMeasuValue` and nothing else,
+  while ODIS describes coding, adaptation and faults through services this reader does not
+  load. "ODIS does not declare it" has been meaning "ODIS's measurement service does not",
+  which for a coding identifier is the right answer.
+
+So **the number of valid measurements ODIS does not know about is plausibly zero.** Blind
+sweeping loses its last justification with it: it finds fault records that are already read
+properly and coding bytes described elsewhere in the same file. That agrees with what
+`SAFETY.md` wanted anyway.
+
+The one real data gap is the **two door units**, which have no variant in SK37X under any
+name — the car says `EV_DCUDriveSideEWMAXCONT`, the project's 633 variants carry
+`EV_DCU2DriveSideMAXHCONT`, a different family. That is the case for a second ODIS project,
+not for a sweep.
 
 And a fifth correction, to the fourth. The paragraph above then said the asymmetry ran
 the other way — 1,746 declared and silent, concentrated in `1000-1FFF`, "concentrated
