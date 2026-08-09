@@ -264,8 +264,28 @@ New file, one entry per `setup` run that touched this project:
 }
 ```
 
-Read by nothing at run time (§4.5 below) — it exists for a person to answer "where did
-this project's data come from", the way `git log` answers the same question for code.
+Written for a person to answer "where did this project's data come from", the way
+`git log` answers the same question for code.
+
+**It was to be read by nothing at run time. That is no longer true, and the exception
+is deliberate (2026-08-09).** `names.json` is a flat `text id → name` map with no record
+of which parser wrote an entry, and that missing fact turned out to matter: on a project
+built from ODIS alone, the entries *are* ODIS's own pooled text, so preferring them over
+a reading's own name reworded 340 channels — mostly worse, and twice giving two distinct
+channels one name, distinguishable only by the identifier beside them. `MAS14374` is the
+worked example: `Total_Physical_Wakeup_Events_Counter` and
+`Total_Logical_Wakeup_Events_Counter` both collapse to `Total_CarWakeup_Events_Counter`.
+
+So `Extracted::open` consults `sources.json` for one thing — whether a VCDS source ever
+contributed — and trusts `names.json` for wording only then. A project whose log is
+missing or unreadable gets the cautious answer.
+
+The alternative was a per-entry kind inside `names.json`, which is the tidier design and
+was rejected on blast radius: it rewrites a file already on disk (1.8 MB on the
+reference machine) and breaks both `tttext`'s dictionary reader and `vagcan vcds names`,
+for the same answer. §4.5's rule is unchanged — nothing branches on source when
+*reading a value*; this is one read of one fact at open time, and the log is the only
+thing on disk that knows it.
 
 ### 4.5 Precedence when sources disagree
 
