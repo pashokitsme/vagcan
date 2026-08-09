@@ -226,6 +226,40 @@ pub fn diff(before: &str, after: &str) -> Vec<(u16, u16, String, String)> {
 }
 
 /// Print a survey diff (`vagcan survey --diff a.jsonl b.jsonl`).
+/// One unit's line in a survey file.
+///
+/// Extracted from the sweep so the shape can be asserted without a car — and
+/// specifically so the round trip can be: `watch` decides which declared
+/// channels this vehicle does not have by reading `asked` back out of here
+/// (`plan::answered_from_survey`), and a writer and a reader that agree only by
+/// inspection will stop agreeing.
+fn unit_line(report: &UnitReport, address: &vag_protocol::address::UnitAddress, batched: bool, ask: &crate::declared::Ask) -> String {
+	serde_json::json!({
+			"request": format!("{:03X}", report.request),
+			"unit": address.label(),
+			"batched": batched,
+			// What was asked, beside what answered. Without it a reader cannot
+			// tell an identifier this unit refused from one nobody ever put to
+			// it, and that difference is what decides whether a channel is
+			// missing from this car or missing from this run.
+			"asked": ask.spans_text(),
+			"ident": report.ident.iter().map(|(did, data)| {
+					serde_json::json!({ "did": format!("{did:04X}"), "data": hex_packed(data) })
+			}).collect::<Vec<_>>(),
+			"dids": report.hits.iter().map(|h| {
+					serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex_packed(&h.data) })
+			}).collect::<Vec<_>>(),
+			"confirmed_faults": report.confirmed(),
+			"dtcs": report.dtcs.iter().map(|d| {
+					serde_json::json!({
+							"code": hex_packed(&d.code),
+							"status": format!("{:02X}", d.status),
+					})
+			}).collect::<Vec<_>>(),
+	})
+	.to_string()
+}
+
 pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
 	let before = std::fs::read_to_string(before_path).with_context(|| format!("reading {before_path:?}"))?;
 	let after = std::fs::read_to_string(after_path).with_context(|| format!("reading {after_path:?}"))?;
@@ -604,25 +638,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		// Built whether or not anyone asked for a file: this is also what goes
 		// into the car's own cache, and a run that has to be repeated with
 		// `--out` to be kept is a run nobody keeps.
-		let line = serde_json::json!({
-				"request": format!("{request:03X}"),
-				"unit": address.label(),
-				"batched": batched,
-				"ident": report.ident.iter().map(|(did, data)| {
-						serde_json::json!({ "did": format!("{did:04X}"), "data": hex_packed(data) })
-				}).collect::<Vec<_>>(),
-				"dids": report.hits.iter().map(|h| {
-						serde_json::json!({ "did": format!("{:04X}", h.did), "data": hex_packed(&h.data) })
-				}).collect::<Vec<_>>(),
-				"confirmed_faults": report.confirmed(),
-				"dtcs": report.dtcs.iter().map(|d| {
-						serde_json::json!({
-								"code": hex_packed(&d.code),
-								"status": format!("{:02X}", d.status),
-						})
-				}).collect::<Vec<_>>(),
-		})
-		.to_string();
+		let line = unit_line(&report, &address, batched, &ask);
 		if let Some(w) = sink.as_mut() {
 			// JSON lines: a survey interrupted halfway keeps every unit it
 			// finished — and, below, the unit it stopped on, which is the one
@@ -708,6 +724,36 @@ mod tests {
 	/// One survey line, as the writer below emits it.
 	fn line(request: &str, did: &str) -> String {
 		format!("{{\"request\":\"{request}\",\"dids\":[{{\"did\":\"{did}\",\"data\":\"0B34\"}}]}}")
+	}
+
+	#[test]
+	fn a_written_line_reads_back_as_the_sweep_it_was() {
+		// The round trip that `watch`'s filter rests on. It calls a declared
+		// channel missing from *this car* when the survey asked for it and got
+		// nothing, and missing from *this run* when the sweep never covered it —
+		// so a writer and a reader that drift apart turn one into the other.
+		let report = UnitReport {
+			request: 0x713,
+			ident: vec![(0xF187, b"5Q0614517AQ".to_vec())],
+			hits: vec![DidHit {
+				did: 0x1001,
+				data: vec![0x0B, 0x34],
+			}],
+			stats: scan::ScanStats::default(),
+			dtcs: Vec::new(),
+			answered: true,
+		};
+		let declared: std::collections::BTreeSet<u16> = [0x1001, 0x1002, 0x1003].into_iter().collect();
+		let ask = crate::declared::ask(&declared, None);
+		let address = vag_protocol::address::UnitAddress::from_request(0x713).expect("713 is a VW unit");
+
+		let text = unit_line(&report, &address, true, &ask);
+		let seen = crate::watch::plan::answered_from_survey(&text);
+
+		assert_eq!(seen.saw(0x713, 0x1001), Some(true), "it answered");
+		assert_eq!(seen.saw(0x713, 0x1002), Some(false), "asked, and it did not");
+		assert_eq!(seen.saw(0x713, 0x2029), None, "outside what this sweep asked, so not this car's answer");
+		assert_eq!(seen.saw(0x7E0, 0x1001), None, "another unit entirely");
 	}
 
 	#[test]

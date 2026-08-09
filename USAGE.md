@@ -284,6 +284,12 @@ what makes every control unit watchable afterwards with no flag.
 
 A unit nothing describes is identified and has its faults read, and is not swept.
 
+Each line records **what was asked as well as what answered**, so a later reader can tell
+an identifier this car refused from one that run never covered. That is the difference
+`watch` uses to keep the declared-but-absent channels off its list, and a survey aimed
+with `--blind --range` would otherwise have every identifier outside its range read as
+something the car does not have.
+
 > **`--blind` is the invasive one.** It asks a unit identifiers *nothing* says it
 > answers, which is structurally a fuzz test of a diagnostic server and is what cost
 > the reference car its power steering — twice, the second time with the car parked.

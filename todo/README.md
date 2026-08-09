@@ -797,10 +797,10 @@ So `survey` is not deleted, and it is not narrowed by much either:
    declared-only sweep and therefore safe.
 2. **Drop the fault read from `survey`** and let `faults` own it. Keep the confirmed-only
    filter that `faults` has and `survey` lacks.
-3. **Give a survey line the range it was asked over.** Today it records what answered,
-   never what was asked, so a run aimed with `--blind --range` would have its unasked
-   identifiers read as silent. Until then the filter stays a default rather than a
-   deletion.
+3. **Done (2026-08-09):** a survey line now carries the range it was asked over
+   (`asked`, spans as `0102-0104`), so an identifier a run never covered reads as "not
+   asked" rather than as "this car does not have it". Older files have no such field and
+   keep the earlier reading, which is right for the full sweeps they are.
 
 Two smaller findings from the same look:
 

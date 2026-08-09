@@ -298,11 +298,16 @@ Three things follow.
    (`plan::Answered`, `crates/vagcan/src/watch/plan.rs`), counted separately from the
    nameless rows and restored with `u`.
 
-**The caveat that limits claim 3.** A survey line records what *answered*, never what was
-*asked*. For a full sweep those are the same question and absence means silence; for a run
-aimed with `--blind --range` they are not, and an identifier outside the range would read
-as silent when nobody ever asked. This is why the filter is a default and not a deletion,
-and the fix is for a survey to write down its own range.
+**The caveat that limited claim 3, and what closed it.** A survey line used to record what
+*answered* and never what was *asked*. For a full sweep those are the same question and
+absence means silence; for a run aimed with `--blind --range` they are not, and an
+identifier outside the range would read as silent when nobody ever asked. A survey now
+writes an `asked` field — the spans it swept, `0102-0104` or a bare `F187` — and
+`plan::Answered::saw` returns `None` outside them, so silence is only ever claimed where
+somebody asked. Files written before that field fall back to the old reading, which is
+correct for the full sweeps those files are, including the one this section measures. The
+filter stays a default rather than a deletion because a channel can also be silent for
+reasons the next paragraph lists.
 
 **What is not established.** Why a declared identifier is silent. Wrong variant match,
 another session, a state the car was not in when parked, or an identifier this trim level

@@ -57,6 +57,25 @@ impl Ask {
 	pub fn total(&self) -> usize {
 		crate::scan::total_dids(&self.ranges)
 	}
+
+	/// The ranges as a survey file writes them down: `0102-0104`, or a bare
+	/// `F187` where a span is one identifier wide.
+	///
+	/// A survey has always recorded what *answered* and never what was *asked*,
+	/// and the two are only the same question for a sweep that covered
+	/// everything. Anything reading a survey to decide whether a control unit
+	/// has an identifier — `watch` holds back the ones this car answers nothing
+	/// to — is otherwise guessing on a run aimed with `--blind --range`.
+	pub fn spans_text(&self) -> Vec<String> {
+		self
+			.ranges
+			.iter()
+			.map(|r| match r.start() == r.end() {
+				true => format!("{:04X}", r.start()),
+				false => format!("{:04X}-{:04X}", r.start(), r.end()),
+			})
+			.collect()
+	}
 }
 
 /// The identifiers some source declares for a unit, given what the unit said
@@ -261,6 +280,27 @@ mod tests {
 		assert!(notice.contains("not swept"), "{notice}");
 		assert!(notice.contains("--blind 44"), "{notice}");
 		assert!(notice.contains("SAFETY.md"), "{notice}");
+	}
+
+	#[test]
+	fn what_was_asked_is_written_down_in_a_form_a_reader_can_take_back_apart() {
+		// The other half of a contract `watch` depends on: it decides which
+		// declared channels this car does not have by comparing what answered
+		// against what was asked, and it can only do that if the survey wrote
+		// the range in a shape that survives the round trip.
+		let declared: BTreeSet<u16> = [0x0102, 0x0103, 0x0104, 0xF187].into_iter().collect();
+		let asked = ask(&declared, None);
+		assert_eq!(asked.spans_text(), vec!["0102-0104", "F187"], "a run of three, then one on its own");
+
+		// A unit nobody asked anything writes an empty list, not a missing one:
+		// "asked nothing" and "no record of what was asked" are different
+		// statements and only the second is a shrug.
+		assert!(ask(&BTreeSet::new(), None).spans_text().is_empty());
+
+		// And the last identifier in the space, which is where an off-by-one
+		// in the span walk would show up.
+		let edge: BTreeSet<u16> = [0xFFFE, 0xFFFF].into_iter().collect();
+		assert_eq!(ask(&edge, None).spans_text(), vec!["FFFE-FFFF"]);
 	}
 
 	#[test]

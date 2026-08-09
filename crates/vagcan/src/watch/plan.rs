@@ -338,32 +338,48 @@ pub struct Answered {
 	pub units: std::collections::BTreeSet<u16>,
 	/// `(request, did)` pairs that came back with a body.
 	pub dids: std::collections::BTreeSet<(u16, u16)>,
+	/// What each unit was actually asked, where the survey wrote it down.
+	///
+	/// A survey used to record only what answered, which is the same question
+	/// as what was asked for a sweep that covered everything and a different
+	/// one for a run aimed with `--blind --range`. Files written before the
+	/// `asked` field have no entry here and fall back to the older reading —
+	/// correct for the full sweeps those files are, and the reason the field
+	/// was added rather than the old files being reinterpreted.
+	pub asked: std::collections::BTreeMap<u16, Vec<std::ops::RangeInclusive<u16>>>,
 }
 
 impl Answered {
 	/// Whether the car has been seen to answer this identifier.
 	///
-	/// `None` when nothing can be said — the unit was never swept — and that is
-	/// deliberately distinct from `Some(false)`. A caller that collapses the two
-	/// hides every channel on every unit the survey did not reach.
+	/// Three answers, not two. `None` when nothing can be said — the unit was
+	/// never swept, or it was swept over a range this identifier is outside of —
+	/// and that is deliberately distinct from `Some(false)`. A caller that
+	/// collapses the two hides every channel on every unit the survey did not
+	/// reach, and `SAFETY.md` recommends surveying one unit at a time, so that
+	/// is the ordinary case rather than the exotic one.
 	pub fn saw(&self, request: u16, did: u16) -> Option<bool> {
 		if !self.units.contains(&request) {
 			return None;
 		}
-		Some(self.dids.contains(&(request, did)))
+		if self.dids.contains(&(request, did)) {
+			return Some(true);
+		}
+		// Silence only counts against an identifier somebody put to the unit.
+		match self.asked.get(&request) {
+			Some(ranges) => ranges.iter().any(|r| r.contains(&did)).then_some(false),
+			// An older file, with no record of its range. Those runs swept
+			// everything the unit declared or the whole space, so absence is
+			// the answer it looks like.
+			None => Some(false),
+		}
 	}
 }
 
 /// Read [`Answered`] out of a survey file.
 ///
-/// A caveat that belongs with the data rather than in a commit message: a
-/// survey line records what *answered*, never what was *asked*. For a full
-/// sweep — blind, or over everything the unit's own data declares — those are
-/// the same question and absence means silence. For a run aimed with
-/// `--blind --range`, they are not, and an identifier outside the range would
-/// be read here as silent when nobody ever asked it. The fix is for a survey to
-/// write down its own range; until it does, this is why the filter is a default
-/// and not a deletion.
+/// The `asked` field is taken where a survey wrote one and simply missing on
+/// files from before it existed — see [`Answered::asked`] for what that costs.
 pub fn answered_from_survey(survey: &str) -> Answered {
 	let mut out = Answered::default();
 	for line in survey.lines().filter(|l| !l.trim().is_empty()) {
@@ -381,8 +397,27 @@ pub fn answered_from_survey(survey: &str) -> Answered {
 			};
 			out.dids.insert((request, did));
 		}
+		if let Some(asked) = value["asked"].as_array() {
+			// A range this parser cannot read is dropped rather than guessed at,
+			// and a line whose whole list is unreadable records an empty range —
+			// which says "asked nothing", so nothing on that unit is called
+			// silent. Wrong in the safe direction.
+			let ranges: Vec<std::ops::RangeInclusive<u16>> = asked.iter().filter_map(|r| r.as_str().and_then(parse_span)).collect();
+			out.asked.insert(request, ranges);
+		}
 	}
 	out
+}
+
+/// One span as a survey writes it: `0102-0104`, or a bare `F187`.
+fn parse_span(text: &str) -> Option<std::ops::RangeInclusive<u16>> {
+	let (start, end) = match text.split_once('-') {
+		Some((a, b)) => (a, b),
+		None => (text, text),
+	};
+	let start = u16::from_str_radix(start.trim(), 16).ok()?;
+	let end = u16::from_str_radix(end.trim(), 16).ok()?;
+	(start <= end).then_some(start..=end)
 }
 
 /// One request: a control unit and the identifiers to ask it for at once.
@@ -835,6 +870,44 @@ mod tests {
 			"a unit that answered none of what it was asked was still asked"
 		);
 		assert_eq!(seen.saw(0x714, 0x1001), None, "nobody swept the cluster, so nothing is claimed about it");
+	}
+
+	#[test]
+	fn an_identifier_outside_the_range_a_survey_swept_is_not_called_silent() {
+		// The caveat the `asked` field removes. A run aimed with
+		// `--blind --range 0100-0110` says nothing whatever about `2029`, and
+		// reading absence as silence there would hide a working channel on the
+		// strength of a sweep that never went near it.
+		let survey = "{\"request\":\"713\",\"asked\":[\"0100-0110\",\"F187\"],\"dids\":[{\"did\":\"0102\",\"data\":\"00\"}]}\n";
+		let seen = answered_from_survey(survey);
+		assert_eq!(seen.saw(0x713, 0x0102), Some(true));
+		assert_eq!(seen.saw(0x713, 0x0103), Some(false), "inside the range and it did not answer");
+		assert_eq!(seen.saw(0x713, 0xF187), Some(false), "a one-wide span is a range too");
+		assert_eq!(seen.saw(0x713, 0x2029), None, "nobody asked this unit about 2029");
+	}
+
+	#[test]
+	fn a_survey_from_before_the_asked_field_still_reads_as_a_full_sweep() {
+		// The cached survey on the reference car is one of these — a blind
+		// sweep from 2026-08-08, which the current safety rules cannot
+		// reproduce. Reinterpreting it as "range unknown, so nothing is silent"
+		// would throw away the only measurement of what this car does not have.
+		let survey = "{\"request\":\"713\",\"dids\":[{\"did\":\"0102\",\"data\":\"00\"}]}\n";
+		let seen = answered_from_survey(survey);
+		assert!(seen.asked.is_empty(), "no range was recorded");
+		assert_eq!(seen.saw(0x713, 0x0103), Some(false));
+	}
+
+	#[test]
+	fn an_unreadable_range_is_dropped_and_never_widens_what_was_asked() {
+		// Wrong in the safe direction: a span this parser cannot read shrinks
+		// what the file is taken to have asked, so the worst case is a channel
+		// shown that could have been hidden.
+		let survey = "{\"request\":\"713\",\"asked\":[\"nonsense\",\"0110-0100\",\"0200-0201\"],\"dids\":[]}\n";
+		let seen = answered_from_survey(survey);
+		assert_eq!(seen.asked.get(&0x713).map(Vec::len), Some(1), "only the one span that parses");
+		assert_eq!(seen.saw(0x713, 0x0200), Some(false));
+		assert_eq!(seen.saw(0x713, 0x0110), None, "a backwards span is not a range");
 	}
 
 	#[test]
