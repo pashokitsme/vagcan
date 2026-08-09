@@ -1319,7 +1319,7 @@ fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], cata
 		out.push_str(&format!("  — they answer, but no catalog in {catalogs} matches their part numbers.\n"));
 		out.push_str(&match source {
 			SurveySource::Missing { cache: Some(path) } => format!(
-				"  Sweep this car once, parked — about 8 minutes — and every later run \n  \
+				"  Read this car once, parked, and every later run \n  \
                  offers their identifiers as raw bytes, with no flag:\n    \
                  vagcan survey\n  \
                  writes {}\n",
@@ -1328,7 +1328,7 @@ fn coverage_report(identities: &[plan::UnitIdentity], channels: &[Channel], cata
 			// No VIN, so this tool has nowhere of its own to put a survey: the
 			// file has to be named by hand at both ends.
 			SurveySource::Missing { cache: None } => "  The car did not report a VIN, so it has no files of its own. Sweep it \n  \
-                 once, parked — about 8 minutes — and name the file at both ends:\n    \
+                 once, parked, and name the file at both ends:\n    \
                  vagcan survey --out FILE\n    \
                  vagcan watch --survey FILE\n"
 				.to_string(),

@@ -99,7 +99,7 @@ why [`USAGE.md`](USAGE.md) has a section on proving one against your own car.
 vagcan info               # VIN, engine, gearbox
 vagcan units --identify   # every control unit the gateway knows about
 vagcan faults             # stored fault codes, in VW's own words (after setup)
-vagcan survey             # once, parked, ~8 min: what every unit answers
+vagcan survey             # once, parked: what every unit answers
 vagcan watch              # live values from several units at once
 ```
 

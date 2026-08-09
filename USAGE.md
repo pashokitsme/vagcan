@@ -163,15 +163,22 @@ with the reason.
 
 ### `vagcan scan --ecu 01` / `vagcan survey` — what does it answer?
 
-`scan` sweeps one unit; `survey` sweeps every unit the car has, in about eight
-minutes. `survey` files its result under the car itself
+`scan` reads one unit; `survey` reads every unit the car has. Each unit is asked
+**only the identifiers its own data declares it answers** — the car reports what it is
+(`F187`, `F19E`, `F1A2`), that resolves to an ODIS variant, and the variant says which
+identifiers it defines. `survey` files its result under the car itself
 (`~/.vagcan/cars/<VIN>/survey.jsonl`) whether or not `--out` was given, and that is
 what makes every control unit watchable afterwards with no flag.
 
-> **A sweep is the most invasive thing here.** Structurally it is a fuzz test of a
-> diagnostic server, and it is what cost the reference car its power steering. Both
-> commands refuse to run on a moving car unless `--while-driving` is passed. Read
-> [`SAFETY.md`](SAFETY.md) before the first one, and sweep parked.
+A unit nothing describes is identified and has its faults read, and is not swept.
+
+> **`--blind` is the invasive one.** It asks a unit identifiers *nothing* says it
+> answers, which is structurally a fuzz test of a diagnostic server and is what cost
+> the reference car its power steering — twice, the second time with the car parked.
+> It has to be aimed at units named one at a time (`--blind 712`); there is no way to
+> ask for it car-wide. Both commands also refuse to run on a moving car unless
+> `--while-driving` is passed, and both **stop the whole run** if a unit goes quiet or
+> goes back on an identifier it already answered. Read [`SAFETY.md`](SAFETY.md).
 
 The diff is the point:
 
@@ -310,7 +317,7 @@ vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
 vagcan faults                      # what is wrong, in VW's words
-vagcan survey                      # once, parked, ~8 min
+vagcan survey                      # once, parked
 vagcan watch                       # now every unit is on offer
 ```
 

@@ -7,10 +7,21 @@
 //! with an identifier space nobody here has swept.
 //!
 //! This command does the pass that document calls for: read the installation
-//! list, then for every unit in it read the identification block and sweep the
-//! identifier pages that are actually in use on this car. The result is a file
-//! of *what answered*, per unit — the raw material for a measurement catalog,
-//! obtained without the label files.
+//! list, then for every unit in it read the identification block, the fault
+//! memory, and **the identifiers that unit's own data declares it answers** —
+//! resolved from what the unit reports about itself, through
+//! [`crate::declared`]. The result is a file of *what answered*, per unit.
+//!
+//! It used to sweep nine fixed pages of identifiers at every unit, on no
+//! evidence any of them existed. That is the fuzz test `SAFETY.md` describes,
+//! and it cost the reference car its power steering — the second time on 9
+//! August 2026, with the car parked. Sweeping identifier space nothing vouches
+//! for is now `--blind`, aimed at units named one at a time.
+//!
+//! And the run **stops** the moment a unit that had been answering goes quiet
+//! or goes back on an identifier it already answered ([`crate::anomaly`]): the
+//! whole run, not that unit, because what made the second drop-out permanent
+//! was carrying on after the first looked like it had resolved itself.
 //!
 //! Two runs of this, one parked and one driving, differ exactly in the live
 //! measurements. That difference is the point: an identifier whose bytes never
