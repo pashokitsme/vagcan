@@ -98,6 +98,33 @@ impl Line {
 		self.drawn = true;
 	}
 
+	/// Say something that must still be on screen a minute later.
+	///
+	/// **A safety message must never be written to a surface that erases
+	/// itself.** This one does: [`update`](Line::update) returns to the start of
+	/// the line with `\r` and pads over whatever was there, and
+	/// [`finish`](Line::finish) blanks it outright. On 9 August 2026 a warning
+	/// went up during a sweep and then went out again, which is how a run that
+	/// had already provoked a control unit carried on.
+	///
+	/// So the progress line is cleared **first**, and the message is written
+	/// whole and newline-terminated onto the line after it, where the next
+	/// redraw cannot reach back. Nothing about this is decoration: it is the
+	/// difference between a warning and a flicker.
+	pub fn notice(&mut self, message: &str) {
+		self.notice_to(&mut std::io::stderr(), message);
+	}
+
+	/// The same, against any sink, so the ordering can be tested without a
+	/// terminal.
+	fn notice_to(&mut self, out: &mut impl Write, message: &str) {
+		// Clearing first is the whole invariant. Written the other way round,
+		// `finish` would blank the first line of the message.
+		self.finish();
+		let _ = writeln!(out, "{}", message.trim_end_matches('\n'));
+		let _ = out.flush();
+	}
+
 	/// Clear the line, leaving the terminal as it was found.
 	///
 	/// Called by [`Drop`] too, so an error path cannot leave a half-written
@@ -235,6 +262,46 @@ mod tests {
 		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
 		line.update("identifying control units");
 		assert!(line.drawn);
+		line.finish();
+	}
+
+	#[test]
+	fn a_warning_is_not_written_to_the_line_that_erases_itself() {
+		// The third defect behind the 9 August 2026 incident: a message shown
+		// during a sweep shares the rewriting progress line and is gone at the
+		// next redraw — "it showed an error, and then it went out". A notice
+		// clears the line first and then writes where nothing rewrites.
+		let mut line = Line::new();
+		line.tty = true; // the test harness's stderr is not a terminal
+		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
+		line.update("sweeping 712 — unit 5 of 15");
+		assert!(line.drawn, "there is a progress line up");
+
+		let mut out: Vec<u8> = Vec::new();
+		line.notice_to(&mut out, "STOPPED: control unit 44 stopped answering");
+
+		assert!(!line.drawn, "the progress line was cleared before the notice");
+		assert_eq!(line.width, 0, "so the next redraw has nothing to overwrite");
+		let text = String::from_utf8(out).unwrap();
+		assert!(text.starts_with("STOPPED"), "{text:?}");
+		assert!(text.ends_with('\n'), "a notice is a whole line, not a fragment: {text:?}");
+		assert!(!text.contains('\r'), "nothing in a notice returns to the start of a line: {text:?}");
+	}
+
+	#[test]
+	fn a_notice_survives_a_redraw_that_follows_it() {
+		// The failure in one assertion: whatever the spinner does next, it must
+		// not be able to touch what the notice said.
+		let mut line = Line::new();
+		line.tty = true;
+		line.started = Instant::now() - THRESHOLD - Duration::from_millis(1);
+		let mut out: Vec<u8> = Vec::new();
+		line.notice_to(&mut out, "STOPPED");
+		let after_notice = out.len();
+		// The next redraw goes to stderr, not here — but the invariant that
+		// makes that safe is the width, and it is zero.
+		line.update("sweeping 713");
+		assert_eq!(out.len(), after_notice, "the redraw wrote nothing over the notice");
 		line.finish();
 	}
 
