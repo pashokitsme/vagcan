@@ -6,9 +6,18 @@ definitions as **data, not code**.
 **The primary source is a VW ODIS-Service runtime project** (since 2026-08-08): it
 declares, per ECU variant, every identifier that unit answers along with the byte
 offset, length, byte order and compu formula — the whole chain, which a VCDS label file
-provably does not carry (`research/labels/rod-labels.md` §4.0c). **A VCDS installation
-is the additional source**, and still the only one for two things: fault-code *text*
-(`Codes.dat` + the `RD.rod` registry chain) and names for units no ODIS project covers.
+provably does not carry (`research/labels/rod-labels.md` §4.0c).
+
+**An ODIS project carries the fault codes and their text too** — 329,268 `DTC_*` objects
+in `SK37X`, with descriptions in the clear in the Unicode pool (`Steuergerät Fehler im
+RAM->defekt`), no cipher and no `Codes.dat` involved. What is missing is the *loader*,
+not the data: `DB_DOP_DTC` and `MCD_DB_DIAG_TROUBLE_CODE` are in the type table and
+`odis/loaders/` holds only `identity.rs` and `measurement.rs`. Until that lands,
+`vagcan faults` still names codes from VCDS files — a limit of this implementation,
+**not** a property of the sources, and it must not be written down as one (2026-08-09).
+
+**A VCDS installation is therefore the fallback**: the path for a car no ODIS project
+covers, or for someone who cannot get one.
 
 Above both sits what was **proven live on the car** —
 `~/.vagcan/data/<project>/measurements/<part number>.json`, keyed by what the unit
@@ -693,6 +702,29 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   is in no label file — the two numberings are unrelated — so it is learned per car by
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live.
+
+## Deferred, from the owner's own runs (2026-08-09)
+
+Raised while using the tool, not blocking, and written down so they are not
+re-discovered:
+
+- **A one-letter path typo reads as a missing directory.** Typing `~/Dowloads/SK37X`
+  gets "is not a directory — there is nothing at that path", which is true and
+  unhelpful: `Downloads` exists one letter away. The refusal already does a
+  did-you-mean for *contents* (it will spot a project inside the folder you named); it
+  should do one for the *name* too, against the siblings of the deepest parent that
+  does exist. **Not** a trailing-slash rule — a slash changes nothing here, and the
+  successful second attempt differed by the missing `n`, not by the slash.
+- **`setup`'s variant walk is serial.** `[1/2]` walks 717 variants one at a time and is
+  the long pole (minutes on release, ~10× that on a debug build). The pools are
+  independent and read-only, so this parallelises without a shared-state question.
+  Worth a word about the debug/release difference wherever a user could read the wait
+  as a hang.
+- **The closing footer's calibrate advice may be noise on the ODIS path.** It is
+  correct under the trust order (§4.5) — an ODIS row is evidence until a drive confirms
+  it — but telling somebody who just imported 310,734 declared scalings to go and
+  measure them reads as though nothing was gained. Decide whether the sentence belongs
+  at the end of a `setup` run at all, or only where a channel is actually used.
 
 ## Next goals (2026-08-09)
 
