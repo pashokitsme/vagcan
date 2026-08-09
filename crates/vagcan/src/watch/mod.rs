@@ -19,10 +19,12 @@
 //! instead of updating one. A full-screen renderer has no such failure mode,
 //! and it can also show a name in full instead of eliding it to fit a column.
 
+pub mod favourites;
 pub mod history;
 pub mod plan;
 pub mod replay;
 
+use std::fmt::Write as _;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -90,6 +92,16 @@ struct Charted {
 enum Screen {
 	Live,
 	Select,
+	/// Which of the watched channels the chart draws — a third screen rather
+	/// than a corner of the second one.
+	///
+	/// The mark was only reachable from `Select`, which lists every channel the
+	/// car has: to change one line of a chart somebody had to leave the chart,
+	/// find the row among two thousand, and come back to see what they had
+	/// done. Here the list is the handful already on the table and the chart
+	/// stays on screen underneath it, so a press and its effect are visible at
+	/// once — which is the whole of "нельзя выбрать что отображать на графике".
+	Series,
 }
 
 /// One line of the live table: a measurement, and its specified counterpart
@@ -120,6 +132,21 @@ pub struct App {
 	/// because what belongs on a table of thirty values and what belongs on a
 	/// chart of three lines are different questions.
 	charted: std::collections::BTreeSet<(u16, u16)>,
+	/// The channels this car's owner marked with `f`, read from and written
+	/// back to [`favourites::path_for`].
+	///
+	/// They are offered first on the selection screen, they survive the
+	/// nameless-identifier filter, and they are what a run starts with — see
+	/// [`favourites`].
+	favourites: std::collections::BTreeSet<(u16, u16)>,
+	/// Where they are kept. `None` on a replay and on a car that would not say
+	/// which car it is: the marks then last until the run ends, which is what
+	/// [`App::note`] says at the moment somebody makes one.
+	favourites_path: Option<std::path::PathBuf>,
+	/// One line about the last thing this screen did that did not work — a
+	/// favourite that could not be written. Empty the rest of the time, which
+	/// is nearly always.
+	note: String,
 	/// Whether the chart has the bottom of the live screen.
 	chart_shown: bool,
 	/// Which page of overlaid lines is up, as `chart::pages` divides them.
@@ -133,9 +160,25 @@ pub struct App {
 	/// True while the filter is being typed, so letters go into it instead of
 	/// triggering `a`/`n`/`q`.
 	typing_filter: bool,
+	/// Whether the rows nothing can name are on the list.
+	///
+	/// Off, because on the reference car 787 of 2,751 channels have no name
+	/// anywhere and their label is the identifier they already sit beside —
+	/// which is two rows of noise for every three rows of list. They are not
+	/// dropped: a nameless identifier is precisely what somebody hunting a new
+	/// measurement is looking for, and `u` puts them back. A selected one is
+	/// always on the list whatever this says, or `--did` could name a channel
+	/// that could then never be unticked.
+	show_unnamed: bool,
 	/// Scroll position of the selection list. Without one, everything past the
 	/// bottom of the terminal is unreachable.
 	select_state: TableState,
+	/// Which row of the chart-lines screen the cursor is on, as an index into
+	/// [`App::shown_indices`]. Its own, not `cursor`: that one belongs to a
+	/// list of every channel the car has, and this one to the handful being
+	/// watched.
+	series_cursor: usize,
+	series_state: TableState,
 	/// Which control unit's tab is open. A car has fifteen units and over a
 	/// thousand identifiers between them; one list of all of it is a list
 	/// nobody reads.
@@ -180,13 +223,19 @@ impl App {
 			latest: std::collections::BTreeMap::new(),
 			history: history::History::new(history::WINDOW_SECONDS),
 			charted: std::collections::BTreeSet::new(),
+			favourites: std::collections::BTreeSet::new(),
+			favourites_path: None,
+			note: String::new(),
 			chart_shown: false,
 			chart_page: 0,
 			screen: Screen::Live,
 			cursor: 0,
 			filter: String::new(),
 			typing_filter: false,
+			show_unnamed: false,
 			select_state: TableState::default(),
+			series_cursor: 0,
+			series_state: TableState::default(),
 			tab: 0,
 			unit_area: None,
 			list_area: None,
@@ -260,11 +309,12 @@ impl App {
 	fn visible(&self) -> Vec<usize> {
 		let unit = self.open_unit();
 		let needle = self.filter.to_lowercase();
-		self
+		let mut out: Vec<usize> = self
 			.channels
 			.iter()
 			.enumerate()
 			.filter(|(_, c)| unit.is_none_or(|u| c.request == u))
+			.filter(|(_, c)| self.show_unnamed || c.is_named() || self.kept(c))
 			.filter(|(_, c)| {
 				needle.is_empty()
 					|| c.label().to_lowercase().contains(&needle)
@@ -272,7 +322,47 @@ impl App {
 					|| c.unit().to_lowercase().contains(&needle)
 			})
 			.map(|(i, _)| i)
-			.collect()
+			.collect();
+		// Favourites first, and otherwise the order the plan polls in. A person
+		// with a handful of channels they watch every drive should not have to
+		// find them again in two thousand rows.
+		out.sort_by_key(|i| (!self.favourite(*i), *i));
+		out
+	}
+
+	/// Whether this channel stays on the list however little describes it.
+	///
+	/// Two ways: it is already being watched, and hiding a ticked row would
+	/// leave `--did`'s channels impossible to untick; or somebody marked it a
+	/// favourite, which is a person saying "this one" about the very row a
+	/// nameless-identifier filter is designed to remove.
+	fn kept(&self, channel: &Channel) -> bool {
+		let key = (channel.request, channel.did);
+		channel.selected || self.favourites.contains(&key) || self.charted.contains(&key)
+	}
+
+	/// Whether the channel at this index is one of the favourites.
+	fn favourite(&self, index: usize) -> bool {
+		self.channels.get(index).is_some_and(|c| self.favourites.contains(&(c.request, c.did)))
+	}
+
+	/// How many of the open tab's channels this screen is holding back.
+	///
+	/// Counted rather than left implicit: a list that silently drops two rows
+	/// in three is its own defect, so the footer says how many went and which
+	/// key brings them back.
+	fn hidden(&self) -> usize {
+		if self.show_unnamed {
+			return 0;
+		}
+		let unit = self.open_unit();
+		self
+			.channels
+			.iter()
+			.enumerate()
+			.filter(|(_, c)| unit.is_none_or(|u| c.request == u))
+			.filter(|(_, c)| !c.is_named() && !self.kept(c))
+			.count()
 	}
 
 	/// Rows currently on screen, in the order the plan polls them.
@@ -282,9 +372,33 @@ impl App {
 	/// measurements from several control units is to watch them together. The
 	/// unit list belongs to the configure screen, where the choosing happens.
 	fn shown(&self) -> Vec<&Channel> {
-		let mut v: Vec<&Channel> = self.channels.iter().filter(|c| c.selected).collect();
-		v.sort_by_key(|c| (c.request, c.did));
+		self.shown_indices().into_iter().map(|i| &self.channels[i]).collect()
+	}
+
+	/// The same rows, as indices — for a screen that has to change one.
+	///
+	/// One ordering, defined here, so the chart's list and the table cannot
+	/// disagree about which row is the third one.
+	fn shown_indices(&self) -> Vec<usize> {
+		let mut v: Vec<usize> = self.channels.iter().enumerate().filter(|(_, c)| c.selected).map(|(i, _)| i).collect();
+		v.sort_by_key(|i| (self.channels[*i].request, self.channels[*i].did));
 		v
+	}
+
+	/// The channels the chart actually draws, in the order it draws them.
+	///
+	/// Not the same set as `charted`: a mark with no number in it never reaches
+	/// a line, and beyond [`CHART_CHANNELS`] there is no room for one. Both are
+	/// said out loud on the screen that makes the marks, because a mark that
+	/// silently does nothing is what makes a chart look broken.
+	fn drawn(&self) -> Vec<(u16, u16)> {
+		self
+			.shown()
+			.into_iter()
+			.filter(|c| self.charted.contains(&(c.request, c.did)) && plottable(c))
+			.take(CHART_CHANNELS)
+			.map(|c| (c.request, c.did))
+			.collect()
 	}
 
 	/// What one line of the table shows.
@@ -431,6 +545,48 @@ impl App {
 			.map(|c| (c.request, c.did))
 			.collect();
 		self.charted.extend(seed);
+	}
+
+	/// Mark or unmark the channel under the cursor as a favourite, and write
+	/// the file.
+	///
+	/// **Written on every press, not once at the end.** `watch` is quit with
+	/// `q` in a car park about as often as it is killed by a closed lid, and a
+	/// mark that only survives a tidy exit is a mark that does not survive.
+	///
+	/// Marking selects it too, for the reason [`Self::toggle_charted`] does:
+	/// "watch this every drive" that leaves the row unticked would be a mark
+	/// with no effect on the run somebody made it during.
+	fn toggle_favourite(&mut self, index: usize) {
+		let Some(channel) = self.channels.get_mut(index) else { return };
+		let key = (channel.request, channel.did);
+		if self.favourites.remove(&key) {
+			// Unfavouriting is not deselecting: somebody who no longer wants a
+			// row *next* time is not asking for it to vanish from this screen.
+		} else {
+			self.favourites.insert(key);
+			channel.selected = true;
+		}
+		self.note = match favourites::save(self.favourites_path.as_deref(), &self.favourites) {
+			Ok(()) => String::new(),
+			Err(why) => why,
+		};
+	}
+
+	/// Tick whatever this car's favourites are, and say how many were found.
+	///
+	/// A favourite the car does not offer is not an error and not a warning:
+	/// which identifiers a unit answers changes with a software update, and a
+	/// mark for one that has gone simply has nothing to tick.
+	fn select_favourites(&mut self) -> usize {
+		let mut found = 0;
+		for channel in self.channels.iter_mut() {
+			if self.favourites.contains(&(channel.request, channel.did)) {
+				channel.selected = true;
+				found += 1;
+			}
+		}
+		found
 	}
 
 	/// Mark or unmark the channel under the cursor.
@@ -690,7 +846,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 		None => String::new(),
 	};
 	let help = format!(
-		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [q] quit{}{waiting}",
+		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [q] quit{}{waiting}",
 		shown.len(),
 		app.channels.iter().filter(|c| c.selected).count(),
 		app.status
@@ -701,6 +857,199 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	);
 }
 
+/// What a row of the chart-lines screen says about itself, after the mark.
+///
+/// Three states and they are three different facts, which is why none of them
+/// is left to be inferred from an empty chart: a channel with no proven number
+/// can never be a line, a marked one past the cap is waiting for room, and the
+/// rest are on screen right now.
+fn series_note(app: &App, channel: &Channel) -> &'static str {
+	let key = (channel.request, channel.did);
+	if !plottable(channel) {
+		// It keeps its row on the table either way; it is the chart that
+		// declines it, and this is where it says so.
+		return "no number";
+	}
+	if !app.charted.contains(&key) {
+		return "";
+	}
+	match app.drawn().contains(&key) {
+		true => "drawn",
+		false => "no room",
+	}
+}
+
+/// The chart-lines screen: the watched channels, and which of them are lines.
+///
+/// The chart itself stays on screen underneath, which is the point — the
+/// previous way to change a line was to leave the chart, find the channel among
+/// every one the car has, and come back to see what had happened.
+fn draw_series(frame: &mut Frame, app: &mut App) {
+	let charted = app.charted();
+	// Two lines of hints, because they do not fit one at eighty columns, and
+	// the block is sized from them for the reason the selection screen's is:
+	// a footer that clips is a footer that clips the last sentence on it.
+	let help = concat!(
+		" [space] draw  [↑↓] move  [←→] page  [a] all  [n] none\n",
+		" [c] configure  [s]/[esc] back  [q] quit"
+	);
+	let hint_rows = wrapped_height(help, frame.area().width.saturating_sub(2)) + 2;
+	let layout = Layout::vertical([Constraint::Min(3), Constraint::Percentage(40), Constraint::Length(hint_rows)]).split(frame.area());
+	let shown = app.shown_indices();
+	let drawn = app.drawn();
+
+	let rows: Vec<Row> = shown
+		.iter()
+		.map(|i| {
+			let c = &app.channels[*i];
+			let marked = app.charted.contains(&(c.request, c.did));
+			let note = series_note(app, c);
+			Row::new(vec![
+				Cell::from(if marked { "[x]" } else { "[ ]" }),
+				Cell::from(c.unit()),
+				Cell::from(format!("{:04X}", c.did)),
+				Cell::from(c.label()),
+				Cell::from(c.unit_of_measure().to_string()),
+				Cell::from(note).style(Style::default().fg(match note {
+					"drawn" => Color::Cyan,
+					"" => Color::Reset,
+					_ => Color::DarkGray,
+				})),
+			])
+		})
+		.collect();
+
+	// The same arithmetic as the selection screen, and for the same failure:
+	// one long ODIS name must not push the note off the right of an 80-column
+	// terminal, because the note is the half that says why nothing appeared.
+	let fixed: u16 = 3 + 1 + 4 + 1 + 5 + 1 + 1 + 9 + 1 + 9;
+	let room = layout[0].width.saturating_sub(fixed).max(11);
+	let name_w = shown
+		.iter()
+		.map(|i| app.channels[*i].label().chars().count() as u16)
+		.max()
+		.unwrap_or(11)
+		.clamp(11, room);
+	let title = format!(
+		" chart lines — {} drawn of {} marked, {CHART_CHANNELS} at most ",
+		drawn.len(),
+		app.charted.len()
+	);
+	let table = Table::new(
+		rows,
+		[
+			Constraint::Length(3),
+			Constraint::Length(4),
+			Constraint::Length(5),
+			Constraint::Length(name_w),
+			Constraint::Length(9),
+			Constraint::Length(9),
+		],
+	)
+	.row_highlight_style(Style::default().bg(Color::Blue).add_modifier(Modifier::BOLD))
+	.block(Block::default().borders(Borders::ALL).title(title));
+
+	app
+		.series_state
+		.select((!shown.is_empty()).then_some(app.series_cursor.min(shown.len().saturating_sub(1))));
+	frame.render_stateful_widget(table, layout[0], &mut app.series_state);
+
+	let split = Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).split(layout[1]);
+	draw_chart(frame, app.chart_page, &charted, split[0]);
+	frame.render_widget(Paragraph::new(chart_note(&charted)).style(Style::default().fg(Color::DarkGray)), split[1]);
+	frame.render_widget(
+		Paragraph::new(help)
+			.wrap(ratatui::widgets::Wrap { trim: false })
+			.block(Block::default().borders(Borders::ALL)),
+		layout[2],
+	);
+}
+
+/// The selection screen's title: how much of the car is on this list.
+///
+/// Three numbers, because there are three ways a channel is not on screen and
+/// a person who cannot tell them apart cannot act on any of them: this tab
+/// rather than another, a filter they typed, and the rows nothing can name.
+/// Pure so the wording can be asserted without a terminal.
+fn select_title(app: &App, shown: usize) -> String {
+	let mut title = format!(" choose what to show — {shown}");
+	if !app.filter.is_empty() {
+		let _ = write!(title, " of {} matching {:?}", app.channels.len(), app.filter);
+	}
+	let hidden = app.hidden();
+	if hidden > 0 {
+		let _ = write!(title, " · {hidden} unnamed hidden");
+	}
+	title.push(' ');
+	title
+}
+
+/// The keys this screen has, in the order somebody reaches for them.
+///
+/// It says how to bring the hidden rows back *where they went missing*, not in
+/// a manual: a list that quietly drops two rows in three is its own defect, and
+/// the sentence undoing it has to be on the same screen as the shortening.
+fn select_keys(app: &App) -> String {
+	// Broken into lines here rather than left to the wrap. This screen has the
+	// most keys in the tool, its hints have not fitted one row since the chart
+	// mark landed, and a wrap chosen by the widget put the break in the middle
+	// of `[a] all` — a key spelled across two rows is a key nobody reads.
+	let mut keys = String::from(concat!(
+		" [space]/click toggle  [f] favourite  [g] chart  [u] unnamed  [/] filter\n",
+		" [↑↓ pgup/pgdn] move  [tab] unit  [a] all  [n] none  [enter] back"
+	));
+	let hidden = app.hidden();
+	if hidden > 0 {
+		let _ = write!(keys, "\n {hidden} with no name anywhere are hidden — [u] shows them");
+	} else if app.show_unnamed {
+		let _ = write!(keys, "\n [u] hides the rows whose only name is their identifier");
+	}
+	if !app.note.is_empty() {
+		let _ = write!(keys, "\n {}", app.note);
+	}
+	keys.push(' ');
+	keys
+}
+
+/// How many screen rows a paragraph takes once it has been wrapped.
+///
+/// The hint block is sized from this rather than from a constant. It was a
+/// constant — four rows, two of them border — and every sentence added to the
+/// screen since has been silently cut off the bottom: first `[enter] back`, the
+/// key that leaves the screen, and then the line saying how many rows are
+/// hidden and which key brings them back. A footer that drops the sentence
+/// explaining a shortened list is worse than no sentence.
+///
+/// Greedy on whitespace, which is what `ratatui`'s `Wrap` does. It may
+/// over-count where a word lands exactly on the edge; a spare row is a blank
+/// line and a row too few is a lost sentence.
+fn wrapped_height(text: &str, width: u16) -> u16 {
+	let width = width.max(1) as usize;
+	let mut rows = 0u16;
+	for line in text.lines() {
+		let mut used = 0usize;
+		let mut on_line = 1u16;
+		for word in line.split(' ') {
+			let word = word.chars().count();
+			if used == 0 {
+				used = word;
+			} else if used + 1 + word <= width {
+				used += 1 + word;
+			} else {
+				on_line += 1;
+				used = word;
+			}
+			// A single word longer than the screen wraps inside itself.
+			while used > width {
+				on_line += 1;
+				used -= width;
+			}
+		}
+		rows += on_line;
+	}
+	rows.max(1)
+}
+
 /// Draw the selection screen.
 fn draw_select(frame: &mut Frame, app: &mut App) {
 	// Two rows for the hints, and they wrap. This screen has the most keys of
@@ -708,7 +1057,14 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
 	// columns before the chart mark was added to it — which meant `[enter]
 	// back`, the key that leaves the screen, was clipped off the end of it on
 	// an ordinary terminal.
-	let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(4)]).split(frame.area());
+	let help = match app.typing_filter {
+		true => format!(" filter: {}▏ [enter] apply  [esc] clear ", app.filter),
+		false => select_keys(app),
+	};
+	// The hints take the rows they need. A fixed height is how `[enter] back`
+	// and then the hidden-row count each fell off the bottom of this screen.
+	let hint_rows = wrapped_height(&help, frame.area().width.saturating_sub(2)) + 2;
+	let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(hint_rows)]).split(frame.area());
 	let table_area = draw_units(frame, app, layout[0]);
 	let visible = app.visible();
 	let rows: Vec<Row> = visible
@@ -725,7 +1081,13 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
 			};
 			Row::new(vec![
 				Cell::from(mark),
-				Cell::from(c.unit()),
+				// A favourite is a person's own mark, so it is a glyph and not
+				// a word: it has to be findable by eye down a long column.
+				Cell::from(if app.favourite(*i) { "★" } else { "" }).style(Style::default().fg(Color::Yellow)),
+				// No control unit column. This list is one unit's — the tab
+				// filters it — and the unit is named in the list beside it. At
+				// eighty columns those five characters are the difference
+				// between `Engine_temperature` and `Engine_temperat`.
 				Cell::from(format!("{:04X}", c.did)),
 				Cell::from(c.label()),
 				Cell::from(c.unit_of_measure().to_string()),
@@ -734,21 +1096,24 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
 		})
 		.collect();
 
-	let name_w = app.channels.iter().map(|c| c.label().len()).max().unwrap_or(4) as u16;
-	let title = match app.filter.is_empty() {
-		true => format!(" choose what to show — {} available ", app.channels.len()),
-		false => format!(
-			" choose what to show — {} of {} match {:?} ",
-			visible.len(),
-			app.channels.len(),
-			app.filter
-		),
-	};
+	// Everything but the name has a fixed width, so the name takes what is
+	// left of the screen. Taking the longest label of every channel instead —
+	// which is what this did — pushed the unit and the chart mark off the
+	// right of an 80-column terminal as soon as one ODIS name ran long.
+	let fixed: u16 = 3 + 1 + 1 + 1 + 5 + 1 + 1 + 9 + 1 + 5;
+	let room = table_area.width.saturating_sub(fixed).max(11);
+	let name_w = visible
+		.iter()
+		.map(|i| app.channels[*i].label().chars().count() as u16)
+		.max()
+		.unwrap_or(11)
+		.clamp(11, room);
+	let title = select_title(app, visible.len());
 	let table = Table::new(
 		rows,
 		[
 			Constraint::Length(3),
-			Constraint::Length(4),
+			Constraint::Length(1),
 			Constraint::Length(5),
 			Constraint::Length(name_w),
 			Constraint::Length(9),
@@ -767,13 +1132,6 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
 	app.list_area = Some(table_area);
 	frame.render_stateful_widget(table, table_area, &mut app.select_state);
 
-	let help = if app.typing_filter {
-		format!(" filter: {}▏ [enter] apply  [esc] clear ", app.filter)
-	} else {
-		" [space]/click toggle  [g] chart  [↑↓ pgup/pgdn] move  [tab] unit  [/] filter  \
-         [a] all  [n] none  [enter] back "
-			.to_string()
-	};
 	frame.render_widget(
 		Paragraph::new(help)
 			.wrap(ratatui::widgets::Wrap { trim: false })
@@ -875,6 +1233,15 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 			KeyCode::Char('q') | KeyCode::Esc => return false,
 			KeyCode::Char('c') => app.screen = Screen::Select,
 			KeyCode::Char('g') => app.toggle_chart(),
+			// Choosing the lines implies wanting to see them, so the chart
+			// comes up with the list — a screen for picking what a hidden
+			// chart draws would be picking in the dark.
+			KeyCode::Char('s') => {
+				if !app.chart_shown {
+					app.toggle_chart();
+				}
+				app.screen = Screen::Series;
+			}
 			// `←`/`→` are the chart's own advertised keys — its bottom border
 			// prints `←→ chart` when there is more than one page — so they
 			// belong to it, and to nothing while it is down.
@@ -882,6 +1249,47 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 			KeyCode::Right if app.chart_shown => app.step_chart(true),
 			_ => {}
 		},
+		Screen::Series => {
+			let shown = app.shown_indices();
+			let at = app.series_cursor.min(shown.len().saturating_sub(1));
+			let step = |app: &mut App, to: usize| app.series_cursor = to.min(shown.len().saturating_sub(1));
+			match code {
+				KeyCode::Char('q') => return false,
+				KeyCode::Char('s') | KeyCode::Esc | KeyCode::Enter => app.screen = Screen::Live,
+				KeyCode::Char('c') => app.screen = Screen::Select,
+				KeyCode::Up => step(app, at.saturating_sub(1)),
+				KeyCode::Down => step(app, at + 1),
+				KeyCode::PageUp => step(app, at.saturating_sub(10)),
+				KeyCode::PageDown => step(app, at + 10),
+				KeyCode::Home => step(app, 0),
+				KeyCode::End => step(app, shown.len().saturating_sub(1)),
+				// `←`/`→` are the chart's own advertised keys — its bottom
+				// border prints `←→ chart` — and the chart is on this screen.
+				KeyCode::Left => app.step_chart(false),
+				KeyCode::Right => app.step_chart(true),
+				KeyCode::Char(' ') => {
+					if let Some(i) = shown.get(at) {
+						app.toggle_charted(*i);
+					}
+				}
+				// `a` and `n` act on what is on this screen, which is what is
+				// being watched — never on every channel the car has.
+				KeyCode::Char('a') => {
+					for i in &shown {
+						let key = (app.channels[*i].request, app.channels[*i].did);
+						if plottable(&app.channels[*i]) {
+							app.charted.insert(key);
+						}
+					}
+					app.chart_page = 0;
+				}
+				KeyCode::Char('n') => {
+					app.charted.clear();
+					app.chart_page = 0;
+				}
+				_ => {}
+			}
+		}
 		// While a filter is being typed the letters belong to it, or `n` would
 		// clear the selection halfway through typing "engine".
 		Screen::Select if app.typing_filter => match code {
@@ -932,7 +1340,21 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 						app.channels[*i].selected = false;
 					}
 				}
+				KeyCode::Char('f') => app.toggle_favourite(app.cursor),
 				KeyCode::Char('g') => app.toggle_charted(app.cursor),
+				// The rows nothing can name, back on the list. A person hunting
+				// a measurement nobody has proven wants exactly those, and the
+				// footer is where they learn the key exists.
+				KeyCode::Char('u') => {
+					app.show_unnamed = !app.show_unnamed;
+					// The cursor may have been standing on a row that just went
+					// away; land it somewhere that still exists.
+					if !app.visible().contains(&app.cursor) {
+						if let Some(first) = app.visible().first() {
+							app.cursor = *first;
+						}
+					}
+				}
 				_ => {}
 			}
 			// Anything above can have deselected a channel, and a chart mark
@@ -956,9 +1378,12 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// for every unit this project has one for. On a replay that is honest:
 	// nothing is being addressed, and a column only appears if it matched.
 	let mut identities: Vec<plan::UnitIdentity> = Vec::new();
-	if let Some(path) = survey {
-		let text = std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?;
-		identities = plan::identities_from_survey(&text);
+	let survey_text = match survey {
+		Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?),
+		None => None,
+	};
+	if let Some(text) = &survey_text {
+		identities = plan::identities_from_survey(text);
 	}
 	// A recording does not record which unit each column came from. With a
 	// survey the real units are known and the tabs are real; without one every
@@ -982,6 +1407,13 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	}
 
 	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
+	// Everything the survey found, exactly as the live view folds it in. A
+	// replay is what this interface is *shown* with, and without this it showed
+	// a tidier tool than the one that exists: 1,964 channels of a car that
+	// answers 2,751, and none of the units no project describes at all.
+	if let Some(text) = &survey_text {
+		channels = plan::with_survey(channels, text);
+	}
 	// A recording does not say which unit each column came from. Columns that
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
@@ -1079,6 +1511,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 		terminal.draw(|f| match app.screen {
 			Screen::Live => draw_live(f, &mut app),
 			Screen::Select => draw_select(f, &mut app),
+			Screen::Series => draw_series(f, &mut app),
 		})?;
 
 		if event::poll(Duration::from_millis(50))? {
@@ -1475,13 +1908,26 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 			}),
 		}
 	}
-	if !channels.iter().any(|c| c.selected) {
-		plan::select_basics(&mut channels);
-	}
 	let mut backend = Some(adapter);
 	let mut header_written = false;
 
 	let mut app = App::new(channels);
+	// This car's own marks, if it has any: the handful somebody watches every
+	// drive, ticked before the screen appears. They come after `--did`, which
+	// is a person being explicit about this one run, and before the basics,
+	// which are only a guess at what anybody wants.
+	app.favourites_path = favourites::path_for(vin.as_deref());
+	app.favourites = favourites::load(app.favourites_path.as_deref());
+	let favourites = app.select_favourites();
+	if favourites > 0 {
+		eprintln!(
+			"{favourites} of your {} favourites are on this car — press `f` on the selection screen to change them",
+			app.favourites.len()
+		);
+	}
+	if !app.channels.iter().any(|c| c.selected) {
+		plan::select_basics(&mut app.channels);
+	}
 	app.open_first_populated();
 	app.units = unit_names(&identities);
 	let period = Duration::from_secs_f64(1.0 / hz.max(0.1));
@@ -1532,6 +1978,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		terminal.draw(|f| match app.screen {
 			Screen::Live => draw_live(f, &mut app),
 			Screen::Select => draw_select(f, &mut app),
+			Screen::Series => draw_series(f, &mut app),
 		})?;
 
 		// Drain the keyboard without blocking the poll loop. `q` here has to
@@ -1581,6 +2028,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 			terminal.draw(|f| match app.screen {
 				Screen::Live => draw_live(f, &mut app),
 				Screen::Select => draw_select(f, &mut app),
+				Screen::Series => draw_series(f, &mut app),
 			})?;
 			let asked = Instant::now();
 			poll_batch(&mut app, &mut backend, &batch).await;
@@ -2500,6 +2948,245 @@ mod tests {
 		a.chart_shown = true;
 		let text = live_text(&mut a, 110, 30);
 		assert!(text.contains("nothing marked"), "{text}");
+	}
+
+	/// The chart-lines screen as a person sees it.
+	fn series_text(app: &mut App, w: u16, h: u16) -> String {
+		use ratatui::Terminal;
+		use ratatui::backend::TestBackend;
+		let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+		terminal.draw(|frame| draw_series(frame, app)).unwrap();
+		let buffer = terminal.backend().buffer().clone();
+		(0..h)
+			.map(|y| (0..w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	/// A channel with a name and one with nothing but its address — the two
+	/// kinds the selection screen now tells apart.
+	fn unselected(channel: Channel) -> Channel {
+		Channel { selected: false, ..channel }
+	}
+
+	#[test]
+	fn the_rows_nothing_can_name_are_hidden_and_the_screen_says_how_many() {
+		// The reported defect: 2,751 rows, and on a unit no project describes
+		// every one of them reads `74B/02BD` — the identifier printed beside
+		// itself. They are hidden rather than dropped, because a nameless
+		// identifier is exactly what somebody hunting a new measurement wants.
+		let mut a = App::new(vec![
+			unselected(proven(0x74B, 0x0102, "Bonnet open", "")),
+			unselected(raw(0x74B, 0x02BD)),
+			unselected(raw(0x74B, 0x02C1)),
+			unselected(raw(0x74B, 0x1948)),
+		]);
+		a.screen = Screen::Select;
+		assert_eq!(a.visible().len(), 1, "only the one anything describes");
+		assert_eq!(a.hidden(), 3);
+
+		let text = select_text(&mut a, 80, 14);
+		assert!(text.contains("Bonnet open"), "{text}");
+		assert!(!text.contains("74B/02BD"), "the nameless row is off the list:\n{text}");
+		// A silently shortened list is its own bug, so the count and the key
+		// that undoes it are on the same screen as the shortening.
+		assert!(text.contains("3 unnamed hidden"), "{text}");
+		assert!(text.contains("[u] shows them"), "{text}");
+
+		on_key(&mut a, KeyCode::Char('u'));
+		assert_eq!(a.visible().len(), 4);
+		assert_eq!(a.hidden(), 0, "nothing is held back once they are asked for");
+		let text = select_text(&mut a, 80, 14);
+		assert!(text.contains("74B/02BD"), "{text}");
+		assert!(!text.contains("unnamed hidden"), "{text}");
+		assert!(text.contains("[u] hides"), "the key still says what it does now: {text}");
+	}
+
+	#[test]
+	fn a_watched_row_stays_on_the_list_however_little_describes_it() {
+		// `--did 74B:02BD` names a channel nothing describes. Hiding it would
+		// leave a ticked row that could never be unticked, and a chart mark on
+		// a line nobody could find again.
+		let mut a = App::new(vec![raw(0x74B, 0x02BD), unselected(raw(0x74B, 0x02C1))]);
+		a.screen = Screen::Select;
+		assert_eq!(a.visible(), vec![0], "the selected one, and only it");
+		assert_eq!(a.hidden(), 1);
+
+		// A favourite is a person saying "this one" about precisely the row the
+		// filter is built to remove, so it outranks the filter too.
+		let mut a = App::new(vec![unselected(raw(0x74B, 0x02BD)), unselected(raw(0x74B, 0x02C1))]);
+		a.favourites.insert((0x74B, 0x02BD));
+		assert_eq!(a.visible(), vec![0]);
+	}
+
+	#[test]
+	fn favourites_are_offered_first_and_are_what_a_run_starts_with() {
+		// The reported cost: the same handful re-found among thousands of rows
+		// every drive. `f` writes the answer down; the next run ticks it.
+		let mut a = App::new(vec![
+			unselected(proven(0x7E0, 0x2000, "Coolant", "°C")),
+			unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar")),
+			unselected(proven(0x7E0, 0x206E, "Engine speed", "/min")),
+		]);
+		a.screen = Screen::Select;
+		assert_eq!(a.visible(), vec![0, 1, 2]);
+
+		a.cursor = 2;
+		on_key(&mut a, KeyCode::Char('f'));
+		assert!(a.favourites.contains(&(0x7E0, 0x206E)));
+		assert!(a.channels[2].selected, "marking it for every drive marks it for this one");
+		assert_eq!(a.visible(), vec![2, 0, 1], "the favourite is offered first");
+		let text = select_text(&mut a, 80, 12);
+		assert!(text.contains("★"), "the mark is visible where it was made:\n{text}");
+
+		// And pressing it again takes the mark off without hiding the row —
+		// "not next time" is not "not now".
+		on_key(&mut a, KeyCode::Char('f'));
+		assert!(a.favourites.is_empty());
+		assert!(a.channels[2].selected);
+	}
+
+	#[test]
+	fn a_favourite_is_written_the_moment_it_is_made_and_read_back_next_run() {
+		// `watch` is killed by a closed lid at least as often as it is quit
+		// with `q`, so a mark that only survives a tidy exit does not survive.
+		let here = tempfile::tempdir().unwrap();
+		let path = here.path().join(favourites::FILE);
+		let mut a = App::new(vec![
+			unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar")),
+			unselected(proven(0x7E1, 0x3816, "Selected gear", "")),
+		]);
+		a.favourites_path = Some(path.clone());
+		a.screen = Screen::Select;
+		a.cursor = 1;
+		on_key(&mut a, KeyCode::Char('f'));
+		assert!(a.note.is_empty(), "{}", a.note);
+		assert!(path.is_file(), "written before anything was quit");
+
+		// A second run over the same car: the marks come back and are ticked
+		// before the screen appears.
+		let mut next = App::new(vec![
+			unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar")),
+			unselected(proven(0x7E1, 0x3816, "Selected gear", "")),
+		]);
+		next.favourites = favourites::load(Some(&path));
+		assert_eq!(next.select_favourites(), 1);
+		assert!(next.channels[1].selected);
+		assert!(!next.channels[0].selected, "only what was marked");
+	}
+
+	#[test]
+	fn a_run_with_no_car_says_the_favourite_will_not_outlive_it() {
+		// A replay addresses nothing, and a car that will not report a VIN has
+		// no directory of its own. Silently doing nothing would be the worse
+		// answer of the two available.
+		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
+		a.screen = Screen::Select;
+		on_key(&mut a, KeyCode::Char('f'));
+		assert!(a.favourites.contains(&(0x7E0, 0x202A)), "it still works for this run");
+		assert!(a.note.contains("no car"), "{}", a.note);
+		let text = select_text(&mut a, 80, 14);
+		assert!(text.contains("no car"), "{text}");
+	}
+
+	#[test]
+	fn the_chart_lines_are_chosen_beside_the_chart_rather_than_two_screens_away() {
+		// "Графики оказались неюзабельными, т.к. нельзя выбрать что отображать":
+		// the mark was only reachable from the list of every channel the car
+		// has. Here the list is what is being watched, and the chart is on the
+		// same screen, so a press and its effect are visible at once.
+		let mut a = App::new(vec![
+			proven(0x7E0, 0x202A, "Boost pressure", "bar"),
+			proven(0x7E0, 0x206E, "Engine speed", "/min"),
+			state(0x7E1, 0x3816, "Selected gear"),
+		]);
+		assert_eq!(a.screen, Screen::Live);
+		on_key(&mut a, KeyCode::Char('s'));
+		assert_eq!(a.screen, Screen::Series);
+		assert!(a.chart_shown, "picking lines for a hidden chart is picking in the dark");
+
+		// Opening the chart seeded it from the table, so both numbers are on
+		// it; the state is not, and never can be.
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A), (0x7E0, 0x206E)]);
+		on_key(&mut a, KeyCode::Char('n'));
+		assert!(a.drawn().is_empty());
+		on_key(&mut a, KeyCode::Down);
+		on_key(&mut a, KeyCode::Char(' '));
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x206E)], "one press, one line");
+
+		// `a` takes everything it can draw and nothing it cannot.
+		on_key(&mut a, KeyCode::Char('a'));
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A), (0x7E0, 0x206E)]);
+		assert!(!a.charted.contains(&(0x7E1, 0x3816)), "a state has no number to plot");
+
+		on_key(&mut a, KeyCode::Esc);
+		assert_eq!(a.screen, Screen::Live);
+		assert!(a.chart_shown, "leaving the list does not put the chart away");
+	}
+
+	#[test]
+	fn the_chart_lines_screen_says_why_a_marked_channel_is_not_a_line() {
+		// A mark that silently does nothing is what makes a chart look broken.
+		// Two ways it can: nothing to plot, and no room left.
+		let mut channels: Vec<Channel> = (0..8).map(|i| proven(0x7E0, 0x2000 + i, "boost", "bar")).collect();
+		channels.push(state(0x7E1, 0x3816, "Selected gear"));
+		let mut a = App::new(channels);
+		for c in &a.channels {
+			a.charted.insert((c.request, c.did));
+		}
+		a.screen = Screen::Series;
+		a.chart_shown = true;
+
+		// Every size a terminal is still allowed to be: the note is the half
+		// that explains an empty-looking chart, so it may never be the half
+		// that falls off the right-hand edge.
+		for (w, h) in [(120u16, 40u16), (100, 30), (80, 24)] {
+			let text = series_text(&mut a, w, h);
+			assert!(text.contains("chart lines"), "{w}×{h}:\n{text}");
+			assert!(text.contains("6 drawn of 9 marked"), "{w}×{h}:\n{text}");
+			assert!(text.contains("drawn"), "{w}×{h}:\n{text}");
+			assert!(text.contains("no room"), "{w}×{h} hides why two marks did nothing:\n{text}");
+			assert!(text.contains("[space] draw"), "{w}×{h}:\n{text}");
+		}
+		// The third reason is a property of the channel rather than of the
+		// screen, and it is asserted where it is decided: at 24 rows the ninth
+		// row of a nine-row list is below the fold, and a test that only looked
+		// at a tall terminal would be testing the scroll.
+		assert_eq!(series_note(&a, &a.channels[0]), "drawn");
+		assert_eq!(series_note(&a, &a.channels[7]), "no room");
+		assert_eq!(series_note(&a, &a.channels[8]), "no number");
+	}
+
+	#[test]
+	fn nothing_on_either_list_overruns_eighty_columns() {
+		// Both defects this session were only visible on a real terminal: a
+		// line wider than the screen vanishes rather than wrapping, so a
+		// rendered buffer is asserted against the width it was given.
+		let long = "Brake_pedal_information_plausibility_and_then_some_more_words_still";
+		let mut a = App::new(vec![
+			proven(0x7E0, 0x202A, long, "bar"),
+			proven(0x7E0, 0x206E, "Engine speed", "/min"),
+			unselected(raw(0x7E0, 0x38F0)),
+		]);
+		a.chart_shown = true;
+		a.screen = Screen::Select;
+		for text in [select_text(&mut a, 80, 24), series_text(&mut a, 80, 24)] {
+			for line in text.lines() {
+				assert_eq!(line.chars().count(), 80, "a line is not the width of the screen:\n{text}");
+			}
+			// A name long enough to fill the screen must not push the columns
+			// after it off the edge — they are the ones a reader acts on.
+			assert!(text.contains("206E"), "{text}");
+			assert!(text.contains("/min"), "{text}");
+		}
+		// And every key of both screens is still on them at that width.
+		for key in ["[u] unnamed", "[f] favourite", "[a] all", "[enter] back"] {
+			assert!(select_text(&mut a, 80, 24).contains(key), "80 columns hides {key}");
+		}
+		a.screen = Screen::Series;
+		for key in ["[space] draw", "[←→] page", "[s]/[esc] back"] {
+			assert!(series_text(&mut a, 80, 24).contains(key), "80 columns hides {key}");
+		}
 	}
 
 	#[test]
