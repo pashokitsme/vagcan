@@ -781,6 +781,22 @@ done tonight.
 
 **No car needed:**
 
+0. **The ODIS fault loaders.** The largest functional gap: a project holds 329,268
+   `DTC_*` objects with their descriptions in the clear, and `vagcan faults` still reads
+   VCDS files, so a person set up from ODIS alone gets numbers. `DB_DOP_DTC` and
+   `MCD_DB_DIAG_TROUBLE_CODE` are in the type table; `odis/loaders/` has only
+   `identity.rs` and `measurement.rs`. Plan Tasks 15–16 (faults, then topology).
+   Research the chain in the real project first, as the measurement chain was.
+   Two things to report as findings, not assume: which **language** the text is in
+   (this project is `deu`, and a user whose faults arrive in German after VCDS gave
+   them English needs telling), and whether the **freeze-frame** fields are reachable —
+   `SAFETY.md` prescribes reading one before touching anything after a unit misbehaves.
+0b. **Measure the naming join where it was meant to work.** It has never run against a
+   VCDS-derived project: the wording preference was written, measured on an ODIS-only
+   project where it made names *worse*, and fenced off by provenance. What it actually
+   delivers on a VCDS project — how many of the 1,209 text ids get better wording, and
+   whether the pooled-text collapse recurs — is unmeasured. One `setup` with an
+   installation answers it, offline.
 1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
    channel by its DID, so of 3,878 expressible fields only 1,959 survive. The other
    1,919 are here, already parsed, and thrown away at the last step. Needs `watch`'s

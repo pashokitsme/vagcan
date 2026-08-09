@@ -132,6 +132,15 @@ So a cleanup pass ends by checking them against the binary, not against memory:
 1. Extract every `vagcan …` invocation from every skill, and run each one's `--help`.
    A command that does not resolve is a defect found; fix the skill in the same
    commit that moved the command.
+
+   **Split the words yourself — the shell here does not.** This check has produced a
+   false "MISSING" on two consecutive passes, both times for the subcommands
+   (`vcds dump`, `measure view`), and both times the commands were fine. The cause is
+   zsh: an unquoted `$c` is **not** word-split, so `vagcan $c --help` passes
+   `vcds dump` as a single argument and clap rejects it. Use `${=c}`, or an array.
+   Then confirm any failure by running it by hand before believing it — a cleanup pass
+   that "fixes" a command which was never broken is the loss this file exists to
+   prevent.
 2. Re-read **this** file. A rule that has been superseded — a phase that names a
    command by its old path, a hazard that no longer exists — gets updated here, or
    the next pass enforces something untrue.
