@@ -378,9 +378,10 @@ enum Command {
 		/// Pause between reads, in milliseconds.
 		#[arg(long, default_value_t = 2, value_name = "MS")]
 		delay_ms: u64,
-		/// Sweep while the car is moving. Refused by default: a sweep is
-		/// requests a unit may never have handled, and on the reference car it
-		/// made the steering assist stop assisting mid-drive.
+		/// Read while the car is moving. Refused by default: on the reference
+		/// car a run like this made the steering assist stop assisting
+		/// mid-drive, and a declared identifier can still be the one whose path
+		/// through the firmware has the defect in it.
 		#[arg(long)]
 		while_driving: bool,
 		/// Ask this unit identifiers NOTHING declares it answers — a fuzz test
@@ -484,9 +485,10 @@ enum Command {
 		/// list the identifiers whose bytes differ. Offline.
 		#[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
 		diff: Option<Vec<String>>,
-		/// Sweep while the car is moving. Refused by default: a sweep is
-		/// thousands of requests a unit may never have handled, and on the
-		/// reference car it made the steering assist stop assisting mid-drive.
+		/// Read while the car is moving. Refused by default: on the reference
+		/// car a run like this made the steering assist stop assisting
+		/// mid-drive, and a declared identifier can still be the one whose path
+		/// through the firmware has the defect in it.
 		#[arg(long)]
 		while_driving: bool,
 		/// Ask each unit for an extended diagnostic session first. Off by
