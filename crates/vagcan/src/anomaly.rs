@@ -247,6 +247,29 @@ impl Monitor {
 		self.halted.as_ref()
 	}
 
+	/// A whole span of identifiers went unanswered, asked as one group request.
+	///
+	/// Only the run-of-silences rule applies. "It answered this one before"
+	/// cannot be asked of a group reply — the request covers eight identifiers
+	/// and the silence belongs to none of them in particular — so a lone lost
+	/// frame on a batch that happens to begin at a known-good identifier must
+	/// not read as the unit going back on itself. `first` is carried for the
+	/// report only, to say where the sweep was.
+	pub fn silent_span(&mut self, first: u16) -> Option<&Anomaly> {
+		if self.halted.is_some() {
+			return self.halted.as_ref();
+		}
+		self.silences += 1;
+		if self.spoke() && self.silences >= QUIET_RUN {
+			self.halted = Some(Anomaly {
+				request: self.request,
+				did: first,
+				change: Change::WentQuiet { silences: self.silences },
+			});
+		}
+		self.halted.as_ref()
+	}
+
 	/// What ended the run, if anything did.
 	pub fn halted(&self) -> Option<&Anomaly> {
 		self.halted.as_ref()
@@ -326,6 +349,30 @@ mod tests {
 		assert!(m.saw(0xF187, Answer::Refused).is_some());
 		assert!(m.saw(0x2000, Answer::Answered).is_some(), "it un-halted itself");
 		assert!(m.halted().is_some());
+	}
+
+	#[test]
+	fn a_lost_group_request_is_not_read_as_the_unit_going_back_on_itself() {
+		// Group testing asks eight identifiers at once and the span often
+		// begins at one the unit answered during identification. A single lost
+		// frame there must not halt a whole-car survey — but three in a row
+		// still must.
+		let mut m = Monitor::new(0x712);
+		m.seed(0xF187);
+		assert!(m.silent_span(0xF187).is_none(), "one lost group reply is not an event");
+		assert!(m.silent_span(0xF187).is_none());
+		let anomaly = m.silent_span(0xF187).expect("three in a row is the unit").clone();
+		assert_eq!(anomaly.change, Change::WentQuiet { silences: QUIET_RUN });
+
+		// And a batch that answers clears the run, without claiming anything
+		// about which of its eight identifiers did the answering.
+		let mut m = Monitor::new(0x712);
+		m.seed(0xF187);
+		m.silent_span(0x2000);
+		m.silent_span(0x2008);
+		m.heard();
+		assert!(m.silent_span(0x2010).is_none());
+		assert!(m.halted().is_none());
 	}
 
 	#[test]

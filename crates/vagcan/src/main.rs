@@ -367,11 +367,11 @@ enum Command {
 		/// a request id (713, 70E). `vagcan units` lists this car's.
 		#[arg(long, default_value = "01", value_name = "ID")]
 		ecu: String,
-		/// Hex ranges to sweep, e.g. `7400-7500,A000-A100`. The default is the
-		/// identification block plus two bands seen carrying live values on the
-		/// reference car; `0000-FFFF` sweeps everything, slowly.
-		#[arg(long, default_value = scan::DEFAULT_RANGES, value_name = "SPEC")]
-		range: String,
+		/// Hex ranges to sweep BLIND, e.g. `7400-7500,A000-A100`, or
+		/// `0000-FFFF` for the whole space. Only means anything with --blind,
+		/// and is refused without it rather than quietly ignored.
+		#[arg(long, value_name = "SPEC")]
+		range: Option<String>,
 		/// Write the answers to this file (JSON lines).
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
@@ -379,10 +379,18 @@ enum Command {
 		#[arg(long, default_value_t = 2, value_name = "MS")]
 		delay_ms: u64,
 		/// Sweep while the car is moving. Refused by default: a sweep is
-		/// thousands of requests a unit may never have handled, and on the
-		/// reference car it made the steering assist stop assisting mid-drive.
+		/// requests a unit may never have handled, and on the reference car it
+		/// made the steering assist stop assisting mid-drive.
 		#[arg(long)]
 		while_driving: bool,
+		/// Ask this unit identifiers NOTHING declares it answers — a fuzz test
+		/// of its diagnostic server. Each request takes a path through firmware
+		/// that may never have been exercised, and a path with a defect in it
+		/// crashes the server: that is how the reference car lost its power
+		/// steering, permanently, on the second attempt. Read SAFETY.md. By
+		/// default only the identifiers this unit's own data declares are read.
+		#[arg(long)]
+		blind: bool,
 	},
 
 	/// Read stored fault codes from every control unit.
@@ -429,14 +437,17 @@ enum Command {
 		from: Option<String>,
 	},
 
-	/// Sweep EVERY control unit the car has — `scan` for the whole car. Slow:
-	/// about 8 minutes.
+	/// Read EVERY control unit the car has — `scan` for the whole car.
 	///
 	/// Reads the gateway's installation list, then walks each unit: its
-	/// identification block, then the identifier pages known to be in use on
-	/// this car. Run it once parked and once driving — the identifiers whose
-	/// bytes differ between the two runs are the live measurements, and that
-	/// list needs no label file.
+	/// identification block, its faults, and the identifiers that unit's own
+	/// data declares it answers. Run it once parked and once driving — the
+	/// identifiers whose bytes differ between the two runs are the live
+	/// measurements, and that list needs no label file.
+	///
+	/// It does NOT sweep identifier space nothing vouches for. That is a fuzz
+	/// test of a diagnostic server, it is what cost the reference car its power
+	/// steering, and it now needs `--blind <unit>` aimed by hand. See SAFETY.md.
 	///
 	/// The result is always filed under this car in
 	/// `~/.vagcan/cars/<VIN>/survey.jsonl`, whether or not `--out` was given,
@@ -446,9 +457,10 @@ enum Command {
 		/// Adapter to use. Omit it when only one is connected.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
-		/// Hex ranges to sweep per unit.
-		#[arg(long, default_value = survey::SURVEY_RANGES, value_name = "SPEC")]
-		range: String,
+		/// Hex ranges for the units named by --blind. Only means anything with
+		/// --blind, and is refused without it rather than quietly ignored.
+		#[arg(long, value_name = "SPEC")]
+		range: Option<String>,
 		/// Write the answers to this file (JSON lines, one object per unit).
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
@@ -459,6 +471,15 @@ enum Command {
 		/// read.
 		#[arg(long, value_name = "LIST")]
 		only: Option<String>,
+		/// Ask THESE units, named one by one (e.g. `712`), identifiers nothing
+		/// declares they answer — a fuzz test of their diagnostic servers. Each
+		/// request takes a path through firmware that may never have been
+		/// exercised, and a path with a defect in it crashes the server: that is
+		/// how the reference car lost its power steering, permanently, on the
+		/// second attempt. There is no value of this meaning "the whole car" —
+		/// that was the default, and it is what did the damage. Read SAFETY.md.
+		#[arg(long, value_name = "LIST")]
+		blind: Option<String>,
 		/// Compare two earlier survey files instead of reading the car, and
 		/// list the identifiers whose bytes differ. Offline.
 		#[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
@@ -660,15 +681,19 @@ async fn main() -> Result<()> {
 			out,
 			delay_ms,
 			while_driving,
+			blind,
 		} => {
 			scan::run(
 				&device::resolve(device.as_deref())?,
 				ADAPTER_BAUD,
-				parse_ecu(&ecu)?,
-				&range,
-				out.as_deref(),
-				delay_ms,
-				while_driving,
+				scan::Options {
+					unit: parse_ecu(&ecu)?,
+					range: range.as_deref(),
+					out: out.as_deref(),
+					delay_ms,
+					while_driving,
+					blind,
+				},
 			)
 			.await
 		}
@@ -707,6 +732,7 @@ async fn main() -> Result<()> {
 			out,
 			delay_ms,
 			only,
+			blind,
 			extended,
 			while_driving,
 			..
@@ -715,10 +741,11 @@ async fn main() -> Result<()> {
 				&device::resolve(device.as_deref())?,
 				ADAPTER_BAUD,
 				survey::Options {
-					range: &range,
+					range: range.as_deref(),
 					out: out.as_deref(),
 					delay_ms,
 					only: only.as_deref(),
+					blind: blind.as_deref(),
 					extended,
 					while_driving,
 				},
@@ -1021,7 +1048,18 @@ async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
 
 	let mut uds = open_ecu(&path, unit).await?;
 	let mut found = Vec::new();
-	scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, |hit| {
+	// The identification block is standardised and 256 identifiers wide, so this
+	// is not the sweep `SAFETY.md` is about — but it is still a control unit
+	// being asked questions, and the rule "stop when something changes" is not
+	// about how big the read was. No witness: there is nothing established as
+	// known-good before this runs, so the guard watches only for the unit going
+	// quiet after it had been answering.
+	let mut monitor = anomaly::Monitor::new(unit.request);
+	let mut guard = scan::Guard {
+		witness: None,
+		monitor: &mut monitor,
+	};
+	scan::scan_dids(&mut uds, &ranges, std::time::Duration::from_millis(2), 400, &mut guard, |hit| {
 		found.push(props::Property {
 			did: hit.did,
 			data: hit.data.clone(),
@@ -1029,6 +1067,11 @@ async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
 		Ok(())
 	})
 	.await?;
+	if let Some(halt) = monitor.halted() {
+		let mut progress = progress::Line::new();
+		progress.notice(&halt.report());
+		anyhow::bail!("the read was stopped: control unit {} changed while it was being read", halt.unit());
+	}
 
 	if found.is_empty() {
 		println!("{}", render::render_nothing_answered());
@@ -1157,6 +1200,53 @@ mod tests {
 			assert!(
 				sub.get_arguments().any(|a| a.get_id() == "while_driving"),
 				"{sweep} is a sweep with no --while-driving gate"
+			);
+		}
+	}
+
+	#[test]
+	fn blind_sweeping_is_opt_in_on_every_sweep_and_says_what_it_costs() {
+		// The default was to ask every unit 2816 identifiers nothing said
+		// existed. `SAFETY.md` calls that a fuzz test of a diagnostic server;
+		// it cost the reference car its power steering, the second time with
+		// the car parked. It is now something somebody asks for.
+		let mut cli = Cli::command();
+		for sweep in ["scan", "survey"] {
+			let sub = cli.find_subcommand_mut(sweep).expect("the sweep exists");
+			let blind = sub
+				.get_arguments()
+				.find(|a| a.get_id() == "blind")
+				.unwrap_or_else(|| panic!("{sweep} sweeps blind with no way to say so"));
+			let help = blind.get_help().map(|h| h.to_string()).unwrap_or_default();
+			assert!(help.contains("fuzz test"), "{sweep} --blind does not say what it is: {help}");
+			assert!(help.contains("SAFETY.md"), "{sweep} --blind does not say where to read: {help}");
+		}
+	}
+
+	#[test]
+	fn a_whole_car_blind_sweep_cannot_be_asked_for() {
+		// `survey --blind` takes a unit list and nothing else. A bare flag
+		// would put the old default back behind five keystrokes, and the thing
+		// that made this a whole-car event was that it applied to every unit.
+		assert!(
+			Cli::try_parse_from(["vagcan", "survey", "--blind"]).is_err(),
+			"--blind must be aimed at named units"
+		);
+		assert!(Cli::try_parse_from(["vagcan", "survey", "--blind", "712"]).is_ok());
+	}
+
+	#[test]
+	fn a_range_is_a_blind_range_and_says_so() {
+		// `--range` used to describe the default sweep. It now describes only
+		// what `--blind` sweeps, and naming one without a unit to aim it at is
+		// refused at run time (`declared::blind_ranges`) rather than ignored —
+		// so the help has to say which flag it belongs to.
+		for path in [["scan"], ["survey"]] {
+			let help = flag_help(&path, "range");
+			assert!(help.contains("--blind"), "{path:?} --range: {help}");
+			assert!(
+				help.to_lowercase().contains("refused") || help.to_lowercase().contains("only means"),
+				"{path:?} --range does not say it is inert alone: {help}"
 			);
 		}
 	}

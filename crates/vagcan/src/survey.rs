@@ -38,8 +38,17 @@ use crate::scan::{self, DidHit};
 /// measurement bands (`20xx`–`22xx`, `38xx`), the gateway's lists (`2Axx`,
 /// `2Bxx`) and the OBD-II mirror (`F4xx`).
 ///
-/// Nine pages rather than the whole 65,536: the rest was refused everywhere it
-/// was ever asked, and a full sweep costs minutes per unit for that answer.
+/// **This is no longer what a survey asks.** It was: every unit got these 2816
+/// identifiers whether or not anything said they existed, which is the fuzz test
+/// `SAFETY.md` describes and the operation that cost the reference car its power
+/// steering — the second time with the car parked, on 9 August 2026. It is now
+/// only the default *blind* range: what `--blind <unit>` sweeps when somebody
+/// aims one by hand and names no range of their own.
+///
+/// It is also, unavoidably, one car's answer — the pages *this* Škoda was seen
+/// using. That was defensible as a way to keep a blind sweep under an hour; it
+/// was never a statement about any other car, and nothing now depends on it
+/// being one.
 pub const SURVEY_RANGES: &str = "0200-02FF,0600-06FF,1900-19FF,2000-22FF,2A00-2BFF,3800-38FF,F100-F1FF,F400-F4FF";
 
 /// Identification identifiers, read before the sweep so the report can name the
@@ -80,6 +89,17 @@ impl UnitReport {
 
 	pub fn part_number(&self) -> Option<String> {
 		self.text(0xF187)
+	}
+
+	/// The ODX label file the unit names — with `odx_version`, the pair that
+	/// picks which variant of its family this unit is, and therefore which
+	/// identifiers anything knows it answers.
+	pub fn odx_name(&self) -> Option<String> {
+		self.text(0xF19E)
+	}
+
+	pub fn odx_version(&self) -> Option<String> {
+		self.text(0xF1A2)
 	}
 
 	fn text(&self, did: u16) -> Option<String> {
@@ -294,14 +314,22 @@ fn cache_survey(vin: &str, fresh: &[String]) -> Result<std::path::PathBuf> {
 /// its steering assist is allowed to happen at speed (see `SAFETY.md`). Named
 /// fields cannot be swapped by accident.
 pub struct Options<'a> {
-	/// Hex ranges to sweep per unit.
-	pub range: &'a str,
+	/// Hex ranges to sweep **blind**, on the units `blind` names and no others.
+	/// Meaningless without `blind`, and refused there rather than ignored.
+	pub range: Option<&'a str>,
 	/// Where to write the answers, if anywhere.
 	pub out: Option<&'a str>,
 	/// Pause between reads, in milliseconds.
 	pub delay_ms: u64,
 	/// Survey only these units, skipping the gateway read.
 	pub only: Option<&'a str>,
+	/// Units to sweep blind, named one by one.
+	///
+	/// **There is no value of this that means "the whole car".** Blind sweeping
+	/// is what cost the reference car its steering assist, and the thing that
+	/// made it a whole-car event was that it was the default for every unit. It
+	/// is now something somebody types a unit number into.
+	pub blind: Option<&'a str>,
 	/// Ask each unit for an extended diagnostic session first.
 	pub extended: bool,
 	/// Sweep even though the car is moving.
@@ -315,13 +343,23 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		out,
 		delay_ms,
 		only,
+		blind,
 		extended,
 		while_driving,
 	} = options;
 	// Every argument is checked before the adapter is opened: it is a
 	// single-user resource, and holding it open to fail on a typo blocks the
 	// next attempt.
-	let ranges = scan::parse_ranges(range).map_err(|e| anyhow::anyhow!("--range: {e}"))?;
+	let blind_ranges = crate::declared::blind_ranges(range, blind.is_some(), SURVEY_RANGES)?;
+	// Which units may be swept blind — named one at a time, never "all".
+	let blind_units: std::collections::BTreeSet<u16> = match blind {
+		Some(spec) => vag_protocol::address::parse_list(spec)
+			.map_err(|e| anyhow::anyhow!("--blind: {e}"))?
+			.iter()
+			.map(|u| u.request)
+			.collect(),
+		None => Default::default(),
+	};
 	// An explicit list skips the gateway read, so one unit can be re-run
 	// without the rest.
 	let requested = match only {
@@ -405,10 +443,19 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		}
 	};
 
+	let (store, extracted) = crate::declared::sources();
 	println!(
-		"surveying {} control units — {} identifiers each ({range})\n",
+		"surveying {} control units — each asked only the identifiers its own data \n\
+         declares it answers{}\n",
 		order.len(),
-		scan::total_dids(&ranges)
+		match blind_units.is_empty() {
+			true => String::new(),
+			false => format!(
+				", except {} swept blind ({} identifiers, SAFETY.md)",
+				blind_units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(", "),
+				scan::total_dids(blind_ranges.as_deref().unwrap_or_default())
+			),
+		}
 	);
 
 	let started = Instant::now();
@@ -424,6 +471,9 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			started.elapsed().as_secs_f64()
 		));
 		let Some(address) = UnitAddress::from_request(request) else {
+			// `finish` first: this line would otherwise be written onto the
+			// progress line, which rewrites itself.
+			progress.finish();
 			println!("  {request:03X} is in neither diagnostic block — skipped");
 			continue;
 		};
@@ -445,10 +495,17 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			request,
 			..Default::default()
 		};
+		// The identification block is the sweep's baseline, not part of it: what
+		// answers here is what the guard may later re-read to ask "are you still
+		// there". Nothing here is judged — units on this car answer `F187` and
+		// refuse half the rest, and halting on that would stop a run over a unit
+		// behaving exactly as it always has. See `crate::anomaly`.
+		let mut monitor = crate::anomaly::Monitor::new(request);
 		for (did, _) in IDENT {
 			match uds.read_data_by_identifier(*did).await {
 				Ok(data) => {
 					report.answered = true;
+					monitor.seed(*did);
 					report.ident.push((*did, data));
 				}
 				// A refusal proves the unit is there and listening, which is
@@ -477,6 +534,32 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			continue;
 		}
 
+		// What this unit's own data says it answers. Resolved through what the
+		// unit just reported about itself — never a table keyed on this car.
+		let declared = crate::declared::declared(
+			&store,
+			&extracted,
+			report.part_number().as_deref(),
+			report.odx_name().as_deref(),
+			report.odx_version().as_deref(),
+		);
+		let aimed = blind_units.contains(&request).then(|| blind_ranges.as_deref().unwrap_or_default());
+		let ask = crate::declared::ask(&declared, aimed);
+
+		// Nothing declares anything for this unit and nobody aimed a blind sweep
+		// at it. It has been identified and its faults read; it is not fuzzed.
+		if ask.is_empty() {
+			progress.finish();
+			println!("{}", report.summary());
+			println!(
+				"{}",
+				crate::declared::no_source_notice(&address.label(), &format!("vagcan survey --only {0} --blind {0}", address.label()))
+			);
+			backend = uds.into_transport().into_backend();
+			reports.push(report);
+			continue;
+		}
+
 		// Group testing needs one identifier known to answer on *this* unit;
 		// the ident block just supplied one, or the unit gets the slow path.
 		let known_good = report.ident.first().map(|(d, _)| *d);
@@ -491,15 +574,37 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			Ok(())
 		};
 		let delay = Duration::from_millis(delay_ms);
+		// The witness the guard re-reads through the sweep, so a unit that falls
+		// over is caught while it is still the most recent thing that happened.
+		let mut guard = scan::Guard {
+			witness: known_good,
+			monitor: &mut monitor,
+		};
 		report.stats = if batched {
-			scan::scan_dids_fast(&mut uds, &ranges, delay, on_hit).await?
+			scan::scan_dids_fast(&mut uds, &ask.ranges, delay, &mut guard, on_hit).await?
 		} else {
-			scan::scan_dids(&mut uds, &ranges, delay, 400, on_hit).await?
+			scan::scan_dids(&mut uds, &ask.ranges, delay, 400, &mut guard, on_hit).await?
 		};
 		report.hits = hits;
 
 		progress.finish();
 		println!("{}", report.summary());
+
+		// `SAFETY.md`: "Stop when something changes… finish nothing and start
+		// nothing." The whole run, not this unit: what made the second incident
+		// permanent was carrying on after the first drop-out looked like it had
+		// resolved itself. The notice goes on a surface nothing rewrites.
+		if let Some(anomaly) = monitor.halted() {
+			progress.notice(&anomaly.report());
+			if let Some(path) = out {
+				println!("what this run read before it stopped is in {path}.");
+			}
+			// The car's whole-car cache is deliberately NOT written: this unit's
+			// hit list is a partial one, and replacing a good line with it would
+			// destroy the "before" half of the comparison SAFETY.md step 3 asks
+			// for.
+			anyhow::bail!("the survey was stopped: control unit {} changed while it was being read", anomaly.unit());
+		}
 		// Built whether or not anyone asked for a file: this is also what goes
 		// into the car's own cache, and a run that has to be repeated with
 		// `--out` to be kept is a run nobody keeps.

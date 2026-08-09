@@ -167,11 +167,15 @@ pub fn blind_ranges(range: Option<&str>, blind: bool, default: &str) -> anyhow::
 /// units the tool understands *least*. So it is not swept, its identification
 /// block and its faults are still read and still filed, and the command says
 /// what it would take to go further.
-pub fn no_source_notice(unit: &str) -> String {
+///
+/// `command` is the invocation that would sweep this unit blind, which differs
+/// between `scan` and `survey`; naming the wrong one is how somebody concludes
+/// there is no way forward.
+pub fn no_source_notice(unit: &str, command: &str) -> String {
 	format!(
 		"  {unit:<4}      nothing declares identifiers for this unit — identified, not swept\n\
 		 \x20              to sweep it blind (a fuzz test of its diagnostic server, see SAFETY.md):\n\
-		 \x20                vagcan survey --only {unit} --blind {unit}"
+		 \x20                {command}"
 	)
 }
 
@@ -253,7 +257,7 @@ mod tests {
 		assert!(ask.is_empty(), "an unknown unit gets asked nothing: {:?}", ask.ranges);
 
 		// And it is told how to go further, in SAFETY.md's own terms.
-		let notice = no_source_notice("44");
+		let notice = no_source_notice("44", "vagcan survey --only 44 --blind 44");
 		assert!(notice.contains("not swept"), "{notice}");
 		assert!(notice.contains("--blind 44"), "{notice}");
 		assert!(notice.contains("SAFETY.md"), "{notice}");
