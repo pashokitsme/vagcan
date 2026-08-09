@@ -8,13 +8,29 @@
 //! directory each one then needs, and what to say when the directory is the
 //! wrong one.
 //!
-//! **The order of the options is the order of how many people have one.** The
-//! spec's mockup leads with the ODIS project because it is the better source;
-//! this leads with the VCDS installation because it is the one somebody
-//! standing at a car actually has. An ODIS project is VW's own dealer data, and
-//! offering it first — pre-highlighted, one Enter away — makes the default
-//! answer the one almost nobody can give. It is second, and its line of detail
-//! is what tells a reader the option exists at all.
+//! **The ODIS project leads, and that is a reversal.** This module first
+//! ordered the menu by how many people have one, which put the VCDS
+//! installation on top: offering VW's own dealer data first, pre-highlighted
+//! and one Enter away, made the default answer the one almost nobody could
+//! give. That was right while ODIS was a second source bolted onto a
+//! VCDS-shaped tool, and it stopped being right when the tool was rebuilt
+//! around it.
+//!
+//! What decided it is not preference. A VCDS label file carries a
+//! measurement's *name* and provably not the join from that name to the
+//! identifier it is read from, nor its scaling — refuted structurally, twice
+//! (`research/labels/rod-labels.md` §4.0c). An ODIS project carries the whole
+//! chain and declares it per ECU variant, and three rows this project had
+//! proved by driving came back identical out of the ODIS file with no drive,
+//! two of them engine-speed channels with opposite byte order. So the menu now
+//! leads with the answer that can actually finish the job.
+//!
+//! **The VCDS line is not a consolation prize**, and its detail says so. Two
+//! things only it supplies: the fault-code text (`Codes.dat` and the `RD.rod`
+//! registry chain — no ODIS project ships either, so without one a fault reads
+//! as a number), and names for the units no ODIS project covers, which on the
+//! reference car is two of fifteen. Somebody who reads the second line must not
+//! come away thinking their installation is now useless.
 //!
 //! **A wrong directory is the ordinary failure, not an exceptional one.** The
 //! two misses seen in practice are pointing at `Labels/` inside an installation
@@ -134,28 +150,50 @@ impl Look {
 /// What the menu asks.
 const QUESTION: &str = "What should vagcan learn this car from?";
 
-/// The three sources, in the order somebody standing at a car has them.
+/// The three sources, the one that can finish the job first.
 ///
 /// Split out from [`choose`] so the copy can be measured: a detail line one
-/// column too long is silently cut to `…` by the renderer, and the first
-/// version of the ODIS line lost the words that said why anyone would pick it.
-/// Eighty columns is the terminal to write for — see the test.
+/// column too long is silently cut to `…` by the renderer, and one version of
+/// the ODIS line lost the words that said why anyone would pick it. Eighty
+/// columns is the terminal to write for — see the test.
+///
+/// Each detail does two jobs in under sixty columns: say how to recognise the
+/// thing, and say what picking it gets you. The second half is what changed
+/// when the order did — the ODIS line no longer has to argue for something
+/// nobody has heard of, and the VCDS line now has to say what only it can give.
 fn options<'a>() -> [Item<'a>; 3] {
-	[
-		Item {
-			label: "VCDS installation",
-			detail: "the folder holding Labels/ and UDS_EV/ — the usual answer",
-		},
-		Item {
-			label: "ODIS project",
-			detail: "VW's dealer-tool data — a folder like SK37X, with scalings",
-		},
-		Item {
-			label: "Download VCDS",
-			detail: "fetch Ross-Tech's installer, about 90 MB, and read that",
-		},
-	]
+	MENU.map(|(label, detail, _)| Item { label, detail })
 }
+
+/// What picking a row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pick {
+	/// Ask for a directory of this kind.
+	Dir(Look),
+	/// Fetch an installation first; it is read as one afterwards.
+	Download,
+}
+
+/// The menu as one table: the label, the line under it, and what picking it
+/// does.
+///
+/// One table rather than a list of items beside a `match` on row numbers. The
+/// order has now been reversed once, and a reorder that moves the copy without
+/// moving the outcome is the worst kind of silent: every row still works, and
+/// every row does the wrong thing.
+const MENU: [(&str, &str, Pick); 3] = [
+	(
+		"ODIS project",
+		"a folder like SK37X — what to read, and how to scale it",
+		Pick::Dir(Look::Odis),
+	),
+	(
+		"VCDS installation",
+		"Labels/ and UDS_EV/ — fault names, and units ODIS misses",
+		Pick::Dir(Look::Vcds),
+	),
+	("Download VCDS", "fetch Ross-Tech's installer, about 90 MB, and read that", Pick::Download),
+];
 
 /// Run the picker.
 ///
@@ -176,13 +214,12 @@ pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<S
 	let Some(row) = io.ask(QUESTION, &options(), 0)? else {
 		return Ok(None);
 	};
-	match row {
-		0 => ask_for(io, Look::Vcds),
-		1 => ask_for(io, Look::Odis),
-		2 => Ok(Some(Source::DownloadVcds)),
+	match MENU.get(row).map(|(_, _, pick)| *pick) {
+		Some(Pick::Dir(look)) => ask_for(io, look),
+		Some(Pick::Download) => Ok(Some(Source::DownloadVcds)),
 		// An asker that named a row outside the menu has named nothing. Nobody
 		// chose anything, which is the same answer as leaving.
-		_ => Ok(None),
+		None => Ok(None),
 	}
 }
 
@@ -273,11 +310,13 @@ const LOOK_IN: usize = 200;
 ///
 /// `want` first when there is one, because the kind they picked is the kind
 /// they are looking for; the other kind afterwards, because "that is the other
-/// one" is still an answer they can act on.
+/// one" is still an answer they can act on. With no `want` — a path given on
+/// the command line, which says nothing about which was meant — the ODIS
+/// project is looked for first, the same order the menu offers them in.
 fn nearby(dir: &Path, want: Option<Look>) -> Option<Near> {
 	let order = match want {
 		Some(look) => [look, look.other()],
-		None => [Look::Vcds, Look::Odis],
+		None => [Look::Odis, Look::Vcds],
 	};
 	for kind in order {
 		if let Some(above) = dir.ancestors().skip(1).take(LOOK_UP).find(|up| identify(up) == Some(kind)) {
@@ -363,16 +402,17 @@ fn unrecognised(dir: &Path) -> String {
 	let head = match (dir.exists(), dir.is_dir()) {
 		(false, _) => format!("{shown} is not a directory — there is nothing at that path."),
 		(true, false) => format!("{shown} is not a directory — it is a file. If that is an archive, unpack it and point at the folder it unpacks to."),
-		(true, true) => format!("{shown} is neither a VCDS installation nor an ODIS project."),
+		(true, true) => format!("{shown} is neither an ODIS project nor a VCDS installation."),
 	};
+	// The ODIS shape first, the order the menu offers them in.
 	format!(
 		"{head}{}\n\n    {}\n    {}\n\n\
          With no path at all, `vagcan setup` asks which to read — and offers to download an\n\
          installation if you have neither.\n\
          Ross-Tech's own: {}",
 		hint(dir, None),
-		Look::Vcds.expected(),
 		Look::Odis.expected(),
+		Look::Vcds.expected(),
 		crate::missing::VCDS_DOWNLOAD
 	)
 }
@@ -646,24 +686,63 @@ mod tests {
 		Answer::Type(path.display().to_string())
 	}
 
+	/// The row a kind is on, so a test says which source it picks rather than
+	/// which number. The order has moved once already and should not cost a
+	/// test edit when it moves again.
+	fn row(look: Look) -> Answer {
+		let at = MENU
+			.iter()
+			.position(|(_, _, pick)| *pick == Pick::Dir(look))
+			.expect("every kind of source is on the menu");
+		Answer::Pick(at)
+	}
+
+	/// The row that fetches an installation rather than pointing at one.
+	fn download_row() -> Answer {
+		let at = MENU
+			.iter()
+			.position(|(_, _, pick)| *pick == Pick::Download)
+			.expect("the download is on the menu");
+		Answer::Pick(at)
+	}
+
 	#[test]
-	fn the_menu_leads_with_the_source_most_people_actually_have() {
-		// An ODIS project is VW's own dealer data and rarer than a VCDS install
-		// by a wide margin. Offering it first, pre-highlighted, would make Enter
-		// the answer almost nobody wants.
+	fn the_menu_leads_with_the_source_that_can_finish_the_job() {
+		// Reversed once. The VCDS installation led while ODIS was a second
+		// source bolted onto a VCDS-shaped tool, and the argument for it — that
+		// leading with what almost nobody has makes Enter the wrong answer —
+		// stopped applying when the tool was rebuilt around ODIS. A label file
+		// carries a measurement's name and provably not the identifier it is
+		// read from or its scaling; an ODIS project carries the whole chain.
+		// The pre-highlighted row has to be the one that can finish the job.
 		let here = tempfile::tempdir().unwrap();
-		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&install)]);
-		let picked = choose(&mut io, None).unwrap();
-		assert_eq!(picked, Some(Source::Vcds { dir: install }));
-		assert_eq!(io.last_labels(), ["VCDS installation", "ODIS project", "Download VCDS"]);
-		assert_eq!(io.highlights, [0]);
+		let project = odis(here.path(), "SK37X");
+		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&project)]);
+		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Odis { dir: project }));
+		assert_eq!(io.last_labels(), ["ODIS project", "VCDS installation", "Download VCDS"]);
+		assert_eq!(io.highlights, [0], "and it is the row the highlight starts on");
+	}
+
+	#[test]
+	fn the_row_a_person_picks_is_the_source_that_row_names() {
+		// The reorder hazard, pinned. Label, detail and outcome travel together
+		// in one table, so moving the copy cannot leave the outcome behind —
+		// which would be silent, because every row would still work and every
+		// row would do the wrong thing.
+		for (label, _, pick) in MENU {
+			match pick {
+				Pick::Dir(Look::Odis) => assert!(label.contains("ODIS"), "{label}"),
+				Pick::Dir(Look::Vcds) => assert!(label.contains("VCDS installation"), "{label}"),
+				Pick::Download => assert!(label.contains("Download"), "{label}"),
+			}
+		}
 	}
 
 	#[test]
 	fn every_option_says_in_its_own_line_what_it_is_and_how_to_recognise_it() {
-		// "ODIS project" is three words most owners have never met, and the
-		// label alone cannot carry them.
+		// "ODIS project" is two words most owners have never met, so the label
+		// cannot carry the offer on its own. Each line has to say both how to
+		// recognise the thing and what picking it gets you.
 		let mut io = Scripted::new(vec![Answer::Quit]);
 		assert_eq!(choose(&mut io, None).unwrap(), None);
 		let menu = io.last_menu();
@@ -671,6 +750,11 @@ mod tests {
 		assert!(menu.contains("Labels/"), "the VCDS line says how to recognise one: {menu}");
 		assert!(menu.contains("SK37X"), "the ODIS line shows what one is called: {menu}");
 		assert!(menu.contains("90 MB"), "the download says what it costs: {menu}");
+		// The reason to pick each, not just the way to spot it. The VCDS line
+		// matters most: it is second now, and nobody may come away thinking
+		// their installation has been made useless.
+		assert!(menu.contains("how to scale it"), "the ODIS line says what only it supplies: {menu}");
+		assert!(menu.contains("fault names"), "and so does the VCDS line: {menu}");
 	}
 
 	#[test]
@@ -689,18 +773,18 @@ mod tests {
 	fn each_option_leads_to_the_source_it_names() {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![Answer::Pick(1), typed(&project)]);
+		let mut io = Scripted::new(vec![row(Look::Odis), typed(&project)]);
 		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Odis { dir: project }));
 
 		// Downloading asks for no directory: there is nothing on disk yet.
-		let mut io = Scripted::new(vec![Answer::Pick(2)]);
+		let mut io = Scripted::new(vec![download_row()]);
 		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::DownloadVcds));
 		assert!(io.typed.is_empty(), "nothing was asked for: {:?}", io.typed);
 	}
 
 	#[test]
 	fn an_empty_line_at_the_directory_is_never_mind_rather_than_an_error() {
-		let mut io = Scripted::new(vec![Answer::Pick(0), Answer::Type(String::new())]);
+		let mut io = Scripted::new(vec![row(Look::Vcds), Answer::Type(String::new())]);
 		assert_eq!(choose(&mut io, None).unwrap(), None);
 	}
 
@@ -710,7 +794,7 @@ mod tests {
 		let music = here.path().join("music");
 		std::fs::create_dir_all(&music).unwrap();
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&music), typed(&install)]);
+		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&music), typed(&install)]);
 		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Vcds { dir: install }));
 		let said = io.all_said();
 		assert!(said.contains(&music.display().to_string()), "the path is named: {said}");
@@ -725,7 +809,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let labels = install.join("Labels");
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&labels), typed(&install)]);
+		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&labels), typed(&install)]);
 		choose(&mut io, None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is inside"), "{said}");
@@ -737,7 +821,7 @@ mod tests {
 		// The other common miss: `~/Downloads` instead of `~/Downloads/SK37X`.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![Answer::Pick(1), typed(here.path()), typed(&project)]);
+		let mut io = Scripted::new(vec![row(Look::Odis), typed(here.path()), typed(&project)]);
 		choose(&mut io, None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains(&project.display().to_string()), "it names what they probably meant: {said}");
@@ -748,7 +832,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![Answer::Pick(1), typed(&install), typed(&project)]);
+		let mut io = Scripted::new(vec![row(Look::Odis), typed(&install), typed(&project)]);
 		choose(&mut io, None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is a VCDS installation, not an ODIS project"), "{said}");
@@ -760,7 +844,7 @@ mod tests {
 		let archive = here.path().join("vcds-en.zip");
 		std::fs::write(&archive, b"PK").unwrap();
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&archive), typed(&install)]);
+		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&archive), typed(&install)]);
 		choose(&mut io, None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is not a directory"), "USAGE.md documents this phrase: {said}");
