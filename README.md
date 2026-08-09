@@ -14,9 +14,10 @@ themselves, what they measure, what faults they have stored, and — with
 - **An slcan USB-CAN adapter.** Development was done on an MKS CANable V2.0 Pro
   (STM32G431 with an isolated transceiver). It enumerates as a serial device, so
   there is no driver to install on macOS or Linux.
-- **VW's label data**, for names instead of numbers. It comes from a VCDS
-  installation, but you do not need to have one: `vagcan setup` will download a copy if
-  you don't point it at your own (see below).
+- **Somebody's diagnostic data**, for names and numbers instead of raw bytes. Either a
+  VW **ODIS-Service project** or a **VCDS installation** will do, and you do not need to
+  have either already: `vagcan setup` will fetch a VCDS copy if you point it at nothing
+  (see below).
 
 Wire the adapter to the OBD-II port:
 
@@ -74,23 +75,34 @@ genuinely nothing to open.
 ## Setting up
 
 ```sh
-vagcan setup /path/to/VCDS      # an installation you have
-vagcan setup                    # or be offered one to download
+vagcan setup                    # pick a source from a menu
+vagcan setup ~/Downloads/SK37X  # …or name one outright, of either kind
 ```
 
-This parses the label data into `~/.vagcan/data/extracted/` — the names of measurements and
-faults, the unit numbering, the keys that open VW's encrypted `.rod` files. It needs no
-car, takes a few minutes, and is the only setup step there is. Running it again on an
-unchanged installation does nothing and says so.
+`setup` asks what to learn the car from, and there are two kinds of answer. A VW
+**ODIS-Service project** is the good one: it declares, per control-unit variant, every
+identifier that unit answers, where the value sits in the reply, and how to scale it. A
+**VCDS installation** is the fallback — for a car no ODIS project covers, or for anyone
+who cannot get one — and it carries wording and fault text but no scalings at all. The
+top menu entry takes both at once, because they compose: the structure from ODIS, the
+human wording from VCDS.
+
+It needs no car and no adapter, takes minutes, and is the only setup step there is.
+Running it again on an unchanged source does nothing and says so.
+
+Whatever it reads lands in a **project** under `~/.vagcan/data/<project id>/`. A project
+is a **platform, not one car** — VW files every Octavia III, Karoq and Kodiaq under
+`SK37X` — so several cars share one, and what is true of exactly one car lives under
+`~/.vagcan/cars/<VIN>/` instead. Which vehicles each of VW's project names covers is
+transcribed in
+[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md);
+it is a reading aid, and nothing in the tool consults it — a project declares its own
+coverage.
 
 **VCDS is Ross-Tech's software**, free to download from
 <https://www.ross-tech.com/vcds/download/> and redistributed here unmodified, for convenient install only. So
-`vagcan setup` with no path offers to fetch a copy and unpacks
-it for you. Either way, only the label data inside is read once, and none of it is baked into the tool.
-
-What `setup` does *not* give you is measurement scalings. No label data carries
-them — that is the single most expensive negative result in this project, and it is
-why [`USAGE.md`](USAGE.md) has a section on proving one against your own car.
+`vagcan setup` offers to fetch a copy and unpacks it for you. Either way, the data
+inside is read once, and none of it is baked into the tool.
 
 
 ## Read the car
@@ -103,8 +115,9 @@ vagcan survey             # once, parked: what every unit answers
 vagcan watch              # live values from several units at once
 ```
 
-Once `setup` has run, `faults` names the codes with no extra flags — the labels are
-already in `~/.vagcan`. Every command and every flag is in [`USAGE.md`](USAGE.md).
+Once a VCDS installation has been read, `faults` names the codes with no extra flag —
+the fault text is already in `~/.vagcan`. Every command and every flag is in
+[`USAGE.md`](USAGE.md).
 
 What the tool deliberately does not do is guess. A value with no proven scaling is
 shown as raw bytes and tagged as raw. This project has twice caught itself believing a
@@ -118,28 +131,30 @@ to read back a drive someone else recorded. The offline commands are grouped und
 
 ## Where your files go
 
-Nothing the tool reads at run time lives in this repository. The label data is rebuilt
-into `~/.vagcan` by `setup` — the raw VCDS archives it parses are Ross-Tech's, vendored
-under `vendor/` and redistributed unmodified — and the measured rows are true of one car
-rather than of yours.
+Nothing the tool reads at run time lives in this repository. The diagnostic data is
+rebuilt into `~/.vagcan` by `setup` — the raw VCDS archives it parses are Ross-Tech's,
+vendored under `vendor/` and redistributed unmodified — and the measured rows are true
+of one car rather than of yours.
 
 ```
 ~/.vagcan/
-  data/
-    extracted/        parsed from VCDS by `vagcan setup`:
-      cache.sqlite      the label data, queryable
-      names.json        measurement names recovered from VCDS's text table
-      rod-keys.json     recovered .rod section keys
-    measured/         proven measurement rows, one file per part number
-  cars/<VIN>/
-    car.json          mass, tyre, measured road load
-    survey.jsonl      what this car answered when it was last swept
-    measures/         saved acceleration sessions
+  rod/                  the raw .rod files and the fault text, shared by every project
+  data/<project id>/    one directory per platform, e.g. SK37X:
+    cache.sqlite          the channels and the label rows, queryable
+    names.json            text id → name
+    rod-keys.json         recovered .rod section keys
+    sources.json          which installation or project each of these came from
+    measurements/         proven-on-a-car rows, one file per part number
+  cars/<VIN>/           what is true of exactly one car
+    car.json              mass, tyre, measured road load
+    survey.jsonl          what this car answered when it was last swept
+    measures/             saved acceleration sessions
   config.json
 ```
 
-`data/extracted/` is rebuilt by `vagcan setup` in minutes and can be deleted at any
-time. `data/measured/` and `cars/` cannot be rebuilt without a vehicle.
+Everything a project holds except `measurements/` is rebuilt by `vagcan setup` in
+minutes and can be deleted at any time. `measurements/` and `cars/` cannot be rebuilt
+without a vehicle.
 
 ## Status
 
