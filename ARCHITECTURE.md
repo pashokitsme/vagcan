@@ -10,7 +10,7 @@ unit, [`SAFETY.md`](SAFETY.md).
 
 ## The one fact that shapes everything
 
-**Names come from VCDS's label files. Scaling cannot.**
+**Names come from VCDS's label files. Scaling cannot come from them at all.**
 
 Ross-Tech's VCDS ships 300 MB of label and ODX files, and it holds a great
 deal: what every control unit is called, what its measuring blocks are called, which
@@ -27,16 +27,61 @@ route from "this unit's boost pressure" to "read `0x202A`, two bytes big-endian,
 [`research/labels/label-linkage.md`](research/labels/label-linkage.md) §3. Do not go
 looking again.
 
-So the tool has two sources and they are not interchangeable:
+**VW's own ODIS-Service data can, and that is why it leads.** An extracted ODIS project
+declares, per control-unit variant, every identifier that unit answers together with the
+byte offset, the length, the byte order and the compu formula — the whole chain the
+label files provably do not hold. It is a declaration by the manufacturer rather than a
+measurement, so it ranks below a drive and above nothing; three rows this project had
+proved by driving came back identical out of the ODIS file, including a pair of
+engine-speed channels with opposite byte order that one wrong guess would have hidden.
+
+So there are three sources and they are not interchangeable:
 
 | | comes from | rebuildable? |
 |---|---|---|
+| which identifiers a variant answers, their shape and scaling | an ODIS project, via `vagcan setup` | yes, in minutes |
 | names, unit numbers, fault text | a VCDS installation, via `vagcan setup` | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
-`~/.vagcan/data/extracted/` holds the first. `~/.vagcan/data/measured/` holds the second. A
-tool short of one of them is in a completely different situation from a tool short of
+The first two land in a **project** — `~/.vagcan/data/<project id>/`, holding
+`cache.sqlite`, `names.json`, `rod-keys.json` and `sources.json`, with the raw `.rod`
+files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
+VCDS *build* rather than of any car. The third lands in that project's `measurements/`.
+A tool short of one of them is in a completely different situation from a tool short of
 the other, and the messages it prints say which.
+
+**A project is keyed by platform, not by car**, and that is the whole reason it is not
+keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octavia III,
+Karoq and Kodiaq, and a proven scaling is a property of a *part number*, true of every
+car carrying that part. What is true of exactly one car — its car file, its drives, its
+survey — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
+[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md)
+transcribes which vehicles each of VW's project names covers; nothing in the tool reads
+it, because a project declares its own coverage in `PRNR-INFO.xml`.
+
+### The two sources compose rather than compete
+
+`setup`'s first menu entry offers both at once, and it is not a convenience. An ODIS
+project names a channel the way a database does —
+`Brake_pedal_information_plausibility` — and carries a **text id** beside it
+(`MAS11563`, `IDE00030`). That id is the *same key* the names recovered from VCDS's
+`TTTEXT.ROD` are written under. So one source supplies which identifiers a variant
+answers, where the value sits in the reply and how to scale it, and the other supplies
+the human wording for the very same ids. Neither replaces the other, and a project
+holding only the ODIS half is valid and useful — the channels simply keep their machine
+phrasing.
+
+The order the combined run reads them in is load-bearing. Recovering names from
+`TTTEXT.ROD` writes `names.json` wholesale, while the ODIS pass merges into whatever is
+already there; so VCDS is read **first** and ODIS fills in the text ids it alone knows.
+The other way round, the wholesale write would land on top and one combined run would
+come out worse than the two separate runs it is meant to be equivalent to.
+
+**Fault text is a gap in this build, not a division of labour.** An ODIS project carries
+the fault codes and their descriptions in the clear, in six figures; what is missing is
+a loader for them. Until that lands, `vagcan faults` names codes from VCDS files. That
+is a fact about the implementation and must not be written down as a property of the
+sources.
 
 ---
 
@@ -56,7 +101,8 @@ car* (not fine — it comes from the label files, or from a read).
 ### The catalog schema
 
 One file per control unit, named for the part number that unit reports for itself
-(`F187`) or its ODX file name (`F19E`), in `~/.vagcan/data/measured/`. A row:
+(`F187`) or its ODX file name (`F19E`), in the project's
+`~/.vagcan/data/<project id>/measurements/`. A row:
 
 ```json
 {"name":"Input shaft speed","unit":"/min","address":{"Uds":14346},
@@ -127,8 +173,7 @@ disassembling VCDS rather than guessed at.
 A section whose `product` field is nonzero cannot be decrypted from the file alone:
 five bytes of its first-block IV are missing and have to be searched for — about
 fourteen seconds a section on a laptop. That is why the recovered keys are cached: the
-live path reads the answer out of `~/.vagcan/data/extracted/rod-keys.json` and never
-searches.
+live path reads the answer out of the project's `rod-keys.json` and never searches.
 
 **Two fifths of the corpus are searchable in principle and not in practice, and the
 reason is worth knowing.** Some files XOR an eight-byte mask over the *finished* IV,
@@ -194,7 +239,26 @@ cluster, and words read off solved records become vocabulary for the next pass. 
 
 ## What `vagcan setup` actually does
 
-One command, three steps, everything under `~/.vagcan/data/extracted/`.
+One command, two branches, everything under `~/.vagcan/data/<project id>/` and the
+shared `~/.vagcan/rod/`. Which branch runs is decided by what the source is, and the
+source is recognised from the folder rather than declared: a `UDS_EV/` inside makes it a
+VCDS installation, an `AStringData.data.gz` beside at least one `<pool>.key` makes it an
+ODIS project. Nothing is opened to decide — being wrong in the permissive direction
+costs a parser error that explains itself, and being wrong in the strict direction turns
+a real project away at the door.
+
+**The ODIS branch is two steps**: every variant's measurement chain walked into
+`cache.sqlite`, then every `(text id, name)` pair in every pool merged into
+`names.json`. A variant whose chain reaches a type this reader declines to open, or one
+it has no loader for, costs itself and nothing else — the count of what was skipped is
+reported rather than hidden, because a project describes hundreds of units and one bad
+one must not cost the rest.
+
+**The VCDS branch is the four steps below.** The first of them is what makes an
+installation disposable: fault naming reads `.rod` files off disk at run time, so those
+are copied out, flat, into the shared pool. The `.lbl`/`.clb` files are deliberately
+*not* copied — they are read once, here, into `cache.sqlite`, and that cache is what
+survives of them.
 
 **1. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather
@@ -284,10 +348,19 @@ data file this project has found — the label files carry the numbers and the n
 no CAN id anywhere — so that half is established by reading the car (`vagcan units
 --identify`) or written down by hand.
 
-**Sweeping is group testing, not 65,536 reads.** A multi-identifier request comes back
-with only the identifiers the unit supports, and is refused outright when it supports
-none of them — so one request is a presence test for a whole batch. That is what turns
-a full sweep from hours into minutes.
+**A blind sweep is group testing, not 65,536 reads.** A multi-identifier request comes
+back with only the identifiers the unit supports, and is refused outright when it
+supports none of them — so one request is a presence test for a whole batch. That is
+what turned a full sweep from hours into minutes.
+
+It is no longer what `survey` does. A unit is asked only the identifiers a source says
+that unit answers — the car reports `F187`/`F19E`/`F1A2`, that resolves to a variant,
+and the variant declares its own list — and a unit nothing describes is identified and
+has its faults read rather than being swept hardest of all. Blind sweeping survives as
+`--blind`, aimed at units named one at a time; there is no spelling of any flag that
+means "sweep the whole car blind", because that was the default and it is what cost the
+reference car its power steering. [`SAFETY.md`](SAFETY.md) is the account, and it is
+worth reading before the flag.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you. `recording …` reads back drives this tool recorded, and
