@@ -284,19 +284,50 @@ Per unit, declared / answered / both:
 746  EV_ACClimaBHBVW37X           120 /  56 /  20
 ```
 
-Three things follow.
+**Split by identifier range, because the totals above mislead badly without it.**
 
-1. **The two door units have no ODIS coverage at all**, and the car answers 103
-   identifiers between them. They are the two unresolved units of §8, quantified.
-2. **693 of what this car answers — 58% — the project never mentions.** That is what a
-   sweep is *for*, and it is also the class of data the safety change of 2026-08-09 makes
-   uncollectable: a declared-only sweep cannot find an undeclared identifier by
-   construction. The cached survey that produced these numbers is a **blind** sweep from
-   2026-08-08, so it cannot be reproduced under the current rules. Do not delete it.
-3. **1,746 declared identifiers are silent**, and they were on `watch`'s selection screen
-   looking exactly like the working ones. `watch` now holds them back by default
-   (`plan::Answered`, `crates/vagcan/src/watch/plan.rs`), counted separately from the
-   nameless rows and restored with `u`.
+| range | answered only | both | declared only |
+|---|---|---|---|
+| `0000-0FFF` | 80 | 97 | 147 |
+| `1000-1FFF` | 53 | 50 | **1,010** |
+| `2000-2FFF` | 98 | 167 | 295 |
+| `3000-3FFF` | 7 | 139 | 125 |
+| `4000-7FFF` | 0 | 0 | 169 |
+| `F000-FFFF` | **455** | 52 | 0 |
+| total | 693 | 505 | 1,746 |
+
+**455 of the 693 are the identification block**, `F1xx` and the `F4xx` OBD-II mirror. A
+project's `reading` objects describe measurements and were never meant to carry those, and
+the tool reads them directly anyway (`vagcan properties`, `units --identify`). Counting
+them as an ODIS gap is a category error, and the first version of this section made it.
+
+Four things follow.
+
+1. **In the measurement space the project declares 453 of the 691 identifiers this car
+   answers — 66%, not 42%.** The remaining **238** are the real gap: channels this car
+   answers that nothing describes, which is exactly what `watch` shows as raw bytes.
+2. **The two door units resolve to no variant at all** — `EV_DCUDriveSideEWMAXCONT` and
+   `EV_DCUPasseSideEWMAXCONT`, the two unresolved units of §8. Of the 103 identifiers they
+   answer, 54 are identification; the genuine gap is **49 measurement identifiers with no
+   description anywhere**.
+3. **The dominant error runs the other way: 1,746 declared and silent against 238 answered
+   and undeclared.** Over-declaration is seven times the size of under-declaration, and it
+   is not evenly spread — **1,010 of the 1,746 are in `1000-1FFF` alone**, where the hit
+   rate is 50 of 1,060 (5%) against 139 of 264 (53%) one range up. A gap that lopsided has
+   a cause rather than a thousand independent ones, and finding it is the cheapest large
+   win available: a variant match that is too loose, a block that needs a session, or a
+   band this trim does not populate. Untested.
+4. **`watch` now holds the silent ones back by default** (`plan::Answered`,
+   `crates/vagcan/src/watch/plan.rs`), counted separately from the nameless rows and
+   restored with `u`.
+
+**On reproducing this.** The cached survey is a **blind** sweep from 2026-08-08 and the
+default sweep can no longer produce one: a declared-only run cannot find an undeclared
+identifier by construction. It is not unrepeatable — `--blind <unit>`, aimed by hand one
+unit at a time, still does exactly this, now under the halt-on-anomaly guard the original
+run did not have. What is true is that repeating it costs fifteen aimed runs and carries
+the risk `SAFETY.md` describes, so the file is worth keeping rather than re-earning. An
+earlier version of this section said "cannot be reproduced", which overstates it.
 
 **The caveat that limited claim 3, and what closed it.** A survey line used to record what
 *answered* and never what was *asked*. For a full sweep those are the same question and

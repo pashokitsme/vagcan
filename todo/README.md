@@ -789,16 +789,26 @@ call, not by reading the enum or the call site.** Grep found the right lines all
 times and the conclusion was still wrong.
 
 What the measurement did establish is in
-[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.1 — and it cuts
-the other way from what the pivot suggested. Of the 1,198 identifiers this car answers,
-**693 are ones the project never declares**, and the two door units (`74A`, `74B`) have
-zero ODIS coverage against 103 answered identifiers. A survey is not superseded; it is the
-only thing that knows about those.
+[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.1, **split by
+identifier range** — and a fourth correction belongs here, to the first draft of this
+paragraph. It said 693 of the 1,198 identifiers this car answers are ones the project
+never declares. True as arithmetic and wrong as a conclusion: **455 of those 693 are the
+identification block**, `F1xx` and the `F4xx` OBD-II mirror, which a project's `reading`
+objects were never meant to carry and which the tool reads directly anyway.
 
-Worse for the archive: the cached survey that proves it is a **blind** sweep from
-2026-08-08, and the safety change of 2026-08-09 makes that class of data uncollectable by
-construction — a declared-only sweep cannot find an undeclared identifier. That file
-cannot be reproduced. It must not be deleted.
+In the measurement space the project declares **453 of the 691** identifiers this car
+answers — 66%. The pivot holds. The real gap is the other **238**, plus the **49**
+measurement identifiers on the two door units that resolve to no variant at all.
+
+And the asymmetry runs the other way from the gap: **1,746 declared and silent against 238
+answered and undeclared**, with 1,010 of the 1,746 in `1000-1FFF` alone. Over-declaration
+is seven times the size of under-declaration and is concentrated enough to have one cause.
+
+The cached survey that proves all of this is a **blind** sweep from 2026-08-08, and the
+default sweep can no longer produce one — a declared-only run cannot find an undeclared
+identifier. It is not unrepeatable: `--blind <unit>` aimed by hand still does exactly this,
+now under the halt-on-anomaly guard. But repeating it costs fifteen aimed runs at the risk
+`SAFETY.md` describes, so the file is kept rather than re-earned. It must not be deleted.
 
 So `survey` is not deleted, and it is not narrowed by much either:
 
