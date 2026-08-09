@@ -95,7 +95,21 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 	Extracted {
 		cache,
 		variants,
-		names: read_names(&project.names()),
+		// **Only when a VCDS installation has actually contributed.** The join
+		// through a text id is right and stays; what was wrong is trusting
+		// `names.json` to hold VCDS wording on a project that has only ever
+		// seen ODIS runs. There it holds ODIS's *pooled* text for the id, while
+		// the row carries that parameter's name in this ECU variant — and the
+		// pooled one is the worse of the two, measured on the owner's car: 0
+		// channels gained a name, 340 got different and mostly worse wording,
+		// and two distinct channels collapsed onto one label.
+		//
+		// A file cannot say who wrote it, so the project's own source log is
+		// asked instead (`crate::project::has_source`).
+		names: match crate::project::has_source(project, vag_db::VCDS) {
+			true => read_names(&project.names()),
+			false => BTreeMap::new(),
+		},
 	}
 }
 
@@ -349,6 +363,58 @@ mod tests {
 			raw_form: RawForm::U16Le,
 			scaling: Scaling::Linear(LinearScale { factor: 0.25, offset: 0.0 }),
 		}
+	}
+
+	#[test]
+	fn an_odis_only_project_does_not_borrow_its_own_pooled_wording_back() {
+		// The regression, at the reader end. A project that has only ever seen
+		// ODIS runs has `names.json` full of ODIS's *pooled* text, and
+		// preferring it over the row's own name replaced the parameter's
+		// wording in this ECU variant with the generic one for the id — 340
+		// channels reworded on the owner's car, none gained, and two distinct
+		// channels collapsed onto a single label.
+		let here = tempfile::tempdir().unwrap();
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.path().to_path_buf(),
+		};
+		std::fs::write(project.names(), r#"{"MAS14374": "Total_CarWakeup_Events_Counter"}"#).unwrap();
+
+		// No source log at all: the cautious answer, and the one that matters
+		// here — a project that cannot say where its data came from is not
+		// assumed to hold VCDS wording.
+		assert!(open(&project).names.is_empty(), "it trusted a file nothing vouched for");
+
+		// A log naming only ODIS runs: same answer, and this is the owner's
+		// actual machine.
+		crate::project::record_source(
+			&project,
+			crate::project::SourceEntry {
+				kind: vag_db::ODIS,
+				path: "/nowhere/SK37X".into(),
+				version: None,
+				detail: None,
+			},
+		)
+		.unwrap();
+		assert!(open(&project).names.is_empty(), "{:?}", open(&project).names);
+
+		// Once an installation has contributed, the file is what it promises
+		// and the join through the text id does its job.
+		crate::project::record_source(
+			&project,
+			crate::project::SourceEntry {
+				kind: vag_db::VCDS,
+				path: "/nowhere/VCDS".into(),
+				version: None,
+				detail: None,
+			},
+		)
+		.unwrap();
+		assert_eq!(
+			open(&project).names.get("MAS14374").map(String::as_str),
+			Some("Total_CarWakeup_Events_Counter")
+		);
 	}
 
 	#[test]

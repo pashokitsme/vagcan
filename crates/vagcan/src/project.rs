@@ -112,6 +112,25 @@ impl Project {
 	pub fn sources(&self) -> PathBuf {
 		self.dir.join("sources.json")
 	}
+
+	/// Text id → the wording an ODIS project uses for it, pooled.
+	///
+	/// **Kept apart from `names.json`, which is VCDS's.** They are not
+	/// interchangeable, and merging them cost real wording on a real car: an
+	/// ODIS reading's own name is the parameter's name *in that ECU variant*,
+	/// while the pooled entry is the generic text for the id. Folded together,
+	/// `Total_Physical_Wakeup_Events_Counter` and
+	/// `Total_Logical_Wakeup_Events_Counter` both became
+	/// `Total_CarWakeup_Events_Counter` — two live channels labelled
+	/// identically, told apart only by the identifier beside them.
+	///
+	/// So `names.json` holds what a VCDS installation recovered and nothing
+	/// else, and this holds what an ODIS project pooled. A reader naming a
+	/// channel wants the first, or the row's own name; the second is a
+	/// searchable index of what a text id means, which is a different question.
+	pub fn odis_names(&self) -> PathBuf {
+		self.dir.join("names-odis.json")
+	}
 }
 
 /// One line of a project's provenance log.
@@ -351,6 +370,29 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 	std::fs::create_dir_all(&p.dir).with_context(|| format!("creating {}", p.dir.display()))?;
 	std::fs::write(&path, serde_json::to_string_pretty(&document)?).with_context(|| format!("writing {}", path.display()))?;
 	Ok(())
+}
+
+/// Whether a source of this kind has ever been read into this project.
+///
+/// Asked of `sources.json`, which is why that log exists — design §4.4 says
+/// nothing reads it at run time, and this is the exception that earned itself:
+/// a file's *content* cannot say which parser produced it, and `names.json` on
+/// a project that has only ever seen ODIS runs is ODIS wording under a name
+/// that promises VCDS's. The log is the only thing on disk that knows.
+///
+/// `false` when the log is missing or unreadable — a project that cannot say
+/// where its data came from gets the cautious answer, which is to trust nothing
+/// it did not have to.
+pub fn has_source(project: &Project, kind: &str) -> bool {
+	let Ok(text) = std::fs::read_to_string(project.sources()) else {
+		return false;
+	};
+	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+		return false;
+	};
+	value["sources"]
+		.as_array()
+		.is_some_and(|rows| rows.iter().any(|row| row["kind"].as_str() == Some(kind)))
 }
 
 /// What `config.json` says this machine's project is, if it says.

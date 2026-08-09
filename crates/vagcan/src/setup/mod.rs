@@ -620,7 +620,7 @@ fn read_odis(odis: &vag_data::odis::Project, dir: &Path, project: &crate::projec
 		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
 		odis.names().with_context(|| format!("reading the names of {}", dir.display()))?
 	};
-	let merged = merge_names(&project.names(), names)?;
+	let merged = merge_names(&project.odis_names(), names)?;
 
 	crate::project::record_source(
 		project,
@@ -635,19 +635,30 @@ fn read_odis(odis: &vag_data::odis::Project, dir: &Path, project: &crate::projec
 		units,
 		Step::Wrote {
 			what: "the measurement names",
-			path: project.names(),
+			path: project.odis_names(),
 			detail: format!("{merged} names"),
 		},
 	])
 }
 
-/// Fold an ODIS project's names into whatever `names.json` already holds.
+/// Fold an ODIS project's pooled names into `names-odis.json`.
 ///
-/// **What is already there wins.** `names.json` is keyed by the label files' own
-/// text id, and the two sources agree about what that id means — that is the
-/// whole finding `research/labels/odis-crib.md` rests on. Where they disagree,
-/// the incumbent is what every earlier run of this tool has been reporting, and
-/// silently changing a name under somebody is worse than not adding one.
+/// **Its own file, not `names.json`, and that separation is the whole point.**
+/// Both are keyed by the same text id — the finding
+/// `research/labels/odis-crib.md` rests on — but they are not interchangeable
+/// wording. An ODIS *reading* carries the parameter's name in one ECU variant;
+/// the pooled entry is the generic text for the id. Writing the second where a
+/// reader expects the first cost real wording on the owner's car: 0 channels
+/// gained a name, 340 got different and mostly worse wording, and
+/// `Total_Physical_Wakeup_Events_Counter` and
+/// `Total_Logical_Wakeup_Events_Counter` both became
+/// `Total_CarWakeup_Events_Counter` — two live channels labelled identically.
+///
+/// So this file is an index of what a text id means, which `vagcan vcds names`
+/// searches, and `names.json` stays what a VCDS installation recovered.
+///
+/// **What is already there wins**, within this file: silently changing a name
+/// under somebody who has been reading it is worse than not adding one.
 fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>) -> Result<usize> {
 	let mut names: std::collections::BTreeMap<String, String> = std::fs::read_to_string(path)
 		.ok()
@@ -1270,6 +1281,26 @@ mod tests {
 		for line in io.all_said().lines() {
 			assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
 		}
+	}
+
+	#[test]
+	fn odis_wording_is_kept_out_of_the_file_that_promises_vcds_wording() {
+		// The regression this split exists for. `names.json` is what a reader
+		// prefers over a channel's own name, so an ODIS run writing into it
+		// replaced variant-specific wording with the pooled text for the id —
+		// and collapsed two live channels onto one label.
+		let here = TempDir::new("odisnames");
+		let project = crate::project::Project {
+			id: "SK37X".into(),
+			dir: here.0.clone(),
+		};
+		assert_ne!(project.odis_names(), project.names(), "one file again");
+		let incoming = [("MAS14374".to_string(), "Total_CarWakeup_Events_Counter".to_string())]
+			.into_iter()
+			.collect();
+		merge_names(&project.odis_names(), incoming).unwrap();
+		assert!(project.odis_names().is_file());
+		assert!(!project.names().exists(), "an ODIS run wrote the file a VCDS run owns");
 	}
 
 	#[test]
