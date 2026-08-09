@@ -533,7 +533,8 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 	// project that already holds ODIS rows must not close by telling its reader
 	// there are no scalings anywhere.
 	let scalings = !crate::extracted::open(project).is_empty();
-	println!("\n{}", report(&steps, scalings));
+	let fault_labels = crate::faultnames::has_fault_labels(&crate::project::rod_pool()?);
+	println!("\n{}", report(&steps, scalings, fault_labels));
 	Ok(())
 }
 
@@ -992,7 +993,7 @@ const SCALINGS_HERE: &str = "This project carries scalings, declared per ECU var
 /// fact the closing sentence turns on, and asked of the store rather than of
 /// which branch ran, so a VCDS run into a project that already has them does not
 /// tell its reader they have none.
-fn report(steps: &[Step], scalings: bool) -> String {
+fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 	use std::fmt::Write as _;
 
 	// "Done." on its own reads as full success; when an artefact is missing the
@@ -1024,11 +1025,22 @@ fn report(steps: &[Step], scalings: bool) -> String {
              that was read, so a different or newer VCDS may have it."
 		);
 	}
+	// The fault line is conditional because it was a lie on the ODIS-only path:
+	// it announced that the labels are copied in after a run that copied
+	// nothing, and naming a code still reads those files off disk. An ODIS
+	// project does carry its fault text — 329,268 `DTC_*` objects, descriptions
+	// in the clear — so this is a missing loader and not a missing source, and
+	// the line says which, because "you need VCDS for fault names" is the wrong
+	// thing to learn from it.
+	let faults = match fault_labels {
+		true => "vagcan faults       stored faults, named — the labels are copied in now",
+		false => "vagcan faults       stored faults, as numbers — naming them needs a VCDS read, for now",
+	};
 	let _ = write!(
 		out,
 		"\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
-         vagcan faults       stored faults, named — the labels are copied in now\n\n\
+         {faults}\n\n\
          {}",
 		match scalings {
 			true => SCALINGS_HERE,
@@ -1058,7 +1070,7 @@ mod tests {
 				why: "newer than the text table it came from",
 			},
 		];
-		let r = report(&steps, false);
+		let r = report(&steps, false, true);
 		assert!(r.contains("/home/x/.vagcan/data/SK37X/cache.sqlite"), "{r}");
 		assert!(r.contains("3035 label files"), "{r}");
 		// A skipped step is reported, not silently absent: a run that took a
@@ -1331,7 +1343,7 @@ mod tests {
 			what: "the .rod section keys",
 			why: "none of them is in this installation".to_string(),
 		}];
-		let r = report(&steps, false);
+		let r = report(&steps, false, true);
 		assert!(r.contains("NOT recovered"), "{r}");
 		assert!(r.contains("The rest is usable"), "{r}");
 	}
@@ -1342,7 +1354,7 @@ mod tests {
 		// path: a reader who has just parsed 300 MB of label files reasonably
 		// assumes the numbers came with the names. They did not, and the
 		// closing lines are the last chance to say so.
-		let r = report(&[], false);
+		let r = report(&[], false, true);
 		assert!(r.contains("no VCDS installation carries them"), "{r}");
 		assert!(r.contains("recording calibrate"), "{r}");
 		// "the label files has names" shipped for months; the noun is plural.
@@ -1357,7 +1369,7 @@ mod tests {
 		// that no installation carries scalings and they must be measured. A
 		// reader who believes the footer goes and drives the car to establish
 		// rows the tool already has.
-		let r = report(&[], true);
+		let r = report(&[], true, true);
 		assert!(r.contains("carries scalings"), "{r}");
 		assert!(!r.contains("no VCDS installation carries them"), "it printed both, which is worse: {r}");
 		// And it still says what they are worth, or it has replaced one wrong
@@ -1368,11 +1380,31 @@ mod tests {
 	}
 
 	#[test]
+	fn a_run_that_copied_no_labels_does_not_claim_the_labels_are_copied_in() {
+		// The defect: the fault line was unconditional, so an ODIS-only run —
+		// which copies nothing — finished by announcing that the labels are in.
+		// Naming a code still reads those files off disk, so the reader was told
+		// the opposite of what they had.
+		let without = report(&[], true, false);
+		assert!(without.contains("as numbers"), "{without}");
+		assert!(!without.contains("copied in"), "{without}");
+		// And it must not teach the wrong lesson on the way past. An ODIS
+		// project carries its fault text; what is missing is a loader, so the
+		// line says "for now" rather than making VCDS sound like the only
+		// source a fault name can ever come from.
+		assert!(without.contains("for now"), "{without}");
+
+		let with = report(&[], true, true);
+		assert!(with.contains("copied in"), "{with}");
+		assert!(!with.contains("as numbers"), "{with}");
+	}
+
+	#[test]
 	fn no_line_of_either_closing_footer_runs_past_eighty_columns() {
 		// Caught twice on real terminals: a sentence written against a short
 		// test path wraps on a real one. Neither of these interpolates
 		// anything, so their width is knowable here and worth pinning.
-		for r in [report(&[], false), report(&[], true)] {
+		for r in [report(&[], false, true), report(&[], true, true)] {
 			for line in r.lines() {
 				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
 			}
