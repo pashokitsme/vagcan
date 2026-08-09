@@ -37,6 +37,18 @@ skills, state the next goals.
    `grep`, not against memory. Real drift found this way: the file said `faults` was
    "in the working tree, not yet merged" long after it was merged.
 
+   **For a claim about which command owns a capability, grep is not enough — follow the
+   call.** One pass wrote three such claims and all three were wrong, with the right
+   lines in front of it each time: that `watch` needed a survey for its unit list (its
+   `wanted` list is `preselect + ENGINE`, but the callee `units::identify` reads the
+   gateway itself); that an ODIS project had taken over "which identifiers a unit
+   answers" (it declares them — 505 of 2,251 declared actually answer); and that
+   `survey`'s fault read duplicated `faults` (those records are what `faults --from`
+   names offline, and dropping them would delete the car-free test of the naming chain).
+   The failure mode is reading a call *site* and stopping. A conclusion of the form "X is
+   the only thing that does Y" is worth one `grep` for Y's other callers before it is
+   written down, and deleting on the strength of one is how a working path dies.
+
 ### Phase 2 — route the facts to the files that own them
 
 Consolidation is not summarising into one place. It is putting each kind of fact in

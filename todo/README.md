@@ -766,15 +766,27 @@ What `survey` did, and who owns each part now:
 | which of those actually *change* — the parked/driving diff (`survey.rs:229`) | **only `survey`**. The file declares; the car decides. Nothing else can tell a live channel from a declared one |
 | the unit list + identities that give `watch` its tabs | **the gateway**, live, every run — `units::identify` reads its installation list. `survey` only saves the probes |
 | which of the declared identifiers this car actually has | **only `survey`** — 1,746 of 2,251 declared are silent on this car, and nothing in a file says which |
-| stored faults on every unit (`survey.rs:532`, mask `0xFF`) | **duplicates `vagcan faults`** — two commands, one job |
+| stored faults on every unit (`survey.rs`, mask `0xFF`) | **`survey` records, `faults` reads** — not a duplicate. `faults --from <survey>` names the codes out of the file offline (`faults.rs:151`), which is how `research/labels/fault-naming-hop.md` §11.3 is reproduced without a car. The wider mask is deliberate: the file keeps the superset and the reader filters |
 
-**A correction, recorded because the first version of this section was wrong.** It
-claimed `watch` could only reach the units a cached survey named, and that wiring the
-gateway walk into it was the step unblocking everything else. It is not: `units::identify`
-already reads the gateway's installation list (`crates/vagcan/src/units.rs:47-58`) and
-`watch` already calls it. The wiring has been there the whole time, and the claim came
-from reading `watch`'s `wanted` list without following the call. Grep the assertion, not
-the memory of it.
+**Three corrections, because the first version of this section got three things wrong
+and all three the same way.** Each claim was checked by reading a call *site* and not by
+following the call.
+
+1. It said `watch` could only reach the units a cached survey named, and that wiring the
+   gateway walk into it was the step unblocking everything else. `watch`'s own `wanted`
+   list is indeed `preselect + ENGINE` — but `units::identify` reads the gateway's
+   installation list itself (`crates/vagcan/src/units.rs:47-58`), and `watch` has always
+   called it.
+2. It said the ODIS project had taken over "which identifiers a unit answers". It has
+   taken over which a unit *declares*, which is a different and much weaker statement:
+   §4.1 measures 505 of 2,251 declared identifiers actually answering.
+3. It said `survey`'s fault read duplicated `vagcan faults`. It does not: the recorded
+   `dtcs` are the input `faults --from` names offline (`faults.rs:151`), and deleting
+   them would delete the car-free test path for the whole naming chain.
+
+The rule this earns: **a claim about who owns a capability is verified by following the
+call, not by reading the enum or the call site.** Grep found the right lines all three
+times and the conclusion was still wrong.
 
 What the measurement did establish is in
 [`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.1 — and it cuts
@@ -795,8 +807,9 @@ So `survey` is not deleted, and it is not narrowed by much either:
    apart from the nameless rows, restored with `u`, and reported by the coverage
    paragraph. This is the survey's *new* job: confirming the declaration, which is a
    declared-only sweep and therefore safe.
-2. **Drop the fault read from `survey`** and let `faults` own it. Keep the confirmed-only
-   filter that `faults` has and `survey` lacks.
+2. **Nothing to drop.** The one candidate — the fault read — turned out to be the input
+   `faults --from` depends on. What is left of `survey` is what only a car can answer,
+   and it is all of it.
 3. **Done (2026-08-09):** a survey line now carries the range it was asked over
    (`asked`, spans as `0102-0104`), so an identifier a run never covered reads as "not
    asked" rather than as "this car does not have it". Older files have no such field and
