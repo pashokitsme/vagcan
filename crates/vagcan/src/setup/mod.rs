@@ -489,7 +489,11 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 	// answer to "which car did I just set up", which is the one a bare
 	// `vagcan faults` has to be able to reach.
 	crate::project::remember(&project.id)?;
-	println!("\n{}", report(&steps));
+	// Asked of the store, not of which branch just ran: a VCDS run into a
+	// project that already holds ODIS rows must not close by telling its reader
+	// there are no scalings anywhere.
+	let scalings = !crate::extracted::open(project).is_empty();
+	println!("\n{}", report(&steps, scalings));
 	Ok(())
 }
 
@@ -897,7 +901,39 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 /// Every line names a file. Somebody who has just waited several minutes is
 /// owed the paths, not a count of successes — and somebody whose run was short
 /// of one artefact needs to see which one without re-reading the scroll.
-fn report(steps: &[Step]) -> String {
+/// What to say about scalings when the project has none.
+///
+/// True of a VCDS installation and always was: the label files carry the names
+/// and no numbers at all (`research/labels/rod-labels.md` §4.0c). Somebody who
+/// has just watched 300 MB of label files parse reasonably assumes the numbers
+/// came with the names, and this is the last chance to say they did not.
+const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS installation carries them — the label \n\
+     files have names, not numbers. Those are measured: `vagcan survey`, then \n\
+     `vagcan watch --out drive.csv`, then `vagcan recording calibrate`.";
+
+/// What to say when the project now holds scalings.
+///
+/// **The opposite sentence, and printing the wrong one is worse than printing
+/// neither.** An ODIS project declares a scaling per ECU variant, so a channel
+/// it describes reads as a number the first time, with no drive — and a reader
+/// who was told otherwise goes and measures rows the tool already has.
+///
+/// It still has to say what these are worth. They are evidence and not proof
+/// (design §4.5): nothing here has been confirmed against a car, a row somebody
+/// proved themselves wins where the two disagree, and the three steps that
+/// settle it are the same three as ever.
+const SCALINGS_HERE: &str = "This project carries scalings, declared per ECU variant — so a channel it \n\
+     describes reads as a number the first time, with no drive.\n\n\
+     They are evidence, not proof: nothing in them has been confirmed against a \n\
+     car, and where a row you proved yourself disagrees, yours wins. Confirming \n\
+     one is the same three steps as ever: `vagcan survey`, then \n\
+     `vagcan watch --out drive.csv`, then `vagcan recording calibrate`.";
+
+/// `scalings` is whether the project now holds per-variant scalings — the one
+/// fact the closing sentence turns on, and asked of the store rather than of
+/// which branch ran, so a VCDS run into a project that already has them does not
+/// tell its reader they have none.
+fn report(steps: &[Step], scalings: bool) -> String {
 	use std::fmt::Write as _;
 
 	// "Done." on its own reads as full success; when an artefact is missing the
@@ -934,9 +970,11 @@ fn report(steps: &[Step]) -> String {
 		"\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
          vagcan faults       stored faults, named — the labels are copied in now\n\n\
-         Scalings are a separate thing and no installation carries them — the label files \n\
-         has names, not numbers. Those are measured: `vagcan survey`, then \n\
-         `vagcan watch --out drive.csv`, then `vagcan recording calibrate`."
+         {}",
+		match scalings {
+			true => SCALINGS_HERE,
+			false => SCALINGS_ARE_MEASURED,
+		}
 	);
 	out
 }
@@ -961,7 +999,7 @@ mod tests {
 				why: "newer than the text table it came from",
 			},
 		];
-		let r = report(&steps);
+		let r = report(&steps, false);
 		assert!(r.contains("/home/x/.vagcan/data/SK37X/cache.sqlite"), "{r}");
 		assert!(r.contains("3035 label files"), "{r}");
 		// A skipped step is reported, not silently absent: a run that took a
@@ -1173,20 +1211,52 @@ mod tests {
 			what: "the .rod section keys",
 			why: "none of them is in this installation".to_string(),
 		}];
-		let r = report(&steps);
+		let r = report(&steps, false);
 		assert!(r.contains("NOT recovered"), "{r}");
 		assert!(r.contains("The rest is usable"), "{r}");
 	}
 
 	#[test]
 	fn the_report_does_not_promise_scalings_the_label_files_cannot_supply() {
-		// The single most expensive misunderstanding available here: a reader
-		// who has just parsed 300 MB of label files reasonably assumes the
-		// numbers came with the names. They did not, and the closing lines are
-		// the last chance to say so.
-		let r = report(&[]);
-		assert!(r.contains("no installation carries them"), "{r}");
+		// The single most expensive misunderstanding available on the VCDS
+		// path: a reader who has just parsed 300 MB of label files reasonably
+		// assumes the numbers came with the names. They did not, and the
+		// closing lines are the last chance to say so.
+		let r = report(&[], false);
+		assert!(r.contains("no VCDS installation carries them"), "{r}");
 		assert!(r.contains("recording calibrate"), "{r}");
+		// "the label files has names" shipped for months; the noun is plural.
+		assert!(r.contains("files have names"), "the grammar fault that shipped with it: {r}");
+		assert!(!r.contains("label files has"), "{r}");
+	}
+
+	#[test]
+	fn a_run_that_read_scalings_does_not_close_by_saying_there_are_none() {
+		// The defect this pair of footers exists for. An ODIS run reported
+		// "633 of 717 variants, 310734 channels" and then, two lines later,
+		// that no installation carries scalings and they must be measured. A
+		// reader who believes the footer goes and drives the car to establish
+		// rows the tool already has.
+		let r = report(&[], true);
+		assert!(r.contains("carries scalings"), "{r}");
+		assert!(!r.contains("no VCDS installation carries them"), "it printed both, which is worse: {r}");
+		// And it still says what they are worth, or it has replaced one wrong
+		// claim with a larger one.
+		assert!(r.contains("evidence, not proof"), "{r}");
+		assert!(r.contains("yours wins"), "the trust order survives the good news: {r}");
+		assert!(r.contains("recording calibrate"), "the way to confirm one is still named: {r}");
+	}
+
+	#[test]
+	fn no_line_of_either_closing_footer_runs_past_eighty_columns() {
+		// Caught twice on real terminals: a sentence written against a short
+		// test path wraps on a real one. Neither of these interpolates
+		// anything, so their width is knowable here and worth pinning.
+		for r in [report(&[], false), report(&[], true)] {
+			for line in r.lines() {
+				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+			}
+		}
 	}
 
 	#[test]
