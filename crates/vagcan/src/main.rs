@@ -10,8 +10,10 @@
 //! the `vag-hex` crate remain, but they are not product commands.
 
 mod analyse;
+mod anomaly;
 mod calibrate;
 mod datadir;
+mod declared;
 mod device;
 mod discover;
 mod extracted;
