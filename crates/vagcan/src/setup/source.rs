@@ -4,7 +4,7 @@
 //! installation, or nothing and an offer to download one. There are two sources
 //! now — a VCDS installation and an extracted ODIS-Service project — and no
 //! argument can be read as both, so the question has to be asked. This module
-//! is the asking: the three options, the copy that tells them apart, the
+//! is the asking: the four ways in, the copy that tells them apart, the
 //! directory each one then needs, and what to say when the directory is the
 //! wrong one.
 //!
@@ -22,15 +22,29 @@
 //! (`research/labels/rod-labels.md` §4.0c). An ODIS project carries the whole
 //! chain and declares it per ECU variant, and three rows this project had
 //! proved by driving came back identical out of the ODIS file with no drive,
-//! two of them engine-speed channels with opposite byte order. So the menu now
-//! leads with the answer that can actually finish the job.
+//! two of them engine-speed channels with opposite byte order. So the top two
+//! rows are both the ODIS project — paired with VCDS wording, then alone.
 //!
-//! **The VCDS line is not a consolation prize**, and its detail says so. Two
-//! things only it supplies: the fault-code text (`Codes.dat` and the `RD.rod`
-//! registry chain — no ODIS project ships either, so without one a fault reads
-//! as a number), and names for the units no ODIS project covers, which on the
-//! reference car is two of fifteen. Somebody who reads the second line must not
-//! come away thinking their installation is now useless.
+//! **The two sources compose, and the top row is that composition.** What an
+//! ODIS project calls a channel is real but machine-phrased —
+//! `Engine_temperature`, `Brake_pedal_information_plausibility` — and each one
+//! carries a text id (`MAS06602`) which is *the same key* VCDS's recovered
+//! `names.json` is written under. So one source gives the structure and the
+//! other gives the wording for the very same rows, and offering that pair as a
+//! first-class answer is better than leaving somebody to discover it by running
+//! `setup` twice.
+//!
+//! **What the VCDS line may not claim.** An earlier version of it said VCDS
+//! supplies fault names, implying ODIS cannot. ODIS can: the project carries
+//! `DTC_*` objects in six figures with their descriptions in the clear. What is
+//! missing is a loader, which is a limit of this build and not a property of
+//! the format, and shipped copy must not freeze a temporary gap into a claim
+//! about the sources. Nor does the line lean on "units ODIS misses" — that was
+//! two of fifteen on one car under one project, which is a sample of one. What
+//! is durably true is what VCDS is *for*: a car no ODIS project covers, or a
+//! person who cannot get one. It also provably does not carry scalings
+//! (`research/labels/rod-labels.md` §4.0c) and has no per-variant channel list
+//! at all, which is why it is no longer the answer on top.
 //!
 //! **A wrong directory is the ordinary failure, not an exceptional one.** The
 //! two misses seen in practice are pointing at `Labels/` inside an installation
@@ -150,7 +164,7 @@ impl Look {
 /// What the menu asks.
 const QUESTION: &str = "What should vagcan learn this car from?";
 
-/// The three sources, the one that can finish the job first.
+/// The four ways in, the one that can finish the job first.
 ///
 /// Split out from [`choose`] so the copy can be measured: a detail line one
 /// column too long is silently cut to `…` by the renderer, and one version of
@@ -158,10 +172,8 @@ const QUESTION: &str = "What should vagcan learn this car from?";
 /// columns is the terminal to write for — see the test.
 ///
 /// Each detail does two jobs in under sixty columns: say how to recognise the
-/// thing, and say what picking it gets you. The second half is what changed
-/// when the order did — the ODIS line no longer has to argue for something
-/// nobody has heard of, and the VCDS line now has to say what only it can give.
-fn options<'a>() -> [Item<'a>; 3] {
+/// thing, and say what picking it gets you.
+fn options<'a>() -> [Item<'a>; 4] {
 	MENU.map(|(label, detail, _)| Item { label, detail })
 }
 
@@ -172,16 +184,32 @@ enum Pick {
 	Dir(Look),
 	/// Fetch an installation first; it is read as one afterwards.
 	Download,
+	/// Ask for an ODIS project, then for somewhere to get the wording.
+	OdisAndNames,
 }
 
 /// The menu as one table: the label, the line under it, and what picking it
 /// does.
 ///
 /// One table rather than a list of items beside a `match` on row numbers. The
-/// order has now been reversed once, and a reorder that moves the copy without
-/// moving the outcome is the worst kind of silent: every row still works, and
-/// every row does the wrong thing.
-const MENU: [(&str, &str, Pick); 3] = [
+/// order has been reversed once and grown once, and a reorder that moves the
+/// copy without moving the outcome is the worst kind of silent: every row still
+/// works, and every row does the wrong thing.
+///
+/// **What the two lines about sources may and may not claim.** An ODIS project
+/// carries the channels, the scalings *and* the fault codes with their text in
+/// the clear; the loader for the last of those is still being written, which is
+/// a limit of this build and not a property of the format, so no line here says
+/// VCDS is needed for fault names. A VCDS installation carries wording and
+/// fault text and provably not scalings (`research/labels/rod-labels.md`
+/// §4.0c), and it has no per-variant channel list at all — so its line says
+/// what it is *for*, which is a car no ODIS project covers.
+const MENU: [(&str, &str, Pick); 4] = [
+	(
+		"ODIS + VCDS names",
+		"channels and scalings from ODIS, wording from VCDS",
+		Pick::OdisAndNames,
+	),
 	(
 		"ODIS project",
 		"a folder like SK37X — what to read, and how to scale it",
@@ -189,11 +217,63 @@ const MENU: [(&str, &str, Pick); 3] = [
 	),
 	(
 		"VCDS installation",
-		"Labels/ and UDS_EV/ — fault names, and units ODIS misses",
+		"Labels/ and UDS_EV/ — when no ODIS project covers the car",
 		Pick::Dir(Look::Vcds),
 	),
 	("Download VCDS", "fetch Ross-Tech's installer, about 90 MB, and read that", Pick::Download),
 ];
+
+/// What the second question asks, once an ODIS project is in hand.
+const NAMES_QUESTION: &str = "Where should the measurement names come from?";
+
+/// What answering the second question does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wording {
+	Point,
+	Download,
+	Skip,
+}
+
+/// The second menu: where the wording for the ODIS channels comes from.
+///
+/// **Skipping is a real answer and it is on the list.** A project holding ODIS
+/// structure and no wording is valid and useful — the channels keep their
+/// machine phrasing (`Engine_temperature`) and everything reads and scales — so
+/// abandoning here must land on that rather than on a failed `setup`. Offering
+/// the download here too, rather than sending somebody back to the first menu
+/// for it, is the same argument: they have already answered the expensive
+/// question.
+const NAMES_MENU: [(&str, &str, Wording); 3] = [
+	("VCDS installation", "point at one — its text table carries the wording", Wording::Point),
+	("Download VCDS", "fetch Ross-Tech's installer, about 90 MB", Wording::Download),
+	("Skip the names", "the channels keep the phrasing ODIS gives them", Wording::Skip),
+];
+
+/// Where the wording comes from, or `None` for none.
+fn names_options<'a>() -> [Item<'a>; 3] {
+	NAMES_MENU.map(|(label, detail, _)| Item { label, detail })
+}
+
+/// What `setup` was told to read, whole.
+///
+/// Two fields because one option needs two inputs. `source` is what the run is
+/// *about* — the structure, and the thing the project is named after; `names`
+/// is where the human wording for those channels comes from, when it comes from
+/// somewhere else. `names` is only ever a VCDS source: an ODIS project already
+/// names its own channels, and nothing else supplies wording at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+	pub source: Source,
+	pub names: Option<Source>,
+}
+
+impl Choice {
+	/// A source on its own, which is three of the four rows and every path
+	/// given on the command line.
+	fn only(source: Source) -> Choice {
+		Choice { source, names: None }
+	}
+}
 
 /// Run the picker.
 ///
@@ -207,20 +287,65 @@ const MENU: [(&str, &str, Pick); 3] = [
 /// An empty line at the directory question means the same thing, and so a
 /// redirected stdin (which takes every default, [`Asker::line`]) backs out
 /// rather than hanging.
-pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<Source>> {
+pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<Choice>> {
 	if let Some(given) = preselected {
-		return Ok(Some(given_path(given)?));
+		return Ok(Some(Choice::only(given_path(given)?)));
 	}
 	let Some(row) = io.ask(QUESTION, &options(), 0)? else {
 		return Ok(None);
 	};
 	match MENU.get(row).map(|(_, _, pick)| *pick) {
-		Some(Pick::Dir(look)) => ask_for(io, look),
-		Some(Pick::Download) => Ok(Some(Source::DownloadVcds)),
+		Some(Pick::OdisAndNames) => odis_and_names(io),
+		Some(Pick::Dir(look)) => Ok(ask_for(io, look)?.map(Choice::only)),
+		Some(Pick::Download) => Ok(Some(Choice::only(Source::DownloadVcds))),
 		// An asker that named a row outside the menu has named nothing. Nobody
 		// chose anything, which is the same answer as leaving.
 		None => Ok(None),
 	}
+}
+
+/// The recommended row: an ODIS project, then somewhere to get the wording.
+///
+/// **The ODIS project is asked for first**, and the order is not arbitrary.
+/// It is the source the run is *about*: it decides what can be read at all,
+/// and it is what the project is named after (spec §4.1), so the run has no
+/// identity until it is answered. Asking for the installation first would be
+/// asking somebody to furnish the wording for channels that may turn out not
+/// to be there.
+///
+/// **Giving up on the second question is not giving up on the run.** An empty
+/// answer at the first question backs out of the whole thing, because nothing
+/// has been decided yet; abandoning the second lands on the ODIS project alone,
+/// which is exactly what the row below this one would have produced. A project
+/// with structure and no wording reads and scales perfectly well — the channels
+/// simply keep the phrasing ODIS gives them — so a half-finished pair is a
+/// smaller result, never a failed `setup`.
+fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
+	let Some(source) = ask_for(io, Look::Odis)? else {
+		return Ok(None);
+	};
+	// Quitting the second menu is the same answer as skipping it, and lands in
+	// the same place rather than returning early — an early return here skipped
+	// the line below that says what was given up, which is the one thing
+	// somebody who changed their mind needs to read.
+	let names = match io.ask(NAMES_QUESTION, &names_options(), 0)? {
+		Some(row) => match NAMES_MENU.get(row).map(|(_, _, wording)| *wording) {
+			Some(Wording::Point) => ask_for(io, Look::Vcds)?,
+			Some(Wording::Download) => Some(Source::DownloadVcds),
+			// A row outside the menu names nothing, which is no wording either.
+			Some(Wording::Skip) | None => None,
+		},
+		None => None,
+	};
+	if names.is_none() {
+		// Wrapped by hand, like every other message this command prints: `say`
+		// does not clip, so a sentence left to the terminal comes out ragged.
+		io.say(
+			"No names source — the channels will read under the phrasing ODIS gives\n\
+             them. Adding one later is another `vagcan setup` into this project.",
+		)?;
+	}
+	Ok(Some(Choice { source, names }))
 }
 
 /// Ask for the directory of a kind already chosen, until it is one or the
@@ -590,13 +715,16 @@ fn projects_in() -> String {
 /// believes they are starting fresh would otherwise find out from the data.
 fn settled(id: &str, already: bool, from_odis: bool) -> String {
 	let how = match from_odis {
-		true => " — the name ODIS gives this folder, kept as it stands",
+		true => " — the name ODIS gives this folder",
 		false => "",
 	};
-	match already {
-		true => format!("Project `{id}`{how}. This source is added to the one already there; nothing already in it is replaced."),
-		false => format!("Project `{id}`{how}. New — nothing has been read into it yet."),
-	}
+	// Two lines, because one ran to 110 columns on a real terminal. The id is
+	// the only part whose length is unknown, so it goes on the first.
+	let what = match already {
+		true => "This source is added to it; nothing already in it is replaced.",
+		false => "New — nothing has been read into it yet.",
+	};
+	format!("Project `{id}`{how}.\n{what}")
 }
 
 /// Why this cannot be a directory under `~/.vagcan/data/`, if it cannot.
@@ -707,20 +835,115 @@ mod tests {
 	}
 
 	#[test]
-	fn the_menu_leads_with_the_source_that_can_finish_the_job() {
-		// Reversed once. The VCDS installation led while ODIS was a second
-		// source bolted onto a VCDS-shaped tool, and the argument for it — that
-		// leading with what almost nobody has makes Enter the wrong answer —
-		// stopped applying when the tool was rebuilt around ODIS. A label file
-		// carries a measurement's name and provably not the identifier it is
-		// read from or its scaling; an ODIS project carries the whole chain.
-		// The pre-highlighted row has to be the one that can finish the job.
+	fn the_menu_leads_with_the_pair_that_can_finish_the_job() {
+		// Reversed once, then grown. The VCDS installation led while ODIS was a
+		// second source bolted onto a VCDS-shaped tool, and that stopped
+		// applying when the tool was rebuilt around ODIS. What leads now is the
+		// two together: ODIS says which identifiers a variant answers and how
+		// to scale them, VCDS supplies the wording for the very same rows, and
+		// both sides key on the same text id. The pre-highlighted row should be
+		// the one that finishes the job most completely.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&project)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Odis { dir: project }));
-		assert_eq!(io.last_labels(), ["ODIS project", "VCDS installation", "Download VCDS"]);
-		assert_eq!(io.highlights, [0], "and it is the row the highlight starts on");
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&project), wording_row(Wording::Point), typed(&install)]);
+		let chosen = choose(&mut io, None).unwrap().unwrap();
+		assert_eq!(chosen.source, Source::Odis { dir: project });
+		assert_eq!(chosen.names, Some(Source::Vcds { dir: install }));
+		assert_eq!(
+			io.seen[0].1.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(),
+			["ODIS + VCDS names", "ODIS project", "VCDS installation", "Download VCDS"]
+		);
+		assert_eq!(io.highlights[0], 0, "and it is the row the highlight starts on");
+	}
+
+	/// The row that asks for both, and the row of the second menu that answers
+	/// the wording question — named rather than numbered, for the same reason
+	/// [`row`] is.
+	fn pair_row() -> Answer {
+		let at = MENU
+			.iter()
+			.position(|(_, _, pick)| *pick == Pick::OdisAndNames)
+			.expect("the pair is on the menu");
+		Answer::Pick(at)
+	}
+
+	fn wording_row(which: Wording) -> Answer {
+		let at = NAMES_MENU
+			.iter()
+			.position(|(_, _, w)| *w == which)
+			.expect("every answer is on the names menu");
+		Answer::Pick(at)
+	}
+
+	#[test]
+	fn the_recommended_row_asks_for_the_project_first_and_the_wording_after() {
+		// The ODIS project decides what can be read at all and is what the
+		// project is named after, so it is the question with an answer worth
+		// having on its own. Asking for the installation first would be asking
+		// somebody to furnish wording for channels that may not be there.
+		let here = tempfile::tempdir().unwrap();
+		let project = odis(here.path(), "SK37X");
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![pair_row(), typed(&project), wording_row(Wording::Point), typed(&install)]);
+		let chosen = choose(&mut io, None).unwrap().unwrap();
+		assert_eq!(chosen.source, Source::Odis { dir: project });
+		assert_eq!(chosen.names, Some(Source::Vcds { dir: install }));
+		let asked: Vec<&str> = io.typed.iter().map(|(question, _)| question.as_str()).collect();
+		assert_eq!(asked, ["Where is the ODIS project?", "Where is the VCDS installation?"], "in that order");
+	}
+
+	#[test]
+	fn the_wording_can_be_downloaded_without_going_back_to_the_first_menu() {
+		// They have already answered the expensive question. Sending them back
+		// to the top to pick the download would throw that away.
+		let here = tempfile::tempdir().unwrap();
+		let project = odis(here.path(), "SK37X");
+		let mut io = Scripted::new(vec![pair_row(), typed(&project), wording_row(Wording::Download)]);
+		let chosen = choose(&mut io, None).unwrap().unwrap();
+		assert_eq!(chosen.source, Source::Odis { dir: project });
+		assert_eq!(chosen.names, Some(Source::DownloadVcds));
+	}
+
+	#[test]
+	fn abandoning_the_wording_leaves_a_project_rather_than_a_failed_run() {
+		// A project with structure and no wording reads and scales perfectly
+		// well — the channels keep the phrasing ODIS gives them. So skipping,
+		// quitting the second menu, and leaving its directory question empty
+		// are all the same answer, and none of them is a failed `setup`.
+		let here = tempfile::tempdir().unwrap();
+		let project = odis(here.path(), "SK37X");
+		let alone = Some(Choice::only(Source::Odis { dir: project.clone() }));
+		for script in [
+			vec![pair_row(), typed(&project), wording_row(Wording::Skip)],
+			vec![pair_row(), typed(&project), Answer::Quit],
+			vec![pair_row(), typed(&project), wording_row(Wording::Point), Answer::Type(String::new())],
+		] {
+			let mut io = Scripted::new(script);
+			assert_eq!(choose(&mut io, None).unwrap(), alone);
+			// Asserted either side of the hand-wrap, never across it.
+			let said = io.all_said();
+			assert!(said.contains("No names source"), "it says what that means: {said}");
+			assert!(said.contains("into this project"), "and how to add one later: {:?}", io.said);
+		}
+	}
+
+	#[test]
+	fn leaving_the_first_question_empty_still_backs_out_of_the_whole_run() {
+		// Nothing has been decided yet, so there is nothing to keep.
+		let mut io = Scripted::new(vec![pair_row(), Answer::Type(String::new())]);
+		assert_eq!(choose(&mut io, None).unwrap(), None);
+		assert_eq!(io.seen.len(), 1, "the wording was never asked about: {:?}", io.seen);
+	}
+
+	#[test]
+	fn every_option_of_both_menus_fits_the_terminal_somebody_actually_has() {
+		// Four rows now, and the first label is the longest yet.
+		for (question, items) in [(QUESTION, options().to_vec()), (NAMES_QUESTION, names_options().to_vec())] {
+			let drawn = crate::ui::menu::screen(question, &items, 0, 80);
+			let cut: Vec<&String> = drawn.iter().filter(|line| line.contains('…')).collect();
+			assert!(cut.is_empty(), "cut off at 80 columns: {cut:?}");
+		}
 	}
 
 	#[test]
@@ -731,7 +954,8 @@ mod tests {
 		// row would do the wrong thing.
 		for (label, _, pick) in MENU {
 			match pick {
-				Pick::Dir(Look::Odis) => assert!(label.contains("ODIS"), "{label}"),
+				Pick::OdisAndNames => assert!(label.contains("ODIS") && label.contains("names"), "{label}"),
+				Pick::Dir(Look::Odis) => assert!(label.contains("ODIS") && !label.contains("names"), "{label}"),
 				Pick::Dir(Look::Vcds) => assert!(label.contains("VCDS installation"), "{label}"),
 				Pick::Download => assert!(label.contains("Download"), "{label}"),
 			}
@@ -753,20 +977,13 @@ mod tests {
 		// The reason to pick each, not just the way to spot it. The VCDS line
 		// matters most: it is second now, and nobody may come away thinking
 		// their installation has been made useless.
+		// The reason to pick each, not just the way to spot it — and no claim
+		// that only VCDS can name a fault, which is a gap in this build rather
+		// than a property of the sources.
 		assert!(menu.contains("how to scale it"), "the ODIS line says what only it supplies: {menu}");
-		assert!(menu.contains("fault names"), "and so does the VCDS line: {menu}");
-	}
-
-	#[test]
-	fn every_option_fits_the_terminal_somebody_actually_has() {
-		// Found on a real pty, not in a test: at 80 columns the ODIS line came
-		// out as "…it carrie…", losing the words that say why anyone would pick
-		// it. The renderer cuts rather than wraps — it must, or the redraw walks
-		// the menu up the screen — so a line too long simply disappears, and
-		// nothing says so. 80 is the width to write for.
-		let drawn = crate::ui::menu::screen(QUESTION, &options(), 0, 80);
-		let cut: Vec<&String> = drawn.iter().filter(|line| line.contains('…')).collect();
-		assert!(cut.is_empty(), "cut off at 80 columns: {cut:?}");
+		assert!(menu.contains("wording from VCDS"), "the pair says what each half brings: {menu}");
+		assert!(menu.contains("no ODIS project covers"), "the VCDS line says what it is for: {menu}");
+		assert!(!menu.contains("fault names"), "VCDS is not the only source of those: {menu}");
 	}
 
 	#[test]
@@ -774,11 +991,11 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![row(Look::Odis), typed(&project)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Odis { dir: project }));
+		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Odis { dir: project })));
 
 		// Downloading asks for no directory: there is nothing on disk yet.
 		let mut io = Scripted::new(vec![download_row()]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::DownloadVcds));
+		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::DownloadVcds)));
 		assert!(io.typed.is_empty(), "nothing was asked for: {:?}", io.typed);
 	}
 
@@ -795,7 +1012,7 @@ mod tests {
 		std::fs::create_dir_all(&music).unwrap();
 		let install = vcds(here.path());
 		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&music), typed(&install)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Source::Vcds { dir: install }));
+		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Vcds { dir: install })));
 		let said = io.all_said();
 		assert!(said.contains(&music.display().to_string()), "the path is named: {said}");
 		assert!(said.contains("Labels/") && said.contains("UDS_EV/"), "what was expected is named: {said}");
@@ -861,11 +1078,11 @@ mod tests {
 		let mut io = Scripted::new(vec![]);
 		assert_eq!(
 			choose(&mut io, Some(&install.display().to_string())).unwrap(),
-			Some(Source::Vcds { dir: install })
+			Some(Choice::only(Source::Vcds { dir: install }))
 		);
 		assert_eq!(
 			choose(&mut io, Some(&project.display().to_string())).unwrap(),
-			Some(Source::Odis { dir: project })
+			Some(Choice::only(Source::Odis { dir: project }))
 		);
 		assert!(io.seen.is_empty(), "the menu never appeared");
 	}

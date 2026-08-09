@@ -45,6 +45,7 @@ use crate::ui::term;
 /// The detail is not decoration. "ODIS project" is three words a Škoda owner
 /// has never met, and the line beside it is the whole of what tells them
 /// whether they have one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Item<'a> {
 	pub label: &'a str,
 	pub detail: &'a str,

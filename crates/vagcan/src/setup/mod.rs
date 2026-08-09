@@ -137,6 +137,10 @@ pub struct Options<'a> {
 /// failure `datadir::existing_folder` was written to undo for cars.
 struct Chosen {
 	source: source::Source,
+	/// Where the wording for the channels comes from, when the recommended row
+	/// was picked and a source for it was actually given. Always a VCDS source
+	/// by the time it gets here — a download has already been fetched.
+	names: Option<source::Source>,
 	project: crate::project::Project,
 	/// The projects that were already on disk when this run started — read
 	/// before anything was created, so [`Chosen::project`] is not in it.
@@ -154,16 +158,11 @@ struct Chosen {
 
 /// Ask what to read, work out what to call it, and open the store.
 fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Option<Chosen>> {
-	let Some(source) = source::choose(io, opts.dir)? else { return Ok(None) };
-	// The download is not a source, it is how one is obtained. Picking it from
-	// the menu *is* the consent — `vendor::confirm_download` asked a second
-	// `[y/N]` for the same decision, and one decision is one question.
-	let source = match source {
-		source::Source::DownloadVcds => source::Source::Vcds {
-			dir: vendor::fetch(opts.archive_base)?,
-		},
-		named => named,
-	};
+	let Some(chosen) = source::choose(io, opts.dir)? else { return Ok(None) };
+	let source = fetched(chosen.source, opts)?;
+	// The wording half of the recommended row. Resolved the same way, because a
+	// download is a download whichever question asked for it.
+	let names = chosen.names.map(|from| fetched(from, opts)).transpose()?;
 
 	let existing = crate::project::list()?;
 	let asked = source::project_id(io, &source, &existing)?;
@@ -178,10 +177,26 @@ fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Op
 	};
 	Ok(Some(Chosen {
 		source,
+		names,
 		project: crate::project::open_or_create(&id)?,
 		existing,
 		odis,
 	}))
+}
+
+/// A download resolved into the installation it fetched.
+///
+/// The download is not a source, it is how one is obtained. Picking it from a
+/// menu *is* the consent — `vendor::confirm_download` asked a second `[y/N]`
+/// for the same decision, and one decision is one question. Both menus can ask
+/// for it, so both go through here.
+fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source> {
+	match source {
+		source::Source::DownloadVcds => Ok(source::Source::Vcds {
+			dir: vendor::fetch(opts.archive_base)?,
+		}),
+		named => Ok(named),
+	}
 }
 
 /// An `s`, when there is more than one of something.
@@ -475,7 +490,7 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 		}
 	}
 
-	let steps = match &chosen.source {
+	let mut steps = match &chosen.source {
 		source::Source::Odis { dir } => {
 			let odis = chosen.odis.as_ref().expect("an ODIS source opens its project in `choose`");
 			read_odis(odis, dir, project)?
@@ -484,6 +499,17 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 		// `choose` turns a download into the installation it fetched.
 		source::Source::DownloadVcds => unreachable!("the download is resolved to an installation before this point"),
 	};
+	// The wording half of the recommended row, read into the same project — the
+	// two sources merge, exactly as running `setup` twice would merge them
+	// (spec §5). It is the whole VCDS read rather than the text table alone:
+	// `names` takes its text table out of the shared pool, which `copy_label_files`
+	// is what fills, and its strongest dictionary out of the installation's own
+	// `Labels/`. A lighter path would have to do both of those anyway, and doing
+	// the whole read also leaves the fault text behind, which is worth having and
+	// which nothing else supplies today.
+	if let Some(source::Source::Vcds { dir }) = &chosen.names {
+		steps.extend(read_vcds(dir, project, opts.refresh)?);
+	}
 
 	// Written down so a later command needs no flag. Not a preference — the
 	// answer to "which car did I just set up", which is the one a bare
@@ -1088,6 +1114,8 @@ mod tests {
 					dir: PathBuf::from("/nowhere/VCDS"),
 				},
 			},
+			// Not what `migration_target_id` turns on.
+			names: None,
 			project: crate::project::Project { id: id.to_string(), dir },
 			existing: existing.iter().map(|s| s.to_string()).collect(),
 			odis: None,
