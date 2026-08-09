@@ -1432,7 +1432,7 @@ mod tests {
 		// folder gets renamed by an unzip and `<SHORT-NAME>` does not.
 		assert_eq!(project.id(), "TEST7X");
 		assert_eq!(project.version(), Some("2610.2.688"));
-		assert_eq!(project.pools(), [pool_id.clone()]);
+		assert_eq!(project.pools(), std::slice::from_ref(&pool_id));
 
 		let variants = project.variants().expect("the project data parses");
 		assert_eq!(

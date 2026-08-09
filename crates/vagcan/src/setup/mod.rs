@@ -309,7 +309,7 @@ fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked:
 	}
 	match crate::project::folder_name(named) {
 		Ok(own) => {
-			let merge = match existing.iter().any(|id| *id == own) {
+			let merge = match existing.contains(&own) {
 				true => " That project is already here: this source is added to it, and nothing already in it is replaced.",
 				false => "",
 			};

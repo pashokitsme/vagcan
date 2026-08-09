@@ -188,6 +188,14 @@ pub fn refused_type_name(type_code: u16) -> Option<&'static str> {
 }
 
 /// What came of asking for an object.
+///
+/// `Object` is 264 bytes against `Unsupported`'s two, and clippy would have it
+/// boxed. It is not, deliberately: `Object` is what nearly every one of the
+/// 310,734 readings in a whole-project parse comes back as, so boxing puts an
+/// allocation on the common path to shrink a variant that occurs twice in 717
+/// ECU variants. The cost is a wide return value moved on the stack, which is
+/// the cheaper half of that trade.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
 	/// A parsed object.

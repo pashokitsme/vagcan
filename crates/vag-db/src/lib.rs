@@ -561,6 +561,30 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 	Ok(written)
 }
 
+/// One `reading` row as SQLite hands it back, before it becomes a
+/// [`vag_data::odis::Reading`].
+///
+/// Named rather than written inline because the column list is fourteen wide
+/// and a positional tuple that long is unreadable at the point it is consumed —
+/// the alias is what lets the `SELECT` above and the destructuring below be
+/// checked against each other by eye.
+type ReadingRow = (
+	i64,
+	u16,
+	String,
+	Option<String>,
+	u32,
+	u32,
+	bool,
+	bool,
+	Option<String>,
+	String,
+	Option<f64>,
+	Option<f64>,
+	Option<i32>,
+	Option<f64>,
+);
+
 /// The channels this cache knows for one ECU variant, by identifier.
 pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::Reading>, Error> {
 	let conn = Connection::open(db_path)?;
@@ -569,22 +593,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::
                 scaling, factor, offset, anchor_raw, anchor_value \
          FROM reading WHERE variant = ?1 ORDER BY did, bit_offset",
 	)?;
-	let rows: Vec<(
-		i64,
-		u16,
-		String,
-		Option<String>,
-		u32,
-		u32,
-		bool,
-		bool,
-		Option<String>,
-		String,
-		Option<f64>,
-		Option<f64>,
-		Option<i32>,
-		Option<f64>,
-	)> = stmt
+	let rows: Vec<ReadingRow> = stmt
 		.query_map(params![variant], |row| {
 			Ok((
 				row.get(0)?,
