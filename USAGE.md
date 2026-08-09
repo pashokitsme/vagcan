@@ -28,42 +28,145 @@ VCDS's own files; neither touches a vehicle.
 
 ### `vagcan setup`
 
-Parses a VCDS installation into `~/.vagcan/data/extracted/`. Offline — no adapter, no car.
-Run it once.
+Reads somebody's diagnostic data into a **project** under `~/.vagcan/data/<project id>/`.
+Offline — no adapter, no car. Run it once.
 
 ```sh
-vagcan setup /path/to/VCDS      # an installation you already have
-vagcan setup                    # or be offered one to download
+vagcan setup                    # pick a source from a menu
+vagcan setup ~/Downloads/SK37X  # …or name one outright, of either kind
 ```
 
-It takes several minutes over a full set of label files, almost all of it in step 2. Watch it
-say what it is doing:
+**A project is a platform, not one car.** VW's own mapping files every Octavia III,
+Karoq and Kodiaq under `SK37X`, so two cars can share a project; what is true of exactly
+one car lives under `~/.vagcan/cars/<VIN>/` instead. Running a second source into a
+project **adds** to it, and nothing already there is replaced.
+
+#### Naming a source outright
+
+The folder itself says which of the two kinds it is, so there is nothing to pick. This
+is an extracted ODIS project:
 
 ```
-Reading the VCDS installation at /Users/you/vcds-en
-Writing everything to /Users/you/.vagcan/data/extracted
+$ vagcan setup ~/Downloads/SK37X
+Project `SK37X` — the name ODIS gives this folder.
+New — nothing has been read into it yet.
+Opening the ODIS project — its two string pools are read whole, which
+takes a moment:
+    /Users/you/Downloads/SK37X
+230 pools, project version 2610.2.688.
+Writing into /Users/you/.vagcan/data/SK37X
 
-[1/3] Label files — parsing every .lbl and decrypting every .clb.
-cached 3035 label files (101241 measurements) in …/data/extracted/cache.sqlite
-[2/3] Measurement names — opening TTTEXT.ROD, then reading its cipher.
-      This is the slow part: every record is under its own substitution, and the
-      attack bootstraps over several passes. Minutes, not seconds.
-[3/3] .rod section keys — searching for the ones not already cached.
+Reading the ODIS project at /Users/you/Downloads/SK37X
+[1/2] Control units — walking each variant's measurement chain.
+[2/2] Names — every object in every pool, for the (text id, name)
+      pairs they carry.
 
 Done.
 
-  the label files: 3035 label files
-    /Users/you/.vagcan/data/extracted/cache.sqlite
-  the measurement names: 3987 names
-    /Users/you/.vagcan/data/extracted/names.json
-  the .rod section keys: 11 keys
-    /Users/you/.vagcan/data/extracted/rod-keys.json
+  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+    /Users/you/.vagcan/data/SK37X/cache.sqlite
+  the measurement names: 21576 names
+    /Users/you/.vagcan/data/SK37X/names.json
+
+Next:  vagcan devices      is the adapter connected?
+       vagcan info         which car is this?
+       vagcan faults       stored faults, named — the labels are copied in now
+
+This project carries scalings, declared per ECU variant — so a channel it
+describes reads as a number the first time, with no drive.
+
+They are evidence, not proof: nothing in them has been confirmed against a
+car, and where a row you proved yourself disagrees, yours wins. Confirming
+one is the same three steps as ever: `vagcan survey`, then
+`vagcan watch --out drive.csv`, then `vagcan recording calibrate`.
 ```
 
-**Run it again and it does almost nothing.** Each step is skipped when what it would
-write is newer than what it would read; a second run on an unchanged installation
-takes about a second and says which steps it skipped. `--refresh` forces the lot —
-what you want after updating VCDS.
+**Fault codes will read as numbers after an ODIS-only run like that one, and nothing on
+screen says so.** That is a limit of this build rather than anything about the sources:
+an ODIS project carries the fault codes *and* their descriptions in the clear, and the
+loader for them is being written. Until it lands, the words come from a VCDS
+installation — so if you want named faults today, read one in as well. The closing
+`vagcan faults` line above is written for the VCDS branch and overstates what this run
+did.
+
+#### Or choose from the menu
+
+With no path, `setup` asks. The first entry is the recommended one and takes both
+sources, because they compose rather than compete — see
+[`ARCHITECTURE.md`](ARCHITECTURE.md):
+
+```
+$ vagcan setup
+? What should vagcan learn this car from?
+❯ ODIS + VCDS names  channels and scalings from ODIS, wording from VCDS
+  ODIS project       a folder like SK37X — what to read, and how to scale it
+  VCDS installation  Labels/ and UDS_EV/ — when no ODIS project covers the car
+  Download VCDS      fetch Ross-Tech's installer, about 90 MB, and read that
+↑↓ move   ⏎ choose   1-4 pick   q quit
+Drag the folder into this window, or paste its path. An empty line goes back.
+Where is the ODIS project? /Users/you/Downloads/SK37X
+? Where should the measurement names come from?
+❯ VCDS installation  point at one — its text table carries the wording
+  Download VCDS      fetch Ross-Tech's installer, about 90 MB
+  Skip the names     the channels keep the phrasing ODIS gives them
+↑↓ move   ⏎ choose   1-3 pick   q quit
+Drag the folder into this window, or paste its path. An empty line goes back.
+Where is the VCDS installation? /Users/you/vcds-en
+Project `SK37X` — the name ODIS gives this folder.
+New — nothing has been read into it yet.
+Opening the ODIS project — its two string pools are read whole, which
+takes a moment:
+    /Users/you/Downloads/SK37X
+230 pools, project version 2610.2.688.
+Writing into /Users/you/.vagcan/data/SK37X
+
+Reading the VCDS installation at /Users/you/vcds-en
+[1/4] Raw files — copying the .rod files and the fault text into the
+      shared pool, so the installation can be deleted afterwards.
+[2/4] Label files — parsing every .lbl and decrypting every .clb.
+cached 3035 label files (101241 measurements) in /Users/you/.vagcan/data/SK37X/cache.sqlite
+[3/4] Measurement names — opening TTTEXT.ROD, then reading its cipher.
+…
+[4/4] .rod section keys — searching for the ones not already cached.
+…
+Reading the ODIS project at /Users/you/Downloads/SK37X
+[1/2] Control units — walking each variant's measurement chain.
+[2/2] Names — every object in every pool, for the (text id, name)
+      pairs they carry.
+
+Done.
+
+  the raw files: 16577 files copied, 0 already current
+    /Users/you/.vagcan/rod
+  the label files: 3035 label files
+    /Users/you/.vagcan/data/SK37X/cache.sqlite
+  the measurement names: 14738 names
+    /Users/you/.vagcan/data/SK37X/names.json
+  the .rod section keys: 3 keys
+    /Users/you/.vagcan/data/SK37X/rod-keys.json
+  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+    /Users/you/.vagcan/data/SK37X/cache.sqlite
+  the measurement names: 36314 names
+    /Users/you/.vagcan/data/SK37X/names.json
+```
+
+(The `…` are the two `.rod` section listings the key search prints as it goes; they run
+to a few dozen lines and say nothing you have to act on.)
+
+The VCDS half is read **first**, and the names count climbing from 14738 to 36314 is
+why: recovering names from `TTTEXT.ROD` writes the file wholesale, while the ODIS pass
+merges into whatever is already there. The other way round, the wholesale write would
+land on top.
+
+**Abandoning the second question is a real answer**, not a failed run. Press `q` or give
+an empty path and the project keeps the phrasing ODIS gives its channels
+(`Engine_temperature`), which reads and scales perfectly well. Adding wording later is
+another `vagcan setup` into the same project.
+
+**Run it again and it does almost nothing.** Each VCDS step is skipped when what it
+would write is newer than what it would read; a second run on an unchanged installation
+takes about a second and says which steps it skipped. `--refresh` forces the lot — what
+you want after updating VCDS.
 
 **Recovering `.rod` keys costs about a minute of every core per blocked section.**
 The search is built in — there is no flag to pass — and `setup` only ever runs it for
@@ -73,9 +176,11 @@ a section with no cached key is reported as unreadable rather than paid for agai
 Without it, setup uses the keys already cached and says so rather than pretending the
 sections are empty.
 
-**What setup does not do is supply scalings.** No VCDS installation carries them —
-see [`ARCHITECTURE.md`](ARCHITECTURE.md). Those are measured; see
-[teaching it a new measurement](#flow-teaching-it-a-new-measurement).
+**A VCDS installation on its own supplies no scalings.** None carries them — see
+[`ARCHITECTURE.md`](ARCHITECTURE.md) — so on that path every channel starts as raw bytes
+until it is measured; see
+[teaching it a new measurement](#flow-teaching-it-a-new-measurement). An ODIS project
+does carry them, and says so in its closing lines.
 
 ### `vagcan devices`
 
@@ -125,9 +230,16 @@ vagcan faults --ecu 01,713 --details   # two units, with the raw freeze frames
 vagcan faults --all                    # every code, not only the confirmed ones
 ```
 
-After `setup`, the codes come out in VW's own words with no extra flag — the labels are
-in `~/.vagcan`. To read a different installation, run `setup` on it: one is held at a
-time, and a second one replaces the first rather than mixing with it.
+Once a **VCDS installation** has been read, the codes come out in VW's own words with no
+extra flag — the fault text is in `~/.vagcan/rod/`. A project set up from an ODIS
+project alone shows the numbers instead: the fault text is in there too, in the clear,
+but the loader for it is still being written, so today the words come from VCDS. Run
+`setup` on an installation as well and this section fills in.
+
+The raw files are shared across every project and only ever swapped wholesale for a
+different **language build** — an English install landing on a Russian one clears it
+first and says so, because layering the two would leave names from one beside fault text
+from the other.
 
 ```
 $ vagcan faults
@@ -199,9 +311,11 @@ That list needs no label file at all.
 
 ### `vagcan watch`
 
-A full-screen view of several units at once, configured from inside with `c` rather
-than by flags. `/` filters across everything the survey found; `g` marks a channel
-for the chart; `s` saves.
+A full-screen view of several units at once, configured from inside rather than by
+flags. The live screen offers `[c] configure`, `[g] chart`, `[s] lines` and `[q] quit`;
+`c` opens the chooser, where `[space]` toggles a channel, `[f]` marks a favourite,
+`[g]` charts it, `[/]` filters and `[u]` is explained below. `s` opens the chart-lines
+screen with the chart up, so you pick what is drawn while you can see it.
 
 ```sh
 vagcan watch                                 # everything this car can offer
@@ -213,6 +327,19 @@ vagcan watch --replay drive.csv              # play a recording back, no car
 
 Output that is not a terminal gets the plain CSV mode whether or not it asked, so this
 works down a pipe or in a log.
+
+**Channels whose only label is their own identifier are hidden by default.** The
+chooser's title says how many, as `choose what to show — 800 · 43 unnamed hidden`, and
+its key line says `43 with no name anywhere are hidden — [u] shows them`. Where a name
+does exist it comes off a chain: a row you proved yourself, then the wording a VCDS
+installation recovered for that channel's text id, then the name the ODIS variant
+carries for it, then the bare identifier. The VCDS link is used only where a VCDS
+installation has actually been read into the project — on an ODIS-only project the
+row's own name is the more specific of the two, and the generic one would put two live
+channels under a single label.
+
+**Favourites persist per car**, in `~/.vagcan/cars/<VIN>/favourites.json`, and sort to
+the top of the chooser.
 
 **Values with no proven scaling are shown as bytes and tagged `(raw)`**, never as a
 bare number — a reader cannot tell an invented number from a measured one, and this
@@ -296,7 +423,8 @@ vagcan vcds labels /path/to/VCDS --part 8V0906264H
 vagcan vcds labels /path/to/VCDS --block 2 --field 1
 vagcan vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
 vagcan vcds rod TTTEXT.ROD --dump out/         # open a .rod container
-vagcan vcds label files /path/to/VCDS/Labels --out label files.json
+vagcan vcds dump /path/to/VCDS/Labels --out labels.json
+vagcan vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
 vagcan vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
 ```
 
@@ -312,7 +440,7 @@ reads `F19E` off the unit and resolves that.
 ## Flow: a first drive
 
 ```sh
-vagcan setup /path/to/VCDS         # once, offline
+vagcan setup                       # once, offline: pick a source
 vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
@@ -325,8 +453,10 @@ vagcan watch                       # now every unit is on offer
 
 ## Flow: teaching it a new measurement
 
-This is the loop that turns raw bytes into numbers, and it needs **a car, not a VCDS
-installation**. Nothing in any label files carry a scaling.
+This is the loop that turns raw bytes into numbers, and it needs **a car**. No VCDS
+label file carries a scaling. An ODIS project does, but what it gives you is a
+manufacturer's declaration rather than a measurement — this is how you check one, or
+how you get a number at all for a channel no project describes.
 
 **1. Find what moves.** Two sweeps, one parked and one after a drive:
 
@@ -364,7 +494,8 @@ vagcan recording calibrate --log drive.csv --out 8V0906264H.json
 
 Nothing under R² 0.995 over 20 points and 4 distinct raw values is accepted.
 
-**5. Install and name.** Move the file to `~/.vagcan/data/measured/`, named for the
+**5. Install and name.** Move the file into your project's `measurements/` directory —
+`~/.vagcan/data/<project id>/measurements/` — named for the
 part number the unit reports for itself (`vagcan properties --ecu 01` shows it). The
 rows arrive keyed by identifier and unnamed, because a fit proves what the bytes mean
 and not what the quantity is called — `vagcan vcds names <word>` is where the wording
@@ -384,22 +515,25 @@ cannot help.
 
 ### "The measurement names are not on this machine" / "The .rod section keys are not…"
 
-Nothing has been parsed out of a VCDS installation yet.
+No source has been read into a project yet. Both artefacts named there come from a VCDS
+installation:
 
 ```sh
 vagcan setup /path/to/VCDS
 ```
 
-One command, no car. If you have no VCDS installation, run `vagcan setup` with no path
-and it offers to download one — that copy is Ross-Tech's software,
-redistributed unmodified; you can also get it from them directly at
-<https://www.ross-tech.com/vcds/download/> and point `setup` at it.
+One command, no car. If you have no installation, run `vagcan setup` with no path and
+pick the download — that copy is Ross-Tech's software, redistributed unmodified; you
+can also get it from them directly at <https://www.ross-tech.com/vcds/download/> and
+point `setup` at it.
 
 ### "This car has no proven measurement rows" / a screen full of `(raw)`
 
-The car has never been calibrated. **`vagcan setup` cannot fix this**, however many
-times you run it: label files carry names and no scaling at all, so no
-installation of VCDS contains what is missing.
+The car has never been calibrated, and no source describes the channel. **Re-running
+`vagcan setup` on a VCDS installation cannot fix this**, however many times you do it:
+label files carry names and no scaling at all. An ODIS project covering the car would
+supply one — that is the cheap thing to try first — and where neither has it, the
+number has to be measured.
 
 ```sh
 vagcan survey
@@ -412,8 +546,37 @@ above.
 
 ### Other things it may say
 
-**"is not a directory"** from `setup` — the path is not a VCDS installation root. That
-is the directory holding `Labels/` and `UDS_EV/`.
+**"is not a directory"** from `setup` — nothing is at that path, or what is there is a
+file. It names both shapes it would have accepted, and points at Ross-Tech's download
+when you have neither:
+
+```
+$ vagcan setup ~/Downloads/SK37
+Error: /Users/you/Downloads/SK37 is not a directory — there is nothing at that path.
+
+    An extracted ODIS project is the folder holding `AStringData.data.gz` and the `<pool>.key` files.
+    A VCDS installation root is the folder holding `Labels/` and `UDS_EV/`.
+
+With no path at all, `vagcan setup` asks which to read — and offers to download an
+installation if you have neither.
+Ross-Tech's own: https://www.ross-tech.com/vcds/download/
+```
+
+A path that *is* a directory but neither shape gets the same list, with a guess in
+front of it where there is one to make — pointing at the folder above a project, or at
+`Labels/` inside an installation, are the two ordinary misses:
+
+```
+$ vagcan setup ~/Downloads
+Error: /Users/you/Downloads is neither an ODIS project nor a VCDS installation.
+    It does hold one. Did you mean:
+        /Users/you/Downloads/SK37X
+```
+
+Pointing at an archive rather than an unpacked folder says so too — *"it is a file. If
+that is an archive, unpack it and point at the folder it unpacks to."* From the menu
+rather than the command line, none of these ends the run: it says the same thing and
+asks again.
 
 **"encrypted (recover with …)"** against a `.rod` section — no cached key for it. Run
 the search against that file: `vagcan vcds rod <file.rod>`.
@@ -422,8 +585,9 @@ the search against that file: `vagcan vcds rod <file.rod>`.
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not
 a damaged file, and not something a retry fixes.
 
-**"no readable fault registry"** — `~/.vagcan` has no `UDS_EV/RD.rod` or no fault text
-file, or the registry's key has not been recovered. All of it comes from `vagcan setup`.
+**"no readable fault registry"** — `~/.vagcan/rod/` has no `RD.rod` or no fault text
+file, or the registry's key has not been recovered. All three come from `vagcan setup`
+run on a VCDS installation.
 
 **Nothing on screen and no error** from `watch` — the car answered nothing. Check
 `vagcan devices`, then the termination jumper.
