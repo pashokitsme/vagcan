@@ -2,8 +2,10 @@
 
 **Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
 definitions as **data, not code**: names from VW's own label files
-(`~/.vagcan/data/extracted/names.json`), read address + scaling + unit **proven live on the car**
-(`~/.vagcan/data/measured/<part number>.json`, keyed by what the unit reports about itself).
+(`~/.vagcan/data/<project>/names.json`), read address + scaling + unit **proven live on the car**
+(`~/.vagcan/data/<project>/measurements/<part number>.json`, keyed by what the unit
+reports about itself) — and, since 2026-08-08, declared by VW's own ODIS project data
+for every identifier a control unit's variant defines.
 The label files carry the scaling *values* but not the join from a measurement to its
 scaling or read DID, so scaling is still proven live — the full audit, including which
 earlier refutation rested on a broken decode, is in
@@ -425,7 +427,7 @@ in `research/logs/`, and crossing it with them now gives:
 | `LOG-02-IDE00022ENG103074_&11.CSV` | 59 | 10 (gearbox) |
 
 **No new catalog row comes out of it, and that is the point.** All 18 are already shipped:
-ten gearbox and three engine rows are in `~/.vagcan/data/measured/`, and the other five are
+ten gearbox and three engine rows are in the project's `measurements/`, and the other five are
 standard OBD-II PIDs mirrored at `F400 + PID`, already in `vag_data::obd` and correctly
 *not* in any car file — `F405` = PID 05 coolant `raw − 40`, `F40D` = 0D speed, `F40F` = 0F
 intake air `raw − 40`, `F423` = 23 fuel rail `raw × 10`, `F446` = 46 ambient `raw − 40`.
@@ -465,7 +467,7 @@ substitution, and the `MWB` code is a global function of the text-id with no per
 of freedom. So the label files are for **names and per-ECU lists**, nothing more.
 
 The name table itself is cracked (`research/labels/tttext-codec.md`): `vagcan setup` now
-rebuilds `~/.vagcan/data/extracted/names.json` from the installation rather than shipping
+rebuilds the project's `names.json` from the installation rather than shipping
 the file, and the in-tool parser carries the word-frequency prior (2026-08-06), recovering
 **14,738 names** — comparable to the original solver's 17,009 (98.5 % agreement on shared
 ids, 6,881 the oracle lacked). Searchable with `vagcan vcds names <text>`. The `ENG######`
@@ -491,7 +493,7 @@ gearbox mode, switches and lamps cannot be fitted: a two-level value fits any li
 exactly. `discover` classifies a `watch --out` recording into never-moved / stepped /
 continuous and ranks the stepped columns, with `--pairs` for candidates whose transitions
 coincide. The gear (`0x3816`, η² = 0.972 against the proven shaft-speed ratio) and the
-selector lever (`0x3809`) are identified and in `~/.vagcan/data/measured/0CW300041G.json` as enums.
+selector lever (`0x3809`) are identified and in the project's `measurements/0CW300041G.json` as enums.
 Still to do: the drive mode (D/S/manual — never selected during the recording, so the
 stimulus is missing, not the signal), and the same treatment for the other units.
 
