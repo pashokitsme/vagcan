@@ -35,6 +35,15 @@ pub struct Channel {
 	/// How to read it, when this project has proven or standardised it.
 	/// `None` means the bytes are shown raw.
 	pub def: Option<MeasurementDef>,
+	/// What the label files call it, found through the text id the row carried.
+	///
+	/// Preferred over [`MeasurementDef::name`] on screen. An ODIS long name is
+	/// written for a diagnostic engineer and reads like one —
+	/// `Brake_pedal_information_plausibility` — while the same channel's text
+	/// id reaches a sentence somebody can read at an open driver's door. It is
+	/// a lookup through an id the data itself carries; nothing here holds a
+	/// name for an identifier.
+	pub named: Option<String>,
 	/// Whether a drive on a car established this scaling.
 	///
 	/// **Not the same question as "is there a `def`".** A channel can be fully
@@ -55,13 +64,28 @@ impl Channel {
 			.unwrap_or_else(|| format!("{:03X}", self.request))
 	}
 
-	/// Column heading. A known channel uses its name; an unknown one is shown
-	/// by address, since there is nothing honest to call it.
+	/// Column heading, in the order of how much it tells a reader: the label
+	/// files' wording, then whatever the row's own source called it, then the
+	/// address — because a channel nothing describes has nothing honest to be
+	/// called.
 	pub fn label(&self) -> String {
+		if let Some(name) = &self.named {
+			return name.clone();
+		}
 		match &self.def {
 			Some(d) => d.name.to_string(),
 			None => format!("{}/{:04X}", self.unit(), self.did),
 		}
+	}
+
+	/// Whether anything at all describes this channel.
+	///
+	/// False means [`Self::label`] is the identifier written twice — the row
+	/// the selection screen hides by default, because two thousand of them
+	/// bury the ones a person can read. It is the *only* thing that decides
+	/// that, so a channel that gains a name gains a place on the list with it.
+	pub fn is_named(&self) -> bool {
+		self.named.is_some() || self.def.is_some()
 	}
 
 	pub fn unit_of_measure(&self) -> &str {
@@ -169,6 +193,9 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 			request: ENGINE,
 			did: vag_data::obd::did_for_pid(p.pid),
 			def: Some(p.to_def()),
+			// SAE J1979 names its own parameters, and there is no text id on a
+			// standard row to look anything else up by.
+			named: None,
 			// The standard's, not this car's: `F40D` is one byte of km/h on the
 			// engine by convention and demonstrably something else elsewhere.
 			proven: false,
@@ -184,21 +211,23 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 			unit.odx_name.as_deref(),
 			unit.odx_version.as_deref(),
 		);
-		for (def, proven) in defs {
-			let ReadId::Uds(did) = def.address;
+		for row in defs {
+			let ReadId::Uds(did) = row.def.address;
 			// A control unit's own proven row wins over the standard one at
 			// the same address: they can mean different things. F40D is one
 			// byte of km/h on the engine and two little-endian bytes on the
 			// gearbox.
 			if let Some(existing) = out.iter_mut().find(|c| c.request == request && c.did == did) {
-				existing.def = Some(def);
-				existing.proven = proven;
+				existing.def = Some(row.def);
+				existing.named = row.named;
+				existing.proven = row.proven;
 			} else {
 				out.push(Channel {
 					request,
 					did,
-					def: Some(def),
-					proven,
+					def: Some(row.def),
+					named: row.named,
+					proven: row.proven,
 					selected: false,
 				});
 			}
@@ -279,6 +308,7 @@ pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
 				request,
 				did,
 				def: None,
+				named: None,
 				proven: false,
 				selected: false,
 			});
@@ -526,6 +556,7 @@ mod tests {
 				raw_form: RawForm::U16Be,
 				scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
 			}),
+			named: None,
 			proven: true,
 			selected: true,
 		}
@@ -602,6 +633,7 @@ mod tests {
 			request: GEARBOX,
 			did: 0x38F0,
 			def: None,
+			named: None,
 			proven: false,
 			selected: true,
 		};
@@ -613,6 +645,7 @@ mod tests {
 			request: 0x713,
 			did: 0x1234,
 			def: None,
+			named: None,
 			proven: false,
 			selected: true,
 		};
@@ -632,12 +665,43 @@ mod tests {
 			request: GEARBOX,
 			did: 0x3816,
 			def: Some(gear),
+			named: None,
 			proven: false,
 			selected: true,
 		};
 		assert_eq!(c.render(&[0x05]), "4");
 		assert_eq!(c.render(&[0x0C]), "R");
 		assert_eq!(c.render(&[0x09]), "09 (raw)");
+	}
+
+	#[test]
+	fn a_label_prefers_the_label_files_wording_over_the_projects_own() {
+		// The reported defect, in one row: an ODIS long name is written for a
+		// diagnostic engineer, and the same channel's text id reaches a
+		// sentence. Both beat the identifier, which is what a row nothing
+		// describes is left with.
+		let odis = Channel {
+			named: None,
+			..known(ENGINE, 0x0283, "Brake_pedal_information_plausibility")
+		};
+		assert_eq!(odis.label(), "Brake_pedal_information_plausibility");
+		assert!(odis.is_named());
+
+		let from_labels = Channel {
+			named: Some("Brake pedal plausibility".to_string()),
+			..odis.clone()
+		};
+		assert_eq!(from_labels.label(), "Brake pedal plausibility");
+
+		// Nothing describes it, so the label is the address — and this is the
+		// row the selection screen has to be able to tell apart from the rest.
+		let nameless = Channel {
+			def: None,
+			named: None,
+			..odis
+		};
+		assert_eq!(nameless.label(), "01/0283");
+		assert!(!nameless.is_named());
 	}
 
 	#[test]

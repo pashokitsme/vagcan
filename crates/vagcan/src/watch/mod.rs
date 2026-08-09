@@ -1469,6 +1469,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 				request: *request,
 				did: *did,
 				def: None,
+				named: None,
 				proven: false,
 				selected: true,
 			}),
@@ -2188,6 +2189,7 @@ mod tests {
 				raw_form: RawForm::U16Be,
 				scaling: Scaling::Linear(LinearScale { factor: 0.001, offset: 0.0 }),
 			}),
+			named: None,
 			proven: true,
 			selected: true,
 		}
@@ -2211,6 +2213,7 @@ mod tests {
 					levels: vec![(5, "4".to_string()), (12, "R".to_string())],
 				},
 			}),
+			named: None,
 			proven: true,
 			selected: true,
 		}
@@ -2221,6 +2224,7 @@ mod tests {
 			request,
 			did,
 			def: None,
+			named: None,
 			proven: false,
 			selected: true,
 		}

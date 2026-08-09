@@ -24,6 +24,7 @@
 //! [`merge`] keeps the proven row and the extracted one stays unread. No code
 //! here picks a winner on the strength of an argument.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use vag_data::catalog::{MeasurementDef, ReadId};
@@ -35,10 +36,39 @@ use vag_data::measure::RawForm;
 /// Holds the variant names rather than the channels: a project has hundreds of
 /// variants and a third of a million channels, and a car needs the handful
 /// belonging to the one variant it turns out to be.
+///
+/// It also holds the project's `names.json`, because that file is the other
+/// half of the same question. An extracted row carries a **text id** and that
+/// id is the key `names.json` is written under — the whole finding
+/// `research/labels/odis-crib.md` §3 rests on — so a channel's wording is a
+/// lookup through an id the row itself carries, never a table of names in this
+/// source.
 #[derive(Debug)]
 pub struct Extracted {
 	cache: PathBuf,
 	variants: Vec<String>,
+	/// text id → what the label files call it. Empty for a project that has
+	/// none, which is not an error: `watch --catalogs <dir>` has no project at
+	/// all, and a project set up before names were recovered has no file.
+	names: BTreeMap<String, String>,
+}
+
+/// One channel a unit offers, with everything known about how to name it.
+///
+/// Three separate facts, and collapsing any two of them loses something a
+/// reader is entitled to: `def` is how the bytes are read, `proven` is whether
+/// a drive established that, and `named` is the label files' own wording for
+/// the same channel. The last one exists because an ODIS long name is written
+/// for a diagnostic engineer — `Brake_pedal_information_plausibility` — and the
+/// text id it carries reaches a sentence written for a person.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resolved {
+	pub def: MeasurementDef,
+	/// Whether a drive on a car established this scaling — see [`tagged`].
+	pub proven: bool,
+	/// What this project's `names.json` calls the channel's text id, when the
+	/// row carried one and the file knows it.
+	pub named: Option<String>,
 }
 
 /// What this run's project knows, or nothing when there is no project.
@@ -62,7 +92,24 @@ pub fn current() -> Extracted {
 pub fn open(project: &crate::project::Project) -> Extracted {
 	let cache = project.cache();
 	let variants = vag_db::reading_variants(&cache).unwrap_or_default();
-	Extracted { cache, variants }
+	Extracted {
+		cache,
+		variants,
+		names: read_names(&project.names()),
+	}
+}
+
+/// A project's `names.json` as a map, or nothing at all.
+///
+/// A missing or unparseable file is a project whose names have not been
+/// recovered, which is an ordinary state and not a failure: every channel then
+/// keeps whatever its own source called it. Failing the run over it would take
+/// `watch` off a car for the sake of nicer wording.
+fn read_names(path: &std::path::Path) -> BTreeMap<String, String> {
+	std::fs::read_to_string(path)
+		.ok()
+		.and_then(|text| serde_json::from_str(&text).ok())
+		.unwrap_or_default()
 }
 
 impl Extracted {
@@ -75,7 +122,18 @@ impl Extracted {
 		Extracted {
 			cache: PathBuf::new(),
 			variants: Vec::new(),
+			names: BTreeMap::new(),
 		}
+	}
+
+	/// What the label files call a text id, when this project has recovered it.
+	///
+	/// The whole of the name join, in one place: nothing else in this tool maps
+	/// an id to words, so a caller cannot end up with a name from somewhere
+	/// this project cannot point at.
+	pub fn name_of(&self, text_id: Option<&str>) -> Option<&str> {
+		let id = text_id?;
+		self.names.get(id).map(String::as_str).filter(|name| !name.trim().is_empty())
 	}
 
 	/// Whether this project knows any channels at all.
@@ -94,6 +152,16 @@ impl Extracted {
 	/// family with an unconfirmed variant, and when an `Exact` or a `Version`
 	/// match exists the family ones are guesses standing next to an answer.
 	pub fn for_unit(&self, odx_name: Option<&str>, version: Option<&str>) -> Vec<MeasurementDef> {
+		self.described(odx_name, version).into_iter().map(|(def, _)| def).collect()
+	}
+
+	/// The same, with each row's **text id** still attached.
+	///
+	/// Split out rather than folded into [`Self::for_unit`] because the id is
+	/// what reaches `names.json`, and dropping it here is exactly how every
+	/// channel on the selection screen came to be called after the ODIS long
+	/// name — or, where there was none, after its own identifier.
+	fn described(&self, odx_name: Option<&str>, version: Option<&str>) -> Vec<(MeasurementDef, Option<String>)> {
 		// A project that knows nothing answers nothing, without opening a cache
 		// that has nothing in it. That is every VCDS-only project, which is
 		// still the common case.
@@ -115,20 +183,21 @@ impl Extracted {
 		ranked.retain(|(rank, _)| *rank == best);
 		ranked.sort_by(|a, b| a.1.cmp(b.1));
 
-		let mut out: Vec<MeasurementDef> = Vec::new();
+		let mut out: Vec<(MeasurementDef, Option<String>)> = Vec::new();
 		for (_, name) in ranked {
 			let Ok(readings) = vag_db::readings_of(&self.cache, name) else {
 				continue;
 			};
 			for reading in readings {
+				let text_id = reading.text_id.clone();
 				let Some(def) = to_def(&reading) else { continue };
 				let ReadId::Uds(did) = def.address;
 				// Two variants of one family can describe the same identifier.
 				// The first wins, which is the alphabetically first — arbitrary,
 				// but stable, and a run that reported a different name each time
 				// would be worse than one that reports a fixed one.
-				if !out.iter().any(|held| held.address == ReadId::Uds(did)) {
-					out.push(def);
+				if !out.iter().any(|(held, _)| held.address == ReadId::Uds(did)) {
+					out.push((def, text_id));
 				}
 			}
 		}
@@ -195,12 +264,26 @@ pub fn tagged(
 	part_number: Option<&str>,
 	odx_name: Option<&str>,
 	version: Option<&str>,
-) -> Vec<(MeasurementDef, bool)> {
+) -> Vec<Resolved> {
 	let proven = store.for_unit(part_number, odx_name);
-	let mut out: Vec<(MeasurementDef, bool)> = proven.into_iter().map(|def| (def, true)).collect();
-	for def in extracted.for_unit(odx_name, version) {
-		if !out.iter().any(|(held, _)| held.address == def.address) {
-			out.push((def, false));
+	let mut out: Vec<Resolved> = proven
+		.into_iter()
+		.map(|def| Resolved {
+			def,
+			proven: true,
+			// A proven row was named by whoever proved it on the car, and that
+			// name is the one they will look for. There is no text id on it to
+			// look anything else up by, either.
+			named: None,
+		})
+		.collect();
+	for (def, text_id) in extracted.described(odx_name, version) {
+		if !out.iter().any(|held| held.def.address == def.address) {
+			out.push(Resolved {
+				named: extracted.name_of(text_id.as_deref()).map(str::to_string),
+				def,
+				proven: false,
+			});
 		}
 	}
 	out
@@ -227,6 +310,12 @@ mod tests {
 	/// A cache holding one project's channels. **Every byte is synthetic** — no
 	/// test reads a real ODIS project or the owner's own `~/.vagcan`.
 	fn cache_with(dir: &Path, variants: &[(&str, Vec<vag_data::odis::Reading>)]) -> Extracted {
+		named_cache_with(dir, variants, &[])
+	}
+
+	/// The same, with a `names.json` beside it — text id to what the label
+	/// files call it. **Every byte is synthetic**, ids included.
+	fn named_cache_with(dir: &Path, variants: &[(&str, Vec<vag_data::odis::Reading>)], names: &[(&str, &str)]) -> Extracted {
 		let cache = dir.join("cache.sqlite");
 		for (name, readings) in variants {
 			vag_db::put_readings(&cache, "/nowhere/SK37X", name, readings).expect("the fixture writes");
@@ -234,6 +323,7 @@ mod tests {
 		Extracted {
 			variants: vag_db::reading_variants(&cache).unwrap(),
 			cache,
+			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
 		}
 	}
 
@@ -428,6 +518,73 @@ mod tests {
 	}
 
 	#[test]
+	fn a_channel_is_named_through_the_text_id_its_own_row_carries() {
+		// The complaint this answers: every row on the selection screen was
+		// called either after an ODIS long name written for a diagnostic
+		// engineer, or — where the project had none — after its own identifier.
+		// The row carries a text id, `names.json` is keyed by that id, and the
+		// join is a lookup rather than a table of names in this source.
+		let here = tempfile::tempdir().unwrap();
+		let mut named = reading(0x0283, "Brake_pedal_information_plausibility", 0, 16, true);
+		named.text_id = Some("MAS11563".to_string());
+		let mut unknown_id = reading(0x0284, "Ambient_pressure", 0, 16, true);
+		unknown_id.text_id = Some("MAS04415".to_string());
+		let x = named_cache_with(
+			here.path(),
+			&[("EV_Test", vec![named, unknown_id, reading(0x0285, "no text id at all", 0, 16, true)])],
+			&[("MAS11563", "Brake pedal plausibility"), ("MAS99999", "some other channel")],
+		);
+
+		let store = vag_data::catalog::CatalogStore::open(here.path().join("nothing"));
+		let rows = tagged(&store, &x, None, Some("EV_Test"), None);
+		assert_eq!(rows.len(), 3, "{rows:#?}");
+		assert_eq!(rows[0].named.as_deref(), Some("Brake pedal plausibility"));
+		// An id `names.json` does not know leaves the row with what its own
+		// source called it — never with a name from somewhere else.
+		assert_eq!(rows[1].named, None);
+		assert_eq!(rows[2].named, None);
+	}
+
+	#[test]
+	fn a_proven_row_keeps_the_name_of_whoever_proved_it() {
+		// A `measurements/` row was named by the person who established it on a
+		// car, and that is the name they will look for. It carries no text id
+		// to look anything else up by either.
+		let here = tempfile::tempdir().unwrap();
+		let mut row = reading(0x380A, "Getriebe-Eingangsdrehzahl", 0, 16, false);
+		row.text_id = Some("IDE00116".to_string());
+		let x = named_cache_with(
+			here.path(),
+			&[("EV_TCMDQ200021_001", vec![row])],
+			&[("IDE00116", "Transmission input speed")],
+		);
+		// A store with the same identifier proven on a car.
+		let dir = here.path().join("measured");
+		std::fs::create_dir_all(&dir).unwrap();
+		let catalog = vag_data::catalog::MeasurementCatalog::new(vec![proven(0x380A, "Input shaft speed")]);
+		std::fs::write(dir.join("0CW300041G.json"), serde_json::to_string(&catalog).unwrap()).unwrap();
+		let store = vag_data::catalog::CatalogStore::open(&dir);
+		let rows = tagged(&store, &x, Some("0CW300041G"), Some("EV_TCMDQ200021"), Some("001"));
+		assert_eq!(rows.len(), 1, "{rows:#?}");
+		assert!(rows[0].proven);
+		assert_eq!(rows[0].def.name, "Input shaft speed");
+		assert_eq!(rows[0].named, None, "a proven row is not renamed under the person who proved it");
+	}
+
+	#[test]
+	fn a_blank_name_in_the_catalog_is_no_name_rather_than_an_empty_row() {
+		// `names.json` is merged from more than one source and an empty string
+		// is a value it can hold. Preferring one would replace a readable ODIS
+		// name with nothing at all.
+		let here = tempfile::tempdir().unwrap();
+		let mut row = reading(0x0283, "Ambient_pressure", 0, 16, true);
+		row.text_id = Some("MAS04415".to_string());
+		let x = named_cache_with(here.path(), &[("EV_Test", vec![row])], &[("MAS04415", "   ")]);
+		assert_eq!(x.name_of(Some("MAS04415")), None);
+		assert_eq!(x.name_of(None), None);
+	}
+
+	#[test]
 	fn a_project_with_no_extracted_rows_is_the_ordinary_case_and_not_an_error() {
 		// The tool worked this way until an ODIS project became a second source,
 		// and a VCDS-only project still does.
@@ -435,6 +592,7 @@ mod tests {
 		let x = Extracted {
 			cache: here.path().join("nothing.sqlite"),
 			variants: Vec::new(),
+			names: BTreeMap::new(),
 		};
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());

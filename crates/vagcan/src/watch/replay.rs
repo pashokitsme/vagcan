@@ -157,6 +157,7 @@ pub fn resolve(columns: &[Column], channels: &mut Vec<Channel>, request: u16) ->
 					request,
 					did,
 					def: None,
+					named: None,
 					proven: false,
 					selected: false,
 				});
@@ -307,6 +308,7 @@ mod tests {
 				raw_form: RawForm::U16Le,
 				scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
 			}),
+			named: None,
 			proven: true,
 			selected: false,
 		}
