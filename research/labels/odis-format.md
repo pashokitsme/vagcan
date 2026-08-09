@@ -371,12 +371,10 @@ variant was picked. It was not:
   names is present in the project for every unit but the two doors.
 - **Trying every sibling version of the same unit recovers one identifier of 238.** Not a
   version-selection problem, and not close to one.
-- **The two door units have no variant in this project under any name.** The car reports
-  `EV_DCUDriveSideEWMAXCONT` / `EV_DCUPasseSideEWMAXCONT`; SK37X's 633 variants carry
-  `EV_DCU2DriveSideMAXHCONT` and its three siblings, which are a different unit family and
-  not another version of this one. No `EWMAX` family exists here at all. That is a project
-  data gap — and the specific thing a second ODIS project would settle, since SK37X is one
-  brand's project and these units may well be described in another's.
+- **~~The two door units have no variant in this project under any name.~~ Wrong — see
+  §4.2.** They have one. `Project::variants()` listed it the whole time; `readings()`
+  returned an empty list for it, so it never reached the cache and every query answered
+  from the cache said the variant did not exist.
 
 **A method note, because the first attempt at this measurement said 118 of 238 rather than
 1.** It asked whether each identifier appeared under *any* variant in the project. A data
@@ -405,6 +403,64 @@ to chase one by one, which is the difference this correction makes: the earlier 
 `vagcan survey`. Since `91c6a05` a sweep asks exactly what the unit's own data declares —
 those 2,251 identifiers — and records the range it used, so a single run turns 1,708
 untested declarations into answers and makes `watch`'s filter meaningful on this car.
+
+---
+
+## 4.2 A layer need not declare its own services (2026-08-10)
+
+**36 ECU variants and 88,549 channels were being read as nothing**, including both of the
+reference car's front door units, and the cause was one missing step of ODX layering.
+
+`EV_DCUDriveSideEWMAXCONT_006` — what the car's driver's door answers with `F19E`/`F1A2` —
+is in `SK37X`, in pool `0.0.0@BV_DoorElectDriveSideUDS.bv`, listed by that pool's
+`DB_PROJECT_DATA` alongside `EV_DCU2DriveSideMAXHCONT_001`. Its `DB_LAYER_DATA` parses
+completely and says:
+
+```
+layer      EcuVariant
+parents    ["0.0.0@BV_DoorElectDriveSideUDS.bv"]
+services   0
+```
+
+Zero services, and a parent naming where they are. The base variant's own layer declares
+`DiagnServi_ReadDataByIdentMeasuValue` and 118 channels. `readings()` stopped at "this
+variant's layer has no measurement service" and returned an empty list — which by §2's own
+rule means "the control unit declares no measurements", so nothing looked wrong anywhere.
+
+**The fix is [`Store::measurement_layer`]:** when a variant's layer declares no measurement
+service, walk `parents` to the first layer that does, and run the rest of the chain against
+*that* layer **and its pool**. The pool matters as much as the layer — the service's tables
+and data object properties are indexed by the parent layer in the parent pool, and resolving
+them against the variant's own pool finds the service and then loses its rows, which is a
+half-working result nobody would notice.
+
+Effect on `SK37X`, whole-project:
+
+| | before | after |
+|---|---|---|
+| variants yielding channels | 633 | **669** |
+| channels | 310,734 | **399,283** |
+| `EV_DCUDriveSideEWMAXCONT_006` | 0 | **118** |
+| `EV_DCUPasseSideEWMAXCONT_006` | 0 | **99** |
+
+Two consequences for §4.1, which was written before this was known:
+
+1. **The door units were never a project data gap.** The claim that `SK37X` does not
+   describe them was reached by querying the *cache*, which only holds what `readings()`
+   produced. A reader that returns an empty list on a failure it cannot distinguish from
+   absence will produce exactly this kind of wrong conclusion about somebody else's data.
+2. **The undeclared-identifier count is now smaller** and needs re-measuring after a
+   re-import; the doors alone contributed 49 of it.
+
+**Still open.** Four variants in the two rear-door pools fail with `a flag at byte 77 is
+113, neither 0 nor 1` — a genuine positional-parse defect, now surfacing on two ECU
+variants as well as the two base variants, because a parent that cannot be read is an
+error rather than a silent empty list. The reference car has no rear door units, so this
+costs it nothing and is not diagnosed.
+
+**The tool that found it** is `cargo run -p vag-data --example odis_pool` — pool census and
+raw object dump with every four-byte word resolved against the string pool, which is what
+makes an untagged positional record readable without writing a loader first.
 
 ---
 

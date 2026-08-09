@@ -329,7 +329,14 @@ impl Project {
 	/// cost a control unit all its others.
 	pub fn readings(&self, variant: &Variant) -> Result<Vec<Reading>, Error> {
 		let mut store = Store::new(self);
-		let Some(layer) = store.layer_data(variant)? else {
+		let Some(own) = store.layer_data(variant)? else {
+			return Ok(Vec::new());
+		};
+		// The service may belong to the variant's *base* variant rather than to
+		// the variant — see [`Store::measurement_layer`]. Everything below then
+		// runs against that layer and its pool, because that is where the
+		// service's own objects are indexed.
+		let Some((layer, home)) = store.measurement_layer(variant, own)? else {
 			return Ok(Vec::new());
 		};
 		let Some(service_ref) = layer
@@ -341,13 +348,13 @@ impl Project {
 			return Ok(Vec::new());
 		};
 
-		let Some(loaders::Object::Service(service)) = store.object(&layer, &variant.pool, &service_ref)? else {
+		let Some(loaders::Object::Service(service)) = store.object(&layer, &home, &service_ref)? else {
 			return Err(Error::Format(format!("{}'s measurement service is not a service", variant.name)));
 		};
 		let Some(response_ref) = service.positive_responses.first().cloned() else {
 			return Ok(Vec::new());
 		};
-		let Some(loaders::Object::Response(response)) = store.object(&layer, &variant.pool, &response_ref)? else {
+		let Some(loaders::Object::Response(response)) = store.object(&layer, &home, &response_ref)? else {
 			return Err(Error::Format(format!("{}'s measurement service has no positive response", variant.name)));
 		};
 
@@ -375,8 +382,8 @@ impl Project {
 			)));
 		}
 
-		let dids = store.identifiers(&layer, &variant.pool, key)?;
-		let rows = store.rows(&layer, &variant.pool, payload)?;
+		let dids = store.identifiers(&layer, &home, key)?;
+		let rows = store.rows(&layer, &home, payload)?;
 
 		let mut out = Vec::new();
 		for (did, name, text_id) in dids {
@@ -384,7 +391,7 @@ impl Project {
 			// Anything below here can legitimately fail for one channel — a
 			// multiplexed shape, a compu category with no honest scaling — and
 			// one channel must not cost the rest.
-			let Ok(channel) = store.channel(&layer, &variant.pool, &row_ref, did, &name, text_id) else {
+			let Ok(channel) = store.channel(&layer, &home, &row_ref, did, &name, text_id) else {
 				continue;
 			};
 			out.extend(channel);
@@ -536,6 +543,50 @@ impl<'a> Store<'a> {
 		}
 		// Last resort: the same pool the referrer lives in.
 		self.named(home, &object_id)
+	}
+
+	/// The layer that actually declares the measurement service, and the pool it
+	/// lives in.
+	///
+	/// **An ECU variant need not declare any service of its own.** ODX layers
+	/// inherit, and the converter uses that: `EV_DCUDriveSideEWMAXCONT_006` — the
+	/// reference car's driver's-door unit — has a layer that parses completely,
+	/// declares **zero** services, and names one parent,
+	/// `0.0.0@BV_DoorElectDriveSideUDS.bv`, whose base-variant layer declares the
+	/// measurement service and 118 channels. A reader that stops at the variant's
+	/// own layer reports that control unit as having no measurements at all,
+	/// which is what this project did until 2026-08-10 for both front doors.
+	///
+	/// The pool comes back with the layer because the service's own objects are
+	/// indexed by *that* layer, in *that* pool; resolving them against the
+	/// variant's pool finds nothing.
+	///
+	/// A parent that cannot be read is an error rather than a silent empty list.
+	/// The variant has no service either way, so without the parent there is
+	/// nothing to say, and saying nothing is how a broken parse became "this unit
+	/// has no measurements".
+	fn measurement_layer(
+		&mut self,
+		variant: &Variant,
+		own: loaders::identity::LayerData,
+	) -> Result<Option<(loaders::identity::LayerData, String)>, Error> {
+		let declares = |layer: &loaders::identity::LayerData| {
+			layer
+				.services
+				.iter()
+				.any(|(name, _)| name.as_deref() == Some(loaders::identity::RDBI_MEASUREMENT))
+		};
+		if declares(&own) {
+			return Ok(Some((own, variant.pool.clone())));
+		}
+		for pool_id in own.parents.clone() {
+			if let Some(loaders::Object::LayerData(parent)) = self.named(&pool_id, loaders::identity::LAYER_DATA_ID)?
+				&& declares(&parent)
+			{
+				return Ok(Some((parent, pool_id)));
+			}
+		}
+		Ok(None)
 	}
 
 	/// Read the parent layers' data, once.
@@ -1132,7 +1183,14 @@ mod tests {
 	}
 
 	/// Build the whole fixture: one pool, one variant, two readings.
-	fn miniature_project(dir: &std::path::Path) -> (Project, String) {
+	///
+	/// `inherit` selects which of the two shapes the real files use. `false`
+	/// puts the measurement service on the ECU variant's own layer. `true` gives
+	/// that layer **no** services and one parent, and puts the service on the
+	/// pool's base-variant layer instead — which is what
+	/// `EV_DCUDriveSideEWMAXCONT_006` looks like on disk. Both must yield the
+	/// same channels; that is the whole assertion.
+	fn miniature_project(dir: &std::path::Path, inherit: bool) -> (Project, String) {
 		let pool_id = "0.0.0@BV_Test.bv";
 		let mut b = Build::default();
 		let pool_hash = b.a(pool_id);
@@ -1173,26 +1231,29 @@ mod tests {
 		// The variant's layer data: one service, no inherited indexes.
 		let rdbi = b.a(loaders::identity::RDBI_MEASUREMENT);
 		let svc = b.a("SVC_Measu");
-		b.put(
-			"LD_EV_Test",
-			code::DB_LAYER_DATA,
-			Obj::default()
+		// One layer, built twice with different contents when the fixture is
+		// exercising inheritance: the service sits on whichever layer is
+		// supposed to own it, and the other names a parent instead.
+		let layer = |variant_hash: u32, services: bool, parents: bool| {
+			let mut o = Obj::default()
 				.u32(0)
 				.u32(0)
 				.u32(0)
 				.u32(0)
 				.u32(0) // five leading names
 				.u16(0x0102) // eECU_VARIANT
-				.hash(ev)
-				.hash(pool_hash)
-				.u16(1) // one service…
-				.hash(rdbi)
-				.hash(svc)
-				.hash(pool_hash)
-				.u8(0)
-				.u8(0)
-				.u16(0x0C83)
-				.u8(0)
+				.hash(variant_hash)
+				.hash(pool_hash);
+			o = match services {
+				// The five bytes after the pool belong to the *entry* — the
+				// attributed reference's tail, the number, the object type and
+				// the flag — so a map with no entries must not carry them.
+				true => o.u16(1).hash(rdbi).hash(svc).hash(pool_hash).u8(0).u8(0).u16(0x0C83).u8(0),
+				// A layer with no services of its own — legal, and common:
+				// 36 of this project's variants are like it.
+				false => o.u16(0),
+			};
+			o = o
 				.u16(0) // no DTC properties
 				.u16(0)
 				.u16(0) // no property or table index
@@ -1203,9 +1264,12 @@ mod tests {
 				.u16(0)
 				.u16(0)
 				.u16(0) // the three always-empty maps
-				.u16(0) // no environment-data descriptions
-				.u16(0)
-				.u16(0) // no parents, no shared-data parents
+				.u16(0); // no environment-data descriptions
+			o = match parents {
+				true => o.u16(1).hash(pool_hash),
+				false => o.u16(0),
+			};
+			o.u16(0) // no shared-data parents
 				.u16(0)
 				.u16(0)
 				.u16(0)
@@ -1215,8 +1279,13 @@ mod tests {
 				.u16(0) // no protocol parameters
 				.u8(0)
 				.u8(0) // the trailing byte, and no special data groups
-				.u16(0), // the final diag-com map
-		);
+				.u16(0) // the final diag-com map
+		};
+		b.put("LD_EV_Test", code::DB_LAYER_DATA, layer(ev, !inherit, inherit));
+		if inherit {
+			// The base variant's layer, which is where the parent lookup goes.
+			b.put(loaders::identity::LAYER_DATA_ID, code::DB_LAYER_DATA, layer(bv, true, false));
+		}
 
 		// The service and its positive response.
 		let rsp = b.a("RSP_Measu");
@@ -1424,9 +1493,52 @@ mod tests {
 	}
 
 	#[test]
+	fn a_variant_that_declares_no_service_inherits_its_base_variant_s() {
+		// Measured on the reference car, 2026-08-10: its two front door units
+		// answer `EV_DCUDriveSideEWMAXCONT_006` and `EV_DCUPasseSideEWMAXCONT_006`,
+		// both of which are in the project, both of whose layers parse
+		// completely, and both of which declare **zero** services while naming
+		// `0.0.0@BV_DoorElectDriveSideUDS.bv` as a parent. Reading only the
+		// variant's own layer reported those units as having no measurements at
+		// all — which is what `watch` showed for the doors, and what made them
+		// look like a gap in VW's data rather than in this reader.
+		//
+		// Across the whole project it is 36 variants and 88,549 channels.
+		let direct = tempfile::tempdir().expect("a temporary directory");
+		let inherited = tempfile::tempdir().expect("a temporary directory");
+		let (a, _) = miniature_project(direct.path(), false);
+		let (b, pool_id) = miniature_project(inherited.path(), true);
+
+		// The fixture is the shape this test is about, and not by accident: a
+		// mis-encoded layer that still carried its own service would make
+		// everything below pass while testing nothing.
+		let mut store = Store::new(&b);
+		let variants = b.variants().expect("the project data parses");
+		let ev = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+		let own = store.layer_data(ev).expect("the layer reads").expect("the layer is there");
+		assert!(own.services.is_empty(), "the variant declares nothing itself");
+		assert_eq!(own.parents, vec![pool_id], "and names where to look");
+
+		let readings = |p: &Project| {
+			let variants = p.variants().expect("the project data parses");
+			let variant = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+			let mut rows = p.readings(variant).expect("the measurement chain walks");
+			rows.sort_by_key(|r| r.did);
+			rows
+		};
+
+		let inherited_rows = readings(&b);
+		assert_eq!(inherited_rows.len(), 2, "the channels come through the parent: {inherited_rows:#?}");
+		// Identical, not merely non-empty. Resolving the chain against the
+		// wrong pool is the way this half-works: the service is found and its
+		// tables are not, and the result is a shorter list nobody notices.
+		assert_eq!(inherited_rows, readings(&a));
+	}
+
+	#[test]
 	fn a_project_reads_its_variants_and_their_readings() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, pool_id) = miniature_project(dir.path());
+		let (project, pool_id) = miniature_project(dir.path(), false);
 
 		// The identity comes off index.xml, not off the directory name — a
 		// folder gets renamed by an unzip and `<SHORT-NAME>` does not.
@@ -1491,7 +1603,7 @@ mod tests {
 	#[test]
 	fn a_project_hands_over_its_names_keyed_by_text_id() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		let names = project.names().expect("the name pass runs");
 		assert_eq!(names.get("000116").map(String::as_str), Some("Getriebe-Eingangsdrehzahl"));
 		assert_eq!(names.get("000117").map(String::as_str), Some("Motordrehzahl"));
@@ -1514,7 +1626,7 @@ mod tests {
 	#[test]
 	fn a_project_declares_the_vehicles_it_covers() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		prnr_info(
 			dir.path(),
 			&[
@@ -1545,7 +1657,7 @@ mod tests {
 	#[test]
 	fn covers_answers_for_one_type_code() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		prnr_info(dir.path(), &[("SK37X/0EU_X", "A7 / Octavia III (Limo, Combi)", "5E0", true)]);
 		let hit = project.covers("5E0").expect("the coverage file parses").expect("the project covers 5E0");
 		assert_eq!(hit.name, "A7 / Octavia III (Limo, Combi)");
@@ -1561,7 +1673,7 @@ mod tests {
 	#[test]
 	fn a_project_without_the_coverage_file_says_so() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		let err = project.vehicles().expect_err("a missing coverage file must be an error");
 		assert!(matches!(err, Error::Missing(_)), "got {err:?}");
 		assert!(matches!(project.covers("5E0"), Err(Error::Missing(_))));
@@ -1572,7 +1684,7 @@ mod tests {
 	#[test]
 	fn a_vehicle_without_a_type_code_is_refused() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		std::fs::write(
 			dir.path().join("PRNR-INFO.xml"),
 			"<PRNR-INFO><VEHICLES>\n<VEHICLE IS-DEFAULT=\"true\">\n<VEHICLE-PROJECT>SK37X/0EU_X</VEHICLE-PROJECT>\n<NAME>A7</NAME>\n</VEHICLE>\n</VEHICLES></PRNR-INFO>",
@@ -1588,7 +1700,7 @@ mod tests {
 	#[test]
 	fn the_container_element_is_not_read_as_a_vehicle() {
 		let dir = tempfile::tempdir().expect("a temporary directory");
-		let (project, _) = miniature_project(dir.path());
+		let (project, _) = miniature_project(dir.path(), false);
 		std::fs::write(
 			dir.path().join("PRNR-INFO.xml"),
 			"<PRNR-INFO><VEHICLES><VEHICLE><VEHICLE-PROJECT>P</VEHICLE-PROJECT><NAME>Škoda &amp; co</NAME><PRODUCT-ID>5E0</PRODUCT-ID></VEHICLE></VEHICLES></PRNR-INFO>",

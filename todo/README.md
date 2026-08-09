@@ -820,10 +820,28 @@ sweeping loses its last justification with it: it finds fault records that are a
 properly and coding bytes described elsewhere in the same file. That agrees with what
 `SAFETY.md` wanted anyway.
 
-The one real data gap is the **two door units**, which have no variant in SK37X under any
-name — the car says `EV_DCUDriveSideEWMAXCONT`, the project's 633 variants carry
-`EV_DCU2DriveSideMAXHCONT`, a different family. That is the case for a second ODIS project,
-not for a sweep.
+~~The one real data gap is the two door units, which have no variant in SK37X under any
+name.~~ **Wrong, and fixed on 2026-08-10.** They have a variant —
+`EV_DCUDriveSideEWMAXCONT_006`, exactly what the car reports — and it was listed all along.
+Its layer declares **zero services** and names its base variant as a parent, which is
+ordinary ODX layering, and `readings()` stopped there and returned an empty list. Empty
+means "declares no measurements" by that function's own contract, so nothing looked wrong;
+the variant never reached the cache, and every check made against the cache concluded the
+variant did not exist.
+
+Following the parent (`Store::measurement_layer`) turns **633 variants into 669** and
+**310,734 channels into 399,283** across the project — the doors get 118 and 99 — so this
+was never about the doors. Details and the remaining rear-door parse defect in
+[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.2.
+
+The lesson is the one this session keeps re-learning in different costumes: **a reader that
+returns "nothing" for a failure it cannot tell apart from absence will get you a confident,
+wrong conclusion about somebody else's data.** Three of the corrections above have that
+shape.
+
+**Re-import needed.** The cache still holds the old 310,734 rows; `vagcan setup` against the
+project picks up the other 88,549. Do the duplicate-source fix first (below) or the re-run
+adds a third copy.
 
 And a fifth correction, to the fourth. The paragraph above then said the asymmetry ran
 the other way — 1,746 declared and silent, concentrated in `1000-1FFF`, "concentrated
