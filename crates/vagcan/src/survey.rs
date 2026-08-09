@@ -601,21 +601,6 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		progress.finish();
 		println!("{}", report.summary());
 
-		// `SAFETY.md`: "Stop when something changes… finish nothing and start
-		// nothing." The whole run, not this unit: what made the second incident
-		// permanent was carrying on after the first drop-out looked like it had
-		// resolved itself. The notice goes on a surface nothing rewrites.
-		if let Some(anomaly) = monitor.halted() {
-			progress.notice(&anomaly.report());
-			if let Some(path) = out {
-				println!("what this run read before it stopped is in {path}.");
-			}
-			// The car's whole-car cache is deliberately NOT written: this unit's
-			// hit list is a partial one, and replacing a good line with it would
-			// destroy the "before" half of the comparison SAFETY.md step 3 asks
-			// for.
-			anyhow::bail!("the survey was stopped: control unit {} changed while it was being read", anomaly.unit());
-		}
 		// Built whether or not anyone asked for a file: this is also what goes
 		// into the car's own cache, and a run that has to be repeated with
 		// `--out` to be kept is a run nobody keeps.
@@ -640,9 +625,32 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		.to_string();
 		if let Some(w) = sink.as_mut() {
 			// JSON lines: a survey interrupted halfway keeps every unit it
-			// finished.
+			// finished — and, below, the unit it stopped on, which is the one
+			// worth having.
 			writeln!(w, "{line}")?;
 			w.flush()?;
+		}
+
+		// `SAFETY.md`: "Stop when something changes… finish nothing and start
+		// nothing." The whole run, not this unit: what made the second incident
+		// permanent was carrying on after the first drop-out looked like it had
+		// resolved itself. The notice goes on a surface nothing rewrites.
+		//
+		// Written to `--out` above and deliberately **not** to `fresh`: this
+		// unit's hit list stops where the sweep did, and folding a partial line
+		// into the car's whole-car cache would destroy the "before" half of the
+		// comparison step 3 of "If a unit stops behaving" asks for.
+		if let Some(anomaly) = monitor.halted() {
+			progress.notice(&anomaly.report());
+			match out {
+				Some(path) => println!("what this run read, up to and including the unit it stopped on, is in {path}."),
+				None => println!(
+					"Nothing was written: re-run with --out to keep the evidence.\n\
+                     This car's cached survey has been left exactly as it was, so it is \n\
+                     still the \"before\" for `vagcan survey --diff`."
+				),
+			}
+			anyhow::bail!("the survey was stopped: control unit {} changed while it was being read", anomaly.unit());
 		}
 		fresh.push(line);
 		reports.push(report);
