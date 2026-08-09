@@ -260,18 +260,22 @@ fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrat
 	match old.proven() {
 		// The sentence that has to be in front of them before they answer.
 		// Everything else here is extracted and can be extracted again.
-		0 => io.say("None of it is measured-on-a-car data, so nothing about this is unrepeatable — it is only a question of where it lands.")?,
+		0 => io.say(
+			"None of it is measured-on-a-car data, so nothing about this is\n\
+             unrepeatable — it is only a question of where it lands.",
+		)?,
 		1 => io.say(
-			"One of them is a row proven by driving a car. Nothing but another drive can recreate it, and \
-             this moves it rather than copying it.\n\
-             If that data is this car's, press Enter. If it is a different car's, give that car a name and \
-             it will be moved there instead.",
+			"One of them is a row proven by driving a car. Nothing but another\n\
+             drive can recreate it, and this moves it rather than copying it.\n\
+             If that data is this car's, press Enter. If it is a different\n\
+             car's, give that car a name and it will be moved there instead.",
 		)?,
 		n => io.say(&format!(
-			"{n} of them are rows proven by driving a car. Nothing but another drive can recreate one, and \
-             this moves them rather than copying them.\n\
-             If that data is this car's, press Enter. If it is a different car's, give that car a name and \
-             it will be moved there instead."
+			"{n} of them are rows proven by driving a car. Nothing but another\n\
+             drive can recreate one, and this moves them rather than copying\n\
+             them.\n\
+             If that data is this car's, press Enter. If it is a different\n\
+             car's, give that car a name and it will be moved there instead."
 		))?,
 	}
 	if !chosen.existing.is_empty() {
@@ -292,7 +296,8 @@ fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrat
 /// Open an ODIS project, saying how long it will be.
 fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data::odis::Project> {
 	io.say(&format!(
-		"Opening the ODIS project at {} — its two string pools are read whole, which takes a moment.",
+		"Opening the ODIS project — its two string pools are read whole, which\n\
+         takes a moment:\n    {}",
 		dir.display()
 	))?;
 	let project = vag_data::odis::Project::open(dir).with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
@@ -325,12 +330,19 @@ fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked:
 	match crate::project::folder_name(named) {
 		Ok(own) => {
 			let merge = match existing.contains(&own) {
-				true => " That project is already here: this source is added to it, and nothing already in it is replaced.",
+				true => "\n    That project is already here: this source is added to it, and\n    nothing already in it is replaced.",
 				false => "",
 			};
+			// Both names last, one to a line. Neither has a knowable width when
+			// this sentence is written — a project id may be sixty-four
+			// characters — and an earlier draft ran to 278 columns on a real
+			// terminal by putting them in the middle of it.
 			io.say(&format!(
-				"The project calls itself `{own}` in its own index.xml, so that is what it is filed under — \
-                 not `{asked}`, which is only what the folder happens to be called. One car, one store.{merge}"
+				"One car, one store: the project names itself in its own index.xml,\n\
+                 so that is what it is filed under, not what the folder happens\n\
+                 to be called.\n    \
+                 the folder:  {asked}\n    \
+                 filed under: {own}{merge}"
 			))?;
 			Ok(own)
 		}
@@ -366,7 +378,8 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 		dir.display()
 	);
 	let mut chooser = crate::ui::picker::Console::new(format!(
-		"re-run `vagcan setup` from a terminal, or point it at a build whose {what} is one of {known:?}"
+		"re-run `vagcan setup` from a terminal, or point it at a build\n\
+         whose {what} is one of {known:?}"
 	));
 	crate::ui::picker::pick_path(&mut chooser, dir, &[crate::ui::picker::Level::files(what).ending(suffix)])
 }
@@ -490,7 +503,19 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 		}
 	}
 
-	let mut steps = match &chosen.source {
+	// **The wording is read first, and the order is the whole correctness of the
+	// combined row.** `vcds::tttext` writes `names.json` wholesale — it builds a
+	// fresh map and replaces the file — while `read_odis` *merges*, first writer
+	// winning. Reading ODIS first would therefore have the VCDS half overwrite
+	// every ODIS-only name a moment later, and a single combined run would come
+	// out worse than the two runs it is supposed to be equivalent to (spec §5).
+	// This way round, VCDS supplies the wording wherever it recovered any and
+	// ODIS fills in the text ids it alone knows — which is what the row offers.
+	let mut steps = Vec::new();
+	if let Some(source::Source::Vcds { dir }) = &chosen.names {
+		steps.extend(read_vcds(dir, project, opts.refresh)?);
+	}
+	steps.extend(match &chosen.source {
 		source::Source::Odis { dir } => {
 			let odis = chosen.odis.as_ref().expect("an ODIS source opens its project in `choose`");
 			read_odis(odis, dir, project)?
@@ -498,18 +523,7 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<(
 		source::Source::Vcds { dir } => read_vcds(dir, project, opts.refresh)?,
 		// `choose` turns a download into the installation it fetched.
 		source::Source::DownloadVcds => unreachable!("the download is resolved to an installation before this point"),
-	};
-	// The wording half of the recommended row, read into the same project — the
-	// two sources merge, exactly as running `setup` twice would merge them
-	// (spec §5). It is the whole VCDS read rather than the text table alone:
-	// `names` takes its text table out of the shared pool, which `copy_label_files`
-	// is what fills, and its strongest dictionary out of the installation's own
-	// `Labels/`. A lighter path would have to do both of those anyway, and doing
-	// the whole read also leaves the fault text behind, which is worth having and
-	// which nothing else supplies today.
-	if let Some(source::Source::Vcds { dir }) = &chosen.names {
-		steps.extend(read_vcds(dir, project, opts.refresh)?);
-	}
+	});
 
 	// Written down so a later command needs no flag. Not a preference — the
 	// answer to "which car did I just set up", which is the one a bare
@@ -601,7 +615,7 @@ fn read_odis(odis: &vag_data::odis::Project, dir: &Path, project: &crate::projec
 		detail: format!("{with_channels} of {} variants, {channels} channels{skipped}", variants.len()),
 	};
 
-	println!("[2/2] Names — every object in every pool, for the (text id, name) pairs they carry.");
+	println!("[2/2] Names — every object in every pool, for the (text id, name)\n      pairs they carry.");
 	let names = {
 		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
 		odis.names().with_context(|| format!("reading the names of {}", dir.display()))?
@@ -667,7 +681,10 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 /// follows: a file is copied only when it is missing from the destination or
 /// newer than what is there, and `--refresh` copies the lot.
 fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
-	println!("[1/4] Raw files — copying the .rod files and the fault text into the shared pool, so the installation can be deleted afterwards.");
+	println!(
+		"[1/4] Raw files — copying the .rod files and the fault text into the\n      \
+         shared pool, so the installation can be deleted afterwards."
+	);
 	let mut plan: Vec<(PathBuf, PathBuf)> = Vec::new();
 	let odx = root.join(ODX_DIR);
 	match odx.is_dir() {
@@ -684,7 +701,10 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 			let name = codes.file_name().unwrap_or_default();
 			plan.push((codes.clone(), target.join(name)));
 		}
-		None => println!("      the fault text file: not in this installation, skipped — faults will read as numbers"),
+		None => println!(
+			"      the fault text file: not in this installation, skipped\n      \
+             — faults will read as numbers"
+		),
 	}
 	if plan.is_empty() {
 		return Ok(Step::Missing {
@@ -797,11 +817,12 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
 			return Ok(Step::Missing {
 				what: "the measurement names",
 				why: format!(
-					"{name} is a *shifted* container, so its text section has no anchor to search from — \
-                     the only route is every legal anchor against the full space, which is hours to days \
-                     rather than the minute or two an ordinary table costs. Everything else in this \
-                     installation is recovered; only the names are out of reach. See \
-                     research/labels/tttext2.md §3.3"
+					"{name} is a *shifted* container, so its text section has no\n    \
+                     anchor to search from — the only route is every legal anchor\n    \
+                     against the full space, which is hours to days rather than\n    \
+                     the minute or two an ordinary table costs. Everything else\n    \
+                     in this installation is recovered; only the names are out of\n    \
+                     reach. See research/labels/tttext2.md §3.3"
 				),
 			});
 		}
@@ -865,11 +886,12 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
 			path: out,
 			detail: format!("{count} names"),
 			why: format!(
-				"{} of {} records long enough to carry a name were read ({pct:.1} %); the rest held a \
-				 letter the attack could not settle, and a half-read name is worse than none, so they \
-				 are withheld rather than guessed. A further {short} records in the table are under a \
-				 dozen letters — acronyms and status codes, which are not names and are not counted \
-				 against this",
+				"{} of {} records long enough to carry a name were read ({pct:.1} %);\n    \
+                 the rest held a letter the attack could not settle, and a\n    \
+                 half-read name is worse than none, so they are withheld rather\n    \
+                 than guessed. A further {short} records in the table are under\n    \
+                 a dozen letters — acronyms and status codes, which are not\n    \
+                 names and are not counted against this",
 				coverage.read, coverage.candidates
 			),
 		});
@@ -1195,7 +1217,10 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![crate::ui::menu::Answer::Type(String::new())]);
 		migration_target_id(&mut io, &old, &chosen("SK37X", &[], true)).unwrap();
 		let said = io.all_said();
-		assert!(said.contains("nothing about this is unrepeatable"), "{said}");
+		// A phrase that survives the hard wrap: the sentence is broken across
+		// lines at 80 columns, so an assertion spanning the break tests the
+		// wrap rather than the copy.
+		assert!(said.contains("only a question of where it lands"), "{said}");
 		assert!(!said.contains("proven by driving"), "it warned about rows that are not there: {said}");
 	}
 
@@ -1209,6 +1234,42 @@ mod tests {
 		]);
 		assert_eq!(migration_target_id(&mut io, &old, &chosen("SK37X", &[], true)).unwrap(), "car-A-1");
 		assert_eq!(io.typed.len(), 2, "it gave up instead of asking again");
+	}
+
+	#[test]
+	fn the_wording_source_is_read_before_the_structure_source() {
+		// The combined row's whole correctness. `vcds::tttext` replaces
+		// `names.json` outright; `read_odis` merges into it, first writer
+		// winning. Read the other way round and the VCDS half would overwrite
+		// every ODIS-only name a moment after it was written, making one
+		// combined run worse than the two runs it stands in for (spec §5).
+		//
+		// Asserted against the source rather than by running two multi-minute
+		// reads: what is being pinned is an ordering decision, and a test that
+		// needed a VCDS installation and an ODIS project could not run here at
+		// all.
+		let body = include_str!("mod.rs");
+		let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} is gone"));
+		assert!(
+			at("steps.extend(read_vcds(dir, project, opts.refresh)?);") < at("read_odis(odis, dir, project)?"),
+			"the ODIS read moved ahead of the wording read; names.json will be clobbered"
+		);
+	}
+
+	#[test]
+	fn nothing_setup_prints_about_a_project_runs_past_eighty_columns() {
+		// Caught three times on real terminals now. A path's width is unknown
+		// when the sentence is written, so the rule is that the sentence ends
+		// with it — and the fixed text around it still has to fit.
+		use crate::ui::menu::Asker as _;
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		let long = Path::new("/Users/somebody/Downloads/an-odis-project-with-a-long-name/SK37X");
+		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &["SK37X".to_string()]).unwrap();
+		open_odis(&mut io, long).ok();
+		io.say(&format!("Writing into {}", long.display())).unwrap();
+		for line in io.all_said().lines() {
+			assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+		}
 	}
 
 	#[test]
