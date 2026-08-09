@@ -198,10 +198,14 @@ pub struct App {
 	/// - **Nothing can name it.** On the reference car 787 of 2,751 channels have
 	///   no name anywhere and their label is the identifier they already sit
 	///   beside.
-	/// - **The car does not answer it.** Measured on the same car: of 2,251
-	///   identifiers an ODIS project declares across the fifteen units, 1,746 were
-	///   asked and said nothing. A named row that can never produce a value is
-	///   worse than a nameless one, because it looks like it works.
+	/// - **The car was asked for it and said nothing.** A project describes a
+	///   vehicle family and no one car is all of it, so a named row can sit there
+	///   unable to produce a value — worse than a nameless one, because it looks
+	///   like it works. How common that is on any given car is not something this
+	///   comment should claim: the first attempt put it at 1,746 of 2,251 on the
+	///   reference car and the real figure was 38, the rest being identifiers the
+	///   sweep never asked. Hence [`plan::Answered`], which will not call anything
+	///   silent without a record of what was put to the unit.
 	///
 	/// Neither is dropped. A nameless identifier is precisely what somebody
 	/// hunting a new measurement is looking for, a silent one may answer in a
@@ -1833,10 +1837,11 @@ fn coverage_report(
 		}
 	}
 	// How much of what the source data declares this particular car does not
-	// have. Worth saying out loud rather than leaving as a shorter list: on the
-	// reference car it is 1,746 of 2,251, so a reader who is not told will
-	// count the rows, find a third of what `setup` reported, and conclude the
-	// import was lost.
+	// have. Worth saying out loud rather than leaving as a shorter list: a
+	// reader who is not told will count the rows, find fewer than `setup`
+	// reported, and conclude the import was lost. It counts only channels a
+	// survey actually put to the unit, so a car with no survey — or one whose
+	// survey did not record its range — gets no sentence rather than a wrong one.
 	let unanswered = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
 	if unanswered > 0 {
 		out.push_str(&format!(
@@ -2424,7 +2429,7 @@ mod tests {
 		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let one = channels.first().expect("the reference store has channels").clone();
 		// One channel asked and answered, and the rest of that unit asked and
-		// silent — which is the shape of the reference car at 505 of 2,251.
+		// silent.
 		let survey = format!(
 			"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
 			one.request, one.did
@@ -3137,24 +3142,36 @@ mod tests {
 		Channel { selected: false, ..channel }
 	}
 
-	/// A survey line for one unit, listing what it answered.
-	fn surveyed(request: u16, dids: &[u16]) -> String {
+	/// A survey line for one unit: what it was asked, and what answered.
+	///
+	/// `asked` is not optional here, and that is the point — a line without it
+	/// supports no verdict about what a car lacks, so a fixture that omitted it
+	/// would be testing the filter with the filter switched off.
+	fn surveyed(request: u16, asked: &[&str], dids: &[u16]) -> String {
 		let entries: Vec<String> = dids.iter().map(|d| format!("{{\"did\":\"{d:04X}\",\"data\":\"00\"}}")).collect();
-		format!("{{\"request\":\"{request:03X}\",\"dids\":[{}]}}\n", entries.join(","))
+		let asked: Vec<String> = asked.iter().map(|r| format!("\"{r}\"")).collect();
+		format!(
+			"{{\"request\":\"{request:03X}\",\"asked\":[{}],\"dids\":[{}]}}\n",
+			asked.join(","),
+			entries.join(",")
+		)
 	}
 
 	#[test]
 	fn a_named_channel_this_car_does_not_answer_is_held_back_and_says_so() {
-		// Measured on the reference car, and the reason this filter exists: an
-		// ODIS project declares 2,251 identifiers across the fifteen units, the
-		// car answered 1,198, and only 505 are in both. The other 1,746 are
-		// fully named rows that can never produce a value — worse than a
-		// nameless one, because they look like they work.
+		// Why the filter exists: a project describes a vehicle family, no one
+		// car is all of it, and a named row that can never produce a value is
+		// worse than a nameless one because it looks like it works.
+		//
+		// The fixture says what it was asked. That is not decoration — the
+		// first version of this feature inferred it, and on the only real
+		// survey in existence the inference was wrong for 1,708 of the 1,746
+		// channels it hid.
 		let mut a = App::new(vec![
 			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
 			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001]));
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
 		a.screen = Screen::Select;
 
 		assert_eq!(a.visible().len(), 1, "only the one the car answered");
@@ -3186,7 +3203,7 @@ mod tests {
 			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
 			unselected(proven(0x7E1, 0x380A, "Engine speed", "/min")),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001]));
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
 		a.screen = Screen::Select;
 
 		// One tab per unit, so each is checked on its own tab rather than by a
@@ -3201,7 +3218,7 @@ mod tests {
 			None,
 			"never asked is not the same answer as asked and silent"
 		);
-		assert_eq!(a.answered.saw(0x713, 0x1002), Some(false));
+		assert_eq!(a.answered.saw(0x713, 0x1002), Some(false), "inside what the brakes were asked");
 	}
 
 	#[test]
@@ -3224,7 +3241,7 @@ mod tests {
 			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
 			unselected(raw(0x713, 0x1003)),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &[0x1001, 0x1003]));
+		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1003"], &[0x1001, 0x1003]));
 		a.screen = Screen::Select;
 
 		assert_eq!(a.hidden(), Hidden { unnamed: 1, silent: 1 });

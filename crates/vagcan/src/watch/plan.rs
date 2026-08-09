@@ -340,12 +340,20 @@ pub struct Answered {
 	pub dids: std::collections::BTreeSet<(u16, u16)>,
 	/// What each unit was actually asked, where the survey wrote it down.
 	///
-	/// A survey used to record only what answered, which is the same question
-	/// as what was asked for a sweep that covered everything and a different
-	/// one for a run aimed with `--blind --range`. Files written before the
-	/// `asked` field have no entry here and fall back to the older reading —
-	/// correct for the full sweeps those files are, and the reason the field
-	/// was added rather than the old files being reinterpreted.
+	/// **Without this, nothing can be called silent.** A survey used to record
+	/// only what answered, and the first version of this type read a missing
+	/// range as "the sweep covered everything, so absence is refusal". That
+	/// assumption was measured and is false: the sweep that wrote the reference
+	/// car's cached survey asked eight windows of 256 identifiers — 2,048 of
+	/// 65,536 — so of 2,251 declared identifiers it put only 543 to the car.
+	/// **505 of those 543 answered, 93%.** The 1,746 that looked like
+	/// over-declaration were 38 real refusals and 1,708 questions nobody asked.
+	///
+	/// So a file with no `asked` field supports no verdict, and
+	/// [`Answered::saw`] returns `None` throughout. That costs the filter
+	/// nothing it was entitled to: a sweep since 2026-08-09 asks what the unit's
+	/// own data declares and records the range, which is exactly the case where
+	/// silence means something.
 	pub asked: std::collections::BTreeMap<u16, Vec<std::ops::RangeInclusive<u16>>>,
 }
 
@@ -366,13 +374,10 @@ impl Answered {
 			return Some(true);
 		}
 		// Silence only counts against an identifier somebody put to the unit.
-		match self.asked.get(&request) {
-			Some(ranges) => ranges.iter().any(|r| r.contains(&did)).then_some(false),
-			// An older file, with no record of its range. Those runs swept
-			// everything the unit declared or the whole space, so absence is
-			// the answer it looks like.
-			None => Some(false),
-		}
+		// A file with no record of what it asked claims nothing at all — see
+		// [`Answered::asked`] for the measurement that settled this.
+		let ranges = self.asked.get(&request)?;
+		ranges.iter().any(|r| r.contains(&did)).then_some(false)
 	}
 }
 
@@ -853,17 +858,19 @@ mod tests {
 
 	#[test]
 	fn what_a_survey_recorded_reads_back_as_answered_and_the_rest_of_that_unit_does_not() {
-		// Two claims and one non-claim, which is the whole of the type: a
-		// listed identifier answered, an unlisted one on a swept unit did not,
-		// and a unit nobody swept is not spoken for.
+		// Two claims and two non-claims, which is the whole of the type: a
+		// listed identifier answered, an unlisted one inside what was asked did
+		// not, an identifier outside the range is not spoken for, and neither
+		// is a unit nobody swept.
 		let survey = "\
-{\"request\":\"713\",\"dids\":[{\"did\":\"1001\",\"data\":\"00\"},{\"did\":\"F187\",\"data\":\"00\"}]}
-{\"request\":\"7E1\",\"dids\":[]}
+{\"request\":\"713\",\"asked\":[\"1001-1002\",\"F187\"],\"dids\":[{\"did\":\"1001\",\"data\":\"00\"},{\"did\":\"F187\",\"data\":\"00\"}]}
+{\"request\":\"7E1\",\"asked\":[\"1001\"],\"dids\":[]}
 ";
 		let seen = answered_from_survey(survey);
 		assert_eq!(seen.saw(0x713, 0x1001), Some(true));
 		assert_eq!(seen.saw(0x713, 0xF187), Some(true));
 		assert_eq!(seen.saw(0x713, 0x1002), Some(false), "asked, and it said nothing");
+		assert_eq!(seen.saw(0x713, 0x2029), None, "outside the range this run swept");
 		assert_eq!(
 			seen.saw(0x7E1, 0x1001),
 			Some(false),
@@ -887,15 +894,20 @@ mod tests {
 	}
 
 	#[test]
-	fn a_survey_from_before_the_asked_field_still_reads_as_a_full_sweep() {
-		// The cached survey on the reference car is one of these — a blind
-		// sweep from 2026-08-08, which the current safety rules cannot
-		// reproduce. Reinterpreting it as "range unknown, so nothing is silent"
-		// would throw away the only measurement of what this car does not have.
+	fn a_survey_from_before_the_asked_field_supports_no_verdict_at_all() {
+		// This started out the other way round — a missing range was read as
+		// "the sweep covered everything". Then the reference car's own cached
+		// survey was measured against the ranges its sweep actually used, and
+		// the assumption was false by a factor of thirty: eight windows of 256,
+		// so 1,708 of the 1,746 "silent" identifiers had never been asked.
+		//
+		// A file that does not say what it asked therefore says nothing about
+		// what a car does not have.
 		let survey = "{\"request\":\"713\",\"dids\":[{\"did\":\"0102\",\"data\":\"00\"}]}\n";
 		let seen = answered_from_survey(survey);
 		assert!(seen.asked.is_empty(), "no range was recorded");
-		assert_eq!(seen.saw(0x713, 0x0103), Some(false));
+		assert_eq!(seen.saw(0x713, 0x0102), Some(true), "what answered is still an answer");
+		assert_eq!(seen.saw(0x713, 0x0103), None, "and everything else is unknown, not absent");
 	}
 
 	#[test]
@@ -924,9 +936,11 @@ mod tests {
 	fn this_machines_own_survey_reads_back_consistently() {
 		// Run against the owner's real cached survey where there is one, and
 		// skipped everywhere else. It asserts the relationship rather than the
-		// counts: the numbers belong to one car — 505 of 2,251 declared
-		// identifiers answered, on 2026-08-09 — and a car's numbers are not
-		// something to write into the program.
+		// counts, because a car's numbers are not something to write into the
+		// program — and because this is where an assumption about them was
+		// caught: the sweep that wrote the reference car's file asked eight
+		// windows of 256 identifiers, so reading its silences as refusals
+		// overstated them thirty-fold.
 		let Some(path) = cached_survey() else {
 			eprintln!("skipped: this machine has no cached survey");
 			return;
@@ -939,13 +953,18 @@ mod tests {
 			assert_eq!(seen.saw(*request, *did), Some(true), "everything recorded reads back as answered");
 			assert!(seen.units.contains(request), "an answer implies its unit was swept");
 		}
-		// And the whole point: on a unit that was swept, an identifier nobody
-		// recorded is a definite no rather than a shrug.
+		// And the whole point: an identifier nobody recorded is a verdict only
+		// where the file says the range was asked. On a survey that recorded no
+		// range it is a shrug, whatever it looks like.
 		let unit = *seen.units.iter().next().expect("checked above");
 		let absent = (0u16..=u16::MAX)
 			.find(|d| !seen.dids.contains(&(unit, *d)))
 			.expect("no unit answers all 65,536");
-		assert_eq!(seen.saw(unit, absent), Some(false));
+		let expected = match seen.asked.get(&unit) {
+			Some(ranges) => ranges.iter().any(|r| r.contains(&absent)).then_some(false),
+			None => None,
+		};
+		assert_eq!(seen.saw(unit, absent), expected);
 	}
 
 	/// The first cached survey this machine holds, whichever car it belongs to.

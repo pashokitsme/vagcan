@@ -268,7 +268,14 @@ project in `~/.vagcan/data/SK37X/cache.sqlite`, matching each unit to its varian
 | the car answered | 1,198 |
 | **declared *and* answered** | **505** |
 | **answered, and the project does not declare** | **693** |
-| **declared, and the car said nothing** | **1,746** |
+| declared, and not among the answers | 1,746 |
+
+**Read that last row as nothing at all until the two corrections below.** Of the 693,
+455 are the identification block, which a project's `reading` objects were never meant to
+carry. Of the 1,746, **1,708 were never asked** — the sweep covered 2,048 of the 65,536
+identifiers. Both figures are artefacts of comparing two sets that were not answering the
+same question, and both are corrected below rather than deleted, because the shape of the
+mistake is the useful part.
 
 Per unit, declared / answered / both:
 
@@ -301,49 +308,71 @@ project's `reading` objects describe measurements and were never meant to carry 
 the tool reads them directly anyway (`vagcan properties`, `units --identify`). Counting
 them as an ODIS gap is a category error, and the first version of this section made it.
 
-Four things follow.
+**And the sweep that produced the "declared only" column asked 2,048 identifiers, not
+65,536.** On 2026-08-08 a survey swept a fixed list of eight windows — `0200-02FF`,
+`0600-06FF`, `1900-19FF`, `2000-22FF`, `2A00-2BFF`, `3800-38FF`, `F100-F1FF`, `F400-F4FF`
+(`SURVEY_RANGES`, as it stood before commit `91c6a05`). `1000-1FFF` is not among them and
+was **never asked**. Re-reading the same two files against that range list:
+
+| | identifiers |
+|---|---|
+| declared **and** inside what the sweep asked | 543 |
+| of those, answered | **505 — 93%** |
+| asked and genuinely silent | **38** |
+| declared and never asked at all | **1,708** |
+| answered outside the sweep's own ranges | 0 (the range list checks out) |
+
+Five things follow, and the third replaces what the first draft of this section claimed.
 
 1. **In the measurement space the project declares 453 of the 691 identifiers this car
-   answers — 66%, not 42%.** The remaining **238** are the real gap: channels this car
-   answers that nothing describes, which is exactly what `watch` shows as raw bytes.
+   answers — 66%.** The remaining **238** are the real gap: channels this car answers that
+   nothing describes, which is exactly what `watch` shows as raw bytes.
 2. **The two door units resolve to no variant at all** — `EV_DCUDriveSideEWMAXCONT` and
    `EV_DCUPasseSideEWMAXCONT`, the two unresolved units of §8. Of the 103 identifiers they
    answer, 54 are identification; the genuine gap is **49 measurement identifiers with no
    description anywhere**.
-3. **The dominant error runs the other way: 1,746 declared and silent against 238 answered
-   and undeclared.** Over-declaration is seven times the size of under-declaration, and it
-   is not evenly spread — **1,010 of the 1,746 are in `1000-1FFF` alone**, where the hit
-   rate is 50 of 1,060 (5%) against 139 of 264 (53%) one range up. A gap that lopsided has
-   a cause rather than a thousand independent ones, and finding it is the cheapest large
-   win available: a variant match that is too loose, a block that needs a session, or a
-   band this trim does not populate. Untested.
-4. **`watch` now holds the silent ones back by default** (`plan::Answered`,
-   `crates/vagcan/src/watch/plan.rs`), counted separately from the nameless rows and
-   restored with `u`.
+3. **There is no over-declaration finding. Where the declaration has been tested it is 93%
+   right.** The 1,746 "declared and silent" were 38 refusals and 1,708 questions nobody
+   asked, and the `1000-1FFF` concentration that looked like a systematic defect is the
+   hole in the sweep's range list showing through. The engine makes this unmistakable:
+   it answers only inside `0xxx`, `2xxx` and `Fxxx` and returns exactly zero in `1xxx`,
+   `3xxx`, `4xxx`, `5xxx`, `7xxx` — all-or-nothing per block, which is the shape of a
+   range that was never swept and not of a control unit choosing what to implement.
+4. **The real state of the declaration is untested, not wrong.** 1,708 of 2,251 declared
+   identifiers have never been put to this car. Closing that needs no blind sweep and no
+   new capability: a survey since `91c6a05` asks what the unit's own data declares, which
+   is precisely those 2,251, and records the range it used. One parked run settles it.
+5. **`watch` holds silent channels back only where a survey recorded what it asked**
+   (`plan::Answered`, `crates/vagcan/src/watch/plan.rs`). The cached file has no such
+   record, so on this machine the filter currently hides nothing — see below.
 
-**On reproducing this.** The cached survey is a **blind** sweep from 2026-08-08 and the
-default sweep can no longer produce one: a declared-only run cannot find an undeclared
+**On reproducing the blind sweep.** The cached survey is a blind run and the default
+sweep can no longer produce one: a declared-only run cannot find an *undeclared*
 identifier by construction. It is not unrepeatable — `--blind <unit>`, aimed by hand one
 unit at a time, still does exactly this, now under the halt-on-anomaly guard the original
-run did not have. What is true is that repeating it costs fifteen aimed runs and carries
-the risk `SAFETY.md` describes, so the file is worth keeping rather than re-earning. An
-earlier version of this section said "cannot be reproduced", which overstates it.
+run did not have. Repeating it costs fifteen aimed runs at the risk `SAFETY.md` describes,
+so the file is worth keeping rather than re-earning.
 
-**The caveat that limited claim 3, and what closed it.** A survey line used to record what
-*answered* and never what was *asked*. For a full sweep those are the same question and
-absence means silence; for a run aimed with `--blind --range` they are not, and an
-identifier outside the range would read as silent when nobody ever asked. A survey now
-writes an `asked` field — the spans it swept, `0102-0104` or a bare `F187` — and
-`plan::Answered::saw` returns `None` outside them, so silence is only ever claimed where
-somebody asked. Files written before that field fall back to the old reading, which is
-correct for the full sweeps those files are, including the one this section measures. The
-filter stays a default rather than a deletion because a channel can also be silent for
-reasons the next paragraph lists.
+**How this was got wrong, since the shape of the error matters more than the numbers.**
+A survey line recorded what *answered* and never what was *asked*. Reading absence as
+refusal is only valid for a sweep that covered everything, the sweep covered 3% of the
+identifier space, and the resulting figure was wrong by a factor of thirty — in the
+direction that makes somebody else's data look bad. A survey now writes an `asked` field
+(the spans it swept, `0102-0104` or a bare `F187`), `plan::Answered::saw` returns `None`
+outside it, and a file without the field supports no verdict at all. The first version of
+that fallback assumed the older files were full sweeps; this measurement is what refuted
+it.
 
-**What is not established.** Why a declared identifier is silent. Wrong variant match,
-another session, a state the car was not in when parked, or an identifier this trim level
-genuinely does not implement — the data here cannot tell them apart, and 1,746 is an upper
-bound on "this car does not have it".
+**What is not established.** Why the 38 that *were* asked stayed silent. Wrong variant
+match, another session, a state the car was not in when parked, or an identifier this trim
+level genuinely does not implement — the data cannot tell them apart. 38 is small enough
+to chase one by one, which is the difference this correction makes: the earlier figure of
+1,746 was too large to do anything with except distrust the project.
+
+**The experiment that closes this**, and it needs no blind sweep: one parked
+`vagcan survey`. Since `91c6a05` a sweep asks exactly what the unit's own data declares —
+those 2,251 identifiers — and records the range it used, so a single run turns 1,708
+untested declarations into answers and makes `watch`'s filter meaningful on this car.
 
 ---
 

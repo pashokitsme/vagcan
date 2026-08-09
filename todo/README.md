@@ -765,7 +765,7 @@ What `survey` did, and who owns each part now:
 | which identifiers a unit *declares* | **the ODIS project** — from file, no car. Not the same as what it answers: see the next two rows |
 | which of those actually *change* — the parked/driving diff (`survey.rs:229`) | **only `survey`**. The file declares; the car decides. Nothing else can tell a live channel from a declared one |
 | the unit list + identities that give `watch` its tabs | **the gateway**, live, every run — `units::identify` reads its installation list. `survey` only saves the probes |
-| which of the declared identifiers this car actually has | **only `survey`** — 1,746 of 2,251 declared are silent on this car, and nothing in a file says which |
+| which of the declared identifiers this car actually has | **only `survey`** — 1,708 of the 2,251 have never been put to this car at all, and no file can say which it has |
 | stored faults on every unit (`survey.rs`, mask `0xFF`) | **`survey` records, `faults` reads** — not a duplicate. `faults --from <survey>` names the codes out of the file offline (`faults.rs:151`), which is how `research/labels/fault-naming-hop.md` §11.3 is reproduced without a car. The wider mask is deliberate: the file keeps the superset and the reader filters |
 
 **Three corrections, because the first version of this section got three things wrong
@@ -800,30 +800,55 @@ In the measurement space the project declares **453 of the 691** identifiers thi
 answers — 66%. The pivot holds. The real gap is the other **238**, plus the **49**
 measurement identifiers on the two door units that resolve to no variant at all.
 
-And the asymmetry runs the other way from the gap: **1,746 declared and silent against 238
-answered and undeclared**, with 1,010 of the 1,746 in `1000-1FFF` alone. Over-declaration
-is seven times the size of under-declaration and is concentrated enough to have one cause.
+And a fifth correction, to the fourth. The paragraph above then said the asymmetry ran
+the other way — 1,746 declared and silent, concentrated in `1000-1FFF`, "concentrated
+enough to have one cause". It did have one cause, and the cause was ours: **the sweep of
+2026-08-08 asked 2,048 identifiers of 65,536**, eight fixed windows (`SURVEY_RANGES` as it
+stood before `91c6a05`), and `1000-1FFF` was not one of them.
 
-The cached survey that proves all of this is a **blind** sweep from 2026-08-08, and the
-default sweep can no longer produce one — a declared-only run cannot find an undeclared
-identifier. It is not unrepeatable: `--blind <unit>` aimed by hand still does exactly this,
-now under the halt-on-anomaly guard. But repeating it costs fifteen aimed runs at the risk
-`SAFETY.md` describes, so the file is kept rather than re-earned. It must not be deleted.
+Against the range that run actually swept:
+
+| | identifiers |
+|---|---|
+| declared **and** asked | 543 |
+| of those, answered | **505 — 93%** |
+| asked and genuinely silent | **38** |
+| declared and never asked | **1,708** |
+
+**There is no over-declaration finding.** Where the declaration has been tested it is 93%
+right, and the state of the other 1,708 is *unknown*, not wrong. The engine shows the
+error in its purest form: zero answers in `1xxx`, `3xxx`, `4xxx`, `5xxx`, `7xxx` and a
+normal hit rate in `0xxx`, `2xxx`, `Fxxx` — all-or-nothing per block is the shape of a
+range nobody swept, not of a control unit choosing what to implement.
+
+This also means **the filter shipped earlier the same day was wrong on the only real
+survey that exists**, hiding 1,708 channels the file says nothing about. Fixed: a survey
+with no recorded range now supports no verdict at all (`Answered::asked`), so on this
+machine the filter currently hides nothing and starts working the moment a survey records
+what it asked.
+
+The cached survey is a **blind** sweep and the default sweep can no longer produce one — a
+declared-only run cannot find an undeclared identifier. It is not unrepeatable:
+`--blind <unit>` aimed by hand still does exactly this, now under the halt-on-anomaly
+guard. Repeating it costs fifteen aimed runs at the risk `SAFETY.md` describes, so the
+file is kept rather than re-earned. It must not be deleted.
 
 So `survey` is not deleted, and it is not narrowed by much either:
 
-1. **Done (2026-08-09):** the third finding — 1,746 declared identifiers the car answers
-   nothing to — is now what `watch` holds back by default (`plan::Answered`), counted
-   apart from the nameless rows, restored with `u`, and reported by the coverage
-   paragraph. This is the survey's *new* job: confirming the declaration, which is a
-   declared-only sweep and therefore safe.
+1. **Done (2026-08-09):** `watch` holds back the channels a survey asked this car for and
+   got nothing to (`plan::Answered`), counted apart from the nameless rows, restored with
+   `u`, and reported by the coverage paragraph. This is the survey's *new* job: confirming
+   the declaration, which is a declared-only sweep and therefore safe. It does nothing
+   until a survey records the range it asked — see the correction above for why that
+   condition is not optional.
 2. **Nothing to drop.** The one candidate — the fault read — turned out to be the input
    `faults --from` depends on. What is left of `survey` is what only a car can answer,
    and it is all of it.
 3. **Done (2026-08-09):** a survey line now carries the range it was asked over
    (`asked`, spans as `0102-0104`), so an identifier a run never covered reads as "not
-   asked" rather than as "this car does not have it". Older files have no such field and
-   keep the earlier reading, which is right for the full sweeps they are.
+   asked" rather than as "this car does not have it". A file without the field claims
+   nothing — the first version assumed those files were full sweeps, and the measurement
+   above is what refuted that.
 
 Two smaller findings from the same look:
 
