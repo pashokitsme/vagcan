@@ -751,6 +751,53 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live.
 
+## The command surface after the ODIS pivot (2026-08-09)
+
+Raised by the owner: *"нам точно нужны эти команды? сейчас `survey` ничего интересного
+и нужного по идее не выдаёт"*. Mostly right, and the reason is the pivot — a project
+declares 310,734 channels with names and scalings from file, which is exactly what
+`survey` used to be the only way to learn.
+
+What `survey` did, and who owns each part now:
+
+| what it produces | who owns it after the pivot |
+|---|---|
+| which identifiers a unit answers | **the ODIS project** — from file, no car |
+| which of those actually *change* — the parked/driving diff (`survey.rs:229`) | **only `survey`**. The file declares; the car decides. Nothing else can tell a live channel from a declared one |
+| the unit list + identities that give `watch` its tabs | **only `survey`**, and that is the blocker below |
+| stored faults on every unit (`survey.rs:532`, mask `0xFF`) | **duplicates `vagcan faults`** — two commands, one job |
+
+So `survey` is not deleted. It is taken apart, in this order — the order matters,
+because today it is load-bearing:
+
+1. **`watch` must get its unit list from the gateway, not from a survey.** It walks
+   only `preselect + ENGINE` (`crates/vagcan/src/watch/mod.rs:1882`), so every other
+   unit on screen comes from `~/.vagcan/cars/<VIN>/survey.jsonl`. `crate::units`
+   already reads the gateway's installation list and already identifies units — this
+   is wiring, not new capability. Until it is done, deleting or narrowing `survey`
+   takes fourteen of the fifteen units off the screen with it.
+2. **Then drop the fault read from `survey`** and let `faults` own it. Keep the
+   confirmed-only filter that `faults` has and `survey` lacks.
+3. **Then narrow what is left** to what only a car can answer: the inventory and the
+   diff. That is a command worth keeping and a much smaller one to guard.
+
+Two smaller findings from the same look:
+
+- **`properties` and `units --identify` are one command in two places.** `units` reads
+  four identifiers per unit; `properties` sweeps `F100-F1FF` on one. Merge into
+  `units --identify <ecu>` by capability, per the cleanup rule — the deep sweep is the
+  survivor's mode, not a second command.
+- **`properties` sweeps 256 undeclared identifiers with no `require_stationary`.** It
+  carries an anomaly monitor and the comment at `crates/vagcan/src/main.rs:1052`
+  argues the case: the identification block is standardised and 256 wide. That is a
+  defensible line, but it is the only sweep-shaped path without the guard, so it is
+  written down rather than left to be re-discovered.
+- **`sniff` and `recording` stay as they are.** `sniff` is listen-only and is the only
+  transport-level tool for "nothing answers"; the live-crib strategy it was built for
+  lost priority to ODIS, but the command costs nothing. `recording calibrate` gained
+  value from the pivot rather than losing it: it is how an ODIS scaling gets confirmed
+  against a real drive, which §4.5's trust order requires.
+
 ## Deferred, from the owner's own runs (2026-08-09)
 
 Raised while using the tool, not blocking, and written down so they are not
@@ -797,6 +844,11 @@ done tonight.
    delivers on a VCDS project — how many of the 1,209 text ids get better wording, and
    whether the pooled-text collapse recurs — is unmeasured. One `setup` with an
    installation answers it, offline.
+0c. **Take `watch`'s unit list from the gateway.** The first step of "The command
+   surface after the ODIS pivot" above, and the one that unblocks the rest: while
+   `watch` can only reach fourteen of the fifteen units through a cached survey,
+   `survey` cannot be narrowed at all. Wiring `crate::units`' gateway walk into
+   `watch/mod.rs:1882` is offline work with an offline test.
 1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
    channel by its DID, so of 3,878 expressible fields only 1,959 survive. The other
    1,919 are here, already parsed, and thrown away at the last step. Needs `watch`'s
