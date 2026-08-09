@@ -751,12 +751,33 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	// Built before anything is drawn, because the chart is what decides how
 	// much of the screen the table gets.
 	let charted = app.chart_shown.then(|| app.charted());
+	let rate = match app.live {
+		true => format!("{:.1} Hz · ", app.poll_rate()),
+		false => String::new(),
+	};
+	let waiting = match app.waiting {
+		Some(request) => {
+			format!("  {} reading {}…", crate::progress::frame(app.cycles), app.unit_heading(request))
+		}
+		None => String::new(),
+	};
+	// Built before the layout, because how many rows it wraps to is what the
+	// footer's height has to be. It was one row and did not wrap: on a replay
+	// at eighty columns the playback keys ran off the end of it, taking `[q]
+	// quit` with them.
+	let help = format!(
+		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [q] quit{}{waiting}",
+		app.rows().len(),
+		app.channels.iter().filter(|c| c.selected).count(),
+		app.status
+	);
+	let hint_rows = wrapped_height(&help, frame.area().width.saturating_sub(2)) + 2;
 	let layout = match charted.is_some() {
 		// A chart in a few lines is a smear, and a chart that takes the screen
 		// leaves no table to read the numbers off. Two fifths is the split that
 		// keeps both readable at the 24 rows a terminal is still allowed to be.
-		true => Layout::vertical([Constraint::Min(3), Constraint::Percentage(40), Constraint::Length(3)]).split(frame.area()),
-		false => Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(frame.area()),
+		true => Layout::vertical([Constraint::Min(3), Constraint::Percentage(40), Constraint::Length(hint_rows)]).split(frame.area()),
+		false => Layout::vertical([Constraint::Min(3), Constraint::Length(hint_rows)]).split(frame.area()),
 	};
 	let table_area = layout[0];
 	let shown = app.rows();
@@ -835,24 +856,10 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 		frame.render_widget(Paragraph::new(chart_note(charted)).style(Style::default().fg(Color::DarkGray)), split[1]);
 	}
 
-	let rate = match app.live {
-		true => format!("{:.1} Hz · ", app.poll_rate()),
-		false => String::new(),
-	};
-	let waiting = match app.waiting {
-		Some(request) => {
-			format!("  {} reading {}…", crate::progress::frame(app.cycles), app.unit_heading(request))
-		}
-		None => String::new(),
-	};
-	let help = format!(
-		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [q] quit{}{waiting}",
-		shown.len(),
-		app.channels.iter().filter(|c| c.selected).count(),
-		app.status
-	);
 	frame.render_widget(
-		Paragraph::new(help).block(Block::default().borders(Borders::ALL)),
+		Paragraph::new(help)
+			.wrap(ratatui::widgets::Wrap { trim: false })
+			.block(Block::default().borders(Borders::ALL)),
 		*layout.last().expect("the footer is the last row of the layout"),
 	);
 }
@@ -3155,6 +3162,26 @@ mod tests {
 		assert_eq!(series_note(&a, &a.channels[0]), "drawn");
 		assert_eq!(series_note(&a, &a.channels[7]), "no room");
 		assert_eq!(series_note(&a, &a.channels[8]), "no number");
+	}
+
+	#[test]
+	fn the_live_footer_keeps_every_key_it_advertises_at_eighty_columns() {
+		// It was one row and did not wrap. A replay adds its playback keys to
+		// the same line, so at eighty columns `[q] quit` — and then the pause
+		// and speed keys behind it — were simply not on the screen, which on a
+		// real terminal looks like a line that ends rather than one that was
+		// cut.
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+		a.live = false;
+		a.chart_shown = true;
+		a.status = " · [space] pause  [g] chart off to seek  [+-] speed · 0/180s ×1.00".to_string();
+		let text = live_text(&mut a, 80, 24);
+		for line in text.lines() {
+			assert_eq!(line.chars().count(), 80, "a line is not the width of the screen:\n{text}");
+		}
+		for key in ["[s] lines", "[q] quit", "[space] pause", "[+-] speed"] {
+			assert!(text.contains(key), "80 columns hides {key}:\n{text}");
+		}
 	}
 
 	#[test]
