@@ -31,7 +31,55 @@ exposes is selectable from config, with no hardcoded addresses or formulas in Ru
 Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
 for the locked stack and `todo/GOAL.md` for the goal statement.
 
-## Status (2026-08-08) — ODIS is a second source, and the car picks its project
+## Status (2026-08-09) — the sweep stopped fuzzing, and `watch` became usable
+
+**`survey` no longer sweeps blind, after a second near-miss with the same steering
+rack.** On 2026-08-09 a run nearly repeated the 2 August incident with the car
+**parked** — every guard in force, and all of them about *where the car was* rather than
+what was being asked. Full account in [`SAFETY.md`](../SAFETY.md); what changed:
+
+- A sweep asks only identifiers a source declares for that unit. The steering assist
+  declares 161; it used to be asked 2816, and the other 2655 were the fuzz test.
+- A unit that goes quiet or goes back on an identifier it already answered **ends the
+  whole run**, non-zero. `SAFETY.md`'s "stop when something changes" was written after
+  the first incident and lived nowhere but that file until now.
+- Blind sweeping is `--blind <unit>`, aimed by hand. `survey --blind` bare is a parse
+  error: whole-car blind was the default, and it is what did the damage.
+- A safety message never goes on the self-rewriting progress line.
+
+Thresholds `WITNESS_EVERY = 64` / `QUIET_RUN = 3` are reasoned, **not measured** — a
+false halt teaches people to reach for the override, so one parked whole-car run is
+owed.
+
+**`watch` is usable.** Of 2,751 channels on the reference car, 1,964 now carry a human
+name and the 787 that nothing can name are hidden (`u` shows them, the header says how
+many). `f` marks a favourite — kept per car under `cars/<VIN>/favourites.json`, because
+which identifiers a unit answers is a fact about that unit *in this car*, and a platform
+project covers Karoq and Kodiaq too. `s` opens a chart-lines screen that says why a
+marked row is not drawn: `no room` (cap of six) or `no number`.
+
+**Naming has provenance now, and the join it was built for is still untested.** The
+`text_id` → `names.json` lookup landed and immediately made names *worse* on an
+ODIS-only project: `names.json` there was written by ODIS itself, so preferring it
+reworded 340 channels toward generic pooled text, twice collapsing two distinct channels
+onto one name (`MAS14374`: `Total_Physical_…` and `Total_Logical_Wakeup_Events_Counter`
+both became `Total_CarWakeup_Events_Counter`). ODIS names now go to `names-odis.json`,
+and `names.json` is trusted for wording only when `sources.json` records a VCDS run —
+the one run-time read of that log, recorded as a deviation in the design's §4.4. **On a
+VCDS-derived project the join has still never run**, so what it actually delivers is
+unmeasured.
+
+**`setup` is four options**, the first being both sources at once: ODIS for what to read
+and how to scale it, VCDS for the wording. VCDS is read first — `tttext` writes
+`names.json` wholesale while ODIS merges, so the other order would make one combined run
+worse than the two runs it replaces.
+
+## Status (2026-08-08) — ODIS becomes the primary source
+
+**The car does not yet pick its own project.** `project::covering()` returns `None`; the
+resolution order (`--project`, `VAGCAN_PROJECT`, covering, `config.json`, sole project)
+is built and tested with that step empty. What blocks it is evidence, not code — see
+next goals, item 4.
 
 A VW ODIS-Service runtime project is now read natively — no Python, no PBL DLL, no
 Java — and `setup` is a choice of *source* rather than a hardcoded VCDS path. Design in
