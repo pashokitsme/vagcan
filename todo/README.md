@@ -1,11 +1,19 @@
 # vagcan — roadmap & status
 
 **Goal:** read the **whole car over CAN** and show measurements by name/value/unit,
-definitions as **data, not code**: names from VW's own label files
-(`~/.vagcan/data/<project>/names.json`), read address + scaling + unit **proven live on the car**
-(`~/.vagcan/data/<project>/measurements/<part number>.json`, keyed by what the unit
-reports about itself) — and, since 2026-08-08, declared by VW's own ODIS project data
-for every identifier a control unit's variant defines.
+definitions as **data, not code**.
+
+**The primary source is a VW ODIS-Service runtime project** (since 2026-08-08): it
+declares, per ECU variant, every identifier that unit answers along with the byte
+offset, length, byte order and compu formula — the whole chain, which a VCDS label file
+provably does not carry (`research/labels/rod-labels.md` §4.0c). **A VCDS installation
+is the additional source**, and still the only one for two things: fault-code *text*
+(`Codes.dat` + the `RD.rod` registry chain) and names for units no ODIS project covers.
+
+Above both sits what was **proven live on the car** —
+`~/.vagcan/data/<project>/measurements/<part number>.json`, keyed by what the unit
+reports about itself. A drive outranks a file, always; an extracted row fills only what
+no drive has proved.
 The label files carry the scaling *values* but not the join from a measurement to its
 scaling or read DID, so scaling is still proven live — the full audit, including which
 earlier refutation rested on a broken decode, is in
@@ -653,8 +661,14 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   `archive/research/` (`vag-hex-framing.md`, `clone-crypto.md`, `vcds-rus-crack.md`) and
   stay authoritative as negative results. The clone capture decoder
   (`research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
-- **Scaling from the label files** — refuted structurally, twice over
+- **Scaling from the *VCDS* label files** — refuted structurally, twice over
   (`research/labels/rod-labels.md` §4.0c, `research/labels/label-linkage.md` §3/§5).
+  **Still true, and no longer the whole story (2026-08-08):** the refutation is about
+  what a `.rod`/`.clb` label file contains, not about files in general. A VW ODIS
+  project declares the entire chain — identifier, offset, length, byte order, compu
+  formula — per ECU variant, and three rows this project had proved *by driving* came
+  back identical from it with no drive. Read this entry as "VCDS cannot supply a
+  scaling", never as "a scaling can only come from a drive".
 - **OBD-II Mode 01 as the product path** — dropped. The standard sensors survive as
   `vagcan sensors` and as calibration references, not as the measurement model.
 - **`MUX.rod` as the measurement registry** — opened 2026-08-04 and it is not one. It is
@@ -679,6 +693,44 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   is in no label file — the two numberings are unrelated — so it is learned per car by
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
   where it would live.
+
+## Next goals (2026-08-09)
+
+Ordered, and each says whether the car is needed — that single fact decides what can be
+done tonight.
+
+**No car needed:**
+
+1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
+   channel by its DID, so of 3,878 expressible fields only 1,959 survive. The other
+   1,919 are here, already parsed, and thrown away at the last step. Needs `watch`'s
+   history and chart, keyed by `(request, did)` today, keyed by channel instead. Moves
+   the goal directly: it is the largest remaining block of readable channels.
+2. **Sub-byte fields — 2,693 of them.** One-bit flags and 3-bit fields. `RawForm`
+   reads whole bytes and returns an `i32`; a bit field needs a mask and a shift, and a
+   one-bit flag needs a *name per state* rather than a number, so this and the
+   `Scaling::Enum` question are one question. A decision first, then code.
+3. **A second ODIS project.** Settles three things one project cannot: whether
+   `PRODUCT-ID` sets are disjoint across projects (the whole car-picks-its-project
+   design rests on it), whether the two unresolved units resolve elsewhere, and whether
+   the TTTEXT crib generalises beyond one German project.
+4. **Car-picks-its-project.** `project::covering()` is a named function returning
+   `None`, and `Project::covers(type_code)` exists to fill it. Blocked on deciding
+   which of a car's fifteen part numbers to believe — `5E0` × 3 against `8V0`, `5Q0`,
+   `3Q0`, `0CW` — which is evidence, not code. Item 3 is the evidence.
+
+**Car needed:**
+
+5. **Confirm the sweep change on the parked car.** `WITNESS_EVERY = 64` and
+   `QUIET_RUN = 3` are reasoned, not measured. A false halt has its own cost: it
+   teaches people to reach for the override. One parked whole-car run answers it.
+6. **The reverse-gear code.** `catalog.rs` says `0C`, ODIS says `0C` is Gear 9 and
+   reverse is `7`, and the `0C` figure is a doc comment rather than a proven row.
+   Select reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`
+   (`research/labels/odis-format.md` §7.1). One minute.
+7. **`watch` and `measure` across the fifteen units.** The join is written and its
+   per-unit numbers are measured against the *file*; nothing has confirmed them against
+   the *car*.
 
 ## Next up (added 2026-08-07)
 
