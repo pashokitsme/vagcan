@@ -205,12 +205,17 @@ impl Extracted {
 			for reading in readings {
 				let text_id = reading.text_id.clone();
 				let Some(def) = to_def(&reading) else { continue };
-				let ReadId::Uds(did) = def.address;
-				// Two variants of one family can describe the same identifier.
-				// The first wins, which is the alphabetically first — arbitrary,
-				// but stable, and a run that reported a different name each time
+				// Two variants of one family can describe the same **field**. The
+				// first wins, which is the alphabetically first — arbitrary, but
+				// stable, and a run that reported a different name each time
 				// would be worse than one that reports a fixed one.
-				if !out.iter().any(|(held, _)| held.address == ReadId::Uds(did)) {
+				//
+				// The field, not the identifier. Keying this by DID alone was
+				// worth 1,952 channels of 3,963 on the reference car: everything
+				// a control unit packed into a response after the first field
+				// was parsed, scaled, named — and then dropped one line before
+				// it could be shown.
+				if !out.iter().any(|(held, _)| same_field(held, &def)) {
 					out.push((def, text_id));
 				}
 			}
@@ -239,6 +244,14 @@ fn to_def(reading: &vag_data::odis::Reading) -> Option<MeasurementDef> {
 	})
 }
 
+/// Whether two definitions describe the same field of the same identifier.
+///
+/// Same address **and** same starting byte. Two fields of one response are two
+/// channels; the same field said twice by two variants of a family is one.
+fn same_field(a: &MeasurementDef, b: &MeasurementDef) -> bool {
+	a.address == b.address && a.raw_form.byte_offset() == b.raw_form.byte_offset()
+}
+
 /// Put the proven rows on top of the extracted ones, by identifier.
 ///
 /// **Design §4.5, and the one place it is enforced.** A `measurements/` row is
@@ -253,7 +266,11 @@ fn to_def(reading: &vag_data::odis::Reading) -> Option<MeasurementDef> {
 pub fn merge(proven: Vec<MeasurementDef>, extracted: Vec<MeasurementDef>) -> Vec<MeasurementDef> {
 	let mut out = proven;
 	for def in extracted {
-		if !out.iter().any(|held| held.address == def.address) {
+		// By field, not by identifier. A proven row for byte 0 of `0x2029` says
+		// nothing about byte 2 of it, and letting it suppress that field would
+		// make a drive *cost* channels — the opposite of what proving one is
+		// for.
+		if !out.iter().any(|held| same_field(held, &def)) {
 			out.push(def);
 		}
 	}
@@ -363,6 +380,66 @@ mod tests {
 			raw_form: RawForm::U16Le,
 			scaling: Scaling::Linear(LinearScale { factor: 0.25, offset: 0.0 }),
 		}
+	}
+
+	#[test]
+	fn every_field_of_one_response_is_its_own_channel() {
+		// The loss this fixes. A `0x22` answer carries as many fields as the
+		// control unit put in it, and keying a channel by its identifier held
+		// the first and dropped the rest: 1,952 of 3,963 sayable fields on the
+		// reference car's fifteen units, all of them parsed, scaled and named
+		// before being thrown away one line from the screen.
+		let here = tempfile::tempdir().unwrap();
+		let extracted = cache_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x2029, "Boost, specified", 0, 16, true),
+					reading(0x2029, "Boost, actual", 16, 16, true),
+					reading(0x2029, "Charge air temperature", 32, 8, true),
+				],
+			)],
+		);
+
+		let defs = extracted.for_unit(Some("EV_Test"), Some("001007"));
+		assert_eq!(defs.len(), 3, "three fields, three channels: {defs:#?}");
+		let offsets: Vec<u8> = defs.iter().map(|d| d.raw_form.byte_offset()).collect();
+		assert_eq!(offsets, vec![0, 2, 4], "and each reads from its own byte");
+		assert!(defs.iter().all(|d| d.address == ReadId::Uds(0x2029)), "one identifier, one request");
+	}
+
+	#[test]
+	fn a_proven_field_does_not_suppress_the_others_beside_it() {
+		// §4.5 says a proven row wins **at its identifier**, which was enforced
+		// as "and everything else at that identifier disappears". A drive that
+		// proved byte 0 would then cost the channels at bytes 2 and 4 — proving
+		// a scaling would *lose* measurements, which is the opposite of the
+		// rule's purpose.
+		let here = tempfile::tempdir().unwrap();
+		let extracted = cache_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x2029, "Boost, specified", 0, 16, true),
+					reading(0x2029, "Boost, actual", 16, 16, true),
+				],
+			)],
+		);
+		let merged = merge(
+			vec![proven(0x2029, "Boost, specified")],
+			extracted.for_unit(Some("EV_Test"), Some("001007")),
+		);
+
+		assert_eq!(merged.len(), 2, "the proven field and the one beside it: {merged:#?}");
+		assert_eq!(
+			merged[0].name.as_ref(),
+			"Boost, specified",
+			"the proven row is still first and still wins its own byte"
+		);
+		assert_eq!(merged[0].raw_form, RawForm::U16Le, "with the form a drive established, not the file's");
+		assert_eq!(merged[1].raw_form.byte_offset(), 2);
 	}
 
 	#[test]

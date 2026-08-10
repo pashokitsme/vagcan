@@ -973,24 +973,28 @@ done tonight.
    delivers on a VCDS project — how many of the 1,209 text ids get better wording, and
    whether the pooled-text collapse recurs — is unmeasured. One `setup` with an
    installation answers it, offline.
-1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
-   channel by its DID, so only one field per identifier survives. **The figures below
-   are stale** — 3,878 expressible fields, 1,959 surviving, 2,693 sub-byte — all measured
-   before §4.2 added 88,549 channels, and all worth re-measuring after item 00 rather
-   than repeated. The shape of the finding stands: most of what is thrown away is thrown
-   away at the last step. Needs `watch`'s
-   history and chart, keyed by `(request, did)` today, keyed by channel instead. Moves
-   the goal directly: it is the largest remaining block of readable channels.
+1. ~~**Several channels per response, not one.**~~ **Done 2026-08-10.** A channel is now
+   keyed by `(request, did, byte offset)` — `watch::plan::Key` — instead of by its
+   identifier, so every field a `0x22` response carries is its own row, its own chart line
+   and its own favourite. `Extracted::described` and `merge` dedupe by field rather than by
+   address; `merge` in particular no longer lets a proven row at byte 0 suppress the
+   channels beside it, which had made proving a scaling *cost* measurements.
+
+   Measured against the owner's rebuilt cache, over the fifteen units the reference car
+   has: **3,963 sayable fields across 2,011 identifiers**, so the ceiling moves from 2,011
+   rows to 3,963. The mechanism is unit-tested; what it looks like on the car is item 7.
+
+   A favourites file written before this has two-part keys (`7E0:202A`); those read as
+   byte 0, which is what they meant when a channel *was* an identifier.
+
 2. **Sub-byte fields — 2,693 of them.** One-bit flags and 3-bit fields. `RawForm`
    reads whole bytes and returns an `i32`; a bit field needs a mask and a shift, and a
    one-bit flag needs a *name per state* rather than a number, so this and the
    `Scaling::Enum` question are one question. A decision first, then code.
-3. **A second ODIS project.** Weaker than it was: one of its three questions —
-   whether the two unresolved units resolve elsewhere — turned out to be a defect in
-   this reader, not a gap in the project (§4.2), and they resolve here. What is left is
-   whether `PRODUCT-ID` sets are disjoint across projects (the whole
-   car-picks-its-project design rests on it) and whether the TTTEXT crib generalises
-   beyond one German project.
+3. ~~**A second ODIS project.**~~ **Cancelled 2026-08-10** — the owner has no other
+   project, and the item had already lost the one question it could still have answered
+   about this car (§4.2). What it would have settled about `PRODUCT-ID` disjointness now
+   has to come from somewhere else, or item 4 stays open.
 4. **Car-picks-its-project.** `project::covering()` is a named function returning
    `None`, and `Project::covers(type_code)` exists to fill it. Blocked on deciding
    which of a car's fifteen part numbers to believe — `5E0` × 3 against `8V0`, `5Q0`,

@@ -161,14 +161,14 @@ pub struct App {
 	/// Which channels the chart holds — a second choice over the same list,
 	/// because what belongs on a table of thirty values and what belongs on a
 	/// chart of three lines are different questions.
-	charted: std::collections::BTreeSet<(u16, u16)>,
+	charted: std::collections::BTreeSet<plan::Key>,
 	/// The channels this car's owner marked with `f`, read from and written
 	/// back to [`favourites::path_for`].
 	///
 	/// They are offered first on the selection screen, they survive the
 	/// nameless-identifier filter, and they are what a run starts with — see
 	/// [`favourites`].
-	favourites: std::collections::BTreeSet<(u16, u16)>,
+	favourites: std::collections::BTreeSet<plan::Key>,
 	/// Where they are kept. `None` on a replay and on a car that would not say
 	/// which car it is: the marks then last until the run ends, which is what
 	/// [`App::note`] says at the moment somebody makes one.
@@ -399,13 +399,13 @@ impl App {
 	/// favourite, which is a person saying "this one" about the very row a
 	/// nameless-identifier filter is designed to remove.
 	fn kept(&self, channel: &Channel) -> bool {
-		let key = (channel.request, channel.did);
+		let key = channel.key();
 		channel.selected || self.favourites.contains(&key) || self.charted.contains(&key)
 	}
 
 	/// Whether the channel at this index is one of the favourites.
 	fn favourite(&self, index: usize) -> bool {
-		self.channels.get(index).is_some_and(|c| self.favourites.contains(&(c.request, c.did)))
+		self.channels.get(index).is_some_and(|c| self.favourites.contains(&c.key()))
 	}
 
 	/// How many of the open tab's channels this screen is holding back, split by
@@ -463,13 +463,13 @@ impl App {
 	/// a line, and beyond [`CHART_CHANNELS`] there is no room for one. Both are
 	/// said out loud on the screen that makes the marks, because a mark that
 	/// silently does nothing is what makes a chart look broken.
-	fn drawn(&self) -> Vec<(u16, u16)> {
+	fn drawn(&self) -> Vec<plan::Key> {
 		self
 			.shown()
 			.into_iter()
-			.filter(|c| self.charted.contains(&(c.request, c.did)) && plottable(c))
+			.filter(|c| self.charted.contains(&c.key()) && plottable(c))
 			.take(CHART_CHANNELS)
-			.map(|c| (c.request, c.did))
+			.map(|c| c.key())
 			.collect()
 	}
 
@@ -547,18 +547,23 @@ impl App {
 	/// so that a recording drawn back through the same screen cannot end up
 	/// with a different idea of what was measured than the car did.
 	fn observe(&mut self, request: u16, did: u16, at: f64, data: Vec<u8>) {
-		let value = self
+		// **One response, several channels.** A control unit packs as many
+		// fields into a `0x22` answer as it likes, and each is a line of its
+		// own; taking the first channel that matched the identifier gave every
+		// one of them the first field's number.
+		//
+		// `interpret` is the one thing that decides whether there is a value,
+		// and it declines exactly what must be declined: bytes too short for the
+		// form, a state, and an anchored row away from its anchor, where the
+		// slope is unknown and no honest value exists.
+		let seen: Vec<(plan::Key, f64)> = self
 			.channels
 			.iter()
-			.find(|c| c.request == request && c.did == did)
-			.and_then(|c| c.def.as_ref())
-			.and_then(|def| def.interpret(&data));
-		// `interpret` is the one thing that decides, and it declines exactly
-		// what must be declined: bytes too short for the form, a state, and an
-		// anchored row away from its anchor, where the slope is unknown and no
-		// honest value exists.
-		if let Some(value) = value {
-			self.history.push((request, did), at, value);
+			.filter(|c| c.request == request && c.did == did)
+			.filter_map(|c| c.def.as_ref().and_then(|def| def.interpret(&data)).map(|value| (c.key(), value)))
+			.collect();
+		for (key, value) in seen {
+			self.history.push(key, at, value);
 		}
 		self.latest.insert((request, did), (at, data));
 	}
@@ -569,7 +574,7 @@ impl App {
 	/// as it did on this one. `pages` is a pure function of what it is handed
 	/// and cannot do better than the order it gets.
 	fn charted(&self) -> Charted {
-		let marked: Vec<&Channel> = self.shown().into_iter().filter(|c| self.charted.contains(&(c.request, c.did))).collect();
+		let marked: Vec<&Channel> = self.shown().into_iter().filter(|c| self.charted.contains(&c.key())).collect();
 		let no_number = marked.iter().filter(|c| !plottable(c)).count();
 		let drawable: Vec<&Channel> = marked.iter().copied().filter(|c| plottable(c)).collect();
 		let over_cap = drawable.len().saturating_sub(CHART_CHANNELS);
@@ -587,7 +592,7 @@ impl App {
 					false => c.label(),
 				},
 				unit: c.unit_of_measure().to_string(),
-				points: self.history.points((c.request, c.did)),
+				points: self.history.points(c.key()),
 				// Everything on this screen came off the bus. `watch` reads and
 				// does not compute, and the day it does the distinction is
 				// already drawn here.
@@ -609,12 +614,12 @@ impl App {
 		if !self.chart_shown || !self.charted.is_empty() {
 			return;
 		}
-		let seed: Vec<(u16, u16)> = self
+		let seed: Vec<plan::Key> = self
 			.shown()
 			.into_iter()
 			.filter(|c| plottable(c))
 			.take(CHART_CHANNELS)
-			.map(|c| (c.request, c.did))
+			.map(|c| c.key())
 			.collect();
 		self.charted.extend(seed);
 	}
@@ -631,7 +636,7 @@ impl App {
 	/// with no effect on the run somebody made it during.
 	fn toggle_favourite(&mut self, index: usize) {
 		let Some(channel) = self.channels.get_mut(index) else { return };
-		let key = (channel.request, channel.did);
+		let key = channel.key();
 		if self.favourites.remove(&key) {
 			// Unfavouriting is not deselecting: somebody who no longer wants a
 			// row *next* time is not asking for it to vanish from this screen.
@@ -653,7 +658,7 @@ impl App {
 	fn select_favourites(&mut self) -> usize {
 		let mut found = 0;
 		for channel in self.channels.iter_mut() {
-			if self.favourites.contains(&(channel.request, channel.did)) {
+			if self.favourites.contains(&channel.key()) {
 				channel.selected = true;
 				found += 1;
 			}
@@ -668,7 +673,7 @@ impl App {
 	/// the whole run.
 	fn toggle_charted(&mut self, index: usize) {
 		let Some(channel) = self.channels.get_mut(index) else { return };
-		let key = (channel.request, channel.did);
+		let key = channel.key();
 		if !self.charted.remove(&key) {
 			self.charted.insert(key);
 			channel.selected = true;
@@ -682,7 +687,7 @@ impl App {
 	/// being polled draws a line that stops dead and then, a minute later,
 	/// nothing — and looks exactly like a control unit that went quiet.
 	fn prune_charted(&mut self) {
-		let selected: std::collections::BTreeSet<(u16, u16)> = self.channels.iter().filter(|c| c.selected).map(|c| (c.request, c.did)).collect();
+		let selected: std::collections::BTreeSet<plan::Key> = self.channels.iter().filter(|c| c.selected).map(|c| c.key()).collect();
 		let before = self.charted.len();
 		self.charted.retain(|key| selected.contains(key));
 		if self.charted.len() != before {
@@ -943,7 +948,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 /// can never be a line, a marked one past the cap is waiting for room, and the
 /// rest are on screen right now.
 fn series_note(app: &App, channel: &Channel) -> &'static str {
-	let key = (channel.request, channel.did);
+	let key = channel.key();
 	if !plottable(channel) {
 		// It keeps its row on the table either way; it is the chart that
 		// declines it, and this is where it says so.
@@ -981,7 +986,7 @@ fn draw_series(frame: &mut Frame, app: &mut App) {
 		.iter()
 		.map(|i| {
 			let c = &app.channels[*i];
-			let marked = app.charted.contains(&(c.request, c.did));
+			let marked = app.charted.contains(&c.key());
 			let note = series_note(app, c);
 			Row::new(vec![
 				Cell::from(if marked { "[x]" } else { "[ ]" }),
@@ -1153,7 +1158,7 @@ fn draw_select(frame: &mut Frame, app: &mut App) {
 			// The chart mark is a word rather than a second box: two boxes side
 			// by side on one row is a puzzle, and this one is the rarer choice
 			// of the two.
-			let charted = match app.charted.contains(&(c.request, c.did)) {
+			let charted = match app.charted.contains(&c.key()) {
 				true => "chart",
 				false => "",
 			};
@@ -1354,7 +1359,7 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 				// being watched — never on every channel the car has.
 				KeyCode::Char('a') => {
 					for i in &shown {
-						let key = (app.channels[*i].request, app.channels[*i].did);
+						let key = app.channels[*i].key();
 						if plottable(&app.channels[*i]) {
 							app.charted.insert(key);
 						}
@@ -2006,16 +2011,24 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	// that stream can be asked to skip. It is still the terminal either way.
 	eprint!("{}", coverage_report(&identities, &channels, catalogs, &source, &answered));
 	for (request, did) in preselect {
-		match channels.iter_mut().find(|c| c.request == *request && c.did == *did) {
-			Some(c) => c.selected = true,
-			None => channels.push(Channel {
+		// **Every** field of that identifier, not the first one. `--did
+		// 01:2029` names an identifier, one request reads all of it, and
+		// selecting one field of the answer while dropping the others would
+		// cost nothing on the bus and lose channels on the screen.
+		let mut found = false;
+		for channel in channels.iter_mut().filter(|c| c.request == *request && c.did == *did) {
+			channel.selected = true;
+			found = true;
+		}
+		if !found {
+			channels.push(Channel {
 				request: *request,
 				did: *did,
 				def: None,
 				named: None,
 				proven: false,
 				selected: true,
-			}),
+			});
 		}
 	}
 	let mut backend = Some(adapter);
@@ -2889,13 +2902,13 @@ mod tests {
 			]);
 			a.units = vec![(0x7E0, "1.8l R4 TFSI".to_string())];
 			for (i, did) in [0x202Au16, 0x206E].iter().enumerate() {
-				a.charted.insert((0x7E0, *did));
+				a.charted.insert((0x7E0, *did, 0));
 				for step in 0..40u16 {
 					let value = 1000 + step * 40 * (i as u16 + 1);
 					a.observe(0x7E0, *did, step as f64 * 0.25, value.to_be_bytes().to_vec());
 				}
 			}
-			a.charted.insert((0x7E0, 0x38F0));
+			a.charted.insert((0x7E0, 0x38F0, 0));
 			a.observe(0x7E0, 0x38F0, 9.75, vec![0x0B, 0x34]);
 			a.clock = 9.75;
 			a.chart_shown = true;
@@ -2915,8 +2928,8 @@ mod tests {
 		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar"), raw(0x7E0, 0x38F0)]);
 		a.observe(0x7E0, 0x202A, 1.0, vec![0x03, 0xE8]);
 		a.observe(0x7E0, 0x38F0, 1.0, vec![0x0B, 0x34]);
-		assert_eq!(a.history.points((0x7E0, 0x202A)), vec![(1.0, 1.0)]);
-		assert!(a.history.points((0x7E0, 0x38F0)).is_empty());
+		assert_eq!(a.history.points((0x7E0, 0x202A, 0)), vec![(1.0, 1.0)]);
+		assert!(a.history.points((0x7E0, 0x38F0, 0)).is_empty());
 		// The table still shows it, because that is what `watch` is for.
 		assert_eq!(a.latest.get(&(0x7E0, 0x38F0)).map(|(_, d)| d.clone()), Some(vec![0x0B, 0x34]));
 
@@ -2925,7 +2938,7 @@ mod tests {
 		// encoding rather than the car.
 		let mut a = App::new(vec![state(0x7E1, 0x3816, "Selected gear")]);
 		a.observe(0x7E1, 0x3816, 1.0, vec![0x05]);
-		assert!(a.history.points((0x7E1, 0x3816)).is_empty());
+		assert!(a.history.points((0x7E1, 0x3816, 0)).is_empty());
 	}
 
 	#[test]
@@ -2940,7 +2953,7 @@ mod tests {
 		a.cursor = 0;
 		assert!(plan::plan(&a.channels).is_empty());
 		on_key(&mut a, KeyCode::Char('g'));
-		assert!(a.charted.contains(&(0x7E0, 0x202A)));
+		assert!(a.charted.contains(&(0x7E0, 0x202A, 0)));
 		assert!(a.channels[0].selected, "marking for the chart selects it");
 		assert!(!plan::plan(&a.channels).is_empty());
 
@@ -2960,7 +2973,7 @@ mod tests {
 		channels.push(raw(0x7E0, 0x38F0));
 		let mut a = App::new(channels);
 		for c in &a.channels {
-			a.charted.insert((c.request, c.did));
+			a.charted.insert(c.key());
 		}
 		let charted = a.charted();
 		assert_eq!(charted.series.len(), CHART_CHANNELS);
@@ -2972,7 +2985,7 @@ mod tests {
 			proven(0x7E0, 0x2029, "Boost pressure, specified", "bar"),
 			proven(0x7E0, 0x202A, "Boost pressure, actual", "bar"),
 		]);
-		a.charted.insert((0x7E0, 0x202A));
+		a.charted.insert((0x7E0, 0x202A, 0));
 		let charted = a.charted();
 		assert_eq!(charted.series.len(), 1);
 		assert_eq!(charted.series[0].label, "Boost pressure, actual");
@@ -2990,10 +3003,10 @@ mod tests {
 			proven(0x7E0, 0x206E, "Engine speed", "/min"),
 			proven(0x7E1, 0x380A, "Engine speed", "/min"),
 		]);
-		a.charted.insert((0x7E0, 0x206E));
+		a.charted.insert((0x7E0, 0x206E, 0));
 		let one = a.charted();
 		assert_eq!(one.series[0].label, "Engine speed", "one unit needs no prefix");
-		a.charted.insert((0x7E1, 0x380A));
+		a.charted.insert((0x7E1, 0x380A, 0));
 		let two = a.charted();
 		assert_eq!(two.series[0].label, "01 Engine speed");
 		assert_eq!(two.series[1].label, "02 Engine speed");
@@ -3012,12 +3025,12 @@ mod tests {
 		on_key(&mut a, KeyCode::Char('g'));
 		assert!(a.chart_shown);
 		assert_eq!(a.charted.len(), CHART_CHANNELS);
-		assert!(!a.charted.contains(&(0x7E0, 0x38F0)), "nothing raw is seeded");
+		assert!(!a.charted.contains(&(0x7E0, 0x38F0, 0)), "nothing raw is seeded");
 
 		// Hiding and showing it again keeps the marks: the seed is for an empty
 		// selection, not for every press.
 		on_key(&mut a, KeyCode::Char('g'));
-		a.charted.remove(&(0x7E0, 0x2000));
+		a.charted.remove(&(0x7E0, 0x2000, 0));
 		on_key(&mut a, KeyCode::Char('g'));
 		assert_eq!(a.charted.len(), CHART_CHANNELS - 1);
 	}
@@ -3037,7 +3050,7 @@ mod tests {
 			proven(0x7E0, 0x2000, "coolant", "°C"),
 		]);
 		for c in &a.channels {
-			a.charted.insert((c.request, c.did));
+			a.charted.insert(c.key());
 		}
 		on_key(&mut a, KeyCode::Right);
 		assert_eq!(a.chart_page, 0, "nothing to page while the chart is down");
@@ -3078,13 +3091,13 @@ mod tests {
 			raw(0x7E0, 0x38F0),
 		]);
 		for (i, did) in [0x202Au16, 0x206E].iter().enumerate() {
-			a.charted.insert((0x7E0, *did));
+			a.charted.insert((0x7E0, *did, 0));
 			for step in 0..5 {
 				let raw_value = 1000 + step * 500 * (i as u16 + 1);
 				a.observe(0x7E0, *did, step as f64 * 0.2, raw_value.to_be_bytes().to_vec());
 			}
 		}
-		a.charted.insert((0x7E0, 0x38F0));
+		a.charted.insert((0x7E0, 0x38F0, 0));
 		a.chart_shown = true;
 
 		// Every size a terminal is still allowed to be. The table and the chart
@@ -3300,7 +3313,7 @@ mod tests {
 		// A favourite is a person saying "this one" about precisely the row the
 		// filter is built to remove, so it outranks the filter too.
 		let mut a = App::new(vec![unselected(raw(0x74B, 0x02BD)), unselected(raw(0x74B, 0x02C1))]);
-		a.favourites.insert((0x74B, 0x02BD));
+		a.favourites.insert((0x74B, 0x02BD, 0));
 		assert_eq!(a.visible(), vec![0]);
 	}
 
@@ -3318,7 +3331,7 @@ mod tests {
 
 		a.cursor = 2;
 		on_key(&mut a, KeyCode::Char('f'));
-		assert!(a.favourites.contains(&(0x7E0, 0x206E)));
+		assert!(a.favourites.contains(&(0x7E0, 0x206E, 0)));
 		assert!(a.channels[2].selected, "marking it for every drive marks it for this one");
 		assert_eq!(a.visible(), vec![2, 0, 1], "the favourite is offered first");
 		let text = select_text(&mut a, 80, 12);
@@ -3368,7 +3381,7 @@ mod tests {
 		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
 		a.screen = Screen::Select;
 		on_key(&mut a, KeyCode::Char('f'));
-		assert!(a.favourites.contains(&(0x7E0, 0x202A)), "it still works for this run");
+		assert!(a.favourites.contains(&(0x7E0, 0x202A, 0)), "it still works for this run");
 		assert!(a.note.contains("no car"), "{}", a.note);
 		let text = select_text(&mut a, 80, 14);
 		assert!(text.contains("no car"), "{text}");
@@ -3392,17 +3405,17 @@ mod tests {
 
 		// Opening the chart seeded it from the table, so both numbers are on
 		// it; the state is not, and never can be.
-		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A), (0x7E0, 0x206E)]);
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A, 0), (0x7E0, 0x206E, 0)]);
 		on_key(&mut a, KeyCode::Char('n'));
 		assert!(a.drawn().is_empty());
 		on_key(&mut a, KeyCode::Down);
 		on_key(&mut a, KeyCode::Char(' '));
-		assert_eq!(a.drawn(), vec![(0x7E0, 0x206E)], "one press, one line");
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x206E, 0)], "one press, one line");
 
 		// `a` takes everything it can draw and nothing it cannot.
 		on_key(&mut a, KeyCode::Char('a'));
-		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A), (0x7E0, 0x206E)]);
-		assert!(!a.charted.contains(&(0x7E1, 0x3816)), "a state has no number to plot");
+		assert_eq!(a.drawn(), vec![(0x7E0, 0x202A, 0), (0x7E0, 0x206E, 0)]);
+		assert!(!a.charted.contains(&(0x7E1, 0x3816, 0)), "a state has no number to plot");
 
 		on_key(&mut a, KeyCode::Esc);
 		assert_eq!(a.screen, Screen::Live);
@@ -3417,7 +3430,7 @@ mod tests {
 		channels.push(state(0x7E1, 0x3816, "Selected gear"));
 		let mut a = App::new(channels);
 		for c in &a.channels {
-			a.charted.insert((c.request, c.did));
+			a.charted.insert(c.key());
 		}
 		a.screen = Screen::Series;
 		a.chart_shown = true;
@@ -3503,7 +3516,7 @@ mod tests {
 			proven(0x7E0, 0x2029, "Boost pressure", "bar"),
 			proven(0x7E0, 0x206E, "Engine speed", "/min"),
 		]);
-		a.charted.insert((0x7E0, 0x206E));
+		a.charted.insert((0x7E0, 0x206E, 0));
 		a.screen = Screen::Select;
 		let text = select_text(&mut a, 110, 12);
 		let charted_row = text

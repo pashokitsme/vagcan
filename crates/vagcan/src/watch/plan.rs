@@ -55,7 +55,27 @@ pub struct Channel {
 	pub selected: bool,
 }
 
+/// What identifies one channel — **not** `(request, did)`.
+///
+/// One `0x22` response carries as many fields as the control unit put in it, and
+/// the byte each starts at is what tells them apart. Keying by identifier alone
+/// meant a unit could show one field per identifier and silently dropped the
+/// rest: measured on the reference car's fifteen units, 3,963 sayable fields
+/// arriving as 2,011 rows.
+///
+/// The response body itself stays keyed by `(request, did)` — see
+/// [`crate::watch::App::latest`] — because one read still answers one
+/// identifier, and every field of it is cut from those same bytes.
+pub type Key = (u16, u16, u8);
+
 impl Channel {
+	/// This channel's identity: unit, identifier, and where in the response it
+	/// starts. A channel nothing describes reads from byte 0, which is also
+	/// where a lone field would be.
+	pub fn key(&self) -> Key {
+		(self.request, self.did, self.def.as_ref().map_or(0, |d| d.raw_form.byte_offset()))
+	}
+
 	/// How the unit is written on screen: its short number when this project
 	/// has established one, otherwise its request id.
 	pub fn unit(&self) -> String {

@@ -17,9 +17,13 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-/// A channel, as `watch` addresses one: the unit's request id and the
-/// identifier.
-pub type Key = (u16, u16);
+/// A channel, as `watch` addresses one — see [`crate::watch::plan::Key`].
+///
+/// The unit, the identifier **and** the byte the field starts at. Not the first
+/// two alone: one response carries several fields, they move independently, and
+/// a chart keyed by identifier would draw whichever of them was found first
+/// while claiming to be about the one that was picked.
+pub type Key = crate::watch::plan::Key;
 
 /// How much of the past a chart keeps: a fixed **time** window, and not a fixed
 /// number of samples.
@@ -143,8 +147,8 @@ fn trim_track(track: &mut VecDeque<(f64, f64)>, now: f64, window: f64) {
 mod tests {
 	use super::*;
 
-	const A: Key = (0x7E0, 0x2029);
-	const B: Key = (0x7E1, 0x380A);
+	const A: Key = (0x7E0, 0x2029, 0);
+	const B: Key = (0x7E1, 0x380A, 0);
 
 	#[test]
 	fn a_run_of_minutes_keeps_a_window_of_seconds() {

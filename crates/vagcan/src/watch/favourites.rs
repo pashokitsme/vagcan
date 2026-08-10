@@ -36,6 +36,8 @@
 //! beside it without every older file becoming unreadable.
 
 use std::collections::BTreeSet;
+
+use super::plan::Key;
 use std::path::PathBuf;
 
 /// What the file is called, beside the car file and the survey.
@@ -59,7 +61,7 @@ pub fn path_for(vin: Option<&str>) -> Option<PathBuf> {
 /// convenience, and losing a drive because a note about which rows to tick
 /// would not parse is the wrong trade — the same judgement `crate::project`
 /// makes about `config.json`.
-pub fn parse(text: &str) -> BTreeSet<(u16, u16)> {
+pub fn parse(text: &str) -> BTreeSet<Key> {
 	let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
 		return BTreeSet::new();
 	};
@@ -69,28 +71,46 @@ pub fn parse(text: &str) -> BTreeSet<(u16, u16)> {
 	list.iter().filter_map(|entry| entry.as_str().and_then(parse_key)).collect()
 }
 
-/// `"7E0:202A"` as the pair it names, or `None` when it is not one.
+/// `"7E0:202A:2"` as the channel it names, or `None` when it is not one.
 ///
-/// Both halves are hex and both are required. A bare identifier is refused
-/// rather than assumed to be the engine's: this file is written by the tool and
-/// read back by it, and guessing a control unit would silently move somebody's
-/// mark to another unit.
-fn parse_key(key: &str) -> Option<(u16, u16)> {
-	let (request, did) = key.split_once(':')?;
-	Some((u16::from_str_radix(request.trim(), 16).ok()?, u16::from_str_radix(did.trim(), 16).ok()?))
+/// Every part is hex, and the unit is required: a bare identifier is refused
+/// rather than assumed to be the engine's, because this file is written by the
+/// tool and read back by it, and guessing a control unit would silently move
+/// somebody's mark elsewhere.
+///
+/// **The third part is the byte the field starts at, and a file written before
+/// it existed has two parts.** Those read as byte 0, which is what they meant:
+/// back then a channel was an identifier, and the only field anything could
+/// show was the one at the start of the response.
+fn parse_key(key: &str) -> Option<Key> {
+	let mut parts = key.split(':');
+	let request = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
+	let did = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
+	let offset = match parts.next() {
+		Some(text) => u8::from_str_radix(text.trim(), 16).ok()?,
+		None => 0,
+	};
+	// A fourth part is not a key this tool ever wrote.
+	match parts.next() {
+		Some(_) => None,
+		None => Some((request, did, offset)),
+	}
 }
 
 /// The file's whole text, ready to write.
 ///
 /// Ordered, because a `BTreeSet` is, and because a file that reshuffles itself
 /// on every save is a file nobody can diff or keep in a backup.
-pub fn render(favourites: &BTreeSet<(u16, u16)>) -> String {
-	let keys: Vec<String> = favourites.iter().map(|(request, did)| format!("{request:03X}:{did:04X}")).collect();
+pub fn render(favourites: &BTreeSet<Key>) -> String {
+	let keys: Vec<String> = favourites
+		.iter()
+		.map(|(request, did, offset)| format!("{request:03X}:{did:04X}:{offset:X}"))
+		.collect();
 	serde_json::to_string_pretty(&serde_json::json!({ "favourites": keys })).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Read a car's favourites, or none at all.
-pub fn load(path: Option<&std::path::Path>) -> BTreeSet<(u16, u16)> {
+pub fn load(path: Option<&std::path::Path>) -> BTreeSet<Key> {
 	path
 		.and_then(|path| std::fs::read_to_string(path).ok())
 		.map(|text| parse(&text))
@@ -102,7 +122,7 @@ pub fn load(path: Option<&std::path::Path>) -> BTreeSet<(u16, u16)> {
 /// Called on every `f`, not once at the end: `watch` is quit with `q` on a
 /// terminal in a car park and killed with a closed lid at least as often, and a
 /// mark that only survives a tidy exit is a mark that does not survive.
-pub fn save(path: Option<&std::path::Path>, favourites: &BTreeSet<(u16, u16)>) -> Result<(), String> {
+pub fn save(path: Option<&std::path::Path>, favourites: &BTreeSet<Key>) -> Result<(), String> {
 	let Some(path) = path else {
 		return Err("this run has no car to keep favourites under — they last until it ends".to_string());
 	};
@@ -118,19 +138,20 @@ pub fn save(path: Option<&std::path::Path>, favourites: &BTreeSet<(u16, u16)>) -
 mod tests {
 	use super::*;
 
-	fn set(pairs: &[(u16, u16)]) -> BTreeSet<(u16, u16)> {
-		pairs.iter().copied().collect()
+	fn set(keys: &[Key]) -> BTreeSet<Key> {
+		keys.iter().copied().collect()
 	}
 
 	#[test]
 	fn what_is_written_is_what_comes_back() {
-		let marks = set(&[(0x7E0, 0x202A), (0x7E1, 0x3816), (0x74B, 0x02BD)]);
+		let marks = set(&[(0x7E0, 0x202A, 0), (0x7E0, 0x202A, 2), (0x7E1, 0x3816, 0), (0x74B, 0x02BD, 0)]);
 		assert_eq!(parse(&render(&marks)), marks);
 		// And the text is the plain, hand-editable thing the rest of ~/.vagcan
 		// is, keyed the way this tool writes identifiers everywhere else.
 		let text = render(&marks);
-		assert!(text.contains("\"7E0:202A\""), "{text}");
-		assert!(text.contains("\"74B:02BD\""), "{text}");
+		assert!(text.contains("\"7E0:202A:0\""), "{text}");
+		assert!(text.contains("\"7E0:202A:2\""), "two fields of one identifier are two marks: {text}");
+		assert!(text.contains("\"74B:02BD:0\""), "{text}");
 	}
 
 	#[test]
@@ -141,8 +162,8 @@ mod tests {
 			assert!(parse(broken).is_empty(), "{broken:?}");
 		}
 		// A malformed entry costs itself and nothing else.
-		let mixed = parse(r#"{"favourites": ["7E0:202A", "nonsense", "202A", "7E0:", ":202A"]}"#);
-		assert_eq!(mixed, set(&[(0x7E0, 0x202A)]));
+		let mixed = parse(r#"{"favourites": ["7E0:202A:0", "nonsense", "202A", "7E0:", ":202A", "7E0:202A:0:1"]}"#);
+		assert_eq!(mixed, set(&[(0x7E0, 0x202A, 0)]));
 	}
 
 	#[test]
@@ -151,7 +172,7 @@ mod tests {
 		// directory of its own. Neither is an error; both are a mark that lasts
 		// until the run ends, and the message has to say which.
 		assert_eq!(path_for(None), None);
-		let why = save(None, &set(&[(0x7E0, 0x202A)])).unwrap_err();
+		let why = save(None, &set(&[(0x7E0, 0x202A, 0)])).unwrap_err();
 		assert!(why.contains("no car"), "{why}");
 		assert!(load(None).is_empty());
 	}
@@ -179,14 +200,14 @@ mod tests {
 		// gets cut off the end of a line.
 		let here = tempfile::tempdir().unwrap();
 		let path = here.path().join("nested/deeper").join(FILE);
-		save(Some(&path), &set(&[(0x7E0, 0x202A)])).expect("it creates what it needs");
-		assert_eq!(load(Some(&path)), set(&[(0x7E0, 0x202A)]));
+		save(Some(&path), &set(&[(0x7E0, 0x202A, 0)])).expect("it creates what it needs");
+		assert_eq!(load(Some(&path)), set(&[(0x7E0, 0x202A, 0)]));
 
 		// A directory where the file should be is the ordinary shape of an
 		// unwritable path, and the answer names it.
 		let blocked = here.path().join("blocked");
 		std::fs::create_dir_all(&blocked).unwrap();
-		let why = save(Some(&blocked), &set(&[(0x7E0, 0x202A)])).unwrap_err();
+		let why = save(Some(&blocked), &set(&[(0x7E0, 0x202A, 0)])).unwrap_err();
 		assert!(why.ends_with(&blocked.display().to_string()), "{why}");
 	}
 }

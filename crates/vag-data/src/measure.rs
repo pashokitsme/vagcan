@@ -116,6 +116,21 @@ pub enum RawForm {
 }
 
 impl RawForm {
+	/// Where in the response this form starts, in bytes after the DID echo.
+	///
+	/// **This is what tells two channels of one identifier apart.** A `0x22`
+	/// response carries as many fields as the unit chose to put in it — the
+	/// reference car's fifteen units describe 3,963 sayable fields across 2,011
+	/// identifiers — and everything that keyed a channel by its identifier alone
+	/// could hold one of them and dropped the rest.
+	pub fn byte_offset(self) -> u8 {
+		match self {
+			RawForm::U8First | RawForm::U16Be | RawForm::U16Le | RawForm::I16Be | RawForm::U24Be | RawForm::U32Be => 0,
+			RawForm::U8Second => 1,
+			RawForm::Int { byte_offset, .. } => byte_offset,
+		}
+	}
+
 	/// Extract the raw integer from `data` (the response bytes after the DID
 	/// echo). Returns `None` if `data` is too short for this form.
 	pub fn read(self, data: &[u8]) -> Option<i32> {
