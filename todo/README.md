@@ -940,17 +940,17 @@ done tonight.
 
 **No car needed:**
 
-00. **Two source rows for one project, and the re-import that needs them merged
-   (2026-08-10).** `source` is `UNIQUE (kind, dir)` on the raw path string, so
-   `~/Downloads/SK37X/` and `~/Downloads/SK37X` are different sources: the reference
-   project is in the cache **twice**, 310,734 rows each. This blocks everything else,
-   because §4.2's fix is worth 88,549 more channels and collecting them means re-running
-   `setup`, which would write a third copy. Normalise the path before it becomes a key,
-   decide what to do with the rows already there, and only then re-import.
+00. ~~**Two source rows for one project.**~~ **Done 2026-08-10.** `source` was
+   `UNIQUE (kind, dir)` on the raw path string, so `~/Downloads/SK37X/` and
+   `~/Downloads/SK37X` were two sources holding two full copies of one project. A path is
+   now normalised (`std::fs::canonicalize`, falling back to trimming separators when the
+   directory is gone) **before it becomes a key**, and an import finding rows under
+   another spelling drops them rather than repointing them — repointing would leave the
+   same channel twice under one source, which is the thing being undone.
 
-   Worth noting how it slipped through: the owner asked about the trailing slash, I
-   checked `expand()`, found it treats both identically, and said so. That was true and
-   irrelevant — the path is normalised for *reading* and stored raw for *keying*.
+   How it slipped through: the owner asked about the trailing slash, I checked `expand()`,
+   found it treats both spellings identically, and said so. True, and about the wrong
+   layer — the path was normalised for *reading* and stored raw for *keying*.
 0a. **The rear-door parse defect.** Four variants in
    `BV_DoorElectRearDriveSideUDS` / `BV_DoorElectRearPasseSideUDS` fail with
    `a flag at byte 77 is 113, neither 0 nor 1`, which means a field before it was read at

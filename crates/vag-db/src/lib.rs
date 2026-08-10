@@ -267,17 +267,78 @@ pub const VCDS: &str = "vcds";
 /// The kind an ODIS project is.
 pub const ODIS: &str = "odis";
 
+/// One directory, spelled the one way this table keys on.
+///
+/// **A path is normalised before it becomes a key, never only before it is
+/// read.** `~/Downloads/SK37X/` and `~/Downloads/SK37X` name one directory and
+/// every reader in this project already treats them as one — but `source` was
+/// `UNIQUE (kind, dir)` on the raw string, so importing under both spellings
+/// wrote two source rows and two full copies of the project: 621,468 rows for
+/// 310,734 channels, every one of them offered twice to anything that looked
+/// them up. That is the whole bug, and it hid behind a check of the *reading*
+/// path, which was correct and irrelevant.
+///
+/// [`std::fs::canonicalize`] rather than trimming a slash: `.`, `..`, a symlink
+/// and a relative path are the same class of alias and there is no reason to fix
+/// one spelling and wait for the next. It needs the directory to exist, which it
+/// does at the moment anything is imported from it; when it does not — a
+/// recorded path whose directory has since gone — the raw string minus its
+/// trailing separators is kept, so an old row still matches itself.
+fn normalise_dir(dir: &str) -> String {
+	if let Ok(real) = std::fs::canonicalize(dir) {
+		return real.to_string_lossy().into_owned();
+	}
+	let trimmed = dir.trim_end_matches(std::path::is_separator);
+	match trimmed.is_empty() {
+		// All separators: that is the root, and trimming it away would make it
+		// the empty string, which names nothing.
+		true => dir.to_owned(),
+		false => trimmed.to_owned(),
+	}
+}
+
 /// Find or make the `source` row for one directory, and return its id.
 ///
-/// `ON CONFLICT` rather than a lookup-then-insert: parsing the same directory
-/// twice must land on the same row, or a project re-read after a `--refresh`
-/// would accumulate one source row per run.
+/// Rows already written under another spelling of the same directory are
+/// **dropped**, not repointed: a cache that already holds the duplicate has no
+/// other way back, and repointing would leave the same channel twice under one
+/// source, which is the very thing being undone. Dropping is safe because a
+/// duplicate source is by construction a second reading of the *same directory*,
+/// and every caller of this function is an import that is about to write that
+/// directory's contents again.
+///
+/// Done here rather than in a schema migration because it is the spelling rule
+/// that decides which rows are the same, and the rule lives here.
 fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> {
-	conn.execute(
-		"INSERT INTO source (kind, dir) VALUES (?1, ?2) ON CONFLICT(kind, dir) DO UPDATE SET dir = excluded.dir",
-		params![kind, dir],
-	)?;
-	conn.query_row("SELECT id FROM source WHERE kind = ?1 AND dir = ?2", params![kind, dir], |row| row.get(0))
+	let wanted = normalise_dir(dir);
+	let mut same: Vec<i64> = {
+		let mut stmt = conn.prepare("SELECT id, dir FROM source WHERE kind = ?1 ORDER BY id")?;
+		let rows = stmt.query_map(params![kind], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+		rows
+			.collect::<rusqlite::Result<Vec<_>>>()?
+			.into_iter()
+			.filter(|(_, stored)| normalise_dir(stored) == wanted)
+			.map(|(id, _)| id)
+			.collect()
+	};
+	let Some(keep) = same.first().copied() else {
+		conn.execute("INSERT INTO source (kind, dir) VALUES (?1, ?2)", params![kind, wanted])?;
+		return conn.query_row("SELECT id FROM source WHERE kind = ?1 AND dir = ?2", params![kind, wanted], |row| {
+			row.get(0)
+		});
+	};
+	same.remove(0);
+	for other in same {
+		conn.execute("DELETE FROM reading WHERE source_id = ?1", params![other])?;
+		// A `measurement` row predating the `source_id` column carries NULL and
+		// belongs to nobody, so it is matched by id and never swept along.
+		conn.execute("DELETE FROM measurement WHERE source_id = ?1", params![other])?;
+		conn.execute("DELETE FROM source WHERE id = ?1", params![other])?;
+	}
+	// The survivor is rewritten in the spelling this function will look for next
+	// time, so the merge happens once rather than on every run.
+	conn.execute("UPDATE source SET dir = ?1 WHERE id = ?2", params![wanted, keep])?;
+	Ok(keep)
 }
 
 /// Insert every file + its records into `conn`, in one transaction. The
@@ -1011,6 +1072,63 @@ mod tests {
 	}
 
 	#[test]
+	fn one_directory_spelled_two_ways_is_one_source() {
+		// The bug this fixes, on the owner's own cache: `~/Downloads/SK37X/`
+		// and `~/Downloads/SK37X` went in as two sources, so the project was
+		// stored twice — 621,468 rows for 310,734 channels, each offered twice
+		// to anything that looked one up.
+		let ws = TempWorkspace::new("spelling");
+		let dir = ws.labels_dir.to_string_lossy().into_owned();
+		std::fs::create_dir_all(&ws.labels_dir).unwrap();
+		let rows = [reading(0x380A, "a", Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }))];
+
+		put_readings(&ws.db_path, &dir, "EV_ECM", &rows).unwrap();
+		put_readings(&ws.db_path, &format!("{dir}/"), "EV_ECM", &rows).unwrap();
+		// And a third spelling that means the same directory without being a
+		// trailing slash, because fixing one alias and waiting for the next is
+		// how this comes back.
+		put_readings(&ws.db_path, &format!("{dir}/./"), "EV_ECM", &rows).unwrap();
+
+		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 1, "one directory, one source");
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1, "and one copy of its channels");
+	}
+
+	#[test]
+	fn a_cache_that_already_holds_the_duplicate_is_merged_rather_than_left() {
+		// Somebody's cache is already in the broken state, and nothing else
+		// will ever repair it: the rows are legal, no constraint is violated,
+		// and every lookup just returns two of everything.
+		let ws = TempWorkspace::new("merge");
+		std::fs::create_dir_all(&ws.labels_dir).unwrap();
+		let dir = ws.labels_dir.to_string_lossy().into_owned();
+		let rows = [reading(0x380A, "a", Scaling::Linear(vag_data::LinearScale { factor: 1.0, offset: 0.0 }))];
+		put_readings(&ws.db_path, &dir, "EV_ECM", &rows).unwrap();
+
+		// Forge the second row the old code would have written.
+		let conn = Connection::open(&ws.db_path).unwrap();
+		conn
+			.execute("INSERT INTO source (kind, dir) VALUES ('odis', ?1)", params![format!("{dir}/")])
+			.unwrap();
+		let stale: i64 = conn
+			.query_row("SELECT id FROM source WHERE dir = ?1", params![format!("{dir}/")], |r| r.get(0))
+			.unwrap();
+		conn
+			.execute(
+				"INSERT INTO reading (source_id, variant, did, name, bit_offset, bit_length, signed, big_endian, scaling, factor, offset) \
+				 VALUES (?1, 'EV_ECM', 14346, 'a', 0, 16, 0, 1, 'linear', 1.0, 0.0)",
+				params![stale],
+			)
+			.unwrap();
+		drop(conn);
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 2, "the broken state");
+
+		// The next import of that directory, under either spelling, repairs it.
+		put_readings(&ws.db_path, &format!("{dir}/"), "EV_ECM", &rows).unwrap();
+		assert_eq!(sources_of(&ws.db_path).unwrap().len(), 1);
+		assert_eq!(readings_of(&ws.db_path, "EV_ECM").unwrap().len(), 1);
+	}
+
+	#[test]
 	fn both_sources_live_in_one_cache_and_neither_erases_the_other() {
 		// Design §4.5: an ODIS parse never deletes VCDS-derived rows or the
 		// reverse. They are addressed differently — block/field against
@@ -1032,8 +1150,12 @@ mod tests {
 		assert!(sources.iter().any(|(kind, _)| kind == VCDS));
 		assert!(sources.iter().any(|(kind, _)| kind == ODIS));
 		// A VCDS row still answers "which label directory was this built from",
-		// which is what the freshness rule asks.
-		assert_eq!(source_of(&ws.db_path).as_deref(), Some(ws.labels_dir.to_string_lossy().as_ref()));
+		// which is what the freshness rule asks — in the canonical spelling,
+		// because that is what makes two spellings of one directory one row.
+		// On macOS a temporary directory is reached through the `/var` symlink
+		// and stored as `/private/var`, which is the same place said properly.
+		let canonical = std::fs::canonicalize(&ws.labels_dir).unwrap();
+		assert_eq!(source_of(&ws.db_path).as_deref(), Some(canonical.to_string_lossy().as_ref()));
 
 		// Rebuilding the VCDS side leaves the ODIS channels where they are.
 		build_db(&ws.labels_dir, &ws.db_path).unwrap();
