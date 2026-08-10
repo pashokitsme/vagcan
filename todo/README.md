@@ -940,6 +940,23 @@ done tonight.
 
 **No car needed:**
 
+00. **Two source rows for one project, and the re-import that needs them merged
+   (2026-08-10).** `source` is `UNIQUE (kind, dir)` on the raw path string, so
+   `~/Downloads/SK37X/` and `~/Downloads/SK37X` are different sources: the reference
+   project is in the cache **twice**, 310,734 rows each. This blocks everything else,
+   because §4.2's fix is worth 88,549 more channels and collecting them means re-running
+   `setup`, which would write a third copy. Normalise the path before it becomes a key,
+   decide what to do with the rows already there, and only then re-import.
+
+   Worth noting how it slipped through: the owner asked about the trailing slash, I
+   checked `expand()`, found it treats both identically, and said so. That was true and
+   irrelevant — the path is normalised for *reading* and stored raw for *keying*.
+0a. **The rear-door parse defect.** Four variants in
+   `BV_DoorElectRearDriveSideUDS` / `BV_DoorElectRearPasseSideUDS` fail with
+   `a flag at byte 77 is 113, neither 0 nor 1`, which means a field before it was read at
+   the wrong width. The last known parse failure in the project, contained to two pools,
+   and `examples/odis_pool` dumps exactly what is needed to find it. The reference car
+   has no rear door units, so nothing on this car depends on it.
 0. **The ODIS fault loaders.** The largest functional gap: a project holds 329,268
    `DTC_*` objects with their descriptions in the clear, and `vagcan faults` still reads
    VCDS files, so a person set up from ODIS alone gets numbers. `DB_DOP_DTC` and
@@ -957,18 +974,23 @@ done tonight.
    whether the pooled-text collapse recurs — is unmeasured. One `setup` with an
    installation answers it, offline.
 1. **Several channels per response, not one.** `Extracted::for_unit` and `merge` key a
-   channel by its DID, so of 3,878 expressible fields only 1,959 survive. The other
-   1,919 are here, already parsed, and thrown away at the last step. Needs `watch`'s
+   channel by its DID, so only one field per identifier survives. **The figures below
+   are stale** — 3,878 expressible fields, 1,959 surviving, 2,693 sub-byte — all measured
+   before §4.2 added 88,549 channels, and all worth re-measuring after item 00 rather
+   than repeated. The shape of the finding stands: most of what is thrown away is thrown
+   away at the last step. Needs `watch`'s
    history and chart, keyed by `(request, did)` today, keyed by channel instead. Moves
    the goal directly: it is the largest remaining block of readable channels.
 2. **Sub-byte fields — 2,693 of them.** One-bit flags and 3-bit fields. `RawForm`
    reads whole bytes and returns an `i32`; a bit field needs a mask and a shift, and a
    one-bit flag needs a *name per state* rather than a number, so this and the
    `Scaling::Enum` question are one question. A decision first, then code.
-3. **A second ODIS project.** Settles three things one project cannot: whether
-   `PRODUCT-ID` sets are disjoint across projects (the whole car-picks-its-project
-   design rests on it), whether the two unresolved units resolve elsewhere, and whether
-   the TTTEXT crib generalises beyond one German project.
+3. **A second ODIS project.** Weaker than it was: one of its three questions —
+   whether the two unresolved units resolve elsewhere — turned out to be a defect in
+   this reader, not a gap in the project (§4.2), and they resolve here. What is left is
+   whether `PRODUCT-ID` sets are disjoint across projects (the whole
+   car-picks-its-project design rests on it) and whether the TTTEXT crib generalises
+   beyond one German project.
 4. **Car-picks-its-project.** `project::covering()` is a named function returning
    `None`, and `Project::covers(type_code)` exists to fill it. Blocked on deciding
    which of a car's fifteen part numbers to believe — `5E0` × 3 against `8V0`, `5Q0`,
