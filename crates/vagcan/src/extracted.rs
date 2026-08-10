@@ -249,7 +249,7 @@ fn to_def(reading: &vag_data::odis::Reading) -> Option<MeasurementDef> {
 /// Same address **and** same starting byte. Two fields of one response are two
 /// channels; the same field said twice by two variants of a family is one.
 fn same_field(a: &MeasurementDef, b: &MeasurementDef) -> bool {
-	a.address == b.address && a.raw_form.byte_offset() == b.raw_form.byte_offset()
+	a.address == b.address && a.raw_form.bit_offset() == b.raw_form.bit_offset()
 }
 
 /// Put the proven rows on top of the extracted ones, by identifier.
@@ -404,8 +404,8 @@ mod tests {
 
 		let defs = extracted.for_unit(Some("EV_Test"), Some("001007"));
 		assert_eq!(defs.len(), 3, "three fields, three channels: {defs:#?}");
-		let offsets: Vec<u8> = defs.iter().map(|d| d.raw_form.byte_offset()).collect();
-		assert_eq!(offsets, vec![0, 2, 4], "and each reads from its own byte");
+		let offsets: Vec<u32> = defs.iter().map(|d| d.raw_form.bit_offset()).collect();
+		assert_eq!(offsets, vec![0, 16, 32], "and each reads from its own place in the response");
 		assert!(defs.iter().all(|d| d.address == ReadId::Uds(0x2029)), "one identifier, one request");
 	}
 
@@ -439,7 +439,7 @@ mod tests {
 			"the proven row is still first and still wins its own byte"
 		);
 		assert_eq!(merged[0].raw_form, RawForm::U16Le, "with the form a drive established, not the file's");
-		assert_eq!(merged[1].raw_form.byte_offset(), 2);
+		assert_eq!(merged[1].raw_form.bit_offset(), 16);
 	}
 
 	#[test]
@@ -578,11 +578,13 @@ mod tests {
 
 	#[test]
 	fn a_channel_this_tool_cannot_read_exactly_is_skipped_rather_than_approximated() {
-		// `RawForm` is the proven catalog's vocabulary — whole bytes, at a byte
-		// boundary, no wider than four — and an ODX file may describe a 3-bit
-		// field at bit 19 or a 32-byte block. Approximating one produces a
-		// confident wrong number, which is worse than the raw bytes a reader
-		// gets today.
+		// What is left after the widening, and why. A field inside one byte is
+		// now sayable — bit order established on the car itself, see
+		// `RawForm::Bits`. What stays refused is a field that **crosses** a byte
+		// boundary, which needs a rule for which end the bits continue from that
+		// nothing here has evidence for, and one wider than the `i32` carrier.
+		// Approximating either produces a confident wrong number, which is worse
+		// than the raw bytes a reader gets instead.
 		let here = tempfile::tempdir().unwrap();
 		let x = cache_with(
 			here.path(),
@@ -600,9 +602,34 @@ mod tests {
 		);
 		let defs = x.for_unit(Some("EV_Test"), None);
 		let names: Vec<&str> = defs.iter().map(|d| d.name.as_ref()).collect();
-		assert_eq!(names, ["a whole big-endian word", "a byte at the second position"], "{defs:#?}");
-		assert_eq!(defs[0].raw_form, RawForm::U16Be);
-		assert_eq!(defs[1].raw_form, RawForm::U8Second);
+		assert_eq!(
+			names,
+			[
+				"three bits, part way into a byte",
+				"a whole big-endian word",
+				"a byte at the second position",
+				"a one-bit flag"
+			],
+			"{defs:#?}"
+		);
+		assert_eq!(
+			defs[0].raw_form,
+			RawForm::Bits {
+				bit_offset: 19,
+				bit_length: 3,
+				signed: false
+			}
+		);
+		assert_eq!(defs[1].raw_form, RawForm::U16Be);
+		assert_eq!(defs[2].raw_form, RawForm::U8Second);
+		assert_eq!(
+			defs[3].raw_form,
+			RawForm::Bits {
+				bit_offset: 24,
+				bit_length: 1,
+				signed: false
+			}
+		);
 	}
 
 	#[test]

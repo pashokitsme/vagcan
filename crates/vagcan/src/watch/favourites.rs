@@ -78,8 +78,8 @@ pub fn parse(text: &str) -> BTreeSet<Key> {
 /// tool and read back by it, and guessing a control unit would silently move
 /// somebody's mark elsewhere.
 ///
-/// **The third part is the byte the field starts at, and a file written before
-/// it existed has two parts.** Those read as byte 0, which is what they meant:
+/// **The third part is the bit the field starts at, and a file written before
+/// it existed has two parts.** Those read as bit 0, which is what they meant:
 /// back then a channel was an identifier, and the only field anything could
 /// show was the one at the start of the response.
 fn parse_key(key: &str) -> Option<Key> {
@@ -87,7 +87,7 @@ fn parse_key(key: &str) -> Option<Key> {
 	let request = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
 	let did = u16::from_str_radix(parts.next()?.trim(), 16).ok()?;
 	let offset = match parts.next() {
-		Some(text) => u8::from_str_radix(text.trim(), 16).ok()?,
+		Some(text) => u32::from_str_radix(text.trim(), 16).ok()?,
 		None => 0,
 	};
 	// A fourth part is not a key this tool ever wrote.

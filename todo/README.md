@@ -987,10 +987,26 @@ done tonight.
    A favourites file written before this has two-part keys (`7E0:202A`); those read as
    byte 0, which is what they meant when a channel *was* an identifier.
 
-2. **Sub-byte fields — 2,693 of them.** One-bit flags and 3-bit fields. `RawForm`
-   reads whole bytes and returns an `i32`; a bit field needs a mask and a shift, and a
-   one-bit flag needs a *name per state* rather than a number, so this and the
-   `Scaling::Enum` question are one question. A decision first, then code.
+2. ~~**Sub-byte fields.**~~ **Done 2026-08-10.** `RawForm::Bits { bit_offset, bit_length,
+   signed }` reads a field inside one byte — 2,732 more channels on the reference car's
+   fifteen units, taking it from 3,963 sayable of 6,886 to **6,695, 97% of what the file
+   describes**.
+
+   **The within-byte bit order was established, not assumed.** ASAM MCD-2D counts
+   `BIT-POSITION` from the least significant bit, and the car's own two dumps agree twice:
+   `710/2A49 engine_running` reads 0 parked and 1 driving counted from the LSB and 0 both
+   times counted from the MSB; and `7E0/20A4` carries flags named `cylinder 1` … `cylinder
+   8`, of which the LSB reading makes 1–4 change and 5–8 constant — on a four-cylinder
+   engine. Both from `research/dumps/survey-parked.jsonl` against
+   `survey-driving-20260802-0322.jsonl`.
+
+   **Still refused: a field crossing a byte boundary** — 4,385 in the project, 191 on this
+   car. It needs a rule for which end the bits continue from, and there is no evidence for
+   one. Refusing 3% beats guessing at it.
+
+   The channel key is counted in bits rather than bytes for the same reason item 1 exists:
+   one byte holds eight flags, and a key in bytes would give all eight one identity.
+
 3. ~~**A second ODIS project.**~~ **Cancelled 2026-08-10** — the owner has no other
    project, and the item had already lost the one question it could still have answered
    about this car (§4.2). What it would have settled about `PRODUCT-ID` disjointness now

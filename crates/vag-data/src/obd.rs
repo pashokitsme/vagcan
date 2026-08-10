@@ -413,6 +413,10 @@ impl ObdPid {
 			RawForm::Int {
 				byte_offset, byte_length, ..
 			} => byte_offset as usize + byte_length as usize,
+			// Likewise: no J1979 parameter is a bit field, but the byte holding
+			// one still has to be present for `conversion_for` to refuse on the
+			// right grounds.
+			RawForm::Bits { bit_offset, .. } => (bit_offset / 8) as usize + 1,
 		}
 	}
 }

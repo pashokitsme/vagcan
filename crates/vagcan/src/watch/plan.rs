@@ -66,14 +66,18 @@ pub struct Channel {
 /// The response body itself stays keyed by `(request, did)` — see
 /// [`crate::watch::App::latest`] — because one read still answers one
 /// identifier, and every field of it is cut from those same bytes.
-pub type Key = (u16, u16, u8);
+///
+/// **Bits, not bytes.** One byte can carry eight flags, and 155,426 of the
+/// reference project's channels are single bits; a key counted in bytes would
+/// give all eight of them one identity and repeat the loss one level down.
+pub type Key = (u16, u16, u32);
 
 impl Channel {
 	/// This channel's identity: unit, identifier, and where in the response it
 	/// starts. A channel nothing describes reads from byte 0, which is also
 	/// where a lone field would be.
 	pub fn key(&self) -> Key {
-		(self.request, self.did, self.def.as_ref().map_or(0, |d| d.raw_form.byte_offset()))
+		(self.request, self.did, self.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()))
 	}
 
 	/// How the unit is written on screen: its short number when this project

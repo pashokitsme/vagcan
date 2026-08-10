@@ -257,6 +257,21 @@ fn encode(count: u64, form: RawForm) -> Option<Vec<u8>> {
 		RawForm::I16Be => be(2),
 		RawForm::U24Be => be(3),
 		RawForm::U32Be => be(4),
+		// A bit field, on the same terms: the bytes before it were never
+		// recorded, so they are zero, and the value is shifted back into the
+		// place its own definition says it came from.
+		RawForm::Bits { bit_offset, bit_length, .. } => {
+			let shift = bit_offset % 8;
+			let mask = if bit_length >= 8 { 0xFFu64 } else { (1u64 << bit_length) - 1 };
+			// A value the field cannot hold is not a value this field ever sent.
+			if count > mask {
+				return None;
+			}
+			let mut bytes = vec![0u8; (bit_offset / 8) as usize + 1];
+			let last = bytes.len() - 1;
+			bytes[last] = ((count & mask) << shift) as u8;
+			Some(bytes)
+		}
 		// The general form, on the same terms as `U8Second`: the bytes before
 		// the field were never recorded, so they are filled with zero and the
 		// reader takes the ones it wants. A width outside 1..=4 is what

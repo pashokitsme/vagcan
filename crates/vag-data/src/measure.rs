@@ -113,21 +113,59 @@ pub enum RawForm {
 		/// Whether the most significant byte comes first.
 		big_endian: bool,
 	},
+	/// A field narrower than a byte, or one that does not start on a byte
+	/// boundary — a one-bit flag, a 3-bit selector, a 5-bit counter.
+	///
+	/// 175,606 of the reference project's channels are this shape and 155,426 of
+	/// them are single bits, so refusing them cost more channels than every other
+	/// limitation of this vocabulary put together.
+	///
+	/// **Only within one byte.** A field that starts mid-byte and runs into the
+	/// next needs a byte-order rule this project has no evidence for, and 97% of
+	/// them do not, so [`RawForm::for_field`] refuses the rest rather than
+	/// guessing at 3%.
+	Bits {
+		/// Bits into the data, counted **as ODX counts them**: `byte * 8 + bit`,
+		/// where `bit` is the position of the field's *least significant* bit
+		/// inside that byte, 0 being the LSB.
+		///
+		/// That is ASAM MCD-2D's definition of `BIT-POSITION`, and it is also
+		/// what the reference car's own answers say. Two dumps of it, one parked
+		/// and one driving (`research/dumps/survey-parked.jsonl` and
+		/// `survey-driving-20260802-0322.jsonl`), settle the within-byte order
+		/// twice over:
+		///
+		/// - `710/2A49` `engine_running` reads 0 parked and 1 driving counted
+		///   from the LSB, and 0 both times counted from the MSB.
+		/// - `7E0/20A4` carries eight flags named `cylinder 1` … `cylinder 8`.
+		///   Counted from the LSB, cylinders 1–4 change between the two dumps and
+		///   5–8 stay zero. Counted from the MSB it is the other way round — on
+		///   an engine with four cylinders.
+		bit_offset: u32,
+		/// How many bits, 1 to 8.
+		bit_length: u8,
+		/// Whether the bits are a two's-complement signed quantity, sign bit at
+		/// the top of the field.
+		signed: bool,
+	},
 }
 
 impl RawForm {
-	/// Where in the response this form starts, in bytes after the DID echo.
+	/// Where in the response this form starts, in **bits** after the DID echo.
 	///
 	/// **This is what tells two channels of one identifier apart.** A `0x22`
 	/// response carries as many fields as the unit chose to put in it — the
 	/// reference car's fifteen units describe 3,963 sayable fields across 2,011
 	/// identifiers — and everything that keyed a channel by its identifier alone
-	/// could hold one of them and dropped the rest.
-	pub fn byte_offset(self) -> u8 {
+	/// could hold one of them and dropped the rest. Bits rather than bytes
+	/// because a byte can hold eight flags, and eight channels that shared a key
+	/// would be the same loss one level down.
+	pub fn bit_offset(self) -> u32 {
 		match self {
 			RawForm::U8First | RawForm::U16Be | RawForm::U16Le | RawForm::I16Be | RawForm::U24Be | RawForm::U32Be => 0,
-			RawForm::U8Second => 1,
-			RawForm::Int { byte_offset, .. } => byte_offset,
+			RawForm::U8Second => 8,
+			RawForm::Int { byte_offset, .. } => u32::from(byte_offset) * 8,
+			RawForm::Bits { bit_offset, .. } => bit_offset,
 		}
 	}
 
@@ -157,6 +195,29 @@ impl RawForm {
 				[a, b, c, d, ..] => i32::try_from(u32::from_be_bytes([*a, *b, *c, *d])).ok(),
 				_ => None,
 			},
+			RawForm::Bits {
+				bit_offset,
+				bit_length,
+				signed,
+			} => {
+				// Within one byte by construction — `for_field` refuses anything
+				// that crosses — so this is a shift and a mask, and the sign
+				// extension is from the field's own width.
+				if bit_length == 0 || bit_length > 8 {
+					return None;
+				}
+				let byte = *data.get((bit_offset / 8) as usize)?;
+				let shift = bit_offset % 8;
+				if u32::from(bit_length) + shift > 8 {
+					return None;
+				}
+				let mask = if bit_length == 8 { 0xFFu32 } else { (1u32 << bit_length) - 1 };
+				let raw = (u32::from(byte) >> shift) & mask;
+				Some(match signed && bit_length > 1 && raw >> (bit_length - 1) != 0 {
+					true => raw as i32 - (1i32 << bit_length),
+					false => raw as i32,
+				})
+			}
 			RawForm::Int {
 				byte_offset,
 				byte_length,
@@ -208,7 +269,18 @@ impl RawForm {
 	/// the raw bytes a reader gets instead.
 	pub fn for_field(bit_offset: u32, bit_length: u32, signed: bool, big_endian: bool) -> Option<RawForm> {
 		if bit_offset % 8 != 0 || bit_length % 8 != 0 {
-			return None;
+			// A field inside one byte. Anything crossing a boundary needs a rule
+			// for which end the bits continue from, and this project has no
+			// evidence for one — 97% of them do not cross, so the rest are
+			// refused rather than guessed at.
+			if bit_length == 0 || bit_length > 8 || (bit_offset % 8) + bit_length > 8 {
+				return None;
+			}
+			return Some(RawForm::Bits {
+				bit_offset,
+				bit_length: bit_length as u8,
+				signed,
+			});
 		}
 		let (byte_offset, byte_length) = (bit_offset / 8, bit_length / 8);
 		if byte_length == 0 || byte_length > 4 {
@@ -468,13 +540,71 @@ mod tests {
 				big_endian: true
 			})
 		);
-		// A field that does not start on a byte, or does not fill whole bytes, is
-		// not this vocabulary's to describe — see the bit-field note on `RawForm`.
-		assert_eq!(f(19, 3, false, true), None);
+		// A field inside one byte is a bit field, wherever in the byte it sits.
+		assert_eq!(
+			f(19, 3, false, true),
+			Some(RawForm::Bits {
+				bit_offset: 19,
+				bit_length: 3,
+				signed: false
+			})
+		);
+		assert_eq!(
+			f(8, 1, false, true),
+			Some(RawForm::Bits {
+				bit_offset: 8,
+				bit_length: 1,
+				signed: false
+			})
+		);
+		// A field that crosses a byte boundary needs a rule for which end the
+		// bits continue from, and nothing here has evidence for one.
 		assert_eq!(f(0, 12, false, true), None);
-		assert_eq!(f(8, 1, false, true), None);
+		assert_eq!(f(6, 4, false, true), None);
 		// And a field too wide for the carrier is refused rather than clipped.
 		assert_eq!(f(0, 64, false, true), None);
+	}
+
+	#[test]
+	fn a_bit_field_is_counted_from_the_least_significant_bit() {
+		// The direction is not a convention this project picked. It is ASAM
+		// MCD-2D's, and the reference car's own answers agree twice over — see
+		// the note on `RawForm::Bits`, which names the two dumps and the two
+		// channels that settle it.
+		//
+		// `0b1010_0110` at byte 1 of the response.
+		let data = [0x00, 0xA6];
+		let bit = |offset, length| {
+			RawForm::Bits {
+				bit_offset: offset,
+				bit_length: length,
+				signed: false,
+			}
+			.read(&data)
+		};
+		assert_eq!(bit(8, 1), Some(0), "bit 0 is the low end of the byte");
+		assert_eq!(bit(9, 1), Some(1));
+		assert_eq!(bit(10, 1), Some(1));
+		assert_eq!(bit(15, 1), Some(1), "and bit 7 is the high end");
+		// Wider fields read from the same end.
+		assert_eq!(bit(8, 4), Some(0b0110));
+		assert_eq!(bit(12, 4), Some(0b1010));
+
+		// Signed, sign bit at the top of the field's own width. Bits 5..7 of
+		// `0b1010_0110` are `0b101`, which in three bits is −3 and not 5.
+		let signed = RawForm::Bits {
+			bit_offset: 13,
+			bit_length: 3,
+			signed: true,
+		};
+		assert_eq!(signed.read(&data), Some(-3));
+		// The same bits unsigned stay 5, so the sign is the definition's and
+		// never the value's.
+		assert_eq!(bit(13, 3), Some(5));
+
+		// A response too short for the byte the field is in has no value in it,
+		// rather than a zero that looks like a reading.
+		assert_eq!(bit(24, 1), None);
 	}
 
 	#[test]
