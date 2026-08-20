@@ -12,6 +12,7 @@
 //! (`todo/dash/README.md`), so the digit counts and unit strings are the ones a
 //! real plan will have to fit.
 
+use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics_simulator::{BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay};
 use vag_dash::{Cell, Frame, PANEL, Theme, draw};
@@ -25,8 +26,15 @@ fn main() {
 	// the panel.
 	let settings = OutputSettingsBuilder::new().scale(3).theme(BinaryColorTheme::OledBlue).build();
 
+	// A second pass at 256x64, the size the 3.12" SSD1322 actually comes in.
+	// Nothing in the renderer is told about it — the layout reads its height from
+	// the target — so this shows what the extra rows give for free, and what they
+	// do not.
+	let tall = std::env::args().any(|a| a == "--tall");
+	let size = if tall { Size::new(PANEL.width, 64) } else { PANEL };
+
 	let shot = |name: &str, frame: &Frame<'_>, theme: &Theme| {
-		let mut display = SimulatorDisplay::<BinaryColor>::new(PANEL);
+		let mut display = SimulatorDisplay::<BinaryColor>::new(size);
 		let report = draw(frame, theme, &mut display);
 		display.to_rgb_output_image(&settings).save_png(format!("{dir}/{name}.png")).unwrap();
 		println!("{name:<28} {report:?}");

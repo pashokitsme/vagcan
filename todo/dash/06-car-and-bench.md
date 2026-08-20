@@ -89,5 +89,6 @@ real numbers on this car before it is fixed in firmware.
 
 ## 10. The panel's controller
 
-Not a car question, but it blocks `05`: 256×32 is not the SSD1322's usual 256×64, and the
-driver crate follows from the part.
+Settled 2026-08-20 without needing the car: buy the 3.12″ **256×64 SSD1322**, 7-pin SPI.
+256×32 is not a part anybody sells. Details and the buying checklist are in the subsystem
+README.

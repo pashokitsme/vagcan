@@ -67,9 +67,28 @@ the first one lacks.
 - **MKS CANable V2.0 Pro**, already soldered to an OBD plug: **STM32G431C8** in LQFP48,
   **ADM3050E** isolated CAN FD transceiver, **Hi-Link B0505S-1WR3** isolated 1 W DC-DC for
   the bus side.
-- **256×32 OLED**, controller to be confirmed. If SSD1322, the driver is `ssd1322` 0.3.0
-  (sync SPI) or `ssd1322_rs` 0.3.1. 4 bpp, 16 grey levels, ~30 KB for a full frame buffer —
-  which the ESP32 can simply hold.
+- **256×64 OLED, 3.12″, SSD1322** — the part to buy, settled 2026-08-20. Driver crate
+  `ssd1322` 0.3.0 (sync SPI) or `ssd1322_rs` 0.3.1. 4 bpp, sixteen grey levels, ~30 KB for
+  a full frame buffer, which the ESP32 can simply hold.
+
+  **256×32 was the original target and is not a part you can buy.** Every 3.12″ SSD1322
+  module on the market is 256×64, and the height difference is smaller than it sounds: the
+  pixel is 0.3 mm square, so 64 rows is a **19 mm** active area against 9.6 for 32. Both are
+  a thin strip; only one exists.
+
+  The extra rows are not a consolation. Rendered the same nine frames at 64 with no change
+  to the renderer — it reads its height from the target — and the chart is a different
+  instrument: at 32 rows the boost trace was a squiggle, at 64 the ripple, the spool shape
+  and the dip at the shift are all legible. The values page, by contrast, works but does not
+  yet *use* the height (label at the top, number at the bottom, a gap between). That is
+  layout work in `02`, not a limitation, and at 64 rows it can be either the reference
+  photograph's four tiers or two rows of four cells.
+
+  What to check when ordering: **7-pin SPI, not the 16-pin parallel version** (those want
+  0 Ω jumpers moved to select 4-wire SPI); **temperature range** — Winstar-grade parts are
+  −40…+85 °C where cheap ones stop at +70, and a vent in summer sun goes past that;
+  **yellow or green** rather than white or blue, for night vision; and confirm the module
+  has its own charge pump, which monochrome SSD1322 boards normally do.
 - **Three buttons.**
 - **Power from OBD pin 16**, permanent battery positive per SAE J1962 — live whenever the
   car is parked, so the regulator's own quiescent draw is the real budget (`08`).

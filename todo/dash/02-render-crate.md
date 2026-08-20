@@ -67,6 +67,13 @@ the `Report`, nine tests, and the nine-frame PNG example. See the subsystem READ
   on the board it is 30 KB over SPI to change one digit.
 - **Two faces are chosen by hand.** Whether the numbers are Inconsolata, FreeUniversal or
   seven segments is the open decision the previews exist to settle.
+- **The 64-row layout.** The panel to buy is 256×**64** (see the subsystem README), and the
+  renderer already draws at that size unchanged — it takes its height from the target — but
+  spends the extra rows on a gap. `PANEL` moves to 256×64 and the values page gets a real
+  layout for it: either the reference photograph's four tiers, or two rows of four cells.
+  The chart needs only its hardcoded `plot_top` generalising, and gains the most: at 64 rows
+  a boost trace stops being a squiggle. `cargo run -p vag-dash --example panel -- <dir>
+  --tall` renders at 64 for comparison.
 
 ## Burn-in
 
