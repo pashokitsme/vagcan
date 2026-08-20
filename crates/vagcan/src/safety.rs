@@ -59,6 +59,49 @@ pub async fn require_stationary<B: vag_can::CanBackend>(backend: B) -> Result<B,
 	}
 }
 
+/// Control units a whole-car sweep leaves alone, and why.
+///
+/// **This is a safety rule, not a table of car data.** `0x712` is VW's
+/// diagnostic address for steering assistance across the platform, not a fact
+/// about one vehicle, and what it is doing here is recorded in `SAFETY.md`: the
+/// steering assist on the reference car dropped out mid-drive about a third of
+/// the way through a survey — which is exactly where `0x712` falls in the walk
+/// order — and a second run cost it permanently. It has been reading its own
+/// fault memory ever since, and every sweep since has made it complain again.
+///
+/// Skipping it costs a whole-car survey one unit of fifteen. Not skipping it
+/// costs the owner a steering rack, twice already.
+///
+/// **Only the whole-car walk.** `--only 712` still reaches it, because naming a
+/// unit by hand is a person deciding to read that unit, the same way `--blind`
+/// is. What this removes is the sweep nobody aimed.
+pub const SPARED: [u16; 1] = [0x712];
+
+/// The walk order minus the units a sweep spares, and what was left out.
+///
+/// Returns the pair rather than filtering silently: a sweep that quietly reads
+/// fourteen units while saying fifteen is the kind of gap that gets discovered
+/// as a missing unit in `watch` months later.
+pub fn spare(order: Vec<u16>) -> (Vec<u16>, Vec<u16>) {
+	let (spared, walk): (Vec<u16>, Vec<u16>) = order.into_iter().partition(|id| SPARED.contains(id));
+	(walk, spared)
+}
+
+/// What to say about the units a sweep spared, or nothing when it spared none.
+pub fn spared_notice(spared: &[u16]) -> Option<String> {
+	if spared.is_empty() {
+		return None;
+	}
+	let list: Vec<String> = spared.iter().map(|id| format!("{id:03X}")).collect();
+	Some(format!(
+		"  {} not swept — it is the unit this project has twice damaged, and it \n  \
+         reports a fault every time it is read (SAFETY.md). Name it to read it: \n    \
+         vagcan survey --only {}",
+		list.join(", "),
+		list.join(",")
+	))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -85,5 +128,34 @@ mod tests {
 		// must never collapse into the same value.
 		let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(vec![(req(SPEED_DID), vec![0x7F, 0x22, 0x31])]));
 		assert_eq!(road_speed_kmh(&mut uds).await, None);
+	}
+
+	#[test]
+	fn a_whole_car_sweep_spares_the_unit_this_project_has_damaged() {
+		// `SAFETY.md`, twice over. The steering assist dropped out a third of
+		// the way through a survey — which is where `0x712` falls in the walk
+		// order — and a second run cost it permanently. It has reported a fault
+		// on every read since.
+		let (walk, spared) = spare(vec![0x7E0, 0x7E1, 0x710, 0x712, 0x713]);
+		assert_eq!(walk, vec![0x7E0, 0x7E1, 0x710, 0x713]);
+		assert_eq!(spared, vec![0x712]);
+		// The order of what is left is the order it was given in: a sweep that
+		// reshuffled itself would make two runs hard to compare, and comparing
+		// two runs is what a survey is for.
+		assert_eq!(spare(vec![0x713, 0x7E0]).0, vec![0x713, 0x7E0]);
+	}
+
+	#[test]
+	fn what_was_spared_is_said_out_loud_and_says_how_to_read_it_anyway() {
+		// A sweep that quietly reads fourteen units while saying fifteen is a
+		// gap somebody finds months later as a control unit missing from
+		// `watch`. And the unit is not forbidden — it is not *swept*, which is
+		// a different sentence, so the notice carries the command that reads it.
+		let notice = spared_notice(&[0x712]).expect("something was spared");
+		assert!(notice.contains("712"), "{notice}");
+		assert!(notice.contains("SAFETY.md"), "{notice}");
+		assert!(notice.contains("--only 712"), "{notice}");
+		// And nothing is said when nothing was held back.
+		assert_eq!(spared_notice(&[]), None);
 	}
 }

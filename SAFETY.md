@@ -101,6 +101,13 @@ is not a fuzz test. Blind sweeping was once the only way to find out what a unit
 answered; it is not any more, so it is no longer what happens when you type
 `vagcan survey`.
 
+* **The steering assist is not swept at all by a whole-car run.** `0x712` is the
+  unit this went wrong on, twice, and it has answered every read since with a
+  stored fault — asking it again is asking a damaged unit to re-report its own
+  damage. `vagcan survey` now walks fourteen units of fifteen and says which one
+  it left out. It is *spared*, not forbidden: `vagcan survey --only 712` still
+  reads it, because naming a unit by hand is somebody deciding to read that unit,
+  the way `--blind` is. What is gone is the sweep nobody aimed.
 * **A unit no source describes is identified, not swept.** Two of this car's
   fifteen resolve to no variant. They get their identification block and their
   fault memory read, and nothing else — the old behaviour swept exactly those

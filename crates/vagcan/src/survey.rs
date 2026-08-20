@@ -407,6 +407,9 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 	};
 	// An explicit list skips the gateway read, so one unit can be re-run
 	// without the rest.
+	// Whether a person named the units, which is what makes reading a spared one
+	// their decision rather than the sweep's.
+	let requested_by_hand = only.is_some();
 	let requested = match only {
 		Some(spec) => Some(
 			vag_protocol::address::parse_list(spec)
@@ -487,6 +490,13 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			walk_order(&listed)
 		}
 	};
+	// A unit nobody named is a unit nobody decided to read. `SAFETY.md` names
+	// one that a sweep must not reach on its own — see `safety::SPARED` — and
+	// `--only` still reaches it, because that is somebody choosing.
+	let (order, spared) = match requested_by_hand {
+		true => (order, Vec::new()),
+		false => crate::safety::spare(order),
+	};
 
 	let (store, extracted) = crate::declared::sources();
 	println!(
@@ -502,6 +512,10 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			),
 		}
 	);
+
+	if let Some(notice) = crate::safety::spared_notice(&spared) {
+		println!("{notice}\n");
+	}
 
 	let started = Instant::now();
 	let mut reports = Vec::new();
