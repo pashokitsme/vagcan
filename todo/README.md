@@ -31,6 +31,34 @@ exposes is selectable from config, with no hardcoded addresses or formulas in Ru
 Live transport = the **generic USB-CAN adapter** (`vag-can`, slcan). See `/CLAUDE.md`
 for the locked stack and `todo/GOAL.md` for the goal statement.
 
+## New subsystem (2026-08-20) — `dash`, an OLED frontend for the car
+
+A second frontend, opened 2026-08-20 and specified in **[`todo/dash/`](dash/README.md)**:
+a 256×32 OLED on an ESP32-S3 that lives in the air vent and shows a handful of numbers
+while you drive. `watch` is for a laptop on the passenger seat; this is for a glance at
+120 km/h.
+
+The decision that shapes it: **the device resolves nothing, it executes a plan.**
+`vagcan dash build` runs on the laptop and emits a plan carrying, per cell, the unit
+address, identifier, bit offset and length, byte order, scaling and an already-rendered
+label; the firmware links it in and only sends `0x22`, takes bits, multiplies and draws.
+Not a preference — `cache.sqlite` is 88 MB against 512 KB of SRAM (measured 2026-08-20),
+searching a catalog is an act of build time, and **a plan cannot sweep**, which is the
+part that matters after the rack.
+
+Built for one car deliberately, at the owner's decision. That keeps `CLAUDE.md`'s rule
+literally: the checkout carries no car data, the generator produces it, and the generated
+plan and firmware are gitignored under `~/.vagcan/dash/<vin>/`.
+
+The allowlist does not move for it. The commercial device this copies the *shape* of also
+clears DTCs and drives the Haldex coupling; **we do neither** — both are write services,
+and a box that lives permanently in the car is the last place to relax that.
+
+Six task files: plan format, the `no_std` render crate, the desktop simulator (the panel
+runs on the laptop through `embedded-graphics-simulator`, so the layout is
+screenshot-tested rather than eyeballed), alarms, firmware, and the list of things only
+the car and the bench can answer.
+
 ## Status (2026-08-09) — the sweep stopped fuzzing, and `watch` became usable
 
 **`survey` no longer sweeps blind, after a second near-miss with the same steering
