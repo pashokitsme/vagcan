@@ -88,7 +88,38 @@ the first one lacks.
   0 Ω jumpers moved to select 4-wire SPI); **temperature range** — Winstar-grade parts are
   −40…+85 °C where cheap ones stop at +70, and a vent in summer sun goes past that;
   **yellow or green** rather than white or blue, for night vision; and confirm the module
-  has its own charge pump, which monochrome SSD1322 boards normally do.
+  has its own charge pump, which the SSD1322 provides for the ~14.5 V the panel wants.
+
+### The bezel, and why it does not matter
+
+There is no bezel-less OLED, and the reason is the glass rather than anybody's parsimony:
+a sealing frit runs around the emissive area and the driver is bonded to the glass or its
+flex. On the `WEX025664B` the outline is 88.0 × 27.8 mm against an active area of
+76.778 × 19.178 — 5.6 mm at each side, 4.3 mm above and below.
+
+But two different borders get seen as one, and only the first is avoidable:
+
+- **The carrier PCB.** Many modules are that panel glued to a breakout of about
+  100.5 × 33.5 mm — twelve millimetres of width and six of height *on top of the glass*.
+  A bare COF panel drops them. The price is a 30-pin 0.5 mm FPC connector and the support
+  parts (`IREF` resistor, charge-pump capacitors) on your own board: the finest soldering
+  in the whole build, finer than the tap on the ADM3050E.
+- **The glass border.** Not removable at any price.
+
+**So do not fight it — hide it behind a dark faceplate**, which is what the device in the
+reference photograph does: there is no visible screen in that vent, only digits floating
+in dark gloss. Smoked acrylic, or clear acrylic with automotive tint film. The bezel
+disappears because nothing but lit pixels is visible through it.
+
+And the contrast **improves**. Ambient light crosses the filter **twice** — in, and out
+again after reflecting off the black bezel — so it is attenuated by T², while the emitted
+light crosses once and is attenuated by T. At 30 % transmission the reflections fall to
+9 % and the digits to 30 %: a threefold gain. It is why every instrument cluster in every
+car sits under smoked plastic.
+
+Which settles the choice: **buy the ordinary breakout and put it behind acrylic.** The
+vent mount is a printed shell in any case and the faceplate is part of it; twelve extra
+millimetres of PCB behind the fascia bother nobody, because only the aperture is seen.
 - **Three buttons.**
 - **Power from OBD pin 16**, permanent battery positive per SAE J1962 — live whenever the
   car is parked, so the regulator's own quiescent draw is the real budget (`08`).
