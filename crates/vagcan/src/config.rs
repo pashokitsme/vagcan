@@ -13,14 +13,23 @@
 //! every note the owner had written, and the whole reason for leaving JSON with
 //! it. Anything that edits this file goes through here and through `toml_edit`.
 //!
-//! YAML was considered and declined. Not for the reason it looked like at
-//! first: a key such as `7E0:202A:0` does parse unquoted, which was checked
-//! rather than assumed. What decided it is that `language: no` is `false` in
-//! YAML — and `no` is Norwegian, on the one field in this file that holds a
-//! language code — that the layout is whitespace-significant in a file people
-//! edit by hand, and that Rust's `serde_yaml` ships under the version string
-//! `0.9.34+deprecated` with no settled successor. A format-preserving TOML
-//! editor is maintained; a format-preserving YAML one is not.
+//! YAML was considered and declined, and two of the three arguments against it
+//! turned out to be weaker than they looked. **A key such as `7E0:202A:0` does
+//! parse unquoted** — checked, not assumed. And while `serde_yaml` ships as
+//! `0.9.34+deprecated` and the `serde_yml` fork as an unmaintained shim,
+//! `yaml-rust2` is alive and YAML 1.2 compliant, and format-preserving editors
+//! (`yaml-edit`, `yamlpatch`) do exist.
+//!
+//! What is left is narrower and still decided it. `language: no` is `false` in
+//! YAML, and `no` is Norwegian — on the one field in this file that holds a
+//! language code. The layout is whitespace-significant in a file people edit by
+//! hand, where a wrong indent under `favourites` is a different document rather
+//! than an error. And `toml_edit` is what cargo edits every `Cargo.toml` with,
+//! against YAML editors at `0.2.3` and `1.30.0-rc1`: for a file this small the
+//! gain is how it reads, and the risk is a settings file that stops loading.
+//!
+//! Worth revisiting if this file grows enough for the nesting to matter. It has
+//! three keys.
 //!
 //! ```toml
 //! # Which project a bare command means.
