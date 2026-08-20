@@ -78,6 +78,13 @@ pub struct Resolved {
 	/// What this project's `names.json` calls the channel's text id, when the
 	/// row carried one and the file knows it.
 	pub named: Option<String>,
+	/// The row's own text id, kept rather than consumed.
+	///
+	/// It is the key `~/.vagcan/names.csv` is written under, so a person who
+	/// has just read a bad name on screen needs it to write a better one — see
+	/// `watch`'s `show_key` setting. `None` on a proven row, which was named by
+	/// whoever proved it and has no id to look anything up by.
+	pub text_id: Option<String>,
 }
 
 /// What this run's project knows, or nothing when there is no project.
@@ -338,12 +345,19 @@ pub fn tagged(
 			// name is the one they will look for. There is no text id on it to
 			// look anything else up by, either.
 			named: None,
+			text_id: None,
 		})
 		.collect();
 	for (def, text_id) in extracted.described(odx_name, version) {
-		if !out.iter().any(|held| held.def.address == def.address) {
+		// **By field, not by address** — the same rule [`merge`] enforces, and
+		// missed here when it was written there. A proven row for the first two
+		// bytes of an identifier says nothing about the field beside it, and
+		// dropping the neighbours undid the whole of "every field of a response
+		// is its own channel" on the one path `watch` actually takes.
+		if !out.iter().any(|held| same_field(&held.def, &def)) {
 			out.push(Resolved {
 				named: extracted.name_of(text_id.as_deref()).map(str::to_string),
+				text_id,
 				def,
 				proven: false,
 			});

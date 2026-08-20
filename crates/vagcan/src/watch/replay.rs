@@ -159,6 +159,7 @@ pub fn resolve(columns: &[Column], channels: &mut Vec<Channel>, request: u16) ->
 					def: None,
 					named: None,
 					proven: false,
+					text_id: None,
 					selected: false,
 				});
 				channels.len() - 1
@@ -325,6 +326,7 @@ mod tests {
 			}),
 			named: None,
 			proven: true,
+			text_id: None,
 			selected: false,
 		}
 	}

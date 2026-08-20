@@ -358,9 +358,19 @@ installation has actually been read into the project — on an ODIS-only project
 row's own name is the more specific of the two, and the generic one would put two live
 channels under a single label.
 
+**`,` opens the settings**, edited where they are used and written to
+`~/.vagcan/config.toml` as they change:
+
+| Setting | What it does |
+|---|---|
+| Poll rate | how often the car is asked. `--hz` overrides it for one run; the rate actually achieved is in the footer |
+| Key at the end of each row | shows each channel's **text id** — the line to edit in `names.csv` when a name reads badly |
+
 **Favourites persist per car**, in `~/.vagcan/config.toml` under `[favourites]`, keyed by
 VIN, and sort to the top of the chooser. A `favourites.json` from an older version is
-folded in the first time that car is watched.
+folded in the first time that car is watched. **The chart's lines are kept the same way**,
+under `[charted]`: choosing three out of two thousand channels is the work, and doing it
+again next drive is the work again.
 
 **Values with no proven scaling are shown as bytes and tagged `(raw)`**, never as a
 bare number — a reader cannot tell an invented number from a measured one, and this

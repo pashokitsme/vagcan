@@ -38,9 +38,19 @@
 //! # Which column of ~/.vagcan/names.csv channel names are read from.
 //! language = "ru"
 //!
+//! # How often `watch` asks the car, in hertz. `--hz` overrides it for one run.
+//! hz = 10.0
+//!
+//! # Show each channel's own key at the end of its row.
+//! show_key = false
+//!
 //! # Channels marked with `f` in `watch`, per car, keyed by VIN.
 //! [favourites]
 //! XW8AD4NE9JH008917 = ["7E0:202A:0", "7E1:380A:0"]
+//!
+//! # Channels the chart draws, per car.
+//! [charted]
+//! XW8AD4NE9JH008917 = ["7E0:202A:0"]
 //! ```
 //!
 //! **The document is kept as a `toml::Table`, not deserialized into a struct.**
@@ -106,7 +116,15 @@ const FRESH: &str = "\
 # Which column of ~/.vagcan/names.csv channel names are read from: \"en\" or \"ru\".\n\
 # language = \"en\"\n\
 \n\
-# Channels marked with `f` in `watch`, per car, keyed by VIN. Written by the tool.\n\
+# How often `watch` asks the car, in hertz. `--hz` overrides it for one run.\n\
+# hz = 10.0\n\
+\n\
+# Show each channel's own key at the end of its row, so a name worth changing\n\
+# can be found in names.csv.\n\
+# show_key = false\n\
+\n\
+# Channels marked with `f` in `watch`, and the ones the chart draws. Per car,\n\
+# keyed by VIN, written by the tool.\n\
 # [favourites]\n\
 # XW8AD4NE9JH008917 = [\"7E0:202A:0\"]\n";
 
@@ -212,10 +230,69 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 	}
 }
 
+/// How often `watch` asks the car, in hertz.
+///
+/// A setting rather than only a flag because it is how somebody likes to work,
+/// not something they decide per run — and because the useful values are found
+/// by trying them on a car, which is exactly the moment a flag is not to hand.
+/// Out-of-range or unreadable is [`DEFAULT_HZ`]: a rate of zero is a screen that
+/// never updates, and a rate of a thousand is the same screen with the bus
+/// saturated.
+pub fn hz(document: &Document) -> f64 {
+	document
+		.get("hz")
+		.and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
+		.filter(|hz| (MIN_HZ..=MAX_HZ).contains(hz))
+		.unwrap_or(DEFAULT_HZ)
+}
+
+/// What `watch` polls at when nothing says otherwise.
+pub const DEFAULT_HZ: f64 = 10.0;
+/// Slower than this is a screen that looks frozen.
+pub const MIN_HZ: f64 = 0.5;
+/// Faster than this the bus, not the setting, is the limit — and asking for it
+/// only fills the link with requests the car will not answer any sooner.
+pub const MAX_HZ: f64 = 50.0;
+
+/// Write down the rate for next time.
+pub fn set_hz(document: &mut Document, hz: f64) {
+	document["hz"] = toml_edit::value(hz.clamp(MIN_HZ, MAX_HZ));
+}
+
+/// Whether a channel's own key is shown at the end of its row.
+///
+/// Off by default: it is four columns of hex nobody reads while driving. On, it
+/// is how somebody who has just seen a badly-named channel finds the line to
+/// write in `names.csv` — which is the only way to answer "what is this row
+/// actually called underneath".
+pub fn show_key(document: &Document) -> bool {
+	document.get("show_key").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// Write down whether to show it.
+pub fn set_show_key(document: &mut Document, show: bool) {
+	document["show_key"] = toml_edit::value(show);
+}
+
+/// One car's charted channels, as the keys `watch` writes.
+pub fn charted(document: &Document, vin: &str) -> Vec<String> {
+	list(document, "charted", vin)
+}
+
+/// Replace one car's charted channels, leaving every other car's alone.
+pub fn set_charted(document: &mut Document, vin: &str, keys: &[String]) {
+	set_list(document, "charted", vin, keys)
+}
+
 /// One car's favourite channels, as the keys `watch` writes.
 pub fn favourites(document: &Document, vin: &str) -> Vec<String> {
+	list(document, "favourites", vin)
+}
+
+/// One car's entry in a per-VIN table of written keys.
+fn list(document: &Document, table: &str, vin: &str) -> Vec<String> {
 	document
-		.get("favourites")
+		.get(table)
 		.and_then(|v| v.as_table_like())
 		.and_then(|table| table.get(vin))
 		.and_then(|v| v.as_array())
@@ -225,17 +302,21 @@ pub fn favourites(document: &Document, vin: &str) -> Vec<String> {
 
 /// Replace one car's favourites, leaving every other car's alone.
 pub fn set_favourites(document: &mut Document, vin: &str, keys: &[String]) {
-	// A `favourites` key that is not a table is somebody's edit, and replacing
+	set_list(document, "favourites", vin, keys)
+}
+
+fn set_list(document: &mut Document, table: &str, vin: &str, keys: &[String]) {
+	// A key of this name that is not a table is somebody's edit, and replacing
 	// it wholesale would throw that away without saying so — but there is
 	// nowhere else to put a car's marks, so it is replaced and only then.
-	if !document.get("favourites").is_some_and(|v| v.is_table_like()) {
-		document["favourites"] = toml_edit::Item::Table(toml_edit::Table::new());
+	if !document.get(table).is_some_and(|v| v.is_table_like()) {
+		document[table] = toml_edit::Item::Table(toml_edit::Table::new());
 	}
-	let mut list = toml_edit::Array::new();
+	let mut array = toml_edit::Array::new();
 	for key in keys {
-		list.push(key.as_str());
+		array.push(key.as_str());
 	}
-	document["favourites"][vin] = toml_edit::value(list);
+	document[table][vin] = toml_edit::value(array);
 }
 
 #[cfg(test)]

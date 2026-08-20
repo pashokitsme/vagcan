@@ -52,6 +52,13 @@ pub struct Channel {
 	/// The coverage report has to tell those apart, or it reports a compu
 	/// formula somebody extracted as something a drive established.
 	pub proven: bool,
+	/// The row's own text id — the key `~/.vagcan/names.csv` is written under.
+	///
+	/// Carried so that somebody who has just read a bad name on screen can find
+	/// the line to write a better one; `watch`'s `show_key` setting is what puts
+	/// it on the row. `None` for a proven row and for anything a survey found
+	/// that no source describes.
+	pub text_id: Option<String>,
 	pub selected: bool,
 }
 
@@ -223,6 +230,7 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 			// The standard's, not this car's: `F40D` is one byte of km/h on the
 			// engine by convention and demonstrably something else elsewhere.
 			proven: false,
+			text_id: None,
 			selected: false,
 		});
 	}
@@ -245,6 +253,7 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 				existing.def = Some(row.def);
 				existing.named = row.named;
 				existing.proven = row.proven;
+				existing.text_id = row.text_id;
 			} else {
 				out.push(Channel {
 					request,
@@ -252,6 +261,7 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 					def: Some(row.def),
 					named: row.named,
 					proven: row.proven,
+					text_id: row.text_id,
 					selected: false,
 				});
 			}
@@ -334,6 +344,7 @@ pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
 				def: None,
 				named: None,
 				proven: false,
+				text_id: None,
 				selected: false,
 			});
 		}
@@ -689,6 +700,7 @@ mod tests {
 			}),
 			named: None,
 			proven: true,
+			text_id: None,
 			selected: true,
 		}
 	}
@@ -713,6 +725,7 @@ mod tests {
 	fn unselected_channels_are_not_polled_and_duplicates_collapse() {
 		let mut chans = vec![known(ENGINE, 0x2029, "boost"), known(ENGINE, 0x2029, "boost again")];
 		chans.push(Channel {
+			text_id: None,
 			selected: false,
 			..known(ENGINE, 0x206E, "rpm")
 		});
@@ -727,6 +740,7 @@ mod tests {
 	#[test]
 	fn nothing_selected_plans_nothing() {
 		let chans = vec![Channel {
+			text_id: None,
 			selected: false,
 			..known(ENGINE, 0x2029, "boost")
 		}];
@@ -766,6 +780,7 @@ mod tests {
 			def: None,
 			named: None,
 			proven: false,
+			text_id: None,
 			selected: true,
 		};
 		assert_eq!(c.label(), "02/38F0");
@@ -778,6 +793,7 @@ mod tests {
 			def: None,
 			named: None,
 			proven: false,
+			text_id: None,
 			selected: true,
 		};
 		assert_eq!(brakes.label(), "713/1234");
@@ -798,6 +814,7 @@ mod tests {
 			def: Some(gear),
 			named: None,
 			proven: false,
+			text_id: None,
 			selected: true,
 		};
 		assert_eq!(c.render(&[0x05]), "4");

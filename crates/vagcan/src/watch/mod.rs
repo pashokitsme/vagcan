@@ -102,6 +102,45 @@ enum Screen {
 	/// stays on screen underneath it, so a press and its effect are visible at
 	/// once — which is the whole of "нельзя выбрать что отображать на графике".
 	Series,
+	/// The settings, edited where they are used.
+	///
+	/// A rate and a `show_key` are found by trying them on a car — which is
+	/// precisely the moment a command-line flag is not to hand and a text editor
+	/// is two windows away. What is changed here is written to
+	/// `~/.vagcan/config.toml` as it is changed, the same as a favourite.
+	Settings,
+}
+
+/// One line of the settings screen.
+///
+/// An enum rather than an index into a list of closures: the screen has to draw
+/// the current value beside each row, and a row that can be drawn but not
+/// applied — or the reverse — is the way a settings screen silently stops
+/// working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setting {
+	/// How often the car is asked, in hertz.
+	Rate,
+	/// Whether each row ends with the channel's own key.
+	ShowKey,
+}
+
+impl Setting {
+	const ALL: [Setting; 2] = [Setting::Rate, Setting::ShowKey];
+
+	fn label(self) -> &'static str {
+		match self {
+			Setting::Rate => "Poll rate",
+			Setting::ShowKey => "Key at the end of each row",
+		}
+	}
+
+	fn note(self) -> &'static str {
+		match self {
+			Setting::Rate => "how often the car is asked — the rate actually achieved is in the footer",
+			Setting::ShowKey => "the text id to look up in names.csv, or the identifier where there is none",
+		}
+	}
 }
 
 /// One line of the live table: a measurement, and its specified counterpart
@@ -116,6 +155,27 @@ impl<'a> DisplayRow<'a> {
 	/// Either half — they always agree on unit and control unit.
 	fn any(&self) -> &'a Channel {
 		self.actual.or(self.specified).expect("a row holds at least one channel")
+	}
+
+	/// What to write in the key column: the text id this row's name came from.
+	///
+	/// A pair shows both halves' ids, because they are two lines of
+	/// `names.csv` and renaming one does not rename the other. A channel with
+	/// no id at all shows nothing rather than a dash — there is no line to
+	/// write, and a placeholder would suggest there is.
+	fn key_text(&self) -> String {
+		let ids: Vec<&str> = [self.actual, self.specified]
+			.into_iter()
+			.flatten()
+			.filter_map(|c| c.text_id.as_deref())
+			.collect();
+		let mut seen: Vec<&str> = Vec::new();
+		for id in ids {
+			if !seen.contains(&id) {
+				seen.push(id);
+			}
+		}
+		seen.join("/")
 	}
 }
 
@@ -213,6 +273,13 @@ pub struct App {
 	/// is always on the list whatever this says, or `--did` could name a channel
 	/// that could then never be unticked.
 	show_hidden: bool,
+	/// Which settings row the cursor is on.
+	settings_cursor: usize,
+	/// How often the car is asked, in hertz. Seeded from the settings and from
+	/// `--hz`, and changed on the settings screen while the car is answering.
+	hz: f64,
+	/// Whether each row ends with the channel's own key.
+	show_key: bool,
 	/// What this car was seen to answer, when a survey has been loaded.
 	///
 	/// Empty means nothing is known, and nothing is then filtered on those
@@ -283,6 +350,9 @@ impl App {
 			filter: String::new(),
 			typing_filter: false,
 			show_hidden: false,
+			settings_cursor: 0,
+			hz: crate::config::DEFAULT_HZ,
+			show_key: false,
 			answered: plan::Answered::default(),
 			select_state: TableState::default(),
 			series_cursor: 0,
@@ -622,6 +692,46 @@ impl App {
 			.map(|c| c.key())
 			.collect();
 		self.charted.extend(seed);
+		self.remember_charted();
+	}
+
+	/// Change one setting, and write it down.
+	///
+	/// **Written on every press**, for the reason a favourite is: this screen is
+	/// used in a car park with the lid about to close, and a preference that
+	/// only survives a tidy exit is one that does not survive.
+	///
+	/// The rate steps rather than scales — a person tuning it is asking "a bit
+	/// faster" and not "twice as fast", and doubling walks straight off the top
+	/// of the useful range in three presses.
+	fn nudge_setting(&mut self, setting: Setting, up: bool) {
+		let mut document = crate::config::load();
+		match setting {
+			Setting::Rate => {
+				let step = if up { RATE_STEP } else { -RATE_STEP };
+				self.hz = (self.hz + step).clamp(crate::config::MIN_HZ, crate::config::MAX_HZ);
+				crate::config::set_hz(&mut document, self.hz);
+			}
+			Setting::ShowKey => {
+				self.show_key = !self.show_key;
+				crate::config::set_show_key(&mut document, self.show_key);
+			}
+		}
+		self.note = match crate::config::save(&document) {
+			Ok(()) => String::new(),
+			Err(why) => format!("could not save the setting: {why}"),
+		};
+	}
+
+	/// What one setting currently reads as.
+	fn setting_value(&self, setting: Setting) -> String {
+		match setting {
+			Setting::Rate => format!("{:.1} Hz", self.hz),
+			Setting::ShowKey => match self.show_key {
+				true => "shown".to_string(),
+				false => "hidden".to_string(),
+			},
+		}
 	}
 
 	/// Mark or unmark the channel under the cursor as a favourite, and write
@@ -679,6 +789,21 @@ impl App {
 			channel.selected = true;
 		}
 		self.chart_page = 0;
+		self.remember_charted();
+	}
+
+	/// Write the chart's lines down, for the same reason a favourite is written
+	/// on every press: choosing three lines out of two thousand channels is the
+	/// work, and doing it again next drive is the work again.
+	fn remember_charted(&mut self) {
+		let Some(vin) = self.favourites_vin.clone() else { return };
+		let mut document = crate::config::load();
+		let keys: Vec<String> = self.charted.iter().map(|key| favourites::render_key(*key)).collect();
+		crate::config::set_charted(&mut document, &vin, &keys);
+		self.note = match crate::config::save(&document) {
+			Ok(()) => String::new(),
+			Err(why) => format!("could not save the chart lines: {why}"),
+		};
 	}
 
 	/// Drop chart marks for channels that are no longer polled.
@@ -719,6 +844,9 @@ impl App {
 		if secs <= 0.0 { 0.0 } else { self.cycles as f64 / secs }
 	}
 }
+
+/// How much one press moves the poll rate.
+const RATE_STEP: f64 = 0.5;
 
 /// Draw the live table.
 ///
@@ -843,7 +971,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	// at eighty columns the playback keys ran off the end of it, taking `[q]
 	// quit` with them.
 	let help = format!(
-		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [q] quit{}{waiting}",
+		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [,] settings  [q] quit{}{waiting}",
 		app.rows().len(),
 		app.channels.iter().filter(|c| c.selected).count(),
 		app.status
@@ -886,14 +1014,21 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 			(Some(a), Some(s)) => format!("{:04X}/{:04X}", a.did, s.did),
 			_ => format!("{:04X}", c.did),
 		};
-		rows.push(Row::new(vec![
+		let mut cells = vec![
 			Cell::from(c.unit()),
 			Cell::from(dids),
 			Cell::from(r.label.clone()),
 			Cell::from(value).style(Style::default().add_modifier(Modifier::BOLD)),
 			Cell::from(c.unit_of_measure().to_string()),
 			Cell::from(age).style(Style::default().fg(Color::DarkGray)),
-		]));
+		];
+		// Last, and only when asked for: it is the line to look up in
+		// names.csv, which nobody needs while the car is moving and everybody
+		// needs the moment a row reads badly.
+		if app.show_key {
+			cells.push(Cell::from(r.key_text()).style(Style::default().fg(Color::DarkGray)));
+		}
+		rows.push(Row::new(cells));
 	}
 
 	let heading_w = shown
@@ -909,22 +1044,29 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 		.unwrap_or(4) as u16;
 	let value_w = shown.iter().map(|r| app.value_of(r).0.len()).max().unwrap_or(8).max(14) as u16;
 
-	let table = Table::new(
-		rows,
-		[
-			Constraint::Length(4),
-			Constraint::Length(did_w),
-			Constraint::Length(name_w),
-			Constraint::Length(value_w),
-			Constraint::Length(9),
-			Constraint::Length(6),
-		],
-	)
-	.header(
-		Row::new(vec!["ECU", "DID", "Measurement", "Actual / specified", "Unit", "Age"])
-			.style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-	)
-	.block(Block::default().borders(Borders::ALL).title(" vagcan watch "));
+	// The key column is as wide as the widest id on screen and no wider: a
+	// fixed width would either clip `IDE00022` or leave a gap on a table where
+	// no row has one.
+	let key_w = match app.show_key {
+		true => shown.iter().map(|r| r.key_text().chars().count()).max().unwrap_or(0).max(3) as u16,
+		false => 0,
+	};
+	let mut widths = vec![
+		Constraint::Length(4),
+		Constraint::Length(did_w),
+		Constraint::Length(name_w),
+		Constraint::Length(value_w),
+		Constraint::Length(9),
+		Constraint::Length(6),
+	];
+	let mut headings = vec!["ECU", "DID", "Measurement", "Actual / specified", "Unit", "Age"];
+	if app.show_key {
+		widths.push(Constraint::Length(key_w));
+		headings.push("Key");
+	}
+	let table = Table::new(rows, widths)
+		.header(Row::new(headings).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+		.block(Block::default().borders(Borders::ALL).title(" vagcan watch "));
 	frame.render_widget(table, table_area);
 
 	if let Some(charted) = &charted {
@@ -968,6 +1110,69 @@ fn series_note(app: &App, channel: &Channel) -> &'static str {
 /// The chart itself stays on screen underneath, which is the point — the
 /// previous way to change a line was to leave the chart, find the channel among
 /// every one the car has, and come back to see what had happened.
+/// Draw the settings screen.
+///
+/// Deliberately plain: three columns, and the note beside each row saying what
+/// the setting is *for*. A settings screen whose rows are only labels makes
+/// somebody guess, and the guess is made while sitting in a car.
+fn draw_settings(frame: &mut Frame, app: &mut App) {
+	let help = concat!(" [↑↓] move  [←→] change  [space] toggle\n", " [c] configure  [,]/[esc] back  [q] quit");
+	let hint_rows = wrapped_height(help, frame.area().width.saturating_sub(2)) + 2;
+	let layout = Layout::vertical([Constraint::Min(3), Constraint::Length(hint_rows)]).split(frame.area());
+	let at = app.settings_cursor.min(Setting::ALL.len() - 1);
+
+	let rows: Vec<Row> = Setting::ALL
+		.iter()
+		.map(|setting| {
+			Row::new(vec![
+				Cell::from(setting.label()),
+				Cell::from(app.setting_value(*setting)).style(Style::default().fg(Color::Cyan)),
+				Cell::from(setting.note()).style(Style::default().fg(Color::DarkGray)),
+			])
+		})
+		.collect();
+
+	let fixed: u16 = 28 + 1 + 9 + 1;
+	let note_w = layout[0].width.saturating_sub(fixed).max(10);
+	let table = Table::new(rows, [Constraint::Length(28), Constraint::Length(9), Constraint::Length(note_w)])
+		.row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+		.block(
+			Block::default()
+				.borders(Borders::ALL)
+				.title(format!(" settings — kept in {} ", short_config_path())),
+		);
+	let mut state = TableState::default();
+	state.select(Some(at));
+	frame.render_stateful_widget(table, layout[0], &mut state);
+	let mut hints = help.to_string();
+	if !app.note.is_empty() {
+		hints.push('\n');
+		hints.push(' ');
+		hints.push_str(&app.note);
+	}
+	frame.render_widget(
+		Paragraph::new(hints)
+			.wrap(ratatui::widgets::Wrap { trim: false })
+			.block(Block::default().borders(Borders::ALL)),
+		layout[1],
+	);
+}
+
+/// The settings file, written short enough for a title bar.
+///
+/// The home directory is replaced by `~` rather than printed: on this machine
+/// it is a third of the width of the box, and the part that matters is the file.
+fn short_config_path() -> String {
+	let Ok(path) = crate::config::path() else {
+		return "~/.vagcan/config.toml".to_string();
+	};
+	let text = path.display().to_string();
+	match dirs::home_dir().map(|home| home.display().to_string()) {
+		Some(home) if text.starts_with(&home) => text.replacen(&home, "~", 1),
+		_ => text,
+	}
+}
+
 fn draw_series(frame: &mut Frame, app: &mut App) {
 	let charted = app.charted();
 	// Two lines of hints, because they do not fit one at eighty columns, and
@@ -1079,8 +1284,9 @@ fn select_keys(app: &App) -> String {
 	// mark landed, and a wrap chosen by the widget put the break in the middle
 	// of `[a] all` — a key spelled across two rows is a key nobody reads.
 	let mut keys = String::from(concat!(
-		" [space]/click toggle  [f] favourite  [g] chart  [u] hidden  [/] filter\n",
-		" [↑↓ pgup/pgdn] move  [tab] unit  [a] all  [n] none  [enter] back"
+		" [space]/click toggle  [f] favourite  [g] chart  [u] hidden\n",
+		" [/] filter  [↑↓ pgup/pgdn] move  [tab] unit  [a] all  [n] none\n",
+		" [,] settings  [enter] back"
 	));
 	if let Some(sentence) = app.hidden().sentence() {
 		let _ = write!(keys, "\n {sentence}");
@@ -1315,6 +1521,7 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 		Screen::Live => match code {
 			KeyCode::Char('q') | KeyCode::Esc => return false,
 			KeyCode::Char('c') => app.screen = Screen::Select,
+			KeyCode::Char(',') => app.screen = Screen::Settings,
 			KeyCode::Char('g') => app.toggle_chart(),
 			// Choosing the lines implies wanting to see them, so the chart
 			// comes up with the list — a screen for picking what a hidden
@@ -1365,11 +1572,31 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 						}
 					}
 					app.chart_page = 0;
+					app.remember_charted();
 				}
 				KeyCode::Char('n') => {
 					app.charted.clear();
 					app.chart_page = 0;
+					app.remember_charted();
 				}
+				_ => {}
+			}
+		}
+		Screen::Settings => {
+			let at = app.settings_cursor.min(Setting::ALL.len() - 1);
+			match code {
+				KeyCode::Char('q') => return false,
+				KeyCode::Char(',') | KeyCode::Esc | KeyCode::Enter => app.screen = Screen::Live,
+				KeyCode::Char('c') => app.screen = Screen::Select,
+				KeyCode::Up => app.settings_cursor = at.saturating_sub(1),
+				KeyCode::Down => app.settings_cursor = (at + 1).min(Setting::ALL.len() - 1),
+				// One key for "more" and one for "less", and `space` for the
+				// settings that are on or off. A rate has no meaningful toggle
+				// and a flag has no meaningful step, so each row takes the keys
+				// its own kind of value has.
+				KeyCode::Left => app.nudge_setting(Setting::ALL[at], false),
+				KeyCode::Right => app.nudge_setting(Setting::ALL[at], true),
+				KeyCode::Char(' ') => app.nudge_setting(Setting::ALL[at], true),
 				_ => {}
 			}
 		}
@@ -1425,6 +1652,7 @@ fn on_key(app: &mut App, code: KeyCode) -> bool {
 				}
 				KeyCode::Char('f') => app.toggle_favourite(app.cursor),
 				KeyCode::Char('g') => app.toggle_charted(app.cursor),
+				KeyCode::Char(',') => app.screen = Screen::Settings,
 				// Everything held back, on the list again: the rows nothing can
 				// name, and the ones this car answered nothing to. A person
 				// hunting a measurement nobody has proven wants the first, and a
@@ -1603,6 +1831,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 			Screen::Live => draw_live(f, &mut app),
 			Screen::Select => draw_select(f, &mut app),
 			Screen::Series => draw_series(f, &mut app),
+			Screen::Settings => draw_settings(f, &mut app),
 		})?;
 
 		if event::poll(Duration::from_millis(50))? {
@@ -2027,6 +2256,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 				def: None,
 				named: None,
 				proven: false,
+				text_id: None,
 				selected: true,
 			});
 		}
@@ -2036,12 +2266,30 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 
 	let mut app = App::new(channels);
 	app.answered = answered;
+	{
+		// The settings this screen can change, read once before it appears.
+		let settings = crate::config::load();
+		app.hz = crate::config::hz(&settings);
+		app.show_key = crate::config::show_key(&settings);
+	}
+	// The flag wins for one run; the setting is what the screen changes and
+	// what the next run starts from. `--hz` left at its own default means
+	// nobody asked for a rate, so the setting stands.
+	if (hz - crate::config::DEFAULT_HZ).abs() > f64::EPSILON {
+		app.hz = hz.clamp(crate::config::MIN_HZ, crate::config::MAX_HZ);
+	}
 	// This car's own marks, if it has any: the handful somebody watches every
 	// drive, ticked before the screen appears. They come after `--did`, which
 	// is a person being explicit about this one run, and before the basics,
 	// which are only a guess at what anybody wants.
 	app.favourites_vin = vin.clone();
 	app.favourites = favourites::load(app.favourites_vin.as_deref());
+	// The chart's lines are the same kind of choice as a favourite and are kept
+	// the same way: per car, because which identifiers a unit answers is a fact
+	// about the unit as installed in this one.
+	app.charted = favourites::from_list(&crate::config::charted(&crate::config::load(), vin.as_deref().unwrap_or_default()))
+		.into_iter()
+		.collect();
 	let favourites = app.select_favourites();
 	if favourites > 0 {
 		eprintln!(
@@ -2054,7 +2302,10 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	}
 	app.open_first_populated();
 	app.units = unit_names(&identities);
-	let period = Duration::from_secs_f64(1.0 / hz.max(0.1));
+	// Read from the app each cycle rather than computed once: the settings
+	// screen changes it while the car is answering, and a period captured at
+	// startup would leave the new rate showing and the old one polling.
+	let period = |app: &App| Duration::from_secs_f64(1.0 / app.hz.max(crate::config::MIN_HZ));
 
 	// No terminal wanted: a script, a pipe, or an agent that cannot press a
 	// key. Same poll loop, no drawing and no input — and with no `--out` the
@@ -2080,7 +2331,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 			// Flushed every cycle: a reader watching the pipe should see the
 			// samples as they happen, not in one burst when the run ends.
 			sink.flush()?;
-			if let Some(rest) = period.checked_sub(cycle.elapsed()) {
+			if let Some(rest) = period(&app).checked_sub(cycle.elapsed()) {
 				tokio::time::sleep(rest).await;
 			}
 		}
@@ -2103,6 +2354,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 			Screen::Live => draw_live(f, &mut app),
 			Screen::Select => draw_select(f, &mut app),
 			Screen::Series => draw_series(f, &mut app),
+			Screen::Settings => draw_settings(f, &mut app),
 		})?;
 
 		// Drain the keyboard without blocking the poll loop. `q` here has to
@@ -2153,6 +2405,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 				Screen::Live => draw_live(f, &mut app),
 				Screen::Select => draw_select(f, &mut app),
 				Screen::Series => draw_series(f, &mut app),
+				Screen::Settings => draw_settings(f, &mut app),
 			})?;
 			let asked = Instant::now();
 			poll_batch(&mut app, &mut backend, &batch).await;
@@ -2175,9 +2428,9 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 
 		// A key pressed during the poll should not wait a whole cycle.
 		let mut quit = false;
-		while let Some(rest) = period.checked_sub(cycle.elapsed()) {
+		while let Some(rest) = period(&app).checked_sub(cycle.elapsed()) {
 			if !event::poll(rest.min(Duration::from_millis(50)))? {
-				if cycle.elapsed() >= period {
+				if cycle.elapsed() >= period(&app) {
 					break;
 				}
 				continue;
@@ -2825,6 +3078,7 @@ mod tests {
 			}),
 			named: None,
 			proven: true,
+			text_id: None,
 			selected: true,
 		}
 	}
@@ -2849,6 +3103,7 @@ mod tests {
 			}),
 			named: None,
 			proven: true,
+			text_id: None,
 			selected: true,
 		}
 	}
@@ -2860,6 +3115,7 @@ mod tests {
 			def: None,
 			named: None,
 			proven: false,
+			text_id: None,
 			selected: true,
 		}
 	}
@@ -2946,6 +3202,7 @@ mod tests {
 		// A line that is charted but not polled can never have a point in it,
 		// and would be a name in the key with nothing under it forever.
 		let mut a = App::new(vec![Channel {
+			text_id: None,
 			selected: false,
 			..proven(0x7E0, 0x202A, "Boost pressure", "bar")
 		}]);
@@ -3149,10 +3406,26 @@ mod tests {
 			.join("\n")
 	}
 
+	fn settings_text(app: &mut App, w: u16, h: u16) -> String {
+		use ratatui::Terminal;
+		use ratatui::backend::TestBackend;
+		let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+		terminal.draw(|frame| draw_settings(frame, app)).unwrap();
+		let buffer = terminal.backend().buffer().clone();
+		(0..h)
+			.map(|y| (0..w).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>())
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
 	/// A channel with a name and one with nothing but its address — the two
 	/// kinds the selection screen now tells apart.
 	fn unselected(channel: Channel) -> Channel {
-		Channel { selected: false, ..channel }
+		Channel {
+			text_id: None,
+			selected: false,
+			..channel
+		}
 	}
 
 	/// A survey line for one unit: what it was asked, and what answered.
@@ -3374,6 +3647,61 @@ mod tests {
 		assert_eq!(next.select_favourites(), 1);
 		assert!(next.channels[1].selected);
 		assert!(!next.channels[0].selected, "only what was marked");
+	}
+
+	#[test]
+	fn the_settings_screen_shows_what_each_setting_is_and_what_it_reads() {
+		// A settings screen whose rows are only labels makes somebody guess,
+		// and the guess is made sitting in a car. Every row carries its current
+		// value and a note saying what it is for.
+		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
+		a.screen = Screen::Settings;
+		let text = settings_text(&mut a, 100, 12);
+		assert!(text.contains("Poll rate"), "{text}");
+		assert!(text.contains("10.0 Hz"), "{text}");
+		assert!(text.contains("Key at the end of each row"), "{text}");
+		assert!(text.contains("hidden"), "{text}");
+		assert!(text.contains("names.csv"), "the note says where the key is used: {text}");
+		// And the file it writes to, so nobody has to be told where it lives.
+		assert!(text.contains("config.toml"), "{text}");
+	}
+
+	#[test]
+	fn the_rate_steps_and_stops_at_the_ends_rather_than_running_off_them() {
+		// Zero is a screen that never updates and a thousand is the same screen
+		// with the bus full of requests the car will not answer any sooner.
+		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
+		a.screen = Screen::Settings;
+		a.hz = crate::config::MIN_HZ;
+		// No VIN and no writable settings needed: the value moves in the app,
+		// and saving is what `crate::config` is tested for.
+		a.nudge_setting(Setting::Rate, false);
+		assert_eq!(a.hz, crate::config::MIN_HZ, "it does not go below the floor");
+		a.nudge_setting(Setting::Rate, true);
+		assert!(a.hz > crate::config::MIN_HZ);
+		a.hz = crate::config::MAX_HZ;
+		a.nudge_setting(Setting::Rate, true);
+		assert_eq!(a.hz, crate::config::MAX_HZ, "nor above the ceiling");
+	}
+
+	#[test]
+	fn the_key_column_appears_only_when_it_is_asked_for() {
+		// Four columns of identifier are noise while driving, and the one thing
+		// anybody needs the moment a row reads badly. So it is a setting, and
+		// it shows the *text id* — the identifier is already its own column, so
+		// repeating it would add nothing to look up.
+		let mut named = proven(0x7E0, 0x202A, "Boost pressure", "bar");
+		named.text_id = Some("IDE00022".into());
+		let mut a = App::new(vec![Channel { selected: true, ..named }]);
+		a.screen = Screen::Live;
+
+		let text = live_text(&mut a, 100, 12);
+		assert!(!text.contains("IDE00022"), "off by default:\n{text}");
+
+		a.show_key = true;
+		let text = live_text(&mut a, 100, 12);
+		assert!(text.contains("IDE00022"), "{text}");
+		assert!(text.contains("Key"), "and the column says what it is: {text}");
 	}
 
 	#[test]
