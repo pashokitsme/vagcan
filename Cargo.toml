@@ -10,8 +10,9 @@ rust-version = "1.85"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Settings and the user's own glossary live in ~/.vagcan as files a person edits.
-toml = "0.8"
+# Settings live in ~/.vagcan as a file a person edits, so the parser has to
+# preserve what they wrote — comments and all — across the tool's own writes.
+toml_edit = "0.25"
 # Async runtime — features selected per-crate (e.g. tokio = { workspace = true, features = [...] }).
 tokio = { version = "1", default-features = false }
 # Benchmarking (label-lookup perf, etc).
