@@ -63,6 +63,9 @@ value.
   (sync SPI) or `ssd1322_rs` 0.3.1 (async, written for this panel family). 4 bpp, 16 grey
   levels, ~30 KB for a full frame buffer — which an S3 can simply hold.
 - **Three buttons.**
+- **Power from OBD pin 16**, which is permanent battery positive (SAE J1962) — so the
+  device is live whenever the car is parked, and the regulator's own quiescent draw is the
+  real power budget. See `08`.
 
 `esp-idf` gives a real `std` with threads, which means the **synchronous** side of
 `vag-transport` (`IsoTpTransport`) carries the device. No tokio on the board, and no
@@ -215,5 +218,6 @@ actually needs rather than guessed in advance.
 **Then:** `04` (alarms) → `05` (firmware), gated on `06`, the list of things only the car
 and the bench can answer.
 
-**Deferred:** `07` (sleeping in the car). Required before the device spends a night
-plugged in; not required before it exists.
+**Deferred:** `07` (sleeping in the car) and `08` (power). One problem from two sides —
+`07` is what the firmware does to draw nothing, `08` is whether the hardware lets it.
+Required before the device spends a night plugged in; not required before it exists.

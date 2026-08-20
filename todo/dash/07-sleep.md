@@ -7,6 +7,11 @@ before the device spends a night in the car — it is optional before the device
 
 Depends on `06` §7, the frame that says the ignition is on.
 
+**Paired with [`08-power.md`](08-power.md), and neither is worth much alone.** This task
+gets the processor down to microamps; that one decides whether the regulator in front of
+it idles at microamps too. A sleep state machine behind a buck converter that draws 5 mA
+has been cancelled by a component choice.
+
 ## Why it cannot be skipped forever
 
 The device is plugged into OBD permanently. A poll loop that never stops holds the
