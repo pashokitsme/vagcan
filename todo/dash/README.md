@@ -170,6 +170,13 @@ clutch temperature model that in the declared set appears only inside snapshot b
 
 ## Order
 
-`01` (plan format) → `02` (render crate) + `03` (simulator) together, because the
-simulator is how `02` is tested → `04` (alarms) → `05` (firmware) → `06` is the list of
-things only the car and the bench can answer, and it gates `05`.
+**Now:** `02` (render crate) + `03` (simulator) together — the simulator is how `02` is
+tested, and the two of them are what turns the layout from a claim into a PNG somebody
+can look at. `01` (the plan format) firms up alongside them, driven by what the renderer
+actually needs rather than guessed in advance.
+
+**Then:** `04` (alarms) → `05` (firmware), gated on `06`, the list of things only the car
+and the bench can answer.
+
+**Deferred:** `07` (sleeping in the car). Required before the device spends a night
+plugged in; not required before it exists.
