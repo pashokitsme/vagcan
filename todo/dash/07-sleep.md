@@ -75,6 +75,17 @@ Settled with the owner 2026-08-20.
 powered from the same buck as everything else, available whether or not the CAN side has
 any power at all — which is exactly the property the `RXD` wake turned out not to have.
 
+Two details that decide how well it works, both properties of the classic ESP32:
+
+- **The divider goes on ADC1** (`GPIO32…39`, and `D34` in the allocation in `05`). ADC2 is
+  unusable while Wi-Fi is on — the radio claims it and reads block or return rubbish — and
+  Wi-Fi and Bluetooth are both wanted (`09`). Not a preference; ADC2 is simply out.
+- **The ULP coprocessor can read ADC1 during deep sleep** and wake the main cores on a
+  threshold. That turns "wake at 13 V" from a periodic full wake-up into a comparison
+  running at hundreds of microamps — the difference between a design that meets the
+  under-1 mA target and one that argues with it. Another place the older part earns its
+  keep.
+
 **Sleep on either of two conditions:**
 
 - **the ignition going off**, read from the bus — and this is affordable precisely because

@@ -67,6 +67,47 @@ memory and the board exposes a `BOOT` pad.
 
 **The 120 Ω jumper on the CANable stays open**, as it does today for sniffing.
 
+### Pin allocation
+
+Settled 2026-08-20. The ESP32 routes peripherals through a GPIO matrix, so TWAI can sit on
+almost any pin — but "almost" carries three real exclusions and one of them is specific to
+this wiring.
+
+| function | pin | why this one |
+|---|---|---|
+| TWAI TX → ADM3050E `TXD` | **D27** | plain GPIO, not a strapping pin |
+| TWAI RX ← ADM3050E `RXD` | **D26** | same |
+| Panel SCK | **D18** | VSPI default |
+| Panel MOSI | **D23** | VSPI default |
+| Panel CS | **D5** | |
+| Panel DC / RST | **D17 / D16** | free on WROOM-32 (a WROVER would have PSRAM here) |
+| Buttons | **D32, D33, D25** | D32/D33 are RTC-capable, so they can also wake |
+| Divider from OBD pin 16 | **D34** | must be ADC1 — see below |
+| Load switch for the CANable | **D14** | |
+
+MISO is unused; the panel is write-only.
+
+**Do not put RX on D12.** It is `MTDI`, and its level at reset selects the flash supply
+voltage: held high the chip decides the flash is 1.8 V and does not boot. The
+transceiver's `RXD` idles **high** — recessive — so this exact wiring would stop the board
+starting, with a cause nobody would guess.
+
+**D34, D35, VP and VN are input-only.** No output driver, no pull-ups. TX cannot go there;
+a divider can, and does.
+
+**TX0/RX0 are the console** through the CP2102. Taking them costs flashing and logs.
+
+`D2`, `D5` and `D15` are strapping pins. They work, but they add noise at boot, so nothing
+important goes on them beyond the panel's chip select.
+
+**The divider must be on ADC1** — `GPIO32…39`. On the classic ESP32, **ADC2 does not work
+while Wi-Fi is on**: the radio takes it, and reads either block or come back as rubbish.
+Wi-Fi and Bluetooth are both wanted (`09`), so ADC2 is out for good, not merely awkward.
+
+**Common ground between the two boards** is required for the logic-side tap. Both sides
+are 3.3 V, so no level shifter.
+
+
 ## Hardware
 
 - **ESP32-WROOM-32** (classic Xtensa LX6) devkit with USB-C, on hand. Has TWAI. Has
