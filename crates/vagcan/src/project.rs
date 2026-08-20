@@ -395,40 +395,19 @@ pub fn has_source(project: &Project, kind: &str) -> bool {
 		.is_some_and(|rows| rows.iter().any(|row| row["kind"].as_str() == Some(kind)))
 }
 
-/// What `config.json` says this machine's project is, if it says.
+/// What `config.toml` says this machine's project is, if it says.
 pub fn configured() -> Result<Option<String>> {
-	Ok(configured_in(&crate::datadir::config_file()?))
-}
-
-fn configured_in(config: &Path) -> Option<String> {
-	let text = std::fs::read_to_string(config).ok()?;
-	let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-	value.get("project")?.as_str().map(str::to_owned)
+	Ok(crate::config::project(&crate::config::load()))
 }
 
 /// Write down which project a bare command means from now on.
 ///
-/// Read-modify-write rather than overwrite: `config.json` is "settings that are
-/// not about one car" and this owns exactly one key of it, so anything else in
-/// there — now or later — has to survive being written by this.
+/// Read-modify-write of the whole settings document rather than an overwrite —
+/// see [`crate::config`]: that file holds the language, the favourites and
+/// whatever somebody has written in it by hand, and this owns exactly one key.
 pub fn remember(id: &str) -> Result<()> {
-	remember_in(&crate::datadir::config_file()?, id)
-}
-
-fn remember_in(config: &Path, id: &str) -> Result<()> {
 	let name = folder_name(id)?;
-	let mut document = std::fs::read_to_string(config)
-		.ok()
-		.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-		.and_then(|value| value.as_object().cloned())
-		.unwrap_or_default();
-	document.insert("project".into(), name.into());
-	if let Some(parent) = config.parent() {
-		std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-	}
-	std::fs::write(config, serde_json::to_string_pretty(&serde_json::Value::Object(document))?)
-		.with_context(|| format!("writing {}", config.display()))?;
-	Ok(())
+	crate::config::set_project(&name)
 }
 
 /// A project id, checked hard enough to be one child of `data/`.
@@ -701,30 +680,11 @@ mod tests {
 		assert!(rows[1]["parsed_at"].as_str().is_some_and(|t| t.contains('T')), "{text}");
 	}
 
-	#[test]
-	fn remembering_a_project_leaves_the_rest_of_the_config_alone() {
-		// `config.json` is "settings that are not about one car"; this owns one
-		// key of it, so whatever else is in there has to survive being written.
-		let here = temp();
-		let config = here.path().join("config.json");
-		std::fs::write(&config, r#"{"something-else": 7}"#).unwrap();
-		remember_in(&config, "SK37X").unwrap();
-		assert_eq!(configured_in(&config).as_deref(), Some("SK37X"));
-		let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-		assert_eq!(value["something-else"], 7);
-	}
-
-	#[test]
-	fn a_config_that_is_not_json_is_no_answer_rather_than_a_failure() {
-		let here = temp();
-		let config = here.path().join("config.json");
-		std::fs::write(&config, "not json at all").unwrap();
-		assert_eq!(configured_in(&config), None);
-		// And it still remembers, because a run that cannot record which project
-		// it set up would ask again for ever.
-		remember_in(&config, "SK37X").unwrap();
-		assert_eq!(configured_in(&config).as_deref(), Some("SK37X"));
-	}
+	// The two tests that used to sit here — that remembering a project leaves
+	// the rest of the settings alone, and that a settings file which will not
+	// parse is no answer rather than a failure — moved to `crate::config` with
+	// the file itself. They are the same assertions about the same behaviour;
+	// what changed is which module owns reading and writing it.
 
 	#[test]
 	fn nothing_a_project_holds_lands_in_the_checkout() {

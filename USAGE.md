@@ -18,6 +18,7 @@ VCDS's own files; neither touches a vehicle.
 - [Watching it live](#watching-it-live)
 - [Timing a run](#timing-a-run)
 - [Offline](#offline)
+  - [`vagcan glossary`](#vagcan-glossary--your-own-names-for-channels)
 - [Flow: a first drive](#flow-a-first-drive)
 - [Flow: teaching it a new measurement](#flow-teaching-it-a-new-measurement)
 - [When it says data is missing](#when-it-says-data-is-missing)
@@ -357,8 +358,9 @@ installation has actually been read into the project — on an ODIS-only project
 row's own name is the more specific of the two, and the generic one would put two live
 channels under a single label.
 
-**Favourites persist per car**, in `~/.vagcan/cars/<VIN>/favourites.json`, and sort to
-the top of the chooser.
+**Favourites persist per car**, in `~/.vagcan/config.toml` under `[favourites]`, keyed by
+VIN, and sort to the top of the chooser. A `favourites.json` from an older version is
+folded in the first time that car is watched.
 
 **Values with no proven scaling are shown as bytes and tagged `(raw)`**, never as a
 bare number — a reader cannot tell an invented number from a measured one, and this
@@ -419,6 +421,36 @@ looked under.
 ---
 
 ## Offline
+
+### `vagcan glossary` — your own names for channels
+
+The wording ODIS and VCDS carry is written for a diagnostic engineer.
+`Brake_pedal_information_plausibility` is accurate and unreadable at an open driver's
+door, and neither vendor is going to fix that.
+
+```sh
+vagcan glossary          # writes ~/.vagcan/names.csv
+```
+
+The file is keyed by VW's own text id, with a column per language and a read-only
+`current` column showing what the channel is called today:
+
+```csv
+text_id,en,ru,current
+IDE00022,Boost pressure,Давление наддува,Ladedruck-Ist
+MAS18568,,,Oil temperature
+```
+
+Fill in a cell and it wins over both vendors everywhere that channel is shown. Leave one
+empty and nothing changes — so this is worth writing one line at a time rather than all
+at once. Which column is read comes from `language` in `~/.vagcan/config.toml`.
+
+**Keyed by text id, not by identifier**, so a translation written once holds for every
+car afterwards. A table keyed by `(unit, identifier)` would be a table about one vehicle.
+
+**Running it again keeps everything you have written** and only appends ids that are new.
+
+---
 
 ### `vagcan recording …` — drives this tool recorded
 

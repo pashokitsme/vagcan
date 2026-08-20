@@ -706,6 +706,23 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data::odis::
 	Ok(out)
 }
 
+/// Every text id this cache knows, with one name it is used under.
+///
+/// The seed for the owner's own glossary (`~/.vagcan/names.csv`): a person
+/// writing their own wording needs the id to key it by and a reminder of what
+/// the channel is currently called, or they are translating a list of opaque
+/// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
+/// cache produce the same file.
+pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
+	let conn = Connection::open(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT text_id, MIN(name) FROM reading \
+         WHERE text_id IS NOT NULL AND text_id <> '' GROUP BY text_id ORDER BY text_id",
+	)?;
+	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Every ECU variant this cache holds readings for, in name order.
 pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 	let conn = Connection::open(db_path)?;

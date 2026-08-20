@@ -51,6 +51,15 @@ pub struct Extracted {
 	/// none, which is not an error: `watch --catalogs <dir>` has no project at
 	/// all, and a project set up before names were recovered has no file.
 	names: BTreeMap<String, String>,
+	/// text id → what **this machine's owner** calls it, in the language
+	/// `config.toml` names — see [`crate::glossary`].
+	///
+	/// It outranks everything, because it is the only wording written by
+	/// somebody who has to read it at an open driver's door. It is also global
+	/// rather than per project: a text id is VW's key for a piece of text, not
+	/// a fact about a platform, so a translation written once holds for every
+	/// car afterwards.
+	mine: BTreeMap<String, String>,
 }
 
 /// One channel a unit offers, with everything known about how to name it.
@@ -110,6 +119,10 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 			true => read_names(&project.names()),
 			false => BTreeMap::new(),
 		},
+		// Read for every project, whatever its sources: this file is the
+		// owner's, not a vendor's, and the id it is keyed by is VW's rather than
+		// this platform's.
+		mine: crate::glossary::load(crate::config::language(&crate::config::load())),
 	}
 }
 
@@ -137,6 +150,7 @@ impl Extracted {
 			cache: PathBuf::new(),
 			variants: Vec::new(),
 			names: BTreeMap::new(),
+			mine: BTreeMap::new(),
 		}
 	}
 
@@ -147,7 +161,25 @@ impl Extracted {
 	/// this project cannot point at.
 	pub fn name_of(&self, text_id: Option<&str>) -> Option<&str> {
 		let id = text_id?;
-		self.names.get(id).map(String::as_str).filter(|name| !name.trim().is_empty())
+		// The owner's own glossary first, then whatever the label files
+		// recovered. An id the glossary does not mention falls straight
+		// through, which is what makes the file worth writing one line at a
+		// time instead of all at once.
+		self
+			.mine
+			.get(id)
+			.or_else(|| self.names.get(id))
+			.map(String::as_str)
+			.filter(|name| !name.trim().is_empty())
+	}
+
+	/// Every text id this project has recovered wording for, and that wording.
+	///
+	/// For [`crate::glossary::seed`], which needs the ids to key a translation
+	/// by and the current name so that translating is reading rather than
+	/// guessing. Not for display — [`Self::name_of`] is the one lookup.
+	pub fn names(&self) -> BTreeMap<String, String> {
+		self.names.clone()
 	}
 
 	/// Whether this project knows any channels at all.
@@ -355,6 +387,8 @@ mod tests {
 			variants: vag_db::reading_variants(&cache).unwrap(),
 			cache,
 			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
+			// Never the owner's real one: a test must not read `~/.vagcan`.
+			mine: BTreeMap::new(),
 		}
 	}
 
@@ -440,6 +474,32 @@ mod tests {
 		);
 		assert_eq!(merged[0].raw_form, RawForm::U16Le, "with the form a drive established, not the file's");
 		assert_eq!(merged[1].raw_form.bit_offset(), 16);
+	}
+
+	#[test]
+	fn the_owners_own_wording_outranks_both_vendors() {
+		// The reason the glossary exists. `Brake_pedal_information_plausibility`
+		// is what a diagnostic engineer wrote and it is unreadable at an open
+		// driver's door; the label files' own recovery is often no better. A
+		// line in ~/.vagcan/names.csv beats both, and an id it does not mention
+		// falls straight through — which is what makes the file worth writing
+		// one line at a time.
+		let here = tempfile::tempdir().unwrap();
+		let mut x = named_cache_with(
+			here.path(),
+			&[("EV_Test_001", vec![reading(0x2029, "Ladedruck", 0, 16, true)])],
+			&[("IDE00022", "Ladedruck-Ist"), ("MAS18568", "Oil temp")],
+		);
+		x.mine = crate::glossary::parse("text_id,en,ru\nIDE00022,Boost pressure,Давление наддува\n", crate::config::Language::Ru);
+
+		assert_eq!(x.name_of(Some("IDE00022")), Some("Давление наддува"), "the owner's line wins");
+		assert_eq!(
+			x.name_of(Some("MAS18568")),
+			Some("Oil temp"),
+			"and an id it says nothing about is untouched"
+		);
+		assert_eq!(x.name_of(Some("IDE99999")), None);
+		assert_eq!(x.name_of(None), None);
 	}
 
 	#[test]
@@ -763,6 +823,7 @@ mod tests {
 			cache: here.path().join("nothing.sqlite"),
 			variants: Vec::new(),
 			names: BTreeMap::new(),
+			mine: BTreeMap::new(),
 		};
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());

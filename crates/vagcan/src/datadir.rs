@@ -60,8 +60,10 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///     extracted/                      the layout from before projects existed,
 ///     measured/                       moved into a project on the next `setup`
 ///                                     run and then gone — see `crate::migrate`
-///   config.json                       settings that are not about one car,
-///                                     including which project a bare command means
+///   config.toml                       settings, and the marks `watch` keeps:
+///                                     which project a bare command means, which
+///                                     language names are shown in, favourites by VIN
+///   names.csv                         the owner's own wording, by text id
 ///   cars/
 ///     XW8AD4NE9JH008917/              one directory per car, named for its VIN
 ///       car.json                      mass, tyre, measured road load
@@ -129,11 +131,6 @@ pub fn projects_dir() -> anyhow::Result<PathBuf> {
 /// `crate::project::rod_pool` is what creates it.
 pub fn rod_pool_dir() -> anyhow::Result<PathBuf> {
 	Ok(vagcan_dir()?.join("rod"))
-}
-
-/// Settings that are not about one car — which project a bare command means.
-pub fn config_file() -> anyhow::Result<PathBuf> {
-	Ok(vagcan_dir()?.join("config.json"))
 }
 
 /// A path the user gave, or this tool's own default for it.
@@ -449,7 +446,7 @@ mod tests {
 		// no repository root at all.
 		let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
 		let home = vagcan_dir().unwrap();
-		for path in [projects_dir().unwrap(), rod_pool_dir().unwrap(), config_file().unwrap()] {
+		for path in [projects_dir().unwrap(), rod_pool_dir().unwrap(), crate::config::path().unwrap()] {
 			assert!(!path.starts_with(&repo), "{path:?} is inside the checkout");
 			assert!(path.starts_with(&home), "{path:?} is outside ~/.vagcan");
 		}
@@ -471,7 +468,7 @@ mod tests {
 	fn a_path_the_user_gave_beats_the_default_and_is_not_second_guessed() {
 		let typed = or_default(Some("Cargo.toml"), || unreachable!("the default was consulted")).unwrap();
 		assert!(typed.ends_with("Cargo.toml"), "{typed:?}");
-		assert_eq!(or_default(None, config_file).unwrap(), config_file().unwrap());
+		assert_eq!(or_default(None, crate::config::path).unwrap(), crate::config::path().unwrap());
 	}
 
 	#[test]

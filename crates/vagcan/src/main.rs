@@ -12,6 +12,7 @@
 mod analyse;
 mod anomaly;
 mod calibrate;
+mod config;
 mod datadir;
 mod declared;
 mod device;
@@ -19,6 +20,7 @@ mod discover;
 mod extracted;
 mod faultnames;
 mod faults;
+mod glossary;
 mod labels;
 mod measure;
 mod migrate;
@@ -128,6 +130,22 @@ enum Command {
 		#[arg(long)]
 		refresh: bool,
 	},
+
+	/// Write your own names for channels. Offline.
+	///
+	/// The wording ODIS and VCDS carry is written for a diagnostic engineer:
+	/// `Brake_pedal_information_plausibility` is accurate and unreadable at an
+	/// open driver's door. This creates `~/.vagcan/names.csv`, where you write
+	/// what you would call the channel — in English, in Russian, or both — and
+	/// what you write wins over both vendors everywhere a name is shown.
+	///
+	/// It is keyed by VW's own text id, so a translation written once holds for
+	/// every car afterwards, not just this one. Running it again keeps every
+	/// line you have written and only adds ids that are new; the `current`
+	/// column is what the channel is called today and is never read back.
+	///
+	/// Which column is used is `language` in `~/.vagcan/config.toml`.
+	Glossary,
 
 	/// List connected USB-CAN adapters.
 	///
@@ -538,12 +556,19 @@ async fn main() -> Result<()> {
 	// nothing when there is nothing to do, which is every machine but the few
 	// that ran a build from the hours `projects/` existed.
 	migrate::relocate_projects()?;
+	// A setting that cannot be honoured is said once, at the top, rather than
+	// applied silently: names would then arrive in the vendor's wording and
+	// nothing on screen would connect that to the line somebody wrote.
+	if let Some(why) = config::language_complaint(&config::load()) {
+		eprintln!("{why}\n");
+	}
 	match cli.command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
 			refresh,
 			archive_base: setup::vendor::ARCHIVE_BASE,
 		}),
+		Command::Glossary => glossary_command(),
 		Command::Devices => {
 			println!("{}", device::render_list(&device::list()?));
 			Ok(())
@@ -1045,6 +1070,26 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 			project.id
 		);
 	}
+	Ok(())
+}
+
+/// Write or refresh the owner's glossary (see the `Glossary` subcommand docs).
+fn glossary_command() -> Result<()> {
+	let project = project::current()?;
+	let seeded = glossary::seed(&project)?;
+	let language = config::language(&config::load());
+	println!(
+		"{} channel names in {}\n  {} already yours, {} added this run\n",
+		seeded.total,
+		seeded.path.display(),
+		seeded.translated,
+		seeded.added
+	);
+	println!(
+		"Write in the `{}` column and it wins over ODIS and VCDS wherever that \n         channel is shown. The `current` column is what it is called today and is \n         not read back. Change which column is used with `language` in {}.",
+		language.code(),
+		config::path()?.display()
+	);
 	Ok(())
 }
 

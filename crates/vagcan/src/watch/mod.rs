@@ -169,10 +169,10 @@ pub struct App {
 	/// nameless-identifier filter, and they are what a run starts with — see
 	/// [`favourites`].
 	favourites: std::collections::BTreeSet<plan::Key>,
-	/// Where they are kept. `None` on a replay and on a car that would not say
-	/// which car it is: the marks then last until the run ends, which is what
-	/// [`App::note`] says at the moment somebody makes one.
-	favourites_path: Option<std::path::PathBuf>,
+	/// Which car they are kept under. `None` on a replay and on a car that
+	/// would not say which car it is: the marks then last until the run ends,
+	/// which is what [`App::note`] says at the moment somebody makes one.
+	favourites_vin: Option<String>,
 	/// One line about the last thing this screen did that did not work — a
 	/// favourite that could not be written. Empty the rest of the time, which
 	/// is nearly always.
@@ -274,7 +274,7 @@ impl App {
 			history: history::History::new(history::WINDOW_SECONDS),
 			charted: std::collections::BTreeSet::new(),
 			favourites: std::collections::BTreeSet::new(),
-			favourites_path: None,
+			favourites_vin: None,
 			note: String::new(),
 			chart_shown: false,
 			chart_page: 0,
@@ -644,7 +644,7 @@ impl App {
 			self.favourites.insert(key);
 			channel.selected = true;
 		}
-		self.note = match favourites::save(self.favourites_path.as_deref(), &self.favourites) {
+		self.note = match favourites::save(self.favourites_vin.as_deref(), &self.favourites) {
 			Ok(()) => String::new(),
 			Err(why) => why,
 		};
@@ -2040,8 +2040,8 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	// drive, ticked before the screen appears. They come after `--did`, which
 	// is a person being explicit about this one run, and before the basics,
 	// which are only a guess at what anybody wants.
-	app.favourites_path = favourites::path_for(vin.as_deref());
-	app.favourites = favourites::load(app.favourites_path.as_deref());
+	app.favourites_vin = vin.clone();
+	app.favourites = favourites::load(app.favourites_vin.as_deref());
 	let favourites = app.select_favourites();
 	if favourites > 0 {
 		eprintln!(
@@ -3345,29 +3345,32 @@ mod tests {
 	}
 
 	#[test]
-	fn a_favourite_is_written_the_moment_it_is_made_and_read_back_next_run() {
-		// `watch` is killed by a closed lid at least as often as it is quit
-		// with `q`, so a mark that only survives a tidy exit does not survive.
-		let here = tempfile::tempdir().unwrap();
-		let path = here.path().join(favourites::FILE);
+	fn a_mark_made_this_run_is_ticked_on_the_next_one() {
+		// The point of writing them down. Where they are stored is
+		// `crate::config`'s business and is tested there against a temporary
+		// file — a test here must never write into the owner's own settings.
 		let mut a = App::new(vec![
 			unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar")),
 			unselected(proven(0x7E1, 0x3816, "Selected gear", "")),
 		]);
-		a.favourites_path = Some(path.clone());
+		// **No VIN, deliberately.** Saving goes to `~/.vagcan/config.toml`, and
+		// a test that set one would write into the owner's own settings — which
+		// is exactly what happened the first time this was written. The mark
+		// still lands; only the writing is declined, and the note says so.
+		a.favourites_vin = None;
 		a.screen = Screen::Select;
 		a.cursor = 1;
 		on_key(&mut a, KeyCode::Char('f'));
-		assert!(a.note.is_empty(), "{}", a.note);
-		assert!(path.is_file(), "written before anything was quit");
+		assert_eq!(a.favourites.len(), 1);
+		assert!(a.note.contains("no car"), "{}", a.note);
 
-		// A second run over the same car: the marks come back and are ticked
-		// before the screen appears.
+		// Through the written form and back, which is what a second run does.
+		let written: Vec<String> = a.favourites.iter().map(|key| favourites::render_key(*key)).collect();
 		let mut next = App::new(vec![
 			unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar")),
 			unselected(proven(0x7E1, 0x3816, "Selected gear", "")),
 		]);
-		next.favourites = favourites::load(Some(&path));
+		next.favourites = favourites::from_list(&written);
 		assert_eq!(next.select_favourites(), 1);
 		assert!(next.channels[1].selected);
 		assert!(!next.channels[0].selected, "only what was marked");
