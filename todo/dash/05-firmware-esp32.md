@@ -41,6 +41,39 @@ reaches from the die.
 
 What replaces it is a transceiver — SN65HVD230, TJA1051 or similar. Eight pins.
 
+### The transceiver is not optional
+
+Asked and answered 2026-08-20: can the ESP32 be soldered straight to the OBD plug?
+
+**No.** TWAI gives logic-level TX/RX — it is a protocol controller, not a line driver.
+CAN is a *differential* bus: recessive is both lines near 2.5 V, dominant is CAN-H ~3.5 V
+against CAN-L ~1.5 V. The transceiver is the whole of the physical layer between those two
+worlds. The same relationship a UART has to a MAX232, and nobody wires a UART pin into an
+RS-232 socket either.
+
+Three consequences, in increasing order of expense:
+
+1. **It cannot work.** A GPIO cannot read a differential pair. It sees one wire loitering
+   between 1.5 V and 3.5 V with no useful transitions against its own thresholds.
+2. **The pin dies.** CAN-H reaches ~3.5 V in ordinary dominant state, already close to the
+   ~3.9 V at which a 3.3 V input's clamp diodes conduct into the supply; a transient goes
+   straight past them. Automotive CAN lines are required to survive a short to +12 V. A
+   GPIO is not.
+3. **It disturbs the bus.** A single-ended pin driving into a terminated 60 Ω differential
+   pair is an unbalanced load, and the bad case is holding a line dominant and taking the
+   powertrain bus down while the car is moving. This is the class of thing `SAFETY.md`
+   exists for: a read-only tool has already cost this car its steering rack.
+
+A transceiver also gives the common-mode range the pin has not got — ground at the OBD
+socket and ground at the ECU differ by volts, and a transceiver tolerates ±12 V or more of
+it where a GPIO has 0–3.3 V.
+
+**A dev board with the transceiver already fitted counts** and is the easy path; the only
+thing to check on one is that the 120 Ω jumper comes off.
+
+**The display is the opposite case** — SPI, logic levels, wire it straight to the pins.
+Nothing between the ESP32 and the panel.
+
 **No 120 Ω terminator on the board.** The vehicle bus is already terminated at both ends
 (~60 Ω); a third resistor drags it to 40 Ω and corrupts signalling. Established for the
 sniffer (`docs/superpowers/specs/2026-07-31-can-sniffer-design.md`) and the rule is the
