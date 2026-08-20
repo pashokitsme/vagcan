@@ -25,10 +25,35 @@ task starts with.
 The TWAI backend is a new implementation of the same trait `SlcanBackend` implements. It
 does not touch the protocol crates.
 
+### The CANable is not part of this device
+
+Considered and rejected 2026-08-20: OBD → CANable → ESP32, with the ESP32 driving the
+CANable. It is the natural thought, because the CANable is "the thing that reads CAN" in
+every session so far — but it is a *bridge*, and it exists because **a laptop has no CAN
+controller**. This chip does.
+
+What the arrangement would cost: the CANable is a USB **device**, so the ESP32 has to be a
+USB **host** — the USB Host stack plus a CDC-ACM driver in the firmware, 5 V of VBUS out
+to it, the one USB port that would otherwise carry flashing and console, and any hope of
+microamps asleep, because a host with a device attached is not a low-power state. All of
+it to reach, through slcan's ASCII framing and somebody else's firmware, a bus that TWAI
+reaches from the die.
+
+What replaces it is a transceiver — SN65HVD230, TJA1051 or similar. Eight pins.
+
+**No 120 Ω terminator on the board.** The vehicle bus is already terminated at both ends
+(~60 Ω); a third resistor drags it to 40 Ω and corrupts signalling. Established for the
+sniffer (`docs/superpowers/specs/2026-07-31-can-sniffer-design.md`) and the rule is the
+same here.
+
+**TWAI is classic CAN 2.0, not CAN-FD.** Sufficient for everything read over `0x22`, and
+named so nobody rediscovers it at bring-up. If FD is ever needed the answer is an external
+controller over SPI (MCP2518FD), not a USB adapter.
+
 ## Hardware
 
-- ESP32-S3 or C6 + CAN transceiver. The owner has the board, with Wi-Fi and BT, and has
-  run a `std` Rust toolchain on it (2026-08-20).
+- ESP32-S3 or C6 + CAN transceiver on TWAI. The owner has the board, with Wi-Fi and BT,
+  and has run a `std` Rust toolchain on it (2026-08-20).
 - 256×32 OLED. **Confirm the controller before choosing the driver** — `ssd1322` 0.3.0
   (sync SPI) if it is an SSD1322. 4 bpp, 16 grey levels; a whole frame is ~30 KB, which
   the S3 can just hold, so keep a full frame buffer and blit the changed rectangle.

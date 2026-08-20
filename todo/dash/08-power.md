@@ -49,6 +49,19 @@ end has to take, per ISO 16750-2 / ISO 7637-2 rather than per guesswork:
 So: TVS, reverse protection, and a buck rated well above the nominal rail — not a bare
 step-down module.
 
+## What is in the car, and what is not
+
+```
+OBD 16 --[TVS, reverse protection]--[buck]-- 3V3 --+-- ESP32-S3
+OBD 4,5 ------------------------------- GND -------+
+OBD 6  -- CANH --+                                 |
+OBD 14 -- CANL --+-- transceiver -- TXD/RXD -------+
+```
+
+No CANable. It is the laptop's bridge and this chip needs no bridge — see `05`. Which
+also settles the question of soldering power into its USB-C socket: there is no socket to
+solder to.
+
 ## USB-C — yes on the bench, and be careful about the rest
 
 For development USB-C is exactly right: the ESP32-S3 has native USB, so one cable gives
