@@ -54,23 +54,36 @@ on another car's engine it is some other quantity that will answer, and answer w
 plausible number. The danger has never been the refusal — it is the confident wrong
 value.
 
-## Hardware
+## Hardware — all of it already on the bench (2026-08-20)
 
-- **ESP32-S3 or C6**, CAN via the built-in TWAI controller plus a transceiver. The owner
-  has the board, with Wi-Fi and BT, and has already run a `std` Rust toolchain on it
-  (2026-08-20).
+Nothing to buy. Both boards are on hand and the second one turned out to carry the part
+the first one lacks.
+
+- **ESP32-WROOM-32** devkit, USB-C. The classic Xtensa part, not an S3, and that cuts both
+  ways. Against: **no USB peripheral at all** (its USB-C goes to a CP2102 bridge), so it
+  can never host anything. For: **Bluetooth Classic**, hence SPP — which is what makes the
+  wireless-adapter idea in `09` nearly free, where a BLE-only S3 would have needed a
+  custom GATT service and a custom client per platform. TWAI is present, as on every ESP32.
+- **MKS CANable V2.0 Pro**, already soldered to an OBD plug: **STM32G431C8** in LQFP48,
+  **ADM3050E** isolated CAN FD transceiver, **Hi-Link B0505S-1WR3** isolated 1 W DC-DC for
+  the bus side.
 - **256×32 OLED**, controller to be confirmed. If SSD1322, the driver is `ssd1322` 0.3.0
-  (sync SPI) or `ssd1322_rs` 0.3.1 (async, written for this panel family). 4 bpp, 16 grey
-  levels, ~30 KB for a full frame buffer — which an S3 can simply hold.
+  (sync SPI) or `ssd1322_rs` 0.3.1. 4 bpp, 16 grey levels, ~30 KB for a full frame buffer —
+  which the ESP32 can simply hold.
 - **Three buttons.**
-- **Power from OBD pin 16**, which is permanent battery positive (SAE J1962) — so the
-  device is live whenever the car is parked, and the regulator's own quiescent draw is the
-  real power budget. See `08`.
+- **Power from OBD pin 16**, permanent battery positive per SAE J1962 — live whenever the
+  car is parked, so the regulator's own quiescent draw is the real budget (`08`).
+
+**The transceiver is shared.** The ESP32 uses its own TWAI and taps the ADM3050E's logic
+side: `RXD` is an output, so a second listener is free; `TXD` is an input and wants one
+driver at a time. No bridge between the two processors, no fork of anybody's firmware in
+the data path, and the CANable is still a CANable when it is plugged into a laptop. The
+reasoning, and the two wrong turns it took to get there, are in `05`.
 
 `esp-idf` gives a real `std` with threads, which means the **synchronous** side of
-`vag-transport` (`IsoTpTransport`) carries the device. No tokio on the board, and no
-rewrite of ISO-TP: `isotp.rs`, `uds.rs`, `pdu.rs` and `read.rs` reach into `std` for
-`Duration` alone, and that is `core::time::Duration` (checked 2026-08-20).
+`vag-transport` (`IsoTpTransport`) carries the device. No tokio on the board and no rewrite
+of ISO-TP: `isotp.rs`, `uds.rs`, `pdu.rs` and `read.rs` reach into `std` for `Duration`
+alone, and that is `core::time::Duration` (checked 2026-08-20).
 
 ## Graphics stack (surveyed 2026-08-20)
 
@@ -218,6 +231,15 @@ actually needs rather than guessed in advance.
 **Then:** `04` (alarms) → `05` (firmware), gated on `06`, the list of things only the car
 and the bench can answer.
 
+**Then:** `09` (the device as a wireless CANable over Bluetooth SPP) — nearly free, given
+the board is the classic ESP32 and `vag-can`'s slcan backend is already stream-generic.
+
 **Deferred:** `07` (sleeping in the car) and `08` (power). One problem from two sides —
 `07` is what the firmware does to draw nothing, `08` is whether the hardware lets it.
 Required before the device spends a night plugged in; not required before it exists.
+
+Sleep is settled in shape (2026-08-20): **wake on the rail at 13 V**, a divider into an
+ADC that works with the whole CAN side unpowered; **sleep on the ignition going off**,
+read from the bus while we are still awake to read it, **or fifteen minutes idle**. Cheap
+sensor to come up, rich signal to go down. "No answer" plays no part — it is the same
+input the moving-car guard reads as *moving*.

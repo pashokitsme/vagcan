@@ -52,15 +52,34 @@ step-down module.
 ## What is in the car, and what is not
 
 ```
-OBD 16 --[TVS, reverse protection]--[buck]-- 3V3 --+-- ESP32-S3
-OBD 4,5 ------------------------------- GND -------+
-OBD 6  -- CANH --+                                 |
-OBD 14 -- CANL --+-- transceiver -- TXD/RXD -------+
+OBD 16 --[TVS, reverse protection]--[buck]-- 3V3 --+-- ESP32-WROOM-32
+                                                   |      |  |
+                                       [load switch]      |  +-- SPI -- OLED 256x32
+                                                   |      |
+OBD 6,14 -- CANH/CANL -- ADM3050E ----- RXD/TXD ---+------+
+                            ^
+                    B0505S-1WR3 (isolated 5 V, bus side)
+
+OBD 4,5 ------------------------------------ GND
 ```
 
-No CANable. It is the laptop's bridge and this chip needs no bridge — see `05`. Which
-also settles the question of soldering power into its USB-C socket: there is no socket to
-solder to.
+The ADM3050E and the B0505S are **already on the CANable**, and the ESP32 shares the
+transceiver rather than carrying one of its own (`05`). The load switch is what lets the
+isolated supply be cut while parked.
+
+### Measure the CANable's idle draw first
+
+The Hi-Link B0505S-1WR3 is an isolated 1 W module, and modules of that class are known for
+a no-load current in the tens of milliamps. Tried to confirm it 2026-08-20 and could not:
+the Hi-Link PDF did not extract and the ADI datasheet timed out. **So measure it** — an
+ammeter in series with the CANable's 5 V, board idle. The board is on the bench and a
+measurement settles this better than any datasheet.
+
+If it is tens of milliamps, two things follow: a load switch under the ESP32's control is
+mandatory rather than tidy, and waking on bus activity becomes impossible, because the
+transceiver is behind that switch. See `07`, where the wake is settled as a divider from
+pin 16 into an ADC at 13 V — which also wants a place on this schematic, and is two
+resistors.
 
 ## USB-C — yes on the bench, and be careful about the rest
 

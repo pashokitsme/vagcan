@@ -72,7 +72,22 @@ bus identifiers are what the sniff supplies.
 repeated, which is a capture that went wrong rather than an idle bus. A fresh one is
 needed.
 
-## 8. The panel's controller
+## 8. The CANable's idle current
+
+An ammeter in series with its 5 V, board idle, two minutes. It decides whether the load
+switch in `08` is mandatory and whether `07`'s wake had to move off the bus — both already
+designed as though the answer is "tens of milliamps", which wants confirming.
+
+Take a second reading with the ESP32 asleep and the CANable switched off, against the
+under-1 mA target.
+
+## 9. The rail, parked and running
+
+For `07`'s wake threshold: the resting voltage at the socket after a night, and the
+charging voltage warm. 13 V is the assumed line between them and it is worth seeing the
+real numbers on this car before it is fixed in firmware.
+
+## 10. The panel's controller
 
 Not a car question, but it blocks `05`: 256×32 is not the SSD1322's usual 256×64, and the
 driver crate follows from the part.

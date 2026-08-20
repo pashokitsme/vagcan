@@ -56,9 +56,56 @@ Two failure modes to design against:
 What distinguishes "ignition on" from "somebody unlocked the car" is a cyclic frame we do
 not yet know. It is found by sniffing, not by reasoning — see `06`.
 
-## The trigger is ignition, not a running engine
+## Waking on bus activity is not available with this hardware
 
-Decided 2026-08-20. Sitting with the ignition on watching temperatures is an ordinary
-thing to do, and with the engine off most channels still answer — a device that only woke
-for a running engine would be dark exactly when somebody is checking something in the
-driveway. `06` §7 finds which cyclic frame carries it.
+Found 2026-08-20, and it invalidates step 1 of the shape above as written.
+
+The wake was to be a GPIO edge from the transceiver's `RXD` on the first dominant bit.
+That needs the transceiver powered — and the transceiver is the ADM3050E on the CANable,
+whose bus side is fed by a Hi-Link **B0505S-1WR3**, an isolated 1 W module. Modules of that
+class are known for an unhelpful no-load current, and on a permanently live OBD pin that
+is the whole battery budget (`08`). Switched off while parked, the transceiver goes off
+with it, and nothing is left listening.
+
+## The decided design: cheap sensor up, rich signal down
+
+Settled with the owner 2026-08-20.
+
+**Wake on the rail: 13 V or above.** A divider from OBD pin 16 into an ADC. Two resistors,
+powered from the same buck as everything else, available whether or not the CAN side has
+any power at all — which is exactly the property the `RXD` wake turned out not to have.
+
+**Sleep on either of two conditions:**
+
+- **the ignition going off**, read from the bus — and this is affordable precisely because
+  we are awake when we ask. The transceiver is powered, the cyclic frame from `06` §7 is
+  there to be seen, and its disappearance is the signal;
+- **or fifteen minutes idle**, as the backstop for everything the first condition misses.
+
+The split is the point. The always-available sensor is crude and only has to get the
+device *up*; the sensor that costs power is rich and only has to be right about going
+*down*, by which time its power is already on.
+
+Two consequences worth having written down:
+
+- **"No answer" plays no part in the sleep decision at all.** It was going to, and it is
+  the same input the moving-car guard reads as *moving* — one signal with two opposite
+  meanings, which is how a device ends up asleep on the motorway. It is now simply not
+  consulted: sleep is a positive statement from the bus, or a timer.
+- **No hysteresis needed on the voltage.** Waking is a rising edge past 13 V and sleeping
+  never consults the rail, so cranking dips and alternator ripple cannot make it flap.
+
+**What this costs, stated plainly:** 13 V means the engine is *running*. A rested battery
+sits near 12.6 V and the ignition alone, with its loads, pulls it to about 12.2 — so
+sitting in the driveway with the key on and the engine off leaves the panel dark until it
+is started. The owner chose this knowingly on 2026-08-20; it buys a wake that needs no CAN
+and no always-on transceiver, and the fifteen-minute timeout means the panel stays up
+after the engine stops rather than dying with it.
+
+## Ignition is the trigger for staying up, not for waking
+
+Decided 2026-08-20, and it survives the change above in the half where it still applies.
+Once the device is awake, sitting with the ignition on and the engine off is an ordinary
+thing to do and most channels still answer, so ignition — not a running engine — is what
+keeps the panel up. `06` §7 finds which cyclic frame carries it. Waking is the rail, per
+the section above.
