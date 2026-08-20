@@ -11,6 +11,17 @@ three buttons on the keyboard.
 This is how `02` gets tested and how the layout gets finished before any hardware
 arrives. It is not a mock of the panel — it is the panel, with a different `DrawTarget`.
 
+## Status (2026-08-20) — the PNG half is done
+
+`cargo run -p vag-dash --example panel -- <dir>` writes nine frames and prints each one's
+`Report`. That was enough to settle the layout and to catch three defects, so it came
+first.
+
+**What remains is the interactive half:** the SDL window, replaying a `watch --out`
+recording through a plan, the three buttons on the keyboard, and diffing the PNGs in CI.
+None of it is blocked; it simply was not what the first look needed. When it lands it
+belongs in `vagcan` as `vagcan dash`, not in the example.
+
 ## Two backends, one flag
 
 - **With SDL2** (`embedded-graphics-simulator` default features): a window, scaled ×4 so

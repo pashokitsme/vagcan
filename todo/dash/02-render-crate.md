@@ -14,9 +14,15 @@ without leaving the desk.
 
 ## Dependencies
 
-`embedded-graphics` 0.8.2, `eg-seven-segment` 0.2.0 (numbers), `u8g2-fonts` 0.8.0
-(labels — the stock fonts have no Cyrillic), `embedded-layout` 0.4.2 (grid),
-`embedded-canvas` 0.3.2 (off-screen composition for partial update).
+**As built (2026-08-20):** `embedded-graphics` 0.8.2, `eg-seven-segment` 0.2.0 (numbers),
+`u8g2-fonts` 0.8.0 (labels — the stock fonts have no Cyrillic, and no `°` either; see
+below). `embedded-graphics-simulator` 0.8.0 as a dev-dependency, with default features
+off so it needs no SDL.
+
+`embedded-layout` and `embedded-canvas` were in the design and are **not** dependencies:
+a four-column grid at a fixed 256×32 is arithmetic, and there is no partial update yet to
+need an off-screen canvas. Add them when there is a second layout or a dirty-rectangle
+path, not before.
 
 No `std`, no float formatting via `format!` if it can be helped — fixed-point rendering
 of `value * factor + offset` to `decimals` places.
@@ -45,6 +51,22 @@ one outlier widens the range. A boost trace that always fills the box tells you 
 
 A ring buffer of `u8` per charted channel, one per pixel column — 190 bytes. Sized at
 compile time from the plan.
+
+## Done as of 2026-08-20
+
+Both page kinds, the alarm inversion, the numeral ladder, the row-wide style decision,
+the `Report`, nine tests, and the nine-frame PNG example. See the subsystem README.
+
+**Still open in this task:**
+
+- **Greyscale.** The crate is `BinaryColor` throughout. The SSD1322 is 4 bpp with sixteen
+  levels, which would give a dim label under a bright number — worth having, and cheap to
+  add behind the existing `ink`/ground pair.
+- **The burn-in shift** below. Not implemented.
+- **Partial update.** Every frame redraws the whole panel today. Fine in the simulator;
+  on the board it is 30 KB over SPI to change one digit.
+- **Two faces are chosen by hand.** Whether the numbers are Inconsolata, FreeUniversal or
+  seven segments is the open decision the previews exist to settle.
 
 ## Burn-in
 
