@@ -95,12 +95,15 @@ Two consequences worth having written down:
 - **No hysteresis needed on the voltage.** Waking is a rising edge past 13 V and sleeping
   never consults the rail, so cranking dips and alternator ripple cannot make it flap.
 
-**What this costs, stated plainly:** 13 V means the engine is *running*. A rested battery
-sits near 12.6 V and the ignition alone, with its loads, pulls it to about 12.2 — so
-sitting in the driveway with the key on and the engine off leaves the panel dark until it
-is started. The owner chose this knowingly on 2026-08-20; it buys a wake that needs no CAN
-and no always-on transceiver, and the fifteen-minute timeout means the panel stays up
-after the engine stops rather than dying with it.
+**What this costs, and why it was accepted.** 13 V means the engine is *running*. A rested
+battery sits near 12.6 V and the ignition alone, with its loads, pulls it to about 12.2 —
+so turning the key without starting leaves the panel dark. Put to the owner and accepted
+outright, 2026-08-20: waking on the engine is fine.
+
+It is a good trade. It buys a wake that works with the entire CAN side unpowered, needs no
+always-on transceiver and costs two resistors — and the fifteen-minute timeout means the
+panel stays up *after* the engine stops rather than dying with it, which covers most of
+what key-on-engine-off would have been for anyway.
 
 ## Ignition is the trigger for staying up, not for waking
 
