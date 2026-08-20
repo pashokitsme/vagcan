@@ -50,7 +50,29 @@ With the real request set (a page plus two armed alarms) over the real cable. Th
 the chart's window: one pixel per poll over 190 px is ~19 s at 10 Hz and ~63 s at 3 Hz,
 and the number is drawn on the screen, so it has to be true.
 
-## 7. The panel's controller
+## 7. The frame that says the ignition is on
+
+The wake discriminator for `05`, and the only way to get it is to listen. Three
+**listen-only** captures with `vagcan sniff` — locked and parked, ignition on with the
+engine off, engine running — and the difference of the ID sets. Nothing is transmitted,
+so this is as safe as bench work gets; `vag-can` has had the silent mode since the
+sniffer landed (`SlcanMode::Silent`).
+
+What is wanted is a frame that is *cyclic* and present only from ignition on, so its
+absence for N seconds is a reliable "the car has gone". Record the period as well as the
+ID — the timeout in `05` is a multiple of it, not a guessed constant.
+
+Half the answer is already in the catalog: `118A` on the gearbox is a bitfield of
+statuses for the CAN messages it receives from the engine — `Motor_04`, `Motor_07`,
+`Motor_11`, `Motor_12`, `Motor_14`, `Motor_16`, `Motor_17`, `Motor_18`, `Motor_20`,
+`Motor_26`, `Motor_35`, `Motor_Code_01`. The names of the cyclic frames are known; their
+bus identifiers are what the sniff supplies.
+
+`research/dumps/bus-idle.jsonl` does **not** serve here: 47 lines of one extended frame
+repeated, which is a capture that went wrong rather than an idle bus. A fresh one is
+needed.
+
+## 8. The panel's controller
 
 Not a car question, but it blocks `05`: 256×32 is not the SSD1322's usual 256×64, and the
 driver crate follows from the part.
