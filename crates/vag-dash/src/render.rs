@@ -1,9 +1,18 @@
 //! Putting a [`Frame`] on the glass.
 //!
-//! Thirty-two pixels is the constraint that decides everything below. A label
-//! over a number is two tiers and fits; the reference panel's four tiers —
-//! label on two lines, number, unit underneath — do not, so the unit sits beside
-//! the number and the label gets one line.
+//! Panel height is the constraint that decides everything below, and it is read
+//! from the target rather than assumed.
+//!
+//! At **32 pixels** a label over a number is two tiers and fits; the reference
+//! panel's four — label on two lines, number, unit underneath — do not, so the
+//! unit sits beside the number and the label gets one line.
+//!
+//! At **64**, which is the height you can actually buy, three tiers fit: label
+//! at the top, the number centred in the band below it, the unit under that.
+//! The number is then vertically centred rather than sitting on the floor,
+//! which is what the eye expects of the thing it came to read. Which layout is
+//! used is decided by measuring, not by a flag: if the three stack inside the
+//! height, they are stacked.
 //!
 //! Nothing here scales, clips or rounds silently. Where the text does not fit,
 //! [`draw`] says so in its [`Report`] and the caller decides. A layout that
@@ -146,11 +155,11 @@ where
 	let cell_w = width / cells.len() as u32;
 	let inner = cell_w.saturating_sub(PAD * 2);
 
-	let (step, with_unit) = row_style(cells, theme, inner, &mut report);
-	if step > 0 {
+	let layout = row_layout(cells, theme, inner, height, &mut report);
+	if layout.step > 0 {
 		report.value_shrunk = true;
 	}
-	if !with_unit && cells.iter().any(|c| !c.unit.is_empty()) {
+	if !layout.with_unit && cells.iter().any(|c| !c.unit.is_empty()) {
 		report.unit_dropped = true;
 	}
 
@@ -171,9 +180,25 @@ where
 
 		let centre = x as i32 + w as i32 / 2;
 		draw_label(cell.label, centre, inner, &theme.label, ink, target, &mut report);
-		draw_value(cell, centre, inner, height, theme, ink, step, with_unit, target, &mut report);
+		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
 	report
+}
+
+/// What the whole row agreed on: one face, one unit policy, one arrangement.
+struct RowLayout {
+	/// Index into the theme's numeral ladder.
+	step: usize,
+	/// Whether the unit is drawn at all.
+	with_unit: bool,
+	/// Unit under the number rather than beside it, and the number centred in
+	/// what is left. Only when the height has room for all three.
+	tiered: bool,
+	/// Where the number's band starts and ends when `tiered`, in pixels from
+	/// the top. Computed once for the row so no cell's number sits at a
+	/// different level from its neighbour's — a difference the eye reads as
+	/// meaning something when it means nothing.
+	band: (i32, i32),
 }
 
 /// One face and one unit policy for the whole row.
@@ -187,7 +212,34 @@ where
 /// smaller than the rest. Both differences are visible at a glance and neither
 /// means anything, so the eye reads the odd cell as the important one — exactly
 /// backwards on a panel whose whole job is to make the important cell obvious.
-fn row_style(cells: &[Cell<'_>], theme: &Theme, inner: u32, report: &mut Report) -> (usize, bool) {
+fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report: &mut Report) -> RowLayout {
+	// First ask what the numbers alone need. Stacking the unit takes it out of
+	// the width competition entirely, so this is also the best face available
+	// if the three tiers turn out to fit.
+	let mut stacked_step = 0usize;
+	for cell in cells {
+		let (s, _, _) = fit(&theme.numerals, number(cell).as_str(), 0, inner);
+		stacked_step = stacked_step.max(s);
+	}
+
+	let label_h = cells.iter().map(|c| text_height(&theme.label, c.label)).max().unwrap_or(0);
+	let unit_h = cells.iter().filter(|c| !c.unit.is_empty()).map(|c| text_height(&theme.unit, c.unit)).max().unwrap_or(0);
+	let value_h = numeral_height(&theme.numerals[stacked_step], "0");
+
+	// One pixel of air above and below the number. Any less and the tiers touch,
+	// which reads as one smeared block rather than three things.
+	if label_h + value_h + unit_h + 2 <= height {
+		let top = label_h as i32 + 1;
+		let bottom = height as i32 - unit_h as i32 - 1;
+		return RowLayout {
+			step: stacked_step,
+			with_unit: unit_h > 0,
+			tiered: true,
+			band: (top, bottom),
+		};
+	}
+
+	// Not enough height: the old two-tier arrangement, unit beside the number.
 	let mut step = 0usize;
 	let mut with_unit = true;
 	for cell in cells {
@@ -208,7 +260,12 @@ fn row_style(cells: &[Cell<'_>], theme: &Theme, inner: u32, report: &mut Report)
 			}
 		}
 	}
-	(step, with_unit)
+	RowLayout {
+		step,
+		with_unit,
+		tiered: false,
+		band: (0, height as i32 - 1),
+	}
 }
 
 fn unit_width(cell: &Cell<'_>, theme: &Theme, report: &mut Report) -> u32 {
@@ -254,8 +311,7 @@ fn draw_value<D>(
 	height: u32,
 	theme: &Theme,
 	ink: BinaryColor,
-	step: usize,
-	with_unit: bool,
+	layout: &RowLayout,
 	target: &mut D,
 	report: &mut Report,
 ) where
@@ -263,16 +319,46 @@ fn draw_value<D>(
 {
 	let buf = number(cell);
 	let text = buf.as_str();
-	let baseline = height as i32 - 1;
-	let unit_w = if with_unit { unit_width(cell, theme, report) } else { 0 };
-	let value_w = measure(&theme.numerals[step], text);
+	let numerals = &theme.numerals[layout.step];
+	let value_w = measure(numerals, text);
 	if value_w > w {
 		report.value_overrun = true;
 	}
 
+	if layout.tiered {
+		// The number is centred in its band by its glyph box, not by its
+		// baseline: a baseline centred looks low, because descenders are
+		// counted and digits have none.
+		let value_h = numeral_height(numerals, text);
+		let (top, bottom) = layout.band;
+		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
+		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
+		if layout.with_unit && !cell.unit.is_empty() {
+			// Unit last, on the floor, centred under the number. It is the
+			// smallest thing on the panel and the one you look at least.
+			if theme
+				.unit
+				.render_aligned(
+					cell.unit,
+					Point::new(centre, height as i32 - 1),
+					VerticalPosition::Baseline,
+					HorizontalAlignment::Center,
+					FontColor::Transparent(ink),
+					target,
+				)
+				.is_err()
+			{
+				report.glyph_missing = true;
+			}
+		}
+		return;
+	}
+
+	let baseline = height as i32 - 1;
+	let unit_w = if layout.with_unit { unit_width(cell, theme, report) } else { 0 };
 	let total = if unit_w > 0 { value_w + unit_w + 2 } else { value_w };
 	let left = centre - total as i32 / 2;
-	draw_numerals(&theme.numerals[step], text, Point::new(left, baseline), ink, target);
+	draw_numerals(numerals, text, Point::new(left, baseline), ink, target);
 	if unit_w > 0 {
 		let _ = theme.unit.render(
 			cell.unit,
@@ -316,6 +402,23 @@ fn text_width(font: &FontRenderer, text: &str) -> u32 {
 		.get_rendered_dimensions(text, Point::zero(), VerticalPosition::Baseline)
 		.map(|d| d.bounding_box.map(|b| b.size.width).unwrap_or(0))
 		.unwrap_or(0)
+}
+
+fn text_height(font: &FontRenderer, text: &str) -> u32 {
+	font
+		.get_rendered_dimensions(text, Point::zero(), VerticalPosition::Baseline)
+		.map(|d| d.bounding_box.map(|b| b.size.height).unwrap_or(0))
+		.unwrap_or(0)
+}
+
+/// How tall the numerals stand. Measured from a digit rather than from the
+/// text, so a value's height does not change as its digits do — `1.05` and
+/// `188` must sit at the same level or the row ripples.
+fn numeral_height(numerals: &Numerals, _text: &str) -> u32 {
+	match numerals {
+		Numerals::Font(font) => text_height(font, "0"),
+		Numerals::Segments(style) => style.digit_size.height,
+	}
 }
 
 fn measure(numerals: &Numerals, text: &str) -> u32 {
@@ -406,10 +509,15 @@ where
 	if step > 0 {
 		report.value_shrunk = true;
 	}
-	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, height as i32 - 1), ink, target);
+	// Centred in the band under the header, for the same reason as the values
+	// page: the number is what the eye came for, and on the floor it reads as an
+	// afterthought under the trace.
+	let plot_top = 8;
+	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
+	let value_baseline = plot_top + (height as i32 - 1 - plot_top - value_h as i32) / 2 + value_h as i32;
+	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, value_baseline), ink, target);
 
 	let plot_x = value_w as i32 + 4;
-	let plot_top = 8;
 	let plot_bottom = height as i32 - 1;
 	let plot_w = width as i32 - plot_x;
 	if plot_w < 8 || max <= min {
@@ -482,7 +590,7 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(0.0), "", 1),
 		];
 		let mut report = Report::default();
-		let (step, _) = row_style(&cells, &theme, INNER, &mut report);
+		let step = row_layout(&cells, &theme, INNER, PANEL.height, &mut report).step;
 		// The step is chosen for the widest cell...
 		assert!(measure(&theme.numerals[step], "-2.6") <= INNER);
 		// ...and every other cell is drawn at that same step, not at its own.
@@ -524,14 +632,63 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(0.0), "°", 1),
 		];
 		let mut report = Report::default();
-		let (step, with_unit) = row_style(&cells, &theme, INNER, &mut report);
-		if with_unit {
+		let layout = row_layout(&cells, &theme, INNER, PANEL.height, &mut report);
+		let (step, with_unit) = (layout.step, layout.with_unit);
+		if with_unit && !layout.tiered {
 			let unit_w = text_width(&theme.unit, "°");
 			for cell in &cells {
 				let w = measure(&theme.numerals[step], number(cell).as_str());
 				assert!(w + unit_w + 2 <= INNER, "every cell must fit its unit, or none may keep one");
 			}
 		}
+	}
+
+	#[test]
+	fn a_taller_panel_stacks_the_unit_under_the_number() {
+		// 256x64 is the part you can buy, and at that height the reference
+		// panel's three tiers fit. The unit then stops competing with the number
+		// for width, so it is never dropped and the face never shrinks for it.
+		let theme = Theme::bold_mono();
+		let cells = [
+			Cell::new("МАСЛО", Some(93.0), "°C", 0),
+			Cell::new("КОРОБКА", Some(72.0), "°C", 0),
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+		];
+		let mut report = Report::default();
+		let layout = row_layout(&cells, &theme, INNER, 64, &mut report);
+		assert!(layout.tiered, "three tiers fit in 64 rows");
+		assert!(layout.with_unit, "a stacked unit is never dropped for width");
+
+		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
+		let report = values(&cells, &theme, &mut display);
+		assert!(!report.unit_dropped, "{report:?}");
+		assert!(!report.value_overrun, "{report:?}");
+
+		// The number sits in the band, not on the floor: the bottom rows belong
+		// to the unit, and the rows just under the label are empty.
+		let (top, bottom) = layout.band;
+		assert!(
+			(top..bottom).any(|y| (0..64).any(|x| lit(&display, x, y))),
+			"something is drawn in the number's band"
+		);
+	}
+
+	#[test]
+	fn a_short_panel_keeps_the_unit_beside_the_number() {
+		// The old arrangement has to survive, because 32 rows cannot stack three
+		// tiers and a panel that silently drew them on top of each other would
+		// be worse than one that admits the unit did not fit.
+		let theme = Theme::bold_mono();
+		let cells = [
+			Cell::new("МАСЛО", Some(93.0), "°C", 0),
+			Cell::new("КОРОБКА", Some(72.0), "°C", 0),
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("ВПУСК", Some(46.0), "°C", 0),
+		];
+		let mut report = Report::default();
+		let layout = row_layout(&cells, &theme, INNER, PANEL.height, &mut report);
+		assert!(!layout.tiered, "three tiers do not fit in 32 rows");
 	}
 
 	#[test]
