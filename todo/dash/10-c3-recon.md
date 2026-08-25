@@ -103,10 +103,20 @@ a task that started and did nothing.
 - **`05`'s runtime argument is weaker than it reads.** It chose ESP-IDF for real threads,
   so that `vag-transport`'s synchronous `IsoTpTransport` could be reused without a
   rewrite. But under embassy a blocking read stalls the single executor — it would stop
-  the panel, the web server and BLE together. The device wants **async ISO-TP**;
-  `uds_async.rs` already exists, `isotp.rs` does not have an async form yet. That is the
-  real cost, and it is larger than "change some imports" and smaller than "rewrite the
-  protocol".
+  the panel, the web server and BLE together. The device wants the **async** path.
+
+  **Correction, 2026-08-25.** An earlier draft of this document said async ISO-TP did not
+  exist and was the large cost of `05`. That was wrong: it read `vag-protocol/src/isotp.rs`
+  (the *synchronous* software ISO-TP over a raw transport) and missed
+  **`vag-can/src/isotp.rs`** — `IsoTpCan<B: CanBackend>`, 397 lines, implementing
+  `AsyncIsoTpTransport`, with its own tests for flow control, block size, reassembly and
+  sequence errors. It is what the live cable already runs on.
+
+  So the port is much smaller than claimed. `CanBackend` is two async methods —
+  `send_frame(id, &[u8])` and `recv_frame(timeout) -> (u32, Vec<u8>)` — and esp-hal's TWAI
+  implements exactly that shape. The only real work is `tokio::time::Instant` →
+  `embassy_time::Instant` in `isotp.rs` and `slcan.rs`, plus `Vec` from `alloc`. The
+  segmentation logic itself does not change.
 - **`05`'s pin table is void.** The C3 has 22 GPIO, different strapping pins, and a
   different ADC layout. It has to be redone against the C3 before any wiring.
 - **`07`/`08` are untouched in principle** — deep sleep, wake on the rail, and the
