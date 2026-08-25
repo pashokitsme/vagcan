@@ -65,6 +65,22 @@ front doors. `heap_allocator!(size: 64 * 1024)` carries AP + DHCP + HTTP with ro
   A phone joins it, gets an address and loads the page.
 - **`scan`** — station-mode radio self-test. Proved the SuperMini's antenna: seven
   networks, the nearest at **−44 dBm**.
+- **`sta`** — station mode, end to end (2026-08-25). Joins a WPA2 network and reports
+  four separate facts rather than one, because "connected" is the word that lies —
+  a board can associate with no address, or hold an address on a network that drops
+  everything:
+
+  ```
+  STEP 1/4 associated with <ssid>
+  STEP 2/4 DHCP lease: 10.0.0.158/16 gateway Some(10.0.0.1) dns [10.0.1.2, 10.0.0.1]
+  STEP 3/4 example.com resolves to [Ipv4(104.20.23.154)]
+  STEP 4/4 TCP connected to example.com:80
+  answered 128 bytes: HTTP/1.1 200 OK
+  ```
+
+  Credentials come from `env!("WIFI_SSID")`/`env!("WIFI_PASSWORD")` at build time and are
+  not in the source: this firmware moves into the repository sooner or later, and a
+  password in a checked-in file is found years later by the wrong person.
 
 ## Three landmines, all of them silent failures
 

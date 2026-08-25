@@ -103,6 +103,18 @@ a write requires cutting power mid-sector. The property holds by construction an
 newest-of-two selection is exercised by the alternation above, but it has not been
 provoked. Say so rather than claim it.
 
+## One way to lose the partition table
+
+**`espflash flash` without `--partition-table` silently writes the default table back.**
+It happened here: flashing an unrelated Wi-Fi binary reverted the table, and the `config`
+entry vanished from it — the firmware would then report `NoPartition` and forget every
+setting, on a board whose settings were still physically intact at 0x310000.
+
+Reflashing *with* the table restored it and generation 3 read back unchanged, so the data
+survives; but a partition table is part of the image, not of the board, and every flash
+of this project must carry it. That is an argument for the flash command living in
+`.cargo/config.toml` as a runner rather than being typed.
+
 ## The command surface, and why it is text
 
 The first form of the protocol is lines of ASCII over the Nordic UART Service:
