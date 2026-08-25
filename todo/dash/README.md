@@ -57,7 +57,8 @@ value.
 > **Superseded in part, 2026-08-25.** The board on the bench is an **ESP32-C3 SuperMini**,
 > not the WROOM-32 described below. Wi-Fi AP, DHCP and a web server run on it today; the
 > measurements, the stack decision (`no_std`/esp-hal) and what it voids in `05` and `09`
-> are in [`10-c3-recon.md`](10-c3-recon.md).
+> are in [`10-c3-recon.md`](10-c3-recon.md); BLE — which the C3 has and the WROOM's SPP
+> is replaced by — is in [`11-ble.md`](11-ble.md).
 
 ## Hardware — all of it already on the bench (2026-08-20)
 

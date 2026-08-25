@@ -5,7 +5,9 @@
 > **The board changed, 2026-08-25.** The bench board is an **ESP32-C3 SuperMini**, not the
 > WROOM-32 this document was written against: RISC-V on stable Rust, native USB, **BLE only
 > — no Bluetooth Classic, no SPP**, 22 GPIO. What was proven on hardware, and what it voids
-> here, is in [`10-c3-recon.md`](10-c3-recon.md). Read that first.
+> here, is in [`10-c3-recon.md`](10-c3-recon.md). Read that first — and
+> [`11-ble.md`](11-ble.md) for what BLE does carry, which is configuration rather than a
+> bus: it cannot move a loaded CAN bus, and the measurement is there.
 
 ## Goal
 

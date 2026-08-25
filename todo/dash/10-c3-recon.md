@@ -154,6 +154,7 @@ The device does not need `address.rs` in any case — the plan carries unit addr
 
 ## Next
 
-**BLE.** The C3 has it, `trouble-host` is the `no_std` host stack, and `esp-generate`
-offers `-o ble-trouble`. What it is *for* is a separate question from whether it works:
-with slcan moving to TCP, BLE's role is no longer the wireless-adapter path.
+**BLE — done, 2026-08-25, in [`11-ble.md`](11-ble.md).** It works in both directions and
+its job is now settled: with slcan moving to TCP, BLE is not the wireless-adapter path
+but the **configuration** link. That document also carries the heap measurement behind
+this one's claim that `esp-alloc` is safe to rely on.
