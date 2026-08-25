@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
 members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-can", "crates/vag-dash", "crates/vagcan"]
+# Research tooling, deliberately not a member. `btleplug` needs CoreBluetooth on
+# macOS and dbus/BlueZ headers on Linux; as a member it would put those on the
+# critical path of `cargo build --workspace` and of CI, for a tool the product
+# does not link. Build it explicitly: `cargo build --manifest-path
+# research/dash/bleecho/Cargo.toml`.
+exclude = ["research/dash/bleecho"]
 
 [workspace.package]
 edition = "2024"
