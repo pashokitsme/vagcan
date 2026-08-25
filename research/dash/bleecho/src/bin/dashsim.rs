@@ -6,9 +6,17 @@
 //! anything: no layout, no page order, no formatting. If this program were
 //! clever, the thing being tested would be this program.
 //!
-//! Two vertical pixels share one terminal cell (`▀ ▄ █`), so 256×64 becomes
-//! 256 columns by 32 rows and the aspect ratio is right. A terminal narrower
-//! than the panel is told so rather than silently showing half a picture.
+//! Two ways to draw pixels in a terminal, both of which keep the aspect ratio
+//! square because a terminal cell is about twice as tall as it is wide:
+//!
+//! * **half blocks** (`▀ ▄ █`) — one pixel per column, two per row, so 256×64
+//!   wants 256 columns. Crisp, and the closest thing to seeing the panel.
+//! * **braille** (`⠀`–`⣿`) — two pixels per column, four per row, so the same
+//!   panel fits in **128 columns**. Denser and less crisp, and the only option
+//!   in a window that is not 258 columns wide.
+//!
+//! The mode is chosen from the terminal width each time it draws, so widening
+//! the window switches back on its own; `b` forces braille either way.
 
 use anyhow::{Context, Result};
 use bleecho::frame::{self, Bitmap};
@@ -23,6 +31,69 @@ const BAUD: u32 = 115_200;
 /// How many of the board's log lines to keep under the panel. Enough to see
 /// what just happened, few enough that the panel stays on screen.
 const LOG_LINES: usize = 8;
+
+/// How pixels become characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    HalfBlocks,
+    Braille,
+}
+
+impl Mode {
+    /// Terminal columns one panel row needs, borders included.
+    fn columns_for(self, width: u32) -> u32 {
+        match self {
+            Mode::HalfBlocks => width + 2,
+            Mode::Braille => width.div_ceil(2) + 2,
+        }
+    }
+}
+
+/// Renders the bitmap as terminal rows, without borders.
+///
+/// Braille packs a 2×4 block of pixels into one code point. The dot numbering
+/// is the historical one and is *not* row-major — dots 1,2,3 run down the left
+/// column, 4,5,6 down the right, and 7,8 are the fourth row added later for
+/// computing. Hence the table rather than a shift.
+fn rows(bitmap: &Bitmap, mode: Mode) -> Vec<String> {
+    match mode {
+        Mode::HalfBlocks => (0..bitmap.height)
+            .step_by(2)
+            .map(|y| {
+                (0..bitmap.width)
+                    .map(|x| match (bitmap.get(x, y), bitmap.get(x, y + 1)) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
+                    })
+                    .collect()
+            })
+            .collect(),
+        Mode::Braille => {
+            const DOTS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+            (0..bitmap.height)
+                .step_by(4)
+                .map(|y| {
+                    (0..bitmap.width)
+                        .step_by(2)
+                        .map(|x| {
+                            let mut bits = 0u8;
+                            for (dy, row) in DOTS.iter().enumerate() {
+                                for (dx, dot) in row.iter().enumerate() {
+                                    if bitmap.get(x + dx as u32, y + dy as u32) {
+                                        bits |= dot;
+                                    }
+                                }
+                            }
+                            char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' ')
+                        })
+                        .collect()
+                })
+                .collect()
+        }
+    }
+}
 
 enum FromBoard {
     Frame(Box<Bitmap>),
@@ -124,6 +195,9 @@ fn event_loop(
     let mut latest: Option<Bitmap> = None;
     let mut frames = 0u64;
     let mut status = String::from("waiting for the board");
+    // `None` means "pick whatever fits"; `b` pins it to braille.
+    let mut forced: Option<Mode> = None;
+    let mut redraw = true;
 
     loop {
         // Drain everything the board has said, then draw once. Drawing per
@@ -150,8 +224,9 @@ fn event_loop(
                 }
             }
         }
-        if dirty {
-            draw(out, latest.as_ref(), &logs, &status)?;
+        if dirty || redraw {
+            redraw = false;
+            draw(out, latest.as_ref(), &logs, &status, forced)?;
         }
 
         if event::poll(Duration::from_millis(30))? {
@@ -174,6 +249,13 @@ fn event_loop(
                         writeln!(writer, "BTN L")?;
                         writer.flush()?;
                     }
+                    KeyCode::Char('b') | KeyCode::Char('B') => {
+                        forced = match forced {
+                            Some(Mode::Braille) => None,
+                            _ => Some(Mode::Braille),
+                        };
+                        redraw = true;
+                    }
                     _ => {}
                 }
             }
@@ -181,39 +263,55 @@ fn event_loop(
     }
 }
 
-fn draw(out: &mut std::io::Stdout, bitmap: Option<&Bitmap>, logs: &VecDeque<String>, status: &str) -> Result<()> {
+fn draw(
+    out: &mut std::io::Stdout,
+    bitmap: Option<&Bitmap>,
+    logs: &VecDeque<String>,
+    status: &str,
+    forced: Option<Mode>,
+) -> Result<()> {
     execute!(out, terminal::Clear(terminal::ClearType::All), crossterm::cursor::MoveTo(0, 0))?;
     let (columns, _) = terminal::size().unwrap_or((80, 24));
+    let mut mode_note = "";
 
     match bitmap {
         Some(bitmap) => {
-            if u32::from(columns) < bitmap.width + 2 {
+            // Half blocks if they fit, braille if they do not. Chosen per draw
+            // rather than at start-up so resizing the window just works.
+            let mode = forced.unwrap_or({
+                if u32::from(columns) >= Mode::HalfBlocks.columns_for(bitmap.width) {
+                    Mode::HalfBlocks
+                } else {
+                    Mode::Braille
+                }
+            });
+            let lines = rows(bitmap, mode);
+            let inner = lines.first().map(|l| l.chars().count()).unwrap_or(0);
+            if u32::from(columns) < mode.columns_for(bitmap.width) {
                 writeln!(
                     out,
-                    "terminal is {columns} columns; the panel needs {}. Make the window wider or the font smaller.\r",
-                    bitmap.width + 2
+                    "terminal is {columns} columns; even braille needs {}. Make the window wider.\r",
+                    mode.columns_for(bitmap.width)
                 )?;
             } else {
-                writeln!(out, "┌{}┐\r", "─".repeat(bitmap.width as usize))?;
-                for pair in (0..bitmap.height).step_by(2) {
-                    let mut row = String::with_capacity(bitmap.width as usize);
-                    for x in 0..bitmap.width {
-                        row.push(match (bitmap.get(x, pair), bitmap.get(x, pair + 1)) {
-                            (true, true) => '█',
-                            (true, false) => '▀',
-                            (false, true) => '▄',
-                            (false, false) => ' ',
-                        });
-                    }
-                    writeln!(out, "│{row}│\r")?;
+                writeln!(out, "┌{}┐\r", "─".repeat(inner))?;
+                for line in &lines {
+                    writeln!(out, "│{line}│\r")?;
                 }
-                writeln!(out, "└{}┘\r", "─".repeat(bitmap.width as usize))?;
+                writeln!(out, "└{}┘\r", "─".repeat(inner))?;
             }
+            mode_note = match mode {
+                Mode::HalfBlocks => "half blocks",
+                Mode::Braille => "braille",
+            };
         }
         None => writeln!(out, "(no frame yet)\r")?,
     }
 
-    writeln!(out, "\r\n  {status}   ·   space = short press, L = long press, q = quit\r\n\r")?;
+    writeln!(
+        out,
+        "\r\n  {status}   ·   {mode_note}   ·   space = short, L = long, b = braille, q = quit\r\n\r"
+    )?;
     for line in logs {
         writeln!(out, "  {line}\r")?;
     }
@@ -273,19 +371,18 @@ fn demo() -> Result<()> {
     let line = frame::encode(&bitmap);
     println!("encoded frame is {} characters", line.len());
     let decoded = frame::decode(&line)?;
-    println!("┌{}┐", "─".repeat(width as usize));
-    for pair in (0..height).step_by(2) {
-        let mut row = String::new();
-        for x in 0..width {
-            row.push(match (decoded.get(x, pair), decoded.get(x, pair + 1)) {
-                (true, true) => '█',
-                (true, false) => '▀',
-                (false, true) => '▄',
-                (false, false) => ' ',
-            });
-        }
-        println!("│{row}│");
+    let (columns, _) = terminal::size().unwrap_or((80, 24));
+    let mode = if u32::from(columns) >= Mode::HalfBlocks.columns_for(width) {
+        Mode::HalfBlocks
+    } else {
+        Mode::Braille
+    };
+    let lines = rows(&decoded, mode);
+    let inner = lines.first().map(|l| l.chars().count()).unwrap_or(0);
+    println!("┌{}┐", "─".repeat(inner));
+    for line in &lines {
+        println!("│{line}│");
     }
-    println!("└{}┘", "─".repeat(width as usize));
+    println!("└{}┘", "─".repeat(inner));
     Ok(())
 }
