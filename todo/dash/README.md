@@ -54,6 +54,11 @@ on another car's engine it is some other quantity that will answer, and answer w
 plausible number. The danger has never been the refusal — it is the confident wrong
 value.
 
+> **Superseded in part, 2026-08-25.** The board on the bench is an **ESP32-C3 SuperMini**,
+> not the WROOM-32 described below. Wi-Fi AP, DHCP and a web server run on it today; the
+> measurements, the stack decision (`no_std`/esp-hal) and what it voids in `05` and `09`
+> are in [`10-c3-recon.md`](10-c3-recon.md).
+
 ## Hardware — all of it already on the bench (2026-08-20)
 
 Nothing to buy. Both boards are on hand and the second one turned out to carry the part
@@ -281,7 +286,7 @@ actually needs rather than guessed in advance.
 **Then:** `04` (alarms) → `05` (firmware), gated on `06`, the list of things only the car
 and the bench can answer.
 
-**Then:** `09` (the device as a wireless CANable over Bluetooth SPP) — nearly free, given
+**Then:** `09` (the device as a wireless CANable — **over Wi-Fi TCP, not Bluetooth SPP**; see `10`) — nearly free, given
 the board is the classic ESP32 and `vag-can`'s slcan backend is already stream-generic.
 
 **Deferred:** `07` (sleeping in the car) and `08` (power). One problem from two sides —
