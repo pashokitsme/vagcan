@@ -3,9 +3,28 @@ name = "bleecho"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "bleecho"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bleecho"
+path = "src/bin/bleecho.rs"
+
+[[bin]]
+name = "dashcfg"
+path = "src/bin/dashcfg.rs"
+
+[[bin]]
+name = "dashsim"
+path = "src/bin/dashsim.rs"
+
 [dependencies]
 anyhow = "1"
 btleplug = "0.11"
 futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
 uuid = "1"
+thiserror = "2"
+serialport = "4"
+crossterm = "0.28"

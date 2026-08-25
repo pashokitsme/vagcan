@@ -1,12 +1,21 @@
 [workspace]
 resolver = "2"
 members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-can", "crates/vag-dash", "crates/vagcan"]
-# Research tooling, deliberately not a member. `btleplug` needs CoreBluetooth on
-# macOS and dbus/BlueZ headers on Linux; as a member it would put those on the
-# critical path of `cargo build --workspace` and of CI, for a tool the product
-# does not link. Build it explicitly: `cargo build --manifest-path
-# research/dash/bleecho/Cargo.toml`.
-exclude = ["research/dash/bleecho"]
+# Research tooling and firmware, deliberately not members.
+#
+# `bleecho` links `btleplug`, which needs CoreBluetooth on macOS and dbus/BlueZ
+# headers on Linux; as a member it would put those on the critical path of
+# `cargo build --workspace` and of CI, for a tool the product does not link.
+#
+# `fw` and `wifi` are `no_std` firmware for `riscv32imc-unknown-none-elf`, each
+# with its own `.cargo/config.toml` pinning that target and `build-std`. As
+# members they would not compile for the host at all.
+#
+# Build any of them **from its own directory**. `--manifest-path` alone is not
+# enough for the firmware: cargo discovers `.cargo/config.toml` from the working
+# directory, so building it from the repository root silently targets the host
+# and fails deep inside `portable-atomic`.
+exclude = ["research/dash/bleecho", "research/dash/fw", "research/dash/wifi"]
 
 [workspace.package]
 edition = "2024"

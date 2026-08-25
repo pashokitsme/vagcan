@@ -1,0 +1,89 @@
+[package]
+edition      = "2021"
+name         = "ble"
+rust-version = "1.86"
+version      = "0.1.0"
+
+[[bin]]
+name = "peri"
+path = "./src/bin/peri.rs"
+
+[[bin]]
+name = "scan"
+path = "./src/bin/scan.rs"
+
+[dependencies]
+esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
+esp-hal = { version = "=1.0.0-rc.0", features = [
+  "esp32c3",
+  "log-04",
+  "unstable",
+] }
+log = "0.4.27"
+
+bt-hci = { version = "0.3.2", features = [] }
+critical-section = "1.2.0"
+embassy-executor = { version = "0.7.0", features = [
+  "log",
+  "task-arena-size-20480",
+] }
+embassy-time = { version = "0.4.0", features = ["log"] }
+embedded-io = "0.6.1"
+embedded-io-async = "0.6.1"
+esp-alloc = { version = "0.8.0", features = ["internal-heap-stats"] }
+# 0.7 is the last release with no `esp-hal` dependency of its own; 0.8+ wants
+# esp-hal 1.0.0-rc.1 and we are on rc.0.
+esp-storage = { version = "0.7.0", features = ["esp32c3"] }
+embedded-storage = "0.3.1"
+# The real panel renderer, out of the workspace next door. Not a copy and not a
+# mock: what the board draws is what `vagcan dash` draws, which is the entire
+# point of the seam `02` describes.
+vag-dash = { path = "../../../crates/vag-dash" }
+embedded-graphics = "0.8"
+crc = "3"
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = "1"
+esp-backtrace = { version = "0.17.0", features = [
+  "esp32c3",
+  "exception-handler",
+  "panic-handler",
+  "println",
+] }
+esp-hal-embassy = { version = "0.9.0", features = ["esp32c3", "log-04"] }
+esp-println = { version = "0.15.0", features = ["esp32c3", "log-04"] }
+esp-wifi = { version = "0.15.0", features = [
+  "ble",
+  "builtin-scheduler",
+  "esp-alloc",
+  "esp32c3",
+  "log-04",
+] }
+static_cell = "2.1.1"
+trouble-host = { version = "0.2.4", features = [
+  "gatt",
+  "peripheral",
+  "central",
+  "scan",
+  "derive",
+  "default-packet-pool",
+  "default-packet-pool-mtu-255",
+  "log",
+] }
+embassy-futures = "0.1.1"
+embassy-sync = "0.7.2"
+heapless = { version = "0.8.0", features = ["serde"] }
+
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
+debug-assertions = false
+incremental      = false
+lto              = 'fat'
+opt-level        = 's'
+overflow-checks  = false
