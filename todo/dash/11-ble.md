@@ -182,24 +182,27 @@ address, or the code works everywhere except on the machine it is being written 
 
 - **Framing** over NUS: 244-byte frames, a header carrying kind and frame *n* of *m*, a
   CRC over the whole blob. Reliability and ordering come from `write with response`.
-- **Persistence on the device.** A configuration that does not survive the ignition being
-  switched off is not a configuration. On `no_std` that is `esp-storage` with something
-  like `sequential-storage` on top. **Nothing here has been touched yet, and it is the
-  real gap.**
-- **The boundary from `SAFETY.md`.** "What to display" is a choice of channels, and `05`
-  already drew this line for the Wi-Fi portal: run-time settings — brightness, buzzer,
-  thresholds, layout — are configuration; the *set of identifiers read* arrives as a plan
-  built on the laptop, where the catalogs are. An interface that lets a number be typed
-  in and asked of the car is a sweep with a form in front of it. The protocol should make
-  that inexpressible rather than merely refuse it.
+- **Persistence on the device** — **done 2026-08-25**, in [`12-settings.md`](12-settings.md):
+  a `config` partition found by label at run time, two slots with a generation counter and
+  a CRC, verified to survive both a reset and a firmware reflash.
+- **No safety boundary is needed here**, and an earlier draft of this document wrongly
+  claimed one. The catalogs are *flashed*, as a firmware built for one car — the board
+  decodes nothing and has nowhere near the resources to. Configuration therefore selects
+  **among what is already in the image**: which pages exist, what each shows, brightness
+  and the like. A page cell is an index into the baked-in plan, so a forty-first
+  identifier is not refused, it is unsayable. That is `README.md`'s "the device resolves
+  nothing, it executes a plan" doing its job, and nothing needs to be added on top.
 
 ## Still unverified
 
 - **The central role** — `scan` is built but not flashed, because the board can hold one
   firmware and `peri` is the one being used.
 - **Bonding and encryption.** `trouble-host` has a `security` feature (LE Secure
-  Connections, P-256, AES-CMAC). Untouched. Whether the configuration link needs it is a
-  question about who can be within ten metres of a parked car.
+  Connections, P-256, AES-CMAC). Untouched, and **not planned**: the configuration client
+  is a program of ours — a TUI first, a phone application only if it turns out to be
+  wanted — so there is no pairing dialogue in anyone's operating system to satisfy. What
+  a parked car within ten metres of a stranger warrants is a separate question, and it is
+  about the protocol rather than about bonding.
 - **Power.** Nothing measured yet in any mode. `08` wants the whole device under about
   1 mA asleep, and the interesting comparison — Wi-Fi AP against BLE advertising against
   deep sleep — is exactly the argument for using BLE for configuration rather than
