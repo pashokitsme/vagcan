@@ -115,8 +115,45 @@ With no ULP the divider does **not** consume a wake slot: nothing can read it wh
 asleep, so `GPIO4` is an ordinary ADC input that happens to sit on an RTC pad.
 
 And the board's BOOT button on `GPIO9` **cannot** be a wake source — not an RTC pin — and
-held low at reset it boots the USB loader instead of the firmware. Until a wire reaches
-`GPIO5`, only timer wake is testable.
+held low at reset it boots the USB loader instead of the firmware.
+
+### Both wake sources verified on hardware, 2026-08-26
+
+No wire and no soldering: `GPIO5` is held high by the chip's own pull-up and wakes on
+`Low`, so a press is a short to ground and a pair of tweezers is a good enough button.
+
+```
+GPIO5 shorted to ground   → wake reason = pin level
+nothing touching it       → wake reason = RTC timer
+```
+
+The second line is the half worth stating: across the whole run there was **not one
+spurious wake**, which is what says the internal pull-up is enough and no external
+resistor is owed. A floating RTC pin would have woken the device on stray charge.
+
+`sleeptest` also flashes the reason on the board's LED before it prints anything — one
+long flash for a cold boot, one short for the timer, three short for the button. That is
+not decoration: see the next paragraph.
+
+### Deep sleep makes the board invisible to its own console
+
+The USB Serial/JTAG peripheral powers down with everything else, so the host un-enumerates
+the device and takes a second or two to bring it back. Anything printed in that window is
+written into a port nobody is holding open — so **every wake looked like a cold boot**,
+because the only line you ever catch is the next one. A 1.2 s delay before printing was
+not enough either; the reason is now printed once a second for the whole awake window.
+
+Two more that only appear with a board attached:
+
+- **`espflash` cannot catch a sleeping board.** It took six attempts to hit a five-second
+  awake window. Flashing a device that sleeps wants a long awake window or the BOOT-hold
+  replug.
+- **Reading that port with `head` loses everything.** stdio buffers into a file and the
+  buffer dies with the process, so the log looks empty while the firmware is talking
+  normally. `dd bs=1` sees it. This cost an hour of believing the wrong thing.
+
+A bench that watches sleep closely wants a USB-serial adapter on UART0 (`GPIO20`/`GPIO21`,
+free — the console is on native USB): a separate chip stays enumerated across the sleep.
 
 ### Two more things the source says, both load-bearing
 

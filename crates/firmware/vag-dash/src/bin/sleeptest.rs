@@ -50,6 +50,7 @@ use core::time::Duration;
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::delay::Delay;
+use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::rtc_cntl::Rtc;
 use esp_println::println;
 use vag_dash_fw::sleep::{self, RAIL_SENSE_GPIO, WAKE_BUTTON_GPIO};
@@ -64,6 +65,31 @@ const AWAKE_SECS: u32 = 5;
 /// enough to watch several cycles in a minute.
 const SLEEP_SECS: u64 = 10;
 
+/// Say why we woke in flashes, before saying it in words.
+///
+/// The words are unreliable at exactly this moment and the light is not: deep
+/// sleep powers the USB peripheral down, so for a second or two after a wake
+/// there is no console to print to. The LED is lit by the time the host has
+/// noticed the device is back.
+///
+/// One long flash is a cold boot, one short is the timer, three short is the
+/// button — the last deliberately the most distinctive, because it is the one
+/// a person causes on purpose and wants confirmed.
+fn signal(led: &mut Output<'_>, delay: &Delay, woke: sleep::Wake) {
+	let (count, on_ms, off_ms) = match woke {
+		sleep::Wake::ColdBoot => (1, 600, 200),
+		sleep::Wake::Timer => (1, 80, 200),
+		sleep::Wake::Pin => (3, 80, 120),
+		sleep::Wake::Unexpected => (8, 40, 40),
+	};
+	for _ in 0..count {
+		led.set_low();
+		delay.delay_millis(on_ms);
+		led.set_high();
+		delay.delay_millis(off_ms);
+	}
+}
+
 #[esp_hal::main]
 fn main() -> ! {
 	let peripherals = esp_hal::init(esp_hal::Config::default());
@@ -72,15 +98,13 @@ fn main() -> ! {
 
 	let woke = sleep::wake_reason();
 
-	// Said twice, a second apart, and the delay is the point. Deep sleep powers
-	// the USB Serial/JTAG peripheral down, so the host un-enumerates the device
-	// and re-enumerates it on wake — which takes long enough that the first
-	// line after a wake is written into a port nobody is holding open yet.
-	// Measured: the banner below is invisible without this, and every wake
-	// looks like a cold boot because the only line you catch is the next one.
-	//
-	// The real fix for a bench that watches sleep closely is a USB-serial
-	// adapter on UART0, which stays enumerated because it is a separate chip.
+	// The board's own LED sinks through GPIO8, so `High` is dark. Flashed
+	// before anything is printed, because at this moment the light works and
+	// the console does not — and because a person watching the board should
+	// not need a terminal to see that it woke, or why.
+	let mut led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
+	signal(&mut led, &delay, woke);
+
 	println!();
 	println!("sleeptest: wake button on GPIO{WAKE_BUTTON_GPIO}, rail divider on GPIO{RAIL_SENSE_GPIO}");
 	println!("sleeptest: short GPIO{WAKE_BUTTON_GPIO} to ground to wake early — it is pulled up inside the chip");
