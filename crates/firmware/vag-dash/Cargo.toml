@@ -43,10 +43,14 @@ embedded-graphics = "0.8"
 crc = "3"
 serde = { version = "1", default-features = false, features = ["derive"] }
 postcard = "1"
+# No `panic-handler`: `src/health.rs` defines that one, so a panic message can
+# reach flash before the board halts. Nothing is lost on the console — it prints
+# the same banner and the same `Backtrace::capture()` frames — and the
+# `exception-handler` half, which catches stack overflows and illegal
+# instructions, is still esp-backtrace's.
 esp-backtrace = { version = "0.17.0", features = [
   "esp32c3",
   "exception-handler",
-  "panic-handler",
   "println",
 ] }
 esp-hal-embassy = { version = "0.9.0", features = ["esp32c3", "log-04"] }

@@ -201,6 +201,10 @@ async fn main(spawner: Spawner) {
     let timer0 = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
 
+    // Reset reason, last panic, watchdog — armed here, before the radio, so a
+    // hang during start-up reboots too. See `health.rs`.
+    vag_dash_fw::health::init(spawner);
+
     let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
     // GPIO9 is the SuperMini's BOOT button: a real button, already fitted, so
     // the whole interaction can be proven before anything is wired. On the
