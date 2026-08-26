@@ -1,5 +1,7 @@
 use crate::dtc::RawDtc;
 use crate::pdu::{self, Classified, MAX_PENDING, RESPONSE_TIMEOUT};
+use alloc::string::String;
+use alloc::vec::Vec;
 use vag_transport::{IsoTpTransport, TransportError};
 
 #[derive(thiserror::Error, Debug)]
@@ -64,8 +66,8 @@ impl<C: IsoTpTransport> UdsClient<C> {
 mod tests {
 	use super::*;
 	use crate::dtc::RawDtc;
+	use core::time::Duration;
 	use std::collections::VecDeque;
-	use std::time::Duration;
 
 	/// Mock IsoTp channel: canned responses, records sent PDUs.
 	struct MockChannel {

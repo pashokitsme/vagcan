@@ -1,7 +1,9 @@
 //! Transport-agnostic UDS PDU encoding/decoding shared by the sync and async
 //! clients. Pure functions over byte slices — no I/O, no timing.
 
-use std::time::Duration;
+use alloc::format;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use crate::dtc::{DtcExtendedData, DtcSnapshot, RawDtc};
 use crate::uds::UdsError;

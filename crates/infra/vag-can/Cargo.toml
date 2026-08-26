@@ -5,15 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-vag-transport = { path = "../vag-transport" }
+vag-transport = { path = "../vag-transport", default-features = false }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "io-util"] }
+# The async runtime on the host: `slcan.rs`, `sniff.rs` and the `std` half of
+# `time.rs`. Optional, because none of it exists on the board.
+tokio = { workspace = true, features = ["time", "io-util"], optional = true }
 # Serial port access for the slcan backend constructor only; the codec and the
 # stream-generic backend build (and are tested) without it.
 tokio-serial = { version = "5.4", optional = true }
+# The board's clock — the `not(std)` half of `time.rs`. NOT optional, and it
+# cannot be: cargo has no "enable this dependency when a feature is *off*", and
+# `--no-default-features` has to compile on its own. The cost is one crate in
+# the host build that nothing calls; with no tick-rate or driver feature
+# selected it is a handful of `Instant`/`Duration` newtypes over extern symbols
+# that the host link never reaches.
+embassy-time = "0.4"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
+# `test-util` gives the time-abstraction tests a paused clock.
+tokio = { workspace = true, features = ["rt", "macros", "time", "io-util", "test-util"] }
 
 # The bench bring-up probe talks to a real serial port; without the feature it
 # would fail to build when the crate is tested on its own.
@@ -22,6 +32,13 @@ name = "slcan_probe"
 required-features = ["slcan"]
 
 [features]
+default = ["std"]
+# The host build. With `--no-default-features` the crate is `no_std` + `alloc`
+# and keeps exactly what the ESP32-C3 firmware links: `backend.rs` (the
+# `CanBackend` seam) and `isotp.rs` (async ISO-TP with flow control, block size,
+# STmin and reassembly). `slcan.rs` and `sniff.rs` drop out — they are
+# tokio-serial and a `HashMap` of bus traffic, neither of which the board has.
+std = ["dep:tokio", "thiserror/std", "vag-transport/std"]
 # Enables `SlcanBackend::open()` over a real serial port (LAWICEL USB-CAN
 # adapter). Off by default so the workspace builds with no serial dependency.
-slcan = ["dep:tokio-serial"]
+slcan = ["std", "dep:tokio-serial"]

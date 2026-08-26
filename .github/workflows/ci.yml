@@ -66,6 +66,38 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+  no-std:
+    name: no-std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The board's target. Checking against it, rather than against the
+          # host with `no_std` merely *declared*, is what makes the job honest:
+          # on the host `std` is still linkable and a stray `std::` path can
+          # slip through.
+          targets: riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+      # Three crates carry a default `std` feature; without it they are
+      # `no_std` + `alloc` and the ESP32-C3 firmware links them. Nothing else in
+      # CI sees that configuration — `cargo test`, `cargo clippy` and
+      # rust-analyzer all use default features — so without this job the board
+      # build rots the moment somebody writes `std::` in vag-protocol.
+      #
+      # The firmware itself is not built here: it is outside the workspace, with
+      # its own toolchain file and `.cargo/config.toml`, and building it needs
+      # the ESP bootloader crates. These checks cover the part that the rest of
+      # CI can break.
+      - name: cargo check --no-default-features (vag-transport)
+        run: cargo check -p vag-transport --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-protocol)
+        run: cargo check -p vag-protocol --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-can)
+        run: cargo check -p vag-can --no-default-features --target riscv32imc-unknown-none-elf
+
   dead-code:
     name: dead-code
     runs-on: ubuntu-latest

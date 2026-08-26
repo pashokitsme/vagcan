@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+pub mod can;
 pub mod config;
 pub mod panel;
 pub mod store;

@@ -1,5 +1,26 @@
 use crate::{CanFrame, TransportError};
-use std::time::Duration;
+use alloc::vec::Vec;
+use core::time::Duration;
+
+/// `Send` where `Send` means something, and nothing where it does not.
+///
+/// The host runs these transports under tokio, which may move a task between
+/// worker threads, so a backend there has to be [`Send`]. The board runs them
+/// under embassy on one core, and esp-hal's async drivers are deliberately
+/// **not** `Send` — an async peripheral is tied to the core whose interrupt
+/// handler wakes it, and the type system is where that is enforced.
+///
+/// So the bound is a feature of the platform, not of the protocol. Under
+/// `std` this is exactly `Send`; without it, it is satisfied by everything.
+#[cfg(feature = "std")]
+pub trait MaybeSend: Send {}
+#[cfg(feature = "std")]
+impl<T: Send + ?Sized> MaybeSend for T {}
+
+#[cfg(not(feature = "std"))]
+pub trait MaybeSend {}
+#[cfg(not(feature = "std"))]
+impl<T: ?Sized> MaybeSend for T {}
 
 /// Raw CAN frame I/O. Implemented by real adapters and by mocks.
 pub trait RawCanTransport {
@@ -25,7 +46,7 @@ pub trait IsoTpTransport {
 // the returned futures; the auto "async fn in public trait" lint is not useful
 // at this seam.
 #[allow(async_fn_in_trait)]
-pub trait AsyncIsoTpTransport: Send {
+pub trait AsyncIsoTpTransport: MaybeSend {
 	/// Send one whole ISO-TP PDU.
 	async fn send(&mut self, pdu: &[u8]) -> Result<(), TransportError>;
 	/// Receive one whole ISO-TP PDU, waiting at most `timeout`.
