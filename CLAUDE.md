@@ -97,7 +97,7 @@ Goal, tech stack, architecture, and development workflow live in
 TL;DR: read the whole car over CAN with measurement scalings proven live on the car and
 names from VW's own label files, on **tokio / edition 2024**, macOS M4, TDD with hardware
 checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-can`); the HEX
-clone is dead — crate and driver deleted, research archived under `archive/research/`.
+clone is dead — crate and driver deleted, research archived under `.archive/research/`.
 `vagcan info` works on the real car. Details in `todo/GOAL.md`.
 
 ## Project structure
@@ -187,5 +187,5 @@ pipeline, the catalog schema, the crate layout.
   (e.g. init handshake works; VIN read works), STOP and ask the user to verify on
   hardware before continuing.
 - **Task tracking:** active tasks live in `todo/<subsystem>/<task>.md`; when a
-  task is done+reviewed+merged, move its file to `archive/tasks/done/<subsystem>/<task>.md`
+  task is done+reviewed+merged, move its file to `.archive/tasks/done/<subsystem>/<task>.md`
   (preserve the subsystem subdir). Each subsystem dir may carry a short `README.md`.
