@@ -94,8 +94,9 @@
 //! bound on what the chip can do, not the floor.
 
 use core::time::Duration;
-use esp_hal::rtc_cntl::sleep::TimerWakeupSource;
+use esp_hal::gpio::RtcPinWithResistors;
 use esp_hal::rtc_cntl::Rtc;
+use esp_hal::rtc_cntl::sleep::{RtcioWakeupSource, TimerWakeupSource, WakeupLevel};
 use esp_hal::system::SleepSource;
 
 /// The pin the wake button must be wired to. Nothing on the board reaches it
@@ -111,30 +112,30 @@ pub const RAIL_SENSE_GPIO: u8 = 4;
 /// one is reported rather than swallowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
-    /// Not a wake at all — power-on, a reset button, a flash. The last sleep,
-    /// if there was one, is not what started this run.
-    ColdBoot,
-    /// The RTC timer expired.
-    Timer,
-    /// A level on an RTC pin. Unreachable today: no pin wake source is
-    /// registered, because no pin is wired.
-    Pin,
-    /// Something the C3 is not documented to do from deep sleep. Worth a log
-    /// line if it is ever seen.
-    Unexpected,
+	/// Not a wake at all — power-on, a reset button, a flash. The last sleep,
+	/// if there was one, is not what started this run.
+	ColdBoot,
+	/// The RTC timer expired.
+	Timer,
+	/// A level on an RTC pin. Unreachable today: no pin wake source is
+	/// registered, because no pin is wired.
+	Pin,
+	/// Something the C3 is not documented to do from deep sleep. Worth a log
+	/// line if it is ever seen.
+	Unexpected,
 }
 
 impl Wake {
-    /// A word for the log. `Debug` would do, but this is the one thing a
-    /// person watching a serial port reads, so it is spelled out.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Wake::ColdBoot => "cold boot",
-            Wake::Timer => "RTC timer",
-            Wake::Pin => "pin level",
-            Wake::Unexpected => "unexpected",
-        }
-    }
+	/// A word for the log. `Debug` would do, but this is the one thing a
+	/// person watching a serial port reads, so it is spelled out.
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Wake::ColdBoot => "cold boot",
+			Wake::Timer => "RTC timer",
+			Wake::Pin => "pin level",
+			Wake::Unexpected => "unexpected",
+		}
+	}
 }
 
 /// What started this run.
@@ -143,14 +144,14 @@ impl Wake {
 /// reason was not `CoreDeepSleep`, which is exactly "we did not get here by
 /// waking up".
 pub fn wake_reason() -> Wake {
-    match esp_hal::system::wakeup_cause() {
-        SleepSource::Undefined => Wake::ColdBoot,
-        SleepSource::Timer => Wake::Timer,
-        // On the C3 an RTC-IO level wake is reported as `Gpio`; `Ext0`/`Ext1`
-        // do not exist on this part.
-        SleepSource::Gpio => Wake::Pin,
-        _ => Wake::Unexpected,
-    }
+	match esp_hal::system::wakeup_cause() {
+		SleepSource::Undefined => Wake::ColdBoot,
+		SleepSource::Timer => Wake::Timer,
+		// On the C3 an RTC-IO level wake is reported as `Gpio`; `Ext0`/`Ext1`
+		// do not exist on this part.
+		SleepSource::Gpio => Wake::Pin,
+		_ => Wake::Unexpected,
+	}
 }
 
 /// The idle backstop: fifteen minutes with nothing happening and the device
@@ -177,11 +178,11 @@ pub const IGNITION_LOST_MS: u64 = 5_000;
 /// they differ only in what a log line should say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepReason {
-    /// The bus stopped saying the ignition was on, and stayed stopped long
-    /// enough to be believed.
-    IgnitionOff,
-    /// Nothing happened for [`IDLE_TIMEOUT_MS`].
-    Idle,
+	/// The bus stopped saying the ignition was on, and stayed stopped long
+	/// enough to be believed.
+	IgnitionOff,
+	/// Nothing happened for [`IDLE_TIMEOUT_MS`].
+	Idle,
 }
 
 /// The decision to sleep, as a state machine over a clock.
@@ -196,53 +197,53 @@ pub enum SleepReason {
 /// is a positive statement from the bus, or a timer, and the absence of the
 /// method is the enforcement.
 pub struct Awake {
-    /// When anything last happened that should keep the panel up.
-    last_activity_ms: u64,
-    /// When the ignition frame was last seen, if it ever was.
-    last_ignition_ms: Option<u64>,
+	/// When anything last happened that should keep the panel up.
+	last_activity_ms: u64,
+	/// When the ignition frame was last seen, if it ever was.
+	last_ignition_ms: Option<u64>,
 }
 
 impl Awake {
-    /// Start the clock. `now_ms` is whatever monotonic millisecond count the
-    /// caller uses; only differences matter.
-    pub const fn new(now_ms: u64) -> Self {
-        Self {
-            last_activity_ms: now_ms,
-            last_ignition_ms: None,
-        }
-    }
+	/// Start the clock. `now_ms` is whatever monotonic millisecond count the
+	/// caller uses; only differences matter.
+	pub const fn new(now_ms: u64) -> Self {
+		Self {
+			last_activity_ms: now_ms,
+			last_ignition_ms: None,
+		}
+	}
 
-    /// The cyclic frame that says the ignition is on was received (`06` §7).
-    ///
-    /// It counts as activity too, so the backstop cannot fire under a running
-    /// ignition.
-    pub fn saw_ignition(&mut self, now_ms: u64) {
-        self.last_ignition_ms = Some(now_ms);
-        self.last_activity_ms = now_ms;
-    }
+	/// The cyclic frame that says the ignition is on was received (`06` §7).
+	///
+	/// It counts as activity too, so the backstop cannot fire under a running
+	/// ignition.
+	pub fn saw_ignition(&mut self, now_ms: u64) {
+		self.last_ignition_ms = Some(now_ms);
+		self.last_activity_ms = now_ms;
+	}
 
-    /// Somebody pressed the button, or a page changed — anything that means a
-    /// person is present. Defers the backstop and nothing else.
-    ///
-    /// A BLE client merely being connected is **not** activity. A phone left
-    /// paired in a parked car would otherwise hold the device up all night,
-    /// which is the exact bill this module exists to avoid.
-    pub fn saw_activity(&mut self, now_ms: u64) {
-        self.last_activity_ms = now_ms;
-    }
+	/// Somebody pressed the button, or a page changed — anything that means a
+	/// person is present. Defers the backstop and nothing else.
+	///
+	/// A BLE client merely being connected is **not** activity. A phone left
+	/// paired in a parked car would otherwise hold the device up all night,
+	/// which is the exact bill this module exists to avoid.
+	pub fn saw_activity(&mut self, now_ms: u64) {
+		self.last_activity_ms = now_ms;
+	}
 
-    /// Ask whether it is time to go down. `None` means stay up.
-    pub fn poll(&self, now_ms: u64) -> Option<SleepReason> {
-        if let Some(seen) = self.last_ignition_ms {
-            if now_ms.saturating_sub(seen) >= IGNITION_LOST_MS {
-                return Some(SleepReason::IgnitionOff);
-            }
-        }
-        if now_ms.saturating_sub(self.last_activity_ms) >= IDLE_TIMEOUT_MS {
-            return Some(SleepReason::Idle);
-        }
-        None
-    }
+	/// Ask whether it is time to go down. `None` means stay up.
+	pub fn poll(&self, now_ms: u64) -> Option<SleepReason> {
+		if let Some(seen) = self.last_ignition_ms {
+			if now_ms.saturating_sub(seen) >= IGNITION_LOST_MS {
+				return Some(SleepReason::IgnitionOff);
+			}
+		}
+		if now_ms.saturating_sub(self.last_activity_ms) >= IDLE_TIMEOUT_MS {
+			return Some(SleepReason::Idle);
+		}
+		None
+	}
 }
 
 /// Enter deep sleep, waking after `wake_after`. Does not return: the chip comes
@@ -272,6 +273,35 @@ impl Awake {
 /// mean inventing hardware that has not been built. It is a checklist for the
 /// caller.
 pub fn deep_sleep(rtc: &mut Rtc<'_>, wake_after: Duration) -> ! {
-    let timer = TimerWakeupSource::new(wake_after);
-    rtc.sleep_deep(&[&timer])
+	let timer = TimerWakeupSource::new(wake_after);
+	rtc.sleep_deep(&[&timer])
+}
+
+/// Sleep until the timer expires **or** the button is pressed.
+///
+/// The button is an RTC pin held high by its internal pull-up, and the wake is
+/// on `Low` — so a press is a short to ground and needs no external resistor.
+/// That also means it can be tested before anything is soldered: touch the pin
+/// to a ground pad and the chip comes back.
+///
+/// Only `GPIO0`–`GPIO5` can do this. The board's own BOOT button is on
+/// `GPIO9`, which is not an RTC pin and therefore cannot wake the chip at all;
+/// it is also the strapping pin that boots the USB loader when held low at
+/// reset, so it is the wrong pin twice over.
+///
+/// There is a second reason to prefer this over the timer alone, and it is
+/// about current rather than convenience: esp-hal isolates the digital pads
+/// only from `RtcioWakeupSource::apply`. With a timer-only sleep they are left
+/// as they are and the floor is higher — so a figure measured without a pin
+/// wake source is an upper bound, not the number this design will land on.
+pub fn deep_sleep_with_button(rtc: &mut Rtc<'_>, wake_after: Duration, button: &mut dyn RtcPinWithResistors) -> ! {
+	// Held high while nothing is pressing it, so the pin does not float and
+	// wake the device on stray charge the moment the drivers stop.
+	button.rtcio_pullup(true);
+	button.rtcio_pulldown(false);
+
+	let timer = TimerWakeupSource::new(wake_after);
+	let mut pins: [(&mut dyn RtcPinWithResistors, WakeupLevel); 1] = [(button, WakeupLevel::Low)];
+	let pin_wake = RtcioWakeupSource::new(&mut pins);
+	rtc.sleep_deep(&[&timer, &pin_wake])
 }

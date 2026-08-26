@@ -25,97 +25,97 @@ const BYTES: usize = WIDTH * HEIGHT / 8;
 /// this is the one large buffer in the firmware and it must not come from the
 /// heap, which is reserved for the radio.
 pub struct Framebuffer {
-    bits: [u8; BYTES],
+	bits: [u8; BYTES],
 }
 
 impl Framebuffer {
-    pub const fn new() -> Self {
-        Self { bits: [0; BYTES] }
-    }
+	pub const fn new() -> Self {
+		Self { bits: [0; BYTES] }
+	}
 
-    pub fn clear_all(&mut self) {
-        self.bits = [0; BYTES];
-    }
+	pub fn clear_all(&mut self) {
+		self.bits = [0; BYTES];
+	}
 
-    pub fn get(&self, x: usize, y: usize) -> bool {
-        let index = y * WIDTH + x;
-        self.bits[index / 8] & (0x80 >> (index % 8)) != 0
-    }
+	pub fn get(&self, x: usize, y: usize) -> bool {
+		let index = y * WIDTH + x;
+		self.bits[index / 8] & (0x80 >> (index % 8)) != 0
+	}
 
-    fn set(&mut self, x: usize, y: usize, lit: bool) {
-        let index = y * WIDTH + x;
-        let mask = 0x80 >> (index % 8);
-        if lit {
-            self.bits[index / 8] |= mask;
-        } else {
-            self.bits[index / 8] &= !mask;
-        }
-    }
+	fn set(&mut self, x: usize, y: usize, lit: bool) {
+		let index = y * WIDTH + x;
+		let mask = 0x80 >> (index % 8);
+		if lit {
+			self.bits[index / 8] |= mask;
+		} else {
+			self.bits[index / 8] &= !mask;
+		}
+	}
 
-    /// Writes one `FRAME` line: a run-length encoding of the pixels, starting
-    /// with unlit, two hex digits per run.
-    ///
-    /// A run longer than 255 is split by emitting `ff` then an empty run `00`
-    /// of the other colour. That costs two characters and keeps the decoder on
-    /// the other side trivial — and `research/dash/bleecho/src/frame.rs` holds
-    /// the matching decoder plus the round-trip tests that say the two agree.
-    pub fn write_frame(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
-        write!(out, "FRAME {WIDTH} {HEIGHT} ")?;
-        let mut lit = false;
-        let mut run: u32 = 0;
-        for index in 0..WIDTH * HEIGHT {
-            let pixel = self.bits[index / 8] & (0x80 >> (index % 8)) != 0;
-            if pixel == lit && run < 255 {
-                run += 1;
-            } else {
-                write!(out, "{run:02x}")?;
-                if pixel == lit {
-                    write!(out, "00")?;
-                } else {
-                    lit = pixel;
-                }
-                run = 1;
-            }
-        }
-        write!(out, "{run:02x}")
-    }
+	/// Writes one `FRAME` line: a run-length encoding of the pixels, starting
+	/// with unlit, two hex digits per run.
+	///
+	/// A run longer than 255 is split by emitting `ff` then an empty run `00`
+	/// of the other colour. That costs two characters and keeps the decoder on
+	/// the other side trivial — and `research/dash/bleecho/src/frame.rs` holds
+	/// the matching decoder plus the round-trip tests that say the two agree.
+	pub fn write_frame(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
+		write!(out, "FRAME {WIDTH} {HEIGHT} ")?;
+		let mut lit = false;
+		let mut run: u32 = 0;
+		for index in 0..WIDTH * HEIGHT {
+			let pixel = self.bits[index / 8] & (0x80 >> (index % 8)) != 0;
+			if pixel == lit && run < 255 {
+				run += 1;
+			} else {
+				write!(out, "{run:02x}")?;
+				if pixel == lit {
+					write!(out, "00")?;
+				} else {
+					lit = pixel;
+				}
+				run = 1;
+			}
+		}
+		write!(out, "{run:02x}")
+	}
 }
 
 impl Default for Framebuffer {
-    fn default() -> Self {
-        Self::new()
-    }
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl Dimensions for Framebuffer {
-    fn bounding_box(&self) -> Rectangle {
-        // `vag_panel::render` reads the panel size from here rather than from a
-        // constant, which is what lets the same code draw 256×32 and 256×64.
-        Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32))
-    }
+	fn bounding_box(&self) -> Rectangle {
+		// `vag_panel::render` reads the panel size from here rather than from a
+		// constant, which is what lets the same code draw 256×32 and 256×64.
+		Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32))
+	}
 }
 
 impl DrawTarget for Framebuffer {
-    type Color = BinaryColor;
-    type Error = Infallible;
+	type Color = BinaryColor;
+	type Error = Infallible;
 
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(point, colour) in pixels {
-            // Out of bounds is silently dropped, as `DrawTarget` requires:
-            // clipping is the target's job, and a renderer that had to bounds
-            // check every glyph would be the wrong shape.
-            if (0..WIDTH as i32).contains(&point.x) && (0..HEIGHT as i32).contains(&point.y) {
-                self.set(point.x as usize, point.y as usize, colour.is_on());
-            }
-        }
-        Ok(())
-    }
+	fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+	where
+		I: IntoIterator<Item = Pixel<Self::Color>>,
+	{
+		for Pixel(point, colour) in pixels {
+			// Out of bounds is silently dropped, as `DrawTarget` requires:
+			// clipping is the target's job, and a renderer that had to bounds
+			// check every glyph would be the wrong shape.
+			if (0..WIDTH as i32).contains(&point.x) && (0..HEIGHT as i32).contains(&point.y) {
+				self.set(point.x as usize, point.y as usize, colour.is_on());
+			}
+		}
+		Ok(())
+	}
 
-    fn clear(&mut self, colour: Self::Color) -> Result<(), Self::Error> {
-        self.bits = [if colour.is_on() { 0xff } else { 0x00 }; BYTES];
-        Ok(())
-    }
+	fn clear(&mut self, colour: Self::Color) -> Result<(), Self::Error> {
+		self.bits = [if colour.is_on() { 0xff } else { 0x00 }; BYTES];
+		Ok(())
+	}
 }

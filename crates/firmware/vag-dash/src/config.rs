@@ -22,73 +22,73 @@ pub const SCHEMA_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageKind {
-    /// One channel, large, with a sparkline.
-    Chart,
-    /// Up to four columns: small label over a large number.
-    Values,
+	/// One channel, large, with a sparkline.
+	Chart,
+	/// Up to four columns: small label over a large number.
+	Values,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page {
-    pub kind: PageKind,
-    /// Indices into the flashed plan. Not identifiers — indices.
-    pub cells: heapless::Vec<u16, MAX_CELLS>,
+	pub kind: PageKind,
+	/// Indices into the flashed plan. Not identifiers — indices.
+	pub cells: heapless::Vec<u16, MAX_CELLS>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
-    /// 0..=255, straight to the panel's contrast register.
-    pub brightness: u8,
-    /// Which page is showing when the device wakes up.
-    pub active_page: u8,
-    pub pages: heapless::Vec<Page, MAX_PAGES>,
+	/// 0..=255, straight to the panel's contrast register.
+	pub brightness: u8,
+	/// Which page is showing when the device wakes up.
+	pub active_page: u8,
+	pub pages: heapless::Vec<Page, MAX_PAGES>,
 }
 
 impl Default for Config {
-    /// What a device with nothing stored shows. Deliberately not empty: a
-    /// panel that boots blank because its settings were never written looks
-    /// broken, and "looks broken" is indistinguishable from "is broken".
-    fn default() -> Self {
-        let mut pages = heapless::Vec::new();
-        let mut cells = heapless::Vec::new();
-        let _ = cells.extend_from_slice(&[0, 1, 2, 3]);
-        let _ = pages.push(Page {
-            kind: PageKind::Values,
-            cells,
-        });
-        let mut chart = heapless::Vec::new();
-        let _ = chart.push(0);
-        let _ = pages.push(Page {
-            kind: PageKind::Chart,
-            cells: chart,
-        });
-        Self {
-            brightness: 128,
-            active_page: 0,
-            pages,
-        }
-    }
+	/// What a device with nothing stored shows. Deliberately not empty: a
+	/// panel that boots blank because its settings were never written looks
+	/// broken, and "looks broken" is indistinguishable from "is broken".
+	fn default() -> Self {
+		let mut pages = heapless::Vec::new();
+		let mut cells = heapless::Vec::new();
+		let _ = cells.extend_from_slice(&[0, 1, 2, 3]);
+		let _ = pages.push(Page {
+			kind: PageKind::Values,
+			cells,
+		});
+		let mut chart = heapless::Vec::new();
+		let _ = chart.push(0);
+		let _ = pages.push(Page {
+			kind: PageKind::Chart,
+			cells: chart,
+		});
+		Self {
+			brightness: 128,
+			active_page: 0,
+			pages,
+		}
+	}
 }
 
 impl Config {
-    /// Rejects what the panel could not render anyway. Called before a save so
-    /// that an unusable configuration never reaches flash — the device must be
-    /// able to trust what it reads back at boot.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.pages.is_empty() {
-            return Err("no pages");
-        }
-        if usize::from(self.active_page) >= self.pages.len() {
-            return Err("active_page past the end");
-        }
-        for page in &self.pages {
-            if page.cells.is_empty() {
-                return Err("a page with no cells");
-            }
-            if page.kind == PageKind::Chart && page.cells.len() != 1 {
-                return Err("a chart page shows exactly one cell");
-            }
-        }
-        Ok(())
-    }
+	/// Rejects what the panel could not render anyway. Called before a save so
+	/// that an unusable configuration never reaches flash — the device must be
+	/// able to trust what it reads back at boot.
+	pub fn validate(&self) -> Result<(), &'static str> {
+		if self.pages.is_empty() {
+			return Err("no pages");
+		}
+		if usize::from(self.active_page) >= self.pages.len() {
+			return Err("active_page past the end");
+		}
+		for page in &self.pages {
+			if page.cells.is_empty() {
+				return Err("a page with no cells");
+			}
+			if page.kind == PageKind::Chart && page.cells.len() != 1 {
+				return Err("a chart page shows exactly one cell");
+			}
+		}
+		Ok(())
+	}
 }

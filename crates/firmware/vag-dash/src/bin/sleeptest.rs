@@ -36,8 +36,8 @@
 #![no_std]
 #![no_main]
 #![deny(
-    clippy::mem_forget,
-    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
+	clippy::mem_forget,
+	reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
 
@@ -66,22 +66,44 @@ const SLEEP_SECS: u64 = 10;
 
 #[esp_hal::main]
 fn main() -> ! {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    let delay = Delay::new();
-    let mut rtc = Rtc::new(peripherals.LPWR);
+	let peripherals = esp_hal::init(esp_hal::Config::default());
+	let delay = Delay::new();
+	let mut rtc = Rtc::new(peripherals.LPWR);
 
-    let woke = sleep::wake_reason();
-    println!();
-    println!("sleeptest: awake, wake reason = {}", woke.as_str());
-    println!("sleeptest: wake button belongs on GPIO{WAKE_BUTTON_GPIO}, rail divider on GPIO{RAIL_SENSE_GPIO}");
-    println!("sleeptest: neither is wired, so timer wake is the only source registered");
-    println!("sleeptest: staying up {AWAKE_SECS} s, then sleeping {SLEEP_SECS} s");
+	let woke = sleep::wake_reason();
 
-    delay.delay_millis(AWAKE_SECS * 1_000);
+	// Said twice, a second apart, and the delay is the point. Deep sleep powers
+	// the USB Serial/JTAG peripheral down, so the host un-enumerates the device
+	// and re-enumerates it on wake — which takes long enough that the first
+	// line after a wake is written into a port nobody is holding open yet.
+	// Measured: the banner below is invisible without this, and every wake
+	// looks like a cold boot because the only line you catch is the next one.
+	//
+	// The real fix for a bench that watches sleep closely is a USB-serial
+	// adapter on UART0, which stays enumerated because it is a separate chip.
+	println!();
+	println!("sleeptest: wake button on GPIO{WAKE_BUTTON_GPIO}, rail divider on GPIO{RAIL_SENSE_GPIO}");
+	println!("sleeptest: short GPIO{WAKE_BUTTON_GPIO} to ground to wake early — it is pulled up inside the chip");
 
-    // Nothing to shut down: this binary drives no panel, no transceiver and no
-    // radio. On the real firmware the checklist on `sleep::deep_sleep` is the
-    // part that decides the number a meter shows.
-    println!("sleeptest: sleeping now");
-    sleep::deep_sleep(&mut rtc, Duration::from_secs(SLEEP_SECS))
+	// The wake reason, once a second for the whole awake window, rather than
+	// once at boot. Deep sleep powers the USB Serial/JTAG peripheral down, so
+	// the host un-enumerates the device and takes a second or two to bring it
+	// back — and anything printed before that lands in a port nobody is
+	// holding open. Measured, not guessed: a single line at boot is invisible,
+	// and so is one delayed by 1.2 s. Repeating it costs nothing and does not
+	// depend on how fast a particular host enumerates.
+	//
+	// A bench that watches sleep closely wants a USB-serial adapter on UART0
+	// instead, which stays enumerated because it is a separate chip.
+	for second in 0..AWAKE_SECS {
+		println!("sleeptest: awake {}/{AWAKE_SECS} s, wake reason = {}", second + 1, woke.as_str());
+		delay.delay_millis(1_000);
+	}
+
+	// Nothing to shut down: this binary drives no panel, no transceiver and no
+	// radio. On the real firmware the checklist on `sleep::deep_sleep` is the
+	// part that decides the number a meter shows.
+	println!("sleeptest: sleeping now");
+	let mut button = peripherals.GPIO5;
+	sleep::deep_sleep_with_button(&mut rtc, Duration::from_secs(SLEEP_SECS), &mut button)
 }
