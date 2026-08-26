@@ -80,11 +80,55 @@ Two details that decide how well it works, both properties of the classic ESP32:
 - **The divider goes on ADC1** (`GPIO32…39`, and `D34` in the allocation in `05`). ADC2 is
   unusable while Wi-Fi is on — the radio claims it and reads block or return rubbish — and
   Wi-Fi and Bluetooth are both wanted (`09`). Not a preference; ADC2 is simply out.
-- **The ULP coprocessor can read ADC1 during deep sleep** and wake the main cores on a
-  threshold. That turns "wake at 13 V" from a periodic full wake-up into a comparison
-  running at hundreds of microamps — the difference between a design that meets the
-  under-1 mA target and one that argues with it. Another place the older part earns its
-  keep.
+- ~~**The ULP coprocessor can read ADC1 during deep sleep**~~ — **this does not exist on
+  the C3, 2026-08-26.** Checked in `esp-metadata`'s device table: `esp32c3.toml` lists no
+  `ulp_supported`, no ext0, no ext1, no touch wake — only `gpio_support_deepsleep_wakeup`
+  and Wi-Fi/BT wake, and the last two are light-sleep only. The S3 has a ULP; this part
+  does not.
+
+  So the mechanism this section was built on is gone, and with it the "comparison running
+  at hundreds of microamps". What remains for waking on the rail is one of two, and both
+  are hardware questions rather than firmware ones:
+
+  - **a periodic timer wake** that samples the divider and goes back down. Costs a full
+    wake-up per sample, so the sample interval sets the average current;
+  - **an external comparator** holding an RTC pin, which is the ULP's job done in two
+    parts for a few cents. `GPIO0`–`GPIO5` are the only pins that can wake the chip.
+
+  This is the single largest thing the board change cost us, and it was invisible until
+  somebody read the device table.
+
+### Pin allocation on the C3 (settled 2026-08-26)
+
+`GPIO0`–`GPIO5` are the only RTC pins, so only they can wake the chip; `GPIO0`–`GPIO4`
+are also the whole of ADC1. The two needs therefore compete for six pins, and they divide
+cleanly:
+
+| pin | assignment | why |
+|---|---|---|
+| `GPIO5` | **wake button** | the one RTC pin that is not ADC1. ADC2 does not read with the radio up, so its analog capability was already worthless — spending it on a digital job costs nothing |
+| `GPIO4` | **rail divider from OBD pin 16** | must be ADC1, is not a strapping pin |
+| `GPIO2` | avoid | strapping pin |
+| `GPIO0`, `GPIO1`, `GPIO3` | free | one spare wake pin, two spare analog inputs |
+
+With no ULP the divider does **not** consume a wake slot: nothing can read it while
+asleep, so `GPIO4` is an ordinary ADC input that happens to sit on an RTC pad.
+
+And the board's BOOT button on `GPIO9` **cannot** be a wake source — not an RTC pin — and
+held low at reset it boots the USB loader instead of the firmware. Until a wire reaches
+`GPIO5`, only timer wake is testable.
+
+### Two more things the source says, both load-bearing
+
+- **Nothing survives the sleep.** `RtcSleepConfig::deep()` powers down both RTC fast and
+  slow memory, so `#[esp_hal::ram(persistent)]` does not persist across `sleep_deep`.
+  Every wake is a cold start; anything that must outlive a sleep belongs in flash
+  (`store.rs` already does this for settings).
+- **A timer-only current figure is an upper bound, not the floor.** esp-hal runs its
+  equivalent of IDF's `esp_sleep_isolate_digital_gpio` only from `RtcioWakeupSource::apply`.
+  With timer-only wake the digital pads are left as they are, and esp-hal's own comment
+  says the bottom current rises without that step. Measure with the real wake source
+  before believing a number.
 
 **Sleep on either of two conditions:**
 
