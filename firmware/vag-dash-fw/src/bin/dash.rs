@@ -20,10 +20,10 @@
     holding buffers for the duration of a data transfer."
 )]
 
-use ble::config::{Config, PageKind};
-use ble::store::{Error as StoreError, Store};
-use ble::panel::Framebuffer;
-use ble::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
+use vag_dash_fw::config::{Config, PageKind};
+use vag_dash_fw::store::{Error as StoreError, Store};
+use vag_dash_fw::panel::Framebuffer;
+use vag_dash_fw::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -604,7 +604,7 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
     let theme = Theme::bold_mono();
 
     // One sample per pixel column, oldest first — the chart's own rule.
-    let mut history = [0.0f32; ble::panel::WIDTH];
+    let mut history = [0.0f32; vag_dash_fw::panel::WIDTH];
     let mut filled = 0usize;
     let mut tick = 0u32;
     let mut last_compromised = false;
@@ -675,7 +675,7 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
             let _ = usb.write_all(note.as_bytes()).await;
             let _ = usb.write_all(b"\r\n").await;
         }
-        let mut line: heapless::String<{ ble::panel::WIDTH * ble::panel::HEIGHT / 8 * 2 + 32 }> = heapless::String::new();
+        let mut line: heapless::String<{ vag_dash_fw::panel::WIDTH * vag_dash_fw::panel::HEIGHT / 8 * 2 + 32 }> = heapless::String::new();
         if framebuffer.write_frame(&mut line).is_ok() {
             let _ = usb.write_all(line.as_bytes()).await;
             let _ = usb.write_all(b"\r\n").await;

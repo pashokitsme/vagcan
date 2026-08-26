@@ -1,0 +1,12 @@
+# This crate is not a workspace member and does not build for the host, so
+# rust-analyzer has to be told twice: once that it exists (linkedProjects, in
+# the editor's own settings — see .vscode/settings.json) and once what it is
+# built for, which is here.
+#
+# Do NOT reach for `#![cfg(target_arch = "riscv32")]` to quieten the errors.
+# It quietens them by making the whole file disappear when analysed for the
+# host: no completion, no go-to-definition, no types. Silence is not analysis.
+cargo.target = "riscv32imc-unknown-none-elf"
+# The bin is the only target that means anything here; asking for tests and
+# benches makes rust-analyzer build a harness that cannot link on bare metal.
+cargo.allTargets = false

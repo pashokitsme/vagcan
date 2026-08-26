@@ -1,0 +1,3 @@
+# Same as the firmware: bare-metal RISC-V, analysed as such.
+cargo.target = "riscv32imc-unknown-none-elf"
+cargo.allTargets = false

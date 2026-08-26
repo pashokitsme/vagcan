@@ -1,16 +1,12 @@
 [package]
 edition      = "2021"
-name         = "ble"
+name         = "vag-dash-fw"
 rust-version = "1.86"
 version      = "0.1.0"
 
 [[bin]]
-name = "peri"
-path = "./src/bin/peri.rs"
-
-[[bin]]
-name = "scan"
-path = "./src/bin/scan.rs"
+name = "dash"
+path = "./src/bin/dash.rs"
 
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
@@ -38,7 +34,7 @@ embedded-storage = "0.3.1"
 # The real panel renderer, out of the workspace next door. Not a copy and not a
 # mock: what the board draws is what `vagcan dash` draws, which is the entire
 # point of the seam `02` describes.
-vag-dash = { path = "../../../crates/vag-dash" }
+vag-dash = { path = "../../infra/vag-dash" }
 embedded-graphics = "0.8"
 crc = "3"
 serde = { version = "1", default-features = false, features = ["derive"] }

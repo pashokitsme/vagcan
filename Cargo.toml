@@ -1,21 +1,39 @@
 [workspace]
 resolver = "2"
-members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-can", "crates/vag-dash", "crates/vagcan"]
-# Research tooling and firmware, deliberately not members.
+members = [
+  # Libraries: what the binaries are built from.
+  "infra/vag-transport",
+  "infra/vag-capture",
+  "infra/vag-protocol",
+  "infra/vag-data",
+  "infra/vag-db",
+  "infra/vag-can",
+  "infra/vag-dash",
+  # Binaries: what a person runs.
+  "bin/vag-can-cli",
+]
+# Three directories, split by what the code is rather than by what it does:
 #
-# `bleecho` links `btleplug`, which needs CoreBluetooth on macOS and dbus/BlueZ
-# headers on Linux; as a member it would put those on the critical path of
-# `cargo build --workspace` and of CI, for a tool the product does not link.
+#   infra/      libraries — the protocol, the transport, the label parsers, the
+#               panel renderer. Nothing here is run directly.
+#   bin/        what a person runs on a laptop.
+#   firmware/   what runs on the board.
 #
-# `fw` and `wifi` are `no_std` firmware for `riscv32imc-unknown-none-elf`, each
-# with its own `.cargo/config.toml` pinning that target and `build-std`. As
-# members they would not compile for the host at all.
+# `firmware/` cannot be a workspace member and this is not a preference: it is
+# `no_std` for `riscv32imc-unknown-none-elf` with its own `.cargo/config.toml`
+# pinning that target and `build-std`. As a member it would not compile for the
+# host at all. `research/` is excluded for the older reason — probes and bench
+# rigs that the product does not link.
 #
-# Build any of them **from its own directory**. `--manifest-path` alone is not
-# enough for the firmware: cargo discovers `.cargo/config.toml` from the working
-# directory, so building it from the repository root silently targets the host
-# and fails deep inside `portable-atomic`.
-exclude = ["research/dash/bleecho", "research/dash/fw", "research/dash/wifi"]
+# Build anything excluded **from its own directory**. `--manifest-path` alone is
+# not enough for the firmware: cargo discovers `.cargo/config.toml` from the
+# working directory, so building it from the repository root silently targets
+# the host and fails deep inside `portable-atomic`.
+exclude = [
+  "firmware/vag-dash-fw",
+  "research/dash/host",
+  "research/dash/probes",
+]
 
 [workspace.package]
 edition = "2024"

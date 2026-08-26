@@ -1,0 +1,19 @@
+{
+  "//": [
+    "rust-analyzer only discovers workspace members. Everything excluded from",
+    "the workspace has to be listed here or the editor treats it as plain text.",
+    "The firmware and the probes are excluded because they are no_std for",
+    "riscv32imc and cannot compile for the host; the bench rig is excluded",
+    "because btleplug wants system libraries the product does not.",
+    "",
+    "Each excluded directory carries its own rust-analyzer.toml naming its",
+    "target. If your editor still fights, open firmware/vag-dash-fw as its own",
+    "window \u2014 one target per window is what rust-analyzer is happiest with."
+  ],
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "firmware/vag-dash-fw/Cargo.toml",
+    "research/dash/probes/Cargo.toml",
+    "research/dash/host/Cargo.toml"
+  ]
+}
