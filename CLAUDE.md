@@ -106,26 +106,23 @@ Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
 ```
-crates/          all Rust. The libraries are not a stack: four roots that depend
-                 on nothing, and binaries that pick the ones they need.
-  bus/             talking to a car. transport -> can, protocol, capture.
-    vag-transport    the seam every backend implements (sync + async), on whole PDUs
+crates/          all Rust.
+  infra/           libraries. Nothing here is run directly. One directory, but
+                   not one stack: four of these depend on nothing at all.
+    vag-transport    the seam every backend implements (sync + async), whole PDUs
     vag-can          slcan backend, async ISO-TP over CAN, listen-only sniffer
     vag-protocol     UDS client + allowlist, DTCs, gateway, unit addressing
     vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
-  data/            understanding what it said, from VW's own files.
     vag-data         parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat, ODX, catalog
     vag-db           SQLite cache over the parsed label files
-  render/          pixels. Depends on nothing at all, ours or otherwise, which
-                   is why the same code draws on the board and into a PNG.
-    vag-panel        a Frame in, pixels out, on any embedded-graphics DrawTarget
-  link/            reaching a device of ours over the air.
+    vag-panel        the renderer: a Frame in, pixels out, on any DrawTarget
     vag-ble          BLE client (btleplug): scan, pick a device, open a NUS pipe
-  bin/             what a person runs on a laptop.
+  bin/             what is run. No exceptions — a library here keeps no binary.
     vag-cli          binary `vagcan`. Top level = needs the car: devices / info /
                      units / properties / sniff / sensors / watch / scan / faults /
                      survey. Offline work is grouped by input: `recording …` (our
                      own `watch --out` recordings) and `vcds …` (VCDS's own files)
+    vag-db-cli       binary `vag-db` — build, look up and inspect the label cache
     vag-dash-config  binary `dashcfg` — configures the dash over BLE
   firmware/        what runs on the board. NOT workspace members: no_std for
                    riscv32imc-unknown-none-elf with their own build-std config.

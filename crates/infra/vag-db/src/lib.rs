@@ -739,6 +739,24 @@ pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
 }
 
 /// Convenience: load a DB straight into a ready-to-query `LabelDb`.
+/// Row counts per table, in the order a person wants to read them.
+///
+/// Here rather than in the utility that prints them because the table names
+/// are this crate's schema: a binary that spelled them out itself would keep
+/// compiling after a rename and fail only when run.
+pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
+	const TABLES: [&str; 5] = ["label_file", "measurement", "redirect", "adaptation", "long_coding"];
+	let conn = rusqlite::Connection::open(db_path)?;
+	let mut out = Vec::with_capacity(TABLES.len());
+	for table in TABLES {
+		// The names are the constant above, never anything a caller supplied,
+		// so the format! cannot carry an injection.
+		let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?;
+		out.push((table, n));
+	}
+	Ok(out)
+}
+
 pub fn load_db(db_path: &Path) -> Result<LabelDb, Error> {
 	Ok(LabelDb::new(load_files(db_path)?))
 }

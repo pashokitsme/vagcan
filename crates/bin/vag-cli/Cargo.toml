@@ -11,14 +11,14 @@ name = "vagcan"
 path = "src/main.rs"
 
 [dependencies]
-vag-protocol = { path = "../../bus/vag-protocol" }
-vag-transport = { path = "../../bus/vag-transport", features = ["test-util"] }
-vag-can = { path = "../../bus/vag-can", features = ["slcan"] }
-vag-data = { path = "../../data/vag-data" }
-vag-capture = { path = "../../bus/vag-capture" }
+vag-protocol = { path = "../../infra/vag-protocol" }
+vag-transport = { path = "../../infra/vag-transport", features = ["test-util"] }
+vag-can = { path = "../../infra/vag-can", features = ["slcan"] }
+vag-data = { path = "../../infra/vag-data" }
+vag-capture = { path = "../../infra/vag-capture" }
 # SQLite cache over the label files: parse the VCDS install once, load it back
 # in milliseconds on every later run.
-vag-db = { path = "../../data/vag-db" }
+vag-db = { path = "../../infra/vag-db" }
 tokio = { workspace = true, features = [
   "rt-multi-thread",
   "macros",

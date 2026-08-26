@@ -1,40 +1,38 @@
 [workspace]
 resolver = "2"
 members = [
-  # bus/ — talking to a car.
-  "crates/bus/vag-transport",
-  "crates/bus/vag-capture",
-  "crates/bus/vag-protocol",
-  "crates/bus/vag-can",
-  # data/ — understanding what it said, from VW's own files.
-  "crates/data/vag-data",
-  "crates/data/vag-db",
-  # render/ — pixels. Depends on nothing, runs anywhere.
-  "crates/render/vag-panel",
-  # link/ — reaching a device of ours over the air.
-  "crates/link/vag-ble",
-  # bin/ — what a person runs.
+  # infra/ — libraries. Nothing here is run directly.
+  "crates/infra/vag-transport",
+  "crates/infra/vag-capture",
+  "crates/infra/vag-protocol",
+  "crates/infra/vag-can",
+  "crates/infra/vag-data",
+  "crates/infra/vag-db",
+  "crates/infra/vag-panel",
+  "crates/infra/vag-ble",
+  # bin/ — what is run.
   "crates/bin/vag-cli",
+  "crates/bin/vag-db-cli",
   "crates/bin/vag-dash-config",
 ]
-# The libraries are not a stack. They are four roots that depend on nothing,
-# and the binaries pick the ones they need:
+# The libraries are one directory, but they are not one stack. Four of them
+# depend on nothing at all, and the binaries pick what they need:
 #
-#   bus/        transport -> can, protocol, capture. Talking to a car.
-#   data/       vag-data -> vag-db. Understanding VW's own files.
-#   render/     vag-panel: a Frame in, pixels out. Depends on nothing at all,
-#               ours or otherwise, and runs on the board and on a laptop alike.
-#               It is not a "device" crate — the device is one of its callers.
-#   link/       vag-ble: the laptop's side of talking to a peripheral of ours.
-#               btleplug, so precisely the half that is NOT on the board.
-#   bin/        what a person runs on a laptop.
-#   firmware/   what runs on the board.
+#   vag-transport -> vag-can, vag-protocol, vag-capture    talking to a car
+#   vag-data      -> vag-db                                VW's own files
+#   vag-panel                                              a Frame in, pixels out
+#   vag-ble                                                reaching a board of ours
 #
-# The one edge between roots is `vag-protocol -> vag-data`, and it exists for a
-# single module (`read.rs`, decoding a measurement against a catalog). It goes
-# behind the `std` feature with `address.rs`, because the board executes a plan
-# with the scaling already baked in and could not hold a catalog if it wanted
-# to.
+# The single edge between those roots is `vag-protocol -> vag-data`, for one
+# module: `read.rs`, decoding a measurement against a catalog. It goes behind
+# the `std` feature with `address.rs`, because the board executes a plan with
+# the scaling already baked in and could not hold a catalog if it wanted to —
+# 88 MB of SQLite against 400 KB of SRAM.
+#
+# The division that actually changes how code is written is not a directory at
+# all: whether a crate runs on the board. vag-transport, vag-protocol (minus
+# those two modules), vag-can (minus slcan.rs) and vag-panel do; the rest are
+# free to use std. Each crate says which it is at the top of its lib.rs.
 #
 # `firmware/` cannot be a workspace member and this is not a preference: it is
 # `no_std` for `riscv32imc-unknown-none-elf` with its own `.cargo/config.toml`

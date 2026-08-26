@@ -90,18 +90,11 @@ fn print_lookup(db: &vag_data::LabelDb, part_no: &str) {
 }
 
 fn print_stats(db_path: &std::path::Path) -> Result<(), String> {
-	let conn = rusqlite::Connection::open(db_path).map_err(|e| format!("open {}: {e}", db_path.display()))?;
-	let count = |table: &str| -> Result<i64, String> {
-		conn
-			.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-			.map_err(|e| format!("count {table}: {e}"))
-	};
+	let counts = vag_db::row_counts(db_path).map_err(|e| format!("stats {}: {e}", db_path.display()))?;
 	println!("== vag-db stats: {} ==", db_path.display());
-	println!("  label_file  : {}", count("label_file")?);
-	println!("  measurement : {}", count("measurement")?);
-	println!("  redirect    : {}", count("redirect")?);
-	println!("  adaptation  : {}", count("adaptation")?);
-	println!("  long_coding : {}", count("long_coding")?);
+	for (table, n) in counts {
+		println!("  {table:<12}: {n}");
+	}
 	Ok(())
 }
 
