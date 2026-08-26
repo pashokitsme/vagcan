@@ -14,12 +14,22 @@
 //! keeping it that way is what lets a page be rendered from a recording, from a
 //! live cable or from a fixture with the same code.
 //!
+//! One thing here is not pixels: [`alarm`], the rule that decides *which* page
+//! is on the glass when a channel nobody is watching goes wrong. It is here and
+//! not in the firmware for the same reason the renderer is — the firmware is not
+//! a workspace member and cannot be built for the host, so anything that lives
+//! there is untested by CI. The alarm machine is `no_std`, allocation-free, has
+//! no dependency on this crate's drawing code, and is the only thing that ever
+//! sets [`Cell::alarm`]; it costs a laptop nothing and it earns a synthetic
+//! clock.
+//!
 //! Sizes are in pixels and the panel is 32 of them tall, which is the single
 //! fact that shapes every decision here. Four tiers of text — the label over two
 //! lines, the number, the unit under it — do not fit. Two do.
 
 #![no_std]
 
+pub mod alarm;
 pub mod frame;
 pub mod render;
 pub mod theme;
