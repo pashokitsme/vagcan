@@ -38,7 +38,7 @@ embedded-storage = "0.3.1"
 # The real panel renderer, out of the workspace next door. Not a copy and not a
 # mock: what the board draws is what `vagcan dash` draws, which is the entire
 # point of the seam `02` describes.
-vag-dash = { path = "../../infra/vag-dash" }
+vag-dash = { path = "../../device/vag-dash" }
 embedded-graphics = "0.8"
 crc = "3"
 serde = { version = "1", default-features = false, features = ["derive"] }

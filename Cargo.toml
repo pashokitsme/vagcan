@@ -1,25 +1,39 @@
 [workspace]
 resolver = "2"
 members = [
-  # Libraries: what the binaries are built from.
-  "crates/infra/vag-transport",
-  "crates/infra/vag-capture",
-  "crates/infra/vag-protocol",
-  "crates/infra/vag-data",
-  "crates/infra/vag-db",
-  "crates/infra/vag-can",
-  "crates/infra/vag-dash",
-  "crates/infra/vag-ble",
-  # Binaries: what a person runs.
+  # bus/ — talking to a car.
+  "crates/bus/vag-transport",
+  "crates/bus/vag-capture",
+  "crates/bus/vag-protocol",
+  "crates/bus/vag-can",
+  # data/ — understanding what it said, from VW's own files.
+  "crates/data/vag-data",
+  "crates/data/vag-db",
+  # device/ — the panel device seen from outside: how it draws, how you reach it.
+  "crates/device/vag-dash",
+  "crates/device/vag-ble",
+  # bin/ — what a person runs.
   "crates/bin/vag-cli",
   "crates/bin/vag-dash-config",
 ]
-# Three directories, split by what the code is rather than by what it does:
+# The libraries are not a stack. They are four roots that depend on nothing,
+# and the binaries pick the ones they need:
 #
-#   infra/      libraries — the protocol, the transport, the label parsers, the
-#               panel renderer. Nothing here is run directly.
+#   bus/        transport -> can, protocol, capture. Talking to a car.
+#   data/       vag-data -> vag-db. Understanding VW's own files.
+#   device/     vag-dash (pixels) and vag-ble (the link to the board). Neither
+#               depends on anything of ours; that is why the renderer runs on
+#               the board unchanged. Not `firmware/`: the renderer also draws
+#               PNGs on the laptop, and vag-ble is btleplug — it is the half
+#               that is NOT on the board.
 #   bin/        what a person runs on a laptop.
 #   firmware/   what runs on the board.
+#
+# The one edge between roots is `vag-protocol -> vag-data`, and it exists for a
+# single module (`read.rs`, decoding a measurement against a catalog). It goes
+# behind the `std` feature with `address.rs`, because the board executes a plan
+# with the scaling already baked in and could not hold a catalog if it wanted
+# to.
 #
 # `firmware/` cannot be a workspace member and this is not a preference: it is
 # `no_std` for `riscv32imc-unknown-none-elf` with its own `.cargo/config.toml`

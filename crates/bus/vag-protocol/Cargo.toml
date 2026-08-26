@@ -8,7 +8,7 @@ rust-version.workspace = true
 # Reading the per-car unit-number table; see address.rs.
 serde_json.workspace = true
 vag-transport = { path = "../vag-transport" }
-vag-data = { path = "../vag-data" }
+vag-data = { path = "../../data/vag-data" }
 thiserror.workspace = true
 
 [dev-dependencies]
