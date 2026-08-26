@@ -7,5 +7,6 @@ extern crate alloc;
 
 pub mod config;
 pub mod panel;
+pub mod sleep;
 pub mod store;
 pub mod ui;

@@ -12,6 +12,14 @@ version = "0.1.0"
 name = "dash"
 path = "./src/bin/dash.rs"
 
+# The deep-sleep demonstrator: boot, say why we woke, wait, sleep, repeat. It
+# is its own image rather than a mode of `dash` because the thing being
+# measured is the *floor*, and a binary that also carries a radio and a panel
+# cannot show one.
+[[bin]]
+name = "sleeptest"
+path = "./src/bin/sleeptest.rs"
+
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
 esp-hal = { version = "=1.0.0-rc.0", features = [
