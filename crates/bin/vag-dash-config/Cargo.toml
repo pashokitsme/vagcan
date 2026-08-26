@@ -10,7 +10,7 @@ name = "dashcfg"
 path = "src/main.rs"
 
 [dependencies]
-vag-ble = { path = "../../device/vag-ble" }
+vag-ble = { path = "../../link/vag-ble" }
 anyhow = "1"
 btleplug = "0.11"
 futures = "0.3"

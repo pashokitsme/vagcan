@@ -116,9 +116,10 @@ crates/          all Rust. The libraries are not a stack: four roots that depend
   data/            understanding what it said, from VW's own files.
     vag-data         parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat, ODX, catalog
     vag-db           SQLite cache over the parsed label files
-  device/          the panel device seen from outside. Neither depends on
-                   anything of ours, which is why the renderer runs on the board.
-    vag-dash         the renderer: a Frame in, pixels out, on any DrawTarget
+  render/          pixels. Depends on nothing at all, ours or otherwise, which
+                   is why the same code draws on the board and into a PNG.
+    vag-panel        a Frame in, pixels out, on any embedded-graphics DrawTarget
+  link/            reaching a device of ours over the air.
     vag-ble          BLE client (btleplug): scan, pick a device, open a NUS pipe
   bin/             what a person runs on a laptop.
     vag-cli          binary `vagcan`. Top level = needs the car: devices / info /

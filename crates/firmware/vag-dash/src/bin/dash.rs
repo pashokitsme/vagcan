@@ -592,12 +592,12 @@ fn wobble(tick: u32, phase: u32, low: f32, high: f32) -> f32 {
 
 /// Draws the current page and ships the pixels out of the USB port.
 ///
-/// This is the real renderer on real pixels: `vag_dash::draw` into a 256×64
+/// This is the real renderer on real pixels: `vag_panel::draw` into a 256×64
 /// framebuffer. What the laptop shows is not an impression of the panel, it is
 /// the panel.
 #[embassy_executor::task]
 async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>, settings: &'static Shared) -> ! {
-    use vag_dash::{Cell, Frame, Theme, draw};
+    use vag_panel::{Cell, Frame, Theme, draw};
 
     static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
     let framebuffer = FRAMEBUFFER.init(Framebuffer::new());

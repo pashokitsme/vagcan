@@ -1,6 +1,6 @@
 //! A panel made of memory, and the wire format that carries it to a laptop.
 //!
-//! The board renders the *real* thing — `vag_dash::draw` onto a framebuffer —
+//! The board renders the *real* thing — `vag_panel::draw` onto a framebuffer —
 //! and ships the pixels out of the USB port it is already logged through. A
 //! program on the laptop draws them in a terminal. Nothing about the layout,
 //! the page order or the formatting lives on that side; if the simulator were
@@ -89,7 +89,7 @@ impl Default for Framebuffer {
 
 impl Dimensions for Framebuffer {
     fn bounding_box(&self) -> Rectangle {
-        // `vag_dash::render` reads the panel size from here rather than from a
+        // `vag_panel::render` reads the panel size from here rather than from a
         // constant, which is what lets the same code draw 256×32 and 256×64.
         Rectangle::new(Point::zero(), Size::new(WIDTH as u32, HEIGHT as u32))
     }

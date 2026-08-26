@@ -9,9 +9,10 @@ members = [
   # data/ — understanding what it said, from VW's own files.
   "crates/data/vag-data",
   "crates/data/vag-db",
-  # device/ — the panel device seen from outside: how it draws, how you reach it.
-  "crates/device/vag-dash",
-  "crates/device/vag-ble",
+  # render/ — pixels. Depends on nothing, runs anywhere.
+  "crates/render/vag-panel",
+  # link/ — reaching a device of ours over the air.
+  "crates/link/vag-ble",
   # bin/ — what a person runs.
   "crates/bin/vag-cli",
   "crates/bin/vag-dash-config",
@@ -21,11 +22,11 @@ members = [
 #
 #   bus/        transport -> can, protocol, capture. Talking to a car.
 #   data/       vag-data -> vag-db. Understanding VW's own files.
-#   device/     vag-dash (pixels) and vag-ble (the link to the board). Neither
-#               depends on anything of ours; that is why the renderer runs on
-#               the board unchanged. Not `firmware/`: the renderer also draws
-#               PNGs on the laptop, and vag-ble is btleplug — it is the half
-#               that is NOT on the board.
+#   render/     vag-panel: a Frame in, pixels out. Depends on nothing at all,
+#               ours or otherwise, and runs on the board and on a laptop alike.
+#               It is not a "device" crate — the device is one of its callers.
+#   link/       vag-ble: the laptop's side of talking to a peripheral of ours.
+#               btleplug, so precisely the half that is NOT on the board.
 #   bin/        what a person runs on a laptop.
 #   firmware/   what runs on the board.
 #

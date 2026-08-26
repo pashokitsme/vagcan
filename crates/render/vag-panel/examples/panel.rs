@@ -15,7 +15,7 @@
 use embedded_graphics::geometry::Size;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics_simulator::{BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay};
-use vag_dash::{Cell, Frame, PANEL, Theme, draw};
+use vag_panel::{Cell, Frame, PANEL, Theme, draw};
 
 fn main() {
 	let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
