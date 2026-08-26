@@ -19,7 +19,7 @@
 //! the window switches back on its own; `b` forces braille either way.
 
 use anyhow::{Context, Result};
-use bleecho::frame::{self, Bitmap};
+use vag_dash_host::frame::{self, Bitmap};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{execute, terminal};
 use std::collections::VecDeque;

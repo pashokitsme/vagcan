@@ -2,15 +2,17 @@
 resolver = "2"
 members = [
   # Libraries: what the binaries are built from.
-  "infra/vag-transport",
-  "infra/vag-capture",
-  "infra/vag-protocol",
-  "infra/vag-data",
-  "infra/vag-db",
-  "infra/vag-can",
-  "infra/vag-dash",
+  "crates/infra/vag-transport",
+  "crates/infra/vag-capture",
+  "crates/infra/vag-protocol",
+  "crates/infra/vag-data",
+  "crates/infra/vag-db",
+  "crates/infra/vag-can",
+  "crates/infra/vag-dash",
+  "crates/infra/vag-ble",
   # Binaries: what a person runs.
-  "bin/vag-can-cli",
+  "crates/bin/vag-cli",
+  "crates/bin/vag-dash-config",
 ]
 # Three directories, split by what the code is rather than by what it does:
 #
@@ -30,7 +32,7 @@ members = [
 # working directory, so building it from the repository root silently targets
 # the host and fails deep inside `portable-atomic`.
 exclude = [
-  "firmware/vag-dash-fw",
+  "crates/firmware/vag-dash",
   "research/dash/host",
   "research/dash/probes",
 ]

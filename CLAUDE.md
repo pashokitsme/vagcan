@@ -106,18 +106,25 @@ Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
 ```
-crates/          the Rust workspace
-  vag-transport    transport trait(s) — the seam every backend implements (sync + async)
-  vag-can          slcan USB-CAN backend (the live path), listen-only mode, ISO-TP sniffer
-  vag-protocol     UDS client + ISO-TP (transport-agnostic) + unit addressing (address.rs)
-  vag-data         label parsers/decoders (.lbl/.clb/.rod) + LabelDb + ODX file resolution
-  vag-db           SQLite cache over the label files
-  vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
-  vagcan           the CLI. Top level = needs the car: devices / info / units /
-                   properties / sniff / sensors / watch / scan / faults / survey.
-                   Offline work is grouped by what its input is: `recording …`
-                   (our own `watch --out` recordings) and `vcds …` (VCDS's files —
-                   labels, names, analyse, rod, label files, tttext)
+crates/          all Rust, split by what the code IS rather than what it does
+  infra/           libraries. Nothing here is run directly.
+    vag-transport    the transport seam every backend implements (sync + async)
+    vag-can          slcan USB-CAN backend (the live path), listen-only, ISO-TP
+    vag-protocol     UDS client + unit addressing (address.rs)
+    vag-data         label parsers (.lbl/.clb/.rod) + LabelDb + ODX resolution
+    vag-db           SQLite cache over the label files
+    vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
+    vag-dash         the panel renderer — no_std, drawn on the board AND on the laptop
+    vag-ble          BLE client (btleplug): scan, pick a device, open a NUS pipe
+  bin/             what a person runs on a laptop.
+    vag-cli          the CLI. Binary is `vagcan`. Top level = needs the car: devices /
+                     info / units / properties / sniff / sensors / watch / scan / faults /
+                     survey. Offline work is grouped by input: `recording …` (our own
+                     `watch --out` recordings) and `vcds …` (VCDS's own files)
+    vag-dash-config  binary `dashcfg` — configures the dash over BLE
+  firmware/        what runs on the board. NOT workspace members: no_std for
+                   riscv32imc-unknown-none-elf with their own build-std config.
+    vag-dash         package `vag-dash-fw`, binary `dash` — the device
 research/        RE writeups + tooling (NOT shipped), one directory per subject:
   labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
                        name codec, `Codes.dat`, and the fault-naming chain. Key reads:
@@ -128,13 +135,17 @@ research/        RE writeups + tooling (NOT shipped), one directory per subject:
                        outside the powertrain, the whole-car survey, gearbox state
   eps/                 the steering-assist incident — read with SAFETY.md
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
-archive/         retired paths kept as evidence: research/ (HEX-clone framing, clone
+  dash/                the ESP32 board from the laptop's side. `probes/` is firmware
+                       that answered a question (wifi-ap, wifi-scan, wifi-sta,
+                       ble-scan); `host/` is the bench rig — `dashsim` (be the panel
+                       and the buttons) and `bleecho`
+.archive/        retired paths kept as evidence: research/ (HEX-clone framing, clone
                  crypto — negative results, do not retry), specs/ (superseded designs)
                  and tasks/done/ (finished task files)
-docs/            active specs (docs/superpowers/specs/*.md, e.g. the CAN sniffer design)
 todo/            task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/stack/workflow);
-                 finished task files retire to archive/tasks/done/
+                 finished task files retire to .archive/tasks/done/
 ```
+
 
 Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
 [`ARCHITECTURE.md`](ARCHITECTURE.md), [`research/labels/rod-labels.md`](research/labels/rod-labels.md).

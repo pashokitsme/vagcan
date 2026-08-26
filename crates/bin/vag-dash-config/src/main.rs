@@ -7,7 +7,7 @@
 //! patiently and say what to press, rather than to fail with "not found".
 
 use anyhow::{Result, bail};
-use bleecho::{Lines, flush, open_nus, render, scan, stdin_lines};
+use vag_ble::{Lines, flush, open_nus, render, scan, stdin_lines};
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 use futures::StreamExt;
@@ -89,7 +89,7 @@ impl DashState {
 async fn main() -> Result<()> {
     let name = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_NAME.into());
     let mut lines = stdin_lines();
-    let adapter = bleecho::adapter().await?;
+    let adapter = vag_ble::adapter().await?;
 
     let target = wait_for(&adapter, &name).await?;
     println!("\nfound {name}, connecting ...");

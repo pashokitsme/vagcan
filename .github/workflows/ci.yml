@@ -45,6 +45,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       # --all-targets is correct HERE: clippy should lint tests, benches and
       # examples too. It is only wrong for the dead-code job below.
       - name: cargo clippy --workspace --all-targets -D warnings
@@ -59,6 +61,8 @@ jobs:
           lfs: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: cargo test --workspace
         run: cargo test --workspace
 
@@ -71,6 +75,8 @@ jobs:
           lfs: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       # MANDATORY (CLAUDE.md): --workspace, NEVER --all-targets. --all-targets
       # recompiles the binary as a test harness where `main` is unreachable and
       # reports ~140 false positives ("fn main is never used"). --force-warn

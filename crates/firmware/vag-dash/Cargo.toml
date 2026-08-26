@@ -1,8 +1,12 @@
 [package]
-edition      = "2021"
-name         = "vag-dash-fw"
+edition = "2021"
+# The directory reads as `firmware/vag-dash` because that is the device; the
+# *package* has to be something else, because it depends on the renderer crate
+# that is already called `vag-dash`. Two packages of one name cannot share a
+# lockfile, and cargo says so rather than picking.
+name = "vag-dash-fw"
 rust-version = "1.86"
-version      = "0.1.0"
+version = "0.1.0"
 
 [[bin]]
 name = "dash"
@@ -76,10 +80,10 @@ heapless = { version = "0.8.0", features = ["serde"] }
 opt-level = "s"
 
 [profile.release]
-codegen-units    = 1     # LLVM can perform better optimizations using a single thread
-debug            = 2
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
+debug = 2
 debug-assertions = false
-incremental      = false
-lto              = 'fat'
-opt-level        = 's'
-overflow-checks  = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false

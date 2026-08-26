@@ -12,7 +12,7 @@
   ],
   "rust-analyzer.linkedProjects": [
     "Cargo.toml",
-    "firmware/vag-dash-fw/Cargo.toml",
+    "crates/firmware/vag-dash/Cargo.toml",
     "research/dash/probes/Cargo.toml",
     "research/dash/host/Cargo.toml"
   ]
