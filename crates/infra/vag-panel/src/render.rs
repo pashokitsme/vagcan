@@ -223,7 +223,12 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 	}
 
 	let label_h = cells.iter().map(|c| text_height(&theme.label, c.label)).max().unwrap_or(0);
-	let unit_h = cells.iter().filter(|c| !c.unit.is_empty()).map(|c| text_height(&theme.unit, c.unit)).max().unwrap_or(0);
+	let unit_h = cells
+		.iter()
+		.filter(|c| !c.unit.is_empty())
+		.map(|c| text_height(&theme.unit, c.unit))
+		.max()
+		.unwrap_or(0);
 	let value_h = numeral_height(&theme.numerals[stacked_step], "0");
 
 	// One pixel of air above and below the number. Any less and the tiers touch,

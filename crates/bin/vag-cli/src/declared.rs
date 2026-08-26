@@ -216,6 +216,11 @@ pub fn sources() -> (CatalogStore, Extracted) {
 
 #[cfg(test)]
 mod tests {
+	// `&[0x2000..=0x20FF]` is one range inside a slice of ranges, which is what
+	// `scan_dids` and friends take. Clippy reads it as a possible typo for
+	// `(0x2000..=0x20FF).collect()`; the parameter type makes that reading
+	// impossible, and spelling one range as a vec! of one would be worse.
+	#![allow(clippy::single_range_in_vec_init)]
 	use super::*;
 	use vag_data::catalog::{MeasurementDef, Scaling};
 	use vag_data::measure::{LinearScale, RawForm};
