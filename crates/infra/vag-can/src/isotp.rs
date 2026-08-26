@@ -1,8 +1,11 @@
-use std::time::Duration;
-use tokio::time::Instant;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::time::Duration;
 use vag_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 use crate::backend::{CanBackend, to_raw_id};
+use crate::time::{Instant, sleep};
 
 /// Frame padding byte (classic CAN diagnostic frames are padded to 8 bytes).
 const PAD: u8 = 0x00;
@@ -134,7 +137,7 @@ impl<B: CanBackend> AsyncIsoTpTransport for IsoTpCan<B> {
 		while offset < pdu.len() {
 			let gap = stmin_gap(stmin);
 			if !gap.is_zero() {
-				tokio::time::sleep(gap).await;
+				sleep(gap).await;
 			}
 			let end = (offset + 7).min(pdu.len());
 			let mut cf = Vec::with_capacity(8);
@@ -213,7 +216,7 @@ impl<B: CanBackend> AsyncIsoTpTransport for IsoTpCan<B> {
 mod tests {
 	use super::*;
 	use crate::CanError;
-	use std::collections::VecDeque;
+	use alloc::collections::VecDeque;
 
 	const TX: u32 = 0x7E0;
 	const RX: u32 = 0x7E8;

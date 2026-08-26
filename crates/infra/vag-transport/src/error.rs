@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 #[derive(thiserror::Error, Debug)]
 pub enum TransportError {
 	#[error("io error: {0}")]

@@ -18,6 +18,8 @@
 //! the seven appear. So the bit order is settled by the data rather than
 //! assumed.
 
+use alloc::vec::Vec;
+
 /// Data identifier holding the installation list.
 pub const INSTALLATION_LIST: u16 = 0x2A26;
 

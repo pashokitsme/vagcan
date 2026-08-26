@@ -30,6 +30,12 @@ path = "./src/bin/dash.rs"
 name = "sleeptest"
 path = "./src/bin/sleeptest.rs"
 
+# A UDS round trip against the chip's own TWAI controller — no transceiver, no
+# second node, no car. See the file's docs.
+[[bin]]
+name = "cantest"
+path = "./src/bin/cantest.rs"
+
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
 esp-hal = { version = "=1.0.0-rc.0", features = [
@@ -57,6 +63,15 @@ embedded-storage = "0.3.1"
 # mock: what the board draws is what `vagcan dash` draws, which is the entire
 # point of the seam `02` describes.
 vag-panel = { path = "../../infra/vag-panel" }
+# The protocol stack, `no_std`. `default-features = false` is not an
+# optimisation: the `std` feature of each of these is what pulls in tokio,
+# tokio-serial, the filesystem and an 88 MB label catalog, none of which exist
+# on a C3.
+vag-can = { path = "../../infra/vag-can", default-features = false }
+vag-protocol = { path = "../../infra/vag-protocol", default-features = false }
+vag-transport = { path = "../../infra/vag-transport", default-features = false }
+# `EspTwaiFrame` exposes its id and its data only through `embedded_can::Frame`.
+embedded-can = "0.4.1"
 embedded-graphics = "0.8"
 crc = "3"
 serde = { version = "1", default-features = false, features = ["derive"] }

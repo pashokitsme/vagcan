@@ -1,5 +1,6 @@
-use std::time::Duration;
-use vag_transport::CanId;
+use alloc::vec::Vec;
+use core::time::Duration;
+use vag_transport::{CanId, MaybeSend};
 
 use crate::CanError;
 
@@ -32,9 +33,10 @@ pub fn from_raw_id(raw: u32) -> CanId {
 ///
 /// Ids are raw `u32`s: 11-bit standard by default, or 29-bit extended when
 /// [`CAN_EFF_FLAG`] (bit 31) is set. Static dispatch only — consumers take
-/// `B: CanBackend`, no `dyn`.
+/// `B: CanBackend`, no `dyn`. [`MaybeSend`] is `Send` on the host and nothing
+/// on the board, where esp-hal's async peripherals are pinned to one core.
 #[allow(async_fn_in_trait)] // static-dispatch seam; callers add Send bounds as needed
-pub trait CanBackend: Send {
+pub trait CanBackend: MaybeSend {
 	/// Transmit one classic CAN frame (`data` must be <= 8 bytes).
 	async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), CanError>;
 	/// Receive the next CAN frame, waiting at most `timeout`.

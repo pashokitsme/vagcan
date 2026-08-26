@@ -1,3 +1,4 @@
+use alloc::string::String;
 use vag_transport::TransportError;
 
 /// Errors from a raw CAN backend (adapter I/O + frame codec).

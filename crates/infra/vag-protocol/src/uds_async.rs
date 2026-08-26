@@ -6,6 +6,7 @@
 //! whole PDUs (in the connection-actor model the `CableActor` owns segmentation),
 //! so this client works purely at the PDU level, like the sync design.
 
+use alloc::vec::Vec;
 use vag_transport::AsyncIsoTpTransport;
 
 use crate::dtc::RawDtc;
@@ -47,7 +48,7 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
 	/// question**, and waiting two seconds per absent unit is what made
 	/// startup take several: the gateway lists fifteen addresses, and the ones
 	/// that do not answer cost the full deadline each.
-	pub async fn request_within(&mut self, sid: u8, payload: &[u8], timeout: std::time::Duration) -> Result<Vec<u8>, UdsError> {
+	pub async fn request_within(&mut self, sid: u8, payload: &[u8], timeout: core::time::Duration) -> Result<Vec<u8>, UdsError> {
 		let req = pdu::encode_request(sid, payload)?;
 		self.channel.send(&req).await?;
 
@@ -68,7 +69,7 @@ impl<T: AsyncIsoTpTransport> AsyncUdsClient<T> {
 	}
 
 	/// The same, giving up after `timeout` rather than the default deadline.
-	pub async fn read_data_by_identifier_within(&mut self, did: u16, timeout: std::time::Duration) -> Result<Vec<u8>, UdsError> {
+	pub async fn read_data_by_identifier_within(&mut self, did: u16, timeout: core::time::Duration) -> Result<Vec<u8>, UdsError> {
 		let resp = self.request_within(0x22, &pdu::did_bytes(did), timeout).await?;
 		pdu::parse_rdbi_response(did, &resp)
 	}

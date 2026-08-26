@@ -1,4 +1,7 @@
-use std::time::Duration;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::time::Duration;
 use vag_transport::{CanFrame, CanId, IsoTpTransport, RawCanTransport, TransportError};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1000);

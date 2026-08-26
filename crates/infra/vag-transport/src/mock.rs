@@ -1,6 +1,8 @@
 use crate::traits::RawCanTransport;
 use crate::{CanFrame, TransportError};
-use std::time::Duration;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 #[cfg(test)]
 use crate::CanId;
@@ -15,7 +17,7 @@ pub enum ScriptStep {
 
 /// Deterministic mock: replays a scripted sequence of expected sends and canned replies.
 pub struct ScriptedCan {
-	steps: std::collections::VecDeque<ScriptStep>,
+	steps: VecDeque<ScriptStep>,
 	sent: Vec<CanFrame>,
 }
 
@@ -60,8 +62,8 @@ impl RawCanTransport for ScriptedCan {
 /// `TransportError::Timeout` when nothing is pending.
 #[cfg(any(test, feature = "test-util"))]
 pub struct MockAsyncTransport {
-	script: std::collections::VecDeque<(Vec<u8>, Vec<u8>)>,
-	pending: std::collections::VecDeque<Vec<u8>>,
+	script: VecDeque<(Vec<u8>, Vec<u8>)>,
+	pending: VecDeque<Vec<u8>>,
 	sent: Vec<Vec<u8>>,
 }
 
@@ -71,7 +73,7 @@ impl MockAsyncTransport {
 	pub fn new(script: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
 		MockAsyncTransport {
 			script: script.into(),
-			pending: std::collections::VecDeque::new(),
+			pending: VecDeque::new(),
 			sent: Vec::new(),
 		}
 	}

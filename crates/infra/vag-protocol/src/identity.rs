@@ -16,6 +16,8 @@
 //! with a trailing space or NUL, part numbers carry no interior spaces, and the
 //! engine does not implement the serial-number identifier at all.
 
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use vag_transport::AsyncIsoTpTransport;
 
 use crate::AsyncUdsClient;
