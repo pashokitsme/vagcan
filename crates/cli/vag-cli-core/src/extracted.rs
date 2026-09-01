@@ -46,6 +46,14 @@ use vag_data_labels::measure::RawForm;
 #[derive(Debug)]
 pub struct Extracted {
 	cache: PathBuf,
+	/// Which project this came out of, for a sentence that has to name it.
+	///
+	/// Carried rather than re-resolved because "is there a project, and which"
+	/// and "what does it know about this unit" are one question asked twice:
+	/// [`current`] has already answered the first to answer the second, and a
+	/// caller that asks [`crate::project::current`] again can get a different
+	/// answer from the one these rows came from.
+	project: Option<String>,
 	variants: Vec<String>,
 	/// text id → what the label files call it. Empty for a project that has
 	/// none, which is not an error: `watch --catalogs <dir>` has no project at
@@ -110,6 +118,7 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 	let variants = vag_data_db::reading_variants(&cache).unwrap_or_default();
 	Extracted {
 		cache,
+		project: Some(project.id.clone()),
 		variants,
 		// **Only when a VCDS installation has actually contributed.** The join
 		// through a text id is right and stays; what was wrong is trusting
@@ -155,6 +164,7 @@ impl Extracted {
 	pub fn none() -> Extracted {
 		Extracted {
 			cache: PathBuf::new(),
+			project: None,
 			variants: Vec::new(),
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),
@@ -192,6 +202,15 @@ impl Extracted {
 	/// Whether this project knows any channels at all.
 	pub fn is_empty(&self) -> bool {
 		self.variants.is_empty()
+	}
+
+	/// The project these rows came out of, when one resolved.
+	///
+	/// `None` is two different states on purpose — no project is set up at all,
+	/// and `--catalogs <dir>` naming proven rows without one — and neither can
+	/// name a project in a sentence, which is the only thing this is for.
+	pub fn project(&self) -> Option<&str> {
+		self.project.as_deref()
 	}
 
 	/// The channels this project knows for a unit, given what the unit said.
@@ -400,6 +419,7 @@ mod tests {
 		Extracted {
 			variants: vag_data_db::reading_variants(&cache).unwrap(),
 			cache,
+			project: Some("SK37X".to_string()),
 			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
 			// Never the owner's real one: a test must not read `~/.vagcan`.
 			mine: BTreeMap::new(),
@@ -835,6 +855,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let x = Extracted {
 			cache: here.path().join("nothing.sqlite"),
+			project: None,
 			variants: Vec::new(),
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),

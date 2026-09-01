@@ -317,18 +317,18 @@ enum Command {
 		/// Pause between reads, in milliseconds.
 		#[arg(long, default_value_t = 2, value_name = "MS")]
 		delay_ms: u64,
-		/// Read while the car is moving. Refused by default: on the reference
-		/// car a run like this made the steering assist stop assisting
-		/// mid-drive, and a declared identifier can still be the one whose path
-		/// through the firmware has the defect in it.
+		/// Read while the car is moving. Refused by default: a declared
+		/// identifier can still be the one whose path through the firmware has
+		/// the defect in it, and a unit that falls over at speed is a different
+		/// event from one that falls over on a driveway.
 		#[arg(long)]
 		while_driving: bool,
 		/// Ask this unit identifiers NOTHING declares it answers — a fuzz test
 		/// of its diagnostic server. Each request takes a path through firmware
 		/// that may never have been exercised, and a path with a defect in it
-		/// crashes the server: that is how the reference car lost its power
-		/// steering, permanently, on the second attempt. By
-		/// default only the identifiers this unit's own data declares are read.
+		/// crashes the server, which on a control unit the car is relying on is
+		/// not a small event. By default only the identifiers this unit's own
+		/// data declares are read.
 		#[arg(long)]
 		blind: bool,
 	},
@@ -386,8 +386,8 @@ enum Command {
 	/// measurements, and that list needs no label file.
 	///
 	/// It does NOT sweep identifier space nothing vouches for. That is a fuzz
-	/// test of a diagnostic server, it is what cost the reference car its power
-	/// steering, and it now needs `--blind <unit>` aimed by hand.
+	/// test of a diagnostic server, and it needs `--blind <unit>` aimed by
+	/// hand.
 	///
 	/// The result is always filed under this car in
 	/// `~/.vagcan/cars/<VIN>/survey.jsonl`, whether or not `--out` was given,
@@ -411,23 +411,23 @@ enum Command {
 		/// read.
 		#[arg(long, value_name = "LIST")]
 		only: Option<String>,
-		/// Ask THESE units, named one by one (e.g. `712`), identifiers nothing
+		/// Ask THESE units, named one by one (e.g. `713`), identifiers nothing
 		/// declares they answer — a fuzz test of their diagnostic servers. Each
 		/// request takes a path through firmware that may never have been
-		/// exercised, and a path with a defect in it crashes the server: that is
-		/// how the reference car lost its power steering, permanently, on the
-		/// second attempt. There is no value of this meaning "the whole car" —
-		/// that was the default, and it is what did the damage.
+		/// exercised, and a path with a defect in it crashes the server, which
+		/// on a control unit the car is relying on is not a small event. There
+		/// is no value of this meaning "the whole car": one unit's crash is an
+		/// incident, and every unit's is the same incident fifteen times.
 		#[arg(long, value_name = "LIST")]
 		blind: Option<String>,
 		/// Compare two earlier survey files instead of reading the car, and
 		/// list the identifiers whose bytes differ. Offline.
 		#[arg(long, num_args = 2, value_names = ["BEFORE", "AFTER"])]
 		diff: Option<Vec<String>>,
-		/// Read while the car is moving. Refused by default: on the reference
-		/// car a run like this made the steering assist stop assisting
-		/// mid-drive, and a declared identifier can still be the one whose path
-		/// through the firmware has the defect in it.
+		/// Read while the car is moving. Refused by default: a declared
+		/// identifier can still be the one whose path through the firmware has
+		/// the defect in it, and a unit that falls over at speed is a different
+		/// event from one that falls over on a driveway.
 		#[arg(long)]
 		while_driving: bool,
 		/// Ask each unit for an extended diagnostic session first. Off by
@@ -1210,9 +1210,8 @@ mod tests {
 	#[test]
 	fn blind_sweeping_is_opt_in_on_every_sweep_and_says_what_it_costs() {
 		// The default was to ask every unit 2816 identifiers nothing said
-		// existed. That is a fuzz test of a diagnostic server;
-		// it cost the reference car its power steering, the second time with
-		// the car parked. It is now something somebody asks for.
+		// existed. That is a fuzz test of a diagnostic server, and it is now
+		// something somebody asks for rather than something that happens.
 		let mut cli = Cli::command();
 		for sweep in ["scan", "survey"] {
 			let sub = cli.find_subcommand_mut(sweep).expect("the sweep exists");
@@ -1222,7 +1221,7 @@ mod tests {
 				.unwrap_or_else(|| panic!("{sweep} sweeps blind with no way to say so"));
 			let help = blind.get_help().map(|h| h.to_string()).unwrap_or_default();
 			assert!(help.contains("fuzz test"), "{sweep} --blind does not say what it is: {help}");
-			assert!(help.contains("power steering"), "{sweep} --blind does not say what it cost: {help}");
+			assert!(help.contains("crashes the server"), "{sweep} --blind does not say what it risks: {help}");
 		}
 	}
 
