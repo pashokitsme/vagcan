@@ -320,7 +320,7 @@ enum Command {
 // and `vcds` and `survey` are among the commands that want it.
 #[derive(Clone, Subcommand)]
 enum Dev {
-	/// Read EVERY control unit the car has — `scan` for the whole car.
+	/// Read EVERY control unit the car has, one after another.
 	///
 	/// Reads the gateway's installation list, then walks each unit: its
 	/// identification block, its faults, and the identifiers that unit's own
