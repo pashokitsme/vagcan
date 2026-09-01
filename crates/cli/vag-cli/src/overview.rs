@@ -14,10 +14,17 @@
 //! no line: it is read at an open driver's door by somebody deciding whether
 //! the cable or the car is at fault.
 //!
+//! **An admission carries why.** Every `Unknown` here holds the error that
+//! produced it, formatted once at the point it happened, and the screen prints
+//! it under the state line as `caused by:` — a permission bit, a missing mount
+//! and a truncated file all read as "could not be read" otherwise, and they
+//! send somebody to three different places.
+//!
 //! **Nothing here touches the car.** No adapter is opened, no frame is sent —
 //! listing USB serial devices and reading `~/.vagcan` is the whole of it, so
 //! this stays instant and stays safe to run with the engine running.
 
+use anyhow::Context;
 use vag_cli_core::{datadir, device, project};
 use vag_uds_can::AdapterInfo;
 
@@ -32,8 +39,10 @@ pub enum Adapters {
 	Unrecognised(usize),
 	/// Nothing serial is connected at all.
 	None,
-	/// The listing itself failed, so nothing is known either way.
-	Unknown,
+	/// The listing itself failed, so nothing is known either way. Carries the
+	/// reason as one line (see [`cause`]), because "could not be listed" alone
+	/// does not say whether the port node is missing or the permission is.
+	Unknown(String),
 }
 
 /// Which car's data this run would use.
@@ -53,7 +62,9 @@ pub enum Cars {
 	/// `vagcan setup` has never run on this machine.
 	None,
 	/// `~/.vagcan/data/` could not be read, which is not the same as empty.
-	Unknown,
+	/// Carries the reason as one line (see [`cause`]): a permission bit and an
+	/// unmounted home directory are both this state and neither is the other.
+	Unknown(String),
 }
 
 /// How much of a car the project's cache describes, or why that is not known.
@@ -73,8 +84,9 @@ pub enum Described {
 	/// "could not be read" send somebody to different places, and apart from
 	/// [`Described::Unbuilt`] for the same reason one step further: a reader
 	/// told to run `setup` on a *corrupt* cache runs it and gets the same
-	/// screen back.
-	Unknown,
+	/// screen back. Carries the reason as one line (see [`cause`]) — sqlite
+	/// says which of the two it is, and it is the only thing that can.
+	Unknown(String),
 }
 
 /// One project, summarised in what can be read in milliseconds.
@@ -113,7 +125,10 @@ pub fn gather() -> Facts {
 }
 
 fn adapters() -> Adapters {
-	let Ok(found) = device::list() else { return Adapters::Unknown };
+	let found = match device::list().context("listing the serial devices") {
+		Ok(found) => found,
+		Err(e) => return Adapters::Unknown(cause(&e)),
+	};
 	let known: Vec<AdapterInfo> = found.iter().filter(|a| a.known).cloned().collect();
 	match (known.is_empty(), found.len()) {
 		(false, _) => Adapters::Ready(known),
@@ -129,13 +144,19 @@ fn cars() -> Cars {
 	// a store that is sitting right there. Only the difference between the two
 	// is taken from `read_dir`; the listing itself stays `project`'s, so the
 	// rule about which directory names count as projects lives in one place.
-	let Ok(dir) = datadir::projects_dir() else { return Cars::Unknown };
+	let dir = match datadir::projects_dir().context("locating ~/.vagcan/data/") {
+		Ok(dir) => dir,
+		Err(e) => return Cars::Unknown(cause(&e)),
+	};
 	match store(&dir) {
 		Store::Listable => {}
 		Store::Missing => return Cars::None,
-		Store::Unreadable => return Cars::Unknown,
+		Store::Unreadable(why) => return Cars::Unknown(why),
 	}
-	let Ok(ids) = project::list() else { return Cars::Unknown };
+	let ids = match project::list().context("listing the projects under ~/.vagcan/data/") {
+		Ok(ids) => ids,
+		Err(e) => return Cars::Unknown(cause(&e)),
+	};
 	if ids.is_empty() {
 		return Cars::None;
 	}
@@ -153,23 +174,27 @@ fn cars() -> Cars {
 }
 
 /// What `~/.vagcan/data/` itself says, before anything that is in it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Store {
 	/// It opened; which projects it holds is [`project::list`]'s answer.
 	Listable,
 	/// It is not there — nothing has been set up on this machine.
 	Missing,
-	/// It is there and would not open. Named apart from [`Store::Missing`]
-	/// because `read_dir` hands both back the same way, and this screen must
-	/// not print the second as the first.
-	Unreadable,
+	/// It is there and would not open, with `read_dir`'s own reason as one line.
+	/// Named apart from [`Store::Missing`] because `read_dir` hands both back the
+	/// same way, and this screen must not print the second as the first; the
+	/// reason travels because a permission bit and a home directory that is not
+	/// mounted are both this variant and want different things done.
+	Unreadable(String),
 }
 
 fn store(dir: &std::path::Path) -> Store {
 	match std::fs::read_dir(dir) {
 		Ok(_) => Store::Listable,
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Store::Missing,
-		Err(_) => Store::Unreadable,
+		// The path is the context because it is the one thing `io::Error` never
+		// carries, and it is what tells somebody *which* directory refused.
+		Err(e) => Store::Unreadable(cause(&anyhow::Error::new(e).context(format!("reading {}", dir.display())))),
 	}
 }
 
@@ -196,11 +221,28 @@ fn described(cache: &std::path::Path) -> Described {
 	if !cache.is_file() {
 		return Described::Unbuilt;
 	}
-	match vag_data_db::channel_counts(cache) {
+	match vag_data_db::channel_counts(cache).with_context(|| format!("reading {}", cache.display())) {
 		Ok((variants, channels)) if channels > 0 => Described::Channels(variants, channels),
 		Ok(_) => Described::None,
-		Err(_) => Described::Unknown,
+		Err(e) => Described::Unknown(cause(&e)),
 	}
+}
+
+/// Somebody else's error, as the one line this screen can afford.
+///
+/// `{e:#}` and not `{e:?}`: anyhow's alternate `Display` walks the whole chain
+/// into `our sentence: what sqlite said`, where `Debug` prints a multi-line
+/// `Caused by:` block (and a backtrace when one is enabled). This screen is six
+/// lines that are meant to be taken in at a glance, in a car park, at a driver's
+/// door — a block pasted into the middle of it is the stack trace the layout
+/// exists to avoid. So the chain is flattened, and any newline inside a single
+/// link goes with it: a cause gets one line however long it is.
+///
+/// [`Cars::Misnamed`] deliberately does not come through here. Its `why` is not
+/// a cause hung off a state line but `project::current`'s whole message, printed
+/// under "Next:" as the instruction it is, and its blank lines are structure.
+fn cause(e: &anyhow::Error) -> String {
+	format!("{e:#}").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// How many catalog files hold rows proven on a car — one file per key.
@@ -242,18 +284,24 @@ fn state(facts: &Facts) -> String {
 			"  Adapter   none recognised — {n} other serial device(s) connected, see `vagcan devices`\n"
 		)),
 		Adapters::None => out.push_str("  Adapter   nothing connected\n"),
-		Adapters::Unknown => out.push_str("  Adapter   could not be listed — `vagcan devices` says why\n"),
+		Adapters::Unknown(why) => {
+			out.push_str("  Adapter   could not be listed — `vagcan devices` says why\n");
+			out.push_str(&caused_by(why));
+		}
 	}
 	match &facts.cars {
 		Cars::One(car) => {
 			out.push_str(&format!("  Car data  {}{}\n", car.id, provenance(car)));
-			match car.described {
+			match &car.described {
 				Described::Channels(variants, channels) => {
 					out.push_str(&format!("            {channels} channels across {variants} control-unit variants\n"));
 				}
 				Described::None => {}
 				Described::Unbuilt => out.push_str("            not built yet — `vagcan setup` reads a source into it\n"),
-				Described::Unknown => out.push_str("            its label cache is there and will not open — `vagcan setup --refresh` rewrites it\n"),
+				Described::Unknown(why) => {
+					out.push_str("            its label cache is there and will not open — `vagcan setup --refresh` rewrites it\n");
+					out.push_str(&caused_by(why));
+				}
 			}
 			if car.proven_catalogs > 0 {
 				out.push_str(&format!(
@@ -269,9 +317,22 @@ fn state(facts: &Facts) -> String {
 		// this run does not land on it is the "Next" block's business.
 		Cars::Misnamed { ids, .. } => out.push_str(&format!("  Car data  set up: {} — not what this run names\n", ids.join(", "))),
 		Cars::None => out.push_str("  Car data  none — nothing has been set up yet\n"),
-		Cars::Unknown => out.push_str("  Car data  could not be read under ~/.vagcan/data/\n"),
+		Cars::Unknown(why) => {
+			out.push_str("  Car data  could not be read under ~/.vagcan/data/\n");
+			out.push_str(&caused_by(why));
+		}
 	}
 	out
+}
+
+/// The one line a state gets to say why, under the state it belongs to.
+///
+/// Our sentence stays first and stays the same width as every other line here;
+/// the underlying error follows it, indented to the state block's continuation
+/// column, so the screen can still be read down the left edge by somebody who
+/// only wants to know which of the four facts is missing.
+fn caused_by(why: &str) -> String {
+	format!("            caused by: {why}\n")
 }
 
 /// Where a project's data came from, as a clause to hang off its name.
@@ -300,7 +361,7 @@ fn next(facts: &Facts) -> String {
 		out.push_str(&setup_advice(&facts.cars));
 		return out;
 	}
-	let plugged = matches!(facts.adapters, Adapters::Ready(_) | Adapters::Unknown);
+	let plugged = matches!(facts.adapters, Adapters::Ready(_) | Adapters::Unknown(_));
 	if !plugged {
 		out.push_str(
 			"  Plug in a USB-CAN adapter, then `vagcan devices` to check it enumerated.\n  \
@@ -374,6 +435,15 @@ mod tests {
 		}
 	}
 
+	/// A cause of the shape `cause()` produces: our sentence, then the real one.
+	fn unlisted() -> String {
+		"listing the serial devices: Permission denied (os error 13)".to_string()
+	}
+
+	fn unreadable() -> String {
+		"reading /Users/x/.vagcan/data: Permission denied (os error 13)".to_string()
+	}
+
 	fn car() -> CarData {
 		CarData {
 			id: "SK37X".to_string(),
@@ -398,8 +468,8 @@ mod tests {
 				cars: Cars::None,
 			},
 			Facts {
-				adapters: Adapters::Unknown,
-				cars: Cars::Unknown,
+				adapters: Adapters::Unknown(unlisted()),
+				cars: Cars::Unknown(unreadable()),
 			},
 		] {
 			let text = render(&facts);
@@ -479,13 +549,88 @@ mod tests {
 		// wrong place, and the second would invite a second `setup` over a
 		// store that is already there.
 		let text = render(&Facts {
-			adapters: Adapters::Unknown,
-			cars: Cars::Unknown,
+			adapters: Adapters::Unknown(unlisted()),
+			cars: Cars::Unknown(unreadable()),
 		});
 		assert!(text.contains("could not be listed"), "{text}");
 		assert!(!text.contains("nothing connected"), "{text}");
 		assert!(text.contains("could not be read"), "{text}");
 		assert!(!text.contains("nothing has been set up"), "{text}");
+	}
+
+	#[test]
+	fn an_adapter_listing_that_failed_prints_our_sentence_and_then_the_real_error() {
+		let text = render(&Facts {
+			adapters: Adapters::Unknown(unlisted()),
+			cars: Cars::One(car()),
+		});
+		assert!(text.contains("  Adapter   could not be listed"), "our sentence is first: {text}");
+		assert!(
+			text.contains("            caused by: listing the serial devices: Permission denied (os error 13)"),
+			"and the cause is under it, indented: {text}"
+		);
+	}
+
+	#[test]
+	fn a_data_directory_that_will_not_open_prints_our_sentence_and_then_the_real_error() {
+		let text = render(&Facts {
+			adapters: Adapters::None,
+			cars: Cars::Unknown(unreadable()),
+		});
+		assert!(text.contains("  Car data  could not be read under ~/.vagcan/data/"), "{text}");
+		assert!(
+			text.contains("            caused by: reading /Users/x/.vagcan/data: Permission denied (os error 13)"),
+			"{text}"
+		);
+	}
+
+	#[test]
+	fn a_cache_that_will_not_open_prints_our_sentence_and_then_the_real_error() {
+		let text = render(&Facts {
+			adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
+			cars: Cars::One(CarData {
+				described: Described::Unknown("reading /Users/x/.vagcan/data/SK37X/cache.sqlite: sqlite error: file is not a database".to_string()),
+				..car()
+			}),
+		});
+		assert!(text.contains("            its label cache is there and will not open"), "{text}");
+		assert!(
+			text.contains("            caused by: reading /Users/x/.vagcan/data/SK37X/cache.sqlite: sqlite error: file is not a database"),
+			"{text}"
+		);
+	}
+
+	#[test]
+	fn the_cause_a_state_carries_is_the_real_one_and_fits_on_one_line() {
+		// A placeholder would satisfy "there is a cause" and help nobody, so the
+		// causes are taken from the failures themselves, not written here.
+		let root = std::env::temp_dir().join(format!("vagcan-overview-cause-{}-{:?}", std::process::id(), std::thread::current().id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(&root).unwrap();
+
+		// `read_dir` over a plain file: the same branch as a `chmod 000` and it
+		// needs no permissions to arrange.
+		let file = root.join("not-a-directory");
+		std::fs::write(&file, b"x").unwrap();
+		let Store::Unreadable(why) = store(&file) else {
+			panic!("a file is not a listable directory");
+		};
+		assert!(why.contains(&file.display().to_string()), "which path refused is in it: {why}");
+		assert!(why.to_lowercase().contains("not a directory"), "and what the OS said: {why}");
+		assert!(!why.contains('\n'), "one line: {why}");
+
+		// A cache that is not a database: sqlite's own words, not "could not be
+		// read", which is the sentence this cause exists to qualify.
+		let cache = root.join("cache.sqlite");
+		std::fs::write(&cache, b"this is not a database").unwrap();
+		let Described::Unknown(why) = described(&cache) else {
+			panic!("a truncated cache does not answer");
+		};
+		assert!(why.contains(&cache.display().to_string()), "{why}");
+		assert!(why.contains("not a database"), "sqlite says which kind of broken: {why}");
+		assert!(!why.contains('\n'), "one line: {why}");
+
+		let _ = std::fs::remove_dir_all(&root);
 	}
 
 	#[test]
@@ -545,7 +690,7 @@ mod tests {
 		// `chmod 000` that prompted this, and needs no permissions to arrange.
 		let file = root.join("not-a-directory");
 		std::fs::write(&file, b"x").unwrap();
-		assert_eq!(store(&file), Store::Unreadable);
+		assert!(matches!(store(&file), Store::Unreadable(_)));
 
 		#[cfg(unix)]
 		{
@@ -554,7 +699,10 @@ mod tests {
 			// Run as root there is nothing to deny, and the assertion would be
 			// about the test runner rather than about this code.
 			if std::fs::read_dir(&data).is_err() {
-				assert_eq!(store(&data), Store::Unreadable);
+				let Store::Unreadable(why) = store(&data) else {
+					panic!("a directory that will not open is not listable");
+				};
+				assert!(why.to_lowercase().contains("permission denied"), "the permission bit is named: {why}");
 			}
 			std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
 		}
@@ -562,7 +710,7 @@ mod tests {
 		// And the state it produces is an admission, not "nothing set up".
 		let text = render(&Facts {
 			adapters: Adapters::None,
-			cars: Cars::Unknown,
+			cars: Cars::Unknown(unreadable()),
 		});
 		assert!(text.contains("could not be read under ~/.vagcan/data/"), "{text}");
 		assert!(!text.contains("nothing has been set up"), "{text}");
@@ -599,7 +747,7 @@ mod tests {
 		let text = render(&Facts {
 			adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
 			cars: Cars::One(CarData {
-				described: Described::Unknown,
+				described: Described::Unknown("reading /Users/x/.vagcan/data/SK37X/cache.sqlite: sqlite error: file is not a database".to_string()),
 				..car()
 			}),
 		});
