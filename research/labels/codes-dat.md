@@ -312,7 +312,7 @@ The rest of this section is left as written, for the record.
 ---
 
 The decoder is shipped: `vag_data_labels::CodesDb` — `parse`, `get`, `iso_dtc`, `file_constant`.
-`crates/cli/src/faults.rs::format_code` already computes the exact key shape
+`crates/vag-cli/src/faults.rs::format_code` already computes the exact key shape
 (`u32::from_be_bytes([0, code[0], code[1], code[2]])`), so on the tool side the join is one
 call. Nothing was wired, deliberately, because on this car it would name nothing.
 

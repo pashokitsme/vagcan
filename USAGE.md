@@ -2,7 +2,7 @@
 
 Every command, what it prints, and the flows that span several of them. Start at
 [`README.md`](README.md) if you have not built the tool yet; read
-[`SAFETY.md`](SAFETY.md) before your first sweep; [`ARCHITECTURE.md`](ARCHITECTURE.md)
+[`ARCHITECTURE.md`](ARCHITECTURE.md)
 explains why any of this is shaped the way it is.
 
 Commands are split by what they need. **The top level needs a car in front of you.**
@@ -297,7 +297,7 @@ something the car does not have.
 > It has to be aimed at units named one at a time (`--blind 712`); there is no way to
 > ask for it car-wide. Both commands also refuse to run on a moving car unless
 > `--while-driving` is passed, and both **stop the whole run** if a unit goes quiet or
-> goes back on an identifier it already answered. Read [`SAFETY.md`](SAFETY.md).
+> goes back on an identifier it already answered.
 
 The diff is the point:
 

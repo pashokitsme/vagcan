@@ -2,26 +2,27 @@
 resolver = "2"
 members = [
   # uds/ — talking to a car. ISO-TP under, UDS over, and the two transports.
-  "crates/uds/transport",
-  "crates/uds/can",
-  "crates/uds/client",
-  "crates/uds/capture",
+  "crates/uds/vag-uds-transport",
+  "crates/uds/vag-uds-can",
+  "crates/uds/vag-uds-client",
+  "crates/uds/vag-uds-capture",
   # data/ — somebody else's diagnostic files, parsed and cached.
-  "crates/data/labels",
-  "crates/data/db",
+  "crates/data/vag-data-labels",
+  "crates/data/vag-data-db",
   # dash/ — the OLED device. Its firmware is excluded (see below), not absent.
-  "crates/dash/render",
-  "crates/dash/ble",
-  "crates/dash/cfg",
+  "crates/dash/vag-dash-render",
+  "crates/dash/vag-dash-ble",
+  "crates/dash/vag-dash-cfg",
   # The product, binary `vagcan`. The only crate belonging to no single family
   # — it consumes uds/ and data/ both — which is why its path is one segment
   # where every other crate's is two.
-  "crates/cli",
+  "crates/vag-cli",
 ]
-# A package's name is `vag-` plus its path under `crates/`, slashes turned to
-# hyphens: `uds/client` is `vag-uds-client`, `dash/fw` is `vag-dash-fw`, `cli`
-# is `vag-cli`. It holds for every crate here, so neither direction has to be
-# looked up. A crate's *binaries* are free of it, and are named for what a
+# A crate's directory **is** its package name, and the family it sits in is
+# already spelled inside that name — `uds/vag-uds-client`, `dash/vag-dash-fw`.
+# The repetition is deliberate: a path and a package name that differ are two
+# things to learn, and every tool that reports one (cargo, rustc, a stack trace,
+# a grep) then needs translating into the other. A crate's *binaries* are free of it, and are named for what a
 # person types: `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, and
 # `vag-dash-fw` builds `dash` beside two bench binaries. The rule
 # that places the binaries: **a binary lives in its family when it has exactly
@@ -47,7 +48,7 @@ members = [
 # do; the rest are free to use std. Each crate says which it is at the top of
 # its lib.rs.
 #
-# `crates/dash/fw` cannot be a workspace member and this is not a preference:
+# `crates/dash/vag-dash-fw` cannot be a workspace member and this is not a preference:
 # it is `no_std` for `riscv32imc-unknown-none-elf` with its own
 # `.cargo/config.toml` pinning that target and `build-std`. As a member it
 # would not compile for the host at all. It still lives inside `dash/`, because
@@ -60,7 +61,7 @@ members = [
 # working directory, so building it from the repository root silently targets
 # the host and fails deep inside `portable-atomic`.
 exclude = [
-  "crates/dash/fw",
+  "crates/dash/vag-dash-fw",
   "research/dash/host",
   "research/dash/probes",
 ]

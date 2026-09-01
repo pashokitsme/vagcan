@@ -615,7 +615,7 @@ vagcan faults --from survey.jsonl --labels ~/vcds/    # offline, from a recorded
 * `crates/vag-data-labels/src/glyphs.rs` — `TableAlphabet::for_key`, §11.
 * `crates/vag-data-labels/src/dtc.rs` — the registry, the row selector, the row grammar.
 * `crates/vag-data-labels/src/codes.rs` — `sae_code`, §12.2.
-* `crates/cli/src/faultnames.rs` — the policy: which files, in what order, and what to
+* `crates/vag-cli/src/faultnames.rs` — the policy: which files, in what order, and what to
   say when the chain breaks.
 * `catalogs/rod-iv-cache.json` — the five recovered `[DTC]` keys, as data (§10.4).
 

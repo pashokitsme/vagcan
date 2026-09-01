@@ -13,7 +13,7 @@ nothing else, so no command here can change anything on the car.
 
 Read-only is not the same as harmless. **A sweep is a fuzz test of a diagnostic
 server**, and on this reference car one crashed the electric power steering, twice —
-the second time permanently. `SAFETY.md` has the account. That is why the section on
+the second time permanently; `research/eps/eps-j500-report-ru.md` has the account. That is why the section on
 what not to run is not advisory.
 
 Everything below needs the car present and the ignition on. Commands under

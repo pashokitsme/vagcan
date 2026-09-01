@@ -343,14 +343,14 @@ Five things follow, and the third replaces what the first draft of this section 
    new capability: a survey since `91c6a05` asks what the unit's own data declares, which
    is precisely those 2,251, and records the range it used. One parked run settles it.
 5. **`watch` holds silent channels back only where a survey recorded what it asked**
-   (`plan::Answered`, `crates/cli/src/watch/plan.rs`). The cached file has no such
+   (`plan::Answered`, `crates/vag-cli/src/watch/plan.rs`). The cached file has no such
    record, so on this machine the filter currently hides nothing — see below.
 
 **On reproducing the blind sweep.** The cached survey is a blind run and the default
 sweep can no longer produce one: a declared-only run cannot find an *undeclared*
 identifier by construction. It is not unrepeatable — `--blind <unit>`, aimed by hand one
 unit at a time, still does exactly this, now under the halt-on-anomaly guard the original
-run did not have. Repeating it costs fifteen aimed runs at the risk `SAFETY.md` describes,
+run did not have. Repeating it costs fifteen aimed runs at the risk a blind sweep carries,
 so the file is worth keeping rather than re-earning.
 
 **How this was got wrong, since the shape of the error matters more than the numbers.**
@@ -567,7 +567,7 @@ That is a sample of one, and a second project settles it.
 
 ## 7. The refusal list, and how it is enforced
 
-`SAFETY.md` and the design's §2 name ten object types that are never parsed into anything
+Ten object types are never parsed into anything
 executable. Two of them sit directly in the path of reading a car at all, and the way that
 was resolved is worth recording, because the obvious resolution is wrong.
 

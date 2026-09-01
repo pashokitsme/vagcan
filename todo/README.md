@@ -66,13 +66,14 @@ the car and the bench can answer.
 **`survey` no longer sweeps blind, after a second near-miss with the same steering
 rack.** On 2026-08-09 a run nearly repeated the 2 August incident with the car
 **parked** — every guard in force, and all of them about *where the car was* rather than
-what was being asked. Full account in [`SAFETY.md`](../SAFETY.md); what changed:
+what was being asked. Full account in
+[`research/eps/eps-j500-report-ru.md`](../research/eps/eps-j500-report-ru.md); what changed:
 
 - A sweep asks only identifiers a source declares for that unit. The steering assist
   declares 161; it used to be asked 2816, and the other 2655 were the fuzz test.
 - A unit that goes quiet or goes back on an identifier it already answered **ends the
-  whole run**, non-zero. `SAFETY.md`'s "stop when something changes" was written after
-  the first incident and lived nowhere but that file until now.
+  whole run**, non-zero. "Stop when something changes" was written down after the first
+  incident and lived nowhere but prose until now.
 - Blind sweeping is `--blind <unit>`, aimed by hand. `survey --blind` bare is a parse
   error: whole-car blind was the default, and it is what did the damage.
 - A safety message never goes on the self-rewriting progress line.
@@ -186,7 +187,7 @@ installation can then be deleted and `vagcan faults` names codes with no flag at
 
 **Docs are split for a newcomer**: `README.md` (start here, install, first commands),
 `USAGE.md` (every command with output), `ARCHITECTURE.md` (why, and VCDS's file formats),
-`SAFETY.md`. A naive-user review signed off on the install path and the cross-links.
+A naive-user review signed off on the install path and the cross-links.
 
 **`measure` second drive + the engine-channel fix**, and the **scaling audit** (label files
 carries the values, not the join) are detailed in the 2026-08-05 status and the header
@@ -609,7 +610,7 @@ Dongle: **MKS CANable V2.0 Pro** (STM32G431 + ADM3050E isolated) — fits `vag-u
 `V` and `E` and stays responsive, but acks nothing else; its whole command set is
 `O C S Y M A V E t T r R d D b B X` — no `L`, no `N`, no `F`, **no loopback**. Listen-only is
 `M1`, not `L`. Since it has no loopback and CAN needs a second node to ACK, TX/RX **cannot**
-be proven on the bench (`crates/vag-uds-can/examples/slcan_probe.rs`).
+be proven on the bench (`crates/uds/vag-uds-can/examples/slcan_probe.rs`).
 
 Before touching the car: wire OBD2 pin 6→CAN-H, 14→CAN-L, 4/5→GND, **do NOT** wire pin 16;
 **open the 120R jumper** (the vehicle bus is already terminated at both ends, ~60 Ω; a third
@@ -674,7 +675,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   A census of the whole corpus refuted that: **1,559 of 22,107 classic sections (7.1 %)
   open with a fixed block** (`0x33`/`0xb3`), so roughly a thousand *shifted* sections are
   closed to today's tooling — not slow, unopenable, and for an unrecorded reason until
-  now (`research/labels/tttext2.md` §5, `crates/vag-data-labels/src/rod/mod.rs`). The research
+  now (`research/labels/tttext2.md` §5, `crates/data/vag-data-labels/src/rod/mod.rs`). The research
   driver carries `--all-btypes` as the widening; the shipped searcher does not, because
   admitting them doubles the search. **No car needed.** Cost of being wrong here is that
   a car naming one of those files gets "sealed" forever with no way to tell it apart from
@@ -687,7 +688,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   the other twelve were only reachable through `survey --out FILE` plus `watch --survey
   FILE`, which is two commands and a remembered file name, so nobody ran them. A run with
   `--only` **merges** into the cache rather than replacing it (`survey::merge_survey`), so
-  the one-unit-at-a-time habit `SAFETY.md` asks for does not cost the other fourteen.
+  the one-unit-at-a-time habit does not cost the other fourteen.
   Still open: **`faults --details` keeps nothing** — it should file its dump under the car
   the same way. `watch` deliberately does **not** offer to run the sweep itself: it holds
   the adapter open and a sweep is the one operation on this car that has hurt it, so it
@@ -802,7 +803,7 @@ following the call.
 1. It said `watch` could only reach the units a cached survey named, and that wiring the
    gateway walk into it was the step unblocking everything else. `watch`'s own `wanted`
    list is indeed `preselect + ENGINE` — but `units::identify` reads the gateway's
-   installation list itself (`crates/cli/src/units.rs:47-58`), and `watch` has always
+   installation list itself (`crates/vag-cli/src/units.rs:47-58`), and `watch` has always
    called it.
 2. It said the ODIS project had taken over "which identifiers a unit answers". It has
    taken over which a unit *declares*, which is a different and much weaker statement:
@@ -845,7 +846,7 @@ ways on 2026-08-09:
 So **the number of valid measurements ODIS does not know about is plausibly zero.** Blind
 sweeping loses its last justification with it: it finds fault records that are already read
 properly and coding bytes described elsewhere in the same file. That agrees with what
-`SAFETY.md` wanted anyway.
+the safety guards wanted anyway.
 
 ~~The one real data gap is the two door units, which have no variant in SK37X under any
 name.~~ **Wrong, and fixed on 2026-08-10.** They have a variant —
@@ -900,7 +901,7 @@ what it asked.
 The cached survey is a **blind** sweep and the default sweep can no longer produce one — a
 declared-only run cannot find an undeclared identifier. It is not unrepeatable:
 `--blind <unit>` aimed by hand still does exactly this, now under the halt-on-anomaly
-guard. Repeating it costs fifteen aimed runs at the risk `SAFETY.md` describes, so the
+guard. Repeating it costs fifteen aimed runs at the risk a blind sweep carries, so the
 file is kept rather than re-earned. It must not be deleted.
 
 So `survey` is not deleted, and it is not narrowed by much either:
@@ -927,7 +928,7 @@ Two smaller findings from the same look:
   `units --identify <ecu>` by capability, per the cleanup rule — the deep sweep is the
   survivor's mode, not a second command.
 - **`properties` sweeps 256 undeclared identifiers with no `require_stationary`.** It
-  carries an anomaly monitor and the comment at `crates/cli/src/main.rs:1052`
+  carries an anomaly monitor and the comment at `crates/vag-cli/src/main.rs:1052`
   argues the case: the identification block is standardised and 256 wide. That is a
   defensible line, but it is the only sweep-shaped path without the guard, so it is
   written down rather than left to be re-discovered.
@@ -993,7 +994,7 @@ done tonight.
    Two things to report as findings, not assume: which **language** the text is in
    (this project is `deu`, and a user whose faults arrive in German after VCDS gave
    them English needs telling), and whether the **freeze-frame** fields are reachable —
-   `SAFETY.md` prescribes reading one before touching anything after a unit misbehaves.
+   the rule is to read one before touching anything after a unit misbehaves.
 0b. **Measure the naming join where it was meant to work.** It has never run against a
    VCDS-derived project: the wording preference was written, measured on an ODIS-only
    project where it made names *worse*, and fenced off by provenance. What it actually
@@ -1118,7 +1119,7 @@ A VNCI cable is now on hand (2026-08-07). Today the only live transport is the g
 slcan USB-CAN adapter (`vag-uds-can`); the seam every backend implements is
 `vag-uds-transport`, so this is a new backend behind that trait rather than a change to the
 protocol crates. Listen-only mode and the moving-car guard have to hold on it exactly
-as they do on slcan — read `SAFETY.md` before the first connection.
+as they do on slcan — read `CLAUDE.md`'s safety section before the first connection.
 
 ## Parked (designed, not being implemented now)
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan retired with

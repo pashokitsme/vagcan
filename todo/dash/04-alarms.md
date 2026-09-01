@@ -74,10 +74,10 @@ and it is the first number wanted from hardware — see `06`. Until it is known,
 must not assume batching: build the request set from the union and split it by a limit
 the plan carries.
 
-## Where it lives — `crates/dash/render/src/alarm.rs` (done)
+## Where it lives — `crates/dash/vag-dash-render/src/alarm.rs` (done)
 
 The machine is in **`vag-dash-render`**, not in the firmware, and that is a testability
-decision: `crates/dash/fw` is not a workspace member and cannot be built for the host,
+decision: `crates/dash/vag-dash-fw` is not a workspace member and cannot be built for the host,
 so anything living there is untested by CI. The module is `no_std`, allocation-free and
 does not touch the drawing code — it decides *which* page is on the glass, and it is the
 only thing that ever sets `Cell::alarm`.

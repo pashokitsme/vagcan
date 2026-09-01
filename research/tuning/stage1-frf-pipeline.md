@@ -6,7 +6,7 @@ Flashing is *not* done here — see the safety boundary below.
 ## Safety boundary (read this first)
 
 `vagcan` stays **read-only**. It never flashes, unlocks, codes, or adapts —
-that line does not move (see [`../SAFETY.md`](../SAFETY.md), [`../CLAUDE.md`](../CLAUDE.md)).
+that line does not move (see [`../CLAUDE.md`](../CLAUDE.md)).
 Everything in this document that *writes* to an ECU is done by the **separate,
 external** tool `bri3d/VW_Flash`, run by the owner on their own car. This file is
 a research writeup of that external workflow plus our offline analysis of a

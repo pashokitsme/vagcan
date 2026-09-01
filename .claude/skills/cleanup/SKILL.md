@@ -60,7 +60,7 @@ the file that survives a context reset **for that kind of fact**:
 | how something was proven, or refuted, and with what data | `research/<topic>.md` |
 | current state, milestones, what to do next | `todo/README.md` |
 | goal, stack, workflow | `CLAUDE.md` (`todo/GOAL.md` was folded into it) |
-| anything that risked or damaged the car | `SAFETY.md` |
+| anything that risked or damaged the car | `CLAUDE.md` if it is a rule, `research/eps/` if it is an incident |
 | a rule the tool must obey forever | `CLAUDE.md` |
 | a path nobody should retry | `.archive/research/`, plus one line under "Dead and archived" |
 
@@ -213,7 +213,7 @@ Five things, and no more:
 | "Nothing calls this, so it is dead" | Uncalled is half the test. The other half is that its reason has been refuted. |
 | "The doc says this path is refuted" | Check what refuted it. Once here it was our own bug. |
 | "`git add -A` is faster, everything is mine" | It was not, twice. Stage by path. |
-| "This guard is over-cautious for a read-only tool" | The read-only tool cost this car its power steering. Read `SAFETY.md`. |
+| "This guard is over-cautious for a read-only tool" | The read-only tool cost this car its power steering, permanently, on the second run. |
 | "I'll fold this JSON into a small table, it is cleaner" | That is the one thing `CLAUDE.md` forbids outright. |
 | "Tests were green before, no need to re-run" | The pass is judged by green after. Run them. |
 
@@ -221,7 +221,7 @@ Five things, and no more:
 
 - About to type `git add -A`.
 - About to run `git rm` on anything under `research/`, `vendor/` (the LFS-tracked VCDS
-  archives) or `crates/*/bin/`. (Proven measurement rows no longer live in the repo at
+  archives) or anything under `crates/`. (Proven measurement rows no longer live in the repo at
   all — they are in `~/.vagcan/data/<project>/measurements/`, outside git; deleting one there is just
   as unrecoverable, and just as forbidden.)
 - Writing "recently", "last session", "currently" into a status document.

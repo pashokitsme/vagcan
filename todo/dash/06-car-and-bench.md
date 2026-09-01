@@ -3,7 +3,7 @@
 **Subsystem:** dash · **Needs the car:** yes — this whole file
 
 Everything here gates `05`, and none of it can be settled from the catalogs. Read
-`SAFETY.md` before any of it. Nothing in this list is a sweep: every identifier named
+`CLAUDE.md`'s safety section before any of it. Nothing in this list is a sweep: every identifier named
 below is one the catalog declares for this car's own variants.
 
 ## 1. How many identifiers per `0x22` request

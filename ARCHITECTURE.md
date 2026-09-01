@@ -3,8 +3,9 @@
 Why this tool is built the way it is. **This one is for the curious and for anyone
 working on the code** — you do not need it to use `vagcan` (that is [`USAGE.md`](USAGE.md)).
 The `research/…` files it links go deeper still, into the reverse-engineering: they are
-developer notes, not instructions. For the rules that were paid for in a broken control
-unit, [`SAFETY.md`](SAFETY.md).
+developer notes, not instructions. The rules that were paid for in a broken control unit
+are in [`CLAUDE.md`](CLAUDE.md); the incident itself is
+[`research/eps/eps-j500-report-ru.md`](research/eps/eps-j500-report-ru.md).
 
 ---
 
@@ -328,24 +329,26 @@ Three families and the product.
 
 ```
 crates/
-  uds/        talking to a car — ISO-TP underneath, UDS over it
-    transport   the transport trait: the seam every backend implements
-    can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
-    client      UDS client, ISO-TP framing, unit addressing
-    capture     capture and replay transport, so tests need no hardware
-  data/       somebody else's diagnostic files
-    labels      label parsers and decoders (.lbl/.clb/.rod), ODX/ODIS resolution
-    db          SQLite cache over the label files
-  dash/       the OLED device, laptop side and board side both
-    render      a Frame in, pixels out, on any embedded-graphics DrawTarget
-    ble         the laptop's BLE client — scan, pick a device, open a NUS pipe
-    cfg         `dashcfg`, which configures the device over that pipe
-    fw          the firmware. Outside the workspace: no_std for riscv32imc
-  cli/        vag-cli, binary `vagcan` — the CLI
+  uds/                     talking to a car — ISO-TP underneath, UDS over it
+    vag-uds-transport        the transport trait: the seam every backend implements
+    vag-uds-can              slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
+    vag-uds-client           UDS client, ISO-TP framing, unit addressing
+    vag-uds-capture          capture and replay transport, so tests need no hardware
+  data/                    somebody else's diagnostic files
+    vag-data-labels          parsers and decoders (.lbl/.clb/.rod), ODX/ODIS resolution
+    vag-data-db              SQLite cache over the label files
+  dash/                    the OLED device, laptop side and board side both
+    vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
+    vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
+    vag-dash-cfg             `dashcfg`, which configures the device over that pipe
+    vag-dash-fw              the firmware. Outside the workspace: no_std for riscv32imc
+  vag-cli                  binary `vagcan` — the CLI
 ```
 
-A package's name is `vag-` plus its path under `crates/`, slashes turned to hyphens, and
-that holds for every crate above. Binaries are free of it and named for what a person
+**A crate's directory is its package name**, and the family it sits in is already spelled
+inside that name. The repetition is deliberate: a path and a package name that differ are
+two things to learn, and everything that reports one — cargo, rustc, a stack trace, a
+grep — then has to be translated into the other. Binaries are free of it and named for what a person
 types — `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, `vag-dash-fw` builds
 `dash` — because the name in a manifest serves the tree and the name in a shell serves
 the reader, and they are not the same audience.
@@ -386,8 +389,9 @@ and the variant declares its own list — and a unit nothing describes is identi
 has its faults read rather than being swept hardest of all. Blind sweeping survives as
 `--blind`, aimed at units named one at a time; there is no spelling of any flag that
 means "sweep the whole car blind", because that was the default and it is what cost the
-reference car its power steering. [`SAFETY.md`](SAFETY.md) is the account, and it is
-worth reading before the flag.
+reference car its power steering.
+[`research/eps/eps-j500-report-ru.md`](research/eps/eps-j500-report-ru.md) is the account,
+and it is worth reading before the flag.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you. `recording …` reads back drives this tool recorded, and
@@ -397,8 +401,9 @@ asserts it.
 
 **Read-only is enforced in the client, not by convention.** The UDS service allowlist
 admits `0x22` (read data), `0x19` (read faults), `0x10` (session control) and `0x3E`
-(tester present), and that is the whole of it. See `SAFETY.md` for why that is not the
-same as harmless.
+(tester present), and that is the whole of it. That is not the same as harmless:
+"read-only" bounds what you can *change* about a car, not what you can *provoke*, and an
+identifier sweep provoked enough to end a steering assist unit.
 
 ---
 
@@ -409,7 +414,7 @@ crates/         the Rust workspace — uds/, data/, dash/ and vagcan/
 research/       reverse-engineering writeups and tooling, one directory per subject
   labels/         VW's label files: the .rod crack, the name codec, fault naming
   car/            what the reference car answers: identifier map, units, surveys
-  eps/            the steering-assist incident — read alongside SAFETY.md
+  eps/            the steering-assist incident, and the rules it bought
   clb-crack/      the RE scripts themselves
   dash/           the board from the laptop's side: probes/ and the bench rig host/
 .archive/       retired paths, kept as evidence — research/, specs/, tasks/done/

@@ -57,7 +57,7 @@ From local repository:
 ```sh
 git clone https://github.com/pashokitsme/vagcan
 cd vagcan
-cargo install --path crates/cli
+cargo install --path crates/vag-cli
 ```
 
 Check it found your adapter:

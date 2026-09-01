@@ -49,7 +49,7 @@ touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
   run it — for them the CI `fmt` job is the backstop. Needs `jq` and `rustfmt` on
   `PATH`; if either is missing the hook no-ops rather than failing the edit.
 
-## Safety (MANDATORY — read [`SAFETY.md`](SAFETY.md))
+## Safety (MANDATORY)
 
 This tool only reads, and it has still cost the reference car its power steering: an
 identifier sweep crashed the steering assist unit, twice, the second time permanently
@@ -75,7 +75,7 @@ between algorithm and data:
   list).
 - **Nothing the tool reads at run time lives in the checkout.** The label data is
   Ross-Tech's and may not be redistributed; the proven measurement rows are one
-  owner's car. Both are under `~/.vagcan/` — see `crates/cli/src/datadir.rs`, which
+  owner's car. Both are under `~/.vagcan/` — see `crates/vag-cli/src/datadir.rs`, which
   owns the layout — and `catalogs/` is gitignored. A new default path that resolves
   relative to the working directory is a bug: it works in a checkout and nowhere else,
   and after `cargo install` there is no checkout.
@@ -105,9 +105,11 @@ HEX clone is dead — crate and driver deleted, research archived under `.archiv
 Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
-**A package's name is `vag-` plus its path under `crates/`**, slashes turned to hyphens:
-`uds/client` is `vag-uds-client`, `dash/fw` is `vag-dash-fw`, `cli` is `vag-cli`. It holds
-for every crate, so neither direction has to be looked up. A crate's *binaries* are free
+**A crate's directory is its package name**, and the family it sits in is already spelled
+inside that name: `uds/vag-uds-client`, `dash/vag-dash-fw`. The repetition is deliberate —
+a path and a package name that differ are two things to learn, and everything that reports
+one (cargo, rustc, a stack trace, a grep) then has to be translated into the other. A
+crate's *binaries* are free
 of the rule and named for what a person types: `vag-cli` builds `vagcan`, `vag-dash-cfg`
 builds `dashcfg`, `vag-dash-fw` builds `dash`. The rule that places them: **a binary lives
 in its family when it has exactly one.** `dashcfg` and
@@ -115,26 +117,26 @@ the firmware serve only the device, so they sit inside `dash/`; `vagcan` consume
 `uds/` and `data/`, so it belongs to neither and carries no family prefix.
 
 ```
-crates/          all Rust. Three families and the product.
-  uds/             talking to a car: ISO-TP underneath, UDS over it.
-    transport        vag-uds-transport — the seam every backend implements, whole PDUs
-    can              vag-uds-can — slcan backend, async ISO-TP over CAN, listen-only sniffer
-    client           vag-uds-client — UDS client + allowlist, DTCs, gateway, addressing
-    capture          vag-uds-capture — capture/replay transport, hardware-free tests
-  data/            somebody else's diagnostic files, parsed and cached.
-    labels           vag-data-labels — parsers: .rod/.clb/.lbl, TTTEXT names,
-                     Codes.dat, ODX/ODIS, OBD-II PIDs, catalog
-    db               vag-data-db — SQLite cache over the parsed label files
-  dash/            the OLED device, all of it — laptop side and board side.
-    render           vag-dash-render — a Frame in, pixels out, on any DrawTarget
-    ble              vag-dash-ble — BLE client (btleplug): scan, pick, open a NUS pipe
-    cfg              vag-dash-cfg, binary `dashcfg` — configures the dash over BLE
-    fw               vag-dash-fw, binary `dash` — the device itself. NOT a workspace
-                     member: no_std for riscv32imc-unknown-none-elf with its own
-                     build-std config. Build it from its own directory.
-  cli/             vag-cli, binary `vagcan` — the product, and the only crate
-                   belonging to no family, which is why its path is one segment
-                   where every other crate's is two. Top level = needs the car: devices / info /
+crates/            all Rust. Three families and the product.
+  uds/               talking to a car: ISO-TP underneath, UDS over it.
+    vag-uds-transport  the seam every backend implements, whole PDUs
+    vag-uds-can        slcan backend, async ISO-TP over CAN, listen-only sniffer
+    vag-uds-client     UDS client + allowlist, DTCs, gateway, addressing
+    vag-uds-capture    capture/replay transport, hardware-free tests
+  data/              somebody else's diagnostic files, parsed and cached.
+    vag-data-labels    parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat,
+                       ODX/ODIS, OBD-II PIDs, catalog
+    vag-data-db        SQLite cache over the parsed label files
+  dash/              the OLED device, all of it — laptop side and board side.
+    vag-dash-render    a Frame in, pixels out, on any DrawTarget
+    vag-dash-ble       BLE client (btleplug): scan, pick, open a NUS pipe
+    vag-dash-cfg       binary `dashcfg` — configures the dash over BLE
+    vag-dash-fw        binary `dash` — the device itself. NOT a workspace member:
+                       no_std for riscv32imc-unknown-none-elf with its own
+                       build-std config. Build it from its own directory.
+  vag-cli            binary `vagcan` — the product, and the only crate belonging
+                     to no family, which is why it sits directly under
+                     `crates/` where every other crate sits under a family. Top level = needs the car: devices / info /
                    units / properties / sniff / sensors / watch / scan / faults /
                    survey / measure. Offline work is grouped by input: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's own files)
@@ -146,7 +148,7 @@ research/        RE writeups + tooling (NOT shipped), one directory per subject:
                        `fault-naming-hop.md` (number → words, end to end)
   car/                 what the reference car answers: identifier map, the units
                        outside the powertrain, the whole-car survey, gearbox state
-  eps/                 the steering-assist incident — read with SAFETY.md
+  eps/                 the steering-assist incident, and the rules it bought
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
   dash/                the ESP32 board from the laptop's side. `probes/` is firmware
                        that answered a question (wifi-ap, wifi-scan, wifi-sta,

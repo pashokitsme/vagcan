@@ -7,7 +7,7 @@ committed (see `.gitignore`) — each is cloned on the machine that needs it.
 
 `bri3d/VW_Flash` — used **read-only** by `../frfscope` to decrypt/extract Simos18
 firmware containers (`.frf`/`.odx`) into calibration binaries. frfscope calls
-only its extraction path; it never flashes. See `../../SAFETY.md`.
+only its extraction path; it never flashes. See `../../CLAUDE.md`.
 
 Install / reinstall:
 
