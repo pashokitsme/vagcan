@@ -18,10 +18,11 @@ mod overview;
 
 use vag_cli_core::device::ADAPTER_BAUD;
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
-use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, scan, setup, sniff, survey, vcds, watch};
+use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, rescue, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -84,7 +85,10 @@ struct Cli {
 	command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+// Clone because a command that stopped for want of label data is run again
+// once that data has been made — see `dispatch_or_offer`. Nothing here is more
+// than a handful of strings and flags.
+#[derive(Clone, Subcommand)]
 enum Command {
 	/// Learn a car from a VCDS installation or an ODIS project. Run once. Offline.
 	///
@@ -453,8 +457,32 @@ enum Command {
 	},
 }
 
+/// How a command's error is reported.
+///
+/// `Termination for Result<T, E: Debug>` prints exactly `Error: {err:?}` before
+/// exiting with a failure code; this is that half of it, by hand. **`main`
+/// returns an `ExitCode` rather than a `Result` for one reason**: the label-data
+/// offer has to put the shortage in front of the reader *before* it asks whether
+/// to fix it, and an error already printed there must not be printed again on
+/// the way out. Owning the printing is what keeps a `no` at that question
+/// costing the reader nothing they would not have seen anyway.
+fn report(err: &anyhow::Error) {
+	eprintln!("Error: {err:?}");
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+	match run().await {
+		Ok(code) => code,
+		Err(err) => {
+			report(&err);
+			ExitCode::FAILURE
+		}
+	}
+}
+
+/// Everything before the command, and then the command.
+async fn run() -> Result<ExitCode> {
 	let cli = Cli::parse();
 	// Before any command runs, because a dozen leaves consult it and none of
 	// them takes it as an argument — the same reason the label files' unit
@@ -478,13 +506,59 @@ async fn main() -> Result<()> {
 	// up". It reads no more than that and opens no adapter.
 	let Some(command) = cli.command else {
 		print!("{}", overview::render(&overview::gather()));
-		return Ok(());
+		return Ok(ExitCode::SUCCESS);
 	};
+	dispatch_or_offer(command).await
+}
+
+/// Run one command; if it stopped for want of label data, offer to make the
+/// data and then run it again.
+///
+/// **The offer is made here and nowhere else.** Every command that needs what
+/// `vagcan setup` produces reports the same typed shortage
+/// ([`vag_cli_core::missing::NoLabelData`]), so one place can meet all of them
+/// — and six commands each growing their own copy of a question that downloads
+/// ninety megabytes is six places for one of them to quietly stop asking.
+/// [`rescue`] carries the reason it is in `diag` and not beside the shortage in
+/// `core`: fixing it means `setup`, and `core` may not depend on `diag`.
+///
+/// **The second attempt is the whole command over again**, which is safe
+/// because this shortage is a missing *file*, checked on the way in: no site
+/// that raises it has opened an adapter or printed any of the command's own
+/// output yet — `faults` opens its label files before the port and says so in
+/// as many words. One retry, and only after an explicit `y`.
+async fn dispatch_or_offer(command: Command) -> Result<ExitCode> {
+	// Kept before the first run consumes it: it is what "carry on with what you
+	// asked for" is made of.
+	let again = command.clone();
+	let Err(err) = dispatch(command).await else {
+		return Ok(ExitCode::SUCCESS);
+	};
+	// Not this shortage, or nobody at the keyboard: report it the ordinary way
+	// and fail the ordinary way, which is byte for byte what happened before.
+	if !rescue::worth_offering(&err) {
+		return Err(err);
+	}
+	report(&err);
+	if !rescue::offer(setup::vendor::ARCHIVE_BASE)? {
+		// The shortage above is the refusal, and it has been said once.
+		return Ok(ExitCode::FAILURE);
+	}
+	dispatch(again).await?;
+	Ok(ExitCode::SUCCESS)
+}
+
+/// The command surface: one arm per command, each handing off to the crate that
+/// does the work.
+async fn dispatch(command: Command) -> Result<()> {
 	match command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
 			refresh,
 			archive_base: setup::vendor::ARCHIVE_BASE,
+			// `vagcan setup` with no path asks which source, and offers the
+			// download as one of the answers. Only `rescue` skips that menu.
+			download: false,
 		}),
 		Command::Glossary => glossary_command(),
 		Command::Devices => {

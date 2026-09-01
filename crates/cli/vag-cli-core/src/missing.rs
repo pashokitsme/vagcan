@@ -68,6 +68,15 @@ pub fn calibration_path() -> &'static str {
 ///
 /// It is *not* [`no_catalog`]: that shortage is fixed by a drive and naming
 /// `setup` at it sends a reader round a loop. See the module docs.
+///
+/// **It is an [`std::error::Error`], and that is load-bearing.** Every site
+/// below reports it by `bail!`-ing one of these, so the type survives into the
+/// `anyhow::Error` a command fails with and `downcast_ref::<NoLabelData>()`
+/// answers "did this command fail for want of label data?" — which is what
+/// `vag_cli_diag::rescue` asks before offering to fix it. Rendering it to a
+/// `String` at the call site would erase that and leave the dispatcher matching
+/// on prose.
+#[derive(Debug)]
 pub struct NoLabelData {
 	/// What was wanted and by what, as one sentence ending in a full stop.
 	headline: String,
@@ -125,6 +134,10 @@ impl std::fmt::Display for NoLabelData {
 	}
 }
 
+/// Nothing to add — the whole message is [`Display`](std::fmt::Display). The
+/// impl exists so the type reaches an `anyhow::Error` intact; see the type docs.
+impl std::error::Error for NoLabelData {}
+
 /// Something `vagcan setup` makes, and this machine has not got.
 ///
 /// `what` names the file in the reader's terms ("the measurement names"), and
@@ -134,10 +147,11 @@ impl std::fmt::Display for NoLabelData {
 /// A named case of [`NoLabelData`] rather than a message of its own: the two
 /// call sites — `vcds names` and the fault namer — build the same sentence, and
 /// a function is where that sentence gets built once.
-pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
-	NoLabelData::new(format!("{what} are not on this machine, and {needed_for} needs them."))
-		.looked_for(path)
-		.to_string()
+///
+/// Returns the [`NoLabelData`] rather than its text, so that a `bail!` of it
+/// stays recognisable to the offer that can fix it. It still prints itself.
+pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> NoLabelData {
+	NoLabelData::new(format!("{what} are not on this machine, and {needed_for} needs them.")).looked_for(path)
 }
 
 /// Fault codes read fine, but this machine has nothing to name them with.
@@ -147,10 +161,8 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> String {
 /// over [`no_label_data`] is the first line — it deliberately says the codes are
 /// still shown, because a reader looking at bare numbers needs to know the
 /// numbers are real and only the names are missing.
-pub fn cannot_name_faults(looked_in: &Path) -> String {
-	NoLabelData::new("Fault names are not on this machine, and naming a recorded survey needs them.")
-		.looked_in(looked_in)
-		.to_string()
+pub fn cannot_name_faults(looked_in: &Path) -> NoLabelData {
+	NoLabelData::new("Fault names are not on this machine, and naming a recorded survey needs them.").looked_in(looked_in)
 }
 
 /// The same shortage, met where the codes are about to be printed anyway.
@@ -159,6 +171,12 @@ pub fn cannot_name_faults(looked_in: &Path) -> String {
 /// one is a note above output that still happens, that one is a stop. A headline
 /// promising "codes below" above a run that prints no codes is the kind of
 /// sentence somebody reads twice and still misreads.
+///
+/// **Text, where its two neighbours return the [`NoLabelData`] itself.** They
+/// are `bail!`ed and this one is `println!`ed, and the type is what
+/// `vag_cli_diag::rescue` recognises a *failed* command by: handing this one
+/// back as an error would offer to run `setup` in the middle of a fault read
+/// that is going perfectly well.
 pub fn no_fault_labels(looked_in: &Path) -> String {
 	NoLabelData::new("Codes below are shown as numbers: no fault-name labels on this machine.")
 		.looked_in(looked_in)
@@ -214,7 +232,7 @@ mod tests {
 	/// each says what is missing, and ends somewhere to go.
 	#[test]
 	fn the_label_shortage_names_setup_and_where_the_data_comes_from() {
-		let m = no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/x/n.json"));
+		let m = no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/x/n.json")).to_string();
 		assert!(m.contains("vagcan setup /path/to/VCDS"), "{m}");
 		assert!(m.contains("/x/n.json"), "the reader must see which file was looked for:\n{m}");
 		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
@@ -243,7 +261,7 @@ mod tests {
 		// They are the same shape of failure — "the tool has less data than it
 		// wants" — with opposite fixes, and the whole risk is a reader running
 		// the wrong one. So neither message may *offer* the other's command.
-		let label = no_label_data("The names", "this", Path::new("/n"));
+		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
 		let catalog = no_catalog("This car", Path::new("/d"));
 		assert!(label.contains("vagcan setup /path/to/VCDS"));
 		assert!(!label.contains("calibrate"), "{label}");
@@ -301,7 +319,7 @@ mod tests {
 		// half that tells the reader what to do is one string, so it cannot go
 		// stale in one place and stay current in another.
 		let sites = [
-			no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/n.json")),
+			no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/n.json")).to_string(),
 			no_fault_labels(Path::new("/rod")),
 			NoLabelData::new("No car has been set up yet.").looked_in(Path::new("/data")).to_string(),
 			NoLabelData::new("The project `SK37X` has no label cache.")

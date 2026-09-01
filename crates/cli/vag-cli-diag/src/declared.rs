@@ -4,8 +4,8 @@
 //! A sweep used to ask every unit the same nine pages of identifiers, 2816 of
 //! them, with no evidence any one existed. That is a fuzz test of a diagnostic
 //! server: each request takes a path through firmware nothing has exercised,
-//! and a path with a defect in it crashes the server. It crashed the steering
-//! assist on the reference car twice.
+//! and a path with a defect in it crashes the server — and the server is a
+//! control unit the car is relying on.
 //!
 //! Blind sweeping was once the only thing available. It is not any more. This
 //! tool resolves a unit's ODIS variant from what the unit itself reports —
@@ -167,7 +167,7 @@ pub fn blind_ranges(range: Option<&str>, blind: bool, default: &str) -> anyhow::
 			anyhow::bail!(
 				"--range says what to sweep blind, and no unit was named to sweep. \n\
 				 A sweep of identifiers nothing declares is a fuzz test of a control unit's \n\
-				 diagnostic server — on the reference car it cost the steering assist. Name \n\
+				 diagnostic server, and a path with a defect in it crashes the server. Name \n\
 				 the unit you mean with --blind, or drop --range and read what the car's own \n\
 				 data declares."
 			);
@@ -181,9 +181,9 @@ pub fn blind_ranges(range: Option<&str>, blind: bool, default: &str) -> anyhow::
 
 /// What to say about a unit no source describes.
 ///
-/// **This is the case the default cannot sweep**, and on the reference car it
-/// is two units of fifteen. The old behaviour — ask it the nine pages anyway —
-/// is exactly the fuzz test that cost this car its steering, performed on the
+/// **This is the case the default cannot sweep**, and on a real car it is a
+/// couple of units out of fifteen. The old behaviour — ask it the nine pages
+/// anyway — is exactly the fuzz test described above, performed on the
 /// units the tool understands *least*. So it is not swept, its identification
 /// block and its faults are still read and still filed, and the command says
 /// what it would take to go further.
@@ -251,12 +251,12 @@ mod tests {
 
 	#[test]
 	fn a_sweep_asks_only_the_identifiers_a_source_declares() {
-		// The whole point. 2816 blind requests per unit is what crashed the
-		// steering assist; a unit the data describes gets asked its own
-		// identifiers and nothing else.
+		// The whole point. 2816 blind requests per unit is a fuzz test of the
+		// unit's diagnostic server; a unit the data describes gets asked its
+		// own identifiers and nothing else.
 		let here = tempfile::tempdir().unwrap();
-		let store = store_with(here.path(), "EV_SteerAssisMQB", &[0x1000, 0x1001, 0x2000]);
-		let declared = declared(&store, &Extracted::none(), None, Some("EV_SteerAssisMQB"), None);
+		let store = store_with(here.path(), "EV_BCMMQB", &[0x1000, 0x1001, 0x2000]);
+		let declared = declared(&store, &Extracted::none(), None, Some("EV_BCMMQB"), None);
 		assert_eq!(declared.iter().copied().collect::<Vec<_>>(), [0x1000, 0x1001, 0x2000]);
 
 		let ask = ask(&declared, None);

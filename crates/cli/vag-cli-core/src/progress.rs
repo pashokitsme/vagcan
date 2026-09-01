@@ -109,9 +109,9 @@ impl Line {
 	/// **A safety message must never be written to a surface that erases
 	/// itself.** This one does: [`update`](Line::update) returns to the start of
 	/// the line with `\r` and pads over whatever was there, and
-	/// [`finish`](Line::finish) blanks it outright. On 9 August 2026 a warning
-	/// went up during a sweep and then went out again, which is how a run that
-	/// had already provoked a control unit carried on.
+	/// [`finish`](Line::finish) blanks it outright. A warning that goes up
+	/// during a sweep and then goes out again is how a run that has already
+	/// provoked a control unit carries on regardless.
 	///
 	/// So the progress line is cleared **first**, and the message is written
 	/// whole and newline-terminated onto the line after it, where the next
@@ -273,8 +273,8 @@ mod tests {
 
 	#[test]
 	fn a_warning_is_not_written_to_the_line_that_erases_itself() {
-		// The third defect behind the 9 August 2026 incident: a message shown
-		// during a sweep shares the rewriting progress line and is gone at the
+		// The defect this guards against: a message shown during a
+		// sweep shares the rewriting progress line and is gone at the
 		// next redraw — "it showed an error, and then it went out". A notice
 		// clears the line first and then writes where nothing rewrites.
 		let mut line = Line::new();

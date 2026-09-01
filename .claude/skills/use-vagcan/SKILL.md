@@ -12,9 +12,9 @@ by construction: the UDS allowlist admits `0x22`, `0x19`, `0x10` and `0x3E` and
 nothing else, so no command here can change anything on the car.
 
 Read-only is not the same as harmless. **A sweep is a fuzz test of a diagnostic
-server**, and on this reference car one crashed the electric power steering, twice —
-the second time permanently; `research/eps/eps-j500-report-ru.md` has the account. That is why the section on
-what not to run is not advisory.
+server**: each request takes a path through firmware nothing has exercised, and a path
+with a defect in it crashes the server — a control unit the car is relying on. That is
+why the section on what not to run is not advisory.
 
 Everything below needs the car present and the ignition on. Commands under
 `vagcan vcds` and `vagcan recording` need only files and are out of scope here.
@@ -149,8 +149,9 @@ vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
 ## Never
 
 - **Never pass `--while-driving`.** A sweep is thousands of requests a unit may never
-  have handled, and this is the flag that killed the steering assist. The tool refuses
-  by default by reading road speed; a car that will not report speed counts as moving.
+  have handled, and a unit that mishandles one can stop doing its job while the car is
+  in motion. The tool refuses by default by reading road speed; a car that will not
+  report speed counts as moving.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
 - **Never run a full `survey` to answer a small question.** It is about eight minutes

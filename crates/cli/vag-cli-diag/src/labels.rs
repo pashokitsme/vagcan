@@ -106,9 +106,7 @@ pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb
 	let cache = project.cache();
 	anyhow::ensure!(
 		cache.is_file(),
-		crate::missing::NoLabelData::new(format!("The project `{}` has no label cache.", project.id))
-			.looked_for(&cache)
-			.to_string()
+		crate::missing::NoLabelData::new(format!("The project `{}` has no label cache.", project.id)).looked_for(&cache)
 	);
 	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
 }

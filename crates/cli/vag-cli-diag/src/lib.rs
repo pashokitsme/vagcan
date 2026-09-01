@@ -29,6 +29,7 @@ pub mod names;
 pub mod props;
 pub mod recording;
 pub mod render;
+pub mod rescue;
 pub mod safety;
 pub mod scan;
 pub mod setup;

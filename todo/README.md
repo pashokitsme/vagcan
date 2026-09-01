@@ -63,19 +63,17 @@ the car and the bench can answer.
 
 ## Status (2026-08-09) — the sweep stopped fuzzing, and `watch` became usable
 
-**`survey` no longer sweeps blind, after a second near-miss with the same steering
-rack.** On 2026-08-09 a run nearly repeated the 2 August incident with the car
-**parked** — every guard in force, and all of them about *where the car was* rather than
-what was being asked. Full account in
-[`research/eps/eps-j500-report-ru.md`](../research/eps/eps-j500-report-ru.md); what changed:
+**`survey` no longer sweeps blind.** The guards it had were all about *where the car
+was* rather than *what was being asked*, and a sweep of identifiers nothing declares is
+a fuzz test of a control unit's diagnostic server. What changed:
 
-- A sweep asks only identifiers a source declares for that unit. The steering assist
-  declares 161; it used to be asked 2816, and the other 2655 were the fuzz test.
+- A sweep asks only identifiers a source declares for that unit. A typical unit declares
+  a couple of hundred; it used to be asked 2816, and the rest were the fuzz test.
 - A unit that goes quiet or goes back on an identifier it already answered **ends the
-  whole run**, non-zero. "Stop when something changes" was written down after the first
-  incident and lived nowhere but prose until now.
+  whole run**, non-zero. "Stop when something changes" lived nowhere but prose until now.
 - Blind sweeping is `--blind <unit>`, aimed by hand. `survey --blind` bare is a parse
-  error: whole-car blind was the default, and it is what did the damage.
+  error: whole-car blind was the default, and a default nobody aims is the worst place
+  for the most invasive thing this tool does.
 - A safety message never goes on the self-rewriting progress line.
 
 Thresholds `WITNESS_EVERY = 64` / `QUIET_RUN = 3` are reasoned, **not measured** — a

@@ -8,7 +8,9 @@
 use clap::{Args as ClapArgs, Parser};
 
 /// Everything `measure` takes, whichever binary is asking.
-#[derive(ClapArgs)]
+// Clone for the reason the command enums are: `vagcan`'s dispatcher keeps a
+// copy of the command so it can be run again after the label data has been made.
+#[derive(Clone, ClapArgs)]
 pub struct Args {
 	/// `setup` describes this car once; `view` opens a saved session.
 	#[command(subcommand)]

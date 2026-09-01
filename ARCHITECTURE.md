@@ -3,9 +3,8 @@
 Why this tool is built the way it is. **This one is for the curious and for anyone
 working on the code** — you do not need it to use `vagcan` (that is [`USAGE.md`](USAGE.md)).
 The `research/…` files it links go deeper still, into the reverse-engineering: they are
-developer notes, not instructions. The rules that were paid for in a broken control unit
-are in [`CLAUDE.md`](CLAUDE.md); the incident itself is
-[`research/eps/eps-j500-report-ru.md`](research/eps/eps-j500-report-ru.md).
+developer notes, not instructions. The rules about what this tool may do to a car are
+in [`CLAUDE.md`](CLAUDE.md).
 
 ---
 
@@ -399,10 +398,8 @@ that unit answers — the car reports `F187`/`F19E`/`F1A2`, that resolves to a v
 and the variant declares its own list — and a unit nothing describes is identified and
 has its faults read rather than being swept hardest of all. Blind sweeping survives as
 `--blind`, aimed at units named one at a time; there is no spelling of any flag that
-means "sweep the whole car blind", because that was the default and it is what cost the
-reference car its power steering.
-[`research/eps/eps-j500-report-ru.md`](research/eps/eps-j500-report-ru.md) is the account,
-and it is worth reading before the flag.
+means "sweep the whole car blind", because that was the default and it turned one
+unit's crash into a whole-car risk.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you. `recording …` reads back drives this tool recorded, and
@@ -414,7 +411,7 @@ asserts it.
 admits `0x22` (read data), `0x19` (read faults), `0x10` (session control) and `0x3E`
 (tester present), and that is the whole of it. That is not the same as harmless:
 "read-only" bounds what you can *change* about a car, not what you can *provoke*, and an
-identifier sweep provoked enough to end a steering assist unit.
+identifier sweep is a fuzz test of a control unit's diagnostic server.
 
 ---
 
@@ -425,7 +422,6 @@ crates/         the Rust workspace — uds/, data/, dash/ and vagcan/
 research/       reverse-engineering writeups and tooling, one directory per subject
   labels/         VW's label files: the .rod crack, the name codec, fault naming
   car/            what the reference car answers: identifier map, units, surveys
-  eps/            the steering-assist incident, and the rules it bought
   clb-crack/      the RE scripts themselves
   dash/           the board from the laptop's side: probes/ and the bench rig host/
 .archive/       retired paths, kept as evidence — research/, specs/, tasks/done/

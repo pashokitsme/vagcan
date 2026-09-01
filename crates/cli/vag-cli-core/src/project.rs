@@ -302,11 +302,10 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		// this is the same shortage `vcds names` and `faults` report, met one
 		// step earlier, and a reader who sees it here and then there must not
 		// be given two accounts of it.
-		[] => bail!(
-			crate::missing::NoLabelData::new("No car has been set up yet.")
-				.looked_in(projects)
-				.to_string()
-		),
+		// The `NoLabelData` itself, not its text: `vag_cli_diag::rescue`
+		// recognises the shortage by downcasting to it, and a rendered string
+		// would leave it matching on prose.
+		[] => bail!(crate::missing::NoLabelData::new("No car has been set up yet.").looked_in(projects)),
 		// One project is not a choice, so it is not asked about.
 		[only] => Ok(Project {
 			id: only.clone(),

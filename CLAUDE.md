@@ -51,10 +51,10 @@ touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
 
 ## Safety (MANDATORY)
 
-This tool only reads, and it has still cost the reference car its power steering: an
-identifier sweep crashed the steering assist unit, twice, the second time permanently
-(`research/eps/eps-j500-report-ru.md`). Read-only bounds what can be *changed* about a car,
-not what can be *provoked*.
+This tool only reads, and reading is not the same as harmless: an identifier sweep is a
+fuzz test of a control unit's diagnostic server, and a path with a defect in it crashes
+the server. Read-only bounds what can be *changed* about a car, not what can be
+*provoked*.
 
 - **Never add a write service.** No coding, no adaptation, no clearing faults, no
   flashing. The UDS allowlist is `0x22`, `0x19`, `0x10`, `0x3E` and stays that way.
@@ -156,7 +156,6 @@ research/        RE writeups + tooling (NOT shipped), one directory per subject:
                        `fault-naming-hop.md` (number → words, end to end)
   car/                 what the reference car answers: identifier map, the units
                        outside the powertrain, the whole-car survey, gearbox state
-  eps/                 the steering-assist incident, and the rules it bought
   clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
   dash/                the ESP32 board from the laptop's side. `probes/` is firmware
                        that answered a question (wifi-ap, wifi-scan, wifi-sta,

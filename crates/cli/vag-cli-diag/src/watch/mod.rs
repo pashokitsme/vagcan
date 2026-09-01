@@ -3179,7 +3179,7 @@ mod tests {
 		// The whole of `watch`'s reason for existing is to show the identifiers
 		// nobody has proven yet, so the chart has to be able to say no to one.
 		// There is no float in a raw channel — there is a byte string — and
-		// inventing one is the mistake this project has twice caught itself at.
+		// inventing one is a mistake this project has caught itself at before.
 		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar"), raw(0x7E0, 0x38F0)]);
 		a.observe(0x7E0, 0x202A, 1.0, vec![0x03, 0xE8]);
 		a.observe(0x7E0, 0x38F0, 1.0, vec![0x0B, 0x34]);

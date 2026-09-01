@@ -184,8 +184,8 @@ right reading and not a story:
 
 ### 3.2 The reference car's own faults, named
 
-`research/eps/eps-j500-report-ru.md` records the three codes the steering assist has stored since
-the sweep, with their failure-type bytes. All three resolve:
+Three codes read off one unit of the reference car, with their failure-type bytes,
+resolve in full:
 
 | code | key | `Codes.dat` (EN) | `Code-RUS.dat` |
 |---|---|---|---|
@@ -213,7 +213,7 @@ actually reports, and every number VCDS printed in its own scan of it, is absent
 | number | where it came from | in `Codes.dat`? |
 |---|---|---|
 | 229 504, 7 680, 19 716, 20 228 | the EPS unit's `0x19` response, `research/dumps/eps-fault-229504-before-clear.txt` | no |
-| 16 136, 291 104 | the same car, `research/eps/eps-j500-report-ru.md` and the VCDS scan | no |
+| 16 136, 291 104 | the same car, read off the unit and confirmed by the VCDS scan | no |
 | 17 178, 15 187, 16 275, 12 289, 26 885, 197 225, 589 825 | `research/VCDS-RUS/Scans/…20260731…` — VCDS named every one of these | no |
 
 So the file is not a fault-number dictionary, and `vagcan faults` cannot be wired to it as it

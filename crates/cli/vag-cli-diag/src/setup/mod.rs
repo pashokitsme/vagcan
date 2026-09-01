@@ -121,6 +121,20 @@ pub struct Options<'a> {
 	/// Where the archives are served from. A parameter so the download path is
 	/// testable against a local file rather than the network.
 	pub archive_base: &'a str,
+	/// Fetch an installation and read that, without asking which source.
+	///
+	/// **The download's only route in used to be the menu**, which made it
+	/// unreachable to a caller that had already asked its own question — and
+	/// [`crate::rescue`] is exactly that caller: it has the person's `yes` in
+	/// hand and a menu in front of them would be the same question twice. It
+	/// is the same answer as picking "Download VCDS" off [`source::choose`],
+	/// and goes down the same path from there, so the fetch, the reuse of an
+	/// installation already unpacked, and the parse stay one path rather than
+	/// two.
+	///
+	/// Ignored when `dir` is given: a path on the command line is a statement
+	/// about what to read, and nothing here talks it out of it.
+	pub download: bool,
 }
 
 /// Everything one `setup` run decided before it started reading anything.
@@ -157,7 +171,15 @@ struct Chosen {
 
 /// Ask what to read, work out what to call it, and open the store.
 fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Option<Chosen>> {
-	let Some(chosen) = source::choose(io, opts.dir)? else { return Ok(None) };
+	// A download already asked for is not a question to ask again — see
+	// `Options::download`. Everything after this line is the menu's own path.
+	let chosen = match (opts.dir, opts.download) {
+		(None, true) => source::Choice::download(),
+		_ => match source::choose(io, opts.dir)? {
+			Some(chosen) => chosen,
+			None => return Ok(None),
+		},
+	};
 	let source = fetched(chosen.source, opts)?;
 	// The wording half of the recommended row. Resolved the same way, because a
 	// download is a download whichever question asked for it.
@@ -186,9 +208,8 @@ fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Op
 /// A download resolved into the installation it fetched.
 ///
 /// The download is not a source, it is how one is obtained. Picking it from a
-/// menu *is* the consent — `vendor::confirm_download` asked a second `[y/N]`
-/// for the same decision, and one decision is one question. Both menus can ask
-/// for it, so both go through here.
+/// menu *is* the consent, and one decision is one question. Both menus can ask
+/// for it, and so can [`Options::download`], so all three go through here.
 fn fetched(source: source::Source, opts: &Options<'_>) -> Result<source::Source> {
 	match source {
 		source::Source::DownloadVcds => Ok(source::Source::Vcds {
@@ -1119,6 +1140,7 @@ mod tests {
 				dir: None,
 				refresh: false,
 				archive_base: vendor::ARCHIVE_BASE,
+				download: false,
 			},
 		);
 		assert!(outcome.is_err(), "a run that asked nobody anything reported success");
@@ -1419,6 +1441,7 @@ mod tests {
 				dir: Some("/definitely/not/here"),
 				refresh: false,
 				archive_base: vendor::ARCHIVE_BASE,
+				download: false,
 			},
 		)
 		.unwrap_err();

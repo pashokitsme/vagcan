@@ -273,6 +273,18 @@ impl Choice {
 	fn only(source: Source) -> Choice {
 		Choice { source, names: None }
 	}
+
+	/// The "Download VCDS" row, without the menu it is a row of.
+	///
+	/// The one answer this module can give that nobody has to be asked for: a
+	/// caller that already has a `yes` in hand (`setup::Options::download`)
+	/// hands it in here rather than re-asking a question it has the answer to.
+	/// Built here and not out of the enum directly so the download keeps
+	/// arriving as a [`Choice`] — [`super::fetched`] resolves it into the
+	/// installation it fetched, whichever of the three asked for it.
+	pub fn download() -> Choice {
+		Choice::only(Source::DownloadVcds)
+	}
 }
 
 /// Run the picker.

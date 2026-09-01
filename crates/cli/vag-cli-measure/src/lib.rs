@@ -154,7 +154,10 @@ pub fn parse_seconds(text: &str) -> Result<f64, String> {
 /// flags that mean nothing elsewhere and produces a different artefact, and
 /// `view` touches no adapter at all. The repository already groups that way with
 /// `recording` and `vcds`.
-#[derive(clap::Subcommand)]
+// Clone for the reason the other command enums are: `vagcan`'s dispatcher keeps
+// a copy of the command so it can be run again after the label data has been
+// made.
+#[derive(Clone, clap::Subcommand)]
 pub enum Tool {
 	/// Describe this car once, then measure its road load on the road.
 	///
@@ -2086,10 +2089,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn nothing_measure_can_ask_for_leaves_the_read_allowlist() {
-		// This tool has already cost the reference car its power
-		// steering, permanently, without ever writing anything. `0x10`
-		// — DiagnosticSessionControl — is what a sweep opens with, and it is
-		// the service that must never appear on a bus this command owns.
+		// A read-only tool can still provoke a control unit into misbehaving:
+		// read-only bounds what can be changed about a car, not what can be
+		// provoked. `0x10` — DiagnosticSessionControl — is what a sweep opens
+		// with, and it is the service that must never appear on a bus this
+		// command owns.
 		//
 		// Both plans, because `--full` adds units and a whole extra batch.
 		for full in [false, true] {

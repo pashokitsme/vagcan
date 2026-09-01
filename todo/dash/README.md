@@ -28,10 +28,10 @@ Three reasons, and the third is the one that decides it:
 2. **There is nothing for a query engine to do.** A catalog exists in order to be
    *searched*, and searching is an act of build time. On the road the device needs
    forty rows and all forty are known before it is flashed.
-3. **A plan cannot sweep.** The steering rack was destroyed by an identifier sweep
-   (`research/eps/eps-j500-report-ru.md`). A device that holds forty
-   identifiers proven on the bench cannot ask for a forty-first — not because it was
-   asked not to, but because it has no mechanism to.
+3. **A plan cannot sweep.** An identifier sweep is a fuzz test of a control unit's
+   diagnostic server, and this device has no business running one. A device that holds
+   forty identifiers proven on the bench cannot ask for a forty-first — not because it
+   was asked not to, but because it has no mechanism to.
 
 ## Built for one car, and that is allowed
 

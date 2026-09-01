@@ -36,7 +36,9 @@ use clap::Subcommand;
 
 use crate::{analyse, datadir, labels, names};
 
-#[derive(Subcommand)]
+// Clone so `vagcan`'s dispatcher can keep a copy of the command it is running:
+// one that stops for want of label data is run again once the data exists.
+#[derive(Clone, Subcommand)]
 pub enum Tool {
 	/// Look measurements up in a VCDS label directory.
 	///
@@ -426,11 +428,7 @@ fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 		if named {
 			anyhow::bail!("no label cache at {}", db_path.display());
 		}
-		anyhow::bail!(
-			crate::missing::NoLabelData::new("There is no label cache to count.")
-				.looked_for(db_path)
-				.to_string()
-		);
+		anyhow::bail!(crate::missing::NoLabelData::new("There is no label cache to count.").looked_for(db_path));
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
 	println!("{}", db_path.display());

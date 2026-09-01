@@ -586,9 +586,9 @@ mod tests {
 
 	#[test]
 	fn a_fault_is_stamped_with_the_cars_own_date_and_time() {
-		// Both anchors come from VCDS printouts of this car: the brake unit's
-		// fault at 2026.07.27 00:00:03 and the steering assist's at
-		// 2026.07.28 23:50:02. Six fields, two exact matches.
+		// Both anchors come from VCDS printouts of this car: one unit's fault
+		// at 2026.07.27 00:00:03 and another's at 2026.07.28 23:50:02.
+		// Six fields, two exact matches.
 		let at = |clock| {
 			describe_when(&FaultContext {
 				priority: 1,

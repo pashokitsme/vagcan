@@ -152,10 +152,10 @@ Two of those ten are the reference car's own confirmed faults, named end to end 
 VW's own files: **`713` fault `000129` → "Steering Angle Sensor: Not Initialized"** and
 **`70E` fault `000213` → "Footwell Illumination"**.
 
-The reference car's EPS codes resolve too, once their table is solved: `007680`'s rows
+The reference car's `712` codes resolve too, once their table is solved: `007680`'s rows
 carry `10489840` = "Internal Fault" and `229504`'s single `f0` fits `140960` = "Internal
 Control Module Memory Check Sum Error" — which are exactly `B200F F0` and `B2000 00`, the
-codes `research/eps/eps-j500-report-ru.md` records VCDS naming on this car.
+codes VCDS names the same way on this car.
 
 ---
 

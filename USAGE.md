@@ -325,10 +325,10 @@ with `--blind --range` would otherwise have every identifier outside its range r
 something the car does not have.
 
 > **`--blind` is the invasive one.** It asks a unit identifiers *nothing* says it
-> answers, which is structurally a fuzz test of a diagnostic server and is what cost
-> the reference car its power steering — twice, the second time with the car parked.
-> It has to be aimed at units named one at a time (`--blind 712`); there is no way to
-> ask for it car-wide. Both commands also refuse to run on a moving car unless
+> answers, which is structurally a fuzz test of a diagnostic server: a path with a
+> defect in it crashes the server, and the server is a control unit the car is relying
+> on. It has to be aimed at units named one at a time (`--blind 713`); there is no way
+> to ask for it car-wide. Both commands also refuse to run on a moving car unless
 > `--while-driving` is passed, and both **stop the whole run** if a unit goes quiet or
 > goes back on an identifier it already answered.
 
@@ -407,7 +407,7 @@ again next drive is the work again.
 
 **Values with no proven scaling are shown as bytes and tagged `(raw)`**, never as a
 bare number — a reader cannot tell an invented number from a measured one, and this
-project has twice caught itself believing one of its own. The summary printed before
+project has caught itself believing one of its own. The summary printed before
 the screen opens says how many channels are in that state and what turns them into
 numbers.
 
@@ -626,6 +626,19 @@ One command, no car. If you have no installation, run `vagcan setup` with no pat
 pick the download — that copy is Ross-Tech's software, redistributed unmodified; you
 can also get it from them directly at <https://www.ross-tech.com/vcds/download/> and
 point `setup` at it.
+
+**You do not have to leave the command you were running.** At a terminal, any command
+that stops for want of this data prints the paragraph above and then offers to fetch an
+installation and read it — and on `y` it carries on with what you asked for, rather than
+telling you to type it again:
+
+```
+Fetch it and carry on? [y/N]
+```
+
+The default is no, and nothing is downloaded without an explicit `y`. With no terminal —
+a pipe, a script, CI — the question is not asked at all: the command reports the shortage
+and fails, exactly as it always did.
 
 ### "This car has no proven measurement rows" / a screen full of `(raw)`
 

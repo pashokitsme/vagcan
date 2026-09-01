@@ -3,9 +3,9 @@
 //! This command was written to ask a unit directly, because a sweep of the
 //! `ReadDataByIdentifier` space finds values no label file mentions. That is
 //! still true, and it is still the only thing here that can discover a channel
-//! nothing describes. It is also *a fuzz test of a diagnostic server* — the
-//! operation that cost the reference car its power
-//! steering, twice.
+//! nothing describes. It is also *a fuzz test of a diagnostic server*: a path
+//! with a defect in it crashes the server, and the server here is a control
+//! unit the car is relying on.
 //!
 //! So the default is no longer a sweep of anything. A unit is asked the
 //! identifiers some source **declares** it answers — its ODIS variant, resolved
@@ -92,8 +92,8 @@ pub fn total_dids(ranges: &[RangeInclusive<u16>]) -> usize {
 
 /// The safety half of a sweep: the watchdog it carries with it.
 ///
-/// A sweep is the most invasive thing this tool does, and until 9 August 2026
-/// it ran without one — a unit that stopped answering was counted in
+/// A sweep is the most invasive thing this tool does, and it used to run
+/// without one — a unit that stopped answering was counted in
 /// [`ScanStats::failed`] and the sweep moved on to the next identifier, and
 /// then to the next unit. Every sweep now carries one of these, so there is no
 /// spelling of "sweep" that is unwatched.
@@ -393,10 +393,9 @@ pub fn summary(unit_label: &str, total: usize, stats: ScanStats, found: &[u16], 
 /// What a `vagcan scan` run was asked to do.
 ///
 /// Bundled rather than passed positionally because two of these decide whether
-/// this is a read or an experiment: `blind` turns the command back into the
-/// sweep that cost this car its steering assist, and `while_driving` decides
-/// whether that may happen at speed. Named fields cannot be swapped by
-/// accident.
+/// this is a read or an experiment: `blind` turns the command back into a fuzz
+/// test of the unit's diagnostic server, and `while_driving` decides whether
+/// that may happen at speed. Named fields cannot be swapped by accident.
 pub struct Options<'a> {
 	pub unit: vag_uds_client::address::UnitAddress,
 	/// Hex ranges to sweep **blind**. Meaningless without `blind`, and refused
@@ -479,19 +478,19 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> anyhow::
 
 	// This is a sweep, and a sweep is a fuzz of the unit's diagnostic server:
 	// requests it may never have been asked before, any one of which its
-	// firmware may mishandle. That is what took the steering assist off the
-	// reference car. `survey` is this command run over every unit and is
-	// guarded the same way; guarding one and not the other would only mean the
-	// danger moves to whichever spelling is unguarded.
+	// firmware may mishandle — including a unit the driver is relying on.
+	// `survey` is this command run over every unit and is guarded the same way;
+	// guarding one and not the other would only mean the danger moves to
+	// whichever spelling is unguarded.
 	if !while_driving {
 		backend = match crate::safety::require_stationary(backend).await {
 			Ok(backend) => backend,
 			Err((_, why)) => anyhow::bail!(
 				"{why}\n\n\
                  A sweep asks a unit for identifiers it may never have been asked for \n\
-                 before. On the reference car that made the steering assist stop assisting \n\
-                 mid-drive. Sweep while parked, or pass --while-driving if you accept that \n\
-                 risk with the car in motion."
+                 before, and a unit that mishandles one can stop doing its job while the \n\
+                 car is in motion. Sweep while parked, or pass --while-driving if you \n\
+                 accept that risk with the car moving."
 			),
 		};
 	}
@@ -732,7 +731,7 @@ mod tests {
 			(req(0x2003), silence()),
 		];
 		let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
-		let mut monitor = anomaly::Monitor::new(0x712);
+		let mut monitor = anomaly::Monitor::new(0x714);
 
 		let stats = scan_dids(&mut uds, &[0x2000..=0x20FF], Duration::ZERO, 0, &mut unwatched(&mut monitor), |_| Ok(()))
 			.await
@@ -740,7 +739,7 @@ mod tests {
 
 		assert_eq!(stats.asked, 4, "it stopped after the third silence, not at the end of the range");
 		let halt = monitor.halted().expect("a unit that went quiet must end the run");
-		assert_eq!(halt.request, 0x712);
+		assert_eq!(halt.request, 0x714);
 		assert_eq!(halt.did, 0x2003, "the notice names what was being asked");
 		assert!(uds.into_transport().is_exhausted(), "nothing was asked after the halt");
 	}
@@ -789,7 +788,7 @@ mod tests {
 		script.push((req(0xF187), silence()));
 		let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(script));
 
-		let mut monitor = anomaly::Monitor::new(0x712);
+		let mut monitor = anomaly::Monitor::new(0x714);
 		monitor.seed(0xF187);
 		// Establish the witness the way the command does, by reading it.
 		assert!(uds.read_data_by_identifier(0xF187).await.is_ok());

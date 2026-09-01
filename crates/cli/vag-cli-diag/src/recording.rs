@@ -16,7 +16,9 @@ use clap::Subcommand;
 use crate::ui::picker;
 use crate::{analyse, calibrate, discover};
 
-#[derive(Subcommand)]
+// Clone for the reason `vcds::Tool` is: the dispatcher keeps a copy of the
+// command so it can be run again after the label data has been made.
+#[derive(Clone, Subcommand)]
 pub enum Tool {
 	/// Prove new scalings against ones already trusted — no VCDS needed.
 	///

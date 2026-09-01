@@ -14,14 +14,15 @@
 //!
 //! It used to sweep nine fixed pages of identifiers at every unit, on no
 //! evidence any of them existed. That is a fuzz test of a diagnostic server,
-//! and it cost the reference car its power steering — the second time on 9
-//! August 2026, with the car parked. Sweeping identifier space nothing vouches
-//! for is now `--blind`, aimed at units named one at a time.
+//! and a path with a defect in it crashes the server. Sweeping identifier
+//! space nothing vouches for is now `--blind`, aimed at units named one at a
+//! time.
 //!
 //! And the run **stops** the moment a unit that had been answering goes quiet
 //! or goes back on an identifier it already answered ([`crate::anomaly`]): the
-//! whole run, not that unit, because what made the second drop-out permanent
-//! was carrying on after the first looked like it had resolved itself.
+//! whole run, not that unit, because a unit that has started misbehaving is
+//! not made safer by the rest of the sweep, and "it recovered" is a guess
+//! until somebody looks.
 //!
 //! Two runs of this, one parked and one driving, differ exactly in the live
 //! measurements. That difference is the point: an identifier whose bytes never
@@ -51,10 +52,9 @@ use crate::scan::{self, DidHit};
 ///
 /// **This is no longer what a survey asks.** It was: every unit got these 2816
 /// identifiers whether or not anything said they existed, which is the fuzz test
-/// of a diagnostic server, and the operation that cost the reference car its power
-/// steering — the second time with the car parked, on 9 August 2026. It is now
-/// only the default *blind* range: what `--blind <unit>` sweeps when somebody
-/// aims one by hand and names no range of their own.
+/// of a diagnostic server — the most invasive thing this tool can do to a car.
+/// It is now only the default *blind* range: what `--blind <unit>` sweeps when
+/// somebody aims one by hand and names no range of their own.
 ///
 /// It is also, unavoidably, one car's answer — the pages *this* Škoda was seen
 /// using. That was defensible as a way to keep a blind sweep under an hour; it
@@ -355,9 +355,9 @@ fn cache_survey(vin: &str, fresh: &[String]) -> Result<std::path::PathBuf> {
 /// What a survey run was asked to do.
 ///
 /// Bundled rather than passed positionally: four of these are booleans, and
-/// `while_driving` is the one that decides whether the sweep that cost this car
-/// its steering assist is allowed to happen at speed. Named
-/// fields cannot be swapped by accident.
+/// `while_driving` is the one that decides whether the most invasive operation
+/// this tool has is allowed to happen at speed. Named fields cannot be swapped
+/// by accident.
 pub struct Options<'a> {
 	/// Hex ranges to sweep **blind**, on the units `blind` names and no others.
 	/// Meaningless without `blind`, and refused there rather than ignored.
@@ -370,10 +370,10 @@ pub struct Options<'a> {
 	pub only: Option<&'a str>,
 	/// Units to sweep blind, named one by one.
 	///
-	/// **There is no value of this that means "the whole car".** Blind sweeping
-	/// is what cost the reference car its steering assist, and the thing that
-	/// made it a whole-car event was that it was the default for every unit. It
-	/// is now something somebody types a unit number into.
+	/// **There is no value of this that means "the whole car".** A blind sweep
+	/// is a fuzz test of a diagnostic server, and what would turn one unit's
+	/// crash into a whole-car event is doing it to every unit by default. It is
+	/// now something somebody types a unit number into.
 	pub blind: Option<&'a str>,
 	/// Ask each unit for an extended diagnostic session first.
 	pub extended: bool,
@@ -407,9 +407,6 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 	};
 	// An explicit list skips the gateway read, so one unit can be re-run
 	// without the rest.
-	// Whether a person named the units, which is what makes reading a spared one
-	// their decision rather than the sweep's.
-	let requested_by_hand = only.is_some();
 	let requested = match only {
 		Some(spec) => Some(
 			vag_uds_client::address::parse_list(spec)
@@ -441,20 +438,18 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 	}
 
 	// A full identifier sweep is a fuzz of the unit's diagnostic server, and a
-	// unit whose firmware mishandles one request can crash on it. That
-	// happened on the reference car: the steering assist dropped out during a
-	// sweep, recovered on a restart, and dropped out permanently during the
-	// next one. Reading a moving car is therefore opt-in, with the reason
-	// stated rather than buried in a flag.
+	// unit whose firmware mishandles one request can crash on it — including a
+	// unit the driver is relying on. Reading a moving car is therefore opt-in,
+	// with the reason stated rather than buried in a flag.
 	if !while_driving {
 		backend = match crate::safety::require_stationary(backend).await {
 			Ok(backend) => backend,
 			Err((_, why)) => anyhow::bail!(
 				"{why}\n\n\
                  A sweep asks a unit thousands of requests it may never have been asked \n\
-                 before. On the reference car that made the steering assist stop assisting \n\
-                 mid-drive. Sweep while parked, or pass --while-driving if you accept that \n\
-                 risk with the car in motion."
+                 before, and a unit that mishandles one can stop doing its job while the \n\
+                 car is in motion. Sweep while parked, or pass --while-driving if you \n\
+                 accept that risk with the car moving."
 			),
 		};
 	}
@@ -490,14 +485,6 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			walk_order(&listed)
 		}
 	};
-	// A unit nobody named is a unit nobody decided to read. This tool names
-	// one that a sweep must not reach on its own — see `safety::SPARED` — and
-	// `--only` still reaches it, because that is somebody choosing.
-	let (order, spared) = match requested_by_hand {
-		true => (order, Vec::new()),
-		false => crate::safety::spare(order),
-	};
-
 	let (store, extracted) = crate::declared::sources();
 	println!(
 		"surveying {} control units — each asked only the identifiers its own data \n\
@@ -512,10 +499,6 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			),
 		}
 	);
-
-	if let Some(notice) = crate::safety::spared_notice(&spared) {
-		println!("{notice}\n");
-	}
 
 	let started = Instant::now();
 	let mut reports = Vec::new();
@@ -543,9 +526,8 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		));
 
 		// No session change by default. `0x10 0x03` is workshop mode, and a
-		// unit that assists the driver may stop assisting while it is in one —
-		// the steering assist on the reference car dropped out mid-drive
-		// exactly here, a third of the way through the walk.
+		// unit that assists the driver is entitled to stop assisting while it
+		// is in one.
 		if extended {
 			let _ = uds.start_session(0x03).await;
 		}
@@ -662,9 +644,10 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		}
 
 		// The rule: "Stop when something changes… finish nothing and start
-		// nothing." The whole run, not this unit: what made the second incident
-		// permanent was carrying on after the first drop-out looked like it had
-		// resolved itself. The notice goes on a surface nothing rewrites.
+		// nothing." The whole run, not this unit: a unit that has started
+		// misbehaving is not made safer by sweeping the next one, and "it
+		// recovered" is a guess until somebody looks. The notice goes on a
+		// surface nothing rewrites.
 		//
 		// Written to `--out` above and deliberately **not** to `fresh`: this
 		// unit's hit list stops where the sweep did, and folding a partial line

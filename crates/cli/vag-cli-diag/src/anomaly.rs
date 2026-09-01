@@ -1,25 +1,24 @@
 //! Stopping when something changes.
 //!
-//! The rule since the first incident: *"Stop when something changes. If a lamp
-//! comes on, or a system goes quiet, finish nothing and start nothing."* It was
-//! a rule for the person holding the laptop, and the
-//! tool did not hold itself to it — the per-unit loop counted a unit that had
-//! gone silent as `stats.failed` and swept on to the next identifier, and then
-//! to the next unit. On 9 August 2026 that is what happened for the second
-//! time: the sweep noticed and carried on, which is worse than not noticing.
+//! The rule: *"Stop when something changes. If a lamp comes on, or a system
+//! goes quiet, finish nothing and start nothing."* It is a rule for the person
+//! holding the laptop, and the tool did not hold itself to it — the per-unit
+//! loop counted a unit that had gone silent as `stats.failed` and swept on to
+//! the next identifier, and then to the next unit. A sweep that notices a unit
+//! misbehaving and carries on is worse than one that never noticed.
 //!
 //! This module is the rule made executable. A sweep feeds every answer through
 //! a [`Monitor`]; the first time a unit that had been talking stops talking, or
 //! goes back on an identifier it already answered *in this same run*, the
 //! monitor records an [`Anomaly`] and the sweep ends — the whole run, not just
-//! that unit, because the thing that made the second incident permanent was
-//! carrying on after the first drop-out looked like it had resolved itself.
+//! that unit, because a unit that has started misbehaving is not made safer by
+//! sweeping the next one, and "it recovered" is a guess until somebody looks.
 //!
 //! ## Why it is deliberately not sensitive during identification
 //!
 //! The monitor is seeded with the identifiers a unit *answered* in its
 //! identification block and starts judging silences only once the sweep proper
-//! begins. Units on the reference car answer `F187` and refuse or ignore half
+//! begins. Real units answer `F187` and refuse or ignore half
 //! the rest of the block; enforcing there would stop a whole-car run on a unit
 //! behaving exactly as it always has. A false halt is not free — it is what
 //! teaches somebody to reach for the override — so the bar is "it answered this
@@ -122,8 +121,8 @@ impl Anomaly {
 			 The tool was asking it for identifier {:04X}.\n\
 			 \n\
 			 The run has ended here — every unit, not just this one. A control unit that\n\
-			 changes under a sweep is the event that cost the reference car its power\n\
-			 steering, and the second time it happened the sweep had noticed and carried on.\n\
+			 changes under a sweep may have stopped doing its job in the car, and a sweep\n\
+			 that carries on past that is how a recoverable fault becomes a lasting one.\n\
 			 \n\
 			 What to do now:\n\
 			 \n\
@@ -282,16 +281,16 @@ mod tests {
 
 	#[test]
 	fn a_unit_that_goes_quiet_mid_sweep_ends_the_run() {
-		// The defect this module exists for: on 9 August 2026 the sweep
-		// recorded exactly this as `stats.failed` and carried on to the next
-		// identifier, and then to the next unit.
-		let mut m = Monitor::new(0x712);
+		// The defect this module exists for: the sweep used to record exactly
+		// this as `stats.failed` and carry on to the next identifier, and then
+		// to the next unit.
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		assert!(m.saw(0x2000, Answer::Refused).is_none(), "a refusal is the ordinary answer");
 		assert!(m.saw(0x2001, Answer::Silent).is_none(), "one lost frame is not an event");
 		assert!(m.saw(0x2002, Answer::Silent).is_none());
 		let anomaly = m.saw(0x2003, Answer::Silent).expect("three in a row is the unit, not the wire").clone();
-		assert_eq!(anomaly.request, 0x712);
+		assert_eq!(anomaly.request, 0x714);
 		assert_eq!(anomaly.did, 0x2003, "the report names what was being asked");
 		assert_eq!(anomaly.change, Change::WentQuiet { silences: QUIET_RUN });
 	}
@@ -300,14 +299,14 @@ mod tests {
 	fn refusing_what_it_already_answered_ends_the_run_at_once() {
 		// No run-up: the unit answered this identifier minutes ago and will not
 		// now. That is not a lost frame under any reading.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		let anomaly = m.saw(0xF187, Answer::Refused).expect("it went back on itself").clone();
 		assert_eq!(anomaly.change, Change::NoLongerAnswers { now: Answer::Refused });
 		assert_eq!(anomaly.did, 0xF187);
 
 		// And the silent spelling of the same thing.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.saw(0xF187, Answer::Answered);
 		let anomaly = m.saw(0xF187, Answer::Silent).expect("it stopped answering it").clone();
 		assert_eq!(anomaly.change, Change::NoLongerAnswers { now: Answer::Silent });
@@ -329,7 +328,7 @@ mod tests {
 		// Two timeouts, then the unit talks again: nothing changed, and a
 		// counter that did not reset would halt the run on the next lone
 		// timeout half a sweep later.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		m.saw(0x2000, Answer::Silent);
 		m.saw(0x2001, Answer::Silent);
@@ -344,7 +343,7 @@ mod tests {
 		// The sweep returns early on the first `Some`, but a caller that polls
 		// it afterwards must not be told the car is fine because the next
 		// request happened to be answered.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		assert!(m.saw(0xF187, Answer::Refused).is_some());
 		assert!(m.saw(0x2000, Answer::Answered).is_some(), "it un-halted itself");
@@ -357,7 +356,7 @@ mod tests {
 		// begins at one the unit answered during identification. A single lost
 		// frame there must not halt a whole-car survey — but three in a row
 		// still must.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		assert!(m.silent_span(0xF187).is_none(), "one lost group reply is not an event");
 		assert!(m.silent_span(0xF187).is_none());
@@ -366,7 +365,7 @@ mod tests {
 
 		// And a batch that answers clears the run, without claiming anything
 		// about which of its eight identifiers did the answering.
-		let mut m = Monitor::new(0x712);
+		let mut m = Monitor::new(0x714);
 		m.seed(0xF187);
 		m.silent_span(0x2000);
 		m.silent_span(0x2008);
@@ -380,7 +379,7 @@ mod tests {
 		// The moment somebody needs these steps is the moment they are
 		// least likely to go and read a file, so the steps are in the message.
 		let text = Anomaly {
-			request: 0x712,
+			request: 0x714,
 			did: 0x22FF,
 			change: Change::WentQuiet { silences: 3 },
 		}
