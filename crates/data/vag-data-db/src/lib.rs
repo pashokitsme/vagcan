@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 
 use vag_data_labels::label::{LabelFile, Measurement, Record};
 use vag_data_labels::{LabelDb, Scaling, load_label_files};
@@ -535,6 +535,19 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 	insert_files(&mut conn, &load.files, &labels_dir.to_string_lossy())
 }
 
+/// Open an existing cache to read it, with no power to create one.
+///
+/// [`Connection::open`] carries SQLite's `CREATE` flag, so every question asked
+/// of a cache that is not there used to *answer it into existence*: a zero-byte
+/// `cache.sqlite` left behind by a bare `vagcan`, which then reads as "this
+/// project has labels" to everything that tests for the file, and fails at the
+/// first query with `no such table: label_file`. A missing database is an error
+/// here, never an empty one — only the paths that build or write a cache
+/// ([`build_db`], [`put_readings`]) may create the file.
+fn open_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
+	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+}
+
 /// The label-file directory `db_path` was built from, if it says.
 ///
 /// `None` for a cache written before this was recorded, one that cannot be
@@ -543,7 +556,7 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 /// concerns. The caller decides what to do with that (see the freshness rule in
 /// `vagcan::labels`, which trusts a cache whose source directory is gone).
 pub fn source_of(db_path: &Path) -> Option<String> {
-	let conn = Connection::open(db_path).ok()?;
+	let conn = open_read_only(db_path).ok()?;
 	conn
 		.query_row("SELECT dir FROM source WHERE kind = ?1 ORDER BY id LIMIT 1", [VCDS], |row| {
 			row.get::<_, String>(0)
@@ -553,7 +566,7 @@ pub fn source_of(db_path: &Path) -> Option<String> {
 
 /// Every source that has ever written into this cache, oldest first.
 pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	let mut stmt = conn.prepare("SELECT kind, dir FROM source ORDER BY id")?;
 	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -650,7 +663,7 @@ type ReadingRow = (
 
 /// The channels this cache knows for one ECU variant, by identifier.
 pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
-	let conn = Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
@@ -716,7 +729,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 /// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
 /// cache produce the same file.
 pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT text_id, MIN(name) FROM reading \
          WHERE text_id IS NOT NULL AND text_id <> '' GROUP BY text_id ORDER BY text_id",
@@ -725,9 +738,29 @@ pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// How much of a car an ODIS source described: `(variants, channels)`.
+///
+/// One query rather than `reading_variants(…).len()`, because a caller that
+/// wants the size of the answer should not have to materialise it — a project
+/// is hundreds of variant names and hundreds of thousands of channels, and the
+/// only place this is asked from is a status line printed before anything else
+/// happens. Both halves ride `idx_reading_lookup`, so it stays in milliseconds
+/// on the owner's 92 MB cache.
+///
+/// `(0, 0)` for a project built from a VCDS installation alone: those rows are
+/// label files rather than readings and live in another table, which is D1's
+/// split. [`row_counts`] is the per-table dump for somebody who wants that.
+pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
+	let conn = open_read_only(db_path)?;
+	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {
+		Ok((row.get(0)?, row.get(1)?))
+	})?;
+	Ok((variants.max(0) as u64, channels.max(0) as u64))
+}
+
 /// Every ECU variant this cache holds readings for, in name order.
 pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
-	let conn = Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM reading ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -736,7 +769,7 @@ pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 /// Load all label files back out of a SQLite DB into a `Vec<LabelFile>`
 /// (reconstructing `Record::Measurement`/`Redirect`/`Adaptation`/`LongCoding`).
 pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
-	let conn = Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	read_files(&conn)
 }
 
@@ -748,7 +781,7 @@ pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
 /// compiling after a rename and fail only when run.
 pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
 	const TABLES: [&str; 5] = ["label_file", "measurement", "redirect", "adaptation", "long_coding"];
-	let conn = rusqlite::Connection::open(db_path)?;
+	let conn = open_read_only(db_path)?;
 	let mut out = Vec::with_capacity(TABLES.len());
 	for table in TABLES {
 		// The names are the constant above, never anything a caller supplied,
@@ -1101,6 +1134,28 @@ mod tests {
 	}
 
 	#[test]
+	fn the_size_of_a_project_is_answered_without_reading_it_all_back() {
+		// What the overview screen prints before any other work happens. A
+		// cache with no ODIS source answers (0, 0) rather than failing: that is
+		// a VCDS-only project, which is an ordinary state and not an error.
+		let ws = TempWorkspace::new("counts");
+		let identity = Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 });
+		write_fixture_labels(&ws);
+		build_db(&ws.labels_dir, &ws.db_path).unwrap();
+		assert_eq!(channel_counts(&ws.db_path).unwrap(), (0, 0));
+
+		put_readings(
+			&ws.db_path,
+			"/x/SK37X",
+			"EV_ECM",
+			&[reading(0x2000, "a", identity.clone()), reading(0x2001, "b", identity.clone())],
+		)
+		.unwrap();
+		put_readings(&ws.db_path, "/x/SK37X", "EV_Gearbox", &[reading(0x380A, "c", identity)]).unwrap();
+		assert_eq!(channel_counts(&ws.db_path).unwrap(), (2, 3), "two variants, three channels between them");
+	}
+
+	#[test]
 	fn rereading_one_project_replaces_its_channels_rather_than_doubling_them() {
 		let ws = TempWorkspace::new("reread");
 		let rows = [reading(
@@ -1293,5 +1348,35 @@ mod tests {
 		assert_eq!(cached.unit_numbers(), live.unit_numbers());
 		assert_eq!(cached.unit_name(0x44), Some("J500 - Power Steering"));
 		assert_eq!(cached.unit_name(0x17), Some("J285 - Instrument Cluster"));
+	}
+
+	#[test]
+	fn asking_a_cache_that_is_not_there_leaves_no_file_behind() {
+		// A read that creates its own database writes a zero-byte `cache.sqlite`
+		// into a project that has none, and that file then reads as "this
+		// project has labels" to every caller that only tests whether it
+		// exists — after which the next command dies on `no such table:
+		// label_file` instead of working without names. Every read must fail
+		// on the missing file and touch nothing.
+		let ws = TempWorkspace::new("nocreate");
+		assert!(!ws.db_path.is_file(), "sanity: the fixture wrote no cache");
+
+		assert!(source_of(&ws.db_path).is_none());
+		assert!(sources_of(&ws.db_path).is_err());
+		assert!(readings_of(&ws.db_path, "EV_ECM").is_err());
+		assert!(text_ids(&ws.db_path).is_err());
+		assert!(channel_counts(&ws.db_path).is_err());
+		assert!(reading_variants(&ws.db_path).is_err());
+		assert!(load_files(&ws.db_path).is_err());
+		assert!(row_counts(&ws.db_path).is_err());
+		assert!(load_db(&ws.db_path).is_err());
+
+		assert!(!ws.db_path.exists(), "a read created {}", ws.db_path.display());
+
+		// And what is allowed to create one still does.
+		write_fixture_labels(&ws);
+		build_db(&ws.labels_dir, &ws.db_path).expect("build_db creates the cache it builds");
+		assert!(ws.db_path.is_file());
+		assert!(channel_counts(&ws.db_path).is_ok(), "the same reads work once it is there");
 	}
 }

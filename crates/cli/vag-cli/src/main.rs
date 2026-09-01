@@ -14,6 +14,8 @@
 // modules below are `use`d rather than declared, so every `vag_cli_core::analyse::run(…)`
 // written when this was one crate still reads the same — it now names another
 // crate's module instead of a local file.
+mod overview;
+
 use vag_cli_core::device::ADAPTER_BAUD;
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
 use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, scan, setup, sniff, survey, vcds, watch};
@@ -74,8 +76,12 @@ struct Cli {
 	#[arg(long, global = true, value_name = "ID")]
 	project: Option<String>,
 
+	/// Nothing at all is a question — "what is this and what do I type" — and
+	/// clap's answer to it was `error: requires a subcommand`, which is true of
+	/// the grammar and useless to a person. `None` is that question, and
+	/// [`overview`] answers it.
 	#[command(subcommand)]
-	command: Command,
+	command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -467,7 +473,14 @@ async fn main() -> Result<()> {
 	if let Some(why) = config::language_complaint(&config::load()) {
 		eprintln!("{why}\n");
 	}
-	match cli.command {
+	// After the migration above, because the overview reports what is under
+	// `~/.vagcan/data/` and a store still in the old place is not "nothing set
+	// up". It reads no more than that and opens no adapter.
+	let Some(command) = cli.command else {
+		print!("{}", overview::render(&overview::gather()));
+		return Ok(());
+	};
+	match command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
 			refresh,
@@ -1013,6 +1026,31 @@ mod tests {
 			.find(|a| a.get_id() == flag)
 			.unwrap_or_else(|| panic!("{path:?} has no {flag}"));
 		arg.get_help().map(|h| h.to_string()).unwrap_or_default()
+	}
+
+	#[test]
+	fn a_bare_invocation_is_a_question_and_help_still_answers_its_own() {
+		// `vagcan` on its own used to be `error: requires a subcommand`, which
+		// is the first thing a new user sees and says nothing about the tool.
+		// It parses now, and the absent subcommand is what `overview` answers.
+		let bare = Cli::try_parse_from(["vagcan"]).expect("a bare `vagcan` must parse");
+		assert!(bare.command.is_none());
+		// The global flag still binds without one, so `vagcan --project X`
+		// describes that project rather than failing.
+		assert_eq!(
+			Cli::try_parse_from(["vagcan", "--project", "SK37X"]).unwrap().project.as_deref(),
+			Some("SK37X")
+		);
+
+		// And the overview replaced no part of `--help`: that is still clap's,
+		// and an unknown subcommand is still an error rather than a screen.
+		let help = Cli::try_parse_from(["vagcan", "--help"]).err().expect("--help is clap's own");
+		assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+		assert!(help.to_string().contains("START HERE"), "{help}");
+		let unknown = Cli::try_parse_from(["vagcan", "nonsense"])
+			.err()
+			.expect("an unknown subcommand is still an error");
+		assert_eq!(unknown.kind(), clap::error::ErrorKind::InvalidSubcommand);
 	}
 
 	#[test]

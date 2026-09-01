@@ -13,6 +13,7 @@ VCDS's own files; neither touches a vehicle.
 
 ## Contents
 
+- [`vagcan` on its own](#vagcan-on-its-own)
 - [Once, before anything else](#once-before-anything-else)
 - [Reading the car](#reading-the-car)
 - [Watching it live](#watching-it-live)
@@ -22,6 +23,38 @@ VCDS's own files; neither touches a vehicle.
 - [Flow: a first drive](#flow-a-first-drive)
 - [Flow: teaching it a new measurement](#flow-teaching-it-a-new-measurement)
 - [When it says data is missing](#when-it-says-data-is-missing)
+
+---
+
+## `vagcan` on its own
+
+No subcommand prints an overview instead of an error: what the tool is, what this
+machine actually has, and what to type next. It opens no adapter and sends no frame —
+it lists USB serial devices and reads `~/.vagcan`, so it is instant and safe to run
+with the engine running.
+
+```
+$ vagcan
+vagcan — read a VAG car (VW / Audi / Škoda / SEAT) over CAN, through the OBD-II port.
+It only ever reads: no coding, no adaptation, no clearing faults, no flashing.
+
+  Adapter   /dev/cu.usbmodem206E37A148451 — CANable 2.0 (slcan)
+  Car data  SK37X, from a VCDS installation and an ODIS project
+            399283 channels across 669 control-unit variants
+
+Next:
+  vagcan info      which car is this?
+  vagcan units     which control units does it have?
+  vagcan faults    what is it complaining about?
+  vagcan watch     live values from several units, chosen on screen
+
+`vagcan --help` lists every command, and `vagcan help <command>` explains one.
+```
+
+The "Next" block follows the state above it: with no project it is `vagcan setup` and
+where to get a source, with no adapter it is what to plug in and which commands work
+without one. Anything that could not be read cheaply says so rather than being guessed
+at — `vagcan --help` is untouched and still lists every command.
 
 ---
 

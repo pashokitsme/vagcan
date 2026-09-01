@@ -60,6 +60,13 @@ cd vagcan
 cargo install --path crates/cli/vag-cli
 ```
 
+Run it with no arguments to see where you stand — what it is, whether an adapter and
+a car's data are there, and what to type next:
+
+```sh
+vagcan
+```
+
 Check it found your adapter:
 
 ```
