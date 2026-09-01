@@ -9,38 +9,16 @@
 //! cable whose session crypto is a dead end for this project; the research and
 //! the `vag-hex` crate remain, but they are not product commands.
 
-mod analyse;
-mod anomaly;
-mod calibrate;
-mod config;
-mod datadir;
-mod declared;
-mod device;
-mod discover;
-mod extracted;
-mod faultnames;
-mod faults;
-mod glossary;
-mod labels;
-mod measure;
-mod migrate;
-mod missing;
-mod names;
-mod progress;
-mod project;
-mod props;
-mod recording;
-mod render;
-mod safety;
-mod scan;
-mod setup;
-mod sniff;
-mod survey;
-mod ui;
-mod units;
-mod vcds;
-mod vcdslog;
-mod watch;
+// This crate is the command surface and nothing else: the clap declarations,
+// and a dispatcher that hands each one to the crate that does the work. The
+// modules below are `use`d rather than declared, so every `vag_cli_core::analyse::run(…)`
+// written when this was one crate still reads the same — it now names another
+// crate's module instead of a local file.
+use vag_cli_core::device::ADAPTER_BAUD;
+use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
+use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, scan, setup, sniff, survey, vcds, watch};
+#[cfg(feature = "measure")]
+use vag_cli_measure as measure;
 
 use std::time::Duration;
 
@@ -53,7 +31,6 @@ use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
 /// Serial speed to the adapter. slcan is ASCII over USB CDC, where the baud
 /// rate is ignored by the hardware — no reason to make anyone choose it.
-const ADAPTER_BAUD: u32 = 115_200;
 
 #[derive(Parser)]
 #[command(
@@ -307,80 +284,8 @@ enum Command {
 	///
 	/// There is no `--hz`: the rate is measured and reported, never asserted in
 	/// advance, and a flag that throttled a stopwatch could only make it worse.
-	Measure {
-		/// `setup` describes this car once; `view` opens a saved session.
-		#[command(subcommand)]
-		tool: Option<measure::Tool>,
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
-		device: Option<String>,
-		/// Use this car file instead of the one kept for this car's VIN.
-		#[arg(long, value_name = "FILE")]
-		car: Option<String>,
-		/// Compute power as well. Needs a car file completed by
-		/// `vagcan measure setup`, and is refused without one rather than
-		/// falling back to generic road-load numbers.
-		#[arg(long)]
-		full: bool,
-		/// Poll only what the stopwatch needs — speed and gear — for the
-		/// highest achievable rate, at the cost of the telemetry.
-		#[arg(long, conflicts_with = "full")]
-		minimal: bool,
-		/// Marks to time, as `A-B` pairs in km/h, `A < B`. `0-60` here is the
-		/// metric one; the American figure is in mph.
-		#[arg(long, default_value = measure::DEFAULT_MARKS, value_name = "LIST",
-              value_parser = measure::parse_marks)]
-		marks: measure::Marks,
-		/// Half-width of the least-squares acceleration window, in seconds.
-		#[arg(long, default_value_t = measure::report::ACCEL_WINDOW_S, value_name = "SECONDS",
-              value_parser = measure::parse_seconds)]
-		accel_window: f64,
-		/// Write the session here continuously. Without it, `s` saves on demand
-		/// into this car's own directory.
-		#[arg(long, value_name = "FILE")]
-		out: Option<String>,
-		/// No tone on a closed mark.
-		#[arg(long)]
-		quiet: bool,
-		/// Where the proven measurement rows live.
-		/// Default: this project's `~/.vagcan/data/<project>/measurements`.
-		#[arg(long, value_name = "DIR")]
-		data: Option<String>,
-		/// Mass in kilograms, overriding the car file for this run.
-		#[arg(long, value_name = "KG")]
-		mass: Option<f64>,
-		/// Tyre size as written on the sidewall, e.g. `205/55R16`.
-		#[arg(long, value_name = "SIZE")]
-		tyre: Option<String>,
-		/// Drag area in m². The coastdown measures this; pass it only if you
-		/// genuinely have the figure, and pass `--crr` with it.
-		#[arg(long, value_name = "M2", requires = "crr")]
-		cda: Option<f64>,
-		/// Rolling resistance coefficient. The fit produces it and `--cda` as a
-		/// pair, so neither is accepted alone.
-		#[arg(long, value_name = "N", requires = "cda")]
-		crr: Option<f64>,
-		/// Scale the stored wheel and engine inertias, for a car whose
-		/// rotating mass is known to differ from the typical figures.
-		#[arg(long, value_name = "N")]
-		inertia_factor: Option<f64>,
-		/// Road gradient in per cent. Downhill flatters every figure.
-		#[arg(long, default_value_t = 0.0, value_name = "PERCENT")]
-		grade: f64,
-		/// Headwind in m/s. Drag acts on air speed, not on ground speed.
-		#[arg(long, default_value_t = 0.0, value_name = "M_S")]
-		headwind: f64,
-		/// Air density in kg/m³, for a car whose barometer or ambient sensor
-		/// this tool cannot read. It feeds power and nothing else.
-		#[arg(long, value_name = "KG_M3", requires = "full")]
-		air_density: Option<f64>,
-		/// Multiply every speed reading before mark detection, so that `0-100`
-		/// means a corrected 100 rather than an indicated one. One GPS
-		/// comparison run is what settles the value.
-		#[arg(long, default_value_t = 1.0, value_name = "N",
-              value_parser = measure::parse_speed_scale)]
-		speed_scale: f64,
-	},
+	#[cfg(feature = "measure")]
+	Measure(#[command(flatten)] measure::args::Args),
 
 	/// Sweep ONE control unit for every data identifier it answers.
 	Scan {
@@ -612,7 +517,7 @@ async fn main() -> Result<()> {
 			..
 		} => {
 			let preselect = match did.as_deref() {
-				Some(spec) => watch::plan::parse_spec(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
+				Some(spec) => plan::parse_spec(spec).map_err(|e| anyhow::anyhow!("--did: {e}"))?,
 				None => Vec::new(),
 			};
 			// A pipe, a log file or an agent gets the plain-console view
@@ -638,75 +543,8 @@ async fn main() -> Result<()> {
 			)
 			.await
 		}
-		Command::Measure {
-			tool: Some(measure::Tool::View { file }),
-			..
-		} => match file {
-			Some(file) => measure::open_view(&file),
-			None => measure::view_picked(),
-		},
-		Command::Measure {
-			tool: Some(measure::Tool::Setup {
-				device,
-				coast_from,
-				coast_to,
-				data,
-				car,
-			}),
-			..
-		} => {
-			measure::setup::run(measure::setup::Options {
-				device: device.as_deref(),
-				catalogs: &data_dir(data.as_deref())?,
-				coast_from_kmh: coast_from,
-				coast_to_kmh: coast_to,
-				car: car.as_deref(),
-			})
-			.await
-		}
-		Command::Measure {
-			device,
-			car,
-			full,
-			minimal,
-			marks,
-			accel_window,
-			out,
-			quiet,
-			data,
-			mass,
-			tyre,
-			cda,
-			crr,
-			inertia_factor,
-			grade,
-			headwind,
-			air_density,
-			speed_scale,
-			..
-		} => {
-			measure::run(measure::Options {
-				device: device.as_deref(),
-				car: car.as_deref(),
-				catalogs: &data_dir(data.as_deref())?,
-				full,
-				minimal,
-				marks: marks.0,
-				accel_window_s: accel_window,
-				out: out.as_deref(),
-				quiet,
-				mass_kg: mass,
-				tyre: tyre.as_deref(),
-				cda,
-				crr,
-				inertia_factor,
-				grade_percent: grade,
-				headwind_ms: headwind,
-				air_density,
-				speed_scale,
-			})
-			.await
-		}
+		#[cfg(feature = "measure")]
+		Command::Measure(args) => measure::dispatch(args, &data_dir(None)?).await,
 		Command::Scan {
 			device,
 			ecu,
@@ -1184,7 +1022,7 @@ mod tests {
 		// `Thresholds::default()`. Loosening a threshold without updating the
 		// help would leave the tool advertising a standard it no longer holds
 		// itself to; this makes that a test failure.
-		let bar = analyse::Thresholds::default();
+		let bar = vag_cli_core::analyse::Thresholds::default();
 		for path in [["vcds", "analyse"], ["recording", "calibrate"]] {
 			for flag in ["min_r2", "min_points"] {
 				let help = flag_help(&path, flag);

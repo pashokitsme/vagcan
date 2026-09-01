@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use vag_data_labels::catalog::Scaling;
 use vag_data_labels::measure::RawForm;
 
-use super::plan::Channel;
+use crate::plan::Channel;
 
 /// One recorded run: the columns it holds and the samples in time order.
 #[derive(Debug, Clone, PartialEq)]

@@ -343,7 +343,7 @@ Five things follow, and the third replaces what the first draft of this section 
    new capability: a survey since `91c6a05` asks what the unit's own data declares, which
    is precisely those 2,251, and records the range it used. One parked run settles it.
 5. **`watch` holds silent channels back only where a survey recorded what it asked**
-   (`plan::Answered`, `crates/vag-cli/src/watch/plan.rs`). The cached file has no such
+   (`plan::Answered`, `crates/cli/vag-cli-core/src/plan.rs`). The cached file has no such
    record, so on this machine the filter currently hides nothing — see below.
 
 **On reproducing the blind sweep.** The cached survey is a blind run and the default

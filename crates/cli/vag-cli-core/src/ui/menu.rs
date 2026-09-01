@@ -234,7 +234,7 @@ fn erase(out: &mut impl std::io::Write, drawn: usize) -> Result<()> {
 /// terminal to test. `pub(crate)` so that a caller can measure its own copy
 /// against a terminal width instead of guessing at this function's arithmetic —
 /// a detail line one column too long is cut to `…` and nobody finds out.
-pub(crate) fn screen(question: &str, items: &[Item<'_>], at: usize, width: u16) -> Vec<String> {
+pub fn screen(question: &str, items: &[Item<'_>], at: usize, width: u16) -> Vec<String> {
 	let width = (width as usize).max(20);
 	let mut lines = vec![clip(&format!("? {question}"), width)];
 	// The details line up under each other, or three sentences at three
@@ -318,7 +318,7 @@ fn no_terminal(instead: &str) -> String {
 ///
 /// Lives beside [`Console`] rather than in this module's own tests so that any
 /// command's tests can drive its menu without a terminal.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
 	/// Take this row of the menu.
@@ -332,7 +332,7 @@ pub enum Answer {
 
 /// The asker the tests use: the answers go in, and everything it showed or was
 /// told to say comes back out to be asserted against.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub struct Scripted {
 	answers: std::collections::VecDeque<Answer>,
 	/// Every menu it was shown: the question, then each option's label and its
@@ -346,7 +346,7 @@ pub struct Scripted {
 	pub said: Vec<String>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 impl Scripted {
 	pub fn new(answers: Vec<Answer>) -> Scripted {
 		Scripted {
@@ -395,7 +395,7 @@ impl Scripted {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 impl Asker for Scripted {
 	fn ask(&mut self, question: &str, items: &[Item<'_>], at: usize) -> Result<Option<usize>> {
 		if items.is_empty() {

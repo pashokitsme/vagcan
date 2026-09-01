@@ -5,6 +5,12 @@
 //! for nothing. `--device` stays available for the ambiguous cases; when it is
 //! omitted we pick the obvious candidate and say which one we picked.
 
+/// The rate every slcan adapter on this project's bench runs at.
+///
+/// In `core` because it is a property of the cable rather than of any command,
+/// and three crates open that cable now.
+pub const ADAPTER_BAUD: u32 = 115_200;
+
 use anyhow::{Result, bail};
 use vag_uds_can::{AdapterInfo, list_adapters};
 

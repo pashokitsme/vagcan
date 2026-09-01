@@ -751,7 +751,7 @@ fn in_neutral(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::measure::power::Inertias;
+	use crate::power::Inertias;
 
 	/// A mid-size car, invented for these tests. Nothing in the module knows any
 	/// of it — mass, density and `δ₁` are all arguments — and `δ₁` in particular

@@ -118,6 +118,15 @@ impl States {
 		self.t.len()
 	}
 
+	/// Whether nothing has been recorded yet.
+	///
+	/// Beside `len` because this type crossed a crate boundary when `measure`
+	/// became its own crate: a public `len` with no `is_empty` is a rough edge
+	/// for every caller that is not this file.
+	pub fn is_empty(&self) -> bool {
+		self.len() == 0
+	}
+
 	/// What was in force at `t` — a step function held until the next reading.
 	/// `None` before the first sample, because nothing was established yet.
 	pub fn at(&self, t: Seconds) -> Option<&str> {

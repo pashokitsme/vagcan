@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use super::plan::Key;
+use crate::plan::Key;
 
 /// What the per-car file used to be called, for [`migrate`].
 pub const LEGACY_FILE: &str = "favourites.json";

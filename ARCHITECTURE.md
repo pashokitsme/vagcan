@@ -342,7 +342,11 @@ crates/
     vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
     vag-dash-cfg             `dashcfg`, which configures the device over that pipe
     vag-dash-fw              the firmware. Outside the workspace: no_std for riscv32imc
-  vag-cli                  binary `vagcan` — the CLI
+  cli/                     what a person runs, in four layers
+    vag-cli-core             which car, what channels, how to poll, where the files are
+    vag-cli-diag             reading a car, and the files that explain what it said
+    vag-cli-measure          binary `vagcan-measure` — the stopwatch, on `core` alone
+    vag-cli                  binary `vagcan` — the command surface and nothing else
 ```
 
 **A crate's directory is its package name**, and the family it sits in is already spelled
@@ -359,6 +363,13 @@ exactly one.** `dashcfg` and the firmware serve only the device. `vagcan` consum
 and `data/` both, so it belongs to neither, sits at the root, and takes no family prefix —
 naming the product after one of its dependencies would be the same mistake as filing the
 renderer under whichever crate happens to draw with it today.
+
+`cli/` is layered where the other families are flat, and the layering is load-bearing.
+`measure` — an acceleration stopwatch, a third of what used to be one crate — needs
+twelve modules from `core` and **nothing** from diagnostics. That was measured before it
+was moved, and it is why `vagcan measure` and the standalone `vagcan-measure` can share
+one set of flags and one `dispatch`, and why a build can leave the stopwatch out
+(`--no-default-features`) without touching a line of diagnostics.
 
 There is exactly one edge between families, `vag-uds-client -> vag-data-labels`, and it
 exists for a single module: `read.rs`, decoding a measurement against a catalog. It goes

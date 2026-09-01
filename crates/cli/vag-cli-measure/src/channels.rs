@@ -2,7 +2,7 @@
 //!
 //! Nothing here names an identifier. Which identifier carries road speed is a
 //! fact about one car; the words label files use for it are shared, so every
-//! channel is found the way [`crate::watch::plan::select_basics`] already finds
+//! channel is found the way [`crate::plan::select_basics`] already finds
 //! the basics — by name, over the rows the car's own units report catalogs for,
 //! plus the legislated SAE J1979 set on the units ISO 15765-4 obliges to answer
 //! it. A car whose catalog uses the same words works without a line of this
@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use vag_data_labels::catalog::{CatalogStore, MeasurementDef, ReadId, Scaling};
 use vag_uds_client::address::UnitAddress;
 
-use crate::watch::plan::{self, UnitIdentity};
+use crate::plan::{self, UnitIdentity};
 
 /// The stopwatch's own channel — the one every mark is timed from.
 const SPEED: &str = "speed";
@@ -65,7 +65,7 @@ impl Resolved {
 	/// The value in the response's data bytes, or `None` when they carry no
 	/// value this definition can honestly produce.
 	///
-	/// Deliberately **not** [`crate::watch::plan::Channel::render`]: that falls
+	/// Deliberately **not** [`crate::plan::Channel::render`]: that falls
 	/// back to `"… (raw)"`, which is exactly the class of number this command
 	/// excludes. `watch` shows raw bytes because its job is to *find*
 	/// measurements; here `None` means the channel is absent for this sample,

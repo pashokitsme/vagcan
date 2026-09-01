@@ -21,7 +21,6 @@
 
 pub mod favourites;
 pub mod history;
-pub mod plan;
 pub mod replay;
 
 use std::fmt::Write as _;
@@ -34,9 +33,9 @@ use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
+use crate::plan::Channel;
 use crate::ui::chart;
 use crate::ui::term;
-use plan::Channel;
 
 /// How many lines the chart draws, however many are marked for it.
 ///
@@ -221,14 +220,14 @@ pub struct App {
 	/// Which channels the chart holds — a second choice over the same list,
 	/// because what belongs on a table of thirty values and what belongs on a
 	/// chart of three lines are different questions.
-	charted: std::collections::BTreeSet<plan::Key>,
+	charted: std::collections::BTreeSet<crate::plan::Key>,
 	/// The channels this car's owner marked with `f`, read from and written
 	/// back to [`favourites::path_for`].
 	///
 	/// They are offered first on the selection screen, they survive the
 	/// nameless-identifier filter, and they are what a run starts with — see
 	/// [`favourites`].
-	favourites: std::collections::BTreeSet<plan::Key>,
+	favourites: std::collections::BTreeSet<crate::plan::Key>,
 	/// Which car they are kept under. `None` on a replay and on a car that
 	/// would not say which car it is: the marks then last until the run ends,
 	/// which is what [`App::note`] says at the moment somebody makes one.
@@ -264,7 +263,7 @@ pub struct App {
 	///   like it works. How common that is on any given car is not something this
 	///   comment should claim: the first attempt put it at 1,746 of 2,251 on the
 	///   reference car and the real figure was 38, the rest being identifiers the
-	///   sweep never asked. Hence [`plan::Answered`], which will not call anything
+	///   sweep never asked. Hence [`crate::plan::Answered`], which will not call anything
 	///   silent without a record of what was put to the unit.
 	///
 	/// Neither is dropped. A nameless identifier is precisely what somebody
@@ -283,10 +282,10 @@ pub struct App {
 	/// What this car was seen to answer, when a survey has been loaded.
 	///
 	/// Empty means nothing is known, and nothing is then filtered on those
-	/// grounds — see [`plan::Answered::saw`], which distinguishes "asked and
+	/// grounds — see [`crate::plan::Answered::saw`], which distinguishes "asked and
 	/// silent" from "never asked" precisely so this cannot hide a unit nobody
 	/// swept.
-	answered: plan::Answered,
+	answered: crate::plan::Answered,
 	/// Scroll position of the selection list. Without one, everything past the
 	/// bottom of the terminal is unreachable.
 	select_state: TableState,
@@ -353,7 +352,7 @@ impl App {
 			settings_cursor: 0,
 			hz: crate::config::DEFAULT_HZ,
 			show_key: false,
-			answered: plan::Answered::default(),
+			answered: crate::plan::Answered::default(),
 			select_state: TableState::default(),
 			series_cursor: 0,
 			series_state: TableState::default(),
@@ -533,7 +532,7 @@ impl App {
 	/// a line, and beyond [`CHART_CHANNELS`] there is no room for one. Both are
 	/// said out loud on the screen that makes the marks, because a mark that
 	/// silently does nothing is what makes a chart look broken.
-	fn drawn(&self) -> Vec<plan::Key> {
+	fn drawn(&self) -> Vec<crate::plan::Key> {
 		self
 			.shown()
 			.into_iter()
@@ -553,7 +552,7 @@ impl App {
 		let shown = self.shown();
 		let mut out: Vec<DisplayRow> = Vec::new();
 		for c in shown {
-			let paired = c.def.as_ref().and_then(|d| plan::split_role(&d.name));
+			let paired = c.def.as_ref().and_then(|d| crate::plan::split_role(&d.name));
 			let Some((base, role)) = paired else {
 				out.push(DisplayRow {
 					label: c.label(),
@@ -568,19 +567,19 @@ impl App {
 				r.label == base
 					&& r.any().request == c.request
 					&& match role {
-						plan::Role::Actual => r.actual.is_none(),
-						plan::Role::Specified => r.specified.is_none(),
+						crate::plan::Role::Actual => r.actual.is_none(),
+						crate::plan::Role::Specified => r.specified.is_none(),
 					}
 			});
 			match (slot, role) {
-				(Some(row), plan::Role::Actual) => row.actual = Some(c),
-				(Some(row), plan::Role::Specified) => row.specified = Some(c),
-				(None, plan::Role::Actual) => out.push(DisplayRow {
+				(Some(row), crate::plan::Role::Actual) => row.actual = Some(c),
+				(Some(row), crate::plan::Role::Specified) => row.specified = Some(c),
+				(None, crate::plan::Role::Actual) => out.push(DisplayRow {
 					label: base.to_string(),
 					actual: Some(c),
 					specified: None,
 				}),
-				(None, plan::Role::Specified) => out.push(DisplayRow {
+				(None, crate::plan::Role::Specified) => out.push(DisplayRow {
 					label: base.to_string(),
 					actual: None,
 					specified: Some(c),
@@ -626,7 +625,7 @@ impl App {
 		// and it declines exactly what must be declined: bytes too short for the
 		// form, a state, and an anchored row away from its anchor, where the
 		// slope is unknown and no honest value exists.
-		let seen: Vec<(plan::Key, f64)> = self
+		let seen: Vec<(crate::plan::Key, f64)> = self
 			.channels
 			.iter()
 			.filter(|c| c.request == request && c.did == did)
@@ -684,7 +683,7 @@ impl App {
 		if !self.chart_shown || !self.charted.is_empty() {
 			return;
 		}
-		let seed: Vec<plan::Key> = self
+		let seed: Vec<crate::plan::Key> = self
 			.shown()
 			.into_iter()
 			.filter(|c| plottable(c))
@@ -812,7 +811,7 @@ impl App {
 	/// being polled draws a line that stops dead and then, a minute later,
 	/// nothing — and looks exactly like a control unit that went quiet.
 	fn prune_charted(&mut self) {
-		let selected: std::collections::BTreeSet<plan::Key> = self.channels.iter().filter(|c| c.selected).map(|c| c.key()).collect();
+		let selected: std::collections::BTreeSet<crate::plan::Key> = self.channels.iter().filter(|c| c.selected).map(|c| c.key()).collect();
 		let before = self.charted.len();
 		self.charted.retain(|key| selected.contains(key));
 		if self.charted.len() != before {
@@ -856,7 +855,7 @@ const RATE_STEP: f64 = 0.5;
 ///
 /// The component string when the unit gave one, else its part number — both
 /// come from the unit, so a tab never carries a name this project made up.
-fn unit_names(identities: &[plan::UnitIdentity]) -> Vec<(u16, String)> {
+fn unit_names(identities: &[crate::plan::UnitIdentity]) -> Vec<(u16, String)> {
 	identities
 		.iter()
 		.filter_map(|i| {
@@ -1690,13 +1689,13 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// A recording carries no identification block, so the catalogs are offered
 	// for every unit this project has one for. On a replay that is honest:
 	// nothing is being addressed, and a column only appears if it matched.
-	let mut identities: Vec<plan::UnitIdentity> = Vec::new();
+	let mut identities: Vec<crate::plan::UnitIdentity> = Vec::new();
 	let survey_text = match survey {
 		Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?),
 		None => None,
 	};
 	if let Some(text) = &survey_text {
-		identities = plan::identities_from_survey(text);
+		identities = crate::plan::identities_from_survey(text);
 	}
 	// A recording does not record which unit each column came from. With a
 	// survey the real units are known and the tabs are real; without one every
@@ -1708,8 +1707,8 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 		for entry in std::fs::read_dir(store.dir()).into_iter().flatten().flatten() {
 			let name = entry.file_name().to_string_lossy().to_string();
 			if let Some(part) = name.strip_suffix(".json") {
-				identities.push(plan::UnitIdentity {
-					request: plan::ENGINE,
+				identities.push(crate::plan::UnitIdentity {
+					request: crate::plan::ENGINE,
 					part_number: Some(part.to_string()),
 					odx_name: None,
 					odx_version: None,
@@ -1719,19 +1718,19 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 		}
 	}
 
-	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
+	let mut channels = crate::plan::available(&store, &crate::extracted::current(), &identities);
 	// Everything the survey found, exactly as the live view folds it in. A
 	// replay is what this interface is *shown* with, and without this it showed
 	// a tidier tool than the one that exists: 1,964 channels of a car that
 	// answers 2,751, and none of the units no project describes at all.
 	if let Some(text) = &survey_text {
-		channels = plan::with_survey(channels, text);
+		channels = crate::plan::with_survey(channels, text);
 	}
 	// A recording does not say which unit each column came from. Columns that
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
 	// request is ever sent in this mode.
-	let resolved = replay::resolve(&recording.columns, &mut channels, plan::ENGINE);
+	let resolved = replay::resolve(&recording.columns, &mut channels, crate::plan::ENGINE);
 	if resolved.is_empty() {
 		anyhow::bail!(
 			"none of the {} columns in {recording_path} matched a channel this build knows. \n\
@@ -1767,7 +1766,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// this interface is shown with, and a demonstration that quietly offers two
 	// thousand channels the car never answers is showing a different tool.
 	if let Some(text) = &survey_text {
-		app.answered = plan::answered_from_survey(text);
+		app.answered = crate::plan::answered_from_survey(text);
 	}
 	app.open_first_populated();
 	app.units = match named_by_survey {
@@ -1777,7 +1776,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 				.file_name()
 				.map(|n| n.to_string_lossy().to_string())
 				.unwrap_or_else(|| recording_path.to_string());
-			vec![(plan::ENGINE, file)]
+			vec![(crate::plan::ENGINE, file)]
 		}
 	};
 	app.live = false;
@@ -1899,15 +1898,15 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 ///
 /// Shared by the full-screen view and the plain-console one so the two cannot
 /// drift: whatever a recording means, it means the same thing in both.
-async fn poll_batch<B: vag_uds_can::CanBackend>(app: &mut App, backend: &mut Option<B>, batch: &plan::Batch) {
-	let (at, outcome) = plan::read_batch(backend, batch, app.started).await;
+async fn poll_batch<B: vag_uds_can::CanBackend>(app: &mut App, backend: &mut Option<B>, batch: &crate::plan::Batch) {
+	let (at, outcome) = crate::plan::read_batch(backend, batch, app.started).await;
 	let records = match outcome {
 		// Nothing was sent, so nothing about the clock has moved on either.
-		plan::BatchOutcome::Unaddressable => return,
+		crate::plan::BatchOutcome::Unaddressable => return,
 		// The clock still advances: the wait happened, and a row that keeps
 		// its old value has to be seen ageing.
-		plan::BatchOutcome::NoAnswer => Vec::new(),
-		plan::BatchOutcome::Answered(records) => records,
+		crate::plan::BatchOutcome::NoAnswer => Vec::new(),
+		crate::plan::BatchOutcome::Answered(records) => records,
 	};
 	app.clock = at;
 	for (did, data) in records {
@@ -1997,11 +1996,11 @@ fn choose_survey(given: Option<&str>, cache: Option<std::path::PathBuf>) -> Surv
 /// "the tool cannot name this unit's identifiers" and "the tool did not find
 /// this unit" look identical on screen and are not the same problem.
 fn coverage_report(
-	identities: &[plan::UnitIdentity],
+	identities: &[crate::plan::UnitIdentity],
 	channels: &[Channel],
 	catalogs: &str,
 	source: &SurveySource,
-	answered: &plan::Answered,
+	answered: &crate::plan::Answered,
 ) -> String {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
@@ -2200,7 +2199,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	// its address. A survey already asked; without one, the units to be polled
 	// are asked directly below.
 	let mut identities = match &survey_text {
-		Some(text) => plan::identities_from_survey(text),
+		Some(text) => crate::plan::identities_from_survey(text),
 		None => Vec::new(),
 	};
 
@@ -2210,7 +2209,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	// units does nothing" looked like. The walk lives in `crate::units`,
 	// because `measure` makes the same one.
 	let mut wanted: Vec<u16> = preselect.iter().map(|(request, _)| *request).collect();
-	wanted.push(plan::ENGINE);
+	wanted.push(crate::plan::ENGINE);
 	// A survey already asked every unit it visited for its identification
 	// block, so those are not asked again; everything else still is.
 	let (back, found) = crate::units::identify(adapter, &wanted, &identities, &mut progress).await;
@@ -2218,16 +2217,16 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	identities.extend(found);
 
 	progress.finish();
-	let mut channels = plan::available(&store, &crate::extracted::current(), &identities);
+	let mut channels = crate::plan::available(&store, &crate::extracted::current(), &identities);
 	// What the car was seen to answer, so the selection screen can hold back the
 	// channels this project declares and this vehicle does not have. Empty
 	// without a survey, and nothing is then filtered on those grounds.
-	let mut answered = plan::Answered::default();
+	let mut answered = crate::plan::Answered::default();
 	if let Some(text) = &survey_text {
 		// Everything a survey found becomes watchable, on every unit — which
 		// is the only way the units outside the catalogs get on screen at all.
-		channels = plan::with_survey(channels, text);
-		answered = plan::answered_from_survey(text);
+		channels = crate::plan::with_survey(channels, text);
+		answered = crate::plan::answered_from_survey(text);
 	}
 	// Say what the car has and what of it can be shown, before the screen takes
 	// over. A unit that identified itself but has no catalog contributes no
@@ -2298,7 +2297,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		);
 	}
 	if !app.channels.iter().any(|c| c.selected) {
-		plan::select_basics(&mut app.channels);
+		crate::plan::select_basics(&mut app.channels);
 	}
 	app.open_first_populated();
 	app.units = unit_names(&identities);
@@ -2323,7 +2322,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		let deadline = duration.and_then(|d| Instant::now().checked_add(d));
 		while deadline.is_none_or(|d| Instant::now() < d) {
 			let cycle = Instant::now();
-			for batch in plan::plan(&app.channels) {
+			for batch in crate::plan::plan(&app.channels) {
 				poll_batch(&mut app, &mut backend, &batch).await;
 			}
 			app.cycles += 1;
@@ -2379,7 +2378,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 
 		let cycle = Instant::now();
 		let mut quit_mid_cycle = false;
-		for batch in plan::plan(&app.channels) {
+		for batch in crate::plan::plan(&app.channels) {
 			// Between batches, not only between cycles: a cycle that spans
 			// several units takes as long as their timeouts add up to, and a
 			// keypress should not wait for that.
@@ -2509,14 +2508,14 @@ mod tests {
 	/// code carries.
 	fn reference_channels(dir: std::path::PathBuf) -> Vec<Channel> {
 		let store = vag_data_labels::catalog::CatalogStore::open(dir);
-		let ident = |request, part: &str| plan::UnitIdentity {
+		let ident = |request, part: &str| crate::plan::UnitIdentity {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
 			odx_version: None,
 			component: None,
 		};
-		plan::available(
+		crate::plan::available(
 			&store,
 			&crate::extracted::Extracted::none(),
 			&[ident(0x7E0, "8V0906264H"), ident(0x7E1, "0CW300041G"), ident(0x714, "5E0920740D")],
@@ -2538,8 +2537,8 @@ mod tests {
 
 	/// The reference car's fifteen units, as `vagcan units` lists them — a
 	/// fixture, not a table the code carries. Only three have catalogs.
-	fn reference_identities() -> Vec<plan::UnitIdentity> {
-		let ident = |request, part: Option<&str>| plan::UnitIdentity {
+	fn reference_identities() -> Vec<crate::plan::UnitIdentity> {
+		let ident = |request, part: Option<&str>| crate::plan::UnitIdentity {
 			request,
 			part_number: part.map(str::to_string),
 			odx_name: None,
@@ -2575,13 +2574,13 @@ mod tests {
 		// count of everything that answered set against a list of the three
 		// with catalogs. Whatever else the summary says, those two must agree.
 		let identities = reference_identities();
-		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
+		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(
 			&identities,
 			&channels,
 			"catalogs/vehicles",
 			&SurveySource::Missing { cache: None },
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
@@ -2595,7 +2594,7 @@ mod tests {
 		// A unit with no catalog and no survey has nothing on screen at all,
 		// and the tool has to say which single command changes that.
 		let identities = reference_identities();
-		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
+		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(
 			&identities,
 			&channels,
@@ -2603,7 +2602,7 @@ mod tests {
 			&SurveySource::Missing {
 				cache: Some(std::path::PathBuf::from("/somewhere/survey.jsonl")),
 			},
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		assert!(text.contains("vagcan survey"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
@@ -2628,8 +2627,8 @@ mod tests {
 				)
 			})
 			.collect();
-		let channels = plan::with_survey(
-			plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
+		let channels = crate::plan::with_survey(
+			crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
 			&survey,
 		);
 		assert!(channels.iter().any(|c| c.request == 0x713), "the sweep's units are watchable");
@@ -2639,7 +2638,7 @@ mod tests {
 			&channels,
 			"catalogs/vehicles",
 			&SurveySource::Cached(cache),
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		assert!(text.contains("survey.jsonl"), "{text}");
 		assert!(text.contains("713"), "{text}");
@@ -2666,8 +2665,8 @@ mod tests {
 				)
 			})
 			.collect();
-		let channels = plan::with_survey(
-			plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
+		let channels = crate::plan::with_survey(
+			crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities),
 			&survey,
 		);
 		let text = coverage_report(
@@ -2675,7 +2674,7 @@ mod tests {
 			&channels,
 			"/x/data",
 			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		assert!(text.contains("no proven scaling for this car yet"), "{text}");
 		assert!(text.contains("recording calibrate"), "{text}");
@@ -2692,7 +2691,7 @@ mod tests {
 		// nothing on screen connects the two — so the import reads as broken
 		// when what actually happened is that this car is not that project.
 		let identities = reference_identities();
-		let channels = plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
+		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let one = channels.first().expect("the reference store has channels").clone();
 		// One channel asked and answered, and the rest of that unit asked and
 		// silent.
@@ -2700,7 +2699,7 @@ mod tests {
 			"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
 			one.request, one.did
 		);
-		let answered = plan::answered_from_survey(&survey);
+		let answered = crate::plan::answered_from_survey(&survey);
 		let quiet = channels.iter().filter(|c| answered.saw(c.request, c.did) == Some(false)).count();
 		assert!(quiet > 0, "the fixture has to have something to hold back");
 
@@ -2722,7 +2721,7 @@ mod tests {
 			&channels,
 			"catalogs/vehicles",
 			&SurveySource::Missing { cache: None },
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		assert!(!text.contains("answered nothing"), "{text}");
 	}
@@ -2736,7 +2735,7 @@ mod tests {
 		// engine sits in the ISO block always has the standard OBD-II rows,
 		// which are SAE J1979's rather than anybody's measurement, so `proven`
 		// is not empty there however uncalibrated the car is.
-		let ident = |request| plan::UnitIdentity {
+		let ident = |request| crate::plan::UnitIdentity {
 			request,
 			part_number: Some(format!("{request:03X}0000000")),
 			odx_name: None,
@@ -2745,13 +2744,13 @@ mod tests {
 		};
 		let identities = vec![ident(0x714), ident(0x713), ident(0x70C)];
 		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
-		let channels = plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
+		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
 		let text = coverage_report(
 			&identities,
 			&channels,
 			"/x/data/measured",
 			&SurveySource::Missing { cache: None },
-			&plan::Answered::default(),
+			&crate::plan::Answered::default(),
 		);
 		assert!(text.contains("no proven measurement rows"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
@@ -2801,7 +2800,7 @@ mod tests {
 	#[test]
 	fn toggling_changes_what_is_polled_without_a_restart() {
 		let mut a = app(need_rows!());
-		let before = plan::plan(&a.channels).len();
+		let before = crate::plan::plan(&a.channels).len();
 		a.screen = Screen::Select;
 		open(&mut a, 0x7E0);
 		a.cursor = a.visible()[5];
@@ -2809,7 +2808,7 @@ mod tests {
 		on_key(&mut a, KeyCode::Char(' '));
 		assert!(a.channels[at].selected);
 		// Selecting more can only add work, never remove it.
-		assert!(plan::plan(&a.channels).len() >= before);
+		assert!(crate::plan::plan(&a.channels).len() >= before);
 
 		// `a` and `n` act on the open tab, so clearing every tab clears the
 		// plan — and polling never follows the tab, only the selection.
@@ -2817,9 +2816,9 @@ mod tests {
 			on_key(&mut a, KeyCode::Char('n'));
 			step_tab(&mut a, true);
 		}
-		assert!(plan::plan(&a.channels).is_empty(), "none selected polls nothing");
+		assert!(crate::plan::plan(&a.channels).is_empty(), "none selected polls nothing");
 		on_key(&mut a, KeyCode::Char('a'));
-		assert!(!plan::plan(&a.channels).is_empty());
+		assert!(!crate::plan::plan(&a.channels).is_empty());
 	}
 
 	#[test]
@@ -3208,11 +3207,11 @@ mod tests {
 		}]);
 		a.screen = Screen::Select;
 		a.cursor = 0;
-		assert!(plan::plan(&a.channels).is_empty());
+		assert!(crate::plan::plan(&a.channels).is_empty());
 		on_key(&mut a, KeyCode::Char('g'));
 		assert!(a.charted.contains(&(0x7E0, 0x202A, 0)));
 		assert!(a.channels[0].selected, "marking for the chart selects it");
-		assert!(!plan::plan(&a.channels).is_empty());
+		assert!(!crate::plan::plan(&a.channels).is_empty());
 
 		// And unselecting it takes the chart mark with it, rather than leaving
 		// a line the loop has stopped feeding.
@@ -3457,7 +3456,7 @@ mod tests {
 			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
 			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
+		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
 		a.screen = Screen::Select;
 
 		assert_eq!(a.visible().len(), 1, "only the one the car answered");
@@ -3489,7 +3488,7 @@ mod tests {
 			unselected(proven(0x713, 0x1001, "Brake pressure", "bar")),
 			unselected(proven(0x7E1, 0x380A, "Engine speed", "/min")),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
+		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1002"], &[0x1001]));
 		a.screen = Screen::Select;
 
 		// One tab per unit, so each is checked on its own tab rather than by a
@@ -3527,7 +3526,7 @@ mod tests {
 			unselected(proven(0x713, 0x1002, "Declared but silent", "bar")),
 			unselected(raw(0x713, 0x1003)),
 		]);
-		a.answered = plan::answered_from_survey(&surveyed(0x713, &["1001-1003"], &[0x1001, 0x1003]));
+		a.answered = crate::plan::answered_from_survey(&surveyed(0x713, &["1001-1003"], &[0x1001, 0x1003]));
 		a.screen = Screen::Select;
 
 		assert_eq!(a.hidden(), Hidden { unnamed: 1, silent: 1 });

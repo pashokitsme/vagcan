@@ -13,10 +13,15 @@ members = [
   "crates/dash/vag-dash-render",
   "crates/dash/vag-dash-ble",
   "crates/dash/vag-dash-cfg",
-  # The product, binary `vagcan`. The only crate belonging to no single family
-  # — it consumes uds/ and data/ both — which is why its path is one segment
-  # where every other crate's is two.
-  "crates/vag-cli",
+  # cli/ — what a person runs, in four layers. `core` is what both command
+  # crates stand on; `diag` reads cars and the files that explain them;
+  # `measure` is the stopwatch and depends on `core` alone, which is what makes
+  # it a crate rather than a directory; `vag-cli` is the command surface and
+  # nothing else — clap declarations and a dispatcher.
+  "crates/cli/vag-cli-core",
+  "crates/cli/vag-cli-diag",
+  "crates/cli/vag-cli-measure",
+  "crates/cli/vag-cli",
 ]
 # A crate's directory **is** its package name, and the family it sits in is
 # already spelled inside that name — `uds/vag-uds-client`, `dash/vag-dash-fw`.

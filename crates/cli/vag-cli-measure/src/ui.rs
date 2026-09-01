@@ -20,7 +20,7 @@
 //! series at a time cannot answer "where did it lose the time". What will not
 //! fit on a page is one `←`/`→` away, and every line says in the key what it is,
 //! what it is measured in, and whether it was read off the bus or worked out
-//! here. How that is decided and drawn is [`ui::chart`](crate::ui::chart)'s;
+//! here. How that is decided and drawn is [`ui::chart`](vag_cli_core::ui::chart)'s;
 //! what is left here is where the chart goes and what stands in for it before
 //! the car has said anything.
 //!
@@ -35,8 +35,8 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use super::messages;
 use super::session::{self, ARMING_HOLD_S};
 use super::types::Seconds;
-use crate::ui::bars;
-use crate::ui::chart::{Origin, Series};
+use vag_cli_core::ui::bars;
+use vag_cli_core::ui::chart::{Origin, Series};
 
 /// Where the stopwatch stands, with what the band has to say about it.
 ///
@@ -134,12 +134,15 @@ pub enum Outcome {
 /// and not beside the type: the type says where a number came from, and this
 /// says how *this* screen spells that. The chart spells the same thing as a
 /// marker and a glyph in the key.
-impl Origin {
-	fn columns(self) -> (&'static str, &'static str) {
-		match self {
-			Origin::Bus => ("bus", ""),
-			Origin::Computed(note) => ("computed", note),
-		}
+///
+/// A free function rather than a method because [`Origin`] belongs to
+/// `vag-cli-core` now and an inherent `impl` may not cross a crate. That is the
+/// language enforcing the sentence above: how one screen spells a value is not
+/// a property of the value.
+fn columns(origin: Origin) -> (&'static str, &'static str) {
+	match origin {
+		Origin::Bus => ("bus", ""),
+		Origin::Computed(note) => ("computed", note),
 	}
 }
 
@@ -451,7 +454,7 @@ fn draw_values(frame: &mut Frame, screen: &Screen, area: Rect) {
 		.rows
 		.iter()
 		.map(|row| {
-			let (origin, note) = row.origin.columns();
+			let (origin, note) = columns(row.origin);
 			Row::new(vec![
 				Cell::from(row.name.clone()),
 				Cell::from(row.value.clone()).style(Style::default().add_modifier(Modifier::BOLD)),
@@ -687,7 +690,7 @@ mod tests {
 				},
 				ValueRow {
 					name: "power".into(),
-					value: crate::measure::report::power_figure(108.0),
+					value: crate::report::power_figure(108.0),
 					origin: Origin::Computed("estimate"),
 				},
 			],
@@ -1052,9 +1055,9 @@ mod tests {
 	#[test]
 	fn a_row_says_whether_its_number_was_on_the_bus() {
 		// A number that was never on the bus must not look like one that was.
-		assert_eq!(Origin::Bus.columns(), ("bus", ""));
-		assert_eq!(Origin::Computed("trailing").columns(), ("computed", "trailing"));
-		assert_eq!(Origin::Computed("estimate").columns(), ("computed", "estimate"));
+		assert_eq!(columns(Origin::Bus), ("bus", ""));
+		assert_eq!(columns(Origin::Computed("trailing")), ("computed", "trailing"));
+		assert_eq!(columns(Origin::Computed("estimate")), ("computed", "estimate"));
 	}
 
 	#[test]

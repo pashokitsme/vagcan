@@ -6,7 +6,7 @@
 //! without driving. `derived` is arithmetic over those samples: the
 //! acceleration trace, the peaks, the distance, what each gearchange cost.
 //!
-//! So `derived` is a **cache**, and [`crate::measure::report`]'s own module doc
+//! So `derived` is a **cache**, and [`crate::report`]'s own module doc
 //! says as much: it exists so that the screen and the file cannot disagree, and
 //! `stamp` names the methods that produced it "so a reader running different
 //! maths knows to recompute rather than believe it".

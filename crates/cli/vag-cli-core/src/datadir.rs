@@ -224,7 +224,7 @@ fn car_folder(vin: &str) -> anyhow::Result<String> {
 /// path either of them resolved earlier stops pointing at anything. So the tail
 /// is still matched, the old directory still wins, and `mv` still works for
 /// anyone who wants the tidier name — this function will follow it.
-pub(crate) fn car_folder_in(cars: &Path, vin: &str) -> anyhow::Result<String> {
+pub fn car_folder_in(cars: &Path, vin: &str) -> anyhow::Result<String> {
 	let wanted = car_folder(vin)?;
 	Ok(existing_folder(cars, &wanted).unwrap_or(wanted))
 }

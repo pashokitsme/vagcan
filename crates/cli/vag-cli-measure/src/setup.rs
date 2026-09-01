@@ -5,7 +5,7 @@
 //! sidewall, and the road load, which is on no document at all and has to be
 //! measured by coasting the car in neutral. This command collects the first two
 //! by asking, measures the third by watching, and writes
-//! [`crate::measure::carfile::CarFile`].
+//! [`crate::carfile::CarFile`].
 //!
 //! **Nothing is asked of the driver while the car is moving.** That is the
 //! design's central promise and it shapes the whole module: every question — the
@@ -40,13 +40,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::measure::carfile::{CarFile, FitConditions, Mass, Source, Sourced, UnitRef, rolling_radius_m};
-use crate::measure::channels::{self, Resolved, Set};
-use crate::measure::coastdown::{self, Detector, Fit, Reject, RoadLoadResult};
-use crate::measure::messages::{self, ChannelFound, MissingChannel};
-use crate::measure::power::{self, Inertias, KMH_PER_MS};
-use crate::measure::types::Seconds;
-use crate::watch::plan::{self, Batch, BatchOutcome, UnitIdentity};
+use crate::carfile::{CarFile, FitConditions, Mass, Source, Sourced, UnitRef, rolling_radius_m};
+use crate::channels::{self, Resolved, Set};
+use crate::coastdown::{self, Detector, Fit, Reject, RoadLoadResult};
+use crate::messages::{self, ChannelFound, MissingChannel};
+use crate::plan::{self, Batch, BatchOutcome, UnitIdentity};
+use crate::power::{self, Inertias, KMH_PER_MS};
+use crate::types::Seconds;
 
 /// The speed a coastdown starts from by default, in km/h.
 ///
@@ -1089,7 +1089,7 @@ impl Reader {
 /// The screens `measure setup` shows on its ordinary path.
 ///
 /// In one place, and never inline in the loop, for the reason
-/// [`crate::measure::messages`] gives: prose formatted in the middle of a drive
+/// [`crate::messages`] gives: prose formatted in the middle of a drive
 /// is prose nobody can read or test. The refusals in that module are reused as
 /// they stand — a rejected pass and a rejected fit say the same thing whoever
 /// asked — and what is here is the part only this command has: the questions, the
@@ -1632,7 +1632,7 @@ mod tests {
 	/// it — these tests are about the stage around the fit, not about the fit.
 	fn coast(cda: f64, crr: f64, delta1: f64) -> Vec<(f64, f64)> {
 		let a = 0.5 * RHO * cda;
-		let b = MASS_KG * crate::measure::power::G * crr;
+		let b = MASS_KG * crate::power::G * crr;
 		let vc = (b / a).sqrt();
 		let tau = MASS_KG * (1.0 + delta1) / (a * b).sqrt();
 		let v0 = (COAST_FROM_KMH + 5.0) / KMH_PER_MS;

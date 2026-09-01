@@ -17,7 +17,7 @@ use vag_uds_client::AsyncUdsClient;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_transport::CanId;
 
-use crate::watch::plan::{self, UnitIdentity};
+use crate::plan::{self, UnitIdentity};
 
 /// Ask the car which control units it has, then ask each of them what it is.
 ///

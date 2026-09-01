@@ -1,0 +1,35 @@
+[package]
+name = "vag-cli-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+# What both command crates stand on: which car this is, what channels it has,
+# how to poll them, where the files live, and the terminal widgets. It knows
+# nothing about any particular command — `diag` and `measure` are its callers,
+# not its subject.
+
+[features]
+# The scripted-answer harness for the menu, and anything else a *another*
+# crate's tests need. `#[cfg(test)]` reaches only this crate's own tests, and
+# `diag`'s setup tests drive this menu.
+test-util = []
+
+[dependencies]
+vag-uds-client = { path = "../../uds/vag-uds-client" }
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
+vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
+vag-uds-capture = { path = "../../uds/vag-uds-capture" }
+vag-data-labels = { path = "../../data/vag-data-labels" }
+vag-data-db = { path = "../../data/vag-data-db" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde_json.workspace = true
+toml_edit.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"

@@ -12,15 +12,25 @@ rust-version.workspace = true
 name = "vagcan"
 path = "src/main.rs"
 
+[features]
+default = ["measure"]
+# The stopwatch is a third of what used to be one crate and is not diagnostics.
+# On by default because leaving it out is the unusual choice, behind a flag
+# because a build that does not want it should not pay for it.
+measure = ["dep:vag-cli-measure"]
+
 [dependencies]
-vag-uds-client = { path = "../uds/vag-uds-client" }
-vag-uds-transport = { path = "../uds/vag-uds-transport", features = ["test-util"] }
-vag-uds-can = { path = "../uds/vag-uds-can", features = ["slcan"] }
-vag-data-labels = { path = "../data/vag-data-labels" }
-vag-uds-capture = { path = "../uds/vag-uds-capture" }
+vag-cli-core = { path = "../vag-cli-core" }
+vag-cli-diag = { path = "../vag-cli-diag" }
+vag-cli-measure = { path = "../vag-cli-measure", optional = true }
+vag-uds-client = { path = "../../uds/vag-uds-client" }
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
+vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
+vag-data-labels = { path = "../../data/vag-data-labels" }
+vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 # SQLite cache over the label files: parse the VCDS install once, load it back
 # in milliseconds on every later run.
-vag-data-db = { path = "../data/vag-data-db" }
+vag-data-db = { path = "../../data/vag-data-db" }
 tokio = { workspace = true, features = [
   "rt-multi-thread",
   "macros",

@@ -75,7 +75,7 @@ between algorithm and data:
   list).
 - **Nothing the tool reads at run time lives in the checkout.** The label data is
   Ross-Tech's and may not be redistributed; the proven measurement rows are one
-  owner's car. Both are under `~/.vagcan/` — see `crates/vag-cli/src/datadir.rs`, which
+  owner's car. Both are under `~/.vagcan/` — see `crates/cli/vag-cli-core/src/datadir.rs`, which
   owns the layout — and `catalogs/` is gitignored. A new default path that resolves
   relative to the working directory is a bug: it works in a checkout and nowhere else,
   and after `cargo install` there is no checkout.
@@ -134,9 +134,17 @@ crates/            all Rust. Three families and the product.
     vag-dash-fw        binary `dash` — the device itself. NOT a workspace member:
                        no_std for riscv32imc-unknown-none-elf with its own
                        build-std config. Build it from its own directory.
-  vag-cli            binary `vagcan` — the product, and the only crate belonging
-                     to no family, which is why it sits directly under
-                     `crates/` where every other crate sits under a family. Top level = needs the car: devices / info /
+  cli/               what a person runs, in four layers.
+    vag-cli-core       what both command crates stand on: which car this is,
+                       what channels it has, how to poll them, where its files
+                       live, the terminal widgets. Knows no command.
+    vag-cli-diag       reading a car and the files that explain it: identify,
+                       faults, the guarded sweeps, watch, setup, vcds tooling
+    vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
+                       Depends on `core` **alone**, checked symbol by symbol,
+                       which is what makes it a crate rather than a directory.
+    vag-cli            binary `vagcan` — the command surface and nothing else:
+                       clap declarations and a dispatcher. Top level = needs the car: devices / info /
                    units / properties / sniff / sensors / watch / scan / faults /
                    survey / measure. Offline work is grouped by input: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's own files)

@@ -312,7 +312,7 @@ pub fn run_diff(before_path: &str, after_path: &str) -> Result<()> {
 /// unit this run visited is replaced by what it just said; every other unit is
 /// left exactly as it was.
 ///
-/// Keyed by request id, which is also how [`crate::watch::plan::with_survey`]
+/// Keyed by request id, which is also how [`crate::plan::with_survey`]
 /// reads the file back — so a line that names no unit is dropped rather than
 /// carried forward: nothing can replace it and nothing can watch it.
 pub fn merge_survey(cached: &str, fresh: &[String]) -> String {
@@ -762,7 +762,7 @@ mod tests {
 		let address = vag_uds_client::address::UnitAddress::from_request(0x713).expect("713 is a VW unit");
 
 		let text = unit_line(&report, &address, true, &ask);
-		let seen = crate::watch::plan::answered_from_survey(&text);
+		let seen = crate::plan::answered_from_survey(&text);
 
 		assert_eq!(seen.saw(0x713, 0x1001), Some(true), "it answered");
 		assert_eq!(seen.saw(0x713, 0x1002), Some(false), "asked, and it did not");

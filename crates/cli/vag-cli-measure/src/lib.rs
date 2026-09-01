@@ -36,6 +36,11 @@ use crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use ratatui::prelude::*;
 use serde_json::{Map, Value, json};
 
+// `ui` is deliberately not re-exported: this crate has its own, the live
+// stopwatch screen, and core's shared widgets are reached by their own name.
+pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, plan, progress, project, units, vcdslog};
+
+pub mod args;
 pub mod carfile;
 pub mod channels;
 pub mod coastdown;
@@ -50,9 +55,9 @@ pub mod types;
 pub mod ui;
 pub mod view;
 
-use crate::ui::{chart, term};
 use channels::Resolved;
 use types::{Seconds, Track};
+use vag_cli_core::ui::{chart, term};
 
 /// The session file's format. Checked before anything else is read.
 ///
@@ -220,7 +225,7 @@ pub struct Options<'a> {
 /// and can be observed with no CAN at all. The live implementation is
 /// [`LiveReader`], over `plan::read_batch`.
 pub trait BatchReader {
-	fn read(&mut self, batch: &crate::watch::plan::Batch) -> impl std::future::Future<Output = (Seconds, crate::watch::plan::BatchOutcome)>;
+	fn read(&mut self, batch: &crate::plan::Batch) -> impl std::future::Future<Output = (Seconds, crate::plan::BatchOutcome)>;
 }
 
 /// The live reader: one adapter, addressed a unit at a time.
@@ -234,8 +239,8 @@ pub struct LiveReader<B> {
 }
 
 impl<B: vag_uds_can::CanBackend> BatchReader for LiveReader<B> {
-	async fn read(&mut self, batch: &crate::watch::plan::Batch) -> (Seconds, crate::watch::plan::BatchOutcome) {
-		crate::watch::plan::read_batch(&mut self.backend, batch, self.started).await
+	async fn read(&mut self, batch: &crate::plan::Batch) -> (Seconds, crate::plan::BatchOutcome) {
+		crate::plan::read_batch(&mut self.backend, batch, self.started).await
 	}
 }
 
@@ -247,14 +252,14 @@ impl<B: vag_uds_can::CanBackend> BatchReader for LiveReader<B> {
 /// marks are timed from the leading speed alone and its rate is the only one
 /// that sets a stopwatch.
 struct Plan {
-	leading: crate::watch::plan::Batch,
-	background: Vec<crate::watch::plan::Batch>,
+	leading: crate::plan::Batch,
+	background: Vec<crate::plan::Batch>,
 	/// The barometer and the ambient sensor, read **once per run** and at the
 	/// end of it. Once, because neither moves measurably in seven seconds and
 	/// polling them at 20 Hz would cost cycles for no information; at the end,
 	/// because the ambient sensor heat-soaks at a standstill and +10 K reads the
 	/// air density 3.4 % low.
-	density: Option<crate::watch::plan::Batch>,
+	density: Option<crate::plan::Batch>,
 	/// Every resolved channel by address, for turning an answer back into a
 	/// value.
 	by_address: BTreeMap<(u16, u16), Resolved>,
@@ -272,7 +277,7 @@ impl Plan {
 		let density_role = |key: &str| matches!(key, "barometer" | "ambient");
 
 		let mut by_address = BTreeMap::new();
-		let mut leading = crate::watch::plan::Batch {
+		let mut leading = crate::plan::Batch {
 			request: set.leading.request,
 			dids: vec![],
 		};
@@ -297,7 +302,7 @@ impl Plan {
 		let batches = |grouped: BTreeMap<u16, Vec<u16>>| {
 			grouped
 				.into_iter()
-				.map(|(request, dids)| crate::watch::plan::Batch { request, dids })
+				.map(|(request, dids)| crate::plan::Batch { request, dids })
 				.collect::<Vec<_>>()
 		};
 		Plan {
@@ -408,7 +413,7 @@ struct Recorded {
 /// What the whole session was recorded under.
 struct Meta {
 	vin: Option<String>,
-	units: Vec<crate::watch::plan::UnitIdentity>,
+	units: Vec<crate::plan::UnitIdentity>,
 	marks: Vec<(u32, u32)>,
 	speed_source: String,
 	speed_scale: f64,
@@ -702,15 +707,15 @@ fn now() -> String {
 pub fn view_picked() -> Result<()> {
 	let cars = crate::datadir::vagcan_dir()?.join("cars");
 	let levels = [
-		crate::ui::picker::Level::directories("car").filled_by("vagcan measure   records one"),
-		crate::ui::picker::Level::files("session")
+		vag_cli_core::ui::picker::Level::directories("car").filled_by("vagcan measure   records one"),
+		vag_cli_core::ui::picker::Level::files("session")
 			.within("measures")
 			.ending(".json")
 			.newest_first()
 			.filled_by("vagcan measure   then press `s` to keep the drive"),
 	];
-	let mut chooser = crate::ui::picker::Console::new("vagcan measure view FILE.json");
-	match crate::ui::picker::pick_path(&mut chooser, &cars, &levels)? {
+	let mut chooser = vag_cli_core::ui::picker::Console::new("vagcan measure view FILE.json");
+	match vag_cli_core::ui::picker::pick_path(&mut chooser, &cars, &levels)? {
 		Some(path) => open_view(&path.to_string_lossy()),
 		// Backing out of the first list is an answer, not a failure.
 		None => Ok(()),
@@ -806,12 +811,12 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	}
 
 	let device = crate::device::resolve(opts.device)?;
-	let adapter = SlcanBackend::open_mode(&device, crate::ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
+	let adapter = SlcanBackend::open_mode(&device, vag_cli_core::device::ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
 		.await
 		.with_context(|| crate::device::open_failure(&device))?;
 
 	let mut progress = crate::progress::Line::new();
-	let (mut adapter, identities) = crate::units::identify(adapter, &[crate::watch::plan::ENGINE], &[], &mut progress).await;
+	let (mut adapter, identities) = crate::units::identify(adapter, &[crate::plan::ENGINE], &[], &mut progress).await;
 	progress.update("reading the vehicle identification number");
 	let (back, vin) = crate::units::read_vin(adapter).await;
 	adapter = back;
@@ -843,7 +848,7 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 fn prepare(
 	store: &vag_data_labels::catalog::CatalogStore,
 	extracted: &crate::extracted::Extracted,
-	identities: &[crate::watch::plan::UnitIdentity],
+	identities: &[crate::plan::UnitIdentity],
 	vin: Option<String>,
 	opts: &Options<'_>,
 ) -> Result<Prepared> {
@@ -944,7 +949,7 @@ fn prepare(
 
 /// What the units answered, so the reader of a refusal can see the check was
 /// real.
-fn found_report(identities: &[crate::watch::plan::UnitIdentity], missing: &[channels::Missing]) -> Vec<messages::ChannelFound> {
+fn found_report(identities: &[crate::plan::UnitIdentity], missing: &[channels::Missing]) -> Vec<messages::ChannelFound> {
 	identities
 		.iter()
 		.flat_map(|unit| {
@@ -1161,8 +1166,8 @@ async fn drive<R: BatchReader>(mut reader: R, prepared: Prepared, opts: &Options
 			let (at, outcome) = reader.read(batch).await;
 			clock = at;
 			let answers = match outcome {
-				crate::watch::plan::BatchOutcome::Answered(answers) => answers,
-				crate::watch::plan::BatchOutcome::NoAnswer | crate::watch::plan::BatchOutcome::Unaddressable => Vec::new(),
+				crate::plan::BatchOutcome::Answered(answers) => answers,
+				crate::plan::BatchOutcome::NoAnswer | crate::plan::BatchOutcome::Unaddressable => Vec::new(),
 			};
 			if index == 0 {
 				answered_leading = !answers.is_empty();
@@ -1371,7 +1376,7 @@ async fn drive<R: BatchReader>(mut reader: R, prepared: Prepared, opts: &Options
 /// stopwatch, and it gets twice the rate of everything else. The barometer and
 /// the ambient sensor are in neither: they are read once per run, at the end of
 /// it, and never here.
-fn due(plan: &Plan, cycle: u64) -> Vec<&crate::watch::plan::Batch> {
+fn due(plan: &Plan, cycle: u64) -> Vec<&crate::plan::Batch> {
 	let mut out = vec![&plan.leading];
 	if cycle % 2 == 0 {
 		out.extend(plan.background.iter());
@@ -1413,9 +1418,9 @@ fn write_session(path: &str, meta: &Meta, recorded: &[Recorded], session: &sessi
 
 /// Read the barometer and the ambient sensor, once, and turn them into a
 /// density.
-async fn read_density<R: BatchReader>(reader: &mut R, plan: &Plan, batch: &crate::watch::plan::Batch) -> Option<f64> {
+async fn read_density<R: BatchReader>(reader: &mut R, plan: &Plan, batch: &crate::plan::Batch) -> Option<f64> {
 	let (_, outcome) = reader.read(batch).await;
-	let crate::watch::plan::BatchOutcome::Answered(answers) = outcome else {
+	let crate::plan::BatchOutcome::Answered(answers) = outcome else {
 		return None;
 	};
 	let mut pressure_kpa = None;
@@ -1716,6 +1721,61 @@ fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> V
 		.collect()
 }
 
+/// Run whatever the command line asked for.
+///
+/// The one entry point both binaries use, so `vagcan measure` and
+/// `vagcan-measure` cannot diverge in behaviour any more than they can in
+/// flags. `catalogs` is passed in rather than resolved here: where a project's
+/// measurements live is `core`'s question, and answering it twice is how two
+/// binaries end up reading different directories.
+pub async fn dispatch(a: args::Args, catalogs: &str) -> anyhow::Result<()> {
+	match a.tool {
+		Some(Tool::View { file }) => match file {
+			Some(file) => open_view(&file),
+			None => view_picked(),
+		},
+		Some(Tool::Setup {
+			device,
+			coast_from,
+			coast_to,
+			data: _,
+			car,
+		}) => {
+			setup::run(setup::Options {
+				device: device.as_deref(),
+				catalogs,
+				coast_from_kmh: coast_from,
+				coast_to_kmh: coast_to,
+				car: car.as_deref(),
+			})
+			.await
+		}
+		None => {
+			run(Options {
+				device: a.device.as_deref(),
+				car: a.car.as_deref(),
+				catalogs,
+				full: a.full,
+				minimal: a.minimal,
+				marks: a.marks.0,
+				accel_window_s: a.accel_window,
+				out: a.out.as_deref(),
+				quiet: a.quiet,
+				mass_kg: a.mass,
+				tyre: a.tyre.as_deref(),
+				cda: a.cda,
+				crr: a.crr,
+				inertia_factor: a.inertia_factor,
+				grade_percent: a.grade,
+				headwind_ms: a.headwind,
+				air_density: a.air_density,
+				speed_scale: a.speed_scale,
+			})
+			.await
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1775,7 +1835,7 @@ mod tests {
 	/// The requests are kept at `0x7E0`/`0x7E1`/`0x714` because emissions
 	/// addressing (`0x7E0..=0x7E7`) is what makes the OBD-II PIDs — speed,
 	/// barometer, ambient, air mass — appear on the powertrain units at all.
-	fn reference() -> (vag_data_labels::catalog::CatalogStore, Vec<crate::watch::plan::UnitIdentity>) {
+	fn reference() -> (vag_data_labels::catalog::CatalogStore, Vec<crate::plan::UnitIdentity>) {
 		use std::borrow::Cow;
 		use vag_data_labels::catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling};
 		use vag_data_labels::measure::{LinearScale, RawForm};
@@ -1840,7 +1900,7 @@ mod tests {
 		});
 
 		let store = vag_data_labels::catalog::CatalogStore::open(dir.path());
-		let ident = |request, part: &str| crate::watch::plan::UnitIdentity {
+		let ident = |request, part: &str| crate::plan::UnitIdentity {
 			request,
 			part_number: Some(part.to_string()),
 			odx_name: None,
@@ -1858,7 +1918,7 @@ mod tests {
 
 	/// The keys a plan would poll, per batch, so a test can talk about roles
 	/// rather than about identifiers.
-	fn keys(plan: &Plan, batch: &crate::watch::plan::Batch) -> Vec<&'static str> {
+	fn keys(plan: &Plan, batch: &crate::plan::Batch) -> Vec<&'static str> {
 		batch
 			.dids
 			.iter()
@@ -1936,19 +1996,19 @@ mod tests {
 	/// A reader that answers from a table and counts what it was asked for.
 	/// The seam the loop's scheduling is tested behind — no CAN, no adapter.
 	struct Fake {
-		asked: Vec<crate::watch::plan::Batch>,
+		asked: Vec<crate::plan::Batch>,
 		answers: BTreeMap<(u16, u16), Vec<u8>>,
 	}
 
 	impl BatchReader for Fake {
-		async fn read(&mut self, batch: &crate::watch::plan::Batch) -> (Seconds, crate::watch::plan::BatchOutcome) {
+		async fn read(&mut self, batch: &crate::plan::Batch) -> (Seconds, crate::plan::BatchOutcome) {
 			self.asked.push(batch.clone());
 			let records: Vec<(u16, Vec<u8>)> = batch
 				.dids
 				.iter()
 				.filter_map(|did| self.answers.get(&(batch.request, *did)).map(|data| (*did, data.clone())))
 				.collect();
-			(self.asked.len() as f64 * 0.05, crate::watch::plan::BatchOutcome::Answered(records))
+			(self.asked.len() as f64 * 0.05, crate::plan::BatchOutcome::Answered(records))
 		}
 	}
 
@@ -2047,7 +2107,7 @@ mod tests {
 				.collect();
 			assert!(!batches.is_empty());
 			for batch in &batches {
-				let _ = crate::watch::plan::read_batch(&mut car, batch, started).await;
+				let _ = crate::plan::read_batch(&mut car, batch, started).await;
 			}
 
 			let services = car.expect("handed back").services;

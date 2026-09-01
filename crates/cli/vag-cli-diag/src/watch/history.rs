@@ -17,13 +17,13 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-/// A channel, as `watch` addresses one — see [`crate::watch::plan::Key`].
+/// A channel, as `watch` addresses one — see [`crate::plan::Key`].
 ///
 /// The unit, the identifier **and** the byte the field starts at. Not the first
 /// two alone: one response carries several fields, they move independently, and
 /// a chart keyed by identifier would draw whichever of them was found first
 /// while claiming to be about the one that was picked.
-pub type Key = crate::watch::plan::Key;
+pub type Key = crate::plan::Key;
 
 /// How much of the past a chart keeps: a fixed **time** window, and not a fixed
 /// number of samples.

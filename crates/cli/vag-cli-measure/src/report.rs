@@ -709,8 +709,8 @@ fn avg_accel(mark: &Mark) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::measure::session::{Samples, Span};
-	use crate::measure::types::States;
+	use crate::session::{Samples, Span};
+	use crate::types::States;
 
 	/// A run built by hand: an analytic 4 m/s² launch, one upshift, three marks.
 	/// No car was driven for it and no adapter exists in this file.
