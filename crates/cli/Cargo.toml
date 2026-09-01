@@ -1,12 +1,16 @@
 [package]
-name = "vagcan"
+name = "vag-cli"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
-# Package and binary are one name. This crate belongs to no family — it
-# consumes uds/ and data/ both — so it takes no family prefix, and the thing a
-# person types is the thing cargo calls it.
+# The package follows the workspace's rule — `vag-` plus its path under
+# `crates/` — while the binary keeps the name people type and every document
+# teaches, the way `vag-dash-cfg` builds `dashcfg`. This crate belongs to no
+# family, which is why its path is one segment where every other crate's is two.
+[[bin]]
+name = "vagcan"
+path = "src/main.rs"
 
 [dependencies]
 vag-uds-client = { path = "../uds/client" }

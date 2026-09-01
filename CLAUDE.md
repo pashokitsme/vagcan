@@ -75,7 +75,7 @@ between algorithm and data:
   list).
 - **Nothing the tool reads at run time lives in the checkout.** The label data is
   Ross-Tech's and may not be redistributed; the proven measurement rows are one
-  owner's car. Both are under `~/.vagcan/` — see `crates/vagcan/src/datadir.rs`, which
+  owner's car. Both are under `~/.vagcan/` — see `crates/cli/src/datadir.rs`, which
   owns the layout — and `catalogs/` is gitignored. A new default path that resolves
   relative to the working directory is a bug: it works in a checkout and nowhere else,
   and after `cargo install` there is no checkout.
@@ -105,9 +105,12 @@ HEX clone is dead — crate and driver deleted, research archived under `.archiv
 Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
-**A crate's directory names its family and its package name repeats it**, so
-`uds/client` is `vag-uds-client` and nothing has to be looked up. The rule that places
-the binaries: **a binary lives in its family when it has exactly one.** `dashcfg` and
+**A package's name is `vag-` plus its path under `crates/`**, slashes turned to hyphens:
+`uds/client` is `vag-uds-client`, `dash/fw` is `vag-dash-fw`, `cli` is `vag-cli`. It holds
+for every crate, so neither direction has to be looked up. A crate's *binaries* are free
+of the rule and named for what a person types: `vag-cli` builds `vagcan`, `vag-dash-cfg`
+builds `dashcfg`, `vag-dash-fw` builds `dash`. The rule that places them: **a binary lives
+in its family when it has exactly one.** `dashcfg` and
 the firmware serve only the device, so they sit inside `dash/`; `vagcan` consumes both
 `uds/` and `data/`, so it belongs to neither and carries no family prefix.
 
@@ -129,8 +132,9 @@ crates/          all Rust. Three families and the product.
     fw               vag-dash-fw, binary `dash` — the device itself. NOT a workspace
                      member: no_std for riscv32imc-unknown-none-elf with its own
                      build-std config. Build it from its own directory.
-  vagcan/          package and binary `vagcan` — the product, and the only crate
-                   belonging to no family. Top level = needs the car: devices / info /
+  cli/             vag-cli, binary `vagcan` — the product, and the only crate
+                   belonging to no family, which is why its path is one segment
+                   where every other crate's is two. Top level = needs the car: devices / info /
                    units / properties / sniff / sensors / watch / scan / faults /
                    survey / measure. Offline work is grouped by input: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's own files)

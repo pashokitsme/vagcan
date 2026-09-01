@@ -324,8 +324,7 @@ read; `--refresh` forces the lot.
 
 ## The crates
 
-Three families and the product. **A crate's directory names its family and its package
-name repeats it**, so `uds/client` is `vag-uds-client` and nothing has to be looked up.
+Three families and the product.
 
 ```
 crates/
@@ -342,8 +341,14 @@ crates/
     ble         the laptop's BLE client — scan, pick a device, open a NUS pipe
     cfg         `dashcfg`, which configures the device over that pipe
     fw          the firmware. Outside the workspace: no_std for riscv32imc
-  vagcan/     the CLI
+  cli/        vag-cli, binary `vagcan` — the CLI
 ```
+
+A package's name is `vag-` plus its path under `crates/`, slashes turned to hyphens, and
+that holds for every crate above. Binaries are free of it and named for what a person
+types — `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, `vag-dash-fw` builds
+`dash` — because the name in a manifest serves the tree and the name in a shell serves
+the reader, and they are not the same audience.
 
 The families are not layers, and the rule that places the binaries is worth stating
 because it looks arbitrary until you see it: **a binary lives in its family when it has

@@ -13,13 +13,17 @@ members = [
   "crates/dash/render",
   "crates/dash/ble",
   "crates/dash/cfg",
-  # The product. It is the only crate belonging to no single family — it
-  # consumes uds/ and data/ both — which is why it carries no family prefix
-  # and sits at the root rather than inside one of them.
-  "crates/vagcan",
+  # The product, binary `vagcan`. The only crate belonging to no single family
+  # — it consumes uds/ and data/ both — which is why its path is one segment
+  # where every other crate's is two.
+  "crates/cli",
 ]
-# A crate's directory names its family and its package name repeats it, so
-# `uds/client` is `vag-uds-client` and nothing has to be looked up. The rule
+# A package's name is `vag-` plus its path under `crates/`, slashes turned to
+# hyphens: `uds/client` is `vag-uds-client`, `dash/fw` is `vag-dash-fw`, `cli`
+# is `vag-cli`. It holds for every crate here, so neither direction has to be
+# looked up. A crate's *binaries* are free of it, and are named for what a
+# person types: `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, and
+# `vag-dash-fw` builds `dash` beside two bench binaries. The rule
 # that places the binaries: **a binary lives in its family when it has exactly
 # one.** `dashcfg` and the firmware serve only the device, so they are inside
 # `dash/`; `vagcan` serves two families, so it is neither's.

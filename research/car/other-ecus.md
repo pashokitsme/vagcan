@@ -13,7 +13,7 @@ Sources:
 
 Method: ISO-TP reassembly per CAN id (same state machine as
 `crates/vag-uds-can/src/sniff.rs`), then `0x22` requests paired with the next `0x62`/`0x7F`
-on the answering id, using `response_id_for` from `crates/vagcan/src/analyse.rs`
+on the answering id, using `response_id_for` from `crates/cli/src/analyse.rs`
 (`0x7E0..0x7E7 → +8`, `0x700..0x7BF → +0x6A`). Every request in both captures asked for a
 **single** identifier, so record splitting is unambiguous and no response had to be
 discarded. 50 partial assemblies were dropped in `1.jsonl` (0.6 % of PDUs) and none of

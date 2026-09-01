@@ -802,7 +802,7 @@ following the call.
 1. It said `watch` could only reach the units a cached survey named, and that wiring the
    gateway walk into it was the step unblocking everything else. `watch`'s own `wanted`
    list is indeed `preselect + ENGINE` — but `units::identify` reads the gateway's
-   installation list itself (`crates/vagcan/src/units.rs:47-58`), and `watch` has always
+   installation list itself (`crates/cli/src/units.rs:47-58`), and `watch` has always
    called it.
 2. It said the ODIS project had taken over "which identifiers a unit answers". It has
    taken over which a unit *declares*, which is a different and much weaker statement:
@@ -927,7 +927,7 @@ Two smaller findings from the same look:
   `units --identify <ecu>` by capability, per the cleanup rule — the deep sweep is the
   survivor's mode, not a second command.
 - **`properties` sweeps 256 undeclared identifiers with no `require_stationary`.** It
-  carries an anomaly monitor and the comment at `crates/vagcan/src/main.rs:1052`
+  carries an anomaly monitor and the comment at `crates/cli/src/main.rs:1052`
   argues the case: the identification block is standardised and 256 wide. That is a
   defensible line, but it is the only sweep-shaped path without the guard, so it is
   written down rather than left to be re-discovered.
