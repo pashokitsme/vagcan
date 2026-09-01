@@ -6,7 +6,7 @@ for this project — what it can and cannot name on the reference car.
 Target: `Codes.dat`, 2 121 476 bytes, from a freshly extracted **VCDS 26.3** installation.
 Cross-checked against `research/VCDS-RUS/Code-RUS.dat` (the Russian translation of the same
 file) and against `research/VCDS-25.12.0/`. Nothing third-party is committed; the decoder is
-`crates/vag-data/src/codes.rs`.
+`crates/vag-data-labels/src/codes.rs`.
 
 Read `research/car/whole-car-survey.md` §3 first — this file finishes what it started and
 **supersedes two of its statements**, listed in §6.
@@ -66,7 +66,7 @@ decrypted at load time.
 ### 2.1 Encrypted, not compressed, and under a key this project already had
 
 Ross-Tech reuses its machinery, and the first thing to try was the machinery. `KEY_ROD`
-(`crates/vag-data/src/rod.rs`), TEA 32 rounds, CBC, little-endian words — the `.rod` cipher —
+(`crates/vag-data-labels/src/rod.rs`), TEA 32 rounds, CBC, little-endian words — the `.rod` cipher —
 decrypts every record. There is no compression layer: `text_len` bytes of Latin-1 (or CP1251
 in the Russian file) come straight out.
 
@@ -104,7 +104,7 @@ IV[i] = s[i] * MT[OFF_ROD[7 - i]]     # OFF_ROD reversed
 ```
 
 all arithmetic `u8` wrapping, `MT`/`KS`/`OFF_ROD` exactly the tables already in
-`crates/vag-data/src/`. Three things were new and each is worth naming, because each one is
+`crates/vag-data-labels/src/`. Three things were new and each is worth naming, because each one is
 why the statistical attacks failed:
 
 * the **seed is the key string**, so the IV moves with all eight digits at once;
@@ -233,7 +233,7 @@ legacy band, and there is a test pinning that refusal to this exact case.
 
 `whole-car-survey.md` §3 established that `UDS_EV/RD.rod`'s `[DTC]` section is a global
 registry keyed by the fault number (946/946), that its per-table digit substitution is broken
-by the row ordering (`crates/vag-data/src/glyphs.rs`), and that the decoded values "read as
+by the row ordering (`crates/vag-data-labels/src/glyphs.rs`), and that the decoded values "read as
 24-bit fault codes" — but that they resolved against `names-uds.json` *below* chance, so
 nothing named them.
 
@@ -301,7 +301,7 @@ Two things this section got right and one it got wrong, worth keeping:
 * right: reading the binary is cheaper than attacking it, twice now;
 * right: **step 3.** `iso_dtc`'s refusal below 90 000 was never on the shipped path in the
   end — the key comes out of a registry row, not out of a fault number — but the *rule*
-  is what `vag_data::codes::sae_code` now enforces at the same boundary, and what
+  is what `vag_data_labels::codes::sae_code` now enforces at the same boundary, and what
   `UnitCatalogue::is_consistent_with_registry` enforces one hop earlier;
 * wrong: **step 2 has not been needed.** `Codes.dat` parses in well under a second and
   `vagcan faults` opens it once per run, so the SQLite slot was never built. The cost that
@@ -311,7 +311,7 @@ The rest of this section is left as written, for the record.
 
 ---
 
-The decoder is shipped: `vag_data::CodesDb` — `parse`, `get`, `iso_dtc`, `file_constant`.
+The decoder is shipped: `vag_data_labels::CodesDb` — `parse`, `get`, `iso_dtc`, `file_constant`.
 `crates/vagcan/src/faults.rs::format_code` already computes the exact key shape
 (`u32::from_be_bytes([0, code[0], code[1], code[2]])`), so on the tool side the join is one
 call. Nothing was wired, deliberately, because on this car it would name nothing.
@@ -339,8 +339,8 @@ That rule is why this file is a result and not a feature.
 
 ## 8. Reproducing
 
-Nothing here needs the car. `vag_data::CodesDb::parse` on any `Codes.dat` reproduces §1–§3;
+Nothing here needs the car. `vag_data_labels::CodesDb::parse` on any `Codes.dat` reproduces §1–§3;
 the IV vector for key 9 529 586 (`47 02 c8 cd 6c 50 dc d3`) is pinned by a unit test, as is
 the constant recovery, the CRLF-in-ciphertext framing and the legacy-band refusal. §5 was
 done with throwaway scripts against `~/vcds-en/UDS_EV/RD.rod`; the ordering attack is
-`crates/vag-data/src/glyphs.rs` and the `[DTC]` IV tail is recorded above.
+`crates/vag-data-labels/src/glyphs.rs` and the `[DTC]` IV tail is recorded above.

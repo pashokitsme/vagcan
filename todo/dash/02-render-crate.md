@@ -1,6 +1,6 @@
-# dash / 02 — `vag-dash`, the rendering crate
+# dash / 02 — `vag-dash-render`, the rendering crate
 
-**Subsystem:** dash · **Crate:** `vag-dash` (new) · **Needs the car:** no
+**Subsystem:** dash · **Crate:** `vag-dash-render` (new) · **Needs the car:** no
 
 ## Goal
 
@@ -72,7 +72,7 @@ the `Report`, nine tests, and the nine-frame PNG example. See the subsystem READ
   spends the extra rows on a gap. `PANEL` moves to 256×64 and the values page gets a real
   layout for it: either the reference photograph's four tiers, or two rows of four cells.
   The chart needs only its hardcoded `plot_top` generalising, and gains the most: at 64 rows
-  a boost trace stops being a squiggle. `cargo run -p vag-dash --example panel -- <dir>
+  a boost trace stops being a squiggle. `cargo run -p vag-dash-render --example panel -- <dir>
   --tall` renders at 64 for comparison.
 
 ## Burn-in
@@ -107,5 +107,5 @@ Screenshot tests, via `03`'s simulator harness — `embedded-graphics-simulator`
 
 ## Done when
 
-`cargo test -p vag-dash` renders every page kind to PNG in CI with no display attached,
+`cargo test -p vag-dash-render` renders every page kind to PNG in CI with no display attached,
 and the crate builds `no_std`.

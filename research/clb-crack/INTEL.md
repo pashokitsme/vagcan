@@ -3,12 +3,12 @@
 Goal: recover how Ross-Tech VCDS decodes its compiled label containers, produce a
 working decoder, and validate it by decoding sample files to readable measurement
 text. This unlocks the modern (MQB) measurement/DTC/adaptation definitions the
-`vag-data` crate cannot currently read.
+`vag-data-labels` crate cannot currently read.
 
 ## Two related container formats
 
 ### `.clb` (legacy compiled labels)
-- Sibling of the plaintext `.lbl` files (already parsed by `crates/vag-data`).
+- Sibling of the plaintext `.lbl` files (already parsed by `crates/vag-data-labels`).
 - Binary. First byte `0x00`; byte 1 looks like a length/count. Bytes 2..~10 are a
   per-"family" constant signature, then a high-entropy body.
 - Observed first-16-bytes (note the shared middle run within a family):

@@ -1,51 +1,62 @@
 [workspace]
 resolver = "2"
 members = [
-  # infra/ — libraries. Nothing here is run directly.
-  "crates/infra/vag-transport",
-  "crates/infra/vag-capture",
-  "crates/infra/vag-protocol",
-  "crates/infra/vag-can",
-  "crates/infra/vag-data",
-  "crates/infra/vag-db",
-  "crates/infra/vag-panel",
-  "crates/infra/vag-ble",
-  # bin/ — what is run.
-  "crates/bin/vag-cli",
-  "crates/bin/vag-db-cli",
-  "crates/bin/vag-dash-config",
+  # uds/ — talking to a car. ISO-TP under, UDS over, and the two transports.
+  "crates/uds/transport",
+  "crates/uds/can",
+  "crates/uds/client",
+  "crates/uds/capture",
+  # data/ — somebody else's diagnostic files, parsed and cached.
+  "crates/data/labels",
+  "crates/data/db",
+  # dash/ — the OLED device. Its firmware is excluded (see below), not absent.
+  "crates/dash/render",
+  "crates/dash/ble",
+  "crates/dash/cfg",
+  # The product. It is the only crate belonging to no single family — it
+  # consumes uds/ and data/ both — which is why it carries no family prefix
+  # and sits at the root rather than inside one of them.
+  "crates/vagcan",
 ]
-# The libraries are one directory, but they are not one stack. Four of them
-# depend on nothing at all, and the binaries pick what they need:
+# A crate's directory names its family and its package name repeats it, so
+# `uds/client` is `vag-uds-client` and nothing has to be looked up. The rule
+# that places the binaries: **a binary lives in its family when it has exactly
+# one.** `dashcfg` and the firmware serve only the device, so they are inside
+# `dash/`; `vagcan` serves two families, so it is neither's.
 #
-#   vag-transport -> vag-can, vag-protocol, vag-capture    talking to a car
-#   vag-data      -> vag-db                                VW's own files
-#   vag-panel                                              a Frame in, pixels out
-#   vag-ble                                                reaching a board of ours
+# The families are not layers. Four crates depend on nothing at all, and layers
+# exist only *inside* a family:
 #
-# The single edge between those roots is `vag-protocol -> vag-data`, for one
-# module: `read.rs`, decoding a measurement against a catalog. It goes behind
-# the `std` feature with `address.rs`, because the board executes a plan with
-# the scaling already baked in and could not hold a catalog if it wanted to —
-# 88 MB of SQLite against 400 KB of SRAM.
+#   uds/    transport -> can, client, capture
+#   data/   labels    -> db
+#   dash/   render, ble             (each depends on nothing of ours)
+#
+# The single edge between families is `vag-uds-client -> vag-data-labels`, for
+# one module: `read.rs`, decoding a measurement against a catalog. It goes
+# behind the `std` feature with `address.rs`, because the board executes a plan
+# with the scaling already baked in and could not hold a catalog if it wanted
+# to — 88 MB of SQLite against 400 KB of SRAM.
 #
 # The division that actually changes how code is written is not a directory at
-# all: whether a crate runs on the board. vag-transport, vag-protocol (minus
-# those two modules), vag-can (minus slcan.rs) and vag-panel do; the rest are
-# free to use std. Each crate says which it is at the top of its lib.rs.
+# all: whether a crate runs on the board. vag-uds-transport, vag-uds-client
+# (minus those two modules), vag-uds-can (minus slcan.rs) and vag-dash-render
+# do; the rest are free to use std. Each crate says which it is at the top of
+# its lib.rs.
 #
-# `firmware/` cannot be a workspace member and this is not a preference: it is
-# `no_std` for `riscv32imc-unknown-none-elf` with its own `.cargo/config.toml`
-# pinning that target and `build-std`. As a member it would not compile for the
-# host at all. `research/` is excluded for the older reason — probes and bench
-# rigs that the product does not link.
+# `crates/dash/fw` cannot be a workspace member and this is not a preference:
+# it is `no_std` for `riscv32imc-unknown-none-elf` with its own
+# `.cargo/config.toml` pinning that target and `build-std`. As a member it
+# would not compile for the host at all. It still lives inside `dash/`, because
+# where a crate is built is a different question from whose it is.
+# `research/` is excluded for the older reason — probes and bench rigs that the
+# product does not link.
 #
 # Build anything excluded **from its own directory**. `--manifest-path` alone is
 # not enough for the firmware: cargo discovers `.cargo/config.toml` from the
 # working directory, so building it from the repository root silently targets
 # the host and fails deep inside `portable-atomic`.
 exclude = [
-  "crates/firmware/vag-dash",
+  "crates/dash/fw",
   "research/dash/host",
   "research/dash/probes",
 ]
@@ -55,7 +66,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
-# `default-features = false` is what lets vag-transport / vag-protocol / vag-can
+# `default-features = false` is what lets vag-uds-transport / vag-uds-client / vag-uds-can
 # be `no_std`; each of them turns `thiserror/std` back on from its own `std`
 # feature, and nothing else in the workspace uses thiserror at all.
 thiserror = { version = "2", default-features = false }

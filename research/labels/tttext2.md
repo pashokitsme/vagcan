@@ -549,7 +549,7 @@ cargo run --release -p vagcan --features rod-crack -- \
 
 The census and the three statistical tests of §3 are a few dozen lines of Python over a
 re-implementation of `rod.rs::rod_block0_iv` + `tea_cbc_decrypt` (the tables are
-`crates/vag-data/src/rod_{mt,ks}.bin`). The steps are small enough to restate rather than
+`crates/vag-data-labels/src/rod_{mt,ks}.bin`). The steps are small enough to restate rather than
 ship: for each file, decrypt each section's first block with the tag-derived IV, take
 `plaintext[0:2]`, and
 
@@ -618,20 +618,20 @@ Tooling: `research/labels/tttext2-sweep/` (Rust driver + `rodread.py` + `textins
 
 Twice in this project a `.rod` conclusion has had to be reopened because a research script and
 the shipped decoder disagreed. So the sweep driver compiles **the shipped code**: `build.rs`
-stages `crates/vag-data/src/{tea.rs,rod.rs}` and `crates/vag-data/src/rod/crack.rs` into
+stages `crates/vag-data-labels/src/{tea.rs,rod.rs}` and `crates/vag-data-labels/src/rod/crack.rs` into
 `OUT_DIR` and `src/main.rs` `include!`s them. Two mechanical edits are applied and no others —
 `//!` at the start of a line becomes `//` (an inner attribute may not arrive from a macro
 expansion, E0753) and the two `include_bytes!` paths are made absolute. That is checkable, and
 was checked:
 
 ```
-$ diff crates/vag-data/src/rod/crack.rs <staged>/crack.rs | grep -Ev '^[<>] //'
+$ diff crates/vag-data-labels/src/rod/crack.rs <staged>/crack.rs | grep -Ev '^[<>] //'
                                                        # (nothing)
-$ diff crates/vag-data/src/rod.rs      <staged>/rod.rs  | grep -Ev '^[<>] //'
+$ diff crates/vag-data-labels/src/rod.rs      <staged>/rod.rs  | grep -Ev '^[<>] //'
 < pub(crate) static MT: &[u8; 256] = include_bytes!("rod_mt.bin");
 < pub(crate) static KS: &[u8; 256] = include_bytes!("rod_ks.bin");
-> …  = include_bytes!("/…/crates/vag-data/src/rod_mt.bin");
-> …  = include_bytes!("/…/crates/vag-data/src/rod_ks.bin");
+> …  = include_bytes!("/…/crates/vag-data-labels/src/rod_mt.bin");
+> …  = include_bytes!("/…/crates/vag-data-labels/src/rod_ks.bin");
 ```
 
 The searcher is therefore byte-identical to the one `vagcan vcds rod --features rod-crack`

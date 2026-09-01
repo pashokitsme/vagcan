@@ -59,7 +59,7 @@ fn `+0x33758`) confirms the derivation:
   file** — so `product` cannot be *computed* offline. Prior work stopped here and prescribed a
   memory dump.
 
-The full IV construction (`crates/vag-data/src/rod.rs::rod_block0_iv` ≡
+The full IV construction (`crates/vag-data-labels/src/rod.rs::rod_block0_iv` ≡
 `research/clb-crack/decrypt_modern.py::rod_block0_iv`, identical logic):
 ```
 seed = tag[0:3]  ||  product_bytes[0:5]                 (8 bytes)
@@ -135,7 +135,7 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
   magnitudes" reading failed. **Corroboration:** decoding a payload as one big-endian base-14
   bignum yields, across the multiple rows of a single structure id, a **shared high-order prefix**
   (the structure template) + a varying low-order tail (the per-channel field) — e.g. id 000147's
-  8 rows all begin `08 56 26 27 d2 03…`. ~~Shipped as~~ **was** `vag_data::struc::{STRUC_BASE14_ALPHABET,
+  8 rows all begin `08 56 26 27 d2 03…`. ~~Shipped as~~ **was** `vag_data_labels::struc::{STRUC_BASE14_ALPHABET,
   base14_value, StrucRecord::decode_base14_be}`.
 - **Still open (honest):** the **field segmentation** of that base-14 number — where each field
   begins/ends and which is the read identifier (DID) / raw byte spec / scaling / unit ref / name
@@ -163,9 +163,9 @@ Python DFS pruning into Rust would make it fast regardless of where the answer l
 > **The `struc` module no longer exists.** It was deleted on 2026-08-02 as dead
 > code: nothing in the workspace called it, and the path it served — reading a
 > measurement's scaling out of STRUC — is refuted in §4.0c and §5.3. What
-> replaced it is the digit-substitution break in `crates/vag-data/src/glyphs.rs`,
+> replaced it is the digit-substitution break in `crates/vag-data-labels/src/glyphs.rs`,
 > which reads those tables without a bespoke parser. Anything above describing
-> `vag_data::struc::…` as available is history, not API.
+> `vag_data_labels::struc::…` as available is history, not API.
 
 
 ---
@@ -224,7 +224,7 @@ exactly the 40 symbols `0-9 A-Z , . - _` (proven), and base-40's ceiling 40²=16
 - Range rules out `code → DOP-id` entirely (DOP ids reach 28,932 ≫ 1600).
 - **No base-40 charset or `mod-40` arithmetic exists in the binary** for this purpose.
 So the `code → table-id` mapping is a **lookup or non-trivial scheme, not base-40 arithmetic**; it
-stays unproven. Shipped only the proven `MWB` row parse (`vag_data::mwb::{parse_mwb, MwbEntry,
+stays unproven. Shipped only the proven `MWB` row parse (`vag_data_labels::mwb::{parse_mwb, MwbEntry,
 MWB_CODE_SYMBOLS}`) — **no** invented `code → id` function.
 
 **Net:** all four tables are located, decrypted, and inflated offline, and confirmed to share the
@@ -274,7 +274,7 @@ Decoded, per channel (link keystream verified — response padding decrypts to a
   offsets, and clustering responses by the echoed-DID cipher `(off8,off9)` separates the DIDs
   without ever knowing `ks[8..9]`.
 
-**PROVEN (shipped, `vag_data::measure`):** the **ignition-angle zero point** — DIDs
+**PROVEN (shipped, `vag_data_labels::measure`):** the **ignition-angle zero point** — DIDs
 `A058/A059/A05E/A05F` each return raw `0x5555` (BE `u16`) for a displayed **0.00°**, cross-validated
 four ways against the four constant ignition-angle channels VCDS logged (`IDE00155/156/157/158`,
 constant `0.00°`). Fixes the COMPU offset.
@@ -369,7 +369,7 @@ either. The name join (`text-id → TTTEXT`) that would let the crib label indiv
 `TTTEXT.ROD [TXT]` cracked (mechanical, §1; a full 2³⁶ sweep — left running, not on the critical path
 for this negative).
 
-**Shipped from this pass (`vag-data`):** the honest architectural foundation, seeded only with
+**Shipped from this pass (`vag-data-labels`):** the honest architectural foundation, seeded only with
 crib-proven data — a `catalog::MeasurementDef { name, unit, address: ReadId::Uds(did), raw_form,
 scaling }` type with a `Scaling::{Linear, Anchor}` enum (so a *partially* reversed measurement is
 representable without inventing the slope), plus `catalog::IGNITION_ANGLE` = the four proven DIDs
@@ -413,7 +413,7 @@ guess: the unit answers it. Read on the reference car 2026-08-01 over CAN:
 | Gearbox 02 (`0CW300041G`) | `EV_TCMDQ200021` | `EV_TCMDQ200021.rod` |
 
 `F19E` is the standard ASAM ODX file identifier, and its value is exactly the `.rod` file
-stem. Shipped as `vag_data::find_rod_by_odx_name` plus
+stem. Shipped as `vag_data_labels::find_rod_by_odx_name` plus
 `vagcan labels <dir> --from-car --ecu 01`, which reads the identifier off the car and
 resolves it against the corpus in one step. This removes the last piece of guesswork from
 the label path — it does **not** touch the STRUC field-codec problem, which is still what
@@ -497,7 +497,7 @@ That makes the whole family decodable **without any capture or VCDS log**: the c
 are standard, and five independent fits confirm this unit obeys them. The engine sweep
 found **42** such identifiers.
 
-Shipped as `vag_data::obd` (32 linear parameters; bitfields, enumerations and the
+Shipped as `vag_data_labels::obd` (32 linear parameters; bitfields, enumerations and the
 multi-field lambda parameters are deliberately excluded rather than forced into a scale
 factor) and `vagcan sensors`. A test pins the table against the five fitted rows so it
 cannot drift from the evidence.
@@ -591,7 +591,7 @@ section. Budget accordingly.
 all. The STRUC segmentation problem (§2–§3) stays unsolved and is now off the critical
 path for *values*; the corpus is still what supplies names and per-ECU measurement lists.
 
-## 5. Design proposal — how `vag-data` should consume this (TEXT ONLY)
+## 5. Design proposal — how `vag-data-labels` should consume this (TEXT ONLY)
 
 *(No crate is modified in this research; another workflow owns `crates/`.)*
 
@@ -782,7 +782,7 @@ cd research/clb-crack
 .venv/bin/python rod_name_harvest.py <dump.dmp>
 ```
 Cipher/IV facts cross-checked with `research/clb-crack/decrypt_modern.py` (`rod_block0_iv`,
-`rod_section_cipher`) and `crates/vag-data/src/rod.rs` (unchanged). Everything under
+`rod_section_cipher`) and `crates/vag-data-labels/src/rod.rs` (unchanged). Everything under
 `research/vcds-data/` and `research/dumps/` is gitignored and never committed; no VIN/PII or
 proprietary label text beyond minimal format snippets is reproduced.
 ```
@@ -795,7 +795,7 @@ STRUC.rod [STRUC]: plaintext[3:8] = 9d 69 92 24 29 → 293,560 bytes inflated.
 
 The per-table digit substitution is broken — by row order, not by cribs; the method and
 its evidence are in `research/car/whole-car-survey.md` §3 and the decoder is
-`crates/vag-data/src/glyphs.rs`. Applying it to the two structure tables settles what
+`crates/vag-data-labels/src/glyphs.rs`. Applying it to the two structure tables settles what
 they hold.
 
 ### 5.1 Grammar and sort key
@@ -869,7 +869,7 @@ absent** from all 899 rows. But the corpus is only 38 % solved and 0.7/−70, 0.
 scalings. Live calibration remains the only *proven* path; it is no longer the only
 possible one.
 
-The decoder in `crates/vag-data/src/glyphs.rs` reads punctuation
+The decoder in `crates/vag-data-labels/src/glyphs.rs` reads punctuation
 (`DigitOrder::decode_field`). Reading such a field as an integer turns `0.125` into
 `125` and `−8` into `8` — the exact numbers a caller would then scale a measurement
 with, which is why the integer reader now refuses them rather than dropping them

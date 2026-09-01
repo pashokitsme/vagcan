@@ -238,7 +238,7 @@ involved anywhere, which is why every crib-based attempt had failed.
 
 Worked example, the fault-531 table, alphabet `0 . - 8 3 2 1 5 7 4`:
 `.0374730` → 10 489 840 = `0xA00FF0`, `4527503` → 9 758 704 = `0x94E7F0`, `.-0238` →
-120 543. The decoder is `crates/vag-data/src/glyphs.rs`.
+120 543. The decoder is `crates/vag-data-labels/src/glyphs.rs`.
 
 Coverage from ordering alone is 680 of 105 186 tables, because a table needs roughly
 five rows before its order pins all ten glyphs and the registry averages 2.2. Tables for

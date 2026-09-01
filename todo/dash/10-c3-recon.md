@@ -117,14 +117,14 @@ a task that started and did nothing.
   Wi-Fi** carries it unchanged — no custom GATT service and no per-platform client. The
   AP is open, so the allowlist enforced on the device is what makes this safe.
 - **`05`'s runtime argument is weaker than it reads.** It chose ESP-IDF for real threads,
-  so that `vag-transport`'s synchronous `IsoTpTransport` could be reused without a
+  so that `vag-uds-transport`'s synchronous `IsoTpTransport` could be reused without a
   rewrite. But under embassy a blocking read stalls the single executor — it would stop
   the panel, the web server and BLE together. The device wants the **async** path.
 
   **Correction, 2026-08-25.** An earlier draft of this document said async ISO-TP did not
-  exist and was the large cost of `05`. That was wrong: it read `vag-protocol/src/isotp.rs`
+  exist and was the large cost of `05`. That was wrong: it read `vag-uds-client/src/isotp.rs`
   (the *synchronous* software ISO-TP over a raw transport) and missed
-  **`vag-can/src/isotp.rs`** — `IsoTpCan<B: CanBackend>`, 397 lines, implementing
+  **`vag-uds-can/src/isotp.rs`** — `IsoTpCan<B: CanBackend>`, 397 lines, implementing
   `AsyncIsoTpTransport`, with its own tests for flow control, block size, reassembly and
   sequence errors. It is what the live cable already runs on.
 
@@ -138,19 +138,19 @@ a task that started and did nothing.
 - **`07`/`08` are untouched in principle** — deep sleep, wake on the rail, and the
   quiescent-current budget are the same problems on either chip, with different numbers.
 
-## `vag-protocol` and `vag-transport` on the device
+## `vag-uds-client` and `vag-uds-transport` on the device
 
 Read on 2026-08-25, not yet compiled for the target — so this is a well-supported
 expectation, not a result:
 
 ```
-vag-transport/traits.rs    use std::time::Duration            → core::time::Duration
-vag-transport/mock.rs      Duration, std::collections::VecDeque → core + alloc
-vag-protocol/pdu.rs        use std::time::Duration            → core::time::Duration
-vag-protocol/isotp.rs      use std::time::Duration            → core::time::Duration
-vag-protocol/read.rs       use std::borrow::Cow               → alloc::borrow::Cow
-vag-protocol/uds.rs        VecDeque, Duration                 → core + alloc
-vag-protocol/address.rs    std::fs, std::env, RwLock          ← the one dirty file
+vag-uds-transport/traits.rs    use std::time::Duration            → core::time::Duration
+vag-uds-transport/mock.rs      Duration, std::collections::VecDeque → core + alloc
+vag-uds-client/pdu.rs        use std::time::Duration            → core::time::Duration
+vag-uds-client/isotp.rs      use std::time::Duration            → core::time::Duration
+vag-uds-client/read.rs       use std::borrow::Cow               → alloc::borrow::Cow
+vag-uds-client/uds.rs        VecDeque, Duration                 → core + alloc
+vag-uds-client/address.rs    std::fs, std::env, RwLock          ← the one dirty file
 ```
 
 No `std::io` anywhere in the transport seam — it is built on byte slices — and the only

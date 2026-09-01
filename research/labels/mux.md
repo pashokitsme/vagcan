@@ -106,7 +106,7 @@ the ODX **`DEFAULT-CASE`**.
 
 ## 3. Reading the numbers — and the honest coverage limit
 
-`crates/vag-data/src/glyphs.rs`'s `digit_order`, fed the f5/f6 constraints, pins a complete
+`crates/vag-data-labels/src/glyphs.rs`'s `digit_order`, fed the f5/f6 constraints, pins a complete
 ten-digit alphabet for **50 tables = 9,533 rows = 21 % of the file**. The other 11,300 fail
 for the reason `whole-car-survey.md` already measured: a table needs roughly five rows
 before its order pins ten glyphs, and MUX's median table has **three**. The 50 are selected
@@ -285,7 +285,7 @@ sentence is now settled; `TTTEXT2` is the other half.
 "MUX table = an ECU's DID list" hypothesis (§5.1, cardinality; §5.2 says what evidence
 would revive it); `MUX` id ← 2-char code (1,600 codes cannot address 11,350 tables).
 
-**No decoder change is shipped.** A `vag_data::mux` parser would be correct and unreachable:
+**No decoder change is shipped.** A `vag_data_labels::mux` parser would be correct and unreachable:
 the only way into MUX is a `STRUC` id (§4.1), and nothing a car says yields one. That is the
 same trap the deleted `struc` module fell into, and this note is not going to re-dig it.
 What *is* committed is the recovered key, because it is the expensive part and it is data,

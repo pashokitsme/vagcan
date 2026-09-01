@@ -10,7 +10,7 @@ table is what says which vehicles fall under it.
 **What this is not.** It is **not a runtime input, and nothing reads it.** A project
 declares its own coverage — `PRNR-INFO.xml` inside every extracted ODIS project lists
 each vehicle it covers with a `PRODUCT-ID` (the VW type code, `5E0`, `55A`, `5EU`), and
-that file is what `vag_data::odis::Project::vehicles` parses. This table is the human's
+that file is what `vag_data_labels::odis::Project::vehicles` parses. This table is the human's
 copy, for reading a project name and knowing what it is; the machine never consults it.
 The S42 lines below are, entry for entry, a rendering of the same `PRNR-INFO.xml` data —
 verified on `SK37X`, whose six vehicles match exactly.

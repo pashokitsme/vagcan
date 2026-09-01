@@ -487,6 +487,7 @@ vagcan vcds rod TTTEXT.ROD --dump out/         # open a .rod container
 vagcan vcds dump /path/to/VCDS/Labels --out labels.json
 vagcan vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
 vagcan vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
+vagcan vcds stats                              # what the label cache actually holds
 ```
 
 `vcds names` searches names keyed by the label files' own **text id**, not by data
@@ -495,6 +496,11 @@ test against the car, not an identification.
 
 `vcds labels --from-car` is the one thing in this group that touches a vehicle: it
 reads `F19E` off the unit and resolves that.
+
+`vcds stats` counts the label cache table by table. It exists to tell "setup wrote
+nothing" apart from "setup wrote something into a project I am not looking at", which
+are the same screenful of missing names otherwise; a cache that is not there is
+reported as not being there rather than as a database error.
 
 ---
 

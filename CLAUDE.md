@@ -90,43 +90,50 @@ between algorithm and data:
 
 ## Project
 
-Goal, tech stack, architecture, and development workflow live in
-**[`todo/GOAL.md`](todo/GOAL.md)**. The MVP task breakdown is in
-**[`todo/README.md`](todo/README.md)**. Read both before working.
+Goal, tech stack, architecture and development workflow are **the sections below in
+this file** — `todo/GOAL.md` was folded into it and no longer exists. The task
+breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 
 TL;DR: read the whole car over CAN with measurement scalings proven live on the car and
 names from VW's own label files, on **tokio / edition 2024**, macOS M4, TDD with hardware
-checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-can`); the HEX
-clone is dead — crate and driver deleted, research archived under `.archive/research/`.
-`vagcan info` works on the real car. Details in `todo/GOAL.md`.
+checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-uds-can`); the
+HEX clone is dead — crate and driver deleted, research archived under `.archive/research/`.
+`vagcan info` works on the real car.
 
 ## Project structure
 
 Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
+**A crate's directory names its family and its package name repeats it**, so
+`uds/client` is `vag-uds-client` and nothing has to be looked up. The rule that places
+the binaries: **a binary lives in its family when it has exactly one.** `dashcfg` and
+the firmware serve only the device, so they sit inside `dash/`; `vagcan` consumes both
+`uds/` and `data/`, so it belongs to neither and carries no family prefix.
+
 ```
-crates/          all Rust.
-  infra/           libraries. Nothing here is run directly. One directory, but
-                   not one stack: four of these depend on nothing at all.
-    vag-transport    the seam every backend implements (sync + async), whole PDUs
-    vag-can          slcan backend, async ISO-TP over CAN, listen-only sniffer
-    vag-protocol     UDS client + allowlist, DTCs, gateway, unit addressing
-    vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
-    vag-data         parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat, ODX, catalog
-    vag-db           SQLite cache over the parsed label files
-    vag-panel        the renderer: a Frame in, pixels out, on any DrawTarget
-    vag-ble          BLE client (btleplug): scan, pick a device, open a NUS pipe
-  bin/             what is run. No exceptions — a library here keeps no binary.
-    vag-cli          binary `vagcan`. Top level = needs the car: devices / info /
-                     units / properties / sniff / sensors / watch / scan / faults /
-                     survey. Offline work is grouped by input: `recording …` (our
-                     own `watch --out` recordings) and `vcds …` (VCDS's own files)
-    vag-db-cli       binary `vag-db` — build, look up and inspect the label cache
-    vag-dash-config  binary `dashcfg` — configures the dash over BLE
-  firmware/        what runs on the board. NOT workspace members: no_std for
-                   riscv32imc-unknown-none-elf with their own build-std config.
-    vag-dash         package `vag-dash-fw`, binary `dash` — the device
+crates/          all Rust. Three families and the product.
+  uds/             talking to a car: ISO-TP underneath, UDS over it.
+    transport        vag-uds-transport — the seam every backend implements, whole PDUs
+    can              vag-uds-can — slcan backend, async ISO-TP over CAN, listen-only sniffer
+    client           vag-uds-client — UDS client + allowlist, DTCs, gateway, addressing
+    capture          vag-uds-capture — capture/replay transport, hardware-free tests
+  data/            somebody else's diagnostic files, parsed and cached.
+    labels           vag-data-labels — parsers: .rod/.clb/.lbl, TTTEXT names,
+                     Codes.dat, ODX/ODIS, OBD-II PIDs, catalog
+    db               vag-data-db — SQLite cache over the parsed label files
+  dash/            the OLED device, all of it — laptop side and board side.
+    render           vag-dash-render — a Frame in, pixels out, on any DrawTarget
+    ble              vag-dash-ble — BLE client (btleplug): scan, pick, open a NUS pipe
+    cfg              vag-dash-cfg, binary `dashcfg` — configures the dash over BLE
+    fw               vag-dash-fw, binary `dash` — the device itself. NOT a workspace
+                     member: no_std for riscv32imc-unknown-none-elf with its own
+                     build-std config. Build it from its own directory.
+  vagcan/          package and binary `vagcan` — the product, and the only crate
+                   belonging to no family. Top level = needs the car: devices / info /
+                   units / properties / sniff / sensors / watch / scan / faults /
+                   survey / measure. Offline work is grouped by input: `recording …`
+                   (our own `watch --out` recordings) and `vcds …` (VCDS's own files)
 research/        RE writeups + tooling (NOT shipped), one directory per subject:
   labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
                        name codec, `Codes.dat`, and the fault-naming chain. Key reads:
@@ -144,12 +151,12 @@ research/        RE writeups + tooling (NOT shipped), one directory per subject:
 .archive/        retired paths kept as evidence: research/ (HEX-clone framing, clone
                  crypto — negative results, do not retry), specs/ (superseded designs)
                  and tasks/done/ (finished task files)
-todo/            task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/stack/workflow);
+todo/            task tracking → todo/README.md (roadmap) and todo/<subsystem>/;
                  finished task files retire to .archive/tasks/done/
 ```
 
 
-Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
+Start-here docs: [`todo/README.md`](todo/README.md),
 [`ARCHITECTURE.md`](ARCHITECTURE.md), [`research/labels/rod-labels.md`](research/labels/rod-labels.md).
 
 The three front-page documents split by audience and must stay split:

@@ -1,6 +1,6 @@
 # dash / 01 — the plan, and the generator that writes it
 
-**Subsystem:** dash · **Crate:** `vagcan` (generator), `vag-dash` (the type) · **Needs the car:** no
+**Subsystem:** dash · **Crate:** `vagcan` (generator), `vag-dash-render` (the type) · **Needs the car:** no
 
 ## Goal
 
@@ -48,7 +48,7 @@ would have to resolve is a bug in this task.
 
 - The channel rows from `reading` in `~/.vagcan/data/<project>/cache.sqlite`, selected by
   the variant the car reports (`F19E` + the first three digits of `F1A2`, via
-  `vag_data::label_files::odx_match`) — the same resolution `watch` already does.
+  `vag_data_labels::label_files::odx_match`) — the same resolution `watch` already does.
 - **A proven measurement outranks a declared one**, exactly as everywhere else in this
   project: `~/.vagcan/data/<project>/measurements/<part number>.json` first, the catalog
   second. Where the two disagree the plan carries the proven scaling and says so in the

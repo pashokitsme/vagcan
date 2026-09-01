@@ -30,7 +30,7 @@ btleplug = "0.11"
 futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
 uuid = "1"
-vag-ble = { path = "../../../crates/infra/vag-ble" }
+vag-dash-ble = { path = "../../../crates/dash/ble" }
 thiserror = "2"
 serialport = "4"
 crossterm = "0.28"

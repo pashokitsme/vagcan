@@ -4,7 +4,7 @@
 
 ## Goal
 
-Run the real panel on the laptop: `vag-dash` rendering a real plan, fed either by a
+Run the real panel on the laptop: `vag-dash-render` rendering a real plan, fed either by a
 `watch --out` recording or by the live cable, in a window at 256×32 (scaled up), with the
 three buttons on the keyboard.
 
@@ -13,7 +13,7 @@ arrives. It is not a mock of the panel — it is the panel, with a different `Dr
 
 ## Status (2026-08-20) — the PNG half is done
 
-`cargo run -p vag-dash --example panel -- <dir>` writes nine frames and prints each one's
+`cargo run -p vag-dash-render --example panel -- <dir>` writes nine frames and prints each one's
 `Report`. That was enough to settle the layout and to catch three defects, so it came
 first.
 

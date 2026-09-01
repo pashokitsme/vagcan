@@ -55,7 +55,7 @@ and the number is drawn on the screen, so it has to be true.
 The wake discriminator for `05`, and the only way to get it is to listen. Three
 **listen-only** captures with `vagcan sniff` — locked and parked, ignition on with the
 engine off, engine running — and the difference of the ID sets. Nothing is transmitted,
-so this is as safe as bench work gets; `vag-can` has had the silent mode since the
+so this is as safe as bench work gets; `vag-uds-can` has had the silent mode since the
 sniffer landed (`SlcanMode::Silent`).
 
 What is wanted is a frame that is *cyclic* and present only from ignition on, so its

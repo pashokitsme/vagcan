@@ -1,0 +1,126 @@
+# An empty `[workspace]` table, and it is load-bearing rather than tidy.
+#
+# This package is in the root manifest's `exclude` list. Cargo therefore walks
+# *past* that manifest looking for a workspace — and inside a git worktree
+# under `.worktrees/`, the next one up is the outer repository's, whose exclude
+# paths do not match this deeper location. The build then fails with "current
+# package believes it's in a workspace when it's not". This table stops the
+# walk here, which is the fix cargo's own error message suggests.
+[workspace]
+
+[package]
+edition = "2021"
+# The directory reads as `firmware/vag-dash` because that is the device; the
+# *package* has to be something else, because it depends on the renderer crate
+# that is already called `vag-dash`. Two packages of one name cannot share a
+# lockfile, and cargo says so rather than picking.
+name = "vag-dash-fw"
+rust-version = "1.86"
+version = "0.1.0"
+
+[[bin]]
+name = "dash"
+path = "./src/bin/dash.rs"
+
+# The deep-sleep demonstrator: boot, say why we woke, wait, sleep, repeat. It
+# is its own image rather than a mode of `dash` because the thing being
+# measured is the *floor*, and a binary that also carries a radio and a panel
+# cannot show one.
+[[bin]]
+name = "sleeptest"
+path = "./src/bin/sleeptest.rs"
+
+# A UDS round trip against the chip's own TWAI controller — no transceiver, no
+# second node, no car. See the file's docs.
+[[bin]]
+name = "cantest"
+path = "./src/bin/cantest.rs"
+
+[dependencies]
+esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
+esp-hal = { version = "=1.0.0-rc.0", features = [
+  "esp32c3",
+  "log-04",
+  "unstable",
+] }
+log = "0.4.27"
+
+bt-hci = { version = "0.3.2", features = [] }
+critical-section = "1.2.0"
+embassy-executor = { version = "0.7.0", features = [
+  "log",
+  "task-arena-size-20480",
+] }
+embassy-time = { version = "0.4.0", features = ["log"] }
+embedded-io = "0.6.1"
+embedded-io-async = "0.6.1"
+esp-alloc = { version = "0.8.0", features = ["internal-heap-stats"] }
+# 0.7 is the last release with no `esp-hal` dependency of its own; 0.8+ wants
+# esp-hal 1.0.0-rc.1 and we are on rc.0.
+esp-storage = { version = "0.7.0", features = ["esp32c3"] }
+embedded-storage = "0.3.1"
+# The real panel renderer, out of the workspace next door. Not a copy and not a
+# mock: what the board draws is what `vagcan dash` draws, which is the entire
+# point of the seam `02` describes.
+vag-dash-render = { path = "../render" }
+# The protocol stack, `no_std`. `default-features = false` is not an
+# optimisation: the `std` feature of each of these is what pulls in tokio,
+# tokio-serial, the filesystem and an 88 MB label catalog, none of which exist
+# on a C3.
+vag-uds-can = { path = "../../uds/can", default-features = false }
+vag-uds-client = { path = "../../uds/client", default-features = false }
+vag-uds-transport = { path = "../../uds/transport", default-features = false }
+# `EspTwaiFrame` exposes its id and its data only through `embedded_can::Frame`.
+embedded-can = "0.4.1"
+embedded-graphics = "0.8"
+crc = "3"
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = "1"
+# No `panic-handler`: `src/health.rs` defines that one, so a panic message can
+# reach flash before the board halts. Nothing is lost on the console — it prints
+# the same banner and the same `Backtrace::capture()` frames — and the
+# `exception-handler` half, which catches stack overflows and illegal
+# instructions, is still esp-backtrace's.
+esp-backtrace = { version = "0.17.0", features = [
+  "esp32c3",
+  "exception-handler",
+  "println",
+] }
+esp-hal-embassy = { version = "0.9.0", features = ["esp32c3", "log-04"] }
+esp-println = { version = "0.15.0", features = ["esp32c3", "log-04"] }
+esp-wifi = { version = "0.15.0", features = [
+  "ble",
+  "builtin-scheduler",
+  "esp-alloc",
+  "esp32c3",
+  "log-04",
+] }
+static_cell = "2.1.1"
+trouble-host = { version = "0.2.4", features = [
+  "gatt",
+  "peripheral",
+  "central",
+  "scan",
+  "derive",
+  "default-packet-pool",
+  "default-packet-pool-mtu-255",
+  "log",
+] }
+embassy-futures = "0.1.1"
+embassy-sync = "0.7.2"
+heapless = { version = "0.8.0", features = ["serde"] }
+
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false

@@ -1,7 +1,7 @@
 //! Thin wrappers over the shipped `.rod` framing, for this driver's use.
 //!
 //! Everything here delegates to `crate::rod` — the real
-//! `crates/vag-data/src/rod.rs`, compiled into this crate by a `#[path]`
+//! `crates/vag-data-labels/src/rod.rs`, compiled into this crate by a `#[path]`
 //! module rather than copied. So the framing this driver sees and the framing
 //! the CLI sees cannot drift: they are the same functions.
 

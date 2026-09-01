@@ -9,20 +9,20 @@
 
 ## Goal
 
-Put `vag-dash` on the board: a TWAI backend behind `vag-transport`, the panel driver, the
+Put `vag-dash-render` on the board: a TWAI backend behind `vag-uds-transport`, the panel driver, the
 three buttons, and the plan linked in.
 
 Gated on `06` — the bench numbers decide the poll loop's shape.
 
 ## The seam
 
-`vag-transport`'s **synchronous** `IsoTpTransport` carries this. `esp-idf` gives a real
+`vag-uds-transport`'s **synchronous** `IsoTpTransport` carries this. `esp-idf` gives a real
 `std` with threads, so there is no tokio on the board and no rewrite of ISO-TP: checked
 2026-08-20, `isotp.rs`, `uds.rs`, `pdu.rs` and `read.rs` reach into `std` only for
 `Duration`, and that is `core::time::Duration`. The sync trait has existed since the
 beginning and has never had a real user; this is it.
 
-`address.rs` is the one file in `vag-protocol` that touches the filesystem (it reads the
+`address.rs` is the one file in `vag-uds-client` that touches the filesystem (it reads the
 per-car unit table). The firmware does not need it — the plan carries unit addresses — so
 it must be reachable without pulling that in. If it is not, that is the refactor this
 task starts with.
@@ -154,10 +154,10 @@ with a web page in front of it.
 
 Most of this cannot be unit-tested; what can:
 
-- The TWAI backend against `vag-capture`'s `ReplayCan`, off the board, like every other
+- The TWAI backend against `vag-uds-capture`'s `ReplayCan`, off the board, like every other
   backend.
 - The button state machine and the sleep detector as pure logic with a synthetic clock.
-- `vag-dash` itself is already covered by `02`/`03` and does not change here.
+- `vag-dash-render` itself is already covered by `02`/`03` and does not change here.
 
 ## Done when
 

@@ -7,12 +7,12 @@
     "because btleplug wants system libraries the product does not.",
     "",
     "Each excluded directory carries its own rust-analyzer.toml naming its",
-    "target. If your editor still fights, open firmware/vag-dash-fw as its own",
-    "window \u2014 one target per window is what rust-analyzer is happiest with."
+    "target. If your editor still fights, open crates/dash/fw as its own",
+    "window — one target per window is what rust-analyzer is happiest with."
   ],
   "rust-analyzer.linkedProjects": [
     "Cargo.toml",
-    "crates/firmware/vag-dash/Cargo.toml",
+    "crates/dash/fw/Cargo.toml",
     "research/dash/probes/Cargo.toml",
     "research/dash/host/Cargo.toml"
   ]

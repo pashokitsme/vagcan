@@ -3,7 +3,7 @@
 //! answers mean.
 
 use anyhow::{Result, bail};
-use vag_ble::{Lines, flush, list, open_nus, prompt_choice, render, scan, stdin_lines};
+use vag_dash_ble::{Lines, flush, list, open_nus, prompt_choice, render, scan, stdin_lines};
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 use futures::StreamExt;
@@ -14,7 +14,7 @@ const SCAN_SECS: u64 = 6;
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut lines = stdin_lines();
-    let adapter = vag_ble::adapter().await?;
+    let adapter = vag_dash_ble::adapter().await?;
 
     println!("scanning for {SCAN_SECS} s ...");
     let found = scan(&adapter, SCAN_SECS).await?;

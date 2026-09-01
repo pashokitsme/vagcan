@@ -30,10 +30,10 @@ use std::time::Instant;
 // `include_bytes!("rod_mt.bin")` resolves next to its own source, as it should.
 // If the shipped searcher is wrong, this driver is wrong in the same way —
 // which is the point.
-#[path = "../../../../crates/vag-data/src/tea.rs"]
+#[path = "../../../../crates/vag-data-labels/src/tea.rs"]
 mod tea;
 
-#[path = "../../../../crates/vag-data/src/rod/mod.rs"]
+#[path = "../../../../crates/vag-data-labels/src/rod/mod.rs"]
 mod rod;
 
 mod raw;

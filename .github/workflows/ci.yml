@@ -85,18 +85,18 @@ jobs:
       # `no_std` + `alloc` and the ESP32-C3 firmware links them. Nothing else in
       # CI sees that configuration — `cargo test`, `cargo clippy` and
       # rust-analyzer all use default features — so without this job the board
-      # build rots the moment somebody writes `std::` in vag-protocol.
+      # build rots the moment somebody writes `std::` in vag-uds-client.
       #
       # The firmware itself is not built here: it is outside the workspace, with
       # its own toolchain file and `.cargo/config.toml`, and building it needs
       # the ESP bootloader crates. These checks cover the part that the rest of
       # CI can break.
-      - name: cargo check --no-default-features (vag-transport)
-        run: cargo check -p vag-transport --no-default-features --target riscv32imc-unknown-none-elf
-      - name: cargo check --no-default-features (vag-protocol)
-        run: cargo check -p vag-protocol --no-default-features --target riscv32imc-unknown-none-elf
-      - name: cargo check --no-default-features (vag-can)
-        run: cargo check -p vag-can --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-uds-transport)
+        run: cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-uds-client)
+        run: cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-uds-can)
+        run: cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
 
   dead-code:
     name: dead-code

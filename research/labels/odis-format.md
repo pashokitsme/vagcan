@@ -2,7 +2,7 @@
 
 VW's ODIS-Service ships each vehicle platform as a directory of binary files. This is
 what those files are, established on 2026-08-07/08 against project `SK37X`
-(472 files, 230 pool pairs) and implemented in `crates/vag-data/src/odis/`.
+(472 files, 230 pool pairs) and implemented in `crates/vag-data-labels/src/odis/`.
 
 Companion to `research/labels/odis-crib.md` (which established that none of it is
 encrypted, and used the string pools against the `TTTEXT` cipher) and
@@ -170,7 +170,7 @@ A structure with several fields is several channels on one DID, each at its own 
 offset — engine DID `48B6` yields eight, at bits 0/16/32/48/64/80/96/112, each separately
 named.
 
-Of ODX's eight compu categories, three become a `vag_data::Scaling` honestly:
+Of ODX's eight compu categories, three become a `vag_data_labels::Scaling` honestly:
 `IDENTICAL`, `LINEAR` (rational coefficients, `(VN0 + VN1·x)/VD0`) and `TEXTTAB` (an
 `Enum`, keyed on the **coded** bound — the physical bounds hold the same text as the
 constant, and reading the key off them yields no key at all). The other five are
@@ -458,7 +458,7 @@ variants as well as the two base variants, because a parent that cannot be read 
 error rather than a silent empty list. The reference car has no rear door units, so this
 costs it nothing and is not diagnosed.
 
-**The tool that found it** is `cargo run -p vag-data --example odis_pool` — pool census and
+**The tool that found it** is `cargo run -p vag-data-labels --example odis_pool` — pool census and
 raw object dump with every four-byte word resolved against the string pool, which is what
 makes an untagged positional record readable without writing a loader first.
 
@@ -598,7 +598,7 @@ simple data object properties on the engine pool.
 
 ### 8.1 The gear conflict — one drive settles it
 
-`crates/vag-data/src/catalog.rs` records that on this car the gear code is `gear + 1` and
+`crates/vag-data-labels/src/catalog.rs` records that on this car the gear code is `gear + 1` and
 that **reverse is code `0C`**. The ODIS project says engine DID `0x210F` ("Selected gear",
 IDE00090) is a text table reading:
 
@@ -648,13 +648,13 @@ confirm:
 ## 9. Where this lives in the code
 
 ```
-crates/vag-data/src/odis/
+crates/vag-data-labels/src/odis/
   hash.rs      DJB2, the 31-bit mask, the 0→5 rule, the +11 probe
   strings.rs   both pools, gzip-or-plain, Windows-1252, hash → name
   keyfile.rs   the PBL B+Tree, read-only — no insert, delete or split exists
   pool.rs      locator widths and member inflate
   object.rs    the positional stream cursor and both terminators
-  compu.rs     COMPU-METHOD → vag_data::Scaling
+  compu.rs     COMPU-METHOD → vag_data_labels::Scaling
   loaders/     the type table, the refusal list, and one transcription per type
   mod.rs       Project / Variant / Reading
 ```

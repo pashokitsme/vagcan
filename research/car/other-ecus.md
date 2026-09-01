@@ -12,7 +12,7 @@ Sources:
 | `research/dumps/session-2026-08-01.jsonl` | 309 s | 2026-08-01 01:17:21.293818 | 3 164 |
 
 Method: ISO-TP reassembly per CAN id (same state machine as
-`crates/vag-can/src/sniff.rs`), then `0x22` requests paired with the next `0x62`/`0x7F`
+`crates/vag-uds-can/src/sniff.rs`), then `0x22` requests paired with the next `0x62`/`0x7F`
 on the answering id, using `response_id_for` from `crates/vagcan/src/analyse.rs`
 (`0x7E0..0x7E7 → +8`, `0x700..0x7BF → +0x6A`). Every request in both captures asked for a
 **single** identifier, so record splitting is unambiguous and no response had to be

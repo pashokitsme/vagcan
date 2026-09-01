@@ -358,7 +358,7 @@ standstill — which needs no external ratio at all.
 
 `catalogs/gearbox-02.json` was read and **left untouched**. It holds 10 rows, every one
 `Scaling::Linear{factor, offset}` over a `RawForm`. The `Scaling` enum
-(`crates/vag-data/src/catalog.rs`) offers exactly two variants: `Linear` and `Anchor`
+(`crates/vag-data-labels/src/catalog.rs`) offers exactly two variants: `Linear` and `Anchor`
 (a single proven point).
 
 The gear is an **enumeration**, not a scaled quantity:
@@ -374,7 +374,7 @@ The gear is an **enumeration**, not a scaled quantity:
 **What the catalog needs before these rows can be added:** a third `Scaling` variant —
 something like `Enum { map: Vec<(i32, Cow<'static, str>)> }` — mapping a raw integer to a
 label, with `interpret` returning a symbolic value rather than `f64`, and no fallback for
-unlisted raws. That is a change to `crates/vag-data/src/catalog.rs` (and to
+unlisted raws. That is a change to `crates/vag-data-labels/src/catalog.rs` (and to
 `MeasurementDef::interpret`'s return type or a sibling method), which is out of scope for
 this analysis and would also break the shipped-catalog row-count test. Until then, the
 knowledge lives here, in this document, where it is honest.

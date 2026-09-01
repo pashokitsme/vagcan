@@ -5,7 +5,7 @@
 # nothing shipped depends on it.
 #
 # It deliberately compiles the *shipped* decoder and key search rather than a
-# copy of them: `src/main.rs` declares `crates/vag-data/src/{tea,rod}.rs` as
+# copy of them: `src/main.rs` declares `crates/vag-data-labels/src/{tea,rod}.rs` as
 # `#[path]` modules, so `rod/crack.rs` resolves beside `rod.rs` the ordinary
 # way. Two of this project's `.rod` conclusions have had to be reopened because
 # a research re-implementation and the shipped one disagreed; pointing at the

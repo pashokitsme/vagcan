@@ -1,0 +1,9 @@
+[package]
+name = "vag-data-db"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vag-data-labels = { path = "../labels" }
+rusqlite = { version = "0.31", features = ["bundled"] }

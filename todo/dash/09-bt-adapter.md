@@ -1,6 +1,6 @@
 # dash / 09 — the device is also a wireless CANable
 
-**Subsystem:** dash · **Crate:** `vag-dash-fw`, `vag-can` · **Needs the car:** no
+**Subsystem:** dash · **Crate:** `vag-dash-fw`, `vag-uds-can` · **Needs the car:** no
 
 > **The board changed, 2026-08-25.** The bench board is an **ESP32-C3 SuperMini**, not the
 > WROOM-32 this document was written against: RISC-V on stable Rust, native USB, **BLE only
@@ -25,7 +25,7 @@ the one place where the older part beats the newer: the S3 and C3 are BLE-only, 
 has no serial port profile — it would need a custom GATT service and a custom client on
 every platform. SPP presents as `/dev/tty.*` and is opened like any other port.
 
-**And `vag-can`'s slcan backend is already stream-generic.** Its own manifest says so: the
+**And `vag-uds-can`'s slcan backend is already stream-generic.** Its own manifest says so: the
 codec and the backend build and are tested without `tokio-serial`, which is only there for
 the constructor that opens a real port. Over an SPP socket it is the same code, unchanged.
 
@@ -55,7 +55,7 @@ behaves stays refused regardless of who is connected.
 
 ## Tests
 
-- The slcan server round-trips against `vag-can`'s own codec — the client and the server
+- The slcan server round-trips against `vag-uds-can`'s own codec — the client and the server
   are two ends of one protocol and each is the other's best test.
 - A frame arriving over the air whose service is outside the allowlist is refused, and the
   refusal is asserted on the device side.

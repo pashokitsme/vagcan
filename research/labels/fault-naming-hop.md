@@ -115,7 +115,7 @@ explained rather than measured — and §5.2 turns on the consequence.
 
 ## 4. Breaking the substitution with the far half — and the chain verified
 
-`crates/vag-data/src/glyphs.rs` recovers a table's alphabet from the order its rows are
+`crates/vag-data-labels/src/glyphs.rs` recovers a table's alphabet from the order its rows are
 stored in. It needs a table to pin all ten digits by itself, which takes about ten rows,
 and the reference car's tables have one to sixteen. **The far half of the chain is a much
 stronger constraint: every `f0` must be one of the 34 716 keys of `Codes.dat`** — 20 059
@@ -299,7 +299,7 @@ What would refute the whole model: a table whose unique alphabet places an `f0` 
 ## 9. Reproducing
 
 Nothing here needs the car. `research/labels/rd-rod/` holds standalone Python — deliberately not
-shipped code, and `crates/vag-data/src/rod.rs` and `codes.rs` remain authoritative:
+shipped code, and `crates/vag-data-labels/src/rod.rs` and `codes.rs` remain authoritative:
 
 * `rod.py` — `.rod` container, TEA-CBC, the block-0 IV, the shifted-IV regime;
 * `codes.py` — `Codes.dat` / `Code-RUS.dat`, the per-record IV (pinned against key
@@ -438,7 +438,7 @@ The file name comes off the car, not out of a table: `F19E` gives the ODX base n
 `EV_SteerAssisMQB` + `013144` → `EV_SteerAssisMQB_013.rod`. Twelve of the reference car's
 fifteen units resolve to at least one candidate that way.
 
-`vag_data::corpus::find_rod_by_odx_name` matches the file **stem exactly**, so it finds
+`vag_data_labels::corpus::find_rod_by_odx_name` matches the file **stem exactly**, so it finds
 only the units whose ODX name happens to have no variant suffix — two of the fifteen.
 Teaching it the `_<F1A2[0..3]>` and brand-suffix forms is the one code change this section
 strictly requires, and it is independent of everything else here.
@@ -598,7 +598,7 @@ crib pair 291 104 → `B1455 01`, and which is what VCDS printed for this exact 
 ### 11.4 Reproducing
 
 `research/labels/rd-rod/alphabet.py` is the derivation, twenty lines, no dependencies. The
-shipped implementation is `crates/vag-data/src/glyphs.rs::DigitOrder::for_key`.
+shipped implementation is `crates/vag-data-labels/src/glyphs.rs::DigitOrder::for_key`.
 
 ---
 
@@ -612,9 +612,9 @@ vagcan faults --labels ~/vcds/                        # live, off the car
 vagcan faults --from survey.jsonl --labels ~/vcds/    # offline, from a recorded survey
 ```
 
-* `crates/vag-data/src/glyphs.rs` — `TableAlphabet::for_key`, §11.
-* `crates/vag-data/src/dtc.rs` — the registry, the row selector, the row grammar.
-* `crates/vag-data/src/codes.rs` — `sae_code`, §12.2.
+* `crates/vag-data-labels/src/glyphs.rs` — `TableAlphabet::for_key`, §11.
+* `crates/vag-data-labels/src/dtc.rs` — the registry, the row selector, the row grammar.
+* `crates/vag-data-labels/src/codes.rs` — `sae_code`, §12.2.
 * `crates/vagcan/src/faultnames.rs` — the policy: which files, in what order, and what to
   say when the chain breaks.
 * `catalogs/rod-iv-cache.json` — the five recovered `[DTC]` keys, as data (§10.4).

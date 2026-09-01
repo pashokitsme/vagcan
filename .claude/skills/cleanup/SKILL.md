@@ -59,10 +59,10 @@ the file that survives a context reset **for that kind of fact**:
 | a proven measurement — read address, scaling, unit | `~/.vagcan/data/<project>/measurements/<part number>.json` |
 | how something was proven, or refuted, and with what data | `research/<topic>.md` |
 | current state, milestones, what to do next | `todo/README.md` |
-| goal, stack, workflow | `todo/GOAL.md` |
+| goal, stack, workflow | `CLAUDE.md` (`todo/GOAL.md` was folded into it) |
 | anything that risked or damaged the car | `SAFETY.md` |
 | a rule the tool must obey forever | `CLAUDE.md` |
-| a path nobody should retry | `archive/research/`, plus one line under "Dead and archived" |
+| a path nobody should retry | `.archive/research/`, plus one line under "Dead and archived" |
 
 Rules for the writing itself:
 
@@ -165,7 +165,7 @@ keeps every other phase from decaying.
 
 ### Phase 6 — say what to do next, and why it is next
 
-End with a short ordered list. Each item names the goal from `todo/GOAL.md` it moves,
+End with a short ordered list. Each item names the goal from `CLAUDE.md` it moves,
 and says whether the car is needed — that single fact decides what can be done
 tonight. An item nobody can start without a drive belongs in its own section, not
 mixed in.

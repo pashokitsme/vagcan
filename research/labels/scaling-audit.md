@@ -13,7 +13,7 @@ premise and half of it survives:
 - The decode that `rod-labels.md` §4.0c used to conclude "the read DID is not in `STRUC`" —
   reading the record as a **base-14 bignum** — is the **wrong codec**. It was already
   superseded inside the corpus writeups (the per-table substitution of
-  `crates/vag-data/src/glyphs.rs`), but §4.0c's DID tests were never re-run under the
+  `crates/vag-data-labels/src/glyphs.rs`), but §4.0c's DID tests were never re-run under the
   correct one. So those specific tests were void.
 - Re-run under the **correct** decode, the DID search comes back negative at chance level
   anyway. **§4.0c's conclusion survives its broken decode.** The read DID is not a field of
@@ -221,6 +221,6 @@ python3 research/labels/scaling-audit/glyphs.py   # selftest vs table 531
 python3 research/labels/scaling-audit/audit.py    # all of §1–§4
 ```
 
-`glyphs.py` is a faithful port of `crates/vag-data/src/glyphs.rs`; the audit reads only the
+`glyphs.py` is a faithful port of `crates/vag-data-labels/src/glyphs.rs`; the audit reads only the
 inflated blobs plus `catalogs/names-uds.json`. No car-specific number is embedded — the crib
 lives in `catalogs/vehicles/*.json` and the `ENG` pairings in `tttext-codec.md` §2.

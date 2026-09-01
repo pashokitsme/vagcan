@@ -153,7 +153,7 @@ file per part number, human readable, with a `; Component: … (#02)` header nam
 unit and its number, then measuring-block and field names. Nothing to crack.
 
 **`.clb` — the encrypted `.lbl`.** Same content in a TEA-CBC container; decrypted
-in-tool by `vag-data`.
+in-tool by `vag-data-labels`.
 
 **`.rod` — the ODX container, and the interesting one.** Where modern (UDS-era) label
 data lives. Each file is TEA-CBC encrypted with a per-record IV and the plaintext is
@@ -324,18 +324,40 @@ read; `--refresh` forces the lot.
 
 ## The crates
 
+Three families and the product. **A crate's directory names its family and its package
+name repeats it**, so `uds/client` is `vag-uds-client` and nothing has to be looked up.
+
 ```
 crates/
-  vag-transport   the transport trait — the seam every backend implements
-  vag-can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
-  vag-protocol    UDS client, ISO-TP framing, unit addressing
-  vag-data        label parsers and decoders (.lbl/.clb/.rod), ODX resolution
-  vag-db          SQLite cache over the label files
-  vag-capture     capture and replay transport, so tests need no hardware
-  vagcan          the CLI
+  uds/        talking to a car — ISO-TP underneath, UDS over it
+    transport   the transport trait: the seam every backend implements
+    can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
+    client      UDS client, ISO-TP framing, unit addressing
+    capture     capture and replay transport, so tests need no hardware
+  data/       somebody else's diagnostic files
+    labels      label parsers and decoders (.lbl/.clb/.rod), ODX/ODIS resolution
+    db          SQLite cache over the label files
+  dash/       the OLED device, laptop side and board side both
+    render      a Frame in, pixels out, on any embedded-graphics DrawTarget
+    ble         the laptop's BLE client — scan, pick a device, open a NUS pipe
+    cfg         `dashcfg`, which configures the device over that pipe
+    fw          the firmware. Outside the workspace: no_std for riscv32imc
+  vagcan/     the CLI
 ```
 
-`vag-protocol` cannot read a label file — it is the protocol layer and label files are
+The families are not layers, and the rule that places the binaries is worth stating
+because it looks arbitrary until you see it: **a binary lives in its family when it has
+exactly one.** `dashcfg` and the firmware serve only the device. `vagcan` consumes `uds/`
+and `data/` both, so it belongs to neither, sits at the root, and takes no family prefix —
+naming the product after one of its dependencies would be the same mistake as filing the
+renderer under whichever crate happens to draw with it today.
+
+There is exactly one edge between families, `vag-uds-client -> vag-data-labels`, and it
+exists for a single module: `read.rs`, decoding a measurement against a catalog. It goes
+behind the `std` feature, because the board executes a plan with the scaling already
+baked in and could not hold a catalog if it wanted to.
+
+`vag-uds-client` cannot read a label file — it is the protocol layer and label files are
 not a protocol — so the label files' unit numbering is pushed *in* from `vagcan`, and
 what crosses the seam is plain numbers and strings.
 
@@ -378,15 +400,15 @@ same as harmless.
 ## The repository
 
 ```
-crates/         the Rust workspace
+crates/         the Rust workspace — uds/, data/, dash/ and vagcan/
 research/       reverse-engineering writeups and tooling, one directory per subject
   labels/         VW's label files: the .rod crack, the name codec, fault naming
   car/            what the reference car answers: identifier map, units, surveys
   eps/            the steering-assist incident — read alongside SAFETY.md
   clb-crack/      the RE scripts themselves
-archive/        retired paths, kept as evidence
-docs/           active design specs
-todo/           the roadmap and the goal statement
+  dash/           the board from the laptop's side: probes/ and the bench rig host/
+.archive/       retired paths, kept as evidence — research/, specs/, tasks/done/
+todo/           the roadmap and the open task files
 ```
 
 **Nothing this tool reads at run time is in here.** The label data is Ross-Tech's and
@@ -395,10 +417,12 @@ anybody else's. Both live under `~/.vagcan/`.
 
 **Nothing is deleted; things are moved.** Most of what this project knows was measured
 on one car, once, and several of its most valuable documents are records of things
-that did *not* work. A refutation you throw away is one you pay for twice. `archive/`
+that did *not* work. A refutation you throw away is one you pay for twice. `.archive/`
 exists so that "we tried that, here is why it failed" survives a year.
 
 Start here: [`todo/README.md`](todo/README.md) for where things stand,
-[`todo/GOAL.md`](todo/GOAL.md) for the goal and the stack, and
+[`CLAUDE.md`](CLAUDE.md) for the goal, the locked stack and the working rules, and
 [`research/labels/rod-labels.md`](research/labels/rod-labels.md) for the format work.
-Design documents are in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+Design documents are not kept: a plan outlives its landing only as a description of code
+that has since moved, so what survives a piece of work is this file, `todo/` and the
+commit that did it.

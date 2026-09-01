@@ -71,7 +71,7 @@ carries one. That section was re-inflated here from the vector recorded in `rod-
 `vagcan labels … --crack` panicked on very small sections:
 
 ```
-thread '<unnamed>' panicked at crates/vag-data/src/rod/crack.rs:58:13:
+thread '<unnamed>' panicked at crates/vag-data-labels/src/rod/crack.rs:58:13:
 index out of bounds: the len is 72 but the index is 72
 ```
 
@@ -405,7 +405,7 @@ supports it otherwise.
 
 (As-run commands from the time of this work. `vagcan labels` has since lost `--crack`:
 the IV brute force now lives behind the `rod-crack` cargo feature —
-`cargo run -p vag-data --features rod-crack --bin vag-rod <file.rod>` — and `vagcan labels`
+`cargo run -p vag-data-labels --features rod-crack --bin vag-rod <file.rod>` — and `vagcan labels`
 reads the cached IVs from `catalogs/rod-iv-cache.json`.)
 
 ```
