@@ -1,7 +1,7 @@
-//! `vagcan vcds dump` — parse a whole VCDS `Labels/` directory into JSON.
+//! `vagcan dev vcds dump` — parse a whole VCDS `Labels/` directory into JSON.
 //!
 //! Was the `vag-labels` binary. Its `--lookup` flag is gone rather than ported:
-//! `vagcan vcds labels --part` answers the same question from a SQLite cache
+//! `vagcan dev vcds labels --part` answers the same question from a SQLite cache
 //! instead of reparsing several thousand files, and two commands for one job
 //! means the next session picks the slower one without knowing it.
 //!

@@ -1,4 +1,4 @@
-//! `vagcan vcds analyse` — turn a capture plus a VCDS log into proven scalings.
+//! `vagcan dev vcds analyse` — turn a capture plus a VCDS log into proven scalings.
 //!
 //! The capture holds what went over the wire; the VCDS CSV holds what VCDS
 //! displayed at the same moment. Crossing them gives
@@ -686,7 +686,7 @@ pub fn log_offset_seconds(anchor_unix_us: u64, log_hms: (u32, u32, u32)) -> Opti
 	Some(log_secs - capture_secs)
 }
 
-/// `vagcan vcds analyse` — cross a capture with a VCDS log.
+/// `vagcan dev vcds analyse` — cross a capture with a VCDS log.
 pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<()> {
 	use anyhow::Context as _;
 
@@ -696,7 +696,7 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 		// a parser's opinion about line 1 column 2 does not tell the user
 		// which one they handed over.
 		anyhow::anyhow!(
-			"{capture_path} is not a `vagcan sniff` capture — that file is JSON lines with a \
+			"{capture_path} is not a `vagcan dev sniff` capture — that file is JSON lines with a \
              `ts_us` field per frame. A `scan --out` or `survey --out` file has a different \
              shape, and a `watch --out` file is CSV (use `discover` or `calibrate` for that \
              one). Parser said: {e}"
@@ -710,7 +710,7 @@ pub fn run(capture_path: &str, log_path: &str, out: Option<&str>, limits: Thresh
 	let Some(anchor) = anchor else {
 		anyhow::bail!(
 			"the capture carries no wall-clock anchor, so it cannot be aligned with the log \
-             arithmetically. Re-record it with a current `vagcan sniff`; guessing the offset is \
+             arithmetically. Re-record it with a current `vagcan dev sniff`; guessing the offset is \
              what invalidated the earlier analyses."
 		);
 	};

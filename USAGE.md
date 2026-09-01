@@ -6,7 +6,7 @@ Every command, what it prints, and the flows that span several of them. Start at
 explains why any of this is shaped the way it is.
 
 Commands are split by what they need. **The top level needs a car in front of you.**
-`vagcan recording …` reads back drives this tool recorded, and `vagcan vcds …` reads
+`vagcan dev recording …` reads back drives this tool recorded, and `vagcan dev vcds …` reads
 VCDS's own files; neither touches a vehicle.
 
 ---
@@ -19,7 +19,7 @@ VCDS's own files; neither touches a vehicle.
 - [Watching it live](#watching-it-live)
 - [Timing a run](#timing-a-run)
 - [Offline](#offline)
-  - [`vagcan glossary`](#vagcan-glossary--your-own-names-for-channels)
+  - [`vagcan dev glossary`](#vagcan-glossary--your-own-names-for-channels)
 - [Flow: a first drive](#flow-a-first-drive)
 - [Flow: teaching it a new measurement](#flow-teaching-it-a-new-measurement)
 - [When it says data is missing](#when-it-says-data-is-missing)
@@ -111,8 +111,8 @@ describes reads as a number the first time, with no drive.
 
 They are evidence, not proof: nothing in them has been confirmed against a
 car, and where a row you proved yourself disagrees, yours wins. Confirming
-one is the same three steps as ever: `vagcan survey`, then
-`vagcan watch --out drive.csv`, then `vagcan recording calibrate`.
+one is the same three steps as ever: `vagcan dev survey`, then
+`vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.
 ```
 
 **Fault codes will read as numbers after an ODIS-only run like that one, and nothing on
@@ -290,7 +290,7 @@ and the tool says so above every listing.
 
 Clearing faults is a write. This tool cannot do it and never will.
 
-### `vagcan properties --ecu 01` — what does this unit say about itself?
+### `vagcan units --identify 01` — what does this unit say about itself?
 
 Sweeps the identification range and names what answers: part numbers, software
 versions, the ODX label file the unit is described by, and the OBD-II mode 09 block.
@@ -307,7 +307,7 @@ right width for the wrong quantity — and the gearbox answers `F40D` with two
 little-endian bytes where PID `0D` is one. Anything refused is still shown, as bytes,
 with the reason.
 
-### `vagcan scan --ecu 01` / `vagcan survey` — what does it answer?
+### `vagcan dev survey --only 01` / `vagcan dev survey` — what does it answer?
 
 `scan` reads one unit; `survey` reads every unit the car has. Each unit is asked
 **only the identifiers its own data declares it answers** — the car reports what it is
@@ -335,9 +335,9 @@ something the car does not have.
 The diff is the point:
 
 ```sh
-vagcan survey --out parked.jsonl     # then drive, then:
-vagcan survey --out driving.jsonl
-vagcan survey --diff parked.jsonl driving.jsonl
+vagcan dev survey --out parked.jsonl     # then drive, then:
+vagcan dev survey --out driving.jsonl
+vagcan dev survey --diff parked.jsonl driving.jsonl
 ```
 
 The identifiers whose bytes moved are the live measurements. (An **identifier** is the
@@ -411,14 +411,14 @@ project has caught itself believing one of its own. The summary printed before
 the screen opens says how many channels are in that state and what turns them into
 numbers.
 
-### `vagcan sniff`
+### `vagcan dev sniff`
 
 Watches the bus listen-only, which cannot disturb anything. Made to run alongside
 VCDS: CAN is multi-drop, so both adapters share the bus and this one records the whole
 conversation.
 
 ```sh
-vagcan sniff --out capture.jsonl --diag-only --seconds 120
+vagcan dev sniff --out capture.jsonl --diag-only --seconds 120
 ```
 
 ---
@@ -465,14 +465,14 @@ looked under.
 
 ## Offline
 
-### `vagcan glossary` — your own names for channels
+### `vagcan dev glossary` — your own names for channels
 
 The wording ODIS and VCDS carry is written for a diagnostic engineer.
 `Brake_pedal_information_plausibility` is accurate and unreadable at an open driver's
 door, and neither vendor is going to fix that.
 
 ```sh
-vagcan glossary          # writes ~/.vagcan/names.csv
+vagcan dev glossary          # writes ~/.vagcan/names.csv
 ```
 
 The file is keyed by VW's own text id, with a column per language and a read-only
@@ -495,13 +495,13 @@ car afterwards. A table keyed by `(unit, identifier)` would be a table about one
 
 ---
 
-### `vagcan recording …` — drives this tool recorded
+### `vagcan dev recording …` — drives this tool recorded
 
 ```sh
-vagcan recording discover --log drive.csv          # which columns carry state
-vagcan recording discover --log drive.csv --pairs  # …and which move together
-vagcan recording calibrate --log drive.csv         # fit unknowns against knowns
-vagcan recording calibrate --log drive.csv --out 8V0906264H.json
+vagcan dev recording discover --log drive.csv          # which columns carry state
+vagcan dev recording discover --log drive.csv --pairs  # …and which move together
+vagcan dev recording calibrate --log drive.csv         # fit unknowns against knowns
+vagcan dev recording calibrate --log drive.csv --out 8V0906264H.json
 ```
 
 `calibrate` is the no-VCDS route to a proven scaling: it fits raw columns against
@@ -509,18 +509,18 @@ columns already trusted **in the same recording**, so there is one clock, tens o
 hertz, and no alignment error. `--out` writes the fits as a catalog; the rows are
 keyed by identifier and deliberately carry no name.
 
-### `vagcan vcds …` — VCDS's own files
+### `vagcan dev vcds …` — VCDS's own files
 
 ```sh
-vagcan vcds names "boost"                      # search the recovered names
-vagcan vcds labels /path/to/VCDS --part 8V0906264H
-vagcan vcds labels /path/to/VCDS --block 2 --field 1
-vagcan vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
-vagcan vcds rod TTTEXT.ROD --dump out/         # open a .rod container
-vagcan vcds dump /path/to/VCDS/Labels --out labels.json
-vagcan vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
-vagcan vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
-vagcan vcds stats                              # what the label cache actually holds
+vagcan dev vcds names "boost"                      # search the recovered names
+vagcan dev vcds labels /path/to/VCDS --part 8V0906264H
+vagcan dev vcds labels /path/to/VCDS --block 2 --field 1
+vagcan dev vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
+vagcan dev vcds rod TTTEXT.ROD --dump out/         # open a .rod container
+vagcan dev vcds dump /path/to/VCDS/Labels --out labels.json
+vagcan dev vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
+vagcan dev vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
+vagcan dev vcds stats                              # what the label cache actually holds
 ```
 
 `vcds names` searches names keyed by the label files' own **text id**, not by data
@@ -545,7 +545,7 @@ vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
 vagcan faults                      # what is wrong, in VW's words
-vagcan survey                      # once, parked
+vagcan dev survey                      # once, parked
 vagcan watch                       # now every unit is on offer
 ```
 
@@ -561,9 +561,9 @@ how you get a number at all for a channel no project describes.
 **1. Find what moves.** Two sweeps, one parked and one after a drive:
 
 ```sh
-vagcan survey --out parked.jsonl
-vagcan survey --out driving.jsonl
-vagcan survey --diff parked.jsonl driving.jsonl
+vagcan dev survey --out parked.jsonl
+vagcan dev survey --out driving.jsonl
+vagcan dev survey --diff parked.jsonl driving.jsonl
 ```
 
 The identifiers whose bytes differ are the live measurements.
@@ -580,7 +580,7 @@ will do. That is what the unknown gets fitted against.
 **3. Sort them.**
 
 ```sh
-vagcan recording discover --log drive.csv
+vagcan dev recording discover --log drive.csv
 ```
 
 Never-moved, stepped between a few values, or continuous. A stepped one is a gear, a
@@ -589,21 +589,21 @@ mode or a switch and wants an `Enum`, not a line.
 **4. Fit them.**
 
 ```sh
-vagcan recording calibrate --log drive.csv --out 8V0906264H.json
+vagcan dev recording calibrate --log drive.csv --out 8V0906264H.json
 ```
 
 Nothing under R² 0.995 over 20 points and 4 distinct raw values is accepted.
 
 **5. Install and name.** Move the file into your project's `measurements/` directory —
 `~/.vagcan/data/<project id>/measurements/` — named for the
-part number the unit reports for itself (`vagcan properties --ecu 01` shows it). The
+part number the unit reports for itself (`vagcan units --identify 01` shows it). The
 rows arrive keyed by identifier and unnamed, because a fit proves what the bytes mean
-and not what the quantity is called — `vagcan vcds names <word>` is where the wording
+and not what the quantity is called — `vagcan dev vcds names <word>` is where the wording
 comes from. `measure` in particular looks for rows named `speed` and `gear`.
 
 The alternative route, if you have VCDS and want it to do the naming for you: run
-`vagcan sniff --out capture.jsonl` while VCDS logs measuring blocks on the same car
-at the same moment, then `vagcan vcds analyse --capture capture.jsonl --log
+`vagcan dev sniff --out capture.jsonl` while VCDS logs measuring blocks on the same car
+at the same moment, then `vagcan dev vcds analyse --capture capture.jsonl --log
 vcds-export.csv --out <part>.json`.
 
 ---
@@ -649,9 +649,9 @@ supply one — that is the cheap thing to try first — and where neither has it
 number has to be measured.
 
 ```sh
-vagcan survey
+vagcan dev survey
 vagcan watch --out drive.csv
-vagcan recording calibrate --log drive.csv --out <part-number>.json
+vagcan dev recording calibrate --log drive.csv --out <part-number>.json
 ```
 
 The long version is [teaching it a new measurement](#flow-teaching-it-a-new-measurement)
@@ -692,7 +692,7 @@ rather than the command line, none of these ends the run: it says the same thing
 asks again.
 
 **"encrypted (recover with …)"** against a `.rod` section — no cached key for it. Run
-the search against that file: `vagcan vcds rod <file.rod>`.
+the search against that file: `vagcan dev vcds rod <file.rod>`.
 
 **"NO CRIB"** against a `.rod` section — no cached key, and the search cannot start on
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not

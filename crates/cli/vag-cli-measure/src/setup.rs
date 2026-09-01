@@ -1247,9 +1247,9 @@ mod screens {
              Without it no pass can open, so the road part would never start, and nothing is\n\
              asked of you at speed to make up for it. Everything answered so far is saved.\n\
              To look for the channel:\n    \
-             vagcan survey --out parked.jsonl      then, after a drive:\n    \
-             vagcan survey --out driving.jsonl\n    \
-             vagcan survey --diff parked.jsonl driving.jsonl",
+             vagcan dev survey --out parked.jsonl      then, after a drive:\n    \
+             vagcan dev survey --out driving.jsonl\n    \
+             vagcan dev survey --diff parked.jsonl driving.jsonl",
 			missing.join(" and ")
 		))
 	}
@@ -2273,7 +2273,7 @@ mod tests {
 		let with_neither = a_set(vec![speed.clone()]);
 		let text = screens::coast_impossible(&with_neither).expect("refused");
 		assert!(text.contains("pedal and selector"), "{text}");
-		assert!(text.contains("vagcan survey"), "{text}");
+		assert!(text.contains("vagcan dev survey"), "{text}");
 
 		let complete = a_set(vec![speed, a_channel("pedal", 0x7E0, 0xF449), a_channel("selector", 0x7E1, 0x1234)]);
 		assert!(screens::coast_impossible(&complete).is_none());

@@ -192,7 +192,7 @@ pipeline, the catalog schema, the crate layout.
   over a serial port (`vag-can`); any future backend implements the same seam.
 - `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
   client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan vcds labels` caches the parsed label files to SQLite under
+  FAST** — `vagcan dev vcds labels` caches the parsed label files to SQLite under
   `~/.vagcan/labels/cache.sqlite`.
 - **Host = macOS Apple Silicon (M4).**
 

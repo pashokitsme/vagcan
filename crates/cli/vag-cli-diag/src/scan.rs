@@ -1,17 +1,21 @@
-//! `vagcan scan` — ask ONE control unit what it will actually give us.
+//! Asking ONE control unit what it will actually give us.
 //!
-//! This command was written to ask a unit directly, because a sweep of the
-//! `ReadDataByIdentifier` space finds values no label file mentions. That is
-//! still true, and it is still the only thing here that can discover a channel
-//! nothing describes. It is also *a fuzz test of a diagnostic server*: a path
-//! with a defect in it crashes the server, and the server here is a control
-//! unit the car is relying on.
+//! The machinery a sweep is made of, and nothing that drives one: `vagcan dev
+//! survey` is the only command built on this, and `--only` aims it at a single
+//! unit. There used to be a second spelling — `vagcan scan`, one unit at a time
+//! — whose flags matched `survey`'s field for field and which `survey` was
+//! itself built on. A driver had two commands to learn and the tool had two
+//! places for a guard to be forgotten in, which is exactly how `properties`
+//! came to have none.
 //!
-//! So the default is no longer a sweep of anything. A unit is asked the
-//! identifiers some source **declares** it answers — its ODIS variant, resolved
-//! through what the unit itself reports, or a catalog proven on a car; see
-//! [`crate::declared`]. Sweeping identifier space nothing vouches for is
-//! `--blind`, aimed by hand at one unit, and it says what it costs.
+//! A sweep finds values no label file mentions, and it is also *a fuzz test of a
+//! diagnostic server*: a path with a defect in it crashes the server, and the
+//! server here is a control unit the car is relying on. So the default is no
+//! longer a sweep of anything. A unit is asked the identifiers some source
+//! **declares** it answers — its ODIS variant, resolved through what the unit
+//! itself reports, or a catalog proven on a car; see [`crate::declared`].
+//! Sweeping identifier space nothing vouches for is `--blind`, aimed by hand at
+//! units named one at a time, and it says what it costs.
 //!
 //! And every sweep, declared or blind, carries [`Guard`]: the moment a unit
 //! that had been answering stops, or goes back on an identifier it already
@@ -70,20 +74,6 @@ pub fn parse_ranges(spec: &str) -> Result<Vec<RangeInclusive<u16>>, String> {
 	}
 	Ok(out)
 }
-
-/// The bands the existing capture crib already showed to be live on this car's
-/// engine ECU (`research/labels/rod-labels.md` §4.0a/§4.0b), plus the standard
-/// identification block. The default, because a full `0000-FFFF` sweep is
-/// 65,536 requests — minutes at best, and most of it is refusals.
-///
-/// On the reference engine only the `F1xx` part of this answered: the two crib
-/// bands returned nothing. They are kept anyway — one car's silence is not
-/// evidence that another car's unit is silent there, and under group testing
-/// ([`scan_dids_fast`]) 771 identifiers cost about a hundred requests, not 771.
-/// What that run *did* show is that the default can finish having found only
-/// what `properties` already prints, so [`summary`] now says so and names the
-/// commands that go further.
-pub const DEFAULT_RANGES: &str = "7400-7500,A000-A100,F100-F200";
 
 /// How many identifiers a range list covers.
 pub fn total_dids(ranges: &[RangeInclusive<u16>]) -> usize {
@@ -321,273 +311,6 @@ pub async fn probe_batching<T: AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>,
 	uds.read_data_by_identifiers(&dids).await.is_ok()
 }
 
-/// One report line for a hit: `A058  55 55`, plus the text when the bytes are
-/// printable and the documented name when the identifier has one.
-///
-/// Both come from [`crate::props`], which is what `vagcan properties` renders
-/// with — the two commands sweep the same identification block, so a name and a
-/// value that read one way there must read the same way here. In particular the
-/// text goes through [`crate::props::Property::text`], which cuts at a NUL and
-/// trims VW's trailing-space padding: `properties` showed `8V0906264H` where
-/// this printed `"8V0906264H "`.
-pub fn format_hit(hit: &DidHit) -> String {
-	let property = crate::props::Property {
-		did: hit.did,
-		data: hit.data.clone(),
-	};
-	let text = property.text().map(|t| format!("  \"{t}\"")).unwrap_or_default();
-	let name = crate::props::name_of(hit.did).map(|n| format!("  — {n}")).unwrap_or_default();
-	format!("{:04X}  {}{text}{name}", hit.did, property.hex())
-}
-
-/// The closing report of a sweep: what answered, and what to do next.
-///
-/// Kept pure so the advice is tested without a car. `found` is every identifier
-/// that answered, in the order they were reported.
-pub fn summary(unit_label: &str, total: usize, stats: ScanStats, found: &[u16], elapsed_s: f64) -> String {
-	let mut out = format!(
-		"\n{} of {total} identifiers answered ({} refused, {} unanswered) in {elapsed_s:.1}s \
-         using {} requests\n",
-		stats.hits, stats.refused, stats.failed, stats.asked
-	);
-
-	if stats.asked > 0 && stats.failed == stats.asked {
-		out.push_str(
-			"\nNothing answered at all. Check the ignition, the wiring (OBD-II pin 6 → CAN-H, \
-             pin 14 → CAN-L), the termination jumper being OFF, and that --ecu names a control \
-             unit this car has.\n",
-		);
-		return out;
-	}
-
-	// A sweep that only turned up identification data has told the user
-	// nothing `properties` would not have told them faster, and on the
-	// reference car that is exactly what the default range did. Say so, and
-	// name the two commands that go further, rather than leaving the reader to
-	// notice that every hit begins with F1.
-	let ident = parse_ranges(crate::props::IDENT_RANGE).expect("the built-in range parses");
-	let all_ident = !found.is_empty() && found.iter().all(|did| ident.iter().any(|r| r.contains(did)));
-	if all_ident {
-		let whole_space = format!("vagcan scan --ecu {unit_label} --blind --range 0000-FFFF");
-		let width = whole_space.len();
-		out.push_str(&format!(
-			"\nEverything that answered is in the identification block, which\n\
-             `vagcan properties --ecu {unit_label}` shows named and in order.\n\n\
-             To go further:\n  \
-             {:<width$}   every unit, the identifiers its own data declares\n  \
-             {whole_space}   this unit's whole identifier space — a fuzz test of its\n\
-             {:<width$}   diagnostic server, and slow.\n",
-			"vagcan survey", ""
-		));
-	} else if found.is_empty() {
-		out.push_str(
-			"\nThe unit answered nothing that was asked of it. `vagcan survey` shows which \
-             units this car has and what each one's own data declares. To go past that on \
-             this unit, `--blind --range 0000-FFFF` sweeps its whole identifier space — \
-             which is a fuzz test of its diagnostic server.\n",
-		);
-	}
-	out
-}
-
-/// What a `vagcan scan` run was asked to do.
-///
-/// Bundled rather than passed positionally because two of these decide whether
-/// this is a read or an experiment: `blind` turns the command back into a fuzz
-/// test of the unit's diagnostic server, and `while_driving` decides whether
-/// that may happen at speed. Named fields cannot be swapped by accident.
-pub struct Options<'a> {
-	pub unit: vag_uds_client::address::UnitAddress,
-	/// Hex ranges to sweep **blind**. Meaningless without `blind`, and refused
-	/// rather than ignored there — see [`crate::declared::blind_ranges`].
-	pub range: Option<&'a str>,
-	/// Where to write the answers, if anywhere.
-	pub out: Option<&'a str>,
-	pub delay_ms: u64,
-	/// Sweep even though the car is moving.
-	pub while_driving: bool,
-	/// Ask identifiers nothing declares. Opt-in, and aimed at this one unit.
-	pub blind: bool,
-}
-
-/// The identifiers read before anything else, to find out what unit this is.
-///
-/// `F187`/`F19E`/`F1A2` are what the variant lookup is keyed on, and `F187` is
-/// also the witness the guard re-reads. All three are standardised
-/// identification identifiers (ISO 14229 / VW's block) — not facts about any
-/// particular car.
-const IDENTITY: [u16; 3] = [0xF187, 0xF19E, 0xF1A2];
-
-/// Read one control unit's identity, and seed the guard with what it answered.
-///
-/// The identification block is the sweep's *baseline*, not part of it: units on
-/// the reference car answer `F187` and refuse half the rest of the block, and
-/// policing that would stop a run on a unit behaving exactly as it always has.
-/// So answers are recorded and nothing here is judged.
-/// Returns what it read and the **witness** — the first of those identifiers
-/// the unit actually answered, which is what the guard re-reads to ask "are you
-/// still there". `None` for a unit that answered none of them: there is nothing
-/// to re-read, and a unit that never spoke cannot have stopped.
-async fn read_identity<T: AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>, monitor: &mut anomaly::Monitor) -> ([Option<String>; 3], Option<u16>) {
-	let mut out: [Option<String>; 3] = [None, None, None];
-	let mut witness = None;
-	for (slot, did) in IDENTITY.iter().enumerate() {
-		if let Ok(bytes) = uds.read_data_by_identifier(*did).await {
-			monitor.seed(*did);
-			witness = witness.or(Some(*did));
-			let text = String::from_utf8_lossy(&bytes).trim_end_matches(['\0', ' ']).to_string();
-			out[slot] = (!text.is_empty()).then_some(text);
-		}
-	}
-	(out, witness)
-}
-
-/// Sweep one control unit's identifiers against a real adapter (the `vagcan
-/// scan` command).
-pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> anyhow::Result<()> {
-	use anyhow::Context as _;
-	use std::io::Write;
-	use std::time::Instant;
-	use vag_uds_can::{IsoTpCan, SlcanBackend, SlcanBitrate};
-	use vag_uds_transport::CanId;
-
-	let Options {
-		unit,
-		range,
-		out,
-		delay_ms,
-		while_driving,
-		blind,
-	} = options;
-
-	// Checked before the adapter is opened: it is a single-user resource, and
-	// holding it open to fail on a flag combination blocks the next attempt.
-	let blind_ranges = crate::declared::blind_ranges(range, blind, DEFAULT_RANGES)?;
-
-	let mut sink: Option<std::io::BufWriter<std::fs::File>> = match out {
-		Some(path) => {
-			let file = std::fs::File::create(path).with_context(|| format!("creating results file {path:?}"))?;
-			Some(std::io::BufWriter::new(file))
-		}
-		None => None,
-	};
-
-	let mut backend = SlcanBackend::open(device_path, baud, SlcanBitrate::Rate500k)
-		.await
-		.with_context(|| crate::device::open_failure(device_path))?;
-
-	// This is a sweep, and a sweep is a fuzz of the unit's diagnostic server:
-	// requests it may never have been asked before, any one of which its
-	// firmware may mishandle — including a unit the driver is relying on.
-	// `survey` is this command run over every unit and is guarded the same way;
-	// guarding one and not the other would only mean the danger moves to
-	// whichever spelling is unguarded.
-	if !while_driving {
-		backend = match crate::safety::require_stationary(backend).await {
-			Ok(backend) => backend,
-			Err((_, why)) => anyhow::bail!(
-				"{why}\n\n\
-                 A sweep asks a unit for identifiers it may never have been asked for \n\
-                 before, and a unit that mishandles one can stop doing its job while the \n\
-                 car is in motion. Sweep while parked, or pass --while-driving if you \n\
-                 accept that risk with the car moving."
-			),
-		};
-	}
-
-	let (store, extracted) = crate::declared::sources();
-	let mut monitor = anomaly::Monitor::new(unit.request);
-	let mut uds = AsyncUdsClient::new(IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response)));
-
-	// What this unit is, in its own words — the key everything below is looked
-	// up by, and never a table about one car.
-	let ([part_number, odx_name, version], witness) = read_identity(&mut uds, &mut monitor).await;
-	let declared = crate::declared::declared(&store, &extracted, part_number.as_deref(), odx_name.as_deref(), version.as_deref());
-	let ask = crate::declared::ask(&declared, blind_ranges.as_deref());
-	let total = ask.total();
-
-	let mut progress = crate::progress::Line::new();
-	if ask.is_empty() {
-		// The one case the default cannot sweep. Identified, not fuzzed.
-		let label = unit.label();
-		println!(
-			"{}",
-			crate::declared::no_source_notice(&label, &format!("vagcan scan --ecu {label} --blind"))
-		);
-		return Ok(());
-	}
-
-	println!(
-		"scanning control unit {} ({:03X}) — {total} {}, {}",
-		unit.label(),
-		unit.request,
-		crate::render::plural(total, "identifier"),
-		match ask.source {
-			crate::declared::Source::Blind => "swept blind".to_string(),
-			_ => format!("declared for {}", odx_name.clone().or(part_number.clone()).unwrap_or_default()),
-		}
-	);
-
-	// Group testing is only valid if the unit answers a mixed request with the
-	// identifiers it does support. Establish that before relying on it, using an
-	// identifier this unit has already answered rather than a hoped-for one:
-	// probing with one it does not answer makes every batch look empty, and the
-	// sweep then reports success having read nothing.
-	let batched = probe_batching(&mut uds, witness.unwrap_or(0xF190)).await;
-	println!(
-		"{}\n",
-		if batched {
-			"probing in batches of 8"
-		} else {
-			"this unit refuses mixed requests — falling back to one at a time"
-		}
-	);
-
-	let started = Instant::now();
-	let mut found: Vec<u16> = Vec::new();
-	let on_hit = |hit: &DidHit| {
-		found.push(hit.did);
-		println!("{}", format_hit(hit));
-		if let Some(w) = sink.as_mut() {
-			// JSON lines, so results join against a capture without a parser.
-			let line = serde_json::json!({
-					"did": format!("{:04X}", hit.did),
-					"data": hit.data.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(""),
-			});
-			writeln!(w, "{line}")?;
-		}
-		Ok(())
-	};
-	// The witness: an identifier this unit answered a moment ago, re-read
-	// through the sweep so a unit that falls over is caught while it is still
-	// the most recent thing that happened to the car.
-	let mut guard = Guard {
-		witness,
-		monitor: &mut monitor,
-	};
-	let stats = if batched {
-		scan_dids_fast(&mut uds, &ask.ranges, Duration::from_millis(delay_ms), &mut guard, on_hit).await?
-	} else {
-		scan_dids(&mut uds, &ask.ranges, Duration::from_millis(delay_ms), 400, &mut guard, on_hit).await?
-	};
-	if let Some(w) = sink.as_mut() {
-		w.flush()?;
-	}
-	// One last look before calling the unit healthy: a sweep short enough never
-	// to reach a witness re-read would otherwise end without ever checking.
-	guard.check(&mut uds).await;
-
-	if let Some(anomaly) = monitor.halted() {
-		// Not `println!`: this must not share a line with anything that
-		// rewrites itself. See `crate::progress::Line::notice`.
-		progress.notice(&anomaly.report());
-		anyhow::bail!("the sweep was stopped: control unit {} changed while it was being read", anomaly.unit());
-	}
-
-	print!("{}", summary(&unit.label(), total, stats, &found, started.elapsed().as_secs_f64()));
-	Ok(())
-}
-
 #[cfg(test)]
 mod tests {
 	// `&[0x2000..=0x20FF]` is one range inside a slice of ranges, which is what
@@ -632,8 +355,6 @@ mod tests {
 		assert!(parse_ranges("F200-F100").is_err(), "backwards range");
 		assert!(parse_ranges("zz").is_err(), "not hex");
 		assert!(parse_ranges("").is_err(), "empty");
-		// The shipped default must itself parse.
-		assert!(parse_ranges(DEFAULT_RANGES).is_ok());
 	}
 
 	#[tokio::test]
@@ -807,90 +528,5 @@ mod tests {
 			uds.into_transport().is_exhausted(),
 			"it stopped at the witness, not at the end of the range"
 		);
-	}
-
-	#[test]
-	fn hits_print_as_hex_and_as_text_when_the_bytes_are_printable() {
-		assert_eq!(
-			format_hit(&DidHit {
-				did: 0xA058,
-				data: vec![0x55, 0x55]
-			}),
-			"A058  55 55",
-		);
-		// A part number reads as text — the common shape of an identity DID.
-		assert_eq!(
-			format_hit(&DidHit {
-				did: 0xF187,
-				data: b"8V0906264H".to_vec()
-			}),
-			"F187  38 56 30 39 30 36 32 36 34 48  \"8V0906264H\"  — VW spare part number",
-		);
-	}
-
-	#[test]
-	fn a_named_identifier_is_named_here_exactly_as_properties_names_it() {
-		// What the reference engine returns for F187, padding included. The two
-		// commands sweep the same block; disagreeing about whether it can be
-		// named — or about the trailing space — is what this pins.
-		let line = format_hit(&DidHit {
-			did: 0xF187,
-			data: b"8V0906264H ".to_vec(),
-		});
-		assert!(line.contains(crate::props::name_of(0xF187).unwrap()), "{line}");
-		assert!(line.contains("\"8V0906264H\""), "the padding is trimmed: {line}");
-
-		// An identifier with no documented name gets no invented one.
-		let line = format_hit(&DidHit {
-			did: 0x7401,
-			data: vec![0x00, 0x01],
-		});
-		assert_eq!(line, "7401  00 01");
-	}
-
-	#[test]
-	fn a_sweep_that_only_found_identification_data_says_where_to_go_next() {
-		// The reference car's result with the default range: every hit an F1xx
-		// identifier, i.e. a subset of what `properties` prints.
-		let stats = ScanStats {
-			asked: 100,
-			hits: 3,
-			refused: 97,
-			failed: 0,
-		};
-		let text = summary("01", 771, stats, &[0xF187, 0xF190, 0xF19E], 12.5);
-		assert!(text.contains("3 of 771 identifiers answered"), "{text}");
-		assert!(text.contains("vagcan properties --ecu 01"), "{text}");
-		assert!(text.contains("0000-FFFF"), "{text}");
-		assert!(text.contains("vagcan survey"), "{text}");
-
-		// One hit outside the block means the sweep earned its time; no advice.
-		let text = summary("01", 771, stats, &[0xF187, 0xA058], 12.5);
-		assert!(!text.contains("vagcan properties"), "{text}");
-	}
-
-	#[test]
-	fn silence_and_emptiness_are_told_apart() {
-		// Nothing on the wire at all: a wiring or ignition problem.
-		let dead = ScanStats {
-			asked: 50,
-			hits: 0,
-			refused: 0,
-			failed: 50,
-		};
-		let text = summary("01", 771, dead, &[], 4.0);
-		assert!(text.contains("Nothing answered at all"), "{text}");
-
-		// The unit answered — with refusals. That is a range worth widening,
-		// not a cable worth checking.
-		let refusing = ScanStats {
-			asked: 50,
-			hits: 0,
-			refused: 400,
-			failed: 0,
-		};
-		let text = summary("01", 771, refusing, &[], 4.0);
-		assert!(!text.contains("Nothing answered at all"), "{text}");
-		assert!(text.contains("--range 0000-FFFF"), "{text}");
 	}
 }

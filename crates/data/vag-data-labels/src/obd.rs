@@ -462,7 +462,7 @@ impl ObdPid {
 
 /// Catalog rows for whichever parameters a control unit actually implements.
 ///
-/// Feed it the identifiers a sweep found (`vagcan scan`); only the standard
+/// Feed it the identifiers a sweep found (`vagcan dev survey --only`); only the standard
 /// linear parameters among them are returned.
 pub fn catalog_for(supported_dids: &[u16]) -> Vec<MeasurementDef> {
 	PIDS

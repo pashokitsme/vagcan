@@ -118,7 +118,7 @@ inside is read once, and none of it is baked into the tool.
 vagcan info               # VIN, engine, gearbox
 vagcan units --identify   # every control unit the gateway knows about
 vagcan faults             # stored fault codes, in VW's own words (after setup)
-vagcan survey             # once, parked: what every unit answers
+vagcan dev survey             # once, parked: what every unit answers
 vagcan watch              # live values from several units at once
 ```
 
@@ -131,7 +131,7 @@ shown as raw bytes and tagged as raw. This project has twice caught itself belie
 number it had invented, and the guards are the scar tissue.
 
 **No car or adapter yet?** You can still do plenty offline: `vagcan setup` (above),
-`vagcan vcds names <text>` to search VW's measurement names, and `vagcan recording …`
+`vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …`
 to read back a drive someone else recorded. The offline commands are grouped under
 `vcds` and `recording` in [`USAGE.md`](USAGE.md).
 <!--

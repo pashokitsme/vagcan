@@ -1,4 +1,4 @@
-//! `vagcan vcds labels` — inventory + lookup over a VCDS label/ODX directory tree.
+//! `vagcan dev vcds labels` — inventory + lookup over a VCDS label/ODX directory tree.
 //!
 //! Points at a VCDS install root (or any subtree), recursively counts the
 //! `.lbl` / `.clb` / `.rod` files it holds, and answers two lookups:

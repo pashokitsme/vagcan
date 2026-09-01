@@ -17,7 +17,7 @@ with a defect in it crashes the server — a control unit the car is relying on.
 why the section on what not to run is not advisory.
 
 Everything below needs the car present and the ignition on. Commands under
-`vagcan vcds` and `vagcan recording` need only files and are out of scope here.
+`vagcan dev vcds` and `vagcan dev recording` need only files and are out of scope here.
 
 ## Invoking it
 
@@ -31,13 +31,13 @@ from the repository root; the commands are written bare for readability.
 | Is the adapter there? | `vagcan devices` |
 | Which car is this? | `vagcan info` |
 | Which control units does it have? | `vagcan units --identify` |
-| What does one unit say about itself? | `vagcan properties --ecu 01` |
+| What does one unit say about itself? | `vagcan units --identify 01` |
 | Fault codes, one unit | `vagcan faults --ecu 01` |
 | Fault codes, whole car, **named** | `vagcan faults` |
 | Standard OBD-II sensors | `vagcan sensors --ecu 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
-| Everything one unit exposes | `vagcan survey --only 01 --out unit01.jsonl` |
+| Everything one unit exposes | `vagcan dev survey --only 01 --out unit01.jsonl` |
 | Time an acceleration run | `vagcan measure` |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
@@ -133,7 +133,7 @@ Sessions live under `~/.vagcan/cars/<VIN>/measures/`.
 them actually answers:
 
 ```bash
-vagcan survey --only 713 --out unit713.jsonl
+vagcan dev survey --only 713 --out unit713.jsonl
 ```
 
 This is the expensive, invasive one — see below. Scope it with `--only` and a
@@ -143,7 +143,7 @@ Two surveys, one parked and one after a drive, name the live measurements withou
 label file:
 
 ```bash
-vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
+vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
 ```
 
 ## Never
@@ -180,7 +180,7 @@ vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
 ## Reporting what was read
 
 - A value with no proven scaling is bytes. Say so; do not convert it.
-- A name found with `vagcan vcds names` is a **hypothesis**, not an identification:
+- A name found with `vagcan dev vcds names` is a **hypothesis**, not an identification:
   the label files carry no name-to-identifier join. Never present one as the meaning of a
   reading without a live confirmation.
 - Quote the unit by both its number and what it called itself, because the numbering

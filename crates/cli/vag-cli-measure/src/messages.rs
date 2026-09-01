@@ -73,13 +73,13 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		"\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
          from raw bytes. The whole way there:\n    \
-         vagcan survey --out parked.jsonl      then, after a drive:\n    \
-         vagcan survey --out driving.jsonl\n    \
-         vagcan survey --diff parked.jsonl driving.jsonl\n\
+         vagcan dev survey --out parked.jsonl      then, after a drive:\n    \
+         vagcan dev survey --out driving.jsonl\n    \
+         vagcan dev survey --diff parked.jsonl driving.jsonl\n\
          The identifiers whose bytes moved are the live measurements. Then record a\n\
          drive with them on screen and fit them against a reading already trusted:\n    \
          vagcan watch --did <the identifiers> --out drive.csv\n    \
-         vagcan recording calibrate --log drive.csv --out <part-number>.json\n\
+         vagcan dev recording calibrate --log drive.csv --out <part-number>.json\n\
          Move that file to {} — the file name is the unit's own\n\
          F187 part number — and name its rows so this command can find them:\n\
          `speed` and `gear` are what it looks for.\n\n\
@@ -139,7 +139,7 @@ pub fn no_barometer() -> String {
      app or an airport METAR has both numbers; press Enter twice if you have neither\n\
      and the standard atmosphere will be used and recorded as such.\n\n\
      If this car does answer those readings under other names, this will find them:\n    \
-     vagcan survey --out parked.jsonl"
+     vagcan dev survey --out parked.jsonl"
 		.to_string()
 }
 

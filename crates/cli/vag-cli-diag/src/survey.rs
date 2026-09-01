@@ -1,4 +1,4 @@
-//! `vagcan survey` — walk the whole car, not just the powertrain.
+//! `vagcan dev survey` — walk the whole car, not just the powertrain.
 //!
 //! Everything this project can read live has so far come from two control
 //! units, because those are the two the ISO addressing block reaches. The
@@ -225,7 +225,7 @@ pub fn diff(before: &str, after: &str) -> Vec<(u16, u16, String, String)> {
 	out
 }
 
-/// Print a survey diff (`vagcan survey --diff a.jsonl b.jsonl`).
+/// Print a survey diff (`vagcan dev survey --diff a.jsonl b.jsonl`).
 /// One unit's line in a survey file.
 ///
 /// Extracted from the sweep so the shape can be asserted without a car — and
@@ -594,7 +594,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			println!("{}", report.summary());
 			println!(
 				"{}",
-				crate::declared::no_source_notice(&address.label(), &format!("vagcan survey --only {0} --blind {0}", address.label()))
+				crate::declared::no_source_notice(&address.label(), &format!("vagcan dev survey --only {0} --blind {0}", address.label()))
 			);
 			backend = uds.into_transport().into_backend();
 			reports.push(report);
@@ -660,7 +660,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 				None => println!(
 					"Nothing was written: re-run with --out to keep the evidence.\n\
                      This car's cached survey has been left exactly as it was, so it is \n\
-                     still the \"before\" for `vagcan survey --diff`."
+                     still the \"before\" for `vagcan dev survey --diff`."
 				),
 			}
 			anyhow::bail!("the survey was stopped: control unit {} changed while it was being read", anomaly.unit());
@@ -705,9 +705,9 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 	}
 	println!(
 		"\nRun this once parked and once driving, then compare:\n  \
-         vagcan survey --out parked.jsonl\n  \
-         vagcan survey --out driving.jsonl\n  \
-         vagcan survey --diff parked.jsonl driving.jsonl\n\
+         vagcan dev survey --out parked.jsonl\n  \
+         vagcan dev survey --out driving.jsonl\n  \
+         vagcan dev survey --diff parked.jsonl driving.jsonl\n\
          The identifiers whose bytes differ are the live measurements, and that list \n\
          needs no label file."
 	);

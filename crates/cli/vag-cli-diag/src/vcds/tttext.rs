@@ -1,4 +1,4 @@
-//! `vagcan vcds tttext` — recover names from the label files' global text table.
+//! `vagcan dev vcds tttext` — recover names from the label files' global text table.
 //!
 //! Was the `vag-tttext` binary. Every record of `TTTEXT.ROD`'s `[TXT]` section
 //! is enciphered under its own substitution, so there is no single key to find:
@@ -995,7 +995,7 @@ mod tests {
 	///
 	/// `#[ignore]` because it needs the decrypted `[TXT]` section, which is
 	/// minutes of key search to produce and is not in the checkout. Dump it once
-	/// (`vagcan vcds rod vendor/vcds-en/UDS_EV/TTTEXT.ROD --dump DIR`) and point
+	/// (`vagcan dev vcds rod vendor/vcds-en/UDS_EV/TTTEXT.ROD --dump DIR`) and point
 	/// the test at it:
 	///
 	/// ```text

@@ -18,7 +18,7 @@ mod overview;
 
 use vag_cli_core::device::ADAPTER_BAUD;
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
-use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, rescue, scan, setup, sniff, survey, vcds, watch};
+use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
@@ -54,19 +54,17 @@ use vag_uds_client::{AsyncUdsClient, UdsReadExt};
                   vagcan info               which car is this?\n  \
                   vagcan units              which control units does it have?\n\n\
                   LOOK AT THE CAR\n  \
-                  faults / properties / sensors\n\n\
+                  faults                    stored fault codes\n  \
+                  units --identify 01       everything one unit says about itself\n  \
+                  sensors                   the standard OBD-II readings\n\n\
                   WATCH IT LIVE\n  \
-                  survey                    once, parked: what every unit answers\n  \
                   watch                     values from several units, chosen on screen\n  \
-                  sniff                     the bus itself, listen-only\n\n\
-                  FIND NEW MEASUREMENTS\n  \
-                  survey --out parked.jsonl        then, after a drive:\n  \
-                  survey --out driving.jsonl       then:\n  \
-                  survey --diff parked.jsonl driving.jsonl   what moved = what is live\n\n\
-                  ---- everything above needs a car in front of you (except setup) ----\n\n\
-                  AWAY FROM THE CAR\n  \
-                  recording ...             read back a `watch --out` drive\n  \
-                  vcds ...                  VCDS's own files: labels, names, logs"
+                  measure                   time an acceleration run\n\n\
+                  THE WORKSHOP\n  \
+                  dev ...                   build and prove the data the above runs on:\n                            \
+                  the whole-car survey, the bus sniffer, your own channel\n                            \
+                  names, and the offline work over recordings and over\n                            \
+                  VCDS's files. `vagcan dev --help`."
 )]
 struct Cli {
 	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
@@ -118,22 +116,6 @@ enum Command {
 		refresh: bool,
 	},
 
-	/// Write your own names for channels. Offline.
-	///
-	/// The wording ODIS and VCDS carry is written for a diagnostic engineer:
-	/// `Brake_pedal_information_plausibility` is accurate and unreadable at an
-	/// open driver's door. This creates `~/.vagcan/names.csv`, where you write
-	/// what you would call the channel — in English, in Russian, or both — and
-	/// what you write wins over both vendors everywhere a name is shown.
-	///
-	/// It is keyed by VW's own text id, so a translation written once holds for
-	/// every car afterwards, not just this one. Running it again keeps every
-	/// line you have written and only adds ids that are new; the `current`
-	/// column is what the channel is called today and is never read back.
-	///
-	/// Which column is used is `language` in `~/.vagcan/config.toml`.
-	Glossary,
-
 	/// List connected USB-CAN adapters.
 	///
 	/// Start here if a command says it cannot find an adapter.
@@ -150,53 +132,75 @@ enum Command {
 	///
 	/// One read of the gateway's installation list, instead of sweeping every
 	/// diagnostic address and waiting out a timeout for each one the car does
-	/// not have. Pass `--identify` to have each unit name itself.
+	/// not have. `--identify` has every unit name itself; `--identify <unit>`
+	/// has one of them say everything it knows.
 	Units {
 		/// Adapter to use. Omit it when only one is connected.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
-		/// Also read each listed unit's part number and component name. Slower,
-		/// and a unit that does not answer is reported as such.
+		/// Have the units name themselves: part number and component name, for
+		/// every unit the gateway lists. Slower, and a unit that does not
+		/// answer is reported as such.
+		///
+		/// Name ONE unit — a short number (01 engine, 02 gearbox, 09, 16, 17)
+		/// or a request id (713, 70E) — and it reads that unit's whole
+		/// identification block instead: every software and hardware version,
+		/// the supplier numbers, the ODX label file the unit is described by,
+		/// and whatever else answers, named where the meaning is documented and
+		/// raw where it is not. That is 256 reads of one control unit, so it is
+		/// refused on a moving car.
+		#[arg(long, value_name = "UNIT", num_args = 0..=1)]
+		identify: Option<Option<String>>,
+		/// Read one unit's identification block while the car is moving.
+		/// Refused by default: 256 reads of one control unit is a sweep, and a
+		/// unit that falls over at speed is a different event from one that
+		/// falls over on a driveway.
 		#[arg(long)]
-		identify: bool,
+		while_driving: bool,
 	},
 
-	/// List everything a control unit tells about itself.
+	/// Read stored fault codes from every control unit.
 	///
-	/// Sweeps the identification range and names what answers — part numbers,
-	/// software versions, the ODX label file the unit is described by.
-	Properties {
+	/// Only codes the unit has confirmed are called faults: asking for
+	/// everything returns hundreds of tests that have merely never run since
+	/// the memory was cleared. Read-only — clearing faults is a write, which
+	/// this tool cannot do.
+	Faults {
 		/// Adapter to use. Omit it when only one is connected.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
-		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
-		/// a request id (713, 70E). `vagcan units` lists this car's.
-		#[arg(long, default_value = "01", value_name = "ID")]
-		ecu: String,
-	},
-
-	/// Watch the bus. Listen-only: cannot disturb anything.
-	///
-	/// Made to run alongside VCDS — CAN is multi-drop, so both adapters share
-	/// the bus and this one records the whole conversation.
-	Sniff {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
-		device: Option<String>,
-		/// Write every frame to this capture file (JSON lines).
+		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
+		/// gateway lists.
+		#[arg(long, value_name = "LIST")]
+		ecu: Option<String>,
+		/// Also dump each fault's raw extended-data record as hex. The layout is
+		/// per-unit and mostly undecoded — for offline analysis.
+		#[arg(long)]
+		details: bool,
+		/// Show every code the units list, not just the confirmed ones.
+		#[arg(long)]
+		all: bool,
+		/// List every code each unit *can* report, in the unit's own order.
+		#[arg(long)]
+		supported: bool,
+		/// Ask each unit for an extended diagnostic session first. Off by
+		/// default and refused while the car is moving: that session is
+		/// workshop mode, and a unit that assists the driver may stop
+		/// assisting while it is in one.
+		#[arg(long)]
+		extended: bool,
+		/// Where the recovered `.rod` section keys are cached. A fault
+		/// catalogue is sealed with one, and recovering one costs ~95 s of
+		/// every core — so they are kept as data, not searched for per run.
+		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
-		out: Option<String>,
-		/// Record only diagnostic traffic, dropping the rest.
-		#[arg(long)]
-		diag_only: bool,
-		/// Stop after this many seconds. Default: until Ctrl-C.
-		#[arg(long, value_name = "N")]
-		seconds: Option<u64>,
-		/// Join the bus normally instead of listen-only, so the adapter
-		/// acknowledges frames. Needed only when nothing else is on the bus to
-		/// acknowledge — it is no longer strictly passive.
-		#[arg(long)]
-		active: bool,
+		iv_cache: Option<String>,
+		/// Name the faults in a survey this tool already recorded, instead of
+		/// reading the car. Offline; names them from what `vagcan setup`
+		/// extracted into ~/.vagcan.
+		#[arg(long, value_name = "FILE",
+              conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
+		from: Option<String>,
 	},
 
 	/// Read the standard OBD-II sensors a control unit exposes.
@@ -224,7 +228,7 @@ enum Command {
 	/// Shows values from several control units at once. The catalogs cover the
 	/// engine, gearbox and instrument cluster with proven scalings; every other
 	/// unit is shown from this car's own cached survey, as raw bytes. Run
-	/// `vagcan survey` once, parked, and the cache is written — after that
+	/// `vagcan dev survey` once, parked, and the cache is written — after that
 	/// `watch` offers every identifier the car answers, on every unit, with no
 	/// flag. Press `c` to choose what appears.
 	///
@@ -249,7 +253,7 @@ enum Command {
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
 		/// Use this survey file instead of the one kept for this car. Without
-		/// it, the survey `vagcan survey` last recorded off this car is loaded
+		/// it, the survey `vagcan dev survey` last recorded off this car is loaded
 		/// from `~/.vagcan/cars/<VIN>/survey.jsonl` — offering every identifier
 		/// the car answers, on every unit, as raw bytes.
 		#[arg(long, value_name = "FILE")]
@@ -297,86 +301,25 @@ enum Command {
 	#[cfg(feature = "measure")]
 	Measure(#[command(flatten)] measure::args::Args),
 
-	/// Sweep ONE control unit for every data identifier it answers.
-	Scan {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
-		device: Option<String>,
-		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
-		/// a request id (713, 70E). `vagcan units` lists this car's.
-		#[arg(long, default_value = "01", value_name = "ID")]
-		ecu: String,
-		/// Hex ranges to sweep BLIND, e.g. `7400-7500,A000-A100`, or
-		/// `0000-FFFF` for the whole space. Only means anything with --blind,
-		/// and is refused without it rather than quietly ignored.
-		#[arg(long, value_name = "SPEC")]
-		range: Option<String>,
-		/// Write the answers to this file (JSON lines).
-		#[arg(long, value_name = "FILE")]
-		out: Option<String>,
-		/// Pause between reads, in milliseconds.
-		#[arg(long, default_value_t = 2, value_name = "MS")]
-		delay_ms: u64,
-		/// Read while the car is moving. Refused by default: a declared
-		/// identifier can still be the one whose path through the firmware has
-		/// the defect in it, and a unit that falls over at speed is a different
-		/// event from one that falls over on a driveway.
-		#[arg(long)]
-		while_driving: bool,
-		/// Ask this unit identifiers NOTHING declares it answers — a fuzz test
-		/// of its diagnostic server. Each request takes a path through firmware
-		/// that may never have been exercised, and a path with a defect in it
-		/// crashes the server, which on a control unit the car is relying on is
-		/// not a small event. By default only the identifiers this unit's own
-		/// data declares are read.
-		#[arg(long)]
-		blind: bool,
-	},
-
-	/// Read stored fault codes from every control unit.
+	/// The workshop: build and prove the data the other commands use.
 	///
-	/// Only codes the unit has confirmed are called faults: asking for
-	/// everything returns hundreds of tests that have merely never run since
-	/// the memory was cleared. Read-only — clearing faults is a write, which
-	/// this tool cannot do.
-	Faults {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
-		device: Option<String>,
-		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
-		/// gateway lists.
-		#[arg(long, value_name = "LIST")]
-		ecu: Option<String>,
-		/// Also dump each fault's raw extended-data record as hex. The layout is
-		/// per-unit and mostly undecoded — for offline analysis.
-		#[arg(long)]
-		details: bool,
-		/// Show every code the units list, not just the confirmed ones.
-		#[arg(long)]
-		all: bool,
-		/// List every code each unit *can* report, in the unit's own order.
-		#[arg(long)]
-		supported: bool,
-		/// Ask each unit for an extended diagnostic session first. Off by
-		/// default and refused while the car is moving: that session is
-		/// workshop mode, and a unit that assists the driver may stop
-		/// assisting while it is in one.
-		#[arg(long)]
-		extended: bool,
-		/// Where the recovered `.rod` section keys are cached. A fault
-		/// catalogue is sealed with one, and recovering one costs ~95 s of
-		/// every core — so they are kept as data, not searched for per run.
-		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
-		#[arg(long, value_name = "FILE")]
-		iv_cache: Option<String>,
-		/// Name the faults in a survey this tool already recorded, instead of
-		/// reading the car. Offline; names them from what `vagcan setup`
-		/// extracted into ~/.vagcan.
-		#[arg(long, value_name = "FILE",
-              conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
-		from: Option<String>,
+	/// Nothing under here is part of reading the car for an answer. These are
+	/// the tools that make the data the commands above run on — the whole-car
+	/// survey, the bus sniffer, the owner's own channel names, and the offline
+	/// work over our recordings and over VCDS's files.
+	Dev {
+		#[command(subcommand)]
+		tool: Dev,
 	},
+}
 
+/// The workshop (see the `Dev` subcommand docs).
+//
+// Clone for the same reason `Command` is: `dispatch_or_offer` keeps a copy so
+// the command can be run again once the label data it wanted has been made,
+// and `vcds` and `survey` are among the commands that want it.
+#[derive(Clone, Subcommand)]
+enum Dev {
 	/// Read EVERY control unit the car has — `scan` for the whole car.
 	///
 	/// Reads the gateway's installation list, then walks each unit: its
@@ -437,6 +380,46 @@ enum Command {
 		#[arg(long)]
 		extended: bool,
 	},
+
+	/// Watch the bus. Listen-only: cannot disturb anything.
+	///
+	/// Made to run alongside VCDS — CAN is multi-drop, so both adapters share
+	/// the bus and this one records the whole conversation.
+	Sniff {
+		/// Adapter to use. Omit it when only one is connected.
+		#[arg(long, value_name = "PATH")]
+		device: Option<String>,
+		/// Write every frame to this capture file (JSON lines).
+		#[arg(long, value_name = "FILE")]
+		out: Option<String>,
+		/// Record only diagnostic traffic, dropping the rest.
+		#[arg(long)]
+		diag_only: bool,
+		/// Stop after this many seconds. Default: until Ctrl-C.
+		#[arg(long, value_name = "N")]
+		seconds: Option<u64>,
+		/// Join the bus normally instead of listen-only, so the adapter
+		/// acknowledges frames. Needed only when nothing else is on the bus to
+		/// acknowledge — it is no longer strictly passive.
+		#[arg(long)]
+		active: bool,
+	},
+
+	/// Write your own names for channels. Offline.
+	///
+	/// The wording ODIS and VCDS carry is written for a diagnostic engineer:
+	/// `Brake_pedal_information_plausibility` is accurate and unreadable at an
+	/// open driver's door. This creates `~/.vagcan/names.csv`, where you write
+	/// what you would call the channel — in English, in Russian, or both — and
+	/// what you write wins over both vendors everywhere a name is shown.
+	///
+	/// It is keyed by VW's own text id, so a translation written once holds for
+	/// every car afterwards, not just this one. Running it again keeps every
+	/// line you have written and only adds ids that are new; the `current`
+	/// column is what the channel is called today and is never read back.
+	///
+	/// Which column is used is `language` in `~/.vagcan/config.toml`.
+	Glossary,
 
 	/// Read back a drive this tool recorded. Offline — no car.
 	///
@@ -560,31 +543,20 @@ async fn dispatch(command: Command) -> Result<()> {
 			// download as one of the answers. Only `rescue` skips that menu.
 			download: false,
 		}),
-		Command::Glossary => glossary_command(),
 		Command::Devices => {
 			println!("{}", device::render_list(&device::list()?));
 			Ok(())
 		}
 		Command::Info { device } => info(device.as_deref()).await,
-		Command::Properties { device, ecu } => properties(device.as_deref(), &ecu).await,
-		Command::Units { device, identify } => units(device.as_deref(), identify).await,
-		Command::Sniff {
+		// The two depths of the same question. `--identify <unit>` names one
+		// unit and reads its whole identification block; `--identify` alone
+		// asks every unit the gateway lists for the two fields that name it.
+		Command::Units {
 			device,
-			out,
-			diag_only,
-			seconds,
-			active,
-		} => {
-			sniff::run(
-				&device::resolve(device.as_deref())?,
-				ADAPTER_BAUD,
-				out.as_deref(),
-				diag_only,
-				seconds,
-				active,
-			)
-			.await
-		}
+			identify: Some(Some(ecu)),
+			while_driving,
+		} => identification(device.as_deref(), &ecu, while_driving).await,
+		Command::Units { device, identify, .. } => units(device.as_deref(), identify.is_some()).await,
 		Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
 		Command::Watch {
 			replay: Some(path),
@@ -632,29 +604,6 @@ async fn dispatch(command: Command) -> Result<()> {
 		}
 		#[cfg(feature = "measure")]
 		Command::Measure(args) => measure::dispatch(args, &data_dir(None)?).await,
-		Command::Scan {
-			device,
-			ecu,
-			range,
-			out,
-			delay_ms,
-			while_driving,
-			blind,
-		} => {
-			scan::run(
-				&device::resolve(device.as_deref())?,
-				ADAPTER_BAUD,
-				scan::Options {
-					unit: parse_ecu(&ecu)?,
-					range: range.as_deref(),
-					out: out.as_deref(),
-					delay_ms,
-					while_driving,
-					blind,
-				},
-			)
-			.await
-		}
 		Command::Faults {
 			from: Some(survey),
 			iv_cache,
@@ -683,8 +632,15 @@ async fn dispatch(command: Command) -> Result<()> {
 			)
 			.await
 		}
-		Command::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
-		Command::Survey {
+		Command::Dev { tool } => dispatch_dev(tool).await,
+	}
+}
+
+/// The workshop group: one arm per tool under `vagcan dev`.
+async fn dispatch_dev(tool: Dev) -> Result<()> {
+	match tool {
+		Dev::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
+		Dev::Survey {
 			device,
 			range,
 			out,
@@ -710,12 +666,30 @@ async fn dispatch(command: Command) -> Result<()> {
 			)
 			.await
 		}
-		Command::Recording { tool } => recording::run(tool),
+		Dev::Sniff {
+			device,
+			out,
+			diag_only,
+			seconds,
+			active,
+		} => {
+			sniff::run(
+				&device::resolve(device.as_deref())?,
+				ADAPTER_BAUD,
+				out.as_deref(),
+				diag_only,
+				seconds,
+				active,
+			)
+			.await
+		}
+		Dev::Glossary => glossary_command(),
+		Dev::Recording { tool } => recording::run(tool),
 		// `labels --from-car` is the one thing under `vcds` that touches a
 		// vehicle: it reads F19E off the unit and resolves that. The group is
 		// otherwise pure file work, so it hands this one case back here rather
 		// than starting a runtime of its own inside a synchronous call.
-		Command::Vcds { tool } => match vcds::run(tool)? {
+		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
 				let name = odx_name_from_car(device.as_deref(), &ecu).await?;
@@ -1018,20 +992,46 @@ fn glossary_command() -> Result<()> {
 	Ok(())
 }
 
-/// List a control unit's properties (see the `Properties` subcommand docs).
-async fn properties(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
+/// Read one unit's whole identification block (`vagcan units --identify <unit>`).
+///
+/// The deeper of the two depths `units` has: the shallow one asks every unit
+/// the two fields that name it, this asks one unit the whole 256-identifier
+/// block and names what answers.
+async fn identification(device_arg: Option<&str>, ecu_text: &str, while_driving: bool) -> Result<()> {
 	let path = device::resolve(device_arg)?;
 	let unit = parse_ecu(ecu_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
-	let mut uds = open_ecu(&path, unit).await?;
+	let mut backend = SlcanBackend::open_mode(&path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
+		.await
+		.with_context(|| device::open_failure(&path))?;
+	// 256 reads aimed at one control unit is a sweep, whatever the block they
+	// are in is called. This was the one sweep-shaped path in the tool with no
+	// road-speed check on it — `vagcan units --identify`, which anybody could run at
+	// speed while `scan` and `survey` refused to. Guarded now like the rest.
+	if !while_driving {
+		backend = match safety::require_stationary(backend).await {
+			Ok(backend) => backend,
+			Err((_, why)) => anyhow::bail!(
+				"{why}\n\n\
+                 Reading a unit's whole identification block asks it 256 identifiers, \n\
+                 and a unit that mishandles one can stop doing its job while the car is \n\
+                 in motion. Read it while parked, or pass --while-driving if you accept \n\
+                 that risk with the car moving."
+			),
+		};
+	}
+	let mut uds = AsyncUdsClient::new(IsoTpCan::new(
+		backend,
+		vag_uds_transport::CanId::Standard(unit.request),
+		vag_uds_transport::CanId::Standard(unit.response),
+	));
+
 	let mut found = Vec::new();
-	// The identification block is standardised and 256 identifiers wide, so this
-	// is not the sweep the guards are about — but it is still a control unit
-	// being asked questions, and the rule "stop when something changes" is not
-	// about how big the read was. No witness: there is nothing established as
-	// known-good before this runs, so the guard watches only for the unit going
-	// quiet after it had been answering.
+	// The read is bounded and the block is standardised, but the rule "stop
+	// when something changes" is not about how big the read was. No witness:
+	// there is nothing established as known-good before this runs, so the guard
+	// watches only for the unit going quiet after it had been answering.
 	let mut monitor = anomaly::Monitor::new(unit.request);
 	let mut guard = scan::Guard {
 		witness: None,
@@ -1086,7 +1086,7 @@ mod tests {
 	use clap::CommandFactory;
 
 	/// The help for one flag, named the way a user would reach it — the whole
-	/// path, because the offline commands live under a group now.
+	/// path, because the workshop commands live under `dev` now.
 	fn flag_help(path: &[&str], flag: &str) -> String {
 		let mut cli = Cli::command();
 		let mut sub = &mut cli;
@@ -1099,7 +1099,10 @@ mod tests {
 			.get_arguments()
 			.find(|a| a.get_id() == flag)
 			.unwrap_or_else(|| panic!("{path:?} has no {flag}"));
-		arg.get_help().map(|h| h.to_string()).unwrap_or_default()
+		// The long help, which is the whole doc comment: the short one is only
+		// its first paragraph, and a flag whose second paragraph is the part
+		// that carries the warning would pass a test that never read it.
+		arg.get_long_help().or_else(|| arg.get_help()).map(|h| h.to_string()).unwrap_or_default()
 	}
 
 	#[test]
@@ -1135,7 +1138,7 @@ mod tests {
 		// help would leave the tool advertising a standard it no longer holds
 		// itself to; this makes that a test failure.
 		let bar = vag_cli_core::analyse::Thresholds::default();
-		for path in [["vcds", "analyse"], ["recording", "calibrate"]] {
+		for path in [["dev", "vcds", "analyse"], ["dev", "recording", "calibrate"]] {
 			for flag in ["min_r2", "min_points"] {
 				let help = flag_help(&path, flag);
 				assert!(help.contains(&format!("R² ≥ {:.3}", bar.min_r2)), "{path:?} {flag}: {help}");
@@ -1152,7 +1155,7 @@ mod tests {
 	fn the_iv_cache_flag_is_legible_without_the_research() {
 		// It used to explain itself with a `cargo run --features rod-crack`
 		// invocation, which says nothing to someone holding an OBD adapter.
-		let help = flag_help(&["vcds", "labels"], "iv_cache");
+		let help = flag_help(&["dev", "vcds", "labels"], "iv_cache");
 		assert!(!help.contains("cargo"), "{help}");
 		assert!(help.contains(".rod"), "{help}");
 	}
@@ -1193,13 +1196,17 @@ mod tests {
 
 	#[test]
 	fn every_sweep_is_refused_on_a_moving_car() {
-		// `scan` had no guard while `survey` did, for no better reason than
-		// that the incident happened during a survey. They are the same
-		// operation over a different number of units, and the danger simply
-		// moves to whichever spelling is unguarded.
+		// The danger moves to whichever spelling is unguarded, so the rule is
+		// asserted over every one of them. `scan` used to be the unguarded one;
+		// then it was `properties`, which read 256 identifiers off a unit with
+		// no road-speed check at all. `scan` is gone and `properties` is now
+		// `units --identify <unit>` — which is in this list.
 		let mut cli = Cli::command();
-		for sweep in ["scan", "survey"] {
-			let sub = cli.find_subcommand_mut(sweep).expect("the sweep exists");
+		let dev = cli.find_subcommand_mut("dev").expect("the workshop group exists").clone();
+		for (sweep, sub) in [
+			("units", cli.find_subcommand("units").expect("units exists")),
+			("dev survey", dev.find_subcommand("survey").expect("the survey exists")),
+		] {
 			assert!(
 				sub.get_arguments().any(|a| a.get_id() == "while_driving"),
 				"{sweep} is a sweep with no --while-driving gate"
@@ -1212,17 +1219,22 @@ mod tests {
 		// The default was to ask every unit 2816 identifiers nothing said
 		// existed. That is a fuzz test of a diagnostic server, and it is now
 		// something somebody asks for rather than something that happens.
+		// One sweep, since `scan` was folded into `survey --only`. Written for
+		// one deliberately: a second would be a second place for the warning to
+		// go stale, which is what having two of them cost before.
 		let mut cli = Cli::command();
-		for sweep in ["scan", "survey"] {
-			let sub = cli.find_subcommand_mut(sweep).expect("the sweep exists");
-			let blind = sub
-				.get_arguments()
-				.find(|a| a.get_id() == "blind")
-				.unwrap_or_else(|| panic!("{sweep} sweeps blind with no way to say so"));
-			let help = blind.get_help().map(|h| h.to_string()).unwrap_or_default();
-			assert!(help.contains("fuzz test"), "{sweep} --blind does not say what it is: {help}");
-			assert!(help.contains("crashes the server"), "{sweep} --blind does not say what it risks: {help}");
-		}
+		let sub = cli
+			.find_subcommand_mut("dev")
+			.expect("the workshop group exists")
+			.find_subcommand_mut("survey")
+			.expect("the sweep exists");
+		let blind = sub
+			.get_arguments()
+			.find(|a| a.get_id() == "blind")
+			.expect("the sweep sweeps blind with some way to say so");
+		let help = blind.get_help().map(|h| h.to_string()).unwrap_or_default();
+		assert!(help.contains("fuzz test"), "--blind does not say what it is: {help}");
+		assert!(help.contains("crashes the server"), "--blind does not say what it risks: {help}");
 	}
 
 	#[test]
@@ -1231,10 +1243,10 @@ mod tests {
 		// would put the old default back behind five keystrokes, and the thing
 		// that made this a whole-car event was that it applied to every unit.
 		assert!(
-			Cli::try_parse_from(["vagcan", "survey", "--blind"]).is_err(),
+			Cli::try_parse_from(["vagcan", "dev", "survey", "--blind"]).is_err(),
 			"--blind must be aimed at named units"
 		);
-		assert!(Cli::try_parse_from(["vagcan", "survey", "--blind", "712"]).is_ok());
+		assert!(Cli::try_parse_from(["vagcan", "dev", "survey", "--blind", "712"]).is_ok());
 	}
 
 	#[test]
@@ -1243,7 +1255,8 @@ mod tests {
 		// what `--blind` sweeps, and naming one without a unit to aim it at is
 		// refused at run time (`declared::blind_ranges`) rather than ignored —
 		// so the help has to say which flag it belongs to.
-		for path in [["scan"], ["survey"]] {
+		{
+			let path = ["dev", "survey"];
 			let help = flag_help(&path, "range");
 			assert!(help.contains("--blind"), "{path:?} --range: {help}");
 			assert!(
@@ -1255,16 +1268,57 @@ mod tests {
 
 	#[test]
 	fn the_top_level_is_only_what_needs_a_car() {
-		// The whole point of the `vcds` and `recording` groups: a top level
-		// crowded with offline analysis cannot be scanned while standing at an
-		// open driver's door. This is the rule made enforceable.
+		// The whole point of the `dev` group: a top level crowded with the
+		// workshop cannot be scanned while standing at an open driver's door.
+		// This is the rule made enforceable, and every name that has ever moved
+		// off the top level stays on the denylist — the leaves that went under
+		// `vcds` and `recording` first, then those two groups themselves along
+		// with `survey`, `sniff` and `glossary` when `dev` swallowed them, and
+		// finally `scan` and `properties`, which were deleted outright as
+		// second spellings of `dev survey --only` and `units --identify`.
 		let cli = Cli::command();
 		let top: Vec<&str> = cli.get_subcommands().map(|s| s.get_name()).collect();
-		for offline in ["analyse", "calibrate", "discover", "labels", "names"] {
+		for offline in [
+			"analyse",
+			"calibrate",
+			"discover",
+			"labels",
+			"names",
+			"survey",
+			"sniff",
+			"glossary",
+			"recording",
+			"vcds",
+			"scan",
+			"properties",
+		] {
 			assert!(!top.contains(&offline), "{offline} belongs under a group, not at the top");
 		}
-		for live in ["info", "units", "faults", "watch", "survey", "sniff"] {
+		for live in ["setup", "devices", "info", "units", "faults", "watch", "sensors"] {
 			assert!(top.contains(&live), "{live} needs a car and belongs at the top");
 		}
+		// And the ones that moved are reachable where they were moved to,
+		// rather than merely gone.
+		let dev = cli.find_subcommand("dev").expect("the workshop group exists");
+		let workshop: Vec<&str> = dev.get_subcommands().map(|s| s.get_name()).collect();
+		for tool in ["survey", "sniff", "glossary", "recording", "vcds"] {
+			assert!(workshop.contains(&tool), "{tool} moved to `dev` and must be there");
+		}
+	}
+
+	#[test]
+	fn one_unit_identified_in_full_is_a_depth_of_units_not_a_command_of_its_own() {
+		// `properties --ecu 01` and `units --identify` asked the same question
+		// at two depths, and only one of them was guarded. One flag now, whose
+		// argument is the depth.
+		assert!(Cli::try_parse_from(["vagcan", "units"]).is_ok());
+		assert!(Cli::try_parse_from(["vagcan", "units", "--identify"]).is_ok());
+		assert!(Cli::try_parse_from(["vagcan", "units", "--identify", "713"]).is_ok());
+		assert!(Cli::try_parse_from(["vagcan", "properties", "--ecu", "01"]).is_err());
+		// The depth is what the guard is about, and the help has to name the
+		// unit spelling somebody would type.
+		let help = flag_help(&["units"], "identify");
+		assert!(help.contains("713"), "{help}");
+		assert!(help.contains("moving car"), "{help}");
 	}
 }

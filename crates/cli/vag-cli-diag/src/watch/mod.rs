@@ -2174,7 +2174,7 @@ fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
 	}
 	out.push_str(&format!(
 		"\nThe other way is to ask those units identifiers nothing declares they answer:\n    \
-         vagcan survey --only {spec} --blind {spec}\n\n\
+         vagcan dev survey --only {spec} --blind {spec}\n\n\
          That is a fuzz test of their diagnostic servers and the most invasive thing this \n         tool does. Each request takes a path through firmware that may never have been \n         exercised, and a path with a defect in it crashes the server, which on a control \n         unit the car is relying on is not a small event. It is refused outright while the \n         car is moving, and it takes a few minutes per unit.\n\n\
          What it buys: the answers are filed under this car, and every later `watch` puts \n         those identifiers on offer as raw bytes with no flag.\n"
 	));
@@ -2676,7 +2676,7 @@ mod tests {
 			&crate::plan::Answered::default(),
 			None,
 		);
-		assert!(text.contains("vagcan survey"), "{text}");
+		assert!(text.contains("vagcan dev survey"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
 		// The identifiers a survey would offer are raw bytes and are said to
 		// be — this project does not invent a scaling for them.
@@ -2718,7 +2718,7 @@ mod tests {
 		// No unit is left with nothing on screen, so there is nothing to
 		// advise about and no advice.
 		assert!(!text.contains("nothing to show"), "{text}");
-		assert!(!text.contains("vagcan survey\n"), "{text}");
+		assert!(!text.contains("vagcan dev survey\n"), "{text}");
 	}
 
 	#[test]
@@ -2831,7 +2831,7 @@ mod tests {
 		);
 		assert!(text.contains("no proven measurement rows"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
-		assert!(text.contains("vagcan recording calibrate"), "{text}");
+		assert!(text.contains("vagcan dev recording calibrate"), "{text}");
 		assert!(text.contains("not something `vagcan setup` can fix"), "{text}");
 	}
 

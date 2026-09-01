@@ -46,9 +46,9 @@ pub const VCDS_DOWNLOAD: &str = "https://www.ross-tech.com/vcds/download/";
 /// who meets the shortage twice — once in `measure`, once in `watch` — is not
 /// left wondering whether the two are the same path.
 pub fn calibration_path() -> &'static str {
-	"    vagcan survey                    once, parked: what every unit answers\n    \
+	"    vagcan dev survey                    once, parked: what every unit answers\n    \
      vagcan watch --out drive.csv     then drive, with the values on screen\n    \
-     vagcan recording calibrate --log drive.csv --out <part-number>.json"
+     vagcan dev recording calibrate --log drive.csv --out <part-number>.json"
 }
 
 /// The label shortage, in the one wording every command reports it in.
@@ -219,7 +219,7 @@ pub fn raw_channels_note(count: usize) -> String {
 	format!(
 		"{count} channel{} shown as raw bytes: no proven scaling for this car yet.\n\
          Record a drive and fit them — `vagcan watch --out drive.csv`, then\n\
-         `vagcan recording calibrate --log drive.csv --out <part-number>.json`.",
+         `vagcan dev recording calibrate --log drive.csv --out <part-number>.json`.",
 		if count == 1 { " is" } else { "s are" }
 	)
 }
@@ -232,7 +232,7 @@ mod tests {
 	/// each says what is missing, and ends somewhere to go.
 	#[test]
 	fn the_label_shortage_names_setup_and_where_the_data_comes_from() {
-		let m = no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/x/n.json")).to_string();
+		let m = no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/x/n.json")).to_string();
 		assert!(m.contains("vagcan setup /path/to/VCDS"), "{m}");
 		assert!(m.contains("/x/n.json"), "the reader must see which file was looked for:\n{m}");
 		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
@@ -244,7 +244,7 @@ mod tests {
 	#[test]
 	fn the_catalog_shortage_names_the_drive_and_never_names_setup() {
 		let m = no_catalog("This car", Path::new("/x/data"));
-		for step in ["vagcan survey", "vagcan watch --out drive.csv", "vagcan recording calibrate"] {
+		for step in ["vagcan dev survey", "vagcan watch --out drive.csv", "vagcan dev recording calibrate"] {
 			assert!(m.contains(step), "{step} missing from:\n{m}");
 		}
 		// The distinction that has to survive: somebody whose car has never
@@ -265,7 +265,7 @@ mod tests {
 		let catalog = no_catalog("This car", Path::new("/d"));
 		assert!(label.contains("vagcan setup /path/to/VCDS"));
 		assert!(!label.contains("calibrate"), "{label}");
-		assert!(catalog.contains("vagcan recording calibrate"));
+		assert!(catalog.contains("vagcan dev recording calibrate"));
 		assert!(!catalog.contains("vagcan setup /path"), "{catalog}");
 	}
 
@@ -319,7 +319,7 @@ mod tests {
 		// half that tells the reader what to do is one string, so it cannot go
 		// stale in one place and stay current in another.
 		let sites = [
-			no_label_data("The measurement names", "`vagcan vcds names`", Path::new("/n.json")).to_string(),
+			no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/n.json")).to_string(),
 			no_fault_labels(Path::new("/rod")),
 			NoLabelData::new("No car has been set up yet.").looked_in(Path::new("/data")).to_string(),
 			NoLabelData::new("The project `SK37X` has no label cache.")

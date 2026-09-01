@@ -180,7 +180,7 @@ pub fn measures_dir(vin: &str) -> anyhow::Result<PathBuf> {
 /// on it or the cache is written where nothing reads it.
 pub const SURVEY_FILE: &str = "survey.jsonl";
 
-/// The survey `vagcan survey` last recorded off this car.
+/// The survey `vagcan dev survey` last recorded off this car.
 ///
 /// **Per car, not per part number.** Which identifiers a control unit answers
 /// is a fact about that unit as it is built, coded and installed in *this* car;

@@ -97,7 +97,7 @@ session repeats the experiment.
 - **A one-shot tool is not dead code.** The `.rod` key search and the label-file dump
   each ran once and produced a committed artefact, and each keeps its value for the
   next label files, on another machine, or when an artefact is doubted. They were retired
-  into `vagcan vcds rod` and `vagcan vcds dump` rather than into `git rm`; do the
+  into `vagcan dev vcds rod` and `vagcan dev vcds dump` rather than into `git rm`; do the
   same with the next one.
 - **Every one-shot tool states three things in its help text**, because by the time
   it is needed again nobody will remember them: **what it is for** (and what it

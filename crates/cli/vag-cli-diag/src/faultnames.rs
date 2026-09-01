@@ -240,14 +240,14 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
          about three minutes each, once — the result is cached and every later run reads it."
 	);
 	if !crate::ui::can_ask() {
-		println!("\nTo do it:\n    vagcan vcds rod <file>   (once per file above)");
+		println!("\nTo do it:\n    vagcan dev vcds rod <file>   (once per file above)");
 		return Ok(());
 	}
 	print!("\nRecover them now? [y/N] ");
 	let _ = std::io::stdout().flush();
 	let mut answer = String::new();
 	if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-		println!("Left sealed. When you want them:\n    vagcan vcds rod <file>   (once per file above)");
+		println!("Left sealed. When you want them:\n    vagcan dev vcds rod <file>   (once per file above)");
 		return Ok(());
 	}
 	for (at, file) in files.iter().enumerate() {

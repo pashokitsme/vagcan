@@ -311,14 +311,14 @@ fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 		.collect()
 }
 
-/// Add every identifier a `vagcan survey` run found, on every unit it found
+/// Add every identifier a `vagcan dev survey` run found, on every unit it found
 /// them on.
 ///
 /// The survey is the only source that covers the whole car: the catalogs know
 /// three units, the gateway lists fifteen more, and none of those fifteen has a
 /// proven measurement yet. Their channels come through with no definition, so
 /// they display as raw bytes — which is the honest rendering and is also
-/// exactly what `vagcan recording calibrate` needs as input.
+/// exactly what `vagcan dev recording calibrate` needs as input.
 ///
 /// Identifiers already in `channels` keep their definition; a survey never
 /// overrides a proven scaling with nothing.

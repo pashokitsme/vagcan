@@ -5,7 +5,7 @@
 //! worth recording at all — but neither has anything to say while the car is in
 //! front of you, so neither belongs at the top level.
 //!
-//! The distinction from `vagcan vcds` is what the input *is*, not whether it is
+//! The distinction from `vagcan dev vcds` is what the input *is*, not whether it is
 //! offline: those read VCDS's files, these read ours.
 
 use std::path::Path;
@@ -117,7 +117,7 @@ pub fn run(tool: Tool) -> Result<()> {
 			min_points,
 			out,
 		} => {
-			let Some(log) = pick_when_absent(log, "vagcan recording calibrate --log FILE.csv")? else {
+			let Some(log) = pick_when_absent(log, "vagcan dev recording calibrate --log FILE.csv")? else {
 				return Ok(());
 			};
 			calibrate::run(
@@ -131,7 +131,7 @@ pub fn run(tool: Tool) -> Result<()> {
 			)
 		}
 		Tool::Discover { log, pairs } => {
-			let Some(log) = pick_when_absent(log, "vagcan recording discover --log FILE.csv")? else {
+			let Some(log) = pick_when_absent(log, "vagcan dev recording discover --log FILE.csv")? else {
 				return Ok(());
 			};
 			let text = std::fs::read_to_string(&log).with_context(|| format!("reading the recording {log:?}"))?;

@@ -367,8 +367,8 @@ fn next(facts: &Facts) -> String {
 			"  Plug in a USB-CAN adapter, then `vagcan devices` to check it enumerated.\n  \
              Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND, termination OFF.\n\n  \
              Away from the car, these work anyway:\n    \
-             vagcan vcds …        VCDS's own files: labels, names, logs\n    \
-             vagcan recording …   read back a drive recorded with `watch --out`\n",
+             vagcan dev vcds …        VCDS's own files: labels, names, logs\n    \
+             vagcan dev recording …   read back a drive recorded with `watch --out`\n",
 		);
 		return out;
 	}
@@ -508,8 +508,8 @@ mod tests {
 		assert!(text.contains("nothing connected"), "{text}");
 		assert!(text.contains("pin 6"), "the wiring is on the screen that says to plug it in: {text}");
 		assert!(text.contains("vagcan devices"), "{text}");
-		assert!(text.contains("vagcan vcds"), "{text}");
-		assert!(text.contains("vagcan recording"), "{text}");
+		assert!(text.contains("vagcan dev vcds"), "{text}");
+		assert!(text.contains("vagcan dev recording"), "{text}");
 		assert!(!text.contains("vagcan info"), "{text}");
 
 		// Serial devices with no CAN adapter among them is a different thing to

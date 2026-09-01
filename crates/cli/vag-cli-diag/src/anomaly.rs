@@ -130,8 +130,8 @@ impl Anomaly {
 			 2. Do NOT clear the faults. The freeze frame is the evidence.\n\
 			      vagcan faults --ecu {unit} --details\n\
 			 3. Snapshot the unit and compare it with the one you took before:\n\
-			      vagcan survey --only {unit} --out after.jsonl\n\
-			      vagcan survey --diff before.jsonl after.jsonl\n\
+			      vagcan dev survey --only {unit} --out after.jsonl\n\
+			      vagcan dev survey --diff before.jsonl after.jsonl\n\
 			 4. Try an ignition cycle: off, wait, on. A unit that crashed and restarted\n\
 			    often comes back. One that does not is a different problem.\n\
 			 5. Then stop, and take it to someone with the factory tool.\n",

@@ -18,8 +18,8 @@
 //! `tttext` reads is a section `rod --dump` extracts:
 //!
 //! ```text
-//! vagcan vcds rod TTTEXT.ROD --dump out/     →  out/TXT.bin
-//! vagcan vcds tttext out/TXT.bin --out names.tsv
+//! vagcan dev vcds rod TTTEXT.ROD --dump out/     →  out/TXT.bin
+//! vagcan dev vcds tttext out/TXT.bin --out names.tsv
 //! ```
 
 mod dump;
@@ -66,7 +66,7 @@ pub enum Tool {
 		field: Option<u8>,
 		/// Resolve the ODX file a control unit names for itself, e.g.
 		/// `EV_ECM18TFS0208V0906264H` — the value of identifier F19E, which
-		/// `vagcan properties` reads off the car.
+		/// `vagcan units --identify` reads off the car.
 		#[arg(long, value_name = "NAME")]
 		odx: Option<String>,
 		/// Read F19E from the car and resolve that, instead of passing --odx.
@@ -125,14 +125,14 @@ pub enum Tool {
 	/// project's proven scalings come from; the label files provably does not
 	/// carry them.
 	///
-	/// IN: a capture from `vagcan sniff --out`, and the VCDS measuring-blocks
+	/// IN: a capture from `vagcan dev sniff --out`, and the VCDS measuring-blocks
 	/// CSV export recorded alongside it. The two are aligned by their wall-clock
 	/// stamps — a subtraction, never a search.
 	///
 	/// OUT: the fits that clear the bar, on stdout; with `--out`, those same
 	/// rows as a measurement catalog that `vagcan watch` reads directly.
 	Analyse {
-		/// Capture written by `vagcan sniff`.
+		/// Capture written by `vagcan dev sniff`.
 		#[arg(long, value_name = "FILE")]
 		capture: String,
 		/// VCDS measuring-blocks CSV export recorded at the same time.
@@ -178,7 +178,7 @@ pub enum Tool {
 		#[arg(long, value_name = "PATH")]
 		cache: Option<String>,
 		/// Also write each decoded section to `DIR/<TAG>.bin`. This is how the
-		/// input to `vagcan vcds tttext` is produced.
+		/// input to `vagcan dev vcds tttext` is produced.
 		#[arg(long, value_name = "DIR")]
 		dump: Option<String>,
 	},
@@ -195,7 +195,7 @@ pub enum Tool {
 	/// OUT: a coverage summary on stdout, and with `--out`, a JSON array of
 	/// label files sorted by source name.
 	///
-	/// To look ONE part number up, use `vagcan vcds labels --part` instead — it
+	/// To look ONE part number up, use `vagcan dev vcds labels --part` instead — it
 	/// answers from a cache instead of reparsing the label files.
 	Dump {
 		/// VCDS `Labels/` directory, or any directory below it.
@@ -215,7 +215,7 @@ pub enum Tool {
 	/// the next pass, and passes run until nothing new is learned.
 	///
 	/// IN: the decrypted, inflated `[TXT]` section of `TTTEXT.ROD` — produced
-	/// by `vagcan vcds rod TTTEXT.ROD --dump DIR`, which writes it as
+	/// by `vagcan dev vcds rod TTTEXT.ROD --dump DIR`, which writes it as
 	/// `DIR/TXT.bin`. Vocabulary comes from `--names` and `--words`; with
 	/// neither, there is nothing to solve against and it refuses.
 	///
@@ -240,7 +240,7 @@ pub enum Tool {
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
 		/// Write the readings that clear the catalog gate as a
-		/// `{"<text id>": "<name>"}` JSON file — the form `vagcan vcds names`
+		/// `{"<text id>": "<name>"}` JSON file — the form `vagcan dev vcds names`
 		/// searches. Far fewer than `--out`: a reading with an ambiguous word,
 		/// a guessed digit or a doubtful ending is dropped rather than shipped.
 		#[arg(long, value_name = "FILE")]

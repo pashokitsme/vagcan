@@ -675,7 +675,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 /// `Total_Logical_Wakeup_Events_Counter` both became
 /// `Total_CarWakeup_Events_Counter` — two live channels labelled identically.
 ///
-/// So this file is an index of what a text id means, which `vagcan vcds names`
+/// So this file is an index of what a text id means, which `vagcan dev vcds names`
 /// searches, and `names.json` stays what a VCDS installation recovered.
 ///
 /// **What is already there wins**, within this file: silently changing a name
@@ -808,7 +808,7 @@ fn label_cache(root: &Path, project: &crate::project::Project, refresh: bool) ->
 
 /// Step 3: recover the measurement names from the global text table.
 ///
-/// Two of the existing tools, chained the way `vagcan vcds`'s own help
+/// Two of the existing tools, chained the way `vagcan dev vcds`'s own help
 /// documents: `rod --dump` writes the decrypted, inflated `[TXT]` section, and
 /// `tttext` reads it. The intermediate file is this function's business and
 /// nobody else's, so it goes in a scratch directory and is removed again.
@@ -890,7 +890,7 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
 		words: &words,
 		names: None,
 		// The readings themselves are not wanted here — only the ones that
-		// clear the gate, in the form `vagcan vcds names` searches.
+		// clear the gate, in the form `vagcan dev vcds names` searches.
 		out: None,
 		catalog: Some(&out.to_string_lossy()),
 		partial: None,
@@ -988,8 +988,8 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 /// has just watched 300 MB of label files parse reasonably assumes the numbers
 /// came with the names, and this is the last chance to say they did not.
 const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS installation carries them — the label \n\
-     files have names, not numbers. Those are measured: `vagcan survey`, then \n\
-     `vagcan watch --out drive.csv`, then `vagcan recording calibrate`.";
+     files have names, not numbers. Those are measured: `vagcan dev survey`, then \n\
+     `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
 
 /// What to say when the project now holds scalings.
 ///
@@ -1006,8 +1006,8 @@ const SCALINGS_HERE: &str = "This project carries scalings, declared per ECU var
      describes reads as a number the first time, with no drive.\n\n\
      They are evidence, not proof: nothing in them has been confirmed against a \n\
      car, and where a row you proved yourself disagrees, yours wins. Confirming \n\
-     one is the same three steps as ever: `vagcan survey`, then \n\
-     `vagcan watch --out drive.csv`, then `vagcan recording calibrate`.";
+     one is the same three steps as ever: `vagcan dev survey`, then \n\
+     `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
 
 /// `scalings` is whether the project now holds per-variant scalings — the one
 /// fact the closing sentence turns on, and asked of the store rather than of

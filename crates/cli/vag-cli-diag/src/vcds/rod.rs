@@ -1,4 +1,4 @@
-//! `vagcan vcds rod` — open a `.rod` container.
+//! `vagcan dev vcds rod` — open a `.rod` container.
 //!
 //! VW ships ODX label files with every section encrypted, and a section whose
 //! `product` field is nonzero cannot be decrypted from the file alone: five

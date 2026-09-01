@@ -282,7 +282,7 @@ mod tests {
 		assert!(ask.is_empty(), "an unknown unit gets asked nothing: {:?}", ask.ranges);
 
 		// And it is told how to go further, in terms that say what it costs.
-		let notice = no_source_notice("44", "vagcan survey --only 44 --blind 44");
+		let notice = no_source_notice("44", "vagcan dev survey --only 44 --blind 44");
 		assert!(notice.contains("not swept"), "{notice}");
 		assert!(notice.contains("--blind 44"), "{notice}");
 		assert!(notice.contains("fuzz test"), "{notice}");

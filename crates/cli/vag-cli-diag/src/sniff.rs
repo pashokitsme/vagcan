@@ -1,4 +1,4 @@
-//! `vagcan sniff` — watch the car's CAN bus without touching it.
+//! `vagcan dev sniff` — watch the car's CAN bus without touching it.
 //!
 //! The point of this command is to sit on the OBD-II bus **alongside VCDS**
 //! while VCDS runs a normal session, and record every request and response in
@@ -210,7 +210,7 @@ impl<W: Write> SniffSession<W> {
 	}
 }
 
-/// Run a sniffing session against a real adapter (the `vagcan sniff` command).
+/// Run a sniffing session against a real adapter (the `vagcan dev sniff` command).
 ///
 /// The loop polls the adapter with a short receive window rather than awaiting
 /// frames inside a `select!`: Ctrl-C and marker input then reach us between

@@ -132,11 +132,11 @@ intended behaviour, not a gap.
 Two routes, both least-squares fits that accept nothing under **R² 0.995 over ≥ 20
 points and ≥ 4 distinct raw values**.
 
-`vagcan sniff` records the bus listen-only while VCDS runs an ordinary session beside
-it, and `vagcan vcds analyse` crosses that capture with VCDS's own CSV export. The
+`vagcan dev sniff` records the bus listen-only while VCDS runs an ordinary session beside
+it, and `vagcan dev vcds analyse` crosses that capture with VCDS's own CSV export. The
 two files are aligned by wall-clock arithmetic — a subtraction, never a search.
 
-`vagcan recording calibrate` needs no VCDS at all: it fits unproven columns of a
+`vagcan dev recording calibrate` needs no VCDS at all: it fits unproven columns of a
 `vagcan watch --out` recording against columns already trusted in the *same*
 recording — the standard OBD-II parameters, whose conversions are SAE J1979's, or
 rows proven earlier. One clock, tens of hertz, and whatever identifiers were asked
@@ -208,7 +208,7 @@ is reading the mask out of a running VCDS, not out of the files.
 [`research/labels/tttext2.md`](research/labels/tttext2.md) has the full argument.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
-file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan vcds labels
+file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan dev vcds labels
 --from-car` finds the right file with no lookup table in the middle.
 
 **`Codes.dat` — the fault-code text store.** A fault number does not resolve to words

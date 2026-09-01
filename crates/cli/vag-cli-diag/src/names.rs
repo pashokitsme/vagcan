@@ -1,4 +1,4 @@
-//! `vagcan vcds names` — search the measurement names recovered from the label
+//! `vagcan dev vcds names` — search the measurement names recovered from the label
 //! label files.
 //!
 //! A project's `names.json` holds the names `vagcan setup` recovered by
@@ -40,7 +40,7 @@ pub fn run(needle: &str, limit: usize, path: &std::path::Path) -> Result<()> {
 	// from Ross-Tech's product — so a fresh checkout not having it is expected,
 	// and saying which command makes it is the whole job here.
 	if !path.is_file() {
-		anyhow::bail!(crate::missing::no_label_data("The measurement names", "`vagcan vcds names`", path));
+		anyhow::bail!(crate::missing::no_label_data("The measurement names", "`vagcan dev vcds names`", path));
 	}
 	let text = std::fs::read_to_string(path).with_context(|| format!("reading the names catalog {}", path.display()))?;
 	let catalog: serde_json::Value = serde_json::from_str(&text).context("parsing the names catalog")?;
