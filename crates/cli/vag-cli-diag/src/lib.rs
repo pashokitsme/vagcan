@@ -10,7 +10,12 @@
 // at a local module. The alternative was rewriting some hundreds of paths
 // across thirty files, which would have made the diff about the paths rather
 // than about the split.
-pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, plan, progress, project, ui, units, vcdslog};
+//
+// `missing` is the one that went the other way: it was this crate's, and moved
+// into core because `core::project` reports the same shortage and the sentence
+// may only be written once. Re-exported for the same reason as the rest —
+// `crate::missing::…` reads the same here as it always did.
+pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, missing, plan, progress, project, ui, units, vcdslog};
 
 pub mod anomaly;
 pub mod calibrate;
@@ -20,7 +25,6 @@ pub mod faultnames;
 pub mod faults;
 pub mod labels;
 pub mod migrate;
-pub mod missing;
 pub mod names;
 pub mod props;
 pub mod recording;

@@ -30,7 +30,7 @@
 //! error and panic included.
 
 use std::fmt::Write as _;
-use std::io::{IsTerminal, Write as _};
+use std::io::Write as _;
 
 use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -96,8 +96,8 @@ impl Asker for Console {
 		}
 		// Before raw mode, not after: switching a terminal that is not there is
 		// an errno, and this is the sentence that actually helps.
-		if !std::io::stdin().is_terminal() {
-			bail!(no_terminal(&self.instead));
+		if !super::can_ask() {
+			bail!(menu_needs_a_terminal(&self.instead));
 		}
 		let mut at = at.min(items.len() - 1);
 		let mut out = std::io::stdout();
@@ -151,7 +151,7 @@ impl Asker for Console {
 		// script gets the default silently rather than a refusal it cannot act
 		// on. Nothing is printed either: there is nobody to read a prompt, and
 		// the caller says what it settled on afterwards.
-		if !std::io::stdin().is_terminal() {
+		if !super::can_ask() {
 			return Ok(default.to_string());
 		}
 		// Asked outside raw mode, so the answer echoes and a backspace works.
@@ -307,7 +307,15 @@ fn nothing_to_choose(question: &str) -> String {
 ///
 /// A prompt on a redirected stdin is a hang with no explanation, and the thing
 /// the person wanted is one argument away.
-fn no_terminal(instead: &str) -> String {
+///
+/// Not [`picker`](crate::ui::picker)'s `list_needs_a_terminal`, which says the
+/// same thing about a *directory listing*: that one names what was being picked
+/// ("a session", "a file to delete") because the picker serves many commands and
+/// does not know which, and it says "name it" where a menu says "say which one".
+/// Both were called `no_terminal` and read as one function; they are two, and
+/// the wording each ends in is the difference. The predicate they share is
+/// [`can_ask`](crate::ui::can_ask).
+fn menu_needs_a_terminal(instead: &str) -> String {
 	format!(
 		"there is no terminal to choose at — stdin is redirected, so nobody would see the \
          menu.\nSay which one on the command line instead:\n    {instead}"
@@ -542,7 +550,7 @@ mod tests {
 	#[test]
 	fn with_no_terminal_the_refusal_names_the_command_that_needs_no_menu() {
 		// A prompt on a redirected stdin is a hang nobody can diagnose.
-		let why = no_terminal("vagcan setup /path/to/VCDS");
+		let why = menu_needs_a_terminal("vagcan setup /path/to/VCDS");
 		assert!(why.contains("no terminal"), "{why}");
 		assert!(why.contains("vagcan setup /path/to/VCDS"), "{why}");
 	}

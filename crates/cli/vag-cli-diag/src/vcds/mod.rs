@@ -366,8 +366,13 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 			Ok(Outcome::Done)
 		}
 		Tool::Stats { catalog } => {
+			// Whether the reader named the file matters to what an absence means,
+			// so it is carried rather than re-derived: `--catalog` is somebody
+			// pointing at a path, and no amount of `vagcan setup` will create a
+			// path they invented.
+			let named = catalog.is_some();
 			let path = datadir::or_default(catalog.as_deref(), || Ok(crate::project::current()?.cache()))?;
-			stats(&path)?;
+			stats(&path, named)?;
 			Ok(Outcome::Done)
 		}
 		Tool::Tttext {
@@ -410,14 +415,22 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 /// and `setup` having been run into a different project produce the same empty
 /// screen everywhere else, and this is the command somebody reaches for to tell
 /// them apart — so it must not report the second as a database error.
-fn stats(db_path: &std::path::Path) -> Result<()> {
+fn stats(db_path: &std::path::Path, named: bool) -> Result<()> {
 	if !db_path.exists() {
-		// Worded to be true of both callers. With `--catalog` the reader named
-		// this file themselves and has not "failed to run setup"; without it,
-		// they have. "`setup` is what builds one" holds either way, where
-		// "nothing has been read into this project yet" would be a guess about
-		// which of the two they are.
-		anyhow::bail!("no label cache at {}\n  `vagcan setup` is what builds one.", db_path.display());
+		// Two callers, two different facts, and one message cannot be true of
+		// both. Without `--catalog` this is a project that was never built, and
+		// `missing` says how to build it. With `--catalog` the reader named this
+		// path themselves — `vagcan setup` writes into `~/.vagcan/data/` and will
+		// never create the file they typed, so offering it would be advice that
+		// cannot work.
+		if named {
+			anyhow::bail!("no label cache at {}", db_path.display());
+		}
+		anyhow::bail!(
+			crate::missing::NoLabelData::new("There is no label cache to count.")
+				.looked_for(db_path)
+				.to_string()
+		);
 	}
 	let counts = vag_data_db::row_counts(db_path)?;
 	println!("{}", db_path.display());

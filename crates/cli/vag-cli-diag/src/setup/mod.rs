@@ -44,7 +44,7 @@
 //! has been set up yet", one command away from the thing that caused it.
 //!
 //! So the refusal is an error, and it names the command line that needs no menu
-//! ([`crate::ui::menu`]'s `no_terminal`). A script doing `vagcan setup || …`
+//! ([`crate::ui::menu`]'s `menu_needs_a_terminal`). A script doing `vagcan setup || …`
 //! changes behaviour on upgrade, and changes it to the branch it should always
 //! have taken. `setup <PATH>` is unaffected and still works under `</dev/null`.
 //!
@@ -59,7 +59,6 @@
 pub mod source;
 pub mod vendor;
 
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -368,7 +367,7 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
 			return Ok(Some(candidate));
 		}
 	}
-	if !std::io::stdin().is_terminal() {
+	if !crate::ui::can_ask() {
 		return Ok(None);
 	}
 	println!(

@@ -158,7 +158,7 @@ pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<(
 	// so an empty default is a clear stop pointing at `vagcan setup` rather than
 	// a bare "the registry did not decode".
 	if !crate::faultnames::has_fault_labels(&root) {
-		anyhow::bail!(crate::missing::no_fault_labels(&root));
+		anyhow::bail!(crate::missing::cannot_name_faults(&root));
 	}
 	let mut namer = crate::faultnames::Namer::open(&root, &crate::datadir::resolve(iv_cache))?;
 	println!(

@@ -38,7 +38,7 @@
 //! deleted) should still be on the screen afterwards.
 
 use std::fmt::Write as _;
-use std::io::{IsTerminal, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
@@ -225,8 +225,8 @@ impl Chooser for Console {
 	fn choose(&mut self, level: &Level<'_>, choices: &[Choice], at: usize) -> Result<Decision> {
 		// Before raw mode, not after: switching a terminal that is not there is
 		// an errno, and this is the sentence that actually helps.
-		if !std::io::stdin().is_terminal() {
-			bail!(no_terminal(level.what, &self.instead));
+		if !super::can_ask() {
+			bail!(list_needs_a_terminal(level.what, &self.instead));
 		}
 		let mut at = at.min(choices.len().saturating_sub(1));
 		let mut out = std::io::stdout();
@@ -284,8 +284,8 @@ impl Chooser for Console {
 
 	fn confirm(&mut self, question: &str) -> Result<bool> {
 		// Asked outside raw mode, so the answer echoes and a backspace works.
-		if !std::io::stdin().is_terminal() {
-			bail!(no_terminal("file to delete", &self.instead));
+		if !super::can_ask() {
+			bail!(list_needs_a_terminal("file to delete", &self.instead));
 		}
 		let mut out = std::io::stdout();
 		write!(out, "{question}")?;
@@ -872,7 +872,13 @@ fn nothing_here(dir: &Path, level: &Level<'_>) -> String {
 ///
 /// A picker that blocks on a redirected stdin is a hang with no explanation, and
 /// the thing the person wanted is one argument away.
-fn no_terminal(what: &str, instead: &str) -> String {
+///
+/// Not [`menu`](crate::ui::menu)'s `menu_needs_a_terminal`, which says the same
+/// thing about a written-out menu and takes no `what`: a menu's options are the
+/// question, so there is nothing to name, where a listing is always a listing
+/// *of* something. Both were called `no_terminal` and read as one function; they
+/// are two. The predicate they share is [`can_ask`](crate::ui::can_ask).
+fn list_needs_a_terminal(what: &str, instead: &str) -> String {
 	format!(
 		"there is no terminal to choose a {what} at — stdin is redirected, so nobody would \
          see the list.\nName it on the command line instead:\n    {instead}"
@@ -1275,7 +1281,7 @@ mod tests {
 	#[test]
 	fn with_no_terminal_the_refusal_names_the_argument_to_pass_instead() {
 		// A prompt on a redirected stdin is a hang nobody can diagnose.
-		let why = no_terminal("session", "vagcan measure view PATH");
+		let why = list_needs_a_terminal("session", "vagcan measure view PATH");
 		assert!(why.contains("no terminal"), "{why}");
 		assert!(why.contains("vagcan measure view PATH"), "{why}");
 	}

@@ -297,12 +297,15 @@ fn current_in(projects: &Path, flag: Option<&str>, env: Option<&str>, covering: 
 		return Ok(Project { id: name, dir });
 	}
 	match list_in(projects).as_slice() {
-		// The existing "run `vagcan setup` first", reworded for a store that is
-		// now per car rather than one directory.
+		// "Run `vagcan setup` first", for a store that is now per car rather
+		// than one directory. The words are `missing`'s, not this module's:
+		// this is the same shortage `vcds names` and `faults` report, met one
+		// step earlier, and a reader who sees it here and then there must not
+		// be given two accounts of it.
 		[] => bail!(
-			"no car has been set up yet — there is nothing under {}.\n\n\
-			 Run `vagcan setup` and point it at a VCDS installation or an ODIS project.",
-			projects.display()
+			crate::missing::NoLabelData::new("No car has been set up yet.")
+				.looked_in(projects)
+				.to_string()
 		),
 		// One project is not a choice, so it is not asked about.
 		[only] => Ok(Project {

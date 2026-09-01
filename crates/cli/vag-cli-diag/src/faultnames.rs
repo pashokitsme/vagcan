@@ -18,7 +18,7 @@
 //! through five passes and this module is where that is kept.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -239,7 +239,7 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
 		"Opening them recovers the words behind the numbers above. It is a key search:\n\
          about three minutes each, once — the result is cached and every later run reads it."
 	);
-	if !std::io::stdin().is_terminal() {
+	if !crate::ui::can_ask() {
 		println!("\nTo do it:\n    vagcan vcds rod <file>   (once per file above)");
 		return Ok(());
 	}

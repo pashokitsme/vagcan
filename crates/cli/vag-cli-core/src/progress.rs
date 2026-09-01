@@ -71,6 +71,12 @@ impl Line {
 			step: 0,
 			width: 0,
 			drawn: false,
+			// **stderr**, and deliberately not the question
+			// [`crate::ui::can_ask`] asks. That one is "is there a person at
+			// stdin to answer a menu"; this is "may I draw a line and erase it
+			// again". They disagree routinely — `vagcan survey </dev/null`
+			// still deserves a spinner, and `vagcan survey 2>log` must not have
+			// one written into the file — so the two must not be merged.
 			tty: std::io::stderr().is_terminal(),
 			started: Instant::now(),
 		}

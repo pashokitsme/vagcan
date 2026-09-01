@@ -106,10 +106,9 @@ pub fn load_project(project: &crate::project::Project) -> anyhow::Result<LabelDb
 	let cache = project.cache();
 	anyhow::ensure!(
 		cache.is_file(),
-		"the project `{}` has no label cache at {}.\n\n\
-		 Run `vagcan setup` and point it at a VCDS installation or an ODIS project.",
-		project.id,
-		cache.display()
+		crate::missing::NoLabelData::new(format!("The project `{}` has no label cache.", project.id))
+			.looked_for(&cache)
+			.to_string()
 	);
 	vag_data_db::load_db(&cache).map_err(|e| anyhow::anyhow!("reading {}: {e}", cache.display()))
 }
