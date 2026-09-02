@@ -18,22 +18,60 @@ mod overview;
 
 use vag_cli_core::device::ADAPTER_BAUD;
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
-use vag_cli_diag::{anomaly, faults, labels, migrate, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
+use vag_cli_diag::{anomaly, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use vag_uds_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+use vag_uds_can::{IsoTpCan, SlcanMode};
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
-/// Serial speed to the adapter. slcan is ASCII over USB CDC, where the baud
-/// rate is ignored by the hardware — no reason to make anyone choose it.
+/// `--help`'s tour of the commands, built rather than written, because one line
+/// of it is not always there.
+///
+/// `measure` is a cargo feature, and this tour used to name it unconditionally:
+/// `cargo build --no-default-features` then produced a `--help` listing a
+/// subcommand the binary does not have, and typing the word it had just
+/// suggested answered `unrecognized subcommand`. A help text is a promise about
+/// what the binary in front of you does; the promise now comes from the same
+/// `cfg` the subcommand does.
+fn long_about() -> String {
+	format!(
+		"Read a VAG car over a USB-CAN adapter on the OBD-II port.\n\n\
+         Read-only: this tool never writes to a control unit.\n\n\
+         Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
+         and the adapter's termination jumper OFF.\n\n\
+         START HERE\n  \
+         vagcan setup              once, offline: read a VCDS install or an ODIS\n                            \
+         project for names and scalings. With no path given it asks\n                            \
+         which, and offers to download an installation.\n  \
+         vagcan devices            is the adapter connected?\n  \
+         vagcan info               which car is this?\n  \
+         vagcan units              which control units does it have?\n\n\
+         LOOK AT THE CAR\n  \
+         faults                    stored fault codes\n  \
+         units --identify 01       everything one unit says about itself\n  \
+         sensors                   the standard OBD-II readings\n\n\
+         WATCH IT LIVE\n  \
+         watch                     values from several units, chosen on screen{}\n\n\
+         THE WORKSHOP\n  \
+         dev ...                   build and prove the data the above runs on:\n                            \
+         the whole-car survey, the bus sniffer, your own channel\n                            \
+         names, and the offline work over recordings and over\n                            \
+         VCDS's files. `vagcan dev --help`.",
+		if cfg!(feature = "measure") {
+			"\n  measure                   time an acceleration run"
+		} else {
+			""
+		}
+	)
+}
 
 #[derive(Parser)]
 #[command(
@@ -42,29 +80,7 @@ use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 	about = "Read a VAG car (VW / Audi / Škoda / SEAT) over CAN. \
              Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND, termination OFF. \
              Start with `vagcan devices`.",
-	long_about = "Read a VAG car over a USB-CAN adapter on the OBD-II port.\n\n\
-                  Read-only: this tool never writes to a control unit.\n\n\
-                  Wiring: OBD-II pin 6 → CAN-H, pin 14 → CAN-L, pin 5 → GND,\n\
-                  and the adapter's termination jumper OFF.\n\n\
-                  START HERE\n  \
-                  vagcan setup              once, offline: read a VCDS install or an ODIS\n                            \
-                  project for names and scalings. With no path given it asks\n                            \
-                  which, and offers to download an installation.\n  \
-                  vagcan devices            is the adapter connected?\n  \
-                  vagcan info               which car is this?\n  \
-                  vagcan units              which control units does it have?\n\n\
-                  LOOK AT THE CAR\n  \
-                  faults                    stored fault codes\n  \
-                  units --identify 01       everything one unit says about itself\n  \
-                  sensors                   the standard OBD-II readings\n\n\
-                  WATCH IT LIVE\n  \
-                  watch                     values from several units, chosen on screen\n  \
-                  measure                   time an acceleration run\n\n\
-                  THE WORKSHOP\n  \
-                  dev ...                   build and prove the data the above runs on:\n                            \
-                  the whole-car survey, the bus sniffer, your own channel\n                            \
-                  names, and the offline work over recordings and over\n                            \
-                  VCDS's files. `vagcan dev --help`."
+	long_about = long_about()
 )]
 struct Cli {
 	/// Which car's data to read — a directory name under `~/.vagcan/data/`.
@@ -155,7 +171,12 @@ enum Command {
 		/// Refused by default: 256 reads of one control unit is a sweep, and a
 		/// unit that falls over at speed is a different event from one that
 		/// falls over on a driveway.
-		#[arg(long)]
+		///
+		/// `requires` because there is nothing for it to lift without a unit
+		/// named — and a flag that is accepted and ignored is the same defect
+		/// `--range` without `--blind` is refused for: a run that did less than
+		/// its flags said is how somebody concludes the tool is broken.
+		#[arg(long, requires = "identify")]
 		while_driving: bool,
 	},
 
@@ -473,23 +494,21 @@ async fn run() -> Result<ExitCode> {
 	if let Some(id) = &cli.project {
 		project::select(id);
 	}
-	// Before any command resolves a project, because this one moved a store out
-	// from under people who had already built one. It asks nothing and says
-	// nothing when there is nothing to do, which is every machine but the few
-	// that ran a build from the hours `projects/` existed.
-	migrate::relocate_projects()?;
 	// A setting that cannot be honoured is said once, at the top, rather than
 	// applied silently: names would then arrive in the vendor's wording and
 	// nothing on screen would connect that to the line somebody wrote.
 	if let Some(why) = config::language_complaint(&config::load()) {
 		eprintln!("{why}\n");
 	}
-	// After the migration above, because the overview reports what is under
-	// `~/.vagcan/data/` and a store still in the old place is not "nothing set
-	// up". It reads no more than that and opens no adapter.
+	// It reads no more than `~/.vagcan/data/` and opens no adapter.
 	let Some(command) = cli.command else {
-		print!("{}", overview::render(&overview::gather()));
-		return Ok(ExitCode::SUCCESS);
+		let facts = overview::gather();
+		print!("{}", overview::render(&facts));
+		return Ok(if overview::settled(&facts) {
+			ExitCode::SUCCESS
+		} else {
+			ExitCode::FAILURE
+		});
 	};
 	dispatch_or_offer(command).await
 }
@@ -556,6 +575,16 @@ async fn dispatch(command: Command) -> Result<()> {
 			identify: Some(Some(ecu)),
 			while_driving,
 		} => identification(device.as_deref(), &ecu, while_driving).await,
+		// `requires = "identify"` above stops `units --while-driving` at the
+		// parse, but `--identify` with no unit satisfies it and lands here,
+		// where the flag has nothing to lift: this arm asks each unit for the
+		// two fields that name it, which is not a sweep and is not gated on
+		// road speed. Refused rather than dropped, for the reason on the flag.
+		Command::Units { while_driving: true, .. } => bail!(
+			"`--while-driving` needs a unit: `--identify <unit>`. With no unit named, `units` asks each one \
+             for the two fields that name it — that is not a sweep, and nothing about it is gated \
+             on road speed."
+		),
 		Command::Units { device, identify, .. } => units(device.as_deref(), identify.is_some()).await,
 		Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
 		Command::Watch {
@@ -748,9 +777,7 @@ fn parse_ecu(text: &str) -> Result<UnitAddress> {
 
 /// Open the adapter and address one control unit over UDS.
 async fn open_ecu(device_path: &str, unit: UnitAddress) -> Result<AsyncUdsClient<IsoTpCan<vag_uds_can::SerialSlcan>>> {
-	let backend = SlcanBackend::open_mode(device_path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| device::open_failure(device_path))?;
+	let backend = device::open(device_path, ADAPTER_BAUD, SlcanMode::Normal).await?;
 	Ok(AsyncUdsClient::new(IsoTpCan::new(
 		backend,
 		vag_uds_transport::CanId::Standard(unit.request),
@@ -851,7 +878,7 @@ async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<S
 
 /// List the car's control units (see the `Units` subcommand docs).
 async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
-	use vag_uds_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+	use vag_uds_can::{IsoTpCan, SlcanMode};
 	use vag_uds_client::gateway;
 	use vag_uds_transport::CanId;
 
@@ -882,9 +909,7 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 	};
 
 	let path = device::resolve(device_arg)?;
-	let backend = SlcanBackend::open_mode(&path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| device::open_failure(&path))?;
+	let backend = device::open(&path, ADAPTER_BAUD, SlcanMode::Normal).await?;
 	let channel = IsoTpCan::new(
 		backend,
 		CanId::Standard(GATEWAY_REQUEST),
@@ -978,11 +1003,11 @@ fn glossary_command() -> Result<()> {
 	let seeded = glossary::seed(&project)?;
 	let language = config::language(&config::load());
 	println!(
-		"{} channel names in {}\n  {} already yours, {} added this run\n",
+		"{} channel names in {}\n  {} already yours, {} still blank\n",
 		seeded.total,
 		seeded.path.display(),
 		seeded.translated,
-		seeded.added
+		seeded.blank
 	);
 	println!(
 		"Write in the `{}` column and it wins over ODIS and VCDS wherever that \n         channel is shown. The `current` column is what it is called today and is \n         not read back. Change which column is used with `language` in {}.",
@@ -1002,9 +1027,7 @@ async fn identification(device_arg: Option<&str>, ecu_text: &str, while_driving:
 	let unit = parse_ecu(ecu_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
-	let mut backend = SlcanBackend::open_mode(&path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| device::open_failure(&path))?;
+	let mut backend = device::open(&path, ADAPTER_BAUD, SlcanMode::Normal).await?;
 	// 256 reads aimed at one control unit is a sweep, whatever the block they
 	// are in is called. This was the one sweep-shaped path in the tool with no
 	// road-speed check on it — `vagcan units --identify`, which anybody could run at

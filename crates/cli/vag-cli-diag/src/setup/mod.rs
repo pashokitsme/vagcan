@@ -397,7 +397,7 @@ fn locate(dir: &Path, known: &[&str], what: &str, suffix: &str) -> Result<Option
          {what} out of what is actually there:",
 		dir.display()
 	);
-	let mut chooser = crate::ui::picker::Console::new(format!(
+	let mut chooser = crate::ui::Console::new(format!(
 		"re-run `vagcan setup` from a terminal, or point it at a build\n\
          whose {what} is one of {known:?}"
 	));
@@ -501,7 +501,7 @@ enum Step {
 }
 
 pub fn run(opts: Options<'_>) -> Result<()> {
-	let mut io = crate::ui::menu::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
+	let mut io = crate::ui::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
 	run_with(&mut io, opts)
 }
 

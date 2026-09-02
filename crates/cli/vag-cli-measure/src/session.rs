@@ -36,7 +36,7 @@
 
 use std::collections::BTreeMap;
 
-use super::derive::{self, Start};
+use super::derive::{self, Start, median};
 use super::power::KMH_PER_MS;
 use super::types::{Seconds, States, Track};
 
@@ -419,13 +419,13 @@ impl Session {
 	/// loop ran would be a setting pretending to be a measurement.
 	pub fn hz(&self) -> Option<f64> {
 		let recent = self.cycles.len().checked_sub(CADENCE_CYCLES)?;
-		let median = median(&self.cycles[recent..]);
+		let median = median(&self.cycles[recent..])?;
 		(median > 0.0).then(|| 1.0 / median)
 	}
 
 	/// The median cycle over the whole session, for the file's `config` block.
 	pub fn cycle_median_s(&self) -> Option<Seconds> {
-		(!self.cycles.is_empty()).then(|| median(&self.cycles))
+		median(&self.cycles)
 	}
 
 	/// One poll cycle. Time is a parameter, which is what makes every behaviour
@@ -681,8 +681,8 @@ impl Session {
 		if self.degraded || self.cycles.len() < 2 * CADENCE_CYCLES {
 			return None;
 		}
-		let was = median(&self.cycles[..CADENCE_CYCLES]);
-		let now = median(&self.cycles[self.cycles.len() - CADENCE_CYCLES..]);
+		let was = median(&self.cycles[..CADENCE_CYCLES])?;
+		let now = median(&self.cycles[self.cycles.len() - CADENCE_CYCLES..])?;
 		if was <= 0.0 || now <= DEGRADED_CYCLE_FACTOR * was {
 			return None;
 		}
@@ -719,13 +719,6 @@ fn pass_start(track: &Track, from_ms: f64) -> Option<Seconds> {
 		}
 	}
 	at
-}
-
-/// The middle value, for a slice that is not empty.
-fn median(values: &[Seconds]) -> Seconds {
-	let mut sorted = values.to_vec();
-	sorted.sort_by(f64::total_cmp);
-	sorted[sorted.len() / 2]
 }
 
 #[cfg(test)]

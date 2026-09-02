@@ -64,6 +64,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::ui::menu::{Asker, Item};
+use vag_cli_core::project::allowed;
 
 /// The name an unnamed project gets.
 ///
@@ -75,13 +76,6 @@ const DEFAULT_ID: &str = "default";
 
 /// The most a project name may be. A directory name, not a sentence.
 const MAX_ID: usize = 64;
-
-/// The characters a project name may hold, besides letters and digits.
-///
-/// A project is a directory under `~/.vagcan/data/`, so its name is a
-/// filesystem name and the interesting question is which characters would make
-/// it something other than one child of that directory.
-const ID_EXTRAS: [char; 3] = ['-', '_', '.'];
 
 /// What an extracted ODIS project has in it that nothing else does.
 ///
@@ -163,6 +157,9 @@ impl Look {
 
 /// What the menu asks.
 const QUESTION: &str = "What should vagcan learn this car from?";
+
+/// What an empty line does at a directory question reached from [`QUESTION`].
+const BACK: &str = "goes back to the menu";
 
 /// The four ways in, the one that can finish the job first.
 ///
@@ -296,23 +293,37 @@ impl Choice {
 ///
 /// `None` means the person left without choosing, which is a successful,
 /// zero-exit outcome — the same rule `setup`'s download prompt already follows.
-/// An empty line at the directory question means the same thing, and so a
-/// redirected stdin (which takes every default, [`Asker::line`]) backs out
-/// rather than hanging.
+/// Only quitting the *menu* means that.
+///
+/// **The menu is a loop, because [`ask_for`] promises it is.** That question
+/// says "an empty line goes back", and it used to end the command instead —
+/// which is worst for the reader it is most for: somebody who took the
+/// recommended row, then found they have no ODIS project and wanted the row
+/// below it. Backing out of a directory question now lands on the menu it was
+/// reached from.
+///
+/// It cannot spin: [`Asker::ask`] has no default to fall back on. `Console`
+/// refuses outright without a terminal, and `Scripted` fails when the script
+/// runs out, so every asker leaves this loop rather than feeding it.
 pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<Choice>> {
 	if let Some(given) = preselected {
 		return Ok(Some(Choice::only(given_path(given)?)));
 	}
-	let Some(row) = io.ask(QUESTION, &options(), 0)? else {
-		return Ok(None);
-	};
-	match MENU.get(row).map(|(_, _, pick)| *pick) {
-		Some(Pick::OdisAndNames) => odis_and_names(io),
-		Some(Pick::Dir(look)) => Ok(ask_for(io, look)?.map(Choice::only)),
-		Some(Pick::Download) => Ok(Some(Choice::only(Source::DownloadVcds))),
-		// An asker that named a row outside the menu has named nothing. Nobody
-		// chose anything, which is the same answer as leaving.
-		None => Ok(None),
+	loop {
+		let Some(row) = io.ask(QUESTION, &options(), 0)? else {
+			return Ok(None);
+		};
+		let picked = match MENU.get(row).map(|(_, _, pick)| *pick) {
+			Some(Pick::OdisAndNames) => odis_and_names(io)?,
+			Some(Pick::Dir(look)) => ask_for(io, look, BACK)?.map(Choice::only),
+			Some(Pick::Download) => Some(Choice::only(Source::DownloadVcds)),
+			// An asker that named a row outside the menu has named nothing.
+			// Nobody chose anything, which is the same answer as leaving.
+			None => return Ok(None),
+		};
+		if picked.is_some() {
+			return Ok(picked);
+		}
 	}
 }
 
@@ -326,14 +337,14 @@ pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<C
 /// to be there.
 ///
 /// **Giving up on the second question is not giving up on the run.** An empty
-/// answer at the first question backs out of the whole thing, because nothing
-/// has been decided yet; abandoning the second lands on the ODIS project alone,
+/// answer at the first question backs out to the menu, because nothing has been
+/// decided yet; abandoning the second lands on the ODIS project alone,
 /// which is exactly what the row below this one would have produced. A project
 /// with structure and no wording reads and scales perfectly well — the channels
 /// simply keep the phrasing ODIS gives them — so a half-finished pair is a
 /// smaller result, never a failed `setup`.
 fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
-	let Some(source) = ask_for(io, Look::Odis)? else {
+	let Some(source) = ask_for(io, Look::Odis, BACK)? else {
 		return Ok(None);
 	};
 	// Quitting the second menu is the same answer as skipping it, and lands in
@@ -342,7 +353,7 @@ fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
 	// somebody who changed their mind needs to read.
 	let names = match io.ask(NAMES_QUESTION, &names_options(), 0)? {
 		Some(row) => match NAMES_MENU.get(row).map(|(_, _, wording)| *wording) {
-			Some(Wording::Point) => ask_for(io, Look::Vcds)?,
+			Some(Wording::Point) => ask_for(io, Look::Vcds, "skips this and keeps the ODIS wording")?,
 			Some(Wording::Download) => Some(Source::DownloadVcds),
 			// A row outside the menu names nothing, which is no wording either.
 			Some(Wording::Skip) | None => None,
@@ -363,6 +374,12 @@ fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
 /// Ask for the directory of a kind already chosen, until it is one or the
 /// person gives up.
 ///
+/// `back` finishes the sentence "an empty line …", and it is a parameter
+/// because the answer differs: a directory reached from the menu goes back to
+/// it ([`choose`] loops), while the wording folder is optional and skipping it
+/// carries the run on. One function saying two true things beats one sentence
+/// that is wrong at one of the two call sites.
+///
 /// Typed rather than picked, and that is a decision worth the sentence:
 /// [`crate::ui::picker::pick_path`] descends a *fixed* number of levels from a
 /// *fixed* root, which is right for `~/.vagcan/cars/<vin>/measures` and wrong
@@ -371,8 +388,8 @@ fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
 /// also already in the person's hands: every file manager copies one, and
 /// dropping a folder on a terminal pastes it. [`expand`] is what makes that
 /// paste work.
-fn ask_for(io: &mut impl Asker, want: Look) -> Result<Option<Source>> {
-	io.say("Drag the folder into this window, or paste its path. An empty line goes back.")?;
+fn ask_for(io: &mut impl Asker, want: Look, back: &str) -> Result<Option<Source>> {
+	io.say(&format!("Drag the folder into this window, or paste its path. An empty line {back}."))?;
 	loop {
 		let typed = io.line(want.question(), "")?;
 		if typed.trim().is_empty() {
@@ -764,11 +781,6 @@ fn why_not(id: &str) -> Option<String> {
 	})
 }
 
-/// Whether one character may be in a project name.
-fn allowed(c: char) -> bool {
-	c.is_ascii_alphanumeric() || ID_EXTRAS.contains(&c)
-}
-
 /// The nearest thing to `text` that could be a directory name.
 ///
 /// Everything a name may not hold becomes a `-`, runs collapse, and the ends
@@ -941,11 +953,22 @@ mod tests {
 	}
 
 	#[test]
-	fn leaving_the_first_question_empty_still_backs_out_of_the_whole_run() {
-		// Nothing has been decided yet, so there is nothing to keep.
-		let mut io = Scripted::new(vec![pair_row(), Answer::Type(String::new())]);
+	fn leaving_the_first_question_empty_goes_back_to_the_menu_it_came_from() {
+		// The whole point of A2: somebody who took the recommended row and then
+		// found they own no ODIS project gets the row below it, not an exit.
+		let here = tempfile::tempdir().unwrap();
+		let install = vcds(here.path());
+		let mut io = Scripted::new(vec![pair_row(), Answer::Type(String::new()), row(Look::Vcds), typed(&install)]);
+		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Vcds { dir: install })));
+		assert_eq!(io.seen.len(), 2, "the menu came back: {:?}", io.seen);
+		assert!(io.all_said().contains("goes back to the menu"), "and it said so: {:?}", io.said);
+	}
+
+	#[test]
+	fn quitting_the_menu_itself_is_what_still_backs_out_of_the_whole_run() {
+		// The loop needs one way out that is not a choice, and this is it.
+		let mut io = Scripted::new(vec![Answer::Quit]);
 		assert_eq!(choose(&mut io, None).unwrap(), None);
-		assert_eq!(io.seen.len(), 1, "the wording was never asked about: {:?}", io.seen);
 	}
 
 	#[test]
@@ -1012,9 +1035,10 @@ mod tests {
 	}
 
 	#[test]
-	fn an_empty_line_at_the_directory_is_never_mind_rather_than_an_error() {
-		let mut io = Scripted::new(vec![row(Look::Vcds), Answer::Type(String::new())]);
+	fn an_empty_line_at_the_directory_re_asks_the_menu_rather_than_leaving() {
+		let mut io = Scripted::new(vec![row(Look::Vcds), Answer::Type(String::new()), Answer::Quit]);
 		assert_eq!(choose(&mut io, None).unwrap(), None);
+		assert_eq!(io.seen.len(), 2, "it went back before anybody quit: {:?}", io.seen);
 	}
 
 	#[test]

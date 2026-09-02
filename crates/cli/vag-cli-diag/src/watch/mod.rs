@@ -959,6 +959,46 @@ fn chart_note(charted: &Charted) -> String {
 	note
 }
 
+/// Draw whichever screen is up.
+///
+/// **One four-arm match, where there were three.** A screen added to two copies
+/// and not the third is a screen that vanishes the moment a batch runs slow —
+/// the third copy is the mid-cycle repaint, which is exactly the one nobody
+/// looks at while adding a screen.
+fn paint<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+	terminal.draw(|f| match app.screen {
+		Screen::Live => draw_live(f, app),
+		Screen::Select => draw_select(f, app),
+		Screen::Series => draw_series(f, app),
+		Screen::Settings => draw_settings(f, app),
+	})?;
+	Ok(())
+}
+
+/// Take every key and mouse event already waiting, and none that is not.
+///
+/// `false` is `q`, and the caller must leave its own loop on it rather than
+/// only this drain: the poll loop asks three times per cycle — before the
+/// cycle, between batches, and while waiting out the period — and a quit that
+/// only ended the drain would cost a whole cycle before anything happened.
+///
+/// Zero timeout throughout, which is what makes it safe to call from all three:
+/// it never waits, so a caller that is timing something is not slowed by asking.
+fn drain_keys(app: &mut App) -> io::Result<bool> {
+	while event::poll(Duration::from_millis(0))? {
+		match event::read()? {
+			Event::Key(k) if k.kind == KeyEventKind::Press => {
+				if !on_key(app, k.code) {
+					return Ok(false);
+				}
+			}
+			Event::Mouse(m) => on_mouse(app, m),
+			_ => {}
+		}
+	}
+	Ok(true)
+}
+
 fn draw_live(frame: &mut Frame, app: &mut App) {
 	// Built before anything is drawn, because the chart is what decides how
 	// much of the screen the table gets.
@@ -1837,12 +1877,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 		);
 		app.cycles += 1;
 
-		terminal.draw(|f| match app.screen {
-			Screen::Live => draw_live(f, &mut app),
-			Screen::Select => draw_select(f, &mut app),
-			Screen::Series => draw_series(f, &mut app),
-			Screen::Settings => draw_settings(f, &mut app),
-		})?;
+		paint(&mut terminal, &mut app)?;
 
 		if event::poll(Duration::from_millis(50))? {
 			match event::read()? {
@@ -2213,7 +2248,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		view,
 	} = opts;
 	use std::io::Write as _;
-	use vag_uds_can::{SlcanBackend, SlcanBitrate, SlcanMode};
+	use vag_uds_can::SlcanMode;
 
 	// Argument checking first: the adapter is a single-user resource, and
 	// holding it open while failing on a typo blocks the next attempt. That
@@ -2235,9 +2270,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		None => None,
 	};
 
-	let mut adapter = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| crate::device::open_failure(device_path))?;
+	let mut adapter = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
 
 	// Which car this is, so its own survey can be found. One identifier read,
 	// and a car that will not say simply has no cache — everything below still
@@ -2419,30 +2452,12 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 	})?;
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 	let result = loop {
-		terminal.draw(|f| match app.screen {
-			Screen::Live => draw_live(f, &mut app),
-			Screen::Select => draw_select(f, &mut app),
-			Screen::Series => draw_series(f, &mut app),
-			Screen::Settings => draw_settings(f, &mut app),
-		})?;
+		paint(&mut terminal, &mut app)?;
 
-		// Drain the keyboard without blocking the poll loop. `q` here has to
-		// leave the loop entirely, not just this drain — otherwise the key is
-		// swallowed and a whole poll cycle runs before the quit takes effect.
-		let mut quit = false;
-		while event::poll(Duration::from_millis(0))? {
-			match event::read()? {
-				Event::Key(k) if k.kind == KeyEventKind::Press => {
-					if !on_key(&mut app, k.code) {
-						quit = true;
-						break;
-					}
-				}
-				Event::Mouse(m) => on_mouse(&mut app, m),
-				_ => {}
-			}
-		}
-		if quit {
+		// `q` here has to leave the loop entirely, not just the drain —
+		// otherwise the key is swallowed and a whole poll cycle runs before the
+		// quit takes effect.
+		if !drain_keys(&mut app)? {
 			break Ok(());
 		}
 
@@ -2452,30 +2467,15 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 			// Between batches, not only between cycles: a cycle that spans
 			// several units takes as long as their timeouts add up to, and a
 			// keypress should not wait for that.
-			while event::poll(Duration::from_millis(0))? {
-				match event::read()? {
-					Event::Key(k) if k.kind == KeyEventKind::Press => {
-						if !on_key(&mut app, k.code) {
-							quit_mid_cycle = true;
-						}
-					}
-					Event::Mouse(m) => on_mouse(&mut app, m),
-					_ => {}
-				}
-			}
-			if quit_mid_cycle {
+			if !drain_keys(&mut app)? {
+				quit_mid_cycle = true;
 				break;
 			}
 			// Redraw before the request, so the footer says which unit is
 			// being waited on. A batch can take as long as that unit's
 			// deadline, and a still screen during it reads as a hang.
 			app.waiting = app.slow.contains(&batch.request).then_some(batch.request);
-			terminal.draw(|f| match app.screen {
-				Screen::Live => draw_live(f, &mut app),
-				Screen::Select => draw_select(f, &mut app),
-				Screen::Series => draw_series(f, &mut app),
-				Screen::Settings => draw_settings(f, &mut app),
-			})?;
+			paint(&mut terminal, &mut app)?;
 			let asked = Instant::now();
 			poll_batch(&mut app, &mut backend, &batch).await;
 			app.waiting = None;
@@ -2504,15 +2504,10 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 				}
 				continue;
 			}
-			match event::read()? {
-				Event::Key(k) if k.kind == KeyEventKind::Press => {
-					if !on_key(&mut app, k.code) {
-						quit = true;
-						break;
-					}
-				}
-				Event::Mouse(m) => on_mouse(&mut app, m),
-				_ => {}
+			// Something is waiting; take it and everything behind it.
+			if !drain_keys(&mut app)? {
+				quit = true;
+				break;
 			}
 		}
 		if quit {

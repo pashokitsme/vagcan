@@ -108,6 +108,34 @@ pub struct CarData {
 	pub proven_catalogs: usize,
 }
 
+/// Whether the screen [`render`] prints is an answer or an admission, which is
+/// what the bare `vagcan` exits on.
+///
+/// **Only [`Cars`] decides it, and only two of its states.** The exit code has
+/// to agree with the rest of the tool: `vagcan --project NOPE units` exits 1, so
+/// `vagcan --project NOPE` printing "not what this run names" and exiting 0 was
+/// the overview disagreeing with every command it summarises.
+///
+/// - [`Cars::Misnamed`] fails. Something *named* a project and the name resolved
+///   to nothing; an instruction that could not be honoured is a failure wherever
+///   else it is met, and this screen is not the exception.
+/// - [`Cars::Unknown`] fails too, and that is the call worth writing down: "I
+///   could not read `~/.vagcan/data/`" is not a state of the machine, it is a
+///   failure to establish one. The permission bit or unmounted home behind it
+///   will fail the next command as well, so reporting success here would only
+///   move the surprise one command later.
+/// - [`Cars::None`] and [`Cars::Ambiguous`] succeed: "nothing is set up yet" and
+///   "several, name one" are true, complete answers to a question nobody
+///   qualified, and a first run on a clean machine must not exit 1.
+///
+/// [`Adapters`] never decides it, including [`Adapters::Unknown`]. Nothing asked
+/// about adapters — the screen volunteers them — and failing the whole run
+/// because a USB port node could not be enumerated would report the tool broken
+/// over something the reader did not ask for and may not need.
+pub fn settled(facts: &Facts) -> bool {
+	!matches!(facts.cars, Cars::Misnamed { .. } | Cars::Unknown(_))
+}
+
 /// Everything the overview knows, gathered without opening the adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
@@ -738,6 +766,37 @@ mod tests {
 		assert!(!text.contains("More than one car is set up"), "{text}");
 		// Nothing on the car is offered until it resolves.
 		assert!(!text.contains("vagcan info"), "{text}");
+	}
+
+	#[test]
+	fn the_exit_code_agrees_with_the_command_the_screen_summarises() {
+		// `vagcan --project NOPE units` exits 1; the overview printing "not what
+		// this run names" and exiting 0 was this screen contradicting it.
+		let misnamed = Cars::Misnamed {
+			ids: vec!["SK37X".to_string()],
+			why: "--project names the project \"NOPE\"".to_string(),
+		};
+		for cars in [misnamed, Cars::Unknown(unreadable())] {
+			assert!(
+				!settled(&Facts {
+					adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
+					cars: cars.clone(),
+				}),
+				"an admission must not exit 0: {cars:?}"
+			);
+		}
+		// A clean machine and an unqualified ambiguity are answers, not failures
+		// — a first run must not exit 1 — and an unlistable USB stack is not
+		// what anybody asked about.
+		for cars in [Cars::None, Cars::Ambiguous(vec!["A".to_string(), "B".to_string()]), Cars::One(car())] {
+			assert!(
+				settled(&Facts {
+					adapters: Adapters::Unknown(unlisted()),
+					cars: cars.clone(),
+				}),
+				"a true answer must exit 0: {cars:?}"
+			);
+		}
 	}
 
 	#[test]

@@ -11,8 +11,8 @@
 /// and three crates open that cable now.
 pub const ADAPTER_BAUD: u32 = 115_200;
 
-use anyhow::{Result, bail};
-use vag_uds_can::{AdapterInfo, list_adapters};
+use anyhow::{Context as _, Result, bail};
+use vag_uds_can::{AdapterInfo, SerialSlcan, SlcanBackend, SlcanBitrate, SlcanMode, list_adapters};
 
 /// Resolve the adapter to open.
 ///
@@ -81,6 +81,22 @@ pub fn render_list(found: &[AdapterInfo]) -> String {
 	out.push_str("\n* = recognised CAN adapter. Pass one with --device, or omit --device when\n");
 	out.push_str("  only one is connected.");
 	out
+}
+
+/// Open the adapter, saying what to do when it will not open.
+///
+/// **Every command that touches the car opened it with these same three lines**
+/// — eight of them, each naming the bitrate and the mode and each appending the
+/// same context — and the bitrate is not a preference anybody was choosing
+/// between: VW's diagnostic CAN is 500 kbit/s (ISO 15765-4), so a site free to
+/// spell it differently is a site free to spell it wrong.
+///
+/// `mode` is the one thing that genuinely varies: `sniff --listen` needs
+/// `Silent`, which is the whole point of it, and everything else is `Normal`.
+pub async fn open(path: &str, baud: u32, mode: SlcanMode) -> Result<SerialSlcan> {
+	SlcanBackend::open_mode(path, baud, SlcanBitrate::Rate500k, mode)
+		.await
+		.with_context(|| open_failure(path))
 }
 
 /// What to say when the adapter will not open.

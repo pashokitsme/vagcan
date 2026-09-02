@@ -110,6 +110,43 @@ impl Guard<'_> {
 	}
 }
 
+/// Read one identifier, count what came back, report it, and say whether the
+/// sweep must stop.
+///
+/// **Both sweeps do exactly this, and each had its own copy.** What the copies
+/// held is a *classification* — which UDS answer is a hit, which is the ordinary
+/// refusal an unimplemented identifier gives, and which is a failure worth
+/// counting as one — and two copies of a classification is two sets of numbers
+/// that can disagree about the same car with nothing on screen saying which
+/// sweep you were on.
+///
+/// `true` means [`anomaly::Monitor`] saw the unit change under the sweep and the
+/// caller must return the statistics gathered so far. The monitor is asked
+/// *after* the hit is reported, so an interrupted sweep keeps the identifier
+/// that was being read when it stopped.
+async fn read_one<T: AsyncIsoTpTransport, F: FnMut(&DidHit) -> std::io::Result<()>>(
+	uds: &mut AsyncUdsClient<T>,
+	did: u16,
+	stats: &mut ScanStats,
+	guard: &mut Guard<'_>,
+	on_hit: &mut F,
+) -> std::io::Result<bool> {
+	stats.asked += 1;
+	let result = uds.read_data_by_identifier(did).await;
+	let answer = anomaly::Answer::of(&result);
+	match result {
+		Ok(data) => {
+			stats.hits += 1;
+			on_hit(&DidHit { did, data })?;
+		}
+		// A refusal is the normal answer for an identifier the ECU does not
+		// implement — that is what the sweep is measuring.
+		Err(UdsError::NegativeResponse { .. }) => stats.refused += 1,
+		Err(_) => stats.failed += 1,
+	}
+	Ok(guard.monitor.saw(did, answer).is_some())
+}
+
 /// Sweep `ranges`, calling `on_hit` for every identifier that answers.
 ///
 /// `on_hit` is invoked as results arrive rather than at the end, so an
@@ -142,22 +179,7 @@ where
 			if stats.asked > 0 && stats.asked % anomaly::WITNESS_EVERY == 0 && guard.check(uds).await {
 				return Ok(stats);
 			}
-			stats.asked += 1;
-			let result = uds.read_data_by_identifier(did).await;
-			let answer = anomaly::Answer::of(&result);
-			match result {
-				Ok(data) => {
-					stats.hits += 1;
-					on_hit(&DidHit { did, data })?;
-				}
-				// A refusal is the normal answer for an identifier the ECU
-				// does not implement — that is what the sweep is measuring.
-				Err(UdsError::NegativeResponse { .. }) => stats.refused += 1,
-				Err(_) => stats.failed += 1,
-			}
-			// Judged after the hit is reported, so an interrupted sweep keeps
-			// the identifier that was being read when it stopped.
-			if guard.monitor.saw(did, answer).is_some() {
+			if read_one(uds, did, &mut stats, guard, &mut on_hit).await? {
 				return Ok(stats);
 			}
 			if !delay.is_zero() {
@@ -231,18 +253,7 @@ where
 			return Ok(stats);
 		}
 		if first == last {
-			stats.asked += 1;
-			let result = uds.read_data_by_identifier(first).await;
-			let answer = anomaly::Answer::of(&result);
-			match result {
-				Ok(data) => {
-					stats.hits += 1;
-					on_hit(&DidHit { did: first, data })?;
-				}
-				Err(UdsError::NegativeResponse { .. }) => stats.refused += 1,
-				Err(_) => stats.failed += 1,
-			}
-			if guard.monitor.saw(first, answer).is_some() {
+			if read_one(uds, first, &mut stats, guard, &mut on_hit).await? {
 				return Ok(stats);
 			}
 			continue;

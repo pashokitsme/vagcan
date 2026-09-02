@@ -35,7 +35,7 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use vag_uds_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+use vag_uds_can::{IsoTpCan, SlcanMode};
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::uds::UdsError;
 use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
@@ -200,13 +200,7 @@ fn dids_of(line: &serde_json::Value) -> std::collections::BTreeMap<u16, String> 
 pub fn diff(before: &str, after: &str) -> Vec<(u16, u16, String, String)> {
 	let read = |text: &str| {
 		let mut units: std::collections::BTreeMap<u16, std::collections::BTreeMap<u16, String>> = std::collections::BTreeMap::new();
-		for line in text.lines().filter(|l| !l.trim().is_empty()) {
-			let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-				continue;
-			};
-			let Some(request) = value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-				continue;
-			};
+		for (request, value) in vag_cli_core::plan::survey_units(text) {
 			units.insert(request, dids_of(&value));
 		}
 		units
@@ -398,25 +392,12 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 	let blind_ranges = crate::declared::blind_ranges(range, blind.is_some(), SURVEY_RANGES)?;
 	// Which units may be swept blind — named one at a time, never "all".
 	let blind_units: std::collections::BTreeSet<u16> = match blind {
-		Some(spec) => vag_uds_client::address::parse_list(spec)
-			.map_err(|e| anyhow::anyhow!("--blind: {e}"))?
-			.iter()
-			.map(|u| u.request)
-			.collect(),
+		Some(spec) => crate::declared::unit_list("--blind", spec)?.into_iter().collect(),
 		None => Default::default(),
 	};
 	// An explicit list skips the gateway read, so one unit can be re-run
 	// without the rest.
-	let requested = match only {
-		Some(spec) => Some(
-			vag_uds_client::address::parse_list(spec)
-				.map_err(|e| anyhow::anyhow!("--only: {e}"))?
-				.iter()
-				.map(|u| u.request)
-				.collect::<Vec<_>>(),
-		),
-		None => None,
-	};
+	let requested = only.map(|spec| crate::declared::unit_list("--only", spec)).transpose()?;
 	let mut sink = match out {
 		Some(path) => {
 			let file = std::fs::File::create(path).with_context(|| format!("creating {path:?}"))?;
@@ -425,9 +406,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		None => None,
 	};
 
-	let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| crate::device::open_failure(device_path))?;
+	let mut backend = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.
@@ -592,10 +571,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		if ask.is_empty() {
 			progress.finish();
 			println!("{}", report.summary());
-			println!(
-				"{}",
-				crate::declared::no_source_notice(&address.label(), &format!("vagcan dev survey --only {0} --blind {0}", address.label()))
-			);
+			println!("{}", crate::declared::no_source_notice(&address.label()));
 			backend = uds.into_transport().into_backend();
 			reports.push(report);
 			continue;

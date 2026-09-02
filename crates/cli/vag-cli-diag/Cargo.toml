@@ -11,20 +11,21 @@ rust-version.workspace = true
 vag-cli-core = { path = "../vag-cli-core" }
 clap = { version = "4", features = ["derive"] }
 vag-uds-client = { path = "../../uds/vag-uds-client" }
-vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
+vag-uds-transport = { path = "../../uds/vag-uds-transport" }
 vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
 anyhow = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde_json.workspace = true
-toml_edit.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
 
 [dev-dependencies]
+# `MockAsyncTransport` and friends: used only under `#[cfg(test)]`, so the
+# feature that carries them is asked for only when tests are being built.
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
 vag-cli-core = { path = "../vag-cli-core", features = ["test-util"] }
 tempfile = "3"

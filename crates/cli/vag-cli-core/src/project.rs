@@ -449,9 +449,13 @@ pub fn folder_name(id: &str) -> Result<String> {
 	Ok(id.to_owned())
 }
 
-/// Whether one character may be in a project name. Matches
-/// `setup::source`'s rule, which is the interactive half of the same question.
-fn allowed(c: char) -> bool {
+/// Whether one character may be in a project name.
+///
+/// Public because `setup::source` asks the same question interactively and used
+/// to carry its own copy — with the doc comment here saying the two "match",
+/// which is a promise a comment cannot keep. One name is legal or it is not,
+/// and the command line and the menu must not be able to disagree about which.
+pub fn allowed(c: char) -> bool {
 	c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
 }
 

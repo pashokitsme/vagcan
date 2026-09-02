@@ -91,72 +91,6 @@ impl Report {
 	}
 }
 
-/// Move projects out of `~/.vagcan/projects/` and into `~/.vagcan/data/`.
-///
-/// **A second, smaller move, and one this project inflicted on itself.** The
-/// store lived at `projects/<id>/` for exactly as long as it took the owner to
-/// say the directory should be `data/`. A build that ran before the rename left
-/// a real project — an 88 MB cache, a names file, possibly proven rows — under a
-/// parent nothing looks in any more, and the next command reports that no car
-/// has been set up.
-///
-/// Unlike [`run`] this asks nothing and reports nothing when there is nothing to
-/// do. There is no question to ask: the project keeps its own name, only its
-/// parent changes, so there is no car it could be filed under by mistake.
-///
-/// `rename` rather than copy-verify-remove, deliberately, and it is the safer of
-/// the two here: within one filesystem it is atomic, so the directory is either
-/// at the old path or the new one and never half at both. A destination that
-/// already exists is left alone rather than merged — two directories of one name
-/// is a state a person has to look at, not one this should resolve by guessing.
-pub fn relocate_projects() -> Result<()> {
-	let vagcan = crate::datadir::vagcan_dir()?;
-	relocate_in(&vagcan.join("projects"), &crate::datadir::projects_dir()?)
-}
-
-/// The rule behind [`relocate_projects`], with both parents passed in.
-fn relocate_in(from: &Path, to: &Path) -> Result<()> {
-	let Ok(entries) = std::fs::read_dir(from) else {
-		// No such directory: every machine that never ran a build from the few
-		// hours the old name existed.
-		return Ok(());
-	};
-	let mut moved = 0usize;
-	for entry in entries.flatten() {
-		let path = entry.path();
-		if !path.is_dir() {
-			continue;
-		}
-		let Some(name) = entry.file_name().into_string().ok().filter(|n| crate::project::folder_name(n).is_ok()) else {
-			continue;
-		};
-		let target = to.join(&name);
-		if target.exists() {
-			// Both exist. Saying so and doing nothing is the only honest move:
-			// merging them could put two builds' rows in one cache, and picking
-			// one would discard the other's proven rows.
-			eprintln!(
-				"both {} and {} exist — leaving them alone; the one to keep is yours to choose",
-				path.display(),
-				target.display()
-			);
-			continue;
-		}
-		std::fs::create_dir_all(to).with_context(|| format!("creating {}", to.display()))?;
-		std::fs::rename(&path, &target).with_context(|| format!("moving {} to {}", path.display(), target.display()))?;
-		moved += 1;
-	}
-	if moved > 0 {
-		// Said once, because a person who upgrades and finds their car under a
-		// new path deserves to know why — and the path is last, since its
-		// length is not knowable when the sentence is written.
-		eprintln!("moved {moved} project(s) into {}", to.display());
-	}
-	// Only if it is empty, and `remove_dir` failing is the check.
-	let _ = std::fs::remove_dir(from);
-	Ok(())
-}
-
 /// The old layout, if there is still anything in it worth moving.
 ///
 /// **Keyed on `extracted`/`measured`, never on `data/` existing** (spec §6).
@@ -582,49 +516,6 @@ mod tests {
 		std::fs::remove_file(old.measured.join("04E-906-027-AH.json")).unwrap();
 		assert_eq!(old.proven(), 0);
 		assert!(old.files() > 0, "there is still plenty to move, just nothing unrepeatable");
-	}
-
-	#[test]
-	fn a_project_left_under_the_old_parent_is_moved_rather_than_orphaned() {
-		// The rename from `projects/` to `data/` stranded a real project — an
-		// 88 MB cache and proven rows — under a parent nothing looks in, and
-		// the next command reported that no car had been set up.
-		let here = tempfile::tempdir().unwrap();
-		let (from, to) = (here.path().join("projects"), here.path().join("data"));
-		std::fs::create_dir_all(from.join("SK37X").join("measurements")).unwrap();
-		std::fs::write(from.join("SK37X").join("cache.sqlite"), b"the cache").unwrap();
-		std::fs::write(from.join("SK37X").join("measurements").join("04E.json"), b"proven").unwrap();
-
-		relocate_in(&from, &to).unwrap();
-		assert_eq!(std::fs::read(to.join("SK37X").join("cache.sqlite")).unwrap(), b"the cache");
-		assert_eq!(std::fs::read(to.join("SK37X").join("measurements").join("04E.json")).unwrap(), b"proven");
-		assert!(!from.exists(), "the empty old parent is tidied away");
-		// And a second run has nothing to do.
-		relocate_in(&from, &to).unwrap();
-		assert!(to.join("SK37X").is_dir());
-	}
-
-	#[test]
-	fn a_project_that_exists_under_both_parents_is_left_for_a_person_to_settle() {
-		// Merging could put two builds' rows in one cache; picking one would
-		// discard the other's proven rows. Neither is this command's to decide.
-		let here = tempfile::tempdir().unwrap();
-		let (from, to) = (here.path().join("projects"), here.path().join("data"));
-		std::fs::create_dir_all(from.join("SK37X")).unwrap();
-		std::fs::create_dir_all(to.join("SK37X")).unwrap();
-		std::fs::write(from.join("SK37X").join("cache.sqlite"), b"old").unwrap();
-		std::fs::write(to.join("SK37X").join("cache.sqlite"), b"new").unwrap();
-
-		relocate_in(&from, &to).unwrap();
-		assert_eq!(std::fs::read(from.join("SK37X").join("cache.sqlite")).unwrap(), b"old");
-		assert_eq!(std::fs::read(to.join("SK37X").join("cache.sqlite")).unwrap(), b"new");
-	}
-
-	#[test]
-	fn a_machine_that_never_had_the_old_parent_is_untouched() {
-		let here = tempfile::tempdir().unwrap();
-		relocate_in(&here.path().join("projects"), &here.path().join("data")).unwrap();
-		assert!(!here.path().join("data").exists(), "it created a directory for nothing");
 	}
 
 	#[test]

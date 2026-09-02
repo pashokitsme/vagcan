@@ -20,7 +20,7 @@
 //! `0x14`, which the client's allowlist rejects.
 
 use anyhow::{Context, Result};
-use vag_uds_can::{IsoTpCan, SlcanBackend, SlcanBitrate, SlcanMode};
+use vag_uds_can::{IsoTpCan, SlcanMode};
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::dtc::{CarTime, FaultContext, UnitStamp};
 use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
@@ -197,7 +197,7 @@ pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<(
 				.flatten()
 				.find(|f| f["did"].as_str() == Some(&format!("{did:04X}")))
 				.and_then(|f| f["data"].as_str())
-				.and_then(hex_bytes)
+				.and_then(vag_cli_core::plan::hex_bytes)
 				.map(|b| ident_text(&b))
 				.unwrap_or_default()
 		};
@@ -237,18 +237,8 @@ pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<(
 }
 
 fn parse_code(text: &str) -> Option<[u8; 3]> {
-	let bytes = hex_bytes(text)?;
+	let bytes = vag_cli_core::plan::hex_bytes(text)?;
 	(bytes.len() == 3).then(|| [bytes[0], bytes[1], bytes[2]])
-}
-
-fn hex_bytes(text: &str) -> Option<Vec<u8>> {
-	(text.len() % 2 == 0)
-		.then(|| {
-			(0..text.len() / 2)
-				.map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok())
-				.collect::<Option<Vec<u8>>>()
-		})
-		.flatten()
 }
 
 /// Read faults from the car (see the module docs).
@@ -279,20 +269,9 @@ pub async fn run(
 	} else {
 		None
 	};
-	let requested = match only {
-		Some(spec) => Some(
-			vag_uds_client::address::parse_list(spec)
-				.map_err(|e| anyhow::anyhow!("--ecu: {e}"))?
-				.iter()
-				.map(|u| u.request)
-				.collect::<Vec<_>>(),
-		),
-		None => None,
-	};
+	let requested = only.map(|spec| crate::declared::unit_list("--ecu", spec)).transpose()?;
 
-	let mut backend = SlcanBackend::open_mode(device_path, baud, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| crate::device::open_failure(device_path))?;
+	let mut backend = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.

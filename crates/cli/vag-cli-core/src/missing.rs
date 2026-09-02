@@ -42,9 +42,12 @@ pub const VCDS_DOWNLOAD: &str = "https://www.ross-tech.com/vcds/download/";
 
 /// The three commands that turn raw bytes into proven numbers, in order.
 ///
-/// Quoted verbatim by every message about a missing catalog, so that a reader
-/// who meets the shortage twice — once in `measure`, once in `watch` — is not
-/// left wondering whether the two are the same path.
+/// Quoted verbatim by every message about a missing catalog — [`no_catalog`],
+/// which is what `watch` reports, and `vag_cli_measure::messages`, which is what
+/// `measure` reports — so that a reader who meets the shortage twice is not left
+/// wondering whether the two are the same path. `measure` genuinely did not
+/// quote this until it was made to; the doc claiming otherwise is how the two
+/// wordings drifted to five commands and three without anybody noticing.
 pub fn calibration_path() -> &'static str {
 	"    vagcan dev survey                    once, parked: what every unit answers\n    \
      vagcan watch --out drive.csv     then drive, with the values on screen\n    \

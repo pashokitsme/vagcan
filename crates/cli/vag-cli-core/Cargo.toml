@@ -17,12 +17,11 @@ test-util = []
 
 [dependencies]
 vag-uds-client = { path = "../../uds/vag-uds-client" }
-vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
+vag-uds-transport = { path = "../../uds/vag-uds-transport" }
 vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde_json.workspace = true

@@ -24,10 +24,9 @@ vag-cli-core = { path = "../vag-cli-core" }
 vag-cli-diag = { path = "../vag-cli-diag" }
 vag-cli-measure = { path = "../vag-cli-measure", optional = true }
 vag-uds-client = { path = "../../uds/vag-uds-client" }
-vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
+vag-uds-transport = { path = "../../uds/vag-uds-transport" }
 vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-data-labels = { path = "../../data/vag-data-labels" }
-vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 # SQLite cache over the label files: parse the VCDS install once, load it back
 # in milliseconds on every later run.
 vag-data-db = { path = "../../data/vag-data-db" }
@@ -42,16 +41,6 @@ tokio = { workspace = true, features = [
 ] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-# Local-time conversion for aligning a capture against a VCDS log.
-chrono = { version = "0.4", default-features = false, features = [
-  "clock",
-  "std",
-] }
-serde_json.workspace = true
-toml_edit.workspace = true
-ratatui = "0.29"
-crossterm = "0.28"
-dirs = "6"
 
 [dev-dependencies]
 # Synthetic catalog fixtures for the poll-scheduler tests write to a temp dir,

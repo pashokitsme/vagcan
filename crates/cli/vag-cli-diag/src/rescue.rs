@@ -94,7 +94,7 @@ fn offerable(err: &anyhow::Error, may_ask: bool) -> bool {
 /// default silently on a pipe, and a silent default is not the refusal this
 /// path owes a script.
 pub fn offer(archive_base: &str) -> Result<bool> {
-	let mut io = crate::ui::menu::Console::new(INSTEAD);
+	let mut io = crate::ui::Console::new(INSTEAD);
 	if !asked(&mut io)? {
 		return Ok(false);
 	}
@@ -115,12 +115,19 @@ fn asked(io: &mut impl Asker) -> Result<bool> {
 	Ok(matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
-/// Fetch an installation and read it, asking nothing further.
+/// Fetch an installation and read it, asking only what `setup` cannot answer.
 ///
 /// The whole of `setup`, not a piece of it: the download is only how an
 /// installation is obtained, and everything after it — the copy, the label
 /// cache, the names, the `.rod` keys, the project it all lands in — is what the
 /// command that failed was actually short of.
+///
+/// **Which is why it is not silent, and this used to say it was.** `setup` still
+/// reaches [`crate::setup::source::project_id`], which asks what the project
+/// should be called and offers a default made from the folder — one question,
+/// answered by pressing Enter. Nothing here can answer it instead: the name is
+/// the reader's, and a run that invented one would leave them with a directory
+/// they did not choose and no line telling them so.
 ///
 /// `refresh` is false. This runs because something was *missing*; redoing work
 /// already on disk is a different request, and `vagcan setup --refresh` is

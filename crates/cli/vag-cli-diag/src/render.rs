@@ -49,10 +49,12 @@ fn render_ecu_section(label: &str, id: &EcuIdentity) -> String {
 	)
 }
 
-/// Render a [`CableIdentity`] into the multi-line block `vagcan doctor`
-/// prints: the firmware string plus the raw identify payload as hex.
 /// What to print when a control unit answers nothing at all.
-fn nothing_answered() -> String {
+///
+/// The three sites that print it are three commands that opened the port, sent
+/// a request and heard silence; the checklist is the same for all three and is
+/// in the order somebody standing at a car can work through it.
+pub fn render_nothing_answered() -> String {
 	"The car did not answer.\n\n\
      Check, in this order:\n  \
      - the ignition is on\n  \
@@ -62,11 +64,6 @@ fn nothing_answered() -> String {
      Note that a silent bus is normal here: this platform's diagnostic line carries almost \
      no traffic until something queries it."
 		.to_string()
-}
-
-/// Public wrapper (see [`nothing_answered`]).
-pub fn render_nothing_answered() -> String {
-	nothing_answered()
 }
 
 /// The noun for a count: `1 change`, `2 changes`.
@@ -337,7 +334,7 @@ mod tests {
 
 	#[test]
 	fn the_silence_message_names_the_checks_in_order() {
-		let text = nothing_answered();
+		let text = render_nothing_answered();
 		assert!(text.contains("ignition"), "{text}");
 		assert!(text.contains("pin 6"), "{text}");
 		assert!(text.contains("vagcan devices"), "{text}");

@@ -163,7 +163,7 @@ pub fn seed(project: &crate::project::Project) -> anyhow::Result<Seeded> {
 			rows.entry(id).or_default().insert(language, name);
 		}
 	}
-	let before = rows.len();
+	let translated = rows.len();
 
 	// Everything the project can name, whether or not it is written yet.
 	for (id, name) in vag_data_db::text_ids(&project.cache()).unwrap_or_default() {
@@ -187,8 +187,8 @@ pub fn seed(project: &crate::project::Project) -> anyhow::Result<Seeded> {
 	Ok(Seeded {
 		path,
 		total: table.len(),
-		added: table.len().saturating_sub(before),
-		translated: before,
+		blank: table.len().saturating_sub(translated),
+		translated,
 	})
 }
 
@@ -197,9 +197,11 @@ pub struct Seeded {
 	pub path: PathBuf,
 	/// Lines in the file afterwards.
 	pub total: usize,
-	/// Lines this run added.
-	pub added: usize,
-	/// Lines that already carried at least one translation.
+	/// Lines still waiting for a translation. **Not "added this run"** — a
+	/// re-run of an unchanged file reports the same number, because that is
+	/// what it counts: the work left, not the work just done.
+	pub blank: usize,
+	/// Lines that already carry at least one translation.
 	pub translated: usize,
 }
 

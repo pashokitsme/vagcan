@@ -552,7 +552,7 @@ fn gear_number(label: &str) -> Option<f64> {
 /// `None` on an empty series: a run with no fits has no noise to speak of and no
 /// shift to report either.
 fn noise_floor(accel: &[Slope]) -> Option<f64> {
-	median(accel.iter().map(|s| s.sigma).collect())
+	median(&accel.iter().map(|s| s.sigma).collect::<Vec<_>>())
 }
 
 /// The 1σ this session puts on a shift's speed deficit, `σ_a·√(2·W·pad)`.
@@ -597,12 +597,15 @@ fn steady_mean(t: &[Seconds], v: &[f64], from: Seconds, to: Seconds, floor: f64)
 
 /// The middle value of a set, or `None` if it is empty. Sorted by `total_cmp`,
 /// so a NaN orders rather than poisoning the comparison.
-fn median(mut values: Vec<f64>) -> Option<f64> {
-	if values.is_empty() {
-		return None;
-	}
-	values.sort_by(f64::total_cmp);
-	Some(values[values.len() / 2])
+///
+/// `pub(crate)` and taking a slice because `session` had the same sort-and-take
+/// written a second time, differing only in assuming its input was not empty —
+/// which it expresses now by unwrapping this, where before it expressed it by
+/// indexing and would have panicked with nothing to say.
+pub(crate) fn median(values: &[f64]) -> Option<f64> {
+	let mut sorted = values.to_vec();
+	sorted.sort_by(f64::total_cmp);
+	(!sorted.is_empty()).then(|| sorted[sorted.len() / 2])
 }
 
 /// Trapezoidal integration over each interval's **own** step, clipped to
@@ -685,7 +688,7 @@ pub fn refresh_bound(track: &Track) -> Option<Seconds> {
 	if intervals.len() < MIN_REFRESH_INTERVALS {
 		return None;
 	}
-	median(intervals)
+	median(&intervals)
 }
 
 /// The 1σ uncertainty of a rolling mark, `√2·T_refresh/√12`.

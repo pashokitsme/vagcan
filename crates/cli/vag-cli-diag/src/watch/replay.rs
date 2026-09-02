@@ -76,26 +76,20 @@ impl Recording {
 			return Err("not a `watch --out` recording: the first column is not t_s".into());
 		}
 
-		// Walk the header the same way the writer built it, so a `name_t_s`
-		// column is recognised as the partner of the one after it rather than
-		// becoming a channel of its own.
+		// The header walked the same way the writer built it, by the one
+		// function that knows the rule: a `name_t_s` column is the partner of
+		// the one after it, not a channel of its own. The per-column time is
+		// dropped here — a replay is driven by one clock — and only the `_raw`
+		// marker on the heading is this reader's own business.
 		let mut columns = Vec::new();
 		let mut cells: Vec<usize> = Vec::new();
-		let mut i = 1;
-		while i < headings.len() {
-			let paired = headings
-				.get(i)
-				.zip(headings.get(i + 1))
-				.is_some_and(|(t, v)| t.strip_suffix("_t_s") == Some(*v));
-			let at = if paired { i + 1 } else { i };
-			let heading = headings[at].trim();
-			let (name, raw) = match heading.strip_suffix("_raw") {
+		for (at, _, heading) in crate::discover::value_columns(&headings) {
+			let (name, raw) = match heading.trim().strip_suffix("_raw") {
 				Some(base) => (base.to_string(), true),
-				None => (heading.to_string(), false),
+				None => (heading.trim().to_string(), false),
 			};
 			columns.push(Column { name, raw });
 			cells.push(at);
-			i += if paired { 2 } else { 1 };
 		}
 		if columns.is_empty() {
 			return Err("the recording has no value columns".into());
@@ -216,7 +210,9 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 	// a converted value written for it, so its cells are bytes. Recordings
 	// made before the marker existed are entirely of that kind.
 	if raw || channel.def.is_none() {
-		return hex_bytes(cell);
+		// Filtered, not merely parsed: an empty cell is a row where this
+		// channel had nothing, and no bytes at all is not a reading of zero.
+		return vag_cli_core::plan::hex_bytes(cell).filter(|bytes| !bytes.is_empty());
 	}
 	let def = channel.def.as_ref()?;
 	let count = match &def.scaling {
@@ -295,15 +291,6 @@ fn encode(count: u64, form: RawForm) -> Option<Vec<u8>> {
 			}),
 		},
 	}
-}
-
-fn hex_bytes(text: &str) -> Option<Vec<u8>> {
-	if text.is_empty() || text.len() % 2 != 0 {
-		return None;
-	}
-	(0..text.len() / 2)
-		.map(|i| u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok())
-		.collect()
 }
 
 #[cfg(test)]

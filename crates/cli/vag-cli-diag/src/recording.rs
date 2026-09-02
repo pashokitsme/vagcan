@@ -96,7 +96,7 @@ fn pick_when_absent(log: Option<String>, instead: &str) -> Result<Option<String>
 ///
 /// `None` is somebody who left the list — an answer, not a failure.
 fn pick_recording(instead: &str) -> Result<Option<String>> {
-	let mut chooser = picker::Console::new(instead);
+	let mut chooser = crate::ui::Console::new(instead);
 	let picked = picker::pick_path(&mut chooser, Path::new("."), &[recordings()])?;
 	Ok(picked.map(|path| path.to_string_lossy().into_owned()))
 }

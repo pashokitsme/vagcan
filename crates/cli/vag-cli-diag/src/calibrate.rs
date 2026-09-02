@@ -23,7 +23,7 @@
 //! everything already known — with no reference to track, there is nothing to
 //! fit against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use vag_data_labels::measure::{LinearScale, RawForm};
 
@@ -106,17 +106,9 @@ fn read_hex(cell: &str, form: RawForm) -> Option<i32> {
 /// Both come from the same recording, so the times are the same clock and the
 /// tolerance only has to cover the gap between polling batches — not the
 /// unknown offset between two programs.
-fn pair(
-	unknown: &Column,
-	reference: &Column,
-	form: RawForm,
-	samples_u: &[(f64, String)],
-	samples_r: &[(f64, String)],
-	tolerance_s: f64,
-) -> Vec<(f64, f64)> {
+fn pair(form: RawForm, samples_u: &[(f64, String)], samples_r: &[(f64, String)], tolerance_s: f64) -> Vec<(f64, f64)> {
 	let mut out = Vec::new();
 	let mut used = vec![false; samples_r.len()];
-	let _ = (unknown, reference);
 	for (t_u, cell) in samples_u {
 		let Some(raw) = read_hex(cell, form) else { continue };
 		let nearest = samples_r
@@ -135,57 +127,27 @@ fn pair(
 	out
 }
 
-/// Rebuild each column's `(time, value)` samples from the recording.
-///
-/// `classify` keeps transitions and distinct values but not the full series,
-/// so the CSV is walked once more here.
-fn series_of(csv: &str) -> BTreeMap<String, Vec<(f64, String)>> {
-	let mut out: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
-	let mut lines = csv.lines();
-	let Some(header) = lines.next() else { return out };
-	let names: Vec<&str> = header.split(',').collect();
-
-	// Same layout rule as `discover`: `<name>_t_s,<name>` pairs when present.
-	let mut columns: Vec<(usize, Option<usize>, &str)> = Vec::new();
-	let mut i = 1;
-	while i < names.len() {
-		let paired = names
-			.get(i)
-			.zip(names.get(i + 1))
-			.is_some_and(|(t, v)| t.strip_suffix("_t_s") == Some(*v));
-		if paired {
-			columns.push((i + 1, Some(i), names[i + 1]));
-			i += 2;
-		} else {
-			columns.push((i, None, names[i]));
-			i += 1;
-		}
-	}
-
-	for line in lines {
-		let cells: Vec<&str> = line.split(',').collect();
-		let Some(Ok(row_t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
-			continue;
-		};
-		for (value_at, time_at, name) in &columns {
-			let Some(cell) = cells.get(*value_at).map(|c| c.trim()) else { continue };
-			if cell.is_empty() {
-				continue;
-			}
-			let t = time_at
-				.and_then(|at| cells.get(at))
-				.and_then(|c| c.trim().parse::<f64>().ok())
-				.unwrap_or(row_t);
-			out.entry((*name).to_string()).or_default().push((t, cell.to_string()));
-		}
-	}
-	out
-}
-
 /// Calibrate every unknown column against every reference column.
 pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, String> {
 	let columns = classify(csv)?;
-	let samples = series_of(csv);
+	// One reader for this format, in `discover`: two walks over a header this
+	// tool writes itself is two chances to disagree about what a column is.
+	//
+	// **A name two columns share identifies neither, so it is dropped.** Channel
+	// labels are not unique — two units can both call a channel "Engine speed"
+	// — and this used to merge their samples into one series, fitting a line
+	// through interleaved readings of two different identifiers and reporting
+	// the result as proven. Keeping one of the two instead would be the same
+	// guess with a quieter failure. A column that cannot be told from another
+	// is not calibrated, which is the only answer that is true.
+	let mut samples: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
+	let mut ambiguous: BTreeSet<String> = BTreeSet::new();
+	for (name, series) in crate::discover::series(csv) {
+		if samples.insert(name.clone(), series).is_some() {
+			ambiguous.insert(name);
+		}
+	}
+	samples.retain(|name, _| !ambiguous.contains(name));
 	let (references, unknowns) = split_columns(&columns);
 	if references.is_empty() {
 		return Err(
@@ -202,7 +164,7 @@ pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, Strin
 		for reference in &references {
 			let Some(samples_r) = samples.get(&reference.name) else { continue };
 			for &form in FORMS {
-				let pairs = pair(unknown, reference, form, samples_u, samples_r, limits.tolerance_s);
+				let pairs = pair(form, samples_u, samples_r, limits.tolerance_s);
 				if pairs.len() < limits.min_points {
 					continue;
 				}
@@ -359,6 +321,31 @@ mod tests {
 			csv.push_str(&format!("{t:.3},{t:.3},{rpm},{t:.3},{:04X}\n", raw));
 		}
 		csv
+	}
+
+	#[test]
+	fn a_name_two_columns_share_calibrates_nothing_rather_than_guessing() {
+		// Channel labels are not unique: two units can both call a channel
+		// "Engine speed". Merging their samples fits a line through interleaved
+		// readings of two different identifiers and calls the result proven;
+		// keeping one of the two is the same guess, quieter. Neither is done.
+		let mut csv = String::from("t_s,Engine speed_t_s,Engine speed,Engine speed_t_s,Engine speed,206F_raw_t_s,206F_raw\n");
+		for i in 0..60 {
+			let t = i as f64 * 0.1;
+			let rpm = 800.0 + i as f64 * 50.0;
+			let raw = (rpm * 2.0) as u16;
+			// The second column of that name reads something else entirely.
+			csv.push_str(&format!("{t:.3},{t:.3},{rpm},{t:.3},{},{t:.3},{raw:04X}\n", 7000.0 - rpm));
+		}
+		let fits = calibrate(&csv, Thresholds::default()).unwrap();
+		assert!(
+			fits.is_empty(),
+			"an ambiguous reference was used anyway: {:?}",
+			fits.iter().map(|f| &f.reference).collect::<Vec<_>>()
+		);
+		// And the same recording with one of the two removed still calibrates,
+		// so what was refused is the ambiguity and not the channel.
+		assert!(!calibrate(&recording(), Thresholds::default()).unwrap().is_empty());
 	}
 
 	#[test]

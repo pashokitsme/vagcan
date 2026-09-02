@@ -44,10 +44,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::Attribute;
-use crossterm::terminal::{Clear, ClearType};
-use crossterm::{cursor, execute, terminal};
+use crossterm::terminal;
 
-use crate::ui::term;
+use crate::ui::{Console, erase, redraw, term};
 
 /// One thing that can be picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,22 +204,6 @@ pub trait Chooser {
 	fn reveal(&mut self, path: &Path) -> Result<()>;
 }
 
-/// The chooser a person uses: a list on stdout, arrow keys off the terminal.
-pub struct Console {
-	/// What to tell someone whose stdin is a pipe — the argument that says the
-	/// same thing without anybody at a keyboard. Passed in because the picker
-	/// does not know which command it is serving.
-	instead: String,
-}
-
-impl Console {
-	/// `instead` is the command line that needs no picker, complete enough to
-	/// paste: `vagcan measure view PATH`.
-	pub fn new(instead: impl Into<String>) -> Console {
-		Console { instead: instead.into() }
-	}
-}
-
 impl Chooser for Console {
 	fn choose(&mut self, level: &Level<'_>, choices: &[Choice], at: usize) -> Result<Decision> {
 		// Before raw mode, not after: switching a terminal that is not there is
@@ -301,10 +284,7 @@ impl Chooser for Console {
 	}
 
 	fn say(&mut self, line: &str) -> Result<()> {
-		let mut out = std::io::stdout();
-		writeln!(out, "{line}")?;
-		out.flush()?;
-		Ok(())
+		self.say_line(line)
 	}
 
 	fn copy(&mut self, path: &Path) -> Result<()> {
@@ -316,32 +296,6 @@ impl Chooser for Console {
 		let line = revealed(path);
 		self.say(&line)
 	}
-}
-
-/// Put `lines` where the last draw was, and remember how tall it is.
-///
-/// Relative movement, not absolute: the terminal scrolls when the list reaches
-/// the bottom, and a remembered absolute row would then point at the wrong
-/// place. Every line ends `\r\n` because raw mode does not return the carriage.
-fn redraw(out: &mut impl std::io::Write, drawn: &mut usize, lines: &[String]) -> Result<()> {
-	if *drawn > 0 {
-		execute!(out, cursor::MoveToPreviousLine(*drawn as u16), Clear(ClearType::FromCursorDown))?;
-	}
-	for line in lines {
-		write!(out, "{line}\r\n")?;
-	}
-	out.flush()?;
-	*drawn = lines.len();
-	Ok(())
-}
-
-/// Take the list back off the screen.
-fn erase(out: &mut impl std::io::Write, drawn: usize) -> Result<()> {
-	if drawn > 0 {
-		execute!(out, cursor::MoveToPreviousLine(drawn as u16), Clear(ClearType::FromCursorDown))?;
-		out.flush()?;
-	}
-	Ok(())
 }
 
 /// The chooser the tests use: the decisions go in, and everything it was shown

@@ -717,7 +717,7 @@ pub fn view_picked() -> Result<()> {
 			.newest_first()
 			.filled_by("vagcan measure   then press `s` to keep the drive"),
 	];
-	let mut chooser = vag_cli_core::ui::picker::Console::new("vagcan measure view FILE.json");
+	let mut chooser = vag_cli_core::ui::Console::new("vagcan measure view FILE.json");
 	match vag_cli_core::ui::picker::pick_path(&mut chooser, &cars, &levels)? {
 		Some(path) => open_view(&path.to_string_lossy()),
 		// Backing out of the first list is an answer, not a failure.

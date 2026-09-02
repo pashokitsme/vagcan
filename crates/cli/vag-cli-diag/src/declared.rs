@@ -179,6 +179,27 @@ pub fn blind_ranges(range: Option<&str>, blind: bool, default: &str) -> anyhow::
 	Ok(Some(ranges))
 }
 
+/// The request ids a `--ecu` / `--only` / `--blind` list names.
+///
+/// **`flag` is the only thing that differed between the three copies**, and it
+/// is the whole value of passing it: `faults --ecu`, `dev survey --only` and
+/// `dev survey --blind` all take a unit list, and somebody who mistyped one of
+/// them has to be told which. Everything else — parse, take the request id of
+/// each unit — was written out three times.
+///
+/// Checked before the adapter is opened, wherever it is called: the cable is a
+/// single-user resource, and holding it open to fail on a typo blocks the next
+/// attempt.
+pub fn unit_list(flag: &str, spec: &str) -> anyhow::Result<Vec<u16>> {
+	Ok(
+		vag_uds_client::address::parse_list(spec)
+			.map_err(|e| anyhow::anyhow!("{flag}: {e}"))?
+			.iter()
+			.map(|u| u.request)
+			.collect(),
+	)
+}
+
 /// What to say about a unit no source describes.
 ///
 /// **This is the case the default cannot sweep**, and on a real car it is a
@@ -188,14 +209,16 @@ pub fn blind_ranges(range: Option<&str>, blind: bool, default: &str) -> anyhow::
 /// block and its faults are still read and still filed, and the command says
 /// what it would take to go further.
 ///
-/// `command` is the invocation that would sweep this unit blind, which differs
-/// between `scan` and `survey`; naming the wrong one is how somebody concludes
-/// there is no way forward.
-pub fn no_source_notice(unit: &str, command: &str) -> String {
+/// The invocation that would sweep it blind is built here rather than passed
+/// in. It was a parameter while `scan` and `survey` each needed their own
+/// spelling; `scan` is gone, one caller is left, and a parameter with one
+/// argument is a place for the two to disagree with nobody left to disagree
+/// with.
+pub fn no_source_notice(unit: &str) -> String {
 	format!(
 		"  {unit:<4}      nothing declares identifiers for this unit — identified, not swept\n\
 		 \x20              to sweep it blind (a fuzz test of its diagnostic server):\n\
-		 \x20                {command}"
+		 \x20                vagcan dev survey --only {unit} --blind {unit}"
 	)
 }
 
@@ -282,7 +305,7 @@ mod tests {
 		assert!(ask.is_empty(), "an unknown unit gets asked nothing: {:?}", ask.ranges);
 
 		// And it is told how to go further, in terms that say what it costs.
-		let notice = no_source_notice("44", "vagcan dev survey --only 44 --blind 44");
+		let notice = no_source_notice("44");
 		assert!(notice.contains("not swept"), "{notice}");
 		assert!(notice.contains("--blind 44"), "{notice}");
 		assert!(notice.contains("fuzz test"), "{notice}");

@@ -270,6 +270,26 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 	out
 }
 
+/// Every line of a survey file that is about a unit: `(request id, the line)`.
+///
+/// **One reader for the format, where there were four.** The three functions
+/// below and `survey::diff` each spelled out the same two rejections — a line
+/// that is not JSON, and a line with no readable `request` — which are the two
+/// ways a survey file can be half-written. Four copies of "skip it" is four
+/// chances for one of them to start counting a truncated file as a unit that
+/// answered nothing.
+///
+/// Rejections rather than errors, deliberately: a survey is appended to as it
+/// runs, so the last line of an interrupted one is routinely half-written, and
+/// refusing the whole file over it would throw away a drive's worth of answers.
+pub fn survey_units(survey: &str) -> impl Iterator<Item = (u16, serde_json::Value)> + '_ {
+	survey.lines().filter(|l| !l.trim().is_empty()).filter_map(|line| {
+		let value: serde_json::Value = serde_json::from_str(line).ok()?;
+		let request = u16::from_str_radix(value["request"].as_str()?, 16).ok()?;
+		Some((request, value))
+	})
+}
+
 /// What each unit in a survey said about itself.
 ///
 /// A survey already asked every unit for its identification block, so a
@@ -277,13 +297,7 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 /// re-read the car to know which scalings apply.
 pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
 	let mut out = Vec::new();
-	for line in survey.lines().filter(|l| !l.trim().is_empty()) {
-		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-			continue;
-		};
-		let Some(request) = value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-			continue;
-		};
+	for (request, value) in survey_units(survey) {
 		let field = |did: &str| -> Option<String> {
 			let entry = value["ident"].as_array()?.iter().find(|e| e["did"].as_str() == Some(did))?;
 			let bytes = hex_bytes(entry["data"].as_str()?)?;
@@ -302,7 +316,18 @@ pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
 }
 
 /// Parse a hex string as bytes; `None` if it is not whole bytes of hex.
-fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+///
+/// **The inverse of the packed hex this tool writes into its own files**, and
+/// public because all three readers of that format needed it and each had grown
+/// a copy: the survey reader below, `faults`' identification lookup, and
+/// `watch`'s recording replay. Three parsers for one format is three chances to
+/// disagree about a malformed one, and they already did — one of the copies
+/// rejected the empty string and two returned no bytes for it.
+///
+/// The empty string parses as no bytes, which is what "a hex string of length
+/// zero" means. A caller for whom an empty *cell* is not a reading says so
+/// itself; see `watch::replay::cell_to_bytes`.
+pub fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 	if text.len() % 2 != 0 {
 		return None;
 	}
@@ -323,13 +348,7 @@ fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 /// Identifiers already in `channels` keep their definition; a survey never
 /// overrides a proven scaling with nothing.
 pub fn with_survey(mut channels: Vec<Channel>, survey: &str) -> Vec<Channel> {
-	for line in survey.lines().filter(|l| !l.trim().is_empty()) {
-		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-			continue;
-		};
-		let Some(request) = value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-			continue;
-		};
+	for (request, value) in survey_units(survey) {
 		let Some(dids) = value["dids"].as_array() else { continue };
 		for entry in dids {
 			let Some(did) = entry["did"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
@@ -422,13 +441,7 @@ impl Answered {
 /// files from before it existed — see [`Answered::asked`] for what that costs.
 pub fn answered_from_survey(survey: &str) -> Answered {
 	let mut out = Answered::default();
-	for line in survey.lines().filter(|l| !l.trim().is_empty()) {
-		let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-			continue;
-		};
-		let Some(request) = value["request"].as_str().and_then(|s| u16::from_str_radix(s, 16).ok()) else {
-			continue;
-		};
+	for (request, value) in survey_units(survey) {
 		let Some(dids) = value["dids"].as_array() else { continue };
 		out.units.insert(request);
 		for entry in dids {

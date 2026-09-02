@@ -46,6 +46,75 @@ impl Column {
 /// Above this many distinct values a column is treated as analogue.
 const STEPPED_MAX_LEVELS: usize = 12;
 
+/// Every value column of a `watch --out` recording, with its samples, in the
+/// order the header lists them.
+///
+/// **The one reader of this layout, where there were three.** `classify` below,
+/// `calibrate::series_of` and `watch::replay::Recording::parse` each grew their
+/// own walk over a header this tool writes itself — and `calibrate`'s carried
+/// the comment "same layout rule as `discover`", which is a promise prose
+/// cannot keep.
+///
+/// A sample is `(time, cell)`, and the time is the column's **own** when it has
+/// one: values on a row are not simultaneous, because identifiers are polled in
+/// batches, so the last column can be most of a cycle newer than the first.
+/// Older recordings carry one `t_s` for the row and still parse, at the cost of
+/// locating a transition only to within a polling cycle.
+///
+/// A blank cell is dropped rather than recorded. Blank means the unit did not
+/// answer that cycle, and a dropped read must not read as a state change.
+pub fn series(csv: &str) -> Vec<(String, Vec<(f64, String)>)> {
+	let mut lines = csv.lines();
+	let Some(header) = lines.next() else { return Vec::new() };
+	let names: Vec<&str> = header.split(',').collect();
+	let columns = value_columns(&names);
+	let mut out: Vec<(String, Vec<(f64, String)>)> = columns.iter().map(|(_, _, name)| ((*name).to_string(), Vec::new())).collect();
+	for line in lines {
+		if line.trim().is_empty() {
+			continue;
+		}
+		let cells: Vec<&str> = line.split(',').collect();
+		let Some(Ok(row_t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
+			continue;
+		};
+		for (slot, (value_at, time_at, _)) in columns.iter().enumerate() {
+			let Some(cell) = cells.get(*value_at).map(|c| c.trim()).filter(|c| !c.is_empty()) else {
+				continue;
+			};
+			let t = time_at
+				.and_then(|at| cells.get(at))
+				.and_then(|c| c.trim().parse::<f64>().ok())
+				.unwrap_or(row_t);
+			out[slot].1.push((t, cell.to_string()));
+		}
+	}
+	out
+}
+
+/// Where each value column sits in a row, and where its own timestamp sits when
+/// it has one: `(value_at, time_at, heading)`.
+///
+/// The pairing rule, in one place: a heading is a timestamp column when it is
+/// `<name>_t_s` and the very next heading is `<name>`. Anything else is a value
+/// column that takes the row's time. Public because `watch::replay` needs the
+/// same walk and keeps different things from it.
+pub fn value_columns<'a>(headings: &[&'a str]) -> Vec<(usize, Option<usize>, &'a str)> {
+	let mut out = Vec::new();
+	let mut i = 1;
+	while i < headings.len() {
+		let paired = headings
+			.get(i)
+			.zip(headings.get(i + 1))
+			.is_some_and(|(t, v)| t.strip_suffix("_t_s") == Some(*v));
+		match paired {
+			true => out.push((i + 1, Some(i), headings[i + 1])),
+			false => out.push((i, None, headings[i])),
+		}
+		i += if paired { 2 } else { 1 };
+	}
+	out
+}
+
 /// Read a `vagcan watch --out` recording and classify every column.
 ///
 /// Two layouts are accepted. Current recordings carry a time column per value
@@ -62,56 +131,12 @@ pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
 		return Err("not a `vagcan watch --out` recording (expected a t_s column)".to_string());
 	}
 
-	// Value columns, and where each one's own timestamp lives.
-	let mut value_columns: Vec<(usize, Option<usize>, &str)> = Vec::new();
-	let mut i = 1;
-	while i < names.len() {
-		let paired = names
-			.get(i)
-			.zip(names.get(i + 1))
-			.is_some_and(|(t, v)| t.strip_suffix("_t_s") == Some(*v));
-		if paired {
-			value_columns.push((i + 1, Some(i), names[i + 1]));
-			i += 2;
-		} else {
-			value_columns.push((i, None, names[i]));
-			i += 1;
-		}
-	}
-
-	let mut series: Vec<Vec<(f64, String)>> = vec![Vec::new(); value_columns.len()];
-	for line in lines {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let cells: Vec<&str> = line.split(',').collect();
-		let Some(Ok(row_t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
-			continue;
-		};
-		for (slot, (value_at, time_at, _)) in value_columns.iter().enumerate() {
-			let Some(cell) = cells.get(*value_at).map(|c| c.trim()) else {
-				continue;
-			};
-			// A blank cell means the unit did not answer that cycle. Skipping
-			// keeps a dropped read from looking like a state change.
-			if cell.is_empty() {
-				continue;
-			}
-			let t = time_at
-				.and_then(|at| cells.get(at))
-				.and_then(|c| c.trim().parse::<f64>().ok())
-				.unwrap_or(row_t);
-			series[slot].push((t, cell.to_string()));
-		}
-	}
-
 	let mut out = Vec::new();
-	for (slot, (_, _, name)) in value_columns.iter().enumerate() {
-		let samples = &series[slot];
+	for (name, samples) in series(csv) {
 		let mut values: Vec<String> = Vec::new();
 		let mut transitions = Vec::new();
 		let mut previous: Option<&String> = None;
-		for (t, v) in samples {
+		for (t, v) in &samples {
 			if !values.contains(v) {
 				values.push(v.clone());
 			}
@@ -131,7 +156,7 @@ pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
 			n => Behaviour::Continuous { levels: n },
 		};
 		out.push(Column {
-			name: (*name).to_string(),
+			name,
 			samples: samples.len(),
 			behaviour,
 			values,

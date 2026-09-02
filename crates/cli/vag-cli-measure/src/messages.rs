@@ -63,28 +63,23 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		let names: Vec<String> = m.tried.iter().map(|n| format!("\"{n}\"")).collect();
 		let _ = writeln!(out, "\n    {} was looked for under {}", m.key, names.join(", "));
 	}
-	// Through to the end, not as far as the diff. "The identifiers whose bytes
-	// moved are the live measurements" tells a reader what they have found and
-	// stops there — leaving them holding a list of hex with no way to learn
-	// that the next two commands turn it into the catalog this refusal is
-	// about. That gap is the whole distance between a refusal and a fix.
+	// Quoted from `missing::calibration_path`, not written again here. This
+	// message and `watch`'s describe the same job on the same car, and they had
+	// drifted to five commands and three: a reader who meets the shortage twice
+	// cannot tell two wordings of one procedure from two procedures. Only what
+	// is genuinely `measure`'s — which rows it looks for — is written below.
 	let _ = writeln!(
 		out,
 		"\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
-         from raw bytes. The whole way there:\n    \
-         vagcan dev survey --out parked.jsonl      then, after a drive:\n    \
-         vagcan dev survey --out driving.jsonl\n    \
-         vagcan dev survey --diff parked.jsonl driving.jsonl\n\
-         The identifiers whose bytes moved are the live measurements. Then record a\n\
-         drive with them on screen and fit them against a reading already trusted:\n    \
-         vagcan watch --did <the identifiers> --out drive.csv\n    \
-         vagcan dev recording calibrate --log drive.csv --out <part-number>.json\n\
-         Move that file to {} — the file name is the unit's own\n\
-         F187 part number — and name its rows so this command can find them:\n\
-         `speed` and `gear` are what it looks for.\n\n\
+         from raw bytes. The whole way there:\n\
+         {}\n\
+         Move the result to {} — the file name is the unit's own F187 part number — and\n\
+         name its rows so this command can find them: `speed` and `gear` are what it\n\
+         looks for.\n\n\
          None of this is what `vagcan setup` does. Label files carry names and no\n\
          scaling at all, so no installation of VCDS can supply what is missing here.",
+		vag_cli_core::missing::calibration_path(),
 		crate::project::measurements_hint()
 	);
 	out
@@ -397,7 +392,7 @@ mod tests {
 			}],
 		);
 		assert!(text.contains("0CW300041G"), "{text}");
-		assert!(text.contains("survey --diff"), "{text}");
+		assert!(text.contains("dev recording calibrate"), "{text}");
 	}
 
 	#[test]
@@ -422,6 +417,11 @@ mod tests {
 		// says nothing about what to do with them. A reader who follows it to
 		// the letter is left holding a list of hex and no catalog — and the
 		// catalog is what this command refused for.
+		//
+		// It then went too far the other way and wrote its own five-command
+		// route while `watch` printed a three-command one for the same job on
+		// the same car. Asserted as a verbatim quote, not as a list of
+		// substrings: substrings are what let the two drift apart.
 		let text = missing_channels(
 			&[],
 			&[MissingChannel {
@@ -429,9 +429,10 @@ mod tests {
 				tried: vec!["vehicle speed".into()],
 			}],
 		);
-		for step in ["survey --diff", "watch --did", "recording calibrate"] {
-			assert!(text.contains(step), "{step} missing from:\n{text}");
-		}
+		assert!(
+			text.contains(vag_cli_core::missing::calibration_path()),
+			"not the one calibration path `watch` prints:\n{text}"
+		);
 		// Where the file goes, resolved rather than written out: this literal
 		// used to be `~/.vagcan/data/measured/`, and it reached somebody
 		// standing at a car after the store had moved out from under it. A
