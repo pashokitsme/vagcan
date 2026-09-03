@@ -19,6 +19,7 @@ pub use vag_cli_core::{analyse, config, datadir, device, extracted, glossary, mi
 
 pub mod anomaly;
 pub mod calibrate;
+pub mod dash;
 pub mod declared;
 pub mod discover;
 pub mod faultnames;

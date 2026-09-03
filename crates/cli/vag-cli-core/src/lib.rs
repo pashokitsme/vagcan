@@ -25,6 +25,7 @@
 
 pub mod analyse;
 pub mod config;
+pub mod dash;
 pub mod datadir;
 pub mod device;
 pub mod extracted;

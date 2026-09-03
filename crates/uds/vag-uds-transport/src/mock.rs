@@ -55,7 +55,7 @@ impl RawCanTransport for ScriptedCan {
 }
 
 /// Deterministic async mock: scripted request→response PDU pairs, so upper
-/// layers (uds-async, cable-actor) can be tested with no hardware.
+/// layers (the async UDS client) can be tested with no hardware.
 ///
 /// `send` must match the next scripted request (panics with a diff otherwise)
 /// and queues its paired response; `recv` returns the next queued response, or

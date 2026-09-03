@@ -2,6 +2,21 @@
 
 **Subsystem:** dash · **Crate:** `vagcan` (generator), `vag-dash-render` (the type) · **Needs the car:** no
 
+> **Implemented 2026-09-03.** The type is `vag_dash_render::plan` (no_std, with the
+> bit-field decoder and its host tests); the generator is `vag_cli_core::dash`, reached
+> as `vagcan dev dash build <VIN>` and — the part that makes it a build step rather than
+> a ritual — from the firmware's own `build.rs`, which runs the same function under
+> `VAGCAN_DASH_VIN=<VIN>` and `include!`s the result. Three things differ from the sketch
+> below, each because of what the board already had: pages hold **indices** into a flat
+> channel list rather than channels, because `config::Page` stores cells as indices and
+> did before there was a plan; each channel carries its unit's request id rather than the
+> unit carrying its channels, because the poll loop walks units one conversation at a
+> time; and the input carries an optional `label`/`decimals` per channel for the panel's
+> ten characters, with the glossary as the default. The command lives under `dev`, where
+> the offline work went in `f21897f`. Building this surfaced a defect in
+> `plan::available` — it keyed by identifier and kept one field per response — fixed
+> with a test in the same change.
+
 ## Goal
 
 Define what a dash plan *is*, and make `vagcan dash build` produce one from the catalogs

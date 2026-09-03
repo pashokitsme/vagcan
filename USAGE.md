@@ -509,6 +509,44 @@ columns already trusted **in the same recording**, so there is one clock, tens o
 hertz, and no alignment error. `--out` writes the fits as a catalog; the rows are
 keyed by identifier and deliberately carry no name.
 
+### `vagcan dev dash build <VIN>` — the plan the dash device runs on
+
+Reads `~/.vagcan/dash/<VIN>/dash.toml` (which channels, on which pages, written by
+hand), the car's own `~/.vagcan/cars/<VIN>/survey.jsonl` and this project's catalogs.
+Writes `plan.json` — for a person and the simulator — and `plan.rs`, the `static` the
+firmware links, both under the car in `~/.vagcan/dash/<VIN>/`. Offline: no adapter, no
+car. The survey has the last word: an identifier it put to the unit that came back silent
+fails the build, and a standard OBD-II row the survey never asked about is built with a
+note saying so.
+
+```sh
+vagcan dev dash build XW8AD4NE9JH008917
+```
+
+```text
+ОЖ ← 01:IDE00025 F405@0/8 u BE ×1 -40 declared (IDE00025)
+НАДДУВ ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 declared (IDE00191)
+МАСЛО ← 01:IDE00196 202F@0/16 u BE ×0.1 -273.14 declared (IDE00196)
+КОРОБКА ← 02:IDE00102 028D@0/16 i LE ×1 +0 declared (IDE00102)
+
+wrote ~/.vagcan/dash/XW8AD4NE9JH008917/plan.json
+wrote ~/.vagcan/dash/XW8AD4NE9JH008917/plan.rs
+4 channels on 2 units, 2 pages
+```
+
+One line per channel, saying which row was chosen, how the device decodes it, and
+whether the car **proved** the scaling or a label file merely **declared** it. A channel
+the car's variant does not declare fails the build and the message names it; so does one
+whose scaling is not linear, because the device can multiply and nothing else. A text id
+that also sits on a flag — every OBD-II parameter's id is on its "supported" bit in the
+`F400` mask too — still picks the quantity, because a flag is not one. When two
+*quantities* answer to the same text id, the message lists both and the input has to
+name one by identifier and bit offset — `ref = "01:F405"` instead of `ref = "01:IDE00025"`.
+
+**The firmware's build runs this itself** — `VAGCAN_DASH_VIN=<VIN> cargo build` in
+`crates/dash/vag-dash-fw` — so this command is for reading the result and the reasons,
+not a step before it.
+
 ### `vagcan dev vcds …` — VCDS's own files
 
 ```sh

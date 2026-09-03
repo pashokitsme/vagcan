@@ -171,6 +171,22 @@ impl Extracted {
 		}
 	}
 
+	/// A project made of nothing but a cache and a name table, for tests in
+	/// other modules that must not read the owner's own `~/.vagcan`.
+	///
+	/// The glossary is left empty on purpose: [`open`] reads the owner's, and
+	/// a test that went through it would pass or fail on what they wrote.
+	#[cfg(any(test, feature = "test-util"))]
+	pub fn synthetic(cache: PathBuf, names: BTreeMap<String, String>) -> Extracted {
+		Extracted {
+			variants: vag_data_db::reading_variants(&cache).unwrap_or_default(),
+			cache,
+			project: Some("TEST".to_string()),
+			names,
+			mine: BTreeMap::new(),
+		}
+	}
+
 	/// What the label files call a text id, when this project has recovered it.
 	///
 	/// The whole of the name join, in one place: nothing else in this tool maps
@@ -355,19 +371,27 @@ pub fn tagged(
 	version: Option<&str>,
 ) -> Vec<Resolved> {
 	let proven = store.for_unit(part_number, odx_name);
+	let declared = extracted.described(odx_name, version);
 	let mut out: Vec<Resolved> = proven
 		.into_iter()
-		.map(|def| Resolved {
-			def,
-			proven: true,
-			// A proven row was named by whoever proved it on the car, and that
-			// name is the one they will look for. There is no text id on it to
-			// look anything else up by, either.
-			named: None,
-			text_id: None,
+		.map(|def| {
+			// A proven row carries no text id of its own — whoever proved it
+			// on the car named it, and that name is the one they will look
+			// for, so `named` stays empty. But the *field* it proves may also
+			// be declared, and the declared row's text id is the key the
+			// glossary and a dash plan address it by. Proving a channel must
+			// not make it unaddressable, so the id is carried over; the
+			// scaling stays the proven one.
+			let text_id = declared.iter().find(|(d, _)| same_field(&def, d)).and_then(|(_, id)| id.clone());
+			Resolved {
+				def,
+				proven: true,
+				named: None,
+				text_id,
+			}
 		})
 		.collect();
-	for (def, text_id) in extracted.described(odx_name, version) {
+	for (def, text_id) in declared {
 		// **By field, not by address** — the same rule [`merge`] enforces, and
 		// missed here when it was written there. A proven row for the first two
 		// bytes of an identifier says nothing about the field beside it, and

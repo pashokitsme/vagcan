@@ -37,11 +37,13 @@ pub trait IsoTpTransport {
 
 /// Async ISO-TP channel: the seam the async UDS client rides.
 ///
-/// In the connection-actor model, a `CableActor` owns the physical byte pipe;
-/// each cheaply-cloned handle (e.g. a per-ECU `CableHandle` channel) implements
-/// this trait by forwarding PDUs to the actor over a bounded mpsc and awaiting
-/// the reply on a oneshot. Consumers (uds-async) use STATIC dispatch
-/// (`T: AsyncIsoTpTransport`) — no `dyn`, no `async_trait`.
+/// One implementor owns the physical link outright — `IsoTpCan` over a
+/// `CanBackend` — and is addressed to one unit at a time; talking to another
+/// unit is unwrapping the backend and wrapping it again (see
+/// `vag-cli-core/src/plan.rs::read_batch`). There is no actor and no shared
+/// handle: the one that existed served the HEX clone and went with it.
+/// Consumers (uds-async) use STATIC dispatch (`T: AsyncIsoTpTransport`) — no
+/// `dyn`, no `async_trait`.
 // Static dispatch only, so callers that spawn add their own `Send` bounds on
 // the returned futures; the auto "async fn in public trait" lint is not useful
 // at this seam.

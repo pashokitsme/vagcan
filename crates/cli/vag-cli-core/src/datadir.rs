@@ -195,6 +195,17 @@ pub fn survey_cache(vin: &str) -> anyhow::Result<PathBuf> {
 	Ok(car_dir(vin)?.join(SURVEY_FILE))
 }
 
+/// Where a car's dash plan is built — `~/.vagcan/dash/<VIN>/`: the hand-written
+/// `dash.toml`, and the `plan.json` and `plan.rs` `vagcan dev dash build` writes
+/// from it.
+///
+/// Keyed by VIN like `cars/`, because a plan is for one car — it carries the
+/// part numbers the firmware checks itself against — and it is never in the
+/// checkout, because everything in it is derived from VW's data.
+pub fn dash_dir(vin: &str) -> anyhow::Result<PathBuf> {
+	Ok(vagcan_dir()?.join("dash").join(car_folder(vin)?))
+}
+
 /// The VIN, checked hard enough to be a directory name.
 ///
 /// It arrives from the bus, so it is not trusted as a path: a unit answering

@@ -24,6 +24,7 @@ vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde.workspace = true
 serde_json.workspace = true
 toml_edit.workspace = true
 ratatui = "0.29"
@@ -32,3 +33,6 @@ dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"
+# The firmware's own decoder, so the plan generator's tests assert on the
+# value the board would show and not on a flag.
+vag-dash-render = { path = "../../dash/vag-dash-render" }

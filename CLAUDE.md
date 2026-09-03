@@ -181,19 +181,22 @@ pipeline, the catalog schema, the crate layout.
 ## Tech stack & architecture (locked)
 
 - **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
-- **Connection-actor architecture** (NOT `Arc<Mutex<device>>`): one cable = one
-  actor task owning the byte pipe; N async tasks query N ECUs concurrently via
-  bounded `mpsc<Request{pdu, oneshot<Reply>}>`; the actor multiplexes/pipelines
-  over the single serial link, owning seq counter + per-channel link keystream +
-  ISO-TP state + timeouts. Clients get concurrency (latency-hiding), not wire
-  parallelism. Multiple cables later = actor-per-cable.
-- **Pluggable backend, static dispatch:** `trait Backend { async fn read/write }`
-  (native async-fn-in-trait, no `dyn`/`async-trait`). The live backend is `SlcanBackend`
-  over a serial port (`vag-can`); any future backend implements the same seam.
-- `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
-  client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan dev vcds labels` caches the parsed label files to SQLite under
-  `~/.vagcan/labels/cache.sqlite`.
+- **One bus, one conversation at a time.** There is no connection actor and no
+  `mpsc`/`oneshot` multiplexer — the one that existed was written for the HEX clone
+  and went with it. A single backend value is *owned*, not shared: a caller takes it,
+  wraps it in an `IsoTpCan` addressed to one unit, runs one exchange to completion,
+  and unwraps it for the next unit (`vag-cli-core/src/plan.rs::read_batch`). Talking
+  to the engine and the gearbox is a sequence of re-addressed groups, and ownership
+  is what makes two exchanges in flight impossible. Do not describe this as
+  concurrent, and do not reintroduce an `Arc<Mutex<device>>` to fake it.
+- **Pluggable backend, static dispatch:** `vag_uds_can::CanBackend` (send/receive one
+  frame) under `vag_uds_transport::AsyncIsoTpTransport` (send/receive one PDU), native
+  async-fn-in-trait, no `dyn`/`async-trait`. The live backends are `SlcanBackend`
+  over a serial port and the firmware's `TwaiBackend`; the same `vag-uds-*` crates
+  compile `no_std` for the board under embassy (`default-features = false`).
+- `vag-data-labels`/`vag-data-db` stay sync (CPU-bound). **Label lookup must be
+  FAST** — `vagcan setup` caches the parsed label files to SQLite under
+  `~/.vagcan/data/<project>/cache.sqlite`.
 - **Host = macOS Apple Silicon (M4).**
 
 ## Development workflow

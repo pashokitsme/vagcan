@@ -3,7 +3,7 @@
 //! Mirrors the sync `UdsClient` exactly — same read-only allowlist, same
 //! responsePending handling, same parsing — via the shared `pdu` helpers.
 //! ISO-TP framing stays BELOW the trait: `AsyncIsoTpTransport` sends/receives
-//! whole PDUs (in the connection-actor model the `CableActor` owns segmentation),
+//! whole PDUs (the transport underneath, `IsoTpCan`, owns segmentation),
 //! so this client works purely at the PDU level, like the sync design.
 
 use alloc::vec::Vec;

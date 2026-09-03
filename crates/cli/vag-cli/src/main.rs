@@ -18,7 +18,7 @@ mod overview;
 
 use vag_cli_core::device::ADAPTER_BAUD;
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
-use vag_cli_diag::{anomaly, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
+use vag_cli_diag::{anomaly, dash, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
 use vag_cli_measure as measure;
 
@@ -451,6 +451,17 @@ enum Dev {
 		tool: recording::Tool,
 	},
 
+	/// Build the dash device's plan for one car. Offline.
+	///
+	/// The OLED panel resolves nothing for itself: what it reads, how it
+	/// decodes it and what it calls it are all decided here, from the car's
+	/// survey and this project's catalogs, and written into a plan the
+	/// firmware links.
+	Dash {
+		#[command(subcommand)]
+		tool: dash::Tool,
+	},
+
 	/// Work with VCDS's own files: labels, recovered names, its logs. Offline.
 	///
 	/// Nothing here needs an adapter — the input is always a file that came
@@ -714,6 +725,7 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 		}
 		Dev::Glossary => glossary_command(),
 		Dev::Recording { tool } => recording::run(tool),
+		Dev::Dash { tool } => dash::run(tool),
 		// `labels --from-car` is the one thing under `vcds` that touches a
 		// vehicle: it reads F19E off the unit and resolves that. The group is
 		// otherwise pure file work, so it hands this one case back here rather

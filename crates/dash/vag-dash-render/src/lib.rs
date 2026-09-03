@@ -31,6 +31,7 @@
 
 pub mod alarm;
 pub mod frame;
+pub mod plan;
 pub mod render;
 pub mod theme;
 

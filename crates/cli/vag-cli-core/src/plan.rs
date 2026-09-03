@@ -245,11 +245,21 @@ pub fn available(store: &CatalogStore, extracted: &crate::extracted::Extracted, 
 		);
 		for row in defs {
 			let ReadId::Uds(did) = row.def.address;
+			let bit_offset = row.def.raw_form.bit_offset();
 			// A control unit's own proven row wins over the standard one at
 			// the same address: they can mean different things. F40D is one
 			// byte of km/h on the engine and two little-endian bytes on the
 			// gearbox.
-			if let Some(existing) = out.iter_mut().find(|c| c.request == request && c.did == did) {
+			//
+			// **The same field, not the same identifier** — the rule [`Key`]
+			// states and `extracted::tagged` enforces, and which this loop
+			// missed: keyed by identifier alone it kept one field per response
+			// and overwrote the rest, so a unit that packs two flags into one
+			// byte offered the second and lost the first.
+			if let Some(existing) = out
+				.iter_mut()
+				.find(|c| c.request == request && c.did == did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == bit_offset)
+			{
 				existing.def = Some(row.def);
 				existing.named = row.named;
 				existing.proven = row.proven;
@@ -693,6 +703,37 @@ mod tests {
 			store,
 			vec![ident(ENGINE, "8V0906264H"), ident(GEARBOX, "0CW300041G"), ident(CLUSTER, "5E0920740D")],
 		)
+	}
+
+	/// Two fields of one identifier are two channels, on this path too. The
+	/// merge in `extracted::tagged` already kept them apart; this loop keyed
+	/// by identifier and quietly overwrote the first with the second.
+	#[test]
+	fn two_fields_of_one_identifier_are_two_channels() {
+		use vag_data_labels::catalog::MeasurementCatalog;
+		use vag_data_labels::measure::{LinearScale, RawForm};
+		let here = tempfile::tempdir().unwrap();
+		let def = |name: &str, raw_form| MeasurementDef {
+			name: name.to_string().into(),
+			unit: "".into(),
+			address: ReadId::Uds(0x3816),
+			raw_form,
+			scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
+		};
+		let catalog = MeasurementCatalog::new(vec![def("gear", RawForm::U8First), def("clutch", RawForm::U8Second)]);
+		std::fs::write(here.path().join("PART2.json"), catalog.to_json().unwrap()).unwrap();
+		let store = CatalogStore::open(here.path().to_path_buf());
+		let unit = UnitIdentity {
+			request: GEARBOX,
+			part_number: Some("PART2".to_string()),
+			..UnitIdentity::default()
+		};
+		let got: Vec<(u16, u32, String)> = available(&store, &crate::extracted::Extracted::none(), &[unit])
+			.into_iter()
+			.filter(|c| c.request == GEARBOX)
+			.map(|c| (c.did, c.key().2, c.label()))
+			.collect();
+		assert_eq!(got, vec![(0x3816, 0, "gear".to_string()), (0x3816, 8, "clutch".to_string())]);
 	}
 
 	fn reference_channels(dir: std::path::PathBuf) -> Vec<Channel> {
