@@ -95,8 +95,8 @@
 
 use core::time::Duration;
 use esp_hal::gpio::RtcPinWithResistors;
-use esp_hal::rtc_cntl::sleep::{RtcioWakeupSource, TimerWakeupSource, WakeupLevel};
 use esp_hal::rtc_cntl::Rtc;
+use esp_hal::rtc_cntl::sleep::{RtcioWakeupSource, TimerWakeupSource, WakeupLevel};
 use esp_hal::system::SleepSource;
 
 /// The pin the wake button must be wired to. Nothing on the board reaches it

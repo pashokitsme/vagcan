@@ -27,11 +27,11 @@
 use alloc::format;
 use alloc::vec::Vec;
 use core::time::Duration;
-use embassy_time::{with_timeout, Duration as EmbassyDuration};
+use embassy_time::{Duration as EmbassyDuration, with_timeout};
 use embedded_can::Frame as _;
-use esp_hal::twai::{EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, Twai};
 use esp_hal::Async;
-use vag_uds_can::{CanBackend, CanError, CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK};
+use esp_hal::twai::{EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, Twai};
+use vag_uds_can::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, CanError};
 
 /// A [`CanBackend`] driving the chip's TWAI peripheral.
 pub struct TwaiBackend<'d> {

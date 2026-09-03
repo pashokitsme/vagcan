@@ -97,7 +97,7 @@ use embassy_time::{Duration as TaskDuration, Timer};
 // stack is the one resource a panicking machine may have run out of.
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_hal::rtc_cntl::{Rwdt, RwdtStage, SocResetReason};
-use esp_hal::system::{reset_reason, wakeup_cause, SleepSource};
+use esp_hal::system::{SleepSource, reset_reason, wakeup_cause};
 use esp_hal::time::Duration as HalDuration;
 use esp_storage::FlashStorage;
 use log::warn;

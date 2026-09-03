@@ -9,7 +9,7 @@
 [workspace]
 
 [package]
-edition = "2021"
+edition = "2024"
 # The directory reads as `firmware/vag-dash` because that is the device; the
 # *package* has to be something else, because it depends on the renderer crate
 # that is already called `vag-dash`. Two packages of one name cannot share a

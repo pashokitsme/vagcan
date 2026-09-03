@@ -26,12 +26,12 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
@@ -50,7 +50,7 @@ use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{CHANNEL_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
-use vag_dash_fw::ui::{Button, Press, Visibility, ADVERTISE_WINDOW_SECS, DEBOUNCE_MS};
+use vag_dash_fw::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_render::plan::{Page as PlanPage, Unit};
 use vag_uds_can::IsoTpCan;
 use vag_uds_client::identity::did;
@@ -1013,7 +1013,7 @@ fn chart_range(index: u16) -> Option<(f32, f32)> {
 /// invents a number.
 #[embassy_executor::task]
 async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>, settings: &'static Shared) -> ! {
-	use vag_dash_render::{draw, Cell, Frame, Theme};
+	use vag_dash_render::{Cell, Frame, Theme, draw};
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
 	let framebuffer = FRAMEBUFFER.init(Framebuffer::new());
