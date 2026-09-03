@@ -8,6 +8,9 @@
 //! express. A forty-first identifier is not refused, it is unsayable.
 
 use serde::{Deserialize, Serialize};
+use vag_dash_render::plan::Page as PlanPage;
+
+use crate::plan::PLAN;
 
 /// How many pages the panel can hold, and how many cells fit on one. Both are
 /// bounded because the storage is: a configuration has to fit in a flash
@@ -45,23 +48,45 @@ pub struct Config {
 }
 
 impl Default for Config {
-	/// What a device with nothing stored shows. Deliberately not empty: a
-	/// panel that boots blank because its settings were never written looks
-	/// broken, and "looks broken" is indistinguishable from "is broken".
+	/// What a device with nothing stored shows: **the plan's own pages**, in
+	/// the plan's order. Deliberately not empty — a panel that boots blank
+	/// because its settings were never written looks broken, and "looks
+	/// broken" is indistinguishable from "is broken" — and deliberately not a
+	/// list of indices written here, because the only thing that knows which
+	/// indices mean anything is the plan.
+	///
+	/// A plan with no pages at all (the generator refuses one, but the type
+	/// allows it) falls back to one values page of its first four channels;
+	/// pages past [`MAX_PAGES`] and cells past [`MAX_CELLS`] are dropped
+	/// rather than refused, since the storage is what bounds them.
 	fn default() -> Self {
-		let mut pages = heapless::Vec::new();
-		let mut cells = heapless::Vec::new();
-		let _ = cells.extend_from_slice(&[0, 1, 2, 3]);
-		let _ = pages.push(Page {
-			kind: PageKind::Values,
-			cells,
-		});
-		let mut chart = heapless::Vec::new();
-		let _ = chart.push(0);
-		let _ = pages.push(Page {
-			kind: PageKind::Chart,
-			cells: chart,
-		});
+		let mut pages: heapless::Vec<Page, MAX_PAGES> = heapless::Vec::new();
+		for page in PLAN.pages {
+			let mut cells = heapless::Vec::new();
+			let kind = match page {
+				PlanPage::Values { cells: indices, .. } => {
+					let _ = cells.extend_from_slice(&indices[..indices.len().min(MAX_CELLS)]);
+					PageKind::Values
+				}
+				PlanPage::Chart { channel, .. } => {
+					let _ = cells.push(*channel);
+					PageKind::Chart
+				}
+			};
+			if pages.push(Page { kind, cells }).is_err() {
+				break;
+			}
+		}
+		if pages.is_empty() {
+			let mut cells = heapless::Vec::new();
+			for index in 0..PLAN.channels.len().min(4) {
+				let _ = cells.push(index as u16);
+			}
+			let _ = pages.push(Page {
+				kind: PageKind::Values,
+				cells,
+			});
+		}
 		Self {
 			brightness: 128,
 			active_page: 0,
@@ -72,8 +97,10 @@ impl Default for Config {
 
 impl Config {
 	/// Rejects what the panel could not render anyway. Called before a save so
-	/// that an unusable configuration never reaches flash — the device must be
-	/// able to trust what it reads back at boot.
+	/// that an unusable configuration never reaches flash, and on what comes
+	/// back from flash — a configuration saved against one plan can name a
+	/// cell the next image does not have, and the device must be able to
+	/// trust what it draws from.
 	pub fn validate(&self) -> Result<(), &'static str> {
 		if self.pages.is_empty() {
 			return Err("no pages");
@@ -87,6 +114,9 @@ impl Config {
 			}
 			if page.kind == PageKind::Chart && page.cells.len() != 1 {
 				return Err("a chart page shows exactly one cell");
+			}
+			if page.cells.iter().any(|&cell| usize::from(cell) >= PLAN.channels.len()) {
+				return Err("a cell past the end of the plan");
 			}
 		}
 		Ok(())

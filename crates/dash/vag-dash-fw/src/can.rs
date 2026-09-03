@@ -64,6 +64,40 @@ impl<'d> TwaiBackend<'d> {
 	pub fn into_twai(self) -> Twai<'d, Async> {
 		self.twai
 	}
+
+	/// Empties the driver's receive queue without waiting, and says how many
+	/// entries it held.
+	///
+	/// Between two exchanges that queue is supposed to be empty and sometimes
+	/// is not: an answer that arrived after its deadline, or a frame from
+	/// another tester on the same response id, would otherwise be consumed by
+	/// the *next* request as its reply — a DID-echo mismatch, and every read of
+	/// that unit one behind until a request gets nothing back. So a caller
+	/// about to ask something sweeps first.
+	///
+	/// Why this is `async` and not a loop over `num_available_messages`: in
+	/// async mode the interrupt handler moves every frame out of the hardware
+	/// FIFO into a 32-deep software queue the moment it lands, so the FIFO
+	/// reads empty while a stale frame sits one `receive_async` away. A zero
+	/// deadline is what makes the sweep free — a queued entry comes back on the
+	/// first poll, an empty queue times out at once. Errors the handler queued
+	/// (a bus-off it saw, an overrun) go with the rest; they describe a moment
+	/// that has passed. The bound is the queue's depth, because a controller
+	/// that is bus-off *now* answers every poll with that and this must not
+	/// loop on it — the exchange that follows reports it instead.
+	pub async fn drain(&mut self) -> usize {
+		/// esp-hal's `TwaiAsyncState::rx_queue` capacity.
+		const QUEUE_DEPTH: usize = 32;
+		let mut swept = 0;
+		while swept < QUEUE_DEPTH {
+			match with_timeout(EmbassyDuration::from_ticks(0), self.twai.receive_async()).await {
+				Ok(Err(_)) if self.twai.is_bus_off() => break,
+				Ok(_) => swept += 1,
+				Err(_elapsed) => break,
+			}
+		}
+		swept
+	}
 }
 
 impl CanBackend for TwaiBackend<'_> {

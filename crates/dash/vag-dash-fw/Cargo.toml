@@ -110,6 +110,18 @@ embassy-futures = "0.1.1"
 embassy-sync = "0.7.2"
 heapless = { version = "0.8.0", features = ["serde"] }
 
+[build-dependencies]
+# The plan generator, and it runs on the **laptop**, never on the chip.
+# `build.rs` asks it for `~/.vagcan/dash/<VIN>/plan.rs` and hands the path to
+# `src/plan.rs`, which `include!`s it — so `cargo build` of this crate *is*
+# the plan build, and the image can never be flashed with a plan older than
+# its input. It drags tokio, ratatui and SQLite behind it, none of which a C3
+# could hold; that is fine here because a build-dependency is compiled for
+# the host and linked into nothing. Resolver 2 keeps its features apart from
+# the target's, which is what stops its `std` builds of `vag-uds-client` and
+# friends from leaking into the `no_std` ones above.
+vag-cli-core = { path = "../../cli/vag-cli-core" }
+
 
 [profile.dev]
 # Rust debug is too slow.

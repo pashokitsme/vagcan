@@ -20,6 +20,7 @@
     holding buffers for the duration of a data transfer."
 )]
 
+use alloc::vec::Vec;
 use bt_hci::controller::ExternalController;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -30,22 +31,31 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::twai::filter::SingleStandardFilter;
+use esp_hal::twai::{BaudRate, StandardId, TwaiConfiguration, TwaiMode};
 use esp_hal::usb_serial_jtag::UsbSerialJtag;
 use esp_wifi::ble::controller::BleConnector;
 use log::{info, warn};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
+use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
+use vag_dash_fw::plan::{CHANNEL_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, Press, Visibility, ADVERTISE_WINDOW_SECS, DEBOUNCE_MS};
+use vag_dash_render::plan::{Page as PlanPage, Unit};
+use vag_uds_can::IsoTpCan;
+use vag_uds_client::identity::did;
+use vag_uds_client::{AsyncUdsClient, UdsError};
+use vag_uds_transport::{CanId, TransportError};
 
 extern crate alloc;
 
@@ -211,9 +221,52 @@ async fn main(spawner: Spawner) {
 	// wake the chip from deep sleep.
 	let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
 
+	// Which car this image is for, said once, before anything is asked of the
+	// bus: a plan and a car that disagree is the first thing to look for.
+	info!(
+		"plan: VIN {}, {} unit(s), {} channel(s), {} page(s), labels in {:?}",
+		PLAN.vin,
+		PLAN.units.len(),
+		PLAN.channels.len(),
+		PLAN.pages.len(),
+		PLAN.language
+	);
+	for unit in PLAN.units {
+		info!("plan: unit {:03X}/{:03X} part {}", unit.request, unit.response, unit.part_number);
+	}
+	note!(
+		"plan: VIN {} — {} unit(s), {} channel(s)",
+		PLAN.vin,
+		PLAN.units.len(),
+		PLAN.channels.len()
+	);
+
 	// Settings are read before the radio starts: a panel that cannot find its
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
+
+	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — see
+	// the pin table in `sleep.rs` for why those two. **Normal mode, not the
+	// listen-only default `can.rs` argues for**, and the reason is the whole
+	// job: a `0x22` request has to be transmitted, and a controller that
+	// cannot acknowledge cannot be answered either. What goes out is the same
+	// single-identifier read `vagcan watch` already puts on this bus from the
+	// laptop, through the same client and the same allowlist; nothing here can
+	// widen it.
+	let mut twai = TwaiConfiguration::new(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, BaudRate::B500K, TwaiMode::Normal);
+	// The controller is told which ids to hand up **before** it is started,
+	// because a car's powertrain bus is not quiet: the engine alone broadcasts
+	// thousands of frames a second, the driver's receive queue is 32 deep, and
+	// a full queue drops what arrives next. Without a filter that "next" is the
+	// answer to the request we just sent, and the first run on the car said so
+	// — every exchange opened by sweeping the queue's full 32 entries. The
+	// filter is the plan's own answer ids, so it narrows to what this image
+	// polls and nothing about any car reaches the source.
+	if let Some(filter) = response_filter() {
+		twai.set_filter(filter);
+	}
+	let twai = twai.into_async().start();
+	let backend = TwaiBackend::new(twai);
 
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);
 	let timer1 = TimerGroup::new(peripherals.TIMG0);
@@ -248,6 +301,9 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(heap_task()) {
 		warn!("SPAWN heap FAILED: {e:?}");
 	}
+	if let Err(e) = spawner.spawn(can_task(backend)) {
+		warn!("SPAWN can FAILED: {e:?}");
+	}
 
 	run(controller, settings).await;
 }
@@ -258,14 +314,32 @@ fn open_settings() -> Settings {
 			let (offset, len, used) = store.partition();
 			info!("config partition at 0x{offset:06x}, {len} bytes ({used} in use: 2 slots)");
 			match store.load() {
-				Ok(config) => {
-					info!("config loaded, generation {}: {config:?}", store.generation());
-					Settings {
-						store: Some(store),
-						config,
-						unsaved: false,
+				// A stored configuration is checked against *this* plan before
+				// it is trusted: it may have been saved by an image with more
+				// channels, and a cell past the end of the plan is nothing.
+				Ok(config) => match config.validate() {
+					Ok(()) => {
+						info!("config loaded, generation {}: {config:?}", store.generation());
+						Settings {
+							store: Some(store),
+							config,
+							unsaved: false,
+						}
 					}
-				}
+					Err(reason) => {
+						warn!(
+							"config generation {} does not fit this plan ({reason}), running on defaults",
+							store.generation()
+						);
+						// `unsaved`: what runs and what flash holds now disagree,
+						// and `state` should say so rather than claim they match.
+						Settings {
+							store: Some(store),
+							config: Config::default(),
+							unsaved: true,
+						}
+					}
+				},
 				Err(StoreError::Empty) => {
 					info!("nothing stored yet, running on defaults");
 					Settings {
@@ -581,23 +655,350 @@ async fn battery_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<
 	}
 }
 
-/// Labels and units for the bench, borrowed from `vag-dash`'s own example so
-/// this introduces no new data about any car. Real cells arrive in the plan
-/// (`01`); these exist so the *layout* can be judged before that lands.
-const FIXTURE: [(&str, &str, u8, f32, f32); 4] = [
-	("МАСЛО", "°C", 0, 70.0, 120.0),
-	("КОРОБКА", "°C", 0, 40.0, 95.0),
-	("ОЖ", "°C", 0, 70.0, 105.0),
-	("НАДДУВ", "bar", 2, 0.9, 2.1),
-];
+/// The last thing the car said about one channel, and when.
+///
+/// `value` is what the panel draws; `None` is a dash, never a zero. `at` is
+/// there so a value the bus stopped refreshing does not stay on the glass
+/// looking current — see [`STALE`].
+#[derive(Clone, Copy)]
+struct Slot {
+	value: Option<f32>,
+	at: Option<Instant>,
+}
 
-/// A triangle wave, so the panel moves without pulling in a trig function.
-/// Nothing here claims to be a measurement; it is a moving number.
-fn wobble(tick: u32, phase: u32, low: f32, high: f32) -> f32 {
-	let period = 120u32;
-	let t = (tick + phase * 17) % period;
-	let up = if t < period / 2 { t } else { period - t };
-	low + (high - low) * (up as f32) / ((period / 2) as f32)
+impl Slot {
+	const EMPTY: Slot = Slot { value: None, at: None };
+
+	/// The value, unless it is older than [`STALE`].
+	fn current(&self, now: Instant) -> Option<f32> {
+		let at = self.at?;
+		if now.saturating_duration_since(at) > STALE {
+			return None;
+		}
+		self.value
+	}
+}
+
+/// How old a value may be and still be shown. A poll cycle is well under a
+/// second; a value nobody has refreshed for five is a bus that went quiet,
+/// and the panel should say so rather than hold the last number.
+const STALE: Duration = Duration::from_secs(5);
+
+/// One slot per plan channel — the whole of what the CAN task tells the panel
+/// task. Sized by the plan, so a channel the plan does not have has nowhere to
+/// be stored, which is the same property `config.rs` has for cells.
+static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::new([Slot::EMPTY; CHANNEL_COUNT]);
+
+/// How long one `0x22` waits for its answer. Short on purpose: a unit that
+/// is there answers in milliseconds, and a unit that is not should not cost
+/// the others a second each.
+const READ_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(300);
+/// The most one exchange may take, all in. The transport's receive has
+/// [`READ_TIMEOUT`]; its send has no deadline of its own, and what every
+/// state of the controller does to a transmit future is not this loop's to
+/// find out — so the whole exchange gets one, and past it the request is
+/// dropped (which aborts the transmission) and counted as no answer.
+const EXCHANGE_DEADLINE: Duration = Duration::from_secs(1);
+/// Between two reads of one unit — a control unit's diagnostic server is not
+/// its day job, and back-to-back requests are how a server gets crowded.
+const READ_GAP: Duration = Duration::from_millis(50);
+/// Between two full passes over every unit.
+const CYCLE_GAP: Duration = Duration::from_millis(200);
+/// Between two passes when **no** unit answers — ignition off, most likely.
+/// The device hangs off permanent battery positive, and a request every third
+/// of a second is a request that may keep the gateway awake (`07-sleep.md`,
+/// `08-power.md`); one every two seconds is a different order of thing. This
+/// puts nothing to sleep; it only stops hammering a bus that is not listening.
+const DEAD_BUS_GAP: Duration = Duration::from_secs(2);
+/// After a bus-off, before the restarted controller is asked anything.
+const BUS_OFF_GAP: Duration = Duration::from_secs(1);
+
+/// What the part-number check has established about one unit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Check {
+	/// Not asked yet.
+	Pending,
+	/// Asked, no answer; said so once. Asked again next cycle — and a unit
+	/// that answered once and then fell silent comes back here, so that a bus
+	/// which has gone quiet is asked one thing per cycle, not everything.
+	Absent,
+	/// Answered with the part number the plan was built against.
+	Matched,
+	/// Answered with a different one. Never polled again this run: the plan's
+	/// identifiers would answer, plausibly, about a unit they were not
+	/// resolved for.
+	Mismatch,
+}
+
+/// The controller's acceptance filter: the ids this plan's units answer on.
+///
+/// Hardware filtering is not an optimisation here, it is what makes the
+/// answer arrive at all. The frames a powertrain bus carries are almost
+/// entirely other people's, esp-hal's async driver queues every accepted one
+/// in a 32-deep channel, and a `try_send` into a full channel drops the
+/// frame. So on a live bus an unfiltered controller fills that queue between
+/// the request and its answer, and the answer is what falls off the end.
+///
+/// The filter is one ESP32 "single standard" filter: an 11-bit code and, in
+/// this API's direction, a mask whose set bits are the ones that must match.
+/// Two answer ids that differ in one bit (`7E8`/`7E9` is the usual pair) cost
+/// that bit; ids scattered further make the filter a superset, which is
+/// harmless — [`vag_uds_can::IsoTpCan`] compares the id exactly, and always
+/// did. Data frames only: nothing in UDS is remote-transmission.
+///
+/// `None` when the plan polls nobody, since a filter matching nothing would
+/// be the same silence with a harder-to-find cause.
+fn response_filter() -> Option<SingleStandardFilter> {
+	/// An 11-bit id is all a standard filter can hold.
+	const SFF: u16 = 0x7FF;
+	let (mut common, mut any) = (SFF, 0u16);
+	for unit in PLAN.units {
+		common &= unit.response & SFF;
+		any |= unit.response & SFF;
+	}
+	if PLAN.units.is_empty() {
+		return None;
+	}
+	// A bit that is set in one answer id and clear in another cannot be
+	// insisted on, so it is dropped from the mask.
+	let must_match = !(any & !common) & SFF;
+	Some(SingleStandardFilter::new_from_code_mask(
+		StandardId::new(common)?,
+		StandardId::new(must_match)?,
+		// RTR clear, and that much is insisted on.
+		false,
+		true,
+		// Any payload: the first two bytes are an ISO-TP header, not a key.
+		[0, 0],
+		[0, 0],
+	))
+}
+
+/// One `0x22` exchange with one unit, and what came of it.
+struct Exchange {
+	backend: TwaiBackend<'static>,
+	answer: Result<Vec<u8>, UdsError>,
+	/// Entries swept out of the receive queue before asking.
+	swept: usize,
+}
+
+/// One exchange: sweep, wrap, ask, unwrap.
+///
+/// The wrappers are stateless, so building them per exchange costs nothing,
+/// and the sweep is what it buys: whatever the controller queued *since the
+/// last answer* — a reply that came in past its deadline, a frame from
+/// another tester on the same response id — is thrown away here rather than
+/// taken as this request's answer, which is how every read of a unit ends up
+/// one behind until a request gets nothing back.
+async fn exchange(mut backend: TwaiBackend<'static>, unit: &Unit, did: u16) -> Exchange {
+	let swept = backend.drain().await;
+	let mut uds = AsyncUdsClient::new(IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response)));
+	let answer = match with_timeout(EXCHANGE_DEADLINE, uds.read_data_by_identifier_within(did, READ_TIMEOUT)).await {
+		Ok(answer) => answer,
+		Err(_elapsed) => Err(UdsError::Transport(TransportError::Timeout)),
+	};
+	Exchange {
+		backend: uds.into_transport().into_backend(),
+		answer,
+		swept,
+	}
+}
+
+/// Nothing came back at all — as opposed to a refusal, which is an answer.
+fn silent(answer: &Result<Vec<u8>, UdsError>) -> bool {
+	matches!(answer, Err(UdsError::Transport(TransportError::Timeout)))
+}
+
+/// The controller after an exchange: restarted if it went bus-off, and the
+/// gap before the next request either way.
+///
+/// Bus-off is sticky. Once the controller has counted its way there, esp-hal
+/// answers every transmit and receive with `BusOff` until it is put through
+/// reset mode again — so without this, one bad moment on the bus would be
+/// dashes until somebody pulled the plug. `stop()` hands back the
+/// configuration, mode and all; `start()` clears the error counters and
+/// leaves reset; both keep the async driver.
+async fn settle(backend: TwaiBackend<'static>, answer: &Result<Vec<u8>, UdsError>, bus_off: &mut bool) -> TwaiBackend<'static> {
+	if let Err(UdsError::Transport(TransportError::Disconnected)) = answer {
+		if !*bus_off {
+			*bus_off = true;
+			note!("can: controller went bus-off — restarting it");
+		}
+		let backend = TwaiBackend::new(backend.into_twai().stop().start());
+		Timer::after(BUS_OFF_GAP).await;
+		return backend;
+	}
+	if *bus_off {
+		*bus_off = false;
+		note!("can: controller is back on the bus");
+	}
+	Timer::after(READ_GAP).await;
+	backend
+}
+
+/// Says, once, that the sweep found something. The mechanism is silent by
+/// design; one line is what proves it earned its place.
+fn sweep(swept: usize, unit: &Unit, did: u16, said: &mut bool) {
+	if swept > 0 && !*said {
+		*said = true;
+		note!(
+			"can: swept {swept} stale frame(s) before {:03X} {:04X} — a late reply, or another tester",
+			unit.request,
+			did
+		);
+	}
+}
+
+/// Polls the plan's channels off the car and keeps [`VALUES`] current.
+///
+/// **One conversation at a time, re-addressed per exchange** — the same
+/// shape as `vag-cli-core`'s `read_batch`, and not by accident: there is one
+/// CAN controller, one ISO-TP state, and a unit is a `(request, response)`
+/// pair the transport is built around. So the backend is wrapped for one
+/// read, unwrapped, swept, and wrapped for the next. No actor, no queue,
+/// nothing in flight while another unit is being asked.
+///
+/// Before a unit is polled its part number is read and compared to the
+/// plan's (`05`, "the car check"). This image is built for one car; on
+/// another the same identifiers answer and the answers mean something else.
+/// A mismatch is said once and the unit is left alone for the rest of the
+/// run. No answer is said once and retried — ignition off looks like that —
+/// and when no unit answers at all the retries slow to [`DEAD_BUS_GAP`].
+///
+/// Every failure lands in the store as `None` before anything else happens,
+/// so the panel never shows a number the bus has stopped confirming; what is
+/// *said* about a failure is said on the change, because the USB line is
+/// shared with the frame stream and a note per tick would be noise.
+#[embassy_executor::task]
+async fn can_task(mut backend: TwaiBackend<'static>) -> ! {
+	let mut checks = [Check::Pending; UNIT_COUNT];
+	// Per channel: whether the last read decoded, or `None` before the first.
+	let mut answering = [None::<bool>; CHANNEL_COUNT];
+	let mut swept_said = false;
+	let mut bus_off = false;
+	let mut dead_bus = false;
+
+	loop {
+		for (u, unit) in PLAN.units.iter().enumerate() {
+			if checks[u] == Check::Mismatch {
+				continue;
+			}
+			if checks[u] != Check::Matched {
+				let ex = exchange(backend, unit, did::PART_NUMBER).await;
+				sweep(ex.swept, unit, did::PART_NUMBER, &mut swept_said);
+				checks[u] = judge(unit, &ex.answer, checks[u]);
+				backend = settle(ex.backend, &ex.answer, &mut bus_off).await;
+				if checks[u] != Check::Matched {
+					continue;
+				}
+			}
+
+			let mut heard = false;
+			for (index, channel) in PLAN.channels_of(unit) {
+				let ex = exchange(backend, unit, channel.did).await;
+				sweep(ex.swept, unit, channel.did, &mut swept_said);
+				heard |= !silent(&ex.answer);
+				let value = ex.answer.as_ref().ok().and_then(|data| channel.decode(data));
+				store(index, value).await;
+
+				let slot = &mut answering[usize::from(index)];
+				if *slot != Some(value.is_some()) {
+					*slot = Some(value.is_some());
+					match &ex.answer {
+						Ok(data) if value.is_none() => note!(
+							"can: {:03X} {:04X} answered {} byte(s), the plan wants bits {}+{}",
+							unit.request,
+							channel.did,
+							data.len(),
+							channel.bit_offset,
+							channel.bit_length
+						),
+						Ok(_) => note!("can: {:03X} {:04X} {} is answering", unit.request, channel.did, channel.label),
+						Err(e) => note!("can: {:03X} {:04X} {}: {e}", unit.request, channel.did, channel.label),
+					}
+				}
+				backend = settle(ex.backend, &ex.answer, &mut bus_off).await;
+			}
+			// A unit that said nothing to a whole pass is asked one thing
+			// per cycle from here on — its part number — until it speaks.
+			if !heard && PLAN.channels_of(unit).next().is_some() {
+				checks[u] = Check::Absent;
+				note!("can: {:03X} went silent — will keep asking", unit.request);
+			}
+		}
+
+		let dead = UNIT_COUNT > 0 && checks.iter().all(|c| *c == Check::Absent);
+		if dead != dead_bus {
+			dead_bus = dead;
+			if dead {
+				note!("can: no unit answers — asking every {} s until one does", DEAD_BUS_GAP.as_secs());
+			} else {
+				note!("can: the bus is answering again");
+			}
+		}
+		Timer::after(if dead_bus { DEAD_BUS_GAP } else { CYCLE_GAP }).await;
+	}
+}
+
+/// What the unit's part number says, against the plan's.
+///
+/// `F187` carries the number padded — one trailing space on the reference
+/// car, and a NUL is the other thing a fixed-width field is padded with — so
+/// the padding is trimmed before comparing, exactly as the survey that the
+/// plan was built from trimmed it.
+fn judge(unit: &Unit, answer: &Result<Vec<u8>, UdsError>, previous: Check) -> Check {
+	match answer {
+		Ok(data) => {
+			let reported = core::str::from_utf8(data).map(|s| s.trim_end_matches([' ', '\0']));
+			match reported {
+				Ok(reported) if reported == unit.part_number => {
+					note!("can: {:03X} is {} as planned", unit.request, unit.part_number);
+					Check::Matched
+				}
+				Ok(reported) => {
+					note!(
+						"can: {:03X} is {reported:?}, the plan was built for {} — not polling it",
+						unit.request,
+						unit.part_number
+					);
+					Check::Mismatch
+				}
+				Err(_) => {
+					note!(
+						"can: {:03X} answered F187 with {:02X?}, not a part number — not polling it",
+						unit.request,
+						data
+					);
+					Check::Mismatch
+				}
+			}
+		}
+		Err(e) => {
+			if previous != Check::Absent {
+				note!("can: {:03X} did not answer F187 ({e}) — will keep asking", unit.request);
+			}
+			Check::Absent
+		}
+	}
+}
+
+/// Puts one reading in the store. `None` clears the slot, timestamp and all.
+async fn store(index: u16, value: Option<f32>) {
+	let mut values = VALUES.lock().await;
+	if let Some(slot) = values.get_mut(usize::from(index)) {
+		*slot = Slot {
+			value,
+			at: value.map(|_| Instant::now()),
+		};
+	}
+}
+
+/// The fixed range the plan gives a chart of this channel, if it gives one.
+fn chart_range(index: u16) -> Option<(f32, f32)> {
+	PLAN.pages.iter().find_map(|page| match page {
+		PlanPage::Chart { channel, min, max } if *channel == index => Some((*min, *max)),
+		_ => None,
+	})
 }
 
 /// Draws the current page and ships the pixels out of the USB port.
@@ -605,6 +1006,11 @@ fn wobble(tick: u32, phase: u32, low: f32, high: f32) -> f32 {
 /// This is the real renderer on real pixels: `vag_dash_render::draw` into a 256×64
 /// framebuffer. What the laptop shows is not an impression of the panel, it is
 /// the panel.
+///
+/// Labels, units and decimals come from the plan; values come from
+/// [`VALUES`], where the CAN task left them. A cell whose channel has not
+/// answered is drawn with `None`, and the renderer draws a dash. Nothing here
+/// invents a number.
 #[embassy_executor::task]
 async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>, settings: &'static Shared) -> ! {
 	use vag_dash_render::{draw, Cell, Frame, Theme};
@@ -613,17 +1019,24 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 	let framebuffer = FRAMEBUFFER.init(Framebuffer::new());
 	let theme = Theme::bold_mono();
 
-	// One sample per pixel column, oldest first — the chart's own rule.
+	// One sample per pixel column, oldest first — the chart's own rule. One
+	// sample is taken per frame, so the window is width ÷ frame rate, and
+	// that is only true of a trace with no holes in it: a frame with no
+	// value, or a frame that was not this chart, ends the trace, and the next
+	// value starts a new one. Joining across a gap would draw ten minutes on
+	// another page, or five seconds of silence, as one continuous line.
 	let mut history = [0.0f32; vag_dash_fw::panel::WIDTH];
 	let mut filled = 0usize;
-	let mut tick = 0u32;
+	// Which chart the previous frame drew, if it drew one.
+	let mut charted: Option<u16> = None;
 	let mut last_compromised = false;
+	// A chart page whose channel the plan gives no range for is said once.
+	let mut no_range_said: Option<u16> = None;
 
 	loop {
 		// Five frames a second: fast enough to look live over a terminal,
 		// slow enough that the encoding never becomes the bottleneck.
 		Timer::after(Duration::from_millis(200)).await;
-		tick = tick.wrapping_add(1);
 
 		let (kind, indices) = {
 			let s = settings.lock().await;
@@ -633,41 +1046,75 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 				None => continue,
 			}
 		};
+		// A copy, so the lock is held for a memcpy and not for a frame.
+		let values = *VALUES.lock().await;
+		let now = Instant::now();
+		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
+		// A cell the plan cannot name draws as a question mark rather than
+		// vanishing: a missing column hides the fault, a wrong one shows it.
+		let cell_of = |index: u16| match PLAN.channel(index) {
+			Some(channel) => Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals),
+			None => Cell::new("?", None, "", 0),
+		};
 
 		framebuffer.clear_all();
+		// What this frame charts, if anything; compared with `charted` next time.
+		let mut charting: Option<u16> = None;
 		let report = match kind {
 			PageKind::Values => {
 				let mut cells: heapless::Vec<Cell<'_>, 4> = heapless::Vec::new();
 				for index in indices.iter().take(4) {
-					let (label, unit, decimals, low, high) = FIXTURE[usize::from(*index) % FIXTURE.len()];
-					let _ = cells.push(Cell::new(label, Some(wobble(tick, u32::from(*index), low, high)), unit, decimals));
+					let _ = cells.push(cell_of(*index));
 				}
 				draw(&Frame::Values { cells: &cells }, &theme, framebuffer)
 			}
 			PageKind::Chart => {
 				let index = indices.first().copied().unwrap_or(0);
-				let (label, unit, decimals, low, high) = FIXTURE[usize::from(index) % FIXTURE.len()];
-				let value = wobble(tick, u32::from(index), low, high);
-				if filled < history.len() {
-					history[filled] = value;
-					filled += 1;
-				} else {
-					history.rotate_left(1);
-					history[history.len() - 1] = value;
+				match chart_range(index) {
+					Some((min, max)) => {
+						if charted != Some(index) {
+							filled = 0;
+						}
+						charting = Some(index);
+						let cell = cell_of(index);
+						match cell.value {
+							Some(value) if filled < history.len() => {
+								history[filled] = value;
+								filled += 1;
+							}
+							Some(value) => {
+								history.rotate_left(1);
+								history[history.len() - 1] = value;
+							}
+							None => filled = 0,
+						}
+						draw(
+							&Frame::Chart {
+								cell,
+								min,
+								max,
+								samples: &history[..filled],
+								window_seconds: filled as f32 * 0.2,
+							},
+							&theme,
+							framebuffer,
+						)
+					}
+					// No range means no chart: the range is fixed by the plan
+					// or there is none, and autoscale is not a fallback (`02`).
+					// The value is still shown, as a one-cell page.
+					None => {
+						if no_range_said != Some(index) {
+							no_range_said = Some(index);
+							note!("panel: the plan has no chart range for channel {index} — showing it as a value");
+						}
+						let cells = [cell_of(index)];
+						draw(&Frame::Values { cells: &cells }, &theme, framebuffer)
+					}
 				}
-				draw(
-					&Frame::Chart {
-						cell: Cell::new(label, Some(value), unit, decimals),
-						min: low,
-						max: high,
-						samples: &history[..filled],
-						window_seconds: filled as f32 * 0.2,
-					},
-					&theme,
-					framebuffer,
-				)
 			}
 		};
+		charted = charting;
 		// The renderer reports what it had to compromise — a label too long,
 		// a unit it had to drop. It is the same answer every frame, so say it
 		// when it changes and never otherwise.
@@ -823,11 +1270,16 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 					let _ = write!(out, "err: no config partition on this board");
 				}
 				Some(store) => match store.load() {
-					Ok(config) => {
-						s.config = config;
-						s.unsaved = false;
-						let _ = write!(out, "ok: reloaded from flash");
-					}
+					Ok(config) => match config.validate() {
+						Ok(()) => {
+							s.config = config;
+							s.unsaved = false;
+							let _ = write!(out, "ok: reloaded from flash");
+						}
+						Err(reason) => {
+							let _ = write!(out, "err: stored config does not fit this plan — {reason}");
+						}
+					},
 					Err(e) => {
 						let _ = write!(out, "err: {e:?}");
 					}

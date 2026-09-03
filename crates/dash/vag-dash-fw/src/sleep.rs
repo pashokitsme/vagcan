@@ -42,7 +42,7 @@
 //! | pin | RTC | ADC | assignment | why this one |
 //! |---|---|---|---|---|
 //! | `GPIO0` | yes | ADC1_CH0 | free | kept for a second analog input |
-//! | `GPIO1` | yes | ADC1_CH1 | free | kept for a second analog input |
+//! | `GPIO1` | yes | ADC1_CH1 | **TWAI RX** — from the transceiver's `RXD` | an RTC pin, so a dominant bit on the bus can wake the chip later |
 //! | `GPIO2` | yes | ADC1_CH2 | **avoid** | strapping pin, sampled at reset |
 //! | `GPIO3` | yes | ADC1_CH3 | free | kept for a second wake pin |
 //! | `GPIO4` | yes | ADC1_CH4 | **rail sense** — divider from OBD pin 16 | has to be ADC1, and is not a strapping pin |

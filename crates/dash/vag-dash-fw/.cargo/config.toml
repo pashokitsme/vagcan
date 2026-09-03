@@ -1,5 +1,13 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --monitor --chip esp32c3"
+# `--partition-table` is not optional here. Without it espflash writes its own
+# default table — `nvs`, `phy_init`, and a `factory` filling the rest — and the
+# board comes up with no `config` partition at all, so `store.rs` finds nothing
+# to save settings in and `health.rs` has nowhere to leave a panic. The device
+# says both at boot ("no settings storage (NoPartition)", "no panic storage")
+# and then runs on defaults for as long as it is powered, which is exactly what
+# the first flash of the real-CAN image did. `partitions.csv` is beside this
+# file, and cargo runs the runner from the package directory.
+runner = "espflash flash --monitor --chip esp32c3 --partition-table partitions.csv"
 
 [env]
 ESP_LOG="warn"
