@@ -1,10 +1,12 @@
 # dash / CAN bring-up on the car — hand-off
 
-**State, 2026-09-04.** The firmware polls the car for real (`todo/dash/05`), it has
-been flashed and run on the reference car once, and **no control unit answered**.
-Two firmware defects were found and fixed on the way; a third, hardware-side
-cause is still open. This document is what the next session needs so it does not
-repeat the search.
+**State, 2026-09-04, evening.** The firmware polls the car for real
+(`todo/dash/05`), it has been flashed and run on the reference car, and **no
+control unit answered**. Two firmware defects were found and fixed on the way.
+The third cause was found the same evening and it is not on the board: **the
+home-made OBD plug**, whose CAN pins had come loose in solder-warped plastic and
+only touched the socket while the plug was pressed in by hand (§5). It is being
+rebuilt; the run after that is the checkpoint.
 
 Everything below was measured, not reasoned about. Where something is an
 inference it says so, and one inference that turned out to be wrong is recorded
@@ -167,28 +169,72 @@ Pin numbering used throughout, from SLOS346O §7: `1 D`, `2 GND`, `3 V_CC`,
 wins. **Do not re-open the hunt on the strength of a voltmeter reading on that
 pin.**
 
-## 5. What is still unexplained
+## 5. Found: the OBD plug
 
-On the car, our frames were not acknowledged. Every node that receives a valid
-frame acknowledges it in hardware, unconditionally — so either the frames did not
-reach the car's pair, or they arrived malformed.
+Written after the search, in the order the evidence came, because the order is
+the lesson.
 
-Untested link, and the only one left: **`CANH`/`CANL` from the module to the OBD
-plug and into the car.** Reception worked over that same pair, which proves it is
-connected — but a differential receiver decodes on a marginal pair (one line
-open, the other biased internally) far more readily than a driver can put a
-dominant bit onto one that other nodes will see. So "we heard the car" does not
-imply "the car can hear us".
+**The set-up nobody had written down.** The board and the CANable share **one
+home-made OBD-II plug**; the pair leaves it as two wires and reaches both. Two
+things follow. Any fault in that plug takes out both adapters at once. And the
+board is on the bus whenever the plug is in the car, monitor or no monitor,
+because the MP1584EN feeds it from pin 16 — "only the CANable on the bus" was
+never true with this harness, and the board's frames, being valid, are simply
+acknowledged by the CANable when it is active; they jam nothing.
 
-Two further candidates, both cheap to exclude:
+**What was measured, at the wire ends, plug in the car.**
 
-- **Two supplies fighting.** The board's own documentation says USB and external
-  power are mutually exclusive. On the car it was fed from the MP1584EN *and*
-  plugged into the laptop for the monitor. VBUS is Schottky-isolated on this
-  board, but the `3.3` pad is the regulator's output node, so back-feeding it
-  while USB powers the same rail is exactly the case the vendor warns about.
-- **The shared ground through the buck.** The transceiver's ground reaches the
-  ESP through the MP1584EN's ground plane rather than directly.
+| | ignition | reading | says |
+|---|---|---|---|
+| red – black | off | 12.51 V | pin 16 and a ground are right |
+| blue – green, plug held in by hand | off | 69 Ω | both lines reach the pair, *while pressed* |
+| blue – green, plug released | off | **open** | they do not, in the position the plug actually runs in |
+| blue / green – black | off | open | normal on a sleeping bus, proves nothing |
+
+**What the day's runs said, once the plug is known.** The second car run
+received nothing at all — no `swept`, no bus-off, only timeouts — where the
+first run had swept 32 frames at boot. Between the two runs the wires had been
+re-soldered onto the plug to match colours, and that is when the pins let go.
+`vagcan info` over the CANable, which had worked on this car, failed on the same
+plug in **both** polarities of the pair. ODIS Engineering, over `CAN` and `KL15`
+on its own cable, read the car normally throughout. Car fine, board plausibly
+fine, CANable plausibly fine, plug shared by exactly the two that failed.
+
+**Two readings that misled, so the next reader is not misled by them.**
+
+- **69 Ω is not 60 Ω.** Two 120 Ω terminators and a metre of probe lead read
+  60–61 Ω. The extra eight or nine ohms were contact resistance in the loose
+  pins, and were the first hint, read as meter error.
+- **A static ohm reading with the plug held is not a contact test.** It shows
+  the pins *can* touch, not that they *do* touch once the hand is off. Measure
+  released, then wiggle the plug and the wires at the root; a pin pushed back
+  into warped plastic drops out exactly when the plug is seated and let go.
+
+**Candidates from the first draft of this section, closed:**
+
+- *Two supplies fighting* — withdrawn. The buck drives the `3.3` pad, which is
+  the on-board ME6211's output; with USB present the LDO holds that node at
+  3.3 V under a 5 V input, which is its normal operating point, and the
+  MP1584EN is non-synchronous and cannot sink, so it merely stops switching.
+  The vendor's warning is about the `5V` pad on boards without the Schottky,
+  which this harness leaves unconnected. Powering from both is fine. The only
+  real effect is a ground loop if the laptop is on a car charger — noise, not
+  a dead transmitter.
+- *One line open reads ≈120 Ω* — wrong, and now removed from §6. An open line
+  reads open; the ohmmeter across a pair with one side missing sees no path.
+  What one loose line actually produced was the reading above: a value that
+  depended on the hand.
+- *`CANH`/`CANL` polarity* — not the cause here, but the check is cheap and was
+  skipped for a while: ignition on, DC volts to ground, `CANH` above 2.5 V,
+  `CANL` below. A swapped pair receives nothing and is heard by nobody, which
+  is the same symptom as an open one; the voltmeter tells them apart.
+
+**The fix** is a new plug — pins in heat-warped plastic go again on the next
+insertion, glue or no glue — with the four wires re-soldered pin by pin, with
+pauses, so the housing is not warped a second time. From the solder side, wide
+edge up: top row 1–8 left to right, bottom row 9–16. Black on 4 or 5, blue on
+6, green on 14, red on 16. Blue must share a row with black, green with red;
+all four in one row is wrong before any meter is reached.
 
 ## 6. The next experiment — CANable in parallel on the car
 
@@ -227,14 +273,14 @@ within a second or two of starting.
 
 ### The one measurement worth taking first
 
-Ignition off, board unpowered, OBD plug in the car, ohmmeter across the module's
-`CANH` and `CANL`:
+Ignition off, board unpowered, OBD plug in the car **and not held**, ohmmeter
+across the module's `CANH` and `CANL`, then wiggle the plug:
 
-- **≈60 Ω** — both lines reach the car's pair (its two 120 Ω terminators in
-  parallel). The transceiver's own 20–50 kΩ per line does not disturb this.
-- **≈120 Ω** — only one line arrives. That is the fault, and it explains
-  receiving while being unable to transmit.
-- **open** — neither arrives.
+- **≈60 Ω, steady** — both lines reach the car's pair (its two 120 Ω
+  terminators in parallel). The transceiver's own 20–50 kΩ per line does not
+  disturb this.
+- **anything else** — a value that moves, sits well above 60, or is open — the
+  plug (§5). Do not run anything until it reads 60 on its own.
 
 ## 7. State of the tree
 
