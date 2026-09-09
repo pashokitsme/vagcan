@@ -256,23 +256,8 @@ impl Extracted {
 		if self.is_empty() {
 			return Vec::new();
 		}
-		let Some(odx_name) = odx_name else { return Vec::new() };
-		let version = version.unwrap_or("");
-		let mut ranked: Vec<(OdxMatch, &String)> = self
-			.variants
-			.iter()
-			.filter_map(|name| odx_match(name, odx_name, version).map(|rank| (rank, name)))
-			.collect();
-		if ranked.is_empty() {
-			return Vec::new();
-		}
-		// `OdxMatch` orders best-first, so the minimum is the best rank there is.
-		let best = ranked.iter().map(|(rank, _)| *rank).min().expect("ranked is not empty");
-		ranked.retain(|(rank, _)| *rank == best);
-		ranked.sort_by(|a, b| a.1.cmp(b.1));
-
 		let mut out: Vec<(MeasurementDef, Option<String>)> = Vec::new();
-		for (_, name) in ranked {
+		for name in best_variants(&self.variants, odx_name, version) {
 			let Ok(readings) = vag_data_db::readings_of(&self.cache, name) else {
 				continue;
 			};
@@ -296,6 +281,34 @@ impl Extracted {
 		}
 		out
 	}
+}
+
+/// The variant names a unit's `F19E`/`F1A2` pick out of a list, best rank only.
+///
+/// **The one rule for matching a unit to its ODIS variants**, shared by the
+/// channels ([`Extracted::for_unit`]) and the fault texts (`vagcan faults`),
+/// so that a code is named from the same variants a channel is scaled from.
+/// Both identifiers are passed through exactly as the car answered them —
+/// [`odx_match`] normalises inside.
+///
+/// A `Family` match is a right family with an unconfirmed variant, and when an
+/// `Exact` or a `Version` match exists the family ones are guesses standing
+/// next to an answer; so only the best rank is kept, sorted by name so a run
+/// reports the same variant every time.
+pub fn best_variants<'a>(variants: &'a [String], odx_name: Option<&str>, version: Option<&str>) -> Vec<&'a String> {
+	let Some(odx_name) = odx_name else { return Vec::new() };
+	let version = version.unwrap_or("");
+	let mut ranked: Vec<(OdxMatch, &String)> = variants
+		.iter()
+		.filter_map(|name| odx_match(name, odx_name, version).map(|rank| (rank, name)))
+		.collect();
+	let Some(best) = ranked.iter().map(|(rank, _)| *rank).min() else {
+		return Vec::new();
+	};
+	// `OdxMatch` orders best-first, so the minimum is the best rank there is.
+	ranked.retain(|(rank, _)| *rank == best);
+	ranked.sort_by(|a, b| a.1.cmp(b.1));
+	ranked.into_iter().map(|(_, name)| name).collect()
 }
 
 /// One extracted channel as the rest of this tool speaks about channels.

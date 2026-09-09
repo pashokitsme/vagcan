@@ -83,6 +83,17 @@ const TEXT_TABLES: &[&str] = &["TTTEXT.ROD", "TTText-RUS.rod"];
 /// `Code-RUS.dat` in the Russian one.
 pub(crate) const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
 
+/// The language a VCDS build's fault-text file is in, as ISO 639-2, from its
+/// name — the only place the build says. Recorded on the source the same way
+/// an ODIS project's `<LANGUAGE>` is, so the two can be compared.
+fn codes_language(file_name: &str) -> Option<&'static str> {
+	match file_name {
+		"Codes.dat" => Some("eng"),
+		"Code-RUS.dat" => Some("rus"),
+		_ => None,
+	}
+}
+
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
 /// `RD.rod` is the fault registry — the hop from a unit's own fault number to
@@ -598,12 +609,28 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	println!("Reading the ODIS project at {}", dir.display());
 	let source = dir.display().to_string();
 
-	println!("[1/2] Control units — walking each variant's measurement chain.");
+	println!("[1/2] Control units — walking each variant's measurement chain and fault table.");
 	let variants = odis.variants().with_context(|| format!("listing the variants of {}", dir.display()))?;
+	// The language the project declares for itself, on its source row — the
+	// fault texts carry none of their own (`vag_data_labels::odis::Project::language`).
+	if let Some(language) = odis.language() {
+		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, &source, language)
+			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", dir.display(), project.cache().display()))?;
+	}
 	let (mut with_channels, mut channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
+	let (mut with_faults, mut codes) = (0usize, 0usize);
 	let mut progress = crate::progress::Line::new();
 	for (at, variant) in variants.iter().enumerate() {
 		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
+		// The fault table first, and separately: a variant whose measurement
+		// chain will not read still names its codes, and the other way round.
+		if let Ok(faults) = odis.faults(variant)
+			&& !faults.is_empty()
+		{
+			codes += vag_data_db::put_faults(&project.cache(), &source, &variant.name, &faults)
+				.map_err(|e| anyhow::anyhow!("writing {}'s fault codes to {}: {e}", variant.name, project.cache().display()))?;
+			with_faults += 1;
+		}
 		let readings = match odis.readings(variant) {
 			Ok(readings) => readings,
 			// The refusal list is enforced by the parser and honoured here: a
@@ -633,7 +660,10 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	let units = Step::Wrote {
 		what: "the control units this project describes",
 		path: project.cache(),
-		detail: format!("{with_channels} of {} variants, {channels} channels{skipped}", variants.len()),
+		detail: format!(
+			"{with_channels} of {} variants, {channels} channels{skipped}; {with_faults} with fault text, {codes} codes",
+			variants.len()
+		),
 	};
 
 	println!("[2/2] Names — every object in every pool, for the (text id, name)\n      pairs they carry.");
@@ -799,6 +829,16 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 fn label_cache(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Step> {
 	println!("[2/4] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
+	// The language of this build's fault text, on the same source row the
+	// label files were written under, so that `faults` can tell a VCDS source
+	// in one language from an ODIS project in another.
+	if let Some(language) =
+		locate(root, CODES_FILES, "fault text file", ".dat")?.and_then(|codes| codes.file_name().and_then(|n| n.to_str()).and_then(codes_language))
+	{
+		let labels = crate::labels::label_dir_under(root)?;
+		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &labels.to_string_lossy(), language)
+			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", root.display(), project.cache().display()))?;
+	}
 	Ok(Step::Wrote {
 		what: "the label files",
 		path: project.cache(),
