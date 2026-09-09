@@ -42,6 +42,12 @@ path = "./src/bin/cantest.rs"
 name = "rxwatch"
 path = "./src/bin/rxwatch.rs"
 
+# Continuous bench transmitter — flash it, sniff the CANable, see whether the
+# board's frames reach the pair. Transmits, so bench only.
+[[bin]]
+name = "cantx"
+path = "./src/bin/cantx.rs"
+
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
 esp-hal = { version = "=1.0.0-rc.0", features = [

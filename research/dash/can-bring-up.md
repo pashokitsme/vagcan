@@ -326,6 +326,13 @@ terminated bus does not. Everything upstream — the C3, `GPIO6`, the TWAI
 controller, the ISO-TP/UDS stack — is proven, and the plug, once rebuilt,
 reads 60 Ω.
 
+**One command for the bench: `research/dash/bench.sh`.** Flashes `cantx`
+(a continuous `7E0` transmitter, bench-only) to the ESP, then sniffs the pair
+over the CANable and prints PASS/FAIL — the board's `7E0` in the capture is
+the transmit path proven. `bench.sh 30` for a longer listen, `bench.sh 15 dash`
+to flash `dash` instead. It finds the CANable by its fixed serial and the ESP
+by exclusion; a wedged ESP port wants a BOOT-held replug first.
+
 **The bench is now the whole test.** No car needed: `dash` (or any board
 transmit) plus CANable's `E` register and a `sniff` is the fault, and the fix
 is proven the moment CANable's `sniff` shows the board's `7E0` and its
