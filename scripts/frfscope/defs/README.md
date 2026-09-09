@@ -3,7 +3,7 @@
 TunerPro XDF definitions used to name maps in a Simos18 calibration. All are
 community definitions from [`joeFischetti/SimosDefinitions`](https://github.com/joeFischetti/SimosDefinitions)
 — the only public Simos18 corpus. **None targets our software version**; see
-`../../../research/stage1-frf-pipeline.md`.
+`../../../research/tuning/stage1-frf-pipeline.md`.
 
 frfscope picks the **alphabetically first** `*.xdf` here when `--xdf` is omitted,
 so the preferred default must sort first. Today that is `SC8S30_…` — deliberate,

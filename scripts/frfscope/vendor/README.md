@@ -1,4 +1,4 @@
-# scripts/vendor
+# scripts/frfscope/vendor
 
 Local checkouts of external tools that `scripts/` depends on. Nothing here is
 committed (see `.gitignore`) — each is cloned on the machine that needs it.
