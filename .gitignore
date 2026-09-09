@@ -80,3 +80,6 @@ vendor/vcds-*/
 # git — and it is never deleted, only kept somewhere git does not carry it.
 # Rooted (`/*.csv`, not `*.csv`) so a fixture a test needs is still trackable.
 /*.csv
+
+# The frame is one owner's printed part: FreeCAD sources and their STL/STEP/PNG exports stay local.
+research/dash/frame/
