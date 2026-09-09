@@ -86,13 +86,15 @@
 //! and vice versa — but the work to *exhaust* a search (the shifted-file worst
 //! case) is a flat 16× less cascade for the same `parse_full`/inflate count.
 //!
-//! Work assigned to threads is now `(group, deflate byte 2)` tasks from a shared
-//! cursor rather than a contiguous byte-1 slice per thread, so the ~2 000 tasks
-//! keep all cores busy even when the true key sits in one cheap subtree.
+//! The unit of work handed to a core is a `(group, deflate byte 2)` task, and
+//! rayon's work-stealing schedules them — ~2 000 tasks over few cores is what
+//! keeps every core busy even when the true key sits in one cheap subtree. A
+//! worker that panics used to be swallowed by its thread's `join` and reported
+//! as "no hit"; under rayon the panic propagates to the caller instead.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rayon::prelude::*;
 
 use crate::rod::{KEY_ROD, MT, OFF_ROD, rod_block0_iv};
 use crate::tea::{tea_cbc_decrypt, tea_decrypt_block};
@@ -833,7 +835,6 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize, known_a
 	// plaintext[0..3] = t[0..3] ^ iv[0..3]; for a classic file iv[0..3] is
 	// exact, so the anchor comes for free and the reduced sets are valid.
 	let classic = t[0] ^ iv0[0] == 0x78 && t[1] ^ iv0[1] == 0xda;
-	let tail = Arc::new(tail);
 	if classic {
 		return search_anchor(tag, &t, &tail, plainlen, t[2] ^ iv0[2], false);
 	}
@@ -850,13 +851,11 @@ pub(crate) fn recover_iv3to8(tag: &[u8], cipher: &[u8], plainlen: usize, known_a
 /// construction, and a shifted file XORs a mask over its output — so on those
 /// files the true bytes sit outside the reduced sets and a reduced search
 /// returns a clean miss however long it runs.
-fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &Arc<Vec<u8>>, plainlen: usize, d0: u8, full_sets: bool) -> Option<[u8; 5]> {
+fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &[u8], plainlen: usize, d0: u8, full_sets: bool) -> Option<[u8; 5]> {
 	let sets: [Vec<u8>; 5] = match full_sets {
 		true => std::array::from_fn(|k| (0..=255u8).map(|v| t[k + 3] ^ v).collect()),
 		false => candidate_sets(tag[1], t),
 	};
-
-	let tail = Arc::clone(tail);
 
 	// Group deflate byte-1 candidates by HCLEN-low (its top three bits). The
 	// cheap filter reads byte 1 only for HDIST (low five bits, discarded) and
@@ -869,59 +868,36 @@ fn search_anchor(tag: &[u8], t: &[u8; 8], tail: &Arc<Vec<u8>>, plainlen: usize, 
 	}
 	groups.retain(|g| !g.is_empty());
 
-	let sets = Arc::new(sets);
-	let groups = Arc::new(groups);
-	// Task = (group index, deflate byte 2). A shared cursor hands them out so a
-	// cheap subtree does not leave a core idle (thousands of tasks, few cores).
-	let d2set: Vec<u8> = sets[1].clone();
+	// Task = (group index, deflate byte 2). Rayon's work-stealing hands them out
+	// so a cheap subtree does not leave a core idle (thousands of tasks, few
+	// cores). `found` is what lets a worker abandon a deep subtree once another
+	// has the key. At most one key matches, so `find_map_any` — whichever worker
+	// finishes first — is the same answer a first-found scan would give.
+	let d2set: &[u8] = &sets[1];
 	let ntasks = groups.len() * d2set.len();
-	let found = Arc::new(AtomicBool::new(false));
-	let result: Arc<Mutex<Option<[u8; 5]>>> = Arc::new(Mutex::new(None));
-	let cursor = Arc::new(AtomicUsize::new(0));
-	let nthreads = thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-
-	let mut handles = Vec::new();
-	for _ in 0..nthreads {
-		let sets = Arc::clone(&sets);
-		let groups = Arc::clone(&groups);
-		let d2set = d2set.clone();
-		let tail = Arc::clone(&tail);
-		let found = Arc::clone(&found);
-		let result = Arc::clone(&result);
-		let cursor = Arc::clone(&cursor);
-		handles.push(thread::spawn(move || {
-			let search = Search {
-				d0,
-				tail: &tail,
-				sets: &sets,
-				found: &found,
-			};
-			// One set of buffers per worker, reused for every confirmation.
-			let mut scratch = Scratch::new(d0, &tail, plainlen);
-			loop {
-				if found.load(Ordering::Relaxed) {
-					break;
-				}
-				let task = cursor.fetch_add(1, Ordering::Relaxed);
-				if task >= ntasks {
-					break;
-				}
+	let found = AtomicBool::new(false);
+	let search = Search {
+		d0,
+		tail,
+		sets: &sets,
+		found: &found,
+	};
+	let guess = (0..ntasks)
+		.into_par_iter()
+		// One set of buffers per worker, reused for every confirmation.
+		.map_init(
+			|| Scratch::new(d0, tail, plainlen),
+			|scratch, task| {
 				let g = &groups[task / d2set.len()];
 				let d2 = d2set[task % d2set.len()];
-				if let Some(hit) = search.run_task(g, d2, &mut scratch) {
-					*result.lock().unwrap() = Some(hit);
-					found.store(true, Ordering::Relaxed);
-					break;
-				}
-			}
-		}));
-	}
-	for h in handles {
-		let _ = h.join();
-	}
+				let hit = search.run_task(g, d2, scratch)?;
+				found.store(true, Ordering::Relaxed);
+				Some(hit)
+			},
+		)
+		.find_map_any(|h| h)?;
 
 	// Convert recovered plaintext[3..8] into raw iv[3..8]: iv[i] = t[i] ^ p[i].
-	let guess = (*result.lock().unwrap())?;
 	Some(std::array::from_fn(|k| t[k + 3] ^ guess[k]))
 }
 
