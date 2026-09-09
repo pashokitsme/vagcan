@@ -112,6 +112,12 @@ pub struct LayerData {
 	/// `(short name, reference)` for every diagnostic service. The measurement
 	/// chain starts by looking up [`RDBI_MEASUREMENT`] here.
 	pub services: Vec<(Option<String>, Ref)>,
+	/// The short names of the layer's fault-code data object properties —
+	/// `DTCDOP_VAGUDS` on nearly every variant of the reference project. Each
+	/// is a key into [`LayerData::properties`], where the entry's reference
+	/// names the `DB_DOP_DTC` object itself. Empty for a layer with no fault
+	/// memory of its own; a variant then inherits its parents'.
+	pub dtc_properties: Vec<String>,
 	/// `(ObjectID, reference)` for every data object property, which is how a
 	/// reference that omits its pool is resolved.
 	pub properties: Vec<(Option<String>, Ref)>,
@@ -283,13 +289,14 @@ fn layer_head(stream: &mut Stream<'_>) -> Result<LayerData, Error> {
 	};
 
 	let services = diag_com_reference_map(stream)?;
-	let _dtc_properties = name_list(stream)?;
+	let dtc_properties = name_list(stream)?;
 	let properties = reference_map(stream, false)?;
 	let tables = reference_map(stream, true)?;
 	Ok(LayerData {
 		layer,
 		variant,
 		services,
+		dtc_properties,
 		properties,
 		tables,
 		parents: Vec::new(),

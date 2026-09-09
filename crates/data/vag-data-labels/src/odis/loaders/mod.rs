@@ -42,6 +42,7 @@
 use super::Error;
 use super::object::Stream;
 
+pub mod dtc;
 pub mod identity;
 pub mod measurement;
 
@@ -448,6 +449,10 @@ pub enum Object {
 	LayerData(identity::LayerData),
 	/// `MCD_DB_ECU_VARIANT` — one control unit's exact software identity.
 	EcuVariant(identity::EcuVariant),
+	/// `DB_DOP_DTC` — a variant's fault-code table.
+	DtcDop(dtc::DtcDop),
+	/// `MCD_DB_DIAG_TROUBLE_CODE` — one fault code's number, display code and text.
+	TroubleCode(dtc::TroubleCode),
 }
 
 /// Parse one inflated member.
@@ -485,6 +490,8 @@ pub fn load(type_code: u16, stream: &mut Stream<'_>) -> Result<Outcome, Error> {
 			return Ok(Outcome::Object(Object::LayerData(layer)));
 		}
 		code::MCD_DB_ECU_VARIANT => Object::EcuVariant(identity::ecu_variant(stream)?),
+		code::DB_DOP_DTC => Object::DtcDop(dtc::dtc_dop(stream)?),
+		code::MCD_DB_DIAG_TROUBLE_CODE => Object::TroubleCode(dtc::trouble_code(stream)?),
 		other => return Ok(Outcome::Unsupported(other)),
 	};
 	stream.end()?;
