@@ -13,7 +13,7 @@ its feature list.
 
 **The device resolves nothing. It executes a plan.**
 
-`vagcan dash build` runs on the laptop, where the catalogs are, and emits a plan: for
+`vagcan dev dash build` runs on the laptop, where the catalogs are, and emits a plan: for
 every cell on every page, the unit address, the identifier, bit offset and length, byte
 order, the linear scaling, the unit string, and the label **already rendered** in the
 chosen language. The firmware links that plan in and does exactly one thing at run time:
@@ -300,3 +300,38 @@ ADC that works with the whole CAN side unpowered; **sleep on the ignition going 
 read from the bus while we are still awake to read it, **or fifteen minutes idle**. Cheap
 sensor to come up, rich signal to go down. "No answer" plays no part — it is the same
 input the moving-car guard reads as *moving*.
+
+## Status (2026-09-10) — the firmware reads the car, and the transceiver does not reach it
+
+**Done since 2026-08-20.** `01` (the plan format) shipped as `vag_dash_render::plan`
+plus the generator `vagcan dev dash build <VIN>` (`6185c32`); the firmware's `build.rs`
+runs the same generator and `include!`s the result, so an image can never carry a plan
+older than its input. `05`'s software half shipped (`9ca3547`): `can_task` owns the
+TWAI controller in `Normal` mode on `GPIO1`/`GPIO6`, checks each unit's `F187` against
+the plan before polling it, polls one conversation at a time through the same
+`IsoTpCan` the laptop uses, filters the receive queue to the plan's answer ids, and
+restarts after bus-off. Nothing on the panel is invented: a channel without a fresh
+reading is a dash. The firmware crate is edition 2024 (`85df0aa`).
+
+**Blocked on hardware, and the block is named.** Three car runs, no unit ever answered.
+The search — a warped OBD plug, a blown socket fuse, a broken trace on the CANable —
+each found and fixed a real fault and none was the one. The one is the blue
+SN65HVD230 module: **a counterfeit chip that receives perfectly and is heard by
+nobody**, proven on the car against the gateway (a known-good receiver, since ODIS
+reads the car over CAN) and on a two-node bench, at 500 and 125 kbit/s. Everything
+upstream is proven. The record is `research/dash/can-bring-up.md`, §5.3 for the
+diagnosis and the two fixes: a genuine `SN65HVD230D` on the same footprint, or the
+CANable Pro's `ADM3050E` shared at 3.3 V as `05` designed.
+
+**Bench tools**, all in `crates/dash/vag-dash-fw/src/bin/` and listed with their
+car-safety in `research/dash/README.md`: `rxwatch` (listen-only, may see a car),
+`cantx`, `cantest`, `rxprobe` (transmit or hold a level — bench only), and
+`research/dash/bench.sh`, one command that flashes a transmitter and sniffs on the
+CANable. Its `PASS` is unambiguous; its `FAIL` is not until the CANable's receive
+has been shown to work.
+
+**Order from here:** the transceiver, then `bench.sh` to `PASS`, then the car with
+`rxwatch` in `Normal` mode before `dash` — the heartbeat dropping from 3106/s to 2 Hz
+is the first dominant bit of ours the gateway will have registered. Then the OLED on
+the carrier (`02`/`03` already render it on the laptop). `07`/`08` stay deferred.
+

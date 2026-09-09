@@ -13,7 +13,7 @@ documents are records of things that did **not** work. Tidying is the operation 
 likely to throw those away.
 
 So the core principle is: **nothing leaves without a destination.** Not deleted —
-moved. Research goes to `archive/`, a one-shot tool becomes a subcommand, a fact goes
+moved. Research goes to `.archive/`, a one-shot tool becomes a subcommand, a fact goes
 to the file that owns that kind of fact. The only thing a cleanup pass may actually
 delete is code that no longer compiles into anything.
 
@@ -75,7 +75,7 @@ Rules for the writing itself:
 
 ### Phase 3 — archive research, and re-check the refutation first
 
-Before moving a research file to `archive/`, establish which it is:
+Before moving a research file to `.archive/`, establish which it is:
 
 - **A dead end that is still true** — archive it. It is what stops a future session
   paying for the same negative result twice. Keep the reasoning; a bare "does not
@@ -170,6 +170,28 @@ and says whether the car is needed — that single fact decides what can be done
 tonight. An item nobody can start without a drive belongs in its own section, not
 mixed in.
 
+### Rules established on the 2026-09-10 pass
+
+- **`research/` and `todo/` keep old command spellings on purpose.** `f21897f` moved
+  commands and left those logs unedited, because they record what was typed on a
+  given day and editing them falsifies the record. A cleanup pass fixes a command's
+  name only in forward-looking text (a design statement, a table presented as
+  current), and puts one mapping table — old spelling → current — in the dated
+  status at the top of `todo/README.md`. Do not sweep the logs.
+- **A directory move is a reference sweep, not a `git mv`.** Moving `research/labels`,
+  `car` and `clb-crack` touched 174 references across code comments, docs, `.gitignore`
+  and the archive's own notes; the sweep is `perl` with a lookbehind so an already-moved
+  path is not prefixed twice, then `git grep -P` for the old form must come back empty.
+  Two things the sweep does not catch: relative links inside the moved tree, whose
+  depth changed, and **ignored junk that becomes tracked** — `.gitignore` globs are
+  anchored to the old path, so 21 `.pyc` files rode the move into the archive.
+  `git ls-files` under the new path, filtered by the ignore patterns, before the commit.
+- **A wrapper script is not a one-shot tool.** `drive-survey.sh` wrapped
+  `dev survey` and `--diff`, produced no artefact of its own, and every capability it
+  had lives in the subcommand; the owner decided to delete it and nothing is stranded.
+  The rule above ("move, never delete") is for tools whose *capability* would otherwise
+  vanish; check that first, then it is the owner's call.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
@@ -177,7 +199,7 @@ Five things, and no more:
 1. Commits that move files and delete nothing of substance, each staged by path.
 2. `todo/README.md` accurate as of today's date, with the milestone table matching
    what the code actually does.
-3. New or moved files under `archive/`, each still carrying its reasoning.
+3. New or moved files under `.archive/`, each still carrying its reasoning.
 4. Skills under `.claude/skills/` whose every command was just run against `--help`.
 5. The next-goals list from Phase 6, in the answer as well as in the file.
 

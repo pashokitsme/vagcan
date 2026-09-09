@@ -31,6 +31,70 @@ exposes is selectable from config, with no hardcoded addresses or formulas in Ru
 Live transport = the **generic USB-CAN adapter** (`vag-uds-can`, slcan). See `/CLAUDE.md`
 for the locked stack and the goal statement.
 
+## Status (2026-09-10) — the command surface, the dash, and the tree
+
+**Read this before any section below it.** Older sections name commands by the
+path they had on the day they were typed; `f21897f` (2026-08) moved the workshop
+behind `dev` and deleted two commands, and left those logs unedited on purpose. The
+surface today, from `vagcan --help`:
+
+```
+setup devices info units faults sensors watch measure dev
+dev: survey sniff glossary recording dash vcds
+```
+
+| written below as | is now |
+|---|---|
+| `vagcan survey` | `vagcan dev survey` (`--diff BEFORE AFTER` is the parked-vs-driving compare) |
+| `vagcan sniff` | `vagcan dev sniff` |
+| `vagcan vcds …`, `vagcan labels` | `vagcan dev vcds …` |
+| `vagcan recording …` | `vagcan dev recording …` |
+| `vagcan dash build` | `vagcan dev dash build` |
+| `vagcan scan` | gone — it was a strict subset of `dev survey --only` |
+| `vagcan properties` | gone — it is `units --identify <unit>`, and now carries the moving-car guard |
+
+Every command the skills under `.claude/skills/` name was run against `--help`
+on 2026-09-10 and resolves.
+
+**The dash.** The firmware polls the car for real (`9ca3547`): `build.rs` runs
+`vag_cli_core::dash::build_for_car` for `VAGCAN_DASH_VIN`, the plan is
+`include!`d, `can_task` owns the TWAI controller and reads `F187` then the plan's
+identifiers, one conversation at a time, with an acceptance filter, a bus-off
+restart and a dead-bus backoff. The panel draws only what the store holds. On the
+car **no unit has ever answered it**, and by 2026-09-10 the reason is found and
+is not software: the blue SN65HVD230 module carries a **counterfeit** transceiver
+that receives but is heard by nobody. Everything else — the C3, `GPIO6`, the
+controller, the stack, the rebuilt plug, the car — is proven, and the car is read
+normally by ODIS over CAN. The whole trail, the bench that reproduces it without
+the car, and the two fixes are in
+[`research/dash/can-bring-up.md`](../research/dash/can-bring-up.md) §5.3.
+Details of the dash's own state: [`dash/README.md`](dash/README.md).
+
+**The tree.** `research/` now holds only work in progress — `dash/` and
+`tuning/` — and everything whose findings shipped moved unchanged to
+`.archive/research/` (`a8d7e8f`), with [`.archive/README.md`](../.archive/README.md)
+as the map (`b5c1031`). `scripts/` is gone: `drive-survey.sh` was a wrapper over
+`dev survey` and `--diff`, deleted at the owner's decision since nothing it did is
+stranded; `frfscope` lives with the note it serves, `research/tuning/frfscope/`
+(`980f873`). The printed frame's FreeCAD sources are local and ignored.
+
+### What to do next, in order
+
+1. **Replace the transceiver, then the car run** — moves the `dash` goal; **needs the
+   bench first, then the car.** A genuine `SN65HVD230D` on the blue board, or the
+   CANable Pro's `ADM3050E` shared as `todo/dash/05` designed. `research/dash/bench.sh`
+   to `PASS`, then on the car `rxwatch` in `Normal` (the gateway's heartbeat falling
+   from 3106/s to 2 Hz) and `dash` (`7E0 is 8V0906264H as planned`). That closes
+   `todo/dash/05`.
+2. **The OLED on the carrier** — `dash`; **no car.** The SSD1322 driver and the
+   frame's snap-fit, with the panel still on the laptop through `dashsim` until then.
+3. **The ODIS DTC loader** — the fault-names goal (M4); **no car.** `DB_DOP_DTC` /
+   `MCD_DB_DIAG_TROUBLE_CODE` are in the type table and no loader reads them, so
+   `faults` still names codes from VCDS files (see the header of this file).
+4. **Whole-car measurement coverage** (M3) — **needs a drive.** The proven rows are
+   23; `dev survey --diff` on a parked and a driving pass is how the next ones are
+   found, and `dev recording calibrate` is how they are proven.
+
 ## New subsystem (2026-08-20) — `dash`, an OLED frontend for the car
 
 A second frontend, opened 2026-08-20 and specified in **[`todo/dash/`](dash/README.md)**:
@@ -41,7 +105,7 @@ ESP32-C3 SuperMini, not an S3 — no ULP, no Bluetooth Classic ([`dash/10-c3-rec
 120 km/h.
 
 The decision that shapes it: **the device resolves nothing, it executes a plan.**
-`vagcan dash build` runs on the laptop and emits a plan carrying, per cell, the unit
+`vagcan dev dash build` runs on the laptop and emits a plan carrying, per cell, the unit
 address, identifier, bit offset and length, byte order, scaling and an already-rendered
 label; the firmware links it in and only sends `0x22`, takes bits, multiplies and draws.
 Not a preference — `cache.sqlite` is 88 MB against 512 KB of SRAM (measured 2026-08-20),
