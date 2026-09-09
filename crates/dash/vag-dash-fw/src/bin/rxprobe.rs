@@ -12,6 +12,10 @@
 //!    a healthy transceiver put a dominant bit on the pair, and reads the receive
 //!    pad (its `R`) back. `D` low must come back as `R` low. This walks the whole
 //!    path — pad, wire, chip, pair, chip, wire, pad — without a single CAN bit.
+//! 3. **timing** — a level that arrives is not a bit that arrives. Flips `D` and
+//!    counts how long `R` takes to follow: a slope-controlled driver that passes
+//!    stage 2's 200 µs wait can still miss the 1.6 µs sample point of a 500 kbit/s
+//!    bit, and then no remote node ever reads its dominant.
 //!
 //! Nothing here is a CAN controller, so nothing needs a bit rate, an
 //! acknowledgement or a second node. It holds a DC level on the pair, so it is a
@@ -91,17 +95,17 @@ async fn main(_spawner: Spawner) {
 	// `total` cannot be zero — the loop runs at least once — but the compiler
 	// cannot see that and a probe is the last place to divide by hope.
 	let percent = (high * 100).checked_div(total).unwrap_or(0);
-	info!("[1/2 idle] R was high {percent}% of {total} samples, {changes} change(s) in one second");
+	info!("[1/3 idle] R was high {percent}% of {total} samples, {changes} change(s) in one second");
 	match (percent, changes) {
-		(_, c) if c > 0 => info!("[1/2 idle] the line moves — something is driving the pair"),
-		(0, _) => info!("[1/2 idle] STUCK LOW — the controller sees a permanently busy bus and will never transmit"),
-		(100, _) => info!("[1/2 idle] stuck high — a clean recessive idle, which is what it should be"),
-		_ => info!("[1/2 idle] neither high nor low: the pad is floating or the level sits on the threshold"),
+		(_, c) if c > 0 => info!("[1/3 idle] the line moves — something is driving the pair"),
+		(0, _) => info!("[1/3 idle] STUCK LOW — the controller sees a permanently busy bus and will never transmit"),
+		(100, _) => info!("[1/3 idle] stuck high — a clean recessive idle, which is what it should be"),
+		_ => info!("[1/3 idle] neither high nor low: the pad is floating or the level sits on the threshold"),
 	}
 
 	// --- 2. echo -----------------------------------------------------------
 	// `D` low must come back as `R` low, through the transceiver and the pair.
-	info!("[2/2 echo] driving D and reading R back");
+	info!("[2/3 echo] driving D and reading R back");
 	let mut ok = true;
 	for round in 0..3 {
 		for (level, name) in [(Level::Low, "dominant"), (Level::High, "recessive")] {
@@ -122,7 +126,7 @@ async fn main(_spawner: Spawner) {
 				ok = false;
 			}
 			info!(
-				"[2/2 echo] round {round}: D {name} -> R {} ({seen_high}/64 high){}",
+				"[2/3 echo] round {round}: D {name} -> R {} ({seen_high}/64 high){}",
 				if got_high { "high" } else { "low" },
 				if got_high == want_high { "" } else { "  <-- WRONG" }
 			);
@@ -135,6 +139,40 @@ async fn main(_spawner: Spawner) {
 	} else {
 		info!("== echo FAILS: R does not follow D — the break is in CTX, CRX, the module, or its supply ==");
 	}
+
+	// --- 3. timing ---------------------------------------------------------
+	// A level that arrives is not a bit that arrives. A CAN bit at 500 kbit/s
+	// is 2 µs and is sampled at 1.6 µs; a transceiver whose driver has been
+	// slowed — `R_S` far above the 10 kΩ it is meant to see — passes stage 2,
+	// which waits 200 µs, and still never puts a dominant on the pair in time
+	// for anyone to sample it. So: flip `D` and count how long `R` takes to
+	// follow, in both directions, with the tightest loop the chip has.
+	info!("[3/3 timing] D edge -> R edge, five rounds each way");
+	delay.delay_micros(500);
+	for round in 0..5 {
+		for (level, name, want_high) in [(Level::Low, "fall", false), (Level::High, "rise", true)] {
+			let t0 = esp_hal::time::Instant::now();
+			tx.set_level(level);
+			let mut spins: u32 = 0;
+			while rx.is_high() != want_high {
+				spins += 1;
+				if spins > 2_000_000 {
+					break;
+				}
+			}
+			let took = t0.elapsed();
+			let verdict = if spins > 2_000_000 {
+				"  <-- never"
+			} else if took.as_micros() > 1 {
+				"  <-- too slow for a 2 µs bit"
+			} else {
+				""
+			};
+			info!("[3/3 timing] round {round}: {name} took {} µs ({spins} spins){verdict}", took.as_micros());
+			delay.delay_micros(500);
+		}
+	}
+	tx.set_high();
 
 	loop {
 		Timer::after(Duration::from_secs(5)).await;

@@ -290,6 +290,49 @@ DTR/RTS reset stopped working after a USB wedge and only a physical
 replug brought it back. The board's own `dash` says its `can:` lines once,
 so a run that missed the boot shows nothing.
 
+### 5.2 The bench reproduces it without the car, 2026-09-09 evening
+
+Two boards on one pair, a 120 Ω terminator, no car. This settles it, and it
+is not the plug.
+
+- **ODIS reads the whole car over `CAN` at `KL15`** — gateway `0019` OK,
+  engine `0001` OK, all fifteen modules. So the car's diagnostic CAN and the
+  gateway's receiver are healthy, and nothing we did damaged them. A
+  known-good acknowledger exists on that socket.
+- **`rxwatch` in `Normal` mode on the car** (it acknowledges every frame it
+  receives, one dominant bit, no content) left the gateway's `0x17F00010`
+  heartbeat storming at 3106/s. A node that heard our acknowledgement would
+  fall silent to its 2 Hz rate; it did not. **A proven-good receiver does not
+  hear the board's dominant bits.**
+- **On the bench, the same asymmetry, both ways.** CANable transmitting `7E0`
+  while `rxwatch` acknowledges: the board receives 3889 frames/s cleanly, but
+  CANable's error register holds `ERR_CAN_TXFAIL` — its frames are never
+  acknowledged, so it retransmits forever, which is what the board is
+  receiving. Board transmitting (`dash`, and `cantest` self-test through the
+  transceiver) while CANable sniffs: **0 frames reach CANable.** Lowering both
+  ends to 125 kbit/s changes nothing.
+- **`rxprobe` now has a timing stage.** Echo (stage 2) passes because the
+  transceiver hears its own dominant bit, which needs nothing to leave the
+  `CANH`/`CANL` pins. Stage 3 flips `D` and times `R`: the recessive edge
+  takes ~2 µs — as long as a whole 500 kbit/s bit — while the dominant edge is
+  under 1 µs. The pair the transceiver drives is slow to return to recessive.
+
+**Conclusion. The board receives perfectly and is heard by nobody.** The fault
+is on the board's transmit path *between the transceiver's `CANH`/`CANL` pins
+and the bus*: the SN65HVD230's driver into a 60 Ω load, its `R_S` slope
+resistor, or the `CANH`/`CANL` solder joints. Reception survives a marginal
+pair (a differential receiver decodes on half of one); transmission into a
+terminated bus does not. Everything upstream — the C3, `GPIO6`, the TWAI
+controller, the ISO-TP/UDS stack — is proven, and the plug, once rebuilt,
+reads 60 Ω.
+
+**The bench is now the whole test.** No car needed: `dash` (or any board
+transmit) plus CANable's `E` register and a `sniff` is the fault, and the fix
+is proven the moment CANable's `sniff` shows the board's `7E0` and its
+`ERR_CAN_TXFAIL` stops. Next hardware step, the owner's: reflow `CANH`/`CANL`
+and the `R_S` resistor, and if that does not do it, swap the VP230 module for
+a fresh SN65HVD230.
+
 ## 6. The next experiment — CANable in parallel on the car
 
 The owner's plan, and it is the right one: put the CANable on the car's pair
