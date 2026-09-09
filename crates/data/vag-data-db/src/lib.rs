@@ -126,12 +126,45 @@ CREATE INDEX IF NOT EXISTS idx_long_coding_file   ON long_coding(file_id);
 -- one cache came from one VCDS installation. A project's cache now holds a
 -- VCDS parse *and* an ODIS parse of the same car, and forcing them into one row
 -- would make the second erase the first's provenance.
+--
+-- `language` is the source's own declaration — an ODIS project's
+-- `<LANGUAGE>deu</LANGUAGE>`, a VCDS build's `Codes.dat` (`eng`) or
+-- `Code-RUS.dat` (`rus`) — as an ISO 639-2 code, and `NULL` where the source
+-- did not say. It is a property of the *source*, not of a row: the ODIS object
+-- model has no language field anywhere, and a project carries one text per
+-- fault in whatever language its supplier wrote. So a second project in another
+-- language is a second source row, and `[faults] language` in config.toml
+-- chooses between sources, never between rows.
 CREATE TABLE IF NOT EXISTS source (
-    id   INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,
-    dir  TEXT NOT NULL,
+    id       INTEGER PRIMARY KEY,
+    kind     TEXT NOT NULL,
+    dir      TEXT NOT NULL,
+    language TEXT,
     UNIQUE (kind, dir)
 );
+-- One fault code of one ECU variant, as an ODIS project describes it.
+--
+-- Keyed the way the car keys it: `code` is the 24-bit number a `0x19` response
+-- carries, read big-endian as one integer — the same number `vagcan faults`
+-- prints in decimal. `display` is the SAE-style code the file carries beside
+-- it (`P150B00`); it is a separate string, not an encoding of `code`, and on
+-- the reference project the two agree for 1,515 pairs of 43,378. `level` and
+-- `temporary` are the object's `LEVEL` and `IS-TEMPORARY`, recorded and not
+-- interpreted. A `dop` names which of a variant's fault tables the row is
+-- from; nearly every variant has one, `DTCDOP_VAGUDS`.
+CREATE TABLE IF NOT EXISTS fault (
+    source_id  INTEGER NOT NULL REFERENCES source(id),
+    variant    TEXT NOT NULL,
+    dop        TEXT NOT NULL,
+    code       INTEGER NOT NULL,
+    display    TEXT,
+    text       TEXT,
+    text_id    TEXT,
+    short_name TEXT,
+    level      INTEGER NOT NULL,
+    temporary  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fault_lookup ON fault(variant, code);
 -- One readable channel of one ECU variant, as an ODIS project describes it.
 --
 -- **A separate table from `measurement`, deliberately (D1).** `measurement` is
@@ -245,6 +278,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 	let reading = columns(conn, "reading")?;
 	if !reading.is_empty() && !reading.iter().any(|name| name == "big_endian") {
 		conn.execute("ALTER TABLE reading ADD COLUMN big_endian INTEGER NOT NULL DEFAULT 1", [])?;
+	}
+	// `source` gained `language` with the fault table. Existing rows keep
+	// `NULL`: what a source declared is read off the source, and `setup` re-run
+	// against it fills the column in. The `fault` table itself needs no
+	// migration — `CREATE TABLE IF NOT EXISTS` in the batch makes it.
+	if !has_column(conn, "source", "language")? {
+		conn.execute("ALTER TABLE source ADD COLUMN language TEXT", [])?;
 	}
 	Ok(())
 }
@@ -572,6 +612,16 @@ pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Every source with the language it declared: `(kind, dir, language)`,
+/// oldest first. The input to the policy that chooses between sources of
+/// fault text when there is more than one.
+pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<String>)>, Error> {
+	let conn = open_read_only(db_path)?;
+	let mut stmt = conn.prepare("SELECT kind, dir, language FROM source ORDER BY id")?;
+	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Replace everything one ODIS source has contributed, and write these readings.
 ///
 /// Replace rather than append: a second parse of the same project is a *reread*,
@@ -635,6 +685,120 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 	}
 	tx.commit()?;
 	Ok(written)
+}
+
+/// Record the language a source declares for itself, on its `source` row.
+///
+/// Makes the row if this is the first thing written for the source, so it can
+/// be called before or after the rows it describes. `language` is whatever the
+/// source said — `deu` off an ODIS project's `index.xml`, `eng`/`rus` from
+/// which fault-text file a VCDS build ships — and is stored as given.
+pub fn record_language(db_path: &Path, kind: &str, dir: &str, language: &str) -> Result<(), Error> {
+	let mut conn = Connection::open(db_path)?;
+	create_schema(&conn)?;
+	let tx = conn.transaction()?;
+	let source = source_id(&tx, kind, dir)?;
+	tx.execute("UPDATE source SET language = ?1 WHERE id = ?2", params![language, source])?;
+	tx.commit()?;
+	Ok(())
+}
+
+/// Replace one variant's fault codes from one ODIS source, and write these.
+///
+/// Same rule as [`put_readings`]: a reread replaces, scoped to this source and
+/// this variant, so a second project's rows for a variant of the same name
+/// stand untouched beside them. Returns how many codes landed.
+pub fn put_faults(db_path: &Path, project_dir: &str, variant: &str, faults: &[vag_data_labels::odis::Fault]) -> Result<usize, Error> {
+	let mut conn = Connection::open(db_path)?;
+	create_schema(&conn)?;
+	let tx = conn.transaction()?;
+	let source = source_id(&tx, ODIS, project_dir)?;
+	tx.execute("DELETE FROM fault WHERE source_id = ?1 AND variant = ?2", params![source, variant])?;
+	let mut written = 0usize;
+	{
+		let mut insert = tx.prepare(
+			"INSERT INTO fault (source_id, variant, dop, code, display, text, text_id, short_name, level, temporary) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+		)?;
+		for f in faults {
+			insert.execute(params![
+				source,
+				variant,
+				f.dop,
+				f.code,
+				f.display_code,
+				f.text,
+				f.text_id,
+				f.short_name,
+				f.level,
+				f.temporary
+			])?;
+			written += 1;
+		}
+	}
+	tx.commit()?;
+	Ok(written)
+}
+
+/// One fault row as the cache hands it back: the fault, and the language its
+/// source declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedFault {
+	pub fault: vag_data_labels::odis::Fault,
+	/// The `language` of the row's `source`, `None` where the source did not
+	/// say or was written before the column existed.
+	pub language: Option<String>,
+	/// The source's directory, so two sources in different languages can be
+	/// told apart in a message.
+	pub source_dir: String,
+}
+
+/// The fault codes this cache knows for one ECU variant, by number.
+///
+/// Every source's rows, each with its source's language, in the order they
+/// were written: choosing between sources is the caller's policy, and it needs
+/// the language to make it.
+pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Error> {
+	let conn = open_read_only(db_path)?;
+	let mut stmt = conn.prepare(
+		"SELECT f.dop, f.code, f.display, f.text, f.text_id, f.short_name, f.level, f.temporary, s.language, s.dir \
+         FROM fault f JOIN source s ON s.id = f.source_id \
+         WHERE f.variant = ?1 ORDER BY f.rowid",
+	)?;
+	let rows = stmt.query_map(params![variant], |row| {
+		Ok(CachedFault {
+			fault: vag_data_labels::odis::Fault {
+				dop: row.get(0)?,
+				code: row.get(1)?,
+				display_code: row.get(2)?,
+				text: row.get(3)?,
+				text_id: row.get(4)?,
+				short_name: row.get(5)?,
+				level: row.get(6)?,
+				temporary: row.get(7)?,
+			},
+			language: row.get(8)?,
+			source_dir: row.get(9)?,
+		})
+	})?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Every ECU variant this cache holds fault codes for, in name order.
+pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
+	let conn = open_read_only(db_path)?;
+	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM fault ORDER BY variant")?;
+	let rows = stmt.query_map([], |row| row.get(0))?;
+	Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// How much fault text an ODIS source described: `(variants, codes)`.
+pub fn fault_counts(db_path: &Path) -> Result<(u64, u64), Error> {
+	let conn = open_read_only(db_path)?;
+	let (variants, codes): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM fault", [], |row| {
+		Ok((row.get(0)?, row.get(1)?))
+	})?;
+	Ok((variants.max(0) as u64, codes.max(0) as u64))
 }
 
 /// One `reading` row as SQLite hands it back, before it becomes a
@@ -1275,6 +1439,78 @@ mod tests {
 			1,
 			"the rebuild took the ODIS rows with it"
 		);
+	}
+
+	fn fault(code: u32, text: &str) -> vag_data_labels::odis::Fault {
+		vag_data_labels::odis::Fault {
+			dop: "DTCDOP_VAGUDS".into(),
+			code,
+			display_code: Some("B1168F2".into()),
+			text: Some(text.into()),
+			text_id: Some("B1168F2".into()),
+			short_name: Some(format!("DTC_{code}")),
+			level: 2,
+			temporary: false,
+		}
+	}
+
+	#[test]
+	fn a_variants_fault_codes_survive_the_cache_with_their_sources_language() {
+		let ws = TempWorkspace::new("faults");
+		let rows = [fault(297, "Lenkwinkelsensor"), fault(291_104, "Temperatursensor Lenkradheizung")];
+		assert_eq!(put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &rows).unwrap(), 2);
+		// Before the source says what language it is, the rows come back with
+		// none — a `NULL`, not a guess.
+		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
+		assert_eq!(cached.len(), 2);
+		assert_eq!(cached[0].fault, rows[0]);
+		assert_eq!(cached[0].language, None);
+
+		record_language(&ws.db_path, ODIS, "/x/SK37X", "deu").unwrap();
+		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
+		assert_eq!(cached[1].fault, rows[1]);
+		assert_eq!(cached[1].language.as_deref(), Some("deu"));
+		assert_eq!(cached[1].source_dir, "/x/SK37X");
+		assert_eq!(fault_variants(&ws.db_path).unwrap(), ["EV_Brake"]);
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (1, 2));
+		// A variant nobody wrote is an empty answer, not an error.
+		assert!(faults_of(&ws.db_path, "EV_Nobody").unwrap().is_empty());
+	}
+
+	#[test]
+	fn rereading_a_variants_faults_replaces_them_and_leaves_another_sources_alone() {
+		let ws = TempWorkspace::new("faults-reread");
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a"), fault(298, "b")]).unwrap();
+		put_faults(&ws.db_path, "/y/SK37X-eng", "EV_Brake", &[fault(297, "steering angle")]).unwrap();
+		record_language(&ws.db_path, ODIS, "/y/SK37X-eng", "eng").unwrap();
+		// A reread of the first project replaces its two rows with one, and
+		// the second project's row for the same variant is untouched.
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a2")]).unwrap();
+		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
+		let texts: Vec<(Option<&str>, Option<&str>)> = cached.iter().map(|c| (c.fault.text.as_deref(), c.language.as_deref())).collect();
+		assert_eq!(texts, [(Some("steering angle"), Some("eng")), (Some("a2"), None)]);
+	}
+
+	#[test]
+	fn a_cache_written_before_the_language_column_gains_it() {
+		// The shape every existing cache has: a `source` with `kind` and `dir`
+		// and no `language`, and no `fault` table at all. It has to open.
+		let ws = TempWorkspace::new("prelanguage");
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch(
+					"CREATE TABLE source (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, dir TEXT NOT NULL, UNIQUE (kind, dir));\
+                     INSERT INTO source (id, kind, dir) VALUES (1, 'odis', '/x/SK37X');",
+				)
+				.unwrap();
+		}
+		record_language(&ws.db_path, ODIS, "/x/SK37X", "deu").unwrap();
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a")]).unwrap();
+		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
+		assert_eq!(cached[0].language.as_deref(), Some("deu"));
+		// The row that was there is the row the language landed on.
+		assert_eq!(sources_of(&ws.db_path).unwrap(), [("odis".to_string(), "/x/SK37X".to_string())]);
 	}
 
 	#[test]

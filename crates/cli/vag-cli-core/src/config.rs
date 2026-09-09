@@ -44,6 +44,11 @@
 //! # Show each channel's own key at the end of its row.
 //! show_key = false
 //!
+//! # Which source's fault text `faults` prefers, as the ISO 639-2 code the
+//! # source declares — an ODIS project's `deu`, a VCDS build's `eng` or `rus`.
+//! [faults]
+//! language = "deu"
+//!
 //! # Channels marked with `f` in `watch`, per car, keyed by VIN.
 //! [favourites]
 //! XW8AD4NE9JH008917 = ["7E0:202A:0", "7E1:380A:0"]
@@ -52,6 +57,15 @@
 //! [charted]
 //! XW8AD4NE9JH008917 = ["7E0:202A:0"]
 //! ```
+//!
+//! **Two language keys, on purpose.** `language` is the glossary's column and a
+//! closed set ([`Language`]): a value nobody wrote a column for is a setting
+//! that cannot be honoured. `[faults] language` is different in kind — it
+//! names which *source* to read fault text from, and a source declares its own
+//! language as an ISO 639-2 code (`deu`, `eng`, `rus`) that this build never
+//! enumerates. Widening [`Language`] to carry those would make the glossary
+//! accept a column that does not exist; a second key keeps each honest. It is
+//! unset by default, and with one source it is never needed.
 //!
 //! **The document is kept as a `toml::Table`, not deserialized into a struct.**
 //! A struct would silently drop anything this version does not know about — a
@@ -122,6 +136,12 @@ const FRESH: &str = "\
 # Show each channel's own key at the end of its row, so a name worth changing\n\
 # can be found in names.csv.\n\
 # show_key = false\n\
+\n\
+# Which source's fault text `faults` shows when several are set up in different\n\
+# languages, as the ISO 639-2 code the source declares: an ODIS project's \"deu\",\n\
+# a VCDS build's \"eng\" or \"rus\". With one source this is never needed.\n\
+# [faults]\n\
+# language = \"deu\"\n\
 \n\
 # Channels marked with `f` in `watch`, and the ones the chart draws. Per car,\n\
 # keyed by VIN, written by the tool.\n\
@@ -228,6 +248,18 @@ pub fn language_complaint(document: &Document) -> Option<String> {
 			Language::default().code()
 		)),
 	}
+}
+
+/// Which source's fault text `faults` prefers — `[faults] language`, as the
+/// ISO 639-2 code the source declares, lower-cased. `None` when unset, which
+/// is the ordinary state: with one source there is nothing to choose.
+///
+/// Not a [`Language`]: that enum is the glossary's closed set of columns, and
+/// this is an open code matched against what each source recorded about
+/// itself (`vag_data_db::CachedFault::language`). See the module note.
+pub fn fault_language(document: &Document) -> Option<String> {
+	let code = document.get("faults")?.get("language")?.as_str()?.trim().to_ascii_lowercase();
+	(!code.is_empty()).then_some(code)
 }
 
 /// How often `watch` asks the car, in hertz.
@@ -400,6 +432,20 @@ mod tests {
 		let fine: Document = "language = \"ru\"\n".parse().unwrap();
 		assert_eq!(language(&fine), Language::Ru);
 		assert_eq!(language_complaint(&fine), None);
+	}
+
+	#[test]
+	fn the_fault_text_language_is_a_source_code_not_a_glossary_column() {
+		// `[faults] language` is matched against what a source declared about
+		// itself, so any code is accepted and only case and whitespace are
+		// normalised. `language` stays the glossary's closed set beside it.
+		let document: Document = "language = \"ru\"\n[faults]\nlanguage = \" DEU \"\n".parse().unwrap();
+		assert_eq!(fault_language(&document).as_deref(), Some("deu"));
+		assert_eq!(language(&document), Language::Ru);
+		// Unset is the ordinary state, and an empty string is unset.
+		assert_eq!(fault_language(&Document::new()), None);
+		let empty: Document = "[faults]\nlanguage = \"\"\n".parse().unwrap();
+		assert_eq!(fault_language(&empty), None);
 	}
 
 	#[test]
