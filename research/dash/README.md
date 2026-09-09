@@ -41,6 +41,22 @@ because it is `no_std` on `riscv32imc-unknown-none-elf` with its own
 `build-std` configuration and would not survive inside the workspace. `05`
 already anticipates this: `vag-dash-fw` is "new, outside the workspace".
 
+## Bench tools — which may see a car and which may not
+
+All in `crates/dash/vag-dash-fw/src/bin/`; the rule is whether the image ever
+drives the pair. Anything that does is bench only, because a car's units log
+what they see.
+
+| tool | does | car? |
+|---|---|---|
+| `rxwatch` | listen-only frame counter, ids per second | **yes** — acknowledges nothing |
+| `cantest` | UDS round trip through the chip's own loopback | no — transmits |
+| `cantx` | hammers one `7E0` request, prints `TEC` | no — transmits |
+| `rxprobe` | drives `D`, reads `R`: idle, echo, edge timing | no — holds a DC level |
+
+`bench.sh` (here) flashes a transmitter and sniffs on the CANable in one
+command; `can-bring-up.md` §5.3 says how to read its verdict.
+
 ## References
 
 Datasheets the dash hardware is read against. Cited by part and section rather

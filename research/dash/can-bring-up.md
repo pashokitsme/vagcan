@@ -1,5 +1,8 @@
 # dash / CAN bring-up on the car — hand-off
 
+**State, 2026-09-10.** The transceiver on the blue module is a counterfeit and is
+the whole remaining fault (§5.3); everything else is proven. Below, the trail.
+
 **State, 2026-09-04, evening.** The firmware polls the car for real
 (`todo/dash/05`), it has been flashed and run on the reference car, and **no
 control unit answered**. Two firmware defects were found and fixed on the way.
@@ -340,6 +343,68 @@ is proven the moment CANable's `sniff` shows the board's `7E0` and its
 and the `R_S` resistor, and if that does not do it, swap the VP230 module for
 a fresh SN65HVD230.
 
+### 5.3 The diagnosis, 2026-09-10 — a counterfeit transceiver
+
+Everything after 5.2 either narrowed the fault or ruled out a way around it.
+
+- **The joints are not it.** `rxprobe` echo passes under a 120 Ω load, and the
+  owner rang `CANH`–`CANH` and `CANL`–`CANL` between the two modules on the
+  bench. The pair between the transceivers is continuous and the driver holds a
+  level into a load.
+- **A slow edge is not it either.** With both ends at 125 kbit/s — an 8 µs bit,
+  sampled at 6.4 µs — the board still acknowledges nothing the CANable can see.
+  Any loop delay or slope that would fit inside that is not a fault a real
+  transceiver has.
+- **The marketplace reviews of this exact blue module say what our board
+  says.** One buyer, on a scope: *the pair is driven for a moment, then the bus
+  goes quiet* — which is `cantx`'s `TEC 128`, an error-passive node whose
+  dominants nobody registers — and *"does not work with ESP-IDF TWAI"*. Another:
+  both boards dead, replaced the SO-8 with a chip bought separately, worked.
+  A third: would not start at 3.3 V, ran at 5 V. The chips are marked
+  `VP230`, and a marked package is not a datasheet: **the module carries a
+  counterfeit, and the fault is the chip.** §4.3's "genuine per the marking"
+  is withdrawn.
+- **Running it at 5 V was considered and is not worth it.** A 5 V `VCC` puts
+  `R` at 5 V, and `GPIO1` on the C3 is not 5 V tolerant; `R` cannot simply be
+  left off, because the controller reads its own transmitted bits back on RX
+  and will not transmit without it. So 5 V needs a divider on `R` (2.2 kΩ over
+  3.9 kΩ), for a part we are replacing anyway.
+- **The 8-pin chip in the old scanner is not a transceiver.** `WA3393` is
+  Way-On's dual comparator, an `LM393`; the two `2A` beside it are `MMBT3906`
+  PNPs. That is how counterfeit ELM327s do CAN — a comparator and two
+  transistors, no transceiver at all — and it explains why only `CAN-L` rang
+  to it. Nothing there to salvage.
+
+**Two fixes, either of which closes it.**
+
+1. **A genuine `SN65HVD230D` from a distributor, soldered onto the blue board
+   in place of the fake.** Same SO-8, same pinout, 3.3 V, no divider, no wiring
+   change. This is what the reviewer who got a working board did. Another blue
+   module from the marketplace is the same lottery.
+2. **The CANable's own transceiver, which is what `todo/dash/05` designed in the
+   first place** ("the CANable stays — as the transceiver, not as a bridge"). The
+   MKS CANable V2.0 Pro carries an **ADM3050E**, isolated, logic side at the
+   STM32's 3.3 V, so `GPIO6 → TXD` and `RXD → GPIO1` connect directly with a
+   common ground. `TXD` is an input with one driver at a time: hold the STM32
+   in reset (`NRST` to `GND`, its pins go high-impedance) for the bench, or do
+   it `05`'s way, both sides open-drain into one pull-up. `SWD`/`SWC` are the
+   debugger and play no part. While wired this way the CANable is not a
+   sniffer — but the board is then on a transceiver whose transmit is proven,
+   and can go straight to the car.
+
+**One caveat on `bench.sh`, so its verdict is read right.** The CANable's
+transmit is proven (the board receives its frames); its *receive* has never
+been shown to work — its trace was broken until this evening and no
+known-good transmitter has been on its pair since. So `FAIL` means "the board
+was not heard *or* the CANable cannot hear"; **`PASS` is unambiguous** and
+proves both at once. The car settles the board side regardless: the gateway
+is a proven receiver, and it did not hear us.
+
+**On the car, after the fix, in this order:** `rxwatch` in `Normal` mode — the
+heartbeat falling from 3106/s to 2 Hz is the first dominant bit of ours the
+gateway has ever registered; then `dash`, expecting `7E0 is 8V0906264H as
+planned` and `7E1 is 0CW300041G as planned`, and numbers on the panel.
+
 ## 6. The next experiment — CANable in parallel on the car
 
 The owner's plan, and it is the right one: put the CANable on the car's pair
@@ -396,6 +461,11 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
 - The wire is back on `GPIO1`, `rxprobe` reads `GPIO1`, and the echo passes
   there (§5.1).
 - `src/bin/rxwatch.rs` — listen-only frame counter, safe on a car (§5.1).
+- `src/bin/cantx.rs` — transmits one `7E0` request back-to-back and prints
+  accepted/timed-out per second and `TEC`. Bench only.
+- `research/dash/bench.sh` — flash a transmitter, sniff on the CANable, verdict.
+  Read §5.3's caveat before trusting a `FAIL`.
+- `rxprobe` has a third stage that times `D → R` on both edges.
 - Board pinout confirmed against the vendor datasheet — with the USB-C connector
   at the bottom the left row reads `0, 1, 2, 3, 4, 3.3, G, 5V` top to bottom,
   which is what `research/dash/frame/wiring.py` draws. `GPIO8` is the blue LED,
@@ -409,5 +479,7 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
 `vag-dash-fw` declares `edition = "2021"`. Every edit of a file in this crate
 therefore reorders its imports the 2024 way, which is not what `cargo fmt`
 produces for a 2021 crate — so the next `cargo fmt -- --check` fails on a file
-nobody meant to reformat. Seen and undone by hand this session. Either the hook
-should read the crate's edition or this crate should move to 2024.
+nobody meant to reformat. Seen and undone by hand this session.
+
+**Resolved 2026-09-04:** the crate moved to edition 2024 (`85df0aa`); `cargo fmt
+--check` and the hook now agree.
