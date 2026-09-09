@@ -8,6 +8,7 @@ rust-version.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 miniz_oxide = "0.7"
+rayon = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -313,6 +313,27 @@ fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrat
 	}
 }
 
+/// Run one stage of setup, and say how long it took when somebody is measuring.
+///
+/// Silent unless `VAGCAN_TIMING` is set in the environment, and then one line
+/// per stage on **stderr**, so it never lands in output somebody is piping.
+/// This is the instrument the 2026-09-10 performance work was done with, kept
+/// because "which stage got slow" is the first question the next regression
+/// asks, and an `eprintln!` somebody has to re-add is not an instrument.
+fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
+	let started = std::time::Instant::now();
+	let out = work();
+	timing(stage, started.elapsed());
+	out
+}
+
+/// The line [`timed`] prints, for a stage whose time was added up by hand.
+fn timing(stage: &str, took: std::time::Duration) {
+	if std::env::var_os("VAGCAN_TIMING").is_some() {
+		eprintln!("[timing] {stage}: {:.2}s", took.as_secs_f64());
+	}
+}
+
 /// Open an ODIS project, saying how long it will be.
 fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data_labels::odis::Project> {
 	io.say(&format!(
@@ -320,7 +341,8 @@ fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_dat
          takes a moment:\n    {}",
 		dir.display()
 	))?;
-	let project = vag_data_labels::odis::Project::open(dir).with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
+	let project = timed("open (string pools)", || vag_data_labels::odis::Project::open(dir))
+		.with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
 	io.say(&format!(
 		"{} pools, project version {}.",
 		project.pools().len(),
@@ -599,12 +621,16 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	let source = dir.display().to_string();
 
 	println!("[1/2] Control units — walking each variant's measurement chain.");
-	let variants = odis.variants().with_context(|| format!("listing the variants of {}", dir.display()))?;
+	let variants = timed("variants", || odis.variants()).with_context(|| format!("listing the variants of {}", dir.display()))?;
 	let (mut with_channels, mut channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
 	let mut progress = crate::progress::Line::new();
+	let (mut walking, mut writing) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
 	for (at, variant) in variants.iter().enumerate() {
 		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
-		let readings = match odis.readings(variant) {
+		let started = std::time::Instant::now();
+		let readings = odis.readings(variant);
+		walking += started.elapsed();
+		let readings = match readings {
 			Ok(readings) => readings,
 			// The refusal list is enforced by the parser and honoured here: a
 			// refused type is a file this tool declines to read, not a broken
@@ -621,11 +647,15 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		if readings.is_empty() {
 			continue;
 		}
+		let started = std::time::Instant::now();
 		channels += vag_data_db::put_readings(&project.cache(), &source, &variant.name, &readings)
 			.map_err(|e| anyhow::anyhow!("writing {}'s channels to {}: {e}", variant.name, project.cache().display()))?;
+		writing += started.elapsed();
 		with_channels += 1;
 	}
 	progress.finish();
+	timing("readings (walk)", walking);
+	timing("readings (sqlite)", writing);
 	let mut skipped = String::new();
 	if refused + unreadable > 0 {
 		skipped = format!(", {refused} refused, {unreadable} unreadable");
@@ -639,9 +669,9 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	println!("[2/2] Names — every object in every pool, for the (text id, name)\n      pairs they carry.");
 	let names = {
 		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
-		odis.names().with_context(|| format!("reading the names of {}", dir.display()))?
+		timed("names (walk)", || odis.names()).with_context(|| format!("reading the names of {}", dir.display()))?
 	};
-	let merged = merge_names(&project.odis_names(), names)?;
+	let merged = timed("names (merge + write)", || merge_names(&project.odis_names(), names))?;
 
 	crate::project::record_source(
 		project,
