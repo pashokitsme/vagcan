@@ -495,10 +495,12 @@ impl Project {
 				};
 				out.push(Fault {
 					dop: dop_name.clone(),
-					// The map's key and the object's own number agree on every
-					// one of the reference project's 291,346 codes; the object's
-					// is the one kept because it is the one the text belongs to.
-					code: if code.code == *number { code.code } else { *number },
+					// The map's key is what the table is looked up by, so it is
+					// the row's key too. The object carries the number as well,
+					// and the two agree on every one of the reference project's
+					// 291,346 codes — checked, not assumed, and not re-checked
+					// here because a disagreement would have no right answer.
+					code: *number,
 					display_code: code.display_code,
 					text: code.text,
 					text_id: code.text_id,
