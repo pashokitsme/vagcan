@@ -41,7 +41,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// The transceiver's `D` (`CTX`), driven here by hand. Recessive is high.
 const TX_PIN: u8 = 6;
 /// The transceiver's `R` (`CRX`), read here by hand.
-const RX_PIN: u8 = 3;
+const RX_PIN: u8 = 1;
 
 /// How long the idle sample runs.
 const WATCH: Duration = Duration::from_secs(1);

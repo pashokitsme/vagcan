@@ -236,6 +236,60 @@ edge up: top row 1–8 left to right, bottom row 9–16. Black on 4 or 5, blue o
 6, green on 14, red on 16. Blue must share a row with black, green with red;
 all four in one row is wrong before any meter is reached.
 
+### 5.1 The rebuilt plug, 2026-09-09 — still not heard, and what that narrowed
+
+New plug, pins checked, fuse replaced (pin 16 had found ground during the
+rebuild; the cluster's warning cleared with the fuse). Then, in order:
+
+- **`vagcan info` on the old `master` fails too**, so the software is out.
+- **The CANable is out for a reason of its own: a trace on it was broken
+  while soldering.** Its firmware still answers `V` (`16e7497-dirty`, stock
+  canable2-fw, 500 kbit/s at 88 % sample point, auto-retransmit on) and `E`
+  reads `4` = `ERR_CAN_TXFAIL`, a full TX FIFO — the same "nobody
+  acknowledges" the board shows. Not evidence about the car until it is
+  repaired.
+- **`src/bin/rxwatch.rs`**, new: TWAI listen-only, no filter, frames per
+  second and their ids. Transmits nothing, so it may be pointed at a car.
+  Ignition on, engine running, first insertion: **0 frames in 60 s.**
+  Plug out and back in: **3106 frames/s, every one `0x17F00010`**, zero
+  errors. That id is the gateway's network-management heartbeat
+  (`research/car/other-ecus.md`), 2 Hz when something acknowledges it.
+  3106/s is the gateway retransmitting it back-to-back because nobody does —
+  and 0 → 3106 across one re-seating says the contact at the socket comes
+  and goes.
+- **`rxprobe` echo on `GPIO1`** (the pin the wire is actually on; the probe
+  had still said `GPIO3`) passes all three rounds, plug out.
+- **`dash` in normal mode, contact present:** receives, times out, goes
+  bus-off. Pressing the plug in every direction for a minute changes
+  nothing. Bus-off with the heartbeat storming means our error flags met
+  the gateway's dominant bits — so the pair reaches us, and **our dominant
+  bits do not reach the gateway**, or it would have acknowledged and gone
+  quiet.
+
+**Where that leaves it — two candidates, and a bench test that separates
+them.** "We hear the car, the car does not hear us" is either one line of
+the pair on a resistive contact (a receiver decodes on half a pair, a
+driver cannot put a dominant onto a 60 Ω-terminated one through it), or a
+driver that cannot load a bus at all. Note that the first car run, on the
+old plug, showed exactly the same shape: **this board has never once been
+heard by the car.** And the echo test that clears the transceiver runs on
+an *open* pair — the module's 120 Ω is desoldered — where a half-dead
+output stage passes as easily as a healthy one.
+
+The test: plug out, a 100–150 Ω load across `CANH`/`CANL` (the CANable's
+own termination jumper, which is passive and needs no power, or any
+resistor), then `rxprobe`. Echo under load passes → the driver is fine and
+the fault is the socket's contacts 6/14, possibly spread by the old warped
+plug; fails → the VP230 module is the fault, replace it. Then, with a meter
+back in hand, `CANH`–`CANL` through the seated, released plug: 60 Ω,
+steady, before anything else is believed.
+
+**Operational notes from the day.** The C3's USB-JTAG re-enumerates on
+every chip reset, so a console reader has to reopen the node; espflash's
+DTR/RTS reset stopped working after a USB wedge and only a physical
+replug brought it back. The board's own `dash` says its `can:` lines once,
+so a run that missed the boot shows nothing.
+
 ## 6. The next experiment — CANable in parallel on the car
 
 The owner's plan, and it is the right one: put the CANable on the car's pair
@@ -289,11 +343,9 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
 - `src/bin/rxprobe.rs` — the GPIO-level probe from §4.2. Bench tool: it holds a DC
   level on the pair, so it must never be pointed at a car. Same rule as
   `cantest.rs`, same reason.
-- **The board currently carries an image with TWAI RX on `GPIO3`**, from the
-  experiment that ruled the pin out; the source is back on the documented
-  `GPIO1`. Move the wire back to `GPIO1` and reflash before the car run, or the
-  receive line is not connected. `GPIO1` was cleared: pad-to-ground reads open,
-  and `GPIO3` behaved identically.
+- The wire is back on `GPIO1`, `rxprobe` reads `GPIO1`, and the echo passes
+  there (§5.1).
+- `src/bin/rxwatch.rs` — listen-only frame counter, safe on a car (§5.1).
 - Board pinout confirmed against the vendor datasheet — with the USB-C connector
   at the bottom the left row reads `0, 1, 2, 3, 4, 3.3, G, 5V` top to bottom,
   which is what `research/dash/frame/wiring.py` draws. `GPIO8` is the blue LED,
