@@ -91,9 +91,13 @@ stranded; `frfscope` lives with the note it serves, `research/tuning/frfscope/`
 3. **The ODIS DTC loader** — the fault-names goal (M4); **no car.** `DB_DOP_DTC` /
    `MCD_DB_DIAG_TROUBLE_CODE` are in the type table and no loader reads them, so
    `faults` still names codes from VCDS files (see the header of this file).
-4. **Whole-car measurement coverage** (M3) — **needs a drive.** The proven rows are
-   23; `dev survey --diff` on a parked and a driving pass is how the next ones are
-   found, and `dev recording calibrate` is how they are proven.
+
+Whole-car measurement coverage (M3) is **off the list** at the owner's decision on
+2026-09-10: the `survey`-driven route to it (`dev survey --diff` on a parked and a
+driving pass, then `dev recording calibrate`) has not produced a row since the first
+23, and the owner's judgement is that it is not going to. The 23 proven rows stay
+where they are; the next rows, if any, come from the ODIS measurement loader, not
+from a sweep.
 
 ## New subsystem (2026-08-20) — `dash`, an OLED frontend for the car
 
