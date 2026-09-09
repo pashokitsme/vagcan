@@ -6,7 +6,7 @@ definitions as **data, not code**.
 **The primary source is a VW ODIS-Service runtime project** (since 2026-08-08): it
 declares, per ECU variant, every identifier that unit answers along with the byte
 offset, length, byte order and compu formula — the whole chain, which a VCDS label file
-provably does not carry (`research/labels/rod-labels.md` §4.0c).
+provably does not carry (`.archive/research/labels/rod-labels.md` §4.0c).
 
 **An ODIS project carries the fault codes and their text too** — 329,268 `DTC_*` objects
 in `SK37X`, with descriptions in the clear in the Unicode pool (`Steuergerät Fehler im
@@ -26,7 +26,7 @@ no drive has proved.
 The label files carry the scaling *values* but not the join from a measurement to its
 scaling or read DID, so scaling is still proven live — the full audit, including which
 earlier refutation rested on a broken decode, is in
-`research/labels/scaling-audit.md` (2026-08-06). Any value a unit
+`.archive/research/labels/scaling-audit.md` (2026-08-06). Any value a unit
 exposes is selectable from config, with no hardcoded addresses or formulas in Rust.
 Live transport = the **generic USB-CAN adapter** (`vag-uds-can`, slcan). See `/CLAUDE.md`
 for the locked stack and the goal statement.
@@ -111,7 +111,7 @@ is built and tested with that step empty. What blocks it is evidence, not code �
 next goals, item 4.
 
 A VW ODIS-Service runtime project is now read natively — no Python, no PBL DLL, no
-Java — and `setup` is a choice of *source* rather than a hardcoded VCDS path. Formats in `research/labels/odis-format.md`; the design and plan documents were
+Java — and `setup` is a choice of *source* rather than a hardcoded VCDS path. Formats in `.archive/research/labels/odis-format.md`; the design and plan documents were
 retired with the rest of `docs/superpowers/` in `2e4721b`.
 
 **The claim the whole branch rests on is measured, not asserted.** Three rows this
@@ -163,7 +163,7 @@ Octavia III, Karoq and Kodiaq under `SK37X` — so several cars share one, and
 - `catalog.rs` describes this car's reverse gear as `0C`; ODIS says `0C` is *Gear 9* on
   `0x210F` and reverse is `7`. The `0C` figure is a doc comment and a test, **not a
   proven row** — no measured file for that channel exists. Settled by selecting reverse
-  and reading `0x210F` on `7E0` and `0x3816` on `7E1` (`research/labels/odis-format.md`
+  and reading `0x210F` on `7E0` and `0x3816` on `7E1` (`.archive/research/labels/odis-format.md`
   §7.1).
 - `watch` reported `measurements this project has proven: 7E0` on a machine holding **no
   proven rows at all** — the built-in OBD-II standard table was being labelled as
@@ -243,7 +243,7 @@ shared cursor instead of fixed slices, and — the larger one — noticing that 
 filter reads HDIST out of deflate byte 1 and then discards it, so the 128 candidates
 are 8 groups of 16 differing only in bits the filter ignores, and the cascade was
 being walked 16 times over. Measured on this machine: 192.9 s → 70.8 s for the second
-alone (`research/labels/tttext2-sweep` grew a `classic <file> <TAG>` command to time
+alone (`.archive/research/labels/tttext2-sweep` grew a `classic <file> <TAG>` command to time
 one section directly).
 Decoding with a cached key is ~20 ms for the 2.2 MB `RD.rod` and below timer
 resolution for a typical 1 KB per-unit file, so nothing on the live path is worth
@@ -253,7 +253,7 @@ caching further.
 
 The tool now reads **every control unit the car has**, not the two the ISO addressing
 block reaches. On the reference car that is 15 units and 1206 identifiers
-(`research/car/whole-car-survey.md`), and every previously unidentified unit named itself:
+(`.archive/research/car/whole-car-survey.md`), and every previously unidentified unit named itself:
 parking aid, steering assist, ESC, airbag, climate, both door modules, telematics,
 media.
 
@@ -288,7 +288,7 @@ Done since the last update:
    `VCDS-ARM.exe`. 11 of this car's 15 confirmed codes, 57 of 57 on the three units whose
    `.rod` resolves, and word-for-word agreement with VCDS on all four codes both name.
    Full writeup, including everything refuted along the way:
-   `research/labels/fault-naming-hop.md`. What is left is file *resolution*, not naming: the
+   `.archive/research/labels/fault-naming-hop.md`. What is left is file *resolution*, not naming: the
    `INC` chain that leads from an ODX variant to the family file carrying `[DTC]`
    (§10.5), which is why the gateway and the two door modules still print numbers.
 3. **The cluster's coolant scaling.** `22D0` has read `0xB8` = 90 °C in every sample ever
@@ -300,7 +300,7 @@ Done since the last update:
    free-running counter at `02BD` was raw subtraction of a packed field — the seconds
    field wraps at 60 in six bits, so a raw difference overshoots by 4 per minute boundary.
    Established against the instrument cluster's own clock across three sweeps; see
-   `vag_uds_client::dtc::CarTime` and `research/car/whole-car-survey.md` §2.3. What is *not* a
+   `vag_uds_client::dtc::CarTime` and `.archive/research/car/whole-car-survey.md` §2.3. What is *not* a
    protocol fact: this car's clock runs four days behind real time.
 
 ## Status (2026-08-05)
@@ -309,8 +309,8 @@ Two things closed since 2026-08-02, and both are worth stating before the older 
 below, which remains true about scaling and stale about nothing else.
 
 **Fault names ship.** `vagcan faults` prints VW's own words. The
-chain and every refutation on the way to it are in `research/labels/fault-naming-hop.md`;
-`research/labels/codes-dat.md` covers the text store it ends in. Zero wrong answers across every
+chain and every refutation on the way to it are in `.archive/research/labels/fault-naming-hop.md`;
+`.archive/research/labels/codes-dat.md` covers the text store it ends in. Zero wrong answers across every
 check made, which is the property that matters more than the hit rate.
 
 **`vagcan measure` exists** — an acceleration stopwatch: marks timed from the car's own
@@ -335,14 +335,14 @@ lines, not −40, because a tested guard costs 150 lines of test.
 
 The protocol stack, the identity reader, and the whole `.rod` label-decrypt pipeline are
 built and merged. The offline path to measurement *scaling* is **audited to a sharper
-conclusion** (2026-08-06, `research/labels/scaling-audit.md`): the label files **does** carry
+conclusion** (2026-08-06, `.archive/research/labels/scaling-audit.md`): the label files **does** carry
 the scaling values — MUX/DOP rows hold every proven factor and offset, and the earlier
 "§4.0c: scaling is live-only" rested on a broken base-14 decode — but the **join** from a
 measurement to its scaling or read DID is absent, and the read DID itself is not in the
 label files under the *corrected* decode either. So scaling still comes from the car:
 `vagcan vcds analyse` and `vagcan recording calibrate` turn recordings into proven rows,
 and `~/.vagcan/data/measured/` holds 23 of them across engine, gearbox and cluster. Names
-come from the label files — `TTTEXT.ROD` is cracked (`research/labels/tttext-codec.md`) — but
+come from the label files — `TTTEXT.ROD` is cracked (`.archive/research/labels/tttext-codec.md`) — but
 they are no longer shipped: `vagcan setup` rebuilds `names.json` from the installation.
 The in-tool parser now carries the original solver's **word-frequency prior** (ported
 2026-08-06), recovering **14,738 names** — 98.5 % agreement with the old 17,009-name
@@ -351,7 +351,7 @@ comparable catalogs differing on known-hard residuals (numeric separators, one-s
 acronyms, cluster-pattern collisions), not a bug. The label files have **no name→DID join**,
 so a `vagcan vcds names` hit is a hypothesis to test live. The one door still unopened is
 `TTTEXT2.ROD` (a bounded multi-hour sweep; its driver is committed under
-`research/labels/tttext2-sweep/`, the sweep itself unrun).
+`.archive/research/labels/tttext2-sweep/`, the sweep itself unrun).
 
 The adapter works on the car. `vagcan info` matches the Auto-Scan oracle, `vagcan survey`
 walks every unit the gateway lists (identification, stored DTCs, identifier sweep), and
@@ -412,13 +412,13 @@ scaling (below), so this project gets the *names* from the label files and prove
 - 🔴 **NOT reversed: STRUC field segmentation** — where inside a `NNNNNN,<base-14>`
   record the `read_id (DID)` / `raw-spec` / `scale` / `unit-ref` / `name-ref` live.
   Offline static + data-only RE is exhausted (5 passes; base-40 `code→id`, fixed-column,
-  per-byte index all refuted — `research/labels/rod-labels.md`).
+  per-byte index all refuted — `.archive/research/labels/rod-labels.md`).
 
 ### The supervised STRUC × crib attack — DONE, refuted
 Crossing the capture crib's real DIDs with the decoded STRUC table was the M3 lever. It
 ran end-to-end and produced a clean negative: the read DID is **not stored in STRUC** in
 any tested encoding, `STRUC-id` is not the IDE measurement id, and `IDE-id` is not the
-MWB row index (`research/labels/rod-labels.md` §4.0c). Do not re-run it.
+MWB row index (`.archive/research/labels/rod-labels.md` §4.0c). Do not re-run it.
 
 ### The lever that worked — sniff VCDS on the bus (the live crib)
 Every prior crib came from USB captures of the HEX clone, where the link cipher hides the
@@ -475,8 +475,8 @@ its own time column — the same thing VCDS's export does, and which this projec
 parsed correctly for VCDS while producing the flawed version itself. Correcting it lifted
 the gear evidence from η² 0.872 to 0.972.
 
-Writeups: `research/car/identifier-map.md`, `research/car/other-ecus.md`,
-`research/car/gearbox-state.md`.
+Writeups: `.archive/research/car/identifier-map.md`, `.archive/research/car/other-ecus.md`,
+`.archive/research/car/gearbox-state.md`.
 
 ### What the next session should do
 
@@ -503,7 +503,7 @@ Writeups: `research/car/identifier-map.md`, `research/car/other-ecus.md`,
 **1. The capture session — DONE 2026-08-01, and it worked.** 308 s of listen-only capture
 alongside a live VCDS session; `vagcan vcds analyse` proved three scalings, one of which
 (coolant = `raw − 40`) reproduces the standard OBD-II PID 05 formula and thereby validates
-the whole pipeline. Details in `research/labels/rod-labels.md` §4.3.
+the whole pipeline. Details in `.archive/research/labels/rod-labels.md` §4.3.
 
 **1a. More coverage — DONE, and it was already on disk (established 2026-08-05).** The
 claim this item used to make — "the logs were only ~20 s each, giving 14–16 matched points
@@ -552,19 +552,19 @@ Exercised against real capture+log data on 2026-08-01: it found the three scalin
 and rejected a two-level false positive, which is what the guards are for.
 
 **3. Names from the `.rod` — DONE.** Scaling comes from the car, and after the linkage
-attempt (`research/labels/label-linkage.md`, `research/labels/rod-labels.md` §4.4) that is settled: the
+attempt (`.archive/research/labels/label-linkage.md`, `.archive/research/labels/rod-labels.md` §4.4) that is settled: the
 label files hold **no linear coefficients**, its values are base-10 under a per-table glyph
 substitution, and the `MWB` code is a global function of the text-id with no per-ECU degree
 of freedom. So the label files are for **names and per-ECU lists**, nothing more.
 
-The name table itself is cracked (`research/labels/tttext-codec.md`): `vagcan setup` now
+The name table itself is cracked (`.archive/research/labels/tttext-codec.md`): `vagcan setup` now
 rebuilds the project's `names.json` from the installation rather than shipping
 the file, and the in-tool parser carries the word-frequency prior (2026-08-06), recovering
 **14,738 names** — comparable to the original solver's 17,009 (98.5 % agreement on shared
 ids, 6,881 the oracle lacked). Searchable with `vagcan vcds names <text>`. The `ENG######`
 question
 is settled — the number **is** the `TTTEXT` text-id, proven four for four on records solved
-blind (`research/labels/tttext-codec.md` §2, superseding `research/labels/label-linkage.md` §4's
+blind (`.archive/research/labels/tttext-codec.md` §2, superseding `.archive/research/labels/label-linkage.md` §4's
 "suggestive, not established"), and the recovered names are English text — the
 `ENG`-means-*English* reading, not *engine*. That closes the chain
 *proven identifier → IDE → ENG → name* for gearbox rows whose `IDE` the VCDS log prints —
@@ -673,7 +673,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   A census of the whole corpus refuted that: **1,559 of 22,107 classic sections (7.1 %)
   open with a fixed block** (`0x33`/`0xb3`), so roughly a thousand *shifted* sections are
   closed to today's tooling — not slow, unopenable, and for an unrecorded reason until
-  now (`research/labels/tttext2.md` §5, `crates/data/vag-data-labels/src/rod/mod.rs`). The research
+  now (`.archive/research/labels/tttext2.md` §5, `crates/data/vag-data-labels/src/rod/mod.rs`). The research
   driver carries `--all-btypes` as the widening; the shipped searcher does not, because
   admitting them doubles the search. **No car needed.** Cost of being wrong here is that
   a car naming one of those files gets "sealed" forever with no way to tell it apart from
@@ -704,7 +704,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
     its coolant scaling from "consistent with" into measured. Not obtainable from any
     archive: every cluster sample on disk reads a flat `90.00 °C`;
   - the unidentified units `0x712` / `0x713` / `0x715` / `0x746` / `0x74A` / `0x74B` /
-    `0x767` / `0x773` (`research/car/other-ecus.md`) — all but `0x715` already appear in the
+    `0x767` / `0x773` (`.archive/research/car/other-ecus.md`) — all but `0x715` already appear in the
     driving diff, so what they answer and what of it is live is known; naming and scaling
     are what is left;
   - deeper engine and gearbox coverage (the `3820–38FF` gearbox block while driving, the
@@ -716,7 +716,7 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   the commands that load label files. The five built-in pairings are the fallback, behind
   the override file and the label files. **Still open:** which CAN request id a number is
   answered on is in *no* label file — the two numberings are unrelated (`17` answers on
-  `0x714`, whose own UDS address is `0x14`; `19` on `0x710` — `research/car/other-ecus.md`
+  `0x714`, whose own UDS address is `0x14`; `19` on `0x710` — `.archive/research/car/other-ecus.md`
   §3) — so that half is learned per car by `units --identify`, which asks each
   id for its part number and the label files whose part number that is, and is lost when the
   process exits. A per-car cache of learned pairings would keep it.
@@ -737,15 +737,15 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
   so that build gives fault text and labels but no measurement names, and `vagcan setup`
   now says so up front instead of spinning. The only route that would change this is
   lifting the mask out of a running VCDS process, which is a Windows-debugger job and
-  not an offline one (`research/labels/tttext2.md` §3.3a, §3.5).
+  not an offline one (`.archive/research/labels/tttext2.md` §3.3a, §3.5).
 
 - **HEX-clone live UDS** — the session KDF is VMProtect-sealed and dead. The `vag-hex`
   crate and the vendored FTDI D2XX driver are **deleted**; the research writeups moved to
   `.archive/research/` (`vag-hex-framing.md`, `clone-crypto.md`, `vcds-rus-crack.md`) and
   stay authoritative as negative results. The clone capture decoder
-  (`research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
+  (`.archive/research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
 - **Scaling from the *VCDS* label files** — refuted structurally, twice over
-  (`research/labels/rod-labels.md` §4.0c, `research/labels/label-linkage.md` §3/§5).
+  (`.archive/research/labels/rod-labels.md` §4.0c, `.archive/research/labels/label-linkage.md` §3/§5).
   **Still true, and no longer the whole story (2026-08-08):** the refutation is about
   what a `.rod`/`.clb` label file contains, not about files in general. A VW ODIS
   project declares the entire chain — identifier, offset, length, byte order, compu
@@ -757,21 +757,21 @@ not a bus fault; a full unplug/replug (power-cycling the MCU) restores it. Check
 - **`MUX.rod` as the measurement registry** — opened 2026-08-04 and it is not one. It is
   the ODX multiplexer table, a leaf of the `STRUC` subgraph a car cannot enter, with no
   read identifier by four independent tests and a median table of three rows.
-  `research/labels/mux.md`. No decoder ships: the only way in is a `STRUC` id and nothing a
+  `.archive/research/labels/mux.md`. No decoder ships: the only way in is a `STRUC` id and nothing a
   control unit reports yields one.
 - **Pooling the `RD.rod` digit substitution across tables** — refuted 2026-08-05, then
   made irrelevant. 95 solved tables have 95 distinct alphabets, so there was nothing to
   intersect; the alphabet turned out to be *generated* from the table key by
   `srand(key)` and two shuffles, read off `VCDS-ARM.exe`
-  (`research/labels/fault-naming-hop.md`).
+  (`.archive/research/labels/fault-naming-hop.md`).
 
 ### Open, and bounded
 
-- **`TTTEXT2.ROD`** is the whole of `research/labels/label-linkage.md` §7 item 3 — whether the
+- **`TTTEXT2.ROD`** is the whole of `.archive/research/labels/label-linkage.md` §7 item 3 — whether the
   `.rod` label files are names-and-lists-only. It is now a **bounded 5–11 h unattended sweep**
   rather than an unknown: its `[CMP]` section is exempt from the shifted-IV regime, so its
   anchor byte cannot be narrowed and all 60 legal values need the full space
-  (`research/labels/tttext2.md` §4.2). Nobody has started it.
+  (`.archive/research/labels/tttext2.md` §4.2). Nobody has started it.
 - **A per-car cache of learned unit pairings.** Which CAN request id answers a unit number
   is in no label file — the two numberings are unrelated — so it is learned per car by
   `units --identify` and lost when the process exits. `~/.vagcan/cars/<VIN>/` is
@@ -792,7 +792,7 @@ What `survey` did, and who owns each part now:
 | which of those actually *change* — the parked/driving diff (`survey.rs:229`) | **only `survey`**. The file declares; the car decides. Nothing else can tell a live channel from a declared one |
 | the unit list + identities that give `watch` its tabs | **the gateway**, live, every run — `units::identify` reads its installation list. `survey` only saves the probes |
 | which of the declared identifiers this car actually has | **only `survey`** — 1,708 of the 2,251 have never been put to this car at all, and no file can say which it has |
-| stored faults on every unit (`survey.rs`, mask `0xFF`) | **`survey` records, `faults` reads** — not a duplicate. `faults --from <survey>` names the codes out of the file offline (`faults.rs:151`), which is how `research/labels/fault-naming-hop.md` §11.3 is reproduced without a car. The wider mask is deliberate: the file keeps the superset and the reader filters |
+| stored faults on every unit (`survey.rs`, mask `0xFF`) | **`survey` records, `faults` reads** — not a duplicate. `faults --from <survey>` names the codes out of the file offline (`faults.rs:151`), which is how `.archive/research/labels/fault-naming-hop.md` §11.3 is reproduced without a car. The wider mask is deliberate: the file keeps the superset and the reader filters |
 
 **Three corrections, because the first version of this section got three things wrong
 and all three the same way.** Each claim was checked by reading a call *site* and not by
@@ -815,7 +815,7 @@ call, not by reading the enum or the call site.** Grep found the right lines all
 times and the conclusion was still wrong.
 
 What the measurement did establish is in
-[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.1, **split by
+[`.archive/research/labels/odis-format.md`](../.archive/research/labels/odis-format.md) §4.1, **split by
 identifier range** — and a fourth correction belongs here, to the first draft of this
 paragraph. It said 693 of the 1,198 identifiers this car answers are ones the project
 never declares. True as arithmetic and wrong as a conclusion: **455 of those 693 are the
@@ -858,7 +858,7 @@ variant did not exist.
 Following the parent (`Store::measurement_layer`) turns **633 variants into 669** and
 **310,734 channels into 399,283** across the project — the doors get 118 and 99 — so this
 was never about the doors. Details and the remaining rear-door parse defect in
-[`research/labels/odis-format.md`](../research/labels/odis-format.md) §4.2.
+[`.archive/research/labels/odis-format.md`](../.archive/research/labels/odis-format.md) §4.2.
 
 The lesson is the one this session keeps re-learning in different costumes: **a reader that
 returns "nothing" for a failure it cannot tell apart from absence will get you a confident,
@@ -1050,7 +1050,7 @@ done tonight.
 6. **The reverse-gear code.** `catalog.rs` says `0C`, ODIS says `0C` is Gear 9 and
    reverse is `7`, and the `0C` figure is a doc comment rather than a proven row.
    Select reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`
-   (`research/labels/odis-format.md` §7.1). One minute.
+   (`.archive/research/labels/odis-format.md` §7.1). One minute.
 7. **`watch` and `measure` across the fifteen units.** The join is written and its
    per-unit numbers are measured against the *file*; nothing has confirmed them against
    the *car*.
@@ -1098,7 +1098,7 @@ Two things this must not disturb:
   `~/.vagcan/`, the checkout ships none of it.
 
 **It is also a crib.** Tested the same day against both ciphers in the label files
-(`research/labels/odis-crib.md`): useless against the `.rod` container — the bytes a known
+(`.archive/research/labels/odis-crib.md`): useless against the `.rod` container — the bytes a known
 plaintext would have to predict are already-compressed ones — but the strongest lever yet
 found against the `TTTEXT` substitution. A signature lookup against the ODIS strings as a
 *closed* candidate list read **18,842 new names** at a measured precision of 86.6 %, more

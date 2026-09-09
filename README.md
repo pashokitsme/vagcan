@@ -102,7 +102,7 @@ is a **platform, not one car** — VW files every Octavia III, Karoq and Kodiaq 
 `SK37X` — so several cars share one, and what is true of exactly one car lives under
 `~/.vagcan/cars/<VIN>/` instead. Which vehicles each of VW's project names covers is
 transcribed in
-[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md);
+[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md);
 it is a reading aid, and nothing in the tool consults it — a project declares its own
 coverage.
 

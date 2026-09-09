@@ -19,7 +19,7 @@
 //! What decided it is not preference. A VCDS label file carries a
 //! measurement's *name* and provably not the join from that name to the
 //! identifier it is read from, nor its scaling — refuted structurally, twice
-//! (`research/labels/rod-labels.md` §4.0c). An ODIS project carries the whole
+//! (`.archive/research/labels/rod-labels.md` §4.0c). An ODIS project carries the whole
 //! chain and declares it per ECU variant, and three rows this project had
 //! proved by driving came back identical out of the ODIS file with no drive,
 //! two of them engine-speed channels with opposite byte order. So the top two
@@ -43,7 +43,7 @@
 //! two of fifteen on one car under one project, which is a sample of one. What
 //! is durably true is what VCDS is *for*: a car no ODIS project covers, or a
 //! person who cannot get one. It also provably does not carry scalings
-//! (`research/labels/rod-labels.md` §4.0c) and has no per-variant channel list
+//! (`.archive/research/labels/rod-labels.md` §4.0c) and has no per-variant channel list
 //! at all, which is why it is no longer the answer on top.
 //!
 //! **A wrong directory is the ordinary failure, not an exceptional one.** The
@@ -198,7 +198,7 @@ enum Pick {
 /// the clear; the loader for the last of those is still being written, which is
 /// a limit of this build and not a property of the format, so no line here says
 /// VCDS is needed for fault names. A VCDS installation carries wording and
-/// fault text and provably not scalings (`research/labels/rod-labels.md`
+/// fault text and provably not scalings (`.archive/research/labels/rod-labels.md`
 /// §4.0c), and it has no per-variant channel list at all — so its line says
 /// what it is *for*, which is a car no ODIS project covers.
 const MENU: [(&str, &str, Pick); 4] = [

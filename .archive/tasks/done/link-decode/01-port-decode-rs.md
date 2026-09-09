@@ -7,13 +7,13 @@ Port the DECODE side of the link cipher to Rust so `vagcan decode <capture>` tur
 `b8`/`b7` session into UDS PDUs. This is the second PoC: our tool decodes the user's real car data.
 
 **Scope / boundary:** DECODE ONLY, using a per-session keystream recovered from known-plaintext
-(exactly what `research/clb-crack/link_cipher.py` does). We are NOT synthesizing the AES session key
+(exactly what `.archive/research/clb-crack/link_cipher.py` does). We are NOT synthesizing the AES session key
 (that's auth-derived, out of scope — see `research/SCOPE-BOUNDARY.md` and the session-key verdict in
 `research/vag-hex-framing.md`). So the decoder takes a recovered keystream (or recovers it from the
 capture's known-plaintext) — it does not and must not derive the key.
 
 ## Context
-- `research/clb-crack/link_cipher.py` is the reference: the 16-byte block layout (off6 = ISO-TP PCI,
+- `.archive/research/clb-crack/link_cipher.py` is the reference: the 16-byte block layout (off6 = ISO-TP PCI,
   off7 = UDS SID, off8..13 data, etc.), per-channel keystream, `plain[i] = cipher[i] ^ KS[i]`.
 - `vag_hex::frame` decodes the outer `S/M` frames; `0xb8`/`0xb7` payloads carry the 16-byte block.
 

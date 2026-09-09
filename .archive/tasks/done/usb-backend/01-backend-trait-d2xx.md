@@ -13,7 +13,7 @@ channels — never `spawn_blocking` per call, never blocking inside the tokio re
 - Vendored driver in `driver/darwin-arm64/` (libftd2xx dylib + headers). Host = macOS
   Apple Silicon M4.
 - FTDI IN transfers prefix each 64-byte packet with a 2-byte modem/line status that
-  must be STRIPPED (see `research/clb-crack/usbpcap.py::strip_ftdi_in`) before the
+  must be STRIPPED (see `.archive/research/clb-crack/usbpcap.py::strip_ftdi_in`) before the
   byte stream reaches the framer.
 - The current `usb.rs` is a stub (`BytePipe` trait + `open()` returning Unspecified).
   Replace it with the real backend.

@@ -95,7 +95,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 /// rebuildable from the source they came from, in minutes. Its `measurements/`
 /// holds the `(identifier, raw form, factor, offset)` rows this project proved
 /// on a vehicle; the label files provably cannot supply those
-/// (`research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
+/// (`.archive/research/labels/rod-labels.md` §4.0c) and nothing but a car can recreate
 /// them. That is the one distinction a reader of the tree needs, and why
 /// `crate::migrate` copies before it removes.
 ///

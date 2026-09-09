@@ -267,7 +267,7 @@ bytes because the cable never puts them on USB in the clear.
 > SVCdec cipher — a fixed per-position keystream). It is fully separable from the
 > `0xb6` init auth challenge, which needs analysis
 > Recovered clean-room from known UDS plaintext in `reading-ecus.pcapng`, cross-
-> checked against the binary. Tooling: `research/clb-crack/link_cipher.py`.
+> checked against the binary. Tooling: `.archive/research/clb-crack/link_cipher.py`.
 
 ### Algorithm (one line) — HIGH
 `plain[i] = cipher[i] XOR KS_channel[i]`, `i = 0..15`. A pure byte XOR against a
@@ -369,7 +369,7 @@ every `(channel, off14 & 0xE0)` bucket, off15 is constant (all 763 `b8` + 457
 `b7` frames). Disproof of the checksum hypothesis: identical PDU content yields
 different off15 (f3 TesterPresent shows both `0xFC` and `0xFD`), and off15 is not
 a function of the content bytes off6..13. Tooling:
-`research/clb-crack/{crack_off15.py,off15_final.py,off15_formula.py}`.
+`.archive/research/clb-crack/{crack_off15.py,off15_final.py,off15_formula.py}`.
 
 - **Form:** `off15 = KS15_channel ^ H(off14 & 0xE0)`. For most channels off15 is
   simply constant (their counter never crosses the bucket boundary that flips
@@ -461,7 +461,7 @@ Tracing the caller to recover how the blob is built
 > was based on a *false premise* — that `0x140072ec0` had "no static caller" — which
 > was an artifact of a `capstone` bug (`md.disasm` halts at the first undecodable word,
 > so the earlier `.text` sweep saw ~422 of ~350k instructions). A robust word-by-word
-> sweep (`research/clb-crack/xref.py`, `disfn.py`) reveals the whole mechanism.
+> sweep (`.archive/research/clb-crack/xref.py`, `disfn.py`) reveals the whole mechanism.
 
 **The link session key `K` is RSA key-transport, decrypted with a STATIC EMBEDDED
 RSA-1024 private key.** `b6`/`b7` are an orthogonal cable-auth handshake and do **not**
@@ -476,7 +476,7 @@ plain[i]= cipher[i] XOR KS_cid[i]
 - **Static secret = embedded RSA-1024 private key**, DER `RSAPrivateKey` at VMA
   `0x140171a30` (file off `0x170030`, 609 bytes, `30 82 02 5d 02 01 00 …`; n =
   `0xd32e7bbce9bf8853…`, e = 65537, p·q = n verified). Extract with
-  `research/clb-crack/extract_rsa_key.py`. Parsed into bignum fields at `ctx+0x5cd8`
+  `.archive/research/clb-crack/extract_rsa_key.py`. Parsed into bignum fields at `ctx+0x5cd8`
   (n@+8, e@+0x20, d@+0x38, p@+0x50, q@+0x68, dP@+0x80, dQ@+0x98, qInv@+0xb0) by RSA-ctx
   init `0x140073248` (called from the connection module `0x140069724`).
 - **Install path (sole AES-256 set-key path — VERIFIED):** dispatcher `0x14006d6c8`
@@ -638,7 +638,7 @@ re-key.
 > **DONE (2026-07-05).** Two captures were taken — `research/captures/init-only.pcapng`
 > and `research/captures/reading-ecus.pcapng` — and fully analyzed. The wire format
 > above was recovered from them and implemented (`crates/vag-hex/src/frame.rs`); the
-> link cipher was reversed (`research/clb-crack/link_cipher.py`). This appendix is the
+> link cipher was reversed (`.archive/research/clb-crack/link_cipher.py`). This appendix is the
 > retained method record — how the captures were produced (on the Windows box where the
 > clone HEX cable/VAG25.3 already works with a real VCDS install).
 

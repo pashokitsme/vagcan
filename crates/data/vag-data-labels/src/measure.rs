@@ -9,7 +9,7 @@
 //! logs `logs-engine.CSV` / `logs-dsg.CSV` / `coolant-rpm-speed.CSV`). The link
 //! cipher is decoded per channel; each measurement DID's raw time-series is
 //! aligned to a logged measurement by curve shape (cross-correlation) and fitted
-//! by least squares. Tooling: `research/clb-crack/measure_{series,ttp,final}.py`
+//! by least squares. Tooling: `.archive/research/clb-crack/measure_{series,ttp,final}.py`
 //! (first capture) and `measure_{coolant,fit,overlay,channels,probe}.py` (the
 //! second, wide-rev capture).
 //!
@@ -44,7 +44,7 @@
 //!   lags 34–90 s) — the signature of spurious window-matching, not tracking. So
 //!   the ADVMB display values are computed from raw the decodable channels do not
 //!   expose; a further capture cannot settle this by rev range alone. See
-//!   `research/labels/rod-labels.md §4` for the full negative.
+//!   `.archive/research/labels/rod-labels.md §4` for the full negative.
 //! - **Coolant temp.** Same capture: `IDE00025` rises 99 → 104 °C (slow, monotonic);
 //!   the only slowly-drifting DID (`7450`) *falls* `0xDE → 0xC5` and anti-correlates
 //!   (`r ≈ −0.66`), and the standard `raw·0.75 − 48` maps it to 118 → 99 °C (wrong
@@ -52,7 +52,7 @@
 //!   the logged coolant. No clean fit.
 //!
 //! [`LinearScale`] + [`RawForm`] are the reusable runtime machinery (mirroring
-//! the `MeasurementDef`/`Compu::Linear` model sketched in `research/labels/rod-labels.md
+//! the `MeasurementDef`/`Compu::Linear` model sketched in `.archive/research/labels/rod-labels.md
 //! §5`); car-specific `(factor, offset)` rows drop in here as they are proven.
 
 /// How to read an integer out of an RDBI response's data bytes (the bytes after
@@ -415,7 +415,7 @@ mod tests {
 		assert_eq!(word(true, true).read(&[0x30, 0xFF]), Some(12543));
 		// The proven little-endian register, expressed the general way: the
 		// gearbox's 0x380A read 690 /min from these bytes, 45570 read the other
-		// way round (`research/labels/rod-labels.md:433`).
+		// way round (`.archive/research/labels/rod-labels.md:433`).
 		assert_eq!(word(false, false).read(&[0xB2, 0x02]), Some(690));
 		assert_eq!(RawForm::U16Le.read(&[0xB2, 0x02]), Some(690));
 

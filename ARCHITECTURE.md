@@ -23,8 +23,8 @@ That is not "we did not look hard enough". The read identifier is not stored in
 rather than assumed, and `MWB` carries no per-ECU identifier either. There is no
 route from "this unit's boost pressure" to "read `0x202A`, two bytes big-endian,
 ×0.001 bar" through any file Ross-Tech ships. The reasoning is in
-[`research/labels/rod-labels.md`](research/labels/rod-labels.md) §4.0c and
-[`research/labels/label-linkage.md`](research/labels/label-linkage.md) §3. Do not go
+[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) §4.0c and
+[`.archive/research/labels/label-linkage.md`](.archive/research/labels/label-linkage.md) §3. Do not go
 looking again.
 
 **VW's own ODIS-Service data can, and that is why it leads.** An extracted ODIS project
@@ -55,7 +55,7 @@ keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octav
 Karoq and Kodiaq, and a proven scaling is a property of a *part number*, true of every
 car carrying that part. What is true of exactly one car — its car file, its drives, its
 survey — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
-[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md)
+[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md)
 transcribes which vehicles each of VW's project names covers; nothing in the tool reads
 it, because a project declares its own coverage in `PRNR-INFO.xml`.
 
@@ -146,7 +146,7 @@ for. What it cannot do is **name** anything.
 
 ## The file formats
 
-Full writeups under [`research/labels/`](research/labels/).
+Full writeups under [`.archive/research/labels/`](.archive/research/labels/).
 
 **`.lbl` — plain text.** The old format, still shipped for older control units. One
 file per part number, human readable, with a `; Component: … (#02)` header naming the
@@ -205,7 +205,7 @@ unmasked and opens in minutes; `TTText-RUS.rod` is masked, so `vagcan setup` che
 before it starts and says so rather than spinning for a day. Fault text and labels are
 unaffected — only the names are out of reach, and the one thing that would change that
 is reading the mask out of a running VCDS, not out of the files.
-[`research/labels/tttext2.md`](research/labels/tttext2.md) has the full argument.
+[`.archive/research/labels/tttext2.md`](.archive/research/labels/tttext2.md) has the full argument.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
 file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan dev vcds labels
@@ -226,14 +226,14 @@ Each `RD.rod` table's digits are substituted under a per-table alphabet, and tha
 alphabet turned out to be *generated* from the table key by `srand(key)` and two
 Fisher-Yates shuffles sharing one stream — read off the binary, not inferred. 95 of
 95 alphabets, 219,490 of 219,490 name fields, zero wrong. See
-[`research/labels/fault-naming-hop.md`](research/labels/fault-naming-hop.md).
+[`.archive/research/labels/fault-naming-hop.md`](.archive/research/labels/fault-naming-hop.md).
 
 **`TTTEXT.ROD` — the names.** Every record of its `[TXT]` section is enciphered under
 its **own** substitution, so there is no single key to find. The attack is
 dictionary-driven and bootstraps: records sharing the repetition pattern of their
 letter runs hold the same words under different keys, so one solve serves a whole
 cluster, and words read off solved records become vocabulary for the next pass. See
-[`research/labels/tttext-codec.md`](research/labels/tttext-codec.md).
+[`.archive/research/labels/tttext-codec.md`](.archive/research/labels/tttext-codec.md).
 
 ---
 
@@ -439,7 +439,7 @@ exists so that "we tried that, here is why it failed" survives a year.
 
 Start here: [`todo/README.md`](todo/README.md) for where things stand,
 [`CLAUDE.md`](CLAUDE.md) for the goal, the locked stack and the working rules, and
-[`research/labels/rod-labels.md`](research/labels/rod-labels.md) for the format work.
+[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) for the format work.
 Design documents are not kept: a plan outlives its landing only as a description of code
 that has since moved, so what survives a piece of work is this file, `todo/` and the
 commit that did it.

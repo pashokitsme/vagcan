@@ -256,7 +256,7 @@ rebuild; the cluster's warning cleared with the fuse). Then, in order:
   Ignition on, engine running, first insertion: **0 frames in 60 s.**
   Plug out and back in: **3106 frames/s, every one `0x17F00010`**, zero
   errors. That id is the gateway's network-management heartbeat
-  (`research/car/other-ecus.md`), 2 Hz when something acknowledges it.
+  (`.archive/research/car/other-ecus.md`), 2 Hz when something acknowledges it.
   3106/s is the gateway retransmitting it back-to-back because nobody does —
   and 0 → 3106 across one re-seating says the contact at the socket comes
   and goes.

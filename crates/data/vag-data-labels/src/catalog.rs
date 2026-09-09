@@ -1,6 +1,6 @@
 //! A data-driven measurement catalog: [`MeasurementDef`] rows that join a UDS
 //! read address to its raw byte form, scaling, unit and name — the model the
-//! roadmap (`todo/README.md` §M3, `research/labels/rod-labels.md` §5) sketches for
+//! roadmap (`todo/README.md` §M3, `.archive/research/labels/rod-labels.md` §5) sketches for
 //! turning `UDS 22 <DID>` responses into `name = value unit`.
 //!
 //! ## Provenance — why this catalog is hand-seeded, not machine-built
@@ -11,7 +11,7 @@
 //! substitution of [`crate::glyphs`] reads `STRUC`/`MUX`/`TTDOP` at 100 %
 //! coverage, and the scalings this project proved by driving (`0.4`, `0.01`,
 //! `0.001`, `1.0`, …) are all present in the label files. So the earlier "base-14,
-//! field segmentation not reversed" blocker is gone (`research/labels/scaling-audit.md`).
+//! field segmentation not reversed" blocker is gone (`.archive/research/labels/scaling-audit.md`).
 //!
 //! Two things still block the *automatic* path, and both were re-confirmed under
 //! that correct decode (not the retired base-14 one):
@@ -154,7 +154,7 @@ fn round(value: f64) -> String {
 }
 
 /// The engine-ECU **ignition-angle family**, the one measurement group proven
-/// against the owner's engine-running capture (`research/labels/rod-labels.md` §4.0a):
+/// against the owner's engine-running capture (`.archive/research/labels/rod-labels.md` §4.0a):
 /// each DID returns raw `0x5555` (big-endian `u16`) for a displayed **0.00°**,
 /// cross-validated four ways. The per-cylinder pairing of these four DIDs to
 /// `IDE00155/156/157/158` is **not individually determined** (all four read a

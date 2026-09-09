@@ -2,7 +2,7 @@
 //! stores against an object's name.
 //!
 //! A `.db` has no index and no framing of its own — it is nothing but zlib
-//! streams laid end to end (`research/labels/odis-crib.md` §2 found them by
+//! streams laid end to end (`.archive/research/labels/odis-crib.md` §2 found them by
 //! scanning for `78 9c`). What says where one starts is the paired `.key`
 //! file: every leaf's data is a [`Locator`], a `(position, compressed size,
 //! decompressed size)` triple.

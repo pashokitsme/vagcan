@@ -36,7 +36,7 @@
 //!
 //! **`measurements/` is the one directory here that nothing can recreate.** Every
 //! other file is extracted from somebody else's — a re-parse reproduces it. Those
-//! rows were proven by driving a car (`research/labels/rod-labels.md` §4.0c), and
+//! rows were proven by driving a car (`.archive/research/labels/rod-labels.md` §4.0c), and
 //! that is why the migration in [`crate::datadir`] copies before it removes and
 //! why nothing in this module ever deletes a project.
 //!

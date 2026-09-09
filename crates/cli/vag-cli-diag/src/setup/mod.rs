@@ -86,7 +86,7 @@ pub(crate) const CODES_FILES: &[&str] = &["Codes.dat", "Code-RUS.dat"];
 /// Label files-wide `.rod` files whose keys every car needs.
 ///
 /// `RD.rod` is the fault registry — the hop from a unit's own fault number to
-/// the code that names it (`research/labels/fault-naming-hop.md`) — and `MUX.rod`
+/// the code that names it (`.archive/research/labels/fault-naming-hop.md`) — and `MUX.rod`
 /// carries the shared multiplexer tables. Both are one file for the whole
 /// label files, so recovering their keys once serves every vehicle.
 ///
@@ -666,7 +666,7 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 ///
 /// **Its own file, not `names.json`, and that separation is the whole point.**
 /// Both are keyed by the same text id — the finding
-/// `research/labels/odis-crib.md` rests on — but they are not interchangeable
+/// `.archive/research/labels/odis-crib.md` rests on — but they are not interchangeable
 /// wording. An ODIS *reading* carries the parameter's name in one ECU variant;
 /// the pooled entry is the generic text for the id. Writing the second where a
 /// reader expects the first cost real wording on the owner's car: 0 channels
@@ -854,7 +854,7 @@ fn names(pool: &Path, install: &Path, project: &crate::project::Project, refresh
                      against the full space, which is hours to days rather than\n    \
                      the minute or two an ordinary table costs. Everything else\n    \
                      in this installation is recovered; only the names are out of\n    \
-                     reach. See research/labels/tttext2.md §3.3"
+                     reach. See .archive/research/labels/tttext2.md §3.3"
 				),
 			});
 		}
@@ -984,7 +984,7 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 /// What to say about scalings when the project has none.
 ///
 /// True of a VCDS installation and always was: the label files carry the names
-/// and no numbers at all (`research/labels/rod-labels.md` §4.0c). Somebody who
+/// and no numbers at all (`.archive/research/labels/rod-labels.md` §4.0c). Somebody who
 /// has just watched 300 MB of label files parse reasonably assumes the numbers
 /// came with the names, and this is the last chance to say they did not.
 const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS installation carries them — the label \n\
@@ -1339,7 +1339,7 @@ mod tests {
 	#[test]
 	fn a_name_already_in_names_json_is_not_changed_under_somebody() {
 		// The two sources agree about what a text id means — that is the whole
-		// finding `research/labels/odis-crib.md` rests on — so where they do
+		// finding `.archive/research/labels/odis-crib.md` rests on — so where they do
 		// not, the incumbent is what every earlier run has been reporting.
 		let here = TempDir::new("names");
 		let path = here.write("names.json", br#"{"000116": "Transmission Input Speed"}"#);

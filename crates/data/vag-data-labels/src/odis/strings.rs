@@ -1,7 +1,7 @@
 //! The two plaintext string pools an ODIS project ships, and the hash → name
 //! table built from them.
 //!
-//! `research/labels/odis-crib.md` §2 established what these are and that they
+//! `.archive/research/labels/odis-crib.md` §2 established what these are and that they
 //! are not encrypted: `AStringData.data` is 1.1 M short names as `u32` byte
 //! count + Windows-1252, `UStringData.data` is 154 k texts as `u32` **character**
 //! count + UTF-16LE. Both parse to the last byte in one forward pass, with no

@@ -1,7 +1,7 @@
 //! Computation methods — how a coded value out of a response becomes an
 //! engineering one — and their translation into this crate's [`Scaling`].
 //!
-//! This is the module the whole ODIS effort is for. `research/labels/rod-labels.md`
+//! This is the module the whole ODIS effort is for. `.archive/research/labels/rod-labels.md`
 //! §4.0c established that Ross-Tech's label files provably cannot supply a
 //! measurement scaling, so every proven row in `vag_data_labels::catalog` had to be
 //! measured by driving the car. A `COMPU-METHOD` is that scaling, written down.
@@ -24,7 +24,7 @@
 //! coded, and [`Scaling`] has no shape for any of them. They are an error that
 //! **names the category**, never a silent factor of 1 — a channel reported with
 //! the wrong slope is worse than a channel not reported at all, and
-//! `research/labels/scaling-audit.md` §4 is the record of what happens when a
+//! `.archive/research/labels/scaling-audit.md` §4 is the record of what happens when a
 //! plausible-looking scaling is trusted without proof.
 
 use crate::catalog::Scaling;
@@ -122,7 +122,7 @@ pub struct Coeffs {
 pub struct Scale {
 	/// The text id of this scale's label, if it has one. For a `TEXTTAB` this
 	/// is the id of the *text*, which is what makes an ODIS project readable
-	/// against `TTTEXT` (`research/labels/odis-crib.md` §3).
+	/// against `TTTEXT` (`.archive/research/labels/odis-crib.md` §3).
 	pub label_id: Option<String>,
 	/// The rational coefficients, on the coded → physical direction.
 	pub coeffs: Option<Coeffs>,

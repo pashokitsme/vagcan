@@ -148,29 +148,33 @@ crates/            all Rust. Three families and the product.
                    units / properties / sniff / sensors / watch / scan / faults /
                    survey / measure. Offline work is grouped by input: `recording …`
                    (our own `watch --out` recordings) and `vcds …` (VCDS's own files)
-research/        RE writeups + tooling (NOT shipped), one directory per subject:
-  labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
-                       name codec, `Codes.dat`, and the fault-naming chain. Key reads:
-                       `rod-labels.md` (the crack + the STRUC refutation, i.e. why
-                       scaling is live-only), `tttext-codec.md` (→ names.json),
-                       `fault-naming-hop.md` (number → words, end to end)
-  car/                 what the reference car answers: identifier map, the units
-                       outside the powertrain, the whole-car survey, gearbox state
-  clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
-  dash/                the ESP32 board from the laptop's side. `probes/` is firmware
-                       that answered a question (wifi-ap, wifi-scan, wifi-sta,
+research/        RE writeups + tooling (NOT shipped) for work still in progress:
+  dash/                the ESP32 board from the laptop's side. `can-bring-up.md` is the
+                       hardware hand-off; `bench.sh` the one-command bench; `probes/` is
+                       firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
                        and the buttons) and `bleecho`
-.archive/        retired paths kept as evidence: research/ (HEX-clone framing, clone
-                 crypto — negative results, do not retry), specs/ (superseded designs)
-                 and tasks/done/ (finished task files)
+  tuning/              the stage-1 FRF pipeline, not started
+.archive/        retired paths kept as evidence — see .archive/README.md for the map:
+  research/            subjects whose findings are implemented and shipped:
+    labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
+                         name codec, `Codes.dat`, the fault-naming chain. Key reads:
+                         `rod-labels.md` (the crack + the STRUC refutation, i.e. why
+                         scaling is live-only), `tttext-codec.md` (→ names.json),
+                         `fault-naming-hop.md` (number → words, end to end)
+    car/                 what the reference car answers: identifier map, the units
+                         outside the powertrain, the whole-car survey, gearbox state
+    clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
+    *.md                 HEX-clone framing, clone crypto — negative results, do not retry
+  specs/               superseded designs
+  tasks/done/          finished task files
 todo/            task tracking → todo/README.md (roadmap) and todo/<subsystem>/;
                  finished task files retire to .archive/tasks/done/
 ```
 
 
 Start-here docs: [`todo/README.md`](todo/README.md),
-[`ARCHITECTURE.md`](ARCHITECTURE.md), [`research/labels/rod-labels.md`](research/labels/rod-labels.md).
+[`ARCHITECTURE.md`](ARCHITECTURE.md), [`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md).
 
 The three front-page documents split by audience and must stay split:
 [`README.md`](README.md) is "is this for me, and how do I start" and nothing else;

@@ -24,7 +24,7 @@ const MARGIN: f32 = 20.0;
 
 /// How many letters a reading must have before it is worth keeping.
 ///
-/// `research/labels/tttext-codec.md` §7. Under a dozen there is too little
+/// `.archive/research/labels/tttext-codec.md` §7. Under a dozen there is too little
 /// evidence for the vocabulary check to mean anything, and the acronyms that
 /// dominate below it are not names.
 const MIN_LETTERS: usize = 12;
@@ -277,7 +277,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 	// than alphabetical order, and a cluster leader that guesses wrong pins that
 	// letter for every member it feeds. The word's frequency *in the decoded
 	// label files themselves* is the signal that settles those ties on evidence: `of`
-	// outnumbers `ob` thousands to one (`research/labels/tttext-codec.md` §7).
+	// outnumbers `ob` thousands to one (`.archive/research/labels/tttext-codec.md` §7).
 	//
 	// It is measured here from the decode, never a table of words baked into the
 	// binary — that would be exactly the car-specific data CLAUDE.md forbids.
@@ -353,7 +353,7 @@ pub fn run(opts: Options<'_>) -> Result<Coverage> {
 
 /// Word frequency over a set of decoded records — the prior.
 ///
-/// This is the statistic `research/labels/tttext-codec.md` §7 calls "a
+/// This is the statistic `.archive/research/labels/tttext-codec.md` §7 calls "a
 /// word-frequency prior measured on the decoded label files themselves": every word of
 /// every reading, counted. It is what tells `of` from `ob` and `oil` from
 /// `bil` — real words the vocabulary holds at equal footing until their counts
@@ -532,7 +532,7 @@ fn word_files(at: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// **The gate is the product, not the decode.** 61 % of the section decodes;
 /// what a name catalog may contain is far less than that, because a fluent
 /// wrong reading is indistinguishable from a right one at the point of use.
-/// `research/labels/tttext-codec.md` §7 states the filters and this applies
+/// `.archive/research/labels/tttext-codec.md` §7 states the filters and this applies
 /// them: the framing rule, no unresolved letter, no digit, at least
 /// [`MIN_LETTERS`] letters, every word of length ≥ 3 a word the vocabulary
 /// knows, the [`MARGIN`] ambiguity check per token, and no name twice.
@@ -696,7 +696,7 @@ fn fits(token: &str, word: &str, mut pinned: tttext::Key) -> bool {
 
 /// Whether a reading is the kind a catalog would consider at all.
 ///
-/// Three of the five filters of `research/labels/tttext-codec.md` §7: enough letters
+/// Three of the five filters of `.archive/research/labels/tttext-codec.md` §7: enough letters
 /// to be sure of, no unresolved letter, and every word of length >= 3 a word
 /// the vocabulary knows. The other two — the ambiguity margin and the framing
 /// rule — are not reimplemented here; this is a sampling filter, not the gate.

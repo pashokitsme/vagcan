@@ -190,7 +190,7 @@ pub fn no_fault_labels(looked_in: &Path) -> String {
 ///
 /// Deliberately does **not** mention `setup`. A VCDS installation supplies
 /// names and nothing else — the label files provably carries no scaling
-/// (`research/labels/rod-labels.md` §4.0c) — so parsing one again cannot
+/// (`.archive/research/labels/rod-labels.md` §4.0c) — so parsing one again cannot
 /// produce a single row of what is missing here. Only a drive can.
 pub fn no_catalog(subject: &str, dir: &Path) -> String {
 	let mut out = String::new();

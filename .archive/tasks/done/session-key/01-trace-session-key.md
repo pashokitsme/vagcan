@@ -19,7 +19,7 @@ our own tool can legitimately replicate for interop, or (b) derived from?**
 When unsure between (a) and (b), treat it as (b) and stop. Err toward stopping.
 
 ## Method (classification only)
-- Environment: `research/clb-crack`, `.venv/bin/python`, `framing_dis.py` (AArch64 disasm),
+- Environment: `.archive/research/clb-crack`, `.venv/bin/python`, `framing_dis.py` (AArch64 disasm),
   captures as oracle. Target the set-key path `0x140072ec0` → `0x14007ce68` and what feeds the
   32-byte key argument: where do those bytes come from?
 - Trace ONLY far enough to classify the SOURCE of the key bytes:

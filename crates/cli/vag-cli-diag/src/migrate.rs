@@ -8,7 +8,7 @@
 //!
 //! **`measured/` is why this module is careful.** Those rows were proven by
 //! driving a car — the label files provably cannot supply them
-//! (`research/labels/rod-labels.md` §4.0c) — and nothing but another drive can
+//! (`.archive/research/labels/rod-labels.md` §4.0c) — and nothing but another drive can
 //! recreate one. So every file is **copied, verified, and only then removed**,
 //! in that order and per file: a run interrupted half way leaves both copies,
 //! which is untidy, and never leaves neither, which would be unrecoverable.

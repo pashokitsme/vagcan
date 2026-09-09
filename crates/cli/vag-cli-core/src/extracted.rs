@@ -18,7 +18,7 @@
 //!
 //! The reference car's proven gear row reads raw `0x0C` as reverse; this
 //! project's `0x210F` calls the same raw value "Gear 9"
-//! (`research/labels/odis-format.md` §7.1). They may simply be different
+//! (`.archive/research/labels/odis-format.md` §7.1). They may simply be different
 //! channels on different units, and one minute with the car settles it — select
 //! reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`. Until somebody does,
 //! [`merge`] keeps the proven row and the extracted one stays unread. No code
@@ -40,7 +40,7 @@ use vag_data_labels::measure::RawForm;
 /// It also holds the project's `names.json`, because that file is the other
 /// half of the same question. An extracted row carries a **text id** and that
 /// id is the key `names.json` is written under — the whole finding
-/// `research/labels/odis-crib.md` §3 rests on — so a channel's wording is a
+/// `.archive/research/labels/odis-crib.md` §3 rests on — so a channel's wording is a
 /// lookup through an id the row itself carries, never a table of names in this
 /// source.
 #[derive(Debug)]

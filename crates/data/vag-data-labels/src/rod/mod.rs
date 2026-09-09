@@ -39,7 +39,7 @@ pub enum RodStatus {
 	/// `78 da` under the tag-derived IV, or there is nothing to search against.
 	/// In **40 % of the label files** they do not — those files carry a per-file XOR
 	/// on the first-block IV of every section after `[CMP]`
-	/// (`research/labels/tttext2.md`).
+	/// (`.archive/research/labels/tttext2.md`).
 	///
 	/// Reported apart from [`RodStatus::Undecodable`] because the two say
 	/// opposite things. A file that is undecodable has been tried; one that is
@@ -96,14 +96,14 @@ fn rod_block0_iv_recovered(tag: &[u8], iv3to8: [u8; 5]) -> [u8; 8] {
 /// Every value deflate byte 0 can take at the head of a zlib stream in this
 /// label files: `BTYPE = 2` (dynamic Huffman), `HLIT ≤ 29`, either `BFINAL`.
 ///
-/// Sixty values, and they matter because a shifted file (`research/labels/tttext2.md`
+/// Sixty values, and they matter because a shifted file (`.archive/research/labels/tttext2.md`
 /// §3.3) destroys exactly this byte. The layout is RFC 1951 §3.2.7:
 /// `BFINAL | BTYPE << 1 | HLIT << 3`. Stored and fixed-Huffman first blocks are
 /// excluded, which **is a known gap, not a property of the data**: this comment
 /// used to claim no section used either, and a census of the whole corpus
 /// refuted it — **1,559 of 22,107 classic sections (7.1 %) open with a fixed
 /// block** (`0x33`/`0xb3`), so roughly a thousand shifted sections cannot be
-/// opened by this sweep at all (`research/labels/tttext2.md` §5). Admitting them
+/// opened by this sweep at all (`.archive/research/labels/tttext2.md` §5). Admitting them
 /// doubles a search that is already the expensive part, which is why the
 /// widening lives behind the research driver's `--all-btypes` rather than here
 /// — but the reason is cost, and it was never that the blocks do not occur.
@@ -124,7 +124,7 @@ fn inflate_with_iv(sc: &SectionCipher<'_>, iv: [u8; 8]) -> Option<Vec<u8>> {
 }
 
 /// Decode a compressed section whose first-block IV carries the per-file XOR of
-/// `research/labels/tttext2.md` §3.3, given the recovered `iv[3..8]`.
+/// `.archive/research/labels/tttext2.md` §3.3, given the recovered `iv[3..8]`.
 ///
 /// Two of the three shifted bytes cost nothing, because the plaintext there is
 /// known: `iv[0] = t[0] ^ 0x78` and `iv[1] = t[1] ^ 0xda`. The third sits under
@@ -414,7 +414,7 @@ pub fn recover_zlib_iv3to8(tag: &[u8], payload: &[u8]) -> Option<[u8; 5]> {
 ///
 /// A section that answers `false` here is not corrupt: 40 % of the label files
 /// carries a per-file XOR on this IV, and one of those files was opened by
-/// deriving it (`research/labels/tttext2.md`). Nothing in this crate recovers that
+/// deriving it (`.archive/research/labels/tttext2.md`). Nothing in this crate recovers that
 /// XOR yet, which is exactly why the two cases are reported apart.
 fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 	if tag.len() < 3 || cipher.len() < 8 {
@@ -437,7 +437,7 @@ fn search_has_a_crib(tag: &[u8], cipher: &[u8]) -> bool {
 /// tag-derived and exact, so `plaintext[0..2]` reads `78 da` and deflate byte 0
 /// comes free: one search over the multiplicatively-reduced candidate sets, and
 /// a minute or two. A **shifted** file XORs a runtime mask over the finished IV
-/// (`research/labels/tttext2.md` §3.3), which destroys both the anchor and the
+/// (`.archive/research/labels/tttext2.md` §3.3), which destroys both the anchor and the
 /// reduction — so the only route is every legal anchor against the full space,
 /// sixty searches wide, and that is hours to days rather than minutes.
 ///
@@ -662,7 +662,7 @@ mod tests {
 		assert_eq!(&spliced[3..8], &[1, 2, 3, 4, 5]); // recovered tail
 	}
 
-	// --- the per-file IV shift (`research/labels/tttext2.md`) ----------------------
+	// --- the per-file IV shift (`.archive/research/labels/tttext2.md`) ----------------------
 
 	/// Build a zlib section encrypted under an IV that has been XORed with a
 	/// per-file mask, the way 40 % of the label files are.
@@ -691,7 +691,7 @@ mod tests {
 
 	#[test]
 	fn a_shifted_section_presents_no_crib_and_is_not_called_undecodable() {
-		// The distinction the whole of `research/labels/tttext2.md` turns on: the
+		// The distinction the whole of `.archive/research/labels/tttext2.md` turns on: the
 		// search cannot start here, which is not the same as the section being
 		// beyond reach. A mask over the IV destroys the known plaintext.
 		let tag = b"MWB";

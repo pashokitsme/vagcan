@@ -3,10 +3,10 @@
 //!
 //! A project's `names.json` holds the names `vagcan setup` recovered by
 //! breaking `TTTEXT.ROD`'s per-record substitution cipher
-//! (`research/labels/tttext-codec.md`). They are keyed by the label files' own text id,
+//! (`.archive/research/labels/tttext-codec.md`). They are keyed by the label files' own text id,
 //! **not** by data identifier: the join from a name to the identifier that
 //! carries it was shown to be structurally absent from the label files
-//! (`research/labels/label-linkage.md` §3), and no amount of decryption puts it back.
+//! (`.archive/research/labels/label-linkage.md` §3), and no amount of decryption puts it back.
 //!
 //! So this command cannot name a scan result for you. What it can do is answer
 //! "does this car's label files have a name that sounds like the thing I am

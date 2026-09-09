@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS reading (
     -- Stored, not assumed, and not derivable from anything else in the row.
     -- UDS payloads are big-endian by convention and the reference car's own
     -- proven row is not: DID 0x380A is `u16` little-endian
-    -- (`research/labels/rod-labels.md:433`, established byte by byte against a
+    -- (`.archive/research/labels/rod-labels.md:433`, established byte by byte against a
     -- log), and the ODIS file agrees. A reader that assumed big-endian would
     -- report 690 /min as 45570 — so a cache that dropped this column would
     -- throw away the parser's correctness at the storage layer.
@@ -1087,7 +1087,7 @@ mod tests {
 	fn byte_order_survives_the_cache_because_the_proven_row_disagrees_with_the_convention() {
 		// UDS payloads are big-endian by convention and the reference car's own
 		// proven row is not: DID 0x380A is `u16` little-endian
-		// (`research/labels/rod-labels.md:433`, established byte by byte against
+		// (`.archive/research/labels/rod-labels.md:433`, established byte by byte against
 		// a log), and the ODIS file agrees. A cache that dropped this column
 		// would throw the parser's correctness away at the storage layer, and a
 		// reader would report 690 /min as 45570.

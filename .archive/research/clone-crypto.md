@@ -301,7 +301,7 @@ from known plaintext, so a recovered `K` for the `f3` epoch must satisfy
 
 Oracle command (canonical — do not reinvent; `validate_k.py` exists):
 ```bash
-cd research/clb-crack
+cd .archive/research/clb-crack
 # 1) fastest sanity — does K reproduce the known f3 keystream?
 .venv/bin/python - "$KHEX" <<'PY'
 import sys; from link_cipher import IV_TABLE
@@ -503,7 +503,7 @@ keep Probe 2 as the long game.
 
 ---
 
-## Tooling (all in `research/clb-crack/`, run with `.venv/bin/python`)
+## Tooling (all in `.archive/research/clb-crack/`, run with `.venv/bin/python`)
 `usbpcap.py` (frame reassembly), `link_cipher.py` (IV_TABLE, keystream recovery),
 `crack_session_key.py`, `validate_k.py` (K → keystream → UDS decode oracle),
 `aes_ks_scan.py`/`aes_scan_fast.py`/`scan_dump_keys.py` (dump AES-schedule scanners),

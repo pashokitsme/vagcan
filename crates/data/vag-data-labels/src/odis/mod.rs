@@ -2,7 +2,7 @@
 //!
 //! An extracted ODIS project is a directory of `<PoolID>.db` / `<PoolID>.key`
 //! pairs plus two plaintext string pools. Nothing in it is encrypted
-//! (`research/labels/odis-crib.md` §2); the three layers are a B+Tree index
+//! (`.archive/research/labels/odis-crib.md` §2); the three layers are a B+Tree index
 //! ([`keyfile`], Peter Graf's PBL), zlib members ([`pool`]), and a positional
 //! object stream ([`object`]) whose field order per type was reverse-engineered
 //! by `ODIS-project-explorer` against a decompiled MCD kernel.
@@ -122,7 +122,7 @@ pub struct Reading {
 	/// Not decoration, and not safe to assume. UDS payloads are big-endian by
 	/// convention, and the reference car's own proven row is not: DID `0x380A`
 	/// on the gearbox is `u16` **little-endian**
-	/// (`research/labels/rod-labels.md:433`, established byte by byte against a
+	/// (`.archive/research/labels/rod-labels.md:433`, established byte by byte against a
 	/// log), and the ODIS file says the same — `is_high_low_byte_order` is
 	/// false for it. A decoder that assumed big-endian would read 690 /min as
 	/// 45570.
@@ -130,7 +130,7 @@ pub struct Reading {
 	/// How the raw value becomes an engineering one.
 	pub scaling: crate::catalog::Scaling,
 	/// The text id of [`Reading::name`] — the join to `TTTEXT`
-	/// (`research/labels/odis-crib.md` §3).
+	/// (`.archive/research/labels/odis-crib.md` §3).
 	pub text_id: Option<String>,
 }
 
@@ -172,7 +172,7 @@ impl Project {
 	/// the pools at all: the reference project's 1,155,437 ASCII and 153,704
 	/// Unicode strings contain no `Karoq`, no `Kodiaq`, no `Octavia`, no
 	/// `Fahrzeugprojekt` and no `5EP`. That is a measured negative, not an
-	/// assumption from the name (`research/labels/odis-format.md`).
+	/// assumption from the name (`.archive/research/labels/odis-format.md`).
 	///
 	/// `PRNR-INFO.xml` carries it instead, and carries it in exactly the shape
 	/// `S42` is written in: `VEHICLE-PROJECT`, `NAME`, `PRODUCT-ID`. The file is
@@ -792,7 +792,7 @@ fn row_for(rows: &[(Option<String>, loaders::Ref)], name: &str) -> Option<loader
 /// Four shapes hold one. A parameter names itself; a structure holds fields
 /// that do; a table row holds a parameter; and a data object property's text
 /// table holds one pair per level — that last is the richest source, and the
-/// one `research/labels/odis-crib.md` §3 turns into `TTTEXT` plaintext.
+/// one `.archive/research/labels/odis-crib.md` §3 turns into `TTTEXT` plaintext.
 ///
 /// First writer wins. The pools are shared across a project, so a text id means
 /// the same thing everywhere it appears; a later, differing text would be a

@@ -64,7 +64,7 @@ Confirmed from the traces (`research/vag-hex-framing.md`):
 - **Catch — the diagnostic channel is encrypted.** UDS rides inside opcode
   `0xb8` (request) / `0xb7` (response) frames as a 16-byte block XOR-enciphered
   with a per-channel keystream. The cipher is recovered in research
-  (`research/clb-crack/link_cipher.py`, a position-dependent XOR keystream, same
+  (`.archive/research/clb-crack/link_cipher.py`, a position-dependent XOR keystream, same
   family as `.clb`) but its 16-key schedule is not yet reversed. Need reverse
 
 ---
