@@ -1,12 +1,12 @@
 # Patches for the vendored VW_Flash
 
-`scripts/frfscope/vendor/VW_Flash/` is a local clone and is **not** committed, so any edit
+`research/tuning/frfscope/vendor/VW_Flash/` is a local clone and is **not** committed, so any edit
 to it would be lost on reinstall. Changes we depend on live here as patches and
 are re-applied after cloning:
 
 ```bash
-git clone --depth 1 https://github.com/bri3d/VW_Flash scripts/frfscope/vendor/VW_Flash
-cd scripts/frfscope/vendor/VW_Flash
+git clone --depth 1 https://github.com/bri3d/VW_Flash research/tuning/frfscope/vendor/VW_Flash
+cd research/tuning/frfscope/vendor/VW_Flash
 uv sync
 for p in ../patches/*.patch; do git apply "$p"; done
 ```

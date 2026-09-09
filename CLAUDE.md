@@ -154,7 +154,8 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
                        and the buttons) and `bleecho`
-  tuning/              the stage-1 FRF pipeline, not started
+  tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
+                       Simos18 calibration as graphs (read-only, never talks to a car)
 .archive/        retired paths kept as evidence — see .archive/README.md for the map:
   research/            subjects whose findings are implemented and shipped:
     labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT

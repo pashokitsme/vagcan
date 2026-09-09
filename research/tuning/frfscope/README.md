@@ -10,13 +10,13 @@ stdlib-only renderer; extraction reuses `bri3d/VW_Flash`.
 
 ```bash
 # zero-config: VW_Flash and a default definition are auto-discovered
-python scripts/frfscope/frfscope.py FILE.frf
+python research/tuning/frfscope/frfscope.py FILE.frf
 
 # override the definition; --report also lists the bad maps to stdout
-python scripts/frfscope/frfscope.py FILE.frf --xdf DEF.xdf --report
+python research/tuning/frfscope/frfscope.py FILE.frf --xdf DEF.xdf --report
 
 # a raw calibration block needs no VW_Flash at all
-python scripts/frfscope/frfscope.py FD_4.CAL.bin
+python research/tuning/frfscope/frfscope.py FD_4.CAL.bin
 ```
 
 Input type is resolved by extension: `.frf` (decrypt→odx→CAL), `.odx` (→CAL),
@@ -26,10 +26,10 @@ Input type is resolved by extension: `.frf` (decrypt→odx→CAL), `.odx` (→CA
 ### Discovery — nothing to wire up
 
 - **VW_Flash** is found automatically: `--vwflash`, then `$VW_FLASH_DIR`, then
-  `scripts/frfscope/vendor/VW_Flash` (see `../vendor/README.md` to install it), then the
+  `research/tuning/frfscope/vendor/VW_Flash` (see `../vendor/README.md` to install it), then the
   cwd. If the running Python lacks `pycryptodome`, frfscope re-execs itself under
   VW_Flash's own `.venv` — so plain `python frfscope.py …` just works.
-- **Definition**: with no `--xdf`, the first `*.xdf` under `scripts/frfscope/defs/`
+- **Definition**: with no `--xdf`, the first `*.xdf` under `research/tuning/frfscope/defs/`
   is used (currently an `SC8S50` near-match — see caveats).
 
 In the page: 2D maps render as heatmaps, 1D as line charts. **Hover any cell for
@@ -55,7 +55,7 @@ cannot promise the survivors are exactly right.
 ## Dependencies
 
 - `.bin` input: **none** (Python 3.10+ stdlib only).
-- `.frf`/`.odx` input: the vendored `bri3d/VW_Flash` (`scripts/frfscope/vendor/VW_Flash`,
+- `.frf`/`.odx` input: the vendored `bri3d/VW_Flash` (`research/tuning/frfscope/vendor/VW_Flash`,
   installed per `../vendor/README.md`) and its `pycryptodome`. frfscope re-execs
   into VW_Flash's `.venv` automatically, so you don't pick an interpreter.
 

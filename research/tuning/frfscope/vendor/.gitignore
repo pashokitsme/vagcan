@@ -1,5 +1,5 @@
 # Vendored external tool — cloned locally, not committed. Reinstall with:
-#   git clone --depth 1 https://github.com/bri3d/VW_Flash scripts/frfscope/vendor/VW_Flash
-#   cd scripts/frfscope/vendor/VW_Flash && uv sync
+#   git clone --depth 1 https://github.com/bri3d/VW_Flash research/tuning/frfscope/vendor/VW_Flash
+#   cd research/tuning/frfscope/vendor/VW_Flash && uv sync
 # (lzss build is only needed for flashing, which frfscope does not do.)
 VW_Flash/

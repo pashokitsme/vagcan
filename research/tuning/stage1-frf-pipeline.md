@@ -82,7 +82,7 @@ cipher would sit near 8.0), so its maps can be read directly with a definition.
 
 ## This FRF is almost certainly NOT what the car runs
 
-`scripts/frfscope/vendor/VW_Flash/data/box_codes.csv` carries the exact row:
+`research/tuning/frfscope/vendor/VW_Flash/data/box_codes.csv` carries the exact row:
 
 ```
 box_code,  version, engine_name, cboot,    asw,      cal,      ecm3_start, ecm3_end
@@ -153,7 +153,7 @@ cable is known to exist. Two viable paths:
    uv run python VW_Flash.py --interface SocketCAN --can_channel can0 <action>
    ```
 2. **Native macOS via the slcan patch — implemented**, see
-   `scripts/frfscope/vendor/patches/0001-slcan-cross-platform-transport.patch`. Adds an
+   `research/tuning/frfscope/vendor/patches/0001-slcan-cross-platform-transport.patch`. Adds an
    `SLCAN` interface (`can.Bus(interface="slcan")` → `isotp.CanStack` →
    `PythonIsoTpConnection`) plus a frame-level STmin floor, since
    `can-isotp==1.9` has no `override_receiver_stmin` to match the kernel's
@@ -195,7 +195,7 @@ Recovery:
   rev limiter, PE lambda, spark…). It is an **`SC8S50`** definition.
 - **S50 addresses align with our `SC8O10` binary for MOST maps, but not the
   torque structure.** A full sweep of all 143 S50 tables over the O10 CAL,
-  scored by flatness + smoothness (`scripts/frfscope/frfscope.py --report`, or
+  scored by flatness + smoothness (`research/tuning/frfscope/frfscope.py --report`, or
   the browser view's flat/noisy filters): **93 structured & plausible, 41 flat,
   9 noisy/garbage.** The plausible set decodes to
   real values — Rail Pressure `ip_fup_sp_bas_sel[*]` 500–20000, Base Fuel MPI

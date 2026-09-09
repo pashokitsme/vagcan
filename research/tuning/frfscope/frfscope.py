@@ -33,7 +33,7 @@ def discover_vwflash(explicit: Path | None) -> Path | None:
     """Locate a bri3d/VW_Flash checkout without the caller naming it.
 
     Order: --vwflash, $VW_FLASH_DIR, a copy vendored next to this script
-    (scripts/frfscope/vendor/VW_Flash), then the current directory."""
+    (research/tuning/frfscope/vendor/VW_Flash), then the current directory."""
     here = Path(__file__).resolve().parent
     cands = [explicit,
              Path(os.environ["VW_FLASH_DIR"]) if os.environ.get("VW_FLASH_DIR") else None,
@@ -89,7 +89,7 @@ def load_calibration(path: Path, vwflash: Path | None) -> bytes:
     if not vwflash or not vwflash.is_dir():
         sys.exit(
             "extracting .frf/.odx needs the VW_Flash toolchain and none was found; "
-            "vendor it at scripts/frfscope/vendor/VW_Flash, pass --vwflash, or set "
+            "vendor it at research/tuning/frfscope/vendor/VW_Flash, pass --vwflash, or set "
             "VW_FLASH_DIR (raw .bin input needs neither)"
         )
     ensure_vwflash_deps(vwflash)
@@ -422,7 +422,7 @@ def main():
     ap.add_argument("--xdf", type=Path, help="TunerPro .xdf definition (named maps)")
     ap.add_argument("--vwflash", type=Path, default=None,
                     help="bri3d/VW_Flash directory; auto-discovered if omitted "
-                         "(scripts/frfscope/vendor/VW_Flash, $VW_FLASH_DIR)")
+                         "(research/tuning/frfscope/vendor/VW_Flash, $VW_FLASH_DIR)")
     ap.add_argument("--out", type=Path, help="output HTML (default: alongside input)")
     ap.add_argument("--report", action="store_true",
                     help="print the list of maps with bad/untrustworthy values")
