@@ -12,8 +12,8 @@ only its extraction path; it never flashes. See `../../CLAUDE.md`.
 Install / reinstall:
 
 ```bash
-git clone --depth 1 https://github.com/bri3d/VW_Flash scripts/vendor/VW_Flash
-cd scripts/vendor/VW_Flash && uv sync      # pulls pycryptodome etc.
+git clone --depth 1 https://github.com/bri3d/VW_Flash scripts/frfscope/vendor/VW_Flash
+cd scripts/frfscope/vendor/VW_Flash && uv sync      # pulls pycryptodome etc.
 ```
 
 frfscope auto-discovers this path. The LZSS C build (`lib/lzss`) is **not**

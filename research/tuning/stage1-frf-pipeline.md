@@ -82,7 +82,7 @@ cipher would sit near 8.0), so its maps can be read directly with a definition.
 
 ## This FRF is almost certainly NOT what the car runs
 
-`scripts/vendor/VW_Flash/data/box_codes.csv` carries the exact row:
+`scripts/frfscope/vendor/VW_Flash/data/box_codes.csv` carries the exact row:
 
 ```
 box_code,  version, engine_name, cboot,    asw,      cal,      ecm3_start, ecm3_end
@@ -153,7 +153,7 @@ cable is known to exist. Two viable paths:
    uv run python VW_Flash.py --interface SocketCAN --can_channel can0 <action>
    ```
 2. **Native macOS via the slcan patch — implemented**, see
-   `scripts/vendor/patches/0001-slcan-cross-platform-transport.patch`. Adds an
+   `scripts/frfscope/vendor/patches/0001-slcan-cross-platform-transport.patch`. Adds an
    `SLCAN` interface (`can.Bus(interface="slcan")` → `isotp.CanStack` →
    `PythonIsoTpConnection`) plus a frame-level STmin floor, since
    `can-isotp==1.9` has no `override_receiver_stmin` to match the kernel's

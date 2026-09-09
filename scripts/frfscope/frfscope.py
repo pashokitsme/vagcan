@@ -7,7 +7,7 @@ line charts for 1D); without one it falls back to heuristic axis detection and
 plots unnamed table candidates.
 
 This is a READ-ONLY analysis helper. It never talks to a car and never writes an
-ECU — see research/stage1-frf-pipeline.md for the safety boundary. Firmware
+ECU — see research/tuning/stage1-frf-pipeline.md for the safety boundary. Firmware
 extraction reuses the external bri3d/VW_Flash toolchain (pass its directory with
 --vwflash or set VW_FLASH_DIR); raw .bin input needs neither.
 
@@ -33,7 +33,7 @@ def discover_vwflash(explicit: Path | None) -> Path | None:
     """Locate a bri3d/VW_Flash checkout without the caller naming it.
 
     Order: --vwflash, $VW_FLASH_DIR, a copy vendored next to this script
-    (scripts/vendor/VW_Flash), then the current directory."""
+    (scripts/frfscope/vendor/VW_Flash), then the current directory."""
     here = Path(__file__).resolve().parent
     cands = [explicit,
              Path(os.environ["VW_FLASH_DIR"]) if os.environ.get("VW_FLASH_DIR") else None,
@@ -89,7 +89,7 @@ def load_calibration(path: Path, vwflash: Path | None) -> bytes:
     if not vwflash or not vwflash.is_dir():
         sys.exit(
             "extracting .frf/.odx needs the VW_Flash toolchain and none was found; "
-            "vendor it at scripts/vendor/VW_Flash, pass --vwflash, or set "
+            "vendor it at scripts/frfscope/vendor/VW_Flash, pass --vwflash, or set "
             "VW_FLASH_DIR (raw .bin input needs neither)"
         )
     ensure_vwflash_deps(vwflash)
@@ -422,7 +422,7 @@ def main():
     ap.add_argument("--xdf", type=Path, help="TunerPro .xdf definition (named maps)")
     ap.add_argument("--vwflash", type=Path, default=None,
                     help="bri3d/VW_Flash directory; auto-discovered if omitted "
-                         "(scripts/vendor/VW_Flash, $VW_FLASH_DIR)")
+                         "(scripts/frfscope/vendor/VW_Flash, $VW_FLASH_DIR)")
     ap.add_argument("--out", type=Path, help="output HTML (default: alongside input)")
     ap.add_argument("--report", action="store_true",
                     help="print the list of maps with bad/untrustworthy values")

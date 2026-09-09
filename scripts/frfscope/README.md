@@ -26,7 +26,7 @@ Input type is resolved by extension: `.frf` (decrypt→odx→CAL), `.odx` (→CA
 ### Discovery — nothing to wire up
 
 - **VW_Flash** is found automatically: `--vwflash`, then `$VW_FLASH_DIR`, then
-  `scripts/vendor/VW_Flash` (see `../vendor/README.md` to install it), then the
+  `scripts/frfscope/vendor/VW_Flash` (see `../vendor/README.md` to install it), then the
   cwd. If the running Python lacks `pycryptodome`, frfscope re-execs itself under
   VW_Flash's own `.venv` — so plain `python frfscope.py …` just works.
 - **Definition**: with no `--xdf`, the first `*.xdf` under `scripts/frfscope/defs/`
@@ -55,7 +55,7 @@ cannot promise the survivors are exactly right.
 ## Dependencies
 
 - `.bin` input: **none** (Python 3.10+ stdlib only).
-- `.frf`/`.odx` input: the vendored `bri3d/VW_Flash` (`scripts/vendor/VW_Flash`,
+- `.frf`/`.odx` input: the vendored `bri3d/VW_Flash` (`scripts/frfscope/vendor/VW_Flash`,
   installed per `../vendor/README.md`) and its `pycryptodome`. frfscope re-execs
   into VW_Flash's `.venv` automatically, so you don't pick an interpreter.
 
