@@ -264,25 +264,51 @@ vagcan faults --ecu 01,713 --details   # two units, with the raw freeze frames
 vagcan faults --all                    # every code, not only the confirmed ones
 ```
 
-Once a **VCDS installation** has been read, the codes come out in VW's own words with no
-extra flag — the fault text is in `~/.vagcan/rod/`. A project set up from an ODIS
-project alone shows the numbers instead: the fault text is in there too, in the clear,
-but the loader for it is still being written, so today the words come from VCDS. Run
-`setup` on an installation as well and this section fills in.
+**The names come from the ODIS project first.** `setup` on an ODIS project writes every
+variant's fault table into the project's `cache.sqlite` — the 24-bit number the unit
+sends, the code a tester prints (`B1168F2`), and the text — and `faults` names a code
+from the table of the variant the unit identifies itself as (`F19E`/`F1A2`, the same
+match `watch` scales channels by). The line under a code is then `<display code>  <text>`.
+Where the project has no table for a unit, or none has been set up, the **VCDS chain** is
+the fallback: the registry, the unit's own catalogue and `Codes.dat` in `~/.vagcan/rod/`,
+which is what the line reads as `B1455 01  Temperature Sensor …`. The listing says which
+it used, above the codes.
 
-The raw files are shared across every project and only ever swapped wholesale for a
+A text is in whichever language its supplier wrote it — the format carries one text per
+code and no translations — so a project's language is the one it *declares*
+(`<LANGUAGE>deu</LANGUAGE>`, recorded on the source), and on the reference project the
+engine's texts are English inside a German project. With one source set up nothing needs
+choosing. With several in different languages, `config.toml` decides:
+
+```toml
+[faults]
+language = "deu"     # the code a source declares: an ODIS project's "deu", a VCDS build's "eng"/"rus"
+```
+
+Unset, the first ODIS source wins and the listing says so and names the setting. A
+language only the VCDS build declares sends the VCDS chain first.
+
+The raw VCDS files are shared across every project and only ever swapped wholesale for a
 different **language build** — an English install landing on a Russian one clears it
 first and says so, because layering the two would leave names from one beside fault text
 from the other.
 
 ```
 $ vagcan faults
+282621 fault texts for 621 variants from /Users/…/SK37X (deu)
+228393 rows of fault registry, 34716 texts, from ~/.vagcan/rod — the fallback
+
 --  713  ESC
   000129  (297)   confirmed
-      B1168 F2  Steering Angle Sensor: Not Initialized
+      B1168F2  Swa_lost_initialisation
       212869 km, 1×
       2026-07-30 18:15:06 by the car's own clock
 ```
+
+The same code through the VCDS chain reads `B1168 F2  Steering Angle Sensor: Not
+Initialized` — the display code agrees to the character, and the words are the
+supplier's against Ross-Tech's. `research/odis-dtc/README.md` §7 has the two side by side
+for every stored fault on the reference car.
 
 A stored code is a record that something happened once — **not** a diagnosis, and not
 necessarily a fault present now. Only codes marked *failed now* are currently failing,
