@@ -263,25 +263,56 @@ impl Namers {
 			(Some(namer), Some(vag_data_labels::UnitLookup::Found { catalogue, .. })) => Some(namer.name(catalogue, code)),
 			_ => None,
 		};
-		let vcds_named = vcds.as_ref().filter(|n| matches!(n, crate::faultnames::Naming::Named { .. }));
-		if self.odis.as_ref().is_some_and(|o| o.prefers_vcds())
-			&& let Some(line) = vcds_named.and_then(|n| n.line())
-		{
-			return Some((line, true));
-		}
-		if let Some(naming) = odis {
-			return Some((naming.line(), true));
-		}
-		if let Some(naming) = vcds {
-			return naming
-				.line()
-				.map(|line| (line, matches!(naming, crate::faultnames::Naming::Named { .. })));
-		}
-		// The project has a table for the unit and this number is not in it,
-		// and nothing else can be asked: said, rather than left blank.
 		let project_has_it = unit.odis.as_ref().is_some_and(|u| !u.is_empty());
-		project_has_it.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
+		compose(odis, vcds, self.odis.as_ref().is_some_and(|o| o.prefers_vcds()), project_has_it)
 	}
+}
+
+/// The order the two chains are asked in, as one function over their answers.
+///
+/// Separated from [`Namers::name`] so the order is testable without a project
+/// and a VCDS installation on disk: everything above it is lookup, this is the
+/// policy.
+///
+/// The project wins, except where it has nothing to say. **A row with a
+/// display code and no text is one of those** — two of the reference
+/// project's 291,346 rows are shaped that way. The code is still the
+/// project's and is kept; the words come from VCDS, and the line says whose
+/// they are. Printing `(no text in the project)` over a name that exists one
+/// lookup away, and counting it as named, was the bug.
+fn compose(
+	odis: Option<crate::odisfaults::Naming>,
+	vcds: Option<crate::faultnames::Naming>,
+	prefer_vcds: bool,
+	project_has_unit: bool,
+) -> Option<(String, bool)> {
+	let vcds_text = match &vcds {
+		Some(crate::faultnames::Naming::Named { text, .. }) => Some(text.clone()),
+		_ => None,
+	};
+	if prefer_vcds && let Some(line) = vcds.as_ref().filter(|_| vcds_text.is_some()).and_then(|n| n.line()) {
+		return Some((line, true));
+	}
+	if let Some(mut naming) = odis {
+		if naming.text.is_none()
+			&& let Some(text) = vcds_text
+		{
+			naming.text = Some(text);
+			return Some((format!("{}  (text from the VCDS labels)", naming.line()), true));
+		}
+		// A code without words anywhere is not a named code, whatever else the
+		// row carries — the run's tally counts names, not rows.
+		let named = naming.text.is_some();
+		return Some((naming.line(), named));
+	}
+	if let Some(naming) = vcds {
+		return naming
+			.line()
+			.map(|line| (line, matches!(naming, crate::faultnames::Naming::Named { .. })));
+	}
+	// The project has a table for the unit and this number is not in it,
+	// and nothing else can be asked: said, rather than left blank.
+	project_has_unit.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
 }
 
 /// Name the faults in a survey this tool recorded (`vagcan faults --from`).
@@ -629,6 +660,48 @@ mod tests {
 		// build, not of one car — while the keys that open it are per project,
 		// because a key is a property of one file's bytes (design §4.2).
 		assert_eq!(crate::datadir::rod_pool_dir().unwrap(), crate::datadir::vagcan_dir().unwrap().join("rod"));
+	}
+
+	/// An ODIS row as the reference project's two textless ones are shaped: a
+	/// display code, and nothing to read.
+	fn textless_odis_row() -> crate::odisfaults::Naming {
+		crate::odisfaults::Naming {
+			display_code: Some("B1168F2".into()),
+			text: None,
+			language: Some("deu".into()),
+			variant: "EV_Brake_035".into(),
+			family: "EV_Brake".into(),
+			matched: 1,
+			confirmed: true,
+			disagrees: false,
+			level: 0,
+		}
+	}
+
+	#[test]
+	fn an_odis_row_with_no_text_borrows_the_vcds_words_under_its_own_code() {
+		// Two rows of the reference project's 291,346 carry a display code and
+		// no text. The project still writes the code, but it has no name to
+		// give — so the VCDS chain is asked rather than "(no text in the
+		// project)" winning over a name that exists one lookup away.
+		let vcds = crate::faultnames::Naming::Named {
+			text: "Steering angle sensor".into(),
+			sae: Some("B1168".into()),
+			failure_type: Some(0xF2),
+		};
+		let (line, named) = compose(Some(textless_odis_row()), Some(vcds), false, true).expect("a code with a display code says something");
+		assert_eq!(line, "B1168F2  Steering angle sensor  (text from the VCDS labels)");
+		assert!(named, "a borrowed name is still a name");
+	}
+
+	#[test]
+	fn a_code_nothing_has_words_for_is_not_counted_as_named() {
+		// The display code alone is how a tester writes the number, not what
+		// went wrong. Counting it as named was what made the run's tally say
+		// every code had a name.
+		let (line, named) = compose(Some(textless_odis_row()), None, false, true).unwrap();
+		assert_eq!(line, "B1168F2  (no text in the project)");
+		assert!(!named);
 	}
 
 	#[test]

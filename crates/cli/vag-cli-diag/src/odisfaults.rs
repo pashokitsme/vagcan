@@ -45,6 +45,14 @@ pub struct OdisFaults {
 #[derive(Debug, Clone, Default)]
 pub struct UnitTexts {
 	pub variants: Vec<String>,
+	/// The unit's `F19E`, so a variant can be printed as the suffix that
+	/// distinguishes it inside the family rather than in full.
+	pub family: String,
+	/// Whether the car's own identifiers picked these variants or merely their
+	/// family — `Exact`/`Version` against `Family`
+	/// ([`vag_data_labels::label_files::OdxMatch`]). A family match is a guess
+	/// and every line taken from one says so.
+	pub confirmed: bool,
 	rows: Vec<(String, CachedFault)>,
 }
 
@@ -66,20 +74,83 @@ pub struct Naming {
 	pub language: Option<String>,
 	/// Which variant's table the row is from.
 	pub variant: String,
+	/// The `F19E` those variants belong to, so [`Naming::line`] can print the
+	/// variant as the suffix that tells it from its siblings.
+	pub family: String,
+	/// How many variants the unit's identity matched — the size of the set
+	/// this row was taken out of.
+	pub matched: usize,
+	/// Whether that match was the car's own answer rather than the family
+	/// ([`UnitTexts::confirmed`]).
+	pub confirmed: bool,
+	/// Whether the other matching variants that list this number say something
+	/// else about it, in the same language.
+	pub disagrees: bool,
 	/// The object's `LEVEL`, recorded and not interpreted.
 	pub level: u32,
 }
 
 impl Naming {
-	/// One line for the console: the display code, then the text with its
-	/// line breaks flattened — a fault text is one row on a screen.
+	/// One line for the console: the display code, the text with its line
+	/// breaks flattened — a fault text is one row on a screen — the level, and
+	/// where the row came from when that was not settled by the car.
 	pub fn line(&self) -> String {
 		let text = self.text.as_deref().map(|t| t.replace('\n', " / "));
-		match (self.display_code.as_deref(), text) {
+		let mut line = match (self.display_code.as_deref(), text) {
 			(Some(code), Some(text)) => format!("{code}  {text}"),
 			(Some(code), None) => format!("{code}  (no text in the project)"),
 			(None, Some(text)) => text,
 			(None, None) => "(no text in the project)".to_string(),
+		};
+		// `LEVEL` in the file's own word. It matched VCDS's fault priority on
+		// both codes it was checked against (`research/odis-dtc/README.md`
+		// §3), which is evidence for a decoder and not one — so the number is
+		// shown and the word stays the file's.
+		if self.level > 0 {
+			line.push_str(&format!("  level {}", self.level));
+		}
+		if let Some(note) = self.provenance() {
+			line.push_str(&format!("  ({note})"));
+		}
+		line
+	}
+
+	/// Which variant this row came from, when the car's identifiers did not
+	/// settle that on their own, and whether the others agreed with it.
+	///
+	/// Silent when `F19E`/`F1A2` picked one variant: then there was no choice
+	/// to report, and naming the file under every code would be noise. A
+	/// family match, or several matching variants, is a choice — the row is
+	/// still shown, because it is the project's answer and the alternative is
+	/// no name at all, but the line never presents it as settled.
+	fn provenance(&self) -> Option<String> {
+		if self.confirmed && self.matched < 2 {
+			return None;
+		}
+		let mut parts = vec![match self.matched {
+			0 | 1 => format!("variant {}, the only one matching", self.short_variant()),
+			n => format!("variant {} of {n} matching", self.short_variant()),
+		}];
+		if self.disagrees {
+			parts.push(match self.confirmed {
+				true => "they disagree on this number".to_string(),
+				false => "they disagree — record F1A2 to settle it".to_string(),
+			});
+		}
+		Some(parts.join("; "))
+	}
+
+	/// The part of the variant's name that distinguishes it inside its family:
+	/// `EV_Brake1UDSContiMK100ESP_032` under `EV_Brake1UDSContiMK100ESP` is
+	/// `_032`. The unit's own line has already printed the family.
+	fn short_variant(&self) -> &str {
+		let family = self.family.trim_end_matches(['\0', ' ']);
+		if family.is_empty() {
+			return &self.variant;
+		}
+		match self.variant.get(..family.len()) {
+			Some(head) if head.eq_ignore_ascii_case(family) && family.len() < self.variant.len() => &self.variant[family.len()..],
+			_ => &self.variant,
 		}
 	}
 }
@@ -182,13 +253,26 @@ impl OdisFaults {
 			.into_iter()
 			.cloned()
 			.collect();
+		// How the identity picked them. `Exact` is the unit's own file and
+		// `Version` is `F1A2` confirming a variant; `Family` is the right
+		// family with `F1A2` unanswered or unmatched, which is a guess and is
+		// reported as one on every line taken from it.
+		let confirmed = variants
+			.first()
+			.and_then(|name| vag_data_labels::label_files::odx_match(name, odx_name, version))
+			.is_some_and(|rank| rank != vag_data_labels::label_files::OdxMatch::Family);
 		let mut rows = Vec::new();
 		for variant in &variants {
 			for row in vag_data_db::faults_of(&self.cache, variant).unwrap_or_default() {
 				rows.push((variant.clone(), row));
 			}
 		}
-		let texts = UnitTexts { variants, rows };
+		let texts = UnitTexts {
+			variants,
+			family: odx_name.trim_end_matches(['\0', ' ']).to_string(),
+			confirmed,
+			rows,
+		};
 		self.units.insert(key, texts.clone());
 		texts
 	}
@@ -198,6 +282,13 @@ impl OdisFaults {
 	/// Among the rows for the number, one whose source declares the preferred
 	/// language wins; failing that, the first written — the first source, in
 	/// its first-named variant — which is what makes two runs agree.
+	///
+	/// **That first row is a choice, not an answer**, whenever the unit's
+	/// identity matched a family rather than a variant: the reference car's
+	/// unit 03 answers no `F1A2`, seven variants match, and they do not all
+	/// write 297 the same way. The row carries where it came from and whether
+	/// the others agreed, so [`Naming::line`] can say so rather than letting
+	/// the alphabetically first look like the car's own answer.
 	pub fn name(&self, unit: &UnitTexts, code: [u8; 3]) -> Option<Naming> {
 		let number = u32::from_be_bytes([0, code[0], code[1], code[2]]);
 		let candidates: Vec<&(String, CachedFault)> = unit.rows.iter().filter(|(_, row)| row.fault.code == number).collect();
@@ -209,11 +300,21 @@ impl OdisFaults {
 			None => candidates.first(),
 		}?;
 		let (variant, row) = chosen;
+		// Only rows in the chosen row's language are compared: a second source
+		// in another language differs by design, and calling that a
+		// disagreement would flag every code on a two-language machine.
+		let disagrees = candidates.iter().any(|(other, r)| {
+			other != variant && r.language == row.language && (r.fault.display_code != row.fault.display_code || r.fault.text != row.fault.text)
+		});
 		Some(Naming {
 			display_code: row.fault.display_code.clone(),
 			text: row.fault.text.clone(),
 			language: row.language.clone(),
 			variant: variant.clone(),
+			family: unit.family.clone(),
+			matched: unit.variants.len(),
+			confirmed: unit.confirmed,
+			disagrees,
 			level: row.fault.level,
 		})
 	}
@@ -224,11 +325,15 @@ mod tests {
 	use super::*;
 
 	fn row(code: u32, text: &str, language: Option<&str>, dir: &str) -> CachedFault {
+		display_row(code, text, language, dir, "B1168F2")
+	}
+
+	fn display_row(code: u32, text: &str, language: Option<&str>, dir: &str, display: &str) -> CachedFault {
 		CachedFault {
 			fault: vag_data_labels::odis::Fault {
 				dop: "DTCDOP_VAGUDS".into(),
 				code,
-				display_code: Some("B1168F2".into()),
+				display_code: Some(display.into()),
 				text: Some(text.into()),
 				text_id: None,
 				short_name: None,
@@ -258,12 +363,16 @@ mod tests {
 		// The reference car's brake unit: `00 01 29` is 297, and the project's
 		// display code for it is the `B1168 F2` VCDS printed.
 		let unit = UnitTexts {
+			family: "EV_Brake".into(),
+			confirmed: true,
 			variants: vec!["EV_Brake_035".into()],
 			rows: vec![("EV_Brake_035".into(), row(297, "Swa_lost_initialisation", Some("deu"), "/x"))],
 		};
 		let r = resolver(None, &[("odis", "/x", Some("deu"))]);
 		let named = r.name(&unit, [0x00, 0x01, 0x29]).expect("297 is in the table");
-		assert_eq!(named.line(), "B1168F2  Swa_lost_initialisation");
+		// The unit's own `F1A2` picked that one variant, so the line is the
+		// name and the level and nothing about where it came from.
+		assert_eq!(named.line(), "B1168F2  Swa_lost_initialisation  level 2");
 		assert_eq!(named.variant, "EV_Brake_035");
 		assert_eq!(named.language.as_deref(), Some("deu"));
 		assert!(r.name(&unit, [0x00, 0x01, 0x2A]).is_none(), "a number no table lists is not named");
@@ -275,15 +384,75 @@ mod tests {
 			display_code: Some("P150B00".into()),
 			text: Some("Acceleration monitoring\nControl limit exceeded".into()),
 			language: None,
-			variant: String::new(),
+			variant: "EV_ECM_001".into(),
+			family: "EV_ECM".into(),
+			matched: 1,
+			confirmed: true,
+			disagrees: false,
 			level: 2,
 		};
-		assert_eq!(naming.line(), "P150B00  Acceleration monitoring / Control limit exceeded");
+		assert_eq!(naming.line(), "P150B00  Acceleration monitoring / Control limit exceeded  level 2");
+	}
+
+	#[test]
+	fn a_family_match_names_the_variant_it_took_and_says_when_they_disagree() {
+		// Unit 03 of the reference car answers no `F1A2`, so seven variants of
+		// `EV_Brake1UDSContiMK100ESP` match at family rank — and they do not
+		// agree about 297: `_032` writes it `B116816`, `_035`–`_038` write
+		// `B1168F2`. Taking the alphabetically first and printing it as the
+		// answer was the bug; the row is still shown, and the line says it was
+		// picked out of seven and that they differ.
+		let variants: Vec<String> = ["_032", "_035", "_036", "_037", "_038", "_039", "_040"]
+			.iter()
+			.map(|suffix| format!("EV_Brake{suffix}"))
+			.collect();
+		let unit = UnitTexts {
+			family: "EV_Brake".into(),
+			confirmed: false,
+			variants,
+			rows: vec![
+				(
+					"EV_Brake_032".into(),
+					display_row(297, "Swa_lost_initialisation", Some("deu"), "/x", "B116816"),
+				),
+				(
+					"EV_Brake_035".into(),
+					display_row(297, "Swa_lost_initialisation", Some("deu"), "/x", "B1168F2"),
+				),
+			],
+		};
+		let named = resolver(None, &[("odis", "/x", Some("deu"))])
+			.name(&unit, [0x00, 0x01, 0x29])
+			.expect("297 is in the table");
+		assert_eq!(named.variant, "EV_Brake_032");
+		assert_eq!(
+			named.line(),
+			"B116816  Swa_lost_initialisation  level 2  (variant _032 of 7 matching; they disagree — record F1A2 to settle it)"
+		);
+	}
+
+	#[test]
+	fn variants_that_agree_are_not_reported_as_a_disagreement() {
+		// Two localisations of one variant say the same thing; only that the
+		// choice was made at family rank is worth a word.
+		let unit = UnitTexts {
+			family: "EV_Brake".into(),
+			confirmed: false,
+			variants: vec!["EV_Brake_035".into(), "EV_Brake_035_SK37".into()],
+			rows: vec![
+				("EV_Brake_035".into(), row(297, "Swa_lost_initialisation", Some("deu"), "/x")),
+				("EV_Brake_035_SK37".into(), row(297, "Swa_lost_initialisation", Some("deu"), "/x")),
+			],
+		};
+		let named = resolver(None, &[("odis", "/x", Some("deu"))]).name(&unit, [0, 1, 0x29]).unwrap();
+		assert_eq!(named.line(), "B1168F2  Swa_lost_initialisation  level 2  (variant _035 of 2 matching)");
 	}
 
 	#[test]
 	fn the_setting_chooses_between_sources_and_an_unset_one_takes_the_first_and_says_so() {
 		let unit = UnitTexts {
+			family: "EV_X".into(),
+			confirmed: true,
 			variants: vec!["EV_X".into()],
 			rows: vec![
 				("EV_X".into(), row(297, "Lenkwinkelsensor", Some("deu"), "/de")),
