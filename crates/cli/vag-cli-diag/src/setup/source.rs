@@ -46,6 +46,16 @@
 //! (`.archive/research/labels/rod-labels.md` §4.0c) and has no per-variant channel list
 //! at all, which is why it is no longer the answer on top.
 //!
+//! **A folder is asked for two ways, and which one is itself a menu.** The
+//! typed path was the only way in for as long as this module existed, and the
+//! argument for it still holds — a path is usually already in the person's
+//! hands, and dropping a folder on a terminal pastes one. What it is not is the
+//! only way anybody wants to answer, and the alternative is not a hotkey buried
+//! in the prompt: it is [`HOW_MENU`], drawn by the same [`Asker::ask`] the
+//! source question uses. The dialog itself is behind [`Dialog`] for the reason
+//! everything else here is behind a trait — a test that opened a real panel
+//! would hang on the machine that runs it.
+//!
 //! **A wrong directory is the ordinary failure, not an exceptional one.** The
 //! two misses seen in practice are pointing at `Labels/` inside an installation
 //! and pointing at `~/Downloads` instead of `~/Downloads/SK37X`, and both are a
@@ -251,6 +261,97 @@ fn names_options<'a>() -> [Item<'a>; 3] {
 	NAMES_MENU.map(|(label, detail, _)| Item { label, detail })
 }
 
+/// The two ways to answer a folder question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum How {
+	/// The operating system's own folder chooser.
+	Dialog,
+	/// A line of text: typed, pasted, or a folder dropped on the terminal.
+	Type,
+}
+
+/// How to answer, as a menu — the third of the three in this command and built
+/// out of the same table-plus-[`Item`] pair as the other two.
+///
+/// **The dialog leads.** The typed path is the older way and still the one that
+/// works on every machine, but it asks somebody to produce a string, and the
+/// two misses this module spends most of its refusal copy on (`Labels/` inside
+/// an installation, `~/Downloads` above a project) are both people who can see
+/// the folder and cannot name it. A chooser starts them in a file manager,
+/// where the folder is the thing they click. The row below is one keystroke
+/// away and loses nothing.
+///
+/// Neither line promises a window will actually open: on a machine with no
+/// display the panel simply hands nothing back, and [`ask_for`] lands on the
+/// prompt with a line saying so.
+const HOW_MENU: [(&str, &str, How); 2] = [
+	("Choose the folder in a dialog", "opens your system's folder chooser", How::Dialog),
+	("Type the path", "drag it into this window, or paste it", How::Type),
+];
+
+/// The two ways to answer, as the menu draws them.
+fn how_options<'a>() -> [Item<'a>; 2] {
+	HOW_MENU.map(|(label, detail, _)| Item { label, detail })
+}
+
+/// The system folder chooser, behind a seam.
+///
+/// One method, because there is one question to ask a window: given a title,
+/// which folder — or `None`, which is a cancel and a machine with no display
+/// alike, since neither produced a folder and neither is an error.
+///
+/// It is a trait for the reason [`Asker`] is one: a test that opened a real
+/// panel would wait forever on a machine nobody is sitting at, and CI is
+/// exactly that machine. The tests pass a closure; [`super::run`] passes
+/// [`native_folder`].
+pub trait Dialog {
+	fn folder(&mut self, title: &str) -> Option<PathBuf>;
+}
+
+/// Any closure of the right shape is a dialog.
+///
+/// No concrete implementor is written anywhere — the real one is
+/// [`native_folder`], a plain `fn` — so this blanket impl is the only one and
+/// cannot overlap with another.
+impl<F: FnMut(&str) -> Option<PathBuf>> Dialog for F {
+	fn folder(&mut self, title: &str) -> Option<PathBuf> {
+		self(title)
+	}
+}
+
+/// The operating system's own folder chooser: `NSOpenPanel` on macOS, the XDG
+/// portal on Linux, `IFileDialog` on Windows.
+///
+/// **This must be called on the main thread, and the call chain that reaches it
+/// is what guarantees that.** AppKit refuses to run a modal panel anywhere else
+/// — `rfd` says so, and a panel opened off the main thread is a hang or a
+/// crash, not a wrong answer. `main` is `#[tokio::main]`, which is
+/// `Runtime::block_on` around the whole of `main`'s future, and `block_on` runs
+/// that future *on the calling thread*: `vagcan setup` dispatches straight into
+/// [`super::run`], which is synchronous and never awaits, so every frame from
+/// `main` down to here is on the main thread. Do not put this behind
+/// `spawn_blocking` or a `std::thread`, and do not make anything on the path
+/// from `main` to [`super::run`] `.await` across it.
+///
+/// `None` is every way of not getting a folder: the person cancelled, or there
+/// is no display and nothing could be shown. [`ask_for`] treats the two the
+/// same because there is nothing useful to say that distinguishes them.
+pub fn native_folder(title: &str) -> Option<PathBuf> {
+	rfd::FileDialog::new().set_title(title).pick_folder()
+}
+
+/// A dialog that opens nothing and hands nothing back.
+///
+/// **No test may open a real panel**, here or in [`super`]'s: a modal window on
+/// a machine nobody is sitting at is a test run that never finishes. This is
+/// what stands in for one wherever the flow under test types its path instead —
+/// and it is also, exactly, the machine with no display, which is why it needs
+/// no window to be tested against either.
+#[cfg(test)]
+pub(crate) fn no_dialog() -> impl Dialog {
+	|_: &str| -> Option<PathBuf> { None }
+}
+
 /// What `setup` was told to read, whole.
 ///
 /// Two fields because one option needs two inputs. `source` is what the run is
@@ -305,7 +406,7 @@ impl Choice {
 /// It cannot spin: [`Asker::ask`] has no default to fall back on. `Console`
 /// refuses outright without a terminal, and `Scripted` fails when the script
 /// runs out, so every asker leaves this loop rather than feeding it.
-pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<Choice>> {
+pub fn choose(io: &mut impl Asker, dialog: &mut impl Dialog, preselected: Option<&str>) -> Result<Option<Choice>> {
 	if let Some(given) = preselected {
 		return Ok(Some(Choice::only(given_path(given)?)));
 	}
@@ -314,8 +415,8 @@ pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<C
 			return Ok(None);
 		};
 		let picked = match MENU.get(row).map(|(_, _, pick)| *pick) {
-			Some(Pick::OdisAndNames) => odis_and_names(io)?,
-			Some(Pick::Dir(look)) => ask_for(io, look, BACK)?.map(Choice::only),
+			Some(Pick::OdisAndNames) => odis_and_names(io, dialog)?,
+			Some(Pick::Dir(look)) => ask_for(io, dialog, look, BACK)?.map(Choice::only),
 			Some(Pick::Download) => Some(Choice::only(Source::DownloadVcds)),
 			// An asker that named a row outside the menu has named nothing.
 			// Nobody chose anything, which is the same answer as leaving.
@@ -343,8 +444,8 @@ pub fn choose(io: &mut impl Asker, preselected: Option<&str>) -> Result<Option<C
 /// with structure and no wording reads and scales perfectly well — the channels
 /// simply keep the phrasing ODIS gives them — so a half-finished pair is a
 /// smaller result, never a failed `setup`.
-fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
-	let Some(source) = ask_for(io, Look::Odis, BACK)? else {
+fn odis_and_names(io: &mut impl Asker, dialog: &mut impl Dialog) -> Result<Option<Choice>> {
+	let Some(source) = ask_for(io, dialog, Look::Odis, BACK)? else {
 		return Ok(None);
 	};
 	// Quitting the second menu is the same answer as skipping it, and lands in
@@ -353,7 +454,7 @@ fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
 	// somebody who changed their mind needs to read.
 	let names = match io.ask(NAMES_QUESTION, &names_options(), 0)? {
 		Some(row) => match NAMES_MENU.get(row).map(|(_, _, wording)| *wording) {
-			Some(Wording::Point) => ask_for(io, Look::Vcds, "skips this and keeps the ODIS wording")?,
+			Some(Wording::Point) => ask_for(io, dialog, Look::Vcds, "skips this and keeps the ODIS wording")?,
 			Some(Wording::Download) => Some(Source::DownloadVcds),
 			// A row outside the menu names nothing, which is no wording either.
 			Some(Wording::Skip) | None => None,
@@ -380,15 +481,69 @@ fn odis_and_names(io: &mut impl Asker) -> Result<Option<Choice>> {
 /// carries the run on. One function saying two true things beats one sentence
 /// that is wrong at one of the two call sites.
 ///
-/// Typed rather than picked, and that is a decision worth the sentence:
-/// [`crate::ui::picker::pick_path`] descends a *fixed* number of levels from a
-/// *fixed* root, which is right for `~/.vagcan/cars/<vin>/measures` and wrong
-/// here — neither the root nor the depth of an installation is knowable
-/// (`/Applications/VCDS`, `~/Downloads/SK37X`, an external disk). The path is
-/// also already in the person's hands: every file manager copies one, and
-/// dropping a folder on a terminal pastes it. [`expand`] is what makes that
-/// paste work.
-fn ask_for(io: &mut impl Asker, want: Look, back: &str) -> Result<Option<Source>> {
+/// **The two ways to answer are a menu, not a hidden key.** This asked for a
+/// typed path and nothing else, and the reason it could is that the path is
+/// usually already in the person's hands — every file manager copies one, and
+/// dropping a folder on a terminal pastes it ([`expand`] is what makes that
+/// paste work). That is still true and still the second row; what it is not is
+/// the *only* way, and somebody who would rather point at the folder had no way
+/// to say so. So the question is asked twice over: [`HOW_MENU`] first — which
+/// is the same [`Asker::ask`] the source menu uses, so there is one kind of
+/// question in this command rather than two — and then either the system's own
+/// folder chooser or the line prompt.
+///
+/// Not [`crate::ui::picker::pick_path`], which is this tool's own list widget:
+/// it descends a *fixed* number of levels from a *fixed* root, which is right
+/// for `~/.vagcan/cars/<vin>/measures` and wrong here, where neither the root
+/// nor the depth of an installation is knowable (`/Applications/VCDS`,
+/// `~/Downloads/SK37X`, an external disk). The dialog has no such root: it is
+/// the one the operating system already opens on the folder they last used.
+fn ask_for(io: &mut impl Asker, dialog: &mut impl Dialog, want: Look, back: &str) -> Result<Option<Source>> {
+	// Said before the menu because the menu's own legend can only offer `q`,
+	// and what `q` costs is the thing worth knowing before pressing it.
+	io.say(&format!("Point at the folder in a window, or type its path. Leaving without one {back}."))?;
+	let Some(row) = io.ask(want.question(), &how_options(), 0)? else {
+		return Ok(None);
+	};
+	if HOW_MENU.get(row).map(|(_, _, how)| *how) == Some(How::Dialog) {
+		if let Some(source) = from_dialog(io, dialog, want)? {
+			return Ok(Some(source));
+		}
+		// Cancelled, or there was no display to open a panel on — the two are
+		// one `None` and neither is a reason to end the question. Falling
+		// through to the prompt rather than back to the menu is what makes a
+		// machine with no window server usable at all: the row above is dead
+		// there, and silently landing on nothing would look like a hang.
+		io.say("No folder came back from the dialog. Type the path instead.")?;
+	}
+	// A row outside the menu names nothing, and typing is the way that works
+	// everywhere — so it is what a nonsense answer lands on.
+	typed_path(io, want, back)
+}
+
+/// The folder as the system's own chooser hands it over.
+///
+/// Loops for the same reason [`typed_path`] does: a folder that is not the kind
+/// being asked for is a thing to correct, and the correction is another go at
+/// the same panel. Cancelling is the way out, and it is not a refusal of the
+/// whole question — the caller offers the prompt afterwards.
+fn from_dialog(io: &mut impl Asker, dialog: &mut impl Dialog, want: Look) -> Result<Option<Source>> {
+	loop {
+		// The panel is titled with the question it is answering, so a window
+		// that appears over the terminal still says which of the two folders it
+		// wants.
+		let Some(dir) = dialog.folder(want.question()) else {
+			return Ok(None);
+		};
+		if identify(&dir) == Some(want) {
+			return Ok(Some(want.source(dir)));
+		}
+		io.say(&refused(&dir, want))?;
+	}
+}
+
+/// The folder as a person types, pastes or drops it.
+fn typed_path(io: &mut impl Asker, want: Look, back: &str) -> Result<Option<Source>> {
 	io.say(&format!("Drag the folder into this window, or paste its path. An empty line {back}."))?;
 	loop {
 		let typed = io.line(want.question(), "")?;
@@ -834,28 +989,87 @@ mod tests {
 		dir
 	}
 
-	fn typed(path: &Path) -> Answer {
-		Answer::Type(path.display().to_string())
+	/// A script, out of one step per question.
+	///
+	/// A folder question is two answers now — how to answer it, then the answer
+	/// — so a step is a `Vec` and a script is the steps flattened. Spelling the
+	/// pair out at every call site would bury what each test is actually about.
+	fn script(steps: impl IntoIterator<Item = Vec<Answer>>) -> Vec<Answer> {
+		steps.into_iter().flatten().collect()
+	}
+
+	/// Answer a folder question by typing: the row that says so, then the path.
+	fn typed(path: &Path) -> Vec<Answer> {
+		vec![how_row(How::Type), Answer::Type(path.display().to_string())]
+	}
+
+	/// Type a path at a question that is *already* asking for one — the second
+	/// go after a refusal, which loops inside the prompt and does not ask how
+	/// again.
+	fn again(path: &Path) -> Vec<Answer> {
+		vec![Answer::Type(path.display().to_string())]
+	}
+
+	/// Back out of a folder question by leaving its line empty.
+	fn empty() -> Vec<Answer> {
+		vec![how_row(How::Type), Answer::Type(String::new())]
+	}
+
+	/// Leave without answering — `q` at whichever menu is on screen.
+	fn quit() -> Vec<Answer> {
+		vec![Answer::Quit]
+	}
+
+	/// The row a way of answering is on, named rather than numbered.
+	fn how_row(how: How) -> Answer {
+		let at = HOW_MENU
+			.iter()
+			.position(|(_, _, offered)| *offered == how)
+			.expect("both ways of answering are on the menu");
+		Answer::Pick(at)
+	}
+
+	/// A dialog with its answers written down: what the panel "returned", in
+	/// order, and the titles it was asked to show, which come back out to be
+	/// asserted against. **It opens no window** — running out of answers is a
+	/// cancel, which is what stops every loop in this module.
+	fn windows(answers: Vec<Option<PathBuf>>) -> (impl Dialog, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+		let titles = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+		let seen = std::rc::Rc::clone(&titles);
+		let mut answers: std::collections::VecDeque<Option<PathBuf>> = answers.into();
+		let dialog = move |title: &str| -> Option<PathBuf> {
+			seen.borrow_mut().push(title.to_string());
+			answers.pop_front().flatten()
+		};
+		(dialog, titles)
 	}
 
 	/// The row a kind is on, so a test says which source it picks rather than
 	/// which number. The order has moved once already and should not cost a
 	/// test edit when it moves again.
-	fn row(look: Look) -> Answer {
+	fn row(look: Look) -> Vec<Answer> {
 		let at = MENU
 			.iter()
 			.position(|(_, _, pick)| *pick == Pick::Dir(look))
 			.expect("every kind of source is on the menu");
-		Answer::Pick(at)
+		vec![Answer::Pick(at)]
 	}
 
 	/// The row that fetches an installation rather than pointing at one.
-	fn download_row() -> Answer {
+	fn download_row() -> Vec<Answer> {
 		let at = MENU
 			.iter()
 			.position(|(_, _, pick)| *pick == Pick::Download)
 			.expect("the download is on the menu");
-		Answer::Pick(at)
+		vec![Answer::Pick(at)]
+	}
+
+	/// How many times the source menu itself has been on screen — the count
+	/// that says whether backing out of a folder question landed on it. The
+	/// menus in front of the folder questions are in `seen` too, so a bare
+	/// length no longer answers this.
+	fn menus(io: &Scripted) -> usize {
+		io.seen.iter().filter(|(question, _)| question == QUESTION).count()
 	}
 
 	#[test]
@@ -870,8 +1084,13 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![Answer::Pick(0), typed(&project), wording_row(Wording::Point), typed(&install)]);
-		let chosen = choose(&mut io, None).unwrap().unwrap();
+		let mut io = Scripted::new(script([
+			vec![Answer::Pick(0)],
+			typed(&project),
+			wording_row(Wording::Point),
+			typed(&install),
+		]));
+		let chosen = choose(&mut io, &mut no_dialog(), None).unwrap().unwrap();
 		assert_eq!(chosen.source, Source::Odis { dir: project });
 		assert_eq!(chosen.names, Some(Source::Vcds { dir: install }));
 		assert_eq!(
@@ -884,20 +1103,20 @@ mod tests {
 	/// The row that asks for both, and the row of the second menu that answers
 	/// the wording question — named rather than numbered, for the same reason
 	/// [`row`] is.
-	fn pair_row() -> Answer {
+	fn pair_row() -> Vec<Answer> {
 		let at = MENU
 			.iter()
 			.position(|(_, _, pick)| *pick == Pick::OdisAndNames)
 			.expect("the pair is on the menu");
-		Answer::Pick(at)
+		vec![Answer::Pick(at)]
 	}
 
-	fn wording_row(which: Wording) -> Answer {
+	fn wording_row(which: Wording) -> Vec<Answer> {
 		let at = NAMES_MENU
 			.iter()
 			.position(|(_, _, w)| *w == which)
 			.expect("every answer is on the names menu");
-		Answer::Pick(at)
+		vec![Answer::Pick(at)]
 	}
 
 	#[test]
@@ -909,8 +1128,8 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![pair_row(), typed(&project), wording_row(Wording::Point), typed(&install)]);
-		let chosen = choose(&mut io, None).unwrap().unwrap();
+		let mut io = Scripted::new(script([pair_row(), typed(&project), wording_row(Wording::Point), typed(&install)]));
+		let chosen = choose(&mut io, &mut no_dialog(), None).unwrap().unwrap();
 		assert_eq!(chosen.source, Source::Odis { dir: project });
 		assert_eq!(chosen.names, Some(Source::Vcds { dir: install }));
 		let asked: Vec<&str> = io.typed.iter().map(|(question, _)| question.as_str()).collect();
@@ -923,8 +1142,8 @@ mod tests {
 		// to the top to pick the download would throw that away.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![pair_row(), typed(&project), wording_row(Wording::Download)]);
-		let chosen = choose(&mut io, None).unwrap().unwrap();
+		let mut io = Scripted::new(script([pair_row(), typed(&project), wording_row(Wording::Download)]));
+		let chosen = choose(&mut io, &mut no_dialog(), None).unwrap().unwrap();
 		assert_eq!(chosen.source, Source::Odis { dir: project });
 		assert_eq!(chosen.names, Some(Source::DownloadVcds));
 	}
@@ -938,13 +1157,13 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let alone = Some(Choice::only(Source::Odis { dir: project.clone() }));
-		for script in [
-			vec![pair_row(), typed(&project), wording_row(Wording::Skip)],
-			vec![pair_row(), typed(&project), Answer::Quit],
-			vec![pair_row(), typed(&project), wording_row(Wording::Point), Answer::Type(String::new())],
+		for answers in [
+			script([pair_row(), typed(&project), wording_row(Wording::Skip)]),
+			script([pair_row(), typed(&project), quit()]),
+			script([pair_row(), typed(&project), wording_row(Wording::Point), empty()]),
 		] {
-			let mut io = Scripted::new(script);
-			assert_eq!(choose(&mut io, None).unwrap(), alone);
+			let mut io = Scripted::new(answers);
+			assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), alone);
 			// Asserted either side of the hand-wrap, never across it.
 			let said = io.all_said();
 			assert!(said.contains("No names source"), "it says what that means: {said}");
@@ -958,23 +1177,33 @@ mod tests {
 		// found they own no ODIS project gets the row below it, not an exit.
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![pair_row(), Answer::Type(String::new()), row(Look::Vcds), typed(&install)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Vcds { dir: install })));
-		assert_eq!(io.seen.len(), 2, "the menu came back: {:?}", io.seen);
+		let mut io = Scripted::new(script([pair_row(), empty(), row(Look::Vcds), typed(&install)]));
+		assert_eq!(
+			choose(&mut io, &mut no_dialog(), None).unwrap(),
+			Some(Choice::only(Source::Vcds { dir: install }))
+		);
+		assert_eq!(menus(&io), 2, "the menu came back: {:?}", io.seen);
 		assert!(io.all_said().contains("goes back to the menu"), "and it said so: {:?}", io.said);
 	}
 
 	#[test]
 	fn quitting_the_menu_itself_is_what_still_backs_out_of_the_whole_run() {
 		// The loop needs one way out that is not a choice, and this is it.
-		let mut io = Scripted::new(vec![Answer::Quit]);
-		assert_eq!(choose(&mut io, None).unwrap(), None);
+		let mut io = Scripted::new(quit());
+		assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), None);
 	}
 
 	#[test]
-	fn every_option_of_both_menus_fits_the_terminal_somebody_actually_has() {
-		// Four rows now, and the first label is the longest yet.
-		for (question, items) in [(QUESTION, options().to_vec()), (NAMES_QUESTION, names_options().to_vec())] {
+	fn every_option_of_every_menu_fits_the_terminal_somebody_actually_has() {
+		// Three menus now. The how-menu's label is the longest in the command,
+		// and its question is whichever folder is being asked for — so it is
+		// measured under the longer of the two.
+		for (question, items) in [
+			(QUESTION, options().to_vec()),
+			(NAMES_QUESTION, names_options().to_vec()),
+			(Look::Vcds.question(), how_options().to_vec()),
+			(Look::Odis.question(), how_options().to_vec()),
+		] {
 			let drawn = crate::ui::menu::screen(question, &items, 0, 80);
 			let cut: Vec<&String> = drawn.iter().filter(|line| line.contains('…')).collect();
 			assert!(cut.is_empty(), "cut off at 80 columns: {cut:?}");
@@ -1002,8 +1231,8 @@ mod tests {
 		// "ODIS project" is two words most owners have never met, so the label
 		// cannot carry the offer on its own. Each line has to say both how to
 		// recognise the thing and what picking it gets you.
-		let mut io = Scripted::new(vec![Answer::Quit]);
-		assert_eq!(choose(&mut io, None).unwrap(), None);
+		let mut io = Scripted::new(quit());
+		assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), None);
 		let menu = io.last_menu();
 		assert!(menu.contains("What should vagcan learn this car from?"), "{menu}");
 		assert!(menu.contains("Labels/"), "the VCDS line says how to recognise one: {menu}");
@@ -1025,20 +1254,121 @@ mod tests {
 	fn each_option_leads_to_the_source_it_names() {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![row(Look::Odis), typed(&project)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Odis { dir: project })));
+		let mut io = Scripted::new(script([row(Look::Odis), typed(&project)]));
+		assert_eq!(
+			choose(&mut io, &mut no_dialog(), None).unwrap(),
+			Some(Choice::only(Source::Odis { dir: project }))
+		);
 
 		// Downloading asks for no directory: there is nothing on disk yet.
-		let mut io = Scripted::new(vec![download_row()]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::DownloadVcds)));
+		let mut io = Scripted::new(script([download_row()]));
+		assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), Some(Choice::only(Source::DownloadVcds)));
 		assert!(io.typed.is_empty(), "nothing was asked for: {:?}", io.typed);
 	}
 
 	#[test]
 	fn an_empty_line_at_the_directory_re_asks_the_menu_rather_than_leaving() {
-		let mut io = Scripted::new(vec![row(Look::Vcds), Answer::Type(String::new()), Answer::Quit]);
-		assert_eq!(choose(&mut io, None).unwrap(), None);
-		assert_eq!(io.seen.len(), 2, "it went back before anybody quit: {:?}", io.seen);
+		let mut io = Scripted::new(script([row(Look::Vcds), empty(), quit()]));
+		assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), None);
+		assert_eq!(menus(&io), 2, "it went back before anybody quit: {:?}", io.seen);
+	}
+
+	#[test]
+	fn a_folder_is_asked_for_two_ways_and_the_dialog_is_the_one_offered_first() {
+		// The owner's wish, pinned: a choice between a chooser and a typed
+		// path, made the way every other choice in this command is made — the
+		// same menu, not a key hidden inside the prompt.
+		let mut io = Scripted::new(script([row(Look::Odis), quit(), quit()]));
+		choose(&mut io, &mut no_dialog(), None).unwrap();
+		let (question, offered) = &io.seen[1];
+		assert_eq!(question, "Where is the ODIS project?", "the menu asks the question itself");
+		assert_eq!(
+			offered.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(),
+			["Choose the folder in a dialog", "Type the path"]
+		);
+		assert_eq!(io.highlights[1], 0, "and the dialog is where the highlight starts");
+		assert!(offered[1].1.contains("drag"), "typing still says a dropped folder works: {offered:?}");
+	}
+
+	#[test]
+	fn the_two_ways_line_up_under_one_another_despite_the_longer_label() {
+		// "Choose the folder in a dialog" is 29 columns, the widest label in
+		// this command, and the renderer pads labels only up to a cap. A cap
+		// under 29 sets these two details five columns apart, and two sentences
+		// at two indents read as two unrelated things.
+		let drawn = crate::ui::menu::screen(Look::Odis.question(), &how_options(), 0, 80);
+		let at: Vec<usize> = drawn[1..3]
+			.iter()
+			.map(|line| {
+				// The highlighted row carries escape bytes that take no columns.
+				let plain = line
+					.replace(&crossterm::style::Attribute::Reverse.to_string(), "")
+					.replace(&crossterm::style::Attribute::Reset.to_string(), "");
+				let byte = plain.find("opens").or(plain.find("drag")).expect("every row carries its detail");
+				plain[..byte].chars().count()
+			})
+			.collect();
+		assert_eq!(at[0], at[1], "{drawn:?}");
+	}
+
+	#[test]
+	fn quitting_the_how_menu_backs_out_the_way_an_empty_line_does() {
+		// Two menus deep is two ways to change your mind, and both have to mean
+		// the same thing: the first `q` lands on the source menu, the second
+		// leaves.
+		let mut io = Scripted::new(script([row(Look::Vcds), quit(), quit()]));
+		assert_eq!(choose(&mut io, &mut no_dialog(), None).unwrap(), None);
+		assert_eq!(menus(&io), 2, "it went back before anybody left: {:?}", io.seen);
+		assert!(io.typed.is_empty(), "and nothing was asked for in words: {:?}", io.typed);
+	}
+
+	#[test]
+	fn the_dialog_answers_the_question_with_no_line_typed_at_all() {
+		// The point of the row. The folder the panel hands back is the answer,
+		// and the panel is titled with the question it is answering — a window
+		// over a terminal has to say which of the two folders it wants.
+		let here = tempfile::tempdir().unwrap();
+		let project = odis(here.path(), "SK37X");
+		let mut io = Scripted::new(script([row(Look::Odis), vec![how_row(How::Dialog)]]));
+		let (mut dialog, titles) = windows(vec![Some(project.clone())]);
+		let chosen = choose(&mut io, &mut dialog, None).unwrap();
+		assert_eq!(chosen, Some(Choice::only(Source::Odis { dir: project })));
+		assert!(io.typed.is_empty(), "nobody was asked to type anything: {:?}", io.typed);
+		assert_eq!(*titles.borrow(), ["Where is the ODIS project?"]);
+	}
+
+	#[test]
+	fn a_dialog_that_hands_nothing_back_lands_on_the_prompt_rather_than_nowhere() {
+		// One `None` for two cases — they cancelled, or there is no display and
+		// no window could be shown at all. Neither ends the question, because on
+		// a machine with no window server the row above is dead and landing
+		// silently on nothing would read as a hang.
+		let here = tempfile::tempdir().unwrap();
+		let project = odis(here.path(), "SK37X");
+		let mut io = Scripted::new(script([row(Look::Odis), vec![how_row(How::Dialog)], again(&project)]));
+		let chosen = choose(&mut io, &mut no_dialog(), None).unwrap();
+		assert_eq!(chosen, Some(Choice::only(Source::Odis { dir: project })));
+		let said = io.all_said();
+		assert!(said.contains("No folder came back"), "it says why it is asking in words: {said}");
+	}
+
+	#[test]
+	fn a_wrong_folder_out_of_the_dialog_is_refused_and_the_panel_comes_back() {
+		// The same rule the typed prompt follows: a wrong folder is a thing to
+		// correct, not a reason to end the question. Correcting it in a chooser
+		// means the chooser again.
+		let here = tempfile::tempdir().unwrap();
+		let music = here.path().join("music");
+		std::fs::create_dir_all(&music).unwrap();
+		let project = odis(here.path(), "SK37X");
+		let mut io = Scripted::new(script([row(Look::Odis), vec![how_row(How::Dialog)]]));
+		let (mut dialog, titles) = windows(vec![Some(music.clone()), Some(project.clone())]);
+		let chosen = choose(&mut io, &mut dialog, None).unwrap();
+		assert_eq!(chosen, Some(Choice::only(Source::Odis { dir: project })));
+		assert_eq!(titles.borrow().len(), 2, "it opened again");
+		let said = io.all_said();
+		assert!(said.contains(&music.display().to_string()), "the folder is named: {said}");
+		assert!(said.contains("AStringData.data.gz"), "and what was expected: {said}");
 	}
 
 	#[test]
@@ -1047,8 +1377,11 @@ mod tests {
 		let music = here.path().join("music");
 		std::fs::create_dir_all(&music).unwrap();
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&music), typed(&install)]);
-		assert_eq!(choose(&mut io, None).unwrap(), Some(Choice::only(Source::Vcds { dir: install })));
+		let mut io = Scripted::new(script([row(Look::Vcds), typed(&music), again(&install)]));
+		assert_eq!(
+			choose(&mut io, &mut no_dialog(), None).unwrap(),
+			Some(Choice::only(Source::Vcds { dir: install }))
+		);
 		let said = io.all_said();
 		assert!(said.contains(&music.display().to_string()), "the path is named: {said}");
 		assert!(said.contains("Labels/") && said.contains("UDS_EV/"), "what was expected is named: {said}");
@@ -1062,8 +1395,8 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let labels = install.join("Labels");
-		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&labels), typed(&install)]);
-		choose(&mut io, None).unwrap();
+		let mut io = Scripted::new(script([row(Look::Vcds), typed(&labels), again(&install)]));
+		choose(&mut io, &mut no_dialog(), None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is inside"), "{said}");
 		assert!(said.contains(&install.display().to_string()), "it names the root to use: {said}");
@@ -1074,8 +1407,8 @@ mod tests {
 		// The other common miss: `~/Downloads` instead of `~/Downloads/SK37X`.
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![row(Look::Odis), typed(here.path()), typed(&project)]);
-		choose(&mut io, None).unwrap();
+		let mut io = Scripted::new(script([row(Look::Odis), typed(here.path()), again(&project)]));
+		choose(&mut io, &mut no_dialog(), None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains(&project.display().to_string()), "it names what they probably meant: {said}");
 	}
@@ -1085,8 +1418,8 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let install = vcds(here.path());
 		let project = odis(here.path(), "SK37X");
-		let mut io = Scripted::new(vec![row(Look::Odis), typed(&install), typed(&project)]);
-		choose(&mut io, None).unwrap();
+		let mut io = Scripted::new(script([row(Look::Odis), typed(&install), again(&project)]));
+		choose(&mut io, &mut no_dialog(), None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is a VCDS installation, not an ODIS project"), "{said}");
 	}
@@ -1097,8 +1430,8 @@ mod tests {
 		let archive = here.path().join("vcds-en.zip");
 		std::fs::write(&archive, b"PK").unwrap();
 		let install = vcds(here.path());
-		let mut io = Scripted::new(vec![row(Look::Vcds), typed(&archive), typed(&install)]);
-		choose(&mut io, None).unwrap();
+		let mut io = Scripted::new(script([row(Look::Vcds), typed(&archive), again(&install)]));
+		choose(&mut io, &mut no_dialog(), None).unwrap();
 		let said = io.all_said();
 		assert!(said.contains("is not a directory"), "USAGE.md documents this phrase: {said}");
 		assert!(said.contains("unpack"), "an archive is a case, not a mystery: {said}");
@@ -1113,11 +1446,11 @@ mod tests {
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
 		assert_eq!(
-			choose(&mut io, Some(&install.display().to_string())).unwrap(),
+			choose(&mut io, &mut no_dialog(), Some(&install.display().to_string())).unwrap(),
 			Some(Choice::only(Source::Vcds { dir: install }))
 		);
 		assert_eq!(
-			choose(&mut io, Some(&project.display().to_string())).unwrap(),
+			choose(&mut io, &mut no_dialog(), Some(&project.display().to_string())).unwrap(),
 			Some(Choice::only(Source::Odis { dir: project }))
 		);
 		assert!(io.seen.is_empty(), "the menu never appeared");
@@ -1126,7 +1459,7 @@ mod tests {
 	#[test]
 	fn a_given_path_that_is_neither_names_both_shapes_and_where_vcds_comes_from() {
 		let mut io = Scripted::new(vec![]);
-		let why = choose(&mut io, Some("/definitely/not/here")).unwrap_err().to_string();
+		let why = choose(&mut io, &mut no_dialog(), Some("/definitely/not/here")).unwrap_err().to_string();
 		assert!(why.contains("is not a directory"), "{why}");
 		assert!(why.contains("Labels/"), "{why}");
 		assert!(why.contains("AStringData.data.gz"), "the other kind is named too: {why}");
@@ -1139,7 +1472,9 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let project = odis(here.path(), "SK37X");
 		let mut io = Scripted::new(vec![]);
-		let why = choose(&mut io, Some(&here.path().display().to_string())).unwrap_err().to_string();
+		let why = choose(&mut io, &mut no_dialog(), Some(&here.path().display().to_string()))
+			.unwrap_err()
+			.to_string();
 		assert!(why.contains(&project.display().to_string()), "{why}");
 	}
 

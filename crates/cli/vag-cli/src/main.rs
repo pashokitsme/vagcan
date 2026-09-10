@@ -125,7 +125,8 @@ enum Command {
 	Setup {
 		/// What to read: a VCDS installation root (the directory holding
 		/// `Labels/` and `UDS_EV/`) or an extracted ODIS project folder. Leave
-		/// it out and it asks which, offering to download an installation.
+		/// it out and it asks which, offering to download an installation —
+		/// and lets you pick the folder in a dialog rather than type its path.
 		#[arg(value_name = "DIR")]
 		dir: Option<String>,
 		/// Redo every step, whatever is already in the project.

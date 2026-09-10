@@ -170,12 +170,12 @@ struct Chosen {
 }
 
 /// Ask what to read, work out what to call it, and open the store.
-fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Option<Chosen>> {
+fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: &Options<'_>) -> Result<Option<Chosen>> {
 	// A download already asked for is not a question to ask again — see
 	// `Options::download`. Everything after this line is the menu's own path.
 	let chosen = match (opts.dir, opts.download) {
 		(None, true) => source::Choice::download(),
-		_ => match source::choose(io, opts.dir)? {
+		_ => match source::choose(io, dialog, opts.dir)? {
 			Some(chosen) => chosen,
 			None => return Ok(None),
 		},
@@ -524,13 +524,21 @@ enum Step {
 
 pub fn run(opts: Options<'_>) -> Result<()> {
 	let mut io = crate::ui::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
-	run_with(&mut io, opts)
+	// **The system folder panel is opened from this thread, and this thread is
+	// the main one.** `main` is `#[tokio::main]` — `block_on` around the whole
+	// of `main`'s future, which it runs on the calling thread — and the `setup`
+	// arm calls straight into here without awaiting, so nothing has moved off
+	// the main thread by the time `native_folder` runs. macOS requires exactly
+	// that of `NSOpenPanel`; see `source::native_folder`. Do not wrap this call
+	// in `spawn_blocking`.
+	run_with(&mut io, &mut source::native_folder, opts)
 }
 
-/// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] so
-/// the flow is testable without a terminal.
-fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<()> {
-	let Some(chosen) = choose(io, &opts)? else { return Ok(()) };
+/// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] and
+/// [`source::Dialog`] so the flow is testable without a terminal — and without a
+/// window, which CI has even less of.
+fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>) -> Result<()> {
+	let Some(chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
 	let project = &chosen.project;
 	io.say(&format!("Writing into {}\n", project.dir.display()))?;
 
@@ -1173,6 +1181,7 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let outcome = run_with(
 			&mut io,
+			&mut source::no_dialog(),
 			Options {
 				dir: None,
 				refresh: false,
@@ -1474,6 +1483,7 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let err = run_with(
 			&mut io,
+			&mut source::no_dialog(),
 			Options {
 				dir: Some("/definitely/not/here"),
 				refresh: false,
