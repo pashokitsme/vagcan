@@ -579,9 +579,13 @@ fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> R
 	// The copy runs first and the derivations then read from it, so afterwards
 	// `~/.vagcan` is the one set of raw files everything points at and the
 	// installation can go.
+	// The fault text is looked for once, in step [1/4], and handed on: finding
+	// it can mean asking the person which file it is, and one run must ask
+	// that once.
+	let (copied, codes) = copy_label_files(root, &pool, refresh)?;
 	let steps = vec![
-		copy_label_files(root, &pool, refresh)?,
-		label_cache(root, project, refresh)?,
+		copied,
+		label_cache(root, codes.as_deref(), project, refresh)?,
 		names(&pool, root, project, refresh)?,
 		rod_keys(&pool, project)?,
 	];
@@ -595,6 +599,39 @@ fn read_vcds(root: &Path, project: &crate::project::Project, refresh: bool) -> R
 		},
 	)?;
 	Ok(steps)
+}
+
+/// What one half of the ODIS read could not take, told apart by whose fault it
+/// is.
+///
+/// **A refused type is not a broken file**: it is on
+/// [`vag_data_labels::odis::loaders::REFUSED`], the permanent never-parsed
+/// list, and this tool declining to read one says nothing about the project.
+/// Anything else is a file that would not read. Both are counted so that a
+/// project which gave up half of itself cannot look like one that had nothing
+/// to give.
+#[derive(Debug, Default)]
+struct Skipped {
+	refused: usize,
+	unreadable: usize,
+}
+
+impl Skipped {
+	fn count(&mut self, e: &vag_data_labels::odis::Error) {
+		match e {
+			vag_data_labels::odis::Error::Refused(_) => self.refused += 1,
+			_ => self.unreadable += 1,
+		}
+	}
+
+	/// The clause for the step's detail line, or nothing when nothing was
+	/// skipped — a run that skipped nothing should not have to say so.
+	fn note(&self) -> String {
+		match self.refused + self.unreadable {
+			0 => String::new(),
+			_ => format!(", {} refused, {} unreadable", self.refused, self.unreadable),
+		}
+	}
 }
 
 /// The ODIS branch: every variant's channels into `cache.sqlite`, every name it
@@ -617,31 +654,38 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, &source, language)
 			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", dir.display(), project.cache().display()))?;
 	}
-	let (mut with_channels, mut channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
+	let (mut with_channels, mut channels) = (0usize, 0usize);
 	let (mut with_faults, mut codes) = (0usize, 0usize);
+	// One tally per half, because the two are read separately and fail
+	// separately: a variant whose fault table is a refused type still has its
+	// channels read, and the other way round.
+	let (mut chain_skipped, mut fault_skipped) = (Skipped::default(), Skipped::default());
 	let mut progress = crate::progress::Line::new();
 	for (at, variant) in variants.iter().enumerate() {
 		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
 		// The fault table first, and separately: a variant whose measurement
 		// chain will not read still names its codes, and the other way round.
-		if let Ok(faults) = odis.faults(variant)
-			&& !faults.is_empty()
-		{
-			codes += vag_data_db::put_faults(&project.cache(), &source, &variant.name, &faults)
-				.map_err(|e| anyhow::anyhow!("writing {}'s fault codes to {}: {e}", variant.name, project.cache().display()))?;
-			with_faults += 1;
+		match odis.faults(variant) {
+			Ok(faults) if !faults.is_empty() => {
+				codes += vag_data_db::put_faults(&project.cache(), &source, &variant.name, &faults)
+					.map_err(|e| anyhow::anyhow!("writing {}'s fault codes to {}: {e}", variant.name, project.cache().display()))?;
+				with_faults += 1;
+			}
+			// A variant that declares no fault-code property is a fact about
+			// the unit, not a failure.
+			Ok(_) => {}
+			// Counted, not swallowed. `if let Ok(..)` here made a project
+			// whose fault tables all refused indistinguishable from one that
+			// carries no fault text at all.
+			Err(e) => fault_skipped.count(&e),
 		}
 		let readings = match odis.readings(variant) {
 			Ok(readings) => readings,
 			// The refusal list is enforced by the parser and honoured here: a
 			// refused type is a file this tool declines to read, not a broken
 			// one, so the variant is skipped and the rest of the project stands.
-			Err(vag_data_labels::odis::Error::Refused(_)) => {
-				refused += 1;
-				continue;
-			}
-			Err(_) => {
-				unreadable += 1;
+			Err(e) => {
+				chain_skipped.count(&e);
 				continue;
 			}
 		};
@@ -653,16 +697,14 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 		with_channels += 1;
 	}
 	progress.finish();
-	let mut skipped = String::new();
-	if refused + unreadable > 0 {
-		skipped = format!(", {refused} refused, {unreadable} unreadable");
-	}
 	let units = Step::Wrote {
 		what: "the control units this project describes",
 		path: project.cache(),
 		detail: format!(
-			"{with_channels} of {} variants, {channels} channels{skipped}; {with_faults} with fault text, {codes} codes",
-			variants.len()
+			"{with_channels} of {} variants, {channels} channels{}; {with_faults} with fault text, {codes} codes{}",
+			variants.len(),
+			chain_skipped.note(),
+			fault_skipped.note()
 		),
 	};
 
@@ -742,7 +784,11 @@ fn merge_names(path: &Path, incoming: std::collections::BTreeMap<String, String>
 /// Idempotent and freshness-gated per file, the same rule the rest of setup
 /// follows: a file is copied only when it is missing from the destination or
 /// newer than what is there, and `--refresh` copies the lot.
-fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
+/// Returns the step and **where the fault text was found**, because finding it
+/// may have meant asking: [`locate`] opens a picker when the file is under a
+/// name this tool does not know, and step [2/4] needs the same file to read
+/// the build's language off its name. Looking twice asked twice.
+fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<(Step, Option<PathBuf>)> {
 	println!(
 		"[1/4] Raw files — copying the .rod files and the fault text into the\n      \
          shared pool, so the installation can be deleted afterwards."
@@ -758,7 +804,8 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 	// The fault text, under whichever name this language build gives it. Copied
 	// under that same name: `faultnames` looks for the whole list too, so the
 	// build stays recognisable rather than being flattened to the English one.
-	match locate(root, CODES_FILES, "fault text file", ".dat")? {
+	let found = locate(root, CODES_FILES, "fault text file", ".dat")?;
+	match &found {
 		Some(codes) => {
 			let name = codes.file_name().unwrap_or_default();
 			plan.push((codes.clone(), target.join(name)));
@@ -769,10 +816,13 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 		),
 	}
 	if plan.is_empty() {
-		return Ok(Step::Missing {
-			what: "the raw files",
-			why: format!("no {ODX_DIR}/ and no fault text under {}", root.display()),
-		});
+		return Ok((
+			Step::Missing {
+				what: "the raw files",
+				why: format!("no {ODX_DIR}/ and no fault text under {}", root.display()),
+			},
+			found,
+		));
 	}
 
 	let total = plan.len();
@@ -791,11 +841,14 @@ fn copy_label_files(root: &Path, target: &Path, refresh: bool) -> Result<Step> {
 		copied += 1;
 	}
 	progress.finish();
-	Ok(Step::Wrote {
-		what: "the raw files",
-		path: target.to_path_buf(),
-		detail: format!("{copied} files copied, {skipped} already current"),
-	})
+	Ok((
+		Step::Wrote {
+			what: "the raw files",
+			path: target.to_path_buf(),
+			detail: format!("{copied} files copied, {skipped} already current"),
+		},
+		found,
+	))
 }
 
 /// Every `.rod` under `src`, wherever it sits, landing flat in `dst`.
@@ -826,15 +879,16 @@ fn collect_rod_files(src: &Path, dst: &Path, plan: &mut Vec<(PathBuf, PathBuf)>)
 /// copy: D4 drops the `.lbl`/`.clb` files and this cache is what survives of
 /// them. This is the one moment they are ever read, and after it the
 /// installation can go.
-fn label_cache(root: &Path, project: &crate::project::Project, refresh: bool) -> Result<Step> {
+/// `codes` is the fault text file step [1/4] found, passed in rather than
+/// looked for again — [`locate`] can ask the person which file it is, and one
+/// setup run asks that once.
+fn label_cache(root: &Path, codes: Option<&Path>, project: &crate::project::Project, refresh: bool) -> Result<Step> {
 	println!("[2/4] Label files — parsing every .lbl and decrypting every .clb.");
 	let db = crate::labels::load_cached(root, &project.cache(), refresh)?;
 	// The language of this build's fault text, on the same source row the
 	// label files were written under, so that `faults` can tell a VCDS source
 	// in one language from an ODIS project in another.
-	if let Some(language) =
-		locate(root, CODES_FILES, "fault text file", ".dat")?.and_then(|codes| codes.file_name().and_then(|n| n.to_str()).and_then(codes_language))
-	{
+	if let Some(language) = codes.and_then(|codes| codes.file_name().and_then(|n| n.to_str()).and_then(codes_language)) {
 		let labels = crate::labels::label_dir_under(root)?;
 		vag_data_db::record_language(&project.cache(), vag_data_db::VCDS, &labels.to_string_lossy(), language)
 			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", root.display(), project.cache().display()))?;
@@ -1544,7 +1598,7 @@ mod tests {
 		// into `cache.sqlite`, and that cache is what survives of them.
 		let install = synthetic_install("layout");
 		let target = TempDir::new("layout-out");
-		let step = copy_label_files(&install.0, &target.0, false).unwrap();
+		let step = copy_label_files(&install.0, &target.0, false).unwrap().0;
 		assert!(detail(&step).starts_with("3 files copied"), "{}", detail(&step));
 		for name in ["RD.rod", "EV_ECM.rod", "Codes.dat"] {
 			assert!(target.0.join(name).is_file(), "{name} did not land in the pool");
@@ -1560,21 +1614,21 @@ mod tests {
 		let install = synthetic_install("fresh");
 		let target = TempDir::new("fresh-out");
 
-		let first = copy_label_files(&install.0, &target.0, false).unwrap();
+		let first = copy_label_files(&install.0, &target.0, false).unwrap().0;
 		assert_eq!(detail(&first), "3 files copied, 0 already current");
 
-		let second = copy_label_files(&install.0, &target.0, false).unwrap();
+		let second = copy_label_files(&install.0, &target.0, false).unwrap().0;
 		assert_eq!(detail(&second), "0 files copied, 3 already current", "a no-op rerun");
 
 		// One destination made to look stale: only it is copied again.
 		let stale = target.0.join("Codes.dat");
 		let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
 		std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
-		let third = copy_label_files(&install.0, &target.0, false).unwrap();
+		let third = copy_label_files(&install.0, &target.0, false).unwrap().0;
 		assert_eq!(detail(&third), "1 files copied, 2 already current");
 
 		// --refresh copies everything regardless of mtimes.
-		let forced = copy_label_files(&install.0, &target.0, true).unwrap();
+		let forced = copy_label_files(&install.0, &target.0, true).unwrap().0;
 		assert_eq!(detail(&forced), "3 files copied, 0 already current");
 	}
 
@@ -1582,11 +1636,35 @@ mod tests {
 	fn an_install_missing_every_input_is_reported_not_a_crash() {
 		let empty = TempDir::new("empty");
 		let target = TempDir::new("empty-out");
-		let step = copy_label_files(&empty.0, &target.0, false).unwrap();
+		let step = copy_label_files(&empty.0, &target.0, false).unwrap().0;
 		match step {
 			Step::Missing { why, .. } => assert!(why.contains(ODX_DIR), "{why}"),
 			other => panic!("expected Missing, got {other:?}"),
 		}
+	}
+
+	#[test]
+	fn the_fault_text_is_located_once_and_handed_to_the_next_step() {
+		// `locate` opens a picker when the file is under a name nobody here
+		// has seen, so looking for it again in step [2/4] asked the same
+		// question twice in one run. Step [1/4] hands over what it found.
+		let install = synthetic_install("once");
+		let target = TempDir::new("once-out");
+		let (_, codes) = copy_label_files(&install.0, &target.0, false).unwrap();
+		assert_eq!(codes, Some(install.0.join("Codes.dat")));
+	}
+
+	#[test]
+	fn a_variant_that_will_not_read_is_counted_and_the_two_halves_are_counted_apart() {
+		// The fault table and the measurement chain are read separately and
+		// fail separately; swallowing one half's errors made a project whose
+		// fault tables were all refused look like a project with no faults.
+		let mut skipped = Skipped::default();
+		skipped.count(&vag_data_labels::odis::Error::Refused("MCD_ACCESS_KEY"));
+		skipped.count(&vag_data_labels::odis::Error::Format("truncated".into()));
+		skipped.count(&vag_data_labels::odis::Error::Missing("no such pool".into()));
+		assert_eq!(skipped.note(), ", 1 refused, 2 unreadable");
+		assert_eq!(Skipped::default().note(), "", "nothing skipped is nothing to say");
 	}
 
 	#[test]

@@ -480,11 +480,25 @@ impl Project {
 			};
 			let Some(object_id) = indexed.object.clone() else { continue };
 			let pool = indexed.pool.clone().unwrap_or_else(|| home.clone());
-			let Some(loaders::Object::DtcDop(dop)) = store.named(&pool, &object_id)? else {
-				return Err(Error::Format(format!(
-					"{}'s fault-code property {object_id} is not a DB_DOP_DTC",
-					variant.name
-				)));
+			// Absent and wrong are different failures and read differently: a
+			// pool that does not carry the object is a project missing a
+			// piece, an object of another type is a project this reader
+			// misunderstood. Reporting both as "is not a DB_DOP_DTC" sent
+			// anyone chasing the second when it was the first.
+			let dop = match store.named(&pool, &object_id)? {
+				Some(loaders::Object::DtcDop(dop)) => dop,
+				Some(_) => {
+					return Err(Error::Format(format!(
+						"{}'s fault-code property {object_id} is in {pool} and is not a DB_DOP_DTC",
+						variant.name
+					)));
+				}
+				None => {
+					return Err(Error::Missing(format!(
+						"{}'s fault-code property {object_id} is not in {pool}",
+						variant.name
+					)));
+				}
 			};
 			let dop_name = dop.short_name.clone().unwrap_or_else(|| name.clone());
 			for (number, target) in &dop.codes {

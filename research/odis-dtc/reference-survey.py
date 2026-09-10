@@ -11,6 +11,7 @@ not answered. The recorded survey those figures came from,
 `research/dumps/survey-parked.jsonl`, is gitignored and no longer on disk.
 """
 import json
+from pathlib import Path
 
 UNITS = [
 	# request, short number, F19E, F1A2, confirmed codes
@@ -22,7 +23,11 @@ UNITS = [
 	("710", "19", "EV_GatewNF", None, ["010405"]),
 ]
 
-with open("reference-survey.jsonl", "w") as out:
+# Beside the script, never beside whoever ran it: this file is checked in
+# next to the README that quotes it, and a run from another directory used
+# to write a second copy there and leave the real one stale.
+out_path = Path(__file__).parent / "reference-survey.jsonl"
+with out_path.open("w") as out:
 	for request, unit, odx, version, codes in UNITS:
 		ident = [{"did": "F19E", "data": odx.encode().hex().upper()}]
 		if version:

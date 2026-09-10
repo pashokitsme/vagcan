@@ -373,6 +373,11 @@ fn source_id(conn: &Connection, kind: &str, dir: &str) -> rusqlite::Result<i64> 
 		// A `measurement` row predating the `source_id` column carries NULL and
 		// belongs to nobody, so it is matched by id and never swept along.
 		conn.execute("DELETE FROM measurement WHERE source_id = ?1", params![other])?;
+		// Every table that points at a source, or the merge leaves fault rows
+		// referring to a source row that no longer exists — and `faults_of`
+		// joins through `source`, so those rows would simply stop being found
+		// while still filling the file.
+		conn.execute("DELETE FROM fault WHERE source_id = ?1", params![other])?;
 		conn.execute("DELETE FROM source WHERE id = ?1", params![other])?;
 	}
 	// The survivor is rewritten in the spelling this function will look for next

@@ -320,11 +320,25 @@ What the table says beyond the count:
   `Databus: Received Error Message`, and less readable where the supplier never meant a
   driver to see it. Language follows the supplier, as §6 measured: the brakes in English,
   the body in German, inside one `deu` project.
-- **The one display-code disagreement is a variant choice, not a text error.** The ESC's
-  297 prints `B116816` because the survey carries no `F1A2` for that unit and the
-  identity falls to `_032`–`_034`; the car's own variant (`_035`–`_038`, §5) prints
-  `B1168F2`, which is what VCDS printed. A survey that records `F1A2` for every unit
-  removes the ambiguity; `vagcan dev survey` does.
+- **The one display-code disagreement is a variant choice, not a text error — and the
+  line says which choice.** The survey carries no `F1A2` for the ESC, so the identity
+  falls back to the family: eight variants of `EV_Brake1UDSContiMK100ESP` match, and
+  they do not all write 297 the same way. The row is still shown — it is the project's
+  answer and the alternative is no name at all — but nothing presents it as settled:
+
+  ```
+  03  EV_Brake1UDSContiMK100ESP
+    00004B  (75)   confirmed
+        C101C07  missing wheel speed sensor signal or wheel speed sensor signal continuously indicates a too low wheel speed  level 1  (variant _008 of 8 matching)
+    00005B  (91)   confirmed
+        C101D07  missing wheel speed sensor signal or wheel speed sensor signal continuously indicates a too low wheel speed  level 1  (variant _008 of 8 matching)
+    000129  (297)   confirmed
+        B116816  Swa_lost_initialisation  level 2  (variant _032 of 8 matching; they disagree — record F1A2 to settle it)
+  ```
+
+  The car's own variant (`_035`–`_038`, §5) prints `B1168F2`, which is what VCDS
+  printed. Recording `F1A2` picks it and the whole parenthesis disappears; `vagcan dev
+  survey` records it.
 - **`0x19` bytes, the number, the variant, the text — no step of it needs a `.rod` key.**
   The four units the VCDS chain could not name had no catalogue to look in; the project
   had a table for every one of the six.
