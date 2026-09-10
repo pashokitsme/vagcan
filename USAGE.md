@@ -137,6 +137,11 @@ $ vagcan setup
   VCDS installation  Labels/ and UDS_EV/ — when no ODIS project covers the car
   Download VCDS      fetch Ross-Tech's installer, about 90 MB, and read that
 ↑↓ move   ⏎ choose   1-4 pick   q quit
+Point at the folder in a window, or type its path. Leaving without one goes back.
+? Where is the ODIS project?
+❯ Choose the folder in a dialog  opens your system's folder chooser
+  Type the path                  drag it into this window, or paste it
+↑↓ move   ⏎ choose   1-2 pick   q quit
 Drag the folder into this window, or paste its path. An empty line goes back.
 Where is the ODIS project? /Users/you/Downloads/SK37X
 ? Where should the measurement names come from?
@@ -144,6 +149,11 @@ Where is the ODIS project? /Users/you/Downloads/SK37X
   Download VCDS      fetch Ross-Tech's installer, about 90 MB
   Skip the names     the channels keep the phrasing ODIS gives them
 ↑↓ move   ⏎ choose   1-3 pick   q quit
+Point at the folder in a window, or type its path. Leaving without one goes back.
+? Where is the VCDS installation?
+❯ Choose the folder in a dialog  opens your system's folder chooser
+  Type the path                  drag it into this window, or paste it
+↑↓ move   ⏎ choose   1-2 pick   q quit
 Drag the folder into this window, or paste its path. An empty line goes back.
 Where is the VCDS installation? /Users/you/vcds-en
 Project `SK37X` — the name ODIS gives this folder.
@@ -191,6 +201,11 @@ The VCDS half is read **first**, and the names count climbing from 14738 to 3631
 why: recovering names from `TTTEXT.ROD` writes the file wholesale, while the ODIS pass
 merges into whatever is already there. The other way round, the wholesale write would
 land on top.
+
+**Every folder it asks for is asked two ways**: "Choose the folder in a dialog" opens
+your system's own folder chooser, and "Type the path" is the prompt above — drag the
+folder into the terminal, or paste it. A dialog that hands nothing back (cancelled, or a
+machine with no display) falls through to the prompt and says so.
 
 **Abandoning the second question is a real answer**, not a failed run. Press `q` or give
 an empty path and the project keeps the phrasing ODIS gives its channels

@@ -84,11 +84,11 @@ struct Block<'a> {
 }
 
 /// What an item points at, which depends on the block's level.
-enum Target {
+enum Target<'a> {
 	/// An inner node's item: the child block to descend into.
 	Child(u32),
-	/// A leaf's item: its data, taken inline.
-	Data(Vec<u8>),
+	/// A leaf's item: its data, borrowed from the block.
+	Data(&'a [u8]),
 }
 
 impl KeyFile {
@@ -117,24 +117,49 @@ impl KeyFile {
 	/// what PBL's own `pblKfFirst`/`pblKfNext` do. The pseudo-item is skipped.
 	pub fn records(&self) -> Result<Vec<Record>, Error> {
 		let mut out = Vec::new();
+		self.each_record(|key, data| {
+			out.push(Record {
+				key: key.to_vec(),
+				data: data.to_vec(),
+			});
+			Ok(())
+		})?;
+		Ok(out)
+	}
+
+	/// Visit every record in key order without building a list.
+	///
+	/// The same walk as [`KeyFile::records`] — leftmost leaf, then the leaf
+	/// chain — handed to a closure one `(key, data)` at a time, both borrowed
+	/// from the block. This is what an index over a whole pool is built with:
+	/// the reference project's engine pool holds 576,793 records, and a list
+	/// of owned pairs for each of them is a quarter of a million allocations
+	/// that the index would discard on the spot.
+	///
+	/// Each block is expanded in **one** pass. `keycommon` is relative to the
+	/// item before, so walking the slots in order and carrying the previous
+	/// key makes every item cost its own bytes — see [`Block::step`].
+	pub fn each_record(&self, mut visit: impl FnMut(&[u8], &[u8]) -> Result<(), Error>) -> Result<(), Error> {
 		let mut at = self.leftmost_leaf()?;
 		// A corrupt `next` chain could loop; a block can be visited at most
 		// once, so the block count bounds the walk.
 		let mut budget = self.blocks();
+		let mut key = Vec::new();
 		loop {
 			let block = self.block(at)?;
+			key.clear();
 			for i in 0..block.entries {
-				let (key, target) = block.item(i)?;
+				let target = block.step(i, &mut key)?;
 				if key.is_empty() {
 					continue; // PBL's magic pseudo-item.
 				}
 				match target {
-					Target::Data(data) => out.push(Record { key, data }),
+					Target::Data(data) => visit(&key, data)?,
 					Target::Child(_) => return Err(Error::Format(format!("block {at} claims level 0 but its items point at child blocks"))),
 				}
 			}
 			if block.next == 0 {
-				return Ok(out);
+				return Ok(());
 			}
 			budget = budget.checked_sub(1).ok_or_else(|| Error::Format("the leaf chain loops".into()))?;
 			at = block.next;
@@ -149,14 +174,16 @@ impl KeyFile {
 	pub fn find(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
 		let mut at = 0u32;
 		let mut budget = self.blocks();
+		let mut item_key = Vec::new();
 		loop {
 			let block = self.block(at)?;
+			item_key.clear();
 			if block.level == 0 {
 				for i in 0..block.entries {
-					let (item_key, target) = block.item(i)?;
+					let target = block.step(i, &mut item_key)?;
 					if item_key == key {
 						return match target {
-							Target::Data(data) => Ok(Some(data)),
+							Target::Data(data) => Ok(Some(data.to_vec())),
 							Target::Child(_) => Err(Error::Format(format!("block {at} claims level 0 but its items point at child blocks"))),
 						};
 					}
@@ -167,7 +194,7 @@ impl KeyFile {
 			// Item 0 always has an empty key, so a candidate always exists.
 			let mut child = None;
 			for i in 0..block.entries {
-				let (item_key, target) = block.item(i)?;
+				let target = block.step(i, &mut item_key)?;
 				if item_key.as_slice() > key {
 					break;
 				}
@@ -203,8 +230,7 @@ impl KeyFile {
 			if block.level == 0 {
 				return Ok(at);
 			}
-			let (_, target) = block.item(0)?;
-			let Target::Child(next) = target else {
+			let Target::Child(next) = block.step(0, &mut Vec::new())? else {
 				return Err(Error::Format(format!(
 					"block {at} claims level {} but its first item carries inline data",
 					block.level
@@ -242,61 +268,60 @@ impl KeyFile {
 }
 
 impl Block<'_> {
-	/// The item at slot `index`: its full key and what it points at.
+	/// Expand item `index`'s key into `key` and say what the item points at.
 	///
-	/// The key is expanded by walking every earlier item on the block, because
-	/// `keycommon` is relative to the immediate predecessor and the chain can
-	/// run all the way back to slot 0. That is `O(n²)` in a block's item count
-	/// — bounded by ~800 — and buys a reader with no per-block cache.
-	fn item(&self, index: usize) -> Result<(Vec<u8>, Target), Error> {
-		let mut key: Vec<u8> = Vec::new();
-		for i in 0..=index {
-			let at = self.slot(i)?;
-			let (keylen, keycommon) = (usize::from(*self.byte(at)?), usize::from(*self.byte(at + 1)?));
-			if keycommon > keylen {
-				return Err(Error::Format(format!(
-					"item {i} shares {keycommon} bytes with a predecessor but is only {keylen} bytes long"
-				)));
-			}
-			if keycommon > key.len() {
-				return Err(Error::Format(format!(
-					"item {i} shares {keycommon} bytes with a predecessor that is only {} bytes long",
-					key.len()
-				)));
-			}
-			let (value, used) = varint(self.bytes, at + 2)?;
-			let stored = keylen - keycommon;
-			let suffix_at = at + 2 + used;
-			let suffix = self
-				.bytes
-				.get(suffix_at..suffix_at + stored)
-				.ok_or_else(|| Error::Format(format!("item {i}'s key runs past the end of its block")))?;
-			key.truncate(keycommon);
-			key.extend_from_slice(suffix);
-
-			if i < index {
-				continue;
-			}
-			// The item actually asked for: read what it points at.
-			if self.level > 0 {
-				return Ok((key, Target::Child(value)));
-			}
-			if value > INLINE_DATA_MAX {
-				// PBL's overflow chain. VW stores only 6/8/12-byte locators, so
-				// this cannot happen in a project — and if it ever did, saying
-				// so beats handing back the block bytes that follow.
-				return Err(Error::Format(format!(
-					"item {i} stores {value} bytes on an overflow block, which this reader does not follow"
-				)));
-			}
-			let data_at = suffix_at + stored;
-			let data = self
-				.bytes
-				.get(data_at..data_at + value as usize)
-				.ok_or_else(|| Error::Format(format!("item {i}'s data runs past the end of its block")))?;
-			return Ok((key, Target::Data(data.to_vec())));
+	/// `key` must hold item `index - 1`'s key on the way in — or nothing, for
+	/// item 0 — because `keycommon` is relative to the immediate predecessor
+	/// and only the suffix past it is stored. Walking a block's slots in order
+	/// and carrying the key between calls therefore reads the block in one
+	/// pass, each item costing its own bytes.
+	///
+	/// That is the cost model of this whole file. The version of this that
+	/// re-expanded from slot 0 on every call was `O(n²)` per block and, under a
+	/// leaf scanned item by item, `O(n³)` per lookup; the measurement chain
+	/// looks up a few million objects by key, and that one function was 96%
+	/// of a three-and-a-half-minute `vagcan setup` (profiled 2026-09-10).
+	fn step(&self, index: usize, key: &mut Vec<u8>) -> Result<Target<'_>, Error> {
+		let at = self.slot(index)?;
+		let (keylen, keycommon) = (usize::from(*self.byte(at)?), usize::from(*self.byte(at + 1)?));
+		if keycommon > keylen {
+			return Err(Error::Format(format!(
+				"item {index} shares {keycommon} bytes with a predecessor but is only {keylen} bytes long"
+			)));
 		}
-		unreachable!("the loop returns on i == index, and index is in 0..=index")
+		if keycommon > key.len() {
+			return Err(Error::Format(format!(
+				"item {index} shares {keycommon} bytes with a predecessor that is only {} bytes long",
+				key.len()
+			)));
+		}
+		let (value, used) = varint(self.bytes, at + 2)?;
+		let stored = keylen - keycommon;
+		let suffix_at = at + 2 + used;
+		let suffix = self
+			.bytes
+			.get(suffix_at..suffix_at + stored)
+			.ok_or_else(|| Error::Format(format!("item {index}'s key runs past the end of its block")))?;
+		key.truncate(keycommon);
+		key.extend_from_slice(suffix);
+
+		if self.level > 0 {
+			return Ok(Target::Child(value));
+		}
+		if value > INLINE_DATA_MAX {
+			// PBL's overflow chain. VW stores only 6/8/12-byte locators, so
+			// this cannot happen in a project — and if it ever did, saying
+			// so beats handing back the block bytes that follow.
+			return Err(Error::Format(format!(
+				"item {index} stores {value} bytes on an overflow block, which this reader does not follow"
+			)));
+		}
+		let data_at = suffix_at + stored;
+		let data = self
+			.bytes
+			.get(data_at..data_at + value as usize)
+			.ok_or_else(|| Error::Format(format!("item {index}'s data runs past the end of its block")))?;
+		Ok(Target::Data(data))
 	}
 
 	/// The byte offset of item `index`, read from the backward slot array.
@@ -377,7 +402,7 @@ mod tests {
 	/// Lay out one block from items given as `(key, target)`, applying the
 	/// prefix compression the format uses. `level` picks how the varint is
 	/// read back: `0` makes it a data length, higher a child block number.
-	fn block(level: u8, next: u32, items: &[(&[u8], Target)]) -> Vec<u8> {
+	fn block(level: u8, next: u32, items: &[(&[u8], Target<'_>)]) -> Vec<u8> {
 		let mut out = vec![0u8; BLOCK];
 		out[0] = level;
 		out[1..5].copy_from_slice(&next.to_be_bytes());
@@ -409,8 +434,8 @@ mod tests {
 	}
 
 	/// PBL's `keylen == 0` magic pseudo-item, present as record 0 of every file.
-	fn pseudo() -> (&'static [u8], Target) {
-		(b"", Target::Data(b"1.00 Peter's B Tree\0".to_vec()))
+	fn pseudo() -> (&'static [u8], Target<'static>) {
+		(b"", Target::Data(b"1.00 Peter's B Tree\0"))
 	}
 
 	#[test]
@@ -449,8 +474,8 @@ mod tests {
 			0,
 			&[
 				pseudo(),
-				(b"\x01\x00\x00\x00", Target::Data(vec![1, 2, 3])),
-				(b"\x02\x00\x00\x00", Target::Data(vec![4, 5])),
+				(b"\x01\x00\x00\x00", Target::Data(&[1, 2, 3])),
+				(b"\x02\x00\x00\x00", Target::Data(&[4, 5])),
 			],
 		);
 		let kf = KeyFile::from_bytes(file).expect("one block is a whole file");
@@ -481,9 +506,9 @@ mod tests {
 			0,
 			&[
 				pseudo(),
-				(b"New Haven", Target::Data(vec![1])),
-				(b"New York", Target::Data(vec![2])),
-				(b"New Yorker", Target::Data(vec![3])),
+				(b"New Haven", Target::Data(&[1])),
+				(b"New York", Target::Data(&[2])),
+				(b"New Yorker", Target::Data(&[3])),
 			],
 		);
 		let kf = KeyFile::from_bytes(file).expect("one block is a whole file");
@@ -494,14 +519,11 @@ mod tests {
 	/// Root over two leaves, chained by `nblock` — the shape `records` walks.
 	fn two_level_tree() -> KeyFile {
 		let root = block(1, 0, &[(b"", Target::Child(1)), (b"\x02\x00\x00\x00", Target::Child(2))]);
-		let leaf_a = block(0, 2, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(vec![0xaa]))]);
+		let leaf_a = block(0, 2, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(&[0xaa]))]);
 		let leaf_b = block(
 			0,
 			0,
-			&[
-				(b"\x02\x00\x00\x00", Target::Data(vec![0xbb])),
-				(b"\x03\x00\x00\x00", Target::Data(vec![0xcc])),
-			],
+			&[(b"\x02\x00\x00\x00", Target::Data(&[0xbb])), (b"\x03\x00\x00\x00", Target::Data(&[0xcc]))],
 		);
 		let mut bytes = root;
 		bytes.extend_from_slice(&leaf_a);
@@ -537,7 +559,7 @@ mod tests {
 
 	#[test]
 	fn a_block_claiming_more_entries_than_it_can_hold_is_refused() {
-		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(vec![1]))]);
+		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(&[1]))]);
 		file[9..11].copy_from_slice(&4000u16.to_be_bytes());
 		let kf = KeyFile::from_bytes(file).expect("one block is a whole file");
 		let err = kf.records().expect_err("an impossible entry count must be refused");
@@ -546,7 +568,7 @@ mod tests {
 
 	#[test]
 	fn a_slot_pointing_outside_the_item_area_is_refused() {
-		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(vec![1]))]);
+		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(&[1]))]);
 		// Point item 1's slot into the slot array itself, where an item's bytes
 		// would be read out of the offsets rather than out of the item area.
 		let slot = BLOCK - 4;
@@ -558,7 +580,7 @@ mod tests {
 
 	#[test]
 	fn a_slot_pointing_into_the_header_is_refused() {
-		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(vec![1]))]);
+		let mut file = block(0, 0, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(&[1]))]);
 		let slot = BLOCK - 4;
 		file[slot..slot + 2].copy_from_slice(&5u16.to_be_bytes());
 		let kf = KeyFile::from_bytes(file).expect("one block is a whole file");
@@ -594,8 +616,8 @@ mod tests {
 	#[test]
 	fn traversal_never_modifies_the_file() {
 		let root = block(1, 0, &[(b"", Target::Child(1)), (b"\x02\x00\x00\x00", Target::Child(2))]);
-		let leaf_a = block(0, 2, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(vec![0xaa]))]);
-		let leaf_b = block(0, 0, &[(b"\x02\x00\x00\x00", Target::Data(vec![0xbb]))]);
+		let leaf_a = block(0, 2, &[pseudo(), (b"\x01\x00\x00\x00", Target::Data(&[0xaa]))]);
+		let leaf_b = block(0, 0, &[(b"\x02\x00\x00\x00", Target::Data(&[0xbb]))]);
 		let mut bytes = root;
 		bytes.extend_from_slice(&leaf_a);
 		bytes.extend_from_slice(&leaf_b);

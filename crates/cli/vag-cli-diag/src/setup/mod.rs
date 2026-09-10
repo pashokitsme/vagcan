@@ -181,12 +181,12 @@ struct Chosen {
 }
 
 /// Ask what to read, work out what to call it, and open the store.
-fn choose(io: &mut impl crate::ui::menu::Asker, opts: &Options<'_>) -> Result<Option<Chosen>> {
+fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: &Options<'_>) -> Result<Option<Chosen>> {
 	// A download already asked for is not a question to ask again — see
 	// `Options::download`. Everything after this line is the menu's own path.
 	let chosen = match (opts.dir, opts.download) {
 		(None, true) => source::Choice::download(),
-		_ => match source::choose(io, opts.dir)? {
+		_ => match source::choose(io, dialog, opts.dir)? {
 			Some(chosen) => chosen,
 			None => return Ok(None),
 		},
@@ -324,6 +324,27 @@ fn migration_target_id(io: &mut impl crate::ui::menu::Asker, old: &crate::migrat
 	}
 }
 
+/// Run one stage of setup, and say how long it took when somebody is measuring.
+///
+/// Silent unless `VAGCAN_TIMING` is set in the environment, and then one line
+/// per stage on **stderr**, so it never lands in output somebody is piping.
+/// This is the instrument the 2026-09-10 performance work was done with, kept
+/// because "which stage got slow" is the first question the next regression
+/// asks, and an `eprintln!` somebody has to re-add is not an instrument.
+fn timed<T>(stage: &str, work: impl FnOnce() -> T) -> T {
+	let started = std::time::Instant::now();
+	let out = work();
+	timing(stage, started.elapsed());
+	out
+}
+
+/// The line [`timed`] prints, for a stage whose time was added up by hand.
+fn timing(stage: &str, took: std::time::Duration) {
+	if std::env::var_os("VAGCAN_TIMING").is_some() {
+		eprintln!("[timing] {stage}: {:.2}s", took.as_secs_f64());
+	}
+}
+
 /// Open an ODIS project, saying how long it will be.
 fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data_labels::odis::Project> {
 	io.say(&format!(
@@ -331,7 +352,8 @@ fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_dat
          takes a moment:\n    {}",
 		dir.display()
 	))?;
-	let project = vag_data_labels::odis::Project::open(dir).with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
+	let project = timed("open (string pools)", || vag_data_labels::odis::Project::open(dir))
+		.with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
 	io.say(&format!(
 		"{} pools, project version {}.",
 		project.pools().len(),
@@ -513,13 +535,21 @@ enum Step {
 
 pub fn run(opts: Options<'_>) -> Result<()> {
 	let mut io = crate::ui::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
-	run_with(&mut io, opts)
+	// **The system folder panel is opened from this thread, and this thread is
+	// the main one.** `main` is `#[tokio::main]` — `block_on` around the whole
+	// of `main`'s future, which it runs on the calling thread — and the `setup`
+	// arm calls straight into here without awaiting, so nothing has moved off
+	// the main thread by the time `native_folder` runs. macOS requires exactly
+	// that of `NSOpenPanel`; see `source::native_folder`. Do not wrap this call
+	// in `spawn_blocking`.
+	run_with(&mut io, &mut source::native_folder, opts)
 }
 
-/// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] so
-/// the flow is testable without a terminal.
-fn run_with(io: &mut impl crate::ui::menu::Asker, opts: Options<'_>) -> Result<()> {
-	let Some(chosen) = choose(io, &opts)? else { return Ok(()) };
+/// The rule behind [`run`], with the asking behind [`crate::ui::menu::Asker`] and
+/// [`source::Dialog`] so the flow is testable without a terminal — and without a
+/// window, which CI has even less of.
+fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog, opts: Options<'_>) -> Result<()> {
+	let Some(chosen) = choose(io, dialog, &opts)? else { return Ok(()) };
 	let project = &chosen.project;
 	io.say(&format!("Writing into {}\n", project.dir.display()))?;
 
@@ -647,28 +677,53 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	let source = dir.display().to_string();
 
 	println!("[1/2] Control units — walking each variant's measurement chain and fault table.");
-	let variants = odis.variants().with_context(|| format!("listing the variants of {}", dir.display()))?;
+	let variants = timed("variants", || odis.variants()).with_context(|| format!("listing the variants of {}", dir.display()))?;
 	// The language the project declares for itself, on its source row — the
 	// fault texts carry none of their own (`vag_data_labels::odis::Project::language`).
 	if let Some(language) = odis.language() {
 		vag_data_db::record_language(&project.cache(), vag_data_db::ODIS, &source, language)
 			.map_err(|e| anyhow::anyhow!("recording the language of {} in {}: {e}", dir.display(), project.cache().display()))?;
 	}
-	let (mut with_channels, mut channels) = (0usize, 0usize);
-	let (mut with_faults, mut codes) = (0usize, 0usize);
-	// One tally per half, because the two are read separately and fail
-	// separately: a variant whose fault table is a refused type still has its
-	// channels read, and the other way round.
+	// Every variant's fault table and measurement chain are walked on rayon's
+	// pool, one variant per task, and the results come back **in variant
+	// order** — `collect` on an indexed parallel iterator keeps it — so the rows
+	// land in the cache in the same order and with the same ids a one-at-a-time
+	// walk gave them. The two halves are read separately and fail separately: a
+	// variant whose fault table is a refused type still has its channels read,
+	// and the other way round. The line is fed from the workers through a
+	// `Reporter`; its own thread keeps the spinner moving whether or not a
+	// variant has just finished.
+	type Walked = (
+		Result<Vec<vag_data_labels::odis::Fault>, vag_data_labels::odis::Error>,
+		Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>,
+	);
+	let walked: Vec<Walked> = {
+		use rayon::prelude::*;
+		let progress = crate::progress::Line::new();
+		let reporter = progress.reporter();
+		let done = std::sync::atomic::AtomicUsize::new(0);
+		timed("readings (walk)", || {
+			variants
+				.par_iter()
+				.map(|variant| {
+					let faults = odis.faults(variant);
+					let readings = odis.readings(variant);
+					let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+					reporter.set(&format!("{finished} of {} — {}", variants.len(), variant.name));
+					(faults, readings)
+				})
+				.collect()
+		})
+	};
+	let (mut with_channels, mut with_faults) = (0usize, 0usize);
+	// One tally per half, for the reason above.
 	let (mut chain_skipped, mut fault_skipped) = (Skipped::default(), Skipped::default());
-	let mut progress = crate::progress::Line::new();
-	for (at, variant) in variants.iter().enumerate() {
-		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
-		// The fault table first, and separately: a variant whose measurement
-		// chain will not read still names its codes, and the other way round.
-		match odis.faults(variant) {
+	let mut channel_rows: Vec<(&str, &[vag_data_labels::odis::Reading])> = Vec::new();
+	let mut fault_rows: Vec<(&str, &[vag_data_labels::odis::Fault])> = Vec::new();
+	for (variant, (faults, readings)) in variants.iter().zip(&walked) {
+		match faults {
 			Ok(faults) if !faults.is_empty() => {
-				codes += vag_data_db::put_faults(&project.cache(), &source, &variant.name, &faults)
-					.map_err(|e| anyhow::anyhow!("writing {}'s fault codes to {}: {e}", variant.name, project.cache().display()))?;
+				fault_rows.push((variant.name.as_str(), faults.as_slice()));
 				with_faults += 1;
 			}
 			// A variant that declares no fault-code property is a fact about
@@ -677,26 +732,26 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 			// Counted, not swallowed. `if let Ok(..)` here made a project
 			// whose fault tables all refused indistinguishable from one that
 			// carries no fault text at all.
-			Err(e) => fault_skipped.count(&e),
+			Err(e) => fault_skipped.count(e),
 		}
-		let readings = match odis.readings(variant) {
-			Ok(readings) => readings,
+		match readings {
 			// The refusal list is enforced by the parser and honoured here: a
 			// refused type is a file this tool declines to read, not a broken
 			// one, so the variant is skipped and the rest of the project stands.
-			Err(e) => {
-				chain_skipped.count(&e);
-				continue;
+			Err(e) => chain_skipped.count(e),
+			Ok(readings) if readings.is_empty() => {}
+			Ok(readings) => {
+				channel_rows.push((variant.name.as_str(), readings.as_slice()));
+				with_channels += 1;
 			}
-		};
-		if readings.is_empty() {
-			continue;
 		}
-		channels += vag_data_db::put_readings(&project.cache(), &source, &variant.name, &readings)
-			.map_err(|e| anyhow::anyhow!("writing {}'s channels to {}: {e}", variant.name, project.cache().display()))?;
-		with_channels += 1;
 	}
-	progress.finish();
+	let codes = timed("faults (sqlite)", || vag_data_db::put_all_faults(&project.cache(), &source, fault_rows))
+		.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
+	let channels = timed("readings (sqlite)", || {
+		vag_data_db::put_all_readings(&project.cache(), &source, channel_rows)
+	})
+	.map_err(|e| anyhow::anyhow!("writing the channels to {}: {e}", project.cache().display()))?;
 	let units = Step::Wrote {
 		what: "the control units this project describes",
 		path: project.cache(),
@@ -711,9 +766,9 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 	println!("[2/2] Names — every object in every pool, for the (text id, name)\n      pairs they carry.");
 	let names = {
 		let _spinner = crate::progress::Spinner::new("reading every object in the project".to_string());
-		odis.names().with_context(|| format!("reading the names of {}", dir.display()))?
+		timed("names (walk)", || odis.names()).with_context(|| format!("reading the names of {}", dir.display()))?
 	};
-	let merged = merge_names(&project.odis_names(), names)?;
+	let merged = timed("names (merge + write)", || merge_names(&project.odis_names(), names))?;
 
 	crate::project::record_source(
 		project,
@@ -1230,6 +1285,7 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let outcome = run_with(
 			&mut io,
+			&mut source::no_dialog(),
 			Options {
 				dir: None,
 				refresh: false,
@@ -1531,6 +1587,7 @@ mod tests {
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let err = run_with(
 			&mut io,
+			&mut source::no_dialog(),
 			Options {
 				dir: Some("/definitely/not/here"),
 				refresh: false,

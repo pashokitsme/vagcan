@@ -90,5 +90,6 @@ toml_edit = "0.25"
 tokio = { version = "1", default-features = false }
 # Benchmarking (label-lookup perf, etc).
 criterion = "0.5"
-# Data-parallel work-stealing (the .rod key search).
+# Data-parallel work-stealing: the .rod key search, and the walks over an ODIS
+# project's pools and variants at setup time.
 rayon = "1.12"

@@ -636,19 +636,46 @@ pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<St
 ///
 /// Returns how many channels landed.
 pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: &[vag_data_labels::odis::Reading]) -> Result<usize, Error> {
+	put_all_readings(db_path, project_dir, std::iter::once((variant, readings)))
+}
+
+/// [`put_readings`] for every variant of a project, in **one** transaction.
+///
+/// Same rows, same order, same ids as calling [`put_readings`] once per
+/// variant in the same order — that equivalence was checked by diffing every
+/// row of a whole-project parse against the one-at-a-time version. What
+/// differs is the cost: 669 transactions were 669 commits, each a journal
+/// write and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down
+/// to 10; one transaction is a fraction of a second.
+///
+/// The connection runs with `synchronous = OFF` for the duration: the rows are
+/// a cache rebuilt from a file that is still on disk, so what a power cut
+/// during the write could cost is the run, not the data. The rollback journal
+/// stays on, so a crash of the *process* mid-write leaves a cache SQLite rolls
+/// back on the next open rather than a corrupt one — `journal_mode = OFF`
+/// would have saved little and lost that. Both settings are per-connection,
+/// and this connection is closed on return.
+pub fn put_all_readings<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
+	conn.pragma_update(None, "synchronous", "OFF")?;
+	// Pages, negative meaning kibibytes: 64 MiB, so a whole project's rows
+	// stay in memory instead of being flushed page by page mid-transaction.
+	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
-	tx.execute(
-		"DELETE FROM reading_level WHERE reading_id IN \
-         (SELECT id FROM reading WHERE source_id = ?1 AND variant = ?2)",
-		params![source, variant],
-	)?;
-	tx.execute("DELETE FROM reading WHERE source_id = ?1 AND variant = ?2", params![source, variant])?;
 
 	let mut written = 0usize;
 	{
+		let mut delete_levels = tx.prepare(
+			"DELETE FROM reading_level WHERE reading_id IN \
+             (SELECT id FROM reading WHERE source_id = ?1 AND variant = ?2)",
+		)?;
+		let mut delete = tx.prepare("DELETE FROM reading WHERE source_id = ?1 AND variant = ?2")?;
 		let mut insert = tx.prepare(
 			"INSERT INTO reading \
                 (source_id, variant, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
@@ -656,36 +683,40 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
 		)?;
 		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
-		for r in readings {
-			let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
-				Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
-				Scaling::Enum { .. } => ("enum", None, None, None, None),
-				Scaling::Anchor { raw, value } => ("anchor", None, None, Some(*raw), Some(*value)),
-			};
-			insert.execute(params![
-				source,
-				variant,
-				r.did,
-				r.name,
-				r.unit,
-				r.bit_offset,
-				r.bit_length,
-				r.signed,
-				r.big_endian,
-				r.text_id,
-				kind,
-				factor,
-				offset,
-				anchor_raw,
-				anchor_value
-			])?;
-			let id = tx.last_insert_rowid();
-			if let Scaling::Enum { levels } = &r.scaling {
-				for (raw, meaning) in levels {
-					insert_level.execute(params![id, raw, meaning])?;
+		for (variant, readings) in variants {
+			delete_levels.execute(params![source, variant])?;
+			delete.execute(params![source, variant])?;
+			for r in readings {
+				let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
+					Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
+					Scaling::Enum { .. } => ("enum", None, None, None, None),
+					Scaling::Anchor { raw, value } => ("anchor", None, None, Some(*raw), Some(*value)),
+				};
+				insert.execute(params![
+					source,
+					variant,
+					r.did,
+					r.name,
+					r.unit,
+					r.bit_offset,
+					r.bit_length,
+					r.signed,
+					r.big_endian,
+					r.text_id,
+					kind,
+					factor,
+					offset,
+					anchor_raw,
+					anchor_value
+				])?;
+				let id = tx.last_insert_rowid();
+				if let Scaling::Enum { levels } = &r.scaling {
+					for (raw, meaning) in levels {
+						insert_level.execute(params![id, raw, meaning])?;
+					}
 				}
+				written += 1;
 			}
-			written += 1;
 		}
 	}
 	tx.commit()?;
@@ -714,31 +745,48 @@ pub fn record_language(db_path: &Path, kind: &str, dir: &str, language: &str) ->
 /// this variant, so a second project's rows for a variant of the same name
 /// stand untouched beside them. Returns how many codes landed.
 pub fn put_faults(db_path: &Path, project_dir: &str, variant: &str, faults: &[vag_data_labels::odis::Fault]) -> Result<usize, Error> {
+	put_all_faults(db_path, project_dir, std::iter::once((variant, faults)))
+}
+
+/// [`put_faults`] for every variant of a project, in **one** transaction —
+/// the same batch [`put_all_readings`] is for channels, with the same
+/// per-connection `synchronous = OFF` and page cache, for the same reason:
+/// the rows are a cache of a file still on disk.
+pub fn put_all_faults<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Fault])>,
+) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
+	conn.pragma_update(None, "synchronous", "OFF")?;
+	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
-	tx.execute("DELETE FROM fault WHERE source_id = ?1 AND variant = ?2", params![source, variant])?;
 	let mut written = 0usize;
 	{
+		let mut delete = tx.prepare("DELETE FROM fault WHERE source_id = ?1 AND variant = ?2")?;
 		let mut insert = tx.prepare(
 			"INSERT INTO fault (source_id, variant, dop, code, display, text, text_id, short_name, level, temporary) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
 		)?;
-		for f in faults {
-			insert.execute(params![
-				source,
-				variant,
-				f.dop,
-				f.code,
-				f.display_code,
-				f.text,
-				f.text_id,
-				f.short_name,
-				f.level,
-				f.temporary
-			])?;
-			written += 1;
+		for (variant, faults) in variants {
+			delete.execute(params![source, variant])?;
+			for f in faults {
+				insert.execute(params![
+					source,
+					variant,
+					f.dop,
+					f.code,
+					f.display_code,
+					f.text,
+					f.text_id,
+					f.short_name,
+					f.level,
+					f.temporary
+				])?;
+				written += 1;
+			}
 		}
 	}
 	tx.commit()?;
@@ -1206,6 +1254,54 @@ mod tests {
 			scaling,
 			text_id: Some("000116".to_string()),
 		}
+	}
+
+	#[test]
+	fn one_transaction_for_every_variant_writes_the_rows_one_per_variant_wrote() {
+		// The whole-project write is a batch of the per-variant one, and what
+		// makes it safe to switch `setup` over is that nothing about the rows
+		// changes: same rows, same order, same ids, same levels — and a second
+		// run still *replaces* a variant's rows rather than doubling them.
+		let levels = Scaling::Enum {
+			levels: vec![(0, "P".to_string()), (1, "R".to_string())],
+		};
+		let identity = Scaling::Linear(vag_data_labels::measure::LinearScale { factor: 1.0, offset: 0.0 });
+		let ecm = vec![reading(0x380A, "speed", identity.clone()), reading(0x2000, "rpm", levels.clone())];
+		let gearbox = vec![reading(0x380A, "gear", levels)];
+
+		let one_by_one = TempWorkspace::new("onebyone");
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_Gearbox", &gearbox).unwrap();
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+
+		let batched = TempWorkspace::new("batched");
+		let batch = [("EV_ECM", ecm.as_slice()), ("EV_Gearbox", gearbox.as_slice())];
+		assert_eq!(put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap(), 3);
+		// The rerun that replaces, batched too.
+		put_all_readings(&batched.db_path, "/x/SK37X", [("EV_ECM", ecm.as_slice())]).unwrap();
+
+		let dump = |path: &Path| -> Vec<(i64, String, u16, String, String)> {
+			let conn = open_read_only(path).unwrap();
+			let mut stmt = conn
+				.prepare(
+					"SELECT r.id, r.variant, r.did, r.scaling, COALESCE(GROUP_CONCAT(l.raw || '=' || l.meaning, ','), '') \
+                     FROM reading r LEFT JOIN reading_level l ON l.reading_id = r.id \
+                     GROUP BY r.id ORDER BY r.id",
+				)
+				.unwrap();
+			stmt
+				.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+				.unwrap()
+				.collect::<rusqlite::Result<_>>()
+				.unwrap()
+		};
+		let (a, b) = (dump(&one_by_one.db_path), dump(&batched.db_path));
+		assert_eq!(
+			a.len(),
+			3,
+			"two ECM rows and one gearbox row, the rerun having replaced rather than added: {a:?}"
+		);
+		assert_eq!(a, b, "the batch must write exactly what the per-variant calls wrote");
 	}
 
 	#[test]

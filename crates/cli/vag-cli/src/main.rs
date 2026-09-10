@@ -117,14 +117,16 @@ enum Command {
 	/// project under `~/.vagcan/data/<id>/`, and a second source is added to
 	/// a project rather than replacing what is in it.
 	///
-	/// It takes minutes, mostly in the name recovery, and it touches no car.
-	/// Running it again on an unchanged source does nothing and says so.
+	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
+	/// mostly in the name recovery. It touches no car. Running it again on an
+	/// unchanged source does nothing and says so.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {
 		/// What to read: a VCDS installation root (the directory holding
 		/// `Labels/` and `UDS_EV/`) or an extracted ODIS project folder. Leave
-		/// it out and it asks which, offering to download an installation.
+		/// it out and it asks which, offering to download an installation —
+		/// and lets you pick the folder in a dialog rather than type its path.
 		#[arg(value_name = "DIR")]
 		dir: Option<String>,
 		/// Redo every step, whatever is already in the project.

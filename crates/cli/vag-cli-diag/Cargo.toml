@@ -18,10 +18,28 @@ vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
 anyhow = "1"
+# The ODIS parse fans out one variant per task over rayon's pool.
+rayon = { workspace = true }
 serde_json.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
+# The system folder chooser behind `setup`'s "Choose the folder in a dialog"
+# row. It lives here rather than in `vag-cli-core` because the question it
+# answers is `setup`'s and nothing else asks it — `core` is what `vagcan-measure`
+# also stands on, and a stopwatch has no use for a file panel.
+#
+# `default-features = false` + `xdg-portal` is about what gets *built on Linux*.
+# The one backend that needs system libraries at build time is `gtk3`
+# (gtk-sys/glib-sys/gobject-sys), and it is opt-in rather than default in 0.17 —
+# so what turning the defaults off actually drops is `wayland`, three
+# `wayland-*` crates for parenting the panel to a window this program does not
+# have. The XDG portal is the backend that needs neither. There is no `tokio`
+# feature to ask for any more: 0.17 dropped `ashpd`, and with it the
+# `async-std`/`tokio` pair that used to choose that crate's executor. On macOS
+# none of this applies — the backend there is objc2/AppKit, target-gated and
+# unaffected by either feature.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 [dev-dependencies]
 # `MockAsyncTransport` and friends: used only under `#[cfg(test)]`, so the

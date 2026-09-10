@@ -83,6 +83,29 @@ as the map (`b5c1031`). `scripts/` is gone: `drive-survey.sh` was a wrapper over
 stranded; `frfscope` lives with the note it serves, `research/tuning/frfscope/`
 (`980f873`). The printed frame's FreeCAD sources are local and ignored.
 
+### Setup performance (2026-09-10)
+
+`vagcan setup` on the reference ODIS project (`SK37X`, 127 MB, 230 pools, 717
+variants), M4 10 cores, scratch `HOME`, `VAGCAN_TIMING=1`:
+
+| stage | before | after |
+|---|---|---|
+| open (string pools + every `.key` indexed) | ≈1 s | 0.36 s |
+| readings walk, 717 variants | ≈200 s | 1.07 s |
+| readings → SQLite | 2.4 s (669 commits) | 1.03 s (one transaction) |
+| names walk, 230 pools | ≈8 s | 0.82 s |
+| **wall** | **219.5 s** | **3.89 s** |
+
+Where it went: 96 % of the old run was `KeyFile::find` re-expanding prefix-compressed
+keys from slot 0 for every item of every leaf — cubic per lookup, millions of lookups —
+and every variant reopening the same base-variant pools. A pool is now opened once,
+its leaf chain walked once into a `HashMap<u32, Locator>`, and the rest is rayon:
+variants in parallel with the order kept, names in chunks folded first-writer-wins in
+pool order, the two string pools inflated beside the 230 `.key` reads. Output proven
+identical to the sequential run by diffing every `reading`, `reading_level` and `source`
+row and `names-odis.json`. The floor now is the readings walk and the one SQLite
+transaction, both ≈1 s; nothing below 3 s is cheap from here.
+
 ### What to do next, in order
 
 1. **Replace the transceiver, then the car run** — moves the `dash` goal; **needs the

@@ -75,10 +75,14 @@ impl From<std::io::Error> for Error {
 /// which `.bv` (base variants) and `.sd` (shared service data) carry
 /// everything this reader wants — plus the two string pools.
 ///
-/// Opening one reads the pools eagerly and nothing else: they are 88 MB
-/// inflated and every name in the project resolves through them, so they are
-/// paid for once. Pools are opened per call, because a project is 472 files
-/// and no single question needs more than a handful of them.
+/// Opening one reads everything: the two string pools — 88 MB inflated, and
+/// every name in the project resolves through them — and every object pool,
+/// each with an index over its `.key` tree ([`PoolFiles`]). All of it is
+/// **kept**: the questions asked of a project ask the same handful of pools
+/// thousands of times over, and re-opening a pool per question was most of
+/// what made `setup` slow. The reference project is 127 MB on disk and
+/// opens in well under a second on ten cores, so there is nothing to save by
+/// being lazy about it.
 #[derive(Debug)]
 pub struct Project {
 	dir: std::path::PathBuf,
@@ -88,6 +92,13 @@ pub struct Project {
 	strings: strings::Strings,
 	/// Every PoolID that has both a `.db` and a `.key`, sorted.
 	pools: Vec<String>,
+	/// The opened pools, one slot per entry of `pools`, filled on first use.
+	///
+	/// `None` inside a filled slot means the pair went missing between
+	/// [`Project::open`] and the first read. A `OnceLock` per pool rather than
+	/// one lock over a map so that readers on different threads never wait on
+	/// each other's pool, and a pool once opened is never opened again.
+	opened: Vec<std::sync::OnceLock<Option<PoolFiles>>>,
 }
 
 /// One ECU variant an ODIS project describes.
@@ -249,7 +260,36 @@ impl Project {
 	/// base variants alone are 54 files in the reference project, and a reader
 	/// that looked only at `.sd` would find no variants at all.
 	pub fn open(dir: &std::path::Path) -> Result<Project, Error> {
-		let strings = strings::Strings::open(dir)?;
+		// The string pools and the object pools are independent files, so
+		// they are read side by side: the strings are two gzip members
+		// inflated and hashed, the pools are 230 files read and indexed, and
+		// neither needs the other to be ready.
+		let (strings, pools) = rayon::join(
+			|| strings::Strings::open(dir),
+			|| {
+				use rayon::prelude::*;
+				let pools = Self::list_pools(dir)?;
+				let opened = pools
+					.par_iter()
+					.map(|pool_id| open_pool(dir, pool_id).map(std::sync::OnceLock::from))
+					.collect::<Result<Vec<_>, Error>>()?;
+				Ok::<_, Error>((pools, opened))
+			},
+		);
+		let (strings, (pools, opened)) = (strings?, pools?);
+		Ok(Project {
+			id: project_id(dir),
+			version: project_version(dir),
+			language: project_language(dir),
+			dir: dir.to_owned(),
+			strings,
+			pools,
+			opened,
+		})
+	}
+
+	/// Every PoolID under `dir` that has both a `.db` and a `.key`, sorted.
+	fn list_pools(dir: &std::path::Path) -> Result<Vec<String>, Error> {
 		let mut pools = Vec::new();
 		for entry in std::fs::read_dir(dir).map_err(Error::Io)? {
 			let path = entry.map_err(Error::Io)?.path();
@@ -265,14 +305,7 @@ impl Project {
 			return Err(Error::Missing(format!("{} holds no .db/.key pool pair", dir.display())));
 		}
 		pools.sort_unstable();
-		Ok(Project {
-			id: project_id(dir),
-			version: project_version(dir),
-			language: project_language(dir),
-			dir: dir.to_owned(),
-			strings,
-			pools,
-		})
+		Ok(pools)
 	}
 
 	/// The project's own name — the identifier VW's tooling uses (design §4.1).
@@ -321,7 +354,7 @@ impl Project {
 	pub fn variants(&self) -> Result<Vec<Variant>, Error> {
 		let mut out = Vec::new();
 		for pool_id in &self.pools {
-			let Some(files) = self.open_pool(pool_id)? else { continue };
+			let Some(files) = self.pool(pool_id)? else { continue };
 			let Some(bytes) = files.object(&self.strings, loaders::identity::PROJECT_DATA_ID)? else {
 				continue;
 			};
@@ -540,65 +573,156 @@ impl Project {
 	/// A member that does not parse is skipped, not fatal. The point of this
 	/// pass is coverage, and one unreadable object should not cost the rest.
 	pub fn names(&self) -> Result<std::collections::BTreeMap<String, String>, Error> {
-		let mut out = std::collections::BTreeMap::new();
+		use rayon::prelude::*;
+		// Every pool's records, then every pool's objects, each in parallel.
+		// The harvest is split into chunks of records that each fill a map of
+		// their own, and the maps are folded **in pool order, then record
+		// order** with the same first-writer-wins rule — so the answer is the
+		// one the sequential walk gave, only the work is spread out. This
+		// pass was 8 s of one core; it is under 2 s of ten.
+		const CHUNK: usize = 4096;
+		let mut located: Vec<(&PoolFiles, Vec<pool::Locator>)> = Vec::new();
 		for pool_id in &self.pools {
-			let Some(files) = self.open_pool(pool_id)? else { continue };
-			for record in files.key.records()? {
-				let Ok(locator) = pool::Locator::parse(&record.data) else { continue };
-				let Ok(bytes) = files.db.member(&locator) else { continue };
-				let Ok((type_code, mut stream)) = object::Stream::open(&bytes, &self.strings) else {
-					continue;
-				};
-				if let Ok(loaders::Outcome::Object(object)) = loaders::load(type_code, &mut stream) {
-					harvest(&object, &mut out);
+			let Some(files) = self.pool(pool_id)? else { continue };
+			let mut locators = Vec::new();
+			files.key.each_record(|_, data| {
+				// A record that is not a locator is skipped, as the sequential
+				// walk skipped it.
+				if let Ok(locator) = pool::Locator::parse(data) {
+					locators.push(locator);
 				}
+				Ok(())
+			})?;
+			located.push((files, locators));
+		}
+		let jobs: Vec<(&PoolFiles, &[pool::Locator])> = located
+			.iter()
+			.flat_map(|(files, locators)| locators.chunks(CHUNK).map(move |chunk| (*files, chunk)))
+			.collect();
+		let harvested: Vec<std::collections::BTreeMap<String, String>> = jobs
+			.par_iter()
+			.map(|(files, chunk)| {
+				let mut found = std::collections::BTreeMap::new();
+				for locator in *chunk {
+					let Ok(bytes) = files.db.member(locator) else { continue };
+					let Ok((type_code, mut stream)) = object::Stream::open(&bytes, &self.strings) else {
+						continue;
+					};
+					if let Ok(loaders::Outcome::Object(object)) = loaders::load(type_code, &mut stream) {
+						harvest(&object, &mut found);
+					}
+				}
+				found
+			})
+			.collect();
+		let mut out = std::collections::BTreeMap::new();
+		for found in harvested {
+			for (id, text) in found {
+				out.entry(id).or_insert(text);
 			}
 		}
 		Ok(out)
 	}
 
-	/// Open a pool's `.db`/`.key` pair, or `None` if either is missing.
-	fn open_pool(&self, pool_id: &str) -> Result<Option<PoolFiles>, Error> {
-		let key_path = self.dir.join(format!("{pool_id}.key"));
-		let db_path = self.dir.join(format!("{pool_id}.db"));
-		if !key_path.is_file() || !db_path.is_file() {
+	/// A pool, opened and indexed by [`Project::open`] and kept for the life
+	/// of the project. `None` when the pair is not in this project, or went
+	/// missing.
+	fn pool(&self, pool_id: &str) -> Result<Option<&PoolFiles>, Error> {
+		let Ok(at) = self.pools.binary_search_by(|p| p.as_str().cmp(pool_id)) else {
 			return Ok(None);
+		};
+		let slot = &self.opened[at];
+		if let Some(files) = slot.get() {
+			return Ok(files.as_ref());
 		}
-		Ok(Some(PoolFiles {
-			key: keyfile::KeyFile::open(&key_path)?,
-			db: pool::Pool::open(&db_path)?,
-		}))
+		// `open` fills every slot, so this is the path for a slot it did not —
+		// there is none today, and if one appears the pool is opened here, on
+		// first use, rather than reported missing. Two threads arriving at
+		// once both open it and the first to finish is kept.
+		let opened = open_pool(&self.dir, pool_id)?;
+		let _ = slot.set(opened);
+		Ok(slot.get().and_then(Option::as_ref))
 	}
 }
 
-/// A pool's two files, opened together.
+/// Open a pool's `.db`/`.key` pair, or `None` if either is missing.
+fn open_pool(dir: &std::path::Path, pool_id: &str) -> Result<Option<PoolFiles>, Error> {
+	let key_path = dir.join(format!("{pool_id}.key"));
+	let db_path = dir.join(format!("{pool_id}.db"));
+	if !key_path.is_file() || !db_path.is_file() {
+		return Ok(None);
+	}
+	Ok(Some(PoolFiles::open(&key_path, &db_path)?))
+}
+
+/// A pool's two files, opened together, plus an index over the key tree.
+///
+/// The index is what a lookup goes through. A `.key` tree answers a lookup
+/// by descending and then scanning a leaf, expanding one prefix-compressed
+/// item after another, and the measurement chain asks a few million times —
+/// walking the leaf chain once and remembering where every object is turns
+/// each of those into one hash probe.
 #[derive(Debug)]
 struct PoolFiles {
 	key: keyfile::KeyFile,
 	db: pool::Pool,
+	/// Where each object's member is, keyed by the object's name hash — the
+	/// four little-endian bytes every VW-written `.key` stores as its key.
+	///
+	/// **Only four-byte keys are indexed.** A lookup by object name is always
+	/// by such a hash ([`PoolFiles::object`]), so a record under a key of any
+	/// other width could never be found by name anyway; it is still reachable
+	/// through [`keyfile::KeyFile::records`]. A record whose data is not a
+	/// locator is left out for the same reason — [`PoolFiles::object`] would
+	/// only refuse it later.
+	///
+	/// First record in key order wins on a duplicate key. VW's writer stores
+	/// each object under its own name hash, probed on collision
+	/// ([`strings::Pool::hash_of`]), so a duplicate is not a shape a project
+	/// produces; the rule is written down so that the answer is at least
+	/// deterministic if one ever does.
+	index: std::collections::HashMap<u32, pool::Locator>,
 }
 
 impl PoolFiles {
+	/// Read both files and build the index.
+	fn open(key_path: &std::path::Path, db_path: &std::path::Path) -> Result<PoolFiles, Error> {
+		let key = keyfile::KeyFile::open(key_path)?;
+		let db = pool::Pool::open(db_path)?;
+		let mut index = std::collections::HashMap::new();
+		key.each_record(|key, data| {
+			if let Ok(hash) = <[u8; 4]>::try_from(key)
+				&& let Ok(locator) = pool::Locator::parse(data)
+			{
+				index.entry(u32::from_le_bytes(hash)).or_insert(locator);
+			}
+			Ok(())
+		})?;
+		Ok(PoolFiles { key, db, index })
+	}
+
 	/// The inflated bytes of one named object, or `None` if this pool has no
 	/// such name.
 	fn object(&self, strings: &strings::Strings, object_id: &str) -> Result<Option<Vec<u8>>, Error> {
 		let Some(hash) = strings.ascii.hash_of(object_id) else { return Ok(None) };
-		// A `.key` key is the hash's four bytes, little-endian.
-		let Some(data) = self.key.find(&hash.to_le_bytes())? else {
+		// A `.key` key is the hash's four bytes, little-endian — which is what
+		// the index is keyed by.
+		let Some(locator) = self.index.get(&hash) else {
 			return Ok(None);
 		};
-		Ok(Some(self.db.member(&pool::Locator::parse(&data)?)?))
+		Ok(Some(self.db.member(locator)?))
 	}
 }
 
-/// A pool cache for one question, plus the reference resolution it needs.
+/// The reference resolution one question needs.
 ///
-/// Held for the length of a single [`Project::readings`] call rather than on
-/// the project: the chain touches a handful of pools but touches them many
-/// times, and reopening a megabyte per data object property would dominate.
+/// Held for the length of a single [`Project::readings`] call: the parent
+/// layers it resolves through belong to that variant. The pools themselves
+/// are the project's ([`Project::pool`]) — every variant of a base variant
+/// walks the same few, and a store that opened its own copies paid for the
+/// same megabytes 717 times over.
 struct Store<'a> {
 	project: &'a Project,
-	open: std::collections::HashMap<String, Option<PoolFiles>>,
 	/// Layer data of the parent pools, resolved on first need. A reference
 	/// that omits its pool is looked up here.
 	inherited: Vec<loaders::identity::LayerData>,
@@ -608,18 +732,13 @@ impl<'a> Store<'a> {
 	fn new(project: &'a Project) -> Store<'a> {
 		Store {
 			project,
-			open: std::collections::HashMap::new(),
 			inherited: Vec::new(),
 		}
 	}
 
-	/// A pool, opened at most once per store.
-	fn pool(&mut self, pool_id: &str) -> Result<Option<&PoolFiles>, Error> {
-		if !self.open.contains_key(pool_id) {
-			let opened = self.project.open_pool(pool_id)?;
-			self.open.insert(pool_id.to_owned(), opened);
-		}
-		Ok(self.open.get(pool_id).and_then(Option::as_ref))
+	/// A pool, opened at most once per project.
+	fn pool(&mut self, pool_id: &str) -> Result<Option<&'a PoolFiles>, Error> {
+		self.project.pool(pool_id)
 	}
 
 	/// Load a named object from a named pool.
@@ -657,17 +776,17 @@ impl<'a> Store<'a> {
 			}
 		}
 		self.load_inherited(layer, home)?;
-		let inherited: Vec<(Option<String>, loaders::Ref)> = self
+		// The pool is found first and the lookup made after, so the parents'
+		// indexes are searched in place: copying them out per reference was a
+		// clone of every property of every parent layer, per channel field.
+		let inherited = self
 			.inherited
 			.iter()
-			.flat_map(|l| l.properties.iter().chain(&l.tables).cloned())
-			.collect();
-		for (name, indexed) in inherited {
-			if name.as_deref() == Some(object_id.as_str())
-				&& let Some(pool_id) = indexed.pool
-			{
-				return self.named(&pool_id, &object_id);
-			}
+			.flat_map(|l| l.properties.iter().chain(&l.tables))
+			.find(|(name, indexed)| name.as_deref() == Some(object_id.as_str()) && indexed.pool.is_some())
+			.and_then(|(_, indexed)| indexed.pool.clone());
+		if let Some(pool_id) = inherited {
+			return self.named(&pool_id, &object_id);
 		}
 		// Last resort: the same pool the referrer lives in.
 		self.named(home, &object_id)

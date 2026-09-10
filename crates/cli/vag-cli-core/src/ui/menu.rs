@@ -193,7 +193,14 @@ pub fn screen(question: &str, items: &[Item<'_>], at: usize, width: u16) -> Vec<
 	let mut lines = vec![clip(&format!("? {question}"), width)];
 	// The details line up under each other, or three sentences at three
 	// different indents read as three unrelated things.
-	let label_width = items.iter().map(|i| i.label.chars().count()).max().unwrap_or(0).min(24);
+	// The cap is what stops one very long label pushing every detail off the
+	// right edge; it is not a width the labels are cut to, so a menu whose
+	// longest label is under it has its details in one column. It was 24, which
+	// was every label anyone had written until `setup` grew "Choose the folder
+	// in a dialog" — 29 columns, and 24 put that one row's detail five columns
+	// right of the other's. 30 still leaves a detail 46 columns on an 80-column
+	// terminal, which is wider than any of them.
+	let label_width = items.iter().map(|i| i.label.chars().count()).max().unwrap_or(0).min(30);
 	for (row, item) in items.iter().enumerate() {
 		let text = clip(
 			&format!("{} {:<label_width$}  {}", if row == at { "❯" } else { " " }, item.label, item.detail),
