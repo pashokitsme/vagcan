@@ -18,6 +18,8 @@ vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
 anyhow = "1"
+# The ODIS parse fans out one variant per task over rayon's pool.
+rayon = { workspace = true }
 serde_json.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"

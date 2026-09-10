@@ -117,8 +117,9 @@ enum Command {
 	/// project under `~/.vagcan/data/<id>/`, and a second source is added to
 	/// a project rather than replacing what is in it.
 	///
-	/// It takes minutes, mostly in the name recovery, and it touches no car.
-	/// Running it again on an unchanged source does nothing and says so.
+	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
+	/// mostly in the name recovery. It touches no car. Running it again on an
+	/// unchanged source does nothing and says so.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {

@@ -622,40 +622,47 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 
 	println!("[1/2] Control units — walking each variant's measurement chain.");
 	let variants = timed("variants", || odis.variants()).with_context(|| format!("listing the variants of {}", dir.display()))?;
-	let (mut with_channels, mut channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize, 0usize);
-	let mut progress = crate::progress::Line::new();
-	let (mut walking, mut writing) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-	for (at, variant) in variants.iter().enumerate() {
-		progress.update(&format!("{} of {} — {}", at + 1, variants.len(), variant.name));
-		let started = std::time::Instant::now();
-		let readings = odis.readings(variant);
-		walking += started.elapsed();
-		let readings = match readings {
-			Ok(readings) => readings,
+	// Every variant's chain is walked on rayon's pool, one variant per task,
+	// and the results come back **in variant order** — `collect` on an
+	// indexed parallel iterator keeps it — so the rows land in the cache in
+	// the same order and with the same ids a one-at-a-time walk gave them.
+	// The line is fed from the workers through a `Reporter`; its own thread
+	// keeps the spinner moving whether or not a variant has just finished.
+	let walked: Vec<Result<Vec<vag_data_labels::odis::Reading>, vag_data_labels::odis::Error>> = {
+		use rayon::prelude::*;
+		let progress = crate::progress::Line::new();
+		let reporter = progress.reporter();
+		let done = std::sync::atomic::AtomicUsize::new(0);
+		timed("readings (walk)", || {
+			variants
+				.par_iter()
+				.map(|variant| {
+					let readings = odis.readings(variant);
+					let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+					reporter.set(&format!("{finished} of {} — {}", variants.len(), variant.name));
+					readings
+				})
+				.collect()
+		})
+	};
+	let (mut with_channels, mut refused, mut unreadable) = (0usize, 0usize, 0usize);
+	let mut to_write: Vec<(&str, &[vag_data_labels::odis::Reading])> = Vec::new();
+	for (variant, readings) in variants.iter().zip(&walked) {
+		match readings {
 			// The refusal list is enforced by the parser and honoured here: a
 			// refused type is a file this tool declines to read, not a broken
 			// one, so the variant is skipped and the rest of the project stands.
-			Err(vag_data_labels::odis::Error::Refused(_)) => {
-				refused += 1;
-				continue;
+			Err(vag_data_labels::odis::Error::Refused(_)) => refused += 1,
+			Err(_) => unreadable += 1,
+			Ok(readings) if readings.is_empty() => {}
+			Ok(readings) => {
+				to_write.push((variant.name.as_str(), readings.as_slice()));
+				with_channels += 1;
 			}
-			Err(_) => {
-				unreadable += 1;
-				continue;
-			}
-		};
-		if readings.is_empty() {
-			continue;
 		}
-		let started = std::time::Instant::now();
-		channels += vag_data_db::put_readings(&project.cache(), &source, &variant.name, &readings)
-			.map_err(|e| anyhow::anyhow!("writing {}'s channels to {}: {e}", variant.name, project.cache().display()))?;
-		writing += started.elapsed();
-		with_channels += 1;
 	}
-	progress.finish();
-	timing("readings (walk)", walking);
-	timing("readings (sqlite)", writing);
+	let channels = timed("readings (sqlite)", || vag_data_db::put_all_readings(&project.cache(), &source, to_write))
+		.map_err(|e| anyhow::anyhow!("writing the channels to {}: {e}", project.cache().display()))?;
 	let mut skipped = String::new();
 	if refused + unreadable > 0 {
 		skipped = format!(", {refused} refused, {unreadable} unreadable");
