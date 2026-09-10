@@ -27,6 +27,7 @@ pub mod faults;
 pub mod labels;
 pub mod migrate;
 pub mod names;
+pub mod odisfaults;
 pub mod props;
 pub mod recording;
 pub mod render;

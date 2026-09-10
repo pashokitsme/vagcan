@@ -31,7 +31,7 @@ use vag_data_labels::{LabelDb, LabelScan, Measurement, scan_label_files};
 /// `Labels/RUS/` out of a Russian build, where nothing sits at the top level.
 /// Two levels is enough for every layout Ross-Tech ships and shallow enough not
 /// to wander into a home directory.
-fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) fn label_dir_under(given: &Path) -> anyhow::Result<PathBuf> {
 	fn holds_labels(dir: &Path) -> bool {
 		std::fs::read_dir(dir).is_ok_and(|entries| {
 			entries.flatten().any(|e| {

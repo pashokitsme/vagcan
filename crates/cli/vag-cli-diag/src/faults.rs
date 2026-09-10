@@ -12,9 +12,12 @@
 //!   simply never run since the memory was last cleared. On the reference car
 //!   the body control module answers 508 codes that way, of which three are
 //!   actual stored faults.
-//! * **A code is printed as a code until something names it.** The texts live
-//!   in the label files; where this project cannot resolve one, it shows the
-//!   raw bytes rather than a plausible-sounding invention.
+//! * **A code is printed as a code until something names it.** The texts come
+//!   from the ODIS project's own fault tables first ([`crate::odisfaults`])
+//!   and from the VCDS label files where the project has none
+//!   ([`crate::faultnames`]); where neither resolves one, it shows the raw
+//!   bytes rather than a plausible-sounding invention. [`Namers`] is the
+//!   order, in one place for both the live and the recorded path.
 //!
 //! Read-only: the service issued is `0x19`, which reads. Clearing faults is
 //! `0x14`, which the client's allowlist rejects.
@@ -141,6 +144,177 @@ fn ident_text(bytes: &[u8]) -> String {
 	String::from_utf8_lossy(bytes).trim_end_matches(['\0', ' ']).to_string()
 }
 
+/// Both ways of naming a code, in the order they are asked.
+///
+/// **The project first, the label files second.** An ODIS project carries a
+/// fault table per ECU variant with the text in the clear, and a VCDS
+/// installation names a code through a registry, a per-unit catalogue and a
+/// text store, each of which can be missing or sealed. The project is asked
+/// first because it answers for the exact variant the unit named; the chain
+/// is asked where the project has no table for the unit, or where
+/// `[faults] language` names a language only the VCDS build declares.
+///
+/// Either half may be absent — a project set up from one source has one —
+/// and a command with neither still prints the codes.
+pub struct Namers {
+	odis: Option<crate::odisfaults::OdisFaults>,
+	vcds: Option<crate::faultnames::Namer>,
+	/// Where the VCDS files were looked for, for the note when there are none.
+	vcds_root: std::path::PathBuf,
+}
+
+/// What both halves know about one unit, looked up once.
+pub struct UnitNamers {
+	odis: Option<crate::odisfaults::UnitTexts>,
+	vcds: Option<vag_data_labels::UnitLookup>,
+}
+
+impl Namers {
+	/// Open whatever this machine has. Never fails for a shortage of data —
+	/// see [`Namers::is_empty`] — only for a VCDS pool that is there and will
+	/// not open.
+	pub fn open(iv_cache: &str) -> Result<Namers> {
+		let vcds_root = crate::project::rod_pool()?;
+		let vcds = if crate::faultnames::has_fault_labels(&vcds_root) {
+			Some(crate::faultnames::Namer::open(&vcds_root, &crate::datadir::resolve(iv_cache))?)
+		} else {
+			None
+		};
+		Ok(Namers {
+			odis: crate::odisfaults::OdisFaults::open(),
+			vcds,
+			vcds_root,
+		})
+	}
+
+	/// Whether there is nothing at all to name a code with.
+	pub fn is_empty(&self) -> bool {
+		self.odis.is_none() && self.vcds.is_none()
+	}
+
+	/// Where the VCDS files were looked for.
+	pub fn vcds_root(&self) -> &std::path::Path {
+		&self.vcds_root
+	}
+
+	/// The lines that say where the names come from, for above a listing.
+	pub fn describe(&self) -> Vec<String> {
+		let mut out = Vec::new();
+		if let Some(odis) = &self.odis {
+			out.push(odis.describe());
+			if let Some(note) = odis.choice_note() {
+				out.push(note);
+			}
+		}
+		if let Some(vcds) = &self.vcds {
+			out.push(format!(
+				"{} rows of fault registry, {} texts, from {}{}",
+				vcds.registry_rows(),
+				vcds.codes_texts(),
+				self.vcds_root.display(),
+				if self.odis.is_some() { " — the fallback" } else { "" }
+			));
+		}
+		out
+	}
+
+	/// Look a unit up in both halves by what it said about itself.
+	pub fn unit(&mut self, odx_name: &str, version: &str) -> UnitNamers {
+		UnitNamers {
+			odis: self.odis.as_mut().map(|o| o.unit(odx_name, version)),
+			vcds: self.vcds.as_mut().map(|n| n.unit(odx_name, version)),
+		}
+	}
+
+	/// Why a unit's codes may come out as numbers, one line each.
+	///
+	/// The VCDS chain's own reasons are only worth saying when that chain is
+	/// what the unit's codes will be named from — a sealed catalogue is no
+	/// loss for a unit the project names in full.
+	pub fn notes(&self, unit: &UnitNamers) -> Vec<String> {
+		let mut out = Vec::new();
+		let project_has_it = unit.odis.as_ref().is_some_and(|u| !u.is_empty());
+		if self.odis.is_some() && !project_has_it {
+			out.push(match &self.vcds {
+				Some(_) => "the ODIS project has no fault table for this unit — VCDS text".to_string(),
+				None => "the ODIS project has no fault table for this unit — codes only".to_string(),
+			});
+		}
+		let vcds_matters = !project_has_it || self.odis.as_ref().is_some_and(|o| o.prefers_vcds());
+		if vcds_matters && let Some(note) = unit.vcds.as_ref().and_then(crate::faultnames::unit_note) {
+			out.push(note);
+		}
+		out
+	}
+
+	/// The VCDS catalogue a unit's codes would need opened, if it is sealed.
+	pub fn sealed(unit: &UnitNamers) -> Option<std::path::PathBuf> {
+		match &unit.vcds {
+			Some(vag_data_labels::UnitLookup::Locked { file }) => Some(file.clone()),
+			_ => None,
+		}
+	}
+
+	/// One line for a code, and whether that line is a name rather than a
+	/// reason. `None` when there is nothing to say under the number.
+	pub fn name(&self, unit: &UnitNamers, code: [u8; 3]) -> Option<(String, bool)> {
+		let odis = self.odis.as_ref().zip(unit.odis.as_ref()).and_then(|(o, u)| o.name(u, code));
+		let vcds = match (&self.vcds, &unit.vcds) {
+			(Some(namer), Some(vag_data_labels::UnitLookup::Found { catalogue, .. })) => Some(namer.name(catalogue, code)),
+			_ => None,
+		};
+		let project_has_it = unit.odis.as_ref().is_some_and(|u| !u.is_empty());
+		compose(odis, vcds, self.odis.as_ref().is_some_and(|o| o.prefers_vcds()), project_has_it)
+	}
+}
+
+/// The order the two chains are asked in, as one function over their answers.
+///
+/// Separated from [`Namers::name`] so the order is testable without a project
+/// and a VCDS installation on disk: everything above it is lookup, this is the
+/// policy.
+///
+/// The project wins, except where it has nothing to say. **A row with a
+/// display code and no text is one of those** — two of the reference
+/// project's 291,346 rows are shaped that way. The code is still the
+/// project's and is kept; the words come from VCDS, and the line says whose
+/// they are. Printing `(no text in the project)` over a name that exists one
+/// lookup away, and counting it as named, was the bug.
+fn compose(
+	odis: Option<crate::odisfaults::Naming>,
+	vcds: Option<crate::faultnames::Naming>,
+	prefer_vcds: bool,
+	project_has_unit: bool,
+) -> Option<(String, bool)> {
+	let vcds_text = match &vcds {
+		Some(crate::faultnames::Naming::Named { text, .. }) => Some(text.clone()),
+		_ => None,
+	};
+	if prefer_vcds && let Some(line) = vcds.as_ref().filter(|_| vcds_text.is_some()).and_then(|n| n.line()) {
+		return Some((line, true));
+	}
+	if let Some(mut naming) = odis {
+		if naming.text.is_none()
+			&& let Some(text) = vcds_text
+		{
+			naming.text = Some(text);
+			return Some((format!("{}  (text from the VCDS labels)", naming.line()), true));
+		}
+		// A code without words anywhere is not a named code, whatever else the
+		// row carries — the run's tally counts names, not rows.
+		let named = naming.text.is_some();
+		return Some((naming.line(), named));
+	}
+	if let Some(naming) = vcds {
+		return naming
+			.line()
+			.map(|line| (line, matches!(naming, crate::faultnames::Naming::Named { .. })));
+	}
+	// The project has a table for the unit and this number is not in it,
+	// and nothing else can be asked: said, rather than left blank.
+	project_has_unit.then(|| ("not in this unit's fault table in the ODIS project".to_string(), false))
+}
+
 /// Name the faults in a survey this tool recorded (`vagcan faults --from`).
 ///
 /// The naming chain needs nothing from the car that a survey does not already
@@ -150,23 +324,17 @@ fn ident_text(bytes: &[u8]) -> String {
 /// figures in `.archive/research/labels/fault-naming-hop.md` §11.3 are reproduced.
 pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<()> {
 	let text = std::fs::read_to_string(survey_path).with_context(|| format!("reading {survey_path:?}"))?;
-	// The shared pool of raw VCDS files. Shared across every project because a
-	// `.rod` file is a property of a VCDS *build* and not of a car — the same
-	// registry names the same faults whichever vehicle is in front of you.
-	let root = crate::project::rod_pool()?;
 	// Naming a recorded survey with nothing to name from is nothing this can do,
-	// so an empty default is a clear stop pointing at `vagcan setup` rather than
-	// a bare "the registry did not decode".
-	if !crate::faultnames::has_fault_labels(&root) {
-		anyhow::bail!(crate::missing::cannot_name_faults(&root));
+	// so a machine with neither source is a clear stop pointing at `vagcan
+	// setup` rather than a bare "the registry did not decode".
+	let mut namers = Namers::open(iv_cache)?;
+	if namers.is_empty() {
+		anyhow::bail!(crate::missing::cannot_name_faults(namers.vcds_root()));
 	}
-	let mut namer = crate::faultnames::Namer::open(&root, &crate::datadir::resolve(iv_cache))?;
-	println!(
-		"{} rows of fault registry, {} texts, from {}\n",
-		namer.registry_rows(),
-		namer.codes_texts(),
-		root.display()
-	);
+	for line in namers.describe() {
+		println!("{line}");
+	}
+	println!();
 
 	let (mut named, mut unnamed) = (0usize, 0usize);
 	// Every sealed catalogue this car names, asked about once at the end rather
@@ -203,29 +371,24 @@ pub fn run_named(survey_path: &str, iv_cache: &str, all_codes: bool) -> Result<(
 		};
 		let (odx, version) = (ident(ODX_NAME), ident(ODX_VERSION));
 		println!("{unit}  {odx}");
-		let lookup = namer.unit(&odx, &version);
-		if let vag_data_labels::UnitLookup::Locked { file } = &lookup {
-			if !sealed.contains(file) {
-				sealed.push(file.clone());
-			}
+		let lookup = namers.unit(&odx, &version);
+		if let Some(file) = Namers::sealed(&lookup)
+			&& !sealed.contains(&file)
+		{
+			sealed.push(file);
 		}
-		if let Some(note) = crate::faultnames::unit_note(&lookup) {
+		for note in namers.notes(&lookup) {
 			println!("  ({note})");
 		}
-		let catalogue = match &lookup {
-			vag_data_labels::UnitLookup::Found { catalogue, .. } => Some(catalogue),
-			_ => None,
-		};
 		for (dtc, _) in &codes {
-			let naming = catalogue.map(|c| namer.name(c, dtc.code));
-			let named_here = matches!(naming, Some(crate::faultnames::Naming::Named { .. }));
-			if named_here {
+			let naming = namers.name(&lookup, dtc.code);
+			if naming.as_ref().is_some_and(|(_, is_name)| *is_name) {
 				named += 1;
 			} else {
 				unnamed += 1;
 			}
 			println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
-			if let Some(line) = naming.as_ref().and_then(|n| n.line()) {
+			if let Some((line, _)) = naming {
 				println!("      {line}");
 			}
 		}
@@ -255,20 +418,15 @@ pub async fn run(
 ) -> Result<()> {
 	// Arguments first: the adapter is a single-user resource, so a typo in
 	// --ecu must not cost the port before it is reported.
-	// The label files are opened before the port for the same reason: a missing
+	// The fault texts are opened before the port for the same reason: a missing
 	// `Codes.dat` is a mistake to report, not one to make after taking the
 	// adapter and reading the whole car.
 	//
-	// The names come from the shared pool `vagcan setup` filled, and from
-	// nowhere else. An empty one is the ordinary "setup has not run yet" case —
-	// the codes are still read and shown as numbers, with a note that names
-	// `vagcan setup`.
-	let naming_source = crate::project::rod_pool()?;
-	let mut namer = if crate::faultnames::has_fault_labels(&naming_source) {
-		Some(crate::faultnames::Namer::open(&naming_source, &crate::datadir::resolve(iv_cache))?)
-	} else {
-		None
-	};
+	// The names come from what `vagcan setup` wrote — the project's cache and
+	// the shared pool of VCDS files — and from nowhere else. Neither being
+	// there is the ordinary "setup has not run yet" case: the codes are still
+	// read and shown as numbers, with a note that names `vagcan setup`.
+	let mut namers = Namers::open(iv_cache)?;
 	let requested = only.map(|spec| crate::declared::unit_list("--ecu", spec)).transpose()?;
 
 	let mut backend = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
@@ -316,11 +474,17 @@ pub async fn run(
              not necessarily a fault present now. Only codes marked \"failed now\" are \n\
              currently failing.\n"
 		);
-		// Where a namer opened, each code names itself or says why it could not,
-		// so nothing is owed here. Where it did not, the labels have not been
-		// copied in yet — the codes read fine, and the note says how to name them.
-		if namer.is_none() {
-			println!("{}\n", crate::missing::no_fault_labels(&naming_source));
+		// Where something opened, each code names itself or says why it could
+		// not, so only where the names come from is owed here. Where nothing
+		// did, the data has not been set up yet — the codes read fine, and the
+		// note says how to name them.
+		if namers.is_empty() {
+			println!("{}\n", crate::missing::no_fault_labels(namers.vcds_root()));
+		} else {
+			for line in namers.describe() {
+				println!("{line}");
+			}
+			println!();
 		}
 	}
 
@@ -404,38 +568,32 @@ pub async fn run(
 				None => "--".to_string(),
 			};
 			println!("\n{number}  {request:03X}  {}", unit.component.clone().unwrap_or_default());
-			// The unit names its own description file, so the catalogue is
-			// fetched only once something has to be named out of it.
-			let lookup = match &mut namer {
-				Some(namer) => {
+			// The unit names its own variant and description file, so they are
+			// read only once something has to be named out of them.
+			let lookup = match namers.is_empty() {
+				true => None,
+				false => {
 					let read = |data: Option<Vec<u8>>| data.map(|b| ident_text(&b)).unwrap_or_default();
 					let odx = read(uds.read_data_by_identifier(ODX_NAME).await.ok());
 					let version = read(uds.read_data_by_identifier(ODX_VERSION).await.ok());
-					Some(namer.unit(&odx, &version))
+					Some(namers.unit(&odx, &version))
 				}
-				None => None,
 			};
-			if let Some(vag_data_labels::UnitLookup::Locked { file }) = lookup.as_ref() {
-				if !sealed.contains(file) {
-					sealed.push(file.clone());
-				}
+			if let Some(file) = lookup.as_ref().and_then(Namers::sealed)
+				&& !sealed.contains(&file)
+			{
+				sealed.push(file);
 			}
-			if let Some(note) = lookup.as_ref().and_then(crate::faultnames::unit_note) {
+			for note in lookup.as_ref().map(|l| namers.notes(l)).unwrap_or_default() {
 				println!("  ({note})");
 			}
-			let catalogue = match &lookup {
-				Some(vag_data_labels::UnitLookup::Found { catalogue, .. }) => Some(catalogue),
-				_ => None,
-			};
 			for dtc in &show {
 				println!("  {}   {}", format_code(dtc.code), describe_status(dtc.status));
 				// The name goes under the code, never instead of it: the
 				// number is what the car said and the name is this project's
 				// reading of it.
-				if let (Some(namer), Some(catalogue)) = (&namer, catalogue) {
-					if let Some(line) = namer.name(catalogue, dtc.code).line() {
-						println!("      {line}");
-					}
+				if let Some((line, _)) = lookup.as_ref().and_then(|l| namers.name(l, dtc.code)) {
+					println!("      {line}");
 				}
 				// Extended data carries when it happened: the odometer at the
 				// time and how often. Read for every fault, since that is the
@@ -502,6 +660,48 @@ mod tests {
 		// build, not of one car — while the keys that open it are per project,
 		// because a key is a property of one file's bytes (design §4.2).
 		assert_eq!(crate::datadir::rod_pool_dir().unwrap(), crate::datadir::vagcan_dir().unwrap().join("rod"));
+	}
+
+	/// An ODIS row as the reference project's two textless ones are shaped: a
+	/// display code, and nothing to read.
+	fn textless_odis_row() -> crate::odisfaults::Naming {
+		crate::odisfaults::Naming {
+			display_code: Some("B1168F2".into()),
+			text: None,
+			language: Some("deu".into()),
+			variant: "EV_Brake_035".into(),
+			family: "EV_Brake".into(),
+			matched: 1,
+			confirmed: true,
+			disagrees: false,
+			level: 0,
+		}
+	}
+
+	#[test]
+	fn an_odis_row_with_no_text_borrows_the_vcds_words_under_its_own_code() {
+		// Two rows of the reference project's 291,346 carry a display code and
+		// no text. The project still writes the code, but it has no name to
+		// give — so the VCDS chain is asked rather than "(no text in the
+		// project)" winning over a name that exists one lookup away.
+		let vcds = crate::faultnames::Naming::Named {
+			text: "Steering angle sensor".into(),
+			sae: Some("B1168".into()),
+			failure_type: Some(0xF2),
+		};
+		let (line, named) = compose(Some(textless_odis_row()), Some(vcds), false, true).expect("a code with a display code says something");
+		assert_eq!(line, "B1168F2  Steering angle sensor  (text from the VCDS labels)");
+		assert!(named, "a borrowed name is still a name");
+	}
+
+	#[test]
+	fn a_code_nothing_has_words_for_is_not_counted_as_named() {
+		// The display code alone is how a tester writes the number, not what
+		// went wrong. Counting it as named was what made the run's tally say
+		// every code had a name.
+		let (line, named) = compose(Some(textless_odis_row()), None, false, true).unwrap();
+		assert_eq!(line, "B1168F2  (no text in the project)");
+		assert!(!named);
 	}
 
 	#[test]

@@ -8,16 +8,21 @@ declares, per ECU variant, every identifier that unit answers along with the byt
 offset, length, byte order and compu formula — the whole chain, which a VCDS label file
 provably does not carry (`.archive/research/labels/rod-labels.md` §4.0c).
 
-**An ODIS project carries the fault codes and their text too** — 329,268 `DTC_*` objects
-in `SK37X`, with descriptions in the clear in the Unicode pool (`Steuergerät Fehler im
-RAM->defekt`), no cipher and no `Codes.dat` involved. What is missing is the *loader*,
-not the data: `DB_DOP_DTC` and `MCD_DB_DIAG_TROUBLE_CODE` are in the type table and
-`odis/loaders/` holds only `identity.rs` and `measurement.rs`. Until that lands,
-`vagcan faults` still names codes from VCDS files — a limit of this implementation,
-**not** a property of the sources, and it must not be written down as one (2026-08-09).
+**An ODIS project carries the fault codes and their text too, and since 2026-09-10 the
+loader reads them.** `odis/loaders/dtc.rs` transcribes `DB_DOP_DTC` and
+`MCD_DB_DIAG_TROUBLE_CODE` — 291,346 code objects across `SK37X`'s pools, every one 34
+bytes: the 24-bit number the unit sends, the display code (`B1168F2`), the text, a level.
+`Project::faults` walks layer data → fault table → code for all 717 variants (621 have
+one, 282,621 codes, none refused, none failed), `setup` writes them into `cache.sqlite`'s
+`fault` table, and `vagcan faults` names a code from the variant the unit identifies
+itself as, **before** the VCDS chain. What it covers and does not: the text is one per
+code in the supplier's language — the format has no translations — so the project's
+declared language is recorded on the source and `[faults] language` chooses between
+sources; it does not translate. Evidence and layouts:
+`research/odis-dtc/README.md`.
 
 **A VCDS installation is therefore the fallback**: the path for a car no ODIS project
-covers, or for someone who cannot get one.
+covers, for a unit the project has no fault table for, or for someone who cannot get one.
 
 Above both sits what was **proven live on the car** —
 `~/.vagcan/data/<project>/measurements/<part number>.json`, keyed by what the unit
@@ -88,9 +93,13 @@ stranded; `frfscope` lives with the note it serves, `research/tuning/frfscope/`
    `todo/dash/05`.
 2. **The OLED on the carrier** — `dash`; **no car.** The SSD1322 driver and the
    frame's snap-fit, with the panel still on the laptop through `dashsim` until then.
-3. **The ODIS DTC loader** — the fault-names goal (M4); **no car.** `DB_DOP_DTC` /
-   `MCD_DB_DIAG_TROUBLE_CODE` are in the type table and no loader reads them, so
-   `faults` still names codes from VCDS files (see the header of this file).
+3. **Fault names without VCDS — the rest of it** (M4); **the car, once.** The ODIS DTC
+   loader landed 2026-09-10 (header of this file), offline-verified on the reference
+   car's fifteen stored faults. What is left is the live run — `vagcan faults` on the
+   car after `setup` on the project, to see the table name the codes the survey named —
+   and the freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`, walked and discarded in
+   `identity.rs`), which is where the extended-data records `faults --details` prints
+   raw would get their field names.
 
 Whole-car measurement coverage (M3) is **off the list** at the owner's decision on
 2026-09-10: the `survey`-driven route to it (`dev survey --diff` on a parked and a

@@ -39,8 +39,8 @@ So there are three sources and they are not interchangeable:
 
 | | comes from | rebuildable? |
 |---|---|---|
-| which identifiers a variant answers, their shape and scaling | an ODIS project, via `vagcan setup` | yes, in minutes |
-| names, unit numbers, fault text | a VCDS installation, via `vagcan setup` | yes, in minutes |
+| which identifiers a variant answers, their shape and scaling; fault codes and their text | an ODIS project, via `vagcan setup` | yes, in minutes |
+| names, unit numbers, fault text where the project has none | a VCDS installation, via `vagcan setup` | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
 The first two land in a **project** — `~/.vagcan/data/<project id>/`, holding
@@ -77,11 +77,22 @@ already there; so VCDS is read **first** and ODIS fills in the text ids it alone
 The other way round, the wholesale write would land on top and one combined run would
 come out worse than the two separate runs it is meant to be equivalent to.
 
-**Fault text is a gap in this build, not a division of labour.** An ODIS project carries
-the fault codes and their descriptions in the clear, in six figures; what is missing is
-a loader for them. Until that lands, `vagcan faults` names codes from VCDS files. That
-is a fact about the implementation and must not be written down as a property of the
-sources.
+**Fault text comes from the project first, and the VCDS chain is the fallback.** An
+ODIS project carries, per ECU variant, a fault table (`DB_DOP_DTC`) mapping every
+24-bit number the unit can send to a code object (`MCD_DB_DIAG_TROUBLE_CODE`) holding
+the display code a tester prints and the text in the clear — 282,621 codes across the
+reference project's 621 variants that have one. `setup` writes them into `cache.sqlite`'s
+`fault` table keyed by variant and number, and `vagcan faults` names a code from the
+variant the unit identifies itself as, by the same `F19E`/`F1A2` match the channels use.
+The VCDS chain below answers for a unit the project has no table for. The layouts and the
+evidence are in [`research/odis-dtc/README.md`](research/odis-dtc/README.md).
+
+A text is one per code, in the language its supplier wrote — the object model has no
+language field and no translations, and the reference project's engine texts are English
+inside a project that declares `deu`. So language is a property of the *source*: each
+`source` row records what its source declared (an ODIS project's `<LANGUAGE>`, a VCDS
+build's `Codes.dat` or `Code-RUS.dat`), a second project in another language is a second
+source, and `[faults] language` in `config.toml` chooses between sources.
 
 ---
 
@@ -211,8 +222,25 @@ is reading the mask out of a running VCDS, not out of the files.
 file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan dev vcds labels
 --from-car` finds the right file with no lookup table in the middle.
 
-**`Codes.dat` — the fault-code text store.** A fault number does not resolve to words
-directly. The chain is:
+**The ODIS fault chain**, which is asked first, is the measurement chain's shape with
+two hops fewer:
+
+```
+raw 24-bit code, and the unit's F19E/F1A2
+  → the variant's DB_LAYER_DATA            (dtc_properties: the fault tables' names)
+  → its property index                     (name → the DB_DOP_DTC object)
+  → the DB_DOP_DTC                         (number → the code object)
+  → MCD_DB_DIAG_TROUBLE_CODE               (display code, text, level)
+```
+
+A variant that names no fault table of its own is read through the first parent layer
+that does, as the measurement service is. The number is the join and the display code
+is a separate string the object carries — on the reference project only 1,515 of 43,378
+`(display, number)` pairs agree with the SAE encoding, so nothing derives one from the
+other.
+
+**`Codes.dat` — the fault-code text store**, the VCDS chain. A fault number does not
+resolve to words directly. The chain is:
 
 ```
 raw 24-bit code
@@ -247,12 +275,13 @@ ODIS project. Nothing is opened to decide — being wrong in the permissive dire
 costs a parser error that explains itself, and being wrong in the strict direction turns
 a real project away at the door.
 
-**The ODIS branch is two steps**: every variant's measurement chain walked into
-`cache.sqlite`, then every `(text id, name)` pair in every pool merged into
-`names.json`. A variant whose chain reaches a type this reader declines to open, or one
-it has no loader for, costs itself and nothing else — the count of what was skipped is
-reported rather than hidden, because a project describes hundreds of units and one bad
-one must not cost the rest.
+**The ODIS branch is two steps**: every variant's fault table and measurement chain
+walked into `cache.sqlite` — the `fault` and `reading` tables, with the language the
+project declares written on its `source` row — then every `(text id, name)` pair in
+every pool merged into `names.json`. A variant whose chain reaches a type this reader
+declines to open, or one it has no loader for, costs itself and nothing else — the count
+of what was skipped is reported rather than hidden, because a project describes hundreds
+of units and one bad one must not cost the rest.
 
 **The VCDS branch is the four steps below.** The first of them is what makes an
 installation disposable: fault naming reads `.rod` files off disk at run time, so those

@@ -84,6 +84,7 @@ pub struct Project {
 	dir: std::path::PathBuf,
 	id: String,
 	version: Option<String>,
+	language: Option<String>,
 	strings: strings::Strings,
 	/// Every PoolID that has both a `.db` and a `.key`, sorted.
 	pools: Vec<String>,
@@ -132,6 +133,36 @@ pub struct Reading {
 	/// The text id of [`Reading::name`] — the join to `TTTEXT`
 	/// (`.archive/research/labels/odis-crib.md` §3).
 	pub text_id: Option<String>,
+}
+
+/// One fault code of one variant, as the project describes it.
+///
+/// The row `vagcan faults` names a code from. Everything here is what the
+/// `MCD_DB_DIAG_TROUBLE_CODE` object carries, recorded rather than
+/// interpreted — see [`loaders::dtc`] for the layout and
+/// `research/odis-dtc/README.md` for how it was established.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fault {
+	/// The short name of the fault-code table this row came from,
+	/// `DTCDOP_VAGUDS` — a variant can carry more than one.
+	pub dop: String,
+	/// The 24-bit number the control unit sends in a `0x19` response, read
+	/// big-endian as one integer. The join key from the car to this row.
+	pub code: u32,
+	/// The code a tester prints, `P150B00` — a string the file carries, not
+	/// an encoding of [`Fault::code`].
+	pub display_code: Option<String>,
+	/// The text, in whichever language its supplier wrote it. One per code;
+	/// the format has no per-language table.
+	pub text: Option<String>,
+	/// The text's own identifier — usually equal to the display code.
+	pub text_id: Option<String>,
+	/// `DTC_<number>`.
+	pub short_name: Option<String>,
+	/// The ODX `LEVEL`, 1 to 9 on the reference project. Not interpreted.
+	pub level: u32,
+	/// `IS-TEMPORARY`, false on every code of the reference project.
+	pub temporary: bool,
 }
 
 /// One vehicle a project declares it covers.
@@ -237,6 +268,7 @@ impl Project {
 		Ok(Project {
 			id: project_id(dir),
 			version: project_version(dir),
+			language: project_language(dir),
 			dir: dir.to_owned(),
 			strings,
 			pools,
@@ -256,6 +288,22 @@ impl Project {
 	/// provenance log (design §4.4). `None` when the file is absent.
 	pub fn version(&self) -> Option<&str> {
 		self.version.as_deref()
+	}
+
+	/// The language the project declares for itself — `<LANGUAGE>deu</LANGUAGE>`
+	/// in `index.xml`'s `ADMIN-DATA`, an ISO 639-2 code. `None` when the file
+	/// does not say.
+	///
+	/// **Declared once, for the whole project, and it is a declaration.** The
+	/// object model has no language field anywhere: a fault code carries one
+	/// text and a measurement one name, in whichever language the supplier
+	/// wrote it. On the reference project, which declares `deu`, the engine's
+	/// 202,863 fault texts are English and the body electronics' are German
+	/// (`research/odis-dtc/README.md`). So this is the language of the
+	/// *source*, recorded so that a second project in another language can be
+	/// told apart from it — not a promise about every text inside.
+	pub fn language(&self) -> Option<&str> {
+		self.language.as_deref()
 	}
 
 	/// Every PoolID this project holds, sorted.
@@ -395,6 +443,86 @@ impl Project {
 				continue;
 			};
 			out.extend(channel);
+		}
+		Ok(out)
+	}
+
+	/// The fault codes one variant can report, with their texts.
+	///
+	/// The chain is the measurement chain's shape with two hops fewer: the
+	/// variant's layer data names its fault-code data object properties by
+	/// short name (`DTCDOP_VAGUDS`), its property index turns each name into
+	/// the `DB_DOP_DTC` object, and that object maps every number to its
+	/// `MCD_DB_DIAG_TROUBLE_CODE`.
+	///
+	/// **The layer that declares the fault memory may be a parent.** Same rule
+	/// as [`Store::measurement_layer`]: a variant that names no fault-code
+	/// property of its own is read through the first parent layer that does,
+	/// and a variant whose own layer names one is read from that layer alone.
+	///
+	/// An empty list means the variant, and every parent it names, declares no
+	/// fault-code property — a fact about the unit. A code whose object cannot
+	/// be read is skipped rather than fatal, as one channel is in
+	/// [`Project::readings`]; a refused type stops the variant, as it does there.
+	pub fn faults(&self, variant: &Variant) -> Result<Vec<Fault>, Error> {
+		let mut store = Store::new(self);
+		let Some(own) = store.layer_data(variant)? else {
+			return Ok(Vec::new());
+		};
+		let Some((layer, home)) = store.fault_layer(variant, own)? else {
+			return Ok(Vec::new());
+		};
+
+		let mut out = Vec::new();
+		for name in &layer.dtc_properties {
+			let Some((_, indexed)) = layer.properties.iter().find(|(key, _)| key.as_deref() == Some(name.as_str())) else {
+				continue;
+			};
+			let Some(object_id) = indexed.object.clone() else { continue };
+			let pool = indexed.pool.clone().unwrap_or_else(|| home.clone());
+			// Absent and wrong are different failures and read differently: a
+			// pool that does not carry the object is a project missing a
+			// piece, an object of another type is a project this reader
+			// misunderstood. Reporting both as "is not a DB_DOP_DTC" sent
+			// anyone chasing the second when it was the first.
+			let dop = match store.named(&pool, &object_id)? {
+				Some(loaders::Object::DtcDop(dop)) => dop,
+				Some(_) => {
+					return Err(Error::Format(format!(
+						"{}'s fault-code property {object_id} is in {pool} and is not a DB_DOP_DTC",
+						variant.name
+					)));
+				}
+				None => {
+					return Err(Error::Missing(format!(
+						"{}'s fault-code property {object_id} is not in {pool}",
+						variant.name
+					)));
+				}
+			};
+			let dop_name = dop.short_name.clone().unwrap_or_else(|| name.clone());
+			for (number, target) in &dop.codes {
+				let code = match store.object(&layer, &pool, target) {
+					Ok(Some(loaders::Object::TroubleCode(code))) => code,
+					Err(e @ Error::Refused(_)) => return Err(e),
+					_ => continue,
+				};
+				out.push(Fault {
+					dop: dop_name.clone(),
+					// The map's key is what the table is looked up by, so it is
+					// the row's key too. The object carries the number as well,
+					// and the two agree on every one of the reference project's
+					// 291,346 codes — checked, not assumed, and not re-checked
+					// here because a disagreement would have no right answer.
+					code: *number,
+					display_code: code.display_code,
+					text: code.text,
+					text_id: code.text_id,
+					short_name: code.short_name,
+					level: code.level,
+					temporary: code.temporary,
+				});
+			}
 		}
 		Ok(out)
 	}
@@ -582,6 +710,23 @@ impl<'a> Store<'a> {
 		for pool_id in own.parents.clone() {
 			if let Some(loaders::Object::LayerData(parent)) = self.named(&pool_id, loaders::identity::LAYER_DATA_ID)?
 				&& declares(&parent)
+			{
+				return Ok(Some((parent, pool_id)));
+			}
+		}
+		Ok(None)
+	}
+
+	/// The layer that declares the fault-code properties, and its pool —
+	/// [`Store::measurement_layer`] for the fault chain, and the same rule:
+	/// the variant's own layer if it names any, else the first parent that does.
+	fn fault_layer(&mut self, variant: &Variant, own: loaders::identity::LayerData) -> Result<Option<(loaders::identity::LayerData, String)>, Error> {
+		if !own.dtc_properties.is_empty() {
+			return Ok(Some((own, variant.pool.clone())));
+		}
+		for pool_id in own.parents.clone() {
+			if let Some(loaders::Object::LayerData(parent)) = self.named(&pool_id, loaders::identity::LAYER_DATA_ID)?
+				&& !parent.dtc_properties.is_empty()
 			{
 				return Ok(Some((parent, pool_id)));
 			}
@@ -832,11 +977,16 @@ fn harvest(object: &loaders::Object, into: &mut std::collections::BTreeMap<Strin
 				pair(&scale.label_id, &text);
 			}
 		}
+		// A fault text is keyed by its own text id and read through
+		// [`Project::faults`], not through `names.json`: the id is the display
+		// code (`P150B00`), which nothing that names a channel will ask for.
 		loaders::Object::Service(_)
 		| loaders::Object::Table(_)
 		| loaders::Object::ProjectData(_)
 		| loaders::Object::LayerData(_)
-		| loaders::Object::EcuVariant(_) => {}
+		| loaders::Object::EcuVariant(_)
+		| loaders::Object::DtcDop(_)
+		| loaders::Object::TroubleCode(_) => {}
 	}
 }
 
@@ -934,6 +1084,17 @@ fn project_id(dir: &std::path::Path) -> String {
 	let Some(close) = rest.find("</SHORT-NAME>") else { return fallback() };
 	let name = rest[..close].trim();
 	if name.is_empty() { fallback() } else { name.to_owned() }
+}
+
+/// The language `index.xml` declares in its `ADMIN-DATA`, if it declares one.
+///
+/// Scanned the way [`project_id`] scans for the short name. The first
+/// `<LANGUAGE>` in the file is the catalog's own; the ones that may follow
+/// belong to individual blocks and repeat it.
+fn project_language(dir: &std::path::Path) -> Option<String> {
+	let text = std::fs::read_to_string(dir.join("index.xml")).ok()?;
+	let code = element(&text, "LANGUAGE")?;
+	(!code.is_empty()).then(|| code.to_ascii_lowercase())
 }
 
 /// The converter's project version, from `DatabaseVersionInfo.txt`.
@@ -1234,6 +1395,11 @@ mod tests {
 		// One layer, built twice with different contents when the fixture is
 		// exercising inheritance: the service sits on whichever layer is
 		// supposed to own it, and the other names a parent instead.
+		// The fault-code property's short name and the object it indexes. The
+		// name is what the layer's `dtc_properties` list holds and what its
+		// property index is keyed by; the object is what the index points at.
+		let dtcdop = b.a("DTCDOP_VAGUDS");
+		let dtcdop_object = b.a("DOP_EV_Test_DTCDOP_VAGUDS");
 		let layer = |variant_hash: u32, services: bool, parents: bool| {
 			let mut o = Obj::default()
 				.u32(0)
@@ -1253,10 +1419,15 @@ mod tests {
 				// 36 of this project's variants are like it.
 				false => o.u16(0),
 			};
+			// The fault memory sits on the same layer as the services, so the
+			// inheritance case exercises both chains at once: one DTC property
+			// by name, and the property index entry that resolves it.
+			o = match services {
+				true => o.u16(1).hash(dtcdop).u16(1).hash(dtcdop).hash(dtcdop_object).u32(0),
+				false => o.u16(0).u16(0),
+			};
 			o = o
-				.u16(0) // no DTC properties
-				.u16(0)
-				.u16(0) // no property or table index
+				.u16(0) // no table index
 				.u16(0)
 				.u16(0)
 				.u16(0) // requests, global negative responses, functional classes
@@ -1482,8 +1653,89 @@ mod tests {
 				.u8(0), // no unit group references
 		);
 
+		// The fault memory: a table of two codes, each its own object. The
+		// numbers are the reference car's brake unit's `00 01 29` and steering
+		// column's `04 71 20`, read as one integer each, which is what the join
+		// from a `0x19` response to a row rests on. The first reference names
+		// its pool and the second omits it, as the real files do both.
+		let dtc_a = b.a("DTC_EV_Test_DTCDOP_VAGUDS.DTC_297");
+		let dtc_b = b.a("DTC_EV_Test_DTCDOP_VAGUDS.DTC_291104");
+		let dop_long = b.u("VAG UDS");
+		b.put(
+			"DOP_EV_Test_DTCDOP_VAGUDS",
+			code::DB_DOP_DTC,
+			Obj::default()
+				.u16(2)
+				.u32(297)
+				.hash(dtc_a)
+				.hash(pool_hash)
+				.u32(291_104)
+				.hash(dtc_b)
+				.u32(0)
+				.u16(0) // the always-empty second collection
+				.some(code::DB_COMPU_METHOD)
+				.u8(0)
+				.none()
+				.none() // identical
+				.some(code::DB_DIAG_CODED_TYPE)
+				.u8(2)
+				.u32(24)
+				.u8(0)
+				.u8(1)
+				.u8(11)
+				.u8(1)
+				.u8(0) // 24 unsigned bits, high-low
+				.some(code::DB_PHYSICAL_TYPE)
+				.u8(1)
+				.u8(0)
+				.u8(16) // an unsigned integer in base 16
+				.hash(dtcdop)
+				.hash(dop_long)
+				.u32(0)
+				.u32(0)
+				.u32(0)
+				.u32(0), // description and three ids, absent
+		);
+		for (object, number, display, text, level) in [
+			(
+				"DTC_EV_Test_DTCDOP_VAGUDS.DTC_297",
+				297u32,
+				"B1168F2",
+				"Lenkwinkelsensor\nkeine Grundeinstellung",
+				2u32,
+			),
+			(
+				"DTC_EV_Test_DTCDOP_VAGUDS.DTC_291104",
+				291_104,
+				"B145501",
+				"Temperatursensor Lenkradheizung",
+				3,
+			),
+		] {
+			let short = b.a(&format!("DTC_{number}"));
+			let display_hash = b.a(display);
+			let text_hash = b.u(text);
+			b.put(
+				object,
+				code::MCD_DB_DIAG_TROUBLE_CODE,
+				Obj::default()
+					.u32(0) // no ODX id, as the body electronics have none
+					.hash(short)
+					.hash(display_hash)
+					.hash(text_hash)
+					.u32(level)
+					.u32(number)
+					.u8(0) // not temporary
+					.hash(display_hash), // the text id, equal to the display code
+			);
+		}
+
 		b.write(dir, pool_id);
-		std::fs::write(dir.join("index.xml"), "<CATALOG><SHORT-NAME>TEST7X</SHORT-NAME></CATALOG>").expect("the fixture writes");
+		std::fs::write(
+			dir.join("index.xml"),
+			"<CATALOG><SHORT-NAME>TEST7X</SHORT-NAME><ADMIN-DATA><LANGUAGE>deu</LANGUAGE></ADMIN-DATA></CATALOG>",
+		)
+		.expect("the fixture writes");
 		std::fs::write(
 			dir.join("DatabaseVersionInfo.txt"),
 			"VWMCD_ConverterVersionInfo=\"26.1.0.0\"\nVWMCD_ProjectVersionInfo=\"2610.2.688\"\n",
@@ -1598,6 +1850,69 @@ mod tests {
 				text_id: Some("000116".into()),
 			}
 		);
+	}
+
+	#[test]
+	fn a_project_reads_a_variants_fault_codes_by_their_number() {
+		let dir = tempfile::tempdir().expect("a temporary directory");
+		let (project, _) = miniature_project(dir.path(), false);
+		// Declared once, in index.xml, for the whole project.
+		assert_eq!(project.language(), Some("deu"));
+
+		let variants = project.variants().expect("the project data parses");
+		let variant = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+		let mut faults = project.faults(variant).expect("the fault chain walks");
+		faults.sort_by_key(|f| f.code);
+		assert_eq!(
+			faults,
+			vec![
+				Fault {
+					dop: "DTCDOP_VAGUDS".into(),
+					code: 297,
+					display_code: Some("B1168F2".into()),
+					text: Some("Lenkwinkelsensor\nkeine Grundeinstellung".into()),
+					text_id: Some("B1168F2".into()),
+					short_name: Some("DTC_297".into()),
+					level: 2,
+					temporary: false,
+				},
+				Fault {
+					dop: "DTCDOP_VAGUDS".into(),
+					code: 291_104,
+					display_code: Some("B145501".into()),
+					text: Some("Temperatursensor Lenkradheizung".into()),
+					text_id: Some("B145501".into()),
+					short_name: Some("DTC_291104".into()),
+					level: 3,
+					temporary: false,
+				},
+			]
+		);
+		// The base variant's own layer is the pool's `#RtGen_DB_LAYER_DATA`,
+		// which this fixture does not write when nothing inherits, so the base
+		// variant declares nothing and says so with an empty list.
+		let base = variants.iter().find(|v| v.name == "BV_Test").expect("the base variant is listed");
+		assert!(project.faults(base).expect("an absent layer is not an error").is_empty());
+	}
+
+	#[test]
+	fn a_variant_that_declares_no_fault_memory_inherits_its_base_variant_s() {
+		// The same shape as the measurement chain's inheritance, and the same
+		// assertion: the codes through the parent are the codes read directly.
+		let direct = tempfile::tempdir().expect("a temporary directory");
+		let inherited = tempfile::tempdir().expect("a temporary directory");
+		let (a, _) = miniature_project(direct.path(), false);
+		let (b, _) = miniature_project(inherited.path(), true);
+		let faults = |p: &Project| {
+			let variants = p.variants().expect("the project data parses");
+			let variant = variants.iter().find(|v| v.name == "EV_Test").expect("the ECU variant is listed");
+			let mut rows = p.faults(variant).expect("the fault chain walks");
+			rows.sort_by_key(|f| f.code);
+			rows
+		};
+		let through_parent = faults(&b);
+		assert_eq!(through_parent.len(), 2, "{through_parent:#?}");
+		assert_eq!(through_parent, faults(&a));
 	}
 
 	#[test]

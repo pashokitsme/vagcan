@@ -69,6 +69,7 @@ exclude = [
   "crates/dash/vag-dash-fw",
   "research/dash/host",
   "research/dash/probes",
+  "research/odis-dtc/dump",
 ]
 
 [workspace.package]
