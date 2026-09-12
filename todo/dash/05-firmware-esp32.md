@@ -163,3 +163,9 @@ Most of this cannot be unit-tested; what can:
 
 The board, on the bench with the car's ignition on, shows live values on the panel, and a
 plan built for a different VIN refuses to poll.
+
+**Met 2026-09-13** for the first half: on the reference car, `dash` polled `7E0` and `7E1`
+and the panel (rendered by `dashsim` from the board's `FRAME` stream — the OLED itself is
+not on the carrier yet) showed coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C,
+both pages, `value_shrunk: true` on page 0 as the only report. The wrong-VIN refusal is
+tested in the firmware and was not re-run on the car. Trail: `research/dash/can-bring-up.md`.

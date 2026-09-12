@@ -1,5 +1,12 @@
 # dash / CAN bring-up on the car — hand-off
 
+**State, 2026-09-13.** **The dash reads the car.** With the replaced transceiver,
+`dash` on the reference car answered `7E0`/`7E1` and the panel (through `dashsim`
+on the laptop) showed coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C —
+live, four channels, two units, both pages. `todo/dash/05`'s "done when" is met; the
+physical OLED on the carrier is the next item. One polish note from the run: page 0
+reports `value_shrunk: true` (a value did not fit at full size), page 1 nothing.
+
 **State, 2026-09-12.** The transceiver is replaced and the bench passes:
 `research/dash/bench.sh` saw **60,861 frames from the board in 15 s** on the
 CANable — ≈4,060/s, the bus's ceiling for 8-byte frames at 500 kbit/s, so every

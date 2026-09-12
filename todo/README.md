@@ -108,8 +108,10 @@ transaction, both ≈1 s; nothing below 3 s is cheap from here.
 
 ### What to do next, in order
 
-1. **Replace the transceiver, then the car run** — moves the `dash` goal; **needs the
-   bench first, then the car.** A genuine `SN65HVD230D` on the blue board, or the
+1. ~~**Replace the transceiver, then the car run**~~ — **done 2026-09-13: the dash
+   read the car** (coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C on the
+   panel through `dashsim`; `research/dash/can-bring-up.md` state header). The trail
+   stays for the record — moves the `dash` goal; **needs the bench first, then the car.** A genuine `SN65HVD230D` on the blue board, or the
    CANable Pro's `ADM3050E` shared as `todo/dash/05` designed. `research/dash/bench.sh`
    to `PASS` — **done 2026-09-12: 60,861 frames in 15 s, the bus's ceiling** — then
    on the car `rxwatch --features ack` (Normal mode; the gateway's heartbeat falling
