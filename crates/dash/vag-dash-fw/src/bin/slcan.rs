@@ -8,6 +8,12 @@
 //! exactly as through the CANable. Nothing is decided on the board: no
 //! address, no identifier, no service. Bytes in, frames out, and back.
 //!
+//! This is the **exclusive adapter mode** of `todo/dash/14-one-bus-three-clients.md`
+//! (its "mode 2", the dumb slcan proxy): raw frames on the host's own clock,
+//! and no panel beside it. The rule that file sets for it — *slowing down is
+//! allowed, dropping is forbidden as far as a buffer can prevent it* — is
+//! what the ring below is sized for.
+//!
 //! What it honours is what `slcan.rs` on the host sends, plus the handful of
 //! Lawicel commands a terminal user or a probe would type:
 //!
@@ -15,10 +21,10 @@
 //! |---|---|---|
 //! | `C` | close the channel; drops queued frames | `\r` |
 //! | `S4` `S5` `S6` `S8` | 125 / 250 / 500 / 1000 kbit/s, closed only | `\r`, else `\x07` |
-//! | `M0` / `M1` | normal / listen-only for the next open, closed only | `\r` |
+//! | `M0` / `M1` | normal / listen-only for the next `O`, closed only | `\r` |
 //! | `O` | open in the configured mode | `\r` |
-//! | `L` | open listen-only, and remember it as `M1` would | `\r` |
-//! | `tiiiLdd…` / `Tiiiiiiiildd…` | transmit an 11- / 29-bit frame | `z\r` / `Z\r`, `\x07` if refused or unacknowledged |
+//! | `L` | open listen-only this once; `M` is not changed | `\r` |
+//! | `tiiiLdd…` / `Tiiiiiiiildd…` | transmit an 11- / 29-bit frame | `z\r` / `Z\r` once the controller reports the frame completed — on the bus, acknowledged; `\x07` if refused, or not completed within [`TX_ATTEMPTS`] tries or [`TX_TIMEOUT`] |
 //! | `r…` / `R…` | remote frames | refused, `\x07` |
 //! | `F` / `E` | status flags, Lawicel bit layout (below) | `Fxx\r` / `Exx\r` |
 //! | `V` / `v` | version | `V0101\r` |
@@ -34,7 +40,8 @@
 //! no acknowledge, no error flag, no frame — the mode `dev sniff` uses next to
 //! another tester. `M0` is normal mode and is sent explicitly on every open
 //! (see `slcan.rs`), so the board never inherits a mode from an earlier
-//! session.
+//! session. `L` opens listen-only without touching what `M` set, as Lawicel
+//! has it: `L`, `C`, `O` is back in the configured mode.
 //!
 //! **Nothing but slcan traffic goes down the console.** No logger is installed
 //! in this binary — not `esp_println::logger::init_logger`, not `…_from_env` —
@@ -42,36 +49,83 @@
 //! the one exception: `health.rs`'s handler prints it through esp-println, and
 //! at that point the stream is dead anyway.
 //!
-//! ## Keeping up with a loaded bus
+//! ## Keeping up with a loaded bus, and what happens when it cannot
 //!
 //! A saturated 500 kbit/s bus is ≈4,000 eight-byte frames a second, and
-//! esp-hal's receive queue is 32 deep — eight milliseconds. So frames are
-//! moved out of it as fast as they land into [`OUT`], a 512-line channel that
-//! a separate task drains into the console, several lines per USB write. The
-//! console runs at USB speed (the "baud rate" the host opens it with is
-//! decorative), and a `t` line is 22 bytes, so the wire needs ≈90 KB/s at the
-//! ceiling. What the channel cannot hold is dropped and counted: `F` reports
-//! it as bit 0, "receive FIFO full", until read.
+//! esp-hal's receive queue is 32 deep — eight milliseconds, and what does not
+//! fit it is dropped by esp-hal's interrupt handler without a count. So frames
+//! are moved out of it as fast as they land into [`OUT`], a ring of
+//! [`RING`] lines that a separate task drains into the console, whole lines
+//! packed into each 64-byte USB packet. The console runs at USB speed (the
+//! "baud rate" the host opens it with is decorative); a `t` line is 22 bytes,
+//! a `T` line 27, so the wire needs ≈90 KB/s at the ceiling.
+//!
+//! The ring is sized for the host stalling, not for the bus: **half a second
+//! of a saturated bus** (2,048 lines at 4,000/s; two thirds of a second at
+//! the gateway's 3,106/s heartbeat storm, the heaviest thing the car does).
+//! What stalls the writer is the host not reading — a tokio task descheduled
+//! behind a SQLite write, a USB service interval, a laptop that is busy — and
+//! those are milliseconds to tens of milliseconds, which the ring covers ten
+//! times over. A stall longer than half a second is a host that has stopped
+//! reading (a paused process, a terminal not draining), and no ring wins that;
+//! a receiver cannot slow a bus. It costs 74 KB of the C3's 400 KB, which an
+//! image with no radio and a 32 KB heap has to spare.
+//!
+//! What the ring cannot hold is dropped **and counted**: `F` reports it as
+//! bit 3, data overrun — a frame was lost between the bus and the host — with
+//! bit 0, receive queue full, saying it was this ring and not the
+//! controller's FIFO. Both clear on read, as the CANable's do.
 //!
 //! ## Status flags (`F`, and `E` as its alias)
 //!
-//! Lawicel's layout: bit 0 receive queue full (frames were dropped here),
-//! bit 2 error warning (an error counter at or past 96), bit 3 data overrun
-//! (the controller's own FIFO overflowed), bit 5 error passive (a counter at
-//! or past 128), bit 7 bus error (the controller went bus-off). The latched
-//! bits — 0, 3, 7 — clear on read; 2 and 5 are read live off the counters.
+//! Lawicel's layout: bit 0 receive queue full (frames were dropped in the
+//! ring), bit 2 error warning (an error counter at or past 96), bit 3 data
+//! overrun (a frame was lost — in the ring, or in the controller's own FIFO),
+//! bit 5 error passive (a counter at or past 128), bit 6 arbitration lost (a
+//! transmit was refused without the error counter moving), bit 7 bus error
+//! (the controller went bus-off). The latched bits — 0, 3, 6, 7 — clear on
+//! read; 2 and 5 are read live off the counters, except in listen-only mode,
+//! where esp-hal parks the receive counter at 128 on purpose (an errata
+//! workaround that keeps the controller error-passive so it can never drive a
+//! dominant bit) and neither counter moves — so there they are not read at
+//! all, and a healthy listen-only channel answers `F00`.
+//!
 //! A bus-off is recovered on its own: the controller is reopened with the
 //! same bit rate and mode, as `dash` does, so the host sees a gap rather than
-//! a dead adapter.
+//! a dead adapter. A controller overrun is cleared in place with the
+//! controller's own command (`CLR_OVERRUN`, which esp-hal never issues — and
+//! its receive future reports the sticky status bit on every poll of an empty
+//! queue, so left alone one overrun would turn every wait into a spin); if the
+//! command does not take, the controller is rebuilt the way a bus-off is.
 //!
-//! ## Transmit and refusal
+//! ## Transmit, and what `z` promises
 //!
-//! A transmit waits up to [`TX_TIMEOUT`] for the controller to see its frame
-//! acknowledged, receiving all the while — a request must not cost the reply.
-//! If nobody acknowledges (a bench with no second node in normal mode) the
-//! controller retries on its own until it goes bus-off; that is reported as
-//! `\x07`, the controller is reopened, and the next `F` shows bit 7. A
-//! transmit in listen-only mode or on a closed channel is refused up front.
+//! esp-hal's transmit future resolves `Ok` when the transmit buffer is
+//! *released* — which is what a completed frame does, and also what an abort
+//! does, and esp-hal's interrupt handler aborts a pending transmit on any
+//! error interrupt whose captured direction says "transmit", including a lost
+//! arbitration and the acknowledge error a bus with no second node produces.
+//! So `Ok` is not "sent". The controller's `tx_complete` status bit is: the
+//! SJA1000 lineage clears it on a transmit request and sets it only when the
+//! frame completed on the bus, acknowledge included, and ESP-IDF's own driver
+//! reads the same bit for the same verdict. A transmit here is retried while
+//! that bit stays clear, up to [`TX_ATTEMPTS`] times inside [`TX_TIMEOUT`],
+//! receiving all the while — a request must not cost the reply — and only
+//! then answered `\x07`. Whether the refusal was arbitration or an error is
+//! told by the error counter: unmoved is arbitration lost, latched as `F`
+//! bit 6; moved is an error, and the live bits show it. A bench with no
+//! partner therefore answers `\x07` to every transmit and reaches error
+//! warning and passive as the counter climbs by eight per attempt; it goes
+//! bus-off only if the host keeps sending, and that is recovered and
+//! reported as bit 7. A transmit in listen-only mode or on a closed channel
+//! is refused up front.
+//!
+//! ## A watchdog
+//!
+//! The RTC watchdog is armed at boot and fed from a task that does nothing
+//! else, as `dash` does — so if the bridge ever stops yielding (the spin
+//! above was exactly that), the adapter reboots within [`WATCHDOG`] rather
+//! than sit dead on the port until the cable is pulled.
 //!
 //! This binary is the adapter, so it **may see a car** — it does on the bus
 //! exactly what the CANable does, which is whatever `vagcan` asks of it, and
@@ -80,19 +134,23 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use embassy_executor::Spawner;
+use embassy_futures::poll_once;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_can::Frame as _;
 use embedded_io_async::{Read as _, Write as _};
 use esp_backtrace as _;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::{GPIO1, GPIO6, TWAI0};
+use esp_hal::rtc_cntl::{Rwdt, RwdtStage};
 use esp_hal::timer::systimer::SystemTimer;
-use esp_hal::twai::{BaudRate, EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, TwaiConfiguration, TwaiMode, TwaiRx, TwaiTx};
+use esp_hal::twai::{BaudRate, ErrorKind, EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, TwaiConfiguration, TwaiMode, TwaiRx, TwaiTx};
 use esp_hal::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
 // The `#[panic_handler]` lives in the library (`health.rs`), and its printer
 // allocates, so the heap below exists for it even though this image never
@@ -107,15 +165,48 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// eight bytes: `T` + 8 + 1 + 16 + `\r` = 27 bytes.
 type Line = heapless::Vec<u8, 32>;
 
+/// How many lines [`OUT`] holds: half a second of a saturated bus. The
+/// argument is in the module docs ("Keeping up with a loaded bus").
+const RING: usize = 2048;
+
 /// Lines waiting for the console: bus frames from the bridge and replies to
 /// commands, in the order they were produced.
-static OUT: Channel<CriticalSectionRawMutex, Line, 512> = Channel::new();
+static OUT: Channel<CriticalSectionRawMutex, Line, RING> = Channel::new();
 
-/// How long a transmit may wait for its acknowledge before it is abandoned.
-/// A frame on an acknowledged bus is through in well under a millisecond; a
-/// bus nobody acknowledges takes the controller to bus-off in a few, which
-/// ends the wait early with an error. This only bounds the case in between.
+/// Bumped by every `C`. The console writer reads it around each USB write:
+/// a line it took out of [`OUT`] before the bump predates the close and is
+/// dropped with the rest — [`Adapter::close`] clears the ring, but not what
+/// the writer already holds.
+static EPOCH: AtomicU32 = AtomicU32::new(0);
+
+/// Depth of esp-hal's receive queue (`TwaiAsyncState::rx_queue`). It is a
+/// static, so it survives the controller being rebuilt, and whatever it held
+/// from before a `C` or a bus-off would otherwise come up as live after `O`.
+const RX_QUEUE_DEPTH: usize = 32;
+
+/// How many times a transmit is re-issued while the controller says the
+/// frame did not complete. What it recovers from is a lost arbitration — one
+/// heartbeat is one loss, and eight in a row is a bus that is not letting
+/// this frame on. On a bench with no partner every attempt costs the transmit
+/// error counter eight, so one refused transmit ends at 64: under the warning
+/// limit, and the refusal itself is the report.
+const TX_ATTEMPTS: usize = 8;
+
+/// How long all the attempts together may take. A frame on an acknowledged
+/// bus is through in well under a millisecond; a bus nobody acknowledges
+/// aborts the attempt in the interrupt handler in about as long. This bounds
+/// the case in between — a transmit the controller neither completes nor
+/// aborts — which is what the future's own drop then cancels.
 const TX_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// The watchdog's patience: nothing legitimate on this executor blocks for
+/// even a tenth of it, and an adapter that is dead for longer is one the host
+/// has already given up on.
+const WATCHDOG: esp_hal::time::Duration = esp_hal::time::Duration::from_secs(4);
+
+/// Feed interval — a quarter of the timeout, so a missed feed or two is not a
+/// reboot.
+const FEED_EVERY: Duration = Duration::from_millis(1000);
 
 /// Lawicel `V` answer: hardware 01, software 01.
 const VERSION: &[u8] = b"V0101\r";
@@ -131,12 +222,22 @@ async fn main(spawner: Spawner) {
 	esp_alloc::heap_allocator!(size: 32 * 1024);
 	esp_hal_embassy::init(SystemTimer::new(peripherals.SYSTIMER).alarm0);
 
-	let (usb_rx, usb_tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
-
 	// Never `.ok()` a spawn: the arena is finite and a full one fails silently.
 	// With no console to say so, a failed spawn would be an adapter that
 	// enumerates and answers nothing — so it halts here instead, and the
 	// symptom is a port that opens and never replies to `V`.
+	//
+	// The feeder first, and the watchdog only once it is running: a watchdog
+	// nobody feeds is a reboot loop, which is worse than any hang.
+	if spawner.spawn(feed()).is_err() {
+		panic!("spawn feed");
+	}
+	let mut wdt = Rwdt::new();
+	wdt.enable();
+	wdt.set_timeout(RwdtStage::Stage0, WATCHDOG);
+
+	let (usb_rx, usb_tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
+
 	if spawner.spawn(console_tx(usb_tx)).is_err() {
 		panic!("spawn console_tx");
 	}
@@ -148,28 +249,59 @@ async fn main(spawner: Spawner) {
 	}
 }
 
-/// Drains [`OUT`] into the console, as many whole lines per write as fit in
-/// one buffer. Each 64-byte USB packet costs an interrupt round trip, so
-/// coalescing lines is what keeps the wire ahead of the bus; latency is
-/// unaffected, because a lone line is written the moment it arrives.
+/// Feeds the watchdog for as long as the executor is scheduling tasks, and
+/// does nothing else — anything it also did could block it, and a feeder that
+/// can block is a watchdog that fires for the wrong reason.
+#[embassy_executor::task]
+async fn feed() -> ! {
+	let mut wdt = Rwdt::new();
+	loop {
+		wdt.feed();
+		Timer::after(FEED_EVERY).await;
+	}
+}
+
+/// Drains [`OUT`] into the console, whole lines packed into each USB packet.
+///
+/// The USB-Serial-JTAG hands the host 64 bytes per packet and esp-hal's
+/// writer waits for each packet to leave, so one packet per write is the
+/// natural unit: packing lines into it is what keeps the wire ahead of the
+/// bus, and never splitting a line across packets is what lets a close
+/// discard the writer's hand without leaving the host half a line. Latency
+/// is unaffected — a lone line is written the moment it arrives.
 #[embassy_executor::task]
 async fn console_tx(mut usb: UsbSerialJtagTx<'static, Async>) -> ! {
-	let mut buf: heapless::Vec<u8, 1024> = heapless::Vec::new();
+	let mut packet: heapless::Vec<u8, 64> = heapless::Vec::new();
+	// A line taken out of the ring that did not fit the packet it was taken
+	// for. It is the one thing this task holds that a `C` cannot see.
+	let mut carry: Option<Line> = None;
 	loop {
-		let first = OUT.receive().await;
-		buf.clear();
-		let _ = buf.extend_from_slice(&first);
-		while buf.capacity() - buf.len() >= first.capacity() {
-			match OUT.try_receive() {
-				Ok(line) => {
-					let _ = buf.extend_from_slice(&line);
-				}
-				Err(_) => break,
+		let first = match carry.take() {
+			Some(line) => line,
+			None => OUT.receive().await,
+		};
+		// Everything taken from the ring between here and the write belongs
+		// to this epoch: the bridge cannot run in between, because there is no
+		// await in between and the executor is cooperative.
+		let epoch = EPOCH.load(Ordering::Relaxed);
+		packet.clear();
+		let _ = packet.extend_from_slice(&first);
+		while let Ok(line) = OUT.try_receive() {
+			// `extend_from_slice` is all-or-nothing, so a line that does not
+			// fit is still whole, and goes first into the next packet.
+			if packet.extend_from_slice(&line).is_err() {
+				carry = Some(line);
+				break;
 			}
 		}
 		// Cannot fail on this peripheral; if the host is not reading, it waits,
 		// and the bridge keeps counting what it has to drop meanwhile.
-		let _ = usb.write_all(&buf).await;
+		let _ = usb.write_all(&packet).await;
+		if EPOCH.load(Ordering::Relaxed) != epoch {
+			// A `C` came while the packet was going out: what was taken before
+			// it predates the close, and the ring it came from is already empty.
+			carry = None;
+		}
 	}
 }
 
@@ -198,7 +330,7 @@ async fn bridge(mut usb: UsbSerialJtagRx<'static, Async>, twai0: TWAI0<'static>,
 			None => Event::Console(usb.read(&mut chunk).await.unwrap_or(0)),
 			Some(bus) => match select(usb.read(&mut chunk), bus.rx.receive_async()).await {
 				Either::First(n) => Event::Console(n.unwrap_or(0)),
-				Either::Second(frame) => Event::Bus(frame),
+				Either::Second(result) => Event::Bus(result),
 			},
 		};
 		match event {
@@ -206,27 +338,15 @@ async fn bridge(mut usb: UsbSerialJtagRx<'static, Async>, twai0: TWAI0<'static>,
 				for &byte in &chunk[..n] {
 					if let Some(line) = parser.feed(byte) {
 						let reply = adapter.command(&line).await;
-						// A reply is never dropped: the client that asked is waiting
-						// for it, unlike a bus frame, which has a successor.
-						OUT.send(reply).await;
+						adapter.answer(reply).await;
 					}
 				}
 			}
-			Event::Bus(Ok(frame)) => {
-				if OUT.try_send(encode(&frame)).is_err() {
-					adapter.dropped += 1;
+			Event::Bus(result) => {
+				if let Err(fault) = take(result, &mut adapter.latched, &mut adapter.dropped) {
+					adapter.repair(fault);
 				}
 			}
-			Event::Bus(Err(EspTwaiError::BusOff)) => {
-				adapter.latched |= flags::BUS_ERROR;
-				adapter.reopen();
-			}
-			Event::Bus(Err(EspTwaiError::EmbeddedHAL(esp_hal::twai::ErrorKind::Overrun))) => {
-				adapter.latched |= flags::DATA_OVERRUN;
-			}
-			// A frame the controller could not decode (a non-compliant DLC, a
-			// bus error it attributed to a frame): nothing to forward.
-			Event::Bus(Err(_)) => {}
 		}
 	}
 }
@@ -244,14 +364,17 @@ mod flags {
 	pub const ERROR_WARNING: u8 = 0x04;
 	pub const DATA_OVERRUN: u8 = 0x08;
 	pub const ERROR_PASSIVE: u8 = 0x20;
+	pub const ARBITRATION_LOST: u8 = 0x40;
 	pub const BUS_ERROR: u8 = 0x80;
 }
 
 /// The controller, once opened: the two halves esp-hal splits it into, so
-/// that a transmit can be awaited while reception carries on.
+/// that a transmit can be awaited while reception carries on, and the mode
+/// it was opened in — which `L` may have chosen for this open alone.
 struct Bus {
 	rx: TwaiRx<'static, Async>,
 	tx: TwaiTx<'static, Async>,
+	mode: TwaiMode,
 }
 
 struct Adapter {
@@ -260,44 +383,153 @@ struct Adapter {
 	tx_pin: GPIO6<'static>,
 	bus: Option<Bus>,
 	bitrate: BaudRate,
+	/// What `M` chose, for the next `O`.
 	mode: TwaiMode,
 	/// `F` bits that stay set until somebody reads them.
 	latched: u8,
-	/// Frames that arrived while [`OUT`] was full. Reported as `F` bit 0 and
-	/// zeroed by that read. Only this task counts, so no atomic is needed —
-	/// and the `imc` core has no atomic read-modify-write to offer anyway.
+	/// Frames that arrived while [`OUT`] was full. Reported as `F` bits 0
+	/// and 3 and zeroed by that read. Only this task counts, so no atomic is
+	/// needed — and the `imc` core has no atomic read-modify-write to offer
+	/// anyway.
 	dropped: u32,
 }
 
+/// What one receive produced: a frame goes up the ring, a fault into the
+/// latched flags. `Err` is a fault the controller has to be rebuilt for —
+/// bus-off, or an overrun the clear command did not take — and carries the
+/// error so the caller can say which.
+fn take(result: Result<EspTwaiFrame, EspTwaiError>, latched: &mut u8, dropped: &mut u32) -> Result<(), EspTwaiError> {
+	match result {
+		Ok(frame) => {
+			if OUT.try_send(encode(&frame)).is_err() {
+				*dropped = dropped.saturating_add(1);
+			}
+			Ok(())
+		}
+		Err(EspTwaiError::BusOff) => {
+			*latched |= flags::BUS_ERROR;
+			Err(EspTwaiError::BusOff)
+		}
+		Err(EspTwaiError::EmbeddedHAL(ErrorKind::Overrun)) => {
+			*latched |= flags::DATA_OVERRUN;
+			if clear_overrun() {
+				Ok(())
+			} else {
+				Err(EspTwaiError::EmbeddedHAL(ErrorKind::Overrun))
+			}
+		}
+		// A frame the controller could not decode (a non-compliant DLC, a
+		// bus error it attributed to a frame): nothing to forward.
+		Err(_) => Ok(()),
+	}
+}
+
+/// Clear the controller's data-overrun status with its own command —
+/// `CLR_OVERRUN` in `TWAI_CMD_REG`, the SJA1000 lineage's "clear data
+/// overrun" — and say whether it took. esp-hal never issues it (there is no
+/// `clr_overrun` anywhere in its driver), and its receive future returns the
+/// sticky `miss_st` as `Ready(Err(Overrun))` on every poll of an empty queue,
+/// so an overrun left standing turns every wait into a spin that starves the
+/// console, the other tasks and the watchdog's feeder.
+fn clear_overrun() -> bool {
+	let regs = TWAI0::regs();
+	regs.cmd().write(|w| w.clr_overrun().set_bit());
+	regs.status().read().miss_st().bit_is_clear()
+}
+
+/// Run `work` while frames keep going up. Ends early if the controller
+/// faults (bus-off, an overrun the command would not clear), which the
+/// caller answers by rebuilding it; `work` is dropped then, which for a
+/// transmit aborts the attempt.
+async fn attend<F: Future>(rx: &mut TwaiRx<'static, Async>, latched: &mut u8, dropped: &mut u32, work: F) -> Result<F::Output, EspTwaiError> {
+	let receive = async {
+		loop {
+			if let Err(fault) = take(rx.receive_async().await, latched, dropped) {
+				return fault;
+			}
+		}
+	};
+	match select(work, receive).await {
+		Either::First(out) => Ok(out),
+		Either::Second(fault) => Err(fault),
+	}
+}
+
 impl Adapter {
-	/// Start the controller with the configured bit rate and mode. An open
-	/// controller is dropped first — that releases the peripheral (its clock
-	/// gates off with the last guard) so the new configuration starts from
-	/// reset, which is also what clears the error counters.
-	fn open(&mut self) {
+	/// Start the controller with the configured bit rate and the given mode.
+	/// An open controller is dropped first — that releases the peripheral
+	/// (its clock gates off with the last guard) so the new configuration
+	/// starts from reset, which is also what clears the error counters and
+	/// the overrun status.
+	fn open(&mut self, mode: TwaiMode) {
 		self.bus = None;
-		// SAFETY: the driver instances built from the previous clones were
-		// dropped on the line above, so exactly one instance of each peripheral
-		// handle is live at a time — the condition `clone_unchecked` asks for.
-		// This is the same reborrow esp-hal's own `start()` performs; the safe
-		// `reborrow()` cannot be used because the result has to outlive this
-		// call, and the borrow checker cannot see that `self.bus` was emptied.
+		// SAFETY: `clone_unchecked` asks that a clone and its original never
+		// both drive the peripheral. The originals — `self.twai0`,
+		// `self.rx_pin`, `self.tx_pin` — stay alive beside the clones for the
+		// life of the task, and the invariant kept here is that they are never
+		// used for anything but making the next clone, and only while
+		// `self.bus` is `None` (the line above): the clones live inside
+		// `self.bus` and drive the peripheral; the originals are inert. The
+		// safe `reborrow()` cannot be used because the result has to outlive
+		// this call. (esp-hal's own `start()` clones the same handle again for
+		// the two halves and keeps its invariant the same way.)
 		let (twai0, rx_pin, tx_pin) = unsafe { (self.twai0.clone_unchecked(), self.rx_pin.clone_unchecked(), self.tx_pin.clone_unchecked()) };
 		// No acceptance filter: an adapter forwards everything, and the host
 		// decides what it wanted. (`TwaiConfiguration::new` installs accept-all.)
-		let config = TwaiConfiguration::new(twai0, rx_pin, tx_pin, self.bitrate, self.mode);
-		let (rx, tx) = config.into_async().start().split();
-		self.bus = Some(Bus { rx, tx });
+		let config = TwaiConfiguration::new(twai0, rx_pin, tx_pin, self.bitrate, mode);
+		let mut twai = config.into_async().start();
+		// esp-hal's receive queue is a static: what it held from before the
+		// rebuild — frames from before a `C`, the errors of a bus-off — would
+		// come up as live after this open. Drain it with polls that cannot
+		// block; a fresh controller answers `Pending` once the queue is empty.
+		// The bound is against a status bit that would answer `Ready` forever.
+		for _ in 0..=RX_QUEUE_DEPTH {
+			if poll_once(twai.receive_async()).is_pending() {
+				break;
+			}
+		}
+		let (rx, tx) = twai.split();
+		self.bus = Some(Bus { rx, tx, mode });
 	}
 
-	/// After a bus-off: the same settings again, nothing forgotten.
-	fn reopen(&mut self) {
-		self.open();
+	/// After a fault: the same settings again, nothing forgotten. Which fault
+	/// is already in the latched flags; `BusOff` from the transmit future is
+	/// the one path that has not latched it yet.
+	fn repair(&mut self, fault: EspTwaiError) {
+		if matches!(fault, EspTwaiError::BusOff) {
+			self.latched |= flags::BUS_ERROR;
+		}
+		if let Some(bus) = &self.bus {
+			let mode = bus.mode;
+			self.open(mode);
+		}
 	}
 
 	fn close(&mut self) {
 		self.bus = None;
+		// Everything queued for the host predates the close, and so does the
+		// line the writer may already hold: the epoch is how it learns that.
+		// Only this task stores, so load-then-store is a whole increment.
+		EPOCH.store(EPOCH.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
 		OUT.clear();
+	}
+
+	/// A reply goes into the ring whatever the ring holds — the host that
+	/// asked is waiting for it, unlike a bus frame, which has a successor.
+	/// While it waits for room the bus is still attended: what arrives then
+	/// has nowhere to go and is counted here, rather than left to overflow
+	/// esp-hal's queue where nothing counts it.
+	async fn answer(&mut self, reply: Line) {
+		let Some(Bus { rx, .. }) = self.bus.as_mut() else {
+			OUT.send(reply).await;
+			return;
+		};
+		let copy = reply.clone();
+		if let Err(fault) = attend(rx, &mut self.latched, &mut self.dropped, OUT.send(reply)).await {
+			// The send was dropped with the fault; the reply still has to go.
+			self.repair(fault);
+			OUT.send(copy).await;
+		}
 	}
 
 	/// Execute one command line (without its `\r`) and produce the reply.
@@ -314,12 +546,12 @@ impl Adapter {
 				reply(OK)
 			}
 			b'O' => {
-				self.open();
+				self.open(self.mode);
 				reply(OK)
 			}
+			// One-shot, as Lawicel has it: the next `O` is back in `M`'s mode.
 			b'L' => {
-				self.mode = TwaiMode::ListenOnly;
-				self.open();
+				self.open(TwaiMode::ListenOnly);
 				reply(OK)
 			}
 			b'S' if self.bus.is_none() => match args {
@@ -375,9 +607,14 @@ impl Adapter {
 	fn flags(&mut self) -> u8 {
 		let mut f = core::mem::take(&mut self.latched);
 		if core::mem::take(&mut self.dropped) > 0 {
-			f |= flags::RX_QUEUE_FULL;
+			f |= flags::RX_QUEUE_FULL | flags::DATA_OVERRUN;
 		}
-		if self.bus.is_some() {
+		// The counters mean something only in normal mode. In listen-only
+		// esp-hal's `start()` sets the receive counter to 128 on purpose
+		// (errata: error-passive can never drive a dominant bit) and the
+		// controller freezes both, so reading them there would answer `F24`
+		// on a healthy bus forever.
+		if let Some(Bus { mode: TwaiMode::Normal, .. }) = &self.bus {
 			let regs = TWAI0::regs();
 			let tec = regs.tx_err_cnt().read().tx_err_cnt().bits();
 			let rec = regs.rx_err_cnt().read().rx_err_cnt().bits();
@@ -394,54 +631,57 @@ impl Adapter {
 		f
 	}
 
-	/// `t`/`T`: put the frame on the bus and wait for its acknowledge, taking
-	/// in whatever arrives meanwhile.
+	/// `t`/`T`: put the frame on the bus and wait for the controller to say
+	/// it completed, taking in whatever arrives meanwhile — see the module
+	/// docs, "Transmit, and what `z` promises".
 	async fn transmit(&mut self, head: u8, args: &[u8]) -> Line {
-		if self.mode == TwaiMode::ListenOnly {
-			return reply(BELL);
-		}
 		let Some(frame) = parse_frame(head, args) else {
 			return reply(BELL);
 		};
-		let Some(Bus { rx, tx }) = self.bus.as_mut() else {
-			return reply(BELL);
-		};
-		let dropped = &mut self.dropped;
-		let outcome = with_timeout(TX_TIMEOUT, async {
+		let deadline = Instant::now() + TX_TIMEOUT;
+		for _ in 0..TX_ATTEMPTS {
+			let Some(Bus { rx, tx, mode }) = self.bus.as_mut() else {
+				return reply(BELL);
+			};
+			if *mode == TwaiMode::ListenOnly {
+				return reply(BELL);
+			}
+			let regs = TWAI0::regs();
+			let tec_before = regs.tx_err_cnt().read().tx_err_cnt().bits();
+			let left = deadline.saturating_duration_since(Instant::now());
 			// Frames keep flowing up while the transmit is in flight — on a
 			// car the answer to this frame is among them, and the ISO-TP flow
 			// control that follows a first frame is what the host is waiting
-			// for. The receive arm never finishes; the select ends with the
-			// transmit.
-			let receive = async {
-				loop {
-					match rx.receive_async().await {
-						Ok(frame) => {
-							if OUT.try_send(encode(&frame)).is_err() {
-								*dropped += 1;
-							}
-						}
-						Err(EspTwaiError::BusOff) => return EspTwaiError::BusOff,
-						Err(_) => {}
+			// for.
+			let attempt = with_timeout(left, attend(rx, &mut self.latched, &mut self.dropped, tx.transmit_async(&frame))).await;
+			match attempt {
+				Ok(Ok(Ok(()))) => {
+					// The buffer was released. Completed, or aborted by esp-hal's
+					// interrupt handler: `tx_complete` is the controller's verdict.
+					if regs.status().read().tx_complete().bit_is_set() {
+						return reply(if head == b't' { b'z' } else { b'Z' }).with(OK);
 					}
+					let tec_after = regs.tx_err_cnt().read().tx_err_cnt().bits();
+					if tec_after <= tec_before {
+						// Nothing went wrong on the wire; somebody else's frame
+						// had the lower id.
+						self.latched |= flags::ARBITRATION_LOST;
+					}
+					// An error moved the counter, and the live bits of `F` show
+					// it; either way, again.
 				}
-			};
-			match select(tx.transmit_async(&frame), receive).await {
-				Either::First(sent) => sent,
-				Either::Second(err) => Err(err),
+				// The transmit future's own bus-off, or a fault on the receive
+				// side that ended the attempt: rebuild, and refuse.
+				Ok(Ok(Err(fault))) | Ok(Err(fault)) => {
+					self.repair(fault);
+					return reply(BELL);
+				}
+				// Neither completed nor aborted in time; the future's drop has
+				// cancelled the request.
+				Err(_) => return reply(BELL),
 			}
-		})
-		.await;
-		match outcome {
-			Ok(Ok(())) => reply(if head == b't' { b'z' } else { b'Z' }).with(OK),
-			Ok(Err(EspTwaiError::BusOff)) => {
-				self.latched |= flags::BUS_ERROR;
-				self.reopen();
-				reply(BELL)
-			}
-			// Timed out (the future's drop aborted the attempt) or another error.
-			_ => reply(BELL),
 		}
+		reply(BELL)
 	}
 }
 
