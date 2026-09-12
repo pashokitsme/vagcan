@@ -43,6 +43,19 @@ that into a queue of *requests* with three sources and a rate each:
 | **stopwatch** | the speed channel while armed | maximum, single DID, ≈100 Hz | high |
 | **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
 
+**Budget and degradation (owner, 2026-09-13: a small delay is fine, the bus is shared
+with the whole car, a run needs speed fast).** The scheduler runs under a **ceiling of
+≈100 exchanges a second** — half of what the one conversation could do — so the gateway
+and the units see a sparse, even trickle from us. Default rates: temperatures 2 Hz,
+boost and revs 10 Hz, stalks 2/20 Hz by the cruise gate (§6a); a four-cell page is ≈25
+exchanges a second, a quarter of the budget. **Stopwatch armed**: speed at 50 Hz (20 ms
+between points, interpolation gives hundredths), every other source at 1 Hz, stalks
+paused. When the sum asks for more than the ceiling, nothing is dropped: sources are
+**thinned in priority order** — background pages first, then the laptop's queue (it has
+back-pressure anyway), then the visible cells down to their minimum rate, and never the
+speed channel during a run. A cell older than its own deadline shows its age instead of
+a stale number without a mark.
+
 One exchange at a time: `0x22 DID` → answer → next. A multi-frame answer (part numbers,
 `F19E`) is a single exchange with its flow control done on the board, in real time. The
 allowlist (`0x22 0x19 0x10 0x3E`) is enforced **on the board** for laptop requests too —
