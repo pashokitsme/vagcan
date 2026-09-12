@@ -17,15 +17,28 @@
 //!
 //! The mode is chosen from the terminal width each time it draws, so widening
 //! the window switches back on its own; `b` forces braille either way.
+//!
+//! One press is one press, at this end too. A held key auto-repeats, and on
+//! 2026-09-13 every repeat went down the wire as `BTN S` — a dozen page turns
+//! for one keystroke. Where the terminal speaks the kitty keyboard protocol
+//! (kitty, WezTerm, foot, Ghostty, iTerm2) it is asked to *report* repeats,
+//! which then arrive as `KeyEventKind::Repeat` and are dropped; where it does
+//! not (Terminal.app), a second press inside the board's own
+//! [`PRESS_GAP_MS`] is taken for a repeat. The board gates the same way, so
+//! neither end can reproduce the burst alone.
 
 use anyhow::{Context, Result};
 use vag_dash_host::frame::{self, Bitmap};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{execute, terminal};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use vag_dash_render::button::PRESS_GAP_MS;
 
 const BAUD: u32 = 115_200;
 /// How many of the board's log lines to keep under the panel. Enough to see
@@ -179,8 +192,21 @@ fn run(port_name: &str) -> Result<()> {
     let mut out = std::io::stdout();
     execute!(out, terminal::EnterAlternateScreen, crossterm::cursor::Hide)?;
 
-    let result = event_loop(&mut out, &mut writer, &rx);
+    // Asked in raw mode, as crossterm wants, and before the event loop starts
+    // reading — the query is answered on the same input.
+    let repeats_reported = terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if repeats_reported {
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        )?;
+    }
 
+    let result = event_loop(&mut out, &mut writer, &rx, repeats_reported);
+
+    if repeats_reported {
+        execute!(out, PopKeyboardEnhancementFlags)?;
+    }
     execute!(out, crossterm::cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
@@ -190,6 +216,7 @@ fn event_loop(
     out: &mut std::io::Stdout,
     writer: &mut Box<dyn serialport::SerialPort>,
     rx: &mpsc::Receiver<FromBoard>,
+    repeats_reported: bool,
 ) -> Result<()> {
     let mut logs: VecDeque<String> = VecDeque::new();
     let mut latest: Option<Bitmap> = None;
@@ -198,6 +225,15 @@ fn event_loop(
     // `None` means "pick whatever fits"; `b` pins it to braille.
     let mut forced: Option<Mode> = None;
     let mut redraw = true;
+    let repeats = if repeats_reported {
+        "key repeat: reported by the terminal"
+    } else {
+        "key repeat: gated, one press per 250 ms"
+    };
+    // When the last button line went down the wire — the gate for a terminal
+    // that cannot tell a repeat from a press.
+    let mut last_button: Option<Instant> = None;
+    let gap = Duration::from_millis(PRESS_GAP_MS);
 
     loop {
         // Drain everything the board has said, then draw once. Drawing per
@@ -226,11 +262,14 @@ fn event_loop(
         }
         if dirty || redraw {
             redraw = false;
-            draw(out, latest.as_ref(), &logs, &status, forced)?;
+            draw(out, latest.as_ref(), &logs, &status, repeats, forced)?;
         }
 
         if event::poll(Duration::from_millis(30))? {
             if let Event::Key(key) = event::read()? {
+                // With `REPORT_EVENT_TYPES` a held key arrives as `Repeat`,
+                // and a repeat is not a press. Without it everything is
+                // `Press`, and the gate below does the telling.
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -241,12 +280,14 @@ fn event_loop(
                     // events rather than as a held level because the board's
                     // debounce belongs to the board — this is a keyboard, and
                     // a keyboard cannot honestly imitate a contact bouncing.
-                    KeyCode::Char(' ') => {
-                        writeln!(writer, "BTN S")?;
-                        writer.flush()?;
-                    }
-                    KeyCode::Char('l') | KeyCode::Char('L') => {
-                        writeln!(writer, "BTN L")?;
+                    KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Char('L') => {
+                        let repeat = !repeats_reported && last_button.is_some_and(|at| at.elapsed() < gap);
+                        if repeat {
+                            continue;
+                        }
+                        last_button = Some(Instant::now());
+                        let line = if key.code == KeyCode::Char(' ') { "BTN S" } else { "BTN L" };
+                        writeln!(writer, "{line}")?;
                         writer.flush()?;
                     }
                     KeyCode::Char('b') | KeyCode::Char('B') => {
@@ -268,6 +309,7 @@ fn draw(
     bitmap: Option<&Bitmap>,
     logs: &VecDeque<String>,
     status: &str,
+    repeats: &str,
     forced: Option<Mode>,
 ) -> Result<()> {
     execute!(out, terminal::Clear(terminal::ClearType::All), crossterm::cursor::MoveTo(0, 0))?;
@@ -310,7 +352,7 @@ fn draw(
 
     writeln!(
         out,
-        "\r\n  {status}   ·   {mode_note}   ·   space = short, L = long, b = braille, q = quit\r\n\r"
+        "\r\n  {status}   ·   {mode_note}   ·   {repeats}   ·   space = short, L = long, b = braille, q = quit\r\n\r"
     )?;
     for line in logs {
         writeln!(out, "  {line}\r")?;

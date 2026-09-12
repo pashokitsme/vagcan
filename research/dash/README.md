@@ -41,6 +41,28 @@ because it is `no_std` on `riscv32imc-unknown-none-elf` with its own
 `build-std` configuration and would not survive inside the workspace. `05`
 already anticipates this: `vag-dash-fw` is "new, outside the workspace".
 
+## `dashsim`
+
+Be the panel and the buttons, so the board can be the device: draws the
+256×64 frames the board sends over its USB serial in the terminal (half blocks
+or braille, by window width) and sends `BTN S` / `BTN L` back for space and
+`l`. Same crate as `bleecho` (`research/dash/host`), same reason it is not a
+workspace member.
+
+```
+cargo run --release --manifest-path research/dash/host/Cargo.toml --bin dashsim
+```
+
+**One press is one press.** A held key auto-repeats, and on 2026-09-13 every
+repeat went down the wire — one keystroke, a dozen page turns. Where the
+terminal speaks the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty,
+iTerm2 3.5+) `dashsim` asks it to report repeats
+(`PushKeyboardEnhancementFlags(REPORT_EVENT_TYPES)`) and drops them; where it
+does not (Terminal.app) a second press inside 250 ms — the board's own
+`PRESS_GAP_MS` — is taken for a repeat. The footer says which of the two is in
+force. The board gates by the same number on its side, so neither end can
+reproduce the burst alone.
+
 ## Bench tools — which may see a car and which may not
 
 All in `crates/dash/vag-dash-fw/src/bin/`; the rule is whether the image ever

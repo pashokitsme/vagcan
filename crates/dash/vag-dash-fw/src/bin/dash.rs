@@ -374,6 +374,12 @@ fn open_settings() -> Settings {
 /// A short press moves to the next page. When `04`'s alarms exist, a short
 /// press *while an alarm is showing* silences that episode instead — the
 /// button is modal because the screen already says which mode it is in.
+///
+/// The simulator's `BTN S` / `BTN L` come in through the same machine as the
+/// GPIO level, and go out through the same gate: one press per
+/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), whoever pressed it.
+/// Taking a remote press at face value is what turned one held space bar
+/// into a dozen page turns.
 #[embassy_executor::task]
 async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 	let mut machine = Button::new();
@@ -381,18 +387,15 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 		// Half the debounce interval: fast enough that no edge is missed,
 		// slow enough to be free.
 		let press = match embassy_futures::select::select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
-			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), embassy_time::Instant::now().as_millis()),
-			embassy_futures::select::Either::Second(press) => Some(press),
+			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
+			embassy_futures::select::Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
 		};
 		match press {
 			Some(Press::Short) => {
 				let mut s = settings.lock().await;
-				let pages = s.config.pages.len() as u8;
-				if pages > 0 {
-					s.config.active_page = (s.config.active_page + 1) % pages;
-					s.unsaved = true;
-					note!("button: page {} of {}", s.config.active_page, pages);
-				}
+				let changed = s.config.next_page();
+				s.unsaved |= changed;
+				note!("button: page {} of {}", s.config.active_page, s.config.pages.len());
 				drop(s);
 				STATE_CHANGED.signal(());
 			}
