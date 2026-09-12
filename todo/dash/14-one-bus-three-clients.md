@@ -93,10 +93,14 @@ transmitting raw frames from a bench.
   guaranteed share of exchanges per second, the host gets the rest under one ceiling.
 - **Mode 2 — the dumb slcan proxy** (option A): raw frames, the screen shows `SLCAN`, the
   bit rate, and rx/tx/error counters instead of the cells.
-- **Switching is by the first bytes on USB**: slcan is ASCII lines (`C\r`, `S6\r`, `O\r`),
-  the link of §4 is a framed binary stream with a header; the board enters mode 2 on the
-  first slcan line and leaves it on `C` or USB disconnect. One image, no reflash, no
-  button. A `mode` message on the link can force it too.
+- **Switching is by the first bytes on USB, and the host chooses with a flag** (owner,
+  2026-09-13): `vagcan --slcan` makes `vagcan` speak raw slcan to the board — the flag
+  exists for the board alone, the CANable needs none — and the board, seeing ASCII lines
+  (`C\r`, `S6\r`, `O\r`) rather than the framed binary link of §4, enters mode 2 and
+  shows `SLCAN` and its counters. Without the flag `vagcan` opens the board through
+  `BoardTransport` and the panel keeps running beside it. The board leaves mode 2 when the
+  cable is pulled (USB disconnect) or on `C`, and the panel comes back. One image, no
+  reflash, no jumper — the free pins (`GPIO0`, `GPIO3`) stay free.
 
 ### What this decides
 
