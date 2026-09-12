@@ -81,6 +81,23 @@ lines, tested against a mock like `vag-uds-capture`. What it cannot do: `dev sni
 link (§4) — mirrored, listen-only — and the exclusive slcan mode of option A stays for
 transmitting raw frames from a bench.
 
+### Decided 2026-09-13 (owner): both, as two modes of one firmware
+
+- **Slowing down is allowed; dropping is forbidden** — a device that drops looks like a
+  dead device. In mode 1 that holds by construction: the host's PDUs queue with
+  back-pressure, `BoardTransport` awaits, `watch` slows to what the bus gives. In mode 2
+  it holds as far as a buffer can make it: a ring of several hundred frames between the
+  TWAI (esp-hal queues 32) and the USB writer, and if the host still falls behind the
+  `E` register says overrun, as the CANable's does — a receiver cannot slow a bus.
+- **Mode 1 — the panel plus the UDS scheduler** (§2, option B): the display keeps a
+  guaranteed share of exchanges per second, the host gets the rest under one ceiling.
+- **Mode 2 — the dumb slcan proxy** (option A): raw frames, the screen shows `SLCAN`, the
+  bit rate, and rx/tx/error counters instead of the cells.
+- **Switching is by the first bytes on USB**: slcan is ASCII lines (`C\r`, `S6\r`, `O\r`),
+  the link of §4 is a framed binary stream with a header; the board enters mode 2 on the
+  first slcan line and leaves it on `C` or USB disconnect. One image, no reflash, no
+  button. A `mode` message on the link can force it too.
+
 ### What this decides
 
 - The `slcan` binary (in progress on branch `slcan`) becomes the **exclusive adapter
