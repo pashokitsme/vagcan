@@ -199,6 +199,15 @@ the gate to CANCEL waits for a test on a parked car: switch on, set, cancel, pre
 standing still, read the status — if nothing resumes, the config may allow it; the default
 stays OFF.
 
+**What it costs, and the adaptive rate.** One `22 1105` exchange is two frames, ≈0.5 ms
+of a 500 kbit/s bus: 20 Hz is 1 % of the diagnostic CAN (which carries nothing else of
+the car's) and 1 % of the comfort bus behind the gateway. The bus is not the limit; the
+board's one conversation is (≈4 ms per exchange with the gateway in the path, so
+≈200–250 a second for everything). The stalk poll adapts to the gate: cruise ON → 2 Hz,
+enough to notice the switch going off; OFF → 20 Hz, a 50 ms button; stopwatch armed →
+paused, the slot goes to speed. On average that is a few exchanges a second (owner's
+concern, 2026-09-13).
+
 To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
 fields move within a poll; that OFF reads as its own value and not as absent. If the
 ON/OFF on this stalk turns out momentary rather than latched, the cruise state comes from
