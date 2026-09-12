@@ -185,8 +185,9 @@ and Set may arm the stopwatch; with it **ON** the dash ignores the lever and cru
 as always. Both the presses and the ON/OFF position are fields of `1105` (`Linker Hebel
 axial 3 (ON/CANCEL/OFF)`, `GRA Hebel vertikal (Plus/Minus)`, `GRA Hebel axial (Set)`), so
 one 20 Hz poll gives the gate and the events together. `1105` joins the scheduler as an
-**event source** with the panel's quota. The device keeps a button regardless — `07-sleep`
-puts the wake button on `GPIO5`, and the bench has no stalk.
+**event source** with the panel's quota. The device keeps its bench button (`GPIO9`,
+BOOT) because the bench has no stalk; no wake button is needed — the board is fed from
+OBD pin 1, +12 V with the ignition only (owner, 2026-09-13; `07` and `08` superseded).
 
 To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
 fields move within a poll; that OFF reads as its own value and not as absent. If the
