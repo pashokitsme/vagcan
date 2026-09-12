@@ -179,10 +179,19 @@ needs no button of its own. It can deliver the *state*, not the press:
   trip computer; nothing on the diagnostic CAN can consume a press. So the stalks cannot
   be *the* button without the two displays paging together.
 
-Decided: the device keeps a button (`07-sleep` already puts the wake button on `GPIO5`;
-the same one pages). `1105` joins the scheduler as an **event source** with the panel's
-quota, and what to do with it is config: `follow_mfa = true` pages the dash in step with
-the cluster, off by default. The stopwatch may arm from a stalk the same way, later.
+Decided (owner, 2026-09-13): **the cruise lever, gated by its own switch.** With the GRA
+main switch **OFF** the car ignores the lever entirely, so its plus/minus page the dash
+and Set may arm the stopwatch; with it **ON** the dash ignores the lever and cruise works
+as always. Both the presses and the ON/OFF position are fields of `1105` (`Linker Hebel
+axial 3 (ON/CANCEL/OFF)`, `GRA Hebel vertikal (Plus/Minus)`, `GRA Hebel axial (Set)`), so
+one 20 Hz poll gives the gate and the events together. `1105` joins the scheduler as an
+**event source** with the panel's quota. The device keeps a button regardless — `07-sleep`
+puts the wake button on `GPIO5`, and the bench has no stalk.
+
+To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
+fields move within a poll; that OFF reads as its own value and not as absent. If the
+ON/OFF on this stalk turns out momentary rather than latched, the cruise state comes from
+the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is that.
 
 ## 7. Order, and what each needs
 
