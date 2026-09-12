@@ -189,6 +189,16 @@ one 20 Hz poll gives the gate and the events together. `1105` joins the schedule
 BOOT) because the bench has no stalk; no wake button is needed — the board is fed from
 OBD pin 1, +12 V with the ignition only (owner, 2026-09-13; `07` and `08` superseded).
 
+**The gate is OFF, and OFF alone** — not CANCEL. The owner proposed OFF/CANCEL
+(2026-09-13); CANCEL on an MQB stalk leaves cruise in standby with the set speed kept, and
+the next plus/RES *resumes* it — paging the dash would accelerate the car to the stored
+speed. So: the cruise state comes from the engine's own GRA status (`7E0`, beside `2018`),
+which tells "off" from "standby" from "regulating", and the dash listens to the lever only
+in "off"; the switch position in `1105` is the second witness, both must say off. Widening
+the gate to CANCEL waits for a test on a parked car: switch on, set, cancel, press plus
+standing still, read the status — if nothing resumes, the config may allow it; the default
+stays OFF.
+
 To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
 fields move within a poll; that OFF reads as its own value and not as absent. If the
 ON/OFF on this stalk turns out momentary rather than latched, the cruise state comes from
