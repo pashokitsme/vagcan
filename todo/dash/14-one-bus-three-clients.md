@@ -1,0 +1,164 @@
+# dash / 14 — one bus, three clients: the consolidated design
+
+**Subsystem:** dash · **Crates:** `vag-dash-fw`, `vag-uds-transport`, `vag-uds-can`, `vag-cli-core` ·
+**Date:** 2026-09-13 · **Status:** design, for the owner's decision on §3
+
+The board reads the car (`05`, met 2026-09-13). Three wishes landed on the same day and
+they all want the same wire:
+
+1. **The laptop reads the car through the board** — `vagcan watch`, `info`, `faults`, the
+   lot — *while the panel keeps showing its numbers* (owner, 2026-09-13).
+2. **Screens**: the owner lays out channels on pages (`13-screens.md`); the chart page and
+   page switching misbehave today and have to be fixed first.
+3. **A stopwatch**: 0–60 and 0–100 timed on the board, with speed projected on time as a
+   chart of the run.
+
+Plus what was already queued: the OLED on the carrier (`05`, `08`), settings over BLE
+(`11`, `12`), sleep (`07`). This file is the design that makes them one thing instead of
+four, and names the one fork the owner has to pick.
+
+---
+
+## 1. The invariant everything hangs on
+
+**One bus, one conversation, and the board is the only talker.** `CLAUDE.md` locks this
+for the host and the firmware alike, and it is not a preference: two testers with the same
+source address `7E0` on one bus get one stream of `7E8` answers between them, and an
+ISO-TP multi-frame answer needs its flow-control frames back within milliseconds from the
+one who asked. A laptop on the far side of a USB hop, and a board polling on its own
+timer, cannot both be that one.
+
+So every client of the bus — the panel, the laptop, the stopwatch — is a client of **one
+scheduler on the board**, which owns the TWAI and runs one exchange at a time.
+
+## 2. The scheduler (new, and the heart of it)
+
+Today `dash.rs` polls the plan's cells round-robin and renders. The scheduler generalises
+that into a queue of *requests* with three sources and a rate each:
+
+| source | what it queues | rate | priority |
+|---|---|---|---|
+| **panel** | the visible page's channels | as fast as the page wants (≈50 Hz for four cells) | normal |
+| **panel, background** | channels of pages not shown | slow (1 Hz) or none | low |
+| **stopwatch** | the speed channel while armed | maximum, single DID, ≈100 Hz | high |
+| **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
+
+One exchange at a time: `0x22 DID` → answer → next. A multi-frame answer (part numbers,
+`F19E`) is a single exchange with its flow control done on the board, in real time. The
+allowlist (`0x22 0x19 0x10 0x3E`) is enforced **on the board** for laptop requests too —
+the host's own allowlist cannot be trusted from a device that lives in the car.
+
+Every answer the board receives updates every consumer that asked for it: a `62 202A …`
+requested by the laptop's `watch` also refreshes the panel's НАДДУВ cell. That is what
+makes "parallel with the display" true instead of a time-share: the two clients
+*share the readings*, not the bus.
+
+## 3. The fork: how the laptop talks to the board
+
+### Option A — the board is an slcan adapter (raw frames)
+
+The board speaks slcan over USB; `SlcanBackend` drives it unchanged; zero host code. This
+is what `todo/dash/09` asked for and what the `slcan` binary now under construction
+delivers. **It cannot share the bus with the panel.** The host sends raw frames on its own
+clock; the board can only *yield* — stop polling while the host is mid-exchange, detect
+the end by watching the bus, resume — and hope the host's flow-control frames arrive in
+time through USB. The panel goes stale while `watch` runs. It is an *exclusive* mode: a
+good one (`dev sniff`, bench work, a laptop-only session), and the wrong one for wish 1.
+
+### Option B — the board is a UDS proxy (whole PDUs) — **recommended**
+
+The host already has the seam: `vag_uds_transport::AsyncIsoTpTransport` moves whole PDUs,
+and `IsoTpCan` over slcan is just one implementation. A second one, `BoardTransport`,
+sends `(unit, pdu)` up a serial link and gets `(unit, pdu)` back; the board runs the
+ISO-TP (it already links `vag-uds-can` `no_std` for its own polling) inside the
+scheduler of §2. `watch`, `info`, `faults`, `units`, `sensors` work through it because
+they never see frames. Sharing is by construction, flow control is on the bus's own clock,
+and the allowlist is checked where the bus is.
+
+What it costs: a link protocol (§4) and one transport impl on the host — a few hundred
+lines, tested against a mock like `vag-uds-capture`. What it cannot do: `dev sniff` and
+`dev survey`'s raw-frame view, which read *frames*. Those get a `frame` message on the same
+link (§4) — mirrored, listen-only — and the exclusive slcan mode of option A stays for
+transmitting raw frames from a bench.
+
+### What this decides
+
+- The `slcan` binary (in progress on branch `slcan`) becomes the **exclusive adapter
+  mode**, kept, documented as such. Not the answer to wish 1.
+- Wish 1 is Option B: `BoardTransport` on the host, the scheduler on the board.
+- One link, typed messages, replaces the ad-hoc `FRAME …` lines `dash` prints for `dashsim`.
+
+## 4. The link: one protocol, two carriers
+
+A framed, typed message stream, the same over **USB-Serial-JTAG** and over **BLE NUS**
+(`11-ble.md` measured BLE cannot carry a loaded *bus*; it can carry PDUs at `watch` rates —
+50 Hz × ~12 bytes is a kilobyte a second, and that measurement stands to be made):
+
+| message | direction | carries |
+|---|---|---|
+| `pdu` | both | `(unit address, UDS PDU)` — request up, answer down; the board tags answers with the request's id |
+| `frame` | down | a raw CAN frame the board saw, for `dev sniff` — on request, listen-only |
+| `image` | down | the panel's pixels, what `FRAME …` is today, for `dashsim` |
+| `button` / `page` | up | what the phone or laptop pressed, so `dashsim` keeps driving the board |
+| `config` | both | what `dashcfg` moves today over BLE (`12`) — folded in, one protocol |
+| `log` | down | firmware log lines, so the console is no longer a mix of logs and data |
+
+Framing: COBS or a length prefix plus a CRC-16, whichever `postcard`'s ecosystem already
+does in `no_std`; `serde` on both ends, the message enum in **one crate both build**
+(`vag-dash-link`, `no_std` + `alloc` off), the way the plan's types are shared now.
+
+## 5. Pages, and the defect in front of them
+
+The page model gains kinds: `values` (today), `chart` (today, broken), **`stopwatch`**
+(§6), `alarm` (`04`, takes the screen). The chart/page defect the owner saw on
+2026-09-13 — pages "switching strangely", charts never drawn — is fixed first and alone,
+with a `dashsim` reproduction, before any page is added. `dash.rs:585-1071` is where
+`PageKind` is dispatched; `value_shrunk: true` on page 0 is a second, smaller thing (a
+value that did not fit at full size).
+
+Channels per page come from `13-screens.md` by the owner's choice, into `dash.toml`; the
+scheduler (§2) polls the visible page fast and the rest slow, so a ten-cell page costs
+the page it is on and nobody else.
+
+## 6. The stopwatch page
+
+`vag-cli-measure` already is the stopwatch, on the laptop: roles (`speed`, `engine speed`,
+`gear`, `pedal`), the run detection, the report. The board's page is its small brother:
+
+- **Source**: one speed channel, chosen in `dash.toml` from `13-screens.md` — `2033`
+  (0.01 km/h, declared) or `F40D` (1 km/h, standard); ESC wheel speeds if they answer.
+  The choice is the owner's; the standard one is the safe default.
+- **Arming**: speed at 0 for a second arms it; the first sample above 0 starts the clock
+  (with the half-sample correction `vag-cli-measure` uses — check `session.rs`); crossing
+  60 and 100 km/h stamps the two times, interpolated between the samples either side.
+- **Rate**: the scheduler gives the speed DID its high-priority slot (≈100 Hz single-DID);
+  the other cells drop to background rate for the run.
+- **Display**: the two times large; the chart page of the run shows speed on time, the
+  same chart widget as `kind = "chart"`, with the x axis being seconds since launch.
+- **Record**: the run's samples go up the link as `pdu` answers anyway, so a laptop that
+  is connected gets the full trace for `vagcan measure`'s report; the board keeps the last
+  run's two numbers in settings (`12`).
+
+## 7. Order, and what each needs
+
+| # | item | needs | moves |
+|---|---|---|---|
+| 1 | chart/page defect, with a `dashsim` repro | bench | 5 |
+| 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dashsim` on the link; `dash` stops printing `FRAME` | bench | 4 |
+| 3 | scheduler in `dash`: sources, rates, shared answers | bench | 2 |
+| 4 | `pdu` message + `BoardTransport` on the host; `watch` through the board on the bench (CANable answering as a mock unit is not possible — the check is the car) | bench, then car | 3 |
+| 5 | `slcan` binary lands as the exclusive mode (branch `slcan`) | bench | 3-A |
+| 6 | stopwatch page | car, one straight road | 6 |
+| 7 | `frame` mirror for `dev sniff` over the link | bench | 4 |
+| 8 | the same link over BLE NUS; measure the PDU rate | bench | 4 |
+| 9 | OLED on the carrier | bench | `05`/`08` |
+
+`09-bt-adapter.md` is superseded by this file (the wish is met by §3-B over USB and §8 over
+BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.
+
+## 8. What is not decided here
+
+- The speed channel for the stopwatch (owner, from `13`).
+- Whether `dev survey` (a sweep) may run through the board at all. A sweep is the most
+  invasive thing the tool does, and the board lives in the car; the safe default is **no** —
+  the exclusive slcan mode is for that, from a bench, with the guard the host has.

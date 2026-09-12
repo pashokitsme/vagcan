@@ -1,5 +1,11 @@
 # dash / 09 — the device is also a wireless CANable
 
+> **Superseded 2026-09-13 by [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md).**
+> The wish — the laptop reads the car through the device — is met over USB by a PDU-level
+> link (§3-B there), and over BLE by the same link, not by Bluetooth SPP, which the C3 does
+> not have. A raw slcan mode over USB is landing as the *exclusive* adapter mode; it cannot
+> share the bus with the panel, and that file says why.
+
 **Subsystem:** dash · **Crate:** `vag-dash-fw`, `vag-uds-can` · **Needs the car:** no
 
 > **The board changed, 2026-08-25.** The bench board is an **ESP32-C3 SuperMini**, not the
