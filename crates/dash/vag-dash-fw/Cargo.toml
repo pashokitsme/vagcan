@@ -42,6 +42,13 @@ path = "./src/bin/cantest.rs"
 name = "rxwatch"
 path = "./src/bin/rxwatch.rs"
 
+[features]
+# `rxwatch` in Normal mode: it still sends no frames, but it acknowledges the
+# ones it hears — which on the car is the first dominant bit of ours the
+# gateway registers (its heartbeat drops from 3106/s to 2 Hz). Off by default
+# so the plain build stays safe to point at anything.
+ack = []
+
 # Continuous bench transmitter — flash it, sniff the CANable, see whether the
 # board's frames reach the pair. Transmits, so bench only.
 [[bin]]

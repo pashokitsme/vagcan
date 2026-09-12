@@ -111,7 +111,8 @@ transaction, both ≈1 s; nothing below 3 s is cheap from here.
 1. **Replace the transceiver, then the car run** — moves the `dash` goal; **needs the
    bench first, then the car.** A genuine `SN65HVD230D` on the blue board, or the
    CANable Pro's `ADM3050E` shared as `todo/dash/05` designed. `research/dash/bench.sh`
-   to `PASS`, then on the car `rxwatch` in `Normal` (the gateway's heartbeat falling
+   to `PASS` — **done 2026-09-12: 60,861 frames in 15 s, the bus's ceiling** — then
+   on the car `rxwatch --features ack` (Normal mode; the gateway's heartbeat falling
    from 3106/s to 2 Hz) and `dash` (`7E0 is 8V0906264H as planned`). That closes
    `todo/dash/05`.
 2. **The OLED on the carrier** — `dash`; **no car.** The SSD1322 driver and the

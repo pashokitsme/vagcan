@@ -1,5 +1,13 @@
 # dash / CAN bring-up on the car — hand-off
 
+**State, 2026-09-12.** The transceiver is replaced and the bench passes:
+`research/dash/bench.sh` saw **60,861 frames from the board in 15 s** on the
+CANable — ≈4,060/s, the bus's ceiling for 8-byte frames at 500 kbit/s, so every
+frame went through first time and was acknowledged. `PASS` is the unambiguous
+verdict (§5.3): the board's dominant bits reach the pair, and the CANable's own
+receive path is proven with them. What remains is the car, in the order at the
+end of §5.3: `rxwatch` built with the `ack` feature (Normal mode), then `dash`.
+
 **State, 2026-09-10.** The transceiver on the blue module is a counterfeit and is
 the whole remaining fault (§5.3); everything else is proven. Below, the trail.
 
@@ -400,10 +408,13 @@ was not heard *or* the CANable cannot hear"; **`PASS` is unambiguous** and
 proves both at once. The car settles the board side regardless: the gateway
 is a proven receiver, and it did not hear us.
 
-**On the car, after the fix, in this order:** `rxwatch` in `Normal` mode — the
-heartbeat falling from 3106/s to 2 Hz is the first dominant bit of ours the
-gateway has ever registered; then `dash`, expecting `7E0 is 8V0906264H as
-planned` and `7E1 is 0CW300041G as planned`, and numbers on the panel.
+**On the car, after the fix, in this order:** `rxwatch` in `Normal` mode
+(`cargo build --release --bin rxwatch --features ack`; without the feature it
+stays listen-only and acknowledges nothing) — the heartbeat falling from 3106/s
+to 2 Hz is the first dominant bit of ours the gateway has ever registered; then
+`dash`, expecting `7E0 is 8V0906264H as planned` and `7E1 is 0CW300041G as
+planned`, and numbers on the panel. The bench passed on 2026-09-12 (state
+header), so this is the next thing to do.
 
 ## 6. The next experiment — CANable in parallel on the car
 

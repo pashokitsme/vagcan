@@ -49,16 +49,20 @@ async fn main(_spawner: Spawner) {
 	esp_hal_embassy::init(SystemTimer::new(peripherals.SYSTIMER).alarm0);
 
 	// Same pins as `dash`: GPIO1 reads the transceiver's `R`, GPIO6 drives its
-	// `D` — which listen-only never pulls low.
-	let twai = TwaiConfiguration::new(
-		peripherals.TWAI0,
-		peripherals.GPIO1,
-		peripherals.GPIO6,
-		BaudRate::B500K,
-		TwaiMode::ListenOnly,
-	);
+	// `D` — which listen-only never pulls low. With the `ack` feature the
+	// controller runs in Normal mode: still no frames of its own, but every
+	// frame it hears gets its acknowledge bit — the one dominant bit that
+	// tells the gateway somebody is on the bus.
+	#[cfg(feature = "ack")]
+	const MODE: TwaiMode = TwaiMode::Normal;
+	#[cfg(not(feature = "ack"))]
+	const MODE: TwaiMode = TwaiMode::ListenOnly;
+	let twai = TwaiConfiguration::new(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, BaudRate::B500K, MODE);
 	let mut twai = twai.into_async().start();
-	info!("rxwatch: listen-only at 500 kbit/s, no filter, R on GPIO1 — transmits nothing");
+	match cfg!(feature = "ack") {
+		true => info!("rxwatch: NORMAL mode at 500 kbit/s, no filter — sends no frames, but acknowledges every one it hears"),
+		false => info!("rxwatch: listen-only at 500 kbit/s, no filter, R on GPIO1 — transmits nothing"),
+	}
 
 	let end = Instant::now() + WATCH;
 	let mut second = 0u32;

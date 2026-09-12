@@ -49,7 +49,7 @@ what they see.
 
 | tool | does | car? |
 |---|---|---|
-| `rxwatch` | listen-only frame counter, ids per second | **yes** — acknowledges nothing |
+| `rxwatch` | listen-only frame counter, ids per second; `--features ack` switches it to Normal mode | **yes** — acknowledges nothing; with `ack` it acknowledges but still sends no frame, which is the car test after the transceiver fix |
 | `cantest` | UDS round trip through the chip's own loopback | no — transmits |
 | `cantx` | hammers one `7E0` request, prints `TEC` | no — transmits |
 | `rxprobe` | drives `D`, reads `R`: idle, echo, edge timing | no — holds a DC level |
