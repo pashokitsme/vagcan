@@ -160,6 +160,30 @@ the page it is on and nobody else.
   is connected gets the full trace for `vagcan measure`'s report; the board keeps the last
   run's two numbers in settings (`12`).
 
+## 6a. Controls: the button stays, the stalks are an event source
+
+The owner asked (2026-09-13) whether the bus can deliver a button press, so the device
+needs no button of its own. It can deliver the *state*, not the press:
+
+- **Broadcast frames do not reach the OBD pins.** The stalks and wheel keys go out as
+  cyclic messages on the comfort bus; the diagnostic CAN behind the gateway carries none
+  of it — every sniff on this car saw one broadcast id there, the gateway's heartbeat.
+- **Polling does.** The steering column module `70C` (`EV_SMLSVALEOMQBLRH_001`) declares
+  one identifier, `1105`, carrying every stalk as an enum: the **MFA rocker** on the wiper
+  stalk, the GRA lever (plus/minus, Set, Set+ACC), the left stalk's FAS / GRA Set-Reset /
+  ON-CANCEL-OFF, indicators, lights, wipers, horn. `22 1105` at 20 Hz in the scheduler
+  is a 50 ms button. The keys on the wheel's spokes are **not** in it (they reach `70C`
+  over LIN; no identifier for them is declared) — whether `1105` answers on this car is
+  one `watch` on `70C` away, not yet done.
+- **But the car keeps its side of the press.** The MFA rocker still pages the cluster's
+  trip computer; nothing on the diagnostic CAN can consume a press. So the stalks cannot
+  be *the* button without the two displays paging together.
+
+Decided: the device keeps a button (`07-sleep` already puts the wake button on `GPIO5`;
+the same one pages). `1105` joins the scheduler as an **event source** with the panel's
+quota, and what to do with it is config: `follow_mfa = true` pages the dash in step with
+the cluster, off by default. The stopwatch may arm from a stalk the same way, later.
+
 ## 7. Order, and what each needs
 
 | # | item | needs | moves |
