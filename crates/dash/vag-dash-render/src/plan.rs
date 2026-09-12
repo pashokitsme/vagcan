@@ -96,10 +96,61 @@ pub enum Page {
 	Values { title: &'static str, cells: &'static [u16] },
 }
 
+/// One chart the plan carries: where its history lives and what its axis is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Chart {
+	/// The chart's position among the plan's chart pages, `0..chart_count()`
+	/// — the index of its [`History`](crate::history::History) in an array
+	/// sized by [`Plan::chart_count`].
+	pub slot: usize,
+	/// The channel it charts, as an index into [`Plan::channels`].
+	pub channel: u16,
+	pub min: f32,
+	pub max: f32,
+}
+
 impl Plan {
 	/// The channel a page cell or a configuration index refers to.
 	pub fn channel(&self, index: u16) -> Option<&'static Channel> {
 		self.channels.get(usize::from(index))
+	}
+
+	/// How many chart pages the plan has — how many histories the panel
+	/// keeps. `const` so an array can be sized by it: the set of channels a
+	/// chart can show is fixed when the image is built, because a chart is a
+	/// fixed range and only the plan has one.
+	pub const fn chart_count(&self) -> usize {
+		// A `while` and an index because iterators are not `const`.
+		let mut count = 0;
+		let mut i = 0;
+		while i < self.pages.len() {
+			if let Page::Chart { .. } = self.pages[i] {
+				count += 1;
+			}
+			i += 1;
+		}
+		count
+	}
+
+	/// Every chart page, in plan order, numbered — what the panel feeds a
+	/// sample to each frame.
+	pub fn charts(&self) -> impl Iterator<Item = Chart> + '_ {
+		self
+			.pages
+			.iter()
+			.filter_map(|page| match page {
+				Page::Chart { channel, min, max } => Some((*channel, *min, *max)),
+				_ => None,
+			})
+			.enumerate()
+			.map(|(slot, (channel, min, max))| Chart { slot, channel, min, max })
+	}
+
+	/// The chart the plan gives a channel, if it gives one. A channel with
+	/// two chart pages is one chart — the first — because one channel has one
+	/// history.
+	pub fn chart(&self, index: u16) -> Option<Chart> {
+		self.charts().find(|chart| chart.channel == index)
 	}
 
 	/// The unit a channel is read from.
@@ -242,6 +293,66 @@ mod tests {
 		// 3531 → 353.1 K → 79.96 °C
 		let v = c.decode(&[0x0D, 0xCB]).unwrap();
 		assert!((v - 79.96).abs() < 1e-3, "{v}");
+	}
+
+	const CHANNELS: [Channel; 3] = [
+		channel(0, 8, false, true, 1.0, 0.0),
+		channel(0, 8, false, true, 1.0, 0.0),
+		channel(0, 8, false, true, 1.0, 0.0),
+	];
+	const PAGES: [Page; 4] = [
+		Page::Values { title: "a", cells: &[0, 1] },
+		Page::Chart {
+			channel: 1,
+			min: 0.9,
+			max: 2.1,
+		},
+		Page::Values { title: "b", cells: &[2] },
+		Page::Chart {
+			channel: 2,
+			min: 0.0,
+			max: 100.0,
+		},
+	];
+	const PLAN: Plan = Plan {
+		vin: "",
+		language: "en",
+		units: &[],
+		channels: &CHANNELS,
+		pages: &PAGES,
+	};
+
+	#[test]
+	fn chart_count_is_a_constant_the_panel_can_size_an_array_by() {
+		const N: usize = PLAN.chart_count();
+		assert_eq!(N, 2);
+		let _sized: [u8; N] = [0; N];
+	}
+
+	#[test]
+	fn a_chart_is_numbered_among_chart_pages_and_carries_its_range() {
+		let boost = Chart {
+			slot: 0,
+			channel: 1,
+			min: 0.9,
+			max: 2.1,
+		};
+		let load = Chart {
+			slot: 1,
+			channel: 2,
+			min: 0.0,
+			max: 100.0,
+		};
+		assert_eq!(PLAN.chart(1), Some(boost));
+		assert_eq!(PLAN.chart(2), Some(load));
+		let all: std::vec::Vec<Chart> = PLAN.charts().collect();
+		assert_eq!(all, [boost, load], "slots are dense and in plan order");
+	}
+
+	#[test]
+	fn a_channel_without_a_chart_page_has_no_chart() {
+		assert_eq!(PLAN.chart(0), None);
+		assert_eq!(PLAN.chart(7), None);
 	}
 
 	#[test]

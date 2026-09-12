@@ -25,3 +25,6 @@ pub const CHANNEL_COUNT: usize = PLAN.channels.len();
 
 /// How many control units the plan polls.
 pub const UNIT_COUNT: usize = PLAN.units.len();
+
+/// How many chart pages the plan has — how many histories the panel keeps.
+pub const CHART_COUNT: usize = PLAN.chart_count();
