@@ -1,5 +1,13 @@
 # dash / CAN bring-up on the car — hand-off
 
+**State, 2026-09-13.** The board is an adapter: the `slcan` image speaks slcan on
+the USB console and `vagcan --device` drives it like the CANable (§9) — the exclusive
+adapter mode, mode 2, of `todo/dash/14-one-bus-three-clients.md`. Built, clippy-clean,
+and reviewed (a spin on controller overrun, stale frames after `O`, `z` that did not
+mean acknowledged — all fixed, §9.1 says how); the bench run in §9.3 is written down
+and **not yet run** — no adapter was on USB when the reviewed image was finished. Run
+it, fill in §9.4.
+
 **State, 2026-09-12.** The transceiver is replaced and the bench passes:
 `research/dash/bench.sh` saw **60,861 frames from the board in 15 s** on the
 CANable — ≈4,060/s, the bus's ceiling for 8-byte frames at 500 kbit/s, so every
@@ -494,3 +502,153 @@ nobody meant to reformat. Seen and undone by hand this session.
 
 **Resolved 2026-09-04:** the crate moved to edition 2024 (`85df0aa`); `cargo fmt
 --check` and the hook now agree.
+
+## 9. The board as an adapter — `slcan`, 2026-09-13
+
+`src/bin/slcan.rs` is the fourth image: a USB-Serial-JTAG ↔ TWAI bridge speaking
+LAWICEL slcan, so `vag_uds_can::SlcanBackend` — the client every `vagcan` command
+opens the CANable with — drives the board unchanged. Nothing is decided on the
+board: it puts on the bus what the host asks, and the host's allowlist is what
+bounds that. The image's own header is the protocol reference (which commands,
+which replies, how the status byte is built); this section is the bench.
+
+### 9.1 What runs on the board
+
+Three embassy tasks and one ring:
+
+- **`bridge`** owns the console's receive half and the controller. One `select`
+  loop: a console byte goes to the line parser and, on `\r`, to the command
+  handler; a bus frame goes into `OUT` as its `t…`/`T…` line. A transmit (`t`/`T`
+  from the host) is awaited *together with* a receive loop, so the reply to a
+  request is never lost to the request — and it is answered `z`/`Z` only when the
+  controller's `tx_complete` bit says the frame completed on the bus, acknowledge
+  included. esp-hal's transmit future resolves `Ok` when the buffer is *released*,
+  which an abort does too, and its interrupt handler aborts a pending transmit on
+  any error whose captured direction says transmit — a lost arbitration, the
+  acknowledge error of a bench with no partner. So a clear `tx_complete` is
+  retried, up to eight times inside 100 ms, then refused (`\x07`); the transmit
+  error counter tells arbitration lost (unmoved; latched as `F` bit 6) from an
+  error (moved; the live bits show it). `C` drops the controller, clears the ring
+  and bumps an epoch the writer checks (below); `O` builds a new one from the
+  stored bit rate and mode, and drains esp-hal's static 32-deep receive queue
+  with non-blocking polls so nothing from before the `C` comes up as live. A
+  bus-off rebuilds the controller on its own and latches `F` bit 7. A controller
+  overrun (`miss_st`) is latched as bit 3 and cleared in place with the
+  controller's `CLR_OVERRUN` command — esp-hal never issues it, and its receive
+  future reports the sticky bit on every poll of an empty queue, so left standing
+  one overrun would spin the bridge forever; if the command does not take, the
+  controller is rebuilt as after a bus-off.
+- **`console_tx`** owns the console's transmit half and drains `OUT`, whole lines
+  packed into each 64-byte USB packet — the USB-Serial-JTAG hands the host 64
+  bytes per packet and esp-hal waits for each, so a packet per write is the
+  natural unit, and never splitting a line across packets is what lets a `C`
+  discard the one line the writer already holds (it compares the epoch around
+  each write) without leaving the host half a line.
+- **`feed`** feeds the RTC watchdog (4 s, every second) and does nothing else, as
+  `dash`'s does. A bridge that stops yielding is a reboot, not a dead port.
+- **`OUT`** is a ring of **2,048 lines** between the bridge and the writer: half a
+  second of a saturated bus (≈4,000 eight-byte frames/s at 500 kbit/s), two
+  thirds of a second at the gateway's 3,106/s heartbeat storm. It is sized for the
+  host stalling — a tokio task descheduled behind a SQLite write, a USB service
+  interval, a busy laptop: milliseconds to tens of milliseconds, covered ten times
+  over. A stall past half a second is a host that stopped reading, and no ring
+  wins that; what the ring cannot hold is dropped **and counted**, and `F` reports
+  it as bit 3 (data overrun) with bit 0 (receive queue full) saying it was this
+  ring, not the controller's FIFO. 74 KB of static RAM; the image's `.bss` is
+  128 KB with 189 KB left for the stack.
+
+No logger is installed in this image, so esp-hal's own `warn!`s evaporate at the
+`log` facade — the only thing on the console is slcan traffic. (A panic still
+prints, through `health.rs`; at that point the stream is dead anyway.)
+
+### 9.2 Flash
+
+```bash
+cd crates/dash/vag-dash-fw && cargo build --release --bin slcan
+espflash flash --chip esp32c3 --partition-table partitions.csv \
+  --port /dev/cu.usbmodem1101 target/riscv32imc-unknown-none-elf/release/slcan
+```
+
+The port re-enumerates on reset; `bench.sh`'s rule finds it — the CANable has
+the fixed serial `206E37A…`, the ESP is the other `usbmodem`. No `--monitor`:
+the console is the protocol now, and a monitor would be a second reader on it.
+
+`vagcan devices` must list the board with a `*`:
+
+```
+* /dev/cu.usbmodem1101
+    vag-dash board (slcan over USB, when running the slcan firmware)
+```
+
+The name says "when running": the board enumerates under Espressif's `303a:1001`
+whatever image it carries, and the listing cannot tell `slcan` from `dash`. A
+`V` answered (`V0101`) is what proves the port is an adapter, and the host's own
+probe asks exactly that — close, `V`, `N`, `F`, `S6`, open listen-only, close:
+
+```bash
+cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmodem1101
+```
+
+### 9.3 The bench, both directions, no car
+
+Nothing on the host transmits arbitrary frames, and `cantx` cannot share the
+board with `slcan`, so the two directions are proven by crossing the two
+adapters' ordinary traffic. The bench pair is the standing one (§5.2): both
+transceivers on one pair, terminated.
+
+**Board transmits** — the CANable listens, the board is asked for a VIN. There
+is no car to answer, so `info` times out; the proof is the CANable seeing the
+board's `7E0` request on the pair.
+
+```bash
+# terminal 1 — CANable, acknowledging (--active), so the board's frame completes
+vagcan dev sniff --device /dev/cu.usbmodem206E37A148451 --active --seconds 20 --out /tmp/esp-tx.jsonl
+# terminal 2 — the board as the adapter
+vagcan info --device /dev/cu.usbmodem1101
+grep -c '"Standard":2016' /tmp/esp-tx.jsonl     # 0x7E0 = 2016: the board's requests
+```
+
+**Board receives** — the reverse: the board listens through `dev sniff`, the
+CANable is asked for a VIN.
+
+```bash
+# terminal 1 — the board, acknowledging, so the CANable's frame completes
+vagcan dev sniff --device /dev/cu.usbmodem1101 --active --seconds 20 --out /tmp/esp-rx.jsonl
+# terminal 2
+vagcan info --device /dev/cu.usbmodem206E37A148451
+grep -c '"Standard":2016' /tmp/esp-rx.jsonl
+```
+
+Without `--active` on the listening side nobody acknowledges: the transmitter
+tries until its controller refuses, a listen-only sniffer still counts the
+attempts (that is how §5.2 saw `cantx`), and the sending side notices nothing —
+`SlcanBackend` never reads an ack, and `info` times out either way. So a non-zero
+count on a listen-only sniffer proves the transmit path; only `--active` proves
+the whole frame, acknowledge included. For the board as the transmitter the
+difference is visible afterwards in `F`: `00` after an `--active` run; after a
+listen-only run the trail of the refusals — every transmit is eight attempts at
+eight error-counter points each, so the live bits climb through warning and
+passive (`24`) and, if `info` keeps asking, reach bus-off, which is rebuilt and
+latched as `80`. On the CANable's side the count is up to eight times the number
+of requests, one line per attempt.
+
+**Listen-only is silence.** With the CANable transmitting (`info` on it) and the
+board opened by plain `dev sniff` (no `--active`, i.e. `M1` before `O`), the
+board must acknowledge nothing: on the CANable side the frames go unacknowledged
+exactly as they would with no board on the pair. That is what `sniff` promises
+next to VCDS, and this is the run that checks the board keeps it.
+
+### 9.4 Results
+
+**Not yet run.** 2026-09-13, twice: no board and no CANable on USB when the image
+was finished, nor when the reviewed image was (`ls /dev/cu.usbmodem*` empty).
+Record here, when it is: `vagcan devices` output with both adapters; the `7E0`
+count in `esp-tx.jsonl` and in `esp-rx.jsonl`; `F` after each run (expect `00` —
+bit 3 with bit 0 means the ring did not keep up, bit 3 alone the controller's own
+FIFO, bit 6 a lost arbitration, bit 7 a bus-off, recovered).
+
+The load test — 4,000 frames/s into the board with nothing dropped — needs a
+transmitter that is not the board, and `cantx` is the board. It is the one
+claim in the image's header that this bench cannot check; the car can, with
+`dev sniff --device <board>` beside the engine's own broadcast traffic, `F`
+read afterwards.

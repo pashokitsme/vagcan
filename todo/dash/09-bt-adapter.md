@@ -2,6 +2,28 @@
 
 **Subsystem:** dash · **Crate:** `vag-dash-fw`, `vag-uds-can` · **Needs the car:** no
 
+> **Landed, 2026-09-13 — as the exclusive adapter mode, and not as this task.** The
+> firmware image **`slcan`** (`crates/dash/vag-dash-fw/src/bin/slcan.rs`) speaks the
+> LAWICEL slcan protocol on the board's USB-Serial-JTAG console; `vagcan devices` lists
+> the board by name (VID `303a` PID `1001`), and `--device /dev/cu.usbmodem…` drives it
+> with `SlcanBackend` unchanged. It is **mode 2 of
+> [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md)** — the dumb slcan proxy:
+> raw frames on the host's own clock, an *exclusive* mode with no panel beside it, for
+> `dev sniff`, bench work and a laptop-only session. It is **not** the answer to the wish
+> underneath this task — "read the car through the board while the panel keeps showing
+> its numbers" — which `14` §3-B meets with a UDS proxy (`BoardTransport` on the host,
+> one scheduler on the board); that is where this task's wish now lives, and `14`
+> supersedes this file. Why not the radio: the C3 has no Bluetooth Classic and so no SPP
+> (`10`), and BLE cannot carry a loaded bus (`11` measured it — single-digit KB/s
+> against the ≈90 KB/s a saturated bus costs in slcan ASCII); `14` §8 carries PDUs over
+> BLE instead, at `watch` rates. The rule `14` sets for mode 2 — *slowing down is
+> allowed, dropping is forbidden as far as a buffer can prevent it* — is what the
+> image's ring is sized for (2,048 lines, half a second of a saturated bus), and what it
+> still cannot hold it counts and reports in `E`/`F` as overrun, as the CANable does.
+> The on-device allowlist argued for below stays with the host in this mode — a raw
+> frame carries no service to check; `14` §2 puts one on the board for mode 1, where the
+> board composes the request. The bench record is `research/dash/can-bring-up.md` §9.
+
 > **The board changed, 2026-08-25.** The bench board is an **ESP32-C3 SuperMini**, not the
 > WROOM-32 this document was written against: RISC-V on stable Rust, native USB, **BLE only
 > — no Bluetooth Classic, no SPP**, 22 GPIO. What was proven on hardware, and what it voids

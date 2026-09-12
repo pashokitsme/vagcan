@@ -335,3 +335,28 @@ has been shown to work.
 is the first dominant bit of ours the gateway will have registered. Then the OLED on
 the carrier (`02`/`03` already render it on the laptop). `07`/`08` stay deferred.
 
+## Status (2026-09-13) — the board is an adapter, in its exclusive mode
+
+**The `slcan` image landed — mode 2 of `14`.** A fourth image in `vag-dash-fw`,
+**`slcan`**, makes the board a second CANable: it speaks the LAWICEL slcan protocol on
+its USB-Serial-JTAG console, so `SlcanBackend` on the laptop drives it unchanged and
+every command that takes an adapter — `watch`, `info`, `units`, `faults`, `sensors`,
+`dev sniff`, `dev survey` — works through `--device /dev/cu.usbmodem…` as it does
+through the CANable. `vagcan devices` lists the board by name (Espressif's
+`303a:1001`). It is the *exclusive* adapter mode of
+[`14-one-bus-three-clients.md`](14-one-bus-three-clients.md): raw frames, no panel
+beside it — for `dev sniff`, bench work, a laptop-only session. The wish in `09` (the
+laptop reads the car *while the panel keeps running*) is `14` §3-B, the UDS proxy, and
+is not met by this image; `09` is superseded by `14`. `10` found the C3 has no SPP and
+`11` measured that BLE cannot carry a loaded bus; the cable needed no host protocol
+work at all. The rule `14` sets — slowing allowed, dropping forbidden as far as a
+buffer can prevent it — is what the image's 2,048-line ring is for; what it still
+cannot hold is counted and reported in `E`/`F` as overrun. The image's own header says
+what it honours; the bench record is `research/dash/can-bring-up.md` §9 — the
+two-adapter run is written down and, as of this note, **not yet run**: no adapter was
+on USB when the reviewed image was finished.
+
+The bench passed on 2026-09-12 (`bench.sh`: 60,861 frames from the board in 15 s),
+so the transceiver question is closed; the car run with `rxwatch --features ack` and
+then `dash` is still the next hardware checkpoint for the panel itself.
+
