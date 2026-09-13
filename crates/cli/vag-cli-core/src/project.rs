@@ -341,11 +341,18 @@ pub fn rod_pool() -> Result<PathBuf> {
 	Ok(dir)
 }
 
-/// Append one entry to a project's provenance log.
+/// Record one source in a project's provenance log.
 ///
-/// Appends rather than replaces: two sources merge into one project, and a log
-/// that kept only the last would answer the question it exists for with half the
-/// truth. An unreadable existing file is started over rather than failing the
+/// One entry per source, not one per run. Two *different* sources merge into
+/// one project, and a log that kept only the last would answer the question it
+/// exists for with half the truth — so another source's entry is kept. The
+/// *same* source read again is a reread: its entry is replaced where it stands,
+/// with this run's version and time, rather than a copy appended per run. "The
+/// same" is the kind and the directory under the spelling rule `cache.sqlite`
+/// keys sources by ([`vag_data_db::normalise_dir`]), so `SK37X` and `SK37X/`
+/// are one entry here as they are one source there.
+///
+/// An unreadable existing file is started over rather than failing the
 /// run — nothing reads this at run time, and losing a `setup` to a corrupt note
 /// about a previous one would be the wrong trade.
 pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
@@ -355,6 +362,13 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 		.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
 		.and_then(|value| value.get("sources").and_then(|s| s.as_array()).cloned())
 		.unwrap_or_default();
+
+	let wanted = vag_data_db::normalise_dir(&entry.path);
+	let same = |row: &serde_json::Value| {
+		row["kind"].as_str() == Some(entry.kind) && row["path"].as_str().is_some_and(|path| vag_data_db::normalise_dir(path) == wanted)
+	};
+	let at = sources.iter().position(same);
+	sources.retain(|row| !same(row));
 
 	let mut row = serde_json::Map::new();
 	row.insert("kind".into(), entry.kind.into());
@@ -366,7 +380,10 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 		row.insert("detail".into(), detail.into());
 	}
 	row.insert("parsed_at".into(), chrono::Utc::now().to_rfc3339().into());
-	sources.push(serde_json::Value::Object(row));
+	match at {
+		Some(at) => sources.insert(at, serde_json::Value::Object(row)),
+		None => sources.push(serde_json::Value::Object(row)),
+	}
 
 	let document = serde_json::json!({ "sources": sources });
 	std::fs::create_dir_all(&p.dir).with_context(|| format!("creating {}", p.dir.display()))?;
@@ -684,6 +701,42 @@ mod tests {
 		assert_eq!(rows[0]["kind"], "vcds");
 		assert_eq!(rows[1]["version"], "2610.2.688");
 		assert!(rows[1]["parsed_at"].as_str().is_some_and(|t| t.contains('T')), "{text}");
+	}
+
+	#[test]
+	fn reading_the_same_source_again_replaces_its_entry_rather_than_appending_a_copy() {
+		// The defect: every `setup` run appended, so a project set up three times
+		// from one folder listed that folder three times. A second read of a
+		// source is a reread — the entry is that source's latest, in one row —
+		// and a trailing slash is the same folder, as it is in `cache.sqlite`.
+		let here = temp();
+		let project_dir = here.path().join("SK37X-download");
+		std::fs::create_dir_all(&project_dir).unwrap();
+		let p = open_or_create_in(here.path(), "SK37X").unwrap();
+		let entry = |path: String, version: &str| SourceEntry {
+			kind: "odis",
+			path,
+			version: Some(version.into()),
+			detail: None,
+		};
+		let vcds = SourceEntry {
+			kind: "vcds",
+			path: "/Applications/VCDS".into(),
+			version: None,
+			detail: None,
+		};
+		record_source(&p, entry(project_dir.display().to_string(), "2610.2.688")).unwrap();
+		record_source(&p, vcds).unwrap();
+		record_source(&p, entry(format!("{}/", project_dir.display()), "2610.2.700")).unwrap();
+
+		let text = std::fs::read_to_string(p.sources()).unwrap();
+		let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+		let rows = value["sources"].as_array().unwrap();
+		assert_eq!(rows.len(), 2, "one folder read twice is one source:\n{text}");
+		let odis: Vec<&serde_json::Value> = rows.iter().filter(|row| row["kind"] == "odis").collect();
+		assert_eq!(odis.len(), 1, "{text}");
+		assert_eq!(odis[0]["version"], "2610.2.700", "the entry is the latest read:\n{text}");
+		assert!(rows.iter().any(|row| row["kind"] == "vcds"), "another source's entry stays:\n{text}");
 	}
 
 	// The two tests that used to sit here — that remembering a project leaves

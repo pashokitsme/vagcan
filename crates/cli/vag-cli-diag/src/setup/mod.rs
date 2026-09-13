@@ -378,7 +378,7 @@ fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked:
 	match crate::project::folder_name(named) {
 		Ok(own) => {
 			let merge = match existing.contains(&own) {
-				true => "\n    That project is already here: this source is added to it, and\n    nothing already in it is replaced.",
+				true => "\n    That project is already here: this source is added to it, and\n    what other sources put there stays.",
 				false => "",
 			};
 			// Both names last, one to a line. Neither has a knowable width when
@@ -1311,7 +1311,7 @@ mod tests {
 		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing).unwrap(), "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("already here"), "{said}");
-		assert!(said.contains("nothing already in it is replaced"), "{said}");
+		assert!(said.contains("what other sources put there stays"), "{said}");
 
 		// A swap onto a name nothing holds is still new, and says nothing extra.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);

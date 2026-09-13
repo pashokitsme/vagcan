@@ -324,7 +324,7 @@ pub const ODIS: &str = "odis";
 /// does at the moment anything is imported from it; when it does not — a
 /// recorded path whose directory has since gone — the raw string minus its
 /// trailing separators is kept, so an old row still matches itself.
-fn normalise_dir(dir: &str) -> String {
+pub fn normalise_dir(dir: &str) -> String {
 	if let Ok(real) = std::fs::canonicalize(dir) {
 		return real.to_string_lossy().into_owned();
 	}
