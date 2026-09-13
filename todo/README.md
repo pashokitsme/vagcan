@@ -54,23 +54,21 @@ port twice resets it.
 3. **Bench session** — the unverified items above.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
 5. **Alarms on the board** — `dash/04`: the render side is done, the firmware wiring is not.
-6. **A path typo reads as a missing directory** — `~/Dowloads/SK37X` should suggest
-   `Downloads` from the siblings of the deepest existing parent (raised 2026-08-09).
-7. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
+6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+7. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
-11. **Questions only the car answers** — `dash/06`.
-12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+9. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
+10. **Questions only the car answers** — `dash/06`.
+11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-14. **`watch` and `measure` across all fifteen units** — measured against the file, not
+13. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
