@@ -959,9 +959,9 @@ fn today() -> String {
 
 /// The engine's identification block, which is where the VIN lives.
 ///
-/// The adapter is handed over and handed back: it is a single-user resource with
+/// The link is handed over and handed back: it is a single-user resource with
 /// no way to borrow it across an await.
-async fn read_engine_identity<B: vag_uds_can::CanBackend>(backend: B) -> (B, vag_uds_client::identity::EcuIdentity) {
+async fn read_engine_identity<B: vag_uds_can::UnitLink>(backend: B) -> (B, vag_uds_client::identity::EcuIdentity) {
 	use vag_uds_client::AsyncUdsClient;
 	use vag_uds_client::address::UnitAddress;
 	use vag_uds_transport::CanId;
@@ -969,13 +969,9 @@ async fn read_engine_identity<B: vag_uds_can::CanBackend>(backend: B) -> (B, vag
 	let Some(address) = UnitAddress::from_request(plan::ENGINE) else {
 		return (backend, vag_uds_client::identity::EcuIdentity::default());
 	};
-	let mut uds = AsyncUdsClient::new(vag_uds_can::IsoTpCan::new(
-		backend,
-		CanId::Standard(address.request),
-		CanId::Standard(address.response),
-	));
+	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 	let identity = vag_uds_client::identity::read_identity(&mut uds).await;
-	(uds.into_transport().into_backend(), identity)
+	(B::release(uds.into_transport()), identity)
 }
 
 /// One cycle of every channel the coastdown watches.
@@ -1019,7 +1015,7 @@ impl Reader {
 	}
 
 	/// Read every batch once, and say when the cycle ended.
-	async fn cycle<B: vag_uds_can::CanBackend>(&mut self, backend: &mut Option<B>, started: Instant) -> Seconds {
+	async fn cycle<B: vag_uds_can::UnitLink>(&mut self, backend: &mut Option<B>, started: Instant) -> Seconds {
 		let mut at = started.elapsed().as_secs_f64();
 		for batch in &self.batches {
 			let (t, outcome) = plan::read_batch(backend, batch, started).await;

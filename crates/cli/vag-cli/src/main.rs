@@ -28,7 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use vag_uds_can::{IsoTpCan, SlcanMode};
+use vag_uds_can::{SlcanMode, UnitLink};
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
@@ -582,7 +582,10 @@ async fn dispatch(command: Command) -> Result<()> {
 			println!("{}", device::render_list(&device::list()?));
 			Ok(())
 		}
-		Command::Info { device } => info(device.as_deref()).await,
+		Command::Info { device } => {
+			let path = device::resolve(device.as_deref())?;
+			info(async || open_adapter(&path).await).await
+		}
 		// The two depths of the same question. `--identify <unit>` names one
 		// unit and reads its whole identification block; `--identify` alone
 		// asks every unit the gateway lists for the two fields that name it.
@@ -590,7 +593,10 @@ async fn dispatch(command: Command) -> Result<()> {
 			device,
 			identify: Some(Some(ecu)),
 			while_driving,
-		} => identification(device.as_deref(), &ecu, while_driving).await,
+		} => {
+			let path = device::resolve(device.as_deref())?;
+			identification(async || open_adapter(&path).await, &ecu, while_driving).await
+		}
 		// `requires = "identify"` above stops `units --while-driving` at the
 		// parse, but `--identify` with no unit satisfies it and lands here,
 		// where the flag has nothing to lift: this arm asks each unit for the
@@ -601,8 +607,15 @@ async fn dispatch(command: Command) -> Result<()> {
              for the two fields that name it — that is not a sweep, and nothing about it is gated \
              on road speed."
 		),
-		Command::Units { device, identify, .. } => units(device.as_deref(), identify.is_some()).await,
-		Command::Sensors { device, ecu } => sensors(device.as_deref(), &ecu).await,
+		// Resolved inside `open`, not here: `units` reads the label files first.
+		Command::Units { device, identify, .. } => {
+			let open = async || open_adapter(&device::resolve(device.as_deref())?).await;
+			units(open, identify.is_some()).await
+		}
+		Command::Sensors { device, ecu } => {
+			let path = device::resolve(device.as_deref())?;
+			sensors(async || open_adapter(&path).await, &ecu).await
+		}
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -633,9 +646,9 @@ async fn dispatch(command: Command) -> Result<()> {
 				(None, false) => watch::View::Plain(None),
 				(None, true) => watch::View::FullScreen,
 			};
+			let path = device::resolve(device.as_deref())?;
 			watch::run(
-				&device::resolve(device.as_deref())?,
-				ADAPTER_BAUD,
+				async || open_adapter(&path).await,
 				watch::Options {
 					preselect: &preselect,
 					hz,
@@ -665,9 +678,9 @@ async fn dispatch(command: Command) -> Result<()> {
 			iv_cache,
 			..
 		} => {
+			let path = device::resolve(device.as_deref())?;
 			faults::run(
-				&device::resolve(device.as_deref())?,
-				ADAPTER_BAUD,
+				async || open_adapter(&path).await,
 				ecu.as_deref(),
 				details,
 				all,
@@ -696,9 +709,9 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 			while_driving,
 			..
 		} => {
+			let path = device::resolve(device.as_deref())?;
 			survey::run(
-				&device::resolve(device.as_deref())?,
-				ADAPTER_BAUD,
+				async || open_adapter(&path).await,
 				survey::Options {
 					range: range.as_deref(),
 					out: out.as_deref(),
@@ -738,7 +751,8 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
-				let name = odx_name_from_car(device.as_deref(), &ecu).await?;
+				let path = device::resolve(device.as_deref())?;
+				let name = odx_name_from_car(async || open_adapter(&path).await, &ecu).await?;
 				println!("control unit {ecu} names its label file {name:?}\n");
 				labels::resolve_odx(&dir, &name, &iv_cache)
 			}
@@ -792,33 +806,29 @@ fn parse_ecu(text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
 }
 
-/// Open the adapter and address one control unit over UDS.
-async fn open_ecu(device_path: &str, unit: UnitAddress) -> Result<AsyncUdsClient<IsoTpCan<vag_uds_can::SerialSlcan>>> {
-	let backend = device::open(device_path, ADAPTER_BAUD, SlcanMode::Normal).await?;
-	Ok(AsyncUdsClient::new(IsoTpCan::new(
-		backend,
+/// Open the adapter as the link a command talks to the car through.
+async fn open_adapter(device_path: &str) -> Result<vag_uds_can::SerialSlcan> {
+	device::open(device_path, ADAPTER_BAUD, SlcanMode::Normal).await
+}
+
+/// Address one control unit over UDS.
+fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
+	AsyncUdsClient::new(link.to_unit(
 		vag_uds_transport::CanId::Standard(unit.request),
 		vag_uds_transport::CanId::Standard(unit.response),
-	)))
+	))
 }
 
 /// Identify the car (see the `Info` subcommand docs).
-async fn info(device_arg: Option<&str>) -> Result<()> {
-	let path = device::resolve(device_arg)?;
-
-	// One serial port, two control units: read the engine, then re-address the
-	// same backend for the gearbox rather than re-opening the adapter.
+async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<()> {
+	// One link, two control units: read the engine, then release the link and
+	// address the gearbox rather than re-opening it.
 	let engine_unit = parse_ecu("01")?;
-	let mut engine_uds = open_ecu(&path, engine_unit).await?;
+	let mut engine_uds = address_unit(open().await?, engine_unit);
 	let engine = engine_uds.read_identity().await;
 
 	let gearbox_unit = parse_ecu("02")?;
-	let backend = engine_uds.into_transport().into_backend();
-	let mut gearbox_uds = AsyncUdsClient::new(IsoTpCan::new(
-		backend,
-		vag_uds_transport::CanId::Standard(gearbox_unit.request),
-		vag_uds_transport::CanId::Standard(gearbox_unit.response),
-	));
+	let mut gearbox_uds = address_unit(L::release(engine_uds.into_transport()), gearbox_unit);
 	let gearbox = gearbox_uds.read_identity().await;
 
 	if engine.is_empty() && gearbox.is_empty() {
@@ -842,14 +852,13 @@ async fn info(device_arg: Option<&str>) -> Result<()> {
 /// answers is still shown; whether its bytes become a number is decided by
 /// `obd::conversion_for`, per parameter, from the unit's block and the width of
 /// what it actually answered.
-async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
+async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<()> {
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
-	let path = device::resolve(device_arg)?;
 	let unit = parse_ecu(ecu_text)?;
 	let established = unit.is_emissions_related();
-	let mut uds = open_ecu(&path, unit).await?;
+	let mut uds = address_unit(open().await?, unit);
 
 	// Ask for every standard parameter; the unit refuses the ones it does not
 	// implement, and those are skipped rather than failing the run.
@@ -877,11 +886,11 @@ async fn sensors(device_arg: Option<&str>, ecu_text: &str) -> Result<()> {
 }
 
 /// Read the ODX label-file name a control unit reports for itself (F19E).
-async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<String> {
+async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
-	let path = device::resolve(device_arg)?;
-	let mut uds = open_ecu(&path, parse_ecu(ecu_text)?).await?;
+	let unit = parse_ecu(ecu_text)?;
+	let mut uds = address_unit(open().await?, unit);
 	let data = uds
 		.read_data_by_identifier(ODX_FILE_NAME)
 		.await
@@ -894,8 +903,7 @@ async fn odx_name_from_car(device_arg: Option<&str>, ecu_text: &str) -> Result<S
 }
 
 /// List the car's control units (see the `Units` subcommand docs).
-async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
-	use vag_uds_can::{IsoTpCan, SlcanMode};
+async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: bool) -> Result<()> {
 	use vag_uds_client::gateway;
 	use vag_uds_transport::CanId;
 
@@ -925,13 +933,9 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 		None => None,
 	};
 
-	let path = device::resolve(device_arg)?;
-	let backend = device::open(&path, ADAPTER_BAUD, SlcanMode::Normal).await?;
-	let channel = IsoTpCan::new(
-		backend,
-		CanId::Standard(GATEWAY_REQUEST),
-		CanId::Standard(GATEWAY_REQUEST + VW_RESPONSE_OFFSET),
-	);
+	let channel = open()
+		.await?
+		.to_unit(CanId::Standard(GATEWAY_REQUEST), CanId::Standard(GATEWAY_REQUEST + VW_RESPONSE_OFFSET));
 	let mut uds = AsyncUdsClient::new(channel);
 
 	let bitmap = uds
@@ -948,7 +952,7 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 	let mut spinner = progress::Line::new();
 	let mut identified = 0usize;
 	let mut resolved = 0usize;
-	let mut backend = uds.into_transport().into_backend();
+	let mut backend = L::release(uds.into_transport());
 	let listed = ids.len();
 	for (at, id) in ids.into_iter().enumerate() {
 		if identify {
@@ -958,8 +962,8 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 			println!("  {id:03X}");
 			continue;
 		}
-		// Re-address the same adapter for each unit rather than reopening it.
-		let channel = IsoTpCan::new(backend, CanId::Standard(id), CanId::Standard(id + VW_RESPONSE_OFFSET));
+		// Address the same link to each unit in turn rather than reopening it.
+		let channel = backend.to_unit(CanId::Standard(id), CanId::Standard(id + VW_RESPONSE_OFFSET));
 		let mut unit = AsyncUdsClient::new(channel);
 		let part = unit.read_data_by_identifier(0xF187).await.ok();
 		let component = unit.read_data_by_identifier(0xF197).await.ok();
@@ -1001,7 +1005,7 @@ async fn units(device_arg: Option<&str>, identify: bool) -> Result<()> {
 				.unwrap_or_else(|| format!("{id:03X}"));
 			println!("  {id:03X}  {number:<4} {part:<14} {component:<16} {name}");
 		}
-		backend = unit.into_transport().into_backend();
+		backend = L::release(unit.into_transport());
 	}
 	if let Some(project) = &label_files_dir {
 		// Silence here would read as "the label files agree"; it usually means the
@@ -1039,12 +1043,11 @@ fn glossary_command() -> Result<()> {
 /// The deeper of the two depths `units` has: the shallow one asks every unit
 /// the two fields that name it, this asks one unit the whole 256-identifier
 /// block and names what answers.
-async fn identification(device_arg: Option<&str>, ecu_text: &str, while_driving: bool) -> Result<()> {
-	let path = device::resolve(device_arg)?;
+async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str, while_driving: bool) -> Result<()> {
 	let unit = parse_ecu(ecu_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
-	let mut backend = device::open(&path, ADAPTER_BAUD, SlcanMode::Normal).await?;
+	let mut backend = open().await?;
 	// 256 reads aimed at one control unit is a sweep, whatever the block they
 	// are in is called. This was the one sweep-shaped path in the tool with no
 	// road-speed check on it — `vagcan units --identify`, which anybody could run at
@@ -1061,11 +1064,7 @@ async fn identification(device_arg: Option<&str>, ecu_text: &str, while_driving:
 			),
 		};
 	}
-	let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-		backend,
-		vag_uds_transport::CanId::Standard(unit.request),
-		vag_uds_transport::CanId::Standard(unit.response),
-	));
+	let mut uds = address_unit(backend, unit);
 
 	let mut found = Vec::new();
 	// The read is bounded and the block is standardised, but the rule "stop

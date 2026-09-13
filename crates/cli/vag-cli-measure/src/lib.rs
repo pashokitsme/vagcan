@@ -231,9 +231,9 @@ pub trait BatchReader {
 	fn read(&mut self, batch: &crate::plan::Batch) -> impl std::future::Future<Output = (Seconds, crate::plan::BatchOutcome)>;
 }
 
-/// The live reader: one adapter, addressed a unit at a time.
+/// The live reader: one link, addressed a unit at a time.
 ///
-/// The backend lives in an `Option` because it is a single-user resource with no
+/// The link lives in an `Option` because it is a single-user resource with no
 /// way to borrow it across an await — it is handed over and handed back, which
 /// is also why this future must never be dropped mid-flight.
 pub struct LiveReader<B> {
@@ -241,7 +241,7 @@ pub struct LiveReader<B> {
 	started: Instant,
 }
 
-impl<B: vag_uds_can::CanBackend> BatchReader for LiveReader<B> {
+impl<B: vag_uds_can::UnitLink> BatchReader for LiveReader<B> {
 	async fn read(&mut self, batch: &crate::plan::Batch) -> (Seconds, crate::plan::BatchOutcome) {
 		crate::plan::read_batch(&mut self.backend, batch, self.started).await
 	}

@@ -35,7 +35,7 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use vag_uds_can::{IsoTpCan, SlcanMode};
+use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::uds::UdsError;
 use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
@@ -376,7 +376,10 @@ pub struct Options<'a> {
 }
 
 /// Run the survey (see the module docs).
-pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<()> {
+///
+/// `open` takes the link to the car, and is called only once every argument
+/// has been checked.
+pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Options<'_>) -> Result<()> {
 	let Options {
 		range,
 		out,
@@ -406,7 +409,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		None => None,
 	};
 
-	let mut backend = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
+	let mut backend = open().await?;
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.
@@ -443,11 +446,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		Some(ids) => ids,
 		None => {
 			let address = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
-			let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-				backend,
-				CanId::Standard(address.request),
-				CanId::Standard(address.response),
-			));
+			let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 			let listed = match uds.read_data_by_identifier(gateway::INSTALLATION_LIST).await {
 				Ok(bitmap) => gateway::decode_installation_list(&bitmap),
 				Err(e) => {
@@ -460,7 +459,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 					Vec::new()
 				}
 			};
-			backend = uds.into_transport().into_backend();
+			backend = L::release(uds.into_transport());
 			walk_order(&listed)
 		}
 	};
@@ -498,11 +497,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			println!("  {request:03X} is in neither diagnostic block — skipped");
 			continue;
 		};
-		let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-			backend,
-			CanId::Standard(address.request),
-			CanId::Standard(address.response),
-		));
+		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 
 		// No session change by default. `0x10 0x03` is workshop mode, and a
 		// unit that assists the driver is entitled to stop assisting while it
@@ -549,7 +544,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		if !report.answered {
 			progress.finish();
 			println!("{}", report.summary());
-			backend = uds.into_transport().into_backend();
+			backend = L::release(uds.into_transport());
 			reports.push(report);
 			continue;
 		}
@@ -572,7 +567,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 			progress.finish();
 			println!("{}", report.summary());
 			println!("{}", crate::declared::no_source_notice(&address.label()));
-			backend = uds.into_transport().into_backend();
+			backend = L::release(uds.into_transport());
 			reports.push(report);
 			continue;
 		}
@@ -643,7 +638,7 @@ pub async fn run(device_path: &str, baud: u32, options: Options<'_>) -> Result<(
 		}
 		fresh.push(line);
 		reports.push(report);
-		backend = uds.into_transport().into_backend();
+		backend = L::release(uds.into_transport());
 	}
 
 	let answered = reports.iter().filter(|r| r.answered).count();

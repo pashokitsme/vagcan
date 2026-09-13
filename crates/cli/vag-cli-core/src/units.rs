@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use vag_uds_can::UnitLink;
 use vag_uds_client::AsyncUdsClient;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_transport::CanId;
@@ -29,15 +30,10 @@ use crate::plan::{self, UnitIdentity};
 /// this tool recommends — would then have left `watch` seeing that unit and
 /// the engine, with the other thirteen silently absent.
 ///
-/// The adapter comes back out because it is a single-user resource with no way
+/// The link comes back out because it is a single-user resource with no way
 /// to borrow it across an await, so it is handed over and handed back rather
 /// than shared.
-pub async fn identify<B: vag_uds_can::CanBackend>(
-	backend: B,
-	also: &[u16],
-	known: &[UnitIdentity],
-	progress: &mut crate::progress::Line,
-) -> (B, Vec<UnitIdentity>) {
+pub async fn identify<B: UnitLink>(backend: B, also: &[u16], known: &[UnitIdentity], progress: &mut crate::progress::Line) -> (B, Vec<UnitIdentity>) {
 	let mut wanted: Vec<u16> = also.to_vec();
 	// Which units the car has. Without this the view would only ever show the
 	// engine, because a unit with no identity contributes no channels and so
@@ -47,18 +43,14 @@ pub async fn identify<B: vag_uds_can::CanBackend>(
 	// back to whatever was asked for.
 	progress.update("asking the gateway which control units this car has");
 	let gateway = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
-	let mut uds = AsyncUdsClient::new(vag_uds_can::IsoTpCan::new(
-		backend,
-		CanId::Standard(gateway.request),
-		CanId::Standard(gateway.response),
-	));
+	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(gateway.request), CanId::Standard(gateway.response)));
 	if let Ok(bitmap) = uds.read_data_by_identifier(vag_uds_client::gateway::INSTALLATION_LIST).await {
 		wanted.extend(vag_uds_client::gateway::decode_installation_list(&bitmap));
 	}
 	// The powertrain is never in that list — it lives on the other id
 	// block — so it is added rather than discovered.
 	wanted.push(0x7E1);
-	let backend = uds.into_transport().into_backend();
+	let backend = B::release(uds.into_transport());
 
 	identify_listed(backend, &wanted, known, progress).await
 }
@@ -72,15 +64,11 @@ pub async fn identify<B: vag_uds_can::CanBackend>(
 /// question with seven requests and throw six of the answers away.
 ///
 /// A car that will not say is not a failure; it simply has no files of its own.
-pub async fn read_vin<B: vag_uds_can::CanBackend>(backend: B) -> (B, Option<String>) {
+pub async fn read_vin<B: UnitLink>(backend: B) -> (B, Option<String>) {
 	let Some(engine) = UnitAddress::from_request(plan::ENGINE) else {
 		return (backend, None);
 	};
-	let mut uds = AsyncUdsClient::new(vag_uds_can::IsoTpCan::new(
-		backend,
-		CanId::Standard(engine.request),
-		CanId::Standard(engine.response),
-	));
+	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(engine.request), CanId::Standard(engine.response)));
 	let vin = uds
 		.read_data_by_identifier(vag_uds_client::identity::did::VIN)
 		.await
@@ -93,7 +81,7 @@ pub async fn read_vin<B: vag_uds_can::CanBackend>(backend: B) -> (B, Option<Stri
 				.to_string()
 		})
 		.filter(|text| !text.is_empty());
-	(uds.into_transport().into_backend(), vin)
+	(B::release(uds.into_transport()), vin)
 }
 
 /// Identify a named list of units, skipping the ones already accounted for.
@@ -105,7 +93,7 @@ pub async fn read_vin<B: vag_uds_can::CanBackend>(backend: B) -> (B, Option<Stri
 /// re-reading those would cost a probe each for an answer already in hand.
 /// Only the units newly identified come back, so the caller keeps the order it
 /// had.
-async fn identify_listed<B: vag_uds_can::CanBackend>(
+async fn identify_listed<B: UnitLink>(
 	mut backend: B,
 	requests: &[u16],
 	known: &[UnitIdentity],
@@ -124,11 +112,7 @@ async fn identify_listed<B: vag_uds_can::CanBackend>(
 		let Some(address) = UnitAddress::from_request(request) else {
 			continue;
 		};
-		let mut uds = AsyncUdsClient::new(vag_uds_can::IsoTpCan::new(
-			backend,
-			CanId::Standard(address.request),
-			CanId::Standard(address.response),
-		));
+		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 		let text = |data: Option<Vec<u8>>| {
 			data
 				.map(|b| String::from_utf8_lossy(&b).trim_end_matches(['\0', ' ']).to_string())
@@ -141,7 +125,7 @@ async fn identify_listed<B: vag_uds_can::CanBackend>(
 		const PROBE: Duration = Duration::from_millis(300);
 		let part = text(uds.read_data_by_identifier_within(0xF187, PROBE).await.ok());
 		if part.is_none() && request != plan::ENGINE {
-			backend = uds.into_transport().into_backend();
+			backend = B::release(uds.into_transport());
 			continue;
 		}
 		// Identification only — no session change and no sweep. The danger is
@@ -160,7 +144,7 @@ async fn identify_listed<B: vag_uds_can::CanBackend>(
 			odx_version: version,
 			component,
 		});
-		backend = uds.into_transport().into_backend();
+		backend = B::release(uds.into_transport());
 	}
 	(backend, identities)
 }
