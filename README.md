@@ -6,7 +6,14 @@ A command-line diagnostics tool for VW, Audi, Škoda and SEAT cars, written in R
 
 It talks to the car through a plain CAN adapter: an `MKS CANable V2.0 Pro`, or an `ESP32` with the firmware from this repository.
 
-The tools is not designed to write operations: coding, adaptations, clearing faults and especially flashing are **not supporeted** (at the moment, at least).
+The tool is not designed for write operations: coding, adaptations, clearing faults and especially flashing are **not supported** (at the moment, at least).
+
+## Requirements
+
+- **Rust stable**, edition 2024.
+- **An slcan USB-CAN adapter.** Developed and tested mainly on `MKS CANable V2.0 Pro`. No driver is needed: the adapter shows up as a serial port.
+- **Diagnostic data**, for names and numbers instead of raw bytes: a VW **ODIS-Service project** or a **VCDS installation**. `vagcan setup` offers to download VCDS if you have neither.
+
 
 ## Features
 
@@ -43,7 +50,7 @@ The tools is not designed to write operations: coding, adaptations, clearing fau
 
 Everything lives under `~/.vagcan/`. Nothing about any car is built into the tool.
 
-### HUD display
+### Dash Display (technically implemented but I didn't assemble it irl yet)
 
 An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OLED.
 
@@ -59,30 +66,20 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-*Updated 2026-09-14. Details: [`todo/README.md`](todo/README.md).*
-
 **Done**
-- [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing
+- [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
 - [x] ODIS project as the main data source, with fault text from ODIS
 - [x] `setup` in about 4 s on an ODIS project
 - [x] Dash reads the car: 4 channels from 2 units, values and chart pages
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
-
-**Next, no car needed**
 - [ ] UDS over BLE: read faults from a laptop without a cable
 - [ ] Laptop reads the car through the dash while its screen keeps working
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
-
-**Next, needs the car**
-- [ ] Page the dash with the cruise-control stalk while cruise is off
+- [ ] Page the dash panel with the cruise-control buttons while cruise is off
 - [ ] `vagcan faults` on the car with fault text from ODIS only
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash
 
-## Requirements
-
-- **Rust stable**, edition 2024.
-- **An slcan USB-CAN adapter.** Developed and tested mainly on `MKS CANable V2.0 Pro`. No driver is needed: the adapter shows up as a serial port.
-- **Diagnostic data**, for names and numbers instead of raw bytes: a VW **ODIS-Service project** or a **VCDS installation**. `vagcan setup` offers to download VCDS if you have neither.
+Details: [`todo/README.md`](todo/README.md).
 
 ## Tested on
 
