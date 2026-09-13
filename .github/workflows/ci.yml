@@ -147,8 +147,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: research/dash/host
-      - name: system deps for btleplug (BlueZ over D-Bus)
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      # libudev-dev: `serialport`'s default `libudev` feature (USB VID/PID in
+      # its port list) builds `libudev-sys`, which finds libudev via pkg-config.
+      - name: system deps for btleplug (BlueZ over D-Bus) and serialport (libudev)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
       - name: cargo fmt --check
         run: cargo fmt -- --check
       - name: cargo clippy --all-targets -D warnings
