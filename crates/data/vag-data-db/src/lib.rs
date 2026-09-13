@@ -1718,24 +1718,34 @@ mod tests {
 	/// [`a_setup_killed_mid_write_leaves_a_cache_every_reader_can_still_open`]
 	/// re-executes this binary into. Without the variable it does nothing.
 	///
-	/// It is the writer `setup` is, killed where Ctrl-C kills it: inside
-	/// [`put_all_faults`]'s one transaction, with rows already written into it.
+	/// It is the writer `setup` is, killed where Ctrl-C kills it: inside one
+	/// replacing transaction over the fault table, after the transaction has
+	/// outgrown the page cache and started writing changed pages into the
+	/// database file itself. On the reference project that happens inside
+	/// [`put_all_faults`] and [`put_all_readings`] on their own — hundreds of
+	/// thousands of rows — and here the cache is shrunk to ten pages so a few
+	/// thousand rows do it. It matters: a journal whose transaction never touched
+	/// the file is not hot under `synchronous = FULL`, and SQLite ignores it.
 	/// `process::exit` runs no destructor, so the transaction is neither
 	/// committed nor rolled back — the rollback journal is left on disk exactly
 	/// as a SIGINT leaves it.
 	#[test]
 	fn a_writer_that_dies_mid_transaction() {
 		let Some(db) = std::env::var_os(DYING_WRITER) else { return };
-		let db = std::path::PathBuf::from(db);
-		let rows: Vec<vag_data_labels::odis::Fault> = (0..2000).map(|code| fault(code, "replacement")).collect();
-		let dying = (0..).map(|n| {
-			if n == 50 {
-				std::process::exit(42);
-			}
-			("EV_Brake", rows.as_slice())
-		});
-		put_all_faults(&db, "/x/SK37X", dying).unwrap();
-		unreachable!("the iterator exits the process before the transaction commits");
+		let mut conn = Connection::open(std::path::PathBuf::from(db)).unwrap();
+		conn.pragma_update(None, "synchronous", "FULL").unwrap();
+		conn.pragma_update(None, "cache_size", 10).unwrap();
+		let tx = conn.transaction().unwrap();
+		tx.execute("DELETE FROM fault", []).unwrap();
+		for code in 0..20_000 {
+			tx.execute(
+				"INSERT INTO fault (source_id, variant, dop, code, text, level, temporary) \
+				 VALUES (1, 'EV_Brake', 'DTCDOP_VAGUDS', ?1, 'a replacement that never commits', 2, 0)",
+				params![code],
+			)
+			.unwrap();
+		}
+		std::process::exit(42);
 	}
 
 	#[test]
@@ -1757,7 +1767,14 @@ mod tests {
 			.unwrap();
 		assert_eq!(status.code(), Some(42), "the writer did not die where it was meant to");
 		let journal = ws.db_path.with_file_name("cache.sqlite-journal");
-		assert!(journal.is_file(), "sanity: a killed writer leaves its journal behind");
+		// The magic number SQLite writes at the head of a journal once that journal
+		// is committed to — the mark that makes it hot, and an open roll it back.
+		let head = std::fs::read(&journal).expect("sanity: a killed writer leaves its journal behind");
+		assert_eq!(
+			head.get(..8),
+			Some(&[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7][..]),
+			"sanity: the journal is hot"
+		);
 
 		// Every reader answers, and answers with what was committed.
 		let faults = faults_of(&ws.db_path, "EV_Brake").expect("faults_of on a cache with a hot journal");
@@ -1768,7 +1785,11 @@ mod tests {
 		assert_eq!(source_languages(&ws.db_path).unwrap().len(), 1);
 		assert!(readings_of(&ws.db_path, "EV_Brake").unwrap().is_empty());
 		assert!(load_files(&ws.db_path).unwrap().is_empty());
-		assert!(!journal.exists(), "the reader that opened it rolled the journal back");
+		assert!(
+			!journal.exists(),
+			"the reader that opened it rolled the journal back: {:?} bytes",
+			std::fs::metadata(&journal).map(|m| m.len())
+		);
 	}
 
 	#[test]
