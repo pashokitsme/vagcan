@@ -669,7 +669,7 @@ fn refused(dir: &Path, want: Look) -> String {
 		);
 	}
 	let mut out = match (dir.exists(), dir.is_dir()) {
-		(false, _) => format!("{shown} is not a directory — there is nothing at that path."),
+		(false, _) => nothing_at(dir),
 		(true, false) => format!("{shown} is not a directory — it is a file. If that is an archive, unpack it and point at the folder it unpacks to."),
 		(true, true) => format!("{shown} is not {}.", want.named()),
 	};
@@ -701,6 +701,66 @@ fn hint(dir: &Path, want: Option<Look>) -> String {
 	}
 }
 
+/// A path with nothing at it, and the path they probably meant when one
+/// component of it is a typo.
+fn nothing_at(dir: &Path) -> String {
+	let mut out = format!("{} is not a directory — there is nothing at that path.", dir.display());
+	if let Some(meant) = misspelt(dir) {
+		out.push_str(&format!("\n    Did you mean {}?", meant.display()));
+	}
+	out
+}
+
+/// The existing path one typo away from a missing one, if exactly one is.
+///
+/// Only the first missing component is corrected, against the directories
+/// beside it; the components after it are kept as typed. A guess that does not
+/// exist, or two equally close guesses, is no guess.
+fn misspelt(dir: &Path) -> Option<PathBuf> {
+	let found = dir.ancestors().skip(1).find(|up| up.exists())?;
+	let mut rest = dir.strip_prefix(found).ok()?.components();
+	let typed = rest.next()?.as_os_str().to_string_lossy().to_lowercase();
+	let length = typed.chars().count();
+	let mut best: Option<(usize, PathBuf)> = None;
+	let mut tied = false;
+	for sibling in children(found).into_iter().filter(|child| child.is_dir()) {
+		let Some(name) = sibling.file_name() else { continue };
+		let distance = edit_distance(&typed, &name.to_string_lossy().to_lowercase());
+		// Close in absolute terms and relative to the name: two edits turn any
+		// three-letter name into any other.
+		if distance > 2 || distance * 3 > length {
+			continue;
+		}
+		match &best {
+			Some((least, _)) if distance > *least => {}
+			Some((least, _)) if distance == *least => tied = true,
+			_ => {
+				best = Some((distance, sibling));
+				tied = false;
+			}
+		}
+	}
+	let (_, sibling) = best.filter(|_| !tied)?;
+	let meant = sibling.join(rest.as_path());
+	meant.exists().then_some(meant)
+}
+
+/// Levenshtein distance over characters: insertions, deletions, substitutions.
+fn edit_distance(a: &str, b: &str) -> usize {
+	let b: Vec<char> = b.chars().collect();
+	let mut row: Vec<usize> = (0..=b.len()).collect();
+	for (i, ca) in a.chars().enumerate() {
+		let mut diagonal = row[0];
+		row[0] = i + 1;
+		for (j, cb) in b.iter().enumerate() {
+			let above = row[j + 1];
+			row[j + 1] = (above + 1).min(row[j] + 1).min(diagonal + usize::from(ca != *cb));
+			diagonal = above;
+		}
+	}
+	row[b.len()]
+}
+
 /// A path given on the command line that is neither of the two.
 ///
 /// Names both shapes, because nothing was picked and so nothing says which one
@@ -709,7 +769,7 @@ fn hint(dir: &Path, want: Option<Look>) -> String {
 fn unrecognised(dir: &Path) -> String {
 	let shown = dir.display();
 	let head = match (dir.exists(), dir.is_dir()) {
-		(false, _) => format!("{shown} is not a directory — there is nothing at that path."),
+		(false, _) => nothing_at(dir),
 		(true, false) => format!("{shown} is not a directory — it is a file. If that is an archive, unpack it and point at the folder it unpacks to."),
 		(true, true) => format!("{shown} is neither an ODIS project nor a VCDS installation."),
 	};
@@ -1504,6 +1564,42 @@ mod tests {
 		assert!(why.contains("AStringData.data.gz"), "the other kind is named too: {why}");
 		assert!(why.contains(crate::missing::VCDS_DOWNLOAD), "{why}");
 		assert!(why.contains("offers to download"), "the other way in is named: {why}");
+	}
+
+	#[test]
+	fn a_typo_in_a_middle_component_names_the_path_with_the_rest_appended() {
+		let here = tempfile::tempdir().unwrap();
+		let meant = here.path().join("Downloads").join("SK37X");
+		std::fs::create_dir_all(&meant).unwrap();
+		let typed = here.path().join("Dowloads").join("SK37X");
+		assert_eq!(misspelt(&typed), Some(meant.clone()));
+		let mut io = Scripted::new(vec![]);
+		let why = choose(&mut io, &mut no_dialog(), Some(&typed.display().to_string()))
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains(&format!("Did you mean {}?", meant.display())), "{why}");
+	}
+
+	#[test]
+	fn a_typo_with_no_close_sibling_suggests_nothing() {
+		let here = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(here.path().join("Music").join("SK37X")).unwrap();
+		assert_eq!(misspelt(&here.path().join("Dowloads").join("SK37X")), None);
+	}
+
+	#[test]
+	fn a_typo_two_siblings_are_equally_close_to_suggests_nothing() {
+		let here = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(here.path().join("Downloads").join("SK37X")).unwrap();
+		std::fs::create_dir_all(here.path().join("Dowloadsx").join("SK37X")).unwrap();
+		assert_eq!(misspelt(&here.path().join("Dowloads").join("SK37X")), None);
+	}
+
+	#[test]
+	fn a_typo_is_corrected_only_to_a_path_that_exists() {
+		let here = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(here.path().join("Downloads")).unwrap();
+		assert_eq!(misspelt(&here.path().join("Dowloads").join("SK37X")), None);
 	}
 
 	#[test]
