@@ -324,20 +324,28 @@ fn open_settings() -> Settings {
 							"config generation {} does not fit this plan ({reason}), running on defaults",
 							store.generation()
 						);
-						// Said to the laptop too, not only in the boot log that
-						// nobody is attached for: a stored configuration from an
-						// older `dash.toml` hid the plan's chart page, and the
-						// only trace was an early `info!` (2026-09-13).
+						// Said again as a note, because the `warn!` above is text
+						// among the boot log's and a note is one whole line of its
+						// own between frames. Both leave by the same USB serial at
+						// the same moment, so a laptop attached later sees
+						// neither; what outlasts boot is `state`'s `unsaved=1`. A
+						// stored configuration from an older `dash.toml` hid the
+						// plan's chart page, and the only trace was an early
+						// `info!` (2026-09-13).
+						let plural = |n: usize| if n == 1 { "page" } else { "pages" };
 						match config.plan_mismatch() {
-							Some(Mismatch::Count { stored, plan }) => {
-								note!("settings: stored config has {stored} pages, this plan has {plan} — discarded, showing the plan's pages")
-							}
+							Some(Mismatch::Count { stored, plan }) => note!(
+								"settings: stored config has {stored} {}, this plan has {plan} {} — discarded, showing the plan's",
+								plural(stored),
+								plural(plan)
+							),
 							Some(Mismatch::Page { index }) => note!(
 								"settings: stored page {} is not the plan's — config discarded, showing the plan's pages",
 								index + 1
 							),
 							None => note!("settings: stored config does not fit this plan ({reason}) — discarded"),
 						}
+						note!("settings: brightness and active page are back to defaults; `save` stores them and this note goes away");
 						// `unsaved`: what runs and what flash holds now disagree,
 						// and `state` should say so rather than claim they match.
 						Settings {

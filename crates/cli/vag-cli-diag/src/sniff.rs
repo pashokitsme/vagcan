@@ -102,6 +102,9 @@ pub struct SniffStats {
 	pub markers: usize,
 }
 
+/// What starts a marker that vagcan wrote rather than the operator typed.
+pub const STATUS_PREFIX: &str = "vagcan: ";
+
 /// A sniffing session: filters frames, streams them to a capture file, and
 /// reassembles diagnostic conversations for display.
 pub struct SniffSession<W: Write> {
@@ -175,6 +178,13 @@ impl<W: Write> SniffSession<W> {
 		}
 	}
 
+	/// Record a line vagcan itself has to say about the capture — the adapter's
+	/// drop report. Written as a marker, since that is the record a note can be,
+	/// but under [`STATUS_PREFIX`] and not counted among the operator's markers.
+	pub fn on_status(&mut self, line: &str, ts_us: u64) -> std::io::Result<()> {
+		self.write_marker(ts_us, &format!("{STATUS_PREFIX}{line}"))
+	}
+
 	/// Record an operator note ("engine started", "pulling away").
 	pub fn on_marker(&mut self, note: &str, ts_us: u64) -> std::io::Result<()> {
 		self.write_marker(ts_us, note)?;
@@ -220,7 +230,7 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::time::{Duration, Instant, SystemTime};
-	use vag_uds_can::{CanBackend, CanError, SlcanMode};
+	use vag_uds_can::SlcanMode;
 
 	// The capture file is opened first: the adapter is a single-user resource,
 	// and a --out path that cannot be created should not cost the port.
@@ -234,12 +244,7 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 
 	let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
 	let mut backend = crate::device::open(device_path, baud, mode).await?;
-	// `F` clears on read, and a close does not clear it — so it is read once
-	// here, to start this session from zero, and once at the end. Drops left
-	// over from an earlier session are said, not silently absorbed.
-	if let Drops::Dropped(bits) = drops(backend.status_flags(F_WAIT).await.context("asking the adapter for its status flags")?) {
-		eprintln!("note: the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
-	}
+	let started = Instant::now();
 	let unix_us = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
 		.map(|d| d.as_micros() as u64)
@@ -286,60 +291,16 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 		}
 	});
 
-	let started = Instant::now();
 	let deadline = seconds.map(|s| started + Duration::from_secs(s));
-	while !stop.load(Ordering::Relaxed) {
-		if deadline.is_some_and(|d| Instant::now() >= d) {
-			break;
-		}
-		let ts_us = started.elapsed().as_micros() as u64;
-		while let Ok(note) = notes_rx.try_recv() {
-			let note = if note.trim().is_empty() { "mark".to_string() } else { note };
-			session.on_marker(&note, ts_us)?;
-			println!("{:9.3}  -- {note}", ts_us as f64 / 1e6);
-		}
-
-		match backend.recv_frame(Duration::from_millis(200)).await {
-			Ok((id, data)) => {
-				let ts_us = started.elapsed().as_micros() as u64;
-				if let Some(line) = session.on_frame(id, &data, ts_us)? {
-					println!("{line}");
-				}
-			}
-			// A quiet window is normal — the bus may simply be idle.
-			Err(CanError::Timeout) => {}
-			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
-			Err(e) => {
-				eprintln!("receive failed: {e}");
-				break;
-			}
-		}
-	}
-
-	// Asked before the channel closes, while the adapter still has its count;
-	// frames that arrive meanwhile are the backend's to keep and are recorded.
-	let flags = backend.status_flags(F_WAIT).await;
-	loop {
-		match backend.recv_frame(Duration::ZERO).await {
-			Ok((id, data)) => {
-				let ts_us = started.elapsed().as_micros() as u64;
-				if let Some(line) = session.on_frame(id, &data, ts_us)? {
-					println!("{line}");
-				}
-			}
-			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
-			Err(_) => break,
-		}
-	}
-	let dropped = match flags {
-		Ok(flags) => drops(flags),
-		Err(e) => {
-			eprintln!("asking the adapter for its status flags failed: {e}");
-			Drops::Unknown
-		}
-	};
-	session.on_marker(&dropped.describe(), started.elapsed().as_micros() as u64)?;
-	println!("\n{}", dropped.describe());
+	record(
+		&mut backend,
+		&mut session,
+		started,
+		|| !stop.load(Ordering::Relaxed) && deadline.is_none_or(|d| Instant::now() < d),
+		|| notes_rx.try_recv().ok(),
+		F_WAIT,
+	)
+	.await?;
 
 	let _ = backend.close_channel().await;
 	let stats = session.stats();
@@ -380,6 +341,92 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 	Ok(())
 }
 
+/// The session's traffic, from the first `F` to the last, with the adapter,
+/// the stop condition and the operator's notes passed in — what [`run`] does
+/// between opening the channel and closing it. Returns what the adapter said
+/// about dropped frames, which is also written to the capture.
+///
+/// Every `ts_us` is measured from `started`.
+async fn record<S, W>(
+	backend: &mut vag_uds_can::SlcanBackend<S>,
+	session: &mut SniffSession<W>,
+	started: std::time::Instant,
+	mut keep_going: impl FnMut() -> bool,
+	mut notes: impl FnMut() -> Option<String>,
+	f_wait: std::time::Duration,
+) -> anyhow::Result<Drops>
+where
+	S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+	W: Write,
+{
+	use anyhow::Context as _;
+	use std::time::Duration;
+	use vag_uds_can::CanError;
+
+	// A frame's time is when the backend read it. Frames kept while `F` was
+	// awaited are handed out afterwards, up to `f_wait` late.
+	let since = |started: std::time::Instant, arrived: std::time::Instant| arrived.saturating_duration_since(started).as_micros() as u64;
+
+	// `F` clears on read, and a close does not clear it — so it is read once
+	// here, to start this session from zero, and once at the end. Drops left
+	// over from an earlier session are said, not silently absorbed.
+	if let Drops::Dropped(bits) = drops(backend.status_flags(f_wait).await.context("asking the adapter for its status flags")?) {
+		eprintln!("note: the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
+	}
+
+	while keep_going() {
+		let ts_us = started.elapsed().as_micros() as u64;
+		while let Some(note) = notes() {
+			let note = if note.trim().is_empty() { "mark".to_string() } else { note };
+			session.on_marker(&note, ts_us)?;
+			println!("{:9.3}  -- {note}", ts_us as f64 / 1e6);
+		}
+
+		match backend.recv_frame_arrived(Duration::from_millis(200)).await {
+			Ok((arrived, id, data)) => {
+				let ts_us = since(started, arrived);
+				if let Some(line) = session.on_frame(id, &data, ts_us)? {
+					println!("{line}");
+				}
+			}
+			// A quiet window is normal — the bus may simply be idle.
+			Err(CanError::Timeout) => {}
+			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(e) => {
+				eprintln!("receive failed: {e}");
+				break;
+			}
+		}
+	}
+
+	// Asked before the channel closes, while the adapter still has its count;
+	// frames that arrive meanwhile are the backend's to keep and are recorded
+	// at the time they arrived, not the time the wait ended.
+	let flags = backend.status_flags(f_wait).await;
+	loop {
+		match backend.recv_frame_arrived(Duration::ZERO).await {
+			Ok((arrived, id, data)) => {
+				let ts_us = since(started, arrived);
+				if let Some(line) = session.on_frame(id, &data, ts_us)? {
+					println!("{line}");
+				}
+			}
+			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(_) => break,
+		}
+	}
+	let dropped = match flags {
+		Ok(flags) => drops(flags),
+		Err(e) => {
+			eprintln!("asking the adapter for its status flags failed: {e}");
+			Drops::Unknown
+		}
+	};
+	session.on_status(&dropped.describe(), started.elapsed().as_micros() as u64)?;
+	println!("\n{}", dropped.describe());
+	Ok(dropped)
+}
+
 /// What an adapter's `F` flags say about frames lost between the bus and this
 /// capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,9 +461,9 @@ impl Drops {
 	/// One line for the terminal and the capture's marker alike.
 	pub fn describe(&self) -> String {
 		match self {
-			Drops::Unknown => "adapter: dropped frames UNKNOWN — it does not report them (no `F`), so this capture cannot vouch it is whole".into(),
-			Drops::None => "adapter: no frames dropped (F data-overrun clear)".into(),
-			Drops::Dropped(bits) => format!("adapter: FRAMES WERE DROPPED (F{bits:02X}, data overrun) — this capture is incomplete"),
+			Drops::Unknown => "adapter: cannot report dropped frames — this capture is not verified complete".into(),
+			Drops::None => "adapter: no frames dropped".into(),
+			Drops::Dropped(bits) => format!("adapter: FRAMES WERE DROPPED — this capture has gaps (status 0x{bits:02X})"),
 		}
 	}
 }
@@ -574,6 +621,100 @@ mod tests {
 		s.on_frame(0x7E8, &[0x22, 4, 5, 6, 7, 8, 9, 10], 1000).unwrap(); // seq 1 missed
 		assert_eq!(s.stats().dropped, 1);
 		assert_eq!(s.stats().pdus, 0);
+	}
+
+	/// The capture's `ts_us` of every frame record, in file order.
+	fn frame_times(capture: &[u8]) -> Vec<u64> {
+		read_records(capture)
+			.unwrap()
+			.into_iter()
+			.filter(|r| matches!(r.payload, CapturePayload::CanFrame { .. }))
+			.map(|r| r.ts_us)
+			.collect()
+	}
+
+	#[tokio::test]
+	async fn frames_that_arrive_while_f_is_awaited_keep_their_arrival_time() {
+		// The CANable never answers `F`, so both questions wait out the whole
+		// window with the bus running. Frames 150 ms apart on the bus must be
+		// 150 ms apart in the capture, not stamped together when handed out.
+		use std::time::{Duration, Instant};
+		use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+		const GAP: Duration = Duration::from_millis(150);
+		let (client, mut adapter) = tokio::io::duplex(4096);
+		let mut backend = vag_uds_can::SlcanBackend::new(client);
+		let mut session = SniffSession::new(Some(Vec::new()), 0, false).unwrap();
+		let started = Instant::now();
+
+		let bus = tokio::spawn(async move {
+			// Into the first F wait.
+			adapter.write_all(b"t0FD1A1\r").await.unwrap();
+			tokio::time::sleep(GAP).await;
+			adapter.write_all(b"t0FD1A2\r").await.unwrap();
+			// Into the last one: wait for the second question, then the same again.
+			let mut asked = Vec::new();
+			while asked.windows(2).filter(|w| w == b"F\r").count() < 2 {
+				let mut chunk = [0u8; 64];
+				let n = adapter.read(&mut chunk).await.unwrap();
+				asked.extend_from_slice(&chunk[..n]);
+			}
+			adapter.write_all(b"t0FD1B1\r").await.unwrap();
+			tokio::time::sleep(GAP).await;
+			adapter.write_all(b"t0FD1B2\r").await.unwrap();
+			adapter
+		});
+
+		let f_wait = Duration::from_millis(400);
+		let dropped = record(
+			&mut backend,
+			&mut session,
+			started,
+			|| started.elapsed() < Duration::from_millis(500),
+			|| None,
+			f_wait,
+		)
+		.await
+		.unwrap();
+		let _adapter = bus.await.unwrap();
+		assert_eq!(dropped, Drops::Unknown);
+		assert_eq!(session.stats().markers, 0, "nobody typed a note; the drop line is not one");
+
+		let capture = session.capture.take().unwrap();
+		let times = frame_times(&capture);
+		assert_eq!(times.len(), 4, "no frame lost: {times:?}");
+		let apart = |a: u64, b: u64| Duration::from_micros(b.saturating_sub(a));
+		// A lower bound only: a loaded machine can stretch a gap, never shrink it
+		// below what the bus put between the two frames.
+		let floor = GAP - Duration::from_millis(30);
+		assert!(apart(times[0], times[1]) >= floor, "start squeezed: {times:?}");
+		assert!(apart(times[2], times[3]) >= floor, "end squeezed: {times:?}");
+
+		// The drop line is kept in the capture as evidence, told apart from the
+		// operator's notes, and after the anchor that `analyse` reads first.
+		let notes: Vec<String> = read_records(&capture[..])
+			.unwrap()
+			.into_iter()
+			.filter_map(|r| match r.payload {
+				CapturePayload::Marker { note } => Some(note),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert!(parse_wall_clock_anchor(&notes[0]).is_some(), "{notes:?}");
+		assert_eq!(notes[1], format!("{STATUS_PREFIX}{}", Drops::Unknown.describe()));
+	}
+
+	#[test]
+	fn the_drop_lines_are_plain_and_fit_a_terminal() {
+		for d in [Drops::Unknown, Drops::None, Drops::Dropped(0x09)] {
+			let line = d.describe();
+			assert!(line.chars().count() <= 80, "{} cols: {line}", line.chars().count());
+			assert!(!line.contains('`'), "{line}");
+		}
+		assert!(Drops::None.describe().contains("no frames dropped"));
+		assert!(Drops::Dropped(0x09).describe().contains("0x09"));
+		assert!(!Drops::Unknown.describe().contains("no frames dropped"), "unknown is never \"none\"");
 	}
 
 	#[test]

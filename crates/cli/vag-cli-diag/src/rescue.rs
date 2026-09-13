@@ -48,7 +48,7 @@ use crate::ui::menu::Asker;
 /// What to tell somebody whose stdin is a pipe. Never reached — the question is
 /// not asked without a terminal — but [`crate::ui::menu::Console`] is built
 /// with one, and a sentence that cannot be printed still has to be true.
-const INSTEAD: &str = "vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)";
+const INSTEAD: &str = crate::setup::WITHOUT_A_TERMINAL;
 
 /// The offer, as the person reads it.
 ///

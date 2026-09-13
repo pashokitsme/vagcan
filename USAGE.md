@@ -29,9 +29,12 @@ VCDS's own files; neither touches a vehicle.
 ## `vagcan` on its own
 
 No subcommand prints an overview instead of an error: what the tool is, what this
-machine actually has, and what to type next. It opens no adapter and sends no frame —
-it lists USB serial devices and reads `~/.vagcan`, so it is instant and safe to run
-with the engine running.
+machine actually has, and what to type next. It opens no adapter's CAN channel and puts
+nothing on a bus — it lists USB serial devices and reads `~/.vagcan`, so it is safe to
+run with the engine running. The one port it writes to is a vag-dash board's: each one
+plugged in is opened and asked its slcan version (`V`), so the adapter line says which
+firmware it runs. That costs up to 300 ms per board; with no board plugged in it is
+instant.
 
 ```
 $ vagcan
@@ -226,25 +229,36 @@ Lists connected USB-CAN adapters. Run it first when anything says it cannot find
 $ vagcan devices
 Serial devices:
 
+* /dev/cu.usbmodem1101
+    vag-dash board — slcan firmware answering
 * /dev/cu.usbmodem206E37A148451
     CANable 2.0 (slcan)
-* /dev/cu.usbmodem1101
-    vag-dash board (slcan over USB, when running the slcan firmware)
 
 * = recognised CAN adapter. Pass one with --device, or omit --device when
   only one is connected.
 ```
 
+Recognised adapters come first, then the rest, each group in path order.
+
 Nothing listed, adapter definitely plugged in? Unplug and replug it. It can enumerate
 on USB without the OS attaching a serial node, and then there is genuinely nothing to
 open. That is a USB-stack hang, not a bus fault.
 
-The second entry is the dash board (`crates/dash/vag-dash-fw`) running its `slcan`
+The board entry is the dash board (`crates/dash/vag-dash-fw`) running its `slcan`
 image: the board is an adapter too. It enumerates as Espressif's USB-Serial-JTAG, and
 every command that takes `--device` drives it exactly as it drives the CANable. The
-same board running `dash` enumerates under the same ids and is *not* an adapter — a
-command opened on it times out, which is the only way to tell from the laptop. With
-both plugged in, say which one with `--device`.
+same board running `dash` enumerates under the same ids and is *not* an adapter, so
+every board is opened and asked its slcan version (`V`) before it is listed. One that
+does not answer is listed without the `*`:
+
+```
+  /dev/cu.usbmodem1101
+    vag-dash board — not answering slcan (display firmware? flash the slcan image)
+```
+
+and one whose port will not open (another program holds it) says
+`vag-dash board — could not be opened to ask its firmware (…)` with the reason. With a
+board and a CANable both answering, say which one with `--device`.
 
 ---
 
@@ -641,7 +655,7 @@ vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
 vagcan faults                      # what is wrong, in VW's words
-vagcan dev survey                      # once, parked
+vagcan dev survey                  # once, parked
 vagcan watch                       # now every unit is on offer
 ```
 
@@ -788,7 +802,9 @@ rather than the command line, none of these ends the run: it says the same thing
 asks again.
 
 **"encrypted (recover with …)"** against a `.rod` section — no cached key for it. Run
-the search against that file: `vagcan dev vcds rod <file.rod>`.
+the search against that file, into the cache the lookup reads — the message prints the
+exact command: `vagcan dev vcds rod --cache <cache> <file.rod>`. Without `--cache` the
+keys it recovers go to `<file>.ivcache.json` beside the file, where nothing looks.
 
 **"NO CRIB"** against a `.rod` section — no cached key, and the search cannot start on
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not

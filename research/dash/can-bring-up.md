@@ -620,9 +620,10 @@ cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmo
 
 ### 9.3 The bench, both directions, no car
 
-The host has no way to put an arbitrary frame on the bus: `vagcan` sends only
-what the UDS allowlist permits, and `slcan_probe` refuses `t`/`T`/`r`/`R` in its
-custom commands, because it writes to the adapter past that allowlist. (A
+No tool here puts an arbitrary frame on the bus: `vagcan` sends only what the
+UDS allowlist permits, and `slcan_probe` refuses every transmit command in its
+custom commands — `t`/`T`/`r`/`R`, and the CANable 2 firmware's CAN FD
+`d`/`D`/`b`/`B` — because it writes to the adapter past that allowlist. (A
 terminal typed straight into the port is the exception nothing here can
 prevent.) `cantx` cannot share the board with `slcan` either, so the two directions are proven by crossing the two
 adapters' ordinary traffic. The bench pair is the standing one (§5.2): both
@@ -715,6 +716,10 @@ adapters on USB:
   next request. `F` read afterwards is `00`: neither bit 3 with bit 0 (the ring)
   nor bit 3 alone (the controller's FIFO) latched. `C` does not clear the
   latched bits and the host never sends `F`, so that `00` covers the whole run.
+  *(Note, 2026-09-13: true of this run only. `vagcan dev sniff` now sends `F` itself,
+  at the start of a capture and at its end, and each read clears the latched bits — so
+  an `F` read after a later `dev sniff` covers only the time since that run's last
+  question, and the run's own drop report is the one to read.)*
   The frames are identical, so content cannot prove none were lost; the counts
   and the clean `F` together can. The car remains the test with varied traffic.
 - **A stalled host loses nothing measurable either.** The same storm (this time

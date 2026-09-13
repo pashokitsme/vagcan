@@ -364,9 +364,7 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 		.unwrap_or_default();
 
 	let wanted = vag_data_db::normalise_dir(&entry.path);
-	let same = |row: &serde_json::Value| {
-		row["kind"].as_str() == Some(entry.kind) && row["path"].as_str().is_some_and(|path| vag_data_db::normalise_dir(path) == wanted)
-	};
+	let same = |row: &serde_json::Value| same_source(row, entry.kind, &wanted);
 	let at = sources.iter().position(same);
 	sources.retain(|row| !same(row));
 
@@ -389,6 +387,31 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 	std::fs::create_dir_all(&p.dir).with_context(|| format!("creating {}", p.dir.display()))?;
 	std::fs::write(&path, serde_json::to_string_pretty(&document)?).with_context(|| format!("writing {}", path.display()))?;
 	Ok(())
+}
+
+/// Whether a `sources.json` row is the source `kind` at `wanted`, a directory
+/// already through [`vag_data_db::normalise_dir`] — the one test both
+/// [`record_source`] and [`records_source`] use, so they cannot disagree.
+fn same_source(row: &serde_json::Value, kind: &str, wanted: &str) -> bool {
+	row["kind"].as_str() == Some(kind) && row["path"].as_str().is_some_and(|path| vag_data_db::normalise_dir(path) == wanted)
+}
+
+/// Whether this very source — this kind, this directory under any spelling —
+/// is already recorded in the project. Reading it again is then a reread:
+/// [`record_source`] replaces its entry, and what it wrote is written again.
+///
+/// `false` when the log is missing or unreadable, as for [`has_source`].
+pub fn records_source(project: &Project, kind: &str, path: &str) -> bool {
+	let Ok(text) = std::fs::read_to_string(project.sources()) else {
+		return false;
+	};
+	let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+		return false;
+	};
+	let wanted = vag_data_db::normalise_dir(path);
+	value["sources"]
+		.as_array()
+		.is_some_and(|rows| rows.iter().any(|row| same_source(row, kind, &wanted)))
 }
 
 /// Whether a source of this kind has ever been read into this project.
@@ -737,6 +760,12 @@ mod tests {
 		assert_eq!(odis.len(), 1, "{text}");
 		assert_eq!(odis[0]["version"], "2610.2.700", "the entry is the latest read:\n{text}");
 		assert!(rows.iter().any(|row| row["kind"] == "vcds"), "another source's entry stays:\n{text}");
+
+		// And it is known to be there before it is read a third time.
+		assert!(records_source(&p, "odis", &format!("{}/", project_dir.display())));
+		assert!(records_source(&p, "vcds", "/Applications/VCDS"));
+		assert!(!records_source(&p, "odis", "/Applications/VCDS"), "the kind is part of the source");
+		assert!(!records_source(&p, "vcds", "/Applications/VCDS-other"));
 	}
 
 	// The two tests that used to sit here — that remembering a project leaves

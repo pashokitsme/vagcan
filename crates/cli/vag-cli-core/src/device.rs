@@ -56,7 +56,16 @@ pub fn resolve_with(requested: Option<&str>, listing: Result<Vec<AdapterInfo>>, 
 		return Ok(path.to_string());
 	}
 
-	let found = probed(listing?, &mut probe);
+	// Which boards would not open, kept apart from the silent ones: a busy port
+	// may well be a working slcan board, and that wants different advice.
+	let mut unopened: Vec<String> = Vec::new();
+	let found = probed(listing?, |path| {
+		let answer = probe(path);
+		if matches!(answer, BoardAnswer::Unopened(_)) {
+			unopened.push(path.to_string());
+		}
+		answer
+	});
 
 	// A recognised CAN adapter wins outright. Someone with a CANable plugged in
 	// next to an Arduino means the CANable, and making them spell that out
@@ -83,16 +92,30 @@ pub fn resolve_with(requested: Option<&str>, listing: Result<Vec<AdapterInfo>>, 
              enumerate on USB without macOS attaching a serial node."
 		),
 		([], boards) => {
-			let why = boards
-				.iter()
-				.map(|b| format!("  {}   {}", b.path, b.description))
-				.collect::<Vec<_>>()
-				.join("\n");
-			bail!(
-				"no USB-CAN adapter found — only a vag-dash board that is not answering slcan:\n{why}\n\
-                 It is running the display firmware (or another image), not the adapter one. Flash its \
-                 `slcan` image (research/dash/can-bring-up.md §9.2), or plug in a CAN adapter."
-			)
+			let (busy, silent): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = boards.iter().partition(|b| unopened.contains(&b.path));
+			let lines = |group: &[&AdapterInfo]| {
+				group
+					.iter()
+					.map(|b| format!("  {}   {}", b.path, b.description))
+					.collect::<Vec<_>>()
+					.join("\n")
+			};
+			let mut why = String::from("no USB-CAN adapter found — only a vag-dash board, and it cannot be used:");
+			if !busy.is_empty() {
+				why.push_str(&format!(
+					"\n{}\nIt could not be opened, so nobody knows which firmware it runs. Another program \
+                     (a monitor, `dashsim`, another vagcan) may be holding the port — close it and try again.",
+					lines(&busy)
+				));
+			}
+			if !silent.is_empty() {
+				why.push_str(&format!(
+					"\n{}\nIt is running the display firmware (or another image), not the adapter one. Flash its \
+                     `slcan` image (research/dash/can-bring-up.md §9.2).",
+					lines(&silent)
+				));
+			}
+			bail!("{why}\nOr plug in a CAN adapter.")
 		}
 		([only], _) => {
 			for board in &silent {
@@ -281,6 +304,28 @@ mod tests {
 			.unwrap_err()
 			.to_string();
 		assert!(err.contains("Resource busy"), "{err}");
+		// A busy slcan board is a working adapter; reflashing it is the wrong advice.
+		assert!(
+			!err.contains("Flash") && !err.contains("display firmware"),
+			"firmware advice for a busy port: {err}"
+		);
+		assert!(err.contains("close"), "say what to do about the port: {err}");
+	}
+
+	#[test]
+	fn a_busy_board_and_a_silent_one_each_get_their_own_advice() {
+		const SECOND: &str = "/dev/cu.usbmodem1201";
+		let mut second = board();
+		second.path = SECOND.into();
+		let err = resolve_with(None, Ok(vec![board(), second]), |path| match path {
+			BOARD => BoardAnswer::Unopened("Resource busy".into()),
+			_ => BoardAnswer::Silent,
+		})
+		.unwrap_err()
+		.to_string();
+		assert!(err.contains(BOARD) && err.contains(SECOND), "{err}");
+		assert!(err.contains("Resource busy") && err.contains("close"), "{err}");
+		assert!(err.contains("Flash"), "the silent one still needs its image: {err}");
 	}
 
 	#[test]
