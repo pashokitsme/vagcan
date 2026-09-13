@@ -102,11 +102,12 @@ Goal, tech stack, architecture and development workflow are **the sections below
 this file** — `todo/GOAL.md` was folded into it and no longer exists. The task
 breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 
-TL;DR: read the whole car over CAN with measurement scalings proven live on the car and
-names from VW's own label files, on **tokio / edition 2024**, macOS M4, TDD with hardware
-checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-uds-can`); the
-HEX clone is dead — crate and driver deleted, research archived under `.archive/research/`.
-`vagcan info` works on the real car.
+TL;DR: read the whole car over CAN, with channels, scalings and fault text from a VW
+ODIS-Service project (a VCDS installation is the fallback, drives on the car override
+both), on **tokio / edition 2024**, macOS M4, TDD with hardware checkpoints. The live
+transport is a generic slcan USB-CAN adapter (`vag-uds-can`) or the dash board running
+its `slcan` image. The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX
+clone is dead — research archived under `.archive/research/`.
 
 ## Project structure
 
@@ -185,19 +186,36 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
     *.md                 HEX-clone framing, clone crypto — negative results, do not retry
   specs/               superseded designs
   tasks/done/          finished task files
-todo/            task tracking → todo/README.md (roadmap) and todo/<subsystem>/;
-                 finished task files retire to .archive/tasks/done/
+docs/            reference for users (docs/odis-project-mapping.md)
+todo/            task tracking → todo/README.md (detailed roadmap) and todo/<subsystem>/;
+                 finished task files retire to .archive/tasks/done/, dated status
+                 history to .archive/tasks/roadmap-history.md
 ```
 
 
-Start-here docs: [`todo/README.md`](todo/README.md),
-[`ARCHITECTURE.md`](ARCHITECTURE.md), [`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md).
+Start-here docs: [`README.md`](README.md) (features, roadmap), [`todo/README.md`](todo/README.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-The three front-page documents split by audience and must stay split:
-[`README.md`](README.md) is "is this for me, and how do I start" and nothing else;
-[`USAGE.md`](USAGE.md) is every command with worked output and the multi-command
-flows; [`ARCHITECTURE.md`](ARCHITECTURE.md) is why — the file formats, the setup
-pipeline, the catalog schema, the crate layout.
+## Documentation for people (MANDATORY)
+
+The documents a person reads are split by audience and stay split:
+
+- **[`README.md`](README.md)** — what the tool does and how to start. Sections, in order:
+  a warning, **Features** (commands and the dash, as facts), **Roadmap**, requirements,
+  tested cars, hardware, install, setup, reading the car. `USAGE.md` was removed by the
+  owner on 2026-09-13; do not bring it back.
+- **`README.md`'s Roadmap is always current.** Any commit that finishes, adds or drops a
+  roadmap item updates it in the same commit, with the date on its first line. The detail
+  behind it is `todo/README.md`.
+- **[`docs/`](docs/)** — reference a user looks things up in.
+- **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — why it is built this way: data sources, file
+  formats, `setup`, the crates, the dash.
+
+How that text is written (owner, 2026-09-14): **short, plain, unambiguous.** State what
+the tool does and what to type. No lecturing, no reasoning the reader did not ask for, no
+hedging. Formatting matters: tables for commands, one idea per bullet, fenced blocks for
+anything typed. `CLAUDE.md`, `todo/` and `research/` are for agents and keep their own
+style.
 
 ## Tech stack & architecture (locked)
 
@@ -232,4 +250,7 @@ pipeline, the catalog schema, the crate layout.
   hardware before continuing.
 - **Task tracking:** active tasks live in `todo/<subsystem>/<task>.md`; when a
   task is done+reviewed+merged, move its file to `.archive/tasks/done/<subsystem>/<task>.md`
-  (preserve the subsystem subdir). Each subsystem dir may carry a short `README.md`.
+  (preserve the subsystem subdir) and update both roadmaps — `README.md` (short) and
+  `todo/README.md` (detail). `todo/README.md` holds only what is live; a dated status
+  that has been superseded moves to `.archive/tasks/roadmap-history.md`. Each subsystem
+  dir may carry a short `README.md`.

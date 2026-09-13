@@ -49,7 +49,7 @@ and cached by [`../crates/data/vag-data-db`](../crates/data/vag-data-db).
 | [`research/labels/fault-naming-hop.md`](research/labels/fault-naming-hop.md) | The last hop from a control unit's 24-bit fault number to words; powers `vagcan faults --labels`. |
 | [`research/labels/odis-format.md`](research/labels/odis-format.md) | VW's ODIS-Service project on disk — three file formats; implemented in `crates/data/vag-data-labels/src/odis/`. |
 | [`research/labels/odis-crib.md`](research/labels/odis-crib.md) | ODIS runtime data as a known-plaintext crib against the label ciphers. |
-| [`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md) | VW's `S42` project-name → vehicle table (e.g. `SK37X` is a platform, not a car). Transcribed reference. |
+| `research/labels/odis-project-mapping.md` | VW's `S42` project-name → vehicle table. Moved to [`../docs/odis-project-mapping.md`](../docs/odis-project-mapping.md) on 2026-09-13: it is reference for users, not research. |
 
 Alongside the notes are the RE scripts that produced them: `odis_crib.py`, and the
 sub-directories `rd-rod/` (the Python `.rod` reader — alphabet/codes/tables/solve/sweep),
@@ -89,7 +89,7 @@ the scripts have been run; those are build junk, gitignored, not part of the arc
 Both specs predate the pivot away from the HEX-clone cable and carry a `SUPERSEDED`
 banner at the top pointing at what replaced them. The live design lives in
 [`../CLAUDE.md`](../CLAUDE.md), [`../ARCHITECTURE.md`](../ARCHITECTURE.md) and
-[`../USAGE.md`](../USAGE.md).
+[`../README.md`](../README.md).
 
 | File | What it designed | Why superseded |
 |------|------------------|----------------|
@@ -98,6 +98,11 @@ banner at the top pointing at what replaced them. The live design lives in
 | [`specs/dash/07-sleep.md`](specs/dash/07-sleep.md) | How the dash sleeps in a parked car and wakes (rail divider at 13 V, wake button, RTC pins). | Superseded 2026-09-13: the owner feeds the board from OBD pin 1 (ignition-switched), so there is nothing to sleep through. Its code, `sleep.rs` and the `sleeptest` image, was deleted the same day at the owner's decision; it is in git history before that commit. |
 | [`specs/dash/08-power.md`](specs/dash/08-power.md) | Power from OBD pin 16 and the microamp budget for a device left plugged in. | Superseded 2026-09-13 by pin 1, as above. |
 | [`specs/dash/09-bt-adapter.md`](specs/dash/09-bt-adapter.md) | The dash as a wireless CANable over Bluetooth SPP. | Superseded 2026-09-13 by `todo/dash/14` (slcan mode over USB) and `todo/dash/16` (UDS over BLE); the C3 has no SPP. |
+
+## `tasks/roadmap-history.md`
+
+The dated status sections of `todo/README.md` from 2026-08-02 to 2026-09-13, moved
+verbatim on 2026-09-14 when the roadmap was cut to what is live.
 
 ## `tasks/done/<subsystem>/` — finished task files
 
@@ -116,6 +121,12 @@ live tree. New finished tasks retire here from `todo/` per the workflow in
 | [`cable-actor`](tasks/done/cable-actor/01-cable-actor-handle.md) | `CableActor`/`CableHandle` mpsc/oneshot multiplex (HEX-clone; since removed) |
 | [`cli-app`](tasks/done/cli-app/01-vagcan-doctor.md) | `vagcan` binary + `doctor` |
 | [`dash`](tasks/done/dash/01-plan-format.md) | the dash plan format + its generator |
+| [`dash`](tasks/done/dash/02-render-crate.md) | `vag-dash-render`: frames to pixels, `no_std` |
+| [`dash`](tasks/done/dash/03-simulator.md) | the panel off the board: PNG frames, then `dashsim` |
+| [`dash`](tasks/done/dash/05-firmware-esp32.md) | the firmware reads the car (met 2026-09-13); the OLED continues in `todo/dash/15` |
+| [`dash`](tasks/done/dash/10-c3-recon.md) | the ESP32-C3 board: stack choice, Wi-Fi and BLE recon |
+| [`dash`](tasks/done/dash/11-ble.md) | BLE on the C3: what it carries, measured |
+| [`dash`](tasks/done/dash/12-settings.md) | settings stored on the board, set over BLE |
 | [`generic-can`](tasks/done/generic-can/01-generic-can-backend.md) | generic CAN backend (the bypass that replaced the cable) |
 | [`init-handshake`](tasks/done/init-handshake/01-plaintext-handshake.md) | plaintext open handshake (HEX-clone) |
 | [`label-lookup`](tasks/done/label-lookup/01-fast-lookup.md) | fast label lookup (`vag-data`/`vag-db`) |

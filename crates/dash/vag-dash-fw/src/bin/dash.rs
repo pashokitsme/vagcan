@@ -13,7 +13,7 @@
 //! once was, a 100→0 ramp. It comes back only with a real measurement behind it.
 //!
 //! What none of these do is put the device in the phone's *Settings* list —
-//! see `10-c3-recon.md`. That needs HID-over-GATT and nothing else.
+//! see `.archive/tasks/done/dash/10-c3-recon.md`. That needs HID-over-GATT and nothing else.
 
 #![no_std]
 #![no_main]
@@ -161,7 +161,7 @@ static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 /// frame corrupted 30 frames out of 30. So everything that wants to say
 /// something puts it here and `panel_task` writes it between frames.
 ///
-/// This is the same rule `10-c3-recon.md` records for Wi-Fi event handlers,
+/// This is the same rule `.archive/tasks/done/dash/10-c3-recon.md` records for Wi-Fi event handlers,
 /// arrived at from the other direction: a callback may push to a channel; the
 /// writing belongs to one task.
 static NOTES: Channel<CriticalSectionRawMutex, heapless::String<128>, 8> = Channel::new();
@@ -266,7 +266,7 @@ async fn main(spawner: Spawner) {
 
 	// The controller stays up for the life of the device and only *advertising*
 	// is gated. Tearing the controller down would free ~46 KB and reintroduce
-	// the one allocation pattern that can fragment this heap (see 11-ble.md);
+	// the one allocation pattern that can fragment this heap (see .archive/tasks/done/dash/11-ble.md);
 	// gating advertising is a single HCI command and costs nothing.
 	let transport = BleConnector::new(&wifi_init, peripherals.BT);
 	let controller: ExternalController<_, 20> = ExternalController::new(transport);

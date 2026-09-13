@@ -125,7 +125,7 @@ transmitting raw frames from a bench.
 ## 4. The link: one protocol, two carriers
 
 A framed, typed message stream, the same over **USB-Serial-JTAG** and over **BLE NUS**
-(`11-ble.md` measured BLE cannot carry a loaded *bus*; it can carry PDUs at `watch` rates —
+(`.archive/tasks/done/dash/11-ble.md` measured BLE cannot carry a loaded *bus*; it can carry PDUs at `watch` rates —
 50 Hz × ~12 bytes is a kilobyte a second, and that measurement stands to be made):
 
 | message | direction | carries |

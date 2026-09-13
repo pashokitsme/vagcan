@@ -4,7 +4,7 @@
 > car carries +12 V only with the ignition on (terminal 15). The device is off when the car
 > is off; there is nothing to sleep through and nothing to wake from. The wake button on
 > `GPIO5`, the RTC-pin allocation and the microamp budget below are moot; what survives is
-> the rule that settings persist across a power cut (`12-settings.md`), which they do.
+> the rule that settings persist across a power cut (`.archive/tasks/done/dash/12-settings.md`), which they do.
 > Kept as the record of what deep sleep on the C3 would have cost.
 
 **Subsystem:** dash · **Needs the car:** for measurement, yes · **Opened 2026-08-20**

@@ -74,7 +74,7 @@ pin rows, W across, T PCB thickness, H tallest component above the PCB.
 
 **The front.** The design already settled that the display goes **behind a dark
 faceplate** — smoked acrylic, or clear acrylic with tint film — because no OLED is
-bezel-less and the filter improves contrast threefold (`todo/dash/README.md`, "The bezel,
+bezel-less and the filter improves contrast threefold (`.archive/tasks/done/dash/README-2026-09-13.md`, "The bezel,
 and why it does not matter"). The faceplate is part of the printed shell. Whether the
 owner has the acrylic, and its thickness — ask.
 

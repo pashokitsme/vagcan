@@ -1,7 +1,7 @@
 # Architecture
 
 Why this tool is built the way it is. **This one is for the curious and for anyone
-working on the code** — you do not need it to use `vagcan` (that is [`USAGE.md`](USAGE.md)).
+working on the code** — you do not need it to use `vagcan` (that is [`README.md`](README.md)).
 The `research/…` files it links go deeper still, into the reverse-engineering: they are
 developer notes, not instructions. The rules about what this tool may do to a car are
 in [`CLAUDE.md`](CLAUDE.md).
@@ -55,7 +55,7 @@ keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octav
 Karoq and Kodiaq, and a proven scaling is a property of a *part number*, true of every
 car carrying that part. What is true of exactly one car — its car file, its drives, its
 survey — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
-[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md)
+[`docs/odis-project-mapping.md`](docs/odis-project-mapping.md)
 transcribes which vehicles each of VW's project names covers; nothing in the tool reads
 it, because a project declares its own coverage in `PRNR-INFO.xml`.
 
@@ -431,10 +431,9 @@ means "sweep the whole car blind", because that was the default and it turned on
 unit's crash into a whole-car risk.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
-a car in front of you. `recording …` reads back drives this tool recorded, and
-`vcds …` reads VCDS's own files. A top level crowded with offline analysis is a top
-level nobody can scan while standing at an open driver's door. There is a test that
-asserts it.
+a car in front of you, plus `setup`, which a new owner runs first. The workshop is under
+`dev`: `dev recording …` reads drives this tool recorded, `dev vcds …` reads VCDS's own
+files. A test (`the_top_level_is_only_what_needs_a_car`) keeps it that way.
 
 **Read-only is enforced in the client, not by convention.** The UDS service allowlist
 admits `0x22` (read data), `0x19` (read faults), `0x10` (session control) and `0x3E`
@@ -444,31 +443,67 @@ identifier sweep is a fuzz test of a control unit's diagnostic server.
 
 ---
 
+## The dash
+
+An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
+`crates/dash/vag-dash-fw`, outside the workspace (`no_std`, `riscv32imc`).
+
+**The board executes a plan; it resolves nothing.** `build.rs` runs the same generator as
+`vagcan dev dash build`: it reads `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and
+the project's cache, and writes a Rust `static` with every channel resolved — unit,
+identifier, bit layout, scaling, unit, label. The image links it. A project cache is
+~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
+fixed list of identifiers cannot sweep.
+
+**One bus, one conversation, on the board too.** `can_task` owns the TWAI controller. It
+reads each unit's part number (`F187`) first and polls the unit only when it matches the
+plan, then reads the plan's identifiers one exchange at a time through the same
+`vag-uds-client` and allowlist the laptop uses. Bus-off restarts the controller; a unit
+that goes silent is asked only for its part number until it answers.
+
+**Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
+of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
+the board that is a 1-bit framebuffer; until the OLED is fitted, the board sends it over
+USB and `dashsim` (`research/dash/host`) draws it in a terminal. The layout is decided
+only on the board.
+
+**Settings over BLE.** The board advertises a Nordic UART service after a 3-second button
+press. `dashcfg` sends text commands (`state`, `set brightness N`, `set page N`, `save`,
+`load`, `defaults`). Settings are stored in a flash partition; a stored page list that
+does not match the current plan is discarded at boot.
+
+**Two firmware images.**
+
+| image | what it is |
+|---|---|
+| `dash` | the display: plan, polling, panel, BLE settings |
+| `slcan` | the board as a LAWICEL slcan adapter over USB, for every `vagcan` command. Answers `V` with `V0101`; `vagcan devices` counts an Espressif port as an adapter only when it does |
+| `rxwatch` | listen-only frame counter (`--features ack` acknowledges, for the car) |
+| `cantx`, `cantest`, `rxprobe` | bench tools that drive the bus; built only with `--features bench` |
+
+The planned single image with both modes, the laptop reading the car *through* the
+running dash, and UDS over BLE are designed in `todo/dash/14` and `todo/dash/16`.
+
+---
+
 ## The repository
 
 ```
-crates/         the Rust workspace — uds/, data/, dash/ and vagcan/
-research/       reverse-engineering writeups and tooling, one directory per subject
-  labels/         VW's label files: the .rod crack, the name codec, fault naming
-  car/            what the reference car answers: identifier map, units, surveys
-  clb-crack/      the RE scripts themselves
-  dash/           the board from the laptop's side: probes/ and the bench rig host/
-.archive/       retired paths, kept as evidence — research/, specs/, tasks/done/
-todo/           the roadmap and the open task files
+crates/         the Rust workspace — uds/, data/, dash/, cli/
+docs/           reference for users (which cars an ODIS project covers)
+research/       work in progress: dash/ (bench rig, hardware record), odis-dtc/, tuning/
+.archive/       retired paths, kept as evidence — research/, specs/, tasks/
+todo/           the detailed roadmap and open task files
 ```
 
 **Nothing this tool reads at run time is in here.** The label data is Ross-Tech's and
-cannot be redistributed; the measured rows are one owner's car and are not true of
-anybody else's. Both live under `~/.vagcan/`.
+cannot be redistributed; the measured rows are one owner's car. Both live under
+`~/.vagcan/`.
 
-**Nothing is deleted; things are moved.** Most of what this project knows was measured
-on one car, once, and several of its most valuable documents are records of things
-that did *not* work. A refutation you throw away is one you pay for twice. `.archive/`
-exists so that "we tried that, here is why it failed" survives a year.
+**Nothing is deleted; things are moved.** Most of what this project knows was measured on
+one car, once, and several of its most valuable documents record what did *not* work.
+`.archive/` keeps them, so a refutation is not paid for twice.
 
-Start here: [`todo/README.md`](todo/README.md) for where things stand,
-[`CLAUDE.md`](CLAUDE.md) for the goal, the locked stack and the working rules, and
-[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) for the format work.
-Design documents are not kept: a plan outlives its landing only as a description of code
-that has since moved, so what survives a piece of work is this file, `todo/` and the
-commit that did it.
+Start here: [`README.md`](README.md) for features and the roadmap,
+[`todo/README.md`](todo/README.md) for the detail, [`CLAUDE.md`](CLAUDE.md) for the
+working rules.

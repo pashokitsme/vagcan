@@ -2,7 +2,7 @@
 
 Recon tooling for the dash subsystem (`todo/dash/`). What was proven on the
 hardware, and the landmines found doing it, is in
-[`todo/dash/10-c3-recon.md`](../../todo/dash/10-c3-recon.md).
+[`.archive/tasks/done/dash/10-c3-recon.md`](../../.archive/tasks/done/dash/10-c3-recon.md).
 
 The CAN side's own bring-up — what the first run on the car said, what has been
 proven good and what has not — is [`can-bring-up.md`](can-bring-up.md).
@@ -78,7 +78,7 @@ Every firmware image links one car's plan, chosen when `build.rs` runs:
 - `VAGCAN_DASH_NO_CAR=1` builds an empty plan, for CI with no `~/.vagcan/`. **Never
   flash it.**
 
-[`USAGE.md`](../../USAGE.md), under `vagcan dev dash build`, has the plan itself.
+`vagcan dev dash build --help` describes the plan input.
 
 ## Bench tools — which may see a car and which may not
 

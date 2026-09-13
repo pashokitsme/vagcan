@@ -87,7 +87,7 @@ device this has to become a record of which plan a configuration was saved again
 
 ## What was verified on the board
 
-Over BLE, using `bleecho` from [`research/dash/host`](../../research/dash/host):
+Over BLE, using `bleecho` from [`research/dash/host`](../../../../research/dash/host):
 
 ```
 > get
