@@ -14,7 +14,7 @@ echo session over the Nordic UART Service: what you type is written to the
 device, what it notifies back is printed.
 
 ```
-cargo run --release --manifest-path research/dash/bleecho/Cargo.toml
+cargo run --release --manifest-path research/dash/host/Cargo.toml --bin bleecho
 ```
 
 It is **not a workspace member**, deliberately. `btleplug` binds CoreBluetooth

@@ -163,7 +163,7 @@ Same shape as the Wi-Fi three in `10`: each one reports success.
 
 ## The client side
 
-[`research/dash/bleecho`](../../research/dash/bleecho) — scan, pick a device from the
+`bleecho` in [`research/dash/host`](../../research/dash/host) — scan, pick a device from the
 listing, echo over NUS. Written in Rust on **`btleplug`** (CoreBluetooth / BlueZ /
 WinRT) rather than as a Python script, because it is the crate `vagcan` would use if BLE
 becomes a transport, so what works there is reusable rather than merely indicative.

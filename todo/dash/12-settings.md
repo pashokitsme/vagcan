@@ -78,7 +78,7 @@ bug.
 
 ## What was verified on the board
 
-Over BLE, using [`research/dash/bleecho`](../../research/dash/bleecho):
+Over BLE, using `bleecho` from [`research/dash/host`](../../research/dash/host):
 
 ```
 > get
