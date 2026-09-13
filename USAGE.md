@@ -237,12 +237,27 @@ Lists connected USB-CAN adapters. Run it first when anything says it cannot find
 
 ```
 $ vagcan devices
-/dev/cu.usbmodem206E37A148451  CANable 2.0 (slcan)
+Serial devices:
+
+* /dev/cu.usbmodem206E37A148451
+    CANable 2.0 (slcan)
+* /dev/cu.usbmodem1101
+    vag-dash board (slcan over USB, when running the slcan firmware)
+
+* = recognised CAN adapter. Pass one with --device, or omit --device when
+  only one is connected.
 ```
 
 Nothing listed, adapter definitely plugged in? Unplug and replug it. It can enumerate
 on USB without the OS attaching a serial node, and then there is genuinely nothing to
 open. That is a USB-stack hang, not a bus fault.
+
+The second entry is the dash board (`crates/dash/vag-dash-fw`) running its `slcan`
+image: the board is an adapter too. It enumerates as Espressif's USB-Serial-JTAG, and
+every command that takes `--device` drives it exactly as it drives the CANable. The
+same board running `dash` enumerates under the same ids and is *not* an adapter — a
+command opened on it times out, which is the only way to tell from the laptop. With
+both plugged in, say which one with `--device`.
 
 ---
 

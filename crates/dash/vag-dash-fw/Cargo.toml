@@ -55,6 +55,13 @@ ack = []
 name = "cantx"
 path = "./src/bin/cantx.rs"
 
+# The board as a CAN adapter: slcan on the USB console, so `vagcan --device`
+# drives it like the CANable. It transmits exactly what the host asks and
+# nothing else, so it may see a car — that is its job.
+[[bin]]
+name = "slcan"
+path = "./src/bin/slcan.rs"
+
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }
 esp-hal = { version = "=1.0.0-rc.0", features = [

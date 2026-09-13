@@ -200,6 +200,13 @@ const KNOWN_ADAPTERS: &[(u16, u16, &str)] = &[
 	(0x16d0, 0x117e, "CANable 2.0 (slcan)"),
 	(0x16d0, 0x117f, "CANable (slcan)"),
 	(0xad50, 0x60c4, "CANable (slcan, older)"),
+	// Espressif's USB-Serial-JTAG, which is the ESP32-C3's own USB. The dash
+	// board enumerates under it whatever image it runs, and only the `slcan`
+	// image (`crates/dash/vag-dash-fw/src/bin/slcan.rs`) is an adapter — the
+	// `dash` image answers nothing on the bus, and a `vagcan` opened on it
+	// simply times out. The listing cannot tell them apart from the ids; a
+	// `V` that comes back is what proves the port is an adapter.
+	(0x303a, 0x1001, "vag-dash board (slcan over USB, when running the slcan firmware)"),
 ];
 
 /// List serial devices that plausibly are CAN adapters, known ones first.

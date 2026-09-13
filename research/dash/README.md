@@ -75,6 +75,7 @@ what they see.
 | `cantest` | UDS round trip through the chip's own loopback | no — transmits |
 | `cantx` | hammers one `7E0` request, prints `TEC` | no — transmits |
 | `rxprobe` | drives `D`, reads `R`: idle, echo, edge timing | no — holds a DC level |
+| `slcan` | the board as a CAN adapter: slcan on the USB console, `vagcan --device` drives it like the CANable | **yes** — it is the adapter; it puts on the bus only what `vagcan` asks, which the allowlist bounds. `can-bring-up.md` §9 |
 
 `bench.sh` (here) flashes a transmitter and sniffs on the CANable in one
 command; `can-bring-up.md` §5.3 says how to read its verdict.
