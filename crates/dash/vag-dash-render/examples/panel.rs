@@ -104,7 +104,7 @@ fn main() {
 		min: 0.0,
 		max: 2.5,
 		samples: &samples,
-		window_seconds: 19.0,
+		seconds_per_sample: 0.2,
 	};
 	shot("8-chart-boost", &chart, &Theme::bold_mono());
 
@@ -115,7 +115,7 @@ fn main() {
 		min: 0.0,
 		max: 2.5,
 		samples: &samples[..8],
-		window_seconds: 19.0,
+		seconds_per_sample: 0.2,
 	};
 	shot("9-chart-cold", &chart_short, &Theme::bold_mono());
 }

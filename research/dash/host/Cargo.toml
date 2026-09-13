@@ -31,6 +31,9 @@ futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
 uuid = "1"
 vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
+# For one number: the gap under which two presses are one, so `dashsim` and
+# the board disagree about nothing.
+vag-dash-render = { path = "../../../crates/dash/vag-dash-render" }
 thiserror = "2"
 serialport = "4"
 crossterm = "0.28"

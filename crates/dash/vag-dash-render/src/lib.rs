@@ -29,8 +29,14 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod alarm;
+pub mod button;
 pub mod frame;
+pub mod history;
+pub mod pages;
 pub mod plan;
 pub mod render;
 pub mod theme;

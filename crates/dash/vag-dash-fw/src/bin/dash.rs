@@ -48,10 +48,10 @@ use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
-use vag_dash_fw::plan::{CHANNEL_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
-use vag_dash_render::plan::{Page as PlanPage, Unit};
+use vag_dash_render::plan::Unit;
 use vag_uds_can::IsoTpCan;
 use vag_uds_client::identity::did;
 use vag_uds_client::{AsyncUdsClient, UdsError};
@@ -374,6 +374,12 @@ fn open_settings() -> Settings {
 /// A short press moves to the next page. When `04`'s alarms exist, a short
 /// press *while an alarm is showing* silences that episode instead — the
 /// button is modal because the screen already says which mode it is in.
+///
+/// The simulator's `BTN S` / `BTN L` come in through the same machine as the
+/// GPIO level, and go out through the same gate: one press per
+/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), whoever pressed it.
+/// Taking a remote press at face value is what turned one held space bar
+/// into a dozen page turns.
 #[embassy_executor::task]
 async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 	let mut machine = Button::new();
@@ -381,18 +387,15 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 		// Half the debounce interval: fast enough that no edge is missed,
 		// slow enough to be free.
 		let press = match embassy_futures::select::select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
-			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), embassy_time::Instant::now().as_millis()),
-			embassy_futures::select::Either::Second(press) => Some(press),
+			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
+			embassy_futures::select::Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
 		};
 		match press {
 			Some(Press::Short) => {
 				let mut s = settings.lock().await;
-				let pages = s.config.pages.len() as u8;
-				if pages > 0 {
-					s.config.active_page = (s.config.active_page + 1) % pages;
-					s.unsaved = true;
-					note!("button: page {} of {}", s.config.active_page, pages);
-				}
+				let changed = s.config.next_page();
+				s.unsaved |= changed;
+				note!("button: page {} of {}", s.config.active_page, s.config.pages.len());
 				drop(s);
 				STATE_CHANGED.signal(());
 			}
@@ -993,13 +996,11 @@ async fn store(index: u16, value: Option<f32>) {
 	}
 }
 
-/// The fixed range the plan gives a chart of this channel, if it gives one.
-fn chart_range(index: u16) -> Option<(f32, f32)> {
-	PLAN.pages.iter().find_map(|page| match page {
-		PlanPage::Chart { channel, min, max } if *channel == index => Some((*min, *max)),
-		_ => None,
-	})
-}
+/// How often the panel draws — and, because a chart's column is one frame,
+/// how much time one column holds. Five a second: fast enough to look live
+/// over a terminal, slow enough that the encoding never becomes the
+/// bottleneck.
+const FRAME_MS: u64 = 200;
 
 /// Draws the current page and ships the pixels out of the USB port.
 ///
@@ -1013,30 +1014,33 @@ fn chart_range(index: u16) -> Option<(f32, f32)> {
 /// invents a number.
 #[embassy_executor::task]
 async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>, settings: &'static Shared) -> ! {
+	use vag_dash_render::history::History;
 	use vag_dash_render::{Cell, Frame, Theme, draw};
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
 	let framebuffer = FRAMEBUFFER.init(Framebuffer::new());
 	let theme = Theme::bold_mono();
 
-	// One sample per pixel column, oldest first — the chart's own rule. One
-	// sample is taken per frame, so the window is width ÷ frame rate, and
-	// that is only true of a trace with no holes in it: a frame with no
-	// value, or a frame that was not this chart, ends the trace, and the next
-	// value starts a new one. Joining across a gap would draw ten minutes on
-	// another page, or five seconds of silence, as one continuous line.
-	let mut history = [0.0f32; vag_dash_fw::panel::WIDTH];
-	let mut filled = 0usize;
-	// Which chart the previous frame drew, if it drew one.
-	let mut charted: Option<u16> = None;
+	// One history per chart the plan has, in the plan's order — `PLAN.chart`
+	// says which slot a channel's is. Every one of them takes a sample **every
+	// frame, whether or not a chart is on the glass**, so the chart page comes
+	// up with its last `WIDTH × FRAME_MS` already drawn. Sampling only while
+	// the chart was shown, and starting over on each entry, is why it used to
+	// come up empty (2026-09-13). A history is of one channel and ends at a
+	// missing value — `History` says why.
+	//
+	// Static rather than a local: a task's locals live in the embassy arena
+	// (20 KiB for every task together), and these are
+	// `CHART_COUNT × (WIDTH × 4 + 8)` bytes — 1032 per chart — which belong in
+	// `.bss` next to the framebuffer.
+	static HISTORIES: StaticCell<[History<{ vag_dash_fw::panel::WIDTH }>; CHART_COUNT]> = StaticCell::new();
+	let histories = HISTORIES.init(core::array::from_fn(|_| History::new()));
 	let mut last_compromised = false;
 	// A chart page whose channel the plan gives no range for is said once.
 	let mut no_range_said: Option<u16> = None;
 
 	loop {
-		// Five frames a second: fast enough to look live over a terminal,
-		// slow enough that the encoding never becomes the bottleneck.
-		Timer::after(Duration::from_millis(200)).await;
+		Timer::after(Duration::from_millis(FRAME_MS)).await;
 
 		let (kind, indices) = {
 			let s = settings.lock().await;
@@ -1050,6 +1054,9 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 		let values = *VALUES.lock().await;
 		let now = Instant::now();
 		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
+		for chart in PLAN.charts() {
+			histories[chart.slot].push(chart.channel, value_of(chart.channel));
+		}
 		// A cell the plan cannot name draws as a question mark rather than
 		// vanishing: a missing column hides the fault, a wrong one shows it.
 		let cell_of = |index: u16| match PLAN.channel(index) {
@@ -1058,8 +1065,6 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 		};
 
 		framebuffer.clear_all();
-		// What this frame charts, if anything; compared with `charted` next time.
-		let mut charting: Option<u16> = None;
 		let report = match kind {
 			PageKind::Values => {
 				let mut cells: heapless::Vec<Cell<'_>, 4> = heapless::Vec::new();
@@ -1070,31 +1075,16 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 			}
 			PageKind::Chart => {
 				let index = indices.first().copied().unwrap_or(0);
-				match chart_range(index) {
-					Some((min, max)) => {
-						if charted != Some(index) {
-							filled = 0;
-						}
-						charting = Some(index);
-						let cell = cell_of(index);
-						match cell.value {
-							Some(value) if filled < history.len() => {
-								history[filled] = value;
-								filled += 1;
-							}
-							Some(value) => {
-								history.rotate_left(1);
-								history[history.len() - 1] = value;
-							}
-							None => filled = 0,
-						}
+				match PLAN.chart(index) {
+					Some(chart) => {
+						let samples = histories[chart.slot].samples();
 						draw(
 							&Frame::Chart {
-								cell,
-								min,
-								max,
-								samples: &history[..filled],
-								window_seconds: filled as f32 * 0.2,
+								cell: cell_of(index),
+								min: chart.min,
+								max: chart.max,
+								samples,
+								seconds_per_sample: FRAME_MS as f32 / 1000.0,
 							},
 							&theme,
 							framebuffer,
@@ -1114,7 +1104,6 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 				}
 			}
 		};
-		charted = charting;
 		// The renderer reports what it had to compromise — a label too long,
 		// a unit it had to drop. It is the same answer every frame, so say it
 		// when it changes and never otherwise.

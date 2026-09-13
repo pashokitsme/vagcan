@@ -96,6 +96,16 @@ impl Default for Config {
 }
 
 impl Config {
+	/// What a short press does: the next page, wrapping at the end. Says
+	/// whether the page changed — with one page it does not, and there is
+	/// nothing to mark unsaved.
+	pub fn next_page(&mut self) -> bool {
+		let before = self.active_page;
+		// `pages` is bounded by `MAX_PAGES`, so the count fits.
+		self.active_page = vag_dash_render::pages::next(before, self.pages.len() as u8);
+		self.active_page != before
+	}
+
 	/// Rejects what the panel could not render anyway. Called before a save so
 	/// that an unusable configuration never reaches flash, and on what comes
 	/// back from flash — a configuration saved against one plan can name a

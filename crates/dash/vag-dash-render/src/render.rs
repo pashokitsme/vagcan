@@ -133,8 +133,8 @@ where
 			min,
 			max,
 			samples,
-			window_seconds,
-		} => chart(cell, *min, *max, samples, *window_seconds, theme, target),
+			seconds_per_sample,
+		} => chart(cell, *min, *max, samples, *seconds_per_sample, theme, target),
 	}
 }
 
@@ -459,8 +459,20 @@ where
 	}
 }
 
+/// How many columns the trace will take: one sample is one column, and there
+/// are only so many columns.
+///
+/// A shorter trace is the truth about a run that has just started; stretching
+/// it across the width would invent history. A history *deeper* than the plot
+/// is the same rule from the other side — the oldest samples are never drawn,
+/// so the header must not count them either. A `History<256>` on a plot 150
+/// columns wide said 51 s over a picture holding 30.
+fn drawn_columns(samples: usize, plot_w: i32) -> usize {
+	samples.min(plot_w.max(0) as usize)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], window_seconds: f32, theme: &Theme, target: &mut D) -> Report
+fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -487,11 +499,31 @@ where
 			0
 		}
 	};
+	let buf = number(cell);
+	// A chart gives the number a third of the width; past that the trace has
+	// nowhere left to be, and a chart with no room for its trace is a bad table.
+	let (step, value_w, _) = fit(&theme.numerals, buf.as_str(), 0, width / 3);
+	if step > 0 {
+		report.value_shrunk = true;
+	}
+	let plot_top = 8;
+	let plot_x = value_w as i32 + 4;
+	let plot_bottom = height as i32 - 1;
+	let plot_w = width as i32 - plot_x;
+	// The geometry is settled before the header is written, because the header
+	// counts what the trace draws and the trace is only as wide as the plot.
+	let drawn = drawn_columns(samples.len(), plot_w);
+
 	let mut tail = Buf::new();
 	let _ = write!(
 		tail,
 		"{:.*}-{:.*}{}  {:.0}s",
-		cell.decimals as usize, min, cell.decimals as usize, max, cell.unit, window_seconds
+		cell.decimals as usize,
+		min,
+		cell.decimals as usize,
+		max,
+		cell.unit,
+		drawn as f32 * seconds_per_sample
 	);
 	if theme
 		.unit
@@ -507,24 +539,13 @@ where
 		report.glyph_missing = true;
 	}
 
-	let buf = number(cell);
-	// A chart gives the number a third of the width; past that the trace has
-	// nowhere left to be, and a chart with no room for its trace is a bad table.
-	let (step, value_w, _) = fit(&theme.numerals, buf.as_str(), 0, width / 3);
-	if step > 0 {
-		report.value_shrunk = true;
-	}
 	// Centred in the band under the header, for the same reason as the values
 	// page: the number is what the eye came for, and on the floor it reads as an
 	// afterthought under the trace.
-	let plot_top = 8;
 	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
 	let value_baseline = plot_top + (height as i32 - 1 - plot_top - value_h as i32) / 2 + value_h as i32;
 	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, value_baseline), ink, target);
 
-	let plot_x = value_w as i32 + 4;
-	let plot_bottom = height as i32 - 1;
-	let plot_w = width as i32 - plot_x;
 	if plot_w < 8 || max <= min {
 		report.value_overrun = plot_w < 8;
 		return report;
@@ -537,10 +558,7 @@ where
 		plot_bottom - (t * usable) as i32
 	};
 
-	// Only as many columns as there are samples. A shorter trace is the truth
-	// about a run that has just started; stretching it across the width would
-	// invent history.
-	let n = samples.len().min(plot_w as usize);
+	let n = drawn;
 	let start = samples.len() - n;
 	let line = PrimitiveStyle::with_stroke(ink, 1);
 	for i in 1..n {
@@ -740,7 +758,7 @@ mod tests {
 			min: 0.0,
 			max: 2.5,
 			samples: &samples,
-			window_seconds: 19.0,
+			seconds_per_sample: 0.2,
 		};
 		let mut display = panel();
 		draw(&frame, &Theme::bold_mono(), &mut display);
@@ -751,6 +769,63 @@ mod tests {
 			(10..PANEL.height as i32).all(|y| !lit(&display, far, y)),
 			"no trace where there is no data"
 		);
+	}
+
+	#[test]
+	fn a_chart_header_counts_the_columns_it_draws_and_not_the_history_it_holds() {
+		// A full `History<256>` on a plot narrower than that: the oldest samples
+		// are never drawn, so the seconds the header claims are the seconds on
+		// the glass, not the seconds in RAM.
+		const PERIOD: f32 = 0.2;
+		let samples: [f32; 256] = core::array::from_fn(|i| (i % 20) as f32 / 10.0);
+		let theme = Theme::bold_mono();
+		let cell = || Cell::new("НАДДУВ", Some(1.5), "bar", 2);
+		// The geometry `chart` works out: the number takes what it takes, the
+		// plot is the rest.
+		let (_, value_w, _) = fit(&theme.numerals, number(&cell()).as_str(), 0, PANEL.width / 3);
+		let plot_w = PANEL.width as i32 - (value_w as i32 + 4);
+		let drawn = drawn_columns(samples.len(), plot_w);
+		assert_eq!(drawn, plot_w as usize, "this panel is narrower than the history is deep");
+		assert!(drawn < samples.len());
+
+		let mut header = Buf::new();
+		let _ = write!(header, "{:.0}s", drawn as f32 * PERIOD);
+		let mut whole_history = Buf::new();
+		let _ = write!(whole_history, "{:.0}s", samples.len() as f32 * PERIOD);
+		assert_eq!(whole_history.as_str(), "51s");
+		assert_ne!(header.as_str(), whole_history.as_str(), "51 s is what is held, not what is shown");
+
+		// And the picture agrees with the header: the same frame given only the
+		// newest `plot_w` samples draws pixel for pixel the same thing.
+		let mut full = panel();
+		draw(
+			&Frame::Chart {
+				cell: cell(),
+				min: 0.0,
+				max: 2.5,
+				samples: &samples,
+				seconds_per_sample: PERIOD,
+			},
+			&theme,
+			&mut full,
+		);
+		let mut trimmed = panel();
+		draw(
+			&Frame::Chart {
+				cell: cell(),
+				min: 0.0,
+				max: 2.5,
+				samples: &samples[samples.len() - drawn..],
+				seconds_per_sample: PERIOD,
+			},
+			&theme,
+			&mut trimmed,
+		);
+		for y in 0..PANEL.height as i32 {
+			for x in 0..PANEL.width as i32 {
+				assert_eq!(lit(&full, x, y), lit(&trimmed, x, y), "differs at {x},{y}");
+			}
+		}
 	}
 
 	#[test]
