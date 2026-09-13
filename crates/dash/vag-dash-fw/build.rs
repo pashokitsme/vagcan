@@ -32,6 +32,13 @@ fn plan() {
 	// different cache is a different plan.
 	println!("cargo:rerun-if-env-changed={}", vag_cli_core::project::PROJECT_ENV);
 
+	println!("cargo:rerun-if-env-changed={NO_CAR_ENV}");
+
+	if std::env::var_os(NO_CAR_ENV).is_some_and(|v| !v.is_empty()) {
+		no_car();
+		return;
+	}
+
 	let vin = match std::env::var("VAGCAN_DASH_VIN") {
 		Ok(vin) if !vin.trim().is_empty() => vin,
 		_ => only_car(),
@@ -71,6 +78,34 @@ fn plan() {
 	let out = std::path::Path::new(&out_dir).join("plan.rs");
 	if let Err(e) = std::fs::copy(&written.rust, &out) {
 		panic!("copying {} to {}: {e}", written.rust.display(), out.display());
+	}
+	println!("cargo:rustc-env=VAG_DASH_PLAN={}", out.display());
+}
+
+/// Build with an empty plan — no unit, no channel, no page — for a machine that
+/// has no car and must not have one: CI, which checks that every image compiles
+/// and passes clippy without `~/.vagcan/`.
+const NO_CAR_ENV: &str = "VAGCAN_DASH_NO_CAR";
+
+/// The empty plan, written by the generator's own [`vag_cli_core::dash::to_rust`]
+/// so it cannot drift from the shape a real plan has.
+///
+/// Nothing is invented: the image polls nothing and shows no number, which is
+/// the opposite of the failure `plan`'s loudness guards against. It is still
+/// no image to flash, and the build says so on every run.
+fn no_car() {
+	let plan = vag_cli_core::dash::Plan {
+		vin: String::new(),
+		language: "en".to_string(),
+		units: Vec::new(),
+		channels: Vec::new(),
+		pages: Vec::new(),
+	};
+	println!("cargo:warning=plan: {NO_CAR_ENV} is set — an EMPTY plan, for checking the build only; do not flash this image");
+	let out_dir = std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for a build script");
+	let out = std::path::Path::new(&out_dir).join("plan.rs");
+	if let Err(e) = std::fs::write(&out, vag_cli_core::dash::to_rust(&plan)) {
+		panic!("writing {}: {e}", out.display());
 	}
 	println!("cargo:rustc-env=VAG_DASH_PLAN={}", out.display());
 }

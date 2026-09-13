@@ -92,8 +92,6 @@ fn dis(s: &str) -> DisString {
 
 #[gatt_server]
 struct Server {
-	// Read over the air, never from Rust — the compiler cannot see that.
-	#[allow(dead_code)]
 	dis: DeviceInformationService,
 	bas: BatteryService,
 	uart: NordicUartService,
@@ -470,6 +468,12 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared) {
 		appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
 	}))
 	.expect("gatt server");
+	// The Device Information service is read over the air, never from Rust, so
+	// nothing here reads `dis` and the dead-code lint says so. An `allow` cannot
+	// quiet it: trouble-host's `#[gatt_server]` rebuilds the struct and drops
+	// every attribute on it and its fields — which is how the one that stood on
+	// the field stopped working unnoticed. Naming the field is the read.
+	let _ = &server.dis;
 
 	info!("heap after host build:\n{}", esp_alloc::HEAP.stats());
 
@@ -930,7 +934,9 @@ async fn can_task(mut backend: TwaiBackend<'static>) -> ! {
 			}
 		}
 
-		let dead = UNIT_COUNT > 0 && checks.iter().all(|c| *c == Check::Absent);
+		// `is_empty` on the plan rather than `UNIT_COUNT > 0`: with the empty plan a
+		// CI build links, the constant comparison is one clippy refuses.
+		let dead = !PLAN.units.is_empty() && checks.iter().all(|c| *c == Check::Absent);
 		if dead != dead_bus {
 			dead_bus = dead;
 			if dead {

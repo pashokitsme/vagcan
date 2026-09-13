@@ -87,16 +87,74 @@ jobs:
       # rust-analyzer all use default features — so without this job the board
       # build rots the moment somebody writes `std::` in vag-uds-client.
       #
-      # The firmware itself is not built here: it is outside the workspace, with
-      # its own toolchain file and `.cargo/config.toml`, and building it needs
-      # the ESP bootloader crates. These checks cover the part that the rest of
-      # CI can break.
+      # The firmware itself is linted by the `firmware` job below: it is outside
+      # the workspace, with its own toolchain file and `.cargo/config.toml`.
       - name: cargo check --no-default-features (vag-uds-transport)
         run: cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
       - name: cargo check --no-default-features (vag-uds-client)
         run: cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
       - name: cargo check --no-default-features (vag-uds-can)
         run: cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
+
+  # The board's firmware and the bench rig that stands in for its panel. Both
+  # are outside the workspace, so nothing above sees them — which is how a
+  # clippy error sat in `dash.rs` unnoticed. Each is built from its own
+  # directory, as the workspace's `exclude` comment says it must be.
+  firmware:
+    name: firmware (vag-dash-fw)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/dash/vag-dash-fw
+    env:
+      # `build.rs` builds the image's plan from one car under ~/.vagcan, which
+      # CI does not have and must not have. This gives the image an empty plan
+      # — no unit, no channel, nothing invented — so every binary compiles and
+      # is linted exactly as shipped. An image built this way is not for flashing.
+      VAGCAN_DASH_NO_CAR: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imc-unknown-none-elf
+          components: rust-src, clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/dash/vag-dash-fw
+      - name: cargo fmt --check
+        run: cargo fmt -- --check
+      - name: cargo clippy --bins -D warnings
+        run: cargo clippy --release --bins -- -D warnings
+      # `rxwatch --features ack` is the car-run build (Normal mode); lint it too.
+      - name: cargo clippy --bins --all-features -D warnings
+        run: cargo clippy --release --bins --all-features -- -D warnings
+
+  bench-host:
+    name: bench host (dashsim, bleecho)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: research/dash/host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: research/dash/host
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: cargo fmt --check
+        run: cargo fmt -- --check
+      - name: cargo clippy --all-targets -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test
 
   dead-code:
     name: dead-code
