@@ -58,6 +58,13 @@ item 7 (the `frame` mirror) unnecessary.
     both are refused over BLE by it, as they should be. Identification reads at most two
     adjacent identifiers (`F190`, `F191`), and faults and a watch page none in a row. The
     numbers are a starting point for the owner to set, not measured.
+  - **Identifiers count, not requests** (review round 3, 2026-09-13): one `0x22` request
+    can carry many identifiers, and the project relies on that (`ARCHITECTURE.md`, one
+    request tests a whole batch), so `22 F100 F101 … F1FF` would pass a per-request cap.
+    Over BLE the board allows at most 4 identifiers in one request, counts every identifier
+    inside a request toward the rate cap and the walk rule, treats any fixed stride
+    (`n`, `n+2`, `n+4` …) as a walk, and caps the distinct identifiers asked of one unit
+    per connection (a starting figure: 32).
   - The host may still check road speed itself, over this transport, as a courtesy that
     fails early with a better message — never as the enforcement.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
@@ -70,8 +77,10 @@ item 7 (the `frame` mirror) unnecessary.
   host, the board's decode/allowlist/chunking in a host-testable crate).
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
   on a negative answer and on no answer, allowed on 0; the rate cap; a consecutive walk
-  refused at its third identifier; and the request sequences `info`, `units --identify`
-  and `faults` actually send passing both limits.
+  refused at its third identifier; a multi-identifier request over 4 refused, and
+  its identifiers counted; a stride walk refused; the distinct-identifier cap; `units
+  --identify` refused (it walks `F100–F1FF`); and the request sequences `info` and `faults`
+  actually send passing every limit.
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
   the CANable with `dev sniff --device … --active` (no unit answers on the bench).
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.

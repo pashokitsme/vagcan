@@ -819,7 +819,7 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 	if let Some(name) = &folder
 		&& why_not(name).is_none()
 	{
-		io.say(&settled(name, landing(name, existing, rereads), true))?;
+		io.say(&settled(name, landing(name, existing, rereads), true, false))?;
 		return Ok(name.clone());
 	}
 	let default = match (folder.as_deref().map(clean), existing) {
@@ -861,7 +861,12 @@ pub fn project_id(io: &mut impl Asker, source: &Source, existing: &[String], rer
 		let id = typed.trim().to_string();
 		match why_not(&id) {
 			None => {
-				io.say(&settled(&id, landing(&id, existing, rereads), false))?;
+				io.say(&settled(
+					&id,
+					landing(&id, existing, rereads),
+					false,
+					matches!(source, Source::Vcds { .. }),
+				))?;
 				return Ok(id);
 			}
 			// Asked again rather than refused: a name is one keystroke, and
@@ -924,7 +929,12 @@ pub fn landing(id: &str, existing: &[String], rereads: &[String]) -> Landing {
 /// believes they are starting fresh would otherwise find out from the data.
 /// A reread is not a merge — the source's entry and rows are replaced — and says
 /// that instead.
-fn settled(id: &str, landing: Landing, from_odis: bool) -> String {
+///
+/// `vcds` because "what other sources put there stays" is only true of an ODIS
+/// source: a VCDS installation's label files replace every label file already in
+/// the project (`insert_files` clears them whichever installation wrote them),
+/// and its names replace `names.json` wholesale. ODIS rows stay either way.
+fn settled(id: &str, landing: Landing, from_odis: bool, vcds: bool) -> String {
 	let how = match from_odis {
 		true => " — the name ODIS gives this folder",
 		false => "",
@@ -933,6 +943,7 @@ fn settled(id: &str, landing: Landing, from_odis: bool) -> String {
 	// the only part whose length is unknown, so it goes on the first.
 	let what = match landing {
 		Landing::Rereads => "It has read this source before; reading it again replaces what it wrote.",
+		Landing::Adds if vcds => "This installation is added to it: ODIS rows stay, and any VCDS read before is replaced.",
 		Landing::Adds => "This source is added to it; what other sources put there stays.",
 		Landing::New => "New — nothing has been read into it yet.",
 	};
@@ -1632,7 +1643,11 @@ mod tests {
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
 		let id = project_id(&mut io, &Source::Vcds { dir: install }, &["SK37X".to_string()], &[]).unwrap();
 		assert_eq!(id, "SK37X");
-		assert!(io.all_said().contains("what other sources put there stays"), "{:?}", io.said);
+		// A second VCDS installation replaces the first one's label files, so
+		// "what other sources put there stays" would be false here.
+		let said = io.all_said();
+		assert!(!said.contains("what other sources put there stays"), "{said}");
+		assert!(said.contains("any VCDS read before is replaced"), "{said}");
 	}
 
 	#[test]
