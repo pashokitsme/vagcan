@@ -197,32 +197,64 @@ impl OdisFaults {
 
 	/// What to say about the choice of language, if a choice is being made.
 	///
-	/// `None` when there is one source, or when the setting decided. Otherwise
-	/// which source won by default and how to choose — once per run, above the
-	/// codes, so that a text in an unexpected language is never a surprise.
+	/// Once per run, above the codes, so that a text in an unexpected language is
+	/// never a surprise. Three cases:
+	///
+	/// - **`[faults] language` names a language no source declares** — always
+	///   said, however many sources there are: which language was asked for,
+	///   which ones the sources here do declare, and whose text is shown instead.
+	///   It used to sit behind "fewer than two languages → nothing to choose",
+	///   which is exactly when a setting that cannot be honoured is ignored
+	///   silently — an ODIS-only project in German with `language = "rus"`, or
+	///   a VCDS source that recorded no language beside a German project. A VCDS
+	///   source with no language recorded gets a second line saying so and how
+	///   to record it.
+	/// - **Unset, and the sources declare two or more languages** — which one
+	///   won by default, and how to choose.
+	/// - Otherwise — the setting was honoured, or there is nothing to choose —
+	///   `None`.
 	pub fn choice_note(&self) -> Option<String> {
-		let odis: Vec<&(String, String, Option<String>)> = self.sources.iter().filter(|(kind, _, _)| kind == vag_data_db::ODIS).collect();
 		let mut languages: Vec<&str> = self.sources.iter().filter_map(|(_, _, l)| l.as_deref()).collect();
 		languages.sort_unstable();
 		languages.dedup();
+		let declared = match languages.is_empty() {
+			true => "none".to_string(),
+			false => languages.join(", "),
+		};
+		// The source whose text [`OdisFaults::name`] falls back to: the first ODIS
+		// source written, since rows come back in source order.
+		let shown = self
+			.sources
+			.iter()
+			.find(|(kind, _, _)| kind == vag_data_db::ODIS)
+			.map(|(_, dir, language)| format!("{dir} ({})", language.as_deref().unwrap_or("no language declared")));
+		if let Some(preferred) = &self.preferred {
+			if languages.contains(&preferred.as_str()) {
+				return None;
+			}
+			let mut note = format!(
+				"config.toml sets [faults] language = {preferred:?}, which no source here declares (declared: {declared}) — showing {}.",
+				shown.as_deref().unwrap_or("the first source")
+			);
+			for (_, dir, _) in self
+				.sources
+				.iter()
+				.filter(|(kind, _, language)| kind == vag_data_db::VCDS && language.is_none())
+			{
+				note.push_str(&format!(
+					"\nThe VCDS source {dir} has no language recorded; `vagcan setup {}` records it.",
+					installation_of(dir).display()
+				));
+			}
+			return Some(note);
+		}
 		if languages.len() < 2 {
 			return None;
 		}
-		if let Some(preferred) = &self.preferred {
-			return match languages.contains(&preferred.as_str()) {
-				true => None,
-				false => Some(format!(
-					"config.toml sets [faults] language = {preferred:?}, which no source here declares ({}) — using the first ODIS source.",
-					languages.join(", ")
-				)),
-			};
-		}
-		let (_, dir, language) = odis.first()?;
 		Some(format!(
-			"Fault text is read from {dir} ({}) first; the sources here declare {}. \
+			"Fault text is read from {} first; the sources here declare {declared}. \
 			 Set [faults] language in config.toml to choose.",
-			language.as_deref().unwrap_or("no language declared"),
-			languages.join(", ")
+			shown?
 		))
 	}
 
@@ -317,6 +349,20 @@ impl OdisFaults {
 			disagrees,
 			level: row.fault.level,
 		})
+	}
+}
+
+/// The installation a VCDS source row was read from.
+///
+/// The row records the `Labels/` directory the label files were parsed out of
+/// (`setup`'s `label_cache`), and `vagcan setup` wants the installation root
+/// above it — which is also where the fault-text file whose name records the
+/// language sits. A row that is not a `Labels/` directory is given back as it is.
+fn installation_of(dir: &str) -> &std::path::Path {
+	let path = std::path::Path::new(dir);
+	match path.file_name().and_then(|name| name.to_str()) {
+		Some(name) if name.eq_ignore_ascii_case("labels") => path.parent().unwrap_or(path),
+		_ => path,
 	}
 }
 
@@ -473,6 +519,46 @@ mod tests {
 		let nobody = resolver(Some("fra"), &sources);
 		assert_eq!(nobody.name(&unit, [0, 1, 0x29]).unwrap().text.as_deref(), Some("Lenkwinkelsensor"));
 		assert!(nobody.choice_note().unwrap().contains("\"fra\""));
+	}
+
+	#[test]
+	fn a_language_nothing_here_declares_is_said_even_with_one_source() {
+		// The defect: the note sat behind "fewer than two languages recorded →
+		// nothing to choose", so an ODIS-only project with `language = "rus"`
+		// printed German and never said the setting had been ignored.
+		let one = resolver(Some("rus"), &[("odis", "/x/SK37X", Some("deu"))]);
+		let note = one.choice_note().expect("a setting that cannot be honoured is always said");
+		assert_eq!(note.lines().count(), 1, "{note}");
+		assert!(note.contains("\"rus\""), "which setting: {note}");
+		assert!(note.contains("deu"), "what is available: {note}");
+		assert!(note.contains("showing /x/SK37X (deu)"), "what is shown instead: {note}");
+		assert!(!one.prefers_vcds());
+		// Honoured, it says nothing.
+		assert_eq!(resolver(Some("deu"), &[("odis", "/x/SK37X", Some("deu"))]).choice_note(), None);
+	}
+
+	#[test]
+	fn a_vcds_source_that_recorded_no_language_is_named_and_how_to_record_it() {
+		// The owner's own cache, built before `language` existed: the VCDS row
+		// is `NULL`, the ODIS one `deu`. With `language = "eng"` the output
+		// stayed German with no note, because one declared language is fewer
+		// than two. Whether that VCDS build is English cannot be known from
+		// here — only that it never said, and that `setup` run on the
+		// installation again records it (`label_cache` → `record_language`).
+		let sources = [("vcds", "/Applications/VCDS/Labels", None), ("odis", "/x/SK37X", Some("deu"))];
+		let r = resolver(Some("eng"), &sources);
+		let note = r.choice_note().expect("the setting matches nothing declared here");
+		let mut lines = note.lines();
+		let first = lines.next().unwrap();
+		assert!(first.contains("\"eng\""), "{note}");
+		assert!(first.contains("deu"), "{note}");
+		assert!(first.contains("showing /x/SK37X (deu)"), "{note}");
+		let hint = lines.next().expect("a line about the VCDS source that recorded nothing");
+		assert!(hint.contains("/Applications/VCDS/Labels"), "{note}");
+		assert!(hint.contains("no language recorded"), "{note}");
+		assert!(hint.contains("vagcan setup /Applications/VCDS"), "how to record it: {note}");
+		assert_eq!(lines.next(), None, "{note}");
+		assert!(!r.prefers_vcds(), "an unrecorded language is not a declared one");
 	}
 
 	#[test]
