@@ -70,6 +70,11 @@ item 7 (the `frame` mirror) unnecessary.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
   way `setup` asks; exactly one found → taken, and said. `--device ble:<name>` picks by
   name without asking, for scripts. No terminal and several found → the list and a refusal.
+- **Zero friction is the point** (owner, 2026-09-14: "Сделать связь по BLE простой и
+  доступной. Просто запускаю прогу и сразу коннекчусь"). No pairing, no confirmation, no
+  button. Anyone nearby can read what the guards allow — VIN, faults — and that is
+  accepted. Without `--device`, when no cable adapter is found, `vagcan` scans BLE itself
+  and connects to the one board it finds, saying so.
 
 ## Done when
 
