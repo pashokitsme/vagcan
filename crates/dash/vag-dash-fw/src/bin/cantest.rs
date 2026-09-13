@@ -44,7 +44,8 @@
 //!
 //! This binary transmits, so it must never be pointed at a car. On a real bus
 //! the mode to start from is `TwaiMode::ListenOnly` — see the module docs of
-//! `vag_dash_fw::can`.
+//! `vag_dash_fw::can`. Built only with `--features bench`
+//! (`cargo build --release --features bench --bin cantest`), for that reason.
 
 #![no_std]
 #![no_main]

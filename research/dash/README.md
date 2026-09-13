@@ -67,7 +67,9 @@ reproduce the burst alone.
 
 All in `crates/dash/vag-dash-fw/src/bin/`; the rule is whether the image ever
 drives the pair. Anything that does is bench only, because a car's units log
-what they see.
+what they see — and it is built only with `--features bench`
+(`cargo build --release --features bench --bin cantx`), so a plain build of the
+firmware cannot produce one.
 
 | tool | does | car? |
 |---|---|---|
@@ -78,7 +80,9 @@ what they see.
 | `slcan` | the board as a CAN adapter: slcan on the USB console, `vagcan --device` drives it like the CANable | **yes** — it is the adapter; it puts on the bus only what `vagcan` asks, which the allowlist bounds. `can-bring-up.md` §9 |
 
 `bench.sh` (here) flashes a transmitter and sniffs on the CANable in one
-command; `can-bring-up.md` §5.3 says how to read its verdict.
+command; `can-bring-up.md` §5.3 says how to read its verdict. It leaves the
+board running the bench image and says so as its last line: reflash `dash` or
+`slcan` before the board goes anywhere near a car.
 
 ## References
 

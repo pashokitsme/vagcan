@@ -5,6 +5,12 @@
 #   research/dash/bench.sh            # flash cantx, sniff 15 s, verdict
 #   research/dash/bench.sh 30         # sniff 30 s
 #   research/dash/bench.sh 15 dash    # flash dash instead of cantx
+#
+# The bench tools (`cantx`, `cantest`, `rxprobe`) sit behind the firmware's
+# `bench` feature so no plain build produces one; this script turns it on. It
+# does NOT flash anything back afterwards: a board it leaves with `cantx` floods
+# any bus it is plugged into from power-on, so the last thing it prints is the
+# reflash command, loudly.
 set -u
 SECS="${1:-15}"
 BIN="${2:-cantx}"
@@ -21,7 +27,7 @@ ESP="$(/bin/ls /dev/cu.usbmodem* 2>/dev/null | grep -v 206E37A | head -1)"
 echo "ESP $ESP   CANable $CANABLE   binary $BIN   listen ${SECS}s"
 
 echo "== build + flash $BIN =="
-( cd "$FW" && cargo build --release --bin "$BIN" ) || exit 1
+( cd "$FW" && cargo build --release --features bench --bin "$BIN" ) || exit 1
 espflash flash --chip esp32c3 --partition-table "$FW/partitions.csv" --port "$ESP" "$ELF" || {
   echo "flash failed — if the port is wedged, hold BOOT on the ESP, replug USB, retry"; exit 1; }
 
@@ -41,3 +47,16 @@ elif [ "$ANY" -gt 0 ]; then
 else
   echo "FAIL — nothing reached the CANable. Board transmit still broken (or the CANable is not on the pair)."
 fi
+
+case "$BIN" in
+  dash|slcan|rxwatch) ;;
+  *)
+    echo
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "!! THE BOARD STILL RUNS '$BIN' — A BENCH IMAGE. NEVER PLUG IT INTO A CAR. !!"
+    echo "!! It drives the pair from power-on. Reflash a car image first:          !!"
+    echo "!!   (cd crates/dash/vag-dash-fw && cargo run --release --bin dash)       !!"
+    echo "!!   or --bin slcan for the adapter image.                                !!"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    ;;
+esac

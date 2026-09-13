@@ -19,7 +19,8 @@
 //!
 //! Nothing here is a CAN controller, so nothing needs a bit rate, an
 //! acknowledgement or a second node. It holds a DC level on the pair, so it is a
-//! bench tool: never point it at a car.
+//! bench tool: never point it at a car. Built only with `--features bench`
+//! (`cargo build --release --features bench --bin rxprobe`).
 
 #![no_std]
 #![no_main]

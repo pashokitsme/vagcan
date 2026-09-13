@@ -11,7 +11,10 @@
 //! **Normal mode: it transmits and expects acknowledgement, so it must never be
 //! pointed at a car.** It is the bench half of the CANable test — flash this,
 //! run `vagcan dev sniff` on the CANable, and the board's `7E0` appearing in the
-//! capture is the transmit path proven end to end.
+//! capture is the transmit path proven end to end. It starts hammering at
+//! power-on and draws nothing on the panel, so a board left with it gives no
+//! sign of what it is doing: built only with `--features bench`
+//! (`research/dash/bench.sh` passes it), and reflash `dash` or `slcan` after.
 
 #![no_std]
 #![no_main]

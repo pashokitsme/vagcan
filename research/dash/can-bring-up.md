@@ -354,11 +354,13 @@ controller, the ISO-TP/UDS stack — is proven, and the plug, once rebuilt,
 reads 60 Ω.
 
 **One command for the bench: `research/dash/bench.sh`.** Flashes `cantx`
-(a continuous `7E0` transmitter, bench-only) to the ESP, then sniffs the pair
+(a continuous `7E0` transmitter, bench-only, built only with `--features bench`) to the ESP, then sniffs the pair
 over the CANable and prints PASS/FAIL — the board's `7E0` in the capture is
 the transmit path proven. `bench.sh 30` for a longer listen, `bench.sh 15 dash`
 to flash `dash` instead. It finds the CANable by its fixed serial and the ESP
-by exclusion; a wedged ESP port wants a BOOT-held replug first.
+by exclusion; a wedged ESP port wants a BOOT-held replug first. It does not
+reflash anything afterwards: a board left with `cantx` floods any bus from
+power-on, so its last line tells you to flash `dash` or `slcan` back.
 
 **The bench is now the whole test.** No car needed: `dash` (or any board
 transmit) plus CANable's `E` register and a `sniff` is the fault, and the fix
@@ -484,7 +486,7 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
   real-CAN firmware, the acceptance filter, the partition-table fix.
 - `src/bin/rxprobe.rs` — the GPIO-level probe from §4.2. Bench tool: it holds a DC
   level on the pair, so it must never be pointed at a car. Same rule as
-  `cantest.rs`, same reason.
+  `cantest.rs`, same reason. Both, and `cantx`, build only with `--features bench`.
 - The wire is back on `GPIO1`, `rxprobe` reads `GPIO1`, and the echo passes
   there (§5.1).
 - `src/bin/rxwatch.rs` — listen-only frame counter, safe on a car (§5.1).
