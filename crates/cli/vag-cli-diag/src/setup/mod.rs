@@ -197,14 +197,15 @@ fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog
 	let names = chosen.names.map(|from| fetched(from, opts)).transpose()?;
 
 	let existing = crate::project::list()?;
-	let asked = source::project_id(io, &source, &existing)?;
+	let rereads = rereads(&source, &existing)?;
+	let asked = source::project_id(io, &source, &existing, &rereads)?;
 	// Opened before a directory exists, so its own name can win.
 	let odis = match &source {
 		source::Source::Odis { dir } => Some(open_odis(io, dir)?),
 		_ => None,
 	};
 	let id = match &odis {
-		Some(project) => prefer_its_own_name(io, project.id(), &asked, &existing)?,
+		Some(project) => prefer_its_own_name(io, project.id(), &asked, &existing, &rereads)?,
 		None => asked,
 	};
 	Ok(Some(Chosen {
@@ -214,6 +215,30 @@ fn choose(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dialog
 		existing,
 		odis,
 	}))
+}
+
+/// The projects in `existing` that have read `source` before.
+fn rereads(source: &source::Source, existing: &[String]) -> Result<Vec<String>> {
+	let (kind, dir) = match source {
+		source::Source::Odis { dir } => (vag_data_db::ODIS, dir),
+		source::Source::Vcds { dir } => (vag_data_db::VCDS, dir),
+		source::Source::DownloadVcds => return Ok(Vec::new()),
+	};
+	let projects = crate::datadir::projects_dir()?;
+	let dir = dir.display().to_string();
+	Ok(
+		existing
+			.iter()
+			.filter(|id| {
+				let project = crate::project::Project {
+					id: (*id).clone(),
+					dir: projects.join(id),
+				};
+				crate::project::records_source(&project, kind, &dir)
+			})
+			.cloned()
+			.collect(),
+	)
 }
 
 /// A download resolved into the installation it fetched.
@@ -371,15 +396,18 @@ fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_dat
 /// has, so the person is told "New" — and then `<SHORT-NAME>` files it into the
 /// `SK37X` that has been there all along. Design §5 makes that a merge, and a
 /// merge nobody was told about is the one this has to say out loud.
-fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str, existing: &[String]) -> Result<String> {
+fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked: &str, existing: &[String], rereads: &[String]) -> Result<String> {
 	if named == asked {
 		return Ok(asked.to_string());
 	}
 	match crate::project::folder_name(named) {
 		Ok(own) => {
-			let merge = match existing.contains(&own) {
-				true => "\n    That project is already here: this source is added to it, and\n    what other sources put there stays.",
-				false => "",
+			let merge = match source::landing(&own, existing, rereads) {
+				source::Landing::Rereads => {
+					"\n    That project is already here and has read this source before:\n    reading it again replaces what it wrote."
+				}
+				source::Landing::Adds => "\n    That project is already here: this source is added to it, and\n    what other sources put there stays.",
+				source::Landing::New => "",
 			};
 			// Both names last, one to a line. Neither has a knowable width when
 			// this sentence is written — a project id may be sixty-four
@@ -1271,20 +1299,20 @@ mod tests {
 		// car in two stores — the two-directory bug `datadir::existing_folder`
 		// was written to undo, arriving by a different door.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &[]).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &[], &[]).unwrap(), "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("SK37X"), "{said}");
 		assert!(said.contains("One car, one store"), "it says why: {said}");
 
 		// Agreement is silent — there is nothing to explain.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X", &[]).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK37X", &[], &[]).unwrap(), "SK37X");
 		assert!(io.said.is_empty(), "{:?}", io.said);
 
 		// A `<SHORT-NAME>` that could not be a directory falls back rather than
 		// being sanitised: a mangled name files a car where nothing looks for it.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[]).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "../escape", "SK37X", &[], &[]).unwrap(), "SK37X");
 	}
 
 	#[test]
@@ -1321,15 +1349,23 @@ mod tests {
 		// along. Design §5 makes that a merge, and nobody has been told.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let existing = ["SK37X".to_string()];
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing, &[]).unwrap(), "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("already here"), "{said}");
 		assert!(said.contains("what other sources put there stays"), "{said}");
 
 		// A swap onto a name nothing holds is still new, and says nothing extra.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
-		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &[]).unwrap(), "SK37X");
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &[], &[]).unwrap(), "SK37X");
 		assert!(!io.all_said().contains("already here"), "{:?}", io.said);
+
+		// The same folder set up a second time lands on a project that has read
+		// it: that is a reread, not a merge.
+		let mut io = crate::ui::menu::Scripted::new(vec![]);
+		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing, &existing).unwrap(), "SK37X");
+		let said = io.all_said();
+		assert!(said.contains("reading it again replaces"), "{said}");
+		assert!(!said.contains("is added to it"), "{said}");
 	}
 
 	/// A `Chosen` as `choose` would have built one. No directory is created:
@@ -1473,7 +1509,9 @@ mod tests {
 		use crate::ui::menu::Asker as _;
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
 		let long = Path::new("/Users/somebody/Downloads/an-odis-project-with-a-long-name/SK37X");
-		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &["SK37X".to_string()]).unwrap();
+		let here = ["SK37X".to_string()];
+		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &here, &[]).unwrap();
+		prefer_its_own_name(&mut io, "SK37X", "SK-37X-copy", &here, &here).unwrap();
 		open_odis(&mut io, long).ok();
 		io.say(&format!("Writing into {}", long.display())).unwrap();
 		for line in io.all_said().lines() {
