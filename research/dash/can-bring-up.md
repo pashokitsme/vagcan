@@ -528,16 +528,25 @@ Three embassy tasks and one ring:
   acknowledge error of a bench with no partner. So a clear `tx_complete` is
   retried, up to eight times inside 100 ms, then refused (`\x07`); the transmit
   error counter tells arbitration lost (unmoved; latched as `F` bit 6) from an
-  error (moved; the live bits show it). `C` drops the controller, clears the ring
-  and bumps an epoch the writer checks (below); `O` builds a new one from the
+  error (moved; the live bits show it) — below error-passive only, because §3's
+  exception makes an unmoved counter meaningless at 128 and above, so there the
+  live bits are the whole report. `C` drops the controller, clears the ring and
+  bumps an epoch the writer checks (below); `O` builds a new one from the
   stored bit rate and mode, and drains esp-hal's static 32-deep receive queue
-  with non-blocking polls so nothing from before the `C` comes up as live. A
-  bus-off rebuilds the controller on its own and latches `F` bit 7. A controller
-  overrun (`miss_st`) is latched as bit 3 and cleared in place with the
-  controller's `CLR_OVERRUN` command — esp-hal never issues it, and its receive
-  future reports the sticky bit on every poll of an empty queue, so left standing
-  one overrun would spin the bridge forever; if the command does not take, the
-  controller is rebuilt as after a bus-off.
+  with non-blocking polls so nothing from before the `C` comes up as live. `O`
+  or `L` on an open channel is refused, and so is the `O` after an `S` the
+  board does not have (`S0`–`S3`, `S7`) — the host ignores acks, and a
+  normal-mode node opened at the wrong bit rate answers every frame on the bus
+  with an error flag. A bus-off rebuilds the controller on its own and latches
+  `F` bit 7. A controller overrun is what esp-hal reports from `MISS_ST`
+  (status bit 8): a per-packet marker on the placeholder the FIFO left at its
+  head for a frame it had no room for, released in place with `RELEASE_BUF`
+  as ESP-IDF does (`CLR_OVERRUN` clears the unrelated `OVERRUN_ST`, bit 1),
+  latched as bit 3; only a marker that survives the release rebuilds the
+  controller as after a bus-off. esp-hal's handler also *reads* the
+  placeholder as a frame and queues it behind the report, so the `Ok` that
+  follows the report is discarded — a defensive fix with a bench check the
+  image's `take` names, not yet run.
 - **`console_tx`** owns the console's transmit half and drains `OUT`, whole lines
   packed into each 64-byte USB packet — the USB-Serial-JTAG hands the host 64
   bytes per packet and esp-hal waits for each, so a packet per write is the
@@ -627,10 +636,13 @@ count on a listen-only sniffer proves the transmit path; only `--active` proves
 the whole frame, acknowledge included. For the board as the transmitter the
 difference is visible afterwards in `F`: `00` after an `--active` run; after a
 listen-only run the trail of the refusals — every transmit is eight attempts at
-eight error-counter points each, so the live bits climb through warning and
-passive (`24`) and, if `info` keeps asking, reach bus-off, which is rebuilt and
-latched as `80`. On the CANable's side the count is up to eight times the number
-of requests, one line per attempt.
+eight error-counter points each, so the live bits climb through warning to
+passive (`24`) and stay there however long `info` keeps asking: §3's exception
+stops the counter at 128 for a transmitter nobody acknowledges, so this bench
+never shows bus-off (`80` takes a loaded bus, i.e. the car). Not `64`: from the
+third request on the counter no longer moves, and an unmoved counter is read as
+arbitration lost only below passive. On the CANable's side the count is up to
+eight times the number of requests, one line per attempt.
 
 **Listen-only is silence.** With the CANable transmitting (`info` on it) and the
 board opened by plain `dev sniff` (no `--active`, i.e. `M1` before `O`), the

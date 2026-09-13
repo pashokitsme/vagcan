@@ -21,9 +21,10 @@
 //! |---|---|---|
 //! | `C` | close the channel; drops queued frames | `\r` |
 //! | `S4` `S5` `S6` `S8` | 125 / 250 / 500 / 1000 kbit/s, closed only | `\r`, else `\x07` |
+//! | other `S` | a rate this controller does not have: **unsets** the rate, so the next `O` is refused too | `\x07` |
 //! | `M0` / `M1` | normal / listen-only for the next `O`, closed only | `\r` |
-//! | `O` | open in the configured mode | `\r` |
-//! | `L` | open listen-only this once; `M` is not changed | `\r` |
+//! | `O` | open in the configured mode, closed only | `\r`, else `\x07` |
+//! | `L` | open listen-only this once; `M` is not changed; closed only | `\r`, else `\x07` |
 //! | `tiiiLdd…` / `Tiiiiiiiildd…` | transmit an 11- / 29-bit frame | `z\r` / `Z\r` once the controller reports the frame completed — on the bus, acknowledged; `\x07` if refused, or not completed within [`TX_ATTEMPTS`] tries or [`TX_TIMEOUT`] |
 //! | `r…` / `R…` | remote frames | refused, `\x07` |
 //! | `F` / `E` | status flags, Lawicel bit layout (below) | `Fxx\r` / `Exx\r` |
@@ -42,6 +43,17 @@
 //! (see `slcan.rs`), so the board never inherits a mode from an earlier
 //! session. `L` opens listen-only without touching what `M` set, as Lawicel
 //! has it: `L`, `C`, `O` is back in the configured mode.
+//!
+//! **A refused `S` refuses the `O` after it.** The host does not read acks —
+//! `SlcanBackend` sends `C`, `S6`, `M0`, `O` blind, because the CANable's
+//! firmware acks nothing at all — so an `S` this controller cannot honour
+//! (`S0`–`S3`, `S7`) would otherwise be followed by an `O` at whatever rate
+//! was set before, and a normal-mode node at the wrong bit rate is not a silent
+//! node: it sees every frame as an error and answers each with an error flag,
+//! which is the one thing an adapter must never do to a car. So a refused `S`
+//! unsets the rate, `O` and `L` answer `\x07` until an `S` the board has, and
+//! the host sees its requests refused instead of a bus it has wrecked. The
+//! `vagcan` commands only ever send `S6`.
 //!
 //! **Nothing but slcan traffic goes down the console.** No logger is installed
 //! in this binary — not `esp_println::logger::init_logger`, not `…_from_env` —
@@ -82,7 +94,8 @@
 //! ring), bit 2 error warning (an error counter at or past 96), bit 3 data
 //! overrun (a frame was lost — in the ring, or in the controller's own FIFO),
 //! bit 5 error passive (a counter at or past 128), bit 6 arbitration lost (a
-//! transmit was refused without the error counter moving), bit 7 bus error
+//! transmit was refused without the error counter moving, while the
+//! controller was below error-passive — see "Transmit"), bit 7 bus error
 //! (the controller went bus-off). The latched bits — 0, 3, 6, 7 — clear on
 //! read; 2 and 5 are read live off the counters, except in listen-only mode,
 //! where esp-hal parks the receive counter at 128 on purpose (an errata
@@ -92,11 +105,21 @@
 //!
 //! A bus-off is recovered on its own: the controller is reopened with the
 //! same bit rate and mode, as `dash` does, so the host sees a gap rather than
-//! a dead adapter. A controller overrun is cleared in place with the
-//! controller's own command (`CLR_OVERRUN`, which esp-hal never issues — and
-//! its receive future reports the sticky status bit on every poll of an empty
-//! queue, so left alone one overrun would turn every wait into a spin); if the
-//! command does not take, the controller is rebuilt the way a bus-off is.
+//! a dead adapter. A controller overrun is not a rebuild. What esp-hal reports
+//! as `Overrun` is `MISS_ST` (status bit 8): a per-packet marker saying the
+//! packet at the head of the receive FIFO is a placeholder for one the FIFO
+//! had no room for, and it goes with the placeholder when `RELEASE_BUF`
+//! releases it — which is how ESP-IDF handles it, one release per missing
+//! packet. (`CLR_OVERRUN` clears a different bit, `OVERRUN_ST`, status bit 1,
+//! which nothing here reads.) The placeholder is released in place, inside a
+//! critical section so the interrupt handler cannot release the packet behind
+//! it instead; only a marker that survives that — a controller in a state the
+//! command does not describe — rebuilds the controller the way a bus-off is.
+//! A wrinkle in esp-hal's handler: it reports the marker and then *reads* the
+//! placeholder as a frame, so by the time the report reaches the bridge the
+//! slot is usually already released and its read is the next thing in the
+//! queue. That read is discarded — see [`take`], and the bench check named
+//! there.
 //!
 //! ## Transmit, and what `z` promises
 //!
@@ -113,12 +136,18 @@
 //! receiving all the while — a request must not cost the reply — and only
 //! then answered `\x07`. Whether the refusal was arbitration or an error is
 //! told by the error counter: unmoved is arbitration lost, latched as `F`
-//! bit 6; moved is an error, and the live bits show it. A bench with no
-//! partner therefore answers `\x07` to every transmit and reaches error
-//! warning and passive as the counter climbs by eight per attempt; it goes
-//! bus-off only if the host keeps sending, and that is recovered and
-//! reported as bit 7. A transmit in listen-only mode or on a closed channel
-//! is refused up front.
+//! bit 6; moved is an error, and the live bits show it — with one exception.
+//! ISO 11898-1 exempts an error-passive transmitter's acknowledge error from
+//! the count (`research/dash/can-bring-up.md` §3 saw exactly this on the
+//! bench), so once the counter is at 128 an unmoved counter says nothing about
+//! arbitration, and it is not read as it. A bench with no partner therefore
+//! answers `\x07` to every transmit, climbs by eight per attempt through error
+//! warning to passive, and **stays there**: a lone node never reaches bus-off.
+//! Bus-off takes a loaded bus that nobody acknowledges on — there the passive
+//! error flags meet real dominant bits — and that is recovered and reported as
+//! bit 7. A transmit in listen-only mode or on a closed channel is refused up
+//! front, and so is one whose time budget is already spent: a request with no
+//! time left would be issued and aborted in the same poll.
 //!
 //! ## A watchdog
 //!
@@ -183,6 +212,19 @@ static EPOCH: AtomicU32 = AtomicU32::new(0);
 /// static, so it survives the controller being rebuilt, and whatever it held
 /// from before a `C` or a bus-off would otherwise come up as live after `O`.
 const RX_QUEUE_DEPTH: usize = 32;
+
+/// The most packets the controller's receive FIFO can count, placeholders
+/// included: `TWAI_RX_MESSAGE_CNT_REG` is seven bits wide (esp32c3 PAC,
+/// `rx_message_cnt`, bits 0:6). A run of overrun markers at the head of the
+/// FIFO is at most this long, so a release loop that outlives it has found
+/// something the command does not describe.
+const RX_FIFO_MESSAGES: usize = 128;
+
+/// ISO 11898-1's error-counter thresholds: at 96 the controller is in error
+/// warning, at 128 it is error-passive. Properties of the protocol, not of a
+/// car.
+const TEC_WARNING: u8 = 96;
+const TEC_PASSIVE: u8 = 128;
 
 /// How many times a transmit is re-issued while the controller says the
 /// frame did not complete. What it recovers from is a lost arbitration — one
@@ -315,10 +357,9 @@ async fn bridge(mut usb: UsbSerialJtagRx<'static, Async>, twai0: TWAI0<'static>,
 		rx_pin,
 		tx_pin,
 		bus: None,
-		bitrate: BaudRate::B500K,
+		bitrate: Some(BaudRate::B500K),
 		mode: TwaiMode::Normal,
-		latched: 0,
-		dropped: 0,
+		intake: Intake::default(),
 	};
 	let mut parser = LineParser::default();
 	let mut chunk = [0u8; 64];
@@ -343,7 +384,7 @@ async fn bridge(mut usb: UsbSerialJtagRx<'static, Async>, twai0: TWAI0<'static>,
 				}
 			}
 			Event::Bus(result) => {
-				if let Err(fault) = take(result, &mut adapter.latched, &mut adapter.dropped) {
+				if let Err(fault) = take(result, &mut adapter.intake) {
 					adapter.repair(fault);
 				}
 			}
@@ -369,12 +410,14 @@ mod flags {
 }
 
 /// The controller, once opened: the two halves esp-hal splits it into, so
-/// that a transmit can be awaited while reception carries on, and the mode
-/// it was opened in — which `L` may have chosen for this open alone.
+/// that a transmit can be awaited while reception carries on, and what it
+/// was opened with — the mode `L` may have chosen for this open alone, and
+/// the bit rate, so a repair can rebuild it without asking the adapter.
 struct Bus {
 	rx: TwaiRx<'static, Async>,
 	tx: TwaiTx<'static, Async>,
 	mode: TwaiMode,
+	bitrate: BaudRate,
 }
 
 struct Adapter {
@@ -382,9 +425,20 @@ struct Adapter {
 	rx_pin: GPIO1<'static>,
 	tx_pin: GPIO6<'static>,
 	bus: Option<Bus>,
-	bitrate: BaudRate,
+	/// What `S` chose, for the next `O`. `None` after an `S` this controller
+	/// cannot honour: the next `O` is refused rather than opened at a rate the
+	/// host did not ask for (the module docs say why that matters).
+	bitrate: Option<BaudRate>,
 	/// What `M` chose, for the next `O`.
 	mode: TwaiMode,
+	intake: Intake,
+}
+
+/// What the bridge keeps between receives: the `F` bits waiting to be read,
+/// the count of frames the ring had no room for, and the one piece of
+/// look-ahead a controller overrun needs.
+#[derive(Default)]
+struct Intake {
 	/// `F` bits that stay set until somebody reads them.
 	latched: u8,
 	/// Frames that arrived while [`OUT`] was full. Reported as `F` bits 0
@@ -392,31 +446,56 @@ struct Adapter {
 	/// needed — and the `imc` core has no atomic read-modify-write to offer
 	/// anyway.
 	dropped: u32,
+	/// The next `Ok` out of the receive queue is esp-hal's read of a released
+	/// overrun placeholder, not a frame — see [`take`].
+	skip: bool,
 }
 
 /// What one receive produced: a frame goes up the ring, a fault into the
 /// latched flags. `Err` is a fault the controller has to be rebuilt for —
-/// bus-off, or an overrun the clear command did not take — and carries the
-/// error so the caller can say which.
-fn take(result: Result<EspTwaiFrame, EspTwaiError>, latched: &mut u8, dropped: &mut u32) -> Result<(), EspTwaiError> {
+/// bus-off, or an overrun marker that releasing did not clear — and carries
+/// the error so the caller can say which.
+///
+/// A controller overrun arrives as `Err(Overrun)` and, usually, one frame
+/// that is not one. esp-hal's interrupt handler reports `MISS_ST` and then
+/// `read_frame`s the same slot — the placeholder — and queues what it read as
+/// `Ok`, right behind the report; ESP-IDF releases that slot without reading
+/// it. So when the report finds the placeholder already gone (the handler
+/// released it), the `Ok` that follows is discarded. What this cannot see is
+/// whether the handler queued anything: it queues nothing when the
+/// placeholder's header decodes to a DLC over 8, or when the report took the
+/// queue's last slot — and then the first real frame after the overrun is
+/// discarded instead. If the handler ran between the report and this call,
+/// its own report of the same placeholder comes next and lands here again,
+/// finds the marker clear, and sets the same flag: nothing is skipped twice.
+///
+/// **Bench check, not yet run:** stall the host's reader on a busy bus (a
+/// `dev sniff` paused with `^Z`), resume, and look in the recording for ids
+/// that were never on the bus — a placeholder read as a frame, the flag not
+/// working — and for one frame missing right after each `F` bit 3, the flag
+/// eating a real one because the handler queued nothing.
+fn take(result: Result<EspTwaiFrame, EspTwaiError>, intake: &mut Intake) -> Result<(), EspTwaiError> {
 	match result {
 		Ok(frame) => {
+			if core::mem::take(&mut intake.skip) {
+				return Ok(());
+			}
 			if OUT.try_send(encode(&frame)).is_err() {
-				*dropped = dropped.saturating_add(1);
+				intake.dropped = intake.dropped.saturating_add(1);
 			}
 			Ok(())
 		}
 		Err(EspTwaiError::BusOff) => {
-			*latched |= flags::BUS_ERROR;
+			intake.latched |= flags::BUS_ERROR;
 			Err(EspTwaiError::BusOff)
 		}
 		Err(EspTwaiError::EmbeddedHAL(ErrorKind::Overrun)) => {
-			*latched |= flags::DATA_OVERRUN;
-			if clear_overrun() {
-				Ok(())
-			} else {
-				Err(EspTwaiError::EmbeddedHAL(ErrorKind::Overrun))
+			intake.latched |= flags::DATA_OVERRUN;
+			match release_missing()? {
+				Missing::Consumed => intake.skip = true,
+				Missing::Released => {}
 			}
+			Ok(())
 		}
 		// A frame the controller could not decode (a non-compliant DLC, a
 		// bus error it attributed to a frame): nothing to forward.
@@ -424,27 +503,50 @@ fn take(result: Result<EspTwaiFrame, EspTwaiError>, latched: &mut u8, dropped: &
 	}
 }
 
-/// Clear the controller's data-overrun status with its own command —
-/// `CLR_OVERRUN` in `TWAI_CMD_REG`, the SJA1000 lineage's "clear data
-/// overrun" — and say whether it took. esp-hal never issues it (there is no
-/// `clr_overrun` anywhere in its driver), and its receive future returns the
-/// sticky `miss_st` as `Ready(Err(Overrun))` on every poll of an empty queue,
-/// so an overrun left standing turns every wait into a spin that starves the
-/// console, the other tasks and the watchdog's feeder.
-fn clear_overrun() -> bool {
-	let regs = TWAI0::regs();
-	regs.cmd().write(|w| w.clr_overrun().set_bit());
-	regs.status().read().miss_st().bit_is_clear()
+/// What became of the placeholder a controller overrun leaves at the head
+/// of the receive FIFO.
+enum Missing {
+	/// esp-hal's interrupt handler had already released it — and read it as
+	/// a frame first, which is now the next item in its queue.
+	Consumed,
+	/// It was still at the head, and is released here.
+	Released,
+}
+
+/// Release the placeholder at the head of the receive FIFO with the
+/// controller's own command — `RELEASE_BUF` in `TWAI_CMD_REG`, the one
+/// ESP-IDF issues for a packet whose `MISS_ST` is set — and say what was
+/// found there. (`CLR_OVERRUN` is the wrong command: it clears `OVERRUN_ST`,
+/// a different bit, and leaves the marker and the placeholder where they
+/// are.) Checked and released in one critical section: the interrupt handler
+/// releases the head too, and a release that lands after its release would
+/// discard the real packet behind. `Err` is a marker that outlives every
+/// release the FIFO could need, which is a controller in a state the command
+/// does not describe; the caller rebuilds it.
+fn release_missing() -> Result<Missing, EspTwaiError> {
+	critical_section::with(|_| {
+		let regs = TWAI0::regs();
+		if regs.status().read().miss_st().bit_is_clear() {
+			return Ok(Missing::Consumed);
+		}
+		for _ in 0..RX_FIFO_MESSAGES {
+			regs.cmd().write(|w| w.release_buf().set_bit());
+			if regs.status().read().miss_st().bit_is_clear() {
+				return Ok(Missing::Released);
+			}
+		}
+		Err(EspTwaiError::EmbeddedHAL(ErrorKind::Overrun))
+	})
 }
 
 /// Run `work` while frames keep going up. Ends early if the controller
-/// faults (bus-off, an overrun the command would not clear), which the
+/// faults (bus-off, an overrun marker that would not clear), which the
 /// caller answers by rebuilding it; `work` is dropped then, which for a
 /// transmit aborts the attempt.
-async fn attend<F: Future>(rx: &mut TwaiRx<'static, Async>, latched: &mut u8, dropped: &mut u32, work: F) -> Result<F::Output, EspTwaiError> {
+async fn attend<F: Future>(rx: &mut TwaiRx<'static, Async>, intake: &mut Intake, work: F) -> Result<F::Output, EspTwaiError> {
 	let receive = async {
 		loop {
-			if let Err(fault) = take(rx.receive_async().await, latched, dropped) {
+			if let Err(fault) = take(rx.receive_async().await, intake) {
 				return fault;
 			}
 		}
@@ -456,12 +558,13 @@ async fn attend<F: Future>(rx: &mut TwaiRx<'static, Async>, latched: &mut u8, dr
 }
 
 impl Adapter {
-	/// Start the controller with the configured bit rate and the given mode.
-	/// An open controller is dropped first — that releases the peripheral
-	/// (its clock gates off with the last guard) so the new configuration
-	/// starts from reset, which is also what clears the error counters and
-	/// the overrun status.
-	fn open(&mut self, mode: TwaiMode) {
+	/// Start the controller with the given bit rate and mode. An open
+	/// controller is dropped first — that releases the peripheral (its clock
+	/// gates off with the last guard) so the new configuration starts from
+	/// reset, which is also what clears the error counters and the overrun
+	/// status. The command handler refuses `O` on an open channel; this is
+	/// reached with one open only from [`Adapter::repair`].
+	fn open(&mut self, bitrate: BaudRate, mode: TwaiMode) {
 		self.bus = None;
 		// SAFETY: `clone_unchecked` asks that a clone and its original never
 		// both drive the peripheral. The originals — `self.twai0`,
@@ -476,20 +579,31 @@ impl Adapter {
 		let (twai0, rx_pin, tx_pin) = unsafe { (self.twai0.clone_unchecked(), self.rx_pin.clone_unchecked(), self.tx_pin.clone_unchecked()) };
 		// No acceptance filter: an adapter forwards everything, and the host
 		// decides what it wanted. (`TwaiConfiguration::new` installs accept-all.)
-		let config = TwaiConfiguration::new(twai0, rx_pin, tx_pin, self.bitrate, mode);
+		let config = TwaiConfiguration::new(twai0, rx_pin, tx_pin, bitrate, mode);
 		let mut twai = config.into_async().start();
 		// esp-hal's receive queue is a static: what it held from before the
 		// rebuild — frames from before a `C`, the errors of a bus-off — would
 		// come up as live after this open. Drain it with polls that cannot
 		// block; a fresh controller answers `Pending` once the queue is empty.
 		// The bound is against a status bit that would answer `Ready` forever.
+		//
+		// The drain runs after `start()` because it has to: the queue lives in
+		// esp-hal's `TwaiAsyncState`, reachable only through a private trait
+		// and so only through the receive future of a started controller. A
+		// frame that lands in the tens of microseconds the loop takes is
+		// drained with the stale ones. Accepted: nothing on the bus in that
+		// window can be an answer to the host, which has not had its `\r` for
+		// this open yet and so has sent nothing through it.
 		for _ in 0..=RX_QUEUE_DEPTH {
 			if poll_once(twai.receive_async()).is_pending() {
 				break;
 			}
 		}
+		// A skip pending from before the rebuild referred to a queue that has
+		// just been drained; left set it would eat the first real frame.
+		self.intake.skip = false;
 		let (rx, tx) = twai.split();
-		self.bus = Some(Bus { rx, tx, mode });
+		self.bus = Some(Bus { rx, tx, mode, bitrate });
 	}
 
 	/// After a fault: the same settings again, nothing forgotten. Which fault
@@ -497,11 +611,11 @@ impl Adapter {
 	/// the one path that has not latched it yet.
 	fn repair(&mut self, fault: EspTwaiError) {
 		if matches!(fault, EspTwaiError::BusOff) {
-			self.latched |= flags::BUS_ERROR;
+			self.intake.latched |= flags::BUS_ERROR;
 		}
 		if let Some(bus) = &self.bus {
-			let mode = bus.mode;
-			self.open(mode);
+			let (bitrate, mode) = (bus.bitrate, bus.mode);
+			self.open(bitrate, mode);
 		}
 	}
 
@@ -525,7 +639,7 @@ impl Adapter {
 			return;
 		};
 		let copy = reply.clone();
-		if let Err(fault) = attend(rx, &mut self.latched, &mut self.dropped, OUT.send(reply)).await {
+		if let Err(fault) = attend(rx, &mut self.intake, OUT.send(reply)).await {
 			// The send was dropped with the fault; the reply still has to go.
 			self.repair(fault);
 			OUT.send(copy).await;
@@ -545,21 +659,32 @@ impl Adapter {
 				self.close();
 				reply(OK)
 			}
-			b'O' => {
-				self.open(self.mode);
-				reply(OK)
-			}
-			// One-shot, as Lawicel has it: the next `O` is back in `M`'s mode.
-			b'L' => {
-				self.open(TwaiMode::ListenOnly);
-				reply(OK)
-			}
+			// Open commands on an open channel: refused, as Lawicel specifies.
+			// Rebuilding instead would zero the error counters and drop the
+			// receive FIFO behind a host that asked for nothing of the kind.
+			b'O' | b'L' if self.bus.is_some() => reply(BELL),
+			// `L` is one-shot, as Lawicel has it: the next `O` is back in `M`'s
+			// mode. No rate means the last `S` was one this controller does not
+			// have, and the module docs say why that refuses the open.
+			b'O' | b'L' => match self.bitrate {
+				Some(bitrate) => {
+					self.open(bitrate, if head == b'O' { self.mode } else { TwaiMode::ListenOnly });
+					reply(OK)
+				}
+				None => reply(BELL),
+			},
 			b'S' if self.bus.is_none() => match args {
 				b"4" => self.set_bitrate(BaudRate::B125K),
 				b"5" => self.set_bitrate(BaudRate::B250K),
 				b"6" => self.set_bitrate(BaudRate::B500K),
 				b"8" => self.set_bitrate(BaudRate::B1000K),
-				_ => reply(BELL),
+				// A rate the controller does not have. The host does not read
+				// this refusal, so the rate is unset and the `O` that follows
+				// is refused in its place.
+				_ => {
+					self.bitrate = None;
+					reply(BELL)
+				}
 			},
 			b'M' if self.bus.is_none() => match args {
 				b"0" => {
@@ -599,14 +724,14 @@ impl Adapter {
 	}
 
 	fn set_bitrate(&mut self, rate: BaudRate) -> Line {
-		self.bitrate = rate;
+		self.bitrate = Some(rate);
 		reply(OK)
 	}
 
 	/// `F`: the latched bits, cleared by this read, plus the live error state.
 	fn flags(&mut self) -> u8 {
-		let mut f = core::mem::take(&mut self.latched);
-		if core::mem::take(&mut self.dropped) > 0 {
+		let mut f = core::mem::take(&mut self.intake.latched);
+		if core::mem::take(&mut self.intake.dropped) > 0 {
 			f |= flags::RX_QUEUE_FULL | flags::DATA_OVERRUN;
 		}
 		// The counters mean something only in normal mode. In listen-only
@@ -618,10 +743,10 @@ impl Adapter {
 			let regs = TWAI0::regs();
 			let tec = regs.tx_err_cnt().read().tx_err_cnt().bits();
 			let rec = regs.rx_err_cnt().read().rx_err_cnt().bits();
-			if tec >= 96 || rec >= 96 {
+			if tec >= TEC_WARNING || rec >= TEC_WARNING {
 				f |= flags::ERROR_WARNING;
 			}
-			if tec >= 128 || rec >= 128 {
+			if tec >= TEC_PASSIVE || rec >= TEC_PASSIVE {
 				f |= flags::ERROR_PASSIVE;
 			}
 			if regs.status().read().bus_off_st().bit_is_set() {
@@ -640,20 +765,27 @@ impl Adapter {
 		};
 		let deadline = Instant::now() + TX_TIMEOUT;
 		for _ in 0..TX_ATTEMPTS {
-			let Some(Bus { rx, tx, mode }) = self.bus.as_mut() else {
+			let Some(Bus { rx, tx, mode, .. }) = self.bus.as_mut() else {
 				return reply(BELL);
 			};
 			if *mode == TwaiMode::ListenOnly {
 				return reply(BELL);
 			}
+			let left = deadline.saturating_duration_since(Instant::now());
+			if left.as_ticks() == 0 {
+				// The budget is spent with attempts to spare. A zero timeout is
+				// not a refusal: `with_timeout` polls the transmit once before
+				// its timer — which issues the request — and then drops it,
+				// which aborts a frame that may already be on the wire.
+				return reply(BELL);
+			}
 			let regs = TWAI0::regs();
 			let tec_before = regs.tx_err_cnt().read().tx_err_cnt().bits();
-			let left = deadline.saturating_duration_since(Instant::now());
 			// Frames keep flowing up while the transmit is in flight — on a
 			// car the answer to this frame is among them, and the ISO-TP flow
 			// control that follows a first frame is what the host is waiting
 			// for.
-			let attempt = with_timeout(left, attend(rx, &mut self.latched, &mut self.dropped, tx.transmit_async(&frame))).await;
+			let attempt = with_timeout(left, attend(rx, &mut self.intake, tx.transmit_async(&frame))).await;
 			match attempt {
 				Ok(Ok(Ok(()))) => {
 					// The buffer was released. Completed, or aborted by esp-hal's
@@ -662,13 +794,17 @@ impl Adapter {
 						return reply(if head == b't' { b'z' } else { b'Z' }).with(OK);
 					}
 					let tec_after = regs.tx_err_cnt().read().tx_err_cnt().bits();
-					if tec_after <= tec_before {
-						// Nothing went wrong on the wire; somebody else's frame
-						// had the lower id.
-						self.latched |= flags::ARBITRATION_LOST;
+					// An unmoved counter means nothing went wrong on the wire —
+					// somebody else's frame had the lower id — unless the
+					// controller is already error-passive: there an acknowledge
+					// error does not move it either (ISO 11898-1's exception;
+					// can-bring-up.md §3 saw it), so it says nothing, and the
+					// live bits of `F` are the report.
+					if tec_before < TEC_PASSIVE && tec_after <= tec_before {
+						self.intake.latched |= flags::ARBITRATION_LOST;
 					}
-					// An error moved the counter, and the live bits of `F` show
-					// it; either way, again.
+					// A moved counter is an error the live bits show; either
+					// way, again.
 				}
 				// The transmit future's own bus-off, or a fault on the receive
 				// side that ended the attempt: rebuild, and refuse.
