@@ -871,15 +871,19 @@ pub struct CachedFault {
 
 /// The fault codes this cache knows for one ECU variant, by number.
 ///
-/// Every source's rows, each with its source's language, in the order they
-/// were written: choosing between sources is the caller's policy, and it needs
-/// the language to make it.
+/// Every source's rows, each with its source's language: choosing between
+/// sources is the caller's policy, and it needs the language to make it.
+///
+/// **In source order, then write order within a source.** A source's id never
+/// changes, and its rows' ids do on every reread — so write order alone put a
+/// reread source behind the others and turned "the first source wins" into
+/// "the last source reread wins".
 pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Error> {
 	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT f.dop, f.code, f.display, f.text, f.text_id, f.short_name, f.level, f.temporary, s.language, s.dir \
          FROM fault f JOIN source s ON s.id = f.source_id \
-         WHERE f.variant = ?1 ORDER BY f.rowid",
+         WHERE f.variant = ?1 ORDER BY s.id, f.rowid",
 	)?;
 	let rows = stmt.query_map(params![variant], |row| {
 		Ok(CachedFault {
@@ -1710,7 +1714,12 @@ mod tests {
 		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a2")]).unwrap();
 		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
 		let texts: Vec<(Option<&str>, Option<&str>)> = cached.iter().map(|c| (c.fault.text.as_deref(), c.language.as_deref())).collect();
-		assert_eq!(texts, [(Some("steering angle"), Some("eng")), (Some("a2"), None)]);
+		// And the first project still comes first. A reread writes new rows,
+		// which land after the second project's; handing rows back in write
+		// order made "the first source written wins" mean "the last one reread"
+		// — two runs of `faults` either side of a `setup` disagreeing about which
+		// text a code gets, and the note naming a source that no longer won.
+		assert_eq!(texts, [(Some("a2"), None), (Some("steering angle"), Some("eng"))]);
 	}
 
 	#[test]
