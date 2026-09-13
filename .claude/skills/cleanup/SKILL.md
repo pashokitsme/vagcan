@@ -205,6 +205,10 @@ mixed in.
   Phase 1. If it is gone, the rows are in git history at `0e263b1^:catalogs/vehicles/`
   (the commit that took them out of the repository); restore them there unchanged and date it
   in the status. They are one owner's car and never go back into the checkout.
+  **Then run the tests again**: 35 tests in `watch` read those rows through
+  `need_rows!` and skip without them, so a machine without rows — and CI, always — never
+  runs them. Restoring the rows on 2026-09-13 surfaced one that had gone stale behind the
+  skip (its survey fixture predated the `asked` field).
 - **A superseded task file is a superseded design.** It goes to `.archive/specs/<subsystem>/`,
   not to `tasks/done/` (nothing was done), with a row in `.archive/README.md` naming what
   replaced it. Then sweep the links: markdown links from `todo/` gain the `../../.archive/…`
