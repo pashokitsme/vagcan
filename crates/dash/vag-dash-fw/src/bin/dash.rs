@@ -208,10 +208,9 @@ async fn main(spawner: Spawner) {
 	vag_dash_fw::health::init(spawner);
 
 	let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
-	// GPIO9 is the SuperMini's BOOT button: a real button, already fitted, so
-	// the whole interaction can be proven before anything is wired. On the
-	// finished device it moves to one of GPIO0..5, which are the pins that can
-	// wake the chip from deep sleep.
+	// GPIO9 is the SuperMini's BOOT button: a real button, already fitted, and
+	// the device's only one — it is powered from OBD pin 1 and never sleeps, and
+	// in the car the cruise lever pages it (`todo/dash/14` §6a).
 	let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
 
 	// Which car this image is for, said once, before anything is asked of the
@@ -238,8 +237,8 @@ async fn main(spawner: Spawner) {
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 
-	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — see
-	// the pin table in `sleep.rs` for why those two. **Normal mode, not the
+	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — the
+	// wiring is `todo/dash/15-enclosure.md` §3. **Normal mode, not the
 	// listen-only default `can.rs` argues for**, and the reason is the whole
 	// job: a `0x22` request has to be transmitted, and a controller that
 	// cannot acknowledge cannot be answered either. What goes out is the same

@@ -217,7 +217,8 @@ mixed in.
 - **Code implementing a superseded design is flagged, not deleted, by a cleanup pass.**
   `sleep.rs` and `sleeptest` implement the archived `07-sleep`; both halves of "genuinely
   dead" are arguable (a caller exists; its reason was superseded by the owner's power
-  decision, not refuted), so it is listed as the owner's call in the next goals.
+  decision, not refuted), so it is listed as the owner's call in the next goals. The owner
+  decided the same day: delete it, entirely.
 
 ## What a cleanup pass produces
 

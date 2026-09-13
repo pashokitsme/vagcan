@@ -21,15 +21,6 @@ version = "0.1.0"
 name = "dash"
 path = "./src/bin/dash.rs"
 
-# The deep-sleep demonstrator: boot, say why we woke, wait, sleep, repeat. It
-# is its own image rather than a mode of `dash` because the thing being
-# measured is the *floor*, and a binary that also carries a radio and a panel
-# cannot show one. It never configures the CAN pins, so it is not behind
-# `bench`: left on a board in a car it drives nothing onto the pair.
-[[bin]]
-name = "sleeptest"
-path = "./src/bin/sleeptest.rs"
-
 # Listen-only frame counter: how many frames per second, which ids. Transmits
 # nothing, so unlike the bench tools below it may be pointed at a car.
 [[bin]]

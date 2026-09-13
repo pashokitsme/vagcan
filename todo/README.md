@@ -99,14 +99,13 @@ gearbox `0CW300041G` 12, cluster `5E0920740D` 8) were restored unchanged from gi
    on the board, and whether opening the board's port twice resets it (a reviewer's open
    question).
 4. **The OLED and the enclosure** — `todo/dash/15`; waits for the panel to arrive.
-5. **Owner's call:** `sleep.rs` and `sleeptest` still implement the archived sleep design.
 
 **With the car:**
 
-6. **The cruise-lever probe** — `14` §7 item 10: `1105` on `70C` and the engine's GRA status.
-7. **Fault names without VCDS, live** (M4): `vagcan faults` after an ODIS `setup`; then the
+5. **The cruise-lever probe** — `14` §7 item 10: `1105` on `70C` and the engine's GRA status.
+6. **Fault names without VCDS, live** (M4): `vagcan faults` after an ODIS `setup`; then the
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-8. **The stopwatch** — `14` §6: fit the `380B` → km/h factor on a steady stretch, then time
+7. **The stopwatch** — `14` §6: fit the `380B` → km/h factor on a steady stretch, then time
    a run on one straight road.
 
 Whole-car measurement coverage (M3) is **off the list** at the owner's decision on

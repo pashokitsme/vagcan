@@ -10,6 +10,5 @@ pub mod config;
 pub mod health;
 pub mod panel;
 pub mod plan;
-pub mod sleep;
 pub mod store;
 pub mod ui;
