@@ -119,6 +119,10 @@ transaction, both ≈1 s; nothing below 3 s is cheap from here.
    `todo/dash/05`.
 2. **The OLED on the carrier** — `dash`; **no car.** The SSD1322 driver and the
    frame's snap-fit, with the panel still on the laptop through `dashsim` until then.
+   The frame itself is redesigned from scratch around the new CAN module (10 × 28 mm,
+   33 with connectors): the printed `carrier` was too complicated and its boards did not
+   snap in (owner, 2026-09-13). Hand-off for that session:
+   [`dash/15-enclosure.md`](dash/15-enclosure.md).
 3. **Fault names without VCDS — the rest of it** (M4); **the car, once.** The ODIS DTC
    loader landed 2026-09-10 (header of this file), offline-verified on the reference
    car's fifteen stored faults. What is left is the live run — `vagcan faults` on the
