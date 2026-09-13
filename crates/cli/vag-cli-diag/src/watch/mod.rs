@@ -2763,9 +2763,12 @@ mod tests {
 		let channels = crate::plan::available(&store(need_rows!()), &crate::extracted::Extracted::none(), &identities);
 		let one = channels.first().expect("the reference store has channels").clone();
 		// One channel asked and answered, and the rest of that unit asked and
-		// silent.
+		// silent. The `asked` range is what makes silence count: a survey that
+		// does not say what it asked supports no verdict (`plan::Answered::asked`),
+		// and this fixture predated the field — it only ran on a machine with
+		// proven rows, which hid that until they were restored on 2026-09-13.
 		let survey = format!(
-			"{{\"request\":\"{:03X}\",\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
+			"{{\"request\":\"{:03X}\",\"asked\":[\"0000-FFFF\"],\"dids\":[{{\"did\":\"{:04X}\",\"data\":\"00\"}}]}}\n",
 			one.request, one.did
 		);
 		let answered = crate::plan::answered_from_survey(&survey);
