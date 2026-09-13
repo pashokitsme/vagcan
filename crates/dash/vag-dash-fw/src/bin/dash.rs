@@ -1,13 +1,16 @@
-//! BLE peripheral probe: three real profiles, not a toy service.
+//! BLE peripheral probe: two real profiles, not a toy service.
 //!
 //! * **DIS** (0x180A) — Device Information: who this thing is. Every scanner
 //!   and every OS reads it, and it costs three constant strings.
-//! * **BAS** (0x180F) — Battery Service. Android shows this next to the device
-//!   name; on a car-powered dash it will eventually report the rail, not a cell.
 //! * **NUS** — Nordic UART Service. Not a SIG profile, but the de-facto one:
 //!   it is what every "BLE terminal" app speaks, and it is the honest
 //!   replacement for the Bluetooth-Classic SPP that `09` was written around
 //!   before the board turned out to be a C3.
+//!
+//! There is no Battery Service (0x180F). Phones show its level as the device's
+//! battery, and this board has no battery and no reading of the rail (the
+//! divider was retired), so anything it notified there would be invented — it
+//! once was, a 100→0 ramp. It comes back only with a real measurement behind it.
 //!
 //! What none of these do is put the device in the phone's *Settings* list —
 //! see `10-c3-recon.md`. That needs HID-over-GATT and nothing else.
@@ -26,7 +29,7 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either3, select, select3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
@@ -93,7 +96,6 @@ fn dis(s: &str) -> DisString {
 #[gatt_server]
 struct Server {
 	dis: DeviceInformationService,
-	bas: BatteryService,
 	uart: NordicUartService,
 }
 
@@ -106,14 +108,6 @@ struct DeviceInformationService {
 	model: DisString,
 	#[characteristic(uuid = characteristic::FIRMWARE_REVISION_STRING, read, value = dis("recon-0.1"))]
 	firmware: DisString,
-}
-
-/// 0x180F. Reports a fake ramp for now; the real one is the 12 V rail through
-/// the divider that `08` puts on an ADC pin.
-#[gatt_service(uuid = service::BATTERY)]
-struct BatteryService {
-	#[characteristic(uuid = characteristic::BATTERY_LEVEL, read, notify, value = 100)]
-	level: u8,
 }
 
 /// The Nordic UART Service. Note the direction names are from the *central's*
@@ -384,7 +378,7 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 	loop {
 		// Half the debounce interval: fast enough that no edge is missed,
 		// slow enough to be free.
-		let press = match embassy_futures::select::select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
+		let press = match select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
 			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
 			embassy_futures::select::Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
 		};
@@ -505,12 +499,7 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared) {
 					Ok(conn) => {
 						set_visibility(Visibility::Connected);
 						info!("[adv] connected");
-						select3(
-							gatt_events_task(&server, &conn, settings),
-							state_task(&server, &conn, settings),
-							battery_task(&server, &conn),
-						)
-						.await;
+						select(gatt_events_task(&server, &conn, settings), state_task(&server, &conn, settings)).await;
 						// Whatever ended it, the device goes dark. It does NOT
 						// return to advertising: requiring someone to press the
 						// button again is the entire point — reaching this
@@ -550,7 +539,7 @@ async fn start_advertising<'values, C: Controller>(
 	let adv_len = AdStructure::encode_slice(
 		&[
 			AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-			AdStructure::ServiceUuids16(&[service::DEVICE_INFORMATION.to_le_bytes(), service::BATTERY.to_le_bytes()]),
+			AdStructure::ServiceUuids16(&[service::DEVICE_INFORMATION.to_le_bytes()]),
 			AdStructure::CompleteLocalName(name.as_bytes()),
 		],
 		&mut adv_data[..],
@@ -643,23 +632,6 @@ async fn gatt_events_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnect
 		}
 	};
 	info!("[gatt] disconnected: {reason:?}");
-}
-
-/// A visible, standard-profile heartbeat: the battery percentage ramps down so
-/// the client has something changing to show. `08`'s divider from the 12 V rail
-/// is what eventually feeds this.
-async fn battery_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
-	let level = &server.bas.level;
-	let mut pct: u8 = 100;
-	loop {
-		Timer::after(Duration::from_secs(5)).await;
-		pct = if pct == 0 { 100 } else { pct - 1 };
-		if server.set(level, &pct).is_err() {
-			break;
-		}
-		// Fails until someone subscribes; not a reason to stop.
-		let _ = level.notify(conn, &pct).await;
-	}
 }
 
 /// The last thing the car said about one channel, and when.
