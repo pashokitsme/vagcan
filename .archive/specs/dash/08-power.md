@@ -1,0 +1,124 @@
+# dash / 08 — power: 12 V from the socket, and the microamps that matter
+
+> **Superseded 2026-09-13.** The owner powers the board from **OBD pin 1**, which on this
+> car carries +12 V only with the ignition on (terminal 15). The device is off when the car
+> is off; there is nothing to sleep through and nothing to wake from. The wake button on
+> `GPIO5`, the RTC-pin allocation and the microamp budget below are moot; what survives is
+> the rule that settings persist across a power cut (`12-settings.md`), which they do.
+> Kept as the record of what deep sleep on the C3 would have cost.
+
+**Subsystem:** dash · **Needs the car:** for measurement, yes · **Opened 2026-08-20**
+
+Paired with [`07-sleep.md`](07-sleep.md). They are one problem seen from two sides: `07`
+is what the firmware does to draw nothing, `08` is whether the hardware lets it.
+
+## Where the power comes from
+
+**OBD-II pin 16 is permanent battery positive**, pins 4 and 5 are chassis and signal
+ground, pins 6 and 14 are CAN-H and CAN-L (SAE J1962). This is the connector standard, not
+a property of this car.
+
+Two consequences, and the second is the whole task:
+
+1. There is no wiring to run. One cable to the socket carries both the bus and the supply.
+2. **It is permanent.** Pin 16 is live with the car locked and asleep. Nothing switches it
+   off for us, so whatever the device draws, it draws for as long as the car is parked.
+
+## The quiescent current *is* the sleep design
+
+`07` gets the ESP32 down to tens of microamps in deep sleep. That number is meaningless
+if the regulator in front of it idles at milliamps — the device then draws milliamps, and
+the whole sleep state machine has been cancelled by one component choice.
+
+The arithmetic, so the target is a number rather than a feeling: 10 mA is 240 mA·h a day,
+about 7 A·h a month. A car battery is 60–70 A·h and the whole vehicle's permitted
+parasitic draw is usually specified in the tens of milliamps, so a single accessory at
+10 mA is a large fraction of the budget. At 100 µA it is 72 mA·h a month, which is
+nothing.
+
+**Target: under about 1 mA for the whole device asleep.** That is a buck-converter
+specification before it is a firmware one — a part with microamp-class quiescent current
+and, ideally, an enable pin the firmware can pull.
+
+The panel is the other half: an OLED must be **off**, not merely dark, when asleep.
+
+## Automotive input, not a bench 12 V
+
+The car's rail is a hostile supply and a bare module will not survive it. What the front
+end has to take, per ISO 16750-2 / ISO 7637-2 rather than per guesswork:
+
+- **Cranking dips** — the rail collapses at every start. The device should ride through
+  rather than brown out and reboot; a display that reboots every time the engine starts
+  is a display nobody trusts.
+- **Load dump and transients** — tens of volts, well above the nominal 12–14.
+- **Reverse polarity**, because one day something will be wired backwards.
+
+So: TVS, reverse protection, and a buck rated well above the nominal rail — not a bare
+step-down module.
+
+## What is in the car, and what is not
+
+```
+OBD 16 --[TVS, reverse protection]--[buck]-- 3V3 --+-- ESP32-WROOM-32
+                                                   |      |  |
+                                       [load switch]      |  +-- SPI -- OLED 256x32
+                                                   |      |
+OBD 6,14 -- CANH/CANL -- ADM3050E ----- RXD/TXD ---+------+
+                            ^
+                    B0505S-1WR3 (isolated 5 V, bus side)
+
+OBD 4,5 ------------------------------------ GND
+```
+
+The ADM3050E and the B0505S are **already on the CANable**, and the ESP32 shares the
+transceiver rather than carrying one of its own (`05`). The load switch is what lets the
+isolated supply be cut while parked.
+
+### Measure the CANable's idle draw first
+
+The Hi-Link B0505S-1WR3 is an isolated 1 W module, and modules of that class are known for
+a no-load current in the tens of milliamps. Tried to confirm it 2026-08-20 and could not:
+the Hi-Link PDF did not extract and the ADI datasheet timed out. **So measure it** — an
+ammeter in series with the CANable's 5 V, board idle. The board is on the bench and a
+measurement settles this better than any datasheet.
+
+If it is tens of milliamps, two things follow: a load switch under the ESP32's control is
+mandatory rather than tidy, and waking on bus activity becomes impossible, because the
+transceiver is behind that switch. See `07`, where the wake is settled as a divider from
+pin 16 into an ADC at 13 V — which also wants a place on this schematic, and is two
+resistors.
+
+## USB-C — yes on the bench, and be careful about the rest
+
+For development USB-C is exactly right: the ESP32-S3 has native USB, so one cable gives
+flashing, serial and 5 V. Keep it.
+
+Two things it does not do:
+
+- **USB-C does not carry CAN.** In the car the bus comes from OBD pins 6 and 14; USB is a
+  bench convenience, not a second data path.
+- **Two supplies on one rail need ORing.** With the car's 5 V and USB's 5 V both connected,
+  one back-feeds the other — into the laptop's port or into the buck's output. An ideal-
+  diode power mux, or at minimum Schottky ORing.
+
+**And do not use a USB-C receptacle as a cheap connector for 12 V + CAN.** It is tempting —
+24 rugged pins for pennies — and it is a trap with a date on it: sooner or later somebody
+plugs a real charger, or a laptop, into a socket that has the car's CAN lines on it. If a
+single-cable connector is wanted, use one that cannot be mistaken for something else.
+
+## The panel's own supply
+
+Check before ordering: many SSD1322 modules want **3.3 V logic and a separate 12–15 V
+panel supply**, and only some carry the boost converter on board. A module without it
+needs one, and that changes the power design rather than a footprint.
+
+## Measure, do not assume
+
+- The device's draw asleep and awake, on the bench, at 12 V.
+- The rail during cranking, at the socket, on this car — the front end is designed against
+  what was measured, not against a datasheet's worst case.
+
+## Done when
+
+The device runs from the socket alone, survives a start without rebooting, and measures
+under 1 mA with the car asleep.

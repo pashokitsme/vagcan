@@ -2,26 +2,62 @@
 
 Every command, what it prints, and the flows that span several of them. Start at
 [`README.md`](README.md) if you have not built the tool yet; read
-[`SAFETY.md`](SAFETY.md) before your first sweep; [`ARCHITECTURE.md`](ARCHITECTURE.md)
+[`ARCHITECTURE.md`](ARCHITECTURE.md)
 explains why any of this is shaped the way it is.
 
 Commands are split by what they need. **The top level needs a car in front of you.**
-`vagcan recording …` reads back drives this tool recorded, and `vagcan vcds …` reads
+`vagcan dev recording …` reads back drives this tool recorded, and `vagcan dev vcds …` reads
 VCDS's own files; neither touches a vehicle.
 
 ---
 
 ## Contents
 
+- [`vagcan` on its own](#vagcan-on-its-own)
 - [Once, before anything else](#once-before-anything-else)
 - [Reading the car](#reading-the-car)
 - [Watching it live](#watching-it-live)
 - [Timing a run](#timing-a-run)
 - [Offline](#offline)
-  - [`vagcan glossary`](#vagcan-glossary--your-own-names-for-channels)
+  - [`vagcan dev glossary`](#vagcan-glossary--your-own-names-for-channels)
 - [Flow: a first drive](#flow-a-first-drive)
 - [Flow: teaching it a new measurement](#flow-teaching-it-a-new-measurement)
 - [When it says data is missing](#when-it-says-data-is-missing)
+
+---
+
+## `vagcan` on its own
+
+No subcommand prints an overview instead of an error: what the tool is, what this
+machine actually has, and what to type next. It opens no adapter's CAN channel and puts
+nothing on a bus — it lists USB serial devices and reads `~/.vagcan`, so it is safe to
+run with the engine running. The one port it writes to is a vag-dash board's: each one
+plugged in is opened and asked its slcan version (`V`), so the adapter line says which
+firmware it runs. That costs up to 300 ms per board; with no board plugged in it is
+instant.
+
+```
+$ vagcan
+vagcan — read a VAG car (VW / Audi / Škoda / SEAT) over CAN, through the OBD-II port.
+It only ever reads: no coding, no adaptation, no clearing faults, no flashing.
+
+  Adapter   /dev/cu.usbmodem206E37A148451 — CANable 2.0 (slcan)
+  Car data  SK37X, from a VCDS installation and an ODIS project
+            399283 channels across 669 control-unit variants
+
+Next:
+  vagcan info      which car is this?
+  vagcan units     which control units does it have?
+  vagcan faults    what is it complaining about?
+  vagcan watch     live values from several units, chosen on screen
+
+`vagcan --help` lists every command, and `vagcan help <command>` explains one.
+```
+
+The "Next" block follows the state above it: with no project it is `vagcan setup` and
+where to get a source, with no adapter it is what to plug in and which commands work
+without one. Anything that could not be read cheaply says so rather than being guessed
+at — `vagcan --help` is untouched and still lists every command.
 
 ---
 
@@ -40,7 +76,8 @@ vagcan setup ~/Downloads/SK37X  # …or name one outright, of either kind
 **A project is a platform, not one car.** VW's own mapping files every Octavia III,
 Karoq and Kodiaq under `SK37X`, so two cars can share a project; what is true of exactly
 one car lives under `~/.vagcan/cars/<VIN>/` instead. Running a second source into a
-project **adds** to it, and nothing already there is replaced.
+project **adds** to it, and what the other sources put there stays; running the same
+source again replaces only what that source wrote before.
 
 #### Naming a source outright
 
@@ -51,44 +88,30 @@ is an extracted ODIS project:
 $ vagcan setup ~/Downloads/SK37X
 Project `SK37X` — the name ODIS gives this folder.
 New — nothing has been read into it yet.
-Opening the ODIS project — its two string pools are read whole, which
-takes a moment:
-    /Users/you/Downloads/SK37X
 230 pools, project version 2610.2.688.
 Writing into /Users/you/.vagcan/data/SK37X
 
 Reading the ODIS project at /Users/you/Downloads/SK37X
-[1/2] Control units — walking each variant's measurement chain.
+[1/2] Control units — walking each variant's measurement chain and fault table.
 [2/2] Names — every object in every pool, for the (text id, name)
       pairs they carry.
 
 Done.
 
-  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+  the control units this project describes: 669 of 717 variants, 399283 channels, 0 refused, 4 unreadable; 621 with fault text, 282621 codes
     /Users/you/.vagcan/data/SK37X/cache.sqlite
   the measurement names: 21576 names
-    /Users/you/.vagcan/data/SK37X/names.json
+    /Users/you/.vagcan/data/SK37X/names-odis.json
 
 Next:  vagcan devices      is the adapter connected?
        vagcan info         which car is this?
-       vagcan faults       stored faults, named — the labels are copied in now
-
-This project carries scalings, declared per ECU variant — so a channel it
-describes reads as a number the first time, with no drive.
-
-They are evidence, not proof: nothing in them has been confirmed against a
-car, and where a row you proved yourself disagrees, yours wins. Confirming
-one is the same three steps as ever: `vagcan survey`, then
-`vagcan watch --out drive.csv`, then `vagcan recording calibrate`.
+       vagcan faults       stored faults, named
 ```
 
-**Fault codes will read as numbers after an ODIS-only run like that one, and nothing on
-screen says so.** That is a limit of this build rather than anything about the sources:
-an ODIS project carries the fault codes *and* their descriptions in the clear, and the
-loader for them is being written. Until it lands, the words come from a VCDS
-installation — so if you want named faults today, read one in as well. The closing
-`vagcan faults` line above is written for the VCDS branch and overstates what this run
-did.
+**The project's own fault text names the codes.** An ODIS project carries every fault
+code with its description, and `setup` reads them in beside the channels, recording the
+language of each source; `[faults] language` in the config picks one where a project
+has several. No VCDS installation is needed for named faults.
 
 #### Or choose from the menu
 
@@ -104,6 +127,11 @@ $ vagcan setup
   VCDS installation  Labels/ and UDS_EV/ — when no ODIS project covers the car
   Download VCDS      fetch Ross-Tech's installer, about 90 MB, and read that
 ↑↓ move   ⏎ choose   1-4 pick   q quit
+Point at the folder in a window, or type its path. Leaving without one goes back.
+? Where is the ODIS project?
+❯ Choose the folder in a dialog  opens your system's folder chooser
+  Type the path                  drag it into this window, or paste it
+↑↓ move   ⏎ choose   1-2 pick   q quit
 Drag the folder into this window, or paste its path. An empty line goes back.
 Where is the ODIS project? /Users/you/Downloads/SK37X
 ? Where should the measurement names come from?
@@ -111,13 +139,15 @@ Where is the ODIS project? /Users/you/Downloads/SK37X
   Download VCDS      fetch Ross-Tech's installer, about 90 MB
   Skip the names     the channels keep the phrasing ODIS gives them
 ↑↓ move   ⏎ choose   1-3 pick   q quit
+Point at the folder in a window, or type its path. Leaving without one goes back.
+? Where is the VCDS installation?
+❯ Choose the folder in a dialog  opens your system's folder chooser
+  Type the path                  drag it into this window, or paste it
+↑↓ move   ⏎ choose   1-2 pick   q quit
 Drag the folder into this window, or paste its path. An empty line goes back.
 Where is the VCDS installation? /Users/you/vcds-en
 Project `SK37X` — the name ODIS gives this folder.
 New — nothing has been read into it yet.
-Opening the ODIS project — its two string pools are read whole, which
-takes a moment:
-    /Users/you/Downloads/SK37X
 230 pools, project version 2610.2.688.
 Writing into /Users/you/.vagcan/data/SK37X
 
@@ -131,7 +161,7 @@ cached 3035 label files (101241 measurements) in /Users/you/.vagcan/data/SK37X/c
 [4/4] .rod section keys — searching for the ones not already cached.
 …
 Reading the ODIS project at /Users/you/Downloads/SK37X
-[1/2] Control units — walking each variant's measurement chain.
+[1/2] Control units — walking each variant's measurement chain and fault table.
 [2/2] Names — every object in every pool, for the (text id, name)
       pairs they carry.
 
@@ -145,29 +175,37 @@ Done.
     /Users/you/.vagcan/data/SK37X/names.json
   the .rod section keys: 3 keys
     /Users/you/.vagcan/data/SK37X/rod-keys.json
-  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+  the control units this project describes: 669 of 717 variants, 399283 channels, 0 refused, 4 unreadable; 621 with fault text, 282621 codes
     /Users/you/.vagcan/data/SK37X/cache.sqlite
-  the measurement names: 36314 names
-    /Users/you/.vagcan/data/SK37X/names.json
+  the measurement names: 21576 names
+    /Users/you/.vagcan/data/SK37X/names-odis.json
 ```
 
 (The `…` are the two `.rod` section listings the key search prints as it goes; they run
 to a few dozen lines and say nothing you have to act on.)
 
-The VCDS half is read **first**, and the names count climbing from 14738 to 36314 is
-why: recovering names from `TTTEXT.ROD` writes the file wholesale, while the ODIS pass
-merges into whatever is already there. The other way round, the wholesale write would
-land on top.
+The two "measurement names" lines are two files, not one count growing:
+`names.json` is the wording recovered from the VCDS installation's `TTTEXT.ROD`, and
+`names-odis.json` is the text the ODIS project pools for each text id. They are kept
+apart because they are not the same wording — an ODIS channel's own name is the
+parameter's name in that one variant, and the pooled text for its id is generic.
+
+**Every folder it asks for is asked two ways**: "Choose the folder in a dialog" opens
+your system's own folder chooser, and "Type the path" is the prompt above — drag the
+folder into the terminal, or paste it. A dialog that hands nothing back (cancelled, or a
+machine with no display) falls through to the prompt and says so.
 
 **Abandoning the second question is a real answer**, not a failed run. Press `q` or give
 an empty path and the project keeps the phrasing ODIS gives its channels
 (`Engine_temperature`), which reads and scales perfectly well. Adding wording later is
 another `vagcan setup` into the same project.
 
-**Run it again and it does almost nothing.** Each VCDS step is skipped when what it
-would write is newer than what it would read; a second run on an unchanged installation
-takes about a second and says which steps it skipped. `--refresh` forces the lot — what
-you want after updating VCDS.
+**Run it again on a VCDS installation and it does almost nothing.** Each VCDS step is
+skipped when what it would write is newer than what it would read; a second run on an
+unchanged installation takes about a second and says which steps it skipped. `--refresh`
+forces the lot — what you want after updating VCDS. **An ODIS project is read again in
+full** — it takes the same few seconds as the first time — and replaces everything that
+project wrote into the cache, so a variant it no longer describes does not linger.
 
 **Recovering `.rod` keys costs about a minute of every core per blocked section.**
 The search is built in — there is no flag to pass — and `setup` only ever runs it for
@@ -189,12 +227,38 @@ Lists connected USB-CAN adapters. Run it first when anything says it cannot find
 
 ```
 $ vagcan devices
-/dev/cu.usbmodem206E37A148451  CANable 2.0 (slcan)
+Serial devices:
+
+* /dev/cu.usbmodem1101
+    vag-dash board — slcan firmware answering
+* /dev/cu.usbmodem206E37A148451
+    CANable 2.0 (slcan)
+
+* = recognised CAN adapter. Pass one with --device, or omit --device when
+  only one is connected.
 ```
+
+Recognised adapters come first, then the rest, each group in path order.
 
 Nothing listed, adapter definitely plugged in? Unplug and replug it. It can enumerate
 on USB without the OS attaching a serial node, and then there is genuinely nothing to
 open. That is a USB-stack hang, not a bus fault.
+
+The board entry is the dash board (`crates/dash/vag-dash-fw`) running its `slcan`
+image: the board is an adapter too. It enumerates as Espressif's USB-Serial-JTAG, and
+every command that takes `--device` drives it exactly as it drives the CANable. The
+same board running `dash` enumerates under the same ids and is *not* an adapter, so
+every board is opened and asked its slcan version (`V`) before it is listed. One that
+does not answer is listed without the `*`:
+
+```
+  /dev/cu.usbmodem1101
+    vag-dash board — not answering slcan (display firmware? flash the slcan image)
+```
+
+and one whose port will not open (another program holds it) says
+`vag-dash board — could not be opened to ask its firmware (…)` with the reason. With a
+board and a CANable both answering, say which one with `--device`.
 
 ---
 
@@ -231,25 +295,59 @@ vagcan faults --ecu 01,713 --details   # two units, with the raw freeze frames
 vagcan faults --all                    # every code, not only the confirmed ones
 ```
 
-Once a **VCDS installation** has been read, the codes come out in VW's own words with no
-extra flag — the fault text is in `~/.vagcan/rod/`. A project set up from an ODIS
-project alone shows the numbers instead: the fault text is in there too, in the clear,
-but the loader for it is still being written, so today the words come from VCDS. Run
-`setup` on an installation as well and this section fills in.
+**The names come from the ODIS project first.** `setup` on an ODIS project writes every
+variant's fault table into the project's `cache.sqlite` — the 24-bit number the unit
+sends, the code a tester prints (`B1168F2`), and the text — and `faults` names a code
+from the table of the variant the unit identifies itself as (`F19E`/`F1A2`, the same
+match `watch` scales channels by). The line under a code is then `<display code>  <text>`.
+Where the project has no table for a unit, or none has been set up, the **VCDS chain** is
+the fallback: the registry, the unit's own catalogue and `Codes.dat` in `~/.vagcan/rod/`,
+which is what the line reads as `B1455 01  Temperature Sensor …`. The listing says which
+it used, above the codes.
 
-The raw files are shared across every project and only ever swapped wholesale for a
+A text is in whichever language its supplier wrote it — the format carries one text per
+code and no translations — so a project's language is the one it *declares*
+(`<LANGUAGE>deu</LANGUAGE>`, recorded on the source), and on the reference project the
+engine's texts are English inside a German project. With one source set up nothing needs
+choosing. With several in different languages, `config.toml` decides:
+
+```toml
+[faults]
+language = "deu"     # the code a source declares: an ODIS project's "deu", a VCDS build's "eng"/"rus"
+```
+
+Unset, the first ODIS source wins and the listing says so and names the setting. A
+language only the VCDS build declares sends the VCDS chain first. A language **no**
+source declares is said above the codes, with the languages that are there and whose
+text is shown instead — and a VCDS source set up before languages were recorded is named
+as having none, with the `vagcan setup` that records it.
+
+The raw VCDS files are shared across every project and only ever swapped wholesale for a
 different **language build** — an English install landing on a Russian one clears it
 first and says so, because layering the two would leave names from one beside fault text
 from the other.
 
 ```
 $ vagcan faults
+282621 fault texts for 621 variants from /Users/…/SK37X (deu)
+228393 rows of fault registry, 34716 texts, from ~/.vagcan/rod — the fallback
+
 --  713  ESC
   000129  (297)   confirmed
-      B1168 F2  Steering Angle Sensor: Not Initialized
+      B1168F2  Swa_lost_initialisation  level 2
       212869 km, 1×
       2026-07-30 18:15:06 by the car's own clock
 ```
+
+`level 2` is the fault's `LEVEL` as the ODIS project declares it, 1 to 9. On both codes
+it was checked against it matched the fault priority VCDS prints — `research/odis-dtc/README.md`
+§2 — which is evidence rather than a definition, so the number is shown as the file has it
+and not translated into a word.
+
+The same code through the VCDS chain reads `B1168 F2  Steering Angle Sensor: Not
+Initialized` — the display code agrees to the character, and the words are the
+supplier's against Ross-Tech's. `research/odis-dtc/README.md` §7 has the two side by side
+for every stored fault on the reference car.
 
 A stored code is a record that something happened once — **not** a diagnosis, and not
 necessarily a fault present now. Only codes marked *failed now* are currently failing,
@@ -257,7 +355,7 @@ and the tool says so above every listing.
 
 Clearing faults is a write. This tool cannot do it and never will.
 
-### `vagcan properties --ecu 01` — what does this unit say about itself?
+### `vagcan units --identify 01` — what does this unit say about itself?
 
 Sweeps the identification range and names what answers: part numbers, software
 versions, the ODX label file the unit is described by, and the OBD-II mode 09 block.
@@ -274,7 +372,7 @@ right width for the wrong quantity — and the gearbox answers `F40D` with two
 little-endian bytes where PID `0D` is one. Anything refused is still shown, as bytes,
 with the reason.
 
-### `vagcan scan --ecu 01` / `vagcan survey` — what does it answer?
+### `vagcan dev survey --only 01` / `vagcan dev survey` — what does it answer?
 
 `scan` reads one unit; `survey` reads every unit the car has. Each unit is asked
 **only the identifiers its own data declares it answers** — the car reports what it is
@@ -292,19 +390,19 @@ with `--blind --range` would otherwise have every identifier outside its range r
 something the car does not have.
 
 > **`--blind` is the invasive one.** It asks a unit identifiers *nothing* says it
-> answers, which is structurally a fuzz test of a diagnostic server and is what cost
-> the reference car its power steering — twice, the second time with the car parked.
-> It has to be aimed at units named one at a time (`--blind 712`); there is no way to
-> ask for it car-wide. Both commands also refuse to run on a moving car unless
+> answers, which is structurally a fuzz test of a diagnostic server: a path with a
+> defect in it crashes the server, and the server is a control unit the car is relying
+> on. It has to be aimed at units named one at a time (`--blind 713`); there is no way
+> to ask for it car-wide. Both commands also refuse to run on a moving car unless
 > `--while-driving` is passed, and both **stop the whole run** if a unit goes quiet or
-> goes back on an identifier it already answered. Read [`SAFETY.md`](SAFETY.md).
+> goes back on an identifier it already answered.
 
 The diff is the point:
 
 ```sh
-vagcan survey --out parked.jsonl     # then drive, then:
-vagcan survey --out driving.jsonl
-vagcan survey --diff parked.jsonl driving.jsonl
+vagcan dev survey --out parked.jsonl     # then drive, then:
+vagcan dev survey --out driving.jsonl
+vagcan dev survey --diff parked.jsonl driving.jsonl
 ```
 
 The identifiers whose bytes moved are the live measurements. (An **identifier** is the
@@ -374,18 +472,18 @@ again next drive is the work again.
 
 **Values with no proven scaling are shown as bytes and tagged `(raw)`**, never as a
 bare number — a reader cannot tell an invented number from a measured one, and this
-project has twice caught itself believing one of its own. The summary printed before
+project has caught itself believing one of its own. The summary printed before
 the screen opens says how many channels are in that state and what turns them into
 numbers.
 
-### `vagcan sniff`
+### `vagcan dev sniff`
 
 Watches the bus listen-only, which cannot disturb anything. Made to run alongside
 VCDS: CAN is multi-drop, so both adapters share the bus and this one records the whole
 conversation.
 
 ```sh
-vagcan sniff --out capture.jsonl --diag-only --seconds 120
+vagcan dev sniff --out capture.jsonl --diag-only --seconds 120
 ```
 
 ---
@@ -432,14 +530,14 @@ looked under.
 
 ## Offline
 
-### `vagcan glossary` — your own names for channels
+### `vagcan dev glossary` — your own names for channels
 
 The wording ODIS and VCDS carry is written for a diagnostic engineer.
 `Brake_pedal_information_plausibility` is accurate and unreadable at an open driver's
 door, and neither vendor is going to fix that.
 
 ```sh
-vagcan glossary          # writes ~/.vagcan/names.csv
+vagcan dev glossary          # writes ~/.vagcan/names.csv
 ```
 
 The file is keyed by VW's own text id, with a column per language and a read-only
@@ -462,13 +560,13 @@ car afterwards. A table keyed by `(unit, identifier)` would be a table about one
 
 ---
 
-### `vagcan recording …` — drives this tool recorded
+### `vagcan dev recording …` — drives this tool recorded
 
 ```sh
-vagcan recording discover --log drive.csv          # which columns carry state
-vagcan recording discover --log drive.csv --pairs  # …and which move together
-vagcan recording calibrate --log drive.csv         # fit unknowns against knowns
-vagcan recording calibrate --log drive.csv --out 8V0906264H.json
+vagcan dev recording discover --log drive.csv          # which columns carry state
+vagcan dev recording discover --log drive.csv --pairs  # …and which move together
+vagcan dev recording calibrate --log drive.csv         # fit unknowns against knowns
+vagcan dev recording calibrate --log drive.csv --out 8V0906264H.json
 ```
 
 `calibrate` is the no-VCDS route to a proven scaling: it fits raw columns against
@@ -476,17 +574,63 @@ columns already trusted **in the same recording**, so there is one clock, tens o
 hertz, and no alignment error. `--out` writes the fits as a catalog; the rows are
 keyed by identifier and deliberately carry no name.
 
-### `vagcan vcds …` — VCDS's own files
+### `vagcan dev dash build <VIN>` — the plan the dash device runs on
+
+Reads `~/.vagcan/dash/<VIN>/dash.toml` (which channels, on which pages, written by
+hand), the car's own `~/.vagcan/cars/<VIN>/survey.jsonl` and this project's catalogs.
+Writes `plan.json` — for a person and the simulator — and `plan.rs`, the `static` the
+firmware links, both under the car in `~/.vagcan/dash/<VIN>/`. Offline: no adapter, no
+car. The survey has the last word: an identifier it put to the unit that came back silent
+fails the build, and a standard OBD-II row the survey never asked about is built with a
+note saying so.
 
 ```sh
-vagcan vcds names "boost"                      # search the recovered names
-vagcan vcds labels /path/to/VCDS --part 8V0906264H
-vagcan vcds labels /path/to/VCDS --block 2 --field 1
-vagcan vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
-vagcan vcds rod TTTEXT.ROD --dump out/         # open a .rod container
-vagcan vcds dump /path/to/VCDS/Labels --out labels.json
-vagcan vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
-vagcan vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
+vagcan dev dash build XW8AD4NE9JH008917
+```
+
+```text
+ОЖ ← 01:IDE00025 F405@0/8 u BE ×1 -40 declared (IDE00025)
+НАДДУВ ← 01:IDE00191 202A@0/16 u BE ×0.001 +0 declared (IDE00191)
+МАСЛО ← 01:IDE00196 202F@0/16 u BE ×0.1 -273.14 declared (IDE00196)
+КОРОБКА ← 02:IDE00102 028D@0/16 i LE ×1 +0 declared (IDE00102)
+
+wrote ~/.vagcan/dash/XW8AD4NE9JH008917/plan.json
+wrote ~/.vagcan/dash/XW8AD4NE9JH008917/plan.rs
+4 channels on 2 units, 2 pages
+```
+
+One line per channel, saying which row was chosen, how the device decodes it, and
+whether the car **proved** the scaling or a label file merely **declared** it. A channel
+the car's variant does not declare fails the build and the message names it; so does one
+whose scaling is not linear, because the device can multiply and nothing else. A text id
+that also sits on a flag — every OBD-II parameter's id is on its "supported" bit in the
+`F400` mask too — still picks the quantity, because a flag is not one. When two
+*quantities* answer to the same text id, the message lists both and the input has to
+name one by identifier and bit offset — `ref = "01:F405"` instead of `ref = "01:IDE00025"`.
+
+**The firmware's build runs this itself** — `VAGCAN_DASH_VIN=<VIN> cargo build` in
+`crates/dash/vag-dash-fw` — so this command is for reading the result and the reasons,
+not a step before it. The build picks its car one of three ways:
+
+- `VAGCAN_DASH_VIN=<VIN>` — that car.
+- unset — the one car under `~/.vagcan/dash/` (a directory holding a `dash.toml`), and
+  the build prints which. With none or several there it stops and asks for the VIN.
+- `VAGCAN_DASH_NO_CAR=1` — an empty plan: no unit, no channel, no page. It is for CI,
+  which checks the images compile with no `~/.vagcan/` at all. **Never flash that image**;
+  the build warns so whenever it builds the plan.
+
+### `vagcan dev vcds …` — VCDS's own files
+
+```sh
+vagcan dev vcds names "boost"                      # search the recovered names
+vagcan dev vcds labels /path/to/VCDS --part 8V0906264H
+vagcan dev vcds labels /path/to/VCDS --block 2 --field 1
+vagcan dev vcds labels /path/to/VCDS --from-car    # ask the unit which file is its own
+vagcan dev vcds rod TTTEXT.ROD --dump out/         # open a .rod container
+vagcan dev vcds dump /path/to/VCDS/Labels --out labels.json
+vagcan dev vcds tttext TXT.bin --words /usr/share/dict/words  # recover names from the text table
+vagcan dev vcds analyse --capture c.jsonl --log vcds.csv --out 8V0906264H.json
+vagcan dev vcds stats                              # what the label cache actually holds
 ```
 
 `vcds names` searches names keyed by the label files' own **text id**, not by data
@@ -495,6 +639,11 @@ test against the car, not an identification.
 
 `vcds labels --from-car` is the one thing in this group that touches a vehicle: it
 reads `F19E` off the unit and resolves that.
+
+`vcds stats` counts the label cache table by table. It exists to tell "setup wrote
+nothing" apart from "setup wrote something into a project I am not looking at", which
+are the same screenful of missing names otherwise; a cache that is not there is
+reported as not being there rather than as a database error.
 
 ---
 
@@ -506,7 +655,7 @@ vagcan devices                     # adapter found?
 vagcan info                        # which car
 vagcan units --identify            # what it has
 vagcan faults                      # what is wrong, in VW's words
-vagcan survey                      # once, parked
+vagcan dev survey                  # once, parked
 vagcan watch                       # now every unit is on offer
 ```
 
@@ -522,9 +671,9 @@ how you get a number at all for a channel no project describes.
 **1. Find what moves.** Two sweeps, one parked and one after a drive:
 
 ```sh
-vagcan survey --out parked.jsonl
-vagcan survey --out driving.jsonl
-vagcan survey --diff parked.jsonl driving.jsonl
+vagcan dev survey --out parked.jsonl
+vagcan dev survey --out driving.jsonl
+vagcan dev survey --diff parked.jsonl driving.jsonl
 ```
 
 The identifiers whose bytes differ are the live measurements.
@@ -541,7 +690,7 @@ will do. That is what the unknown gets fitted against.
 **3. Sort them.**
 
 ```sh
-vagcan recording discover --log drive.csv
+vagcan dev recording discover --log drive.csv
 ```
 
 Never-moved, stepped between a few values, or continuous. A stepped one is a gear, a
@@ -550,21 +699,21 @@ mode or a switch and wants an `Enum`, not a line.
 **4. Fit them.**
 
 ```sh
-vagcan recording calibrate --log drive.csv --out 8V0906264H.json
+vagcan dev recording calibrate --log drive.csv --out 8V0906264H.json
 ```
 
 Nothing under R² 0.995 over 20 points and 4 distinct raw values is accepted.
 
 **5. Install and name.** Move the file into your project's `measurements/` directory —
 `~/.vagcan/data/<project id>/measurements/` — named for the
-part number the unit reports for itself (`vagcan properties --ecu 01` shows it). The
+part number the unit reports for itself (`vagcan units --identify 01` shows it). The
 rows arrive keyed by identifier and unnamed, because a fit proves what the bytes mean
-and not what the quantity is called — `vagcan vcds names <word>` is where the wording
+and not what the quantity is called — `vagcan dev vcds names <word>` is where the wording
 comes from. `measure` in particular looks for rows named `speed` and `gear`.
 
 The alternative route, if you have VCDS and want it to do the naming for you: run
-`vagcan sniff --out capture.jsonl` while VCDS logs measuring blocks on the same car
-at the same moment, then `vagcan vcds analyse --capture capture.jsonl --log
+`vagcan dev sniff --out capture.jsonl` while VCDS logs measuring blocks on the same car
+at the same moment, then `vagcan dev vcds analyse --capture capture.jsonl --log
 vcds-export.csv --out <part>.json`.
 
 ---
@@ -576,17 +725,31 @@ cannot help.
 
 ### "The measurement names are not on this machine" / "The .rod section keys are not…"
 
-No source has been read into a project yet. Both artefacts named there come from a VCDS
-installation:
+No source has been read into a project yet. The message says so and names the fix — an
+extracted ODIS-Service project first, a VCDS installation as the alternative:
 
 ```sh
-vagcan setup /path/to/VCDS
+vagcan setup /path/to/ODIS-project     # seconds: channels, scalings, fault text
+vagcan setup /path/to/VCDS             # minutes: names and fault text, no scalings
 ```
 
-One command, no car. If you have no installation, run `vagcan setup` with no path and
-pick the download — that copy is Ross-Tech's software, redistributed unmodified; you
-can also get it from them directly at <https://www.ross-tech.com/vcds/download/> and
-point `setup` at it.
+One command, no car. With neither to hand, run `vagcan setup` with no path: it asks
+which, and can fetch VCDS — Ross-Tech's software, redistributed unmodified; you can
+also get it from them directly at <https://www.ross-tech.com/vcds/download/> and point
+`setup` at it.
+
+**You do not have to leave the command you were running.** At a terminal, any command
+that stops for want of this data prints that message and then offers to fetch an
+installation and read it — and on `y` it carries on with what you asked for, rather than
+telling you to type it again:
+
+```
+Fetch it and carry on? [y/N]
+```
+
+The default is no, and nothing is downloaded without an explicit `y`. With no terminal —
+a pipe, a script, CI — the question is not asked at all: the command reports the shortage
+and fails, exactly as it always did.
 
 ### "This car has no proven measurement rows" / a screen full of `(raw)`
 
@@ -597,9 +760,9 @@ supply one — that is the cheap thing to try first — and where neither has it
 number has to be measured.
 
 ```sh
-vagcan survey
+vagcan dev survey
 vagcan watch --out drive.csv
-vagcan recording calibrate --log drive.csv --out <part-number>.json
+vagcan dev recording calibrate --log drive.csv --out <part-number>.json
 ```
 
 The long version is [teaching it a new measurement](#flow-teaching-it-a-new-measurement)
@@ -640,7 +803,9 @@ rather than the command line, none of these ends the run: it says the same thing
 asks again.
 
 **"encrypted (recover with …)"** against a `.rod` section — no cached key for it. Run
-the search against that file: `vagcan vcds rod <file.rod>`.
+the search against that file, into the cache the lookup reads — the message prints the
+exact command: `vagcan dev vcds rod --cache <cache> <file.rod>`. Without `--cache` the
+keys it recovers go to `<file>.ivcache.json` beside the file, where nothing looks.
 
 **"NO CRIB"** against a `.rod` section — no cached key, and the search cannot start on
 that file: it is one of the 40 % that XOR a per-file mask over every section's IV. Not

@@ -1,0 +1,27 @@
+[package]
+name = "vag-uds-transport"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# The workspace pins thiserror with `default-features = false` so this crate
+# can be `no_std`; the `std` feature below turns its std mode back on.
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+default = ["std"]
+# The host build. With `--no-default-features` the crate is `no_std` + `alloc`,
+# which is what the ESP32-C3 firmware links. Nothing here actually needs `std`:
+# `Duration` is `core::time::Duration` either way, and `Vec` / `VecDeque` /
+# `String` come from `alloc`. The feature exists so thiserror picks
+# `std::error::Error` over `core::error::Error`, and so downstream crates have
+# one switch to forward.
+std = ["thiserror/std"]
+serde = ["dep:serde"]
+# Exposes MockAsyncTransport to downstream crates' tests (e.g. uds-async).
+test-util = []

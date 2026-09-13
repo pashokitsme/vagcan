@@ -45,6 +45,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       # --all-targets is correct HERE: clippy should lint tests, benches and
       # examples too. It is only wrong for the dead-code job below.
       - name: cargo clippy --workspace --all-targets -D warnings
@@ -59,8 +61,104 @@ jobs:
           lfs: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: cargo test --workspace
         run: cargo test --workspace
+
+  no-std:
+    name: no-std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The board's target. Checking against it, rather than against the
+          # host with `no_std` merely *declared*, is what makes the job honest:
+          # on the host `std` is still linkable and a stray `std::` path can
+          # slip through.
+          targets: riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+      # Three crates carry a default `std` feature; without it they are
+      # `no_std` + `alloc` and the ESP32-C3 firmware links them. Nothing else in
+      # CI sees that configuration — `cargo test`, `cargo clippy` and
+      # rust-analyzer all use default features — so without this job the board
+      # build rots the moment somebody writes `std::` in vag-uds-client.
+      #
+      # The firmware itself is linted by the `firmware` job below: it is outside
+      # the workspace, with its own toolchain file and `.cargo/config.toml`.
+      - name: cargo check --no-default-features (vag-uds-transport)
+        run: cargo check -p vag-uds-transport --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-uds-client)
+        run: cargo check -p vag-uds-client --no-default-features --target riscv32imc-unknown-none-elf
+      - name: cargo check --no-default-features (vag-uds-can)
+        run: cargo check -p vag-uds-can --no-default-features --target riscv32imc-unknown-none-elf
+
+  # The board's firmware and the bench rig that stands in for its panel. Both
+  # are outside the workspace, so nothing above sees them — which is how a
+  # clippy error sat in `dash.rs` unnoticed. Each is built from its own
+  # directory, as the workspace's `exclude` comment says it must be.
+  firmware:
+    name: firmware (vag-dash-fw)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/dash/vag-dash-fw
+    env:
+      # `build.rs` builds the image's plan from one car under ~/.vagcan, which
+      # CI does not have and must not have. This gives the image an empty plan
+      # — no unit, no channel, nothing invented — so every binary compiles and
+      # is linted exactly as shipped. An image built this way is not for flashing.
+      VAGCAN_DASH_NO_CAR: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imc-unknown-none-elf
+          components: rust-src, clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/dash/vag-dash-fw
+      - name: cargo fmt --check
+        run: cargo fmt -- --check
+      - name: cargo clippy --bins -D warnings
+        run: cargo clippy --release --bins -- -D warnings
+      # The only step that lints the `bench` tools — `cantest`, `cantx`, `rxprobe` build
+      # only with `--features bench` — and `rxwatch --features ack`, the car-run build
+      # (Normal mode).
+      - name: cargo clippy --bins --all-features -D warnings
+        run: cargo clippy --release --bins --all-features -- -D warnings
+
+  bench-host:
+    name: bench host (dashsim, bleecho)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: research/dash/host
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: research/dash/host
+      # libudev-dev: `serialport`'s default `libudev` feature (USB VID/PID in
+      # its port list) builds `libudev-sys`, which finds libudev via pkg-config.
+      - name: system deps for btleplug (BlueZ over D-Bus) and serialport (libudev)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
+      - name: cargo fmt --check
+        run: cargo fmt -- --check
+      - name: cargo clippy --all-targets -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test
 
   dead-code:
     name: dead-code
@@ -71,6 +169,8 @@ jobs:
           lfs: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: system deps for btleplug (BlueZ over D-Bus)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       # MANDATORY (CLAUDE.md): --workspace, NEVER --all-targets. --all-targets
       # recompiles the binary as a test harness where `main` is unreachable and
       # reports ~140 false positives ("fn main is never used"). --force-warn

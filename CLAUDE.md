@@ -49,12 +49,12 @@ touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
   run it — for them the CI `fmt` job is the backstop. Needs `jq` and `rustfmt` on
   `PATH`; if either is missing the hook no-ops rather than failing the edit.
 
-## Safety (MANDATORY — read [`SAFETY.md`](SAFETY.md))
+## Safety (MANDATORY)
 
-This tool only reads, and it has still cost the reference car its power steering: an
-identifier sweep crashed the steering assist unit, twice, the second time permanently
-(`research/eps/eps-j500-report-ru.md`). Read-only bounds what can be *changed* about a car,
-not what can be *provoked*.
+This tool only reads, and reading is not the same as harmless: an identifier sweep is a
+fuzz test of a control unit's diagnostic server, and a path with a defect in it crashes
+the server. Read-only bounds what can be *changed* about a car, not what can be
+*provoked*.
 
 - **Never add a write service.** No coding, no adaptation, no clearing faults, no
   flashing. The UDS allowlist is `0x22`, `0x19`, `0x10`, `0x3E` and stays that way.
@@ -62,6 +62,14 @@ not what can be *provoked*.
   Guard anything new that resembles one the same way `survey` is guarded.
 - **Anything that can change how a unit behaves is refused on a moving car** — checked
   by reading road speed, with "no answer" counted as moving.
+- **A firmware image that transmits on its own is a bench tool, and builds only with the
+  `bench` feature** (`cantx`, `cantest`, `rxprobe` in `vag-dash-fw`). `cantx` floods
+  `7E0` at the bus's ceiling from power-on; a board left with it and plugged into a car
+  floods the engine's diagnostic server at once. `bench.sh` ends by saying to reflash
+  `dash` or `slcan`. A new transmitting bench image goes behind the same feature.
+- **The board guards itself on any link that is not a cable.** A host across a radio is
+  not trusted, so over BLE the board enforces the allowlist, the moving-car check and a
+  sweep limit on its own (`todo/dash/16-uds-over-ble.md`).
 
 ## No car-specific data in the code (MANDATORY)
 
@@ -75,7 +83,7 @@ between algorithm and data:
   list).
 - **Nothing the tool reads at run time lives in the checkout.** The label data is
   Ross-Tech's and may not be redistributed; the proven measurement rows are one
-  owner's car. Both are under `~/.vagcan/` — see `crates/vagcan/src/datadir.rs`, which
+  owner's car. Both are under `~/.vagcan/` — see `crates/cli/vag-cli-core/src/datadir.rs`, which
   owns the layout — and `catalogs/` is gitignored. A new default path that resolves
   relative to the working directory is a bug: it works in a checkout and nowhere else,
   and after `cargo install` there is no checkout.
@@ -90,54 +98,100 @@ between algorithm and data:
 
 ## Project
 
-Goal, tech stack, architecture, and development workflow live in
-**[`todo/GOAL.md`](todo/GOAL.md)**. The MVP task breakdown is in
-**[`todo/README.md`](todo/README.md)**. Read both before working.
+Goal, tech stack, architecture and development workflow are **the sections below in
+this file** — `todo/GOAL.md` was folded into it and no longer exists. The task
+breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 
 TL;DR: read the whole car over CAN with measurement scalings proven live on the car and
 names from VW's own label files, on **tokio / edition 2024**, macOS M4, TDD with hardware
-checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-can`); the HEX
-clone is dead — crate and driver deleted, research archived under `archive/research/`.
-`vagcan info` works on the real car. Details in `todo/GOAL.md`.
+checkpoints. The live transport is a generic slcan USB-CAN adapter (`vag-uds-can`); the
+HEX clone is dead — crate and driver deleted, research archived under `.archive/research/`.
+`vagcan info` works on the real car.
 
 ## Project structure
 
 Rust workspace ([`README.md`](README.md)) + reverse-engineering research +
 task tracking.
 
+**A crate's directory is its package name**, and the family it sits in is already spelled
+inside that name: `uds/vag-uds-client`, `dash/vag-dash-fw`. The repetition is deliberate —
+a path and a package name that differ are two things to learn, and everything that reports
+one (cargo, rustc, a stack trace, a grep) then has to be translated into the other. A
+crate's *binaries* are free
+of the rule and named for what a person types: `vag-cli` builds `vagcan`, `vag-dash-cfg`
+builds `dashcfg`, `vag-dash-fw` builds `dash`. The rule that places them: **a binary lives
+in its family when it has exactly one.** `dashcfg` and
+the firmware serve only the device, so they sit inside `dash/`; `vagcan` consumes both
+`uds/` and `data/`, so it belongs to neither and carries no family prefix.
+
 ```
-crates/          the Rust workspace
-  vag-transport    transport trait(s) — the seam every backend implements (sync + async)
-  vag-can          slcan USB-CAN backend (the live path), listen-only mode, ISO-TP sniffer
-  vag-protocol     UDS client + ISO-TP (transport-agnostic) + unit addressing (address.rs)
-  vag-data         label parsers/decoders (.lbl/.clb/.rod) + LabelDb + ODX file resolution
-  vag-db           SQLite cache over the label files
-  vag-capture      capture/replay transport (ReplayCan) for hardware-free tests
-  vagcan           the CLI. Top level = needs the car: devices / info / units /
-                   properties / sniff / sensors / watch / scan / faults / survey.
-                   Offline work is grouped by what its input is: `recording …`
-                   (our own `watch --out` recordings) and `vcds …` (VCDS's files —
-                   labels, names, analyse, rod, label files, tttext)
-research/        RE writeups + tooling (NOT shipped), one directory per subject:
-  labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
-                       name codec, `Codes.dat`, and the fault-naming chain. Key reads:
-                       `rod-labels.md` (the crack + the STRUC refutation, i.e. why
-                       scaling is live-only), `tttext-codec.md` (→ names.json),
-                       `fault-naming-hop.md` (number → words, end to end)
-  car/                 what the reference car answers: identifier map, the units
-                       outside the powertrain, the whole-car survey, gearbox state
-  eps/                 the steering-assist incident — read with SAFETY.md
-  clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
-archive/         retired paths kept as evidence: research/ (HEX-clone framing, clone
-                 crypto — negative results, do not retry), specs/ (superseded designs)
-                 and tasks/done/ (finished task files)
-docs/            active specs (docs/superpowers/specs/*.md, e.g. the CAN sniffer design)
-todo/            task tracking → todo/README.md (roadmap), todo/GOAL.md (goal/stack/workflow);
-                 finished task files retire to archive/tasks/done/
+crates/            all Rust. Three families and the product.
+  uds/               talking to a car: ISO-TP underneath, UDS over it.
+    vag-uds-transport  the seam every backend implements, whole PDUs
+    vag-uds-can        slcan backend, async ISO-TP over CAN, listen-only sniffer
+    vag-uds-client     UDS client + allowlist, DTCs, gateway, addressing
+    vag-uds-capture    capture/replay transport, hardware-free tests
+  data/              somebody else's diagnostic files, parsed and cached.
+    vag-data-labels    parsers: .rod/.clb/.lbl, TTTEXT names, Codes.dat,
+                       ODX/ODIS, OBD-II PIDs, catalog
+    vag-data-db        SQLite cache over the parsed label files
+  dash/              the OLED device, all of it — laptop side and board side.
+    vag-dash-render    a Frame in, pixels out, on any DrawTarget
+    vag-dash-ble       BLE client (btleplug): scan, pick, open a NUS pipe
+    vag-dash-cfg       binary `dashcfg` — configures the dash over BLE
+    vag-dash-fw        binary `dash` — the device itself. NOT a workspace member:
+                       no_std for riscv32imc-unknown-none-elf with its own
+                       build-std config. Build it from its own directory.
+  cli/               what a person runs, in four layers.
+    vag-cli-core       what both command crates stand on: which car this is,
+                       what channels it has, how to poll them, where its files
+                       live, the terminal widgets. Knows no command.
+    vag-cli-diag       reading a car and the files that explain it: identify,
+                       faults, the guarded sweeps, watch, setup, vcds tooling
+    vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
+                       Depends on `core` **alone**, checked symbol by symbol,
+                       which is what makes it a crate rather than a directory.
+    vag-cli            binary `vagcan` — the command surface and nothing else:
+                       clap declarations and a dispatcher. Top level = needs the car:
+                       devices / info / units / faults / sensors / watch / measure —
+                       plus `setup`, the one offline command there, because it is
+                       the first thing a new owner runs and what a car command short
+                       of label data offers to run. The workshop is `dev …`: survey /
+                       sniff / glossary / dash, and offline work grouped by input —
+                       `dev recording …` (our own `watch --out` recordings) and
+                       `dev vcds …` (VCDS's own files). `main.rs`'s
+                       `the_top_level_is_only_what_needs_a_car` test holds the line
+research/        RE writeups + tooling (NOT shipped) for work still in progress:
+  dash/                the ESP32 board from the laptop's side. `can-bring-up.md` is the
+                       hardware hand-off; `bench.sh` the one-command bench; `probes/` is
+                       firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
+                       ble-scan); `host/` is the bench rig — `dashsim` (be the panel
+                       and the buttons) and `bleecho`
+  odis-dtc/            fault codes and their text in an ODIS project: the object
+                       layouts the DTC loader reads, and the offline proof against
+                       the reference car's stored faults (ODIS 15/15, VCDS 11/15)
+  tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
+                       Simos18 calibration as graphs (read-only, never talks to a car)
+.archive/        retired paths kept as evidence — see .archive/README.md for the map:
+  research/            subjects whose findings are implemented and shipped:
+    labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
+                         name codec, `Codes.dat`, the fault-naming chain. Key reads:
+                         `rod-labels.md` (the crack + the STRUC refutation, i.e. why
+                         scaling is live-only), `tttext-codec.md` (→ names.json),
+                         `fault-naming-hop.md` (number → words, end to end)
+    car/                 what the reference car answers: identifier map, the units
+                         outside the powertrain, the whole-car survey, gearbox state
+    clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)
+    *.md                 HEX-clone framing, clone crypto — negative results, do not retry
+  specs/               superseded designs
+  tasks/done/          finished task files
+todo/            task tracking → todo/README.md (roadmap) and todo/<subsystem>/;
+                 finished task files retire to .archive/tasks/done/
 ```
 
-Start-here docs: [`todo/GOAL.md`](todo/GOAL.md), [`todo/README.md`](todo/README.md),
-[`ARCHITECTURE.md`](ARCHITECTURE.md), [`research/labels/rod-labels.md`](research/labels/rod-labels.md).
+
+Start-here docs: [`todo/README.md`](todo/README.md),
+[`ARCHITECTURE.md`](ARCHITECTURE.md), [`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md).
 
 The three front-page documents split by audience and must stay split:
 [`README.md`](README.md) is "is this for me, and how do I start" and nothing else;
@@ -148,19 +202,22 @@ pipeline, the catalog schema, the crate layout.
 ## Tech stack & architecture (locked)
 
 - **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
-- **Connection-actor architecture** (NOT `Arc<Mutex<device>>`): one cable = one
-  actor task owning the byte pipe; N async tasks query N ECUs concurrently via
-  bounded `mpsc<Request{pdu, oneshot<Reply>}>`; the actor multiplexes/pipelines
-  over the single serial link, owning seq counter + per-channel link keystream +
-  ISO-TP state + timeouts. Clients get concurrency (latency-hiding), not wire
-  parallelism. Multiple cables later = actor-per-cable.
-- **Pluggable backend, static dispatch:** `trait Backend { async fn read/write }`
-  (native async-fn-in-trait, no `dyn`/`async-trait`). The live backend is `SlcanBackend`
-  over a serial port (`vag-can`); any future backend implements the same seam.
-- `CableHandle` (cheap clone) implements the async transport `vag-protocol`'s UDS
-  client rides. `vag-data`/`vag-db` stay sync (CPU-bound). **Label lookup must be
-  FAST** — `vagcan vcds labels` caches the parsed label files to SQLite under
-  `~/.vagcan/labels/cache.sqlite`.
+- **One bus, one conversation at a time.** There is no connection actor and no
+  `mpsc`/`oneshot` multiplexer — the one that existed was written for the HEX clone
+  and went with it. A single backend value is *owned*, not shared: a caller takes it,
+  wraps it in an `IsoTpCan` addressed to one unit, runs one exchange to completion,
+  and unwraps it for the next unit (`vag-cli-core/src/plan.rs::read_batch`). Talking
+  to the engine and the gearbox is a sequence of re-addressed groups, and ownership
+  is what makes two exchanges in flight impossible. Do not describe this as
+  concurrent, and do not reintroduce an `Arc<Mutex<device>>` to fake it.
+- **Pluggable backend, static dispatch:** `vag_uds_can::CanBackend` (send/receive one
+  frame) under `vag_uds_transport::AsyncIsoTpTransport` (send/receive one PDU), native
+  async-fn-in-trait, no `dyn`/`async-trait`. The live backends are `SlcanBackend`
+  over a serial port and the firmware's `TwaiBackend`; the same `vag-uds-*` crates
+  compile `no_std` for the board under embassy (`default-features = false`).
+- `vag-data-labels`/`vag-data-db` stay sync (CPU-bound). **Label lookup must be
+  FAST** — `vagcan setup` caches the parsed label files to SQLite under
+  `~/.vagcan/data/<project>/cache.sqlite`.
 - **Host = macOS Apple Silicon (M4).**
 
 ## Development workflow
@@ -174,5 +231,5 @@ pipeline, the catalog schema, the crate layout.
   (e.g. init handshake works; VIN read works), STOP and ask the user to verify on
   hardware before continuing.
 - **Task tracking:** active tasks live in `todo/<subsystem>/<task>.md`; when a
-  task is done+reviewed+merged, move its file to `archive/tasks/done/<subsystem>/<task>.md`
+  task is done+reviewed+merged, move its file to `.archive/tasks/done/<subsystem>/<task>.md`
   (preserve the subsystem subdir). Each subsystem dir may carry a short `README.md`.

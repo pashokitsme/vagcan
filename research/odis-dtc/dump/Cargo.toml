@@ -1,0 +1,13 @@
+# An empty `[workspace]` table, for the same reason research/dash/host carries
+# one: this package is excluded from the root manifest, and without a root of
+# its own cargo walks up past it and refuses to build.
+[workspace]
+
+[package]
+name = "odis-dtc-dump"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+vag-data-labels = { path = "../../../crates/data/vag-data-labels" }

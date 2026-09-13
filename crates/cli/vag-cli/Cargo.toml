@@ -1,0 +1,48 @@
+[package]
+name = "vag-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+# The package follows the workspace's rule — `vag-` plus its path under
+# `crates/` — while the binary keeps the name people type and every document
+# teaches, the way `vag-dash-cfg` builds `dashcfg`. This crate belongs to no
+# family, which is why its path is one segment where every other crate's is two.
+[[bin]]
+name = "vagcan"
+path = "src/main.rs"
+
+[features]
+default = ["measure"]
+# The stopwatch is a third of what used to be one crate and is not diagnostics.
+# On by default because leaving it out is the unusual choice, behind a flag
+# because a build that does not want it should not pay for it.
+measure = ["dep:vag-cli-measure"]
+
+[dependencies]
+vag-cli-core = { path = "../vag-cli-core" }
+vag-cli-diag = { path = "../vag-cli-diag" }
+vag-cli-measure = { path = "../vag-cli-measure", optional = true }
+vag-uds-client = { path = "../../uds/vag-uds-client" }
+vag-uds-transport = { path = "../../uds/vag-uds-transport" }
+vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
+vag-data-labels = { path = "../../data/vag-data-labels" }
+# SQLite cache over the label files: parse the VCDS install once, load it back
+# in milliseconds on every later run.
+vag-data-db = { path = "../../data/vag-data-db" }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "io-std",
+  "io-util",
+  "sync",
+  "time",
+] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[dev-dependencies]
+# Synthetic catalog fixtures for the poll-scheduler tests write to a temp dir,
+# now that the proven rows they used to read live under ~/.vagcan, not the repo.
+tempfile = "3"

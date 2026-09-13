@@ -13,7 +13,7 @@ documents are records of things that did **not** work. Tidying is the operation 
 likely to throw those away.
 
 So the core principle is: **nothing leaves without a destination.** Not deleted —
-moved. Research goes to `archive/`, a one-shot tool becomes a subcommand, a fact goes
+moved. Research goes to `.archive/`, a one-shot tool becomes a subcommand, a fact goes
 to the file that owns that kind of fact. The only thing a cleanup pass may actually
 delete is code that no longer compiles into anything.
 
@@ -59,10 +59,10 @@ the file that survives a context reset **for that kind of fact**:
 | a proven measurement — read address, scaling, unit | `~/.vagcan/data/<project>/measurements/<part number>.json` |
 | how something was proven, or refuted, and with what data | `research/<topic>.md` |
 | current state, milestones, what to do next | `todo/README.md` |
-| goal, stack, workflow | `todo/GOAL.md` |
-| anything that risked or damaged the car | `SAFETY.md` |
+| goal, stack, workflow | `CLAUDE.md` (`todo/GOAL.md` was folded into it) |
+| anything that risks the car | `CLAUDE.md` — it belongs there as a rule, not as an anecdote |
 | a rule the tool must obey forever | `CLAUDE.md` |
-| a path nobody should retry | `archive/research/`, plus one line under "Dead and archived" |
+| a path nobody should retry | `.archive/research/`, plus one line under "Dead and archived" |
 
 Rules for the writing itself:
 
@@ -75,7 +75,7 @@ Rules for the writing itself:
 
 ### Phase 3 — archive research, and re-check the refutation first
 
-Before moving a research file to `archive/`, establish which it is:
+Before moving a research file to `.archive/`, establish which it is:
 
 - **A dead end that is still true** — archive it. It is what stops a future session
   paying for the same negative result twice. Keep the reasoning; a bare "does not
@@ -97,7 +97,7 @@ session repeats the experiment.
 - **A one-shot tool is not dead code.** The `.rod` key search and the label-file dump
   each ran once and produced a committed artefact, and each keeps its value for the
   next label files, on another machine, or when an artefact is doubted. They were retired
-  into `vagcan vcds rod` and `vagcan vcds dump` rather than into `git rm`; do the
+  into `vagcan dev vcds rod` and `vagcan dev vcds dump` rather than into `git rm`; do the
   same with the next one.
 - **Every one-shot tool states three things in its help text**, because by the time
   it is needed again nobody will remember them: **what it is for** (and what it
@@ -116,7 +116,7 @@ session repeats the experiment.
   skipped. `mwb.rs` is the worked example of failing it: exported from `lib.rs`,
   called by nothing but its own tests — and still not dead, because the MWB→TTTEXT
   name join it is held for is recorded as a live prediction
-  (`research/labels/label-linkage.md` §5, `todo/README.md`). Uncalled is half a case.
+  (`.archive/research/labels/label-linkage.md` §5, `todo/README.md`). Uncalled is half a case.
 - **The top level of the CLI is for commands used with the car in front of you.**
   That is the whole test: if it needs an adapter and a running vehicle, it is a
   top-level command. Everything that reads static files — a VCDS installation, a
@@ -124,7 +124,11 @@ session repeats the experiment.
   group, however useful it is. A top level crowded with offline analysis is a top
   level nobody can scan while standing at an open driver's door. Group by **what the
   input is**, not by how the code is organised: files that came from VCDS are one
-  group, recordings we made are another.
+  group (`dev vcds`), recordings we made are another (`dev recording`). The one
+  offline exception is `setup`: it is the first thing a new owner runs (`vagcan --help`
+  opens with it under START HERE), and it is what a car command that stopped for want
+  of label data offers to run. The test `the_top_level_is_only_what_needs_a_car` in
+  `crates/cli/vag-cli/src/main.rs` holds the denylist.
 - **Never simplify a data-driven path into a table in Rust.** `CLAUDE.md` forbids
   car-specific data in code, and cleanup is exactly when someone "tidies" a JSON
   lookup into a `match`. Cleanup should move data *out* of code, never in.
@@ -165,10 +169,56 @@ keeps every other phase from decaying.
 
 ### Phase 6 — say what to do next, and why it is next
 
-End with a short ordered list. Each item names the goal from `todo/GOAL.md` it moves,
+End with a short ordered list. Each item names the goal from `CLAUDE.md` it moves,
 and says whether the car is needed — that single fact decides what can be done
 tonight. An item nobody can start without a drive belongs in its own section, not
 mixed in.
+
+### Rules established on the 2026-09-10 pass
+
+- **`research/` and `todo/` keep old command spellings on purpose.** `f21897f` moved
+  commands and left those logs unedited, because they record what was typed on a
+  given day and editing them falsifies the record. A cleanup pass fixes a command's
+  name only in forward-looking text (a design statement, a table presented as
+  current), and puts one mapping table — old spelling → current — in the dated
+  status at the top of `todo/README.md`. Do not sweep the logs.
+- **A directory move is a reference sweep, not a `git mv`.** Moving `research/labels`,
+  `car` and `clb-crack` touched 174 references across code comments, docs, `.gitignore`
+  and the archive's own notes; the sweep is `perl` with a lookbehind so an already-moved
+  path is not prefixed twice, then `git grep -P` for the old form must come back empty.
+  Two things the sweep does not catch: relative links inside the moved tree, whose
+  depth changed, and **ignored junk that becomes tracked** — `.gitignore` globs are
+  anchored to the old path, so 21 `.pyc` files rode the move into the archive.
+  `git ls-files` under the new path, filtered by the ignore patterns, before the commit.
+- **A wrapper script is not a one-shot tool.** `drive-survey.sh` wrapped
+  `dev survey` and `--diff`, produced no artefact of its own, and every capability it
+  had lives in the subcommand; the owner decided to delete it and nothing is stranded.
+  The rule above ("move, never delete") is for tools whose *capability* would otherwise
+  vanish; check that first, then it is the owner's call.
+
+### Rules established on the 2026-09-13 pass
+
+- **Check that the proven rows are on disk, not only that the docs mention them.**
+  `todo/README.md` said "the 23 proven rows stay where they are" while
+  `~/.vagcan/data/SK37X/measurements/` did not exist — nothing read them, so nothing failed,
+  and `dev dash build` quietly marked every channel `declared`. `ls` the directory in
+  Phase 1. If it is gone, the rows are in git history at `0e263b1^:catalogs/vehicles/`
+  (the commit that took them out of the repository); restore them there unchanged and date it
+  in the status. They are one owner's car and never go back into the checkout.
+  **Then run the tests again**: 29 tests in `plan`, `watch` and `measure`
+  read those rows through `need_rows!` and skip without them, so a machine without rows — and CI, always — never
+  runs them. Restoring the rows on 2026-09-13 surfaced one that had gone stale behind the
+  skip (its survey fixture predated the `asked` field).
+- **A superseded task file is a superseded design.** It goes to `.archive/specs/<subsystem>/`,
+  not to `tasks/done/` (nothing was done), with a row in `.archive/README.md` naming what
+  replaced it. Then sweep the links: markdown links from `todo/` gain the `../../.archive/…`
+  depth, links inside the moved file to live `todo/` files gain `../../../todo/…`, and code
+  comments that name the file by bare filename get the archive path.
+- **Code implementing a superseded design is flagged, not deleted, by a cleanup pass.**
+  `sleep.rs` and `sleeptest` implement the archived `07-sleep`; both halves of "genuinely
+  dead" are arguable (a caller exists; its reason was superseded by the owner's power
+  decision, not refuted), so it is listed as the owner's call in the next goals. The owner
+  decided the same day: delete it, entirely.
 
 ## What a cleanup pass produces
 
@@ -177,7 +227,7 @@ Five things, and no more:
 1. Commits that move files and delete nothing of substance, each staged by path.
 2. `todo/README.md` accurate as of today's date, with the milestone table matching
    what the code actually does.
-3. New or moved files under `archive/`, each still carrying its reasoning.
+3. New or moved files under `.archive/`, each still carrying its reasoning.
 4. Skills under `.claude/skills/` whose every command was just run against `--help`.
 5. The next-goals list from Phase 6, in the answer as well as in the file.
 
@@ -213,7 +263,7 @@ Five things, and no more:
 | "Nothing calls this, so it is dead" | Uncalled is half the test. The other half is that its reason has been refuted. |
 | "The doc says this path is refuted" | Check what refuted it. Once here it was our own bug. |
 | "`git add -A` is faster, everything is mine" | It was not, twice. Stage by path. |
-| "This guard is over-cautious for a read-only tool" | The read-only tool cost this car its power steering. Read `SAFETY.md`. |
+| "This guard is over-cautious for a read-only tool" | Read-only bounds what can be *changed* about a car, not what can be *provoked*. A sweep is a fuzz test of a diagnostic server. |
 | "I'll fold this JSON into a small table, it is cleaner" | That is the one thing `CLAUDE.md` forbids outright. |
 | "Tests were green before, no need to re-run" | The pass is judged by green after. Run them. |
 
@@ -221,7 +271,7 @@ Five things, and no more:
 
 - About to type `git add -A`.
 - About to run `git rm` on anything under `research/`, `vendor/` (the LFS-tracked VCDS
-  archives) or `crates/*/bin/`. (Proven measurement rows no longer live in the repo at
+  archives) or anything under `crates/`. (Proven measurement rows no longer live in the repo at
   all — they are in `~/.vagcan/data/<project>/measurements/`, outside git; deleting one there is just
   as unrecoverable, and just as forbidden.)
 - Writing "recently", "last session", "currently" into a status document.

@@ -1,0 +1,39 @@
+# An empty `[workspace]` table, and it is load-bearing rather than tidy.
+#
+# This package is in the root manifest's `exclude` list. Cargo therefore walks
+# *past* that manifest looking for a workspace — and inside a git worktree
+# under `.worktrees/`, the next one up is the outer repository's, whose exclude
+# paths do not match this deeper location. The build then fails with "current
+# package believes it's in a workspace when it's not". This table stops the
+# walk here, which is the fix cargo's own error message suggests.
+[workspace]
+
+[package]
+name = "vag-dash-host"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bleecho"
+path = "src/bin/bleecho.rs"
+
+[[bin]]
+name = "dashsim"
+path = "src/bin/dashsim.rs"
+
+[dependencies]
+anyhow = "1"
+btleplug = "0.11"
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
+uuid = "1"
+vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
+# For one number: the gap under which two presses are one, so `dashsim` and
+# the board disagree about nothing.
+vag-dash-render = { path = "../../../crates/dash/vag-dash-render" }
+thiserror = "2"
+serialport = "4"
+crossterm = "0.28"

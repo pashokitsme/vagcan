@@ -1,0 +1,6 @@
+{"request": "70C", "unit": "16", "ident": [{"did": "F19E", "data": "45565F534D4C5356414C454F4D51424C5248"}, {"did": "F1A2", "data": "303031303037"}], "dtcs": [{"code": "047120", "status": "08"}]}
+{"request": "713", "unit": "03", "ident": [{"did": "F19E", "data": "45565F4272616B6531554453436F6E74694D4B313030455350"}], "dtcs": [{"code": "00004B", "status": "08"}, {"code": "00005B", "status": "08"}, {"code": "000129", "status": "08"}]}
+{"request": "70A", "unit": "10", "ident": [{"did": "F19E", "data": "45565F45504856413134415533373030303030"}], "dtcs": [{"code": "D01721", "status": "08"}, {"code": "D01722", "status": "08"}, {"code": "D0172E", "status": "08"}, {"code": "D0172F", "status": "08"}, {"code": "D01732", "status": "08"}]}
+{"request": "712", "unit": "44", "ident": [{"did": "F19E", "data": "45565F537465657241737369734D5142"}], "dtcs": [{"code": "004F04", "status": "08"}, {"code": "004D04", "status": "08"}]}
+{"request": "70E", "unit": "09", "ident": [{"did": "F19E", "data": "45565F42434D4D5142"}, {"did": "F1A2", "data": "303137303031"}], "dtcs": [{"code": "000107", "status": "08"}, {"code": "000213", "status": "08"}, {"code": "060901", "status": "08"}]}
+{"request": "710", "unit": "19", "ident": [{"did": "F19E", "data": "45565F47617465774E46"}], "dtcs": [{"code": "010405", "status": "08"}]}

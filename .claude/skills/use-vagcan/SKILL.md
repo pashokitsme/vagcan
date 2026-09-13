@@ -12,17 +12,18 @@ by construction: the UDS allowlist admits `0x22`, `0x19`, `0x10` and `0x3E` and
 nothing else, so no command here can change anything on the car.
 
 Read-only is not the same as harmless. **A sweep is a fuzz test of a diagnostic
-server**, and on this reference car one crashed the electric power steering, twice —
-the second time permanently. `SAFETY.md` has the account. That is why the section on
-what not to run is not advisory.
+server**: each request takes a path through firmware nothing has exercised, and a path
+with a defect in it crashes the server — a control unit the car is relying on. That is
+why the section on what not to run is not advisory.
 
 Everything below needs the car present and the ignition on. Commands under
-`vagcan vcds` and `vagcan recording` need only files and are out of scope here.
+`vagcan dev vcds` and `vagcan dev recording` need only files and are out of scope here.
 
 ## Invoking it
 
-There is no installed binary. Everything below is `cargo run -q -p vagcan -- <args>`
-from the repository root; the commands are written bare for readability.
+There is no installed binary. Everything below is `cargo run -q -p vag-cli -- <args>`
+from the repository root — the package is `vag-cli`, the binary it builds is `vagcan` —
+and the commands are written bare for readability.
 
 ## Quick reference
 
@@ -31,13 +32,13 @@ from the repository root; the commands are written bare for readability.
 | Is the adapter there? | `vagcan devices` |
 | Which car is this? | `vagcan info` |
 | Which control units does it have? | `vagcan units --identify` |
-| What does one unit say about itself? | `vagcan properties --ecu 01` |
+| What does one unit say about itself? | `vagcan units --identify 01` |
 | Fault codes, one unit | `vagcan faults --ecu 01` |
 | Fault codes, whole car, **named** | `vagcan faults` |
 | Standard OBD-II sensors | `vagcan sensors --ecu 01` |
 | Monitor for N seconds | `vagcan watch --did "01:2029,202A" --for 20 --hz 10` |
 | One instantaneous sample | `vagcan watch --did "01:2029" --for 1 --hz 2` |
-| Everything one unit exposes | `vagcan survey --only 01 --out unit01.jsonl` |
+| Everything one unit exposes | `vagcan dev survey --only 01 --out unit01.jsonl` |
 | Time an acceleration run | `vagcan measure` |
 | Open a saved run as a chart page | `vagcan measure view` (offline) |
 
@@ -76,7 +77,7 @@ happen.
 vagcan faults                    # named, whole car — the form to prefer
 vagcan faults --ecu 01            # one unit
 vagcan faults --ecu 01,02,713     # several
-vagcan faults                     # every unit, codes only
+vagcan faults --from unit01.jsonl # offline: name the faults in a recorded survey
 ```
 
 **Run `vagcan setup` once, and faults come out named.** Without it the output is
@@ -88,7 +89,7 @@ A code stays a number when the chain cannot reach it, and the reason is printed 
 the unit: no ODX file of that name in the label files, or no file of its family carrying a
 fault catalogue. **That is not a failure to work around.** Naming a fault wrongly is
 the one thing this path refuses to do, and it has held at zero wrong answers across
-every check (`research/labels/fault-naming-hop.md`).
+every check (`.archive/research/labels/fault-naming-hop.md`).
 
 The first run against an installation recovers the encryption keys of the `.rod`
 catalogues, which costs about 95 s of every core per unit file. They are cached — the
@@ -133,29 +134,32 @@ Sessions live under `~/.vagcan/cars/<VIN>/measures/`.
 them actually answers:
 
 ```bash
-vagcan survey --only 713 --out unit713.jsonl
+vagcan dev survey --only 713 --out unit713.jsonl
 ```
 
-This is the expensive, invasive one — see below. Scope it with `--only` and a
-`--range` whenever you can, and prefer an existing survey file over a fresh run.
+This is the expensive, invasive one — see below. Scope it with `--only` whenever you
+can, and prefer an existing survey file over a fresh run. (`--range` narrows only a
+`--blind` sweep and is refused without one — and `--blind` is a fuzz test; do not reach
+for it to answer a question.)
 
 Two surveys, one parked and one after a drive, name the live measurements without any
 label file:
 
 ```bash
-vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
+vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
 ```
 
 ## Never
 
 - **Never pass `--while-driving`.** A sweep is thousands of requests a unit may never
-  have handled, and this is the flag that killed the steering assist. The tool refuses
-  by default by reading road speed; a car that will not report speed counts as moving.
+  have handled, and a unit that mishandles one can stop doing its job while the car is
+  in motion. The tool refuses by default by reading road speed; a car that will not
+  report speed counts as moving.
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
 - **Never run a full `survey` to answer a small question.** It is about eight minutes
-  and it is the most invasive thing in the tool. `properties`, `faults --ecu`, or a
-  scoped `survey --only` answer most questions.
+  and it is the most invasive thing in the tool. `units --identify 01`, `faults --ecu`,
+  or a scoped `dev survey --only` answer most questions.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.
 - **Never hardcode a car's identifier, scaling or unit name into the code** to make a
@@ -174,12 +178,13 @@ vagcan survey --diff parked.jsonl driving.jsonl   # offline, no car
   diagnostic line is nearly idle — about 46 frames in 8 seconds, all one periodic id
   from the gateway.
 - **A unit that answers nothing after identifying** is normal; the survey skips it.
-- **`watch` refuses with a terminal error** — pass `--for SECONDS`.
+- **`watch` never returns** — output that is not a terminal already gets the CSV mode,
+  but without `--for SECONDS` it runs until interrupted. Pass `--for`.
 
 ## Reporting what was read
 
 - A value with no proven scaling is bytes. Say so; do not convert it.
-- A name found with `vagcan vcds names` is a **hypothesis**, not an identification:
+- A name found with `vagcan dev vcds names` is a **hypothesis**, not an identification:
   the label files carry no name-to-identifier join. Never present one as the meaning of a
   reading without a live confirmation.
 - Quote the unit by both its number and what it called itself, because the numbering

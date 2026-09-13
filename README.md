@@ -49,7 +49,7 @@ is not listed here.)
 From cargo:
 
 ```sh
-cargo install --git https://github.com/pashokitsme/vagcan vagcan
+cargo install --git https://github.com/pashokitsme/vagcan vag-cli
 ```
 
 From local repository:
@@ -57,7 +57,14 @@ From local repository:
 ```sh
 git clone https://github.com/pashokitsme/vagcan
 cd vagcan
-cargo install --path crates/vagcan
+cargo install --path crates/cli/vag-cli
+```
+
+Run it with no arguments to see where you stand — what it is, whether an adapter and
+a car's data are there, and what to type next:
+
+```sh
+vagcan
 ```
 
 Check it found your adapter:
@@ -95,7 +102,7 @@ is a **platform, not one car** — VW files every Octavia III, Karoq and Kodiaq 
 `SK37X` — so several cars share one, and what is true of exactly one car lives under
 `~/.vagcan/cars/<VIN>/` instead. Which vehicles each of VW's project names covers is
 transcribed in
-[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md);
+[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md);
 it is a reading aid, and nothing in the tool consults it — a project declares its own
 coverage.
 
@@ -111,7 +118,7 @@ inside is read once, and none of it is baked into the tool.
 vagcan info               # VIN, engine, gearbox
 vagcan units --identify   # every control unit the gateway knows about
 vagcan faults             # stored fault codes, in VW's own words (after setup)
-vagcan survey             # once, parked: what every unit answers
+vagcan dev survey             # once, parked: what every unit answers
 vagcan watch              # live values from several units at once
 ```
 
@@ -124,7 +131,7 @@ shown as raw bytes and tagged as raw. This project has twice caught itself belie
 number it had invented, and the guards are the scar tissue.
 
 **No car or adapter yet?** You can still do plenty offline: `vagcan setup` (above),
-`vagcan vcds names <text>` to search VW's measurement names, and `vagcan recording …`
+`vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …`
 to read back a drive someone else recorded. The offline commands are grouped under
 `vcds` and `recording` in [`USAGE.md`](USAGE.md).
 <!--

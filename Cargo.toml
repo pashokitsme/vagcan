@@ -1,13 +1,86 @@
 [workspace]
 resolver = "2"
-members = ["crates/vag-transport", "crates/vag-capture", "crates/vag-protocol", "crates/vag-data", "crates/vag-db", "crates/vag-can", "crates/vagcan"]
+members = [
+  # uds/ — talking to a car. ISO-TP under, UDS over, and the two transports.
+  "crates/uds/vag-uds-transport",
+  "crates/uds/vag-uds-can",
+  "crates/uds/vag-uds-client",
+  "crates/uds/vag-uds-capture",
+  # data/ — somebody else's diagnostic files, parsed and cached.
+  "crates/data/vag-data-labels",
+  "crates/data/vag-data-db",
+  # dash/ — the OLED device. Its firmware is excluded (see below), not absent.
+  "crates/dash/vag-dash-render",
+  "crates/dash/vag-dash-ble",
+  "crates/dash/vag-dash-cfg",
+  # cli/ — what a person runs, in four layers. `core` is what both command
+  # crates stand on; `diag` reads cars and the files that explain them;
+  # `measure` is the stopwatch and depends on `core` alone, which is what makes
+  # it a crate rather than a directory; `vag-cli` is the command surface and
+  # nothing else — clap declarations and a dispatcher.
+  "crates/cli/vag-cli-core",
+  "crates/cli/vag-cli-diag",
+  "crates/cli/vag-cli-measure",
+  "crates/cli/vag-cli",
+]
+# A crate's directory **is** its package name, and the family it sits in is
+# already spelled inside that name — `uds/vag-uds-client`, `dash/vag-dash-fw`.
+# The repetition is deliberate: a path and a package name that differ are two
+# things to learn, and every tool that reports one (cargo, rustc, a stack trace,
+# a grep) then needs translating into the other. A crate's *binaries* are free of it, and are named for what a
+# person types: `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, and
+# `vag-dash-fw` builds `dash` beside its bench binaries. The rule
+# that places the binaries: **a binary lives in its family when it has exactly
+# one.** `dashcfg` and the firmware serve only the device, so they are inside
+# `dash/`; `vagcan` serves two families, so it is neither's.
+#
+# The families are not layers. Four crates depend on nothing at all, and layers
+# exist only *inside* a family:
+#
+#   uds/    transport -> can, client, capture
+#   data/   labels    -> db
+#   dash/   render, ble             (each depends on nothing of ours)
+#
+# The single edge between families is `vag-uds-client -> vag-data-labels`, for
+# one module: `read.rs`, decoding a measurement against a catalog. It goes
+# behind the `std` feature with `address.rs`, because the board executes a plan
+# with the scaling already baked in and could not hold a catalog if it wanted
+# to — 88 MB of SQLite against 400 KB of SRAM.
+#
+# The division that actually changes how code is written is not a directory at
+# all: whether a crate runs on the board. vag-uds-transport, vag-uds-client
+# (minus those two modules), vag-uds-can (minus slcan.rs) and vag-dash-render
+# do; the rest are free to use std. Each crate says which it is at the top of
+# its lib.rs.
+#
+# `crates/dash/vag-dash-fw` cannot be a workspace member and this is not a preference:
+# it is `no_std` for `riscv32imc-unknown-none-elf` with its own
+# `.cargo/config.toml` pinning that target and `build-std`. As a member it
+# would not compile for the host at all. It still lives inside `dash/`, because
+# where a crate is built is a different question from whose it is.
+# `research/` is excluded for the older reason — probes and bench rigs that the
+# product does not link.
+#
+# Build anything excluded **from its own directory**. `--manifest-path` alone is
+# not enough for the firmware: cargo discovers `.cargo/config.toml` from the
+# working directory, so building it from the repository root silently targets
+# the host and fails deep inside `portable-atomic`.
+exclude = [
+  "crates/dash/vag-dash-fw",
+  "research/dash/host",
+  "research/dash/probes",
+  "research/odis-dtc/dump",
+]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
-thiserror = "1"
+# `default-features = false` is what lets vag-uds-transport / vag-uds-client / vag-uds-can
+# be `no_std`; each of them turns `thiserror/std` back on from its own `std`
+# feature, and nothing else in the workspace uses thiserror at all.
+thiserror = { version = "2", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Settings live in ~/.vagcan as a file a person edits, so the parser has to
@@ -17,3 +90,6 @@ toml_edit = "0.25"
 tokio = { version = "1", default-features = false }
 # Benchmarking (label-lookup perf, etc).
 criterion = "0.5"
+# Data-parallel work-stealing: the .rod key search, and the walks over an ODIS
+# project's pools and variants at setup time.
+rayon = "1.12"

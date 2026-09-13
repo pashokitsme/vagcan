@@ -3,8 +3,8 @@
 Why this tool is built the way it is. **This one is for the curious and for anyone
 working on the code** — you do not need it to use `vagcan` (that is [`USAGE.md`](USAGE.md)).
 The `research/…` files it links go deeper still, into the reverse-engineering: they are
-developer notes, not instructions. For the rules that were paid for in a broken control
-unit, [`SAFETY.md`](SAFETY.md).
+developer notes, not instructions. The rules about what this tool may do to a car are
+in [`CLAUDE.md`](CLAUDE.md).
 
 ---
 
@@ -23,8 +23,8 @@ That is not "we did not look hard enough". The read identifier is not stored in
 rather than assumed, and `MWB` carries no per-ECU identifier either. There is no
 route from "this unit's boost pressure" to "read `0x202A`, two bytes big-endian,
 ×0.001 bar" through any file Ross-Tech ships. The reasoning is in
-[`research/labels/rod-labels.md`](research/labels/rod-labels.md) §4.0c and
-[`research/labels/label-linkage.md`](research/labels/label-linkage.md) §3. Do not go
+[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) §4.0c and
+[`.archive/research/labels/label-linkage.md`](.archive/research/labels/label-linkage.md) §3. Do not go
 looking again.
 
 **VW's own ODIS-Service data can, and that is why it leads.** An extracted ODIS project
@@ -39,8 +39,8 @@ So there are three sources and they are not interchangeable:
 
 | | comes from | rebuildable? |
 |---|---|---|
-| which identifiers a variant answers, their shape and scaling | an ODIS project, via `vagcan setup` | yes, in minutes |
-| names, unit numbers, fault text | a VCDS installation, via `vagcan setup` | yes, in minutes |
+| which identifiers a variant answers, their shape and scaling; fault codes and their text | an ODIS project, via `vagcan setup` | yes, in minutes |
+| names, unit numbers, fault text where the project has none | a VCDS installation, via `vagcan setup` | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
 The first two land in a **project** — `~/.vagcan/data/<project id>/`, holding
@@ -55,7 +55,7 @@ keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octav
 Karoq and Kodiaq, and a proven scaling is a property of a *part number*, true of every
 car carrying that part. What is true of exactly one car — its car file, its drives, its
 survey — is keyed by the VIN the car itself answers, under `~/.vagcan/cars/<VIN>/`.
-[`research/labels/odis-project-mapping.md`](research/labels/odis-project-mapping.md)
+[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md)
 transcribes which vehicles each of VW's project names covers; nothing in the tool reads
 it, because a project declares its own coverage in `PRNR-INFO.xml`.
 
@@ -77,11 +77,22 @@ already there; so VCDS is read **first** and ODIS fills in the text ids it alone
 The other way round, the wholesale write would land on top and one combined run would
 come out worse than the two separate runs it is meant to be equivalent to.
 
-**Fault text is a gap in this build, not a division of labour.** An ODIS project carries
-the fault codes and their descriptions in the clear, in six figures; what is missing is
-a loader for them. Until that lands, `vagcan faults` names codes from VCDS files. That
-is a fact about the implementation and must not be written down as a property of the
-sources.
+**Fault text comes from the project first, and the VCDS chain is the fallback.** An
+ODIS project carries, per ECU variant, a fault table (`DB_DOP_DTC`) mapping every
+24-bit number the unit can send to a code object (`MCD_DB_DIAG_TROUBLE_CODE`) holding
+the display code a tester prints and the text in the clear — 282,621 codes across the
+reference project's 621 variants that have one. `setup` writes them into `cache.sqlite`'s
+`fault` table keyed by variant and number, and `vagcan faults` names a code from the
+variant the unit identifies itself as, by the same `F19E`/`F1A2` match the channels use.
+The VCDS chain below answers for a unit the project has no table for. The layouts and the
+evidence are in [`research/odis-dtc/README.md`](research/odis-dtc/README.md).
+
+A text is one per code, in the language its supplier wrote — the object model has no
+language field and no translations, and the reference project's engine texts are English
+inside a project that declares `deu`. So language is a property of the *source*: each
+`source` row records what its source declared (an ODIS project's `<LANGUAGE>`, a VCDS
+build's `Codes.dat` or `Code-RUS.dat`), a second project in another language is a second
+source, and `[faults] language` in `config.toml` chooses between sources.
 
 ---
 
@@ -132,11 +143,11 @@ intended behaviour, not a gap.
 Two routes, both least-squares fits that accept nothing under **R² 0.995 over ≥ 20
 points and ≥ 4 distinct raw values**.
 
-`vagcan sniff` records the bus listen-only while VCDS runs an ordinary session beside
-it, and `vagcan vcds analyse` crosses that capture with VCDS's own CSV export. The
+`vagcan dev sniff` records the bus listen-only while VCDS runs an ordinary session beside
+it, and `vagcan dev vcds analyse` crosses that capture with VCDS's own CSV export. The
 two files are aligned by wall-clock arithmetic — a subtraction, never a search.
 
-`vagcan recording calibrate` needs no VCDS at all: it fits unproven columns of a
+`vagcan dev recording calibrate` needs no VCDS at all: it fits unproven columns of a
 `vagcan watch --out` recording against columns already trusted in the *same*
 recording — the standard OBD-II parameters, whose conversions are SAE J1979's, or
 rows proven earlier. One clock, tens of hertz, and whatever identifiers were asked
@@ -146,14 +157,14 @@ for. What it cannot do is **name** anything.
 
 ## The file formats
 
-Full writeups under [`research/labels/`](research/labels/).
+Full writeups under [`.archive/research/labels/`](.archive/research/labels/).
 
 **`.lbl` — plain text.** The old format, still shipped for older control units. One
 file per part number, human readable, with a `; Component: … (#02)` header naming the
 unit and its number, then measuring-block and field names. Nothing to crack.
 
 **`.clb` — the encrypted `.lbl`.** Same content in a TEA-CBC container; decrypted
-in-tool by `vag-data`.
+in-tool by `vag-data-labels`.
 
 **`.rod` — the ODX container, and the interesting one.** Where modern (UDS-era) label
 data lives. Each file is TEA-CBC encrypted with a per-record IV and the plaintext is
@@ -205,14 +216,31 @@ unmasked and opens in minutes; `TTText-RUS.rod` is masked, so `vagcan setup` che
 before it starts and says so rather than spinning for a day. Fault text and labels are
 unaffected — only the names are out of reach, and the one thing that would change that
 is reading the mask out of a running VCDS, not out of the files.
-[`research/labels/tttext2.md`](research/labels/tttext2.md) has the full argument.
+[`.archive/research/labels/tttext2.md`](.archive/research/labels/tttext2.md) has the full argument.
 
 **A control unit tells you which `.rod` is its own.** Identifier `F19E` returns an ODX
-file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan vcds labels
+file name — `EV_ECM18TFS0208V0906264H`, say. That is how `vagcan dev vcds labels
 --from-car` finds the right file with no lookup table in the middle.
 
-**`Codes.dat` — the fault-code text store.** A fault number does not resolve to words
-directly. The chain is:
+**The ODIS fault chain**, which is asked first, is the measurement chain's shape with
+two hops fewer:
+
+```
+raw 24-bit code, and the unit's F19E/F1A2
+  → the variant's DB_LAYER_DATA            (dtc_properties: the fault tables' names)
+  → its property index                     (name → the DB_DOP_DTC object)
+  → the DB_DOP_DTC                         (number → the code object)
+  → MCD_DB_DIAG_TROUBLE_CODE               (display code, text, level)
+```
+
+A variant that names no fault table of its own is read through the first parent layer
+that does, as the measurement service is. The number is the join and the display code
+is a separate string the object carries — on the reference project only 1,515 of 43,378
+`(display, number)` pairs agree with the SAE encoding, so nothing derives one from the
+other.
+
+**`Codes.dat` — the fault-code text store**, the VCDS chain. A fault number does not
+resolve to words directly. The chain is:
 
 ```
 raw 24-bit code
@@ -226,14 +254,14 @@ Each `RD.rod` table's digits are substituted under a per-table alphabet, and tha
 alphabet turned out to be *generated* from the table key by `srand(key)` and two
 Fisher-Yates shuffles sharing one stream — read off the binary, not inferred. 95 of
 95 alphabets, 219,490 of 219,490 name fields, zero wrong. See
-[`research/labels/fault-naming-hop.md`](research/labels/fault-naming-hop.md).
+[`.archive/research/labels/fault-naming-hop.md`](.archive/research/labels/fault-naming-hop.md).
 
 **`TTTEXT.ROD` — the names.** Every record of its `[TXT]` section is enciphered under
 its **own** substitution, so there is no single key to find. The attack is
 dictionary-driven and bootstraps: records sharing the repetition pattern of their
 letter runs hold the same words under different keys, so one solve serves a whole
 cluster, and words read off solved records become vocabulary for the next pass. See
-[`research/labels/tttext-codec.md`](research/labels/tttext-codec.md).
+[`.archive/research/labels/tttext-codec.md`](.archive/research/labels/tttext-codec.md).
 
 ---
 
@@ -247,12 +275,13 @@ ODIS project. Nothing is opened to decide — being wrong in the permissive dire
 costs a parser error that explains itself, and being wrong in the strict direction turns
 a real project away at the door.
 
-**The ODIS branch is two steps**: every variant's measurement chain walked into
-`cache.sqlite`, then every `(text id, name)` pair in every pool merged into
-`names.json`. A variant whose chain reaches a type this reader declines to open, or one
-it has no loader for, costs itself and nothing else — the count of what was skipped is
-reported rather than hidden, because a project describes hundreds of units and one bad
-one must not cost the rest.
+**The ODIS branch is two steps**: every variant's fault table and measurement chain
+walked into `cache.sqlite` — the `fault` and `reading` tables, with the language the
+project declares written on its `source` row — then every `(text id, name)` pair in
+every pool merged into `names.json`. A variant whose chain reaches a type this reader
+declines to open, or one it has no loader for, costs itself and nothing else — the count
+of what was skipped is reported rather than hidden, because a project describes hundreds
+of units and one bad one must not cost the rest.
 
 **The VCDS branch is the four steps below.** The first of them is what makes an
 installation disposable: fault naming reads `.rod` files off disk at run time, so those
@@ -324,18 +353,58 @@ read; `--refresh` forces the lot.
 
 ## The crates
 
+Three families and the product.
+
 ```
 crates/
-  vag-transport   the transport trait — the seam every backend implements
-  vag-can         slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
-  vag-protocol    UDS client, ISO-TP framing, unit addressing
-  vag-data        label parsers and decoders (.lbl/.clb/.rod), ODX resolution
-  vag-db          SQLite cache over the label files
-  vag-capture     capture and replay transport, so tests need no hardware
-  vagcan          the CLI
+  uds/                     talking to a car — ISO-TP underneath, UDS over it
+    vag-uds-transport        the transport trait: the seam every backend implements
+    vag-uds-can              slcan USB-CAN backend, listen-only mode, ISO-TP sniffer
+    vag-uds-client           UDS client, ISO-TP framing, unit addressing
+    vag-uds-capture          capture and replay transport, so tests need no hardware
+  data/                    somebody else's diagnostic files
+    vag-data-labels          parsers and decoders (.lbl/.clb/.rod), ODX/ODIS resolution
+    vag-data-db              SQLite cache over the label files
+  dash/                    the OLED device, laptop side and board side both
+    vag-dash-render          a Frame in, pixels out, on any embedded-graphics DrawTarget
+    vag-dash-ble             the laptop's BLE client — scan, pick a device, open a NUS pipe
+    vag-dash-cfg             `dashcfg`, which configures the device over that pipe
+    vag-dash-fw              the firmware. Outside the workspace: no_std for riscv32imc
+  cli/                     what a person runs, in four layers
+    vag-cli-core             which car, what channels, how to poll, where the files are
+    vag-cli-diag             reading a car, and the files that explain what it said
+    vag-cli-measure          binary `vagcan-measure` — the stopwatch, on `core` alone
+    vag-cli                  binary `vagcan` — the command surface and nothing else
 ```
 
-`vag-protocol` cannot read a label file — it is the protocol layer and label files are
+**A crate's directory is its package name**, and the family it sits in is already spelled
+inside that name. The repetition is deliberate: a path and a package name that differ are
+two things to learn, and everything that reports one — cargo, rustc, a stack trace, a
+grep — then has to be translated into the other. Binaries are free of it and named for what a person
+types — `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, `vag-dash-fw` builds
+`dash` — because the name in a manifest serves the tree and the name in a shell serves
+the reader, and they are not the same audience.
+
+The families are not layers, and the rule that places the binaries is worth stating
+because it looks arbitrary until you see it: **a binary lives in its family when it has
+exactly one.** `dashcfg` and the firmware serve only the device. `vagcan` consumes `uds/`
+and `data/` both, so it belongs to neither, sits at the root, and takes no family prefix —
+naming the product after one of its dependencies would be the same mistake as filing the
+renderer under whichever crate happens to draw with it today.
+
+`cli/` is layered where the other families are flat, and the layering is load-bearing.
+`measure` — an acceleration stopwatch, a third of what used to be one crate — needs
+twelve modules from `core` and **nothing** from diagnostics. That was measured before it
+was moved, and it is why `vagcan measure` and the standalone `vagcan-measure` can share
+one set of flags and one `dispatch`, and why a build can leave the stopwatch out
+(`--no-default-features`) without touching a line of diagnostics.
+
+There is exactly one edge between families, `vag-uds-client -> vag-data-labels`, and it
+exists for a single module: `read.rs`, decoding a measurement against a catalog. It goes
+behind the `std` feature, because the board executes a plan with the scaling already
+baked in and could not hold a catalog if it wanted to.
+
+`vag-uds-client` cannot read a label file — it is the protocol layer and label files are
 not a protocol — so the label files' unit numbering is pushed *in* from `vagcan`, and
 what crosses the seam is plain numbers and strings.
 
@@ -358,9 +427,8 @@ that unit answers — the car reports `F187`/`F19E`/`F1A2`, that resolves to a v
 and the variant declares its own list — and a unit nothing describes is identified and
 has its faults read rather than being swept hardest of all. Blind sweeping survives as
 `--blind`, aimed at units named one at a time; there is no spelling of any flag that
-means "sweep the whole car blind", because that was the default and it is what cost the
-reference car its power steering. [`SAFETY.md`](SAFETY.md) is the account, and it is
-worth reading before the flag.
+means "sweep the whole car blind", because that was the default and it turned one
+unit's crash into a whole-car risk.
 
 **The CLI is split by what a command needs.** The top level is for commands that need
 a car in front of you. `recording …` reads back drives this tool recorded, and
@@ -370,23 +438,23 @@ asserts it.
 
 **Read-only is enforced in the client, not by convention.** The UDS service allowlist
 admits `0x22` (read data), `0x19` (read faults), `0x10` (session control) and `0x3E`
-(tester present), and that is the whole of it. See `SAFETY.md` for why that is not the
-same as harmless.
+(tester present), and that is the whole of it. That is not the same as harmless:
+"read-only" bounds what you can *change* about a car, not what you can *provoke*, and an
+identifier sweep is a fuzz test of a control unit's diagnostic server.
 
 ---
 
 ## The repository
 
 ```
-crates/         the Rust workspace
+crates/         the Rust workspace — uds/, data/, dash/ and vagcan/
 research/       reverse-engineering writeups and tooling, one directory per subject
   labels/         VW's label files: the .rod crack, the name codec, fault naming
   car/            what the reference car answers: identifier map, units, surveys
-  eps/            the steering-assist incident — read alongside SAFETY.md
   clb-crack/      the RE scripts themselves
-archive/        retired paths, kept as evidence
-docs/           active design specs
-todo/           the roadmap and the goal statement
+  dash/           the board from the laptop's side: probes/ and the bench rig host/
+.archive/       retired paths, kept as evidence — research/, specs/, tasks/done/
+todo/           the roadmap and the open task files
 ```
 
 **Nothing this tool reads at run time is in here.** The label data is Ross-Tech's and
@@ -395,10 +463,12 @@ anybody else's. Both live under `~/.vagcan/`.
 
 **Nothing is deleted; things are moved.** Most of what this project knows was measured
 on one car, once, and several of its most valuable documents are records of things
-that did *not* work. A refutation you throw away is one you pay for twice. `archive/`
+that did *not* work. A refutation you throw away is one you pay for twice. `.archive/`
 exists so that "we tried that, here is why it failed" survives a year.
 
 Start here: [`todo/README.md`](todo/README.md) for where things stand,
-[`todo/GOAL.md`](todo/GOAL.md) for the goal and the stack, and
-[`research/labels/rod-labels.md`](research/labels/rod-labels.md) for the format work.
-Design documents are in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+[`CLAUDE.md`](CLAUDE.md) for the goal, the locked stack and the working rules, and
+[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) for the format work.
+Design documents are not kept: a plan outlives its landing only as a description of code
+that has since moved, so what survives a piece of work is this file, `todo/` and the
+commit that did it.
