@@ -589,8 +589,22 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 /// first query with `no such table: label_file`. A missing database is an error
 /// here, never an empty one — only the paths that build or write a cache
 /// ([`build_db`], [`put_readings`]) may create the file.
-fn open_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
-	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+///
+/// **Read-write, not read-only, and that is what makes it safe to read.** A
+/// `setup` killed inside one of its write transactions leaves
+/// `cache.sqlite-journal` behind — a hot journal — and SQLite refuses to read
+/// the file until something rolls that journal back. A `SQLITE_OPEN_READ_ONLY`
+/// connection is not allowed to: every read failed with "attempt to write a
+/// readonly database" (`SQLITE_READONLY_ROLLBACK`) until the next setup, and
+/// the callers that treat an unopenable cache as an empty one then printed
+/// faults with no ODIS names and a watch with no ODIS channels, saying
+/// nothing. A read-write connection rolls the journal back on open. It writes
+/// nothing else: no function that opens through here issues a write.
+///
+/// Still no `SQLITE_OPEN_CREATE`, so the property above holds — and a file the
+/// process may not write is opened read-only by SQLite itself.
+fn open_existing(db_path: &Path) -> rusqlite::Result<Connection> {
+	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
 /// The label-file directory `db_path` was built from, if it says.
@@ -601,7 +615,7 @@ fn open_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
 /// concerns. The caller decides what to do with that (see the freshness rule in
 /// `vagcan::labels`, which trusts a cache whose source directory is gone).
 pub fn source_of(db_path: &Path) -> Option<String> {
-	let conn = open_read_only(db_path).ok()?;
+	let conn = open_existing(db_path).ok()?;
 	conn
 		.query_row("SELECT dir FROM source WHERE kind = ?1 ORDER BY id LIMIT 1", [VCDS], |row| {
 			row.get::<_, String>(0)
@@ -611,7 +625,7 @@ pub fn source_of(db_path: &Path) -> Option<String> {
 
 /// Every source that has ever written into this cache, oldest first.
 pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT kind, dir FROM source ORDER BY id")?;
 	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -621,7 +635,7 @@ pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// oldest first. The input to the policy that chooses between sources of
 /// fault text when there is more than one.
 pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<String>)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT kind, dir, language FROM source ORDER BY id")?;
 	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -812,7 +826,7 @@ pub struct CachedFault {
 /// were written: choosing between sources is the caller's policy, and it needs
 /// the language to make it.
 pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT f.dop, f.code, f.display, f.text, f.text_id, f.short_name, f.level, f.temporary, s.language, s.dir \
          FROM fault f JOIN source s ON s.id = f.source_id \
@@ -839,7 +853,7 @@ pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Erro
 
 /// Every ECU variant this cache holds fault codes for, in name order.
 pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM fault ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -847,7 +861,7 @@ pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 
 /// How much fault text an ODIS source described: `(variants, codes)`.
 pub fn fault_counts(db_path: &Path) -> Result<(u64, u64), Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let (variants, codes): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM fault", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -880,7 +894,7 @@ type ReadingRow = (
 
 /// The channels this cache knows for one ECU variant, by identifier.
 pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
@@ -946,7 +960,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 /// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
 /// cache produce the same file.
 pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT text_id, MIN(name) FROM reading \
          WHERE text_id IS NOT NULL AND text_id <> '' GROUP BY text_id ORDER BY text_id",
@@ -968,7 +982,7 @@ pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// label files rather than readings and live in another table, which is D1's
 /// split. [`row_counts`] is the per-table dump for somebody who wants that.
 pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -977,7 +991,7 @@ pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 
 /// Every ECU variant this cache holds readings for, in name order.
 pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM reading ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -986,7 +1000,7 @@ pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 /// Load all label files back out of a SQLite DB into a `Vec<LabelFile>`
 /// (reconstructing `Record::Measurement`/`Redirect`/`Adaptation`/`LongCoding`).
 pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	read_files(&conn)
 }
 
@@ -998,7 +1012,7 @@ pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
 /// compiling after a rename and fail only when run.
 pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
 	const TABLES: [&str; 5] = ["label_file", "measurement", "redirect", "adaptation", "long_coding"];
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut out = Vec::with_capacity(TABLES.len());
 	for table in TABLES {
 		// The names are the constant above, never anything a caller supplied,
@@ -1281,7 +1295,7 @@ mod tests {
 		put_all_readings(&batched.db_path, "/x/SK37X", [("EV_ECM", ecm.as_slice())]).unwrap();
 
 		let dump = |path: &Path| -> Vec<(i64, String, u16, String, String)> {
-			let conn = open_read_only(path).unwrap();
+			let conn = open_existing(path).unwrap();
 			let mut stmt = conn
 				.prepare(
 					"SELECT r.id, r.variant, r.did, r.scaling, COALESCE(GROUP_CONCAT(l.raw || '=' || l.meaning, ','), '') \
@@ -1685,6 +1699,67 @@ mod tests {
 		assert_eq!(cached.unit_numbers(), live.unit_numbers());
 		assert_eq!(cached.unit_name(0x44), Some("J500 - Power Steering"));
 		assert_eq!(cached.unit_name(0x17), Some("J285 - Instrument Cluster"));
+	}
+
+	/// The environment variable that turns [`a_writer_that_dies_mid_transaction`]
+	/// from a no-op into the dying writer. Holds the cache path.
+	const DYING_WRITER: &str = "VAG_DATA_DB_DYING_WRITER";
+
+	/// Not a test of its own: the child process
+	/// [`a_setup_killed_mid_write_leaves_a_cache_every_reader_can_still_open`]
+	/// re-executes this binary into. Without the variable it does nothing.
+	///
+	/// It is the writer `setup` is, killed where Ctrl-C kills it: inside
+	/// [`put_all_faults`]'s one transaction, with rows already written into it.
+	/// `process::exit` runs no destructor, so the transaction is neither
+	/// committed nor rolled back — the rollback journal is left on disk exactly
+	/// as a SIGINT leaves it.
+	#[test]
+	fn a_writer_that_dies_mid_transaction() {
+		let Some(db) = std::env::var_os(DYING_WRITER) else { return };
+		let db = std::path::PathBuf::from(db);
+		let rows: Vec<vag_data_labels::odis::Fault> = (0..2000).map(|code| fault(code, "replacement")).collect();
+		let dying = (0..).map(|n| {
+			if n == 50 {
+				std::process::exit(42);
+			}
+			("EV_Brake", rows.as_slice())
+		});
+		put_all_faults(&db, "/x/SK37X", dying).unwrap();
+		unreachable!("the iterator exits the process before the transaction commits");
+	}
+
+	#[test]
+	fn a_setup_killed_mid_write_leaves_a_cache_every_reader_can_still_open() {
+		// The failure: `setup` interrupted inside a write transaction leaves
+		// `cache.sqlite-journal` behind — a *hot* journal. The next connection has
+		// to roll it back before it may read, and a read-only connection is not
+		// allowed to, so every reader failed with "attempt to write a readonly
+		// database" until the next setup. The callers turn that error into "no
+		// ODIS fault names" and "no ODIS channels", silently.
+		let ws = TempWorkspace::new("hotjournal");
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "before")]).unwrap();
+		record_language(&ws.db_path, ODIS, "/x/SK37X", "deu").unwrap();
+
+		let status = std::process::Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "tests::a_writer_that_dies_mid_transaction", "--test-threads=1", "--nocapture"])
+			.env(DYING_WRITER, &ws.db_path)
+			.status()
+			.unwrap();
+		assert_eq!(status.code(), Some(42), "the writer did not die where it was meant to");
+		let journal = ws.db_path.with_file_name("cache.sqlite-journal");
+		assert!(journal.is_file(), "sanity: a killed writer leaves its journal behind");
+
+		// Every reader answers, and answers with what was committed.
+		let faults = faults_of(&ws.db_path, "EV_Brake").expect("faults_of on a cache with a hot journal");
+		assert_eq!(faults.len(), 1, "the half-written transaction must have been rolled back");
+		assert_eq!(faults[0].fault.text.as_deref(), Some("before"));
+		assert_eq!(fault_variants(&ws.db_path).unwrap(), ["EV_Brake"]);
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (1, 1));
+		assert_eq!(source_languages(&ws.db_path).unwrap().len(), 1);
+		assert!(readings_of(&ws.db_path, "EV_Brake").unwrap().is_empty());
+		assert!(load_files(&ws.db_path).unwrap().is_empty());
+		assert!(!journal.exists(), "the reader that opened it rolled the journal back");
 	}
 
 	#[test]
