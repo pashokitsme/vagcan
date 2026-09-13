@@ -7,7 +7,7 @@
 //! in **listen-only** mode — none of which needs a transceiver to see traffic.
 //!
 //! Custom commands may follow the port, but never a transmit (`t`, `T`, `r`,
-//! `R`): this probe writes to the adapter directly, so a frame typed here would
+//! `R`, or CAN FD's `d`, `D`, `b`, `B`): this probe writes to the adapter directly, so a frame typed here would
 //! reach the bus without passing the UDS allowlist. It refuses them before the
 //! port is opened.
 //!
@@ -141,20 +141,24 @@ fn escape(bytes: &[u8]) -> String {
 
 /// Why a custom command may not be sent, or `None` when it may.
 ///
-/// `t`/`T` put a frame on the bus and `r`/`R` a remote frame. This probe writes
+/// `t`/`T` put a frame on the bus, `r`/`R` a remote frame, and `d`/`D`/`b`/`B`
+/// a CAN FD frame (the CANable 2 firmware takes all eight). This probe writes
 /// straight to the port, past `vag-uds-client`'s allowlist, so a frame typed
 /// here is whatever the typist wrote — an ECUReset as easily as a read. The
 /// probe is for asking an adapter about itself; frames go through `vagcan`.
 /// A command is checked line by line, because one argument can carry several
 /// (`$'O\rt7E0…'` in a shell is two commands to the adapter).
 fn refusal(cmd: &str) -> Option<String> {
+	/// Every slcan command that puts a frame on the bus: classic data and remote
+	/// frames, then CAN FD without and with bit-rate switch.
+	const TRANSMITS: [char; 8] = ['t', 'T', 'r', 'R', 'd', 'D', 'b', 'B'];
 	cmd
 		.split(['\r', '\n'])
 		.map(str::trim_start)
-		.find(|line| line.starts_with(['t', 'T', 'r', 'R']))
+		.find(|line| line.starts_with(TRANSMITS))
 		.map(|line| {
 			format!(
-				"refusing {line:?}: `t`/`T`/`r`/`R` transmit a frame, and this probe bypasses the UDS allowlist. \
+				"refusing {line:?}: `t`/`T`/`r`/`R`/`d`/`D`/`b`/`B` transmit a frame, and this probe bypasses the UDS allowlist. \
 				 It asks an adapter about itself; put frames on a bus through `vagcan`."
 			)
 		})
@@ -169,6 +173,11 @@ mod tests {
 		// `t7E0021101` is an ECUReset request: bytes on the bus that the
 		// allowlist never sees, because nothing here goes through the client.
 		for cmd in ["t7E0021101", "T18DA10F1021101", "r7E00", "R18DA10F10", " t7E0021101", "O\rt7E0021101"] {
+			assert!(refusal(cmd).is_some(), "sent {cmd:?}");
+		}
+		// CAN FD frames: the CANable 2 firmware transmits `d`/`D` (FD) and
+		// `b`/`B` (FD with bit-rate switch) as readily as `t`/`T`.
+		for cmd in ["d7E0021101", "D18DA10F1021101", "b7E0021101", "B18DA10F1021101", "O\rd7E0021101"] {
 			assert!(refusal(cmd).is_some(), "sent {cmd:?}");
 		}
 	}

@@ -620,9 +620,10 @@ cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmo
 
 ### 9.3 The bench, both directions, no car
 
-The host has no way to put an arbitrary frame on the bus: `vagcan` sends only
-what the UDS allowlist permits, and `slcan_probe` refuses `t`/`T`/`r`/`R` in its
-custom commands, because it writes to the adapter past that allowlist. (A
+No tool here puts an arbitrary frame on the bus: `vagcan` sends only what the
+UDS allowlist permits, and `slcan_probe` refuses every transmit command in its
+custom commands — `t`/`T`/`r`/`R`, and the CANable 2 firmware's CAN FD
+`d`/`D`/`b`/`B` — because it writes to the adapter past that allowlist. (A
 terminal typed straight into the port is the exception nothing here can
 prevent.) `cantx` cannot share the board with `slcan` either, so the two directions are proven by crossing the two
 adapters' ordinary traffic. The bench pair is the standing one (§5.2): both
