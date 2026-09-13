@@ -528,8 +528,13 @@ enum Step {
 	},
 }
 
+/// The command to type when there is no terminal to ask at — what `setup` and
+/// the offer to run it print on a pipe. ODIS first, as `missing` orders them:
+/// it is the source that brings scalings.
+pub const WITHOUT_A_TERMINAL: &str = "vagcan setup /path/to/ODIS-project      (or the path to a VCDS installation)";
+
 pub fn run(opts: Options<'_>) -> Result<()> {
-	let mut io = crate::ui::Console::new("vagcan setup /path/to/VCDS      (or the path to an extracted ODIS project)");
+	let mut io = crate::ui::Console::new(WITHOUT_A_TERMINAL);
 	// **The system folder panel is opened from this thread, and this thread is
 	// the main one.** `main` is `#[tokio::main]` — `block_on` around the whole
 	// of `main`'s future, which it runs on the calling thread — and the `setup`
@@ -1224,6 +1229,14 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn the_command_for_a_pipe_names_odis_first() {
+		let odis = WITHOUT_A_TERMINAL.find("ODIS").expect(WITHOUT_A_TERMINAL);
+		let vcds = WITHOUT_A_TERMINAL.find("VCDS").expect(WITHOUT_A_TERMINAL);
+		assert!(odis < vcds, "{WITHOUT_A_TERMINAL}");
+		assert!(WITHOUT_A_TERMINAL.starts_with("vagcan setup "), "{WITHOUT_A_TERMINAL}");
+	}
 
 	#[test]
 	fn the_report_names_every_file_it_wrote() {
