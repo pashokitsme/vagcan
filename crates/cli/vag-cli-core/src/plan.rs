@@ -1,6 +1,6 @@
 //! What to poll, and in what order — the part that can be tested without a car.
 //!
-//! One serial port means one conversation at a time, so reading measurements
+//! One link to the car means one conversation at a time, so reading measurements
 //! that live on different control units is a sequence of re-addressed groups,
 //! not a broadcast. This module decides the grouping; the live loop in the
 //! parent module just walks it.
@@ -546,12 +546,12 @@ pub enum BatchOutcome {
 /// resolves — it is the age of every record in the batch, and identifiers are
 /// polled in groups, so columns in one cycle are up to a cycle apart.
 ///
-/// **The adapter is `take()`n out of the `Option` and put back after the
-/// await.** A dropped future therefore leaves the `Option` empty and the
-/// adapter gone for the rest of the run, silently. Do not put this call in a
-/// `select!`; drain the keyboard between batches instead, as `watch` does.
-pub async fn read_batch<B: vag_uds_can::CanBackend>(backend: &mut Option<B>, batch: &Batch, started: std::time::Instant) -> (f64, BatchOutcome) {
-	use vag_uds_can::IsoTpCan;
+/// **The link is `take()`n out of the `Option`, addressed to the batch's unit,
+/// released and put back after the await.** A dropped future therefore leaves
+/// the `Option` empty and the link gone for the rest of the run, silently. Do
+/// not put this call in a `select!`; drain the keyboard between batches
+/// instead, as `watch` does.
+pub async fn read_batch<B: vag_uds_can::UnitLink>(backend: &mut Option<B>, batch: &Batch, started: std::time::Instant) -> (f64, BatchOutcome) {
 	use vag_uds_client::AsyncUdsClient;
 	use vag_uds_transport::CanId;
 
@@ -566,7 +566,7 @@ pub async fn read_batch<B: vag_uds_can::CanBackend>(backend: &mut Option<B>, bat
 		*backend = Some(b);
 		return (elapsed(), BatchOutcome::Unaddressable);
 	};
-	let mut uds = AsyncUdsClient::new(IsoTpCan::new(b, CanId::Standard(address.request), CanId::Standard(address.response)));
+	let mut uds = AsyncUdsClient::new(b.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 	let answer = if batch.dids.len() == 1 {
 		uds.read_data_by_identifier(batch.dids[0]).await.map(|d| vec![(batch.dids[0], d)])
 	} else {
@@ -576,7 +576,7 @@ pub async fn read_batch<B: vag_uds_can::CanBackend>(backend: &mut Option<B>, bat
 			.map(|payload| crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default())
 	};
 	let at = elapsed();
-	*backend = Some(uds.into_transport().into_backend());
+	*backend = Some(B::release(uds.into_transport()));
 	match answer {
 		Ok(records) => (at, BatchOutcome::Answered(records)),
 		Err(_) => (at, BatchOutcome::NoAnswer),

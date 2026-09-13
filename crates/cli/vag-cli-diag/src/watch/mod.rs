@@ -1939,12 +1939,11 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	result
 }
 
-/// Run the live view against a real adapter.
 /// Read one batch of identifiers and record the answer against the clock.
 ///
 /// Shared by the full-screen view and the plain-console one so the two cannot
 /// drift: whatever a recording means, it means the same thing in both.
-async fn poll_batch<B: vag_uds_can::CanBackend>(app: &mut App, backend: &mut Option<B>, batch: &crate::plan::Batch) {
+async fn poll_batch<B: vag_uds_can::UnitLink>(app: &mut App, backend: &mut Option<B>, batch: &crate::plan::Batch) {
 	let (at, outcome) = crate::plan::read_batch(backend, batch, app.started).await;
 	let records = match outcome {
 		// Nothing was sent, so nothing about the clock has moved on either.
@@ -2238,7 +2237,11 @@ pub struct Options<'a> {
 	pub view: View,
 }
 
-pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> {
+/// Run the live view against the car.
+///
+/// `open` takes the link to the car, and is called only once every argument
+/// has been checked.
+pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>, opts: Options<'_>) -> Result<()> {
 	let Options {
 		preselect,
 		hz,
@@ -2248,7 +2251,6 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		view,
 	} = opts;
 	use std::io::Write as _;
-	use vag_uds_can::SlcanMode;
 
 	// Argument checking first: the adapter is a single-user resource, and
 	// holding it open while failing on a typo blocks the next attempt. That
@@ -2270,7 +2272,7 @@ pub async fn run(device_path: &str, baud: u32, opts: Options<'_>) -> Result<()> 
 		None => None,
 	};
 
-	let mut adapter = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
+	let mut adapter = open().await?;
 
 	// Which car this is, so its own survey can be found. One identifier read,
 	// and a car that will not say simply has no cache — everything below still

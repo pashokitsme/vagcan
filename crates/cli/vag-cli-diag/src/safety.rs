@@ -10,7 +10,7 @@
 //! opt-in, and even then it is refused while the car is moving.
 
 use anyhow::Result;
-use vag_uds_can::IsoTpCan;
+use vag_uds_can::UnitLink;
 use vag_uds_client::AsyncUdsClient;
 use vag_uds_transport::{AsyncIsoTpTransport, CanId};
 
@@ -32,13 +32,13 @@ pub async fn road_speed_kmh<T: AsyncIsoTpTransport>(uds: &mut AsyncUdsClient<T>)
 
 /// Refuse an extended diagnostic session unless the car is standing still.
 ///
-/// Takes the backend, asks the engine for road speed, and hands it back. A car
+/// Takes the link, asks the engine for road speed, and hands it back. A car
 /// that will not say how fast it is going is treated as moving: the failure
 /// this guards against is one the driver feels through the controls.
-pub async fn require_stationary<B: vag_uds_can::CanBackend>(backend: B) -> Result<B, (B, String)> {
-	let mut uds = AsyncUdsClient::new(IsoTpCan::new(backend, CanId::Standard(ENGINE_REQUEST), CanId::Standard(ENGINE_RESPONSE)));
+pub async fn require_stationary<B: UnitLink>(backend: B) -> Result<B, (B, String)> {
+	let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(ENGINE_REQUEST), CanId::Standard(ENGINE_RESPONSE)));
 	let speed = road_speed_kmh(&mut uds).await;
-	let backend = uds.into_transport().into_backend();
+	let backend = B::release(uds.into_transport());
 	match speed {
 		Some(0) => Ok(backend),
 		Some(kmh) => Err((
@@ -83,5 +83,38 @@ mod tests {
 		// must never collapse into the same value.
 		let mut uds = AsyncUdsClient::new(MockAsyncTransport::new(vec![(req(SPEED_DID), vec![0x7F, 0x22, 0x31])]));
 		assert_eq!(road_speed_kmh(&mut uds).await, None);
+	}
+
+	/// A link that is not a CAN backend, the way a BLE one will not be: the
+	/// guard has to run over it, addressed to the engine.
+	struct Scripted(MockAsyncTransport);
+
+	impl UnitLink for Scripted {
+		type Channel = MockAsyncTransport;
+
+		fn to_unit(self, request: CanId, response: CanId) -> MockAsyncTransport {
+			assert_eq!((request, response), (CanId::Standard(ENGINE_REQUEST), CanId::Standard(ENGINE_RESPONSE)));
+			self.0
+		}
+
+		fn release(channel: MockAsyncTransport) -> Scripted {
+			Scripted(channel)
+		}
+	}
+
+	#[tokio::test]
+	async fn the_guard_runs_over_any_link_and_hands_it_back() {
+		let still = Scripted(MockAsyncTransport::new(vec![(req(SPEED_DID), resp(SPEED_DID, &[0]))]));
+		let link = require_stationary(still).await.map_err(|(_, why)| why).expect("0 km/h is stationary");
+		assert!(link.0.is_exhausted());
+
+		let moving = Scripted(MockAsyncTransport::new(vec![(req(SPEED_DID), resp(SPEED_DID, &[30]))]));
+		let (link, why) = require_stationary(moving).await.err().expect("30 km/h is moving");
+		assert!(why.contains("30 km/h"), "{why}");
+		assert!(link.0.is_exhausted(), "the link comes back on refusal too");
+
+		let silent = Scripted(MockAsyncTransport::new(vec![(req(SPEED_DID), vec![0x7F, 0x22, 0x31])]));
+		let (_, why) = require_stationary(silent).await.err().expect("no speed is moving");
+		assert!(why.contains("cannot tell"), "{why}");
 	}
 }
