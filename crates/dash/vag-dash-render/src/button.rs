@@ -64,7 +64,9 @@ pub struct Button {
 	/// When the believed press started.
 	pressed_since_ms: u64,
 	/// Set once a press has already produced a long event, so the release does
-	/// not then also produce a short one.
+	/// not then also produce a short one. Set from [`Button::poll`] and only
+	/// when the gate let the Long out — a hold whose Long the gate dropped is
+	/// still a hold, and it has to be able to try again on the next poll.
 	consumed: bool,
 	/// When the last press of either kind, from either source, was let out.
 	last_accepted_ms: Option<u64>,
@@ -86,7 +88,17 @@ impl Button {
 	/// debounce interval; returns an event at most once per call.
 	pub fn poll(&mut self, level_pressed: bool, now_ms: u64) -> Option<Press> {
 		let press = self.classify(level_pressed, now_ms)?;
-		self.accept(press, now_ms)
+		let out = self.accept(press, now_ms);
+		// A hold is spent by a Long that *came out*, not by one the gate ate.
+		// Marking it at the threshold instead lost the whole hold to whatever
+		// happened to pass through the gate in the quarter second before it,
+		// and the release then produced no Short either. The Long is exempted
+		// from the gate on this side rather than inside `accept`, because the
+		// gate is what makes a burst of remote `BTN L` one long press.
+		if out == Some(Press::Long) {
+			self.consumed = true;
+		}
+		out
 	}
 
 	/// Feed a press somebody else already classified — the simulator's
@@ -113,7 +125,6 @@ impl Button {
 		}
 
 		if self.pressed && !self.consumed && now_ms.saturating_sub(self.pressed_since_ms) >= LONG_PRESS_MS {
-			self.consumed = true;
 			return Some(Press::Long);
 		}
 		None
@@ -188,6 +199,30 @@ mod tests {
 		assert_eq!(held.as_slice(), &[Press::Long], "fires at the threshold, once");
 		let released = hold(&mut button, false, LONG_PRESS_MS + DEBOUNCE_MS + 100, DEBOUNCE_MS + 1);
 		assert!(released.is_empty(), "the release of a long press is not a short press");
+	}
+
+	#[test]
+	fn a_long_press_the_gate_drops_fires_once_the_gap_has_passed() {
+		// The gate is shared, so something else coming out of it can land close
+		// enough to the long-press threshold to swallow the Long. That must cost
+		// the press its timing, not the press: the finger is still on the button.
+		let mut button = Button::new();
+		// The hold starts at 0 and is believed at DEBOUNCE_MS, so the threshold
+		// falls at 3010.
+		let early = hold(&mut button, true, 0, 2_900);
+		assert!(early.is_empty(), "nothing before the threshold, got {early:?}");
+		// A page turn from the simulator, 110 ms before it.
+		assert_eq!(button.remote(Press::Short, 2_900), Some(Press::Short));
+		// The threshold falls inside the gap, and the Long is dropped there...
+		let gated = hold(&mut button, true, 2_901, PRESS_GAP_MS - 1);
+		assert!(gated.is_empty(), "inside the gap nothing comes out, got {gated:?}");
+		// ...and comes out at the first poll past the gap, exactly once, with the
+		// button never released.
+		let late = hold(&mut button, true, 2_900 + PRESS_GAP_MS, 500);
+		assert_eq!(late.as_slice(), &[Press::Long], "the hold is still a hold");
+		// And the release of a long press is still not a short press.
+		let released = hold(&mut button, false, 3_400 + PRESS_GAP_MS, DEBOUNCE_MS + 1);
+		assert!(released.is_empty(), "got {released:?}");
 	}
 
 	#[test]

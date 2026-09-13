@@ -9,9 +9,9 @@
 /// The page after `active`, of `count` pages, wrapping at the end.
 ///
 /// With one page the answer is that page. With none the answer is `0`, which
-/// is what the caller's bounds check makes of it. An `active` past the end —
-/// a configuration read back under a shorter plan — goes to the first page
-/// rather than arithmetic on a number that means nothing.
+/// is what the caller's bounds check makes of it. An `active` past the end
+/// goes to the first page rather than arithmetic on a number that means
+/// nothing — defensive; `Config::validate` rejects such a value upstream.
 pub fn next(active: u8, count: u8) -> u8 {
 	if active >= count {
 		return 0;

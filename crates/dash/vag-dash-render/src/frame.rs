@@ -68,12 +68,16 @@ pub enum Frame<'a> {
 		/// Oldest first, one per pixel column. Fewer samples than columns draws
 		/// a shorter trace — never an invented point.
 		samples: &'a [f32],
-		/// How much time the full width holds, for the header.
+		/// How long one sample is — the poll period, in seconds.
 		///
-		/// One pixel is one poll, so this is width ÷ rate and it moves when the
-		/// rate does. It is printed because a window nobody can see is a chart
+		/// The *window* the header prints is derived from it here rather than
+		/// passed in, because only the renderer knows how many columns the plot
+		/// got: one pixel is one poll, so a history deeper than the plot is wide
+		/// has its oldest samples dropped, and a caller multiplying its whole
+		/// history by the period prints a window twice what the screen shows.
+		/// A window is printed at all because one nobody can see is a chart
 		/// nobody can read — the same argument `watch/history.rs` makes for
 		/// printing its own.
-		window_seconds: f32,
+		seconds_per_sample: f32,
 	},
 }

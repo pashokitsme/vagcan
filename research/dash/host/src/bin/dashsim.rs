@@ -21,7 +21,7 @@
 //! One press is one press, at this end too. A held key auto-repeats, and on
 //! 2026-09-13 every repeat went down the wire as `BTN S` — a dozen page turns
 //! for one keystroke. Where the terminal speaks the kitty keyboard protocol
-//! (kitty, WezTerm, foot, Ghostty, iTerm2) it is asked to *report* repeats,
+//! (kitty, WezTerm, foot, Ghostty, iTerm2 3.5+) it is asked to *report* repeats,
 //! which then arrive as `KeyEventKind::Repeat` and are dropped; where it does
 //! not (Terminal.app), a second press inside the board's own
 //! [`PRESS_GAP_MS`] is taken for a repeat. The board gates the same way, so
