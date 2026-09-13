@@ -710,8 +710,8 @@ const READ_GAP: Duration = Duration::from_millis(50);
 const CYCLE_GAP: Duration = Duration::from_millis(200);
 /// Between two passes when **no** unit answers — ignition off, most likely.
 /// The device hangs off permanent battery positive, and a request every third
-/// of a second is a request that may keep the gateway awake (`07-sleep.md`,
-/// `08-power.md`); one every two seconds is a different order of thing. This
+/// of a second is a request that may keep the gateway awake (`.archive/specs/dash/07-sleep.md`,
+/// `.archive/specs/dash/08-power.md`); one every two seconds is a different order of thing. This
 /// puts nothing to sleep; it only stops hammering a bus that is not listening.
 const DEAD_BUS_GAP: Duration = Duration::from_secs(2);
 /// After a bus-off, before the restarted controller is asked anything.

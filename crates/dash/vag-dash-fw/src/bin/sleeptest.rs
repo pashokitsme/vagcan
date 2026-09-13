@@ -23,10 +23,10 @@
 //!
 //! What the numbers are is deliberately not written down anywhere here. Nothing
 //! in this repository has measured the board's current, and the sleep design in
-//! `08-power.md` is settled by a measurement, not by a firmware author's
+//! `.archive/specs/dash/08-power.md` is settled by a measurement, not by a firmware author's
 //! expectation. Two things make the reading honest:
 //!
-//! - **Measure the whole device, not the chip.** The target in `08-power.md` is
+//! - **Measure the whole device, not the chip.** The target in `.archive/specs/dash/08-power.md` is
 //!   under about 1 mA for everything on the OBD plug, and the regulator's own
 //!   quiescent current is part of that.
 //! - **Measure over a whole cycle.** [`SLEEP_SECS`] is short so that a person

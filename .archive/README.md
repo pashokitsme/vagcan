@@ -95,6 +95,9 @@ banner at the top pointing at what replaced them. The live design lives in
 |------|------------------|----------------|
 | [`specs/2026-07-02-vagcan-cli-design.md`](specs/2026-07-02-vagcan-cli-design.md) | The original `vagcan` PRD, with `vag-hex` as the transport and `vag-cli`/`vag-core` crates. | Those crate names never shipped; the transport is now the generic slcan adapter. |
 | [`specs/2026-07-03-vag-hex-transport.md`](specs/2026-07-03-vag-hex-transport.md) | The `vag-hex` cable-transport crate. | The HEX-clone path is dead (session KDF VMProtect-sealed); the crate is deleted. |
+| [`specs/dash/07-sleep.md`](specs/dash/07-sleep.md) | How the dash sleeps in a parked car and wakes (rail divider at 13 V, wake button, RTC pins). | Superseded 2026-09-13: the owner feeds the board from OBD pin 1 (ignition-switched), so there is nothing to sleep through. `sleep.rs` and `sleeptest` still implement it. |
+| [`specs/dash/08-power.md`](specs/dash/08-power.md) | Power from OBD pin 16 and the microamp budget for a device left plugged in. | Superseded 2026-09-13 by pin 1, as above. |
+| [`specs/dash/09-bt-adapter.md`](specs/dash/09-bt-adapter.md) | The dash as a wireless CANable over Bluetooth SPP. | Superseded 2026-09-13 by `todo/dash/14` (slcan mode over USB) and `todo/dash/16` (UDS over BLE); the C3 has no SPP. |
 
 ## `tasks/done/<subsystem>/` — finished task files
 

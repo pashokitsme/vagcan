@@ -1,6 +1,6 @@
 # dash / 09 — the device is also a wireless CANable
 
-> **Superseded 2026-09-13 by [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md).**
+> **Superseded 2026-09-13 by [`14-one-bus-three-clients.md`](../../../todo/dash/14-one-bus-three-clients.md).**
 > The wish — the laptop reads the car through the device — is met over USB by a PDU-level
 > link (§3-B there), and over BLE by the same link, not by Bluetooth SPP, which the C3 does
 > not have. A raw slcan mode over USB is landing as the *exclusive* adapter mode; it cannot
@@ -13,7 +13,7 @@
 > LAWICEL slcan protocol on the board's USB-Serial-JTAG console; `vagcan devices` lists
 > the board by name (VID `303a` PID `1001`), and `--device /dev/cu.usbmodem…` drives it
 > with `SlcanBackend` unchanged. It is **mode 2 of
-> [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md)** — the dumb slcan proxy:
+> [`14-one-bus-three-clients.md`](../../../todo/dash/14-one-bus-three-clients.md)** — the dumb slcan proxy:
 > raw frames on the host's own clock, an *exclusive* mode with no panel beside it, for
 > `dev sniff`, bench work and a laptop-only session. It is **not** the answer to the wish
 > underneath this task — "read the car through the board while the panel keeps showing
@@ -34,7 +34,7 @@
 > WROOM-32 this document was written against: RISC-V on stable Rust, native USB, **BLE only
 > — no Bluetooth Classic, no SPP**, 22 GPIO. What was proven on hardware, and what it voids
 > here, is in [`10-c3-recon.md`](10-c3-recon.md). Read that first — and
-> [`11-ble.md`](11-ble.md) for what BLE does carry, which is configuration rather than a
+> [`11-ble.md`](../../../todo/dash/11-ble.md) for what BLE does carry, which is configuration rather than a
 > bus: it cannot move a loaded CAN bus, and the measurement is there.
 
 ## Goal

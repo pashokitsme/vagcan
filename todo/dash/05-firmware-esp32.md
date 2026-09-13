@@ -128,7 +128,7 @@ are 3.3 V, so no level shifter.
 
 ## The one thing that only matters because it lives in the car
 
-**Sleep.** Pulled out into [`07-sleep.md`](07-sleep.md) and deferred (2026-08-20). It is
+**Sleep.** Pulled out into [`07-sleep.md`](../../.archive/specs/dash/07-sleep.md) and deferred (2026-08-20). It is
 real work and it is not what blocks a first look at the panel.
 
 **The car check.** Read the VIN and the part numbers of the units in the plan at start-up

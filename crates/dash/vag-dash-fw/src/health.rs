@@ -31,7 +31,7 @@
 //! On the next boot the chip still knows why the last one ended. Three lines of
 //! code separate "the watchdog fired", "the rail collapsed while the engine
 //! cranked" and "somebody unplugged it" — and without them those three are
-//! indistinguishable, which is precisely the question `todo/dash/08-power.md`
+//! indistinguishable, which is precisely the question `.archive/specs/dash/08-power.md`
 //! has to answer with a measurement it has not taken yet. [`SocResetReason`]
 //! has a `SysBrownOut` variant; if cranking browns the board out, this is what
 //! says so, for free, before anybody puts a scope on the rail.

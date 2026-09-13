@@ -240,7 +240,7 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 | 8 | ~~the same link over BLE NUS; measure the PDU rate~~ → [`16-uds-over-ble.md`](16-uds-over-ble.md): UDS over BLE as a slow transport, after the merge | bench, then car | 4 |
 | 9 | OLED on the carrier | bench | `05`/`08` |
 
-`09-bt-adapter.md` is superseded by this file (the wish is met by §3-B over USB and §8 over
+[`09-bt-adapter.md`](../../.archive/specs/dash/09-bt-adapter.md) (archived) is superseded by this file (the wish is met by §3-B over USB and §8 over
 BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.
 
 ## 8. What is not decided here

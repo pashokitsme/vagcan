@@ -3,7 +3,7 @@
 //!
 //! The device hangs off **OBD-II pin 16, permanent battery positive** (SAE
 //! J1962). Nothing in the car switches that off, so whatever the board draws
-//! it draws for every hour the car stands. `08-power.md` sets the target at
+//! it draws for every hour the car stands. `.archive/specs/dash/08-power.md` sets the target at
 //! under about 1 mA for the whole device asleep.
 //!
 //! **No current has been measured.** There is no meter on this yet and nothing
@@ -12,7 +12,7 @@
 //!
 //! # What an ESP32-C3 can actually wake on
 //!
-//! `07-sleep.md` was written for an ESP32-WROOM-32 and its central mechanism —
+//! `.archive/specs/dash/07-sleep.md` was written for an ESP32-WROOM-32 and its central mechanism —
 //! the ULP coprocessor sampling ADC1 through deep sleep and waking the cores on
 //! a threshold — **does not transfer to this board**. The C3 has no ULP. The
 //! device description esp-hal builds from (`esp-metadata`, `devices/esp32c3.toml`)
@@ -52,7 +52,7 @@
 //! ADC1. Its analog capability is already worthless — ADC2 does not read while
 //! Wi-Fi/BLE is up — so spending it on a digital job costs nothing, and all
 //! five ADC1 pins stay analog. The divider then takes `GPIO4`: it must be ADC1
-//! (`07-sleep.md`), and of the non-strapping ADC1 pins it is the one furthest
+//! (`.archive/specs/dash/07-sleep.md`), and of the non-strapping ADC1 pins it is the one furthest
 //! from the low-numbered pads a bootloader or a crystal option tends to claim.
 //!
 //! Note that the divider does **not** consume a wake slot on this chip. With no
@@ -191,7 +191,7 @@ pub enum SleepReason {
 /// like the button machine in `ui.rs`.
 ///
 /// **There is deliberately no way to tell it that a request went unanswered.**
-/// `07-sleep.md` is explicit that "no answer" must play no part: it is the same
+/// `.archive/specs/dash/07-sleep.md` is explicit that "no answer" must play no part: it is the same
 /// input the moving-car guard reads as *moving*, and one signal with two
 /// opposite meanings is how a device ends up asleep on the motorway. Sleep here
 /// is a positive statement from the bus, or a timer, and the absence of the
@@ -259,7 +259,7 @@ impl Awake {
 ///    command, and better than that it wants its supply cut.
 /// 2. **The isolated CAN side is off.** The B0505S-1WR3 that feeds the
 ///    ADM3050E is a 1 W isolated module, and modules of that class idle in the
-///    tens of milliamps (`08-power.md`) — on its own, ten times the whole
+///    tens of milliamps (`.archive/specs/dash/08-power.md`) — on its own, ten times the whole
 ///    budget. It is cut with the load switch, and the load switch has no pin
 ///    assigned yet because the board does not exist.
 /// 3. **The radio is stopped.** BLE is torn down, or at least not advertising,
