@@ -11,6 +11,15 @@ three buttons on the keyboard.
 This is how `02` gets tested and how the layout gets finished before any hardware
 arrives. It is not a mock of the panel — it is the panel, with a different `DrawTarget`.
 
+## Note (2026-09-13) — the names below are not what shipped
+
+The interactive half became `dashsim` (`research/dash/host`), and it is a different
+thing from the one proposed here: it draws the frames the **board** renders and sends
+over its USB serial, and sends button presses back, rather than rendering a plan on the
+laptop. And `vagcan dev dash` now exists — it builds the plan the firmware links, not a
+simulator. So `vagcan dash` below is this task's proposal, not a command; read it as
+the design it was.
+
 ## Status (2026-08-20) — the PNG half is done
 
 `cargo run -p vag-dash-render --example panel -- <dir>` writes nine frames and prints each one's

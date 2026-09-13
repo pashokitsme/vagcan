@@ -7,7 +7,7 @@
 //!
 //! **Five of these rows were measured on this car; the other 27 are transcribed
 //! from SAE J1979.** The five were fitted blind by crossing a passive CAN
-//! capture with a simultaneous VCDS log (`vagcan analyse`, 2026-08-01) — the
+//! capture with a simultaneous VCDS log (`vagcan dev vcds analyse`, 2026-08-01) — the
 //! fitter is told nothing about J1979 — and every one landed exactly on the
 //! standard's conversion, including a two-byte pressure with a ×10 factor:
 //!

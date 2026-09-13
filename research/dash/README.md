@@ -36,10 +36,10 @@ over one stdin silently eat each other's input — the first buffers everything
 available and discards the remainder when dropped, so the second sees EOF. That
 does not reproduce interactively, only through a pipe.
 
-The firmware it talks to lives outside this repository for now (`~/esp/c3-recon/`),
-because it is `no_std` on `riscv32imc-unknown-none-elf` with its own
-`build-std` configuration and would not survive inside the workspace. `05`
-already anticipates this: `vag-dash-fw` is "new, outside the workspace".
+The firmware it talks to is `crates/dash/vag-dash-fw`: in this repository, but not a
+workspace member, because it is `no_std` on `riscv32imc-unknown-none-elf` with its own
+`build-std` configuration and would not survive inside the workspace. Build it from its
+own directory.
 
 ## `dashsim`
 

@@ -716,6 +716,10 @@ adapters on USB:
   next request. `F` read afterwards is `00`: neither bit 3 with bit 0 (the ring)
   nor bit 3 alone (the controller's FIFO) latched. `C` does not clear the
   latched bits and the host never sends `F`, so that `00` covers the whole run.
+  *(Note, 2026-09-13: true of this run only. `vagcan dev sniff` now sends `F` itself,
+  at the start of a capture and at its end, and each read clears the latched bits — so
+  an `F` read after a later `dev sniff` covers only the time since that run's last
+  question, and the run's own drop report is the one to read.)*
   The frames are identical, so content cannot prove none were lost; the counts
   and the clean `F` together can. The car remains the test with varied traffic.
 - **A stalled host loses nothing measurable either.** The same storm (this time
