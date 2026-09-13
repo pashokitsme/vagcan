@@ -62,6 +62,14 @@ the server. Read-only bounds what can be *changed* about a car, not what can be
   Guard anything new that resembles one the same way `survey` is guarded.
 - **Anything that can change how a unit behaves is refused on a moving car** — checked
   by reading road speed, with "no answer" counted as moving.
+- **A firmware image that transmits on its own is a bench tool, and builds only with the
+  `bench` feature** (`cantx`, `cantest`, `rxprobe` in `vag-dash-fw`). `cantx` floods
+  `7E0` at the bus's ceiling from power-on; a board left with it and plugged into a car
+  floods the engine's diagnostic server at once. `bench.sh` ends by saying to reflash
+  `dash` or `slcan`. A new transmitting bench image goes behind the same feature.
+- **The board guards itself on any link that is not a cable.** A host across a radio is
+  not trusted, so over BLE the board enforces the allowlist, the moving-car check and a
+  sweep limit on its own (`todo/dash/16-uds-over-ble.md`).
 
 ## No car-specific data in the code (MANDATORY)
 
@@ -159,6 +167,9 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
                        and the buttons) and `bleecho`
+  odis-dtc/            fault codes and their text in an ODIS project: the object
+                       layouts the DTC loader reads, and the offline proof against
+                       the reference car's stored faults (ODIS 15/15, VCDS 11/15)
   tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
                        Simos18 calibration as graphs (read-only, never talks to a car)
 .archive/        retired paths kept as evidence — see .archive/README.md for the map:
