@@ -584,7 +584,14 @@ name one by identifier and bit offset — `ref = "01:F405"` instead of `ref = "0
 
 **The firmware's build runs this itself** — `VAGCAN_DASH_VIN=<VIN> cargo build` in
 `crates/dash/vag-dash-fw` — so this command is for reading the result and the reasons,
-not a step before it.
+not a step before it. The build picks its car one of three ways:
+
+- `VAGCAN_DASH_VIN=<VIN>` — that car.
+- unset — the one car under `~/.vagcan/dash/` (a directory holding a `dash.toml`), and
+  the build prints which. With none or several there it stops and asks for the VIN.
+- `VAGCAN_DASH_NO_CAR=1` — an empty plan: no unit, no channel, no page. It is for CI,
+  which checks the images compile with no `~/.vagcan/` at all. **Never flash that image**;
+  the build warns so whenever it builds the plan.
 
 ### `vagcan dev vcds …` — VCDS's own files
 

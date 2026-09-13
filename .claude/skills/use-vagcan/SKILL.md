@@ -21,8 +21,9 @@ Everything below needs the car present and the ignition on. Commands under
 
 ## Invoking it
 
-There is no installed binary. Everything below is `cargo run -q -p vagcan -- <args>`
-from the repository root; the commands are written bare for readability.
+There is no installed binary. Everything below is `cargo run -q -p vag-cli -- <args>`
+from the repository root — the package is `vag-cli`, the binary it builds is `vagcan` —
+and the commands are written bare for readability.
 
 ## Quick reference
 
@@ -76,7 +77,7 @@ happen.
 vagcan faults                    # named, whole car — the form to prefer
 vagcan faults --ecu 01            # one unit
 vagcan faults --ecu 01,02,713     # several
-vagcan faults                     # every unit, codes only
+vagcan faults --from unit01.jsonl # offline: name the faults in a recorded survey
 ```
 
 **Run `vagcan setup` once, and faults come out named.** Without it the output is
@@ -136,8 +137,10 @@ them actually answers:
 vagcan dev survey --only 713 --out unit713.jsonl
 ```
 
-This is the expensive, invasive one — see below. Scope it with `--only` and a
-`--range` whenever you can, and prefer an existing survey file over a fresh run.
+This is the expensive, invasive one — see below. Scope it with `--only` whenever you
+can, and prefer an existing survey file over a fresh run. (`--range` narrows only a
+`--blind` sweep and is refused without one — and `--blind` is a fuzz test; do not reach
+for it to answer a question.)
 
 Two surveys, one parked and one after a drive, name the live measurements without any
 label file:
@@ -155,8 +158,8 @@ vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
 - **Never pass `--extended` casually.** The extended diagnostic session is workshop
   mode, and a unit that assists the driver may stop assisting while it is in one.
 - **Never run a full `survey` to answer a small question.** It is about eight minutes
-  and it is the most invasive thing in the tool. `properties`, `faults --ecu`, or a
-  scoped `survey --only` answer most questions.
+  and it is the most invasive thing in the tool. `units --identify 01`, `faults --ecu`,
+  or a scoped `dev survey --only` answer most questions.
 - **Never suggest adding a write service** — coding, adaptation, clearing faults,
   flashing. `CLAUDE.md` forbids it outright.
 - **Never hardcode a car's identifier, scaling or unit name into the code** to make a
@@ -175,7 +178,8 @@ vagcan dev survey --diff parked.jsonl driving.jsonl   # offline, no car
   diagnostic line is nearly idle — about 46 frames in 8 seconds, all one periodic id
   from the gateway.
 - **A unit that answers nothing after identifying** is normal; the survey skips it.
-- **`watch` refuses with a terminal error** — pass `--for SECONDS`.
+- **`watch` never returns** — output that is not a terminal already gets the CSV mode,
+  but without `--for SECONDS` it runs until interrupted. Pass `--for`.
 
 ## Reporting what was read
 

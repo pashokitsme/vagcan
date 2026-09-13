@@ -49,7 +49,7 @@ is not listed here.)
 From cargo:
 
 ```sh
-cargo install --git https://github.com/pashokitsme/vagcan vagcan
+cargo install --git https://github.com/pashokitsme/vagcan vag-cli
 ```
 
 From local repository:

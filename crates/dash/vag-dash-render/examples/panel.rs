@@ -5,7 +5,7 @@
 //! drawing code that will run on the OLED writes files anybody can look at —
 //! and, later, files CI can diff.
 //!
-//! Usage: `cargo run -p vag-dash --example panel -- <output directory>`
+//! Usage: `cargo run -p vag-dash-render --example panel -- <output directory>`
 //!
 //! The values are stand-ins with the right shape, not readings from the car.
 //! Every channel named here is one the catalog declares for the reference car

@@ -27,11 +27,11 @@ label files into human-meaningful measurement names, units, and ranges.
 ## Binary
 
 ```
-# parse+decrypt a Labels dir into a JSON label files + coverage summary
-cargo run -p vagcan -- vcds label files /path/to/VCDS/Labels --out label files.json
+# parse+decrypt a Labels dir into one JSON file + coverage summary
+vagcan dev vcds dump /path/to/VCDS/Labels --out labels.json
 
 # resolve a part number to its measurements
-cargo run -p vagcan -- vcds labels /path/to/VCDS/Labels --part 06F-906-056-AXW
+vagcan dev vcds labels /path/to/VCDS --part 06F-906-056-AXW
 ```
 
 Against the reference install (~2884 files): **1202 `.lbl` + 1627 `.clb` all parse**;

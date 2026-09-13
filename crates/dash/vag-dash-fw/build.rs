@@ -92,7 +92,9 @@ const NO_CAR_ENV: &str = "VAGCAN_DASH_NO_CAR";
 ///
 /// Nothing is invented: the image polls nothing and shows no number, which is
 /// the opposite of the failure `plan`'s loudness guards against. It is still
-/// no image to flash, and the build says so on every run.
+/// no image to flash, and the build says so each time the build script runs —
+/// on every build of the plan, not on a build cargo answers from its cache,
+/// since cargo does not replay a build script's warnings.
 fn no_car() {
 	let plan = vag_cli_core::dash::Plan {
 		vin: String::new(),

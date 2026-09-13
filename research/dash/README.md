@@ -14,7 +14,7 @@ echo session over the Nordic UART Service: what you type is written to the
 device, what it notifies back is printed.
 
 ```
-cargo run --release --manifest-path research/dash/bleecho/Cargo.toml
+cargo run --release --manifest-path research/dash/host/Cargo.toml --bin bleecho
 ```
 
 It is **not a workspace member**, deliberately. `btleplug` binds CoreBluetooth
@@ -62,6 +62,18 @@ does not (Terminal.app) a second press inside 250 ms — the board's own
 `PRESS_GAP_MS` — is taken for a repeat. The footer says which of the two is in
 force. The board gates by the same number on its side, so neither end can
 reproduce the burst alone.
+
+## Which car an image is built for
+
+Every firmware image links one car's plan, chosen when `build.rs` runs:
+
+- `VAGCAN_DASH_VIN=<VIN>` names the car;
+- unset, the build takes the one car under `~/.vagcan/dash/` and prints which — this is
+  what `bench.sh` gets — and stops if there are none or several;
+- `VAGCAN_DASH_NO_CAR=1` builds an empty plan, for CI with no `~/.vagcan/`. **Never
+  flash it.**
+
+[`USAGE.md`](../../USAGE.md), under `vagcan dev dash build`, has the plan itself.
 
 ## Bench tools — which may see a car and which may not
 

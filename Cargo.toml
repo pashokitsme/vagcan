@@ -29,7 +29,7 @@ members = [
 # things to learn, and every tool that reports one (cargo, rustc, a stack trace,
 # a grep) then needs translating into the other. A crate's *binaries* are free of it, and are named for what a
 # person types: `vag-cli` builds `vagcan`, `vag-dash-cfg` builds `dashcfg`, and
-# `vag-dash-fw` builds `dash` beside two bench binaries. The rule
+# `vag-dash-fw` builds `dash` beside its bench binaries. The rule
 # that places the binaries: **a binary lives in its family when it has exactly
 # one.** `dashcfg` and the firmware serve only the device, so they are inside
 # `dash/`; `vagcan` serves two families, so it is neither's.

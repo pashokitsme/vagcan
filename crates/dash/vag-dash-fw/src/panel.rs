@@ -57,7 +57,7 @@ impl Framebuffer {
 	///
 	/// A run longer than 255 is split by emitting `ff` then an empty run `00`
 	/// of the other colour. That costs two characters and keeps the decoder on
-	/// the other side trivial — and `research/dash/bleecho/src/frame.rs` holds
+	/// the other side trivial — and `research/dash/host/src/frame.rs` holds
 	/// the matching decoder plus the round-trip tests that say the two agree.
 	pub fn write_frame(&self, out: &mut impl core::fmt::Write) -> core::fmt::Result {
 		write!(out, "FRAME {WIDTH} {HEIGHT} ")?;

@@ -120,9 +120,10 @@ impl Namer {
                  The chain needs UDS_EV/{} and the key for its [DTC] section. \
                  The key lives in {} — if the file is there and the key is not, \
                  recover it with:\n    \
-                 cargo run --release -p vagcan -- vcds rod <path to {}>",
+                 vagcan dev vcds rod --cache {} <path to {}>",
 				root.display(),
 				dtc::REGISTRY_FILE,
+				iv_cache.display(),
 				iv_cache.display(),
 				dtc::REGISTRY_FILE,
 			)
@@ -240,14 +241,20 @@ pub fn offer_to_unseal(files: &[PathBuf], cache: &Path) -> Result<()> {
          about three minutes each, once — the result is cached and every later run reads it."
 	);
 	if !crate::ui::can_ask() {
-		println!("\nTo do it:\n    vagcan dev vcds rod <file>   (once per file above)");
+		println!(
+			"\nTo do it:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
+			cache.display()
+		);
 		return Ok(());
 	}
 	print!("\nRecover them now? [y/N] ");
 	let _ = std::io::stdout().flush();
 	let mut answer = String::new();
 	if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-		println!("Left sealed. When you want them:\n    vagcan dev vcds rod <file>   (once per file above)");
+		println!(
+			"Left sealed. When you want them:\n    vagcan dev vcds rod --cache {} <file>   (once per file above)",
+			cache.display()
+		);
 		return Ok(());
 	}
 	for (at, file) in files.iter().enumerate() {
