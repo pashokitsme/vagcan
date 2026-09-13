@@ -601,13 +601,18 @@ the console is the protocol now, and a monitor would be a second reader on it.
 
 ```
 * /dev/cu.usbmodem1101
-    vag-dash board (slcan over USB, when running the slcan firmware)
+    vag-dash board — slcan firmware answering
 ```
 
-The name says "when running": the board enumerates under Espressif's `303a:1001`
-whatever image it carries, and the listing cannot tell `slcan` from `dash`. A
-`V` answered (`V0101`) is what proves the port is an adapter, and the host's own
-probe asks exactly that — close, `V`, `N`, `F`, `S6`, open listen-only, close:
+The board enumerates under Espressif's `303a:1001` whatever image it carries —
+and so does every other ESP32-C3 and -S3 — so the ids alone do not make it an
+adapter. `vagcan` asks each such port slcan's `V` (and nothing else) before it
+lists or picks it: a well-formed `V0101` makes it a recognised adapter; no
+answer lists it unmarked as `not answering slcan (display firmware? flash the
+slcan image)`, and a car command pointed at it fails at once with that reason
+instead of timing out on the car. No other device is ever asked anything. The
+host's bench probe asks more — close, `V`, `N`, `F`, `S6`, open listen-only,
+close:
 
 ```bash
 cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmodem1101

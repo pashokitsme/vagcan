@@ -28,7 +28,7 @@ pub use backend::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, from_raw
 pub use error::CanError;
 pub use isotp::IsoTpCan;
 #[cfg(feature = "slcan")]
-pub use slcan::{AdapterInfo, SerialSlcan, list_adapters};
+pub use slcan::{AdapterInfo, BOARD_PROBE_WAIT, BOARD_USB, BoardAnswer, SerialSlcan, classify_usb, list_adapters, probe_board};
 #[cfg(feature = "std")]
 pub use slcan::{SlcanBackend, SlcanBitrate, SlcanMode};
 #[cfg(feature = "std")]

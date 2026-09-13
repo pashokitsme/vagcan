@@ -20,9 +20,13 @@
 //! and a truncated file all read as "could not be read" otherwise, and they
 //! send somebody to three different places.
 //!
-//! **Nothing here touches the car.** No adapter is opened, no frame is sent —
-//! listing USB serial devices and reading `~/.vagcan` is the whole of it, so
-//! this stays instant and stays safe to run with the engine running.
+//! **Nothing here touches the car.** No adapter's channel is opened, no frame
+//! is sent — listing USB serial devices and reading `~/.vagcan` is the whole
+//! of it, so this stays safe to run with the engine running. The one port it
+//! writes to is a vag-dash board's, asked its slcan version (`V`) so the adapter
+//! line says what the next command will actually use ([`device::list`]); that
+//! question never reaches a bus, and costs up to a few hundred milliseconds
+//! only when a board is plugged in.
 
 use anyhow::Context;
 use vag_cli_core::{datadir, device, project};
@@ -460,6 +464,7 @@ mod tests {
 			path: path.to_string(),
 			description: description.to_string(),
 			known: true,
+			board: false,
 		}
 	}
 
