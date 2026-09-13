@@ -144,10 +144,15 @@ crates/            all Rust. Three families and the product.
                        Depends on `core` **alone**, checked symbol by symbol,
                        which is what makes it a crate rather than a directory.
     vag-cli            binary `vagcan` — the command surface and nothing else:
-                       clap declarations and a dispatcher. Top level = needs the car: devices / info /
-                   units / properties / sniff / sensors / watch / scan / faults /
-                   survey / measure. Offline work is grouped by input: `recording …`
-                   (our own `watch --out` recordings) and `vcds …` (VCDS's own files)
+                       clap declarations and a dispatcher. Top level = needs the car:
+                       devices / info / units / faults / sensors / watch / measure —
+                       plus `setup`, the one offline command there, because it is
+                       the first thing a new owner runs and what a car command short
+                       of label data offers to run. The workshop is `dev …`: survey /
+                       sniff / glossary / dash, and offline work grouped by input —
+                       `dev recording …` (our own `watch --out` recordings) and
+                       `dev vcds …` (VCDS's own files). `main.rs`'s
+                       `the_top_level_is_only_what_needs_a_car` test holds the line
 research/        RE writeups + tooling (NOT shipped) for work still in progress:
   dash/                the ESP32 board from the laptop's side. `can-bring-up.md` is the
                        hardware hand-off; `bench.sh` the one-command bench; `probes/` is
