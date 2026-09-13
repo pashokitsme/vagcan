@@ -749,3 +749,52 @@ byte its own sibling `TTTEXT.ROD` uses. The sweep is ordered by that prior, then
 `BFINAL = 0` anchors, then the `BFINAL = 1` half. **This changes nothing about coverage** — all
 60 are tried and the driver appends anything the order left out — only about when it is likely
 to stop.
+
+---
+
+## 12. What an anchor actually costs, measured
+
+*Ported 2026-09-13 from an unmerged research branch (`edf70d8`, measured 2026-08-06); the
+branch is deleted. Its driver change — a `--only` flag to run disjoint anchor lists in two
+processes — is not in the archived driver and was not kept; the measurements are.*
+
+§4.2 budgeted "≈ 11 minutes per anchor, 5–11 hours for the file", by taking a ~100 s reduced
+sweep of this section and applying §4.1's 6.5× full-space penalty. **That is out by a factor of
+two.** Measured on this section:
+
+| anchor | wall |
+|---|---|
+| `0xac` | 1,353.2 s |
+| `0x54` | 1,203.2 s |
+
+So ~21 minutes an anchor and **~21 hours for all 60**, not 5–11. Both anchors were misses:
+`0xac`, the corpus's most common large-section anchor, and `0x54`, the one `TTTEXT.ROD` itself
+uses. Two things are worth taking from it beyond the number:
+
+**The cost does not scale with the section.** The control (§10) is a 20 KB section and took
+1,285.9 s; this one is 3.9 MB and takes 1,203–1,353 s. The 2⁴⁰ header-oracle tree is the whole
+of the work — the confirming inflate, the only part that grows with the section, is reached too
+rarely to show up. So a shifted file costs what it costs regardless of size, and §6.2b's
+"~18 min per anchor on a 20 KB section" generalises rather than being a small-section figure.
+
+**The machine was about 30 % idle while it ran.** The searcher of that day split the first
+branch byte into fixed contiguous per-thread chunks, so on a heterogeneous CPU (an M4: four
+performance cores, six efficiency) the threads that drew a cheap chunk finished and sat out the
+rest of the anchor — `%CPU` ran 520–880 against a 1,000 ceiling. The run worked around it with
+two processes over disjoint anchor lists, checked to partition the 60:
+
+```
+done first, single-process : 0xac 0x54
+half A (29 anchors)        : 0x8c 0x84 0xa4 0xb4 0xc4 0xd4 0xe4 0x94 0x74 0x5c 0x3c 0x2c 0x1c 0x0c
+                             0x0d 0x3d 0x35 0x25 0x1d 0xad 0x5d 0x6d 0x7d 0x8d 0x9d 0xb5 0xc5 0xd5 0xe5
+half B (29 anchors)        : 0x64 0x9c 0x44 0xbc 0xcc 0xdc 0xec 0x7c 0x6c 0x4c 0x34 0x24 0x14 0x04
+                             0x45 0x2d 0x15 0x4d 0x05 0x55 0x65 0x75 0x85 0x95 0xa5 0xbd 0xcd 0xdd 0xed
+A ∩ B = ∅,  A ∪ B ∪ done = the 60 legal anchors     (checked, not assumed)
+```
+
+The fix recorded then — a shared cursor over the first branch byte instead of contiguous
+slices, estimated at ~1.4× on every shifted-file search — has since been overtaken: on
+2026-09-10 `crates/data/vag-data-labels/src/rod/crack.rs` moved onto rayon, one task per
+(group, second byte) pair under `find_map_any`, and rayon's work stealing is exactly what keeps a
+thread from sitting out a slow chunk. **Not re-measured**: whoever runs the next shifted-file
+search should check `%CPU` stays near the ceiling before believing the idle time is gone.
