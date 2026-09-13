@@ -662,13 +662,23 @@ pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: 
 /// write and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down
 /// to 10; one transaction is a fraction of a second.
 ///
-/// The connection runs with `synchronous = OFF` for the duration: the rows are
-/// a cache rebuilt from a file that is still on disk, so what a power cut
-/// during the write could cost is the run, not the data. The rollback journal
-/// stays on, so a crash of the *process* mid-write leaves a cache SQLite rolls
-/// back on the next open rather than a corrupt one — `journal_mode = OFF`
-/// would have saved little and lost that. Both settings are per-connection,
-/// and this connection is closed on return.
+/// **`synchronous = FULL`, stated rather than inherited, and it costs nothing
+/// measurable.** It was `OFF`, on the argument that these rows are a cache of
+/// a file still on disk and a power cut could cost only the run. That was
+/// wrong twice: SQLite documents that `OFF` can leave the *file* corrupt after
+/// a power loss or an OS crash, not merely the transaction lost, and the same
+/// `cache.sqlite` holds the VCDS label rows, which cannot be rebuilt once the
+/// installation they came from is deleted (D4/D5). With one transaction per
+/// batch there are only a handful of syncs to pay for: timed on the reference
+/// project (`VAGCAN_TIMING=1`, 282,621 codes, 399,283 channels), the faults and
+/// readings stages took 0.34–0.38 s and 0.82–0.87 s under each of `OFF`,
+/// `NORMAL` and `FULL` on a fresh cache, and 0.54–0.72 s and 1.39–1.54 s on a
+/// re-run — the spread within a setting was larger than between them.
+///
+/// The rollback journal stays on, so a crash of the *process* mid-write leaves
+/// a cache the next open rolls back rather than a corrupt one
+/// ([`open_existing`]). Both settings are per-connection, and this connection
+/// is closed on return.
 pub fn put_all_readings<'a>(
 	db_path: &Path,
 	project_dir: &str,
@@ -676,7 +686,7 @@ pub fn put_all_readings<'a>(
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	conn.pragma_update(None, "synchronous", "OFF")?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
 	// Pages, negative meaning kibibytes: 64 MiB, so a whole project's rows
 	// stay in memory instead of being flushed page by page mid-transaction.
 	conn.pragma_update(None, "cache_size", -65536)?;
@@ -764,8 +774,7 @@ pub fn put_faults(db_path: &Path, project_dir: &str, variant: &str, faults: &[va
 
 /// [`put_faults`] for every variant of a project, in **one** transaction —
 /// the same batch [`put_all_readings`] is for channels, with the same
-/// per-connection `synchronous = OFF` and page cache, for the same reason:
-/// the rows are a cache of a file still on disk.
+/// per-connection `synchronous = FULL` and page cache, for the same reasons.
 pub fn put_all_faults<'a>(
 	db_path: &Path,
 	project_dir: &str,
@@ -773,7 +782,7 @@ pub fn put_all_faults<'a>(
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	conn.pragma_update(None, "synchronous", "OFF")?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
