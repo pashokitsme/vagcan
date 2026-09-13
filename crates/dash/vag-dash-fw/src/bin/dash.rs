@@ -54,6 +54,7 @@ use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
+use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::Unit;
 use vag_uds_can::IsoTpCan;
 use vag_uds_client::identity::did;
@@ -323,6 +324,20 @@ fn open_settings() -> Settings {
 							"config generation {} does not fit this plan ({reason}), running on defaults",
 							store.generation()
 						);
+						// Said to the laptop too, not only in the boot log that
+						// nobody is attached for: a stored configuration from an
+						// older `dash.toml` hid the plan's chart page, and the
+						// only trace was an early `info!` (2026-09-13).
+						match config.plan_mismatch() {
+							Some(Mismatch::Count { stored, plan }) => {
+								note!("settings: stored config has {stored} pages, this plan has {plan} — discarded, showing the plan's pages")
+							}
+							Some(Mismatch::Page { index }) => note!(
+								"settings: stored page {} is not the plan's — config discarded, showing the plan's pages",
+								index + 1
+							),
+							None => note!("settings: stored config does not fit this plan ({reason}) — discarded"),
+						}
 						// `unsaved`: what runs and what flash holds now disagree,
 						// and `state` should say so rather than claim they match.
 						Settings {

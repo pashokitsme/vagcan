@@ -8,7 +8,7 @@
 //! express. A forty-first identifier is not refused, it is unsayable.
 
 use serde::{Deserialize, Serialize};
-use vag_dash_render::plan::Page as PlanPage;
+use vag_dash_render::pages::{self, Layout, Mismatch};
 
 use crate::plan::PLAN;
 
@@ -61,21 +61,12 @@ impl Default for Config {
 	/// rather than refused, since the storage is what bounds them.
 	fn default() -> Self {
 		let mut pages: heapless::Vec<Page, MAX_PAGES> = heapless::Vec::new();
-		for page in PLAN.pages {
+		// `from_plan` already bounds both counts, so neither push can fail.
+		for layout in pages::from_plan(PLAN.pages, MAX_PAGES, MAX_CELLS) {
 			let mut cells = heapless::Vec::new();
-			let kind = match page {
-				PlanPage::Values { cells: indices, .. } => {
-					let _ = cells.extend_from_slice(&indices[..indices.len().min(MAX_CELLS)]);
-					PageKind::Values
-				}
-				PlanPage::Chart { channel, .. } => {
-					let _ = cells.push(*channel);
-					PageKind::Chart
-				}
-			};
-			if pages.push(Page { kind, cells }).is_err() {
-				break;
-			}
+			let _ = cells.extend_from_slice(layout.cells);
+			let kind = if layout.chart { PageKind::Chart } else { PageKind::Values };
+			let _ = pages.push(Page { kind, cells });
 		}
 		if pages.is_empty() {
 			let mut cells = heapless::Vec::new();
@@ -106,11 +97,22 @@ impl Config {
 		self.active_page != before
 	}
 
+	/// How this configuration's pages differ from the plan's, if they do — see
+	/// [`vag_dash_render::pages::mismatch`] for why a difference means the
+	/// configuration is stale rather than chosen.
+	pub fn plan_mismatch(&self) -> Option<Mismatch> {
+		let stored = self.pages.iter().map(|page| Layout {
+			chart: page.kind == PageKind::Chart,
+			cells: &page.cells,
+		});
+		pages::mismatch(stored, PLAN.pages, MAX_PAGES, MAX_CELLS)
+	}
+
 	/// Rejects what the panel could not render anyway. Called before a save so
 	/// that an unusable configuration never reaches flash, and on what comes
 	/// back from flash — a configuration saved against one plan can name a
-	/// cell the next image does not have, and the device must be able to
-	/// trust what it draws from.
+	/// cell the next image does not have, or lack a page the next image's plan
+	/// added, and the device must be able to trust what it draws from.
 	pub fn validate(&self) -> Result<(), &'static str> {
 		if self.pages.is_empty() {
 			return Err("no pages");
@@ -128,6 +130,9 @@ impl Config {
 			if page.cells.iter().any(|&cell| usize::from(cell) >= PLAN.channels.len()) {
 				return Err("a cell past the end of the plan");
 			}
+		}
+		if self.plan_mismatch().is_some() {
+			return Err("its pages are not this plan's pages");
 		}
 		Ok(())
 	}
