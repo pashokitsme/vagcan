@@ -84,8 +84,12 @@ makes "parallel with the display" true instead of a time-share: the two clients
   default 2 Hz. No rate derived from a unit of measure.
 - **Ceiling 100 exchanges/s; the panel keeps at least 25/s** while a laptop is served.
 - **Shape.** A `no_std` core with no clock and no bus (`due(now) -> request`,
-  `answered(now, request, answer) -> deliveries`), tested on the laptop; the board wraps it
-  in embassy over TWAI. Radio requests pass the board guard (`16`) before they reach it.
+  `answered(now, request, answer) -> deliveries`), tested on the laptop.
+- **One layer everywhere, now** (owner: "Общий слой, используется везде вместо текущего
+  механизма … Не позже — сейчас. Не будем плодить легаси"). The board wraps the core in
+  embassy over TWAI and replaces `can_task`'s round-robin; the laptop wraps it in tokio and
+  replaces `plan::read_batch` polling in `watch` and `measure`, and one-shot reads in
+  `info`/`faults` go through it too. Radio requests pass the board guard (`16`) first.
 
 ## 3. The fork: how the laptop talks to the board
 
