@@ -236,8 +236,8 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 | 4 | `pdu` message + `BoardTransport` on the host; `watch` through the board on the bench (CANable answering as a mock unit is not possible — the check is the car) | bench, then car | 3 |
 | 5 | `slcan` binary lands as the exclusive mode (branch `slcan`) | bench | 3-A |
 | 6 | stopwatch page | car, one straight road | 6 |
-| 7 | `frame` mirror for `dev sniff` over the link | bench | 4 |
-| 8 | the same link over BLE NUS; measure the PDU rate | bench | 4 |
+| 7 | ~~`frame` mirror for `dev sniff` over the link~~ — dropped 2026-09-13 (owner): sniffing through the board is mode 2 over the cable | — | — |
+| 8 | ~~the same link over BLE NUS; measure the PDU rate~~ → [`16-uds-over-ble.md`](16-uds-over-ble.md): UDS over BLE as a slow transport, after the merge | bench, then car | 4 |
 | 9 | OLED on the carrier | bench | `05`/`08` |
 
 `09-bt-adapter.md` is superseded by this file (the wish is met by §3-B over USB and §8 over
