@@ -124,7 +124,11 @@ session repeats the experiment.
   group, however useful it is. A top level crowded with offline analysis is a top
   level nobody can scan while standing at an open driver's door. Group by **what the
   input is**, not by how the code is organised: files that came from VCDS are one
-  group, recordings we made are another.
+  group (`dev vcds`), recordings we made are another (`dev recording`). The one
+  offline exception is `setup`: it is the first thing a new owner runs (`vagcan --help`
+  opens with it under START HERE), and it is what a car command that stopped for want
+  of label data offers to run. The test `the_top_level_is_only_what_needs_a_car` in
+  `crates/cli/vag-cli/src/main.rs` holds the denylist.
 - **Never simplify a data-driven path into a table in Rust.** `CLAUDE.md` forbids
   car-specific data in code, and cleanup is exactly when someone "tidies" a JSON
   lookup into a `match`. Cleanup should move data *out* of code, never in.
