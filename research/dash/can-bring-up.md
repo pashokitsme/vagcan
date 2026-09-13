@@ -502,7 +502,7 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
 - `rxprobe` has a third stage that times `D → R` on both edges.
 - Board pinout confirmed against the vendor datasheet — with the USB-C connector
   at the bottom the left row reads `0, 1, 2, 3, 4, 3.3, G, 5V` top to bottom,
-  which is what `research/dash/frame/wiring.py` draws. `GPIO8` is the blue LED,
+  which is what `wiring.py` in the owner's CAD workspace (`~/CAD/projects/vagcan/`) draws. `GPIO8` is the blue LED,
   `GPIO9` is BOOT.
 - The LED not blinking is **not** a fault: `led_task` keeps it dark unless BLE is
   advertising or connected.

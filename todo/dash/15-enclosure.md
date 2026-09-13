@@ -20,9 +20,10 @@ smaller, or merely prettier, has not answered them.
 
 ## 1. What the previous design was, and what to keep from it
 
-All of it lives in `research/dash/frame/` — **gitignored on purpose** ("one owner's
-printed part: FreeCAD sources and their STL/STEP/PNG exports stay local", `.gitignore`).
-Read the files; do not try to commit them.
+All of it lives in **`~/CAD/projects/vagcan/`** — the owner's CAD workspace, its own git
+repo with its own `CLAUDE.md`, outside this checkout (moved there from
+`research/dash/frame/` on 2026-09-13). One owner's printed part does not belong in this
+repository; read the files there, commit CAD sources there, not here.
 
 - `frame.py` — one FreeCAD script, three variants, every dimension a named parameter at
   the top. Headless:
@@ -131,9 +132,9 @@ how the last round worked, and the owner picked `carrier`.
 ## 5. How to work
 
 - **Same toolchain as before:** a new FreeCAD script beside `frame.py` (e.g.
-  `research/dash/frame/housing.py`), every dimension a named parameter at the top with a
+  `~/CAD/projects/vagcan/housing.py`), every dimension a named parameter at the top with a
   comment saying where it came from (drawing, calipers, ruler, guess), boards as reference
-  bodies, STL + STEP + PNG views. The folder is gitignored; that is correct, leave it.
+  bodies, STL + STEP + PNG views. `~/CAD`'s rules apply there.
 - **No guessed dimension goes into a print unmarked.** The new CAN module's thickness,
   holes and connector positions are unknown today: get them from the owner (calipers, or
   a photo with a ruler in frame) before modelling its clip. A parameter that is a guess
@@ -181,7 +182,7 @@ Owner's answers (calipers where it says so; the rest stays `# GUESS` in `housing
 - **Mount:** no vent clip this round — taped to the dashboard, so the back is a flat face.
 - **Cable:** fixed, leaves through the **left** end (USB-C stays right).
 
-Sketches: `research/dash/frame/housing.py` (local, gitignored), built in the running FreeCAD
+Sketches: `housing.py` (then in `research/dash/frame/`, now `~/CAD/projects/vagcan/`), built in the running FreeCAD
 through the Robust MCP bridge. One architecture — a **face** (window, acrylic pocket, display
 held by four latches, printed face down) and a **tray** (boards in a row, each on its own
 floor-slotted beam clip, printed floor down), closed by four arms — and three poses for the
@@ -189,8 +190,7 @@ CAN module, since its terminal sets the thickness: `edge` (on its long edge, 103
 24.4 mm), `flat` (terminal kept, 31.2 mm), `slim` (terminal desoldered, 20.2 mm). Contact
 sheet: `housing-sketches.png`.
 
-**2026-09-13 — the owner picked `flat`; print pack prepared** (`research/dash/frame/print/`,
-local; its `README.md` says the order, settings and which parameter each coupon symptom
+**2026-09-13 — the owner picked `flat`; print pack prepared** (`~/CAD/projects/vagcan/print/`; its `README.md` says the order, settings and which parameter each coupon symptom
 moves). Changes made for printing: the cable's S-bend pins (a 5 mm cable cannot bend between
 pins 5 mm apart) became a press-fit channel with ribs, closed by a tongue inside the face's
 wall thickness (a tongue over the block would overhang 6 mm printed front down); the clip
