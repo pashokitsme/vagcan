@@ -387,7 +387,9 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 				let mut s = settings.lock().await;
 				let changed = s.config.next_page();
 				s.unsaved |= changed;
-				note!("button: page {} of {}", s.config.active_page, s.config.pages.len());
+				// One-based: this line is read by a person, and "page 0 of 2" reads as
+				// no page at all. The `state` line stays zero-based — it is a protocol.
+				note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
 				drop(s);
 				STATE_CHANGED.signal(());
 			}

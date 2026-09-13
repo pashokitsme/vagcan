@@ -443,14 +443,19 @@ alongside the board and watch both ends at once.
 monitors:
 
 ```bash
-cd crates/dash/vag-dash-fw && cargo run --release
+cd crates/dash/vag-dash-fw && cargo run --release --bin dash
 ```
+
+(`--bin dash` is not optional: the crate has several binaries and no
+`default-run`, so a bare `cargo run` refuses to guess.)
 
 **Terminal 2 — the CANable, listening.** Note there is **no `--active`** here: on
 a car the car's own units acknowledge, and listen-only cannot disturb anything.
+`--device` names the CANable: with the board plugged in beside it, a bare
+command would have two USB serial ports to choose from.
 
 ```bash
-cargo run --release --bin vagcan -- dev sniff --diag-only --out /tmp/car.jsonl
+cargo run --release --bin vagcan -- dev sniff --device /dev/cu.usbmodem206E37A148451 --diag-only --out /tmp/car.jsonl
 ```
 
 Read the two together:

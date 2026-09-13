@@ -22,7 +22,7 @@
 //! | `C` | close the channel; drops queued frames | `\r` |
 //! | `S4` `S5` `S6` `S8` | 125 / 250 / 500 / 1000 kbit/s, closed only | `\r`, else `\x07` |
 //! | other `S` | a rate this controller does not have: **unsets** the rate, so the next `O` is refused too | `\x07` |
-//! | `M0` / `M1` | normal / listen-only for the next `O`, closed only | `\r` |
+//! | `M0` / `M1` | normal / listen-only for the next `O`, closed only | `\r`; `\x07` for any other argument, or on an open channel |
 //! | `O` | open in the configured mode, closed only | `\r`, else `\x07` |
 //! | `L` | open listen-only this once; `M` is not changed; closed only | `\r`, else `\x07` |
 //! | `tiiiLdd…` / `Tiiiiiiiildd…` | transmit an 11- / 29-bit frame | `z\r` / `Z\r` once the controller reports the frame completed — on the bus, acknowledged; `\x07` if refused, or not completed within [`TX_ATTEMPTS`] tries or [`TX_TIMEOUT`] |
@@ -86,7 +86,9 @@
 //! What the ring cannot hold is dropped **and counted**: `F` reports it as
 //! bit 3, data overrun — a frame was lost between the bus and the host — with
 //! bit 0, receive queue full, saying it was this ring and not the
-//! controller's FIFO. Both clear on read, as the CANable's do.
+//! controller's FIFO. Both clear on read. (The CANable's firmware has no `F`
+//! at all, so a host must treat "no reply to `F`" as "not known", never as
+//! "nothing dropped".)
 //!
 //! ## Status flags (`F`, and `E` as its alias)
 //!
@@ -97,11 +99,14 @@
 //! transmit was refused without the error counter moving, while the
 //! controller was below error-passive — see "Transmit"), bit 7 bus error
 //! (the controller went bus-off). The latched bits — 0, 3, 6, 7 — clear on
-//! read; 2 and 5 are read live off the counters, except in listen-only mode,
-//! where esp-hal parks the receive counter at 128 on purpose (an errata
-//! workaround that keeps the controller error-passive so it can never drive a
-//! dominant bit) and neither counter moves — so there they are not read at
-//! all, and a healthy listen-only channel answers `F00`.
+//! read. Bit 7 has a live half as well: a controller still bus-off at the
+//! moment of the read (its status register's `bus_off_st`) sets it whether or
+//! not it was latched. 2 and 5 are read live off the counters. The live reads
+//! — 2, 5 and that half of 7 — happen only in normal mode: in listen-only
+//! esp-hal parks the receive counter at 128 on purpose (an errata workaround
+//! that keeps the controller error-passive so it can never drive a dominant
+//! bit) and neither counter moves, so there nothing is read live, and a
+//! healthy listen-only channel answers `F00`.
 //!
 //! A bus-off is recovered on its own: the controller is reopened with the
 //! same bit rate and mode, as `dash` does, so the host sees a gap rather than

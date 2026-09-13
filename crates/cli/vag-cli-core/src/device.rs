@@ -91,8 +91,9 @@ pub fn render_list(found: &[AdapterInfo]) -> String {
 /// between: VW's diagnostic CAN is 500 kbit/s (ISO 15765-4), so a site free to
 /// spell it differently is a site free to spell it wrong.
 ///
-/// `mode` is the one thing that genuinely varies: `sniff --listen` needs
-/// `Silent`, which is the whole point of it, and everything else is `Normal`.
+/// `mode` is the one thing that genuinely varies: `dev sniff` opens `Silent` by
+/// default, which is the whole point of it (`--active` asks for `Normal`), and
+/// everything else is `Normal`.
 pub async fn open(path: &str, baud: u32, mode: SlcanMode) -> Result<SerialSlcan> {
 	SlcanBackend::open_mode(path, baud, SlcanBitrate::Rate500k, mode)
 		.await
