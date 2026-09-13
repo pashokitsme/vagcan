@@ -31,9 +31,35 @@ item 7 (the `frame` mirror) unnecessary.
   pairing in the first step.
 - **Because it is always visible, the board enforces the limits itself** — a host across
   the radio is not trusted: the allowlist `0x22 0x19 0x10 0x3E` is checked on the board;
-  single requests only, nothing sweep-shaped (`dev survey` and `dev sniff` are refused over
-  BLE — no frames go over this link at all). The host's own guards (road speed before a
-  session change) still run, through the same transport.
+  single requests only (`dev survey` and `dev sniff` are refused over BLE — no frames go
+  over this link at all). What "nothing sweep-shaped" and "not on a moving car" mean on
+  the board is the next bullet; a check the host makes is not one of them.
+- **The board's own guards** — *a reviewer's requirement, accepted by the author on
+  2026-09-13, pending the owner.* The bullet above left the moving-car check on the host
+  and called it "through the same transport", which was false twice: the host is the
+  party not trusted, and `safety::require_stationary` takes a CAN backend, not a PDU
+  transport, so over BLE it does not run at all. And an allowlist by service lets
+  `10 02` through, and cannot tell one read from a sweep. So, on the board, per BLE
+  request, before anything reaches the pair:
+  - **`10 02` (programming session) is refused outright** over BLE, whatever the car is
+    doing. Nothing this project does needs it.
+  - **Any other session change except `10 01` (default) is refused unless the board has
+    just read road speed 0 from the engine** — `22 F40D` to `7E0`/`7E8`, the SAE J1979
+    parameter on the ISO 15765-4 engine address (`safety.rs` reads the same), asked
+    immediately before the request is forwarded, not taken from the panel's last poll.
+    No answer, a negative response, or any non-zero speed is "moving": refused, and the
+    refusal says which. `10 01` is always allowed — returning a unit to default is the
+    safe direction.
+  - **A sweep limit, per BLE connection:** at most 20 UDS requests in any 10 s, and a
+    third strictly consecutive identifier to one unit (`22 n`, `22 n+1`, `22 n+2` on
+    one request id, in the connection's order) is refused and every further `0x22` to that
+    unit is refused until the connection drops. A walk is what `dev survey` and
+    `properties` (all of `F100–F1FF`) do and what the service allowlist cannot see —
+    both are refused over BLE by it, as they should be. Identification reads at most two
+    adjacent identifiers (`F190`, `F191`), and faults and a watch page none in a row. The
+    numbers are a starting point for the owner to set, not measured.
+  - The host may still check road speed itself, over this transport, as a courtesy that
+    fails early with a better message — never as the enforcement.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
   way `setup` asks; exactly one found → taken, and said. `--device ble:<name>` picks by
   name without asking, for scripts. No terminal and several found → the list and a refusal.
@@ -42,6 +68,10 @@ item 7 (the `frame` mirror) unnecessary.
 
 - Host transport and board message handling covered by hardware-free tests (mock NUS on the
   host, the board's decode/allowlist/chunking in a host-testable crate).
+- The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
+  on a negative answer and on no answer, allowed on 0; the rate cap; a consecutive walk
+  refused at its third identifier; and the request sequences `info`, `units --identify`
+  and `faults` actually send passing both limits.
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
   the CANable with `dev sniff --device … --active` (no unit answers on the bench).
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.
