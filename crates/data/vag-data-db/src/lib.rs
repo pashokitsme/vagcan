@@ -913,8 +913,15 @@ pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 }
 
 /// How much fault text an ODIS source described: `(variants, codes)`.
+///
+/// A cache written before faults were cached has no `fault` table, and holds no
+/// fault text: `(0, 0)`, not an error. Opening it for this does not add the
+/// table — that is a write's job, and a count is not a write.
 pub fn fault_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 	let conn = open_existing(db_path)?;
+	if columns(&conn, "fault")?.is_empty() {
+		return Ok((0, 0));
+	}
 	let (variants, codes): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM fault", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -1742,6 +1749,34 @@ mod tests {
 		assert_eq!(cached[0].language.as_deref(), Some("deu"));
 		// The row that was there is the row the language landed on.
 		assert_eq!(sources_of(&ws.db_path).unwrap(), [("odis".to_string(), "/x/SK37X".to_string())]);
+	}
+
+	#[test]
+	fn a_cache_from_before_the_fault_table_counts_no_fault_text() {
+		// Master's schema, as `vagcan setup <VCDS>` wrote it before faults were
+		// cached: no `fault` table, no `source.language`. Setup finds such a
+		// cache current and does not re-create it, and its closing report asks
+		// how much fault text there is. "None", not "no such table: fault" — the
+		// error ended a run that had written everything with no report at all.
+		let ws = TempWorkspace::new("prefault");
+		{
+			let conn = Connection::open(&ws.db_path).unwrap();
+			conn
+				.execute_batch(
+					"CREATE TABLE label_file (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, unit_address INTEGER, unit_name TEXT);\
+                     CREATE TABLE measurement (file_id INTEGER NOT NULL, block INTEGER NOT NULL, field INTEGER NOT NULL, \
+                        name TEXT NOT NULL, location TEXT NOT NULL, description TEXT NOT NULL, unit TEXT, range_min REAL, range_max REAL, \
+                        source_id INTEGER REFERENCES source(id));\
+                     CREATE TABLE source (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, dir TEXT NOT NULL, UNIQUE (kind, dir));\
+                     INSERT INTO label_file (name) VALUES ('index.lbl');\
+                     INSERT INTO source (id, kind, dir) VALUES (1, 'vcds', '/old/Labels');",
+				)
+				.unwrap();
+		}
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (0, 0));
+		// Asking did not create the table behind the cache's back.
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert!(columns(&conn, "fault").unwrap().is_empty());
 	}
 
 	#[test]
