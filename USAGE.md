@@ -725,20 +725,21 @@ cannot help.
 
 ### "The measurement names are not on this machine" / "The .rod section keys are not…"
 
-No source has been read into a project yet. Both artefacts named there come from a VCDS
-installation:
+No source has been read into a project yet. The message says so and names the fix — an
+extracted ODIS-Service project first, a VCDS installation as the alternative:
 
 ```sh
-vagcan setup /path/to/VCDS
+vagcan setup /path/to/ODIS-project     # seconds: channels, scalings, fault text
+vagcan setup /path/to/VCDS             # minutes: names and fault text, no scalings
 ```
 
-One command, no car. If you have no installation, run `vagcan setup` with no path and
-pick the download — that copy is Ross-Tech's software, redistributed unmodified; you
-can also get it from them directly at <https://www.ross-tech.com/vcds/download/> and
-point `setup` at it.
+One command, no car. With neither to hand, run `vagcan setup` with no path: it asks
+which, and can fetch VCDS — Ross-Tech's software, redistributed unmodified; you can
+also get it from them directly at <https://www.ross-tech.com/vcds/download/> and point
+`setup` at it.
 
 **You do not have to leave the command you were running.** At a terminal, any command
-that stops for want of this data prints the paragraph above and then offers to fetch an
+that stops for want of this data prints that message and then offers to fetch an
 installation and read it — and on `y` it carries on with what you asked for, rather than
 telling you to type it again:
 

@@ -54,7 +54,7 @@ item 7 (the `frame` mirror) unnecessary.
     third strictly consecutive identifier to one unit (`22 n`, `22 n+1`, `22 n+2` on
     one request id, in the connection's order) is refused and every further `0x22` to that
     unit is refused until the connection drops. A walk is what `dev survey` and
-    `properties` (all of `F100–F1FF`) do and what the service allowlist cannot see —
+    `units --identify <unit>` (all of `F100–F1FF`) do and what the service allowlist cannot see —
     both are refused over BLE by it, as they should be. Identification reads at most two
     adjacent identifiers (`F190`, `F191`), and faults and a watch page none in a row. The
     numbers are a starting point for the owner to set, not measured.
