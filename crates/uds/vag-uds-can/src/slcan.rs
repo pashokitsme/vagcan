@@ -92,11 +92,18 @@ pub fn decode_frame(line: &str) -> Result<(u32, Vec<u8>), CanError> {
 pub struct SlcanBackend<S> {
 	stream: S,
 	buf: Vec<u8>,
+	/// Frames read while waiting for a command's reply, handed out by
+	/// [`CanBackend::recv_frame`] before anything new — see [`Self::status_flags`].
+	pending: std::collections::VecDeque<Result<(u32, Vec<u8>), CanError>>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub fn new(stream: S) -> Self {
-		SlcanBackend { stream, buf: Vec::new() }
+		SlcanBackend {
+			stream,
+			buf: Vec::new(),
+			pending: std::collections::VecDeque::new(),
+		}
 	}
 
 	/// Send the channel-open sequence in [`SlcanMode::Normal`] — see
@@ -120,6 +127,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub async fn open_channel_mode(&mut self, bitrate: SlcanBitrate, mode: SlcanMode) -> Result<(), CanError> {
 		let cmd = format!("C\rS{}\rM{}\rO\r", bitrate as u8, mode as u8);
 		self.write_all(cmd.as_bytes()).await
+	}
+
+	/// Ask the adapter for its Lawicel status flags (`F`): `Some(bits)` from an
+	/// `Fxx` reply within `wait`, `None` when none came.
+	///
+	/// **`None` is "not known", never "no flags".** The CANable's firmware has
+	/// no `F` and answers nothing; the vag-dash board's `slcan` image answers,
+	/// and counts frames its ring could not hold into bit 3 (data overrun) with
+	/// bit 0 (receive queue full). The bits clear on read.
+	///
+	/// Safe on an open channel: frames that arrive while the reply is awaited
+	/// are kept, in order, and [`CanBackend::recv_frame`] returns them before
+	/// reading anything new — asking must not cost the capture a frame.
+	pub async fn status_flags(&mut self, wait: Duration) -> Result<Option<u8>, CanError> {
+		self.write_all(b"F\r").await?;
+		let deadline = Instant::now() + wait;
+		loop {
+			let line = match self.read_line(deadline).await {
+				Ok(line) => line,
+				Err(CanError::Timeout) => return Ok(None),
+				Err(e) => return Err(e),
+			};
+			let text = String::from_utf8_lossy(&line);
+			let text = text.trim_matches(|c: char| c == '\u{7}' || c.is_whitespace());
+			match text.as_bytes() {
+				[b't' | b'T', ..] => self.pending.push_back(decode_frame(text)),
+				[b'F', hi, lo] if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() => {
+					return Ok(u8::from_str_radix(&text[1..], 16).ok());
+				}
+				// Acks and other replies are not the answer, and not bus traffic.
+				_ => continue,
+			}
+		}
 	}
 
 	/// Send the channel-close command.
@@ -164,6 +204,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CanBackend for SlcanBackend<S> {
 	}
 
 	async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+		if let Some(frame) = self.pending.pop_front() {
+			return frame;
+		}
 		let deadline = Instant::now() + timeout;
 		loop {
 			let line = self.read_line(deadline).await?;
@@ -564,6 +607,41 @@ mod tests {
 		let mut backend = SlcanBackend::new(client);
 		let err = backend.recv_frame(Duration::from_millis(50)).await.unwrap_err();
 		assert!(matches!(err, CanError::Disconnected), "got {err:?}");
+	}
+
+	#[tokio::test]
+	async fn status_flags_are_read_from_the_f_reply() {
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client);
+		adapter.write_all(b"F08\r").await.unwrap();
+		assert_eq!(backend.status_flags(Duration::from_millis(200)).await.unwrap(), Some(0x08));
+		let mut got = vec![0u8; 16];
+		let n = adapter.read(&mut got).await.unwrap();
+		assert_eq!(&got[..n], b"F\r");
+	}
+
+	#[tokio::test]
+	async fn frames_that_arrive_ahead_of_the_f_reply_are_not_lost() {
+		// The channel is open while the question is asked; the bus does not wait.
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client);
+		adapter.write_all(b"t7E825003\rT17F00010101\rF00\rt7E9101\r").await.unwrap();
+		assert_eq!(backend.status_flags(Duration::from_millis(200)).await.unwrap(), Some(0));
+		let wait = Duration::from_millis(50);
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E8, vec![0x50, 0x03]));
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x17F0_0010 | CAN_EFF_FLAG, vec![0x01]));
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E9, vec![0x01]));
+	}
+
+	#[tokio::test]
+	async fn an_adapter_without_f_reports_nothing_rather_than_no_flags() {
+		// The CANable's firmware has no `F`: silence, or a BEL, is "not known".
+		for reply in [&b""[..], b"\x07", b"z\r"] {
+			let (client, mut adapter) = tokio::io::duplex(256);
+			let mut backend = SlcanBackend::new(client);
+			adapter.write_all(reply).await.unwrap();
+			assert_eq!(backend.status_flags(Duration::from_millis(30)).await.unwrap(), None, "{reply:?}");
+		}
 	}
 
 	#[tokio::test]
