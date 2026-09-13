@@ -164,7 +164,7 @@ mod tests {
 		let err = like_a_site().unwrap_err();
 		assert!(err.downcast_ref::<NoLabelData>().is_some(), "{err}");
 		// And it still prints as it always did, prefix to fix.
-		assert!(err.to_string().contains("vagcan setup /path/to/VCDS"), "{err}");
+		assert!(err.to_string().contains("vagcan setup <path to the ODIS project folder>"), "{err}");
 	}
 
 	#[test]
@@ -221,7 +221,7 @@ mod tests {
 		assert!(said.contains("no car") || said.contains("touches no car"), "{said}");
 		// It must not repeat the fix the shortage above it has just spelled
 		// out — the reader has that paragraph on screen.
-		assert!(!said.contains("vagcan setup /path/to/VCDS"), "{said}");
+		assert!(!said.contains("vagcan setup <path"), "{said}");
 		// One question, and it defaults to nothing rather than to a yes.
 		assert_eq!(io.typed.len(), 1);
 		assert_eq!(io.defaults(), vec![String::new()]);

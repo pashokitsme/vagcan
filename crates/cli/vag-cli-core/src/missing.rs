@@ -9,7 +9,7 @@
 //!
 //! | missing | why | the fix |
 //! |---|---|---|
-//! | label data | never parsed a VCDS install | `vagcan setup <VCDS-DIR>` — offline, one command |
+//! | label data | never set up from an ODIS project or a VCDS install | `vagcan setup <DIR>` — offline, one command |
 //! | a measurement catalog | this car was never calibrated | a drive: `survey`, `watch --out`, `recording calibrate` |
 //!
 //! Telling somebody to run `setup` when their real problem is that they have
@@ -124,15 +124,17 @@ impl std::fmt::Display for NoLabelData {
 		writeln!(
 			f,
 			"\n\
-             The label data is recovered from a VCDS installation, in one command:\n    \
-             vagcan setup /path/to/VCDS\n\n\
-             No VCDS installation? Leave the path off and it offers to fetch one for you —\n\
-             or point it at an extracted ODIS-Service project instead:\n    \
-             vagcan setup\n\n\
-             Either way it is offline — no adapter, no car — and takes a few minutes over\n\
-             all the label files. It copies what it read into a project under\n\
-             ~/.vagcan/data/, so the installation can then be deleted.\n\n\
-             VCDS is Ross-Tech's, and free from them directly: {VCDS_DOWNLOAD}"
+             vagcan learns a car from an extracted ODIS-Service project, in one command:\n    \
+             vagcan setup <path to the ODIS project folder>\n\n\
+             A VCDS installation works too — names and fault text, but no scalings:\n    \
+             vagcan setup <path to the VCDS installation>\n\
+             Neither to hand? Leave the path off: it asks which, and can fetch VCDS.\n\n\
+             It is offline — no adapter, no car. An ODIS project reads in seconds; a VCDS\n\
+             installation takes minutes, mostly recovering the measurement names. What it\n\
+             reads lands in a project under ~/.vagcan/data/, so the folder it read can be\n\
+             deleted afterwards.\n\n\
+             VCDS is Ross-Tech's, and free from them directly:\n    \
+             {VCDS_DOWNLOAD}"
 		)
 	}
 }
@@ -236,7 +238,8 @@ mod tests {
 	#[test]
 	fn the_label_shortage_names_setup_and_where_the_data_comes_from() {
 		let m = no_label_data("The measurement names", "`vagcan dev vcds names`", Path::new("/x/n.json")).to_string();
-		assert!(m.contains("vagcan setup /path/to/VCDS"), "{m}");
+		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
+		assert!(m.contains("vagcan setup <path to the VCDS installation>"), "{m}");
 		assert!(m.contains("/x/n.json"), "the reader must see which file was looked for:\n{m}");
 		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
 		assert!(m.contains("Ross-Tech"), "{m}");
@@ -266,7 +269,7 @@ mod tests {
 		// the wrong one. So neither message may *offer* the other's command.
 		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
 		let catalog = no_catalog("This car", Path::new("/d"));
-		assert!(label.contains("vagcan setup /path/to/VCDS"));
+		assert!(label.contains("vagcan setup <path"));
 		assert!(!label.contains("calibrate"), "{label}");
 		assert!(catalog.contains("vagcan dev recording calibrate"));
 		assert!(!catalog.contains("vagcan setup /path"), "{catalog}");
@@ -279,11 +282,11 @@ mod tests {
 		// the directory it looked in, and never to a drive — the numbers are
 		// real, only the names are absent, so `calibrate` would be the wrong loop.
 		let m = no_fault_labels(Path::new("/home/x/.vagcan/data/extracted"));
-		assert!(m.contains("vagcan setup /path/to/VCDS"), "{m}");
+		assert!(m.contains("vagcan setup <path to the ODIS project folder>"), "{m}");
 		assert!(m.contains("/home/x/.vagcan/data/extracted"), "the reader must see where it looked:\n{m}");
 		assert!(m.contains(VCDS_DOWNLOAD), "no VCDS install is a case, not an oversight:\n{m}");
-		assert!(m.contains("copies what it read"), "the point is that setup copies the labels in:\n{m}");
-		assert!(m.contains("can then be deleted"), "and that the installation is then disposable:\n{m}");
+		assert!(m.contains("~/.vagcan/data/"), "the point is that setup copies what it read in:\n{m}");
+		assert!(m.contains("deleted afterwards"), "and that the source is then disposable:\n{m}");
 		// The one thing it must never do is send a reader driving.
 		assert!(!m.contains("calibrate"), "a missing name is not fixed by a drive:\n{m}");
 		assert!(!m.contains("measurement rows"), "{m}");
@@ -309,9 +312,7 @@ mod tests {
 	/// The fix line, cut out of a rendered message so two of them can be
 	/// compared without the part that is meant to differ.
 	fn fix_only(message: &str) -> String {
-		let at = message
-			.find("The label data is recovered")
-			.unwrap_or_else(|| panic!("no fix in:\n{message}"));
+		let at = message.find("vagcan learns a car").unwrap_or_else(|| panic!("no fix in:\n{message}"));
 		message[at..].to_string()
 	}
 
@@ -336,11 +337,22 @@ mod tests {
 		for site in &sites[1..] {
 			assert_eq!(fix_only(site), first, "a second wording of the fix:\n{site}");
 		}
-		// And what it tells them is still both ways in: a VCDS installation,
-		// which it can fetch, or an ODIS project — the two `setup` accepts.
-		assert!(first.contains("vagcan setup /path/to/VCDS"), "{first}");
-		assert!(first.contains("ODIS"), "an ODIS project is the other half of `setup`:\n{first}");
+		// And what it tells them is still both ways in, ODIS first — the project
+		// the tool is heading for — then a VCDS installation, which it can fetch.
+		// Each with the argument spelled as what to type, since a bare
+		// `vagcan setup` under "point it at an ODIS project" was no instruction.
+		let odis = first.find("vagcan setup <path to the ODIS project folder>").expect(&first);
+		let vcds = first.find("vagcan setup <path to the VCDS installation>").expect(&first);
+		assert!(odis < vcds, "ODIS comes first:\n{first}");
 		assert!(first.contains(VCDS_DOWNLOAD), "{first}");
+		// And the time it takes is said per source: an ODIS project reads in
+		// seconds, and "a few minutes over all the label files" was only ever
+		// true of a VCDS installation.
+		assert!(first.contains("seconds"), "{first}");
+		assert!(!first.contains("few minutes over all the label files"), "{first}");
+		for line in first.lines() {
+			assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
+		}
 		// Never the other shortage's fix. That is the mistake this module exists
 		// to prevent, and it must hold for the sites that build their own
 		// headline as much as for the two named ones.

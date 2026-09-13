@@ -73,7 +73,8 @@ vagcan setup ~/Downloads/SK37X  # …or name one outright, of either kind
 **A project is a platform, not one car.** VW's own mapping files every Octavia III,
 Karoq and Kodiaq under `SK37X`, so two cars can share a project; what is true of exactly
 one car lives under `~/.vagcan/cars/<VIN>/` instead. Running a second source into a
-project **adds** to it, and nothing already there is replaced.
+project **adds** to it, and what the other sources put there stays; running the same
+source again replaces only what that source wrote before.
 
 #### Naming a source outright
 
@@ -94,10 +95,10 @@ Reading the ODIS project at /Users/you/Downloads/SK37X
 
 Done.
 
-  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+  the control units this project describes: 669 of 717 variants, 399283 channels, 0 refused, 4 unreadable; 621 with fault text, 282621 codes
     /Users/you/.vagcan/data/SK37X/cache.sqlite
   the measurement names: 21576 names
-    /Users/you/.vagcan/data/SK37X/names.json
+    /Users/you/.vagcan/data/SK37X/names-odis.json
 
 Next:  vagcan devices      is the adapter connected?
        vagcan info         which car is this?
@@ -171,19 +172,20 @@ Done.
     /Users/you/.vagcan/data/SK37X/names.json
   the .rod section keys: 3 keys
     /Users/you/.vagcan/data/SK37X/rod-keys.json
-  the control units this project describes: 633 of 717 variants, 310734 channels, 0 refused, 2 unreadable
+  the control units this project describes: 669 of 717 variants, 399283 channels, 0 refused, 4 unreadable; 621 with fault text, 282621 codes
     /Users/you/.vagcan/data/SK37X/cache.sqlite
-  the measurement names: 36314 names
-    /Users/you/.vagcan/data/SK37X/names.json
+  the measurement names: 21576 names
+    /Users/you/.vagcan/data/SK37X/names-odis.json
 ```
 
 (The `…` are the two `.rod` section listings the key search prints as it goes; they run
 to a few dozen lines and say nothing you have to act on.)
 
-The VCDS half is read **first**, and the names count climbing from 14738 to 36314 is
-why: recovering names from `TTTEXT.ROD` writes the file wholesale, while the ODIS pass
-merges into whatever is already there. The other way round, the wholesale write would
-land on top.
+The two "measurement names" lines are two files, not one count growing:
+`names.json` is the wording recovered from the VCDS installation's `TTTEXT.ROD`, and
+`names-odis.json` is the text the ODIS project pools for each text id. They are kept
+apart because they are not the same wording — an ODIS channel's own name is the
+parameter's name in that one variant, and the pooled text for its id is generic.
 
 **Every folder it asks for is asked two ways**: "Choose the folder in a dialog" opens
 your system's own folder chooser, and "Type the path" is the prompt above — drag the
@@ -195,10 +197,12 @@ an empty path and the project keeps the phrasing ODIS gives its channels
 (`Engine_temperature`), which reads and scales perfectly well. Adding wording later is
 another `vagcan setup` into the same project.
 
-**Run it again and it does almost nothing.** Each VCDS step is skipped when what it
-would write is newer than what it would read; a second run on an unchanged installation
-takes about a second and says which steps it skipped. `--refresh` forces the lot — what
-you want after updating VCDS.
+**Run it again on a VCDS installation and it does almost nothing.** Each VCDS step is
+skipped when what it would write is newer than what it would read; a second run on an
+unchanged installation takes about a second and says which steps it skipped. `--refresh`
+forces the lot — what you want after updating VCDS. **An ODIS project is read again in
+full** — it takes the same few seconds as the first time — and replaces everything that
+project wrote into the cache, so a variant it no longer describes does not linger.
 
 **Recovering `.rod` keys costs about a minute of every core per blocked section.**
 The search is built in — there is no flag to pass — and `setup` only ever runs it for
@@ -299,7 +303,10 @@ language = "deu"     # the code a source declares: an ODIS project's "deu", a VC
 ```
 
 Unset, the first ODIS source wins and the listing says so and names the setting. A
-language only the VCDS build declares sends the VCDS chain first.
+language only the VCDS build declares sends the VCDS chain first. A language **no**
+source declares is said above the codes, with the languages that are there and whose
+text is shown instead — and a VCDS source set up before languages were recorded is named
+as having none, with the `vagcan setup` that records it.
 
 The raw VCDS files are shared across every project and only ever swapped wholesale for a
 different **language build** — an English install landing on a Russian one clears it
@@ -313,10 +320,15 @@ $ vagcan faults
 
 --  713  ESC
   000129  (297)   confirmed
-      B1168F2  Swa_lost_initialisation
+      B1168F2  Swa_lost_initialisation  level 2
       212869 km, 1×
       2026-07-30 18:15:06 by the car's own clock
 ```
+
+`level 2` is the fault's `LEVEL` as the ODIS project declares it, 1 to 9. On both codes
+it was checked against it matched the fault priority VCDS prints — `research/odis-dtc/README.md`
+§2 — which is evidence rather than a definition, so the number is shown as the file has it
+and not translated into a word.
 
 The same code through the VCDS chain reads `B1168 F2  Steering Angle Sensor: Not
 Initialized` — the display code agrees to the character, and the words are the

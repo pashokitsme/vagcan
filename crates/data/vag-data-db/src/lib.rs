@@ -324,7 +324,7 @@ pub const ODIS: &str = "odis";
 /// does at the moment anything is imported from it; when it does not — a
 /// recorded path whose directory has since gone — the raw string minus its
 /// trailing separators is kept, so an old row still matches itself.
-fn normalise_dir(dir: &str) -> String {
+pub fn normalise_dir(dir: &str) -> String {
 	if let Ok(real) = std::fs::canonicalize(dir) {
 		return real.to_string_lossy().into_owned();
 	}
@@ -589,8 +589,22 @@ pub fn build_db(labels_dir: &Path, db_path: &Path) -> Result<BuildStats, Error> 
 /// first query with `no such table: label_file`. A missing database is an error
 /// here, never an empty one — only the paths that build or write a cache
 /// ([`build_db`], [`put_readings`]) may create the file.
-fn open_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
-	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+///
+/// **Read-write, not read-only, and that is what makes it safe to read.** A
+/// `setup` killed inside one of its write transactions leaves
+/// `cache.sqlite-journal` behind — a hot journal — and SQLite refuses to read
+/// the file until something rolls that journal back. A `SQLITE_OPEN_READ_ONLY`
+/// connection is not allowed to: every read failed with "attempt to write a
+/// readonly database" (`SQLITE_READONLY_ROLLBACK`) until the next setup, and
+/// the callers that treat an unopenable cache as an empty one then printed
+/// faults with no ODIS names and a watch with no ODIS channels, saying
+/// nothing. A read-write connection rolls the journal back on open. It writes
+/// nothing else: no function that opens through here issues a write.
+///
+/// Still no `SQLITE_OPEN_CREATE`, so the property above holds — and a file the
+/// process may not write is opened read-only by SQLite itself.
+fn open_existing(db_path: &Path) -> rusqlite::Result<Connection> {
+	Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
 /// The label-file directory `db_path` was built from, if it says.
@@ -601,7 +615,7 @@ fn open_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
 /// concerns. The caller decides what to do with that (see the freshness rule in
 /// `vagcan::labels`, which trusts a cache whose source directory is gone).
 pub fn source_of(db_path: &Path) -> Option<String> {
-	let conn = open_read_only(db_path).ok()?;
+	let conn = open_existing(db_path).ok()?;
 	conn
 		.query_row("SELECT dir FROM source WHERE kind = ?1 ORDER BY id LIMIT 1", [VCDS], |row| {
 			row.get::<_, String>(0)
@@ -611,7 +625,7 @@ pub fn source_of(db_path: &Path) -> Option<String> {
 
 /// Every source that has ever written into this cache, oldest first.
 pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT kind, dir FROM source ORDER BY id")?;
 	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -621,53 +635,85 @@ pub fn sources_of(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// oldest first. The input to the policy that chooses between sources of
 /// fault text when there is more than one.
 pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<String>)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT kind, dir, language FROM source ORDER BY id")?;
 	let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Replace everything one ODIS source has contributed, and write these readings.
+/// What a write replaces before it inserts.
+///
+/// **Two answers, because there are two callers with two meanings.** `setup`
+/// hands over a whole project, and what that project no longer has must go with
+/// what it has: a variant whose table now refuses or comes back empty, or that
+/// a re-downloaded project at the same folder simply does not carry, is not in
+/// the batch at all, and deleting per variant in the batch left last run's rows
+/// for it — rows the variant match still picked and the counts still counted. A
+/// single-variant write is a statement about that variant alone.
+#[derive(Clone, Copy)]
+enum Replace {
+	/// Every row this source wrote, whatever variant.
+	Source,
+	/// Only the rows of each variant in the batch.
+	EachVariant,
+}
+
+/// Replace one variant's channels from one ODIS source, and write these.
 ///
 /// Replace rather than append: a second parse of the same project is a *reread*,
 /// not a second opinion, and appending would double every channel. Scoped to
-/// this source's own rows, so a VCDS parse of the same car is untouched —
-/// design §4.5's "an ODIS parse never deletes VCDS-derived rows or vice versa".
+/// this source and this variant, so the source's other variants, another
+/// project's rows and a VCDS parse of the same car are all untouched — design
+/// §4.5's "an ODIS parse never deletes VCDS-derived rows or vice versa".
 ///
 /// Returns how many channels landed.
 pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: &[vag_data_labels::odis::Reading]) -> Result<usize, Error> {
-	put_all_readings(db_path, project_dir, std::iter::once((variant, readings)))
+	write_readings(db_path, project_dir, std::iter::once((variant, readings)), Replace::EachVariant)
 }
 
-/// [`put_readings`] for every variant of a project, in **one** transaction.
+/// Everything one ODIS source says about channels, in **one** transaction,
+/// replacing everything that source said before.
 ///
-/// Same rows, same order, same ids as calling [`put_readings`] once per
-/// variant in the same order — that equivalence was checked by diffing every
-/// row of a whole-project parse against the one-at-a-time version. What
-/// differs is the cost: 669 transactions were 669 commits, each a journal
-/// write and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down
-/// to 10; one transaction is a fraction of a second.
+/// **The batch is the source's whole contribution**: every channel row of this
+/// source is deleted first — including variants not in the batch — and the rows
+/// of every other source stay. On a first write that is the same rows, in the
+/// same order, with the same ids as [`put_readings`] once per variant; that
+/// equivalence was checked by diffing every row of a whole-project parse. What
+/// differs is the cost: 669 transactions were 669 commits, each a journal write
+/// and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down to 10;
+/// one transaction is a fraction of a second.
 ///
-/// The connection runs with `synchronous = OFF` for the duration: the rows are
-/// a cache rebuilt from a file that is still on disk, so what a power cut
-/// during the write could cost is the run, not the data. The rollback journal
-/// stays on, so a crash of the *process* mid-write leaves a cache SQLite rolls
-/// back on the next open rather than a corrupt one — `journal_mode = OFF`
-/// would have saved little and lost that. Both settings are per-connection,
-/// and this connection is closed on return.
 pub fn put_all_readings<'a>(
 	db_path: &Path,
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
 ) -> Result<usize, Error> {
+	write_readings(db_path, project_dir, variants, Replace::Source)
+}
+
+/// The one writer behind [`put_readings`] and [`put_all_readings`].
+fn write_readings<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+	replace: Replace,
+) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	conn.pragma_update(None, "synchronous", "OFF")?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
 	// Pages, negative meaning kibibytes: 64 MiB, so a whole project's rows
 	// stay in memory instead of being flushed page by page mid-transaction.
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
+
+	if let Replace::Source = replace {
+		tx.execute(
+			"DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE source_id = ?1)",
+			params![source],
+		)?;
+		tx.execute("DELETE FROM reading WHERE source_id = ?1", params![source])?;
+	}
 
 	let mut written = 0usize;
 	{
@@ -684,8 +730,10 @@ pub fn put_all_readings<'a>(
 		)?;
 		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
 		for (variant, readings) in variants {
-			delete_levels.execute(params![source, variant])?;
-			delete.execute(params![source, variant])?;
+			if let Replace::EachVariant = replace {
+				delete_levels.execute(params![source, variant])?;
+				delete.execute(params![source, variant])?;
+			}
 			for r in readings {
 				let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
 					Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
@@ -745,24 +793,37 @@ pub fn record_language(db_path: &Path, kind: &str, dir: &str, language: &str) ->
 /// this variant, so a second project's rows for a variant of the same name
 /// stand untouched beside them. Returns how many codes landed.
 pub fn put_faults(db_path: &Path, project_dir: &str, variant: &str, faults: &[vag_data_labels::odis::Fault]) -> Result<usize, Error> {
-	put_all_faults(db_path, project_dir, std::iter::once((variant, faults)))
+	write_faults(db_path, project_dir, std::iter::once((variant, faults)), Replace::EachVariant)
 }
 
-/// [`put_faults`] for every variant of a project, in **one** transaction —
-/// the same batch [`put_all_readings`] is for channels, with the same
-/// per-connection `synchronous = OFF` and page cache, for the same reason:
-/// the rows are a cache of a file still on disk.
+/// Every fault code one ODIS source describes, in **one** transaction,
+/// replacing everything that source described before — the same batch, and the
+/// same whole-source rule, [`put_all_readings`] is for channels, with the same
+/// per-connection `synchronous = FULL` and page cache, for the same reasons.
 pub fn put_all_faults<'a>(
 	db_path: &Path,
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Fault])>,
 ) -> Result<usize, Error> {
+	write_faults(db_path, project_dir, variants, Replace::Source)
+}
+
+/// The one writer behind [`put_faults`] and [`put_all_faults`].
+fn write_faults<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Fault])>,
+	replace: Replace,
+) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
-	conn.pragma_update(None, "synchronous", "OFF")?;
+	conn.pragma_update(None, "synchronous", "FULL")?;
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
+	if let Replace::Source = replace {
+		tx.execute("DELETE FROM fault WHERE source_id = ?1", params![source])?;
+	}
 	let mut written = 0usize;
 	{
 		let mut delete = tx.prepare("DELETE FROM fault WHERE source_id = ?1 AND variant = ?2")?;
@@ -771,7 +832,9 @@ pub fn put_all_faults<'a>(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
 		)?;
 		for (variant, faults) in variants {
-			delete.execute(params![source, variant])?;
+			if let Replace::EachVariant = replace {
+				delete.execute(params![source, variant])?;
+			}
 			for f in faults {
 				insert.execute(params![
 					source,
@@ -808,15 +871,19 @@ pub struct CachedFault {
 
 /// The fault codes this cache knows for one ECU variant, by number.
 ///
-/// Every source's rows, each with its source's language, in the order they
-/// were written: choosing between sources is the caller's policy, and it needs
-/// the language to make it.
+/// Every source's rows, each with its source's language: choosing between
+/// sources is the caller's policy, and it needs the language to make it.
+///
+/// **In source order, then write order within a source.** A source's id never
+/// changes, and its rows' ids do on every reread — so write order alone put a
+/// reread source behind the others and turned "the first source wins" into
+/// "the last source reread wins".
 pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT f.dop, f.code, f.display, f.text, f.text_id, f.short_name, f.level, f.temporary, s.language, s.dir \
          FROM fault f JOIN source s ON s.id = f.source_id \
-         WHERE f.variant = ?1 ORDER BY f.rowid",
+         WHERE f.variant = ?1 ORDER BY s.id, f.rowid",
 	)?;
 	let rows = stmt.query_map(params![variant], |row| {
 		Ok(CachedFault {
@@ -839,7 +906,7 @@ pub fn faults_of(db_path: &Path, variant: &str) -> Result<Vec<CachedFault>, Erro
 
 /// Every ECU variant this cache holds fault codes for, in name order.
 pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM fault ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -847,7 +914,7 @@ pub fn fault_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 
 /// How much fault text an ODIS source described: `(variants, codes)`.
 pub fn fault_counts(db_path: &Path) -> Result<(u64, u64), Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let (variants, codes): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM fault", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -880,7 +947,7 @@ type ReadingRow = (
 
 /// The channels this cache knows for one ECU variant, by identifier.
 pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels::odis::Reading>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, \
                 scaling, factor, offset, anchor_raw, anchor_value \
@@ -946,7 +1013,7 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 /// keys. `MIN()` picks the name rather than an arbitrary row so two runs on one
 /// cache produce the same file.
 pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare(
 		"SELECT text_id, MIN(name) FROM reading \
          WHERE text_id IS NOT NULL AND text_id <> '' GROUP BY text_id ORDER BY text_id",
@@ -968,7 +1035,7 @@ pub fn text_ids(db_path: &Path) -> Result<Vec<(String, String)>, Error> {
 /// label files rather than readings and live in another table, which is D1's
 /// split. [`row_counts`] is the per-table dump for somebody who wants that.
 pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let (variants, channels): (i64, i64) = conn.query_row("SELECT COUNT(DISTINCT variant), COUNT(*) FROM reading", [], |row| {
 		Ok((row.get(0)?, row.get(1)?))
 	})?;
@@ -977,7 +1044,7 @@ pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 
 /// Every ECU variant this cache holds readings for, in name order.
 pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut stmt = conn.prepare("SELECT DISTINCT variant FROM reading ORDER BY variant")?;
 	let rows = stmt.query_map([], |row| row.get(0))?;
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -986,7 +1053,7 @@ pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 /// Load all label files back out of a SQLite DB into a `Vec<LabelFile>`
 /// (reconstructing `Record::Measurement`/`Redirect`/`Adaptation`/`LongCoding`).
 pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	read_files(&conn)
 }
 
@@ -998,7 +1065,7 @@ pub fn load_files(db_path: &Path) -> Result<Vec<LabelFile>, Error> {
 /// compiling after a rename and fail only when run.
 pub fn row_counts(db_path: &Path) -> Result<Vec<(&'static str, i64)>, Error> {
 	const TABLES: [&str; 5] = ["label_file", "measurement", "redirect", "adaptation", "long_coding"];
-	let conn = open_read_only(db_path)?;
+	let conn = open_existing(db_path)?;
 	let mut out = Vec::with_capacity(TABLES.len());
 	for table in TABLES {
 		// The names are the constant above, never anything a caller supplied,
@@ -1261,47 +1328,49 @@ mod tests {
 		// The whole-project write is a batch of the per-variant one, and what
 		// makes it safe to switch `setup` over is that nothing about the rows
 		// changes: same rows, same order, same ids, same levels — and a second
-		// run still *replaces* a variant's rows rather than doubling them.
+		// run of either still *replaces* rather than doubling.
 		let levels = Scaling::Enum {
 			levels: vec![(0, "P".to_string()), (1, "R".to_string())],
 		};
 		let identity = Scaling::Linear(vag_data_labels::measure::LinearScale { factor: 1.0, offset: 0.0 });
 		let ecm = vec![reading(0x380A, "speed", identity.clone()), reading(0x2000, "rpm", levels.clone())];
 		let gearbox = vec![reading(0x380A, "gear", levels)];
-
-		let one_by_one = TempWorkspace::new("onebyone");
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_Gearbox", &gearbox).unwrap();
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
-
-		let batched = TempWorkspace::new("batched");
 		let batch = [("EV_ECM", ecm.as_slice()), ("EV_Gearbox", gearbox.as_slice())];
-		assert_eq!(put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap(), 3);
-		// The rerun that replaces, batched too.
-		put_all_readings(&batched.db_path, "/x/SK37X", [("EV_ECM", ecm.as_slice())]).unwrap();
 
-		let dump = |path: &Path| -> Vec<(i64, String, u16, String, String)> {
-			let conn = open_read_only(path).unwrap();
+		let dump = |path: &Path, with_id: bool| -> Vec<(i64, String, u16, String, String)> {
+			let conn = open_existing(path).unwrap();
 			let mut stmt = conn
 				.prepare(
 					"SELECT r.id, r.variant, r.did, r.scaling, COALESCE(GROUP_CONCAT(l.raw || '=' || l.meaning, ','), '') \
                      FROM reading r LEFT JOIN reading_level l ON l.reading_id = r.id \
-                     GROUP BY r.id ORDER BY r.id",
+                     GROUP BY r.id ORDER BY r.variant, r.did, r.id",
 				)
 				.unwrap();
 			stmt
-				.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+				.query_map([], |row| {
+					Ok((if with_id { row.get(0)? } else { 0 }, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+				})
 				.unwrap()
 				.collect::<rusqlite::Result<_>>()
 				.unwrap()
 		};
-		let (a, b) = (dump(&one_by_one.db_path), dump(&batched.db_path));
-		assert_eq!(
-			a.len(),
-			3,
-			"two ECM rows and one gearbox row, the rerun having replaced rather than added: {a:?}"
-		);
+
+		let one_by_one = TempWorkspace::new("onebyone");
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_Gearbox", &gearbox).unwrap();
+		let batched = TempWorkspace::new("batched");
+		assert_eq!(put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap(), 3);
+		let (a, b) = (dump(&one_by_one.db_path, true), dump(&batched.db_path, true));
+		assert_eq!(a.len(), 3, "two ECM rows and one gearbox row: {a:?}");
 		assert_eq!(a, b, "the batch must write exactly what the per-variant calls wrote");
+
+		// The reruns that replace. The ids move on — a replaced row is a new row
+		// — and nothing else does.
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+		put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap();
+		let (a, b) = (dump(&one_by_one.db_path, false), dump(&batched.db_path, false));
+		assert_eq!(a.len(), 3, "the rerun replaced rather than added: {a:?}");
+		assert_eq!(a, b);
 	}
 
 	#[test]
@@ -1579,6 +1648,62 @@ mod tests {
 	}
 
 	#[test]
+	fn a_whole_project_reread_drops_the_variants_it_no_longer_has_and_no_other_sources() {
+		// The stale-row bug: `setup` hands over only the variants that read this
+		// time. A variant whose fault table now refuses, is empty, or is gone
+		// from a re-downloaded project at the same folder kept last run's rows —
+		// which `fault_variants` still offered to the variant match and
+		// `fault_counts` still counted. A reread of a source is that source's
+		// whole contribution, so everything else it wrote goes. Another
+		// project's rows for the same variant names are not its to drop.
+		let ws = TempWorkspace::new("stale-faults");
+		let (a, b) = ([fault(297, "a")], [fault(298, "b")]);
+		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_A", &a[..]), ("EV_B", &b[..])]).unwrap();
+		put_all_faults(&ws.db_path, "/y/SK37X-eng", [("EV_B", &b[..])]).unwrap();
+
+		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_A", &a[..])]).unwrap();
+
+		let from = |variant: &str| -> Vec<String> { faults_of(&ws.db_path, variant).unwrap().into_iter().map(|row| row.source_dir).collect() };
+		assert_eq!(from("EV_A"), ["/x/SK37X"]);
+		assert_eq!(from("EV_B"), ["/y/SK37X-eng"], "the reread kept a variant it no longer has");
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (2, 2));
+	}
+
+	#[test]
+	fn a_whole_project_reread_drops_the_channels_of_variants_it_no_longer_has() {
+		// The same rule for channels, and their levels with them: a
+		// `reading_level` left pointing at a deleted `reading` is a row nothing
+		// can reach and something still stores.
+		let ws = TempWorkspace::new("stale-readings");
+		let levels = Scaling::Enum {
+			levels: vec![(0, "P".to_string())],
+		};
+		let a = [reading(0x2000, "a", levels.clone())];
+		let b = [reading(0x2001, "b", levels)];
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_A", &a[..]), ("EV_B", &b[..])]).unwrap();
+		put_all_readings(&ws.db_path, "/y/SK37X-eng", [("EV_B", &b[..])]).unwrap();
+
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_A", &a[..])]).unwrap();
+
+		assert_eq!(readings_of(&ws.db_path, "EV_A").unwrap().len(), 1);
+		assert_eq!(
+			readings_of(&ws.db_path, "EV_B").unwrap().len(),
+			1,
+			"the reread kept a variant it no longer has, or dropped another source's"
+		);
+		assert_eq!(channel_counts(&ws.db_path).unwrap(), (2, 2));
+		let conn = open_existing(&ws.db_path).unwrap();
+		let orphans: i64 = conn
+			.query_row(
+				"SELECT COUNT(*) FROM reading_level WHERE reading_id NOT IN (SELECT id FROM reading)",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(orphans, 0, "levels outlived their channels");
+	}
+
+	#[test]
 	fn rereading_a_variants_faults_replaces_them_and_leaves_another_sources_alone() {
 		let ws = TempWorkspace::new("faults-reread");
 		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a"), fault(298, "b")]).unwrap();
@@ -1589,7 +1714,12 @@ mod tests {
 		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "a2")]).unwrap();
 		let cached = faults_of(&ws.db_path, "EV_Brake").unwrap();
 		let texts: Vec<(Option<&str>, Option<&str>)> = cached.iter().map(|c| (c.fault.text.as_deref(), c.language.as_deref())).collect();
-		assert_eq!(texts, [(Some("steering angle"), Some("eng")), (Some("a2"), None)]);
+		// And the first project still comes first. A reread writes new rows,
+		// which land after the second project's; handing rows back in write
+		// order made "the first source written wins" mean "the last one reread"
+		// — two runs of `faults` either side of a `setup` disagreeing about which
+		// text a code gets, and the note naming a source that no longer won.
+		assert_eq!(texts, [(Some("a2"), None), (Some("steering angle"), Some("eng"))]);
 	}
 
 	#[test]
@@ -1685,6 +1815,88 @@ mod tests {
 		assert_eq!(cached.unit_numbers(), live.unit_numbers());
 		assert_eq!(cached.unit_name(0x44), Some("J500 - Power Steering"));
 		assert_eq!(cached.unit_name(0x17), Some("J285 - Instrument Cluster"));
+	}
+
+	/// The environment variable that turns [`a_writer_that_dies_mid_transaction`]
+	/// from a no-op into the dying writer. Holds the cache path.
+	const DYING_WRITER: &str = "VAG_DATA_DB_DYING_WRITER";
+
+	/// Not a test of its own: the child process
+	/// [`a_setup_killed_mid_write_leaves_a_cache_every_reader_can_still_open`]
+	/// re-executes this binary into. Without the variable it does nothing.
+	///
+	/// It is the writer `setup` is, killed where Ctrl-C kills it: inside one
+	/// replacing transaction over the fault table, after the transaction has
+	/// outgrown the page cache and started writing changed pages into the
+	/// database file itself. On the reference project that happens inside
+	/// [`put_all_faults`] and [`put_all_readings`] on their own — hundreds of
+	/// thousands of rows — and here the cache is shrunk to ten pages so a few
+	/// thousand rows do it. It matters: a journal whose transaction never touched
+	/// the file is not hot under `synchronous = FULL`, and SQLite ignores it.
+	/// `process::exit` runs no destructor, so the transaction is neither
+	/// committed nor rolled back — the rollback journal is left on disk exactly
+	/// as a SIGINT leaves it.
+	#[test]
+	fn a_writer_that_dies_mid_transaction() {
+		let Some(db) = std::env::var_os(DYING_WRITER) else { return };
+		let mut conn = Connection::open(std::path::PathBuf::from(db)).unwrap();
+		conn.pragma_update(None, "synchronous", "FULL").unwrap();
+		conn.pragma_update(None, "cache_size", 10).unwrap();
+		let tx = conn.transaction().unwrap();
+		tx.execute("DELETE FROM fault", []).unwrap();
+		for code in 0..20_000 {
+			tx.execute(
+				"INSERT INTO fault (source_id, variant, dop, code, text, level, temporary) \
+				 VALUES (1, 'EV_Brake', 'DTCDOP_VAGUDS', ?1, 'a replacement that never commits', 2, 0)",
+				params![code],
+			)
+			.unwrap();
+		}
+		std::process::exit(42);
+	}
+
+	#[test]
+	fn a_setup_killed_mid_write_leaves_a_cache_every_reader_can_still_open() {
+		// The failure: `setup` interrupted inside a write transaction leaves
+		// `cache.sqlite-journal` behind — a *hot* journal. The next connection has
+		// to roll it back before it may read, and a read-only connection is not
+		// allowed to, so every reader failed with "attempt to write a readonly
+		// database" until the next setup. The callers turn that error into "no
+		// ODIS fault names" and "no ODIS channels", silently.
+		let ws = TempWorkspace::new("hotjournal");
+		put_faults(&ws.db_path, "/x/SK37X", "EV_Brake", &[fault(297, "before")]).unwrap();
+		record_language(&ws.db_path, ODIS, "/x/SK37X", "deu").unwrap();
+
+		let status = std::process::Command::new(std::env::current_exe().unwrap())
+			.args(["--exact", "tests::a_writer_that_dies_mid_transaction", "--test-threads=1", "--nocapture"])
+			.env(DYING_WRITER, &ws.db_path)
+			.status()
+			.unwrap();
+		assert_eq!(status.code(), Some(42), "the writer did not die where it was meant to");
+		let journal = ws.db_path.with_file_name("cache.sqlite-journal");
+		// The magic number SQLite writes at the head of a journal once that journal
+		// is committed to — the mark that makes it hot, and an open roll it back.
+		let head = std::fs::read(&journal).expect("sanity: a killed writer leaves its journal behind");
+		assert_eq!(
+			head.get(..8),
+			Some(&[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7][..]),
+			"sanity: the journal is hot"
+		);
+
+		// Every reader answers, and answers with what was committed.
+		let faults = faults_of(&ws.db_path, "EV_Brake").expect("faults_of on a cache with a hot journal");
+		assert_eq!(faults.len(), 1, "the half-written transaction must have been rolled back");
+		assert_eq!(faults[0].fault.text.as_deref(), Some("before"));
+		assert_eq!(fault_variants(&ws.db_path).unwrap(), ["EV_Brake"]);
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (1, 1));
+		assert_eq!(source_languages(&ws.db_path).unwrap().len(), 1);
+		assert!(readings_of(&ws.db_path, "EV_Brake").unwrap().is_empty());
+		assert!(load_files(&ws.db_path).unwrap().is_empty());
+		assert!(
+			!journal.exists(),
+			"the reader that opened it rolled the journal back: {:?} bytes",
+			std::fs::metadata(&journal).map(|m| m.len())
+		);
 	}
 
 	#[test]

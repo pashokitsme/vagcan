@@ -118,8 +118,11 @@ enum Command {
 	/// a project rather than replacing what is in it.
 	///
 	/// An ODIS project reads in seconds; a VCDS installation takes minutes,
-	/// mostly in the name recovery. It touches no car. Running it again on an
-	/// unchanged source does nothing and says so.
+	/// mostly in the name recovery. It touches no car. Running it again on a
+	/// source already in the project reads that source again and replaces what
+	/// it wrote before, leaving every other source's data where it is; a VCDS
+	/// run skips each step whose output is already newer than what it reads,
+	/// and `--refresh` redoes them.
 	///
 	/// No VCDS installation: https://www.ross-tech.com/vcds/download/
 	Setup {

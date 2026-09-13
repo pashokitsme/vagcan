@@ -905,7 +905,7 @@ fn settled(id: &str, already: bool, from_odis: bool) -> String {
 	// Two lines, because one ran to 110 columns on a real terminal. The id is
 	// the only part whose length is unknown, so it goes on the first.
 	let what = match already {
-		true => "This source is added to it; nothing already in it is replaced.",
+		true => "This source is added to it; what other sources put there stays.",
 		false => "New — nothing has been read into it yet.",
 	};
 	format!("Project `{id}`{how}.\n{what}")
@@ -1537,7 +1537,7 @@ mod tests {
 		assert_eq!(id, "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("added"), "{said}");
-		assert!(said.contains("nothing already in it is replaced"), "{said}");
+		assert!(said.contains("what other sources put there stays"), "{said}");
 	}
 
 	#[test]
@@ -1577,7 +1577,7 @@ mod tests {
 		let mut io = Scripted::new(vec![Answer::Type(String::new())]);
 		let id = project_id(&mut io, &Source::Vcds { dir: install }, &["SK37X".to_string()]).unwrap();
 		assert_eq!(id, "SK37X");
-		assert!(io.all_said().contains("nothing already in it is replaced"), "{:?}", io.said);
+		assert!(io.all_said().contains("what other sources put there stays"), "{:?}", io.said);
 	}
 
 	#[test]

@@ -378,7 +378,7 @@ fn prefer_its_own_name(io: &mut impl crate::ui::menu::Asker, named: &str, asked:
 	match crate::project::folder_name(named) {
 		Ok(own) => {
 			let merge = match existing.contains(&own) {
-				true => "\n    That project is already here: this source is added to it, and\n    nothing already in it is replaced.",
+				true => "\n    That project is already here: this source is added to it, and\n    what other sources put there stays.",
 				false => "",
 			};
 			// Both names last, one to a line. Neither has a knowable width when
@@ -589,9 +589,30 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dial
 	// project that already holds ODIS rows must not close by telling its reader
 	// there are no scalings anywhere.
 	let scalings = !crate::extracted::open(project).is_empty();
-	let fault_labels = crate::faultnames::has_fault_labels(&crate::project::rod_pool()?) || crate::odisfaults::OdisFaults::open().is_some();
+	let fault_labels = fault_text_available(&crate::project::rod_pool()?, project)?;
 	println!("\n{}", report(&steps, scalings, fault_labels));
 	Ok(())
+}
+
+/// Whether `vagcan faults` will be able to name a code once this run is done:
+/// VCDS's fault labels in the shared pool, or fault rows in **this** project's
+/// cache.
+///
+/// Asked of the project this run wrote, not of `OdisFaults::open`, which
+/// resolves the *current* project (`--project`, `VAGCAN_PROJECT`, config.toml)
+/// and answered for the first car while a second one was being set up. And an
+/// error is an error: a cache this run has just written that will not answer
+/// is not "no fault text". Only a cache that is not there at all is.
+fn fault_text_available(pool: &Path, project: &crate::project::Project) -> Result<bool> {
+	if crate::faultnames::has_fault_labels(pool) {
+		return Ok(true);
+	}
+	let cache = project.cache();
+	if !cache.is_file() {
+		return Ok(false);
+	}
+	let (_, codes) = vag_data_db::fault_counts(&cache).map_err(|e| anyhow::anyhow!("counting the fault texts in {}: {e}", cache.display()))?;
+	Ok(codes > 0)
 }
 
 /// The VCDS branch: the four steps this command has always run, into a project.
@@ -741,6 +762,9 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 			}
 		}
 	}
+	// Both batches replace everything this source wrote before, not only the
+	// variants in them: a variant that read last time and not this time must not
+	// keep last time's rows.
 	let codes = timed("faults (sqlite)", || vag_data_db::put_all_faults(&project.cache(), &source, fault_rows))
 		.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
 	let channels = timed("readings (sqlite)", || {
@@ -1120,11 +1144,6 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 	}
 }
 
-/// The closing report: what is on disk now, and what to do with it.
-///
-/// Every line names a file. Somebody who has just waited several minutes is
-/// owed the paths, not a count of successes — and somebody whose run was short
-/// of one artefact needs to see which one without re-reading the scroll.
 /// What to say about scalings when the project has none.
 ///
 /// True of a VCDS installation and always was: the label files carry the names
@@ -1135,6 +1154,12 @@ const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS i
      files have names, not numbers. Those are measured: `vagcan dev survey`, then \n\
      `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
 
+/// The closing report: what is on disk now, and what to do with it.
+///
+/// Every line names a file. Somebody who has just waited several minutes is
+/// owed the paths, not a count of successes — and somebody whose run was short
+/// of one artefact needs to see which one without re-reading the scroll.
+///
 /// `scalings` is whether the project now holds per-variant scalings — the one
 /// fact the closing sentence turns on, and asked of the store rather than of
 /// which branch ran, so a VCDS run into a project that already has them does not
@@ -1286,7 +1311,7 @@ mod tests {
 		assert_eq!(prefer_its_own_name(&mut io, "SK37X", "SK-37X-1", &existing).unwrap(), "SK37X");
 		let said = io.all_said();
 		assert!(said.contains("already here"), "{said}");
-		assert!(said.contains("nothing already in it is replaced"), "{said}");
+		assert!(said.contains("what other sources put there stays"), "{said}");
 
 		// A swap onto a name nothing holds is still new, and says nothing extra.
 		let mut io = crate::ui::menu::Scripted::new(vec![]);
@@ -1693,6 +1718,46 @@ mod tests {
 		skipped.count(&vag_data_labels::odis::Error::Missing("no such pool".into()));
 		assert_eq!(skipped.note(), ", 1 refused, 2 unreadable");
 		assert_eq!(Skipped::default().note(), "", "nothing skipped is nothing to say");
+	}
+
+	#[test]
+	fn the_closing_fault_line_asks_the_project_this_run_wrote() {
+		// The defect: it asked `OdisFaults::open()`, which resolves the *current*
+		// project — `--project`, `VAGCAN_PROJECT`, config.toml — not the one this
+		// run just wrote. Setting up a second car while config.toml still names
+		// the first answered for the first. Two projects that differ only in
+		// whether their caches hold fault rows must get different answers.
+		let pool = TempDir::new("faultline-pool");
+		let with = TempDir::new("faultline-with");
+		let without = TempDir::new("faultline-without");
+		let project = |dir: &TempDir| crate::project::Project {
+			id: "SK37X".into(),
+			dir: dir.0.clone(),
+		};
+		let fault = vag_data_labels::odis::Fault {
+			dop: "DTCDOP_VAGUDS".into(),
+			code: 297,
+			display_code: Some("B1168F2".into()),
+			text: Some("Lenkwinkelsensor".into()),
+			text_id: None,
+			short_name: None,
+			level: 2,
+			temporary: false,
+		};
+		vag_data_db::put_all_faults(&project(&with).cache(), "/x/SK37X", [("EV_Brake", std::slice::from_ref(&fault))]).unwrap();
+		vag_data_db::put_all_faults(&project(&without).cache(), "/x/SK37X", []).unwrap();
+
+		assert!(
+			fault_text_available(&pool.0, &project(&with)).unwrap(),
+			"a project whose cache holds fault text was reported as having none"
+		);
+		assert!(
+			!fault_text_available(&pool.0, &project(&without)).unwrap(),
+			"a project with no fault text was reported as having some"
+		);
+		// No cache at all is no fault text, not an error.
+		let empty = TempDir::new("faultline-empty");
+		assert!(!fault_text_available(&pool.0, &project(&empty)).unwrap());
 	}
 
 	#[test]
