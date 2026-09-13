@@ -353,8 +353,8 @@ work at all. The rule `14` sets — slowing allowed, dropping forbidden as far a
 buffer can prevent it — is what the image's 2,048-line ring is for; what it still
 cannot hold is counted and reported in `E`/`F` as overrun. The image's own header says
 what it honours; the bench record is `research/dash/can-bring-up.md` §9 — the
-two-adapter run is written down and, as of this note, **not yet run**: no adapter was
-on USB when the reviewed image was finished.
+two-adapter run **passed on 2026-09-13** — both directions, listen-only silence, and
+3,726 frames/s for 12 s with `F00`, the host reader stopped for 2 s on the second run.
 
 The bench passed on 2026-09-12 (`bench.sh`: 60,861 frames from the board in 15 s),
 so the transceiver question is closed; the car run with `rxwatch --features ack` and
