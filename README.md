@@ -1,48 +1,44 @@
 # vagcan
 
-A command-line diagnostics tool for VW / Audi / Škoda / SEAT cars, written in Rust.
-It plugs into the diagnostics (OBD-II port) socket and reads
-the car's control units: which units it has, what they call
-themselves, what they measure, what faults they have stored, and — with
-`vagcan measure` — how fast the car actually accelerates.
+**UNDER DEVELOPMENT** and **not** battle-tested. Things might change, work wrong, cause faults on your cars and so on. 
 
-**This is a hobby project** which is **UNDER DEVELOPMENT**. **Things might (and likely will) work wrong and even cause faults on your car**.
+A command-line diagnostics tool for VW / Audi / Škoda / SEAT cars, written in Rust. 
+Talks to car over simple & stupid CAN transceiver – `MKS CANable V2.0 Pro` or `ESP32` with firmware provided by this repo. Won't work with VCDS' `HEX-V2`.
 
 ## Dependencies
 
 - **Rust stable**, edition 2024
-- **An slcan USB-CAN adapter.** Development was done on an MKS CANable V2.0 Pro
-  (STM32G431 with an isolated transceiver). It enumerates as a serial device, so
-  there is no driver to install on macOS or Linux.
-- **Somebody's diagnostic data**, for names and numbers instead of raw bytes. Either a
-  VW **ODIS-Service project** or a **VCDS installation** will do, and you do not need to
-  have either already: `vagcan setup` will fetch a VCDS copy if you point it at nothing
-  (see below).
+- **An slcan USB-CAN adapter.** Development and testing was mainly done on `MKS CANable V2.0 Pro`
+- No driver needed as the devices is used as serial
+- **Diagnostics data**, for names and numbers instead of raw bytes. Either a
+  VW **ODIS-Service project** or a **VCDS installation** will do. Just run `vagcan setup` and it'll offer you to download a temp copy of VCDS for extraction
+ 
+## Tested on
 
-Wire the adapter to the OBD-II port:
+| Name & Year | Platform | Device |
+|---|---|----|
+| Škoda Octavia III FL, 2017 | MQB | MKS CANable V2.0 Pro (slcan) |
+| Škoda Octavia III FL, 2017 | MQB | ESP32 SuperMini with SN65HVD230 (VP230-based) CAN Transceiver |
+
+
+## Where to start?
+
+First of all and as said earlier, this software will **neither** work over VCDS' `HEX-V2`, `VNCI` or any other diagnostic tool you might already have. Those are not sending CAN data plainly unlike SLCAN devices.
+
+**Tested devices**
+- `MKS CANable V2.0 Pro` – works out of box; any CANable device will probably work
+- `ESP32 SuperMini + VP230-based CAN transceiver` – needs some soldering & firmware from this repo
+
+**Remove 120 Ω termination jumper** if your device has one. The car's diagnostics port is already terminated
+
+**OBD-II adapter pins**
 
 | OBD-II pin | Adapter |
 |---|---|
 | 6 | CAN-H |
 | 14 | CAN-L |
-| 5 (or 4) | GND |
-| 16 | **leave unconnected** |
-
-**Open the adapter's 120 Ω termination jumper.** The vehicle bus is probably already terminated
-at both ends (~60 Ω); a third resistor drags it to 40 Ω, and you will spend an evening
-blaming the software.
-
-## Tested on
-
-Run `vagcan info` on your car and add a row. The columns are what other owners can
-match against — the engine and gearbox **part numbers** are the keys a measurement
-catalog is filed under, so a car sharing one inherits everything proven for it. (The
-VIN `vagcan info` also prints identifies one physical car and helps nobody else, so it
-is not listed here.)
-
-| Make / model | Year | Platform | Engine | Gearbox | Adapter |
-|---|---|---|---|---|---|
-| Škoda Octavia III (facelift) | 2017 | MQB | `8V0906264H` — 1.8 R4 TFSI (HW `06K907425B`) | `0CW300041G` — DQ200 7-speed DSG (SW `1003`) | MKS CANable V2.0 Pro (slcan) |
+| 5 or 4 | GND |
+| 16 or 1 | **optional, for standalone CAN devices** |
 
 ## Install
 
@@ -78,7 +74,6 @@ If it reports nothing and the adapter is definitely plugged in, unplug and replu
 It can enumerate on USB without the OS attaching a serial node, and then there is
 genuinely nothing to open.
 
-
 ## Setting up
 
 ```sh
@@ -94,17 +89,10 @@ who cannot get one — and it carries wording and fault text but no scalings at 
 top menu entry takes both at once, because they compose: the structure from ODIS, the
 human wording from VCDS.
 
-It needs no car and no adapter, takes minutes, and is the only setup step there is.
-Running it again on an unchanged source does nothing and says so.
-
 Whatever it reads lands in a **project** under `~/.vagcan/data/<project id>/`. A project
 is a **platform, not one car** — VW files every Octavia III, Karoq and Kodiaq under
 `SK37X` — so several cars share one, and what is true of exactly one car lives under
-`~/.vagcan/cars/<VIN>/` instead. Which vehicles each of VW's project names covers is
-transcribed in
-[`.archive/research/labels/odis-project-mapping.md`](.archive/research/labels/odis-project-mapping.md);
-it is a reading aid, and nothing in the tool consults it — a project declares its own
-coverage.
+`~/.vagcan/cars/<VIN>/` instead. Which vehicles each of VW's project names is [written here](./docs/odis-project-mapping.md).
 
 **VCDS is Ross-Tech's software**, free to download from
 <https://www.ross-tech.com/vcds/download/> and redistributed here unmodified, for convenient install only. So
@@ -118,30 +106,15 @@ inside is read once, and none of it is baked into the tool.
 vagcan info               # VIN, engine, gearbox
 vagcan units --identify   # every control unit the gateway knows about
 vagcan faults             # stored fault codes, in VW's own words (after setup)
-vagcan dev survey             # once, parked: what every unit answers
 vagcan watch              # live values from several units at once
 ```
-
-Once a VCDS installation has been read, `faults` names the codes with no extra flag —
-the fault text is already in `~/.vagcan`. Every command and every flag is in
-[`USAGE.md`](USAGE.md).
-
-What the tool deliberately does not do is guess. A value with no proven scaling is
-shown as raw bytes and tagged as raw. This project has twice caught itself believing a
-number it had invented, and the guards are the scar tissue.
 
 **No car or adapter yet?** You can still do plenty offline: `vagcan setup` (above),
 `vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …`
 to read back a drive someone else recorded. The offline commands are grouped under
 `vcds` and `recording` in [`USAGE.md`](USAGE.md).
-<!--
 
-## Where your files go
-
-Nothing the tool reads at run time lives in this repository. The diagnostic data is
-rebuilt into `~/.vagcan` by `setup` — the raw VCDS archives it parses are Ross-Tech's,
-vendored under `vendor/` and redistributed unmodified — and the measured rows are true
-of one car rather than of yours.
+<!--## Where your files is stored
 
 ```
 ~/.vagcan/
@@ -161,21 +134,4 @@ of one car rather than of yours.
 
 Everything a project holds except `measurements/` is rebuilt by `vagcan setup` in
 minutes and can be deleted at any time. `measurements/` and `cars/` cannot be rebuilt
-without a vehicle.
-
-## Status
-
-The tool reads the whole car and names its faults. What is still open is **coverage**:
-23 measurement rows are proven across engine, gearbox and instrument cluster, while the
-brakes, the body control module and half a dozen other units have not been through the
-same process yet.
-
-`vagcan measure` is the newest piece and the least proven — two real drives, with seven
-defects found and fixed on the first. Treat its numbers as good until a third drive
-says otherwise.
-
-The tool is written to work on any VAG car. It has been *proven* on the ones below.-->
-
-## Code quality
-
-The whole project is built by Claude, and I don't really care about the code it produced. Althrough, the UX of the tool and test coverage is very important part and must be considered firstly
+without a vehicle.-->
