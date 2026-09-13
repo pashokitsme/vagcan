@@ -5,8 +5,11 @@
 //! generator (`vag_cli_core::dash::build_for_car`) against
 //! `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and the project's
 //! catalog cache, and puts the result under `~/.vagcan/dash/<VIN>/plan.rs`.
-//! The VIN comes from `VAGCAN_DASH_VIN`, and a build without one does not
-//! build. So the plan is where the label files are — on the laptop — and the
+//! The car is `VAGCAN_DASH_VIN`; unset, it is the one car under
+//! `~/.vagcan/dash/`, and with none or several there the build stops rather
+//! than pick. (`VAGCAN_DASH_NO_CAR` builds an empty plan instead — for CI, which
+//! has no car; that image is never flashed.) So the plan is where the label
+//! files are — on the laptop — and the
 //! image carries only what was resolved from them: addresses, identifiers, bit
 //! layouts, scalings, labels. `todo/dash/01-plan-format.md` is the contract;
 //! [`vag_dash_render::plan`] is the type.

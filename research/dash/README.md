@@ -63,6 +63,18 @@ does not (Terminal.app) a second press inside 250 ms — the board's own
 force. The board gates by the same number on its side, so neither end can
 reproduce the burst alone.
 
+## Which car an image is built for
+
+Every firmware image links one car's plan, chosen when `build.rs` runs:
+
+- `VAGCAN_DASH_VIN=<VIN>` names the car;
+- unset, the build takes the one car under `~/.vagcan/dash/` and prints which — this is
+  what `bench.sh` gets — and stops if there are none or several;
+- `VAGCAN_DASH_NO_CAR=1` builds an empty plan, for CI with no `~/.vagcan/`. **Never
+  flash it.**
+
+[`USAGE.md`](../../USAGE.md), under `vagcan dev dash build`, has the plan itself.
+
 ## Bench tools — which may see a car and which may not
 
 All in `crates/dash/vag-dash-fw/src/bin/`; the rule is whether the image ever
