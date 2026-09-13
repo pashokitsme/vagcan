@@ -66,6 +66,27 @@ requested by the laptop's `watch` also refreshes the panel's НАДДУВ cell. 
 makes "parallel with the display" true instead of a time-share: the two clients
 *share the readings*, not the bus.
 
+### Decided 2026-09-14 (owner): subscriptions, not a priority queue
+
+"Функции программы имеют возможность подписаться на рассылку данных с такой-то частотой,
+либо запросить их единоразово … шедулер сам решает кого когда оповестить. Должна быть
+задействована drop семантика у подписчиков … Шедулер должен по максимуму ужимать запросы."
+
+- **API.** `subscribe(unit, did, rate) -> Subscription` (`next().await` yields readings),
+  `read_once(unit, did)`, and `exchange(unit, pdu)` for a raw non-`0x22` request.
+  Dropping a `Subscription` unsubscribes; a dead consumer (a page closed, a BLE connection
+  gone) takes its subscriptions with it.
+- **Compression.** One read per `(unit, did)` whatever the number of subscribers; due
+  identifiers of one unit go out as one `22 d1 … dn`, and ones due soon are pulled into
+  that request; a unit that refuses multi-identifier requests is learned once and asked
+  singly. A laptop's one-shot `22` may be merged with the panel's reads.
+- **Rates come from the plan, never from a heuristic.** `hz` per channel in `dash.toml`,
+  default 2 Hz. No rate derived from a unit of measure.
+- **Ceiling 100 exchanges/s; the panel keeps at least 25/s** while a laptop is served.
+- **Shape.** A `no_std` core with no clock and no bus (`due(now) -> request`,
+  `answered(now, request, answer) -> deliveries`), tested on the laptop; the board wraps it
+  in embassy over TWAI. Radio requests pass the board guard (`16`) before they reach it.
+
 ## 3. The fork: how the laptop talks to the board
 
 ### Option A — the board is an slcan adapter (raw frames)
