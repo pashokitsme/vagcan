@@ -295,9 +295,9 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 	}
 
 	// Recovered initialisation vectors come from the cache only. The search
-	// that fills it costs minutes of every core and lives in a separate tool
-	// (`cargo run -p vagcan -- vcds rod <file.rod>`),
-	// so reading a car never links it.
+	// that fills it costs minutes of every core and is its own command
+	// (`vagcan dev vcds rod --cache <this cache> <file.rod>`), so a lookup
+	// never starts one.
 	let mut cache = IvCache::load(cache_path);
 	for path in &hits {
 		println!("{}", path.display());
@@ -318,12 +318,13 @@ pub fn resolve_odx(dir: &str, odx_name: &str, cache_path: &Path) -> anyhow::Resu
 			let state = match section.status {
 				RodStatus::Tea => "decrypted",
 				RodStatus::Zlib => "decrypted + inflated",
-				// No vector in the cache for this section, and this binary
-				// cannot search for one.
-				RodStatus::Undecodable => {
-					"encrypted (recover with: cargo run -p vagcan \
-                     -- vcds rod <file.rod>)"
-				}
+				// No vector in the cache for this section, and a lookup does
+				// not search for one.
+				RodStatus::Undecodable => &format!(
+					"encrypted (recover with: vagcan dev vcds rod --cache {} {})",
+					cache_path.display(),
+					path.display()
+				),
 				// Pointing at the recovery command here would waste an hour of
 				// every core: the search cannot start on this file at all.
 				RodStatus::SearchDeclined => {
