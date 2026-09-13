@@ -1,7 +1,7 @@
 # dash / 14 — one bus, three clients: the consolidated design
 
 **Subsystem:** dash · **Crates:** `vag-dash-fw`, `vag-uds-transport`, `vag-uds-can`, `vag-cli-core` ·
-**Date:** 2026-09-13 · **Status:** design, for the owner's decision on §3
+**Date:** 2026-09-13 · **Status:** design; §3 decided by the owner the same day, the order and state of the work in §7
 
 The board reads the car (`05`, met 2026-09-13). Three wishes landed on the same day and
 they all want the same wire:
@@ -159,7 +159,14 @@ the page it is on and nobody else.
 `vag-cli-measure` already is the stopwatch, on the laptop: roles (`speed`, `engine speed`,
 `gear`, `pedal`), the run detection, the report. The board's page is its small brother:
 
-- **Source**: one speed channel, chosen in `dash.toml` from `13-screens.md` — `2033`
+- **Source, decided 2026-09-13 (owner):** the gearbox **output shaft speed `380B`** — proven on
+  the car (`~/.vagcan/data/<project>/measurements/0CW300041G.json`), 1 rpm a step and not
+  averaged, so finer than either road speed below. It turns into km/h through a
+  per-car factor (final drive × rolling circumference) that is **measured, never
+  written in**: a steady-speed stretch reading `380B` and `F40D` together fits it, and the
+  factor is stored under `~/.vagcan`. `F40D` stays beside it as the cross-check. Known
+  limit: wheelspin at launch reads as speed. Before that decision the text read:
+  one speed channel, chosen in `dash.toml` from `13-screens.md` — `2033`
   (0.01 km/h, declared) or `F40D` (1 km/h, standard); ESC wheel speeds if they answer.
   The choice is the owner's; the standard one is the safe default.
 - **Arming**: speed at 0 for a second arms it; the first sample above 0 starts the clock
@@ -228,24 +235,25 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 
 ## 7. Order, and what each needs
 
-| # | item | needs | moves |
+| # | item | needs | state, 2026-09-13 |
 |---|---|---|---|
-| 1 | chart/page defect, with a `dashsim` repro | bench | 5 |
-| 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dashsim` on the link; `dash` stops printing `FRAME` | bench | 4 |
-| 3 | scheduler in `dash`: sources, rates, shared answers | bench | 2 |
-| 4 | `pdu` message + `BoardTransport` on the host; `watch` through the board on the bench (CANable answering as a mock unit is not possible — the check is the car) | bench, then car | 3 |
-| 5 | `slcan` binary lands as the exclusive mode (branch `slcan`) | bench | 3-A |
-| 6 | stopwatch page | car, one straight road | 6 |
-| 7 | ~~`frame` mirror for `dev sniff` over the link~~ — dropped 2026-09-13 (owner): sniffing through the board is mode 2 over the cable | — | — |
-| 8 | ~~the same link over BLE NUS; measure the PDU rate~~ → [`16-uds-over-ble.md`](16-uds-over-ble.md): UDS over BLE as a slow transport, after the merge | bench, then car | 4 |
-| 9 | OLED on the carrier | bench | `05`/`08` |
+| 1 | chart/page defect, with a `dashsim` repro | bench | **done**, merged (`599ba68`); a stale stored config no longer hides the plan's pages (review round 1) — not yet seen on the board |
+| 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dash` stops printing `FRAME` | bench | **folded into 4 and `16`** (owner could not see a reason for it alone): the message types arrive with the first transport that needs them |
+| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **not started.** Today `can_task` reads every channel of every unit in turn, 50 ms between reads and 200 ms between rounds — ≈2 Hz a channel, ≈9 exchanges/s, visible page or not. To be discussed with the owner; natural to build with 4 |
+| 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **next** (owner: "реализуй") |
+| 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
+| 6 | stopwatch page | car, one straight road | on `380B` (§6), after 3 |
+| 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
+| 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](16-uds-over-ble.md)**: UDS over BLE as a slow transport, first after the merge |
+| 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
+| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **a probe first** (owner): read `1105` on `70C` and the engine's GRA status, to see that they answer and move |
 
 [`09-bt-adapter.md`](../../.archive/specs/dash/09-bt-adapter.md) (archived) is superseded by this file (the wish is met by §3-B over USB and §8 over
 BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.
 
 ## 8. What is not decided here
 
-- The speed channel for the stopwatch (owner, from `13`).
+- ~~The speed channel for the stopwatch~~ — decided 2026-09-13: `380B` (§6).
 - Whether `dev survey` (a sweep) may run through the board at all. A sweep is the most
   invasive thing the tool does, and the board lives in the car; the safe default is **no** —
   the exclusive slcan mode is for that, from a bench, with the guard the host has.

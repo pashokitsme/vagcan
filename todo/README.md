@@ -36,6 +36,84 @@ exposes is selectable from config, with no hardcoded addresses or formulas in Ru
 Live transport = the **generic USB-CAN adapter** (`vag-uds-can`, slcan). See `/CLAUDE.md`
 for the locked stack and the goal statement.
 
+## Status (2026-09-13) — the board reads the car, and `dash` is ready to merge
+
+**Read this first.** The 2026-09-10 section below still owns the command table (old
+spelling → current), which is unchanged; its paragraph on the dash is superseded here.
+
+**The dash reads the car** (2026-09-13): with the transceiver replaced, `dash` on the
+reference car answered `7E0`/`7E1` and the panel, through `dashsim`, showed coolant 51 °C,
+boost 0.99 bar, oil 42.0 °C and gearbox 39 °C. The bench had passed the day before
+(`bench.sh`: 60,861 frames in 15 s). Record: `research/dash/can-bring-up.md`.
+
+**The board is also a CAN adapter** (mode 2 of `todo/dash/14`, merged `87dc9f2`): the
+`slcan` image, driven by every `vagcan` command like the CANable. Bench 2026-09-13
+(§9.4 there): whole frames both ways, a listen-only board acknowledging nothing, 3,726
+frames/s for 12 s with the drop flags clear, twice — once with the host's reader stopped
+for 2 s. `vagcan devices` now treats the board as an adapter only when it answers `V`
+(it shows which), and `dev sniff` reads the drop flags at both ends of a capture.
+
+**Decided by the owner on 2026-09-13**, each recorded where it is designed:
+- the board runs two modes, the host picks mode 2 with `vagcan --slcan`
+  (`todo/dash/14` §3);
+- power from OBD pin 1 (ignition-switched) — sleep, power budget and the wake button are
+  superseded and archived under `.archive/specs/dash/`;
+- the cruise lever pages the dash only with cruise OFF (`14` §6a);
+- the stopwatch times on the gearbox output shaft speed `380B` (`14` §6);
+- UDS over BLE is a second, slow transport for single reads, the board always visible
+  and guarding itself (`todo/dash/16-uds-over-ble.md`); the `frame` mirror is dropped;
+- the enclosure is redesigned around the new CAN module, `flat` layout picked
+  (`todo/dash/15-enclosure.md`).
+
+**`dash` was prepared for merging into `master`** (2026-09-13): three review rounds, four
+lenses (safety and wire contract, data correctness, docs and CI, UX), every reviewer ending
+with no blocking objection. What they found and what was fixed is in the merge commits
+`9669f81`, `65ce209`, `9185a28` and the commits after them; the worst of it was a killed
+`setup` leaving `cache.sqlite` unreadable to every reader until the next setup, and
+`[faults] language` silently ignored on a project with one declared language. CI gained
+the firmware and the bench host, which sit outside the workspace. The merge itself is the
+owner's.
+
+**Not verified on hardware:** the board's `V` probe and busy-port message, `dev sniff`'s
+`F` query against the board, the stored-config check on boot. All are covered by
+hardware-free tests only.
+
+**The proven measurement rows were missing from disk** and are back (2026-09-13).
+`~/.vagcan/data/SK37X/measurements/` did not exist; the 23 rows (engine `8V0906264H` 3,
+gearbox `0CW300041G` 12, cluster `5E0920740D` 8) were restored unchanged from git history
+(`0e263b1^:catalogs/vehicles/`, the commit that took them out of the repository).
+`vagcan dev dash build` now marks the panel's boost row `proven`, same scaling as declared.
+
+### What to do next, in order
+
+**Without the car:**
+
+1. **UDS over BLE** — `todo/dash/16`; moves the dash goal. First after the merge (owner).
+   Host transport and the board's guards under hardware-free tests, then the bench.
+2. **`BoardTransport` and `vagcan --slcan`** — `todo/dash/14` §7 item 4 (owner: "реализуй");
+   the scheduler (item 3) is to be discussed with the owner and is natural to build here.
+3. **On the next bench session:** the `V` probe and busy-port text, `F` through `dev sniff`
+   on the board, and whether opening the board's port twice resets it (a reviewer's open
+   question).
+4. **The OLED and the enclosure** — `todo/dash/15`; waits for the panel to arrive.
+5. **Owner's call:** `sleep.rs` and `sleeptest` still implement the archived sleep design.
+
+**With the car:**
+
+6. **The cruise-lever probe** — `14` §7 item 10: `1105` on `70C` and the engine's GRA status.
+7. **Fault names without VCDS, live** (M4): `vagcan faults` after an ODIS `setup`; then the
+   freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
+8. **The stopwatch** — `14` §6: fit the `380B` → km/h factor on a steady stretch, then time
+   a run on one straight road.
+
+Whole-car measurement coverage (M3) is **off the list** at the owner's decision on
+2026-09-10: the `survey`-driven route to it (`dev survey --diff` on a parked and a
+driving pass, then `dev recording calibrate`) has not produced a row since the first
+23, and the owner's judgement is that it is not going to. The 23 proven rows stay
+where they are (restored to disk 2026-09-13, above); the next rows, if any, come from the ODIS measurement loader, not
+from a sweep.
+
+
 ## Status (2026-09-10) — the command surface, the dash, and the tree
 
 **Read this before any section below it.** Older sections name commands by the
@@ -61,7 +139,7 @@ dev: survey sniff glossary recording dash vcds
 Every command the skills under `.claude/skills/` name was run against `--help`
 on 2026-09-10 and resolves.
 
-**The dash.** The firmware polls the car for real (`9ca3547`): `build.rs` runs
+**The dash** (superseded by 2026-09-13 above: the transceiver was replaced and the board reads the car). The firmware polls the car for real (`9ca3547`): `build.rs` runs
 `vag_cli_core::dash::build_for_car` for `VAGCAN_DASH_VIN`, the plan is
 `include!`d, `can_task` owns the TWAI controller and reads `F187` then the plan's
 identifiers, one conversation at a time, with an acceptance filter, a bus-off
@@ -106,37 +184,9 @@ identical to the sequential run by diffing every `reading`, `reading_level` and 
 row and `names-odis.json`. The floor now is the readings walk and the one SQLite
 transaction, both ≈1 s; nothing below 3 s is cheap from here.
 
-### What to do next, in order
+### What to do next
 
-1. ~~**Replace the transceiver, then the car run**~~ — **done 2026-09-13: the dash
-   read the car** (coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C on the
-   panel through `dashsim`; `research/dash/can-bring-up.md` state header). The trail
-   stays for the record — moves the `dash` goal; **needs the bench first, then the car.** A genuine `SN65HVD230D` on the blue board, or the
-   CANable Pro's `ADM3050E` shared as `todo/dash/05` designed. `research/dash/bench.sh`
-   to `PASS` — **done 2026-09-12: 60,861 frames in 15 s, the bus's ceiling** — then
-   on the car `rxwatch --features ack` (Normal mode; the gateway's heartbeat falling
-   from 3106/s to 2 Hz) and `dash` (`7E0 is 8V0906264H as planned`). That closes
-   `todo/dash/05`.
-2. **The OLED on the carrier** — `dash`; **no car.** The SSD1322 driver and the
-   frame's snap-fit, with the panel still on the laptop through `dashsim` until then.
-   The frame itself is redesigned from scratch around the new CAN module (10 × 28 mm,
-   33 with connectors): the printed `carrier` was too complicated and its boards did not
-   snap in (owner, 2026-09-13). Hand-off for that session:
-   [`dash/15-enclosure.md`](dash/15-enclosure.md).
-3. **Fault names without VCDS — the rest of it** (M4); **the car, once.** The ODIS DTC
-   loader landed 2026-09-10 (header of this file), offline-verified on the reference
-   car's fifteen stored faults. What is left is the live run — `vagcan faults` on the
-   car after `setup` on the project, to see the table name the codes the survey named —
-   and the freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`, walked and discarded in
-   `identity.rs`), which is where the extended-data records `faults --details` prints
-   raw would get their field names.
-
-Whole-car measurement coverage (M3) is **off the list** at the owner's decision on
-2026-09-10: the `survey`-driven route to it (`dev survey --diff` on a parked and a
-driving pass, then `dev recording calibrate`) has not produced a row since the first
-23, and the owner's judgement is that it is not going to. The 23 proven rows stay
-where they are; the next rows, if any, come from the ODIS measurement loader, not
-from a sweep.
+Moved to the status of 2026-09-13 at the top of this file.
 
 ## New subsystem (2026-08-20) — `dash`, an OLED frontend for the car
 
