@@ -102,6 +102,9 @@ pub struct SniffStats {
 	pub markers: usize,
 }
 
+/// What starts a marker that vagcan wrote rather than the operator typed.
+pub const STATUS_PREFIX: &str = "vagcan: ";
+
 /// A sniffing session: filters frames, streams them to a capture file, and
 /// reassembles diagnostic conversations for display.
 pub struct SniffSession<W: Write> {
@@ -173,6 +176,13 @@ impl<W: Write> SniffSession<W> {
 			}
 			None => Ok(None),
 		}
+	}
+
+	/// Record a line vagcan itself has to say about the capture — the adapter's
+	/// drop report. Written as a marker, since that is the record a note can be,
+	/// but under [`STATUS_PREFIX`] and not counted among the operator's markers.
+	pub fn on_status(&mut self, line: &str, ts_us: u64) -> std::io::Result<()> {
+		self.write_marker(ts_us, &format!("{STATUS_PREFIX}{line}"))
 	}
 
 	/// Record an operator note ("engine started", "pulling away").
@@ -412,7 +422,7 @@ where
 			Drops::Unknown
 		}
 	};
-	session.on_marker(&dropped.describe(), started.elapsed().as_micros() as u64)?;
+	session.on_status(&dropped.describe(), started.elapsed().as_micros() as u64)?;
 	println!("\n{}", dropped.describe());
 	Ok(dropped)
 }
@@ -451,9 +461,9 @@ impl Drops {
 	/// One line for the terminal and the capture's marker alike.
 	pub fn describe(&self) -> String {
 		match self {
-			Drops::Unknown => "adapter: dropped frames UNKNOWN — it does not report them (no `F`), so this capture cannot vouch it is whole".into(),
-			Drops::None => "adapter: no frames dropped (F data-overrun clear)".into(),
-			Drops::Dropped(bits) => format!("adapter: FRAMES WERE DROPPED (F{bits:02X}, data overrun) — this capture is incomplete"),
+			Drops::Unknown => "adapter: cannot report dropped frames — this capture is not verified complete".into(),
+			Drops::None => "adapter: no frames dropped".into(),
+			Drops::Dropped(bits) => format!("adapter: FRAMES WERE DROPPED — this capture has gaps (status 0x{bits:02X})"),
 		}
 	}
 }
@@ -668,6 +678,7 @@ mod tests {
 		.unwrap();
 		let _adapter = bus.await.unwrap();
 		assert_eq!(dropped, Drops::Unknown);
+		assert_eq!(session.stats().markers, 0, "nobody typed a note; the drop line is not one");
 
 		let capture = session.capture.take().unwrap();
 		let times = frame_times(&capture);
@@ -678,6 +689,32 @@ mod tests {
 		let floor = GAP - Duration::from_millis(30);
 		assert!(apart(times[0], times[1]) >= floor, "start squeezed: {times:?}");
 		assert!(apart(times[2], times[3]) >= floor, "end squeezed: {times:?}");
+
+		// The drop line is kept in the capture as evidence, told apart from the
+		// operator's notes, and after the anchor that `analyse` reads first.
+		let notes: Vec<String> = read_records(&capture[..])
+			.unwrap()
+			.into_iter()
+			.filter_map(|r| match r.payload {
+				CapturePayload::Marker { note } => Some(note),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert!(parse_wall_clock_anchor(&notes[0]).is_some(), "{notes:?}");
+		assert_eq!(notes[1], format!("{STATUS_PREFIX}{}", Drops::Unknown.describe()));
+	}
+
+	#[test]
+	fn the_drop_lines_are_plain_and_fit_a_terminal() {
+		for d in [Drops::Unknown, Drops::None, Drops::Dropped(0x09)] {
+			let line = d.describe();
+			assert!(line.chars().count() <= 80, "{} cols: {line}", line.chars().count());
+			assert!(!line.contains('`'), "{line}");
+		}
+		assert!(Drops::None.describe().contains("no frames dropped"));
+		assert!(Drops::Dropped(0x09).describe().contains("0x09"));
+		assert!(!Drops::Unknown.describe().contains("no frames dropped"), "unknown is never \"none\"");
 	}
 
 	#[test]
