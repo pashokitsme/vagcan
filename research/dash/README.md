@@ -53,6 +53,11 @@ workspace member.
 cargo run --release --manifest-path research/dash/host/Cargo.toml --bin dashsim
 ```
 
+With no port it opens the one port under Espressif's USB vendor id (`303a`) —
+not the first `usbmodem`, which on a desk with a CANable is the CANable — and
+says so when there is none or several. The status line names the port it
+opened. `--help` for the rest.
+
 **One press is one press.** A held key auto-repeats, and on 2026-09-13 every
 repeat went down the wire — one keystroke, a dozen page turns. Where the
 terminal speaks the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty,

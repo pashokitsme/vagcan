@@ -27,7 +27,7 @@
 //! [`PRESS_GAP_MS`] is taken for a repeat. The board gates the same way, so
 //! neither end can reproduce the burst alone.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::event::{
 	self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -113,19 +113,52 @@ enum FromBoard {
 	Gone(String),
 }
 
-fn main() -> Result<()> {
-	let mut args = std::env::args().skip(1);
-	let first = args.next();
-	match first.as_deref() {
-		Some("--demo") => return demo(),
-		Some("--list") => return list_ports(),
-		_ => {}
+/// What the one argument asks for.
+enum Invocation {
+	Demo,
+	List,
+	Help,
+	Unknown(String),
+	Port(String),
+	Guess,
+}
+
+fn parse(first: Option<&str>) -> Invocation {
+	match first {
+		Some("--demo") => Invocation::Demo,
+		Some("--list") => Invocation::List,
+		Some("--help" | "-h") => Invocation::Help,
+		// Nothing else starts with a dash; a port path never does.
+		Some(flag) if flag.starts_with('-') => Invocation::Unknown(flag.to_string()),
+		Some(name) => Invocation::Port(name.to_string()),
+		None => Invocation::Guess,
 	}
-	let port_name = match first {
-		Some(name) => name,
-		None => guess_port()?,
-	};
-	run(&port_name)
+}
+
+const USAGE: &str = "\
+dashsim — be the panel and the buttons for a board running the `dash` image
+
+usage:
+  dashsim [PORT]    open PORT, or the one ESP32 board (USB vendor 303a) if omitted
+  dashsim --list    list the serial ports
+  dashsim --demo    draw one synthetic frame and exit (no board needed)
+  dashsim --help    this text
+
+keys: space = short press, L = long press, b = braille, q = quit";
+
+fn main() -> Result<()> {
+	let first = std::env::args().nth(1);
+	match parse(first.as_deref()) {
+		Invocation::Demo => demo(),
+		Invocation::List => list_ports(),
+		Invocation::Help => {
+			println!("{USAGE}");
+			Ok(())
+		}
+		Invocation::Unknown(flag) => bail!("unknown option {flag}\n\n{USAGE}"),
+		Invocation::Port(name) => run(&name),
+		Invocation::Guess => run(&guess_port()?),
+	}
 }
 
 fn list_ports() -> Result<()> {
@@ -135,15 +168,32 @@ fn list_ports() -> Result<()> {
 	Ok(())
 }
 
-/// The ESP32-C3's native USB shows up as a `usbmodem`; picking it beats making
-/// every run start with a path nobody remembers.
+/// Espressif's USB vendor id. The C3's native USB (its USB-Serial-JTAG) enumerates
+/// under it whatever image the board runs; a property of the chip, the same id
+/// `vag-uds-can`'s adapter listing knows the board by.
+const ESPRESSIF_VID: u16 = 0x303a;
+
+/// Picking the board beats making every run start with a path nobody remembers.
 fn guess_port() -> Result<String> {
-	let ports = serialport::available_ports()?;
-	ports
+	pick_board(&serialport::available_ports()?)
+}
+
+/// The one port under [`ESPRESSIF_VID`]. Not "the first `usbmodem`": a CANable
+/// is a `usbmodem` too, and on a desk with both it lists first — which left this
+/// program waiting forever for a board on the wrong port.
+fn pick_board(ports: &[serialport::SerialPortInfo]) -> Result<String> {
+	let boards: Vec<&str> = ports
 		.iter()
-		.map(|p| p.port_name.clone())
-		.find(|n| n.contains("usbmodem"))
-		.context("no usbmodem port found — pass one explicitly, or --list to see them")
+		.filter(|p| matches!(&p.port_type, serialport::SerialPortType::UsbPort(usb) if usb.vid == ESPRESSIF_VID))
+		// macOS lists a `tty.*` and a `cu.*` node per device; `cu.*` is the one to open.
+		.filter(|p| !p.port_name.contains("/tty."))
+		.map(|p| p.port_name.as_str())
+		.collect();
+	match boards.as_slice() {
+		[one] => Ok((*one).to_string()),
+		[] => bail!("no ESP32 board found (USB vendor {ESPRESSIF_VID:04x}) — plug it in, pass its port explicitly, or --list to see the ports"),
+		several => bail!("several ESP32 boards found — pass one explicitly:\n  {}", several.join("\n  ")),
+	}
 }
 
 fn run(port_name: &str) -> Result<()> {
@@ -198,7 +248,7 @@ fn run(port_name: &str) -> Result<()> {
 		execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES))?;
 	}
 
-	let result = event_loop(&mut out, &mut writer, &rx, repeats_reported);
+	let result = event_loop(&mut out, &mut writer, &rx, repeats_reported, port_name);
 
 	if repeats_reported {
 		execute!(out, PopKeyboardEnhancementFlags)?;
@@ -213,11 +263,14 @@ fn event_loop(
 	writer: &mut Box<dyn serialport::SerialPort>,
 	rx: &mpsc::Receiver<FromBoard>,
 	repeats_reported: bool,
+	port_name: &str,
 ) -> Result<()> {
 	let mut logs: VecDeque<String> = VecDeque::new();
 	let mut latest: Option<Bitmap> = None;
 	let mut frames = 0u64;
-	let mut status = String::from("waiting for the board");
+	// The port is on the status line always: a board that never speaks is
+	// most often the right program on the wrong port, and that is where to look.
+	let mut status = format!("{port_name}: waiting for the board");
 	// `None` means "pick whatever fits"; `b` pins it to braille.
 	let mut forced: Option<Mode> = None;
 	let mut redraw = true;
@@ -240,7 +293,7 @@ fn event_loop(
 			match message {
 				FromBoard::Frame(bitmap) => {
 					frames += 1;
-					status = format!("{}×{}, {frames} frames", bitmap.width, bitmap.height);
+					status = format!("{port_name}: {}×{}, {frames} frames", bitmap.width, bitmap.height);
 					latest = Some(*bitmap);
 				}
 				FromBoard::Log(line) => {
@@ -252,7 +305,7 @@ fn event_loop(
 					}
 				}
 				FromBoard::Gone(why) => {
-					status = format!("board gone: {why}");
+					status = format!("{port_name}: board gone: {why}");
 				}
 			}
 		}
@@ -423,4 +476,58 @@ fn demo() -> Result<()> {
 	}
 	println!("└{}┘", "─".repeat(inner));
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serialport::{SerialPortInfo, SerialPortType, UsbPortInfo};
+
+	fn usb(name: &str, vid: u16, pid: u16) -> SerialPortInfo {
+		SerialPortInfo {
+			port_name: name.to_string(),
+			port_type: SerialPortType::UsbPort(UsbPortInfo {
+				vid,
+				pid,
+				serial_number: None,
+				manufacturer: None,
+				product: None,
+			}),
+		}
+	}
+
+	#[test]
+	fn the_board_is_picked_by_its_usb_ids_not_by_listing_order() {
+		// The owner's desk: the CANable enumerates first, and it is a
+		// `usbmodem` too. Taking the first one waited forever on the wrong port.
+		let ports = [
+			usb("/dev/cu.usbmodem206E37A148451", 0x16d0, 0x117e),
+			usb("/dev/cu.usbmodem1101", 0x303a, 0x1001),
+		];
+		assert_eq!(pick_board(&ports).unwrap(), "/dev/cu.usbmodem1101");
+	}
+
+	#[test]
+	fn no_board_is_said_rather_than_guessed() {
+		let ports = [usb("/dev/cu.usbmodem206E37A148451", 0x16d0, 0x117e)];
+		let err = pick_board(&ports).unwrap_err().to_string();
+		assert!(err.contains("no ESP32 board"), "{err}");
+	}
+
+	#[test]
+	fn several_boards_are_listed_and_none_is_picked() {
+		let ports = [usb("/dev/cu.usbmodem1101", 0x303a, 0x1001), usb("/dev/cu.usbmodem2101", 0x303a, 0x1001)];
+		let err = pick_board(&ports).unwrap_err().to_string();
+		assert!(err.contains("/dev/cu.usbmodem1101") && err.contains("/dev/cu.usbmodem2101"), "{err}");
+	}
+
+	#[test]
+	fn help_is_usage_not_a_port_name() {
+		for flag in ["--help", "-h"] {
+			assert!(matches!(parse(Some(flag)), Invocation::Help), "{flag}");
+		}
+		assert!(matches!(parse(Some("--bogus")), Invocation::Unknown(_)));
+		assert!(matches!(parse(Some("/dev/cu.usbmodem1101")), Invocation::Port(p) if p == "/dev/cu.usbmodem1101"));
+		assert!(matches!(parse(None), Invocation::Guess));
+	}
 }
