@@ -84,9 +84,6 @@ is an extracted ODIS project:
 $ vagcan setup ~/Downloads/SK37X
 Project `SK37X` — the name ODIS gives this folder.
 New — nothing has been read into it yet.
-Opening the ODIS project — its two string pools are read whole, which
-takes a moment:
-    /Users/you/Downloads/SK37X
 230 pools, project version 2610.2.688.
 Writing into /Users/you/.vagcan/data/SK37X
 
@@ -147,9 +144,6 @@ Drag the folder into this window, or paste its path. An empty line goes back.
 Where is the VCDS installation? /Users/you/vcds-en
 Project `SK37X` — the name ODIS gives this folder.
 New — nothing has been read into it yet.
-Opening the ODIS project — its two string pools are read whole, which
-takes a moment:
-    /Users/you/Downloads/SK37X
 230 pools, project version 2610.2.688.
 Writing into /Users/you/.vagcan/data/SK37X
 

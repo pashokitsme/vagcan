@@ -345,13 +345,8 @@ fn timing(stage: &str, took: std::time::Duration) {
 	}
 }
 
-/// Open an ODIS project, saying how long it will be.
+/// Open an ODIS project and say which one it turned out to be.
 fn open_odis(io: &mut impl crate::ui::menu::Asker, dir: &Path) -> Result<vag_data_labels::odis::Project> {
-	io.say(&format!(
-		"Opening the ODIS project — its two string pools are read whole, which\n\
-         takes a moment:\n    {}",
-		dir.display()
-	))?;
 	let project = timed("open (string pools)", || vag_data_labels::odis::Project::open(dir))
 		.with_context(|| format!("reading the ODIS project at {}", dir.display()))?;
 	io.say(&format!(
