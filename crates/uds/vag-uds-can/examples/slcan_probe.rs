@@ -6,6 +6,11 @@
 //! close the channel, ask for version/serial/status, set the bitrate, and open
 //! in **listen-only** mode — none of which needs a transceiver to see traffic.
 //!
+//! Custom commands may follow the port, but never a transmit (`t`, `T`, `r`,
+//! `R`): this probe writes to the adapter directly, so a frame typed here would
+//! reach the bus without passing the UDS allowlist. It refuses them before the
+//! port is opened.
+//!
 //! Run:
 //! ```text
 //! cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmodemXXXX
@@ -40,7 +45,12 @@ async fn main() {
 		std::process::exit(2);
 	});
 	// Extra args override the default script: each is one command (CR added).
+	// Nothing that transmits is among them — see [`refusal`].
 	let custom: Vec<String> = args.collect();
+	if let Some(why) = custom.iter().find_map(|c| refusal(c)) {
+		eprintln!("{why}");
+		std::process::exit(2);
+	}
 
 	let mut port = tokio_serial::new(&path, 115_200)
 		.timeout(Duration::from_millis(200))
@@ -127,4 +137,46 @@ fn escape(bytes: &[u8]) -> String {
 			_ => format!("<{b:02X}>"),
 		})
 		.collect()
+}
+
+/// Why a custom command may not be sent, or `None` when it may.
+///
+/// `t`/`T` put a frame on the bus and `r`/`R` a remote frame. This probe writes
+/// straight to the port, past `vag-uds-client`'s allowlist, so a frame typed
+/// here is whatever the typist wrote — an ECUReset as easily as a read. The
+/// probe is for asking an adapter about itself; frames go through `vagcan`.
+/// A command is checked line by line, because one argument can carry several
+/// (`$'O\rt7E0…'` in a shell is two commands to the adapter).
+fn refusal(cmd: &str) -> Option<String> {
+	cmd
+		.split(['\r', '\n'])
+		.map(str::trim_start)
+		.find(|line| line.starts_with(['t', 'T', 'r', 'R']))
+		.map(|line| {
+			format!(
+				"refusing {line:?}: `t`/`T`/`r`/`R` transmit a frame, and this probe bypasses the UDS allowlist. \
+				 It asks an adapter about itself; put frames on a bus through `vagcan`."
+			)
+		})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::refusal;
+
+	#[test]
+	fn transmit_commands_are_refused() {
+		// `t7E0021101` is an ECUReset request: bytes on the bus that the
+		// allowlist never sees, because nothing here goes through the client.
+		for cmd in ["t7E0021101", "T18DA10F1021101", "r7E00", "R18DA10F10", " t7E0021101", "O\rt7E0021101"] {
+			assert!(refusal(cmd).is_some(), "sent {cmd:?}");
+		}
+	}
+
+	#[test]
+	fn setup_and_status_commands_still_go_through() {
+		for cmd in ["C", "V", "N", "F", "S6", "M1", "L", "O", "Z0"] {
+			assert!(refusal(cmd).is_none(), "refused {cmd:?}");
+		}
+	}
 }

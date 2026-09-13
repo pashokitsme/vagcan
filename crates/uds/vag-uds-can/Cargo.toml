@@ -27,9 +27,13 @@ tokio = { workspace = true, features = ["rt", "macros", "time", "io-util", "test
 
 # The bench bring-up probe talks to a real serial port; without the feature it
 # would fail to build when the crate is tested on its own.
+#
+# `test = true`: its refusal to transmit is a safety property with a unit test,
+# and an example's tests do not run unless asked for.
 [[example]]
 name = "slcan_probe"
 required-features = ["slcan"]
+test = true
 
 [features]
 default = ["std"]
