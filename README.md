@@ -193,5 +193,3 @@ Everything is in `~/.vagcan/`. Nothing is written to the checkout.
 ```
 
 - **Safe to delete:** `rod/` and everything in `data/<project id>/` except `measurements/`. `vagcan setup` rebuilds them.
-- **Back up:** `data/<project id>/measurements/` and `cars/`. They come only from driving the car.
-- **Back up:** `names.csv`, `config.toml` and `dash/<VIN>/dash.toml`. You wrote them.
