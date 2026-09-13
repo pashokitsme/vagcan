@@ -197,5 +197,13 @@ wall thickness (a tongue over the block would overhang 6 mm printed front down);
 slots widened 0.4 → 0.6 (first-layer squish); the ESP rides on two 1.2 mm rails so the
 plug-sized USB-C window sits above the floor instead of leaving a 0.5 mm skin at the bed.
 Five coupons are cut out of the real parts (ESP, buck, CAN pockets; the left end of both
-halves) — print those first. **Still guesses that the coupons depend on:** ESP and buck PCB
-thickness, cable diameter, how the CAN module's 5 mm of connectors splits between its ends.
+halves) — print those first.
+
+**2026-09-13 — measurements in, room for soldering.** Owner: ESP PCB **1.5 mm**, buck PCB
+**1.0 mm**; the CAN terminal does not overhang, the connectors stick **5 mm** out of the other
+end; the cable will probably be a 4-core ethernet cable (diameter still unknown — the clamp
+waits on it). Owner's rule: leave room for soldering, **1.2 mm** under the boards. So the
+reliefs became rails: every board stands 1.2 mm up, rails clear of pinned ends; the ESP's
+USB-end lips (they sat over its pin rows) are gone, replaced by a hole the size of the USB-C
+shell in the wall's inner 0.6 mm behind the plug-sized recess; stops beside castellated rows
+keep 0.4 mm; 5 mm between boards. Housing now 103.9 × 36.9 × 32.4 mm.
