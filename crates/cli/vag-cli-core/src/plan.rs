@@ -573,7 +573,7 @@ pub async fn read_batch<B: vag_uds_can::CanBackend>(backend: &mut Option<B>, bat
 		uds
 			.read_data_by_identifiers(&batch.dids)
 			.await
-			.map(|payload| crate::analyse::split_records(&payload, &batch.dids).unwrap_or_default())
+			.map(|payload| vag_uds_client::schedule::split_records(&payload, &batch.dids).unwrap_or_default())
 	};
 	let at = elapsed();
 	*backend = Some(uds.into_transport().into_backend());
