@@ -241,10 +241,21 @@ impl OdisFaults {
 				.iter()
 				.filter(|(kind, _, language)| kind == vag_data_db::VCDS && language.is_none())
 			{
-				note.push_str(&format!(
-					"\nThe VCDS source {dir} has no language recorded; `vagcan setup {}` records it.",
-					installation_of(dir).display()
-				));
+				let installation = installation_of(dir);
+				// A relative path is relative to wherever `setup` ran, which
+				// nothing here knows; as a command it would only work from there.
+				if installation.is_relative() {
+					note.push_str(&format!(
+						"\nThe VCDS source {dir} has no language recorded; running `vagcan setup` on {} again records it \
+						 (that path is relative to where setup was run).",
+						installation.display()
+					));
+				} else {
+					note.push_str(&format!(
+						"\nThe VCDS source {dir} has no language recorded; `vagcan setup {}` records it.",
+						installation.display()
+					));
+				}
 			}
 			return Some(note);
 		}
@@ -559,6 +570,23 @@ mod tests {
 		assert!(hint.contains("vagcan setup /Applications/VCDS"), "how to record it: {note}");
 		assert_eq!(lines.next(), None, "{note}");
 		assert!(!r.prefers_vcds(), "an unrecorded language is not a declared one");
+	}
+
+	#[test]
+	fn a_relative_vcds_source_is_not_offered_as_a_command_to_run() {
+		// A cache can hold the path as `setup` was given it. `vagcan setup
+		// vendor/vcds-en` is only right from where that ran, and nothing here
+		// knows where that was — so the hint says the path is relative rather
+		// than print a command that fails anywhere else.
+		let sources = [("vcds", "vendor/vcds-en/Labels", None), ("odis", "/x/SK37X", Some("deu"))];
+		let note = resolver(Some("eng"), &sources).choice_note().unwrap();
+		let hint = note.lines().nth(1).expect("the VCDS line");
+		assert!(hint.contains("vendor/vcds-en/Labels"), "{note}");
+		assert!(
+			!hint.contains("`vagcan setup vendor/vcds-en`"),
+			"a command that only runs in one directory: {note}"
+		);
+		assert!(hint.contains("relative"), "{note}");
 	}
 
 	#[test]
