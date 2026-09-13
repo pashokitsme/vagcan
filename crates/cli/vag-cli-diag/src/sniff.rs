@@ -373,6 +373,20 @@ where
 	if let Drops::Dropped(bits) = drops(backend.status_flags(f_wait).await.context("asking the adapter for its status flags")?) {
 		eprintln!("note: the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
 	}
+	// The frames kept through that wait go into the capture before anything
+	// else does. A note typed meanwhile is stamped when it is read, later than
+	// those frames arrived, and the capture's times must never go backwards.
+	loop {
+		match backend.recv_frame_arrived(Duration::ZERO).await {
+			Ok((arrived, id, data)) => {
+				if let Some(line) = session.on_frame(id, &data, since(started, arrived))? {
+					println!("{line}");
+				}
+			}
+			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(_) => break,
+		}
+	}
 
 	while keep_going() {
 		let ts_us = started.elapsed().as_micros() as u64;
@@ -666,19 +680,22 @@ mod tests {
 		});
 
 		let f_wait = Duration::from_millis(400);
+		// A note typed while the first `F` was awaited: it is stamped when it is
+		// read, after the kept frames arrived, so it must not land before them.
+		let mut typed = Some("typed during the wait".to_string());
 		let dropped = record(
 			&mut backend,
 			&mut session,
 			started,
 			|| started.elapsed() < Duration::from_millis(500),
-			|| None,
+			|| typed.take(),
 			f_wait,
 		)
 		.await
 		.unwrap();
 		let _adapter = bus.await.unwrap();
 		assert_eq!(dropped, Drops::Unknown);
-		assert_eq!(session.stats().markers, 0, "nobody typed a note; the drop line is not one");
+		assert_eq!(session.stats().markers, 1, "one typed note; the drop line is not one");
 
 		let capture = session.capture.take().unwrap();
 		let times = frame_times(&capture);
@@ -700,9 +717,15 @@ mod tests {
 				_ => None,
 			})
 			.collect();
-		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert_eq!(notes.len(), 3, "{notes:?}");
 		assert!(parse_wall_clock_anchor(&notes[0]).is_some(), "{notes:?}");
-		assert_eq!(notes[1], format!("{STATUS_PREFIX}{}", Drops::Unknown.describe()));
+		assert_eq!(notes[1], "typed during the wait");
+		assert_eq!(notes[2], format!("{STATUS_PREFIX}{}", Drops::Unknown.describe()));
+
+		// The capture format promises `ts_us` never goes backwards
+		// (`vag-uds-capture`'s record docs).
+		let all: Vec<u64> = read_records(&capture[..]).unwrap().into_iter().map(|r| r.ts_us).collect();
+		assert!(all.windows(2).all(|w| w[0] <= w[1]), "time went backwards: {all:?}");
 	}
 
 	#[test]

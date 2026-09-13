@@ -370,7 +370,9 @@ pub fn record_source(p: &Project, entry: SourceEntry) -> Result<()> {
 
 	let mut row = serde_json::Map::new();
 	row.insert("kind".into(), entry.kind.into());
-	row.insert("path".into(), entry.path.into());
+	// Stored resolved, as `cache.sqlite` stores it: a path as typed is only
+	// true in the directory it was typed in.
+	row.insert("path".into(), wanted.clone().into());
 	if let Some(version) = entry.version {
 		row.insert("version".into(), version.into());
 	}
@@ -766,6 +768,29 @@ mod tests {
 		assert!(records_source(&p, "vcds", "/Applications/VCDS"));
 		assert!(!records_source(&p, "odis", "/Applications/VCDS"), "the kind is part of the source");
 		assert!(!records_source(&p, "vcds", "/Applications/VCDS-other"));
+	}
+
+	#[test]
+	fn a_source_given_as_a_relative_path_is_recorded_where_it_resolves() {
+		// `vagcan setup SK37X` from `~/Downloads` stored `"path": "SK37X"`, and
+		// the next setup — from anywhere else — resolved that against its own
+		// directory, missed the entry and appended a second copy of the folder.
+		let here = temp();
+		let p = open_or_create_in(here.path(), "SK37X").unwrap();
+		record_source(
+			&p,
+			SourceEntry {
+				kind: "odis",
+				path: ".".into(),
+				version: None,
+				detail: None,
+			},
+		)
+		.unwrap();
+		let text = std::fs::read_to_string(p.sources()).unwrap();
+		let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+		let stored = value["sources"][0]["path"].as_str().unwrap();
+		assert!(std::path::Path::new(stored).is_absolute(), "stored as typed: {text}");
 	}
 
 	// The two tests that used to sit here — that remembering a project leaves
