@@ -10,10 +10,9 @@
 
 [package]
 edition = "2024"
-# The directory reads as `firmware/vag-dash` because that is the device; the
-# *package* has to be something else, because it depends on the renderer crate
-# that is already called `vag-dash`. Two packages of one name cannot share a
-# lockfile, and cargo says so rather than picking.
+# The directory is the package name, as for every crate (root `Cargo.toml`):
+# `vag-dash-fw`, the board side of the `dash` family, beside the renderer it
+# links (`vag-dash-render`). What a person flashes is the binary, `dash`.
 name = "vag-dash-fw"
 rust-version = "1.86"
 version = "0.1.0"
