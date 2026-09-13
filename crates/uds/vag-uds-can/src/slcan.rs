@@ -92,10 +92,14 @@ pub fn decode_frame(line: &str) -> Result<(u32, Vec<u8>), CanError> {
 pub struct SlcanBackend<S> {
 	stream: S,
 	buf: Vec<u8>,
-	/// Frames read while waiting for a command's reply, handed out by
-	/// [`CanBackend::recv_frame`] before anything new — see [`Self::status_flags`].
-	pending: std::collections::VecDeque<Result<(u32, Vec<u8>), CanError>>,
+	/// Frames read while waiting for a command's reply, with when each was
+	/// read, handed out by [`CanBackend::recv_frame`] before anything new — see
+	/// [`Self::status_flags`].
+	pending: std::collections::VecDeque<KeptFrame>,
 }
+
+/// A frame kept through a command's wait: when it was read, and what it decoded to.
+type KeptFrame = (std::time::Instant, Result<(u32, Vec<u8>), CanError>);
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub fn new(stream: S) -> Self {
@@ -139,7 +143,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	///
 	/// Safe on an open channel: frames that arrive while the reply is awaited
 	/// are kept, in order, and [`CanBackend::recv_frame`] returns them before
-	/// reading anything new — asking must not cost the capture a frame.
+	/// reading anything new — asking must not cost the capture a frame. They are
+	/// handed out after the wait, so a caller that timestamps frames must take
+	/// their time from [`Self::recv_frame_arrived`], not from the clock.
 	pub async fn status_flags(&mut self, wait: Duration) -> Result<Option<u8>, CanError> {
 		self.write_all(b"F\r").await?;
 		let deadline = Instant::now() + wait;
@@ -152,11 +158,35 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 			let text = String::from_utf8_lossy(&line);
 			let text = text.trim_matches(|c: char| c == '\u{7}' || c.is_whitespace());
 			match text.as_bytes() {
-				[b't' | b'T', ..] => self.pending.push_back(decode_frame(text)),
+				[b't' | b'T', ..] => self.pending.push_back((std::time::Instant::now(), decode_frame(text))),
 				[b'F', hi, lo] if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() => {
 					return Ok(u8::from_str_radix(&text[1..], 16).ok());
 				}
 				// Acks and other replies are not the answer, and not bus traffic.
+				_ => continue,
+			}
+		}
+	}
+
+	/// [`CanBackend::recv_frame`], with when the frame was read off the port.
+	///
+	/// For a frame read now that is now; for one kept while [`Self::status_flags`]
+	/// waited it is when it was kept, up to that whole wait earlier. A capture
+	/// stamped at hand-out would squeeze those frames into one instant.
+	pub async fn recv_frame_arrived(&mut self, timeout: Duration) -> Result<(std::time::Instant, u32, Vec<u8>), CanError> {
+		if let Some((arrived, frame)) = self.pending.pop_front() {
+			return frame.map(|(id, data)| (arrived, id, data));
+		}
+		let deadline = Instant::now() + timeout;
+		loop {
+			let line = self.read_line(deadline).await?;
+			// Strip stray BEL (error ack) bytes; they are not CR-terminated.
+			let text = String::from_utf8_lossy(&line);
+			let text = text.trim_matches(|c: char| c == '\u{7}' || c.is_whitespace());
+			match text.as_bytes().first() {
+				Some(b't' | b'T') => return decode_frame(text).map(|(id, data)| (std::time::Instant::now(), id, data)),
+				// Command acks ('z', 'Z', version/status replies) and empty
+				// lines are not bus traffic — skip them.
 				_ => continue,
 			}
 		}
@@ -204,22 +234,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CanBackend for SlcanBackend<S> {
 	}
 
 	async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
-		if let Some(frame) = self.pending.pop_front() {
-			return frame;
-		}
-		let deadline = Instant::now() + timeout;
-		loop {
-			let line = self.read_line(deadline).await?;
-			// Strip stray BEL (error ack) bytes; they are not CR-terminated.
-			let text = String::from_utf8_lossy(&line);
-			let text = text.trim_matches(|c: char| c == '\u{7}' || c.is_whitespace());
-			match text.as_bytes().first() {
-				Some(b't' | b'T') => return decode_frame(text),
-				// Command acks ('z', 'Z', version/status replies) and empty
-				// lines are not bus traffic — skip them.
-				_ => continue,
-			}
-		}
+		self.recv_frame_arrived(timeout).await.map(|(_, id, data)| (id, data))
 	}
 }
 
@@ -631,6 +646,20 @@ mod tests {
 		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E8, vec![0x50, 0x03]));
 		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x17F0_0010 | CAN_EFF_FLAG, vec![0x01]));
 		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E9, vec![0x01]));
+	}
+
+	#[tokio::test]
+	async fn a_frame_kept_through_the_f_wait_carries_when_it_was_read() {
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client);
+		adapter.write_all(b"t7E825003\r").await.unwrap();
+		let asked = std::time::Instant::now();
+		// No `F` reply: the whole wait passes with the frame already read.
+		assert_eq!(backend.status_flags(Duration::from_millis(100)).await.unwrap(), None);
+		let answered = std::time::Instant::now();
+		let (arrived, id, data) = backend.recv_frame_arrived(Duration::ZERO).await.unwrap();
+		assert_eq!((id, data), (0x7E8, vec![0x50, 0x03]));
+		assert!(arrived >= asked && answered - arrived >= Duration::from_millis(80), "stamped at hand-out");
 	}
 
 	#[tokio::test]
