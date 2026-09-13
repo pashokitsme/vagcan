@@ -1001,7 +1001,7 @@ mod tests {
 	/// ```text
 	/// VAGCAN_TTTEXT_TXT=DIR/TXT.bin \
 	/// VAGCAN_TTTEXT_LABELS=vendor/vcds-en/Labels \
-	///   cargo test -p vagcan --bin vagcan -- --ignored tttext_reproduces
+	///   cargo test -p vag-cli-diag --lib -- --ignored tttext_reproduces
 	/// ```
 	///
 	/// It pins the recovered-name count and a sample of id → name pairs so the
