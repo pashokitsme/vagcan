@@ -162,3 +162,40 @@ how the last round worked, and the owner picked `carrier`.
    housing or a fixed cable?
 7. Anything from the printed `carrier` besides "complicated" and "boards don't snap" —
    what was annoying to assemble, what broke, what they liked.
+
+## 7. Status
+
+**2026-09-13 — answers, and the sketch round.**
+
+Owner's answers (calipers where it says so; the rest stays `# GUESS` in `housing.py`):
+
+- **CAN module:** W 10 mm, L 28 mm without connectors, 33 mm with; PCB 1.6 mm; tallest part
+  a **screw terminal, 16.9 mm**. Connectors on one short end, the terminal on the other.
+  How the 5 mm splits between the ends, the terminal's footprint, the header height, mounting
+  holes — unknown.
+- **ESP32-C3 SuperMini:** L 22.4 × W 18.8 (calipers). T and H still the ruler's.
+- **Buck:** L 22.0 × **W 11.9** (calipers) — a narrower board than the ruler's 17 mm; T, H and
+  pad layout unknown.
+- **SSD1322, MP1584EN, ESP** are on the desk; the drawing's numbers for the display stand.
+- **Faceplate:** smoked acrylic on hand, **3 mm**, large enough.
+- **Mount:** no vent clip this round — taped to the dashboard, so the back is a flat face.
+- **Cable:** fixed, leaves through the **left** end (USB-C stays right).
+
+Sketches: `research/dash/frame/housing.py` (local, gitignored), built in the running FreeCAD
+through the Robust MCP bridge. One architecture — a **face** (window, acrylic pocket, display
+held by four latches, printed face down) and a **tray** (boards in a row, each on its own
+floor-slotted beam clip, printed floor down), closed by four arms — and three poses for the
+CAN module, since its terminal sets the thickness: `edge` (on its long edge, 103.9 × 36.9 ×
+24.4 mm), `flat` (terminal kept, 31.2 mm), `slim` (terminal desoldered, 20.2 mm). Contact
+sheet: `housing-sketches.png`.
+
+**2026-09-13 — the owner picked `flat`; print pack prepared** (`research/dash/frame/print/`,
+local; its `README.md` says the order, settings and which parameter each coupon symptom
+moves). Changes made for printing: the cable's S-bend pins (a 5 mm cable cannot bend between
+pins 5 mm apart) became a press-fit channel with ribs, closed by a tongue inside the face's
+wall thickness (a tongue over the block would overhang 6 mm printed front down); the clip
+slots widened 0.4 → 0.6 (first-layer squish); the ESP rides on two 1.2 mm rails so the
+plug-sized USB-C window sits above the floor instead of leaving a 0.5 mm skin at the bed.
+Five coupons are cut out of the real parts (ESP, buck, CAN pockets; the left end of both
+halves) — print those first. **Still guesses that the coupons depend on:** ESP and buck PCB
+thickness, cable diameter, how the CAN module's 5 mm of connectors splits between its ends.
