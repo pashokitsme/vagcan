@@ -354,11 +354,13 @@ controller, the ISO-TP/UDS stack — is proven, and the plug, once rebuilt,
 reads 60 Ω.
 
 **One command for the bench: `research/dash/bench.sh`.** Flashes `cantx`
-(a continuous `7E0` transmitter, bench-only) to the ESP, then sniffs the pair
+(a continuous `7E0` transmitter, bench-only, built only with `--features bench`) to the ESP, then sniffs the pair
 over the CANable and prints PASS/FAIL — the board's `7E0` in the capture is
 the transmit path proven. `bench.sh 30` for a longer listen, `bench.sh 15 dash`
 to flash `dash` instead. It finds the CANable by its fixed serial and the ESP
-by exclusion; a wedged ESP port wants a BOOT-held replug first.
+by exclusion; a wedged ESP port wants a BOOT-held replug first. It does not
+reflash anything afterwards: a board left with `cantx` floods any bus from
+power-on, so its last line tells you to flash `dash` or `slcan` back.
 
 **The bench is now the whole test.** No car needed: `dash` (or any board
 transmit) plus CANable's `E` register and a `sniff` is the fault, and the fix
@@ -441,14 +443,19 @@ alongside the board and watch both ends at once.
 monitors:
 
 ```bash
-cd crates/dash/vag-dash-fw && cargo run --release
+cd crates/dash/vag-dash-fw && cargo run --release --bin dash
 ```
+
+(`--bin dash` is not optional: the crate has several binaries and no
+`default-run`, so a bare `cargo run` refuses to guess.)
 
 **Terminal 2 — the CANable, listening.** Note there is **no `--active`** here: on
 a car the car's own units acknowledge, and listen-only cannot disturb anything.
+`--device` names the CANable: with the board plugged in beside it, a bare
+command would have two USB serial ports to choose from.
 
 ```bash
-cargo run --release --bin vagcan -- dev sniff --diag-only --out /tmp/car.jsonl
+cargo run --release --bin vagcan -- dev sniff --device /dev/cu.usbmodem206E37A148451 --diag-only --out /tmp/car.jsonl
 ```
 
 Read the two together:
@@ -484,7 +491,7 @@ across the module's `CANH` and `CANL`, then wiggle the plug:
   real-CAN firmware, the acceptance filter, the partition-table fix.
 - `src/bin/rxprobe.rs` — the GPIO-level probe from §4.2. Bench tool: it holds a DC
   level on the pair, so it must never be pointed at a car. Same rule as
-  `cantest.rs`, same reason.
+  `cantest.rs`, same reason. Both, and `cantx`, build only with `--features bench`.
 - The wire is back on `GPIO1`, `rxprobe` reads `GPIO1`, and the echo passes
   there (§5.1).
 - `src/bin/rxwatch.rs` — listen-only frame counter, safe on a car (§5.1).
@@ -594,13 +601,18 @@ the console is the protocol now, and a monitor would be a second reader on it.
 
 ```
 * /dev/cu.usbmodem1101
-    vag-dash board (slcan over USB, when running the slcan firmware)
+    vag-dash board — slcan firmware answering
 ```
 
-The name says "when running": the board enumerates under Espressif's `303a:1001`
-whatever image it carries, and the listing cannot tell `slcan` from `dash`. A
-`V` answered (`V0101`) is what proves the port is an adapter, and the host's own
-probe asks exactly that — close, `V`, `N`, `F`, `S6`, open listen-only, close:
+The board enumerates under Espressif's `303a:1001` whatever image it carries —
+and so does every other ESP32-C3 and -S3 — so the ids alone do not make it an
+adapter. `vagcan` asks each such port slcan's `V` (and nothing else) before it
+lists or picks it: a well-formed `V0101` makes it a recognised adapter; no
+answer lists it unmarked as `not answering slcan (display firmware? flash the
+slcan image)`, and a car command pointed at it fails at once with that reason
+instead of timing out on the car. No other device is ever asked anything. The
+host's bench probe asks more — close, `V`, `N`, `F`, `S6`, open listen-only,
+close:
 
 ```bash
 cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmodem1101
@@ -608,8 +620,11 @@ cargo run -p vag-uds-can --features slcan --example slcan_probe -- /dev/cu.usbmo
 
 ### 9.3 The bench, both directions, no car
 
-Nothing on the host transmits arbitrary frames, and `cantx` cannot share the
-board with `slcan`, so the two directions are proven by crossing the two
+The host has no way to put an arbitrary frame on the bus: `vagcan` sends only
+what the UDS allowlist permits, and `slcan_probe` refuses `t`/`T`/`r`/`R` in its
+custom commands, because it writes to the adapter past that allowlist. (A
+terminal typed straight into the port is the exception nothing here can
+prevent.) `cantx` cannot share the board with `slcan` either, so the two directions are proven by crossing the two
 adapters' ordinary traffic. The bench pair is the standing one (§5.2): both
 transceivers on one pair, terminated.
 

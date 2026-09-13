@@ -24,35 +24,17 @@ path = "./src/bin/dash.rs"
 # The deep-sleep demonstrator: boot, say why we woke, wait, sleep, repeat. It
 # is its own image rather than a mode of `dash` because the thing being
 # measured is the *floor*, and a binary that also carries a radio and a panel
-# cannot show one.
+# cannot show one. It never configures the CAN pins, so it is not behind
+# `bench`: left on a board in a car it drives nothing onto the pair.
 [[bin]]
 name = "sleeptest"
 path = "./src/bin/sleeptest.rs"
 
-# A UDS round trip against the chip's own TWAI controller — no transceiver, no
-# second node, no car. See the file's docs.
-[[bin]]
-name = "cantest"
-path = "./src/bin/cantest.rs"
-
 # Listen-only frame counter: how many frames per second, which ids. Transmits
-# nothing, so unlike the two above it may be pointed at a car.
+# nothing, so unlike the bench tools below it may be pointed at a car.
 [[bin]]
 name = "rxwatch"
 path = "./src/bin/rxwatch.rs"
-
-[features]
-# `rxwatch` in Normal mode: it still sends no frames, but it acknowledges the
-# ones it hears — which on the car is the first dominant bit of ours the
-# gateway registers (its heartbeat drops from 3106/s to 2 Hz). Off by default
-# so the plain build stays safe to point at anything.
-ack = []
-
-# Continuous bench transmitter — flash it, sniff the CANable, see whether the
-# board's frames reach the pair. Transmits, so bench only.
-[[bin]]
-name = "cantx"
-path = "./src/bin/cantx.rs"
 
 # The board as a CAN adapter: slcan on the USB console, so `vagcan --device`
 # drives it like the CANable. It transmits exactly what the host asks and
@@ -60,6 +42,47 @@ path = "./src/bin/cantx.rs"
 [[bin]]
 name = "slcan"
 path = "./src/bin/slcan.rs"
+
+# ---- Bench tools: never a car, and not built without `--features bench` ----
+#
+# Each of these drives the pair on its own from power-on — frames nobody asked
+# for, or a DC level — and none of them draws anything on the panel, so a board
+# left with one and plugged into a car gives no sign of what it is doing to the
+# bus. `required-features` is what keeps a plain `cargo build --release` (and
+# the `--bins` that builds everything) from producing one by accident.
+
+# A UDS round trip against the chip's own TWAI controller — no transceiver, no
+# second node, no car. See the file's docs.
+[[bin]]
+name = "cantest"
+path = "./src/bin/cantest.rs"
+required-features = ["bench"]
+
+# Continuous bench transmitter — flash it, sniff the CANable, see whether the
+# board's frames reach the pair. Transmits `7E0` back to back from power-on,
+# thousands a second: on a car that is the engine's diagnostic server flooded.
+[[bin]]
+name = "cantx"
+path = "./src/bin/cantx.rs"
+required-features = ["bench"]
+
+# Is the transceiver there at all? Drives the transmit pad by hand and reads the
+# receive pad back. Holds a DC level on the pair.
+[[bin]]
+name = "rxprobe"
+path = "./src/bin/rxprobe.rs"
+required-features = ["bench"]
+
+[features]
+# `rxwatch` in Normal mode: it still sends no frames, but it acknowledges the
+# ones it hears — which on the car is the first dominant bit of ours the
+# gateway registers (its heartbeat drops from 3106/s to 2 Hz). Off by default
+# so the plain build stays safe to point at anything.
+ack = []
+# The bench tools above: `cantest`, `cantx`, `rxprobe`. Off by default so that
+# no image which drives the pair unasked can be built without saying so.
+# `research/dash/bench.sh` turns it on.
+bench = []
 
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32c3"] }

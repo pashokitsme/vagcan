@@ -234,6 +234,12 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 
 	let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
 	let mut backend = crate::device::open(device_path, baud, mode).await?;
+	// `F` clears on read, and a close does not clear it — so it is read once
+	// here, to start this session from zero, and once at the end. Drops left
+	// over from an earlier session are said, not silently absorbed.
+	if let Drops::Dropped(bits) = drops(backend.status_flags(F_WAIT).await.context("asking the adapter for its status flags")?) {
+		eprintln!("note: the adapter still held a drop flag from before this session (F{bits:02X}); cleared");
+	}
 	let unix_us = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
 		.map(|d| d.as_micros() as u64)
@@ -310,6 +316,31 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 		}
 	}
 
+	// Asked before the channel closes, while the adapter still has its count;
+	// frames that arrive meanwhile are the backend's to keep and are recorded.
+	let flags = backend.status_flags(F_WAIT).await;
+	loop {
+		match backend.recv_frame(Duration::ZERO).await {
+			Ok((id, data)) => {
+				let ts_us = started.elapsed().as_micros() as u64;
+				if let Some(line) = session.on_frame(id, &data, ts_us)? {
+					println!("{line}");
+				}
+			}
+			Err(CanError::MalformedFrame(what)) => eprintln!("skipped: {what}"),
+			Err(_) => break,
+		}
+	}
+	let dropped = match flags {
+		Ok(flags) => drops(flags),
+		Err(e) => {
+			eprintln!("asking the adapter for its status flags failed: {e}");
+			Drops::Unknown
+		}
+	};
+	session.on_marker(&dropped.describe(), started.elapsed().as_micros() as u64)?;
+	println!("\n{}", dropped.describe());
+
 	let _ = backend.close_channel().await;
 	let stats = session.stats();
 	session.finish()?;
@@ -349,10 +380,70 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 	Ok(())
 }
 
+/// What an adapter's `F` flags say about frames lost between the bus and this
+/// capture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Drops {
+	/// The adapter did not answer `F` (the CANable's firmware has none). Not
+	/// "no drops": nothing is known either way.
+	Unknown,
+	/// It answered, and data overrun is clear.
+	None,
+	/// It answered with data overrun set — frames were lost. The whole flag byte.
+	Dropped(u8),
+}
+
+/// Lawicel `F` bit 3, data overrun: a frame was lost before the host got it.
+/// The bit layout is Lawicel's, not any one adapter's.
+const F_DATA_OVERRUN: u8 = 0x08;
+
+/// How long an adapter gets to answer `F`. The board answers within a USB round
+/// trip; an adapter without `F` costs this much once at each end of a capture.
+const F_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Read the drop flag out of an `F` answer — see [`Drops`].
+pub fn drops(flags: Option<u8>) -> Drops {
+	match flags {
+		None => Drops::Unknown,
+		Some(bits) if bits & F_DATA_OVERRUN != 0 => Drops::Dropped(bits),
+		Some(_) => Drops::None,
+	}
+}
+
+impl Drops {
+	/// One line for the terminal and the capture's marker alike.
+	pub fn describe(&self) -> String {
+		match self {
+			Drops::Unknown => "adapter: dropped frames UNKNOWN — it does not report them (no `F`), so this capture cannot vouch it is whole".into(),
+			Drops::None => "adapter: no frames dropped (F data-overrun clear)".into(),
+			Drops::Dropped(bits) => format!("adapter: FRAMES WERE DROPPED (F{bits:02X}, data overrun) — this capture is incomplete"),
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use vag_uds_capture::{parse_wall_clock_anchor, read_records};
+
+	#[test]
+	fn no_answer_to_f_is_unknown_never_no_drops() {
+		// The CANable's firmware has no `F`. Owner's rule: dropping frames is
+		// forbidden — so a capture that cannot say it lost none must not.
+		assert_eq!(drops(None), Drops::Unknown);
+	}
+
+	#[test]
+	fn data_overrun_is_a_drop() {
+		assert_eq!(drops(Some(0x08)), Drops::Dropped(0x08));
+		assert_eq!(drops(Some(0x09)), Drops::Dropped(0x09));
+	}
+
+	#[test]
+	fn error_state_without_overrun_is_not_a_drop() {
+		assert_eq!(drops(Some(0x00)), Drops::None);
+		assert_eq!(drops(Some(0x24)), Drops::None);
+	}
 
 	#[test]
 	fn diag_ids_are_recognised_across_both_addressing_forms() {

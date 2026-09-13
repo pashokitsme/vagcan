@@ -50,13 +50,17 @@ map, protocol mode and control point, plus mandatory encryption and bonding — 
 a device that pretends to be a keyboard, which a dash is not. Not done, and not needed:
 the laptop talks to it with code, which is the case that matters.
 
-## The three services on the device
+## The two services on the device
 
 | service | UUID | why |
 |---|---|---|
 | Device Information | `0x180A` | manufacturer / model / firmware revision. Every scanner and OS reads it; it costs three constant strings and the device stops being anonymous |
-| Battery | `0x180F` | notifies a level. A standard profile with a visible effect — and where `08`'s 12 V rail measurement will eventually surface |
 | Nordic UART | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | the pipe. `…0002` is written by the central, `…0003` notifies back |
+
+**There is no Battery service (`0x180F`).** It was here once, notifying an invented
+100→0 ramp, and a phone shows that as the device's battery. The board has no battery and
+no rail measurement (the divider was retired), so there is nothing real to report; it
+returns only with a measurement behind it.
 
 **NUS is not a SIG profile** — it is Nordic's convention, and it won by being what every
 BLE terminal application implements. It is the honest replacement for SPP: two

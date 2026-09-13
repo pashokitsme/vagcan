@@ -53,6 +53,11 @@ workspace member.
 cargo run --release --manifest-path research/dash/host/Cargo.toml --bin dashsim
 ```
 
+With no port it opens the one port under Espressif's USB vendor id (`303a`) —
+not the first `usbmodem`, which on a desk with a CANable is the CANable — and
+says so when there is none or several. The status line names the port it
+opened. `--help` for the rest.
+
 **One press is one press.** A held key auto-repeats, and on 2026-09-13 every
 repeat went down the wire — one keystroke, a dozen page turns. Where the
 terminal speaks the kitty keyboard protocol (kitty, WezTerm, foot, Ghostty,
@@ -79,7 +84,9 @@ Every firmware image links one car's plan, chosen when `build.rs` runs:
 
 All in `crates/dash/vag-dash-fw/src/bin/`; the rule is whether the image ever
 drives the pair. Anything that does is bench only, because a car's units log
-what they see.
+what they see — and it is built only with `--features bench`
+(`cargo build --release --features bench --bin cantx`), so a plain build of the
+firmware cannot produce one.
 
 | tool | does | car? |
 |---|---|---|
@@ -90,7 +97,9 @@ what they see.
 | `slcan` | the board as a CAN adapter: slcan on the USB console, `vagcan --device` drives it like the CANable | **yes** — it is the adapter; it puts on the bus only what `vagcan` asks, which the allowlist bounds. `can-bring-up.md` §9 |
 
 `bench.sh` (here) flashes a transmitter and sniffs on the CANable in one
-command; `can-bring-up.md` §5.3 says how to read its verdict.
+command; `can-bring-up.md` §5.3 says how to read its verdict. It leaves the
+board running the bench image and says so as its last line: reflash `dash` or
+`slcan` before the board goes anywhere near a car.
 
 ## References
 

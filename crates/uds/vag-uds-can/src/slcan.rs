@@ -92,11 +92,18 @@ pub fn decode_frame(line: &str) -> Result<(u32, Vec<u8>), CanError> {
 pub struct SlcanBackend<S> {
 	stream: S,
 	buf: Vec<u8>,
+	/// Frames read while waiting for a command's reply, handed out by
+	/// [`CanBackend::recv_frame`] before anything new — see [`Self::status_flags`].
+	pending: std::collections::VecDeque<Result<(u32, Vec<u8>), CanError>>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub fn new(stream: S) -> Self {
-		SlcanBackend { stream, buf: Vec::new() }
+		SlcanBackend {
+			stream,
+			buf: Vec::new(),
+			pending: std::collections::VecDeque::new(),
+		}
 	}
 
 	/// Send the channel-open sequence in [`SlcanMode::Normal`] — see
@@ -120,6 +127,39 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub async fn open_channel_mode(&mut self, bitrate: SlcanBitrate, mode: SlcanMode) -> Result<(), CanError> {
 		let cmd = format!("C\rS{}\rM{}\rO\r", bitrate as u8, mode as u8);
 		self.write_all(cmd.as_bytes()).await
+	}
+
+	/// Ask the adapter for its Lawicel status flags (`F`): `Some(bits)` from an
+	/// `Fxx` reply within `wait`, `None` when none came.
+	///
+	/// **`None` is "not known", never "no flags".** The CANable's firmware has
+	/// no `F` and answers nothing; the vag-dash board's `slcan` image answers,
+	/// and counts frames its ring could not hold into bit 3 (data overrun) with
+	/// bit 0 (receive queue full). The bits clear on read.
+	///
+	/// Safe on an open channel: frames that arrive while the reply is awaited
+	/// are kept, in order, and [`CanBackend::recv_frame`] returns them before
+	/// reading anything new — asking must not cost the capture a frame.
+	pub async fn status_flags(&mut self, wait: Duration) -> Result<Option<u8>, CanError> {
+		self.write_all(b"F\r").await?;
+		let deadline = Instant::now() + wait;
+		loop {
+			let line = match self.read_line(deadline).await {
+				Ok(line) => line,
+				Err(CanError::Timeout) => return Ok(None),
+				Err(e) => return Err(e),
+			};
+			let text = String::from_utf8_lossy(&line);
+			let text = text.trim_matches(|c: char| c == '\u{7}' || c.is_whitespace());
+			match text.as_bytes() {
+				[b't' | b'T', ..] => self.pending.push_back(decode_frame(text)),
+				[b'F', hi, lo] if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() => {
+					return Ok(u8::from_str_radix(&text[1..], 16).ok());
+				}
+				// Acks and other replies are not the answer, and not bus traffic.
+				_ => continue,
+			}
+		}
 	}
 
 	/// Send the channel-close command.
@@ -164,6 +204,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> CanBackend for SlcanBackend<S> {
 	}
 
 	async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+		if let Some(frame) = self.pending.pop_front() {
+			return frame;
+		}
 		let deadline = Instant::now() + timeout;
 		loop {
 			let line = self.read_line(deadline).await?;
@@ -190,7 +233,14 @@ pub struct AdapterInfo {
 	pub description: String,
 	/// True when the USB ids match an adapter we know speaks slcan.
 	pub known: bool,
+	/// True for the vag-dash board's own USB ([`BOARD_USB`]).
+	pub board: bool,
 }
+
+/// Espressif's USB-Serial-JTAG, the ESP32-C3's own USB, which the vag-dash
+/// board enumerates under whatever image it runs.
+#[cfg(feature = "slcan")]
+pub const BOARD_USB: (u16, u16) = (0x303a, 0x1001);
 
 /// USB ids of adapters known to run slcan firmware. Used only to *rank*
 /// candidates — an unknown device is still offered, since plenty of adapters
@@ -200,13 +250,11 @@ const KNOWN_ADAPTERS: &[(u16, u16, &str)] = &[
 	(0x16d0, 0x117e, "CANable 2.0 (slcan)"),
 	(0x16d0, 0x117f, "CANable (slcan)"),
 	(0xad50, 0x60c4, "CANable (slcan, older)"),
-	// Espressif's USB-Serial-JTAG, which is the ESP32-C3's own USB. The dash
-	// board enumerates under it whatever image it runs, and only the `slcan`
-	// image (`crates/dash/vag-dash-fw/src/bin/slcan.rs`) is an adapter — the
-	// `dash` image answers nothing on the bus, and a `vagcan` opened on it
-	// simply times out. The listing cannot tell them apart from the ids; a
-	// `V` that comes back is what proves the port is an adapter.
-	(0x303a, 0x1001, "vag-dash board (slcan over USB, when running the slcan firmware)"),
+	// Not here: the vag-dash board, `BOARD_USB`. Its ids are Espressif's
+	// USB-Serial-JTAG, which every ESP32-C3 and -S3 enumerates under whatever
+	// it runs, and only the board's `slcan` image is an adapter. Ids alone would
+	// mark every ESP32 on the desk a CAN adapter; `vag_cli_core::device` asks
+	// each such port `V` ([`probe_board`]) and only a reply makes it one.
 ];
 
 /// List serial devices that plausibly are CAN adapters, known ones first.
@@ -233,20 +281,116 @@ pub fn list_adapters() -> Result<Vec<AdapterInfo>, CanError> {
 		let SerialPortType::UsbPort(usb) = &port.port_type else {
 			continue;
 		};
-		let known = KNOWN_ADAPTERS.iter().find(|(v, p, _)| *v == usb.vid && *p == usb.pid);
-		let description = match known {
-			Some((_, _, name)) => (*name).to_string(),
-			None => usb.product.clone().unwrap_or_else(|| format!("USB {:04x}:{:04x}", usb.vid, usb.pid)),
-		};
-		out.push(AdapterInfo {
-			path: port.port_name,
-			description,
-			known: known.is_some(),
-		});
+		out.push(classify_usb(port.port_name, usb.vid, usb.pid, usb.product.clone()));
 	}
 	// Known adapters first, then alphabetically, so the default pick is stable.
 	out.sort_by(|a, b| b.known.cmp(&a.known).then_with(|| a.path.cmp(&b.path)));
 	Ok(out)
+}
+
+/// One USB serial port as the listing presents it.
+#[cfg(feature = "slcan")]
+pub fn classify_usb(path: String, vid: u16, pid: u16, product: Option<String>) -> AdapterInfo {
+	let known = KNOWN_ADAPTERS.iter().find(|(v, p, _)| *v == vid && *p == pid);
+	let description = match known {
+		Some((_, _, name)) => (*name).to_string(),
+		None => product.unwrap_or_else(|| format!("USB {vid:04x}:{pid:04x}")),
+	};
+	AdapterInfo {
+		path,
+		description,
+		known: known.is_some(),
+		board: (vid, pid) == BOARD_USB,
+	}
+}
+
+/// Whether the port answers slcan's version query (`V`) with a well-formed
+/// version line within `wait`.
+///
+/// Sends `V\r` and nothing else — no close, no open, nothing that reaches a
+/// bus — then reads until `wait` runs out, looking for a whole line that is
+/// Lawicel's `Vhhss` (`V` and four hex digits: hardware and software version).
+/// Lines before it are skipped: an slcan image with a channel left open queues
+/// bus frames ahead of the reply. The `dash` display image ignores the query
+/// and prints frames and log lines, none of which is such a line.
+///
+/// A read that times out is not an error here, only "nothing yet"; any other
+/// read error ends the probe as "no answer".
+pub fn answers_version<P: std::io::Read + std::io::Write>(port: &mut P, wait: Duration) -> bool {
+	let deadline = std::time::Instant::now() + wait;
+	if port.write_all(b"V\r").and_then(|()| port.flush()).is_err() {
+		return false;
+	}
+	let mut pending: Vec<u8> = Vec::new();
+	let mut chunk = [0u8; 256];
+	while std::time::Instant::now() < deadline {
+		match port.read(&mut chunk) {
+			Ok(0) => return false,
+			Ok(n) => pending.extend_from_slice(&chunk[..n]),
+			Err(e)
+				if matches!(
+					e.kind(),
+					std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+				) =>
+			{
+				continue;
+			}
+			Err(_) => return false,
+		}
+		while let Some(end) = pending.iter().position(|&b| b == b'\r' || b == b'\n') {
+			let line: Vec<u8> = pending.drain(..=end).collect();
+			// A BEL is an error reply with no CR of its own; it may prefix a line.
+			let line = line.trim_ascii();
+			let line = &line[line.iter().take_while(|&&b| b == 0x07).count()..];
+			if is_version_reply(line) {
+				return true;
+			}
+		}
+	}
+	false
+}
+
+/// `V` followed by exactly four hex digits.
+fn is_version_reply(line: &[u8]) -> bool {
+	matches!(line, [b'V', digits @ ..] if digits.len() == 4 && digits.iter().all(u8::is_ascii_hexdigit))
+}
+
+/// What a vag-dash board said when asked for its slcan version.
+#[cfg(feature = "slcan")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardAnswer {
+	/// A well-formed `V` reply: the `slcan` image, which is an adapter.
+	Slcan,
+	/// No such reply: the `dash` display image, or anything else not slcan.
+	Silent,
+	/// The port would not open to ask, with the reason — usually another
+	/// program holding it.
+	Unopened(String),
+}
+
+/// How long a board gets to answer `V`. The `slcan` image replies within a USB
+/// round trip, milliseconds; this is generous for that and short enough not to
+/// be noticed in front of a command.
+#[cfg(feature = "slcan")]
+pub const BOARD_PROBE_WAIT: Duration = Duration::from_millis(300);
+
+/// Open the board's port and ask it for its slcan version — see
+/// [`answers_version`]. Only ever call this on a [`BOARD_USB`] port: asking an
+/// unknown device a question is writing bytes into somebody else's console.
+#[cfg(feature = "slcan")]
+pub fn probe_board(path: &str, baud: u32, wait: Duration) -> BoardAnswer {
+	match tokio_serial::new(path, baud).timeout(Duration::from_millis(50)).open() {
+		Ok(mut port) => {
+			// Whatever the image printed before the question is not an answer to it.
+			let _ = port.clear(tokio_serial::ClearBuffer::Input);
+			if answers_version(&mut port, wait) {
+				BoardAnswer::Slcan
+			} else {
+				BoardAnswer::Silent
+			}
+		}
+		Err(e) => BoardAnswer::Unopened(e.to_string()),
+	}
 }
 
 /// An slcan backend over a real serial port — the concrete type callers name
@@ -326,6 +470,105 @@ mod tests {
 		}
 	}
 
+	/// A port that answers only what it was scripted to, and only once `V\r`
+	/// has been written to it. A timeout is what a real port with a timeout
+	/// returns when nothing arrives.
+	struct FakePort {
+		before: Vec<u8>,
+		after_v: Vec<u8>,
+		written: Vec<u8>,
+	}
+
+	impl FakePort {
+		fn new(before: &[u8], after_v: &[u8]) -> Self {
+			FakePort {
+				before: before.to_vec(),
+				after_v: after_v.to_vec(),
+				written: Vec::new(),
+			}
+		}
+	}
+
+	impl std::io::Read for FakePort {
+		fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+			let asked = self.written.windows(2).any(|w| w == b"V\r");
+			let source = if !self.before.is_empty() {
+				&mut self.before
+			} else if asked && !self.after_v.is_empty() {
+				&mut self.after_v
+			} else {
+				return Err(std::io::ErrorKind::TimedOut.into());
+			};
+			// Seven bytes at a time, so a line split across reads is exercised.
+			let n = source.len().min(buf.len()).min(7);
+			buf[..n].copy_from_slice(&source[..n]);
+			source.drain(..n);
+			Ok(n)
+		}
+	}
+
+	impl std::io::Write for FakePort {
+		fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+			self.written.extend_from_slice(buf);
+			Ok(buf.len())
+		}
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	const WAIT: Duration = Duration::from_millis(30);
+
+	#[test]
+	fn the_slcan_image_answers_the_version_query() {
+		let mut port = FakePort::new(b"", b"V0101\r");
+		assert!(answers_version(&mut port, WAIT));
+		assert_eq!(port.written, b"V\r", "the probe sends the version query and nothing else");
+	}
+
+	#[test]
+	fn bus_frames_ahead_of_the_reply_do_not_hide_it() {
+		// An slcan image with its channel left open queues frames before the reply.
+		let mut port = FakePort::new(b"T17F0001080102030405060708\r", b"t7E8025003\rV0101\r");
+		assert!(answers_version(&mut port, WAIT));
+	}
+
+	#[test]
+	fn the_display_image_does_not_answer() {
+		// `dash` prints frames and log lines and ignores slcan commands.
+		let mut port = FakePort::new(
+			b"plan: 2 units, 9 channels\r\nFRAME 256 64 AAAA\r\ncan: 7E0 timeout\r\n",
+			b"FRAME 256 64 AAAA\r\n",
+		);
+		assert!(!answers_version(&mut port, WAIT));
+	}
+
+	#[test]
+	fn silence_is_not_an_answer() {
+		let mut port = FakePort::new(b"", b"");
+		assert!(!answers_version(&mut port, WAIT));
+	}
+
+	#[test]
+	fn a_version_that_is_not_a_whole_well_formed_line_is_not_an_answer() {
+		for reply in [&b"V01\r"[..], b"note: V0101 somewhere\r", b"V0101", b"\x07", b"VZZZZ\r"] {
+			let mut port = FakePort::new(b"", reply);
+			assert!(!answers_version(&mut port, WAIT), "accepted {:?}", String::from_utf8_lossy(reply));
+		}
+	}
+
+	#[cfg(feature = "slcan")]
+	#[test]
+	fn the_board_is_not_a_known_adapter_by_its_ids_alone() {
+		// Every ESP32-C3 and -S3 enumerates as 303a:1001. The ids say "a board
+		// that might be an adapter"; only an answer to `V` says it is one.
+		let board = classify_usb("/dev/cu.usbmodem1101".into(), 0x303a, 0x1001, Some("USB JTAG/serial debug unit".into()));
+		assert!(board.board);
+		assert!(!board.known, "{board:?}");
+		let canable = classify_usb("/dev/cu.usbmodem206E37A148451".into(), 0x16d0, 0x117e, None);
+		assert!(canable.known && !canable.board, "{canable:?}");
+	}
+
 	#[tokio::test]
 	async fn backend_writes_frame_as_ascii_line() {
 		let (client, mut adapter) = tokio::io::duplex(256);
@@ -364,6 +607,41 @@ mod tests {
 		let mut backend = SlcanBackend::new(client);
 		let err = backend.recv_frame(Duration::from_millis(50)).await.unwrap_err();
 		assert!(matches!(err, CanError::Disconnected), "got {err:?}");
+	}
+
+	#[tokio::test]
+	async fn status_flags_are_read_from_the_f_reply() {
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client);
+		adapter.write_all(b"F08\r").await.unwrap();
+		assert_eq!(backend.status_flags(Duration::from_millis(200)).await.unwrap(), Some(0x08));
+		let mut got = vec![0u8; 16];
+		let n = adapter.read(&mut got).await.unwrap();
+		assert_eq!(&got[..n], b"F\r");
+	}
+
+	#[tokio::test]
+	async fn frames_that_arrive_ahead_of_the_f_reply_are_not_lost() {
+		// The channel is open while the question is asked; the bus does not wait.
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client);
+		adapter.write_all(b"t7E825003\rT17F00010101\rF00\rt7E9101\r").await.unwrap();
+		assert_eq!(backend.status_flags(Duration::from_millis(200)).await.unwrap(), Some(0));
+		let wait = Duration::from_millis(50);
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E8, vec![0x50, 0x03]));
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x17F0_0010 | CAN_EFF_FLAG, vec![0x01]));
+		assert_eq!(backend.recv_frame(wait).await.unwrap(), (0x7E9, vec![0x01]));
+	}
+
+	#[tokio::test]
+	async fn an_adapter_without_f_reports_nothing_rather_than_no_flags() {
+		// The CANable's firmware has no `F`: silence, or a BEL, is "not known".
+		for reply in [&b""[..], b"\x07", b"z\r"] {
+			let (client, mut adapter) = tokio::io::duplex(256);
+			let mut backend = SlcanBackend::new(client);
+			adapter.write_all(reply).await.unwrap();
+			assert_eq!(backend.status_flags(Duration::from_millis(30)).await.unwrap(), None, "{reply:?}");
+		}
 	}
 
 	#[tokio::test]

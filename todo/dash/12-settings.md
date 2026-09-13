@@ -76,6 +76,15 @@ reads at boot. And `load()` reports `Empty` rather than quietly substituting def
 "never saved" and "saved these defaults" are different facts, and only one of them is a
 bug.
 
+**A stored configuration whose pages are not the plan's pages is discarded.** Nothing on
+the device edits pages (the commands below set brightness and the active page), so every
+page list it ever saved was the plan's own; a list that differs was saved by an image built
+from an older `dash.toml`. Honouring it hid the plan's new chart page on 2026-09-13 — every
+cell was in range, so it passed, and the only trace was an early boot `info!`. Now the
+plan's pages win, and the board says so as a `settings:` line to the laptop
+(`vag_dash_render::pages::mismatch`, tested on the host). Once pages become editable on the
+device this has to become a record of which plan a configuration was saved against.
+
 ## What was verified on the board
 
 Over BLE, using `bleecho` from [`research/dash/host`](../../research/dash/host):

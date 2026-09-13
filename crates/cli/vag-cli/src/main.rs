@@ -407,7 +407,7 @@ enum Dev {
 		extended: bool,
 	},
 
-	/// Watch the bus. Listen-only: cannot disturb anything.
+	/// Watch the bus. Listen-only by default: nothing is acknowledged or sent.
 	///
 	/// Made to run alongside VCDS — CAN is multi-drop, so both adapters share
 	/// the bus and this one records the whole conversation.
