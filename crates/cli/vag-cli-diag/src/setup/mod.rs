@@ -741,6 +741,9 @@ fn read_odis(odis: &vag_data_labels::odis::Project, dir: &Path, project: &crate:
 			}
 		}
 	}
+	// Both batches replace everything this source wrote before, not only the
+	// variants in them: a variant that read last time and not this time must not
+	// keep last time's rows.
 	let codes = timed("faults (sqlite)", || vag_data_db::put_all_faults(&project.cache(), &source, fault_rows))
 		.map_err(|e| anyhow::anyhow!("writing the fault codes to {}: {e}", project.cache().display()))?;
 	let channels = timed("readings (sqlite)", || {

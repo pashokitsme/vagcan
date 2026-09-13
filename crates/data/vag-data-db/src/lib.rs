@@ -641,48 +641,62 @@ pub fn source_languages(db_path: &Path) -> Result<Vec<(String, String, Option<St
 	Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Replace everything one ODIS source has contributed, and write these readings.
+/// What a write replaces before it inserts.
+///
+/// **Two answers, because there are two callers with two meanings.** `setup`
+/// hands over a whole project, and what that project no longer has must go with
+/// what it has: a variant whose table now refuses or comes back empty, or that
+/// a re-downloaded project at the same folder simply does not carry, is not in
+/// the batch at all, and deleting per variant in the batch left last run's rows
+/// for it — rows the variant match still picked and the counts still counted. A
+/// single-variant write is a statement about that variant alone.
+#[derive(Clone, Copy)]
+enum Replace {
+	/// Every row this source wrote, whatever variant.
+	Source,
+	/// Only the rows of each variant in the batch.
+	EachVariant,
+}
+
+/// Replace one variant's channels from one ODIS source, and write these.
 ///
 /// Replace rather than append: a second parse of the same project is a *reread*,
 /// not a second opinion, and appending would double every channel. Scoped to
-/// this source's own rows, so a VCDS parse of the same car is untouched —
-/// design §4.5's "an ODIS parse never deletes VCDS-derived rows or vice versa".
+/// this source and this variant, so the source's other variants, another
+/// project's rows and a VCDS parse of the same car are all untouched — design
+/// §4.5's "an ODIS parse never deletes VCDS-derived rows or vice versa".
 ///
 /// Returns how many channels landed.
 pub fn put_readings(db_path: &Path, project_dir: &str, variant: &str, readings: &[vag_data_labels::odis::Reading]) -> Result<usize, Error> {
-	put_all_readings(db_path, project_dir, std::iter::once((variant, readings)))
+	write_readings(db_path, project_dir, std::iter::once((variant, readings)), Replace::EachVariant)
 }
 
-/// [`put_readings`] for every variant of a project, in **one** transaction.
+/// Everything one ODIS source says about channels, in **one** transaction,
+/// replacing everything that source said before.
 ///
-/// Same rows, same order, same ids as calling [`put_readings`] once per
-/// variant in the same order — that equivalence was checked by diffing every
-/// row of a whole-project parse against the one-at-a-time version. What
-/// differs is the cost: 669 transactions were 669 commits, each a journal
-/// write and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down
-/// to 10; one transaction is a fraction of a second.
+/// **The batch is the source's whole contribution**: every channel row of this
+/// source is deleted first — including variants not in the batch — and the rows
+/// of every other source stay. On a first write that is the same rows, in the
+/// same order, with the same ids as [`put_readings`] once per variant; that
+/// equivalence was checked by diffing every row of a whole-project parse. What
+/// differs is the cost: 669 transactions were 669 commits, each a journal write
+/// and an fsync, and 2.4 s of a `vagcan setup` whose parse had come down to 10;
+/// one transaction is a fraction of a second.
 ///
-/// **`synchronous = FULL`, stated rather than inherited, and it costs nothing
-/// measurable.** It was `OFF`, on the argument that these rows are a cache of
-/// a file still on disk and a power cut could cost only the run. That was
-/// wrong twice: SQLite documents that `OFF` can leave the *file* corrupt after
-/// a power loss or an OS crash, not merely the transaction lost, and the same
-/// `cache.sqlite` holds the VCDS label rows, which cannot be rebuilt once the
-/// installation they came from is deleted (D4/D5). With one transaction per
-/// batch there are only a handful of syncs to pay for: timed on the reference
-/// project (`VAGCAN_TIMING=1`, 282,621 codes, 399,283 channels), the faults and
-/// readings stages took 0.34–0.38 s and 0.82–0.87 s under each of `OFF`,
-/// `NORMAL` and `FULL` on a fresh cache, and 0.54–0.72 s and 1.39–1.54 s on a
-/// re-run — the spread within a setting was larger than between them.
-///
-/// The rollback journal stays on, so a crash of the *process* mid-write leaves
-/// a cache the next open rolls back rather than a corrupt one
-/// ([`open_existing`]). Both settings are per-connection, and this connection
-/// is closed on return.
 pub fn put_all_readings<'a>(
 	db_path: &Path,
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+) -> Result<usize, Error> {
+	write_readings(db_path, project_dir, variants, Replace::Source)
+}
+
+/// The one writer behind [`put_readings`] and [`put_all_readings`].
+fn write_readings<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Reading])>,
+	replace: Replace,
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
@@ -692,6 +706,14 @@ pub fn put_all_readings<'a>(
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
+
+	if let Replace::Source = replace {
+		tx.execute(
+			"DELETE FROM reading_level WHERE reading_id IN (SELECT id FROM reading WHERE source_id = ?1)",
+			params![source],
+		)?;
+		tx.execute("DELETE FROM reading WHERE source_id = ?1", params![source])?;
+	}
 
 	let mut written = 0usize;
 	{
@@ -708,8 +730,10 @@ pub fn put_all_readings<'a>(
 		)?;
 		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
 		for (variant, readings) in variants {
-			delete_levels.execute(params![source, variant])?;
-			delete.execute(params![source, variant])?;
+			if let Replace::EachVariant = replace {
+				delete_levels.execute(params![source, variant])?;
+				delete.execute(params![source, variant])?;
+			}
 			for r in readings {
 				let (kind, factor, offset, anchor_raw, anchor_value) = match &r.scaling {
 					Scaling::Linear(s) => ("linear", Some(s.factor), Some(s.offset), None, None),
@@ -769,16 +793,27 @@ pub fn record_language(db_path: &Path, kind: &str, dir: &str, language: &str) ->
 /// this variant, so a second project's rows for a variant of the same name
 /// stand untouched beside them. Returns how many codes landed.
 pub fn put_faults(db_path: &Path, project_dir: &str, variant: &str, faults: &[vag_data_labels::odis::Fault]) -> Result<usize, Error> {
-	put_all_faults(db_path, project_dir, std::iter::once((variant, faults)))
+	write_faults(db_path, project_dir, std::iter::once((variant, faults)), Replace::EachVariant)
 }
 
-/// [`put_faults`] for every variant of a project, in **one** transaction —
-/// the same batch [`put_all_readings`] is for channels, with the same
+/// Every fault code one ODIS source describes, in **one** transaction,
+/// replacing everything that source described before — the same batch, and the
+/// same whole-source rule, [`put_all_readings`] is for channels, with the same
 /// per-connection `synchronous = FULL` and page cache, for the same reasons.
 pub fn put_all_faults<'a>(
 	db_path: &Path,
 	project_dir: &str,
 	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Fault])>,
+) -> Result<usize, Error> {
+	write_faults(db_path, project_dir, variants, Replace::Source)
+}
+
+/// The one writer behind [`put_faults`] and [`put_all_faults`].
+fn write_faults<'a>(
+	db_path: &Path,
+	project_dir: &str,
+	variants: impl IntoIterator<Item = (&'a str, &'a [vag_data_labels::odis::Fault])>,
+	replace: Replace,
 ) -> Result<usize, Error> {
 	let mut conn = Connection::open(db_path)?;
 	create_schema(&conn)?;
@@ -786,6 +821,9 @@ pub fn put_all_faults<'a>(
 	conn.pragma_update(None, "cache_size", -65536)?;
 	let tx = conn.transaction()?;
 	let source = source_id(&tx, ODIS, project_dir)?;
+	if let Replace::Source = replace {
+		tx.execute("DELETE FROM fault WHERE source_id = ?1", params![source])?;
+	}
 	let mut written = 0usize;
 	{
 		let mut delete = tx.prepare("DELETE FROM fault WHERE source_id = ?1 AND variant = ?2")?;
@@ -794,7 +832,9 @@ pub fn put_all_faults<'a>(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
 		)?;
 		for (variant, faults) in variants {
-			delete.execute(params![source, variant])?;
+			if let Replace::EachVariant = replace {
+				delete.execute(params![source, variant])?;
+			}
 			for f in faults {
 				insert.execute(params![
 					source,
@@ -1284,47 +1324,49 @@ mod tests {
 		// The whole-project write is a batch of the per-variant one, and what
 		// makes it safe to switch `setup` over is that nothing about the rows
 		// changes: same rows, same order, same ids, same levels — and a second
-		// run still *replaces* a variant's rows rather than doubling them.
+		// run of either still *replaces* rather than doubling.
 		let levels = Scaling::Enum {
 			levels: vec![(0, "P".to_string()), (1, "R".to_string())],
 		};
 		let identity = Scaling::Linear(vag_data_labels::measure::LinearScale { factor: 1.0, offset: 0.0 });
 		let ecm = vec![reading(0x380A, "speed", identity.clone()), reading(0x2000, "rpm", levels.clone())];
 		let gearbox = vec![reading(0x380A, "gear", levels)];
-
-		let one_by_one = TempWorkspace::new("onebyone");
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_Gearbox", &gearbox).unwrap();
-		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
-
-		let batched = TempWorkspace::new("batched");
 		let batch = [("EV_ECM", ecm.as_slice()), ("EV_Gearbox", gearbox.as_slice())];
-		assert_eq!(put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap(), 3);
-		// The rerun that replaces, batched too.
-		put_all_readings(&batched.db_path, "/x/SK37X", [("EV_ECM", ecm.as_slice())]).unwrap();
 
-		let dump = |path: &Path| -> Vec<(i64, String, u16, String, String)> {
+		let dump = |path: &Path, with_id: bool| -> Vec<(i64, String, u16, String, String)> {
 			let conn = open_existing(path).unwrap();
 			let mut stmt = conn
 				.prepare(
 					"SELECT r.id, r.variant, r.did, r.scaling, COALESCE(GROUP_CONCAT(l.raw || '=' || l.meaning, ','), '') \
                      FROM reading r LEFT JOIN reading_level l ON l.reading_id = r.id \
-                     GROUP BY r.id ORDER BY r.id",
+                     GROUP BY r.id ORDER BY r.variant, r.did, r.id",
 				)
 				.unwrap();
 			stmt
-				.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+				.query_map([], |row| {
+					Ok((if with_id { row.get(0)? } else { 0 }, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+				})
 				.unwrap()
 				.collect::<rusqlite::Result<_>>()
 				.unwrap()
 		};
-		let (a, b) = (dump(&one_by_one.db_path), dump(&batched.db_path));
-		assert_eq!(
-			a.len(),
-			3,
-			"two ECM rows and one gearbox row, the rerun having replaced rather than added: {a:?}"
-		);
+
+		let one_by_one = TempWorkspace::new("onebyone");
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_Gearbox", &gearbox).unwrap();
+		let batched = TempWorkspace::new("batched");
+		assert_eq!(put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap(), 3);
+		let (a, b) = (dump(&one_by_one.db_path, true), dump(&batched.db_path, true));
+		assert_eq!(a.len(), 3, "two ECM rows and one gearbox row: {a:?}");
 		assert_eq!(a, b, "the batch must write exactly what the per-variant calls wrote");
+
+		// The reruns that replace. The ids move on — a replaced row is a new row
+		// — and nothing else does.
+		put_readings(&one_by_one.db_path, "/x/SK37X", "EV_ECM", &ecm).unwrap();
+		put_all_readings(&batched.db_path, "/x/SK37X", batch).unwrap();
+		let (a, b) = (dump(&one_by_one.db_path, false), dump(&batched.db_path, false));
+		assert_eq!(a.len(), 3, "the rerun replaced rather than added: {a:?}");
+		assert_eq!(a, b);
 	}
 
 	#[test]
@@ -1599,6 +1641,62 @@ mod tests {
 		assert_eq!(fault_counts(&ws.db_path).unwrap(), (1, 2));
 		// A variant nobody wrote is an empty answer, not an error.
 		assert!(faults_of(&ws.db_path, "EV_Nobody").unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_whole_project_reread_drops_the_variants_it_no_longer_has_and_no_other_sources() {
+		// The stale-row bug: `setup` hands over only the variants that read this
+		// time. A variant whose fault table now refuses, is empty, or is gone
+		// from a re-downloaded project at the same folder kept last run's rows —
+		// which `fault_variants` still offered to the variant match and
+		// `fault_counts` still counted. A reread of a source is that source's
+		// whole contribution, so everything else it wrote goes. Another
+		// project's rows for the same variant names are not its to drop.
+		let ws = TempWorkspace::new("stale-faults");
+		let (a, b) = ([fault(297, "a")], [fault(298, "b")]);
+		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_A", &a[..]), ("EV_B", &b[..])]).unwrap();
+		put_all_faults(&ws.db_path, "/y/SK37X-eng", [("EV_B", &b[..])]).unwrap();
+
+		put_all_faults(&ws.db_path, "/x/SK37X", [("EV_A", &a[..])]).unwrap();
+
+		let from = |variant: &str| -> Vec<String> { faults_of(&ws.db_path, variant).unwrap().into_iter().map(|row| row.source_dir).collect() };
+		assert_eq!(from("EV_A"), ["/x/SK37X"]);
+		assert_eq!(from("EV_B"), ["/y/SK37X-eng"], "the reread kept a variant it no longer has");
+		assert_eq!(fault_counts(&ws.db_path).unwrap(), (2, 2));
+	}
+
+	#[test]
+	fn a_whole_project_reread_drops_the_channels_of_variants_it_no_longer_has() {
+		// The same rule for channels, and their levels with them: a
+		// `reading_level` left pointing at a deleted `reading` is a row nothing
+		// can reach and something still stores.
+		let ws = TempWorkspace::new("stale-readings");
+		let levels = Scaling::Enum {
+			levels: vec![(0, "P".to_string())],
+		};
+		let a = [reading(0x2000, "a", levels.clone())];
+		let b = [reading(0x2001, "b", levels)];
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_A", &a[..]), ("EV_B", &b[..])]).unwrap();
+		put_all_readings(&ws.db_path, "/y/SK37X-eng", [("EV_B", &b[..])]).unwrap();
+
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_A", &a[..])]).unwrap();
+
+		assert_eq!(readings_of(&ws.db_path, "EV_A").unwrap().len(), 1);
+		assert_eq!(
+			readings_of(&ws.db_path, "EV_B").unwrap().len(),
+			1,
+			"the reread kept a variant it no longer has, or dropped another source's"
+		);
+		assert_eq!(channel_counts(&ws.db_path).unwrap(), (2, 2));
+		let conn = open_existing(&ws.db_path).unwrap();
+		let orphans: i64 = conn
+			.query_row(
+				"SELECT COUNT(*) FROM reading_level WHERE reading_id NOT IN (SELECT id FROM reading)",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(orphans, 0, "levels outlived their channels");
 	}
 
 	#[test]
