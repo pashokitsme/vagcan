@@ -594,7 +594,7 @@ fn run_with(io: &mut impl crate::ui::menu::Asker, dialog: &mut impl source::Dial
 	// project that already holds ODIS rows must not close by telling its reader
 	// there are no scalings anywhere.
 	let scalings = !crate::extracted::open(project).is_empty();
-	let fault_labels = crate::faultnames::has_fault_labels(&crate::project::rod_pool()?);
+	let fault_labels = crate::faultnames::has_fault_labels(&crate::project::rod_pool()?) || crate::odisfaults::OdisFaults::open().is_some();
 	println!("\n{}", report(&steps, scalings, fault_labels));
 	Ok(())
 }
@@ -1140,24 +1140,6 @@ const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS i
      files have names, not numbers. Those are measured: `vagcan dev survey`, then \n\
      `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
 
-/// What to say when the project now holds scalings.
-///
-/// **The opposite sentence, and printing the wrong one is worse than printing
-/// neither.** An ODIS project declares a scaling per ECU variant, so a channel
-/// it describes reads as a number the first time, with no drive — and a reader
-/// who was told otherwise goes and measures rows the tool already has.
-///
-/// It still has to say what these are worth. They are evidence and not proof
-/// (design §4.5): nothing here has been confirmed against a car, a row somebody
-/// proved themselves wins where the two disagree, and the three steps that
-/// settle it are the same three as ever.
-const SCALINGS_HERE: &str = "This project carries scalings, declared per ECU variant — so a channel it \n\
-     describes reads as a number the first time, with no drive.\n\n\
-     They are evidence, not proof: nothing in them has been confirmed against a \n\
-     car, and where a row you proved yourself disagrees, yours wins. Confirming \n\
-     one is the same three steps as ever: `vagcan dev survey`, then \n\
-     `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
-
 /// `scalings` is whether the project now holds per-variant scalings — the one
 /// fact the closing sentence turns on, and asked of the store rather than of
 /// which branch ran, so a VCDS run into a project that already has them does not
@@ -1196,26 +1178,26 @@ fn report(steps: &[Step], scalings: bool, fault_labels: bool) -> String {
 	}
 	// The fault line is conditional because it was a lie on the ODIS-only path:
 	// it announced that the labels are copied in after a run that copied
-	// nothing, and naming a code still reads those files off disk. An ODIS
-	// project does carry its fault text — 329,268 `DTC_*` objects, descriptions
-	// in the clear — so this is a missing loader and not a missing source, and
-	// the line says which, because "you need VCDS for fault names" is the wrong
-	// thing to learn from it.
+	// nothing. `fault_labels` is whether either source can name a code now —
+	// VCDS's label files, or the fault text an ODIS project carries — so the
+	// line promises names only when `vagcan faults` will print them.
 	let faults = match fault_labels {
-		true => "vagcan faults       stored faults, named — the labels are copied in now",
-		false => "vagcan faults       stored faults, as numbers — naming them needs a VCDS read, for now",
+		true => "vagcan faults       stored faults, named",
+		false => "vagcan faults       stored faults, as numbers — no fault text read",
 	};
 	let _ = write!(
 		out,
 		"\nNext:  vagcan devices      is the adapter connected?\n       \
          vagcan info         which car is this?\n       \
-         {faults}\n\n\
-         {}",
-		match scalings {
-			true => SCALINGS_HERE,
-			false => SCALINGS_ARE_MEASURED,
-		}
+         {faults}"
 	);
+	// Said only where it is true. An ODIS project declares a scaling per variant,
+	// so "they must be measured" would be false there; the paragraph that once
+	// replaced it was more noise than use (owner, 2026-09-13), so an ODIS run
+	// closes on the commands.
+	if !scalings {
+		let _ = write!(out, "\n\n{SCALINGS_ARE_MEASURED}");
+	}
 	out
 }
 
@@ -1535,19 +1517,15 @@ mod tests {
 
 	#[test]
 	fn a_run_that_read_scalings_does_not_close_by_saying_there_are_none() {
-		// The defect this pair of footers exists for. An ODIS run reported
+		// The defect this footer split exists for. An ODIS run reported
 		// "633 of 717 variants, 310734 channels" and then, two lines later,
 		// that no installation carries scalings and they must be measured. A
 		// reader who believes the footer goes and drives the car to establish
-		// rows the tool already has.
+		// rows the tool already has. It now closes on the commands.
 		let r = report(&[], true, true);
-		assert!(r.contains("carries scalings"), "{r}");
-		assert!(!r.contains("no VCDS installation carries them"), "it printed both, which is worse: {r}");
-		// And it still says what they are worth, or it has replaced one wrong
-		// claim with a larger one.
-		assert!(r.contains("evidence, not proof"), "{r}");
-		assert!(r.contains("yours wins"), "the trust order survives the good news: {r}");
-		assert!(r.contains("recording calibrate"), "the way to confirm one is still named: {r}");
+		assert!(!r.contains("no VCDS installation carries them"), "{r}");
+		assert!(!r.contains("carries scalings"), "the paragraph the owner dropped is gone: {r}");
+		assert!(r.trim_end().ends_with("stored faults, named"), "{r}");
 	}
 
 	#[test]
@@ -1559,14 +1537,12 @@ mod tests {
 		let without = report(&[], true, false);
 		assert!(without.contains("as numbers"), "{without}");
 		assert!(!without.contains("copied in"), "{without}");
-		// And it must not teach the wrong lesson on the way past. An ODIS
-		// project carries its fault text; what is missing is a loader, so the
-		// line says "for now" rather than making VCDS sound like the only
-		// source a fault name can ever come from.
-		assert!(without.contains("for now"), "{without}");
+		// And it must not teach the wrong lesson on the way past: neither
+		// source is named as the only place fault text can come from.
+		assert!(!without.contains("VCDS"), "{without}");
 
 		let with = report(&[], true, true);
-		assert!(with.contains("copied in"), "{with}");
+		assert!(with.contains("stored faults, named"), "{with}");
 		assert!(!with.contains("as numbers"), "{with}");
 	}
 
@@ -1575,7 +1551,7 @@ mod tests {
 		// Caught twice on real terminals: a sentence written against a short
 		// test path wraps on a real one. Neither of these interpolates
 		// anything, so their width is knowable here and worth pinning.
-		for r in [report(&[], false, true), report(&[], true, true)] {
+		for r in [report(&[], false, true), report(&[], true, true), report(&[], true, false)] {
 			for line in r.lines() {
 				assert!(line.chars().count() <= 80, "{} columns: {line:?}", line.chars().count());
 			}

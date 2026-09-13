@@ -74,8 +74,9 @@ const SHOW_ELAPSED_AFTER: Duration = Duration::from_secs(5);
 struct State {
 	/// The message last set. Empty until the first `update`.
 	message: String,
-	/// Which frame the spinner is on. Advances on every draw and every update,
-	/// so the animation matches how long the wait has actually been.
+	/// Which frame the spinner is on. Advances on the ticker's clock alone, so
+	/// it turns at one speed however often the caller has news: a loop that
+	/// reports a hundred items a second must not make it blur.
 	step: u64,
 	/// How many columns the last draw covered, so a shorter message can pad
 	/// over the tail of a longer one.
@@ -117,10 +118,14 @@ impl Shared {
 	}
 
 	/// Redraw the current message on stderr, if drawing is allowed and the
-	/// line is active. Advances the spinner either way, so the first frame
+	/// line is active. `tick` is whether this is the ticker's redraw, the only
+	/// thing that moves the spinner on — a new message is drawn on the frame
+	/// already showing. Ticks count before the threshold too, so the first frame
 	/// drawn is not always the first one.
-	fn draw(&self, state: &mut State) {
-		state.step += 1;
+	fn draw(&self, state: &mut State, tick: bool) {
+		if tick {
+			state.step += 1;
+		}
 		if !state.active || !self.may_draw() {
 			return;
 		}
@@ -210,7 +215,7 @@ impl Line {
 				while !shared.stop.load(Ordering::Relaxed) {
 					thread::sleep(TICK);
 					if let Ok(mut state) = shared.state.lock() {
-						shared.draw(&mut state);
+						shared.draw(&mut state, true);
 					}
 				}
 			})
@@ -227,11 +232,8 @@ impl Line {
 	}
 
 	/// Redraw with a new message, once the operation has run long enough to
-	/// be worth reporting.
-	///
-	/// Calls before [`THRESHOLD`] still advance the spinner, so the first
-	/// frame drawn is not always the first one — the animation matches how
-	/// long the wait has actually been.
+	/// be worth reporting. The spinner stays on its frame: it turns with the
+	/// ticker, not with the messages.
 	pub fn update(&mut self, message: &str) {
 		self.reporter.set(message);
 	}
@@ -289,7 +291,7 @@ impl Reporter {
 			state.message.clear();
 			state.message.push_str(message);
 			state.active = true;
-			self.shared.draw(&mut state);
+			self.shared.draw(&mut state, false);
 		}
 	}
 }
@@ -387,25 +389,34 @@ mod tests {
 		for _ in 0..5 {
 			line.update("identifying control units");
 		}
-		// Five updates plus however many ticks the thread managed; the ticks
-		// count too, since each is a frame the animation would have shown.
 		assert!(!line.state().drawn, "nothing on screen yet");
-		assert!(line.state().step >= 5, "but the spinner tracked the calls");
 	}
 
 	#[test]
 	fn off_a_terminal_nothing_is_ever_drawn() {
 		// Redirected to a file, a rewriting line turns every frame into scroll —
-		// a 23 000-file copy left half a megabyte of spinner. The spinner still
-		// tracks the calls; it just never writes. And no ticker is started at
-		// all: there is nothing for it to draw on.
+		// a 23 000-file copy left half a megabyte of spinner. And no ticker is
+		// started at all: there is nothing for it to draw on.
 		let mut line = Line::with(false, false);
 		assert!(line.worker.is_none(), "a non-terminal starts no ticker");
 		for _ in 0..5 {
 			line.update("copying");
 		}
 		assert!(!line.state().drawn, "a non-terminal must stay clean");
-		assert_eq!(line.state().step, 5, "but the calls were still counted");
+	}
+
+	#[test]
+	fn messages_do_not_turn_the_spinner() {
+		// The defect: `setup` reports every variant it finishes, hundreds a
+		// second across the rayon pool, and each report moved the frame on — the
+		// glyph blurred instead of turning. Only the ticker's clock moves it.
+		let mut line = drawing_line();
+		for i in 0..50 {
+			line.update(&format!("{i} of 717"));
+		}
+		assert_eq!(line.state().step, 0, "fifty messages, no tick, the same frame");
+		assert!(line.state().drawn, "and each message was still drawn");
+		line.finish();
 	}
 
 	#[test]
@@ -431,7 +442,7 @@ mod tests {
 		};
 		{
 			let mut state = line.state();
-			line.reporter.shared.draw(&mut state);
+			line.reporter.shared.draw(&mut state, true);
 		}
 		assert_eq!(line.state().step, step + 1, "the frame advanced");
 		assert_eq!(line.state().width, width, "and the same message was redrawn");
@@ -449,7 +460,7 @@ mod tests {
 		line.finish();
 		{
 			let mut state = line.state();
-			line.reporter.shared.draw(&mut state);
+			line.reporter.shared.draw(&mut state, true);
 		}
 		assert!(!line.state().drawn, "a cleared line stays cleared on a tick");
 		line.update("sweeping 713");

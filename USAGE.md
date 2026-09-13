@@ -91,7 +91,7 @@ takes a moment:
 Writing into /Users/you/.vagcan/data/SK37X
 
 Reading the ODIS project at /Users/you/Downloads/SK37X
-[1/2] Control units — walking each variant's measurement chain.
+[1/2] Control units — walking each variant's measurement chain and fault table.
 [2/2] Names — every object in every pool, for the (text id, name)
       pairs they carry.
 
@@ -104,24 +104,13 @@ Done.
 
 Next:  vagcan devices      is the adapter connected?
        vagcan info         which car is this?
-       vagcan faults       stored faults, named — the labels are copied in now
-
-This project carries scalings, declared per ECU variant — so a channel it
-describes reads as a number the first time, with no drive.
-
-They are evidence, not proof: nothing in them has been confirmed against a
-car, and where a row you proved yourself disagrees, yours wins. Confirming
-one is the same three steps as ever: `vagcan dev survey`, then
-`vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.
+       vagcan faults       stored faults, named
 ```
 
-**Fault codes will read as numbers after an ODIS-only run like that one, and nothing on
-screen says so.** That is a limit of this build rather than anything about the sources:
-an ODIS project carries the fault codes *and* their descriptions in the clear, and the
-loader for them is being written. Until it lands, the words come from a VCDS
-installation — so if you want named faults today, read one in as well. The closing
-`vagcan faults` line above is written for the VCDS branch and overstates what this run
-did.
+**The project's own fault text names the codes.** An ODIS project carries every fault
+code with its description, and `setup` reads them in beside the channels, recording the
+language of each source; `[faults] language` in the config picks one where a project
+has several. No VCDS installation is needed for named faults.
 
 #### Or choose from the menu
 
@@ -174,7 +163,7 @@ cached 3035 label files (101241 measurements) in /Users/you/.vagcan/data/SK37X/c
 [4/4] .rod section keys — searching for the ones not already cached.
 …
 Reading the ODIS project at /Users/you/Downloads/SK37X
-[1/2] Control units — walking each variant's measurement chain.
+[1/2] Control units — walking each variant's measurement chain and fault table.
 [2/2] Names — every object in every pool, for the (text id, name)
       pairs they carry.
 
