@@ -104,7 +104,7 @@ impl Naming {
 		};
 		// `LEVEL` in the file's own word. It matched VCDS's fault priority on
 		// both codes it was checked against (`research/odis-dtc/README.md`
-		// §3), which is evidence for a decoder and not one — so the number is
+		// §2), which is evidence for a decoder and not one — so the number is
 		// shown and the word stays the file's.
 		if self.level > 0 {
 			line.push_str(&format!("  level {}", self.level));
