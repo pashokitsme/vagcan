@@ -1144,11 +1144,6 @@ fn is_newer(out: &Path, source: &Path) -> bool {
 	}
 }
 
-/// The closing report: what is on disk now, and what to do with it.
-///
-/// Every line names a file. Somebody who has just waited several minutes is
-/// owed the paths, not a count of successes — and somebody whose run was short
-/// of one artefact needs to see which one without re-reading the scroll.
 /// What to say about scalings when the project has none.
 ///
 /// True of a VCDS installation and always was: the label files carry the names
@@ -1159,6 +1154,12 @@ const SCALINGS_ARE_MEASURED: &str = "Scalings are a separate thing and no VCDS i
      files have names, not numbers. Those are measured: `vagcan dev survey`, then \n\
      `vagcan watch --out drive.csv`, then `vagcan dev recording calibrate`.";
 
+/// The closing report: what is on disk now, and what to do with it.
+///
+/// Every line names a file. Somebody who has just waited several minutes is
+/// owed the paths, not a count of successes — and somebody whose run was short
+/// of one artefact needs to see which one without re-reading the scroll.
+///
 /// `scalings` is whether the project now holds per-variant scalings — the one
 /// fact the closing sentence turns on, and asked of the store rather than of
 /// which branch ran, so a VCDS run into a project that already has them does not
