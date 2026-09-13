@@ -74,6 +74,9 @@ with no blocking objection. What they found and what was fixed is in the merge c
 the firmware and the bench host, which sit outside the workspace. The merge itself is the
 owner's.
 
+Every `vagcan` command and flag the skills under `.claude/skills/` name was run against
+`--help` on 2026-09-13 and resolves.
+
 **Not verified on hardware:** the board's `V` probe and busy-port message, `dev sniff`'s
 `F` query against the board, the stored-config check on boot. All are covered by
 hardware-free tests only.

@@ -196,6 +196,25 @@ mixed in.
   The rule above ("move, never delete") is for tools whose *capability* would otherwise
   vanish; check that first, then it is the owner's call.
 
+### Rules established on the 2026-09-13 pass
+
+- **Check that the proven rows are on disk, not only that the docs mention them.**
+  `todo/README.md` said "the 23 proven rows stay where they are" while
+  `~/.vagcan/data/SK37X/measurements/` did not exist — nothing read them, so nothing failed,
+  and `dev dash build` quietly marked every channel `declared`. `ls` the directory in
+  Phase 1. If it is gone, the rows are in git history at `0e263b1^:catalogs/vehicles/`
+  (the commit that took them out of the repository); restore them there unchanged and date it
+  in the status. They are one owner's car and never go back into the checkout.
+- **A superseded task file is a superseded design.** It goes to `.archive/specs/<subsystem>/`,
+  not to `tasks/done/` (nothing was done), with a row in `.archive/README.md` naming what
+  replaced it. Then sweep the links: markdown links from `todo/` gain the `../../.archive/…`
+  depth, links inside the moved file to live `todo/` files gain `../../../todo/…`, and code
+  comments that name the file by bare filename get the archive path.
+- **Code implementing a superseded design is flagged, not deleted, by a cleanup pass.**
+  `sleep.rs` and `sleeptest` implement the archived `07-sleep`; both halves of "genuinely
+  dead" are arguable (a caller exists; its reason was superseded by the owner's power
+  decision, not refuted), so it is listed as the owner's call in the next goals.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
