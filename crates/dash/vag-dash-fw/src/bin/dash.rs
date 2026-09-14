@@ -698,6 +698,9 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared, bus: &'sta
 
 	info!("heap after host build:\n{}", esp_alloc::HEAP.stats());
 
+	// The radio's session, one for the board's life: a close frees a connection's
+	// subscriptions and queue, never what its guard remembers (`guard` module docs, "Memory").
+	let mut session = Session::new();
 	let _ = join(ble_task(runner), async {
 		// Always visible (owner, 2026-09-13: "мы можем видимость всегда включенной
 		// держать … антенна всё равно далеко не бьёт"; 2026-09-14: zero friction).
@@ -722,7 +725,7 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared, bus: &'sta
 					Ok(conn) => {
 						set_visibility(Visibility::Connected);
 						info!("[adv] connected");
-						serve(&server, &conn, settings, bus).await;
+						serve(&server, &conn, settings, bus, &mut session).await;
 						info!("[adv] connection over, advertising again");
 					}
 					Err(e) => warn!("[adv] attribute server: {e:?}"),
@@ -782,28 +785,34 @@ const NUS_UUID_LE: [u8; 16] = [
 ///
 /// Four jobs, and the first one to end — the GATT event loop, on disconnect —
 /// ends them all. Then the session is closed: the host's subscriptions leave
-/// the planner (drop semantics), and the reassembler and guard go with the
-/// session.
-async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>, settings: &'static Shared, bus: &'static Bus) {
+/// the planner (drop semantics) and the reassembler goes. The session itself is the
+/// board's, `run` keeps one for every connection: its radio guard remembers what the
+/// last host asked (`vag_uds_client::guard`, "Memory"), so a reconnect is no reset.
+async fn serve<P: PacketPool>(
+	server: &Server<'_>,
+	conn: &GattConnection<'_, '_, P>,
+	settings: &'static Shared,
+	bus: &'static Bus,
+	session: &mut Session,
+) {
 	// Nothing from a previous connection is this one's.
 	INBOX.clear();
 	OUTBOX.clear();
 	BLE_CLIENT.reset();
 	info!("[gatt] ATT MTU {} at connect", conn.raw().att_mtu());
 
-	let mut session = Session::new();
 	select4(
 		gatt_events(server, conn),
 		notifier(server, conn),
 		state_pushes(settings),
-		uds_server(&mut session, settings, bus),
+		uds_server(session, settings, bus),
 	)
 	.await;
 	// The host is gone: what it wrote and nobody read yet is not sent to the car, the
 	// exchange it has queued is cancelled, and its subscriptions leave the planner.
 	INBOX.clear();
-	bus.lock(|planner| session.close(&mut planner.borrow_mut()));
-	BLE_CLIENT.publish(&session);
+	bus.lock(|planner| session.close(ms(), &mut planner.borrow_mut()));
+	BLE_CLIENT.publish(session);
 	BUS_WAKE.signal(());
 }
 
@@ -996,14 +1005,14 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 /// One framed message from a host, on either carrier.
 ///
 /// A Hello starts the session over — whatever an earlier host left on this carrier is
-/// closed — and is answered with what this image is. In adapter mode everything that
-/// would reach the bus is refused, and says why.
+/// closed, except what the radio guard remembers — and is answered with what this image
+/// is. In adapter mode everything that would reach the bus is refused, and says why.
 fn take_message(session: &mut Session, bus: &Bus, message: Message) -> Vec<Message> {
 	bus.lock(|p| {
 		let mut planner = p.borrow_mut();
 		match message {
 			Message::Hello => {
-				session.close(&mut planner);
+				session.close(ms(), &mut planner);
 				alloc::vec![hello_reply()]
 			}
 			message if adapter_mode() => session.push_refused(ms(), &mut planner, message, ADAPTER_MODE),
@@ -2455,7 +2464,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 /// The host on the cable is gone: its subscriptions leave the planner, its queued
 /// exchange is cancelled, and nothing it sent and nobody read is sent to the car.
 fn close_usb_session(session: &mut Session, bus: &Bus) {
-	bus.lock(|p| session.close(&mut p.borrow_mut()));
+	bus.lock(|p| session.close(ms(), &mut p.borrow_mut()));
 	USB_MESSAGES.clear();
 	critical_section::with(|_| USB_INBOUND_BYTES.store(0, Ordering::Relaxed));
 	USB_CLIENT.reset();

@@ -40,7 +40,10 @@
 //! When the guard locks a unit (a walk), every live subscription of this
 //! session to that unit ends with a [`Reading`] saying so. [`Session::close`]
 //! — the connection is gone — ends all of them: a dead consumer takes its
-//! subscriptions with it.
+//! subscriptions with it. It does not end what the radio guard remembers: the board
+//! keeps one radio session and closes it, so a Hello or a reconnect starts with the
+//! locks, the rate window and the units the last connection left (`guard` module docs,
+//! "Memory").
 //!
 //! # Why a host may hold a timing subscription
 //!
@@ -91,8 +94,11 @@ const SPEED_UNIT: Unit = Unit {
 	response: SPEED_RESPONSE_ID,
 };
 
-/// One connection's session. Dropping it without [`Session::close`] leaves its
-/// subscriptions in the planner, so the shell closes it on disconnect.
+/// One host's session. The board keeps one for the radio for its whole life, closed and
+/// used again on every disconnect and Hello — that is what makes the radio guard's memory
+/// the board's (`guard` module docs, "Memory") — and one for the cable. Dropping it without
+/// [`Session::close`] leaves its subscriptions in the planner, so the shell closes it on
+/// disconnect.
 #[derive(Debug, Default)]
 pub struct Session {
 	guard: Guard,
@@ -211,7 +217,7 @@ impl Session {
 		match message {
 			Message::Request(request) => self.queue.push_back(request),
 			Message::Subscribe(s) => self.subscribe(now_ms, planner, s, &mut out),
-			Message::Unsubscribe { sub } => self.unsubscribe(planner, sub),
+			Message::Unsubscribe { sub } => self.unsubscribe(now_ms, planner, sub),
 			// A Hello is the shell's to answer: only it knows the image, and it closes the
 			// session first ([`Session::close`]).
 			Message::Answer(_) | Message::Reading(_) | Message::Hello | Message::HelloReply(_) => {}
@@ -235,7 +241,7 @@ impl Session {
 				outcome: Outcome::Refused(String::from(reason)),
 			})],
 			Message::Subscribe(s) => {
-				self.unsubscribe(planner, s.sub);
+				self.unsubscribe(now_ms, planner, s.sub);
 				vec![Message::Reading(Reading {
 					sub: s.sub,
 					at_ms: now_ms as u32,
@@ -243,7 +249,7 @@ impl Session {
 				})]
 			}
 			Message::Unsubscribe { sub } => {
-				self.unsubscribe(planner, sub);
+				self.unsubscribe(now_ms, planner, sub);
 				Vec::new()
 			}
 			Message::Answer(_) | Message::Reading(_) | Message::Hello | Message::HelloReply(_) => Vec::new(),
@@ -366,11 +372,12 @@ impl Session {
 		}))
 	}
 
-	/// The connection is gone: every subscription leaves the planner, nothing
-	/// queued is begun, and the exchange handed to the planner is cancelled if it has not
-	/// gone out ([`Planner::cancel`]). One already on the bus cannot be recalled; its
-	/// answer finds nobody.
-	pub fn close(&mut self, planner: &mut Planner) {
+	/// The connection is gone, or a Hello starts it over: every subscription leaves the
+	/// planner, nothing queued is begun, and the exchange handed to the planner is cancelled
+	/// if it has not gone out ([`Planner::cancel`]). One already on the bus cannot be
+	/// recalled; its answer finds nobody. The guard frees the subscription slots
+	/// ([`Guard::close`]): over the radio its memory stays, on the cable it is the reset.
+	pub fn close(&mut self, now_ms: u64, planner: &mut Planner) {
 		for (_, live) in core::mem::take(&mut self.subs) {
 			planner.unsubscribe(live.id);
 		}
@@ -379,7 +386,7 @@ impl Session {
 		}
 		self.queue.clear();
 		self.current = None;
-		self.guard = self.guard.renewed();
+		self.guard.close(now_ms);
 	}
 
 	/// Do what the guard decided. `speed_cleared`: the verdict follows a speed read that
@@ -434,8 +441,11 @@ impl Session {
 	fn subscribe(&mut self, now_ms: u64, planner: &mut Planner, s: Subscribe, out: &mut Vec<Message>) {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
-		self.unsubscribe(planner, s.sub);
-		let verdict = match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms, s.priority) {
+		self.unsubscribe(now_ms, planner, s.sub);
+		let verdict = match self
+			.guard
+			.check_subscribe(now_ms, s.request_id, s.response_id, s.did, s.period_ms, s.priority)
+		{
 			// One stopwatch at a time on the board (module docs): the planner every session
 			// shares already holds a timing subscription, and it is not this one, which went above.
 			Verdict::Forward if s.priority == Priority::Timing && planner.timing_subscriptions() > 0 => Verdict::Refuse(Refusal::TimingChannelHeld),
@@ -448,7 +458,7 @@ impl Session {
 					response: s.response_id,
 				};
 				let id = planner.subscribe(now_ms, class_of(s.priority), unit, s.did, u32::from(s.period_ms), None);
-				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did, s.priority);
+				self.guard.subscribed(now_ms, s.sub, s.request_id, s.response_id, s.did, s.priority);
 				self.subs.insert(
 					s.sub,
 					Live {
@@ -468,10 +478,10 @@ impl Session {
 		}
 	}
 
-	fn unsubscribe(&mut self, planner: &mut Planner, sub: u16) {
+	fn unsubscribe(&mut self, now_ms: u64, planner: &mut Planner, sub: u16) {
 		if let Some(live) = self.subs.remove(&sub) {
 			planner.unsubscribe(live.id);
-			self.guard.unsubscribed(sub);
+			self.guard.unsubscribed(now_ms, sub);
 		}
 	}
 
@@ -479,7 +489,7 @@ impl Session {
 	fn end_unit(&mut self, now_ms: u64, planner: &mut Planner, request_id: u16, out: &mut Vec<Message>) {
 		let ended: Vec<u16> = self.subs.iter().filter(|(_, l)| l.request_id == request_id).map(|(s, _)| *s).collect();
 		for sub in ended {
-			self.unsubscribe(planner, sub);
+			self.unsubscribe(now_ms, planner, sub);
 			out.push(refused_reading(sub, now_ms, Refusal::Locked));
 		}
 	}

@@ -473,7 +473,7 @@ fn closing_ends_every_subscription_and_forgets_the_queue() {
 	board.hear(subscribe(2, GATEWAY, 0x1000, 50));
 	board.run_until(200);
 	board.hear(request(1, ENGINE, &[0x10, 0x03]));
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	let before = board.sent.len();
 	board.run_until(2000);
 	let after: Vec<&[u8]> = board.sent[before..].iter().map(|(_, o)| o.pdu.as_slice()).collect();
@@ -517,7 +517,7 @@ fn subscribing_one_request_id_under_every_response_id_leaves_memory_bounded() {
 	// `sub: 1` given again replaces the live one before the guard refuses the new
 	// pair, so the first subscription is gone too: at most one unit is ever held.
 	assert!(board.planner.units_held() <= 1, "{} units held", board.planner.units_held());
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	assert_eq!(board.planner.units_held(), 0);
 }
 
@@ -528,7 +528,7 @@ fn closing_cancels_the_request_the_planner_has_not_sent() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	board.hear(request(1, GATEWAY, &[0x22, 0xF1, 0x87]));
 	assert!(board.session.awaiting().is_some(), "handed to the planner");
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	board.run_until(2000);
 	assert!(board.sent.is_empty(), "{:02X?}", board.pdus_sent());
 }
@@ -820,7 +820,7 @@ fn the_boards_one_timing_channel_is_held_across_connections_until_its_holder_let
 	let out = usb.push(0, &mut board.planner, subscribe(8, GATEWAY, 0x1001, 100));
 	assert_eq!(refusal_of(&out, 8), None, "a normal subscription is not held to it");
 
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
 	assert_eq!(refusal_of(&out, 7), None, "the radio's session closed, so the channel is free");
 	board.run_until(200);
@@ -845,8 +845,115 @@ fn the_boards_one_timing_channel_is_held_across_connections_until_its_holder_let
 	board.hear(Message::Unsubscribe { sub: 1 });
 	let out = usb.push(now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
 	assert_eq!(refusal_of(&out, 7), None, "unsubscribed, the radio let go");
-	usb.close(&mut board.planner);
+	usb.close(board.now, &mut board.planner);
 	assert_eq!(board.planner.timing_subscriptions(), 0);
+}
+
+// --- the radio guard is the board's, not the connection's (PR #2 review, S-F1) -----------
+
+/// A `22` request for `dids`.
+fn rdbi(dids: &[u16]) -> Vec<u8> {
+	core::iter::once(0x22).chain(dids.iter().flat_map(|did| did.to_be_bytes())).collect()
+}
+
+/// Identifiers of the `22` requests that reached the bus.
+fn identifiers_sent(board: &Board) -> usize {
+	board
+		.pdus_sent()
+		.iter()
+		.filter(|p| p[0] == 0x22 && p[1..] != [0xF4, 0x0D])
+		.map(|p| (p.len() - 1) / 2)
+		.sum()
+}
+
+/// The reviewer's proof reversed. A Hello closes the session, and the close used to renew
+/// the radio guard: all of `F100–F1FF`, four a request with a Hello after each, reached the
+/// unit in 1.3 s. The memory now outlives it, and the sweep is refused by its eighth identifier.
+#[test]
+fn a_hello_between_requests_does_not_reset_the_radio_guard() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let all: Vec<u16> = (0xF100u16..=0xF1FF).collect();
+	for (seq, block) in all.chunks(4).enumerate() {
+		board.hear(request(seq as u8, GATEWAY, &rdbi(block)));
+		board.run_until(board.now + 20);
+		// What the firmware does with a Hello, on either carrier.
+		board.session.close(board.now, &mut board.planner);
+	}
+	let reads = identifiers_sent(&board);
+	assert!(reads < crate::guard::WALK_RUN, "{reads} identifiers reached the unit");
+	assert!(
+		board
+			.answers()
+			.iter()
+			.any(|(_, o)| matches!(o, Outcome::Refused(why) if why.contains("evenly spaced"))),
+		"{:?}",
+		board.answers()
+	);
+}
+
+/// A reconnect is a close of the same board's radio session: a unit a walk locked stays
+/// locked, and the rate window stays as full as it was.
+#[test]
+fn a_reconnect_keeps_the_lock_and_the_rate_window() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.hear(request(1, ENGINE, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003])));
+	board.run_until(100);
+	board.hear(request(2, ENGINE, &rdbi(&[0x2004, 0x2005, 0x2006, 0x2007])));
+	board.run_until(200);
+	assert!(refused(&board.answers()[1].1).contains("evenly spaced"), "{:?}", board.answers());
+
+	board.session.close(board.now, &mut board.planner);
+	board.to_host.clear();
+	board.hear(request(3, ENGINE, &rdbi(&[0xF190])));
+	board.run_until(300);
+	assert!(refused(&board.answers()[0].1).contains("locked"), "{:?}", board.answers());
+
+	// Four identifiers are in the window; sixteen more fill it.
+	for seq in 0..16 {
+		board.hear(request(10 + seq, GATEWAY, &[0x3E, 0x00]));
+	}
+	board.run_until(1_000);
+	assert_eq!(board.answers().len(), 17, "{:?}", board.answers());
+	board.session.close(board.now, &mut board.planner);
+	board.hear(request(30, GATEWAY, &[0x3E, 0x00]));
+	board.run_until(2_000);
+	assert_eq!(board.answers().len(), 17, "the full window outlived the reconnect");
+	board.run_until(RATE_WINDOW_MS + 1_000);
+	assert_eq!(board.answers().len(), 18, "and the request went out once it had room");
+}
+
+/// The units a radio host addressed count across reconnects, so the board's memory stays
+/// bounded by [`MAX_UNITS`](crate::guard::MAX_UNITS) whatever the host does with the link —
+/// and a unit ten minutes without a request frees its slot.
+#[test]
+fn the_units_cap_holds_across_reconnects_and_frees_with_time() {
+	use crate::guard::MAX_UNITS;
+	let unit = |n: u16| Unit {
+		request: 0x600 + n,
+		response: 0x700 + n,
+	};
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	for n in 0..MAX_UNITS as u16 {
+		board.hear(request(n as u8, unit(n), &[0x3E, 0x00]));
+		if n % 8 == 7 {
+			board.run_until(board.now + RATE_WINDOW_MS);
+			board.session.close(board.now, &mut board.planner);
+		}
+	}
+	board.run_until(board.now + RATE_WINDOW_MS);
+	assert!(board.answers().iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))), "{:?}", board.answers());
+	board.to_host.clear();
+
+	let next = unit(MAX_UNITS as u16);
+	board.hear(request(99, next, &[0x3E, 0x00]));
+	board.run_until(board.now + 100);
+	assert!(refused(&board.answers()[0].1).contains("units"), "{:?}", board.answers());
+
+	board.to_host.clear();
+	board.run_until(board.now + 10 * 60_000);
+	board.hear(request(100, next, &[0x3E, 0x00]));
+	board.run_until(board.now + 100);
+	assert!(matches!(board.answers()[..], [(100, Outcome::Pdu(_))]), "{:?}", board.answers());
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.
@@ -866,7 +973,7 @@ fn a_cable_session_walks_a_range_the_radio_refuses_and_stays_a_cable_session_aft
 	let mut cable = Board::new(Bus::Answering { kmh: 0 });
 	cable.session = Session::with_guard(crate::guard::Guard::cable());
 	assert_eq!(walk(&mut cable), 0, "{:?}", cable.answers());
-	cable.session.close(&mut cable.planner);
+	cable.session.close(cable.now, &mut cable.planner);
 	cable.to_host.clear();
 	assert_eq!(walk(&mut cable), 0, "still the cable's guard after a close");
 }
