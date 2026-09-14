@@ -71,6 +71,36 @@ on a frame to any other id, so every unit a command addresses must be listed).
 
 ## 4. The car, once
 
-- `vagcan faults --device ble` lists the stored faults while the panel keeps updating.
-- `vagcan info` and `vagcan watch` through `--device B` with the panel updating.
-- A subscription at 10 Hz on a unit that answers, measured on the pair.
+Recorded 2026-09-14, after PR #2's review. Each item is something the bench could not show:
+the bench units answer at once or with a fixed delay, carry no traffic of their own, and
+never move.
+
+**Through the board, parked, ignition on**
+
+| check | expect |
+|---|---|
+| `vagcan faults --device ble` | the stored faults listed; the panel keeps updating |
+| `vagcan info --device ble` and `--device B` | VIN and identities; note how long BLE takes with the rate cap |
+| `vagcan watch --device ble` and `--device B` at `--hz 10` | rows 100 ms apart; the panel's values still move (its 25/s floor holds) |
+| `vagcan measure --device B` and `--device ble` | how fast the timing channel's unit really answers (`7E1 F40D` on the bench plan); timing channel rate. Under ~20 ms: ~50/s. Slower: the other channels may drop to one read per 5 s — accepted by the owner (`dash/14` §2), note what it is |
+| `vagcan units --device ble` | finishes; the guard's walk rule and rate cap do not refuse a normal run (delays are fine) |
+| any command over BLE with engine traffic on the bus | no answers lost behind the acceptance filter (`vag_uds_can::filter`), no stale answer matched to the next request |
+| `vagcan --slcan dev sniff --device B` | frames at the car's rate; count lines dropped by the 512-line ring |
+| the board's USB panel output with `dashsim B` on the car's traffic | no `[bad frame]` |
+
+**The moving-car guard**
+
+| check | expect |
+|---|---|
+| `bleuds 7E0 7E8 1003` standing | forwarded after one `22 F40D` read |
+| the same while rolling | refused, "moving" with the speed |
+| ignition off, board powered | refused: no speed answer counts as moving |
+
+**Alarms** (`dash/04`)
+
+- The owner's `[[alarm]]` rules in `dash.toml`; the misfire rule's trip and release numbers set from the car.
+- A takeover inverts the offending cell; a short press silences the episode.
+
+**Cable adapter on the car**
+
+- `vagcan info --device C` and `watch --device C`: the stale-answer sweep before each request (`discard_queued`, 5 ms bound) does not slow commands on a busy bus.

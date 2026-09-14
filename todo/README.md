@@ -37,10 +37,10 @@ the `slcan` image, and `measure` through the board at 50 Hz.
 - **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
   --hz` given explicitly wins over the saved rate.
 
-**Not verified on hardware:** the car (`faults --device ble` with the panel updating,
-`info`/`watch` through the board), unplugging USB in adapter mode, a USB flood of large
-requests, the stored-config check at boot, whether opening the board's port twice resets it
-— [`dash/17`](dash/17-bench-ble-usb.md).
+**Not verified on hardware:** the car — the list is [`dash/17`](dash/17-bench-ble-usb.md) §4
+(faults, info, watch, measure through the board; the moving-car guard; alarms; the cable on
+car traffic). On the bench: unplugging USB in adapter mode, a USB flood of large requests, the
+stored-config check at boot, whether opening the board's port twice resets it (§2, §3).
 
 ## Decisions (owner)
 
@@ -61,32 +61,37 @@ requests, the stored-config check at boot, whether opening the board's port twic
 
 **Without the car**
 
-1. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: `vagcan faults
-   --device ble` with the panel updating, `info`/`watch` over USB, a subscription on a unit
-   that answers. What is left on the bench: unplug USB in adapter mode, a USB flood.
-2. **`ble-uds` → `master`** — PR #2; the bench passed, merge when the owner says.
-3. **OLED and enclosure** — `dash/15`; waits for the panel.
-4. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
+1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2: unplug USB in adapter mode, a USB flood.
+2. **`ble-uds` → `master`** — PR #2; review closed and CI green 2026-09-14, merge when the owner says.
+3. **Link icons and the adapter screen** — owner, 2026-09-14. Top right: 7×9 icons for the
+   USB cable and BLE while a host holds the link. `--slcan` mode: "SLCAN" top left in the
+   medium font, the speed centred with ▲▼ in kb/s, bit rate and error counters centred below.
+   Rendered in `dashsim --preview` on branch `panel-preview` (`vag_dash_render::frame::Board`,
+   `draw_with`); not wired into the firmware: real link state, TX/RX rate on the slcan port.
+4. **OLED and enclosure** — `dash/15`; waits for the panel.
+5. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
    `vag_dash_render::screen`. Next: the owner writes the rules into `dash.toml`; the misfire rule's numbers and a run on the car. The
    demo from a recorded drive waits for a recording with the retard channels and a way to
    replay it (none is hardware-free today).
-5. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
+6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-6. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-7. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+7. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+   watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
+8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-8. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
-9. **Questions only the car answers** — `dash/06`.
-10. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
+11. **Questions only the car answers** — `dash/06`.
+12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-11. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-12. **`watch` and `measure` across all fifteen units** — measured against the file, not
+14. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
