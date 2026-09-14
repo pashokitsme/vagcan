@@ -165,39 +165,46 @@ const ICON_GAP: u32 = 2;
 /// (owner, on the first preview).
 const ICON_TOP: u32 = 2;
 
-/// Dark columns right of the icons. Wider than [`ICON_TOP`] because columns read closer
-/// than rows on this panel (owner, on the second preview).
-const ICON_RIGHT: u32 = 4;
+/// Dark columns between the icons and the panel's side edge — the right one on the values
+/// page, the left one on the chart. Wider than [`ICON_TOP`] because columns read closer than
+/// rows on this panel (owner, on the second preview).
+const ICON_SIDE: u32 = 4;
 
-/// Dark columns between the icons and the label or chart header they narrow.
+/// Dark columns between the icons and the text beside them.
 const ICON_CLEARANCE: i32 = 4;
 
-/// Where the link icons go: a column in the top-right corner, [`ICON_TOP`] down and
-/// [`ICON_RIGHT`] in, USB above BLE. `None` when nothing is connected — then nothing is
-/// drawn.
+/// Where the values page's link icons go: a column in the top-right corner, [`ICON_TOP`] down
+/// and [`ICON_SIDE`] in, USB above BLE. `None` when nothing is connected — then nothing is
+/// drawn. The chart puts the same column in the top-left corner ([`chart_layout`]).
 ///
 /// A column and not a row (owner, 2026-09-14): the room it takes from the rightmost label is
 /// one icon wide whether one host is connected or two, so what fits there does not depend on
 /// how many hosts there are — and that label is whatever the plan puts last.
 pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
+	icons_at(links, icon_column(width))
+}
+
+/// The icons' column with its left edge at `x`.
+fn icons_at(links: Links, x: i32) -> Option<Rectangle> {
 	let n = u32::from(links.usb) + u32::from(links.ble);
 	if n == 0 {
 		return None;
 	}
 	let h = n * ICON.height + (n - 1) * ICON_GAP;
-	Some(Rectangle::new(Point::new(icon_column(width), ICON_TOP as i32), Size::new(ICON.width, h)))
+	Some(Rectangle::new(Point::new(x, ICON_TOP as i32), Size::new(ICON.width, h)))
 }
 
-/// The icons' left edge, connected or not.
+/// The values page's icons' left edge, connected or not.
 fn icon_column(width: u32) -> i32 {
-	width as i32 - (ICON_RIGHT + ICON.width) as i32
+	width as i32 - (ICON_SIDE + ICON.width) as i32
 }
 
-fn draw_icons<D>(links: Links, width: u32, ink: BinaryColor, target: &mut D)
+/// The icons with their column's left edge at `x`.
+fn draw_icons<D>(links: Links, x: i32, ink: BinaryColor, target: &mut D)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	let Some(area) = icon_box(links, width) else {
+	let Some(area) = icons_at(links, x) else {
 		return;
 	};
 	let mut at = area.top_left;
@@ -611,7 +618,7 @@ where
 	} else {
 		BinaryColor::On
 	};
-	draw_icons(links, width, ink, target);
+	draw_icons(links, icon_column(width), ink, target);
 	report
 }
 
@@ -912,10 +919,6 @@ where
 	}
 }
 
-/// The chart's header rows: the header text, and the first link icon beside it. The trace
-/// starts under them.
-const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
-
 /// How many columns the trace will take: one sample is one column, and there
 /// are only so many columns.
 ///
@@ -928,95 +931,148 @@ fn drawn_columns(samples: usize, plot_w: i32) -> usize {
 	samples.min(plot_w.max(0) as usize)
 }
 
+/// Where the chart page puts things, decided before any pixel.
+///
+/// The left column is text, one thing under another: the label, the number, then what a
+/// trace cannot show about itself — its vertical extent and how much time the width holds
+/// (without those a trace is a shape with no units, which is decoration). The trace has the
+/// rest of the width and the whole height. The link icons stand left of the column, and their
+/// room is kept **whether or not a host is connected**, so a host connecting moves nothing
+/// (owner, 2026-09-14).
+#[derive(Debug, PartialEq, Eq)]
+struct ChartLayout {
+	/// Index into the theme's numeral ladder.
+	step: usize,
+	/// Where the text column starts: right of the icons and their clearance.
+	text_x: i32,
+	/// The number's baseline, centred in the band between the label and the range line.
+	value_baseline: i32,
+	/// The range line's baseline; the seconds line is on the floor under it.
+	range_baseline: i32,
+	/// The trace's first column, and how many columns it has.
+	plot_x: i32,
+	plot_w: i32,
+}
+
+/// The range line: `0.00-2.50bar`.
+fn chart_range(cell: &Cell<'_>, min: f32, max: f32) -> Buf {
+	let mut range = Buf::new();
+	let d = cell.decimals as usize;
+	let _ = write!(range, "{min:.d$}-{max:.d$}{}", cell.unit);
+	range
+}
+
+fn chart_layout(cell: &Cell<'_>, min: f32, max: f32, theme: &Theme, size: Size, report: &mut Report) -> ChartLayout {
+	let (width, height) = (size.width, size.height);
+	let text_x = (ICON_SIDE + ICON.width) as i32 + ICON_CLEARANCE;
+	// The text column takes at most a third of the panel, beside the icons; past that the trace
+	// has nowhere left to be, and a chart with no room for its trace is a bad table. The icons'
+	// room is not taken from the third: `2.50` at the largest face is 72 px, and the number is
+	// what the eye came for.
+	let room = width / 3;
+	let buf = number(cell);
+	let (mut step, value_w, _) = fit(&theme.numerals, buf.as_str(), 0, room);
+
+	// One line of the small face, and a dark row under it.
+	let line = text_height(&theme.unit, "0") as i32 + 2;
+	let range_baseline = height as i32 - 1 - line;
+	let band_top = text_height(&theme.label, cell.label) as i32 + 2;
+	let band_bottom = range_baseline - line + 1;
+	// A face the band is too short for steps down, as a face the width is too narrow for does.
+	while step < 2 && numeral_height(&theme.numerals[step], buf.as_str()) as i32 > band_bottom - band_top {
+		step += 1;
+	}
+	if step > 0 {
+		report.value_shrunk = true;
+	}
+	let value_w = if step == 0 {
+		value_w
+	} else {
+		measure(&theme.numerals[step], buf.as_str())
+	};
+	let value_h = numeral_height(&theme.numerals[step], buf.as_str()) as i32;
+	let value_baseline = band_top + (band_bottom - band_top - value_h) / 2 + value_h;
+
+	let label_w = text_width(&theme.label, cell.label);
+	let range_w = text_width(&theme.unit, chart_range(cell, min, max).as_str());
+	if label_w > room || range_w > room {
+		report.label_overrun = true;
+	}
+	let column_w = label_w.max(value_w).max(range_w).min(room);
+	let plot_x = text_x + column_w as i32 + 4;
+	ChartLayout {
+		step,
+		text_x,
+		value_baseline,
+		range_baseline,
+		plot_x,
+		plot_w: width as i32 - plot_x,
+	}
+}
+
 #[allow(clippy::too_many_arguments)]
 fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, links: Links, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
 	let mut report = Report::default();
-	let area = target.bounding_box();
-	let width = area.size.width;
-	let height = area.size.height;
+	let size = target.bounding_box().size;
 	let ink = BinaryColor::On;
+	let layout = chart_layout(cell, min, max, theme, size, &mut report);
+	// The geometry is settled before the seconds are written, because they count what the
+	// trace draws and the trace is only as wide as the plot.
+	let drawn = drawn_columns(samples.len(), layout.plot_w);
 
-	// The header carries what a chart cannot show about itself: what it is, what
-	// the vertical extent is, and how much time the width holds. Without the
-	// last two a trace is a shape with no units, which is decoration.
-	//
-	// Drawn in two pieces because it is two alphabets: the label is a word in the
-	// reader's language, the rest is `0.00-2.50bar 19s`. One face has Cyrillic
-	// and the other has `°`, and no face here has both.
-	let head = theme
+	// Two faces because two alphabets: the label is a word in the reader's language, the
+	// range has `°`, and no face here has both.
+	if theme
 		.label
-		.render(cell.label, Point::new(0, 0), VerticalPosition::Top, FontColor::Transparent(ink), target);
-	let after = match &head {
-		Ok(dim) => dim.advance.x + 6,
-		Err(_) => {
-			report.glyph_missing = true;
-			0
-		}
-	};
+		.render(
+			cell.label,
+			Point::new(layout.text_x, 0),
+			VerticalPosition::Top,
+			FontColor::Transparent(ink),
+			target,
+		)
+		.is_err()
+	{
+		report.glyph_missing = true;
+	}
 	let buf = number(cell);
-	// A chart gives the number a third of the width; past that the trace has
-	// nowhere left to be, and a chart with no room for its trace is a bad table.
-	let (step, value_w, _) = fit(&theme.numerals, buf.as_str(), 0, width / 3);
-	if step > 0 {
-		report.value_shrunk = true;
-	}
-	let plot_top = HEADER_ROWS;
-	let plot_x = value_w as i32 + 4;
-	let plot_bottom = height as i32 - 1;
-	// The trace ends before the icons' column **whether or not a host is connected**: the icons
-	// stand one under the other, so a second one is beside the trace's top rows, and a plot
-	// that widened when the last host left would change how many seconds the chart holds.
-	let plot_w = icon_column(width) - ICON_CLEARANCE - plot_x;
-	// The geometry is settled before the header is written, because the header
-	// counts what the trace draws and the trace is only as wide as the plot.
-	let drawn = drawn_columns(samples.len(), plot_w);
-
-	let mut tail = Buf::new();
-	let _ = write!(
-		tail,
-		"{:.*}-{:.*}{}  {:.0}s",
-		cell.decimals as usize,
-		min,
-		cell.decimals as usize,
-		max,
-		cell.unit,
-		drawn as f32 * seconds_per_sample
-	);
-	match theme.unit.render(
-		tail.as_str(),
-		Point::new(after, 1),
-		VerticalPosition::Top,
-		FontColor::Transparent(ink),
+	draw_numerals(
+		&theme.numerals[layout.step],
+		buf.as_str(),
+		Point::new(layout.text_x, layout.value_baseline),
+		ink,
 		target,
-	) {
-		// The header's room is the width less the icons and the padding before them.
-		Ok(dim) => {
-			let room = icon_box(links, width).map_or(width as i32, |icons| icons.top_left.x - ICON_CLEARANCE);
-			if dim.bounding_box.is_some_and(|b| b.top_left.x + b.size.width as i32 > room) {
-				report.label_overrun = true;
-			}
+	);
+	let mut seconds = Buf::new();
+	let _ = write!(seconds, "{:.0}s", drawn as f32 * seconds_per_sample);
+	for (text, baseline) in [(chart_range(cell, min, max), layout.range_baseline), (seconds, size.height as i32 - 1)] {
+		if theme
+			.unit
+			.render(
+				text.as_str(),
+				Point::new(layout.text_x, baseline),
+				VerticalPosition::Baseline,
+				FontColor::Transparent(ink),
+				target,
+			)
+			.is_err()
+		{
+			report.glyph_missing = true;
 		}
-		Err(_) => report.glyph_missing = true,
 	}
-	draw_icons(links, width, ink, target);
+	draw_icons(links, ICON_SIDE as i32, ink, target);
 
-	// Centred in the band under the header, for the same reason as the values
-	// page: the number is what the eye came for, and on the floor it reads as an
-	// afterthought under the trace.
-	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
-	let value_baseline = plot_top + (height as i32 - 1 - plot_top - value_h as i32) / 2 + value_h as i32;
-	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, value_baseline), ink, target);
-
-	if plot_w < 8 || max <= min {
-		report.value_overrun = plot_w < 8;
+	let plot_x = layout.plot_x;
+	if layout.plot_w < 8 || max <= min {
+		report.value_overrun = layout.plot_w < 8;
 		return report;
 	}
-
+	let plot_bottom = size.height as i32 - 1;
 	let span = max - min;
-	let usable = (plot_bottom - plot_top) as f32;
+	let usable = plot_bottom as f32;
 	let y_of = |v: f32| -> i32 {
 		let t = ((v - min) / span).clamp(0.0, 1.0);
 		plot_bottom - (t * usable) as i32
@@ -1226,11 +1282,11 @@ mod tests {
 		};
 		let mut display = panel();
 		draw(&frame, &Theme::bold_mono(), &mut display);
-		// The trace occupies at most `samples.len()` columns. Well past that, and
-		// below the header, nothing is drawn.
+		// The trace occupies at most `samples.len()` columns. Well past that nothing is
+		// drawn, at any height.
 		let far = PANEL.width as i32 - 4;
 		assert!(
-			(10..PANEL.height as i32).all(|y| !lit(&display, far, y)),
+			(0..PANEL.height as i32).all(|y| !lit(&display, far, y)),
 			"no trace where there is no data"
 		);
 	}
@@ -1244,10 +1300,9 @@ mod tests {
 		let samples: [f32; 256] = core::array::from_fn(|i| (i % 20) as f32 / 10.0);
 		let theme = Theme::bold_mono();
 		let cell = || Cell::new("НАДДУВ", Some(1.5), "bar", 2);
-		// The geometry `chart` works out: the number takes what it takes, the
-		// plot is the rest.
-		let (_, value_w, _) = fit(&theme.numerals, number(&cell()).as_str(), 0, PANEL.width / 3);
-		let plot_w = PANEL.width as i32 - (value_w as i32 + 4);
+		// The geometry `chart` works out: the text column takes what it takes, the plot is the
+		// rest.
+		let plot_w = chart_layout(&cell(), 0.0, 2.5, &theme, PANEL, &mut Report::default()).plot_w;
 		let drawn = drawn_columns(samples.len(), plot_w);
 		assert_eq!(drawn, plot_w as usize, "this panel is narrower than the history is deep");
 		assert!(drawn < samples.len());
@@ -1338,7 +1393,7 @@ mod tests {
 	/// Inside the icon box, `display` is pixel for pixel the icons drawn alone.
 	fn icon_box_holds_only_the_icons(display: &SimulatorDisplay<BinaryColor>, links: Links) -> bool {
 		let mut alone = tall();
-		draw_icons(links, TALL.width, BinaryColor::On, &mut alone);
+		draw_icons(links, icon_column(TALL.width), BinaryColor::On, &mut alone);
 		icon_box(links, TALL.width)
 			.unwrap()
 			.points()
@@ -1366,7 +1421,7 @@ mod tests {
 	#[test]
 	fn each_icon_draws_inside_its_own_cell_and_nowhere_else() {
 		let mut none = tall();
-		draw_icons(Links::NONE, TALL.width, BinaryColor::On, &mut none);
+		draw_icons(Links::NONE, icon_column(TALL.width), BinaryColor::On, &mut none);
 		assert!(!lit_in(&none, none.bounding_box()), "no link, no pixel");
 
 		// Every lit pixel is inside the icon box, so the two dark rows above it and the two
@@ -1374,7 +1429,7 @@ mod tests {
 		let right = Rectangle::new(Point::new(245, 2), ICON);
 		for links in [USB, BLE, BOTH] {
 			let mut display = tall();
-			draw_icons(links, TALL.width, BinaryColor::On, &mut display);
+			draw_icons(links, icon_column(TALL.width), BinaryColor::On, &mut display);
 			let area = icon_box(links, TALL.width).unwrap();
 			for p in display.bounding_box().points() {
 				assert!(
@@ -1390,8 +1445,8 @@ mod tests {
 		}
 
 		let (mut usb, mut ble) = (tall(), tall());
-		draw_icons(USB, TALL.width, BinaryColor::On, &mut usb);
-		draw_icons(BLE, TALL.width, BinaryColor::On, &mut ble);
+		draw_icons(USB, icon_column(TALL.width), BinaryColor::On, &mut usb);
+		draw_icons(BLE, icon_column(TALL.width), BinaryColor::On, &mut ble);
 		assert!(right.points().any(|p| usb.get_pixel(p) != ble.get_pixel(p)), "two different pictures");
 	}
 
@@ -1450,7 +1505,7 @@ mod tests {
 				let mut display = tall();
 				values(&cells, BOTH, &Theme::bold_mono(), &mut display);
 				let mut alone = tall();
-				draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone);
+				draw_icons(BOTH, icon_column(TALL.width), BinaryColor::On, &mut alone);
 				let area = icon_box(BOTH, TALL.width).unwrap();
 				let around = Rectangle::new(
 					area.top_left - Point::new(ICON_CLEARANCE, 0),
@@ -1485,8 +1540,8 @@ mod tests {
 	}
 
 	#[test]
-	fn a_chart_header_gives_way_to_the_icons_and_the_trace_ends_before_their_column() {
-		// Pinned at the top of the scale, so the trace runs along the highest row it can.
+	fn a_chart_keeps_its_icons_left_of_its_text_and_draws_the_same_picture_without_them() {
+		// Pinned at the top of the scale, so the trace runs along row 0, the highest there is.
 		let samples = [2.5f32; 240];
 		fn pinned<'a>(label: &'a str, samples: &'a [f32]) -> Frame<'a> {
 			Frame::Chart {
@@ -1497,38 +1552,46 @@ mod tests {
 				seconds_per_sample: 0.2,
 			}
 		}
-		let chart = |label: &'static str| pinned(label, &samples);
-		let board = Board { links: BOTH, rates: None };
-		let mut display = tall();
-		let report = draw_with(&chart("НАДДУВ"), &board, &Theme::bold_mono(), &mut display);
-		assert!(!report.label_overrun, "{report:?}");
-		assert!(icon_box_holds_only_the_icons(&display, BOTH));
-		let end = icon_column(TALL.width) - ICON_CLEARANCE;
-		assert!(lit(&display, end - 1, HEADER_ROWS), "the trace runs along its top row to the clearance");
-		assert!(
-			(end..TALL.width as i32)
-				.all(|x| (HEADER_ROWS..TALL.height as i32).all(|y| !lit(&display, x, y) || icon_box(BOTH, TALL.width).unwrap().contains(Point::new(x, y)))),
-			"nothing of the trace in the clearance or the icons' column"
-		);
-		let mut plain = tall();
-		draw(&chart("НАДДУВ"), &Theme::bold_mono(), &mut plain);
-		let under = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(end as u32, TALL.height - HEADER_ROWS as u32));
-		assert!(
-			under.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
-			"the trace is the same picture with no host connected"
-		);
+		let theme = Theme::bold_mono();
+		let text_x = (ICON_SIDE + ICON.width) as i32 + ICON_CLEARANCE;
+		for links in [USB, BLE, BOTH] {
+			let mut display = tall();
+			let report = draw_with(&pinned("НАДДУВ", &samples), &Board { links, rates: None }, &theme, &mut display);
+			assert_eq!(report, Report::default(), "{links:?}");
+			let area = icons_at(links, ICON_SIDE as i32).unwrap();
+			let mut alone = tall();
+			draw_icons(links, ICON_SIDE as i32, BinaryColor::On, &mut alone);
+			// Left of the text column there is nothing but the icons: the margin, the clearance
+			// and the rows under the icons are dark.
+			for x in 0..text_x {
+				for y in 0..TALL.height as i32 {
+					let p = Point::new(x, y);
+					assert_eq!(display.get_pixel(p), alone.get_pixel(p), "{links:?}: {p:?}");
+				}
+			}
+			assert!(lit_in(&display, area), "{links:?}: the icons are drawn");
+			assert!(
+				lit(&display, TALL.width as i32 - 1, 0),
+				"{links:?}: the trace runs to the right edge on its top row"
+			);
 
-		// Lengthen the label a letter at a time: the icons never let a longer header through,
-		// and some length fits the whole width but not the width less the icons.
-		let mut collided = false;
-		for n in 1..40 {
-			let long: std::string::String = core::iter::repeat_n('Ж', n).collect();
-			let alone = draw(&pinned(&long, &samples), &Theme::bold_mono(), &mut tall()).label_overrun;
-			let beside = draw_with(&pinned(&long, &samples), &board, &Theme::bold_mono(), &mut tall()).label_overrun;
-			assert!(!alone || beside, "{n} letters: the icons only take room away");
-			collided |= beside && !alone;
+			let mut plain = tall();
+			draw(&pinned("НАДДУВ", &samples), &theme, &mut plain);
+			assert!(
+				display
+					.bounding_box()
+					.points()
+					.all(|p| area.contains(p) || plain.get_pixel(p) == display.get_pixel(p)),
+				"{links:?}: outside the icons, the same picture with no host connected"
+			);
 		}
-		assert!(collided, "some header fits the panel but not beside the icons");
+
+		// A label wider than the column may take is reported, and the trace keeps its room.
+		let long: std::string::String = core::iter::repeat_n('Ж', 20).collect();
+		let mut display = tall();
+		let report = draw_with(&pinned(&long, &samples), &Board { links: BOTH, rates: None }, &theme, &mut display);
+		assert!(report.label_overrun, "{report:?}");
+		assert!(!report.value_overrun, "{report:?}");
 	}
 
 	// --- the adapter screen -----------------------------------------------------------
