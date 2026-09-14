@@ -27,7 +27,7 @@ pub const BLE_SCAN: std::time::Duration = std::time::Duration::from_secs(4);
 use anyhow::{Context as _, Result, bail};
 use vag_uds_can::{AdapterInfo, BOARD_PROBE_WAIT, BoardAnswer, SerialSlcan, SlcanBackend, SlcanBitrate, SlcanMode, list_adapters, probe_board};
 
-use crate::bus::{Budget, Bus};
+use crate::bus::{Budget, Bus, Carrier};
 use crate::ui::menu::{Asker, Item};
 
 /// How a vag-dash board reads in the listing, by what it answered.
@@ -479,7 +479,7 @@ pub async fn open_bus(target: &Target) -> Result<Bus> {
 			let pipe = vag_dash_ble::NusPipe::connect(&board.handle.adapter, &board.handle.peripheral)
 				.await
 				.with_context(|| format!("connecting to {} over BLE", board.name))?;
-			Ok(Bus::start_remote(pipe, &board.name))
+			Ok(Bus::start_remote(pipe, &board.name, Carrier::Ble))
 		}
 	}
 }
