@@ -2325,16 +2325,19 @@ async fn usb_writer_task(usb: UsbSerialJtagTx<'static, Async>) -> ! {
 		usb,
 		stalled: false,
 		owed: 0,
+		broken_owed: false,
 	};
 	let mut carry: Option<Line> = None;
 	let mut packet = Packet::new();
 	loop {
 		if !USB_PRESENT.load(Ordering::Relaxed) {
 			writer.stalled = true;
-			// The host whose reassembler is inside a cut frame is gone with the cable. The next
-			// host never saw that frame's head: its zeros and the broken header would only be
-			// garbage ahead of that host's handshake, and `dashsim` would read them first.
-			writer.owed = 0;
+			// `owed` stays. A stopped frame counter is a pulled cable *or a host asleep*, and a
+			// host that wakes without a bus reset still holds the cut frame's head: without the
+			// zeros and the broken header its reassembler takes whatever comes next as that
+			// frame's body, and a message with a genuine `seq` decodes out of it (review round 2).
+			// A new host reads the filler first and discards it: its handshake scans for a
+			// HelloReply, and `dashsim` skips lines that hold a NUL.
 			let drained = select(Timer::after(PRESENCE_POLL), SLCAN_PORT.next_packet(&mut carry, &mut packet)).await;
 			if let Either::Second(packed) = drained {
 				SLCAN_PORT.lost(packed);
@@ -2389,6 +2392,9 @@ struct Writer {
 	stalled: bool,
 	/// Body bytes of a link frame cut short by a stall, not yet sent as filler.
 	owed: usize,
+	/// The [`link::BROKEN_FRAME`] header that follows a cut frame's filler, not yet in the
+	/// endpoint. Apart from `owed`, so a stall inside the filler does not lose it.
+	broken_owed: bool,
 }
 
 /// One USB-Serial-JTAG packet: what the endpoint holds, and what esp-hal writes at a time.
@@ -2418,7 +2424,7 @@ impl Writer {
 				return false;
 			}
 			self.stalled = false;
-			if self.owed > 0 {
+			if self.owed > 0 || self.broken_owed {
 				const ZEROS: [u8; USB_PACKET] = [0; USB_PACKET];
 				while self.owed > 0 {
 					let n = self.owed.min(USB_PACKET);
@@ -2428,7 +2434,13 @@ impl Writer {
 					}
 					self.owed -= n;
 				}
-				if !self.packet(&link::BROKEN_FRAME).await {
+				// Owed apart from the zeros: a host that stops reading again during the filler
+				// still gets the header once it takes packets, or it would read the padded
+				// frame and carry on (review round 3). A packet whose wait ran out is in the
+				// endpoint all the same, so it is paid either way.
+				let taken = self.packet(&link::BROKEN_FRAME).await;
+				self.broken_owed = false;
+				if !taken {
 					return false;
 				}
 			}
@@ -2439,6 +2451,7 @@ impl Writer {
 			if !self.packet(chunk).await {
 				if frame {
 					self.owed = bytes.len() - sent;
+					self.broken_owed = true;
 				}
 				return false;
 			}
