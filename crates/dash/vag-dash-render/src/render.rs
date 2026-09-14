@@ -41,6 +41,16 @@ use crate::theme::{Numerals, Theme};
 /// only kind of look this panel ever gets.
 const PAD: u32 = 3;
 
+/// Rows kept clear above the label and below the unit on a values page.
+///
+/// Owner, 2026-09-15: flush with the top and bottom edges the two small lines read as falling
+/// off the glass; pulled in, the cell reads as one block.
+const ROW_INSET: i32 = 2;
+
+/// Rows between the difference and the unit under it — one more than between the other lines
+/// (owner, 2026-09-15).
+const DEV_GAP: i32 = 2;
+
 /// What did not fit.
 ///
 /// Returned rather than logged because there is nowhere to log to on the board,
@@ -700,7 +710,7 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 
 	// One pixel of air above and below the number. Any less and the tiers touch,
 	// which reads as one smeared block rather than three things.
-	let fits = |step: usize, dev_h: u32| label_h + numeral_height(&theme.numerals[step], "0") + dev_h + unit_h + 2 <= height;
+	let fits = |step: usize, dev_h: u32| ROW_INSET as u32 * 2 + label_h + numeral_height(&theme.numerals[step], "0") + dev_h + unit_h + 2 <= height;
 	let mut step = stacked_step;
 	let mut dev_h = dev_h;
 	// The deviation buys its line from the number's face before it gives up: the number is
@@ -714,13 +724,13 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		step = stacked_step;
 	}
 	if fits(step, dev_h) {
-		let top = label_h as i32 + 1;
-		let floor = height as i32 - 1;
-		// The unit stays on the floor; the difference sits one row above whatever is under it.
-		let dev_baseline = (dev_h > 0).then(|| floor - if unit_h > 0 { unit_h as i32 + 1 } else { 0 });
+		let top = ROW_INSET + label_h as i32 + 1;
+		let floor = height as i32 - 1 - ROW_INSET;
+		// The unit sits on the floor, inset; the difference above it, with a row more air.
+		let dev_baseline = (dev_h > 0).then(|| floor - if unit_h > 0 { unit_h as i32 + DEV_GAP } else { 0 });
 		let bottom = match dev_baseline {
 			Some(baseline) => baseline - dev_h as i32,
-			None => height as i32 - unit_h as i32 - 1,
+			None => floor - unit_h as i32,
 		};
 		return RowLayout {
 			step,
@@ -799,7 +809,7 @@ where
 		};
 		let drawn = font.render(
 			label,
-			Point::new(x - ink_box.top_left.x, 0),
+			Point::new(x - ink_box.top_left.x, ROW_INSET),
 			VerticalPosition::Top,
 			FontColor::Transparent(ink),
 			target,
@@ -811,7 +821,7 @@ where
 	}
 	let drawn = font.render_aligned(
 		label,
-		Point::new(centre, 0),
+		Point::new(centre, ROW_INSET),
 		VerticalPosition::Top,
 		HorizontalAlignment::Center,
 		FontColor::Transparent(ink),
@@ -874,7 +884,7 @@ fn draw_value<D>(
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(centre, height as i32 - 1),
+					Point::new(centre, height as i32 - 1 - ROW_INSET),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
@@ -988,9 +998,6 @@ where
 	}
 }
 
-/// The numeral face a difference is drawn in where it fits: the ladder's smallest.
-const SMALL_NUMERALS: usize = 2;
-
 /// The chart's header rows: the header text, and the first link icon beside it. The trace
 /// starts under them.
 const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
@@ -1061,15 +1068,8 @@ where
 	// The column the number and its difference share: the wider of the two decides where the
 	// trace starts, or a long difference would run under it.
 	let deviation = deviation_text(cell);
-	let dev_numerals = deviation
-		.as_ref()
-		.filter(|text| measure(&theme.numerals[SMALL_NUMERALS], text.as_str()) <= width / 3)
-		.map(|_| &theme.numerals[SMALL_NUMERALS]);
-	let dev_w = match (&deviation, dev_numerals) {
-		(None, _) => 0,
-		(Some(text), Some(numerals)) => measure(numerals, text.as_str()),
-		(Some(text), None) => text_width(&theme.label, text.as_str()),
-	};
+	// The label's face: the numeral ladder's smallest was too big here (owner, 2026-09-15).
+	let dev_w = deviation.as_ref().map_or(0, |text| text_width(&theme.label, text.as_str()));
 	let column_w = value_w.max(dev_w) as i32;
 	let plot_x = column_w + 4;
 	let plot_bottom = height as i32 - 1;
@@ -1104,40 +1104,26 @@ where
 	// page: the number is what the eye came for, and on the floor it reads as an
 	// afterthought under the trace. The difference from the specified value, when there is
 	// one, takes the floor under it.
-	// The difference is drawn in the numeral ladder's smallest face where it fits under the
-	// number, and in the label's face where it does not (owner, 2026-09-15: bigger, and
-	// centred). Both are centred in the column they share.
-	let dev_h = match (&deviation, dev_numerals) {
-		(None, _) => 0,
-		(Some(_), Some(numerals)) => numeral_height(numerals, "0") as i32,
-		(Some(_), None) => text_height(&theme.label, "0") as i32,
-	};
+	// Both the number and the difference are centred in the column they share.
+	let dev_h = if deviation.is_some() { text_height(&theme.label, "0") as i32 } else { 0 };
 	let band_bottom = height as i32 - 1 - if dev_h > 0 { dev_h + 1 } else { 0 };
 	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
 	let value_baseline = plot_top + (band_bottom - plot_top - value_h as i32) / 2 + value_h as i32;
 	let value_x = (column_w - value_w as i32) / 2;
 	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(value_x, value_baseline), ink, target);
-	if let Some(text) = deviation {
-		let floor = height as i32 - 1;
-		let x = (column_w - dev_w as i32) / 2;
-		match dev_numerals {
-			Some(numerals) => draw_numerals(numerals, text.as_str(), Point::new(x, floor), ink, target),
-			None => {
-				if theme
-					.label
-					.render(
-						text.as_str(),
-						Point::new(x, floor),
-						VerticalPosition::Baseline,
-						FontColor::Transparent(ink),
-						target,
-					)
-					.is_err()
-				{
-					report.glyph_missing = true;
-				}
-			}
-		}
+	if let Some(text) = deviation
+		&& theme
+			.label
+			.render(
+				text.as_str(),
+				Point::new((column_w - dev_w as i32) / 2, height as i32 - 1),
+				VerticalPosition::Baseline,
+				FontColor::Transparent(ink),
+				target,
+			)
+			.is_err()
+	{
+		report.glyph_missing = true;
 	}
 
 	if plot_w < 8 || max <= min {
@@ -1556,42 +1542,34 @@ mod tests {
 
 	#[test]
 	fn a_difference_wider_than_the_number_keeps_the_trace_out_of_its_column() {
-		// `-12.34` is wider than `9.9`, so the column is the difference's and the trace starts
-		// past it.
-		let samples = [9.9f32; 200];
-		let cell = drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34));
-		let frame = Frame::Chart {
-			cell: drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34)),
+		// `-1234` is wider than `9`, so the column is the difference's and the trace starts past
+		// it rather than running under it.
+		static SAMPLES: [f32; 200] = [9.0; 200];
+		let of = |v: f32| Cell::new("ДАВЛЕНИЕ", Some(v), "bar", 0).with_deviation(Deviation::Value(-1234.0));
+		let frame = |samples: &'static [f32]| Frame::Chart {
+			cell: of(9.0),
 			min: 0.0,
 			max: 20.0,
-			samples: &samples,
+			samples,
 			seconds_per_sample: 0.2,
 		};
 		let mut display = tall();
-		let report = draw(&frame, &Theme::bold_mono(), &mut display);
+		let report = draw(&frame(&SAMPLES), &Theme::bold_mono(), &mut display);
 		assert!(!report.value_overrun, "{report:?}");
 
 		let theme = Theme::bold_mono();
+		let cell = of(9.0);
 		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, TALL.width / 3);
-		let dev_w = measure(&theme.numerals[SMALL_NUMERALS], deviation_text(&cell).unwrap().as_str());
-		assert!(dev_w > value_w, "the difference is the wider of the two");
-		// Nothing of the trace in the column: the rows under the header, left of where the
-		// plot starts, hold only the number and the difference.
-		let mut plain = tall();
-		draw(
-			&Frame::Chart {
-				cell: drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34)),
-				min: 0.0,
-				max: 20.0,
-				samples: &[],
-				seconds_per_sample: 0.2,
-			},
-			&theme,
-			&mut plain,
-		);
+		let dev_w = text_width(&theme.label, deviation_text(&cell).unwrap().as_str());
+		assert!(dev_w > value_w, "the difference is the wider of the two: {dev_w} against {value_w}");
+
+		// Nothing of the trace in the column: with no samples at all the same rows hold the
+		// same pixels.
+		let mut empty = tall();
+		draw(&frame(&[]), &theme, &mut empty);
 		let column = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(dev_w, TALL.height - HEADER_ROWS as u32));
 		assert!(
-			column.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
+			column.points().all(|p| empty.get_pixel(p) == display.get_pixel(p)),
 			"the trace stays out of the number's column"
 		);
 	}
