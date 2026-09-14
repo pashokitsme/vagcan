@@ -171,8 +171,8 @@ pub enum Tool {
 	Setup {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
 		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
-		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
-		/// when there is none.
+		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
+		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// The speed a coastdown pass opens at. Narrowing the range separates
@@ -261,6 +261,10 @@ pub struct LiveFeed {
 	subs: Vec<vag_cli_core::bus::Subscription>,
 	/// Where the next look for an arrival starts, so no read is favoured.
 	cursor: usize,
+	/// The leading speed's address: its subscription ending ends the feed.
+	speed: (u16, u16),
+	/// Why it ended, once it has.
+	ended: Option<String>,
 }
 
 impl LiveFeed {
@@ -272,7 +276,13 @@ impl LiveFeed {
 			.iter()
 			.filter_map(|poll| Some(bus.subscribe(poll.class, unit_of(poll.request)?, poll.did, poll.period, None)))
 			.collect();
-		LiveFeed { bus, subs, cursor: 0 }
+		LiveFeed {
+			bus,
+			subs,
+			cursor: 0,
+			speed: plan.speed,
+			ended: None,
+		}
 	}
 }
 
@@ -287,11 +297,26 @@ fn unit_of(request: u16) -> Option<vag_cli_core::bus::Unit> {
 
 impl Feed for LiveFeed {
 	fn closed(&self) -> Option<String> {
-		self.bus.closed()
+		self.bus.closed().or_else(|| self.ended.clone())
 	}
 
+	/// The speed's subscription ending ends the feed: the speed is what closes a cycle,
+	/// so without it nothing would be shown again, and [`closed`](Feed::closed) says why.
+	/// Any other read that ends is one last miss.
 	async fn next(&mut self) -> Option<Arrival> {
+		if self.ended.is_some() {
+			return None;
+		}
 		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs, &mut self.cursor).await?;
+		if let Some(why) = &sample.ended
+			&& (sample.unit.request, sample.did) == self.speed
+		{
+			self.ended = Some(format!(
+				"the vehicle speed ({:03X} {:04X}) is no longer read: {why}",
+				sample.unit.request, sample.did
+			));
+			return None;
+		}
 		Some(Arrival {
 			request: sample.unit.request,
 			did: sample.did,
@@ -1343,28 +1368,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 				}
 				session::Event::Finished(run) | session::Event::Aborted(run) => {
 					ui::play(if run.aborted { ui::Tone::Rejected } else { ui::Tone::Finished }, opts.quiet);
-					// The barometer and the ambient sensor are read here and
-					// nowhere else: once per run, and at the end of it, because
-					// that sensor heat-soaks at a standstill and +10 K reads the
-					// air density 3.4 % low.
-					if full
-						&& !plan.density.is_empty()
-						&& let Some(measured) = read_density(&mut feed, &plan).await
-					{
-						density = Some((measured, true));
-					}
-					if let Some((rho, measured)) = density
-						&& let Some(model) = meta.setting.model.as_mut()
-					{
-						model.conditions.rho = rho;
-						// The heading follows the number. A stated density is
-						// already what it says it is; a read one has just
-						// stopped being the standard atmosphere.
-						meta.setting.rho_from = match measured {
-							true => carfile::Source::Measured,
-							false => carfile::Source::Stated,
-						};
-					}
+					apply_density(&mut meta, density);
 					last_outcome = Some(match run.aborted {
 						true => ui::Outcome::Aborted {
 							at_kmh: speed_kmh,
@@ -1381,16 +1385,62 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 						derived,
 						at: now(),
 					});
-					match terminal.is_some() {
-						true => table = Some(text),
-						false => println!("{text}"),
-					}
 					// `--out` writes continuously; `s` writes on demand. Both
-					// write the same document.
+					// write the same document. The run is recorded and written
+					// before the density is read below: a read that never comes
+					// back must not cost the run it was for.
 					if let Some(path) = opts.out {
 						write_session(path, &meta, &recorded, &session)?;
 						session.on_command(session::Command::Save);
 						discarded_unsaved = 0;
+					}
+					// The results table goes up at once; the plain console prints
+					// them once the density has had its chance to change them.
+					let mut text = Some(text);
+					if terminal.is_some() {
+						table = text.take();
+					}
+					// The barometer and the ambient sensor are read here and
+					// nowhere else: once per run, and at the end of it, because
+					// that sensor heat-soaks at a standstill and +10 K reads the
+					// air density 3.4 % low. Bounded, and the keyboard is still
+					// taken while it waits.
+					if full && !plan.density.is_empty() {
+						let reading = tokio::time::timeout(DENSITY_WAIT, read_density(&mut feed, &plan));
+						tokio::pin!(reading);
+						let measured = loop {
+							tokio::select! {
+								biased;
+								got = &mut reading => break got.ok().flatten(),
+								() = tokio::time::sleep(FRAME) => {
+									if terminal.is_some() {
+										let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
+										drain(&mut controls, &mut session, unsaved, &mut warning, &mut pending, &mut quit)?;
+										if quit {
+											break None;
+										}
+									}
+								}
+							}
+						};
+						if let Some(measured) = measured {
+							density = Some((measured, true));
+							apply_density(&mut meta, density);
+							if let Some(last) = recorded.last_mut() {
+								last.derived = report::recompute(&last.run, &meta.setting);
+								let again = report::results(&last.run, &last.derived, &meta.setting);
+								match terminal.is_some() {
+									true => table = Some(again),
+									false => text = Some(again),
+								}
+							}
+							if let Some(path) = opts.out {
+								write_session(path, &meta, &recorded, &session)?;
+							}
+						}
+					}
+					if let Some(text) = text {
+						println!("{text}");
 					}
 				}
 				session::Event::Armed => {}
@@ -1508,6 +1558,28 @@ fn write_session(path: &str, meta: &Meta, recorded: &[Recorded], session: &sessi
 	let mut text = serde_json::to_string(&document)?;
 	text.push('\n');
 	std::fs::write(path, text).with_context(|| format!("writing {path}"))
+}
+
+/// The longest the loop waits for the density read at the end of a run: what the bus
+/// gives a one-shot read over the dash board. The live feed's read comes back by then
+/// on its own; this bounds any feed.
+const DENSITY_WAIT: Duration =
+	Duration::from_millis(vag_cli_core::bus::ONCE_DEADLINE.as_millis() as u64 + vag_cli_core::bus::REMOTE_GRACE.as_millis() as u64);
+
+/// Put the density in force for the power model, and say where it came from.
+fn apply_density(meta: &mut Meta, density: Option<(f64, bool)>) {
+	if let Some((rho, measured)) = density
+		&& let Some(model) = meta.setting.model.as_mut()
+	{
+		model.conditions.rho = rho;
+		// The heading follows the number. A stated density is
+		// already what it says it is; a read one has just
+		// stopped being the standard atmosphere.
+		meta.setting.rho_from = match measured {
+			true => carfile::Source::Measured,
+			false => carfile::Source::Stated,
+		};
+	}
 }
 
 /// Read the barometer and the ambient sensor, once, and turn them into a
@@ -2227,6 +2299,171 @@ mod tests {
 		let seconds = mark["seconds"].as_f64().expect("0-50 closed");
 		assert!((seconds - 2.5).abs() < 0.1, "0-50 at 20 km/h a second is 2.5 s, timed {seconds}");
 		assert_eq!(written["runs"].as_array().unwrap().len(), 1);
+	}
+
+	/// A launch, then nothing: the car's speed every 20 ms, 0 to 60 km/h at 20 km/h a
+	/// second after a second and a half at a standstill, with the gear beside it.
+	fn launch(plan: &Plan) -> std::collections::VecDeque<Arrival> {
+		let speed = plan.speed;
+		let gear = *plan
+			.by_address
+			.iter()
+			.find(|(_, c)| c.key == "gear")
+			.map(|(address, _)| address)
+			.expect("a gear channel");
+		let mut arrivals = std::collections::VecDeque::new();
+		for i in 0..300u32 {
+			let t = f64::from(i) * 0.02;
+			let kmh = ((t - 1.5) * 20.0).clamp(0.0, 60.0);
+			let raw = (kmh * 100.0).round() as u16;
+			arrivals.push_back(Arrival {
+				request: speed.0,
+				did: speed.1,
+				at: t,
+				data: Some(raw.to_le_bytes().to_vec()),
+			});
+			if i % 3 == 0 {
+				arrivals.push_back(Arrival {
+					request: gear.0,
+					did: gear.1,
+					at: t + 0.005,
+					data: Some(vec![0x02]),
+				});
+			}
+		}
+		arrivals
+	}
+
+	/// A feed whose one-shot reads never come back.
+	struct NoDensity {
+		arrivals: std::collections::VecDeque<Arrival>,
+	}
+
+	impl Feed for NoDensity {
+		async fn next(&mut self) -> Option<Arrival> {
+			self.arrivals.pop_front()
+		}
+
+		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
+			std::future::pending().await
+		}
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_finished_run_is_written_before_a_density_read_that_never_answers() {
+		let (store, units) = reference();
+		let dir = tempfile::tempdir().unwrap();
+		let out = dir.path().join("session.json");
+		let out_text = out.to_string_lossy().to_string();
+		// Round numbers, only so that `--full` has a car to compute power for.
+		let car_path = dir.path().join("car.json");
+		let mut car = carfile::CarFile::new("TESTVIN0000000000");
+		car.i_wheels_kgm2 = Some(carfile::Sourced::new(1.0, carfile::Source::Stated));
+		car.i_engine_kgm2 = Some(carfile::Sourced::new(0.1, carfile::Source::Stated));
+		car.save(&car_path).unwrap();
+		let car_text = car_path.to_string_lossy().to_string();
+		let opts = Options {
+			car: Some(&car_text),
+			catalogs: "",
+			full: true,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: Some(&out_text),
+			quiet: true,
+			mass_kg: Some(1500.0),
+			tyre: Some("205/55R16"),
+			cda: Some(0.7),
+			crr: Some(0.011),
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves under --full");
+		assert!(!prepared.plan.density.is_empty(), "the density is read at the end of a run");
+		let feed = NoDensity {
+			arrivals: launch(&prepared.plan),
+		};
+		let ended = tokio::time::timeout(Duration::from_secs(3600), drive(feed, prepared, &opts, false))
+			.await
+			.expect("the drive does not hang on a density read that never answers");
+		assert!(ended.is_err(), "a feed that ends is a link that closed");
+		let written: Value = serde_json::from_str(&std::fs::read_to_string(&out).expect("--out was written")).unwrap();
+		assert_eq!(written["runs"].as_array().map(Vec::len), Some(1), "{written}");
+	}
+
+	/// The speed is what closes a cycle. When the dash board refuses it — another host
+	/// holds its one timing channel — the other readings keep coming and nothing is ever
+	/// shown, so the run ends at once with the board's reason.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_speed_reading_the_board_refuses_ends_the_run_with_the_boards_reason() {
+		use vag_uds_transport::link::{self, Message, Outcome, Piece, Pipe, Reading, Reassembler, pipe_pair};
+		const REFUSAL: &str = "the timing channel is held by another host";
+		let (store, units) = reference();
+		let opts = Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let speed = prepared.plan.speed;
+		let (host, mut board) = pipe_pair(244);
+		let bus = vag_cli_core::bus::Bus::start_remote(host, "vagcan-dash", vag_cli_core::bus::Carrier::Ble);
+		let feed = LiveFeed::new(bus, &prepared.plan);
+		// The board: refuses the speed, and reads every other subscription every 20 ms.
+		tokio::spawn(async move {
+			let mut reassembler = Reassembler::new();
+			let mut live: Vec<(u16, u16)> = Vec::new();
+			let mut at_ms = 1_000u32;
+			loop {
+				let mut out = Vec::new();
+				tokio::select! {
+					chunk = board.read() => {
+						let Some(chunk) = chunk else { return };
+						for piece in reassembler.push(&chunk) {
+							let Piece::Message(Message::Subscribe(s)) = piece else { continue };
+							match (s.request_id, s.did) == speed {
+								true => out.push(Reading { sub: s.sub, at_ms, outcome: Outcome::Refused(REFUSAL.into()) }),
+								false => live.push((s.sub, s.did)),
+							}
+						}
+					}
+					() = tokio::time::sleep(Duration::from_millis(20)) => {
+						at_ms += 20;
+						for &(sub, did) in &live {
+							let [hi, lo] = did.to_be_bytes();
+							out.push(Reading { sub, at_ms, outcome: Outcome::Pdu(vec![0x62, hi, lo, 0x02]) });
+						}
+					}
+				}
+				for reading in out {
+					if board.write(&link::encode(&Message::Reading(reading)).unwrap()).await.is_err() {
+						return;
+					}
+				}
+			}
+		});
+		let ended = tokio::time::timeout(Duration::from_secs(5), drive(feed, prepared, &opts, false))
+			.await
+			.expect("the run ends rather than wait for a speed that will not come");
+		let why = ended.expect_err("ended by the refusal").to_string();
+		assert!(why.contains(REFUSAL), "{why}");
 	}
 
 	/// A feed from a car that says nothing for a while and then goes away, counting

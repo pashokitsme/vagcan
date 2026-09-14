@@ -71,6 +71,16 @@ pub const PENDING_WAIT: Duration = Duration::from_secs(5);
 /// exchange's caller gets as a success with no data.
 pub const SUPPRESSED_WAIT: Duration = Duration::from_millis(150);
 
+/// How long a one-shot read ([`Bus::read_once`], [`Bus::read_all`]) waits, queue and answer
+/// together, before its caller gets [`Miss::NoAnswer`]: one scheduled read's deadline and
+/// one response-pending wait. A bus over the dash board adds [`REMOTE_GRACE`].
+///
+/// The task bounds each exchange on its own; this bounds the caller, whatever holds the
+/// task up — a queue in front of the read, a unit that keeps saying `78`, a backend that
+/// does not honour its deadline. A read given up on may still go out later; its answer
+/// then reaches nobody.
+pub const ONCE_DEADLINE: Duration = Duration::from_millis(READ_DEADLINE.as_millis() as u64 + PENDING_WAIT.as_millis() as u64);
+
 /// How many `7F xx 78` in a row one request may be answered with before the unit counts
 /// as not answering: the async UDS client's own limit, so an exchange through the bus
 /// gives up exactly where it did talking to the link directly.
@@ -132,6 +142,12 @@ pub struct Sample {
 	pub at: At,
 	/// The record's bytes, identifier echo stripped; or why there are none this time.
 	pub value: Result<Vec<u8>, Miss>,
+	/// `Some` on the last sample of a subscription that ends while its consumer still
+	/// holds it, with why, in words for a person: the dash board refused it ("refused by
+	/// the dash board — the car is moving"), or the link to the board broke. Its `value`
+	/// is then [`Miss::BusError`], and the stream ends after it. A subscription on a
+	/// cable never ends this way; it ends only with the bus.
+	pub ended: Option<String>,
 }
 
 /// Why a raw exchange came back without an answer.
@@ -210,6 +226,9 @@ pub struct Bus {
 	keys: Arc<AtomicU64>,
 	/// Why the link broke under the task, once it has (see [`Bus::closed`]).
 	closed: Arc<std::sync::OnceLock<String>>,
+	/// What a one-shot read waits past [`ONCE_DEADLINE`]: nothing on a cable,
+	/// [`REMOTE_GRACE`] over the dash board.
+	grace: Duration,
 }
 
 impl Bus {
@@ -226,6 +245,7 @@ impl Bus {
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
 			closed: Arc::new(std::sync::OnceLock::new()),
+			grace: Duration::ZERO,
 		}
 	}
 
@@ -249,6 +269,7 @@ impl Bus {
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
 			closed,
+			grace: REMOTE_GRACE,
 		}
 	}
 
@@ -290,21 +311,22 @@ impl Bus {
 			did,
 			rx,
 			commands: self.commands.clone(),
+			ended: None,
 		}
 	}
 
-	/// Read `did` of `unit` once. It rides with anything of that unit due soon.
+	/// Read `did` of `unit` once. It rides with anything of that unit due soon. A read that
+	/// has not come back within [`ONCE_DEADLINE`] (and the grace of a bus over the board)
+	/// is [`Miss::NoAnswer`].
 	pub async fn read_once(&self, class: Class, unit: Unit, did: u16) -> Result<(Vec<u8>, At), Miss> {
-		let (to, rx) = oneshot::channel();
-		if self.commands.send(Command::ReadOnce { class, unit, did, to }).is_err() {
-			return Err(Miss::BusError);
-		}
-		rx.await.unwrap_or(Err(Miss::BusError))
+		self.read_all(class, &[(unit, did)]).await.pop().unwrap_or(Err(Miss::BusError))
 	}
 
 	/// Read several identifiers once each. All are asked before any is waited for, so
 	/// those of one unit ride in one request; the results come back in the order asked.
+	/// One deadline for all of them, as for [`read_once`](Self::read_once).
 	pub async fn read_all(&self, class: Class, reads: &[(Unit, u16)]) -> Vec<Result<(Vec<u8>, At), Miss>> {
+		let until = Instant::now() + ONCE_DEADLINE + self.grace;
 		let waiting: Vec<_> = reads
 			.iter()
 			.map(|&(unit, did)| {
@@ -315,7 +337,10 @@ impl Bus {
 		let mut out = Vec::with_capacity(waiting.len());
 		for rx in waiting {
 			out.push(match rx {
-				Some(rx) => rx.await.unwrap_or(Err(Miss::BusError)),
+				Some(rx) => match tokio::time::timeout_at(until, rx).await {
+					Ok(answered) => answered.unwrap_or(Err(Miss::BusError)),
+					Err(_elapsed) => Err(Miss::NoAnswer),
+				},
 				None => Err(Miss::BusError),
 			});
 		}
@@ -363,17 +388,30 @@ pub struct Subscription {
 	did: u16,
 	rx: mpsc::UnboundedReceiver<Sample>,
 	commands: mpsc::UnboundedSender<Command>,
+	/// Why it ended, once its last sample ([`Sample::ended`]) has been delivered.
+	ended: Option<String>,
 }
 
 impl Subscription {
-	/// The next reading or miss, in arrival order. `None` once the bus has shut down.
+	/// The next reading or miss, in arrival order. `None` once the subscription has ended
+	/// ([`ended`](Self::ended) says why, when there is a reason) or the bus has shut down.
 	pub async fn next(&mut self) -> Option<Sample> {
-		self.rx.recv().await
+		std::future::poll_fn(|cx| self.poll_next(cx)).await
 	}
 
 	/// [`next`](Self::next) as a poll, for waiting on several at once ([`next_of`]).
 	pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Sample>> {
-		self.rx.poll_recv(cx)
+		let polled = self.rx.poll_recv(cx);
+		if let Poll::Ready(Some(Sample { ended: Some(why), .. })) = &polled {
+			self.ended = Some(why.clone());
+		}
+		polled
+	}
+
+	/// Why this subscription ended while it was held, once its last sample has been
+	/// delivered: the words [`Sample::ended`] carried. `None` while it is live.
+	pub fn ended(&self) -> Option<&str> {
+		self.ended.as_deref()
 	}
 
 	pub fn unit(&self) -> Unit {

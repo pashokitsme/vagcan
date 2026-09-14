@@ -49,17 +49,21 @@ struct State {
 }
 
 impl Drop for State {
-	/// Said once, when the bus closes: in the middle of a run this would land on top of
-	/// whatever the screen is drawing.
+	/// Said once, when the bus closes, and only when there were any: in the middle of a
+	/// run this would land on top of whatever the screen is drawing.
 	fn drop(&mut self) {
-		if self.discarded > 0 {
-			eprintln!(
-				"{} late {} from control units discarded rather than taken for the request after {}",
-				self.discarded,
-				if self.discarded == 1 { "answer" } else { "answers" },
-				if self.discarded == 1 { "it" } else { "them" },
-			);
+		if let Some(note) = late_note(self.discarded) {
+			eprintln!("{note}");
 		}
+	}
+}
+
+/// What the closing note says about `discarded` late answers: nothing for none.
+pub(super) fn late_note(discarded: usize) -> Option<String> {
+	match discarded {
+		0 => None,
+		1 => Some("1 late answer from a control unit ignored".to_string()),
+		n => Some(format!("{n} late answers from control units ignored")),
 	}
 }
 
@@ -242,17 +246,27 @@ impl State {
 
 	fn to_subscriber(&self, sub: SubId, unit: Unit, did: u16, at: At, value: Result<Vec<u8>, Miss>) {
 		if let Some(to) = self.subs.get(&sub) {
-			let _ = to.send(Sample { unit, did, at, value });
+			let _ = to.send(Sample {
+				unit,
+				did,
+				at,
+				value,
+				ended: None,
+			});
 		}
 	}
 }
 
 /// Address `unit`, put `pdu` on the link, and take the final answer back.
 ///
+/// What the link already holds is thrown away first ([`UnitLink::discard_stale`]): a late
+/// answer to an identical request echoes this one's identifier, and [`answers`] cannot
+/// tell it from the real one.
+///
 /// Not cancel-safe: dropped mid-exchange, it leaves the slot empty. The task drops it
 /// only on its way out.
 async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout: Duration) -> Heard {
-	let Some(link) = slot.take() else {
+	let Some(mut link) = slot.take() else {
 		return Heard {
 			answer: Answer::BusError,
 			at: Instant::now(),
@@ -260,6 +274,7 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 			discarded: 0,
 		};
 	};
+	link.discard_stale().await;
 	let mut channel = link.to_unit(CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let heard = exchange(&mut channel, pdu, timeout).await;
 	*slot = Some(L::release(channel));
