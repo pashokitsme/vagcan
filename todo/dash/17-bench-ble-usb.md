@@ -19,6 +19,10 @@ answer". Two defects found and fixed there. Everything that needs frames on the 
 
 ## 0. The pair
 
+- **16:08 `rxprobe`: the transceiver's `R` is stuck low and never follows `D`** (§9.7). By hand:
+  CANable off the pair → `rxprobe` again; CAN-H/CAN-L at idle ≈2.5 V each; module 3.3 V;
+  H–L resistance unpowered.
+
 - `research/dash/bench.sh 15 cantx` → PASS. Then reflash `dash` with the real plan.
 - Power the board from the 12 V bench supply, not USB, so unplugging USB does not reset it.
 

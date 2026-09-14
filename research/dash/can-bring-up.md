@@ -822,6 +822,22 @@ fault showing first. **Needs the owner at the bench.** The board was left on `da
 Not yet judged because of it: whether `watch` plain mode's CSV rows every ~20 ms with ~5 s
 gaps (on a bus where nothing answers) is a host defect; re-run on a working pair.
 
+**Timeline, rebuilt from commit and capture times:** the pair last worked at the §9.6 check
+(commit `c6b1339`, 11:41: `F187` to both units on the pair). Nothing touched the hardware
+between then and 12:19 — the 12:14 attempt was an `osascript` launch that timed out before
+running anything — and at 12:19 `benchecu` heard no request from its first second. The
+owner's own `bench.sh` runs at 14:56 and 16:04–16:06 failed too, after replugging and RST.
+
+**`rxprobe`, 16:08 (no CAN controller involved):** idle `R was high 0% of 47618 samples, 0
+change(s)` — STUCK LOW; echo `D recessive -> R low` in every round; `rise took 200001 µs
+<-- never`. The transceiver's `R` never goes recessive, whatever `D` does: the pair is held
+dominant, or the module's `R`/supply/`CRX` path is broken. Not firmware — it survives
+reflashing, RST and replug, and `rxprobe` drives the pads by hand. Next, by hand: unplug
+the CANable from the pair and run `rxprobe` again (`R` high at idle → the CANable side
+holds the bus; still low → the board's module or its wiring), and measure CAN-H/CAN-L
+at idle (recessive: both ≈2.5 V, difference ≈0), the module's 3.3 V, and H–L resistance
+unpowered.
+
 ### 9.8 What runs with the pair still dead, 2026-09-14 15:49–16:01
 
 `ble-uds` after the alarms merge, `dash` rebuilt with the real plan. The pair was re-tested
