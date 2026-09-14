@@ -177,6 +177,11 @@ mod memory {
 pub const MARKER: u8 = 0x00;
 /// Marker, type and the two length bytes.
 pub const HEADER_LEN: usize = 4;
+/// A header with a type nobody sends and no body: sent after a frame that had to be cut
+/// short and then completed with filler, so a host that goes on reading is told the link
+/// lost data instead of trusting what the filler made of it. The reassembler rejects it
+/// by its type and starts clean after it.
+pub const BROKEN_FRAME: [u8; HEADER_LEN] = [MARKER, 0xFF, 0x00, 0x00];
 /// The largest body the reassembler accepts. The largest body this link sends is a
 /// Reading's, 7 + [`MAX_PDU`] bytes; anything past this cap is not a message.
 pub const MAX_BODY: usize = 4200;
@@ -531,6 +536,11 @@ impl Reassembler {
 	/// Forget any frame in progress.
 	pub fn reset(&mut self) {
 		self.partial.clear();
+	}
+
+	/// Whether a frame is in progress: its first bytes have come and its last have not.
+	pub fn in_frame(&self) -> bool {
+		!self.partial.is_empty()
 	}
 
 	/// Feed one chunk; get back everything it completed.
@@ -1064,6 +1074,51 @@ mod tests {
 			"{pieces:?}"
 		);
 		assert_eq!(pieces[7], Piece::Message(request()));
+	}
+
+	#[test]
+	fn a_frame_in_progress_is_known_until_it_ends_or_is_reset() {
+		let frame = encode(&request()).unwrap();
+		let mut r = Reassembler::new();
+		assert!(!r.in_frame());
+		r.push(&frame[..1]);
+		assert!(r.in_frame(), "the marker alone starts a frame");
+		r.push(&frame[1..]);
+		assert!(!r.in_frame());
+		r.push(&frame[..6]);
+		r.reset();
+		assert!(!r.in_frame());
+		r.push(b"text");
+		assert!(!r.in_frame(), "text is no frame");
+	}
+
+	/// What the board's writer sends when a host that stopped reading reads again: the
+	/// rest of the cut frame's length in zeros, then a header nobody sends. The cut frame
+	/// ends where it was declared to end, the header breaks the link, and a frame after it
+	/// — a HelloReply to the next host — is read whole.
+	#[test]
+	fn zeros_for_a_cut_frame_and_an_unknown_header_resynchronise_the_stream() {
+		let long = encode(&answer(Outcome::Pdu((0..200).map(|i| i as u8).collect()))).unwrap();
+		let sent = 64;
+		let mut stream = long[..sent].to_vec();
+		stream.extend(core::iter::repeat_n(0u8, long.len() - sent));
+		stream.extend_from_slice(&BROKEN_FRAME);
+		let next = encode(&Message::Hello).unwrap();
+		let mut r = Reassembler::new();
+		let mut pieces = r.push(&stream);
+		assert!(!r.in_frame(), "the cut frame and the broken header are both closed");
+		pieces.extend(r.push(&next));
+		assert!(pieces.contains(&Piece::Error(LinkError::UnknownType(BROKEN_FRAME[1]))), "{pieces:?}");
+		assert_eq!(pieces.last(), Some(&Piece::Message(Message::Hello)));
+		// Byte by byte the same holds. (Read in one chunk with what follows it, the header
+		// costs the rest of that chunk, as any untrusted header does; a host's handshake
+		// that sees it says Hello again.)
+		let mut all = stream.clone();
+		all.extend(&next);
+		let mut r = Reassembler::new();
+		let pieces: Vec<Piece> = chunks(&all, 1).flat_map(|c| r.push(c)).collect();
+		assert!(pieces.contains(&Piece::Error(LinkError::UnknownType(BROKEN_FRAME[1]))), "{pieces:?}");
+		assert_eq!(pieces.last(), Some(&Piece::Message(Message::Hello)));
 	}
 
 	#[test]

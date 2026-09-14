@@ -221,7 +221,19 @@ pub struct Console {
 	mode: Mode,
 	reassembler: Reassembler,
 	parser: LineParser,
+	/// When the last byte came, on the caller's clock ([`Console::push_at`]).
+	last_byte_ms: u64,
 }
+
+/// How long a frame may stand unfinished with no byte arriving before it is given up.
+///
+/// A host killed half way through a frame never sends the rest, and without this the next
+/// host's `\rC\r` and Hello would be read as that frame's body. A host sends a frame in
+/// one go and USB hands it over within milliseconds, so a frame this quiet is no slow one.
+pub const FRAME_GAP_MS: u64 = 200;
+
+/// What a frame given up after [`FRAME_GAP_MS`] is reported as.
+pub const UNFINISHED: LinkError = LinkError::Malformed("a frame the host never finished");
 
 impl Default for Console {
 	fn default() -> Self {
@@ -236,6 +248,7 @@ impl Console {
 			mode: Mode::Panel,
 			reassembler: Reassembler::new(),
 			parser: LineParser::lines(),
+			last_byte_ms: 0,
 		}
 	}
 
@@ -249,8 +262,25 @@ impl Console {
 	/// A Request or a Subscribe routed within the chunk makes the link active for the rest
 	/// of it: the session will hold it by the time anything is done with what follows, and
 	/// the caller's word was taken before it came.
-	pub fn push(&mut self, chunk: &[u8], mut link_active: bool) -> Vec<Input> {
+	///
+	/// No time passes between chunks given this way; the firmware uses [`Console::push_at`].
+	pub fn push(&mut self, chunk: &[u8], link_active: bool) -> Vec<Input> {
+		self.push_at(chunk, link_active, self.last_byte_ms)
+	}
+
+	/// [`Console::push`], with the moment the chunk arrived in milliseconds on any
+	/// monotonic clock: a frame in progress whose last byte is [`FRAME_GAP_MS`] old is
+	/// given up first, and said as [`UNFINISHED`].
+	pub fn push_at(&mut self, chunk: &[u8], mut link_active: bool, now_ms: u64) -> Vec<Input> {
 		let mut out = Vec::new();
+		if chunk.is_empty() {
+			return out;
+		}
+		if self.reassembler.in_frame() && now_ms.saturating_sub(self.last_byte_ms) >= FRAME_GAP_MS {
+			self.reassembler.reset();
+			out.push(Input::Malformed(UNFINISHED));
+		}
+		self.last_byte_ms = now_ms;
 		for piece in self.reassembler.push(chunk) {
 			match piece {
 				Piece::Message(message) => {
@@ -566,6 +596,34 @@ mod tests {
 			Console::new().push(&bytes, false),
 			vec![Input::Message(Message::Hello), Input::EnterAdapter, slcan(b"V")]
 		);
+	}
+
+	#[test]
+	fn a_frame_left_half_way_is_given_up_after_a_quiet_gap_and_the_next_host_is_heard() {
+		let frame = link::encode(&request()).unwrap();
+		let mut next = b"\rC\r".to_vec();
+		next.extend(link::encode(&Message::Hello).unwrap());
+
+		let mut console = Console::new();
+		assert!(console.push_at(&frame[..6], false, 1_000).is_empty());
+		assert_eq!(
+			console.push_at(&next, false, 1_000 + FRAME_GAP_MS + 50),
+			vec![Input::Malformed(UNFINISHED), Input::Closed, Input::Message(Message::Hello)]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+
+		// Within the gap the same bytes are the frame's body, and nothing of them is heard.
+		let mut console = Console::new();
+		console.push_at(&frame[..6], false, 1_000);
+		assert_eq!(console.push_at(&next, false, 1_000 + FRAME_GAP_MS - 100), vec![]);
+
+		// A frame that keeps arriving, however slowly byte by byte, is never given up.
+		let mut console = Console::new();
+		let mut heard = Vec::new();
+		for (at, byte) in frame.iter().enumerate() {
+			heard.extend(console.push_at(core::slice::from_ref(byte), false, 1_000 + at as u64 * (FRAME_GAP_MS - 1)));
+		}
+		assert_eq!(heard, vec![Input::Message(request())]);
 	}
 
 	#[test]
