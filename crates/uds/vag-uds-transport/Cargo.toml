@@ -11,7 +11,7 @@ thiserror.workspace = true
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [features]
 default = ["std"]

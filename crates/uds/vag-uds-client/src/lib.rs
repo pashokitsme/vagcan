@@ -29,6 +29,7 @@ pub use address::UnitAddress;
 pub use dtc::RawDtc;
 pub use identity::EcuIdentity;
 pub use isotp::SoftwareIsoTp;
+pub use pdu::check_read_only;
 #[cfg(feature = "std")]
 pub use read::{Reading, UdsReadExt};
 pub use uds::{UdsClient, UdsError};

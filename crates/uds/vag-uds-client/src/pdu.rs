@@ -26,6 +26,16 @@ pub(crate) fn encode_request(sid: u8, payload: &[u8]) -> Result<Vec<u8>, UdsErro
 	Ok(req)
 }
 
+/// The check [`encode_request`] makes, for a request PDU that arrives already built:
+/// refused when empty or when its service is outside the read-only allowlist.
+pub fn check_read_only(pdu: &[u8]) -> Result<(), UdsError> {
+	match pdu.first() {
+		None => Err(UdsError::Malformed(alloc::string::String::from("empty request"))),
+		Some(sid) if READ_ONLY_ALLOWLIST.contains(sid) => Ok(()),
+		Some(sid) => Err(UdsError::Forbidden(*sid)),
+	}
+}
+
 /// One classified response PDU.
 pub(crate) enum Classified {
 	/// NRC 0x78 — the ECU asks for more time; read again without re-sending.

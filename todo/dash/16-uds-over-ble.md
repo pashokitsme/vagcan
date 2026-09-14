@@ -99,7 +99,16 @@ item 7 (the `frame` mirror) unnecessary.
   host, the board's decode/allowlist/chunking in a host-testable crate). *(Board side done
   2026-09-14, branch `fw-bus`: `vag_uds_client::remote::Session` — guard, planner, readings,
   walk lock, close — tested against a real planner and a simulated bus; the firmware's NUS
-  server wraps it. Host transport not started.)*
+  server wraps it. Host side done 2026-09-14, branch `bus-ble`: `link::Pipe` and
+  `pipe_pair`; `vag_dash_ble::NusPipe` (notifications drained by a task of their own,
+  connect bounded to 10 s) and `scan_boards` (stops 1 s after the first board); 
+  `Bus::start_remote` in `vag-cli-core/src/bus/remote.rs`, tested against a scripted board —
+  subscriptions on the board's clock, one-shot reads, exchanges and every outcome, refusals,
+  notifications of 20 and 244 bytes with the state line between, reads taken in between
+  writes, a lost chunk breaking the link, a drop mid-exchange, the 33rd subscription;
+  `--device ble` / `ble:<name>` and the fallback with no cable in `device.rs`, every branch
+  tested; `dev survey`, `units --identify <unit>` and `dev sniff` refused over BLE before
+  anything is opened. The host side has not run against the board yet.)*
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
   on a negative answer and on no answer, allowed on 0; the rate cap delaying; a run of 8
   refused in any order and through padding; a multi-identifier request over 4 refused, and
@@ -111,6 +120,6 @@ item 7 (the `frame` mirror) unnecessary.
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
   the CANable with `dev sniff --device … --active` (no unit answers on the bench). *(The
   board's half passed 2026-09-14 with the bench tool `bleuds` in place of `vagcan`:
-  `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` waits for the host
-  transport.)*
+  `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` itself is still to
+  run: the host transport is implemented, on `bus-ble`.)*
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.

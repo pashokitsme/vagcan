@@ -6,10 +6,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::time::Instant;
 use vag_uds_can::UnitLink;
-use vag_uds_client::schedule::{Answer, Budget, Delivery, Miss, Next, Planner, ReqId, SubId, Unit};
+use vag_uds_client::schedule::{Answer, Budget, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
-use super::{At, Command, ExchangeError, MAX_PENDING, OnceReply, PENDING_WAIT, READ_DEADLINE, RawReply, Sample};
+use super::{At, Command, ExchangeError, MAX_PENDING, OnceReply, PENDING_WAIT, READ_DEADLINE, RawReply, SUPPRESSED_WAIT, Sample};
 
 /// A negative response's first byte, and the NRC that means "response pending"
 /// (ISO 14229-1).
@@ -138,7 +138,8 @@ pub(super) async fn run<L: UnitLink>(link: L, budget: Budget, mut inbox: mpsc::U
 	}
 }
 
-async fn sleep_until(wake: Option<Instant>) {
+/// Wake at `wake`, or never. Shared with the remote task.
+pub(super) async fn sleep_until(wake: Option<Instant>) {
 	match wake {
 		Some(at) => tokio::time::sleep_until(at).await,
 		None => std::future::pending().await,
@@ -223,8 +224,10 @@ impl State {
 						// produced here; kept total so a refusal is still a refusal.
 						Answer::Refused(nrc) => Ok((vec![NEGATIVE, 0, nrc], at)),
 						// Silence after a request that suppressed its positive response is
-						// what was asked for; to the caller it is still no answer.
-						Answer::NoAnswer | Answer::NotExpected => Err(ExchangeError::NoAnswer),
+						// what was asked for: a success with nothing in it, as the remote
+						// bus reports it too.
+						Answer::NotExpected => Ok((Vec::new(), at)),
+						Answer::NoAnswer => Err(ExchangeError::NoAnswer),
 						Answer::BusError => {
 							Err(ExchangeError::Link(error.take().unwrap_or_else(|| {
 								TransportError::Io(format!("the link failed talking to {:03X}", unit.request))
@@ -271,21 +274,27 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 /// is discarded, and the wait goes on for what is left of the deadline, not a new one.
 async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, pdu: &[u8], timeout: Duration) -> Heard {
 	let mut discarded = 0;
+	// A request that suppressed its positive response is answered only by a refusal, so
+	// it waits [`SUPPRESSED_WAIT`] for one rather than the caller's whole deadline, and
+	// silence is what it asked for. Once the unit says `78` it owes a final answer after
+	// all (ISO 14229-1), and silence from then on is no answer.
+	let mut none_expected = expects_no_answer(pdu);
 	if let Err(why) = channel.send(pdu).await {
-		return failed(why, discarded);
+		return failed(why, discarded, none_expected);
 	}
 	// The first wait is the whole deadline, and so is the first after a `78`; only a
 	// discarded answer leaves less of it.
-	let mut deadline = Instant::now() + timeout;
-	let mut wait = timeout;
+	let first = if none_expected { SUPPRESSED_WAIT } else { timeout };
+	let mut deadline = Instant::now() + first;
+	let mut wait = first;
 	let mut pending = 0;
 	loop {
 		if wait.is_zero() {
-			return failed(TransportError::Timeout, discarded);
+			return failed(TransportError::Timeout, discarded, none_expected);
 		}
 		let answer = match channel.recv(wait).await {
 			Ok(answer) => answer,
-			Err(why) => return failed(why, discarded),
+			Err(why) => return failed(why, discarded, none_expected),
 		};
 		// The arrival, before anything else is done with the answer.
 		let at = Instant::now();
@@ -295,9 +304,10 @@ async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, pdu: &[u8], timeout: 
 			continue;
 		}
 		if is_pending(&answer) {
+			none_expected = false;
 			pending += 1;
 			if pending > MAX_PENDING {
-				return failed(TransportError::Timeout, discarded);
+				return failed(TransportError::Timeout, discarded, none_expected);
 			}
 			deadline = at + PENDING_WAIT;
 			wait = PENDING_WAIT;
@@ -312,9 +322,12 @@ async fn exchange<C: AsyncIsoTpTransport>(channel: &mut C, pdu: &[u8], timeout: 
 	}
 }
 
-fn failed(error: TransportError, discarded: usize) -> Heard {
+/// A request that got no answer: [`Answer::NotExpected`] when it asked for none and none
+/// came, otherwise no answer or a link failure.
+fn failed(error: TransportError, discarded: usize, none_expected: bool) -> Heard {
 	Heard {
 		answer: match error {
+			TransportError::Timeout if none_expected => Answer::NotExpected,
 			TransportError::Timeout => Answer::NoAnswer,
 			_ => Answer::BusError,
 		},

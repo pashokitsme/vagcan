@@ -16,7 +16,7 @@
 // crate's module instead of a local file.
 mod overview;
 
-use vag_cli_core::device::ADAPTER_BAUD;
+use vag_cli_core::device::{ADAPTER_BAUD, Target};
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
 use vag_cli_diag::{anomaly, dash, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
@@ -144,8 +144,10 @@ enum Command {
 
 	/// Identify the car: VIN, engine and gearbox passports.
 	Info {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
+		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
+		/// or the dash board over BLE when no USB-CAN adapter is.
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
 
@@ -156,8 +158,11 @@ enum Command {
 	/// not have. `--identify` has every unit name itself; `--identify <unit>`
 	/// has one of them say everything it knows.
 	Units {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
+		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
+		/// or the dash board over BLE when no USB-CAN adapter is. `--identify <unit>`
+		/// needs a cable: it is a sweep, and a sweep is refused over BLE.
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Have the units name themselves: part number and component name, for
 		/// every unit the gateway lists. Slower, and a unit that does not
@@ -192,8 +197,10 @@ enum Command {
 	/// the memory was cleared. Read-only — clearing faults is a write, which
 	/// this tool cannot do.
 	Faults {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
+		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
+		/// or the dash board over BLE when no USB-CAN adapter is.
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
 		/// gateway lists.
@@ -240,8 +247,10 @@ enum Command {
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
 	/// something else by them, so those are shown as bytes with the reason.
 	Sensors {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
+		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
+		/// or the dash board over BLE when no USB-CAN adapter is.
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
 		/// a request id (713, 70E). `vagcan units` lists this car's.
@@ -264,8 +273,10 @@ enum Command {
 	/// nothing can name — and `u` shows both. Without a survey nothing is hidden
 	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
-		/// Adapter to use. Omit it when only one is connected.
-		#[arg(long, value_name = "PATH")]
+		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
+		/// or the dash board over BLE when no USB-CAN adapter is.
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
 		/// before the colon is a unit — short number or request id — and a
@@ -363,7 +374,8 @@ enum Dev {
 	/// and that is what makes every control unit watchable: run this once and
 	/// `vagcan watch` offers all of them from then on.
 	Survey {
-		/// Adapter to use. Omit it when only one is connected.
+		/// Adapter to use: a serial path. Omit it when only one is connected. Not `ble`:
+		/// a sweep is refused over BLE.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
 		/// Hex ranges for the units named by --blind. Only means anything with
@@ -412,7 +424,8 @@ enum Dev {
 	/// Made to run alongside VCDS — CAN is multi-drop, so both adapters share
 	/// the bus and this one records the whole conversation.
 	Sniff {
-		/// Adapter to use. Omit it when only one is connected.
+		/// Adapter to use: a serial path. Omit it when only one is connected. Not `ble`:
+		/// the BLE link carries no CAN frames.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
 		/// Write every frame to this capture file (JSON lines).
@@ -580,11 +593,13 @@ async fn dispatch(command: Command) -> Result<()> {
 		}),
 		Command::Devices => {
 			println!("{}", device::render_list(&device::list()?));
+			eprintln!("\nlooking for dash boards over BLE…");
+			println!("\n{}", device::render_boards(&device::list_boards().await));
 			Ok(())
 		}
 		Command::Info { device } => {
-			let path = device::resolve(device.as_deref())?;
-			info(async || open_adapter(&path).await).await
+			let target = device::resolve(device.as_deref()).await?;
+			info(async || device::open_bus(&target).await).await
 		}
 		// The two depths of the same question. `--identify <unit>` names one
 		// unit and reads its whole identification block; `--identify` alone
@@ -594,8 +609,8 @@ async fn dispatch(command: Command) -> Result<()> {
 			identify: Some(Some(ecu)),
 			while_driving,
 		} => {
-			let path = device::resolve(device.as_deref())?;
-			identification(async || open_adapter(&path).await, &ecu, while_driving).await
+			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), IDENTIFY_OVER_BLE)?);
+			identification(async || device::open_bus(&target).await, &ecu, while_driving).await
 		}
 		// `requires = "identify"` above stops `units --while-driving` at the
 		// parse, but `--identify` with no unit satisfies it and lands here,
@@ -609,12 +624,12 @@ async fn dispatch(command: Command) -> Result<()> {
 		),
 		// Resolved inside `open`, not here: `units` reads the label files first.
 		Command::Units { device, identify, .. } => {
-			let open = async || open_adapter(&device::resolve(device.as_deref())?).await;
+			let open = async || device::connect(device.as_deref()).await;
 			units(open, identify.is_some()).await
 		}
 		Command::Sensors { device, ecu } => {
-			let path = device::resolve(device.as_deref())?;
-			sensors(async || open_adapter(&path).await, &ecu).await
+			let target = device::resolve(device.as_deref()).await?;
+			sensors(async || device::open_bus(&target).await, &ecu).await
 		}
 		Command::Watch {
 			replay: Some(path),
@@ -646,9 +661,9 @@ async fn dispatch(command: Command) -> Result<()> {
 				(None, false) => watch::View::Plain(None),
 				(None, true) => watch::View::FullScreen,
 			};
-			let path = device::resolve(device.as_deref())?;
+			let target = device::resolve(device.as_deref()).await?;
 			watch::run(
-				async || open_adapter(&path).await,
+				async || device::open_bus(&target).await,
 				watch::Options {
 					preselect: &preselect,
 					hz,
@@ -663,7 +678,7 @@ async fn dispatch(command: Command) -> Result<()> {
 		#[cfg(feature = "measure")]
 		Command::Measure(args) => {
 			measure::dispatch(args, &data_dir(None)?, async |device: Option<String>| {
-				open_adapter(&device::resolve(device.as_deref())?).await
+				device::connect(device.as_deref()).await
 			})
 			.await
 		}
@@ -683,9 +698,9 @@ async fn dispatch(command: Command) -> Result<()> {
 			iv_cache,
 			..
 		} => {
-			let path = device::resolve(device.as_deref())?;
+			let target = device::resolve(device.as_deref()).await?;
 			faults::run(
-				async || open_adapter(&path).await,
+				async || device::open_bus(&target).await,
 				ecu.as_deref(),
 				details,
 				all,
@@ -714,9 +729,9 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 			while_driving,
 			..
 		} => {
-			let path = device::resolve(device.as_deref())?;
+			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), SWEEP_OVER_BLE)?);
 			survey::run(
-				async || open_adapter(&path).await,
+				async || device::open_bus(&target).await,
 				survey::Options {
 					range: range.as_deref(),
 					out: out.as_deref(),
@@ -737,7 +752,7 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 			active,
 		} => {
 			sniff::run(
-				&device::resolve(device.as_deref())?,
+				&device::resolve_cable_for(device.as_deref(), SNIFF_OVER_BLE)?,
 				ADAPTER_BAUD,
 				out.as_deref(),
 				diag_only,
@@ -756,8 +771,8 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
-				let path = device::resolve(device.as_deref())?;
-				let name = odx_name_from_car(async || open_adapter(&path).await, &ecu).await?;
+				let target = device::resolve(device.as_deref()).await?;
+				let name = odx_name_from_car(async || device::open_bus(&target).await, &ecu).await?;
 				println!("control unit {ecu} names its label file {name:?}\n");
 				labels::resolve_odx(&dir, &name, &iv_cache)
 			}
@@ -811,11 +826,17 @@ fn parse_ecu(text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
 }
 
-/// Open the adapter under the bus scheduler: the link every car command talks to
-/// the car through. `dev sniff` alone opens the adapter bare, for frames.
-async fn open_adapter(device_path: &str) -> Result<vag_cli_core::bus::Bus> {
-	device::open_bus(device_path).await
-}
+/// Why `dev survey` needs a cable. The board refuses a sweep itself
+/// (`vag_uds_client::guard`); this says so before anything is scanned or opened.
+const SWEEP_OVER_BLE: &str = "`dev survey` is a sweep, and a sweep is refused over BLE — use a cable";
+
+/// Why `units --identify <unit>` needs a cable: it walks `F100–F1FF`, which the board's
+/// walk rule refuses by its eighth identifier.
+const IDENTIFY_OVER_BLE: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep is refused over BLE — use a cable";
+
+/// Why `dev sniff` needs a cable: it reads CAN frames, and the BLE link carries whole
+/// answers only.
+const SNIFF_OVER_BLE: &str = "`dev sniff` reads CAN frames, and the BLE link carries none — use a cable";
 
 /// Address one control unit over UDS.
 fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
@@ -1308,6 +1329,24 @@ mod tests {
 				help.to_lowercase().contains("refused") || help.to_lowercase().contains("only means"),
 				"{path:?} --range does not say it is inert alone: {help}"
 			);
+		}
+	}
+
+	#[tokio::test]
+	async fn what_the_board_refuses_is_refused_here_before_anything_is_opened() {
+		// Hardware-free: each is refused on the `--device` spelling alone, before a
+		// scan, a port or a connection.
+		for device in ["ble", "ble:vagcan-dash"] {
+			let cases = [
+				(vec!["vagcan", "dev", "survey", "--device", device], SWEEP_OVER_BLE),
+				(vec!["vagcan", "units", "--identify", "01", "--device", device], IDENTIFY_OVER_BLE),
+				(vec!["vagcan", "dev", "sniff", "--device", device], SNIFF_OVER_BLE),
+			];
+			for (args, why) in cases {
+				let command = Cli::try_parse_from(args.clone()).unwrap().command.expect("a command");
+				let refused = dispatch(command).await.expect_err("refused");
+				assert_eq!(refused.to_string(), why, "{args:?}");
+			}
 		}
 	}
 

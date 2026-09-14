@@ -34,6 +34,7 @@
 //! the same timers and I/O drivers, and only the link itself has to be `Send`.
 
 mod channel;
+mod remote;
 mod task;
 #[cfg(test)]
 mod tests;
@@ -62,10 +63,38 @@ pub const READ_DEADLINE: Duration = Duration::from_millis(500);
 /// ISO 14229-2's default P2*server_max, 5 s.
 pub const PENDING_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a request that suppressed its positive response (`3E 80`, `10 81`) waits for
+/// the refusal that is its only possible answer: three times ISO 14229-2's default
+/// P2server_max (50 ms), room for a unit behind the gateway — the board's own figure
+/// (`vag-dash-fw`'s `SUPPRESSED_WAIT`). Silence after it is
+/// [`Answer::NotExpected`](vag_uds_client::schedule::Answer::NotExpected), which a raw
+/// exchange's caller gets as a success with no data.
+pub const SUPPRESSED_WAIT: Duration = Duration::from_millis(150);
+
 /// How many `7F xx 78` in a row one request may be answered with before the unit counts
 /// as not answering: the async UDS client's own limit, so an exchange through the bus
 /// gives up exactly where it did talking to the link directly.
 pub const MAX_PENDING: usize = 30;
+
+/// What a request over the dash board ([`Bus::start_remote`]) waits past its caller's
+/// own deadline.
+///
+/// The board answers every request, but may hold one a long time first, and the
+/// caller's deadline never reaches it — the link has no field for one:
+///
+/// - up to [`RATE_WINDOW_MS`](vag_uds_client::guard::RATE_WINDOW_MS), 10 s, waiting out
+///   the guard's rate cap: over it the board delays a request and never refuses it;
+/// - up to 10 s more for the unit: the board waits out `7F xx 78` itself up to twice
+///   [`PENDING_WAIT`] (the firmware's pending cap), and a unit that does not answer is
+///   backed off from before it is asked — a request to one came back as no answer after
+///   5.8 s on the bench (2026-09-14);
+/// - 5 s for the rest: the speed read a session change waits for, the panel's own reads
+///   ahead of it, and the radio.
+///
+/// Past this the board or the radio has gone quiet, and the request counts as no answer.
+/// Generous on purpose: giving up on a request the board still holds only puts the next
+/// one behind it.
+pub const REMOTE_GRACE: Duration = Duration::from_millis(vag_uds_client::guard::RATE_WINDOW_MS + 15_000);
 
 /// When a sample arrived, on the bus's own clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,6 +124,9 @@ pub enum ExchangeError {
 	NoAnswer,
 	/// The link failed under the request.
 	Link(TransportError),
+	/// The dash board would not put it on the bus, and said why (a bus over BLE only;
+	/// see `remote.rs`).
+	Refused(String),
 	/// The bus has shut down.
 	Closed,
 }
@@ -105,6 +137,7 @@ impl std::fmt::Display for ExchangeError {
 			ExchangeError::Forbidden(why) => write!(f, "{why}"),
 			ExchangeError::NoAnswer => write!(f, "no answer"),
 			ExchangeError::Link(why) => write!(f, "{why}"),
+			ExchangeError::Refused(why) => write!(f, "refused by the dash board: {why}"),
 			ExchangeError::Closed => write!(f, "the bus has shut down"),
 		}
 	}
@@ -156,6 +189,8 @@ pub struct Bus {
 	commands: mpsc::UnboundedSender<Command>,
 	started: Instant,
 	keys: Arc<AtomicU64>,
+	/// Why the link broke under the task, once it has (see [`Bus::closed`]).
+	closed: Arc<std::sync::OnceLock<String>>,
 }
 
 impl Bus {
@@ -171,7 +206,38 @@ impl Bus {
 			commands,
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
+			closed: Arc::new(std::sync::OnceLock::new()),
 		}
+	}
+
+	/// The same handles over a byte pipe to the dash board, which runs the planner and
+	/// its guard itself: this task only forwards (`remote.rs`). `peer` names the board in
+	/// what is said when it refuses something or the connection drops.
+	///
+	/// Must be called inside a tokio runtime. Runs on a blocking-pool thread for the
+	/// reason [`Bus::start`] does.
+	pub fn start_remote<P: vag_uds_transport::link::Pipe + Send + 'static>(pipe: P, peer: &str) -> Bus {
+		let (commands, inbox) = mpsc::unbounded_channel();
+		let started = Instant::now();
+		let runtime = tokio::runtime::Handle::current();
+		let peer = peer.to_string();
+		let closed = Arc::new(std::sync::OnceLock::new());
+		let told = closed.clone();
+		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, inbox, started, told)));
+		Bus {
+			commands,
+			started,
+			keys: Arc::new(AtomicU64::new(0)),
+			closed,
+		}
+	}
+
+	/// Why the link broke under the bus, once it has — "the BLE connection to vagcan-dash
+	/// dropped" — so a consumer whose subscriptions ended can say why rather than only
+	/// that they did. `None` while the link is up, and for a cable, whose task does not
+	/// outlive its link.
+	pub fn closed(&self) -> Option<String> {
+		self.closed.get().cloned()
 	}
 
 	/// Seconds since the bus started: the clock every [`At::secs`] is on.
@@ -237,7 +303,9 @@ impl Bus {
 	}
 
 	/// Send one whole UDS request to `unit` and return its answer as it came — a negative
-	/// response included — waiting [`vag_uds_client`]'s own default deadline.
+	/// response included — waiting [`vag_uds_client`]'s own default deadline. A request that
+	/// suppressed its positive response and was not refused comes back as an empty answer,
+	/// after [`SUPPRESSED_WAIT`] on a cable.
 	pub async fn exchange(&self, class: Class, unit: Unit, pdu: Vec<u8>) -> Result<(Vec<u8>, At), ExchangeError> {
 		self.exchange_within(class, unit, pdu, DEFAULT_EXCHANGE_DEADLINE).await
 	}
