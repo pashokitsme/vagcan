@@ -212,6 +212,23 @@ the page it is on and nobody else.
   one speed channel, chosen in `dash.toml` from `13-screens.md` — `2033`
   (0.01 km/h, declared) or `F40D` (1 km/h, standard); ESC wheel speeds if they answer.
   The choice is the owner's; the standard one is the safe default.
+- **The ESC's channels, found 2026-09-14, not read on the car yet.** The owner asked whether an
+  accelerometer could help; the board has none, the car's is in the ESC. This car's ESC (`713`,
+  `5Q0614517AQ`, Continental MK100, ODIS variant `EV_Brake1UDSContiMK100ESP_036`) declares:
+  - `1800`–`1803` wheel speeds, 0.1 km/h a step; which index is which wheel is not known. DQ200 is
+    front-drive only, so a rear wheel is not driven and does not spin at launch — the limit of
+    `380B` above — and, unlike an acceleration, it does not drift. A candidate speed source.
+  - `1822` longitudinal acceleration, `u16 × 0.03125 − 16` m/s² (±16 m/s², 0.03 a step). **Not a
+    speed source:** integrated, 0.01 g of offset is ~2.5 km/h by 100 km/h, and road grade and the
+    body squatting (~1°, ~4 km/h) read as acceleration. Useful for the launch instant (a step,
+    where the first moving speed sample comes up to one poll period late) and to flag a spinning
+    start (wheel-derived acceleration above the measured one).
+  - Both are on `713` and `380B` is on `7E1`: separate exchanges, sharing the 100/s ceiling.
+  - The parked survey (`research/dumps/survey-parked.jsonl`) never asked `18xx`; the ESC answered
+    48 identifiers in `02xx 06xx 19xx 2Axx F1xx`. Not answered there means not asked.
+  - These come from the ODIS project for this car; another car resolves its own ESC's channels
+    the same way. Nothing here goes into code.
+  Car check: [`17-bench-ble-usb.md`](17-bench-ble-usb.md) §4, "Stopwatch sources on the ESC".
 - **Arming**: speed at 0 for a second arms it; the first sample above 0 starts the clock
   (with the half-sample correction `vag-cli-measure` uses — check `session.rs`); crossing
   60 and 100 km/h stamps the two times, interpolated between the samples either side.

@@ -85,7 +85,9 @@ stored-config check at boot, whether opening the board's port twice resets it (�
 8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
 9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
+10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
+    ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
+    `dash/17` §4).
 11. **Questions only the car answers** — `dash/06`.
 12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.

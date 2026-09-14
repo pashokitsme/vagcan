@@ -104,3 +104,12 @@ never move.
 **Cable adapter on the car**
 
 - `vagcan info --device C` and `watch --device C`: the stale-answer sweep before each request (`discard_queued`, 5 ms bound) does not slow commands on a busy bus.
+
+**Stopwatch sources on the ESC** (`dash/14` §6; added 2026-09-14)
+
+| check | expect |
+|---|---|
+| `vagcan watch --did 713:1822,1800,1801,1802,1803` parked | all five answer; wheel speeds 0; acceleration near 0 on level ground (a grade reads as an offset) |
+| the same, rolling slowly through a tight turn | which index is which wheel: the inner side reads slower, and on one side the front reads faster than the rear |
+| rows' spacing in that `watch` | how fast the ESC answers, and so what rate its channels can have beside `380B` |
+| `vagcan watch --did 713:1822,1800,1801,1802,1803 7E1:380B` through a launch | a rear wheel against `380B`: a gap at launch is wheelspin; `1822` steps at the launch instant |

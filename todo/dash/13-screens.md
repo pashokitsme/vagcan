@@ -82,8 +82,9 @@ bus, so a screen of four cells refreshes at ≈50 Hz if it wants to, and a 10-ce
 
 | # | DID | channel | unit | resolution | status | note |
 |---|---|---|---|---|---|---|
-| S1 | `1800`–`1803` | wheel speeds, four | km/h | 16-bit | declared, **unanswered in the survey** | the finest speed on the car if it answers; a candidate 0–100 source |
+| S1 | `1800`–`1803` | wheel speeds, four | km/h | 0.1 | declared, **not asked** — the parked survey skipped `18xx` | a rear wheel is not driven on DQ200 and does not spin at launch; a candidate 0–100 source (`14` §6) |
 | S2 | `F40D` | vehicle speed | km/h | 1 | standard | the ESC's copy of PID 0D |
+| S3 | `1822` | longitudinal acceleration | m/s² | 0.03125 | declared, **not asked** | launch instant and a spin check, not a speed source — it drifts when integrated (`14` §6) |
 
 ## Derived, no new channel
 
