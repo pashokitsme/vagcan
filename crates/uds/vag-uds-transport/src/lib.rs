@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod error;
 pub mod frame;
+pub mod link;
 pub mod mock;
 pub mod traits;
 

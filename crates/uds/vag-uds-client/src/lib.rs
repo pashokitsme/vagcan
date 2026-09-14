@@ -14,6 +14,7 @@ extern crate alloc;
 pub mod address;
 pub mod dtc;
 pub mod gateway;
+pub mod guard;
 pub mod identity;
 pub mod isotp;
 mod pdu;

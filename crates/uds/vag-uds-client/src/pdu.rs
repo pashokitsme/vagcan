@@ -13,7 +13,7 @@ pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_millis(2000);
 /// Max NRC 0x78 (responsePending) replies tolerated before giving up.
 pub(crate) const MAX_PENDING: usize = 30;
 /// Services this stack will ever emit. Everything else → `UdsError::Forbidden`.
-const READ_ONLY_ALLOWLIST: &[u8] = &[0x10, 0x19, 0x22, 0x3E];
+pub(crate) const READ_ONLY_ALLOWLIST: &[u8] = &[0x10, 0x19, 0x22, 0x3E];
 
 /// Encode `[sid, payload...]`, rejecting services outside the read-only allowlist.
 pub(crate) fn encode_request(sid: u8, payload: &[u8]) -> Result<Vec<u8>, UdsError> {
