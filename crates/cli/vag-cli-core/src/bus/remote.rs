@@ -426,7 +426,9 @@ impl Remote {
 			Message::Reading(reading) => self.reading(reading, arrived),
 			Message::Answer(answer) => self.answer(answer, arrived),
 			// Only a host sends these.
-			Message::Request(_) | Message::Subscribe(_) | Message::Unsubscribe { .. } => {}
+			Message::Request(_) | Message::Subscribe(_) | Message::Unsubscribe { .. } | Message::Hello => {}
+			// Asked for before the bus starts, by whoever opened the pipe; nothing here waits for it.
+			Message::HelloReply(_) => {}
 		}
 	}
 
