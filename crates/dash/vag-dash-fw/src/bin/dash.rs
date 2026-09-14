@@ -2179,6 +2179,10 @@ async fn usb_writer_task(usb: UsbSerialJtagTx<'static, Async>) -> ! {
 	loop {
 		if !USB_PRESENT.load(Ordering::Relaxed) {
 			writer.stalled = true;
+			// The host whose reassembler is inside a cut frame is gone with the cable. The next
+			// host never saw that frame's head: its zeros and the broken header would only be
+			// garbage ahead of that host's handshake, and `dashsim` would read them first.
+			writer.owed = 0;
 			let drained = select(Timer::after(PRESENCE_POLL), SLCAN_PORT.next_packet(&mut carry, &mut packet)).await;
 			if let Either::Second(packed) = drained {
 				SLCAN_PORT.lost(packed);
