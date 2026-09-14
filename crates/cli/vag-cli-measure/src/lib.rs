@@ -974,8 +974,15 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	// unwritable `--out` is the same typo as a bad `--marks`, and holding the
 	// port open while failing on either blocks the next attempt.
 	let store = vag_data_labels::catalog::CatalogStore::open(opts.catalogs);
+	// Only checked here, not emptied: `open` also resolves the device, and a run that cannot
+	// name its adapter must not empty the runs already there. Every write replaces the file.
 	if let Some(path) = opts.out {
-		std::fs::File::create(path).with_context(|| format!("creating {path:?}"))?;
+		std::fs::OpenOptions::new()
+			.write(true)
+			.create(true)
+			.truncate(false)
+			.open(path)
+			.with_context(|| format!("creating {path:?}"))?;
 	}
 
 	let bus = open().await?;
@@ -3214,5 +3221,39 @@ mod tests {
 		std::fs::write(&path, r#"{"runs": []}"#).unwrap();
 		assert!(open_view(path.to_str().unwrap()).unwrap_err().to_string().contains("no `schema`"));
 		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	/// No adapter, several, a dash board refused: `open` resolves the device, and a run that
+	/// cannot name one has timed nothing, so it must not empty the runs already in `--out`.
+	#[tokio::test]
+	async fn a_device_that_does_not_resolve_leaves_an_existing_out_file_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("runs.json");
+		std::fs::write(&path, b"yesterday's runs").unwrap();
+		let out = path.to_string_lossy().into_owned();
+		let opts = Options {
+			car: None,
+			catalogs: "/definitely/not/here",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: Some(&out),
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let refused = run(async || -> Result<vag_cli_core::bus::Bus> { anyhow::bail!("no adapter found") }, opts)
+			.await
+			.expect_err("no device");
+		assert_eq!(refused.to_string(), "no adapter found");
+		assert_eq!(std::fs::read(&path).unwrap(), b"yesterday's runs", "--out was truncated");
 	}
 }
