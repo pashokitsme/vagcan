@@ -731,6 +731,7 @@ where
 }
 
 /// What the whole row agreed on: one face, one unit policy, one arrangement.
+#[derive(Debug)]
 struct RowLayout {
 	/// Index into the theme's numeral ladder.
 	step: usize,
@@ -750,9 +751,11 @@ struct RowLayout {
 	dev_baseline: Option<i32>,
 	/// Where the label's ink starts, and the baseline the unit sits on.
 	///
-	/// Every line's place is decided here, not at the edges: the air left over after the ink
-	/// is split evenly between the lines, so three lines and four lines both read as one
-	/// block rather than as text pushed against the top and bottom (owner, 2026-09-15).
+	/// Every line's place is decided here, not at the edges: the air left after the lines'
+	/// boxes is shared between the gaps, so three lines and four lines both read as one block
+	/// rather than as text pushed against the top and bottom (owner, 2026-09-15). The gaps are
+	/// equal in the arithmetic, not on the glass: a numeral's box is a few rows taller than the
+	/// digits drawn in it, and that slack sits above the number.
 	label_top: i32,
 	unit_baseline: i32,
 }
@@ -809,7 +812,10 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		step = stacked_step;
 	}
 	if fits(step, dev_h) {
-		// The ink of every line, and the air to share between them.
+		// The boxes of the lines this row actually draws, and the air to share between them. A
+		// line of no height is not a line: a row of unlabelled cells has three boxes, not four,
+		// and counting a gap for the one that is not there pushed everything below it off the
+		// glass (review, 2026-09-15).
 		let value_h = numeral_height(&theme.numerals[step], "0") as i32;
 		let heights = [label_h as i32, value_h, dev_h as i32, unit_h as i32];
 		let ink: i32 = heights.iter().sum();
@@ -818,10 +824,12 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		let air = (height as i32 - 2 * ROW_INSET - ink).max(0);
 		// The remainder goes above the number, the widest gap on the page anyway.
 		let (gap, over) = (air / gaps, air % gaps);
+		// One gap under a line, and only under one that was drawn.
+		let after = |h: i32, extra: i32| if h > 0 { h + gap + extra } else { 0 };
 
 		let mut y = ROW_INSET;
 		let label_top = y;
-		y += label_h as i32 + gap + over;
+		y += after(label_h as i32, over);
 		let value_top = y;
 		y += value_h + gap;
 		let dev_baseline = (dev_h > 0).then(|| {
@@ -1546,6 +1554,31 @@ mod tests {
 				assert_eq!(bottom - top + 1, size, "and is a pixel shorter than the digits beside it");
 				assert_eq!(lit.len() as i32, 2 * size - 1, "two strokes crossing once");
 			}
+		}
+	}
+
+	#[test]
+	fn a_row_of_unlabelled_cells_still_fits_the_panel() {
+		// A line of no height is not a line, and must not be given a gap of its own: with one
+		// the unit slid off the bottom of the glass (review, 2026-09-15).
+		for deviation in [Deviation::None, Deviation::Value(0.07)] {
+			let cells = [Cell::new("", Some(1.92), "bar", 2).with_deviation(deviation)];
+			let theme = Theme::bold_mono();
+			let mut report = Report::default();
+			let layout = row_layout(&cells, &theme, TALL.width - 2 * PAD, TALL.height, &mut report);
+			assert!(layout.unit_baseline < TALL.height as i32, "{deviation:?}: {layout:?}");
+			if let Some(baseline) = layout.dev_baseline {
+				assert!(baseline < layout.unit_baseline, "{layout:?}");
+			}
+
+			let mut display = tall();
+			let report = values(&cells, Links::NONE, &theme, &mut display);
+			assert_eq!(report, Report::default(), "{deviation:?}: {report:?}");
+			// The bottom line is drawn, which it is not when it is pushed past the floor.
+			assert!(
+				(layout.unit_baseline - 6..=layout.unit_baseline).any(|y| lit_row(&display, y)),
+				"{deviation:?}: the unit is on the glass"
+			);
 		}
 	}
 

@@ -485,32 +485,35 @@ impl<'a, const N: usize> Alarms<'a, N> {
 fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Option<f32>, now_ms: u64) -> Episode {
 	let worst = rule.worst(value_of);
 	// A rule with no hold fires the moment it trips; one with a hold starts counting.
-	let start = |c: ChannelId| match rule.hold_ms() {
+	let start_at = |c: ChannelId, at: u64| match rule.hold_ms() {
 		0 => Episode::Firing { offender: c },
-		_ => Episode::Rising {
-			offender: c,
-			since_ms: now_ms,
-		},
+		_ => Episode::Rising { offender: c, since_ms: at },
 	};
+	let start = |c: ChannelId| start_at(c, now_ms);
 	match episode {
 		Episode::Clear => match worst {
 			Some((c, v)) if rule.trips(v) => start(c),
 			_ => Episode::Clear,
 		},
-		// Counting. The offender follows the worst channel here too, so the cell inverted when
-		// it does fire is the one that was worst last, not the one that was worst first.
+		// Counting, for **one channel**: a rule watching four cylinders must not add a second
+		// of one to a second of another, and a channel that comes back and goes out again
+		// starts over.
 		Episode::Rising { offender, since_ms } => match worst {
-			Some((c, v)) if rule.trips(v) => {
+			Some((c, v)) if rule.trips(v) && c == offender => {
 				if now_ms.saturating_sub(since_ms) >= rule.hold_ms() {
 					Episode::Firing { offender: c }
 				} else {
-					Episode::Rising { offender: c, since_ms }
+					Episode::Rising { offender, since_ms }
 				}
 			}
-			// Back inside, or no evidence: the count starts over next time. A transient is
-			// exactly what this state exists to swallow.
-			Some((_, v)) if rule.releases(v) => Episode::Clear,
-			_ => Episode::Rising { offender, since_ms },
+			// A different channel is the worst one now: the hold belongs to one channel, so
+			// this one's starts here rather than inheriting the other's seconds.
+			Some((c, v)) if rule.trips(v) => start_at(c, now_ms),
+			// Back inside, or no evidence at all — nothing answered, or the specified value is
+			// under the floor. Both end the count: a hold that survived the gaps between what
+			// it was counting would not be a hold, and a transient is what this state exists
+			// to swallow.
+			_ => Episode::Clear,
 		},
 		Episode::Firing { offender } => match worst {
 			// The offender follows the engine: a worse cylinder is the one worth
@@ -621,6 +624,59 @@ mod tests {
 			Shown::page(WAS_SHOWING)
 		);
 		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_600).shown.page, DRIFT_PAGE);
+	}
+
+	#[test]
+	fn a_hold_belongs_to_one_channel_and_is_not_handed_over() {
+		let mut alarms = Alarms::new([drift()]);
+		let both = |a: f32, b: f32| {
+			[
+				Reading::new(DRIFTING[0], Some(a)),
+				Reading::new(SPECIFIED[0], Some(2.0)),
+				Reading::new(DRIFTING[1], Some(b)),
+				Reading::new(SPECIFIED[1], Some(2.0)),
+			]
+		};
+		// The first channel is out for 900 ms, then comes back as the second goes out.
+		alarms.poll(WAS_SHOWING, &both(2.2, 2.0), 0);
+		alarms.poll(WAS_SHOWING, &both(2.2, 2.0), 900);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 1_000).shown,
+			Shown::page(WAS_SHOWING),
+			"the second channel does not inherit the first one's second"
+		);
+		// It earns its own, from where it started.
+		assert_eq!(alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 1_999).shown, Shown::page(WAS_SHOWING));
+		let up = alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 2_000);
+		assert_eq!(up.shown.page, DRIFT_PAGE);
+		assert_eq!(up.shown.offending, Some(DRIFTING[1]));
+	}
+
+	#[test]
+	fn a_hold_does_not_survive_a_gap_in_the_evidence() {
+		let mut alarms = Alarms::new([drift()]);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+		// Half a minute with the specified value under the floor: no evidence either way, and
+		// the count is not kept across it.
+		alarms.poll(WAS_SHOWING, &pair(Some(0.1), Some(0.4)), 30_000);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 60_000).shown,
+			Shown::page(WAS_SHOWING),
+			"one sample after the gap is not a second of drift"
+		);
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 61_000).shown.page, DRIFT_PAGE);
+
+		// The same for a value that sits in the hysteresis band meanwhile, and for a pair that
+		// stops answering.
+		for quiet in [pair(Some(2.16), Some(2.0)), pair(None, None)] {
+			let mut alarms = Alarms::new([drift()]);
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+			alarms.poll(WAS_SHOWING, &quiet, 500);
+			assert_eq!(
+				alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000).shown,
+				Shown::page(WAS_SHOWING)
+			);
+		}
 	}
 
 	#[test]

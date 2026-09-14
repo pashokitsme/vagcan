@@ -2253,10 +2253,12 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				}
 			}
 		};
-		// The renderer reports what it had to compromise — a label too long,
-		// a unit it had to drop. It is the same answer every frame, so say it
-		// when it changes and never otherwise.
-		let compromised = report.label_overrun || report.value_overrun || report.unit_dropped || report.value_shrunk || report.glyph_missing;
+		// The renderer reports what it had to compromise — a label too long, a unit or a
+		// difference it had to drop. Compared against the whole default rather than field by
+		// field, so a flag added to `Report` is reported here without being listed twice
+		// (review, 2026-09-15). It is the same answer every frame, so say it when it changes
+		// and never otherwise.
+		let compromised = report != vag_dash_render::render::Report::default();
 		if compromised != last_compromised {
 			last_compromised = compromised;
 			note!("panel: {report:?}");
