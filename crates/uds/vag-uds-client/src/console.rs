@@ -14,17 +14,21 @@
 //!
 //! | mode | a framed message | `BTN S` / `BTN L` | an slcan line (`\r`) | anything else |
 //! |---|---|---|---|---|
-//! | [`Mode::Panel`] | [`Input::Message`] | [`Input::Press`] | no link client: [`Input::EnterAdapter`] then [`Input::Slcan`]; a bare `C` is [`Input::Closed`] and switches nothing; a link client active: [`Input::Ignored`] | [`Input::Ignored`] |
-//! | [`Mode::Adapter`] | [`Input::Message`] | — | [`Input::Slcan`]; after a `C`, [`Input::LeaveAdapter`] | [`Input::Slcan`] (the adapter answers `\x07`) |
+//! | [`Mode::Panel`] | [`Input::Message`] | [`Input::Press`] | an opening command, no link client: [`Input::EnterAdapter`] then [`Input::Slcan`]; a `C`: [`Input::Closed`]; an empty line: nothing; a link client active: [`Input::Ignored`] | [`Input::Ignored`] |
+//! | [`Mode::Adapter`] | [`Input::Message`] | — | [`Input::Slcan`], the empty line included; after a `C`, [`Input::LeaveAdapter`] | [`Input::Slcan`] (the adapter answers `\x07`) |
 //!
 //! - **A framed message never switches.** It is routed in either mode; what the board
 //!   does with one in adapter mode (answer a Hello, refuse the rest) is the shell's.
-//! - **Only a CR-terminated line of a command the adapter has switches**: `C S O L M t T
-//!   r R F E V v N Z`. A line ended by `\n` is a terminal or `dashsim`, not slcan.
-//! - **A bare `C` in panel mode is answered and switches nothing**: there is no channel
-//!   to close, and entering adapter mode only to leave it at once would blank the panel
-//!   for nothing. It is what a host sends to end an adapter session an earlier host left
-//!   open, whichever mode the board is in.
+//! - **Only a CR-terminated line that opens or uses the adapter switches**: it starts
+//!   with one of `S s O L M t T r R F E V v N Z` ([`enters_adapter`]) — a setting, an
+//!   open, a frame, a status or version question. A line ended by `\n` is a terminal or
+//!   `dashsim`, not slcan.
+//! - **`C` and the empty line never switch.** The host's handshake before a Hello is
+//!   `\rC\r`: the `\r` ends whatever half line an earlier program left, and the `C` ends
+//!   an adapter session an earlier `--slcan` run left open. In panel mode there is no
+//!   channel to close, so a `C` is answered `\r` ([`Input::Closed`]) and nothing else,
+//!   and an empty line is nothing at all. A probe that got no answer to its Hello sends
+//!   `\r` and then `V`: the `V` is what switches.
 //! - **"A link client is active"** is the caller's to say: a framed session holding a
 //!   subscription or a request ([`crate::remote::Session::is_active`]). While one is,
 //!   slcan lines are not taken.
@@ -48,9 +52,12 @@ pub const LINE_MAX: usize = 32;
 /// Lawicel's error reply, and what an overflowed line is handed on as.
 pub const BELL: u8 = 0x07;
 
-/// The slcan commands the board's adapter has: a CR-terminated line starting with one
-/// of these is slcan. (The `slcan` module of `vag-dash-fw` is the list's other half.)
-const SLCAN_COMMANDS: &[u8] = b"CSOLMtTrRFEVvNZ";
+/// The slcan commands that open or use the adapter: a CR-terminated line starting with
+/// one of these, in panel mode, is a host that wants a CAN adapter. `C` is not among
+/// them (module docs). `s`, Lawicel's raw bit-timing setting, is one the board's adapter
+/// refuses, but a host that sends it wants an adapter, and the refusal is its answer.
+/// (The `slcan` module of `vag-dash-fw` holds the commands themselves.)
+const OPENING_COMMANDS: &[u8] = b"SsOLMtTrRFEVvNZ";
 
 /// One command line, without its terminator. Fixed-size: the standalone `slcan` image
 /// does not allocate in its steady state, and this is on its path for every frame.
@@ -288,7 +295,7 @@ impl Console {
 				b"" => {}
 				b"BTN S" => out.push(Input::Press(Button::Short)),
 				b"BTN L" => out.push(Input::Press(Button::Long)),
-				_ if ending == Ending::Cr && is_slcan_command(text) => {
+				_ if ending == Ending::Cr && (text == b"C" || enters_adapter(text)) => {
 					if link_active {
 						out.push(Input::Ignored {
 							line,
@@ -311,9 +318,10 @@ impl Console {
 	}
 }
 
-/// Whether `line` starts with a command the board's adapter has.
-pub fn is_slcan_command(line: &[u8]) -> bool {
-	line.first().is_some_and(|head| SLCAN_COMMANDS.contains(head))
+/// Whether `line` starts with a command that opens or uses the adapter
+/// ([`OPENING_COMMANDS`]).
+pub fn enters_adapter(line: &[u8]) -> bool {
+	line.first().is_some_and(|head| OPENING_COMMANDS.contains(head))
 }
 
 #[cfg(test)]
@@ -546,14 +554,72 @@ mod tests {
 	}
 
 	#[test]
-	fn the_command_letters_are_the_adapter_s() {
-		for head in b"CSOLMtTrRFEVvNZ" {
-			assert!(is_slcan_command(&[*head]), "{}", *head as char);
+	fn the_opening_letters_are_settings_opens_frames_and_questions() {
+		for head in b"SsOLMtTrRFEVvNZ" {
+			assert!(enters_adapter(&[*head]), "{}", *head as char);
 		}
-		for head in b"BXxsWmUQ0 \x07" {
-			assert!(!is_slcan_command(&[*head]), "{}", *head as char);
+		for head in b"CBXxWmUQ0 \x07" {
+			assert!(!enters_adapter(&[*head]), "{}", *head as char);
 		}
-		assert!(!is_slcan_command(b""));
+		assert!(!enters_adapter(b""));
+	}
+
+	/// What the host writes before its Hello: `\r` to end a half line, `C` to end an
+	/// adapter session an earlier `--slcan` run left open.
+	fn handshake() -> Vec<u8> {
+		let mut bytes = b"\rC\r".to_vec();
+		bytes.extend(link::encode(&Message::Hello).unwrap());
+		bytes
+	}
+
+	#[test]
+	fn the_host_handshake_never_enters_adapter_mode_in_panel_mode() {
+		let mut console = Console::new();
+		assert_eq!(console.push(&handshake(), false), vec![Input::Closed, Input::Message(Message::Hello)]);
+		assert_eq!(console.mode(), Mode::Panel);
+		// Byte by byte, and with a link client active, the same: nothing switches.
+		let bytewise = feed_bytewise(&mut Console::new(), &handshake(), false);
+		assert_eq!(bytewise, vec![Input::Closed, Input::Message(Message::Hello)]);
+		let mut busy = Console::new();
+		assert_eq!(
+			busy.push(&handshake(), true),
+			vec![
+				Input::Ignored {
+					line: CommandLine::new(b"C"),
+					why: Ignored::LinkActive
+				},
+				Input::Message(Message::Hello)
+			]
+		);
+		assert_eq!(busy.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn the_host_handshake_ends_an_adapter_session_left_open() {
+		let mut console = Console::new();
+		console.push(b"S6\rM0\rO\r", false);
+		assert_eq!(console.mode(), Mode::Adapter);
+		assert_eq!(
+			console.push(&handshake(), false),
+			vec![slcan(b""), slcan(b"C"), Input::LeaveAdapter, Input::Message(Message::Hello)]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn a_probe_that_got_no_hello_answer_switches_at_its_v_not_at_its_empty_line() {
+		let mut console = Console::new();
+		assert_eq!(console.push(b"\r", false), vec![]);
+		assert_eq!(console.mode(), Mode::Panel);
+		assert_eq!(console.push(b"V\r", false), vec![Input::EnterAdapter, slcan(b"V")]);
+		// In adapter mode the empty line is the adapter's, which answers it; `V` follows.
+		assert_eq!(console.push(b"\rV\r", false), vec![slcan(b""), slcan(b"V")]);
+	}
+
+	#[test]
+	fn a_raw_bit_timing_setting_enters_adapter_mode_to_be_refused_there() {
+		let mut console = Console::new();
+		assert_eq!(console.push(b"s031C\r", false), vec![Input::EnterAdapter, slcan(b"s031C")]);
 	}
 
 	#[test]
