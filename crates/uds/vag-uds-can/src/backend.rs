@@ -55,11 +55,18 @@ pub trait CanBackend: MaybeSend {
 	/// already queued — in the backend, or in the port's buffer — comes back on that poll,
 	/// and the first that would wait ends the sweep, dropped unfinished. The timeout
 	/// handed to it is never waited out; it is non-zero only so that a backend which
-	/// checks for an expired deadline before it reads (slcan does) still reads. At most
-	/// [`MAX_DISCARDED`] frames, so a bus that never falls quiet costs one bounded sweep.
+	/// checks for an expired deadline before it reads (slcan does) still reads.
+	///
+	/// The sweep runs until the backend would wait, not for a number of frames. The slcan
+	/// cable has no acceptance filter, so between two exchanges its port holds the whole
+	/// bus's traffic, and a late answer can sit behind hundreds of foreign frames (PR #2
+	/// review round 2, S2-F2). It stops early only at [`MAX_DISCARD_TIME`] or
+	/// [`MAX_DISCARDED`] frames, so a bus that queues frames as fast as they are swept
+	/// costs one bounded sweep.
 	async fn discard_queued(&mut self) -> usize {
+		let started = crate::time::Instant::now();
 		let mut discarded = 0;
-		while discarded < MAX_DISCARDED {
+		while discarded < MAX_DISCARDED && crate::time::Instant::now().saturating_duration_since(started) < MAX_DISCARD_TIME {
 			let mut next = core::pin::pin!(self.recv_frame(Duration::from_millis(1)));
 			let now = core::future::poll_fn(|cx| {
 				core::task::Poll::Ready(match core::future::Future::poll(next.as_mut(), cx) {
@@ -79,8 +86,15 @@ pub trait CanBackend: MaybeSend {
 	}
 }
 
-/// The most frames one [`CanBackend::discard_queued`] sweep throws away.
-pub const MAX_DISCARDED: usize = 64;
+/// The longest one [`CanBackend::discard_queued`] sweep runs. A frame already queued is
+/// taken in microseconds, so this clears thousands; it is under the 10 ms the planner's
+/// ceiling of 100 exchanges a second leaves between two sends.
+pub const MAX_DISCARD_TIME: Duration = Duration::from_millis(5);
+
+/// The most frames one [`CanBackend::discard_queued`] sweep throws away: the bound for a
+/// clock that does not move while the sweep runs. 4096 slcan lines are about 100 kB, more
+/// than a serial port buffers.
+pub const MAX_DISCARDED: usize = 4096;
 
 #[cfg(test)]
 mod tests {
@@ -131,6 +145,74 @@ mod tests {
 			sent: 0,
 		};
 		assert_eq!(busy.discard_queued().await, MAX_DISCARDED, "a bus that never falls quiet is swept once");
+	}
+
+	/// A backend holding these frames in order, whose receive waits once they are gone —
+	/// what the slcan port holds between exchanges: the cable has no acceptance filter.
+	struct Port {
+		frames: alloc::collections::VecDeque<(u32, Vec<u8>)>,
+	}
+
+	impl CanBackend for Port {
+		async fn send_frame(&mut self, _id: u32, _data: &[u8]) -> Result<(), CanError> {
+			Ok(())
+		}
+
+		async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+			match self.frames.pop_front() {
+				Some(frame) => Ok(frame),
+				None => {
+					tokio::time::sleep(timeout).await;
+					Err(CanError::Timeout)
+				}
+			}
+		}
+	}
+
+	/// PR #2 review round 2 (S2-F2): a late answer that landed behind more of the whole bus's
+	/// traffic than one sweep took was still queued after it, and the next identical request's
+	/// channel, skipping the foreign ids, took it for its own answer.
+	#[tokio::test(start_paused = true)]
+	async fn a_late_answer_behind_the_whole_buss_traffic_is_swept_with_it() {
+		use vag_uds_transport::AsyncIsoTpTransport;
+		let mut frames: alloc::collections::VecDeque<(u32, Vec<u8>)> = (0..500).map(|n| (0x280 + (n % 16), alloc::vec![0u8; 8])).collect();
+		// The late answer to `22 F190` on the engine's pair.
+		frames.push_back((0x7E8, alloc::vec![0x04, 0x62, 0xF1, 0x90, 0x2A, 0, 0, 0]));
+		let mut port = Port { frames };
+		let swept = port.discard_queued().await;
+		let mut channel = crate::IsoTpCan::new(port, CanId::Standard(0x7E0), CanId::Standard(0x7E8));
+		let heard = channel.recv(Duration::from_millis(50)).await;
+		assert!(heard.is_err(), "the stale answer survived a sweep of {swept}: {heard:02X?}");
+		assert_eq!(swept, 501, "every frame queued, the late answer last");
+
+		let mut empty = channel.into_backend();
+		let started = tokio::time::Instant::now();
+		assert_eq!(empty.discard_queued().await, 0);
+		assert_eq!(started.elapsed(), Duration::ZERO, "an empty port is swept without waiting");
+	}
+
+	/// A bus that queues a frame for every one swept, each taking a millisecond to hand over.
+	struct NeverQuiet;
+
+	impl CanBackend for NeverQuiet {
+		async fn send_frame(&mut self, _id: u32, _data: &[u8]) -> Result<(), CanError> {
+			Ok(())
+		}
+
+		async fn recv_frame(&mut self, _timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+			std::thread::sleep(Duration::from_millis(1));
+			Ok((0x280, alloc::vec![0u8; 8]))
+		}
+	}
+
+	#[tokio::test]
+	async fn a_bus_that_never_falls_quiet_is_swept_for_a_bounded_time() {
+		let started = std::time::Instant::now();
+		let swept = NeverQuiet.discard_queued().await;
+		let took = started.elapsed();
+		assert!(swept > 0 && swept < MAX_DISCARDED, "swept {swept}");
+		assert!(took >= MAX_DISCARD_TIME, "stopped after {took:?}, before the bound");
+		assert!(took < MAX_DISCARD_TIME * 20, "a sweep of {swept} took {took:?}");
 	}
 
 	#[test]
