@@ -102,6 +102,8 @@ struct Sim {
 	car: Car,
 	now: u64,
 	latency: u64,
+	/// A unit's own answer latency, where it is not `latency`.
+	unit_latency: BTreeMap<Unit, u64>,
 	sends: Vec<(u64, Outgoing)>,
 	got: Vec<Delivery>,
 }
@@ -113,9 +115,18 @@ impl Sim {
 			car,
 			now: 0,
 			latency: 4,
+			unit_latency: BTreeMap::new(),
 			sends: Vec::new(),
 			got: Vec::new(),
 		}
+	}
+
+	/// When the one-shot or raw exchange `req` was delivered.
+	fn delivered_at(&self, req: ReqId) -> Option<u64> {
+		self.got.iter().find_map(|d| match d {
+			Delivery::Once { req: r, at_ms, .. } | Delivery::Raw { req: r, at_ms, .. } if *r == req => Some(*at_ms),
+			_ => None,
+		})
 	}
 
 	/// Run the loop a shell runs until `end`, calling `hook` after every step with the
@@ -126,7 +137,7 @@ impl Sim {
 				Next::Send(out) => {
 					let answer = self.car.answer(&out);
 					self.sends.push((self.now, out.clone()));
-					self.now += self.latency;
+					self.now += self.unit_latency.get(&out.unit).copied().unwrap_or(self.latency);
 					let d = self.p.answered(self.now, out.token, answer);
 					hook(&mut self.p, self.now, &d);
 					self.got.extend(d);
@@ -659,6 +670,10 @@ fn background_is_thinned_first() {
 	);
 }
 
+/// "Never thinned" in the owner's sense: no timing reading is lost, and one is late only
+/// when something starved goes ahead of it — at most once per `starve_after_ms` per starving
+/// read, by an exchange or two (PR #2 review, Sched-F1). The background here never gets a
+/// slot otherwise, so it starves every five seconds.
 #[test]
 fn timing_at_50_hz_is_never_thinned() {
 	let timing = unit(0x10);
@@ -677,15 +692,19 @@ fn timing_at_50_hz_is_never_thinned() {
 
 	let readings = sim.readings_of(speed);
 	assert!(readings.len() >= 2999, "{}", readings.len());
-	let worst_gap = readings.windows(2).map(|w| w[1].1 - w[0].1).max().unwrap();
-	assert!(worst_gap <= 20, "a reading every 20 ms, never later: worst {worst_gap} ms");
+	let late: Vec<u64> = readings.windows(2).map(|w| w[1].1 - w[0].1).filter(|gap| *gap > 20).collect();
+	let starving = bg.len() as u64;
+	let windows = 60_000 / u64::from(Budget::default().starve_after_ms) + 1;
+	assert!(late.len() as u64 <= starving * windows, "late only for a starved read: {late:?}");
+	assert!(late.iter().all(|gap| *gap <= 20 + 2 * (4 + 10)), "and by an exchange or two: {late:?}");
 }
 
 /// A timing unit that answers slower than its period is due again the moment it answers.
 /// With [`Budget::timing_yields_to_floor`] (the board) the panel under its floor still goes
 /// first — all 120 of its reads a minute at 2 Hz, at every latency — and timing gets every
-/// other send. Without it (the laptop) timing keeps its place ahead of everything: a unit
-/// that answers inside the period leaves the panel gaps, a slower one takes every send.
+/// other send. Without it (the laptop) timing keeps its place ahead of everything not
+/// starved: a unit that answers inside the period leaves the panel gaps, a slower one takes
+/// every send but one each time the panel has waited `starve_after_ms`.
 #[test]
 fn a_slow_timing_unit_yields_to_the_panels_floor_only_where_the_budget_says() {
 	let timing = unit(0x10);
@@ -726,7 +745,11 @@ fn a_slow_timing_unit_yields_to_the_panels_floor_only_where_the_budget_says() {
 					"{label}: the panel keeps its floor: {panel_reads:?}"
 				);
 			} else {
-				assert_eq!(panel_sends, 0, "{label}: timing takes every send, as on the laptop");
+				let windows = 60_000 / u64::from(budget.starve_after_ms) + 1;
+				assert!(
+					(1..=windows as usize).contains(&panel_sends),
+					"{label}: timing takes every send but the starved panel's, one a window: {panel_sends}"
+				);
 			}
 			if latency < 20 {
 				assert!(
@@ -861,6 +884,96 @@ fn a_waiting_read_is_not_starved_forever() {
 	let starve = Budget::default().starve_after_ms;
 	assert!(worst <= u64::from(starve) + 200, "worst wait {worst} ms");
 	assert!(busiest_second(&sim.sends.iter().map(|(t, _)| *t).collect::<Vec<_>>()) <= 100);
+}
+
+/// PR #2 review (Sched-F1), the reviewer's latency table: `measure` on a unit that answers
+/// in 10–30 ms, beside three leading channels at 50 ms on the same unit and two at 100 ms on
+/// another, a one-shot and a raw request asked at 5 s. On the laptop they are Foreground and
+/// Background; through the board, a host's Remote. A timing read slower than its 20 ms period
+/// is always due, and before the fix nothing below it was sent at 21 ms and up: no channel,
+/// no one-shot, no raw. Now nothing waits much longer than `starve_after_ms`, and a unit that
+/// answers inside the period keeps its timing channel at 45 Hz or better.
+#[test]
+fn nothing_waits_past_starve_after_behind_a_timing_channel_at_any_latency() {
+	const SPEED: u16 = 0xF40D;
+	/// The longest subscription period here.
+	const PERIOD_MS: u64 = 100;
+	const END_MS: u64 = 30_000;
+	let leading = [0x2029u16, 0x202A, 0x206E];
+	let background = [0x3801u16, 0x3802];
+	for (budget, fg, bg) in [
+		(Budget::default(), Class::Foreground, Class::Background),
+		(Budget::board(), Class::Remote, Class::Remote),
+	] {
+		for latency in [10, 15, 19, 21, 30] {
+			let engine: Vec<(u16, &[u8])> = [SPEED, 0x2001].iter().chain(&leading).map(|d| (*d, &[0u8][..])).collect();
+			let gearbox: Vec<(u16, &[u8])> = background.iter().map(|d| (*d, &[0u8][..])).collect();
+			let mut sim = Sim::new(budget, car(&[(A, FakeUnit::with(&engine)), (B, FakeUnit::with(&gearbox))]));
+			sim.unit_latency.insert(A, latency);
+			sim.unit_latency.insert(B, 10);
+			let speed = sim.p.subscribe(0, Class::Timing, A, SPEED, 20, None);
+			let mut subs: Vec<SubId> = leading.iter().map(|d| sim.p.subscribe(0, fg, A, *d, 50, None)).collect();
+			subs.extend(background.iter().map(|d| sim.p.subscribe(0, bg, B, *d, PERIOD_MS as u32, None)));
+			sim.run_until(5_000);
+			let asked = sim.now;
+			let once = sim.p.read_once(asked, fg, A, 0x2001);
+			let raw = sim.p.exchange(asked, fg, B, vec![0x19, 0x02, 0xAF]).unwrap();
+			sim.run_until(END_MS);
+
+			let label = format!("yields {}, latency {latency} ms", budget.timing_yields_to_floor);
+			let starve = u64::from(budget.starve_after_ms);
+			for (what, req) in [("one-shot", once), ("raw", raw)] {
+				let waited = sim.delivered_at(req).map(|t| t - asked);
+				assert!(
+					waited.is_some_and(|w| w <= starve + PERIOD_MS),
+					"{label}: the {what} was delivered after {waited:?} ms"
+				);
+			}
+			for sub in &subs {
+				let mut at = vec![0];
+				at.extend(sim.readings_of(*sub).iter().map(|(_, t)| *t));
+				at.push(END_MS.max(*at.last().unwrap()));
+				let worst = at.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+				assert!(worst <= starve + 2 * PERIOD_MS, "{label}: {sub:?} waited {worst} ms for a reading");
+			}
+			let hz = sim.readings_of(speed).len() as u64 * 1000 / END_MS;
+			if latency < 20 {
+				assert!(hz >= 45, "{label}: the timing channel ran at {hz} Hz");
+			}
+		}
+	}
+}
+
+/// A unit's raw exchanges rank by their own class, not by the one in front: a guard's speed
+/// check (Timing) queued behind a host's raw (Remote) on the engine, with a timing channel
+/// on the same slow engine, goes out at once — before the fix neither went, ever.
+#[test]
+fn a_timing_raw_is_not_held_behind_a_waiting_raw_of_its_unit() {
+	let engine = FakeUnit::with(&[(0xF40D, &[0])]);
+	let panel = FakeUnit::with(&[(0x3801, &[0]), (0x3802, &[0])]);
+	for budget in [Budget::default(), Budget::board()] {
+		let mut sim = Sim::new(budget, car(&[(A, engine.clone()), (B, panel.clone())]));
+		sim.unit_latency.insert(A, 25);
+		sim.unit_latency.insert(B, 10);
+		for did in [0x3801, 0x3802] {
+			sim.p.subscribe(0, Class::Foreground, B, did, 100, None);
+		}
+		sim.p.subscribe(0, Class::Timing, A, 0xF40D, 20, None);
+		sim.run_until(1_000);
+		let asked = sim.now;
+		let faults = sim.p.exchange(asked, Class::Remote, A, vec![0x19, 0x02, 0xAF]).unwrap();
+		let speed = sim.p.exchange(asked + 1, Class::Timing, A, vec![0x22, 0xF4, 0x0D]).unwrap();
+		sim.run_until(asked + 10_000);
+
+		let label = format!("yields {}", budget.timing_yields_to_floor);
+		let speed_waited = sim.delivered_at(speed).map(|t| t - asked);
+		assert!(speed_waited.is_some_and(|w| w <= 100), "{label}: speed check after {speed_waited:?} ms");
+		let faults_waited = sim.delivered_at(faults).map(|t| t - asked);
+		assert!(
+			faults_waited.is_some_and(|w| w <= u64::from(budget.starve_after_ms) + 100),
+			"{label}: the raw in front after {faults_waited:?} ms"
+		);
+	}
 }
 
 #[test]

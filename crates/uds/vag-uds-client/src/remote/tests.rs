@@ -626,12 +626,15 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 				"{label}: nothing refused"
 			);
 			let speed = board.readings(1).iter().filter(|(_, o)| matches!(o, Outcome::Pdu(_))).count();
+			// A normal channel starved for `starve_after_ms` goes ahead of the timing one: one
+			// send per channel per window at most, fewer where channels share a request.
+			let windows = (MINUTE_MS / u64::from(budget.starve_after_ms) + 1) as usize;
 			if latency < 20 {
 				assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
 			} else {
 				let rest = board.sent.iter().filter(|(_, o)| o.unit != GATEWAY).count();
 				assert!(
-					speed * 100 >= rest * 95,
+					speed + 15 * windows >= rest,
 					"{label}: the timing channel got {speed} of the {rest} sends the panel left"
 				);
 			}
@@ -647,10 +650,11 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 			}
 
 			// Slower than the period, the timing read is always due, and the normal channels
-			// wait behind it: only a fast bus says anything about them.
-			for n in (0..15u16).filter(|_| latency < 20) {
+			// wait behind it until they starve: then one reading each per window.
+			for n in 0..15u16 {
 				let got = board.readings(10 + n).len();
-				assert!(got >= 60, "{label}: normal channel {n} got {got} readings in a minute");
+				let least = if latency < 20 { 60 } else { windows - 2 };
+				assert!(got >= least, "{label}: normal channel {n} got {got} readings in a minute");
 			}
 
 			let times: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();

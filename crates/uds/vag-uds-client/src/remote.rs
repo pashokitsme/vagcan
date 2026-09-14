@@ -63,7 +63,8 @@
 //! panel keeps its floor, and the timing channel gets what is left — 50 a second from a
 //! unit that answers in a few milliseconds, less from a slow one. A host's other
 //! subscriptions stay `Remote` and get what the timing channel leaves: slowed when the bus
-//! is short, and with a slow timing unit nothing while the run lasts.
+//! is short, and with a slow timing unit one reading each time they have waited the
+//! planner's `starve_after_ms`.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};

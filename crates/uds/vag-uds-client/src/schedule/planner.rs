@@ -124,14 +124,15 @@ enum Flying {
 }
 
 /// How a candidate for the next slot sorts, lowest first: its [`tier`], when it came
-/// due (the most overdue first), then unit, raw before read, and identifier, so that ties
-/// break the same way every time.
-type Rank = (u8, u64, Unit, u8, u16);
+/// due (the most overdue first), then unit, raw before read, and the raw's id or the read's
+/// identifier, so that ties break the same way every time — and a unit's raws of one rank
+/// in the order they were queued.
+type Rank = (u8, u64, Unit, u8, u32);
 
 /// What a candidate for the next slot is.
 #[derive(Debug, Clone, Copy)]
 enum Pick {
-	Raw,
+	Raw(ReqId),
 	Read(u16),
 }
 
@@ -377,20 +378,22 @@ impl Planner {
 		let mut best: Option<(Rank, Class, Pick)> = None;
 		let mut earliest: Option<u64> = None;
 		for (unit, state) in &self.units {
-			let raw = state.raws.front().map(|r| (r.since_ms, Some(r.class), Pick::Raw));
+			// Every queued raw is a candidate of its own class: a Timing raw is not held behind
+			// a Remote one in front of it.
+			let raws = state.raws.iter().map(|r| (r.since_ms, Some(r.class), Pick::Raw(r.id)));
 			let reads = state
 				.reads
 				.iter()
 				.filter_map(|(did, read)| Some((read.due()?, read.class_due(now), Pick::Read(*did))));
-			for (due, class, pick) in raw.into_iter().chain(reads) {
+			for (due, class, pick) in raws.chain(reads) {
 				let ready = due.max(state.retry_at);
 				let Some(class) = class.filter(|_| ready <= now) else {
 					earliest = Some(earliest.map_or(ready, |e| e.min(ready)));
 					continue;
 				};
-				let (kind, did) = match pick {
-					Pick::Raw => (0, 0),
-					Pick::Read(did) => (1, did),
+				let (kind, key) = match pick {
+					Pick::Raw(id) => (0, id.0),
+					Pick::Read(did) => (1, u32::from(did)),
 				};
 				let starved = now.saturating_sub(due) > u64::from(self.budget.starve_after_ms);
 				let rank = (
@@ -398,7 +401,7 @@ impl Planner {
 					due,
 					*unit,
 					kind,
-					did,
+					key,
 				);
 				if best.as_ref().is_none_or(|(held, _, _)| rank < *held) {
 					best = Some((rank, class, pick));
@@ -424,8 +427,9 @@ impl Planner {
 		let budget = self.budget;
 		let state = self.units.get_mut(&unit).expect("the candidate's unit is held");
 		let (pdu, what) = match pick {
-			Pick::Raw => {
-				let raw = state.raws.pop_front().expect("the candidate raw is queued");
+			Pick::Raw(id) => {
+				let at = state.raws.iter().position(|raw| raw.id == id).expect("the candidate raw is queued");
+				let raw = state.raws.remove(at).expect("the candidate raw is queued");
 				(raw.pdu.clone(), Flying::Raw(raw))
 			}
 			Pick::Read(trigger) => {
@@ -757,13 +761,14 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
 ///
-/// `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`]) moves the foreground under
-/// its floor ahead of timing; everything else keeps its order.
+/// `starved`: due for longer than [`Budget::starve_after_ms`]. Anything but Timing that is
+/// starved goes ahead of Timing; `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`])
+/// puts the foreground under its floor ahead of both. Nothing on the laptop takes tier 0.
 fn tier(class: Class, foreground_under_floor: bool, starved: bool, timing_yields_to_floor: bool) -> u8 {
 	match class {
 		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 0,
-		Class::Timing => 1,
-		Class::Remote | Class::Background if starved => 2,
+		Class::Timing => 2,
+		_ if starved => 1,
 		Class::Foreground if foreground_under_floor => 3,
 		Class::Remote => 4,
 		Class::Foreground => 5,
