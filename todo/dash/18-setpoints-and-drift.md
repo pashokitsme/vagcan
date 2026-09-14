@@ -91,7 +91,17 @@ min_setpoint = 0.5    # below this specified value the rule says nothing
 - The existing `direction`/`trip`/`release` rules stay as they are; `kind` defaults to the
   threshold rule so every `dash.toml` written so far still builds.
 
-## 5. Done when
+## 5. Built, 2026-09-15 (branch `setpoint-drift`)
+
+Everything above is in the tree and hardware-free green: `Deviation` on a cell and the two
+screens (`494df74`, `983e758`, `b546f6d`, `733aa43`), `setpoint` in `dash.toml` and the plan
+(`83d6d35`), the drift rule in the alarm machine and the builder (`0fa3a07`), and the board
+drawing the difference and reading a pair as a pair (`5816c53`).
+
+Left: the owner's own `dash.toml` — nothing pairs anything yet, so no board has drawn a real
+difference — and then the bench and the car.
+
+## 6. Done when
 
 - `cargo test --workspace` green, including: the builder refuses each of the four bad
   `setpoint`s; a values row with a deviation steps its face down; a chart with a setpoint has no
@@ -101,7 +111,7 @@ min_setpoint = 0.5    # below this specified value the rule says nothing
 - On the car: the owner's numbers for `percent`, `hold_ms` and `min_setpoint`, and a look at
   what boost's difference does on a real pull ([`17-bench-ble-usb.md`](17-bench-ble-usb.md) §4).
 
-## 6. Not in this task
+## 7. Not in this task
 
 - Pairs across two units (two exchanges, two moments).
 - A second trace for the specified value on the chart. Offered and not taken (2026-09-14);
