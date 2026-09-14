@@ -172,13 +172,19 @@ impl std::fmt::Display for ExchangeError {
 			ExchangeError::Forbidden(why) => write!(f, "{why}"),
 			ExchangeError::NoAnswer => write!(f, "no answer"),
 			ExchangeError::Link(why) => write!(f, "{why}"),
-			ExchangeError::Refused(why) => write!(f, "refused by the dash board: {why}"),
+			ExchangeError::Refused(why) => f.write_str(&refused_by_board(why)),
 			ExchangeError::Closed => write!(f, "the bus has shut down"),
 		}
 	}
 }
 
 impl std::error::Error for ExchangeError {}
+
+/// A refusal by the dash board in words, one spelling wherever it surfaces: a
+/// subscription's end, a one-shot read's note, an exchange's error.
+fn refused_by_board(why: &str) -> String {
+	format!("refused by the dash board — {why}")
+}
 
 /// Where a one-shot read's result goes.
 type OnceReply = oneshot::Sender<Result<(Vec<u8>, At), Miss>>;

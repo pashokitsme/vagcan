@@ -488,7 +488,7 @@ impl Remote {
 			Outcome::Refused(why) => {
 				if let Some(sub) = self.subs.remove(&reading.sub) {
 					self.wire.retain(|_, wire| *wire != reading.sub);
-					end(unit, did, at, &sub.to, &format!("refused by the dash board — {why}"));
+					end(unit, did, at, &sub.to, &super::refused_by_board(&why));
 				}
 				return;
 			}
@@ -514,10 +514,7 @@ impl Remote {
 			Ask::Once { unit, did, to } => {
 				let value = match answer.outcome {
 					Outcome::Refused(why) => {
-						self.note(format!(
-							"{}: {:03X} {did:04X} was not read: refused by the dash board: {why}",
-							self.peer, unit.request
-						));
+						self.note(once_refused(&self.peer, unit, did, &why));
 						Err(Miss::BusError)
 					}
 					outcome => read_value(did, outcome),
@@ -608,6 +605,11 @@ fn end(unit: Unit, did: u16, at: At, to: &mpsc::UnboundedSender<Sample>, why: &s
 		value: Err(Miss::BusError),
 		ended: Some(why.to_string()),
 	});
+}
+
+/// What is said when the bus closes about a one-shot read the board refused.
+fn once_refused(peer: &str, unit: Unit, did: u16, why: &str) -> String {
+	format!("{peer}: {:03X} {did:04X} was not read: {}", unit.request, super::refused_by_board(why))
 }
 
 /// How a subscription of `class` is marked on the link (module docs).
