@@ -136,9 +136,11 @@ pub async fn resolve_with<H>(
 			None => named_usb(requested, listing, probe).map(|usb| usb.target(slcan)),
 		};
 	}
-	let no_cable = match choose_usb(listing, probe, slcan)? {
+	let no_cable = match choose_usb(listing, probe, slcan, true)? {
 		Found::Picked(usb) => return Ok(usb.target(slcan)),
 		Found::Nothing(why) => why,
+		// A dash board is always a candidate here, so it is never the one left out.
+		Found::OnlyThroughTheBoard => unreachable!("a dash board is a candidate when it may be read through"),
 	};
 	if slcan {
 		bail!("{no_cable}\n--slcan asks for a USB adapter, so the dash board was not looked for over BLE.");
@@ -277,6 +279,8 @@ enum Found {
 	Picked(Usb),
 	/// No USB-CAN adapter at all, and why, in full.
 	Nothing(String),
+	/// Nothing to use but a dash board, on a path that does not go through the board.
+	OnlyThroughTheBoard,
 }
 
 /// Why a command that does not go through the dash board is refused, on each way to it.
@@ -311,10 +315,13 @@ pub fn resolve_cable_for_with(
 	}
 	let usb = match requested {
 		Some(path) => named_usb(path, listing, probe)?,
-		None => match choose_usb(listing, probe, slcan)? {
+		// A dash board is a candidate only as `--slcan`'s adapter: without it the board is
+		// refused here, so it must not stand in the way of another device either.
+		None => match choose_usb(listing, probe, slcan, slcan)? {
 			Found::Picked(usb) => usb,
 			Found::Nothing(no_cable) if slcan => bail!("{no_cable}"),
 			Found::Nothing(no_cable) => bail!("{no_cable}\n{}", why.over_ble),
+			Found::OnlyThroughTheBoard => bail!("{}", why.over_usb),
 		},
 	};
 	match usb.target::<()>(slcan) {
@@ -356,7 +363,12 @@ fn named_usb(path: &str, listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMu
 /// to the wrong bus. "No USB-CAN adapter at all" is an answer rather than an error, because
 /// [`resolve_with`] looks for the board over BLE next. `slcan` only changes what is said
 /// about a `dash` board picked.
-fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer, slcan: bool) -> Result<Found> {
+///
+/// `dash_candidate`: whether a board on its `dash` image may be picked at all. A command
+/// that does not go through the board passes `false` without `--slcan`: such a board is
+/// then no candidate — beside a CANable the CANable is picked, beside an unrecognised
+/// device that device is — and alone it is [`Found::OnlyThroughTheBoard`].
+fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer, slcan: bool, dash_candidate: bool) -> Result<Found> {
 	// Which boards would not open, kept apart from the silent ones: a busy port may well
 	// be a working board, and that wants different advice. Which answered Hello, because
 	// those are read through rather than opened as adapters.
@@ -375,7 +387,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
 	// A recognised CAN adapter wins outright. Someone with a CANable plugged in
 	// next to an Arduino means the CANable, and making them spell that out
 	// every time is friction for nothing. A board that answered Hello or `V` is one.
-	let known: Vec<&AdapterInfo> = found.iter().filter(|a| a.known).collect();
+	let known: Vec<&AdapterInfo> = found.iter().filter(|a| a.known && (dash_candidate || !dash.contains(&a.path))).collect();
 	match known.as_slice() {
 		[only] if dash.contains(&only.path) => {
 			let how = match slcan {
@@ -405,6 +417,7 @@ fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> 
              enumerate on USB without macOS attaching a serial node."
 				.to_string(),
 		)),
+		([], boards) if boards.iter().any(|b| dash.contains(&b.path)) => Ok(Found::OnlyThroughTheBoard),
 		([], boards) => {
 			let (busy, silent): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = boards.iter().partition(|b| unopened.contains(&b.path));
 			let lines = |group: &[&AdapterInfo]| {
@@ -1024,6 +1037,25 @@ mod tests {
 		let failed = render_boards::<()>(&Err(anyhow::anyhow!("no Bluetooth adapter")));
 		assert_eq!(failed.lines().count(), 1, "{failed}");
 		assert!(failed.contains("no Bluetooth adapter"), "{failed}");
+	}
+
+	#[test]
+	fn a_command_that_does_not_go_through_the_board_takes_the_other_device_beside_a_dash_board() {
+		// Survey, sniff, identify without `--slcan`: the board is refused on this path, so
+		// it is no candidate either.
+		assert_eq!(cable(None, Ok(vec![canable(), board()]), answering(dash())).unwrap(), CANABLE);
+		assert_eq!(
+			cable(None, Ok(vec![anonymous(), board()]), answering(dash())).unwrap(),
+			"/dev/cu.usbserial-A10"
+		);
+		// Alone it is refused in the command's own words, not as "no adapter".
+		assert_eq!(cable(None, Ok(vec![board()]), answering(dash())).unwrap_err().to_string(), WHY.over_usb);
+		// With `--slcan` it is an adapter again: beside a CANable a question, beside an
+		// unrecognised device the pick.
+		let both = resolve_cable_for_with(None, true, &WHY, Ok(vec![canable(), board()]), answering(dash()));
+		assert!(both.unwrap_err().to_string().contains("say which one"));
+		let beside = resolve_cable_for_with(None, true, &WHY, Ok(vec![anonymous(), board()]), answering(dash()));
+		assert_eq!(beside.unwrap(), BOARD);
 	}
 
 	#[test]
