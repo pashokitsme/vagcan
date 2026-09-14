@@ -2278,8 +2278,11 @@ async fn usb_presence_task() -> ! {
 /// The one task that writes the cable. Everything the board says there comes through
 /// here, whole: the host's link frames first, then the adapter's lines, then log lines
 /// and notes, then the panel's `FRAME` line — so a log line can never be written in
-/// the middle of a frame's bytes. In adapter mode only slcan goes out: the host there is
-/// an slcan client, whose reader takes a line starting with `t` for a CAN frame.
+/// the middle of a frame's bytes. In adapter mode no log line and no panel line goes out:
+/// the host there is an slcan client, whose reader takes a line starting with `t` for a CAN
+/// frame. Link frames and the `\r` a bare `C` is answered with go out in either mode — a
+/// Hello is answered in adapter mode too, and the probe (`vag_uds_can::slcan::ask_board`)
+/// relies on both.
 ///
 /// While no host is attached nothing but the adapter's ring is taken off the queues, so
 /// what was said at boot is there when one arrives; the queues that fill drop as they
