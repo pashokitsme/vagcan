@@ -649,6 +649,46 @@ async fn a_bus_over_the_cable_says_hello_when_it_ends() {
 	assert_eq!(board.next().await, Message::Hello);
 }
 
+/// The board's clock is a `u32` of milliseconds, and it wraps after 49.7 days: the gap
+/// across the wrap is still the board's gap, not every later reading at 0 s.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_board_clock_that_wraps_keeps_the_boards_gaps() {
+	let (bus, mut board) = start();
+	let mut speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let id = subscribed(board.next().await).sub;
+	for (at_ms, kmh) in [(u32::MAX - 9, 1), (10, 2), (30, 3)] {
+		board.send(reading(id, at_ms, Outcome::Pdu(vec![0x62, 0xF4, 0x0D, kmh]))).await;
+	}
+	let got = [sample(&mut speed).await, sample(&mut speed).await, sample(&mut speed).await];
+	let gaps = [got[1].at.secs - got[0].at.secs, got[2].at.secs - got[1].at.secs];
+	assert!(
+		(gaps[0] - 0.020).abs() < 1e-9 && (gaps[1] - 0.020).abs() < 1e-9,
+		"the board's gaps across its clock's wrap: {:?}",
+		got.iter().map(|s| s.at).collect::<Vec<_>>()
+	);
+}
+
+/// The parting Hello over the cable is written while the process may be exiting, when
+/// the runtime's timer has already shut down and polling one panics. A runtime with no
+/// timer at all stands in for that: the parting must not need one.
+#[test]
+fn parting_over_the_cable_needs_no_timer() {
+	let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	runtime.block_on(async move {
+		let (commands, inbox) = tokio::sync::mpsc::unbounded_channel::<crate::bus::Command>();
+		drop(commands);
+		let closed = Arc::new(std::sync::OnceLock::new());
+		super::run(host, PEER.to_string(), Carrier::Usb, inbox, tokio::time::Instant::now(), closed).await;
+	});
+	assert_eq!(runtime.block_on(board.recv()), Some(Message::Hello), "the Hello still went out");
+}
+
 /// Over BLE the disconnect closes the board's session, and nothing more is sent.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bus_over_ble_ends_without_a_word() {

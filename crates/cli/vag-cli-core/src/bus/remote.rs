@@ -259,12 +259,25 @@ impl Remote {
 	/// Best effort and bounded. Over BLE the disconnect itself closes the session. A host
 	/// killed outright (`kill -9`) sends nothing; its session lasts until the next host's
 	/// Hello, a stalled write on the board, or the cable.
+	///
+	/// **Bounded without tokio's timer.** This runs as the process exits, when the runtime
+	/// may already have shut its timer down — and polling a tokio timer then panics
+	/// ("A Tokio 1.x context was found, but it is being shutdown"). The bound is a plain
+	/// thread that sleeps [`PART_WAIT`] and then answers a oneshot, which needs no driver.
 	async fn part<P: Pipe>(&self, pipe: &mut P) {
 		if self.carrier != Carrier::Usb {
 			return;
 		}
-		if let Ok(hello) = link::encode(&Message::Hello) {
-			let _ = tokio::time::timeout(PART_WAIT, pipe.write(&hello)).await;
+		let Ok(hello) = link::encode(&Message::Hello) else { return };
+		let (waited, give_up) = tokio::sync::oneshot::channel::<()>();
+		std::thread::spawn(move || {
+			std::thread::sleep(PART_WAIT);
+			let _ = waited.send(());
+		});
+		tokio::select! {
+			biased;
+			_ = pipe.write(&hello) => {}
+			_ = give_up => {}
 		}
 	}
 
@@ -286,7 +299,9 @@ impl Remote {
 		let Some((first_ms, first_secs)) = self.clock else {
 			return arrived;
 		};
-		let secs = (first_secs + (f64::from(at_ms) - f64::from(first_ms)) / 1000.0).max(0.0);
+		// The board's clock is a `u32` of milliseconds and wraps after 49.7 days: the gap is
+		// taken modulo that, before it becomes a float.
+		let secs = (first_secs + f64::from(at_ms.wrapping_sub(first_ms)) / 1000.0).max(0.0);
 		At {
 			ms: (secs * 1000.0) as u64,
 			secs,
