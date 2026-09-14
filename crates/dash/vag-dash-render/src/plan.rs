@@ -53,6 +53,39 @@ pub struct Unit {
 	pub part_number: &'static str,
 }
 
+/// What came back when a unit was asked its part number (`F187`), as
+/// [`Unit::check_part`] needs it — the scheduler's own types stay out of this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartAnswer<'a> {
+	/// The record's bytes, identifier echo stripped.
+	Data(&'a [u8]),
+	/// A negative response, by its NRC.
+	Refused(u8),
+	/// Nothing within the deadline.
+	NoAnswer,
+	/// The bus failed under the request.
+	BusError,
+	/// An answer that is not a response to what was asked.
+	Malformed,
+}
+
+/// What a part-number answer makes of a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartCheck {
+	/// The number the plan was built against: poll the unit.
+	Matched,
+	/// A definite answer that is not that number — another number, not text, or a
+	/// refusal to say. Never polled this run: the plan's identifiers would answer,
+	/// plausibly, about a unit they were not resolved for, and a unit that will not say
+	/// what it is cannot be checked.
+	Mismatch,
+	/// Not there (yet): ask again, as often as the scheduler's backoff allows.
+	Absent,
+	/// Something came back that did not parse. It was an answer, so the scheduler does
+	/// not back the unit off; ask again no sooner than the backoff's cap.
+	RetryLater,
+}
+
 /// One value: where it is on the bus, how to cut it out, how to scale it, and
 /// what to call it. Already rendered — there is nothing left to look up.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,6 +245,25 @@ impl Plan {
 			.iter()
 			.enumerate()
 			.filter_map(move |(i, c)| (c.unit == request).then_some((i as u16, c)))
+	}
+}
+
+impl Unit {
+	/// The car check (`05`): what this unit's answer to `F187` means for polling it.
+	///
+	/// `F187` carries the number padded — one trailing space on the reference car, and a
+	/// NUL is the other thing a fixed-width field is padded with — so the padding is
+	/// trimmed before comparing, exactly as the survey the plan was built from trimmed it.
+	pub fn check_part(&self, answer: PartAnswer<'_>) -> PartCheck {
+		match answer {
+			PartAnswer::Data(data) => match core::str::from_utf8(data) {
+				Ok(reported) if reported.trim_end_matches([' ', '\0']) == self.part_number => PartCheck::Matched,
+				_ => PartCheck::Mismatch,
+			},
+			PartAnswer::Refused(_) => PartCheck::Mismatch,
+			PartAnswer::NoAnswer | PartAnswer::BusError => PartCheck::Absent,
+			PartAnswer::Malformed => PartCheck::RetryLater,
+		}
 	}
 }
 
@@ -405,6 +457,40 @@ mod tests {
 		assert_eq!(PLAN.chart(2), Some(load));
 		let all: std::vec::Vec<Chart> = PLAN.charts().collect();
 		assert_eq!(all, [boost, load], "slots are dense and in plan order");
+	}
+
+	const PARTED: Unit = Unit {
+		request: 0x7E0,
+		response: 0x7E8,
+		part_number: "PART1",
+	};
+
+	/// The car check (`05`): what an answer to `F187` makes of a unit.
+	#[test]
+	fn a_part_number_matches_after_its_padding_and_anything_definite_else_is_a_mismatch() {
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1")), PartCheck::Matched);
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1 ")), PartCheck::Matched, "a space pads it");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1\0\0")), PartCheck::Matched, "so does a NUL");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART2")), PartCheck::Mismatch);
+		assert_eq!(PARTED.check_part(PartAnswer::Data(&[0xFF, 0xFE])), PartCheck::Mismatch, "not text");
+	}
+
+	/// A unit that refuses `F187` cannot be checked against the plan, and a unit that
+	/// cannot be checked is not polled: asking again changes nothing it would say.
+	#[test]
+	fn a_refused_part_number_is_a_mismatch_not_a_retry() {
+		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x31)), PartCheck::Mismatch);
+		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x22)), PartCheck::Mismatch);
+	}
+
+	/// Silence is a unit that is not there yet (ignition off): asked again, at the pace
+	/// the scheduler's backoff sets. An answer that did not parse was an answer, which
+	/// resets that backoff — so it waits on its own, no faster than the backoff's cap.
+	#[test]
+	fn silence_is_asked_again_and_a_garbled_answer_later() {
+		assert_eq!(PARTED.check_part(PartAnswer::NoAnswer), PartCheck::Absent);
+		assert_eq!(PARTED.check_part(PartAnswer::BusError), PartCheck::Absent);
+		assert_eq!(PARTED.check_part(PartAnswer::Malformed), PartCheck::RetryLater);
 	}
 
 	#[test]
