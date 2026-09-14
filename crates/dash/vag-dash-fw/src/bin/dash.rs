@@ -889,14 +889,23 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 		let send = async |bytes: &[u8]| {
 			let mut out = UartData::new();
 			let _ = out.extend_from_slice(bytes);
-			let _ = tx.notify(conn, &out).await;
+			tx.notify(conn, &out).await
 		};
 		// Both cut at the notification size: a frame's reassembler and a text line's
 		// `\n` say where each ends. The first state push goes out before the MTU
 		// exchange, at 20 bytes a notification, and must still arrive whole.
 		let (Outgoing::Text(bytes) | Outgoing::Frame(bytes)) = outgoing;
 		for piece in link::chunks(&bytes, size) {
-			send(piece).await;
+			if let Err(e) = send(piece).await {
+				// A chunk lost is a hole in the host's stream with nothing to say so: its
+				// reassembler takes the next message's bytes for this one's rest, and a text
+				// line runs into the next. A notification is not sent again, so the
+				// connection ends — the host reconnects and says Hello — and the disconnect
+				// ends `gatt_events`, and with it this session.
+				note!("ble: a notification failed ({e:?}) — ending the connection, the host's stream has a hole");
+				conn.raw().disconnect();
+				core::future::pending::<()>().await;
+			}
 		}
 	}
 }
