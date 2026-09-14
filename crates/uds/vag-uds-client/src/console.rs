@@ -300,6 +300,13 @@ impl Console {
 		out
 	}
 
+	/// The caller was away: waiting on a queue of its own — back-pressure — not on the host.
+	/// The gap a frame in progress is given up after ([`FRAME_GAP_MS`]) restarts from
+	/// `now_ms`, so only the host's silence counts toward it.
+	pub fn resume(&mut self, now_ms: u64) {
+		self.last_byte_ms = self.last_byte_ms.max(now_ms);
+	}
+
 	/// The cable was pulled (or the host stopped the bus): what was in progress is
 	/// forgotten, and adapter mode ends.
 	pub fn disconnected(&mut self) -> Option<Input> {
@@ -323,7 +330,7 @@ impl Console {
 		let text = line.as_bytes();
 		match self.mode {
 			Mode::Adapter => {
-				let close = text == b"C";
+				let close = closes(text);
 				out.push(Input::Slcan(line));
 				if close {
 					self.set(Mode::Panel);
@@ -334,13 +341,13 @@ impl Console {
 				b"" => {}
 				b"BTN S" => out.push(Input::Press(Button::Short)),
 				b"BTN L" => out.push(Input::Press(Button::Long)),
-				_ if ending == Ending::Cr && (text == b"C" || enters_adapter(text)) => {
+				_ if ending == Ending::Cr && (closes(text) || enters_adapter(text)) => {
 					if link_active {
 						out.push(Input::Ignored {
 							line,
 							why: Ignored::LinkActive,
 						});
-					} else if text == b"C" {
+					} else if closes(text) {
 						out.push(Input::Closed);
 					} else {
 						self.set(Mode::Adapter);
@@ -361,6 +368,14 @@ impl Console {
 /// ([`OPENING_COMMANDS`]).
 pub fn enters_adapter(line: &[u8]) -> bool {
 	line.first().is_some_and(|head| OPENING_COMMANDS.contains(head))
+}
+
+/// Whether `line` is Lawicel's close: `C` and nothing else. One rule for both sides of
+/// adapter mode — this console leaves it on such a line, and the adapter (`vag-dash-fw`'s
+/// `slcan`) closes its channel on it and refuses a `C` with arguments, closing nothing. Were
+/// the two to differ, a `C1` would shut the channel and leave the board in adapter mode.
+pub fn closes(line: &[u8]) -> bool {
+	line == b"C"
 }
 
 #[cfg(test)]
@@ -502,6 +517,33 @@ mod tests {
 	}
 
 	#[test]
+	fn a_close_with_arguments_is_the_adapter_s_to_refuse_and_leaves_nothing() {
+		let mut console = Console::new();
+		console.push(b"S6\rO\r", false);
+		// The adapter refuses `C1` and keeps its channel; the console keeps adapter mode with it.
+		assert_eq!(console.push(b"C1\rCC\r", false), vec![slcan(b"C1"), slcan(b"CC")]);
+		assert_eq!(console.mode(), Mode::Adapter);
+		assert_eq!(console.push(b"C\r", false), vec![slcan(b"C"), Input::LeaveAdapter]);
+		// In panel mode a `C` with arguments is no command at all.
+		assert_eq!(
+			console.push(b"C1\r", false),
+			vec![Input::Ignored {
+				line: CommandLine::new(b"C1"),
+				why: Ignored::NotACommand
+			}]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn only_a_bare_c_closes() {
+		assert!(closes(b"C"));
+		for line in [&b"C1"[..], b"CC", b"C ", b"c", b"", b" C"] {
+			assert!(!closes(line), "{:?}", line.escape_ascii().to_string());
+		}
+	}
+
+	#[test]
 	fn a_close_then_a_new_open_in_one_chunk_leaves_and_enters_again() {
 		let mut console = Console::new();
 		console.push(b"S6\rO\r", false);
@@ -625,6 +667,23 @@ mod tests {
 			heard.extend(console.push_at(core::slice::from_ref(byte), false, 1_000 + at as u64 * (FRAME_GAP_MS - 1)));
 		}
 		assert_eq!(heard, vec![Input::Message(request())]);
+	}
+
+	#[test]
+	fn the_board_s_own_wait_between_two_halves_of_a_frame_is_not_the_host_s_silence() {
+		let frame = link::encode(&request()).unwrap();
+		let mut console = Console::new();
+		assert!(console.push_at(&frame[..6], false, 1_000).is_empty());
+		// Handing on what the first half said waited 300 ms on a full queue; the host sent
+		// the rest meanwhile, and it is read the moment the board looks again.
+		console.resume(1_000 + 300);
+		assert_eq!(console.push_at(&frame[6..], false, 1_000 + 301), vec![Input::Message(request())]);
+
+		// The host's own silence past the gap, after a resume, still gives the frame up.
+		let mut console = Console::new();
+		console.push_at(&frame[..6], false, 1_000);
+		console.resume(1_300);
+		assert_eq!(console.push_at(&frame[6..], false, 1_300 + FRAME_GAP_MS)[0], Input::Malformed(UNFINISHED));
 	}
 
 	#[test]

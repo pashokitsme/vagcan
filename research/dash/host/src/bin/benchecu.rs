@@ -36,6 +36,9 @@ const LISTEN: Duration = Duration::from_secs(2);
 /// ISO 15765-2 N_Bs and N_Cr: the wait for a flow control, and for the next
 /// consecutive frame.
 const N_TIMEOUT: Duration = Duration::from_millis(1000);
+/// The longest `--delay-ms`: past ISO 15765-2's N_As/N_Ar and UDS's P2 (50 ms) by far,
+/// short of the 1 s a requester waits for a flow control or a consecutive frame.
+const MAX_DELAY_MS: u64 = 500;
 /// FC.WAIT frames accepted in a row before a response is abandoned.
 const MAX_FC_WAIT: u8 = 10;
 /// The largest PDU a 12-bit first-frame length carries (ISO 15765-2).
@@ -75,6 +78,7 @@ usage:
   --unit        request id to answer, hex; repeatable (7E0 answers on 7E8, 714 on 77E)
   --part        what F187 reads on that --unit, ASCII; repeatable; without it F187 is refused
   --speed-kmh   what F40D reads, default 0
+  --delay-ms    answer this long after a request's last frame, 0..500, default 0 (a slow unit)
   --seconds     stop after N seconds of answering; otherwise Ctrl-C
 
 answers:
@@ -106,6 +110,8 @@ struct Config {
 	/// What `F187` reads, by request id; a unit not here refuses it.
 	parts: BTreeMap<u16, String>,
 	speed_kmh: u8,
+	/// How long after a request's last frame its answer goes out.
+	delay: Duration,
 	seconds: Option<u64>,
 }
 
@@ -122,6 +128,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 		return Ok(Invocation::Refused);
 	}
 	let (mut device, mut units, mut parts, mut speed_kmh, mut seconds) = (None, Vec::new(), BTreeMap::new(), 0u8, None);
+	let mut delay = Duration::ZERO;
 	let mut rest = args.iter();
 	while let Some(flag) = rest.next() {
 		let mut value = || rest.next().ok_or_else(|| format!("{flag} wants a value"));
@@ -148,6 +155,12 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 				}
 			}
 			"--speed-kmh" => speed_kmh = value()?.parse().map_err(|_| "--speed-kmh is a number 0..255".to_string())?,
+			"--delay-ms" => {
+				delay = match value()?.parse::<u64>() {
+					Ok(ms) if ms <= MAX_DELAY_MS => Duration::from_millis(ms),
+					_ => return Err(format!("--delay-ms is a number 0..{MAX_DELAY_MS}")),
+				}
+			}
 			"--seconds" => seconds = Some(value()?.parse().map_err(|_| "--seconds is a whole number".to_string())?),
 			other => return Err(format!("unknown argument {other}")),
 		}
@@ -164,6 +177,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 		units,
 		parts,
 		speed_kmh,
+		delay,
 		seconds,
 	}))
 }
@@ -417,6 +431,24 @@ async fn transmit<B: CanBackend>(backend: &mut B, unit: UnitAddress, pdu: &[u8],
 	Ok(Transmit::Sent)
 }
 
+/// Send `reply` from `unit`, `delay` after `received` — when the request's last frame came.
+///
+/// Only the answer waits: the flow control a multi-frame request is sent while it arrives
+/// is not delayed (ISO 15765-2's N_Br is short). The car guard reads the bus through the
+/// wait, and a foreign frame stops it; a frame on a played id is dropped, one conversation
+/// at a time.
+async fn respond<B: CanBackend>(
+	backend: &mut B,
+	unit: UnitAddress,
+	reply: &[u8],
+	requests: &[u16],
+	delay: Duration,
+	received: Instant,
+) -> Result<Transmit, Stop> {
+	listen(backend, requests, (received + delay).saturating_duration_since(Instant::now())).await?;
+	transmit(backend, unit, reply, requests).await
+}
+
 // ---- UDS -------------------------------------------------------------------
 
 fn negative(sid: u8, nrc: u8) -> Vec<u8> {
@@ -569,6 +601,7 @@ async fn serve<B: CanBackend>(backend: &mut B, config: &Config, counts: &mut Cou
 			Err(CanError::Timeout) => continue,
 			Err(e) => return Err(Stop::Can(e)),
 		};
+		let received = Instant::now();
 		if is_foreign(id, &requests) {
 			return Err(Stop::Foreign(id));
 		}
@@ -577,13 +610,14 @@ async fn serve<B: CanBackend>(backend: &mut B, config: &Config, counts: &mut Cou
 			continue;
 		};
 		let unit = config.units[at];
-		match reassemblers[at].push(&data, Instant::now()) {
+		match reassemblers[at].push(&data, received) {
 			Received::Nothing => {}
+			// Never delayed: the requester is inside its own N_Bs wait.
 			Received::FlowControl(frame) => backend.send_frame(u32::from(unit.response), &frame).await.map_err(Stop::Can)?,
 			Received::Request(pdu) => {
 				counts.saw(unit.request, &pdu);
 				if let Some(reply) = answer(&pdu, config.speed_kmh, config.parts.get(&unit.request).map(String::as_str))
-					&& let Transmit::Abandoned(why) = transmit(backend, unit, &reply, &requests).await?
+					&& let Transmit::Abandoned(why) = respond(backend, unit, &reply, &requests, config.delay, received).await?
 				{
 					println!("{:03X} response abandoned: {why}", unit.request);
 				}
@@ -902,6 +936,99 @@ mod tests {
 		assert_eq!(counts.total[&(0x7E0, Asked::Did(0xF40D))], 2);
 	}
 
+	#[test]
+	fn a_delay_is_given_in_milliseconds_up_to_500() {
+		let Ok(Invocation::Run(config)) = parse(&args("--bench --device /dev/x --unit 7E0 --delay-ms 25")) else {
+			panic!("--delay-ms runs");
+		};
+		assert_eq!(config.delay, Duration::from_millis(25));
+		let Ok(Invocation::Run(bare)) = parse(&args("--bench --device /dev/x --unit 7E0")) else {
+			panic!("--delay-ms is optional");
+		};
+		assert_eq!(bare.delay, Duration::ZERO);
+		assert!(parse(&args("--bench --device /dev/x --unit 7E0 --delay-ms 500")).is_ok());
+		for bad in ["501", "-1", "fast"] {
+			assert!(
+				parse(&args(&format!("--bench --device /dev/x --unit 7E0 --delay-ms {bad}"))).is_err(),
+				"{bad}"
+			);
+		}
+	}
+
+	/// [`Fake`], with when each frame went out.
+	#[derive(Default)]
+	struct Clocked {
+		bus: Fake,
+		sent_at: Vec<Instant>,
+	}
+
+	impl CanBackend for Clocked {
+		async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), CanError> {
+			self.sent_at.push(Instant::now());
+			self.bus.send_frame(id, data).await
+		}
+
+		async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+			self.bus.recv_frame(timeout).await
+		}
+	}
+
+	const DELAY: Duration = Duration::from_millis(120);
+
+	#[tokio::test]
+	async fn an_answer_goes_out_no_sooner_than_the_delay_after_the_request() {
+		let reply = [0x62, 0xF4, 0x0D, 42];
+		let mut bus = Clocked::default();
+		let received = Instant::now();
+		assert_eq!(
+			respond(&mut bus, engine(), &reply, &[0x7E0], DELAY, received).await.unwrap(),
+			Transmit::Sent
+		);
+		assert_eq!(bus.bus.sent, vec![(0x7E8, padded(&[0x04, 0x62, 0xF4, 0x0D, 42]).to_vec())]);
+		assert!(bus.sent_at[0] >= received + DELAY, "answered after {:?}", bus.sent_at[0] - received);
+
+		// A negative answer waits the same; a request that came long ago waits no more.
+		let mut late = Clocked::default();
+		let long_ago = Instant::now() - DELAY;
+		respond(&mut late, engine(), &[0x7F, 0x22, 0x31], &[0x7E0], DELAY, long_ago)
+			.await
+			.unwrap();
+		assert!(late.sent_at[0] - long_ago < DELAY * 2, "the wait counts from the request");
+	}
+
+	#[tokio::test]
+	async fn the_flow_control_for_a_request_is_not_delayed_and_a_foreign_frame_in_the_delay_stops_it() {
+		let config = Config {
+			device: String::new(),
+			units: vec![engine()],
+			parts: BTreeMap::new(),
+			speed_kmh: 42,
+			delay: DELAY,
+			seconds: None,
+		};
+		let mut bus = Clocked::default();
+		// A two-frame request, then a car's frame while its answer waits.
+		bus.bus.incoming.extend([
+			(0x7E0, vec![0x10, 0x09, 0x22, 0xF4, 0x0D, 0xF4, 0x0D, 0xF4]),
+			(0x7E0, padded(&[0x21, 0x0D, 0xF4, 0x0D]).to_vec()),
+			(0x280, vec![0; 8]),
+		]);
+		let started = Instant::now();
+		let mut counts = Counts::default();
+		assert!(matches!(serve(&mut bus, &config, &mut counts).await, Err(Stop::Foreign(0x280))));
+		assert_eq!(
+			bus.bus.sent,
+			vec![(0x7E8, padded(&[0x30, 0x00, 0x00]).to_vec())],
+			"the flow control, and no answer"
+		);
+		assert!(
+			bus.sent_at[0] - started < DELAY / 2,
+			"the flow control waited {:?}",
+			bus.sent_at[0] - started
+		);
+		assert_eq!(counts.total[&(0x7E0, Asked::Did(0xF40D))], 4, "the request was whole");
+	}
+
 	#[tokio::test]
 	async fn the_loop_answers_a_request_and_stops_on_another_node() {
 		let config = Config {
@@ -909,6 +1036,7 @@ mod tests {
 			units: vec![engine()],
 			parts: BTreeMap::new(),
 			speed_kmh: 42,
+			delay: Duration::ZERO,
 			seconds: None,
 		};
 		let mut bus = Fake::default();
