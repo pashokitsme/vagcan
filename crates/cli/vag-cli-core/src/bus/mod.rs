@@ -306,23 +306,26 @@ impl Drop for Subscription {
 
 /// The next sample from any of `subs`, with the index of the one it came from.
 ///
+/// `cursor` is where the next look starts, and it is the caller's to keep from one call
+/// to the next: it moves past whichever subscription just delivered, so one busy
+/// subscription cannot keep the rest waiting. Any value is valid, including after the
+/// slice has changed length.
+///
 /// Waits forever on an empty slice, so it can sit in a `select!` beside a keyboard while
 /// nothing is selected; `None` once every subscription's bus has shut down.
-pub async fn next_of(subs: &mut [Subscription]) -> Option<(usize, Sample)> {
+pub async fn next_of(subs: &mut [Subscription], cursor: &mut usize) -> Option<(usize, Sample)> {
 	if subs.is_empty() {
 		return std::future::pending().await;
 	}
-	// Where to start looking, turned each poll so one busy subscription cannot keep the
-	// rest waiting.
-	let mut start = 0usize;
 	std::future::poll_fn(|cx| {
 		let n = subs.len();
+		let start = *cursor % n;
 		let mut closed = 0;
 		for step in 0..n {
 			let i = (start + step) % n;
 			match subs[i].poll_next(cx) {
 				Poll::Ready(Some(sample)) => {
-					start = (i + 1) % n;
+					*cursor = (i + 1) % n;
 					return Poll::Ready(Some((i, sample)));
 				}
 				Poll::Ready(None) => closed += 1,

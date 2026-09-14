@@ -31,6 +31,8 @@ struct Script {
 	pending: usize,
 	/// Every request: the unit's request id, the PDU, and the deadline it was given.
 	asked: Vec<(u16, Vec<u8>, Duration)>,
+	/// Answers left over from earlier requests, handed out before the real one.
+	stale: std::collections::VecDeque<Vec<u8>>,
 }
 
 /// A link that carries whole PDUs, with its script shared so a test can read it.
@@ -79,6 +81,9 @@ impl AsyncIsoTpTransport for CarChannel {
 		let Some(pdu) = self.pdu.clone() else {
 			return Err(TransportError::Timeout);
 		};
+		if let Some(stale) = script.stale.pop_front() {
+			return Ok(stale);
+		}
 		if script.pending > 0 {
 			script.pending -= 1;
 			return Ok(vec![0x7F, pdu[0], 0x78]);
@@ -131,6 +136,76 @@ fn asked_for(script: &Mutex<Script>, did: u16) -> usize {
 		.iter()
 		.filter(|(_, pdu, _)| pdu[0] == 0x22 && pdu[1..].chunks(2).any(|b| b == wanted))
 		.count()
+}
+
+#[test]
+fn an_answer_is_only_taken_for_the_request_it_answers() {
+	use super::task::answers;
+	// Read: the positive SID and the first echoed identifier.
+	assert!(answers(&[0x22, 0xF1, 0x90], &[0x62, 0xF1, 0x90, b'V']));
+	assert!(answers(&[0x22, 0xF1, 0x90, 0xF1, 0x87], &[0x62, 0xF1, 0x90, b'V', 0xF1, 0x87, b'P']));
+	assert!(
+		!answers(&[0x22, 0xF1, 0x90], &[0x62, 0xF1, 0x87, b'P']),
+		"another identifier's late answer"
+	);
+	assert!(!answers(&[0x22, 0xF1, 0x90], &[0x62]), "no echo at all");
+	assert!(!answers(&[0x22, 0xF1, 0x90], &[0x59, 0x02, 0xFF]), "another service's answer");
+	// Negative: `7F <this SID> nrc`, pending included.
+	assert!(answers(&[0x22, 0xF1, 0x90], &[0x7F, 0x22, 0x31]));
+	assert!(answers(&[0x22, 0xF1, 0x90], &[0x7F, 0x22, 0x78]));
+	assert!(!answers(&[0x22, 0xF1, 0x90], &[0x7F, 0x19, 0x31]));
+	assert!(!answers(&[0x22, 0xF1, 0x90], &[0x7F, 0x22]), "a negative answer carries its NRC");
+	// Sub-functions are echoed, without the suppress-positive-response bit.
+	assert!(answers(&[0x19, 0x02, 0xFF], &[0x59, 0x02, 0xFF]));
+	assert!(!answers(&[0x19, 0x02, 0xFF], &[0x59, 0x0A]));
+	assert!(answers(&[0x10, 0x03], &[0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]));
+	assert!(!answers(&[0x10, 0x03], &[0x50, 0x01]));
+	assert!(answers(&[0x3E, 0x00], &[0x7E, 0x00]));
+	assert!(answers(&[0x3E, 0x80], &[0x7E, 0x00]));
+	assert!(!answers(&[0x3E, 0x00], &[0x7E]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_answer_to_an_earlier_request_is_not_taken_for_this_one() {
+	let (link, script, _) = car(&[(0x7E0, 0xF190, b"VIN")]);
+	script.lock().unwrap().stale.extend([
+		vec![0x62, 0xF1, 0x87, b'P'],
+		vec![0x7F, 0x19, 0x31],
+		vec![0x7F, 0x19, 0x78],
+		vec![0x59, 0x02, 0xFF],
+	]);
+	let bus = Bus::start(link, Budget::default());
+	let (data, _) = bus.read_once(Class::Foreground, ENGINE, 0xF190).await.unwrap();
+	assert_eq!(data, b"VIN", "four stale answers skipped, the right one taken");
+	let asked = &script.lock().unwrap().asked;
+	assert_eq!(asked.len(), 1);
+	assert!(
+		asked[0].2 < READ_DEADLINE,
+		"the wait after a discard is what is left, not a fresh deadline"
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_busy_subscription_does_not_keep_the_others_waiting() {
+	let (link, _, _) = car(&[(0x7E0, 0x1000, &[1]), (0x7E1, 0x2000, &[2])]);
+	let bus = Bus::start(link, Budget::default());
+	let gearbox = Unit {
+		request: 0x7E1,
+		response: 0x7E9,
+	};
+	let mut subs = vec![
+		bus.subscribe(Class::Foreground, ENGINE, 0x1000, Duration::from_millis(10), None),
+		bus.subscribe(Class::Foreground, gearbox, 0x2000, Duration::from_millis(10), None),
+	];
+	// Both queues fill while nobody reads them.
+	tokio::time::sleep(Duration::from_millis(300)).await;
+	let mut cursor = 0;
+	let mut order = Vec::new();
+	for _ in 0..10 {
+		let (i, _) = next_of(&mut subs, &mut cursor).await.unwrap();
+		order.push(i);
+	}
+	assert_eq!(order, [0, 1, 0, 1, 0, 1, 0, 1, 0, 1], "turn and turn about, across calls");
 }
 
 async fn sample(sub: &mut Subscription) -> Sample {
@@ -187,7 +262,10 @@ async fn identifiers_of_one_unit_go_out_together() {
 		.collect();
 	let mut got = BTreeMap::new();
 	while got.len() < 3 {
-		let (_, s) = tokio::time::timeout(Duration::from_secs(2), next_of(&mut subs)).await.unwrap().unwrap();
+		let (_, s) = tokio::time::timeout(Duration::from_secs(2), next_of(&mut subs, &mut 0))
+			.await
+			.unwrap()
+			.unwrap();
 		got.insert(s.did, s.value.unwrap());
 	}
 	assert_eq!(got, BTreeMap::from([(0x1000, vec![1]), (0x1001, vec![2]), (0x1002, vec![3])]));
@@ -289,7 +367,10 @@ async fn arrival_times_only_move_forward() {
 	];
 	let mut last = At { ms: 0, secs: 0.0 };
 	for _ in 0..30 {
-		let (_, s) = tokio::time::timeout(Duration::from_secs(2), next_of(&mut subs)).await.unwrap().unwrap();
+		let (_, s) = tokio::time::timeout(Duration::from_secs(2), next_of(&mut subs, &mut 0))
+			.await
+			.unwrap()
+			.unwrap();
 		assert!(s.at.secs >= last.secs && s.at.ms >= last.ms, "{:?} after {last:?}", s.at);
 		let ms = s.at.secs * 1000.0;
 		assert!(

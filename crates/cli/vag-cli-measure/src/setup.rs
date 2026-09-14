@@ -971,6 +971,8 @@ async fn read_engine_identity<B: vag_uds_can::UnitLink>(backend: B) -> (B, vag_u
 #[derive(Default)]
 struct Reader {
 	latest: BTreeMap<(u16, u16), Vec<u8>>,
+	/// Where the next look for an arrival starts, so no channel is favoured.
+	cursor: usize,
 }
 
 impl Reader {
@@ -997,7 +999,7 @@ impl Reader {
 	/// `None` once the bus has closed.
 	async fn until_speed(&mut self, set: &Set, subs: &mut [vag_cli_core::bus::Subscription]) -> Option<Seconds> {
 		loop {
-			let (_, sample) = vag_cli_core::bus::next_of(subs).await?;
+			let (_, sample) = vag_cli_core::bus::next_of(subs, &mut self.cursor).await?;
 			let (request, did) = (sample.unit.request, sample.did);
 			self.take(request, did, sample.value.ok());
 			if (request, did) == (set.leading.request, set.leading.did) {

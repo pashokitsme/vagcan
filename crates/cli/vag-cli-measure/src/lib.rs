@@ -252,6 +252,8 @@ pub trait Feed {
 pub struct LiveFeed {
 	bus: vag_cli_core::bus::Bus,
 	subs: Vec<vag_cli_core::bus::Subscription>,
+	/// Where the next look for an arrival starts, so no read is favoured.
+	cursor: usize,
 }
 
 impl LiveFeed {
@@ -263,7 +265,7 @@ impl LiveFeed {
 			.iter()
 			.filter_map(|poll| Some(bus.subscribe(poll.class, unit_of(poll.request)?, poll.did, poll.period, None)))
 			.collect();
-		LiveFeed { bus, subs }
+		LiveFeed { bus, subs, cursor: 0 }
 	}
 }
 
@@ -278,7 +280,7 @@ fn unit_of(request: u16) -> Option<vag_cli_core::bus::Unit> {
 
 impl Feed for LiveFeed {
 	async fn next(&mut self) -> Option<Arrival> {
-		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs).await?;
+		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs, &mut self.cursor).await?;
 		Some(Arrival {
 			request: sample.unit.request,
 			did: sample.did,
@@ -1246,7 +1248,13 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 		// out its deadline holds up nothing but its own reading.
 		let mut quit = false;
 		let mut cycle = false;
-		let wait = last_frame.map_or(Duration::ZERO, |at| FRAME.saturating_sub(at.elapsed()));
+		// On the plain console nothing is drawn until a cycle closes, so without one
+		// there is no frame to wake for and the feed alone is waited on: a timer that
+		// has already run out would turn this loop into a spin while the car is silent.
+		let wait = match terminal.is_some() || cycled {
+			true => Some(last_frame.map_or(Duration::ZERO, |at| FRAME.saturating_sub(at.elapsed()))),
+			false => None,
+		};
 		tokio::select! {
 			biased;
 			arrival = feed.next() => match arrival {
@@ -1268,7 +1276,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 				}
 				None => break Err(anyhow::anyhow!("the link to the car closed")),
 			},
-			() = tokio::time::sleep(wait) => {}
+			() = sleep_for(wait) => {}
 		}
 
 		if terminal.is_some() {
@@ -1507,6 +1515,14 @@ async fn read_density<F: Feed>(feed: &mut F, plan: &Plan) -> Option<f64> {
 		}
 	}
 	Some(power::air_density(pressure_kpa?, ambient_c?))
+}
+
+/// Sleep for `wait`, or forever when there is nothing to wait for.
+async fn sleep_for(wait: Option<Duration>) {
+	match wait {
+		Some(wait) => tokio::time::sleep(wait).await,
+		None => std::future::pending().await,
+	}
 }
 
 /// Fold one arrival's readings into the cycle's set.
@@ -2199,6 +2215,63 @@ mod tests {
 		let seconds = mark["seconds"].as_f64().expect("0-50 closed");
 		assert!((seconds - 2.5).abs() < 0.1, "0-50 at 20 km/h a second is 2.5 s, timed {seconds}");
 		assert_eq!(written["runs"].as_array().unwrap().len(), 1);
+	}
+
+	/// A feed from a car that says nothing for a while and then goes away, counting
+	/// how often the loop came back to ask it.
+	struct Quiet {
+		calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+		silence: Duration,
+	}
+
+	impl Feed for Quiet {
+		async fn next(&mut self) -> Option<Arrival> {
+			self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+			tokio::time::sleep(self.silence).await;
+			None
+		}
+
+		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
+			Vec::new()
+		}
+	}
+
+	#[tokio::test]
+	async fn the_plain_console_waits_on_a_silent_car_instead_of_spinning() {
+		// With no terminal and no cycle closed there is nothing to draw, so the loop
+		// has nothing to wake for but the feed: asked again and again, it would spin.
+		let (store, units) = reference();
+		let opts = Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+		let feed = Quiet {
+			calls: calls.clone(),
+			silence: Duration::from_millis(400),
+		};
+		let ended = tokio::time::timeout(Duration::from_secs(5), drive(feed, prepared, &opts, false))
+			.await
+			.expect("the drive ends when the feed does");
+		assert!(ended.is_err());
+		let asked = calls.load(std::sync::atomic::Ordering::SeqCst);
+		assert!(asked <= 3, "the feed was asked {asked} times in 400 ms of silence");
 	}
 
 	/// A car that answers reads and remembers every byte it was sent.

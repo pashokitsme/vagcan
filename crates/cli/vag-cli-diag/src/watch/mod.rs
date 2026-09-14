@@ -863,7 +863,9 @@ impl App {
 	fn take(&mut self, sample: vag_cli_core::bus::Sample) {
 		let key = (sample.unit.request, sample.did);
 		let at = sample.at.secs;
-		let answered = sample.value.is_ok();
+		// Only silence and a failed bus are waiting: a refusal, an identifier left out
+		// or an answer that does not parse all came from a unit that is there.
+		let answered = !matches!(sample.value, Err(vag_cli_core::bus::Miss::NoAnswer | vag_cli_core::bus::Miss::BusError));
 		if let Ok(data) = sample.value {
 			self.observe(key.0, key.1, at, data);
 			// Sweeping every channel and not only the one just answered: a channel
@@ -2489,6 +2491,8 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	app.open_first_populated();
 	app.units = unit_names(&identities);
 	let mut subs: Vec<Subscription> = Vec::new();
+	// Where `next_of` looks first, kept across calls so no subscription is favoured.
+	let mut cursor = 0usize;
 	let mut period = live_period(&app);
 	resubscribe(&mut app, &bus, &mut subs, &mut period);
 
@@ -2522,7 +2526,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 			}
 			let wake = deadline.map_or(next_row, |d| d.min(next_row));
 			tokio::select! {
-				got = vag_cli_core::bus::next_of(&mut subs) => match got {
+				got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
 					Some((_, sample)) => app.take(sample),
 					None => anyhow::bail!("the link to the car closed"),
 				},
@@ -2566,7 +2570,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		// The keyboard is never behind the bus: whichever comes first, a reading or
 		// the next frame, the keys are taken straight after it.
 		tokio::select! {
-			got = vag_cli_core::bus::next_of(&mut subs) => match got {
+			got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
 				Some((_, sample)) => app.take(sample),
 				None => break Err(anyhow::anyhow!("the link to the car closed")),
 			},
@@ -3195,6 +3199,41 @@ mod tests {
 		assert_eq!(a.latest[&(0x7E0, 0x202A)].0, 2.0, "a miss keeps the last value, ageing");
 		assert!(!a.heard[&(0x7E0, 0x202A)].answered);
 		assert_eq!(a.readings, 20);
+	}
+
+	#[test]
+	fn a_unit_that_refuses_is_answering_and_the_footer_does_not_wait_on_it() {
+		use vag_cli_core::bus::{At, Miss, Sample};
+		// A refusal, an identifier left out, or an answer that does not parse all
+		// came back from a unit that is there. Only silence and a failed bus are
+		// waiting.
+		let unit = Unit {
+			request: 0x7E0,
+			response: 0x7E8,
+		};
+		for why in [Miss::Refused(0x31), Miss::Absent, Miss::Malformed] {
+			let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+			a.heard.insert((0x7E0, 0x202A), Heard { at: 0.0, answered: true });
+			a.take(Sample {
+				unit,
+				did: 0x202A,
+				at: At { ms: 1000, secs: 1.0 },
+				value: Err(why),
+			});
+			assert_eq!(waited_on(&a.heard, 1.0, 0.1), None, "{why:?} is an answer");
+			assert_eq!(a.heard[&(0x7E0, 0x202A)].at, 1.0, "{why:?} is heard from");
+		}
+		for why in [Miss::NoAnswer, Miss::BusError] {
+			let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+			a.heard.insert((0x7E0, 0x202A), Heard { at: 0.0, answered: true });
+			a.take(Sample {
+				unit,
+				did: 0x202A,
+				at: At { ms: 1000, secs: 1.0 },
+				value: Err(why),
+			});
+			assert_eq!(waited_on(&a.heard, 1.0, 0.1), Some(0x7E0), "{why:?} is waited on");
+		}
 	}
 
 	/// A CAN bus nobody answers on: enough to hand a [`Bus`] something to own.
