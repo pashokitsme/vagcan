@@ -49,8 +49,12 @@ port twice resets it.
 
 1. **UDS over BLE** — `dash/16`. Host transport and the board's guards under
    hardware-free tests, then the bench.
-2. **`BoardTransport` and `vagcan --slcan`** — `dash/14` §7 item 4. The scheduler (item 3):
-   core and laptop shell done (branch `bus-host`), board shell next.
+2. **The board over its USB cable, and `vagcan --slcan`** — `dash/14` §7 item 4.
+   Implemented on branch `board-usb` (2026-09-14), hardware-free tests only: the framed
+   link on USB with `Guard::cable`, Hello/HelloReply, `SerialPipe`, adapter mode inside
+   the `dash` image, `--slcan`. Next: the bench (`dash` on USB: `info`, `watch` with
+   `dashsim` closed; `--slcan`: `V0101`, `F`, listen-only; `C` and unplug end adapter
+   mode), then `research/dash/can-bring-up.md`.
 3. **Bench session** — the unverified items above.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
 5. **Alarms on the board** — `dash/04`: the render side is done, the firmware wiring is not.
