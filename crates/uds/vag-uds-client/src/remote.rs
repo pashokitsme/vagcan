@@ -101,6 +101,17 @@ impl Session {
 		}
 	}
 
+	/// The PDU bytes this session holds for requests not yet handed to the planner: what a
+	/// host that floods large requests pins here. A shell bounds it by not reading the
+	/// link while it is high; the one request out is the planner's, at most `MAX_PDU`.
+	pub fn queued_bytes(&self) -> usize {
+		let current = match &self.current {
+			Some(Current::Waiting { request, .. } | Current::Speed { request, .. }) => request.pdu.len(),
+			Some(Current::Forwarded { .. }) | None => 0,
+		};
+		current + self.queue.iter().map(|request| request.pdu.len()).sum::<usize>()
+	}
+
 	/// Whether a host holds anything here: a live subscription, or a request queued or
 	/// out. A carrier that also takes other protocols (the USB cable's slcan lines)
 	/// does not let them in while this is so.

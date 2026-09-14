@@ -517,6 +517,22 @@ fn refusing_the_pending_answers_each_request_once_and_keeps_the_subscriptions() 
 }
 
 #[test]
+fn queued_bytes_count_what_waits_here_and_not_what_the_planner_holds() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	assert_eq!(board.session.queued_bytes(), 0);
+	let big: Vec<u8> = core::iter::once(0x22)
+		.chain((0..200u16).flat_map(|d| (0x2000 + d).to_be_bytes()))
+		.collect();
+	board.hear(request(1, GATEWAY, &[0x22, 0xF1, 0x87]));
+	board.hear(request(2, GATEWAY, &big));
+	board.hear(request(3, GATEWAY, &[0x3E, 0x00]));
+	// The first is the planner's; the other two wait here.
+	assert_eq!(board.session.queued_bytes(), big.len() + 2);
+	board.run_until(2000);
+	assert_eq!(board.session.queued_bytes(), 0, "{:?}", board.answers());
+}
+
+#[test]
 fn a_session_is_active_while_it_holds_a_subscription_or_a_request() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	assert!(!board.session.is_active());
