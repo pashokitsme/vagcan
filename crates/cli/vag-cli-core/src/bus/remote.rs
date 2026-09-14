@@ -479,6 +479,9 @@ impl Remote {
 						self.peer
 					)))),
 					Outcome::Pdu(pdu) => Ok((pdu, at)),
+					// Status 1 to a request that suppressed its positive response is the board
+					// saying no refusal came: what was asked for, as on a cable.
+					Outcome::NoAnswer if vag_uds_client::schedule::expects_no_answer(&asked) => Ok((Vec::new(), at)),
 					Outcome::NoAnswer => Err(ExchangeError::NoAnswer),
 					Outcome::Refused(why) => Err(ExchangeError::Refused(why)),
 					Outcome::BusError(why) => Err(ExchangeError::Link(TransportError::Io(format!("{}: {why}", self.peer)))),

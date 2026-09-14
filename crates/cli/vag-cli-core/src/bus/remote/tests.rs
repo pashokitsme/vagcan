@@ -480,6 +480,29 @@ impl Pipe for Eager {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_request_that_suppressed_its_answer_and_was_not_refused_is_a_success_with_no_data() {
+	let (bus, mut board) = start();
+	for (pdu, suppressed) in [(vec![0x3E, 0x80], true), (vec![0x3E, 0x00], false)] {
+		let asking = bus.clone();
+		let sent = pdu.clone();
+		let out = tokio::spawn(async move { asking.exchange(Class::Foreground, ENGINE, sent).await });
+		let asked = requested(board.next().await);
+		assert_eq!(asked.pdu, pdu);
+		board
+			.send(Message::Answer(Answer {
+				seq: asked.seq,
+				outcome: Outcome::NoAnswer,
+			}))
+			.await;
+		match (out.await.unwrap(), suppressed) {
+			(Ok((answer, _)), true) => assert!(answer.is_empty(), "{answer:?}"),
+			(Err(ExchangeError::NoAnswer), false) => {}
+			(other, _) => panic!("{pdu:02X?}: {other:?}"),
+		}
+	}
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn readings_streaming_in_while_subscribes_are_written_are_taken_in_between_the_writes() {
 	let lane = Arc::new(Mutex::new(Lane::default()));
 	let bus = Bus::start_remote(Eager(lane.clone()), PEER);
