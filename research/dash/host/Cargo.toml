@@ -57,3 +57,6 @@ vag-uds-client = { path = "../../../crates/uds/vag-uds-client" }
 thiserror = "2"
 serialport = "4"
 crossterm = "0.28"
+# `dashsim --preview`: the renderer's `DrawTarget` trait, and the PNG the frames are written to.
+embedded-graphics = "0.8"
+png = "0.17"

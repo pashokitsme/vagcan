@@ -86,6 +86,46 @@ pub enum Frame<'a> {
 	Adapter(Adapter),
 }
 
+/// What the board says about itself, drawn over whichever page is up.
+///
+/// Not part of [`Frame`], and on purpose: a page is built from the plan and the car's
+/// values, while these come from the board's own links — a different owner. It also keeps
+/// every `Frame` literal the firmware writes today valid: a field added to a variant
+/// would break each of them, and wiring these in is its own change. [`crate::draw`]
+/// draws with the default, which is nothing connected and no rates measured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Board {
+	/// Which hosts are connected. Drawn as icons in the top-right corner of the values
+	/// and chart pages; the adapter screen draws none, its `SLCAN` already says the
+	/// host is on the cable.
+	pub links: Links,
+	/// The bus traffic the adapter screen's main line shows. `None` until the board
+	/// measures it, and drawn as `--`, never as a zero.
+	pub rates: Option<Rates>,
+}
+
+/// Which hosts the board is serving.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Links {
+	/// A host on the USB cable.
+	pub usb: bool,
+	/// A host over BLE.
+	pub ble: bool,
+}
+
+impl Links {
+	pub const NONE: Links = Links { usb: false, ble: false };
+}
+
+/// Bits per second on the bus in each direction, as the board estimates them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rates {
+	/// What the host put on the bus.
+	pub tx_bps: u32,
+	/// What was taken off it.
+	pub rx_bps: u32,
+}
+
 /// What the adapter screen shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Adapter {
