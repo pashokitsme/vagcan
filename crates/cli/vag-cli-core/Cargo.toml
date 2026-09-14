@@ -30,9 +30,13 @@ toml_edit.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
+# The bus scheduler's shell (`bus.rs`): one task owns the link, handles talk to
+# it over channels, and it keeps time with tokio's clock.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # The firmware's own decoder, so the plan generator's tests assert on the
 # value the board would show and not on a flag.
 vag-dash-render = { path = "../../dash/vag-dash-render" }

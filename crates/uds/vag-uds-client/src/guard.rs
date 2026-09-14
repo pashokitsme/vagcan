@@ -1218,7 +1218,7 @@ mod tests {
 	fn a_watch_page_of_four_channels_polled_repeatedly_passes_slowed_not_refused() {
 		// The reference car's dash page: engine coolant F405, boost 202A, oil
 		// 202F on the engine; control module temperature 028D on the gearbox.
-		// `plan::plan` groups them by unit, one request each.
+		// The scheduler groups them by unit, one request each.
 		let page = [(ENGINE, rdbi(&[0xF405, 0x202A, 0x202F])), (GEARBOX, rdbi(&[0x028D]))];
 		let mut guard = Guard::new();
 		let mut now = 0;

@@ -399,6 +399,16 @@ was moved, and it is why `vagcan measure` and the standalone `vagcan-measure` ca
 one set of flags and one `dispatch`, and why a build can leave the stopwatch out
 (`--no-default-features`) without touching a line of diagnostics.
 
+**One owner of the link: the bus.** Every command that talks to the car gets a `Bus`
+(`vag-cli-core/src/bus`), not the adapter. One task owns the adapter and runs the
+scheduler (`vag_uds_client::schedule::Planner`): consumers subscribe to a `(unit,
+identifier)` at a rate or read it once, the scheduler puts one request on the bus at a
+time, merges due identifiers of one unit into one `22 d1 … dn`, keeps under 100
+exchanges a second, and hands every answer to everyone who asked for it, stamped with
+when it arrived. `watch` and `measure` subscribe; `info`, `units`, `faults`, `survey`
+use the `Bus` as an ordinary link, and each exchange queues in the same scheduler.
+`dev sniff` alone opens the adapter bare, because it reads frames.
+
 There is exactly one edge between families, `vag-uds-client -> vag-data-labels`, and it
 exists for a single module: `read.rs`, decoding a measurement against a catalog. It goes
 behind the `std` feature, because the board executes a plan with the scaling already

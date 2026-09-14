@@ -213,6 +213,16 @@ pub async fn open(path: &str, baud: u32, mode: SlcanMode) -> Result<SerialSlcan>
 		.with_context(|| open_failure(path))
 }
 
+/// Open the adapter and hand it to the bus scheduler: what every car command talks
+/// to the car through.
+///
+/// A cable carries the scheduler's default budget. `dev sniff` is the one command
+/// that opens the adapter without this, because it reads frames, not answers.
+pub async fn open_bus(path: &str) -> Result<crate::bus::Bus> {
+	let adapter = open(path, ADAPTER_BAUD, SlcanMode::Normal).await?;
+	Ok(crate::bus::Bus::start(adapter, crate::bus::Budget::default()))
+}
+
 /// What to say when the adapter will not open.
 ///
 /// The `devices` command exists precisely for this moment and used to be

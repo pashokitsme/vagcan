@@ -220,19 +220,24 @@ style.
 ## Tech stack & architecture (locked)
 
 - **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
-- **One bus, one conversation at a time.** There is no connection actor and no
-  `mpsc`/`oneshot` multiplexer — the one that existed was written for the HEX clone
-  and went with it. A single backend value is *owned*, not shared: a caller takes it,
-  wraps it in an `IsoTpCan` addressed to one unit, runs one exchange to completion,
-  and unwraps it for the next unit (`vag-cli-core/src/plan.rs::read_batch`). Talking
-  to the engine and the gearbox is a sequence of re-addressed groups, and ownership
-  is what makes two exchanges in flight impossible. Do not describe this as
-  concurrent, and do not reintroduce an `Arc<Mutex<device>>` to fake it.
+- **One bus, one conversation at a time, one owner.** On the laptop the scheduler task
+  (`vag-cli-core/src/bus`, over `vag_uds_client::schedule::Planner`) is the single
+  owner of the link. Everything else holds a cheap `Bus` handle and talks to the task
+  over a channel: `subscribe(unit, did, period)` (dropping the `Subscription`
+  unsubscribes), `read_once`, `exchange`. The task addresses the link to one unit,
+  runs one exchange to completion and releases it; the planner never has two requests
+  out, so exactly one exchange is in flight. Do not add a second owner of the link,
+  do not open the adapter beside a running `Bus` (only `dev sniff` opens it bare, for
+  frames), and do not reintroduce an `Arc<Mutex<link>>`.
 - **Pluggable backend, static dispatch:** `vag_uds_can::CanBackend` (send/receive one
   frame) under `vag_uds_transport::AsyncIsoTpTransport` (send/receive one PDU), native
-  async-fn-in-trait, no `dyn`/`async-trait`. The live backends are `SlcanBackend`
-  over a serial port and the firmware's `TwaiBackend`; the same `vag-uds-*` crates
-  compile `no_std` for the board under embassy (`default-features = false`).
+  async-fn-in-trait, no `dyn`/`async-trait`. `vag_uds_can::UnitLink` is the seam a
+  command addresses one unit through: every `CanBackend` is one (ISO-TP per unit), a
+  link that carries whole PDUs implements it directly, and `Bus` is one too — so a
+  command generic over `UnitLink` runs through the scheduler unchanged. The live
+  backends are `SlcanBackend` over a serial port and the firmware's `TwaiBackend`; the
+  same `vag-uds-*` crates compile `no_std` for the board under embassy
+  (`default-features = false`).
 - `vag-data-labels`/`vag-data-db` stay sync (CPU-bound). **Label lookup must be
   FAST** — `vagcan setup` caches the parsed label files to SQLite under
   `~/.vagcan/data/<project>/cache.sqlite`.

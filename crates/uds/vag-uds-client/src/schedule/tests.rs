@@ -489,6 +489,22 @@ fn only_read_only_services_are_accepted_for_a_raw_exchange() {
 	);
 }
 
+#[test]
+fn the_shell_can_tell_a_raw_exchange_in_flight_from_a_read() {
+	let mut p = Planner::new(Budget::default());
+	assert_eq!(p.flying_raw(), None, "nothing in flight");
+	let req = p.exchange(0, Class::Foreground, A, vec![0x22, 0xF1, 0x87]).unwrap();
+	let out = send(p.due(0));
+	assert_eq!(p.flying_raw(), Some(req), "the same bytes a read of F187 would be, and still a raw");
+	p.answered(5, out.token, Answer::NoAnswer);
+	assert_eq!(p.flying_raw(), None, "answered");
+
+	p.read_once(1000, Class::Foreground, A, 0xF187);
+	let out = send(p.due(3000));
+	assert_eq!(p.flying_raw(), None, "a read is not a raw");
+	p.answered(3001, out.token, Answer::NoAnswer);
+}
+
 /// Sends in any `[t, t + 1000)` window, at its worst.
 fn busiest_second(times: &[u64]) -> usize {
 	times

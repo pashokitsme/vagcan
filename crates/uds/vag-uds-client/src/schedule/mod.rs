@@ -122,7 +122,7 @@ pub struct Budget {
 	/// What [`Class::Foreground`] keeps whenever it wants it. Owner, 2026-09-14: 25, a
 	/// four-cell page.
 	pub foreground_floor_per_s: u16,
-	/// Identifiers in one `22` request. Default 8, the value `vag-cli-core`'s `plan::BATCH`
+	/// Identifiers in one `22` request. Default 8, the value the laptop's old `plan::BATCH`
 	/// was measured at on the reference car (eight answered, twelve refused); a unit that
 	/// accepts fewer is learned as single-only rather than guessed at.
 	pub max_dids_per_request: u8,
