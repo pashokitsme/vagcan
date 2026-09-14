@@ -73,7 +73,8 @@
 //! different id each time dodges the planner's per-unit backoff, so a stranger over the
 //! radio could deny the panel and the cable host the bus (S-F3). Each radio session is
 //! charged the time its exchanges hold the bus ([`Session::charge_bus_time`], measured
-//! send to final answer, `78` waits included); past
+//! from the planner sending it to its final answer, `78` waits included, not the time it
+//! waited to go out); past
 //! [`RADIO_BUS_SHARE_PERMILLE`](crate::guard::RADIO_BUS_SHARE_PERMILLE) of a sliding
 //! [`RATE_WINDOW_MS`](crate::guard::RATE_WINDOW_MS) its next request waits
 //! ([`Session::bus_time_wait`]) — back-pressure, nothing dropped. The cable is not charged.
@@ -149,17 +150,11 @@ struct Live {
 enum Current {
 	/// Over the rate cap; checked again at `until_ms`.
 	Waiting { request: Request, until_ms: u64 },
-	/// The speed read `req` is out; it went to the planner at `since_ms`.
-	Speed { request: Request, req: ReqId, since_ms: u64 },
+	/// The speed read `req` is out.
+	Speed { request: Request, req: ReqId },
 	/// The request itself is out as `req`; `sid` is its service. `fresh` for a session
-	/// change a speed read cleared; it went to the planner at `since_ms`.
-	Forwarded {
-		seq: u8,
-		sid: u8,
-		req: ReqId,
-		fresh: Option<Fresh>,
-		since_ms: u64,
-	},
+	/// change a speed read cleared.
+	Forwarded { seq: u8, sid: u8, req: ReqId, fresh: Option<Fresh> },
 }
 
 /// A session change handed to the planner while its road speed reading is fresh.
@@ -338,17 +333,10 @@ impl Session {
 					sid,
 					req,
 					fresh: Some(fresh),
-					since_ms,
 				}) if fresh.not_after_ms < now_ms => {
 					if !planner.cancel(req) {
 						// It went out while the reading was fresh: its answer is coming.
-						self.current = Some(Current::Forwarded {
-							seq,
-							sid,
-							req,
-							fresh: None,
-							since_ms,
-						});
+						self.current = Some(Current::Forwarded { seq, sid, req, fresh: None });
 						break;
 					}
 					// It did not, and the planner will not send it now: start again, speed read
@@ -373,17 +361,22 @@ impl Session {
 		out
 	}
 
-	/// The answer to the exchange [`Session::awaiting`] named; anything else is
-	/// ignored. `now_ms` is the moment the answer arrived.
-	pub fn answered(&mut self, now_ms: u64, planner: &mut Planner, req: ReqId, answer: &schedule::Answer) -> Vec<Message> {
+	/// The planner's [`Delivery::Raw`] for the exchange [`Session::awaiting`] named; any
+	/// other raw answer is ignored, and a delivery that is not a raw answer does nothing.
+	/// Its `at_ms` is the moment the answer arrived, and from its `sent_ms` to then is the
+	/// bus time a radio host is charged.
+	pub fn answered(&mut self, planner: &mut Planner, delivery: &Delivery) -> Vec<Message> {
+		let Delivery::Raw {
+			req, answer, sent_ms, at_ms, ..
+		} = delivery
+		else {
+			return Vec::new();
+		};
+		let (req, sent_ms, now_ms) = (*req, *sent_ms, *at_ms);
 		let mut out = Vec::new();
 		match self.current.take() {
-			Some(Current::Speed {
-				request,
-				req: out_req,
-				since_ms,
-			}) if out_req == req => {
-				self.charge_bus_time(now_ms, since_ms);
+			Some(Current::Speed { request, req: out_req }) if out_req == req => {
+				self.charge_bus_time(now_ms, sent_ms);
 				let kmh = match answer {
 					schedule::Answer::Pdu(pdu) => road_speed(pdu),
 					_ => None,
@@ -391,14 +384,8 @@ impl Session {
 				let verdict = self.guard.speed(now_ms, request.request_id, request.response_id, &request.pdu, kmh);
 				self.act(now_ms, planner, request, verdict, true, &mut out);
 			}
-			Some(Current::Forwarded {
-				seq,
-				sid,
-				req: out_req,
-				since_ms,
-				..
-			}) if out_req == req => {
-				self.charge_bus_time(now_ms, since_ms);
+			Some(Current::Forwarded { seq, sid, req: out_req, .. }) if out_req == req => {
+				self.charge_bus_time(now_ms, sent_ms);
 				out.push(Message::Answer(Answer {
 					seq,
 					outcome: outcome_of(sid, answer),
@@ -475,11 +462,7 @@ impl Session {
 				let req = planner
 					.exchange(now_ms, Class::Timing, SPEED_UNIT, SPEED_REQUEST.to_vec())
 					.expect("a read is inside the allowlist");
-				self.current = Some(Current::Speed {
-					request,
-					req,
-					since_ms: now_ms,
-				});
+				self.current = Some(Current::Speed { request, req });
 			}
 			Verdict::Refuse(refusal) => {
 				if refusal == Refusal::Walk {
@@ -507,13 +490,7 @@ impl Session {
 						self.guard.forwarded(now_ms, request.request_id, request.response_id, &request.pdu);
 						let (seq, sid) = (request.seq, request.pdu[0]);
 						let fresh = not_after_ms.map(|not_after_ms| Fresh { request, not_after_ms });
-						self.current = Some(Current::Forwarded {
-							seq,
-							sid,
-							req,
-							fresh,
-							since_ms: now_ms,
-						});
+						self.current = Some(Current::Forwarded { seq, sid, req, fresh });
 					}
 					// The guard's allowlist is the planner's; this is the second lock on one door.
 					Err(e) => out.push(Message::Answer(Answer {
@@ -598,11 +575,14 @@ impl Session {
 		}
 	}
 
-	/// Charge the bus the time an exchange held it — sent to the planner at `since_ms`,
-	/// answered now — for the radio's bus-time share. Nothing on the cable.
-	fn charge_bus_time(&mut self, now_ms: u64, since_ms: u64) {
+	/// Charge the bus the time an exchange held it — put on the bus at `sent_ms`, answered at
+	/// `now_ms` — for the radio's bus-time share. Not the time it waited in the planner's queue
+	/// before it went out: behind a timing channel that is seconds a read, and charging it
+	/// held the host back for time the bus spent on others (PR #2 review round 2, S2-N1).
+	/// Nothing on the cable.
+	fn charge_bus_time(&mut self, now_ms: u64, sent_ms: u64) {
 		if self.guard.profile() == Profile::Radio {
-			self.bus_time.push_back((now_ms, now_ms.saturating_sub(since_ms)));
+			self.bus_time.push_back((now_ms, now_ms.saturating_sub(sent_ms)));
 		}
 	}
 

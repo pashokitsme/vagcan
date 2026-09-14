@@ -208,9 +208,12 @@ fn car(units: &[(Unit, FakeUnit)]) -> Car {
 /// as `Class::Remote` — and the planner gives the timing channel the whole bus but the panel's
 /// floor: the panel keeps every read it asks, and timing takes at least 80 % of the exchanges
 /// the latency allows once the panel's share is set aside. The host's normal identifiers ride
-/// in the panel's requests (compression: the same one exchange whether it carries two
-/// identifiers or eight), so they cost the timing channel no bus time. The 14/s on the bench is
-/// real-hardware latency and the panel's part-number checks, not the ranking.
+/// in the panel's requests (compression), so they take no slot of their own from the timing
+/// channel. They are not free: five riders make the request 13 bytes — a first frame, a flow
+/// control and a consecutive frame — and a unit that serves them answers in several frames, so
+/// the exchange they ride in holds the bus longer. This simulation answers every exchange in a
+/// flat 30 ms and does not count that. The 14/s on the bench is real-hardware latency and the
+/// panel's part-number checks, not the ranking.
 #[test]
 fn a_measure_shaped_timing_channel_takes_the_bus_the_latency_allows_beyond_the_panels_floor() {
 	const LATENCY_MS: u64 = 30;
@@ -612,6 +615,7 @@ fn only_read_only_services_are_accepted_for_a_raw_exchange() {
 			req,
 			unit: A,
 			answer: Answer::Refused(0x22),
+			sent_ms: 0,
 			at_ms: 9
 		}]
 	);

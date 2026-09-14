@@ -119,6 +119,8 @@ impl Raw {
 struct Flight {
 	token: Token,
 	unit: Unit,
+	/// The `now_ms` of the [`Planner::due`] that sent it.
+	sent_ms: u64,
 	what: Flying,
 }
 
@@ -509,7 +511,12 @@ impl Planner {
 				(pdu, Flying::Read { dids, onces })
 			}
 		};
-		self.flight = Some(Flight { token, unit, what });
+		self.flight = Some(Flight {
+			token,
+			unit,
+			sent_ms: now,
+			what,
+		});
 		Next::Send(Outgoing { token, unit, pdu })
 	}
 
@@ -532,7 +539,7 @@ impl Planner {
 			return Vec::new();
 		};
 		let mut out = Vec::new();
-		let unit = flight.unit;
+		let (unit, sent_ms) = (flight.unit, flight.sent_ms);
 		match flight.what {
 			Flying::Raw(raw) => {
 				match answer {
@@ -546,6 +553,7 @@ impl Planner {
 					req: raw.id,
 					unit,
 					answer,
+					sent_ms,
 					at_ms: now_ms,
 				});
 			}
