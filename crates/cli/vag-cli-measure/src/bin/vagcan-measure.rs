@@ -13,5 +13,8 @@ async fn main() -> anyhow::Result<()> {
 		vag_cli_core::project::select(id);
 	}
 	let catalogs = vag_cli_core::datadir::or_default(None, || Ok(vag_cli_core::project::current()?.measurements_dir()))?;
-	vag_cli_measure::dispatch(cli.args, &catalogs.to_string_lossy()).await
+	vag_cli_measure::dispatch(cli.args, &catalogs.to_string_lossy(), async |device: Option<String>| {
+		vag_cli_core::device::open_bus(&vag_cli_core::device::resolve(device.as_deref())?).await
+	})
+	.await
 }

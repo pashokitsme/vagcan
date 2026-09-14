@@ -24,6 +24,7 @@
 //! still resolves.
 
 pub mod analyse;
+pub mod bus;
 pub mod config;
 pub mod dash;
 pub mod datadir;

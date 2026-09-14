@@ -41,6 +41,8 @@ use ratatui::layout::Rect;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
+use vag_cli_core::bus::{Bus, Class, Subscription, Unit};
+
 use crate::plan::Channel;
 use crate::ui::chart;
 use crate::ui::term;
@@ -314,29 +316,27 @@ pub struct App {
 	/// What each unit called itself (`F197`), for the tab labels. A unit that
 	/// did not say goes by its number alone rather than an invented name.
 	pub units: Vec<(u16, String)>,
-	/// Completed poll cycles, and when the run started.
-	cycles: u64,
-	started: Instant,
-	/// The clock a reading's age is measured against. Live, it is time since
-	/// the run started; on a replay it is the playhead, because a value
-	/// recorded ten minutes into a drive is not ten minutes old.
+	/// Frames drawn, which is what turns the footer's spinner.
+	frames: u64,
+	/// The clock a reading's age is measured against. Live, it is the bus's own
+	/// clock — the one every reading is stamped on; on a replay it is the
+	/// playhead, because a value recorded ten minutes into a drive is not ten
+	/// minutes old.
 	clock: f64,
 	/// False on a replay, where a poll rate would be the redraw rate and mean
 	/// nothing about a car.
 	live: bool,
-	/// The unit a request is out to, while it is out. Shown in the footer:
-	/// a batch can take as long as that unit's deadline, and a still screen
-	/// during it reads as a hang.
+	/// The unit the footer names as being waited on — see [`waited_on`]. A unit
+	/// that has stopped answering leaves its rows ageing, and a still screen with
+	/// no word about why reads as a hang.
 	waiting: Option<u16>,
-	/// Units whose last request took longer than the threshold.
-	///
-	/// The screen is drawn before the request is sent — it has to be, since
-	/// the await blocks — so whether *this* request will be slow is not yet
-	/// knowable. What is knowable is whether the last one to this unit was,
-	/// and a unit that timed out once will time out again. So the first slow
-	/// answer passes unannounced and the rest are called: over-reporting a
-	/// prompt unit would put a spinner on screen at every redraw.
-	slow: std::collections::BTreeSet<u16>,
+	/// What the bus last said about each read the selection subscribes to.
+	heard: std::collections::BTreeMap<(u16, u16), Heard>,
+	/// When the readings of the last [`RATE_WINDOW_S`] arrived, for the rate the
+	/// footer shows.
+	arrivals: std::collections::VecDeque<f64>,
+	/// Readings taken in over the whole run, for the closing line.
+	readings: u64,
 	status: String,
 }
 
@@ -368,12 +368,13 @@ impl App {
 			unit_area: None,
 			list_area: None,
 			units: Vec::new(),
-			cycles: 0,
-			started: Instant::now(),
+			frames: 0,
 			clock: 0.0,
 			live: true,
 			waiting: None,
-			slow: std::collections::BTreeSet::new(),
+			heard: std::collections::BTreeMap::new(),
+			arrivals: std::collections::VecDeque::new(),
+			readings: 0,
 			status: String::new(),
 		}
 	}
@@ -846,14 +847,77 @@ impl App {
 		format!("{:.1}s", (self.clock - at).max(0.0))
 	}
 
+	/// The rate each watched read is actually being answered at, over the last
+	/// [`RATE_WINDOW_S`]: measured off the readings, never the rate asked for.
 	fn poll_rate(&self) -> f64 {
-		let secs = self.started.elapsed().as_secs_f64();
-		if secs <= 0.0 { 0.0 } else { self.cycles as f64 / secs }
+		let window = self.clock.min(RATE_WINDOW_S);
+		let recent = self.arrivals.iter().filter(|t| **t > self.clock - RATE_WINDOW_S).count();
+		match (window > 0.0, self.heard.len()) {
+			(true, reads) if reads > 0 => recent as f64 / window / reads as f64,
+			_ => 0.0,
+		}
 	}
+
+	/// Take in one sample off the bus: a reading goes on the table, a miss marks
+	/// its read as not answering.
+	fn take(&mut self, sample: vag_cli_core::bus::Sample) {
+		let key = (sample.unit.request, sample.did);
+		let at = sample.at.secs;
+		// Only silence and a failed bus are waiting: a refusal, an identifier left out
+		// or an answer that does not parse all came from a unit that is there.
+		let answered = !matches!(sample.value, Err(vag_cli_core::bus::Miss::NoAnswer | vag_cli_core::bus::Miss::BusError));
+		if let Ok(data) = sample.value {
+			self.observe(key.0, key.1, at, data);
+			// Sweeping every channel and not only the one just answered: a channel
+			// that was deselected mid-run stops being polled, and its last minute
+			// would otherwise sit in memory for the rest of the drive.
+			self.history.trim(at);
+			self.readings += 1;
+			self.arrivals.push_back(at);
+			while self.arrivals.front().is_some_and(|t| *t <= at - RATE_WINDOW_S) {
+				self.arrivals.pop_front();
+			}
+		}
+		// Only a read still subscribed: a sample already on its way when the
+		// selection changed says nothing about what is being watched now.
+		if let Some(heard) = self.heard.get_mut(&key) {
+			*heard = Heard { at, answered };
+		}
+	}
+}
+
+/// What the bus last said about one read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Heard {
+	/// When: the last sample, or the moment the read was subscribed.
+	at: f64,
+	/// Whether that was a reading rather than a miss.
+	answered: bool,
+}
+
+/// The unit the footer names as being waited on.
+///
+/// The first whose read has missed its last answer, or has gone without one for
+/// longer than both the progress threshold and two periods. A prompt unit is
+/// never named: over-reporting would put a spinner on screen at every redraw.
+fn waited_on(heard: &std::collections::BTreeMap<(u16, u16), Heard>, now: f64, period: f64) -> Option<u16> {
+	let patience = crate::progress::THRESHOLD.as_secs_f64().max(2.0 * period);
+	heard
+		.iter()
+		.find(|(_, h)| !h.answered || now - h.at > patience)
+		.map(|((request, _), _)| *request)
 }
 
 /// How much one press moves the poll rate.
 const RATE_STEP: f64 = 0.5;
+
+/// The window the footer's achieved rate is taken over, in seconds.
+const RATE_WINDOW_S: f64 = 2.0;
+
+/// How often the live screen is redrawn while readings arrive, at most. A reading
+/// is not a reason to repaint by itself: at fifty a second the terminal would be
+/// redrawn faster than anybody reads it.
+const FRAME: Duration = Duration::from_millis(50);
 
 /// Draw the live table.
 ///
@@ -978,12 +1042,11 @@ fn paint<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()
 /// Take every key and mouse event already waiting, and none that is not.
 ///
 /// `false` is `q`, and the caller must leave its own loop on it rather than
-/// only this drain: the poll loop asks three times per cycle — before the
-/// cycle, between batches, and while waiting out the period — and a quit that
-/// only ended the drain would cost a whole cycle before anything happened.
+/// only this drain. The live loop asks after every reading and at least every
+/// [`FRAME`], so a key never waits for the bus.
 ///
-/// Zero timeout throughout, which is what makes it safe to call from all three:
-/// it never waits, so a caller that is timing something is not slowed by asking.
+/// Zero timeout throughout: it never waits, so a caller that is timing
+/// something is not slowed by asking.
 fn drain_keys(app: &mut App) -> io::Result<bool> {
 	while event::poll(Duration::from_millis(0))? {
 		match event::read()? {
@@ -1009,7 +1072,7 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 	};
 	let waiting = match app.waiting {
 		Some(request) => {
-			format!("  {} reading {}…", crate::progress::frame(app.cycles), app.unit_heading(request))
+			format!("  {} reading {}…", crate::progress::frame(app.frames), app.unit_heading(request))
 		}
 		None => String::new(),
 	};
@@ -1875,7 +1938,7 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 			duration,
 			if paused { " PAUSED" } else { "" }
 		);
-		app.cycles += 1;
+		app.frames += 1;
 
 		paint(&mut terminal, &mut app)?;
 
@@ -1939,36 +2002,59 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	result
 }
 
-/// Read one batch of identifiers and record the answer against the clock.
+/// Keep one subscription per read the selection wants, at the rate on screen.
 ///
-/// Shared by the full-screen view and the plain-console one so the two cannot
-/// drift: whatever a recording means, it means the same thing in both.
-async fn poll_batch<B: vag_uds_can::UnitLink>(app: &mut App, backend: &mut Option<B>, batch: &crate::plan::Batch) {
-	let (at, outcome) = crate::plan::read_batch(backend, batch, app.started).await;
-	let records = match outcome {
-		// Nothing was sent, so nothing about the clock has moved on either.
-		crate::plan::BatchOutcome::Unaddressable => return,
-		// The clock still advances: the wait happened, and a row that keeps
-		// its old value has to be seen ageing.
-		crate::plan::BatchOutcome::NoAnswer => Vec::new(),
-		crate::plan::BatchOutcome::Answered(records) => records,
-	};
-	app.clock = at;
-	for (did, data) in records {
-		app.observe(batch.request, did, at, data);
+/// Called after anything that can change either: a newly ticked channel is
+/// subscribed, an unticked one's subscription is dropped — which is what stops the
+/// scheduler asking for it — and a new rate replaces every subscription, because a
+/// period is fixed when a subscription is made.
+///
+/// A request id with no addressing rule is left out, as it always was: nothing can
+/// be sent to it, so nothing about the car is learned from its silence.
+fn resubscribe(app: &mut App, bus: &Bus, subs: &mut Vec<Subscription>, period: &mut Duration) {
+	let wanted: std::collections::BTreeMap<(u16, u16), Unit> = crate::plan::reads(&app.channels)
+		.into_iter()
+		.filter_map(|(request, did)| {
+			let address = vag_uds_client::address::UnitAddress::from_request(request)?;
+			Some((
+				(request, did),
+				Unit {
+					request: address.request,
+					response: address.response,
+				},
+			))
+		})
+		.collect();
+	let now = bus.secs();
+	let asked = live_period(app);
+	if asked != *period {
+		subs.clear();
+		*period = asked;
 	}
-	// Sweeping every channel and not only the ones just answered: a channel
-	// that was deselected mid-run stops being polled, and its last minute would
-	// otherwise sit in memory for the rest of the drive.
-	app.history.trim(at);
+	subs.retain(|sub| wanted.contains_key(&(sub.unit().request, sub.did())));
+	for (&(request, did), unit) in &wanted {
+		if !subs.iter().any(|sub| (sub.unit().request, sub.did()) == (request, did)) {
+			subs.push(bus.subscribe(Class::Foreground, *unit, did, asked, None));
+			app.heard.insert((request, did), Heard { at: now, answered: true });
+		}
+	}
+	app.heard.retain(|key, _| wanted.contains_key(key));
+}
+
+/// How often each watched read is asked for, from the rate the settings screen
+/// shows. Read each time rather than captured: the screen changes it while the car
+/// is answering, and a period captured at startup would leave the new rate showing
+/// and the old one polling.
+fn live_period(app: &App) -> Duration {
+	Duration::from_secs_f64(1.0 / app.hz.max(crate::config::MIN_HZ))
 }
 
 /// One CSV row of whatever is selected, writing the header first.
 ///
 /// A raw column is marked, because a four-digit hex value and a four-digit
 /// decimal are the same string — the reader cannot tell them apart from the
-/// value alone. Every value carries its own time, because identifiers are
-/// polled in batches and columns are up to a cycle apart.
+/// value alone. Every value carries its own time, because every read arrives on
+/// its own and columns are up to a period apart.
 fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool) -> Result<()> {
 	let shown = app.shown();
 	if !*header_written {
@@ -1995,7 +2081,7 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 			None => ",".to_string(),
 		})
 		.collect();
-	writeln!(w, "{:.3},{}", app.started.elapsed().as_secs_f64(), cells.join(","))?;
+	writeln!(w, "{:.3},{}", app.clock, cells.join(","))?;
 	Ok(())
 }
 
@@ -2239,9 +2325,10 @@ pub struct Options<'a> {
 
 /// Run the live view against the car.
 ///
-/// `open` takes the link to the car, and is called only once every argument
-/// has been checked.
-pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>, opts: Options<'_>) -> Result<()> {
+/// `open` takes the bus to the car, and is called only once every argument has
+/// been checked. Every watched read is a subscription at the rate on screen; the
+/// scheduler behind the bus decides which go out together and when.
+pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> Result<()> {
 	let Options {
 		preselect,
 		hz,
@@ -2272,15 +2359,14 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 		None => None,
 	};
 
-	let mut adapter = open().await?;
+	let bus = open().await?;
 
 	// Which car this is, so its own survey can be found. One identifier read,
 	// and a car that will not say simply has no cache — everything below still
 	// works, with the catalogs alone.
 	let mut progress = crate::progress::Line::new();
 	progress.update("reading the vehicle identification number");
-	let (back, vin) = crate::units::read_vin(adapter).await;
-	adapter = back;
+	let (_, vin) = crate::units::read_vin(bus.clone()).await;
 
 	// The whole reason a car keeps a survey: without one, the twelve units no
 	// catalog covers have nothing on screen, and the only way to see them was
@@ -2311,8 +2397,7 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 	wanted.push(crate::plan::ENGINE);
 	// A survey already asked every unit it visited for its identification
 	// block, so those are not asked again; everything else still is.
-	let (back, found) = crate::units::identify(adapter, &wanted, &identities, &mut progress).await;
-	adapter = back;
+	let (_, found) = crate::units::identify(bus.clone(), &wanted, &identities, &mut progress).await;
 	identities.extend(found);
 
 	progress.finish();
@@ -2365,7 +2450,6 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 			});
 		}
 	}
-	let mut backend = Some(adapter);
 	let mut header_written = false;
 
 	let mut app = App::new(channels);
@@ -2406,13 +2490,14 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 	}
 	app.open_first_populated();
 	app.units = unit_names(&identities);
-	// Read from the app each cycle rather than computed once: the settings
-	// screen changes it while the car is answering, and a period captured at
-	// startup would leave the new rate showing and the old one polling.
-	let period = |app: &App| Duration::from_secs_f64(1.0 / app.hz.max(crate::config::MIN_HZ));
+	let mut subs: Vec<Subscription> = Vec::new();
+	// Where `next_of` looks first, kept across calls so no subscription is favoured.
+	let mut cursor = 0usize;
+	let mut period = live_period(&app);
+	resubscribe(&mut app, &bus, &mut subs, &mut period);
 
 	// No terminal wanted: a script, a pipe, or an agent that cannot press a
-	// key. Same poll loop, no drawing and no input — and with no `--out` the
+	// key. Same subscriptions, no drawing and no input — and with no `--out` the
 	// samples go to stdout, so they can be read directly instead of through a
 	// file nobody asked for.
 	if let View::Plain(duration) = view {
@@ -2420,26 +2505,35 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 			Some(file) => Box::new(file),
 			None => Box::new(io::stdout().lock()),
 		};
-		// `checked_add`, not `+`: a duration a caller is free to name can be
-		// large enough to overflow the instant, and panicking there would do it
-		// with the adapter open and the car on the bus. Too far away to reach
-		// is the same as no deadline at all.
-		let deadline = duration.and_then(|d| Instant::now().checked_add(d));
-		while deadline.is_none_or(|d| Instant::now() < d) {
-			let cycle = Instant::now();
-			for batch in crate::plan::plan(&app.channels) {
-				poll_batch(&mut app, &mut backend, &batch).await;
+		// Seconds on the bus's clock, where a duration a caller is free to name
+		// cannot overflow anything: too far away to reach is no deadline at all.
+		let deadline = duration.map(|d| bus.secs() + d.as_secs_f64());
+		let mut rows = 0u64;
+		// A row a period in, not at once: at once every cell would be empty.
+		let mut next_row = bus.secs() + period.as_secs_f64();
+		loop {
+			app.clock = bus.secs();
+			if deadline.is_some_and(|d| app.clock >= d) {
+				break;
 			}
-			app.cycles += 1;
-			write_row(&mut sink, &app, &mut header_written)?;
-			// Flushed every cycle: a reader watching the pipe should see the
-			// samples as they happen, not in one burst when the run ends.
-			sink.flush()?;
-			if let Some(rest) = period(&app).checked_sub(cycle.elapsed()) {
-				tokio::time::sleep(rest).await;
+			if app.clock >= next_row {
+				write_row(&mut sink, &app, &mut header_written)?;
+				// Flushed every row: a reader watching the pipe should see the
+				// samples as they happen, not in one burst when the run ends.
+				sink.flush()?;
+				rows += 1;
+				next_row = next_after(next_row, app.clock, period);
+			}
+			let wake = deadline.map_or(next_row, |d| d.min(next_row));
+			tokio::select! {
+				got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
+					Some((_, sample)) => app.take(sample),
+					None => anyhow::bail!("the link to the car closed"),
+				},
+				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 			}
 		}
-		eprintln!("{} cycles over {:.1} s", app.cycles, app.started.elapsed().as_secs_f64());
+		eprintln!("{rows} rows, {} readings over {:.1} s", app.readings, bus.secs());
 		return Ok(());
 	}
 
@@ -2453,68 +2547,40 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 		)
 	})?;
 	let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+	let mut next_frame = 0.0f64;
+	let mut next_row = bus.secs() + period.as_secs_f64();
 	let result = loop {
-		paint(&mut terminal, &mut app)?;
-
-		// `q` here has to leave the loop entirely, not just the drain —
-		// otherwise the key is swallowed and a whole poll cycle runs before the
-		// quit takes effect.
+		app.clock = bus.secs();
+		if app.clock >= next_frame {
+			app.waiting = waited_on(&app.heard, app.clock, period.as_secs_f64());
+			paint(&mut terminal, &mut app)?;
+			app.frames += 1;
+			next_frame = app.clock + FRAME.as_secs_f64();
+		}
+		if let Some(w) = sink.as_mut()
+			&& app.clock >= next_row
+		{
+			write_row(w, &app, &mut header_written)?;
+			next_row = next_after(next_row, app.clock, period);
+		}
+		let wake = match sink.is_some() {
+			true => next_frame.min(next_row),
+			false => next_frame,
+		};
+		// The keyboard is never behind the bus: whichever comes first, a reading or
+		// the next frame, the keys are taken straight after it.
+		tokio::select! {
+			got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
+				Some((_, sample)) => app.take(sample),
+				None => break Err(anyhow::anyhow!("the link to the car closed")),
+			},
+			() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
+		}
 		if !drain_keys(&mut app)? {
 			break Ok(());
 		}
-
-		let cycle = Instant::now();
-		let mut quit_mid_cycle = false;
-		for batch in crate::plan::plan(&app.channels) {
-			// Between batches, not only between cycles: a cycle that spans
-			// several units takes as long as their timeouts add up to, and a
-			// keypress should not wait for that.
-			if !drain_keys(&mut app)? {
-				quit_mid_cycle = true;
-				break;
-			}
-			// Redraw before the request, so the footer says which unit is
-			// being waited on. A batch can take as long as that unit's
-			// deadline, and a still screen during it reads as a hang.
-			app.waiting = app.slow.contains(&batch.request).then_some(batch.request);
-			paint(&mut terminal, &mut app)?;
-			let asked = Instant::now();
-			poll_batch(&mut app, &mut backend, &batch).await;
-			app.waiting = None;
-			// Remember for next time round, so the footer can warn before the
-			// wait rather than after it.
-			match asked.elapsed() >= crate::progress::THRESHOLD {
-				true => app.slow.insert(batch.request),
-				false => app.slow.remove(&batch.request),
-			};
-		}
-		if quit_mid_cycle {
-			break Ok(());
-		}
-		app.cycles += 1;
-
-		if let Some(w) = sink.as_mut() {
-			write_row(w, &app, &mut header_written)?;
-		}
-
-		// A key pressed during the poll should not wait a whole cycle.
-		let mut quit = false;
-		while let Some(rest) = period(&app).checked_sub(cycle.elapsed()) {
-			if !event::poll(rest.min(Duration::from_millis(50)))? {
-				if cycle.elapsed() >= period(&app) {
-					break;
-				}
-				continue;
-			}
-			// Something is waiting; take it and everything behind it.
-			if !drain_keys(&mut app)? {
-				quit = true;
-				break;
-			}
-		}
-		if quit {
-			break Ok(());
-		}
+		// A key may have ticked, unticked or changed the rate.
+		resubscribe(&mut app, &bus, &mut subs, &mut period);
 	};
 
 	// Off the alternate screen before the summary is printed, for the same
@@ -2524,13 +2590,19 @@ pub async fn run<L: vag_uds_can::UnitLink>(open: impl AsyncFnOnce() -> Result<L>
 	if let Some(w) = sink.as_mut() {
 		w.flush()?;
 	}
-	println!(
-		"{} cycles in {:.1}s — {:.1} Hz",
-		app.cycles,
-		app.started.elapsed().as_secs_f64(),
-		app.poll_rate()
-	);
+	println!("{} readings in {:.1}s — {:.1} Hz a channel", app.readings, bus.secs(), app.poll_rate());
 	result
+}
+
+/// When the row after one due at `due` is, seen at `now`: a period on, or a period
+/// from now if the loop fell further behind than that — rows are not caught up in a
+/// burst of identical lines.
+fn next_after(due: f64, now: f64, period: Duration) -> f64 {
+	let next = due + period.as_secs_f64();
+	match next <= now {
+		true => now + period.as_secs_f64(),
+		false => next,
+	}
 }
 
 #[cfg(test)]
@@ -2877,7 +2949,7 @@ mod tests {
 	#[test]
 	fn toggling_changes_what_is_polled_without_a_restart() {
 		let mut a = app(need_rows!());
-		let before = crate::plan::plan(&a.channels).len();
+		let before = crate::plan::reads(&a.channels).len();
 		a.screen = Screen::Select;
 		open(&mut a, 0x7E0);
 		a.cursor = a.visible()[5];
@@ -2885,7 +2957,7 @@ mod tests {
 		on_key(&mut a, KeyCode::Char(' '));
 		assert!(a.channels[at].selected);
 		// Selecting more can only add work, never remove it.
-		assert!(crate::plan::plan(&a.channels).len() >= before);
+		assert!(crate::plan::reads(&a.channels).len() >= before);
 
 		// `a` and `n` act on the open tab, so clearing every tab clears the
 		// plan — and polling never follows the tab, only the selection.
@@ -2893,9 +2965,9 @@ mod tests {
 			on_key(&mut a, KeyCode::Char('n'));
 			step_tab(&mut a, true);
 		}
-		assert!(crate::plan::plan(&a.channels).is_empty(), "none selected polls nothing");
+		assert!(crate::plan::reads(&a.channels).is_empty(), "none selected polls nothing");
 		on_key(&mut a, KeyCode::Char('a'));
-		assert!(!crate::plan::plan(&a.channels).is_empty());
+		assert!(!crate::plan::reads(&a.channels).is_empty());
 	}
 
 	#[test]
@@ -3079,15 +3151,144 @@ mod tests {
 	}
 
 	#[test]
-	fn only_a_unit_that_has_been_slow_is_announced() {
-		// The screen is drawn before the request, so whether this one will be
-		// slow is not knowable; whether the last one was, is. A prompt unit
-		// must not put a spinner on screen at every redraw.
-		let mut a = App::new(reference_channels(need_rows!()));
-		assert!(a.slow.is_empty());
-		assert_eq!(a.slow.contains(&0x7E0).then_some(0x7E0), None);
-		a.slow.insert(0x7E0);
-		assert_eq!(a.slow.contains(&0x7E0).then_some(0x7E0), Some(0x7E0));
+	fn only_a_unit_that_has_stopped_answering_is_announced() {
+		// A prompt unit must not put a spinner on screen at every redraw; one that
+		// missed its last answer, or has gone quiet past the threshold, is named.
+		let heard = |at: f64, answered: bool| Heard { at, answered };
+		let mut reads = std::collections::BTreeMap::new();
+		reads.insert((0x7E0, 0x2029), heard(9.9, true));
+		reads.insert((0x7E1, 0x380A), heard(9.8, true));
+		assert_eq!(waited_on(&reads, 10.0, 0.1), None, "both answering");
+		reads.insert((0x7E1, 0x380A), heard(9.8, false));
+		assert_eq!(waited_on(&reads, 10.0, 0.1), Some(0x7E1), "a miss is named at once");
+		reads.insert((0x7E1, 0x380A), heard(9.0, true));
+		assert_eq!(waited_on(&reads, 10.0, 0.1), Some(0x7E1), "a second without a reading at 10 Hz");
+		assert_eq!(waited_on(&reads, 10.0, 1.0), None, "at 1 Hz a second is one period, not a silence");
+	}
+
+	#[test]
+	fn a_sample_goes_on_the_table_and_the_rate_is_what_arrived() {
+		use vag_cli_core::bus::{At, Miss, Sample};
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+		a.heard.insert((0x7E0, 0x202A), Heard { at: 0.0, answered: true });
+		let unit = Unit {
+			request: 0x7E0,
+			response: 0x7E8,
+		};
+		for i in 1..=20 {
+			let secs = f64::from(i) * 0.1;
+			a.take(Sample {
+				unit,
+				did: 0x202A,
+				at: At {
+					ms: (secs * 1000.0) as u64,
+					secs,
+				},
+				value: Ok(vec![0x03, 0xE8]),
+			});
+		}
+		a.clock = 2.0;
+		assert_eq!(a.latest.get(&(0x7E0, 0x202A)).map(|(t, _)| *t), Some(2.0), "stamped with its arrival");
+		assert!((a.poll_rate() - 10.0).abs() < 1.0, "{}", a.poll_rate());
+		a.take(Sample {
+			unit,
+			did: 0x202A,
+			at: At { ms: 2100, secs: 2.1 },
+			value: Err(Miss::NoAnswer),
+		});
+		assert_eq!(a.latest[&(0x7E0, 0x202A)].0, 2.0, "a miss keeps the last value, ageing");
+		assert!(!a.heard[&(0x7E0, 0x202A)].answered);
+		assert_eq!(a.readings, 20);
+	}
+
+	#[test]
+	fn a_unit_that_refuses_is_answering_and_the_footer_does_not_wait_on_it() {
+		use vag_cli_core::bus::{At, Miss, Sample};
+		// A refusal, an identifier left out, or an answer that does not parse all
+		// came back from a unit that is there. Only silence and a failed bus are
+		// waiting.
+		let unit = Unit {
+			request: 0x7E0,
+			response: 0x7E8,
+		};
+		for why in [Miss::Refused(0x31), Miss::Absent, Miss::Malformed] {
+			let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+			a.heard.insert((0x7E0, 0x202A), Heard { at: 0.0, answered: true });
+			a.take(Sample {
+				unit,
+				did: 0x202A,
+				at: At { ms: 1000, secs: 1.0 },
+				value: Err(why),
+			});
+			assert_eq!(waited_on(&a.heard, 1.0, 0.1), None, "{why:?} is an answer");
+			assert_eq!(a.heard[&(0x7E0, 0x202A)].at, 1.0, "{why:?} is heard from");
+		}
+		for why in [Miss::NoAnswer, Miss::BusError] {
+			let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+			a.heard.insert((0x7E0, 0x202A), Heard { at: 0.0, answered: true });
+			a.take(Sample {
+				unit,
+				did: 0x202A,
+				at: At { ms: 1000, secs: 1.0 },
+				value: Err(why),
+			});
+			assert_eq!(waited_on(&a.heard, 1.0, 0.1), Some(0x7E0), "{why:?} is waited on");
+		}
+	}
+
+	/// A CAN bus nobody answers on: enough to hand a [`Bus`] something to own.
+	struct Silent;
+
+	impl vag_uds_can::CanBackend for Silent {
+		async fn send_frame(&mut self, _id: u32, _data: &[u8]) -> Result<(), vag_uds_can::CanError> {
+			Ok(())
+		}
+
+		async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), vag_uds_can::CanError> {
+			tokio::time::sleep(timeout.min(Duration::from_millis(5))).await;
+			Err(vag_uds_can::CanError::Timeout)
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn changing_the_selection_or_the_rate_changes_the_subscriptions() {
+		let bus = Bus::start(Silent, vag_cli_core::bus::Budget::default());
+		let mut a = App::new(vec![
+			proven(0x7E0, 0x202A, "Boost pressure", "bar"),
+			proven(0x7E0, 0x2029, "Boost pressure, specified", "bar"),
+			Channel {
+				selected: false,
+				..proven(0x7E1, 0x380A, "Input shaft speed", "/min")
+			},
+		]);
+		let mut subs = Vec::new();
+		let mut period = live_period(&a);
+		let keys = |subs: &[Subscription]| subs.iter().map(|s| (s.unit().request, s.did())).collect::<Vec<_>>();
+
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		assert_eq!(keys(&subs), vec![(0x7E0, 0x2029), (0x7E0, 0x202A)]);
+		assert_eq!(a.heard.len(), 2);
+
+		// Tick one, untick another: one new subscription, one dropped.
+		a.channels[2].selected = true;
+		a.channels[0].selected = false;
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		let mut now = keys(&subs);
+		now.sort_unstable();
+		assert_eq!(now, vec![(0x7E0, 0x2029), (0x7E1, 0x380A)]);
+		assert!(!a.heard.contains_key(&(0x7E0, 0x202A)), "an unticked read is not waited on");
+
+		// A new rate is a new period for every subscription.
+		a.hz = 2.0;
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		assert_eq!(period, Duration::from_millis(500));
+		assert_eq!(subs.len(), 2);
+
+		// Nothing selected, nothing subscribed.
+		a.channels.iter_mut().for_each(|c| c.selected = false);
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		assert!(subs.is_empty());
+		assert!(a.heard.is_empty());
 	}
 
 	#[test]
@@ -3284,11 +3485,11 @@ mod tests {
 		}]);
 		a.screen = Screen::Select;
 		a.cursor = 0;
-		assert!(crate::plan::plan(&a.channels).is_empty());
+		assert!(crate::plan::reads(&a.channels).is_empty());
 		on_key(&mut a, KeyCode::Char('g'));
 		assert!(a.charted.contains(&(0x7E0, 0x202A, 0)));
 		assert!(a.channels[0].selected, "marking for the chart selects it");
-		assert!(!crate::plan::plan(&a.channels).is_empty());
+		assert!(!crate::plan::reads(&a.channels).is_empty());
 
 		// And unselecting it takes the chart mark with it, rather than leaving
 		// a line the loop has stopped feeding.

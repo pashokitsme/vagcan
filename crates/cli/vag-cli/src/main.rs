@@ -28,7 +28,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use vag_uds_can::{SlcanMode, UnitLink};
+use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::{AsyncUdsClient, UdsReadExt};
 
@@ -661,7 +661,12 @@ async fn dispatch(command: Command) -> Result<()> {
 			.await
 		}
 		#[cfg(feature = "measure")]
-		Command::Measure(args) => measure::dispatch(args, &data_dir(None)?).await,
+		Command::Measure(args) => {
+			measure::dispatch(args, &data_dir(None)?, async |device: Option<String>| {
+				open_adapter(&device::resolve(device.as_deref())?).await
+			})
+			.await
+		}
 		Command::Faults {
 			from: Some(survey),
 			iv_cache,
@@ -806,9 +811,10 @@ fn parse_ecu(text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
 }
 
-/// Open the adapter as the link a command talks to the car through.
-async fn open_adapter(device_path: &str) -> Result<vag_uds_can::SerialSlcan> {
-	device::open(device_path, ADAPTER_BAUD, SlcanMode::Normal).await
+/// Open the adapter under the bus scheduler: the link every car command talks to
+/// the car through. `dev sniff` alone opens the adapter bare, for frames.
+async fn open_adapter(device_path: &str) -> Result<vag_cli_core::bus::Bus> {
+	device::open_bus(device_path).await
 }
 
 /// Address one control unit over UDS.

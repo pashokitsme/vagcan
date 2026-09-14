@@ -6,7 +6,7 @@
 //! guesses: an answer that does not read exactly one way is `None`.
 //!
 //! Moved here from `vag-cli-core`'s `analyse.rs` so the board and the laptop
-//! split with the same code; `analyse` and `plan::read_batch` call this one.
+//! split with the same code; `analyse` and the planner call this one.
 
 use alloc::vec::Vec;
 

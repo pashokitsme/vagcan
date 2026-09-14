@@ -61,7 +61,7 @@ item 7 (the `frame` mirror) unnecessary.
   - **Identifiers count, not requests** (review round 3, 2026-09-13): one `0x22` request
     can carry many identifiers, so `22 F100 F101 … F1FF` would pass a per-request cap.
     Over BLE the board allows at most **4 identifiers in one request**, so the host must
-    batch at most 4 over this link (`plan::BATCH` is 8 on the cable).
+    batch at most 4 over this link (`Budget::max_dids_per_request: 4` for this link; the cable's default is 8).
   - **A walk rule, per unit, per connection, blind to order:** the board keeps the set of
     different identifiers asked of each unit. A request that would put 8 evenly spaced
     identifiers into that set (`WALK_RUN = 8`, any non-zero stride: `F100…F107`,

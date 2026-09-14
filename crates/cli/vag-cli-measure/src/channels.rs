@@ -25,8 +25,6 @@
 //! and a required role that finds none is a refusal naming what it tried, never
 //! an empty column and never raw bytes.
 
-use std::collections::BTreeMap;
-
 use vag_data_labels::catalog::{CatalogStore, MeasurementDef, ReadId, Scaling};
 use vag_uds_client::address::UnitAddress;
 
@@ -87,19 +85,19 @@ impl Resolved {
 
 /// Everything a run polls, split by the cadence it is polled at.
 ///
-/// One request addresses one control unit, so the split is by unit and not by
-/// taste: everything on the unit that owns the leading speed is read every
-/// cycle, everything else half as often. Marks are timed from the leading
+/// The split is by unit and not by taste: everything on the unit that owns the
+/// leading speed is read at the leading rate, everything else half as often, and
+/// the speed itself alone at the stopwatch's. Marks are timed from the leading
 /// speed alone, so its rate is the only one that sets a stopwatch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Set {
 	/// The speed channel that won, and by owning it, the unit that leads.
 	pub leading: Resolved,
-	/// Everything on the leading unit, within [`plan::BATCH`].
-	pub leading_batch: Vec<Resolved>,
+	/// Everything on the leading unit, the speed included.
+	pub leading_unit: Vec<Resolved>,
 	/// Everything on every other unit.
 	pub background: Vec<Resolved>,
-	/// The speeds that did not win. These also appear in one of the batches
+	/// The speeds that did not win. These also appear in one of the lists
 	/// above — the list exists so the caller can tell which rows are speeds
 	/// without matching names a second time.
 	pub cross_check_speeds: Vec<Resolved>,
@@ -108,7 +106,7 @@ pub struct Set {
 impl Set {
 	/// Every channel that will be polled, in priority order.
 	pub fn all(&self) -> impl Iterator<Item = &Resolved> {
-		self.leading_batch.iter().chain(self.background.iter())
+		self.leading_unit.iter().chain(self.background.iter())
 	}
 }
 
@@ -472,24 +470,11 @@ pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, un
 		.cloned()
 		.expect("speed is required, so it is either resolved or already reported missing");
 
-	// One request holds `BATCH` identifiers and asking for more makes the whole
-	// response look empty, so a unit with more rows than that loses the ones
-	// furthest down the priority order rather than losing all of them.
-	let mut used: BTreeMap<u16, usize> = BTreeMap::new();
-	let (mut leading_batch, mut background) = (Vec::new(), Vec::new());
-	for channel in found {
-		let taken = used.entry(channel.request).or_default();
-		if *taken >= plan::BATCH {
-			continue;
-		}
-		*taken += 1;
-		match channel.request == leading.request {
-			true => leading_batch.push(channel),
-			false => background.push(channel),
-		}
-	}
+	// How many identifiers go in one request is the scheduler's to decide, so a
+	// unit keeps every role it answers to.
+	let (leading_unit, background): (Vec<Resolved>, Vec<Resolved>) = found.into_iter().partition(|channel| channel.request == leading.request);
 
-	let cross_check_speeds = leading_batch
+	let cross_check_speeds = leading_unit
 		.iter()
 		.chain(background.iter())
 		.filter(|r| r.key == CROSS_SPEED)
@@ -498,7 +483,7 @@ pub fn resolve(store: &CatalogStore, extracted: &crate::extracted::Extracted, un
 
 	Ok(Set {
 		leading,
-		leading_batch,
+		leading_unit,
 		background,
 		cross_check_speeds,
 	})
@@ -660,7 +645,7 @@ mod tests {
 		assert_eq!(resolved(&set, "gear").unwrap().did, 0x1003);
 		assert_eq!(resolved(&set, "pedal").unwrap().did, 0x1004);
 		// One unit, so everything it owns is read at the leading cadence.
-		assert_eq!(set.leading_batch.len(), 4);
+		assert_eq!(set.leading_unit.len(), 4);
 		assert!(set.background.is_empty());
 		assert!(set.cross_check_speeds.is_empty());
 	}
@@ -678,12 +663,12 @@ mod tests {
 
 		// Everything the gearbox owns is read at the leading cadence, and
 		// everything else at the background one.
-		let leading_keys: Vec<&str> = set.leading_batch.iter().map(|r| r.key).collect();
+		let leading_keys: Vec<&str> = set.leading_unit.iter().map(|r| r.key).collect();
 		assert!(leading_keys.contains(&"gear"), "{leading_keys:?}");
 		assert!(leading_keys.contains(&"pedal"), "{leading_keys:?}");
 		assert!(leading_keys.contains(&"selector"), "{leading_keys:?}");
 		assert!(leading_keys.contains(&"input shaft speed"), "{leading_keys:?}");
-		assert!(set.leading_batch.iter().all(|r| r.request == GEARBOX));
+		assert!(set.leading_unit.iter().all(|r| r.request == GEARBOX));
 
 		let background_keys: Vec<&str> = set.background.iter().map(|r| r.key).collect();
 		for wanted in ["engine speed", "boost actual", "boost specified", "air mass"] {
@@ -695,15 +680,8 @@ mod tests {
 		let crossed: Vec<String> = set.cross_check_speeds.iter().map(|r| r.source()).collect();
 		assert!(crossed.contains(&"714:22D2".to_string()), "{crossed:?}");
 		assert!(crossed.iter().all(|s| s != "7E1:F40D"));
-		// A cross-check is polled: it is in one of the batches too.
+		// A cross-check is polled: it is in one of the lists too.
 		assert!(set.all().filter(|r| r.key == CROSS_SPEED).count() == crossed.len());
-
-		// No request may exceed what a unit answers in one go.
-		let mut per_unit: BTreeMap<u16, usize> = BTreeMap::new();
-		for channel in set.all() {
-			*per_unit.entry(channel.request).or_default() += 1;
-		}
-		assert!(per_unit.values().all(|n| *n <= plan::BATCH), "{per_unit:?}");
 	}
 
 	#[test]

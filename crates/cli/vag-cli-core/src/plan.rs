@@ -1,29 +1,15 @@
-//! What to poll, and in what order — the part that can be tested without a car.
+//! What to read, and what it means — the part that can be tested without a car.
 //!
-//! One link to the car means one conversation at a time, so reading measurements
-//! that live on different control units is a sequence of re-addressed groups,
-//! not a broadcast. This module decides the grouping; the live loop in the
-//! parent module just walks it.
+//! One link to the car means one conversation at a time. Which identifiers go out
+//! together, and when, is decided by the bus scheduler (`crate::bus`); this module
+//! only says which channels exist and which of them are wanted.
 //!
 //! A channel is keyed by the unit's **request id**, not by a unit number: the
 //! two id blocks on this car have different response rules, and a number is
 //! only a display convenience over the id (see `vag_uds_client::address`).
-//!
-//! One exception to the no-car rule: [`read_batch`] performs the read a plan
-//! describes. It lives here because it is the other half of [`Batch`] — a
-//! reader who wants to know what a batch *is* and what asking for one costs
-//! should not have to open two files — and because more than one live loop
-//! needs it, and a copied one drifts.
-
-use std::collections::BTreeMap;
 
 use vag_data_labels::catalog::{CatalogStore, MeasurementDef, ReadId};
 use vag_uds_client::address::UnitAddress;
-
-/// Identifiers per request. Measured on the reference car: eight are answered,
-/// twelve are refused outright, and asking for more than a unit accepts makes
-/// every batch look empty rather than erroring.
-pub const BATCH: usize = 8;
 
 /// One value the user can put on screen.
 #[derive(Debug, Clone, PartialEq)]
@@ -483,104 +469,16 @@ fn parse_span(text: &str) -> Option<std::ops::RangeInclusive<u16>> {
 	(start <= end).then_some(start..=end)
 }
 
-/// One request: a control unit and the identifiers to ask it for at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Batch {
-	pub request: u16,
-	pub dids: Vec<u16>,
-}
-
-/// Group the selected channels into requests.
+/// Every `(request id, identifier)` the selected channels read, each once, in order.
 ///
-/// Grouped by control unit because addressing changes between them, then split
-/// into [`BATCH`]-sized requests. Units come out in ascending order so the
-/// polling sequence is stable — a screen whose rows reshuffle between cycles
-/// is unreadable.
-pub fn plan(channels: &[Channel]) -> Vec<Batch> {
-	let mut by_unit: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
-	for c in channels.iter().filter(|c| c.selected) {
-		let dids = by_unit.entry(c.request).or_default();
-		// The same identifier twice in one request wastes a slot and makes the
-		// response ambiguous to split.
-		if !dids.contains(&c.did) {
-			dids.push(c.did);
-		}
-	}
-	by_unit
-		.into_iter()
-		.flat_map(|(request, dids)| {
-			dids
-				.chunks(BATCH)
-				.map(|chunk| Batch {
-					request,
-					dids: chunk.to_vec(),
-				})
-				.collect::<Vec<_>>()
-		})
-		.collect()
-}
-
-/// What one batch read produced.
-///
-/// `NoAnswer` is explicit because a silent failure leaves the previous value on
-/// screen and makes a collapsing poll rate undetectable: a caller that only
-/// hears about answers cannot tell a value that is steady from a link that has
-/// died, and both look like a table nobody is updating.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BatchOutcome {
-	/// The unit answered. Possibly with fewer records than were asked for —
-	/// a response that will not split into records comes back empty rather
-	/// than as an error, which is what the car does when a request holds more
-	/// identifiers than the unit accepts.
-	Answered(Vec<(u16, Vec<u8>)>),
-	/// Nothing was sent, so this says nothing about the car: either there is no
-	/// adapter to ask with, or no addressing rule for this request id.
-	Unaddressable,
-	/// Asked, and the unit did not answer within its deadline.
-	NoAnswer,
-}
-
-/// Read one batch of identifiers, and say when the answer arrived.
-///
-/// The returned time is seconds since `started`, taken the moment the request
-/// resolves — it is the age of every record in the batch, and identifiers are
-/// polled in groups, so columns in one cycle are up to a cycle apart.
-///
-/// **The link is `take()`n out of the `Option`, addressed to the batch's unit,
-/// released and put back after the await.** A dropped future therefore leaves
-/// the `Option` empty and the link gone for the rest of the run, silently. Do
-/// not put this call in a `select!`; drain the keyboard between batches
-/// instead, as `watch` does.
-pub async fn read_batch<B: vag_uds_can::UnitLink>(backend: &mut Option<B>, batch: &Batch, started: std::time::Instant) -> (f64, BatchOutcome) {
-	use vag_uds_client::AsyncUdsClient;
-	use vag_uds_transport::CanId;
-
-	let elapsed = || started.elapsed().as_secs_f64();
-	let Some(b) = backend.take() else {
-		return (elapsed(), BatchOutcome::Unaddressable);
-	};
-	// Each unit is addressed by the rule its id block uses: the cluster
-	// answers on 0x77E, not on 0x7E0 + 16, which is what treating the unit
-	// number as an ISO index used to produce.
-	let Some(address) = UnitAddress::from_request(batch.request) else {
-		*backend = Some(b);
-		return (elapsed(), BatchOutcome::Unaddressable);
-	};
-	let mut uds = AsyncUdsClient::new(b.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
-	let answer = if batch.dids.len() == 1 {
-		uds.read_data_by_identifier(batch.dids[0]).await.map(|d| vec![(batch.dids[0], d)])
-	} else {
-		uds
-			.read_data_by_identifiers(&batch.dids)
-			.await
-			.map(|payload| vag_uds_client::schedule::split_records(&payload, &batch.dids).unwrap_or_default())
-	};
-	let at = elapsed();
-	*backend = Some(B::release(uds.into_transport()));
-	match answer {
-		Ok(records) => (at, BatchOutcome::Answered(records)),
-		Err(_) => (at, BatchOutcome::NoAnswer),
-	}
+/// One identifier answers every field cut from it, so two selected fields of one
+/// identifier are one read. Grouping reads into requests, and how many identifiers go
+/// in one, is the scheduler's business (`crate::bus`), not the plan's: the plan says
+/// what is wanted, and the order is by unit and identifier so that anything listing
+/// them — the table included — lists them the same way every time.
+pub fn reads(channels: &[Channel]) -> Vec<(u16, u16)> {
+	let wanted: std::collections::BTreeSet<(u16, u16)> = channels.iter().filter(|c| c.selected).map(|c| (c.request, c.did)).collect();
+	wanted.into_iter().collect()
 }
 
 /// What to put on screen when the user asked for nothing in particular.
@@ -760,19 +658,16 @@ mod tests {
 	}
 
 	#[test]
-	fn one_request_per_control_unit_per_eight_identifiers() {
-		// The addressing changes between units, so a batch can never span two.
+	fn every_selected_identifier_is_one_read_whatever_its_unit() {
+		// How many go in one request is the scheduler's to decide; the plan lists
+		// each read once, every unit's.
 		let mut chans: Vec<Channel> = (0..10).map(|i| known(ENGINE, 0x2000 + i, "engine")).collect();
 		chans.extend((0..3).map(|i| known(GEARBOX, 0x3800 + i, "gearbox")));
 
-		let batches = plan(&chans);
-		assert_eq!(batches.len(), 3, "8+2 on the engine, 3 on the gearbox: {batches:?}");
-		assert_eq!(batches[0].request, ENGINE);
-		assert_eq!(batches[0].dids.len(), 8);
-		assert_eq!(batches[1].request, ENGINE);
-		assert_eq!(batches[1].dids.len(), 2);
-		assert_eq!(batches[2].request, GEARBOX);
-		assert_eq!(batches[2].dids.len(), 3);
+		let wanted = reads(&chans);
+		assert_eq!(wanted.len(), 13, "{wanted:?}");
+		assert_eq!(wanted.iter().filter(|(request, _)| *request == ENGINE).count(), 10);
+		assert_eq!(wanted.iter().filter(|(request, _)| *request == GEARBOX).count(), 3);
 	}
 
 	#[test]
@@ -784,11 +679,8 @@ mod tests {
 			..known(ENGINE, 0x206E, "rpm")
 		});
 
-		let batches = plan(&chans);
-		assert_eq!(batches.len(), 1);
-		// Asking twice in one request wastes a slot and makes the answer
-		// ambiguous to split.
-		assert_eq!(batches[0].dids, vec![0x2029]);
+		// Two fields of one identifier are one read: the answer carries both.
+		assert_eq!(reads(&chans), vec![(ENGINE, 0x2029)]);
 	}
 
 	#[test]
@@ -798,7 +690,7 @@ mod tests {
 			selected: false,
 			..known(ENGINE, 0x2029, "boost")
 		}];
-		assert!(plan(&chans).is_empty());
+		assert!(reads(&chans).is_empty());
 	}
 
 	#[test]
@@ -808,10 +700,9 @@ mod tests {
 		// powertrain because its id is lower — the order is by id, not by the
 		// number people call the unit.
 		let chans = vec![known(CLUSTER, 0x2203, "odo"), known(ENGINE, 0x206E, "rpm"), known(GEARBOX, 0x380A, "in")];
-		let a = plan(&chans);
-		let b = plan(&chans);
-		assert_eq!(a, b);
-		assert_eq!(a.iter().map(|x| x.request).collect::<Vec<_>>(), vec![CLUSTER, ENGINE, GEARBOX]);
+		let a = reads(&chans);
+		assert_eq!(a, reads(&chans));
+		assert_eq!(a.iter().map(|(request, _)| *request).collect::<Vec<_>>(), vec![CLUSTER, ENGINE, GEARBOX]);
 	}
 
 	#[test]
