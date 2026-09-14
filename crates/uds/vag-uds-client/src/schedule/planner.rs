@@ -815,13 +815,17 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
 ///
 /// `starved`: due for longer than [`Budget::starve_after_ms`]. Anything but Timing that is
-/// starved goes ahead of Timing; `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`])
-/// puts the foreground under its floor ahead of both. Nothing on the laptop takes tier 0.
+/// starved goes first, so nothing waits forever — on the board as on the laptop.
+/// `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`]) puts the foreground under its
+/// floor ahead of Timing (not ahead of a starved item: a host's forwarded request sharing a
+/// unit with the panel would otherwise never go out, since the panel is always under its
+/// floor). Timing is never itself the starved tier — a timing read that just answered is
+/// freshly due, not overdue.
 fn tier(class: Class, foreground_under_floor: bool, starved: bool, timing_yields_to_floor: bool) -> u8 {
 	match class {
-		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 0,
 		Class::Timing => 2,
-		_ if starved => 1,
+		_ if starved => 0,
+		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 1,
 		Class::Foreground if foreground_under_floor => 3,
 		Class::Remote => 4,
 		Class::Foreground => 5,

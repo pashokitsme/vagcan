@@ -552,6 +552,35 @@ fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() 
 	board.planner.unsubscribe(panel);
 }
 
+/// PR #2 review round 1 regression (Sched-F1 + the board's floor). A radio request to a
+/// silent unit the panel also polls — every unit on the bench — was never answered: the
+/// host waited past its link timeout for a `NoAnswer` that never came, though a refusal
+/// still came in ~90 ms (`research/dash/can-bring-up.md` §9.5, §9.8; before round 1 the same
+/// read answered `NoAnswer` in 5.8–8.8 s).
+///
+/// The board's `Budget::timing_yields_to_floor` ranked Foreground under its floor ahead of a
+/// starved item, so the panel's part-number retry on the shared unit (a perpetual Foreground
+/// candidate, re-asked on every silence — modelled here as a subscription) beat the host's
+/// forwarded exchange at every wake, and the exchange, sharing the unit's one backoff, never
+/// went out. "Nothing waits forever" must hold on the board too: the forwarded request is
+/// answered within the starvation bound plus the unit's backoff and the answer timeout.
+#[test]
+fn a_request_to_a_silent_unit_the_panel_polls_is_answered_and_not_starved_by_the_panel() {
+	let mut board = Board::new(Bus::Silent);
+	// A silent unit holds the bus for the whole answer timeout, as on the bench.
+	board.latency = 500;
+	// The panel's perpetual Foreground demand on the same unit.
+	board.planner.subscribe(0, Class::Foreground, ENGINE, 0xF187, 500, None);
+	board.hear(request(7, ENGINE, &[0x22, 0xF1, 0x90]));
+	// starve_after_ms (5 s) + the backoff cap (2 s) + the answer timeout, generously.
+	board.run_until(9_000);
+	assert_eq!(
+		board.answers(),
+		[(7, Outcome::NoAnswer)],
+		"the forwarded read must be answered, not starved forever by the panel's reads"
+	);
+}
+
 // --- the USB cable's session, and the board's adapter mode -------------------------
 
 const ADAPTER: &str = "the board is in adapter mode";
@@ -729,6 +758,12 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 				);
 			}
 
+			// The panel keeps its floor, and reads every channel it asks — save for a bounded
+			// few it yields to a starved host channel where the bus is tightest (one identifier
+			// per request, the slowest latency). On the board the panel outranks Timing but not
+			// a starved item, so nothing waits forever (PR #2 review round 1 regression). The
+			// slack is at most about one read per starve window.
+			let panel_windows = (MINUTE_MS / u64::from(budget.starve_after_ms) + 1) as usize;
 			for did in &panel {
 				let reads = board
 					.sent
@@ -736,7 +771,10 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 					.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(did))
 					.count();
 				let asked = (MINUTE_MS / u64::from(PANEL_PERIOD_MS)) as usize;
-				assert!(reads + 1 >= asked, "{label}: panel {did:04X} read {reads} times of {asked}");
+				assert!(
+					reads + panel_windows + 2 >= asked,
+					"{label}: panel {did:04X} read {reads} times of {asked}"
+				);
 			}
 
 			// Slower than the period, the timing read is always due, and the normal channels
