@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ use crate::carfile::{CarFile, FitConditions, Mass, Source, Sourced, UnitRef, rol
 use crate::channels::{self, Resolved, Set};
 use crate::coastdown::{self, Detector, Fit, Reject, RoadLoadResult};
 use crate::messages::{self, ChannelFound, MissingChannel};
-use crate::plan::{self, Batch, BatchOutcome, UnitIdentity};
+use crate::plan::{self, UnitIdentity};
 use crate::power::{self, Inertias, KMH_PER_MS};
 use crate::types::Seconds;
 
@@ -73,16 +73,12 @@ const WANTED_PASSES: usize = 2;
 /// clear stretch, and short enough to arrive before they give up.
 const HINT_AFTER_S: Seconds = 120.0;
 
-/// The poll period during the road stage.
+/// How often every channel is read during the road stage.
 ///
 /// A coast loses about 0.3 m/s², so 10 Hz puts hundreds of samples into a pass —
 /// far more than the fit needs, and slow enough that the pedal and the selector,
-/// which usually live on other control units, stay fresh in the same cycle.
+/// which usually live on other control units, stay fresh beside each speed.
 const POLL_PERIOD: Duration = Duration::from_millis(100);
-
-/// The adapter's USB serial rate, the same one every other live command opens
-/// at. A property of the slcan adapter, not of any car.
-const ADAPTER_BAUD: u32 = 115_200;
 
 /// Wong, *Theory of Ground Vehicles*: the rotating inertia of a typical
 /// passenger car's wheels, and of its crank, flywheel and clutch, in kg·m².
@@ -147,7 +143,6 @@ fn hpa_to_kpa(hpa: f64) -> f64 {
 
 /// What `measure setup` was asked for.
 pub struct Options<'a> {
-	pub device: Option<&'a str>,
 	pub catalogs: &'a str,
 	/// The speed a coastdown pass opens at, and the one it closes at.
 	pub coast_from_kmh: f64,
@@ -772,25 +767,20 @@ pub fn still_valid(passes: Vec<KeptPass>, rho: f64, mass_kg: f64) -> (Vec<KeptPa
 ///
 /// Parked for everything that involves a person, moving for everything that
 /// involves the car, and in that order.
-pub async fn run(opts: Options<'_>) -> Result<()> {
-	use vag_uds_can::{SlcanBackend, SlcanBitrate, SlcanMode};
-
+///
+/// `open` takes the bus to the car.
+pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opts: Options<'_>) -> Result<()> {
 	let today = today();
-	let device_path = crate::device::resolve(opts.device)?;
 	let store = vag_data_labels::catalog::CatalogStore::open(opts.catalogs);
-	let mut adapter = SlcanBackend::open_mode(&device_path, ADAPTER_BAUD, SlcanBitrate::Rate500k, SlcanMode::Normal)
-		.await
-		.with_context(|| crate::device::open_failure(&device_path))?;
+	let bus = open().await?;
 
 	// 1. What this car is: the gateway's installation list, then one
 	//    identification block per unit, then the VIN off the engine. The same
 	//    reads `watch` makes, and no session change in any of them.
 	let mut progress = crate::progress::Line::new();
-	let (back, identities) = crate::units::identify(adapter, &[plan::ENGINE], &[], &mut progress).await;
-	adapter = back;
+	let (_, identities) = crate::units::identify(bus.clone(), &[plan::ENGINE], &[], &mut progress).await;
 	progress.update("asking the engine for the VIN");
-	let (back, engine) = read_engine_identity(adapter).await;
-	adapter = back;
+	let (_, engine) = read_engine_identity(bus.clone()).await;
 	progress.finish();
 
 	let vin = engine
@@ -875,10 +865,8 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	//    and, on a car that publishes no barometer, asked for or fallen back to
 	//    the standard atmosphere rather than refused. Still parked: nothing below
 	//    the briefing asks the driver anything.
-	let mut reader = Reader::new(&set);
-	let started = Instant::now();
-	let mut backend = Some(adapter);
-	reader.cycle(&mut backend, started).await;
+	let mut reader = Reader::default();
+	reader.read_once(&bus, &set).await;
 	let rho = air_density(&mut io, reader.air_density(&set), None)?;
 	let mass_kg = car.mass_total_kg().context("the mass was answered just above")?;
 	let delta1 = delta1(&car).context("the car file describes this car by now")?;
@@ -896,9 +884,12 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 	// 7. The drive. Nothing below this line asks the driver anything.
 	let mut stage = Coastdown::new(opts.coast_from_kmh, opts.coast_to_kmh, &rho, mass_kg, delta1, kept, &today);
 	let mut line = crate::progress::Line::new();
+	let mut subs = reader.subscribe(&bus, &set);
 	while !stage.is_done() {
-		let cycle = Instant::now();
-		let t = reader.cycle(&mut backend, started).await;
+		// One sample for each speed that arrives, with whatever else is freshest.
+		let Some(t) = reader.until_speed(&set, &mut subs).await else {
+			bail!("the link to the car closed");
+		};
 		match reader.sample(&set, t) {
 			Some(sample) => {
 				for note in stage.on_sample(&sample) {
@@ -916,9 +907,6 @@ pub async fn run(opts: Options<'_>) -> Result<()> {
 				}
 			}
 			None => line.update(&screens::not_answering()),
-		}
-		if let Some(rest) = POLL_PERIOD.checked_sub(cycle.elapsed()) {
-			tokio::time::sleep(rest).await;
 		}
 	}
 	line.finish();
@@ -974,70 +962,63 @@ async fn read_engine_identity<B: vag_uds_can::UnitLink>(backend: B) -> (B, vag_u
 	(B::release(uds.into_transport()), identity)
 }
 
-/// One cycle of every channel the coastdown watches.
+/// The latest reading of every channel the coastdown watches.
 ///
-/// Every resolved channel is read every cycle, not only the leading unit's: the
-/// pedal and the selector usually live on other control units, and a coast is
-/// recognised from all three together. A coastdown is slow — 0.3 m/s² — so the
-/// rate this costs is rate the fit does not need.
+/// Every resolved channel is read, not only the leading unit's: the pedal and the
+/// selector usually live on other control units, and a coast is recognised from all
+/// three together. A coastdown is slow — 0.3 m/s² — so the rate this costs is rate
+/// the fit does not need.
+#[derive(Default)]
 struct Reader {
-	batches: Vec<Batch>,
 	latest: BTreeMap<(u16, u16), Vec<u8>>,
 }
 
 impl Reader {
-	fn new(set: &Set) -> Reader {
-		let mut by_unit: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
-		for channel in set.all() {
-			let dids = by_unit.entry(channel.request).or_default();
-			// The same identifier twice in one request wastes a slot and makes
-			// the response ambiguous to split.
-			if !dids.contains(&channel.did) {
-				dids.push(channel.did);
-			}
-		}
-		let batches = by_unit
-			.into_iter()
-			.flat_map(|(request, dids)| {
-				dids
-					.chunks(plan::BATCH)
-					.map(|chunk| Batch {
-						request,
-						dids: chunk.to_vec(),
-					})
-					.collect::<Vec<_>>()
-			})
-			.collect();
-		Reader {
-			batches,
-			latest: BTreeMap::new(),
+	/// Every resolved channel once, asked together — what the air density is read
+	/// from while the car is still parked.
+	async fn read_once(&mut self, bus: &vag_cli_core::bus::Bus, set: &Set) {
+		let reads: Vec<(u16, u16)> = addresses(set);
+		let asked: Vec<(vag_cli_core::bus::Unit, u16)> = reads.iter().filter_map(|&(request, did)| Some((unit_of(request)?, did))).collect();
+		let answers = bus.read_all(vag_cli_core::bus::Class::Foreground, &asked).await;
+		for ((unit, did), answer) in asked.into_iter().zip(answers) {
+			self.take(unit.request, did, answer.ok().map(|(data, _)| data));
 		}
 	}
 
-	/// Read every batch once, and say when the cycle ended.
-	async fn cycle<B: vag_uds_can::UnitLink>(&mut self, backend: &mut Option<B>, started: Instant) -> Seconds {
-		let mut at = started.elapsed().as_secs_f64();
-		for batch in &self.batches {
-			let (t, outcome) = plan::read_batch(backend, batch, started).await;
-			at = t;
-			match outcome {
-				BatchOutcome::Answered(records) => {
-					for (did, data) in records {
-						self.latest.insert((batch.request, did), data);
-					}
-				}
-				// A unit that stopped answering keeps no stale value: the
-				// detector treats an absent reading as "nothing was said", which
-				// neither opens a pass nor discards one — and a held-over pedal
-				// reading is exactly how a braked pass would come to be accepted.
-				BatchOutcome::NoAnswer | BatchOutcome::Unaddressable => {
-					for did in &batch.dids {
-						self.latest.remove(&(batch.request, *did));
-					}
-				}
+	/// One subscription per resolved channel, at [`POLL_PERIOD`].
+	fn subscribe(&self, bus: &vag_cli_core::bus::Bus, set: &Set) -> Vec<vag_cli_core::bus::Subscription> {
+		addresses(set)
+			.into_iter()
+			.filter_map(|(request, did)| Some(bus.subscribe(vag_cli_core::bus::Class::Foreground, unit_of(request)?, did, POLL_PERIOD, None)))
+			.collect()
+	}
+
+	/// Take in arrivals until the leading speed's comes, and say when it did.
+	/// `None` once the bus has closed.
+	async fn until_speed(&mut self, set: &Set, subs: &mut [vag_cli_core::bus::Subscription]) -> Option<Seconds> {
+		loop {
+			let (_, sample) = vag_cli_core::bus::next_of(subs).await?;
+			let (request, did) = (sample.unit.request, sample.did);
+			self.take(request, did, sample.value.ok());
+			if (request, did) == (set.leading.request, set.leading.did) {
+				return Some(sample.at.secs);
 			}
 		}
-		at
+	}
+
+	/// A unit that did not answer keeps no stale value: the detector treats an
+	/// absent reading as "nothing was said", which neither opens a pass nor
+	/// discards one — and a held-over pedal reading is exactly how a braked pass
+	/// would come to be accepted.
+	fn take(&mut self, request: u16, did: u16, data: Option<Vec<u8>>) {
+		match data {
+			Some(data) => {
+				self.latest.insert((request, did), data);
+			}
+			None => {
+				self.latest.remove(&(request, did));
+			}
+		}
 	}
 
 	fn raw(&self, channel: &Resolved) -> Option<&[u8]> {
@@ -1076,6 +1057,26 @@ impl Reader {
 			selector: self.state_of(set, "selector"),
 		})
 	}
+}
+
+/// Every resolved channel's address, each once.
+fn addresses(set: &Set) -> Vec<(u16, u16)> {
+	let mut out: Vec<(u16, u16)> = Vec::new();
+	for channel in set.all() {
+		if !out.contains(&(channel.request, channel.did)) {
+			out.push((channel.request, channel.did));
+		}
+	}
+	out
+}
+
+/// The unit a request id addresses, by the rule its id block uses.
+fn unit_of(request: u16) -> Option<vag_cli_core::bus::Unit> {
+	let address = vag_uds_client::address::UnitAddress::from_request(request)?;
+	Some(vag_cli_core::bus::Unit {
+		request: address.request,
+		response: address.response,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -2278,7 +2279,7 @@ mod tests {
 	fn a_set(channels: Vec<Resolved>) -> Set {
 		Set {
 			leading: channels[0].clone(),
-			leading_batch: channels,
+			leading_unit: channels,
 			background: Vec::new(),
 			cross_check_speeds: Vec::new(),
 		}

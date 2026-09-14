@@ -206,6 +206,26 @@ async fn a_one_shot_read_answers_once_or_says_why_not() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn one_shot_reads_asked_together_share_a_request() {
+	let (link, script, _) = car(&[(0x7E0, 0x0133, &[101]), (0x7E0, 0x0146, &[55])]);
+	let bus = Bus::start(link, Budget::default());
+	let got = bus
+		.read_all(Class::Foreground, &[(ENGINE, 0x0133), (ENGINE, 0x0146), (ABSENT, 0x0133)])
+		.await;
+	let values: Vec<Option<Vec<u8>>> = got.into_iter().map(|r| r.ok().map(|(data, _)| data)).collect();
+	assert_eq!(values, vec![Some(vec![101]), Some(vec![55]), None], "in the order asked");
+	let engine: Vec<Vec<u8>> = script
+		.lock()
+		.unwrap()
+		.asked
+		.iter()
+		.filter(|(request, _, _)| *request == 0x7E0)
+		.map(|(_, pdu, _)| pdu.clone())
+		.collect();
+	assert_eq!(engine, vec![vec![0x22, 0x01, 0x33, 0x01, 0x46]], "one request for the engine's two");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_uds_client_runs_through_the_bus_unchanged() {
 	use vag_uds_can::UnitLink as _;
 	let (link, script, _) = car(&[(0x7E0, 0xF190, b"TMBJJ7NE1J0000000"), (0x7E0, 0xF187, b"PART")]);

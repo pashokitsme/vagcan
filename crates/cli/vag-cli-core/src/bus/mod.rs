@@ -216,6 +216,26 @@ impl Bus {
 		rx.await.unwrap_or(Err(Miss::BusError))
 	}
 
+	/// Read several identifiers once each. All are asked before any is waited for, so
+	/// those of one unit ride in one request; the results come back in the order asked.
+	pub async fn read_all(&self, class: Class, reads: &[(Unit, u16)]) -> Vec<Result<(Vec<u8>, At), Miss>> {
+		let waiting: Vec<_> = reads
+			.iter()
+			.map(|&(unit, did)| {
+				let (to, rx) = oneshot::channel();
+				self.commands.send(Command::ReadOnce { class, unit, did, to }).ok().map(|()| rx)
+			})
+			.collect();
+		let mut out = Vec::with_capacity(waiting.len());
+		for rx in waiting {
+			out.push(match rx {
+				Some(rx) => rx.await.unwrap_or(Err(Miss::BusError)),
+				None => Err(Miss::BusError),
+			});
+		}
+		out
+	}
+
 	/// Send one whole UDS request to `unit` and return its answer as it came — a negative
 	/// response included — waiting [`vag_uds_client`]'s own default deadline.
 	pub async fn exchange(&self, class: Class, unit: Unit, pdu: Vec<u8>) -> Result<(Vec<u8>, At), ExchangeError> {
