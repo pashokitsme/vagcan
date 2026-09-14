@@ -104,6 +104,15 @@ struct Raw {
 	class: Class,
 	pdu: Vec<u8>,
 	since_ms: u64,
+	/// Never sent after this ([`Planner::exchange_until`]).
+	not_after_ms: Option<u64>,
+}
+
+impl Raw {
+	/// Whether it may still go out at `now`.
+	fn sendable(&self, now: u64) -> bool {
+		self.not_after_ms.is_none_or(|last| now <= last)
+	}
 }
 
 #[derive(Debug)]
@@ -304,7 +313,8 @@ impl Planner {
 
 	/// Take back an exchange that is still queued, so a consumer that is gone does not
 	/// reach the car. `false` for one already in flight, answered, or unknown: what is on
-	/// the bus cannot be recalled, and its answer is delivered as usual.
+	/// the bus cannot be recalled, and its answer is delivered as usual. `true` for one that
+	/// expired unsent ([`Planner::exchange_until`]) — this is how its owner learns so.
 	pub fn cancel(&mut self, req: ReqId) -> bool {
 		let found = self
 			.units
@@ -351,6 +361,21 @@ impl Planner {
 	/// [`Delivery::Raw`]. Refused at the door, and never queued, when its service is
 	/// outside the read-only allowlist.
 	pub fn exchange(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>) -> Result<ReqId, UdsError> {
+		self.queue_raw(now_ms, class, unit, pdu, None)
+	}
+
+	/// [`exchange`](Self::exchange), never sent after `not_after_ms`: a request whose reason
+	/// to go out goes stale — a session change cleared by a road speed read a moment ago.
+	///
+	/// Past it the exchange is not sent and nothing is delivered for it. It stays queued,
+	/// inert, until its owner takes it back with [`cancel`](Self::cancel), which answers
+	/// `true` because it never went out: the planner has no clock, so the owner, which set
+	/// the time, is the one that looks.
+	pub fn exchange_until(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>, not_after_ms: u64) -> Result<ReqId, UdsError> {
+		self.queue_raw(now_ms, class, unit, pdu, Some(not_after_ms))
+	}
+
+	fn queue_raw(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>, not_after_ms: Option<u64>) -> Result<ReqId, UdsError> {
 		let (&sid, rest) = pdu.split_first().ok_or_else(|| UdsError::Malformed(String::from("empty request")))?;
 		let pdu = pdu::encode_request(sid, rest)?;
 		let id = ReqId(self.fresh());
@@ -359,6 +384,7 @@ impl Planner {
 			class,
 			pdu,
 			since_ms: now_ms,
+			not_after_ms,
 		});
 		Ok(id)
 	}
@@ -380,7 +406,12 @@ impl Planner {
 		for (unit, state) in &self.units {
 			// Every queued raw is a candidate of its own class: a Timing raw is not held behind
 			// a Remote one in front of it.
-			let raws = state.raws.iter().map(|r| (r.since_ms, Some(r.class), Pick::Raw(r.id)));
+			// One past its `not_after_ms` is no candidate, and nothing to wake for either.
+			let raws = state
+				.raws
+				.iter()
+				.filter(|r| r.sendable(now))
+				.map(|r| (r.since_ms, Some(r.class), Pick::Raw(r.id)));
 			let reads = state
 				.reads
 				.iter()

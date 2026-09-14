@@ -111,6 +111,13 @@ pub const SPEED_REQUEST_ID: u16 = 0x7E0;
 pub const SPEED_RESPONSE_ID: u16 = 0x7E8;
 /// Road speed: SAE J1979 PID `0x0D` at its UDS mirror `0xF400 + PID`, one byte of km/h.
 pub const SPEED_REQUEST: [u8; 3] = [0x22, 0xF4, 0x0D];
+/// How long a road speed of 0 clears a session change for: past this many milliseconds after
+/// the speed answer arrived, the change is not sent, and speed is read again (PR #2 review,
+/// S-F2 — a change queued behind other work went out a minute later on a moving car). The
+/// board sends it as its next Timing exchange, so on a working bus it goes in one or two
+/// exchanges; 100 ms is a car at 100 km/h rolling under 3 m. A starting figure: the owner
+/// may tune it.
+pub const SPEED_FRESH_MS: u64 = 100;
 
 const SESSION_CONTROL: u8 = 0x10;
 const READ_BY_IDENTIFIER: u8 = 0x22;

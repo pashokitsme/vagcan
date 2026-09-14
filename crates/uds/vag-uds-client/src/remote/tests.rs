@@ -239,6 +239,92 @@ fn an_extended_session_on_a_moving_car_is_refused_and_on_a_standing_one_forwarde
 	assert_eq!(standing.answers(), [(2, Outcome::Pdu(vec![0x50, 0x03]))]);
 }
 
+/// PR #2 review (S-F2), the reviewer's proof reversed. With a timing channel on a unit slower
+/// than its period, the session change the speed read cleared was queued as Remote and waited
+/// behind it for a minute, then went out on a car answering 90 km/h with no fresh read. Now it
+/// goes out while its speed reading is fresh, and never later without another one.
+#[test]
+fn a_speed_cleared_session_change_goes_out_while_the_reading_is_fresh_beside_a_slow_timing_channel() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	// A unit slower than the timing period: 30 ms to answer a 20 ms subscription.
+	board.latency = 30;
+	board.hear(timing(1, GATEWAY, 0x1000, 20));
+	board.run_until(200);
+	board.hear(request(9, GATEWAY, &[0x10, 0x03]));
+	board.run_until(2_000);
+	let speed_at = board.sent.iter().find(|(_, o)| o.pdu == [0x22, 0xF4, 0x0D]).map(|(t, _)| *t);
+	let session_at = board.sent.iter().find(|(_, o)| o.pdu == [0x10, 0x03]).map(|(t, _)| *t);
+	let fresh = speed_at.zip(session_at).map(|(speed, session)| session - (speed + board.latency));
+	assert!(
+		fresh.is_some_and(|after| after <= crate::guard::SPEED_FRESH_MS),
+		"speed read at {speed_at:?}, 10 03 at {session_at:?}"
+	);
+	assert_eq!(board.answers(), [(9, Outcome::Pdu(vec![0x50, 0x03]))]);
+
+	// The car drives off; the run ends. Nothing else is ever sent as a session change.
+	board.bus = Bus::Answering { kmh: 90 };
+	board.run_until(60_000);
+	board.hear(Message::Unsubscribe { sub: 1 });
+	board.run_until(61_000);
+	assert_eq!(board.sent.iter().filter(|(_, o)| o.pdu == [0x10, 0x03]).count(), 1);
+}
+
+/// A session change the speed read cleared, that cannot go out within `SPEED_FRESH_MS` of the
+/// speed answer — the bus is busy elsewhere — is not sent: the road speed is read again, and
+/// on a car now moving it is refused. Whichever of the shell's two loops looks first.
+#[test]
+fn a_session_change_that_misses_its_fresh_speed_reading_is_not_sent_and_speed_is_read_again() {
+	for due_first in [true, false] {
+		let mut planner = Planner::new(Budget::board());
+		let mut session = Session::new();
+		let mut to_host = session.push(0, &mut planner, request(1, GATEWAY, &[0x10, 0x03]));
+		let answer = |planner: &mut Planner, session: &mut Session, at: u64, kmh: u8| {
+			let Next::Send(out) = planner.due(at - 5) else {
+				panic!("nothing to send")
+			};
+			assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "due first {due_first}");
+			let mut messages = Vec::new();
+			for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, kmh])) {
+				if let Delivery::Raw { req, answer, .. } = &delivery {
+					messages.extend(session.answered(at, planner, *req, answer));
+				}
+			}
+			messages
+		};
+		to_host.extend(answer(&mut planner, &mut session, 20, 0));
+
+		// The bus was busy elsewhere until one millisecond past the reading's freshness.
+		let late = 20 + crate::guard::SPEED_FRESH_MS + 1;
+		let sent_late = |planner: &mut Planner| match planner.due(late) {
+			Next::Send(out) => Some(out),
+			Next::Idle { .. } => None,
+		};
+		let out = if due_first {
+			let out = sent_late(&mut planner);
+			to_host.extend(session.poll(late, &mut planner));
+			out.or_else(|| sent_late(&mut planner))
+		} else {
+			to_host.extend(session.poll(late, &mut planner));
+			sent_late(&mut planner)
+		};
+		let out = out.expect("a fresh speed read goes out");
+		assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "due first {due_first}: not the stale session change");
+
+		// Meanwhile the car drove off.
+		let at = late + 5;
+		for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, 90])) {
+			if let Delivery::Raw { req, answer, .. } = &delivery {
+				to_host.extend(session.answered(at, &mut planner, *req, answer));
+			}
+		}
+		assert!(matches!(planner.due(at + 100), Next::Idle { .. }), "due first {due_first}");
+		let [Message::Answer(answer)] = to_host.as_slice() else {
+			panic!("due first {due_first}: {to_host:?}")
+		};
+		assert!(refused(&answer.outcome).contains("90 km/h"), "{answer:?}");
+	}
+}
+
 #[test]
 fn the_speed_read_goes_ahead_of_the_panels_reads() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });

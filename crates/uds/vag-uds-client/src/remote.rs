@@ -20,7 +20,11 @@
 //! - [`Verdict::Refuse`] — an [`Answer`] with [`Outcome::Refused`] and the
 //!   refusal's text, and nothing reaches the bus;
 //! - [`Verdict::Forward`] — [`Planner::exchange`] as [`Class::Remote`],
-//!   [`Guard::forwarded`], and the unit's answer comes back as an [`Answer`].
+//!   [`Guard::forwarded`], and the unit's answer comes back as an [`Answer`]. A session
+//!   change the speed read cleared goes as [`Class::Timing`] instead, through
+//!   [`Planner::exchange_until`]: if it has not gone out within
+//!   [`SPEED_FRESH_MS`] of the speed answer, it is taken back and checked again from the
+//!   start, which reads speed again. A reading of 0 is only true for a moment.
 //!
 //! # Subscriptions
 //!
@@ -73,7 +77,7 @@ use alloc::vec::Vec;
 
 use vag_uds_transport::link::{Answer, Message, Outcome, Priority, Reading, Request, Subscribe};
 
-use crate::guard::{Guard, Refusal, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict, road_speed};
+use crate::guard::{Guard, Refusal, SPEED_FRESH_MS, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict, road_speed};
 use crate::schedule::{self, Class, Delivery, Miss, Planner, ReqId, SubId, Unit};
 
 /// ReadDataByIdentifier's positive response and a negative response's first byte (ISO 14229-1).
@@ -112,8 +116,18 @@ enum Current {
 	Waiting { request: Request, until_ms: u64 },
 	/// The speed read `req` is out.
 	Speed { request: Request, req: ReqId },
-	/// The request itself is out as `req`; `sid` is its service.
-	Forwarded { seq: u8, sid: u8, req: ReqId },
+	/// The request itself is out as `req`; `sid` is its service. `fresh` for a session
+	/// change a speed read cleared.
+	Forwarded { seq: u8, sid: u8, req: ReqId, fresh: Option<Fresh> },
+}
+
+/// A session change handed to the planner while its road speed reading is fresh.
+#[derive(Debug)]
+struct Fresh {
+	/// Kept to be checked again if it does not go out in time.
+	request: Request,
+	/// The planner's `not_after_ms`: the speed answer's arrival plus [`SPEED_FRESH_MS`].
+	not_after_ms: u64,
 }
 
 impl Session {
@@ -135,8 +149,15 @@ impl Session {
 	/// link while it is high; the one request out is the planner's, at most `MAX_PDU`.
 	pub fn queued_bytes(&self) -> usize {
 		let current = match &self.current {
-			Some(Current::Waiting { request, .. } | Current::Speed { request, .. }) => request.pdu.len(),
-			Some(Current::Forwarded { .. }) | None => 0,
+			Some(
+				Current::Waiting { request, .. }
+				| Current::Speed { request, .. }
+				| Current::Forwarded {
+					fresh: Some(Fresh { request, .. }),
+					..
+				},
+			) => request.pdu.len(),
+			Some(Current::Forwarded { fresh: None, .. }) | None => 0,
 		};
 		current + self.queue.iter().map(|request| request.pdu.len()).sum::<usize>()
 	}
@@ -154,10 +175,16 @@ impl Session {
 		self.queue.len() + usize::from(self.current.is_some())
 	}
 
-	/// The time the request that is waiting out the rate cap may be checked again.
+	/// When [`Session::poll`] has something to do by time alone: the request waiting out the
+	/// rate cap may be checked again, or a session change whose speed reading has gone stale
+	/// is taken back if it has not gone out.
 	pub fn wake_at(&self) -> Option<u64> {
-		match self.current {
-			Some(Current::Waiting { until_ms, .. }) => Some(until_ms),
+		match &self.current {
+			Some(Current::Waiting { until_ms, .. }) => Some(*until_ms),
+			Some(Current::Forwarded {
+				fresh: Some(Fresh { not_after_ms, .. }),
+				..
+			}) => Some(not_after_ms + 1),
 			_ => None,
 		}
 	}
@@ -265,12 +292,29 @@ impl Session {
 					let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
 					(request, verdict)
 				}
+				Some(Current::Forwarded {
+					seq,
+					sid,
+					req,
+					fresh: Some(fresh),
+				}) if fresh.not_after_ms < now_ms => {
+					if !planner.cancel(req) {
+						// It went out while the reading was fresh: its answer is coming.
+						self.current = Some(Current::Forwarded { seq, sid, req, fresh: None });
+						break;
+					}
+					// It did not, and the planner will not send it now: start again, speed read
+					// and all.
+					let request = fresh.request;
+					let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
+					(request, verdict)
+				}
 				Some(blocked) => {
 					self.current = Some(blocked);
 					break;
 				}
 			};
-			self.act(now_ms, planner, request, verdict, &mut out);
+			self.act(now_ms, planner, request, verdict, false, &mut out);
 		}
 		out
 	}
@@ -286,9 +330,9 @@ impl Session {
 					_ => None,
 				};
 				let verdict = self.guard.speed(now_ms, request.request_id, request.response_id, &request.pdu, kmh);
-				self.act(now_ms, planner, request, verdict, &mut out);
+				self.act(now_ms, planner, request, verdict, true, &mut out);
 			}
-			Some(Current::Forwarded { seq, sid, req: out_req }) if out_req == req => {
+			Some(Current::Forwarded { seq, sid, req: out_req, .. }) if out_req == req => {
 				out.push(Message::Answer(Answer {
 					seq,
 					outcome: outcome_of(sid, answer),
@@ -338,7 +382,9 @@ impl Session {
 		self.guard = self.guard.renewed();
 	}
 
-	fn act(&mut self, now_ms: u64, planner: &mut Planner, request: Request, verdict: Verdict, out: &mut Vec<Message>) {
+	/// Do what the guard decided. `speed_cleared`: the verdict follows a speed read that
+	/// answered just now, at `now_ms` — a forward then has [`SPEED_FRESH_MS`] to go out.
+	fn act(&mut self, now_ms: u64, planner: &mut Planner, request: Request, verdict: Verdict, speed_cleared: bool, out: &mut Vec<Message>) {
 		match verdict {
 			Verdict::WaitUntil(until_ms) => self.current = Some(Current::Waiting { request, until_ms }),
 			Verdict::CheckSpeedFirst => {
@@ -361,14 +407,19 @@ impl Session {
 					request: request.request_id,
 					response: request.response_id,
 				};
-				match planner.exchange(now_ms, Class::Remote, unit, request.pdu.clone()) {
+				// A session change goes while the car is known to stand: as the next Timing
+				// exchange, and never after its reading goes stale.
+				let not_after_ms = speed_cleared.then_some(now_ms + SPEED_FRESH_MS);
+				let queued = match not_after_ms {
+					Some(not_after_ms) => planner.exchange_until(now_ms, Class::Timing, unit, request.pdu.clone(), not_after_ms),
+					None => planner.exchange(now_ms, Class::Remote, unit, request.pdu.clone()),
+				};
+				match queued {
 					Ok(req) => {
 						self.guard.forwarded(now_ms, request.request_id, request.response_id, &request.pdu);
-						self.current = Some(Current::Forwarded {
-							seq: request.seq,
-							sid: request.pdu[0],
-							req,
-						});
+						let (seq, sid) = (request.seq, request.pdu[0]);
+						let fresh = not_after_ms.map(|not_after_ms| Fresh { request, not_after_ms });
+						self.current = Some(Current::Forwarded { seq, sid, req, fresh });
 					}
 					// The guard's allowlist is the planner's; this is the second lock on one door.
 					Err(e) => out.push(Message::Answer(Answer {

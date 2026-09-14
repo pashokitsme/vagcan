@@ -48,6 +48,31 @@ fn a_unit_nobody_wants_is_forgotten() {
 	assert_eq!(p.units_held(), 0);
 }
 
+/// An exchange with a `not_after_ms` goes out up to that moment and never after: past it
+/// the planner does not send it and does not wake for it, and `cancel` takes it back as one
+/// that never went out. Another exchange behind it on the same unit is not held up.
+#[test]
+fn an_exchange_is_never_sent_after_its_not_after_and_cancel_takes_it_back() {
+	let mut p = Planner::new(Budget::default());
+	let on_time = p.exchange_until(0, Class::Timing, A, vec![0x10, 0x03], 50).unwrap();
+	let out = send(p.due(50));
+	assert_eq!(out.pdu, [0x10, 0x03], "at its not_after it still goes");
+	let got = p.answered(55, out.token, Answer::Pdu(vec![0x50, 0x03]));
+	assert!(matches!(got.as_slice(), [Delivery::Raw { req, .. }] if *req == on_time));
+
+	let stale = p.exchange_until(100, Class::Timing, A, vec![0x10, 0x03], 150).unwrap();
+	let other = p.exchange(100, Class::Remote, A, vec![0x3E, 0x00]).unwrap();
+	let out = send(p.due(151));
+	assert_eq!(out.pdu, [0x3E, 0x00], "one past it, only the other exchange goes");
+	let got = p.answered(155, out.token, Answer::Pdu(vec![0x7E, 0x00]));
+	assert!(matches!(got.as_slice(), [Delivery::Raw { req, .. }] if *req == other));
+	assert_eq!(p.due(160), Next::Idle { until_ms: None }, "nothing to send, nothing to wake for");
+	assert_eq!(p.units_held(), 1, "held until its owner takes it back");
+	assert!(p.cancel(stale), "it never went out");
+	assert!(!p.cancel(stale));
+	assert_eq!(p.units_held(), 0);
+}
+
 /// Forgetting must not undo the backoff: the panel asks a silent unit its part number
 /// once, gets "no answer", and asks once more at once — which, if the unit had been
 /// forgotten with its backoff, would put a request on the bus every exchange.
