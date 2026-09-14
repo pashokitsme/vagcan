@@ -1,10 +1,10 @@
 //! `dashcfg` — configure the dash over BLE.
 //!
-//! The device is **dark by default**: it advertises nothing until somebody
-//! holds its button for three seconds, and it goes dark again the moment the
-//! connection drops. That is the whole access-control story — reaching this
-//! device means standing next to it — so this tool's first job is to wait
-//! patiently and say what to press, rather than to fail with "not found".
+//! The device is **always visible** (owner, 2026-09-13/14): it advertises from
+//! boot and again after every disconnect, with no button and no pairing. This
+//! tool still waits patiently rather than failing with "not found", because a
+//! board that is powered off or already serving another central is not on the
+//! air either.
 
 use anyhow::{Result, bail};
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
@@ -101,8 +101,9 @@ async fn main() -> Result<()> {
 	result
 }
 
-/// Scans until the device appears. It only appears when somebody holds the
-/// button, so the hint is repeated rather than printed once and scrolled away.
+/// Scans until the device appears. It is not on the air while powered off or
+/// connected to another central, so the hint is repeated rather than printed
+/// once and scrolled away.
 async fn wait_for(adapter: &btleplug::platform::Adapter, name: &str) -> Result<Peripheral> {
 	let mut attempt = 0u32;
 	loop {
@@ -110,7 +111,7 @@ async fn wait_for(adapter: &btleplug::platform::Adapter, name: &str) -> Result<P
 		if attempt == 1 {
 			println!("looking for {name} ...");
 		} else if attempt % 3 == 0 {
-			println!("still nothing — hold the button on the device for 3 s to make it visible");
+			println!("still nothing — is the board powered, and is another central connected to it?");
 		}
 		for found in scan(adapter, SCAN_SECS).await? {
 			if found.name.as_deref() == Some(name) {
@@ -169,7 +170,7 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 						match tokio::time::timeout(Duration::from_secs(3), notifications.next()).await {
 								Ok(Some(n)) => report(&n.value, name),
 								Ok(None) => break,
-								Err(_) => println!("  (no reply in 3 s — the device may have gone dark)"),
+								Err(_) => println!("  (no reply in 3 s — the connection may have dropped)"),
 						}
 				}
 		}

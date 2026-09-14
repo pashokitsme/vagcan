@@ -1,11 +1,18 @@
-//! BLE peripheral probe: two real profiles, not a toy service.
+//! The dash: reads the plan's channels off the car, draws them, and serves the
+//! car over BLE.
 //!
-//! * **DIS** (0x180A) — Device Information: who this thing is. Every scanner
-//!   and every OS reads it, and it costs three constant strings.
-//! * **NUS** — Nordic UART Service. Not a SIG profile, but the de-facto one:
-//!   it is what every "BLE terminal" app speaks, and it is the honest
-//!   replacement for the Bluetooth-Classic SPP that `09` was written around
-//!   before the board turned out to be a C3.
+//! * **The bus** is one task, `bus_task`, and one scheduler:
+//!   [`vag_uds_client::schedule::Planner`]. The panel subscribes to the
+//!   channels of the page on the glass at their own rates and to the rest at
+//!   1 Hz; a BLE host's requests and subscriptions go through the same planner
+//!   (`todo/dash/14` §2). One exchange is in flight at a time.
+//! * **BLE** is always visible (owner, 2026-09-13/14): the board advertises from
+//!   boot, accepts one central, serves it, and advertises again when it leaves.
+//!   Two real profiles: **DIS** (0x180A, who this thing is) and **NUS**, the
+//!   Nordic UART Service, which carries `dashcfg`'s text commands and the framed
+//!   UDS link (`vag_uds_transport::link`) side by side. A host across the radio
+//!   is not trusted, so every framed request passes the board's own guard
+//!   (`vag_uds_client::guard`, `todo/dash/16`).
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -25,11 +32,13 @@
 
 use alloc::vec::Vec;
 use bt_hci::controller::ExternalController;
+use core::cell::RefCell;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
-use embassy_futures::select::{Either3, select, select3};
+use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
@@ -53,13 +62,14 @@ use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
-use vag_dash_fw::ui::{ADVERTISE_WINDOW_SECS, Button, DEBOUNCE_MS, Press, Visibility};
+use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_render::pages::Mismatch;
-use vag_dash_render::plan::Unit;
-use vag_uds_can::IsoTpCan;
+use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::identity::did;
-use vag_uds_client::{AsyncUdsClient, UdsError};
-use vag_uds_transport::{CanId, TransportError};
+use vag_uds_client::remote::Session;
+use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit};
+use vag_uds_transport::link::{self, Piece, Reassembler};
+use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 extern crate alloc;
 
@@ -82,6 +92,11 @@ const L2CAP_CHANNELS_MAX: usize = 2;
 /// so 248 bytes are usable on the air; 244 leaves room for a framing header
 /// and stays inside the MTU-255 packet pool.
 const UART_MTU: usize = 244;
+
+/// The payload of one notification before the central has negotiated anything:
+/// ATT's default MTU of 23 less the 3-byte notification header (Bluetooth Core,
+/// Vol 3 Part F §3.2.8). The floor under [`notify_size`].
+const ATT_DEFAULT_PAYLOAD: usize = 20;
 
 type UartData = heapless::Vec<u8, UART_MTU>;
 
@@ -142,12 +157,54 @@ type Shared = Mutex<CriticalSectionRawMutex, Settings>;
 
 static SETTINGS: StaticCell<Shared> = StaticCell::new();
 
-/// Raised by a three-second hold. It both arms and cancels: the meaning is
-/// decided by what the BLE loop is currently doing.
-static LONG_PRESS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// The one scheduler of the bus, shared by the bus task and the BLE session.
+///
+/// A **blocking** mutex, held only for a planner call — a few map operations,
+/// microseconds — and never across an `.await`. What waits on the bus waits
+/// outside it.
+type Bus = BlockingMutex<CriticalSectionRawMutex, RefCell<Planner>>;
+
+static BUS: StaticCell<Bus> = StaticCell::new();
+
+/// Raised by whoever gives the planner work while the bus task sleeps, so a
+/// BLE request does not wait for the panel's next due read.
+static BUS_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Raised whenever the pages or the page on the glass may have changed, so the
+/// panel's subscriptions follow.
+static PAGES_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Answers to the BLE session's raw exchanges: the request, the answer, and the
+/// board's clock when it arrived. The session waits for one at a time, so four
+/// slots never fill; one left over from a connection that is gone is ignored by
+/// the next.
+static REMOTE_ANSWERS: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 4> = Channel::new();
+
+/// Planner deliveries for the BLE session's subscriptions. **Drop semantics**
+/// (owner, 2026-09-14): a reading that finds this full is thrown away and
+/// counted in [`READINGS_DROPPED`] — the next one is newer anyway, and a bus
+/// that waited for a radio would starve the panel.
+static REMOTE_READINGS: Channel<CriticalSectionRawMutex, Delivery, 16> = Channel::new();
+static READINGS_DROPPED: AtomicU32 = AtomicU32::new(0);
+
+/// Bytes the central wrote to the UART service, in arrival order. Small on
+/// purpose: a full one holds the next write's ATT response back, which is the
+/// host's back-pressure.
+static INBOX: Channel<CriticalSectionRawMutex, UartData, 4> = Channel::new();
+
+/// What goes back to the central. One task notifies, so a framed message cut
+/// into chunks is never interleaved with a text line.
+static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
+
+enum Outgoing {
+	/// One text line, one notification.
+	Text(Vec<u8>),
+	/// One encoded link frame, cut at the notification size.
+	Frame(Vec<u8>),
+}
 
 /// `Visibility as u8`. An atomic rather than the mutex because the LED task
 /// reads it constantly and must never wait for a flash write.
@@ -193,6 +250,12 @@ fn set_visibility(v: Visibility) {
 	VISIBILITY.store(v as u8, Ordering::Relaxed);
 }
 
+/// The board's clock in milliseconds since boot — what the planner, the guard
+/// and every timestamp sent to a host are on.
+fn ms() -> u64 {
+	Instant::now().as_millis()
+}
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
 	esp_println::logger::init_logger_from_env();
@@ -236,15 +299,15 @@ async fn main(spawner: Spawner) {
 	// Settings are read before the radio starts: a panel that cannot find its
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
+	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::default()))));
 
 	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — the
 	// wiring is `todo/dash/15-enclosure.md` §3. **Normal mode, not the
 	// listen-only default `can.rs` argues for**, and the reason is the whole
 	// job: a `0x22` request has to be transmitted, and a controller that
-	// cannot acknowledge cannot be answered either. What goes out is the same
-	// single-identifier read `vagcan watch` already puts on this bus from the
-	// laptop, through the same client and the same allowlist; nothing here can
-	// widen it.
+	// cannot acknowledge cannot be answered either. What goes out is what the
+	// planner sends: the plan's reads, and a BLE host's requests after the
+	// board's guard — both inside the same read-only allowlist.
 	let mut twai = TwaiConfiguration::new(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, BaudRate::B500K, TwaiMode::Normal);
 	// The controller is told which ids to hand up **before** it is started,
 	// because a car's powertrain bus is not quiet: the engine alone broadcasts
@@ -252,9 +315,9 @@ async fn main(spawner: Spawner) {
 	// a full queue drops what arrives next. Without a filter that "next" is the
 	// answer to the request we just sent, and the first run on the car said so
 	// — every exchange opened by sweeping the queue's full 32 entries. The
-	// filter is the plan's own answer ids, so it narrows to what this image
-	// polls and nothing about any car reaches the source.
-	if let Some(filter) = response_filter() {
+	// filter starts as the plan's own answer ids and follows each exchange from
+	// there (`bus_task`), so nothing about any car reaches the source.
+	if let Some(filter) = plan_filter().and_then(twai_filter) {
 		twai.set_filter(filter);
 	}
 	let twai = twai.into_async().start();
@@ -264,10 +327,9 @@ async fn main(spawner: Spawner) {
 	let timer1 = TimerGroup::new(peripherals.TIMG0);
 	let wifi_init = esp_wifi::init(timer1.timer0, rng).expect("radio init");
 
-	// The controller stays up for the life of the device and only *advertising*
-	// is gated. Tearing the controller down would free ~46 KB and reintroduce
-	// the one allocation pattern that can fragment this heap (see .archive/tasks/done/dash/11-ble.md);
-	// gating advertising is a single HCI command and costs nothing.
+	// The controller stays up for the life of the device. Tearing it down would
+	// free ~46 KB and reintroduce the one allocation pattern that can fragment
+	// this heap (see .archive/tasks/done/dash/11-ble.md).
 	let transport = BleConnector::new(&wifi_init, peripherals.BT);
 	let controller: ExternalController<_, 20> = ExternalController::new(transport);
 
@@ -293,11 +355,11 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(heap_task()) {
 		warn!("SPAWN heap FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(can_task(backend)) {
-		warn!("SPAWN can FAILED: {e:?}");
+	if let Err(e) = spawner.spawn(bus_task(backend, bus, settings)) {
+		warn!("SPAWN bus FAILED: {e:?}");
 	}
 
-	run(controller, settings).await;
+	run(controller, settings, bus).await;
 }
 
 fn open_settings() -> Settings {
@@ -389,6 +451,9 @@ fn open_settings() -> Settings {
 /// press *while an alarm is showing* silences that episode instead — the
 /// button is modal because the screen already says which mode it is in.
 ///
+/// A long press does nothing any more: it used to open a three-minute BLE
+/// window, and BLE is now always on (owner, 2026-09-13/14).
+///
 /// The simulator's `BTN S` / `BTN L` come in through the same machine as the
 /// GPIO level, and go out through the same gate: one press per
 /// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), whoever pressed it.
@@ -401,8 +466,8 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 		// Half the debounce interval: fast enough that no edge is missed,
 		// slow enough to be free.
 		let press = match select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
-			embassy_futures::select::Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
-			embassy_futures::select::Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
+			Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
+			Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
 		};
 		match press {
 			Some(Press::Short) => {
@@ -414,25 +479,17 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 				note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
 				drop(s);
 				STATE_CHANGED.signal(());
+				PAGES_CHANGED.signal(());
 			}
-			Some(Press::Long) => {
-				info!(
-					"[button] held — {}",
-					match visibility() {
-						Visibility::Dark => "allowing configuration",
-						_ => "closing configuration",
-					}
-				);
-				LONG_PRESS.signal(());
-			}
+			Some(Press::Long) => note!("button: held — nothing to do, BLE is always on"),
 			None => {}
 		}
 	}
 }
 
 /// The only thing that says what state the device is in while there is no
-/// panel: dark is off, advertising is a hurried blink, connected is a slow
-/// double pulse.
+/// panel: off is not advertising (it could not start), a hurried blink is
+/// advertising, a slow double pulse is connected.
 #[embassy_executor::task]
 async fn led_task(mut led: Output<'static>) -> ! {
 	loop {
@@ -471,7 +528,7 @@ async fn heap_task() -> ! {
 	}
 }
 
-async fn run<C: Controller>(controller: C, settings: &'static Shared) {
+async fn run<C: Controller>(controller: C, settings: &'static Shared, bus: &'static Bus) {
 	// A fixed random address keeps the device recognisable across reflashes.
 	// A shipping device would derive this from its own MAC.
 	let address = Address::random([0xf2, 0xa6, 0x1c, 0x11, 0x5e, 0xc3]);
@@ -496,48 +553,36 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared) {
 	info!("heap after host build:\n{}", esp_alloc::HEAP.stats());
 
 	let _ = join(ble_task(runner), async {
+		// Always visible (owner, 2026-09-13: "мы можем видимость всегда включенной
+		// держать … антенна всё равно далеко не бьёт"; 2026-09-14: zero friction).
+		// There is no gate to open: the board advertises from boot, serves one
+		// central, and advertises again as soon as it leaves. What a stranger in
+		// range can do is what the guard allows, and that was accepted with it.
 		loop {
-			set_visibility(Visibility::Dark);
-			info!("dark — hold the button for 3 s to allow configuration");
-			LONG_PRESS.wait().await;
-
-			set_visibility(Visibility::Advertising);
 			let advertiser = match start_advertising(DEVICE_NAME, &mut peripheral).await {
 				Ok(a) => a,
 				Err(e) => {
+					set_visibility(Visibility::Dark);
 					warn!("[adv] could not start: {e:?}");
 					Timer::after(Duration::from_secs(1)).await;
 					continue;
 				}
 			};
-			info!("[adv] advertising as {DEVICE_NAME} for {ADVERTISE_WINDOW_SECS} s");
+			set_visibility(Visibility::Advertising);
+			info!("[adv] advertising as {DEVICE_NAME}");
 
-			match select3(
-				advertiser.accept(),
-				Timer::after(Duration::from_secs(ADVERTISE_WINDOW_SECS)),
-				LONG_PRESS.wait(),
-			)
-			.await
-			{
-				Either3::First(Ok(conn)) => match conn.with_attribute_server(&server) {
+			match advertiser.accept().await {
+				Ok(conn) => match conn.with_attribute_server(&server) {
 					Ok(conn) => {
 						set_visibility(Visibility::Connected);
 						info!("[adv] connected");
-						select(gatt_events_task(&server, &conn, settings), state_task(&server, &conn, settings)).await;
-						// Whatever ended it, the device goes dark. It does NOT
-						// return to advertising: requiring someone to press the
-						// button again is the entire point — reaching this
-						// device means standing next to it.
-						info!("[adv] connection over, going dark");
+						serve(&server, &conn, settings, bus).await;
+						info!("[adv] connection over, advertising again");
 					}
 					Err(e) => warn!("[adv] attribute server: {e:?}"),
 				},
-				Either3::First(Err(e)) => warn!("[adv] accept failed: {e:?}"),
-				Either3::Second(()) => info!("[adv] window closed with nobody connected"),
-				Either3::Third(()) => info!("[adv] cancelled by the button"),
+				Err(e) => warn!("[adv] accept failed: {e:?}"),
 			}
-			// Dropping the advertiser cancels advertising; `Advertiser::drop`
-			// sends the cancel for us, which is why nothing does it by hand.
 		}
 	})
 	.await;
@@ -587,6 +632,166 @@ const NUS_UUID_LE: [u8; 16] = [
 	0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e,
 ];
 
+/// One connection, from accept to disconnect.
+///
+/// Four jobs, and the first one to end — the GATT event loop, on disconnect —
+/// ends them all. Then the session is closed: the host's subscriptions leave
+/// the planner (drop semantics), and the reassembler and guard go with the
+/// session.
+async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>, settings: &'static Shared, bus: &'static Bus) {
+	// Nothing from a previous connection is this one's.
+	INBOX.clear();
+	OUTBOX.clear();
+	REMOTE_ANSWERS.clear();
+	REMOTE_READINGS.clear();
+	info!("[gatt] ATT MTU {} at connect", conn.raw().att_mtu());
+
+	let mut session = Session::new();
+	select4(
+		gatt_events(server, conn),
+		notifier(server, conn),
+		state_pushes(settings),
+		uds_server(&mut session, settings, bus),
+	)
+	.await;
+	bus.lock(|planner| session.close(&mut planner.borrow_mut()));
+	BUS_WAKE.signal(());
+}
+
+/// The bytes of one notification: the negotiated ATT MTU less the 3-byte
+/// header, never above the characteristic's storage ([`UART_MTU`]) and never
+/// below ATT's default payload.
+///
+/// trouble-host 0.2.4 exposes the MTU as `Connection::att_mtu` and does not
+/// clip a notification to it, so this is where it is kept. macOS asks for 251
+/// at connect (the figure `UART_MTU`'s note records), which makes this 244.
+fn notify_size<P: PacketPool>(conn: &GattConnection<'_, '_, P>) -> usize {
+	usize::from(conn.raw().att_mtu()).saturating_sub(3).clamp(ATT_DEFAULT_PAYLOAD, UART_MTU)
+}
+
+/// Writes into the UART characteristic, handed on as they came.
+async fn gatt_events<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
+	let rx = &server.uart.rx;
+	let reason = loop {
+		match conn.next().await {
+			GattConnectionEvent::Disconnected { reason } => break reason,
+			GattConnectionEvent::Gatt { event } => {
+				if let GattEvent::Write(e) = &event {
+					if e.handle() == rx.handle {
+						let mut chunk = UartData::new();
+						let data = e.data();
+						let _ = chunk.extend_from_slice(&data[..data.len().min(UART_MTU)]);
+						// Awaited before the write is acknowledged: a host that
+						// writes faster than the board reads is held at the ATT
+						// layer instead of being queued without end.
+						INBOX.send(chunk).await;
+					}
+				}
+				// Dropping the event also replies, but the reply is the point,
+				// so send it where it can be seen to fail.
+				match event.accept() {
+					Ok(reply) => reply.send().await,
+					Err(e) => warn!("[gatt] reply failed: {e:?}"),
+				}
+			}
+			_ => {}
+		}
+	};
+	info!("[gatt] disconnected: {reason:?}");
+}
+
+/// The one writer of notifications.
+async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
+	let tx = &server.uart.tx;
+	let mut said_mtu = 0;
+	loop {
+		let outgoing = OUTBOX.receive().await;
+		let size = notify_size(conn);
+		if size != said_mtu {
+			said_mtu = size;
+			note!("ble: notifications of {size} bytes (ATT MTU {})", conn.raw().att_mtu());
+		}
+		let send = async |bytes: &[u8]| {
+			let mut out = UartData::new();
+			let _ = out.extend_from_slice(bytes);
+			let _ = tx.notify(conn, &out).await;
+		};
+		match outgoing {
+			// A text reply is one notification, as it always was: `dashcfg`
+			// reads one per command.
+			Outgoing::Text(line) => send(&line[..line.len().min(size)]).await,
+			Outgoing::Frame(frame) => {
+				for piece in link::chunks(&frame, size) {
+					send(piece).await;
+				}
+			}
+		}
+	}
+}
+
+/// Pushes the state line: once on connecting, and again whenever the button
+/// changes something. A client that has to poll to notice a button press is a
+/// client that shows the wrong thing most of the time.
+async fn state_pushes(settings: &Shared) {
+	loop {
+		OUTBOX.send(Outgoing::Text(state_line(settings).await.into_bytes().to_vec())).await;
+		STATE_CHANGED.wait().await;
+	}
+}
+
+/// Requests in flight in the session past which the board stops reading the
+/// link, so the host waits at the ATT layer. A host that awaits each answer
+/// never has more than one.
+const SESSION_QUEUE_MAX: usize = 4;
+
+/// The link's two protocols: `dashcfg`'s text commands, answered as before, and
+/// framed UDS messages, through the session.
+async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'static Bus) {
+	let mut reassembler = Reassembler::new();
+	let mut dropped_said = 0;
+	loop {
+		// Nothing to wake for is an hour away, not `Instant::MAX`: an alarm that far
+		// out is a question for the time driver this loop does not need to ask.
+		let wake = session.wake_at().map_or(Instant::now() + Duration::from_secs(3600), Instant::from_millis);
+		let full = session.queued() >= SESSION_QUEUE_MAX;
+		let inbox = async {
+			if full {
+				core::future::pending::<()>().await;
+			}
+			INBOX.receive().await
+		};
+		let out = match select4(inbox, REMOTE_ANSWERS.receive(), REMOTE_READINGS.receive(), Timer::at(wake)).await {
+			Either4::First(chunk) => {
+				let mut out = Vec::new();
+				for piece in reassembler.push(&chunk) {
+					match piece {
+						Piece::Text(bytes) => OUTBOX.send(Outgoing::Text(command(settings, &bytes).await.into_bytes().to_vec())).await,
+						Piece::Message(message) => out.extend(bus.lock(|p| session.push(ms(), &mut p.borrow_mut(), message))),
+						Piece::Error(e) => note!("ble: a malformed frame from the host was dropped: {e}"),
+					}
+				}
+				out
+			}
+			Either4::Second((req, answer, at)) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either4::Third(delivery) => session.deliver(&delivery).into_iter().collect(),
+			Either4::Fourth(()) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
+		};
+		// Whatever the session did may have given the planner work.
+		BUS_WAKE.signal(());
+		for message in out {
+			match link::encode(&message) {
+				Ok(frame) => OUTBOX.send(Outgoing::Frame(frame)).await,
+				Err(e) => note!("ble: an answer for the host did not encode: {e}"),
+			}
+		}
+		let dropped = READINGS_DROPPED.load(Ordering::Relaxed);
+		if dropped != dropped_said && dropped >= dropped_said.saturating_mul(2).max(1) {
+			dropped_said = dropped;
+			note!("ble: {dropped} reading(s) dropped — the link is slower than its subscriptions");
+		}
+	}
+}
+
 /// Renders the one line that describes the device completely enough for a
 /// client to draw its own view of it.
 async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
@@ -611,53 +816,6 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	out
 }
 
-/// Pushes the state to the client: once on connecting, and again whenever the
-/// button changes something. A client that has to poll to notice a button
-/// press is a client that shows the wrong thing most of the time.
-async fn state_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>, settings: &Shared) {
-	let tx = &server.uart.tx;
-	loop {
-		let line = state_line(settings).await;
-		let mut out: UartData = heapless::Vec::new();
-		let _ = out.extend_from_slice(line.as_bytes());
-		if server.set(tx, &out).is_ok() {
-			let _ = tx.notify(conn, &out).await;
-		}
-		STATE_CHANGED.wait().await;
-	}
-}
-
-async fn gatt_events_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>, settings: &Shared) {
-	let rx = &server.uart.rx;
-	let tx = &server.uart.tx;
-	let reason = loop {
-		match conn.next().await {
-			GattConnectionEvent::Disconnected { reason } => break reason,
-			GattConnectionEvent::Gatt { event } => {
-				if let GattEvent::Write(e) = &event {
-					if e.handle() == rx.handle {
-						let data = e.data();
-						let reply = command(settings, data).await;
-						let mut out: UartData = heapless::Vec::new();
-						let _ = out.extend_from_slice(&reply.as_bytes()[..reply.len().min(UART_MTU)]);
-						if server.set(tx, &out).is_ok() {
-							let _ = tx.notify(conn, &out).await;
-						}
-					}
-				}
-				// Dropping the event also replies, but the reply is the point,
-				// so send it where it can be seen to fail.
-				match event.accept() {
-					Ok(reply) => reply.send().await,
-					Err(e) => warn!("[gatt] reply failed: {e:?}"),
-				}
-			}
-			_ => {}
-		}
-	};
-	info!("[gatt] disconnected: {reason:?}");
-}
-
 /// The last thing the car said about one channel, and when.
 ///
 /// `value` is what the panel draws; `None` is a dash, never a zero. `at` is
@@ -667,65 +825,77 @@ async fn gatt_events_task<P: PacketPool>(server: &Server<'_>, conn: &GattConnect
 struct Slot {
 	value: Option<f32>,
 	at: Option<Instant>,
+	/// How long this value may be shown: [`STALE`], or three periods of a
+	/// channel read slower than that.
+	fresh_for: Duration,
 }
 
 impl Slot {
-	const EMPTY: Slot = Slot { value: None, at: None };
+	const EMPTY: Slot = Slot {
+		value: None,
+		at: None,
+		fresh_for: STALE,
+	};
 
-	/// The value, unless it is older than [`STALE`].
+	/// The value, unless it is older than it may be.
 	fn current(&self, now: Instant) -> Option<f32> {
 		let at = self.at?;
-		if now.saturating_duration_since(at) > STALE {
+		if now.saturating_duration_since(at) > self.fresh_for {
 			return None;
 		}
 		self.value
 	}
 }
 
-/// How old a value may be and still be shown. A poll cycle is well under a
-/// second; a value nobody has refreshed for five is a bus that went quiet,
-/// and the panel should say so rather than hold the last number.
+/// How old a value may be and still be shown. A shown channel is read several
+/// times a second and a hidden one once; a value nobody has refreshed for five
+/// is a bus that went quiet, and the panel should say so rather than hold the
+/// last number.
 const STALE: Duration = Duration::from_secs(5);
 
-/// One slot per plan channel — the whole of what the CAN task tells the panel
+/// One slot per plan channel — the whole of what the bus task tells the panel
 /// task. Sized by the plan, so a channel the plan does not have has nowhere to
 /// be stored, which is the same property `config.rs` has for cells.
 static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::new([Slot::EMPTY; CHANNEL_COUNT]);
 
-/// How long one `0x22` waits for its answer. Short on purpose: a unit that
-/// is there answers in milliseconds, and a unit that is not should not cost
-/// the others a second each.
-const READ_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(300);
-/// The most one exchange may take, all in. The transport's receive has
-/// [`READ_TIMEOUT`]; its send has no deadline of its own, and what every
-/// state of the controller does to a transmit future is not this loop's to
-/// find out — so the whole exchange gets one, and past it the request is
-/// dropped (which aborts the transmission) and counted as no answer.
-const EXCHANGE_DEADLINE: Duration = Duration::from_secs(1);
-/// Between two reads of one unit — a control unit's diagnostic server is not
-/// its day job, and back-to-back requests are how a server gets crowded.
-const READ_GAP: Duration = Duration::from_millis(50);
-/// Between two full passes over every unit.
-const CYCLE_GAP: Duration = Duration::from_millis(200);
-/// Between two passes when **no** unit answers — ignition off, most likely.
-/// The device hangs off permanent battery positive, and a request every third
-/// of a second is a request that may keep the gateway awake (`.archive/specs/dash/07-sleep.md`,
-/// `.archive/specs/dash/08-power.md`); one every two seconds is a different order of thing. This
-/// puts nothing to sleep; it only stops hammering a bus that is not listening.
-const DEAD_BUS_GAP: Duration = Duration::from_secs(2);
+/// How long one answer PDU may take to arrive, all its frames together. A unit
+/// that is there answers a read in milliseconds; this is also what a silent
+/// unit costs the bus per attempt, so it stays short. 500 ms rather than the
+/// 300 the round-robin used: a host's request may be a fault list of many
+/// frames from a unit behind the gateway.
+const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
+/// After `7F xx 78` (response pending), how long to wait for the next answer:
+/// ISO 14229-2's default P2*server_max, 5000 ms.
+const PENDING_WAIT: Duration = Duration::from_secs(5);
+/// The most a run of `7F xx 78` may hold the bus, all of them together. Past it
+/// the exchange is no answer and the next one goes out. Twice P2*: one unit's
+/// slow operation, not an open-ended one — the panel waits while it lasts.
+const PENDING_DEADLINE: Duration = Duration::from_secs(10);
+/// The transmit side of an exchange. The transport's receive has its own
+/// deadline; its send has none, and what every state of the controller does to
+/// a transmit future is not this loop's to find out — so it gets one, and past
+/// it the request is dropped (which aborts the transmission).
+const SEND_DEADLINE: Duration = Duration::from_secs(1);
 /// After a bus-off, before the restarted controller is asked anything.
 const BUS_OFF_GAP: Duration = Duration::from_secs(1);
+/// How often the bus task looks at the pages when nothing has said they changed.
+const PAGE_RECHECK: Duration = Duration::from_secs(1);
+/// ISO 14229-1: a negative response, and the NRC that asks for more time.
+const NEGATIVE: u8 = 0x7F;
+const RESPONSE_PENDING: u8 = 0x78;
 
 /// What the part-number check has established about one unit.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Check {
-	/// Not asked yet.
+	/// Asked, not answered yet.
 	Pending,
-	/// Asked, no answer; said so once. Asked again next cycle — and a unit
-	/// that answered once and then fell silent comes back here, so that a bus
-	/// which has gone quiet is asked one thing per cycle, not everything.
+	/// Asked, no answer; said so once, and asked again as the planner's backoff
+	/// allows — and a unit that answered once and then fell silent comes back
+	/// here, so that a bus which has gone quiet is asked one thing per unit,
+	/// not everything.
 	Absent,
-	/// Answered with the part number the plan was built against.
+	/// Answered with the part number the plan was built against: its channels
+	/// are subscribed.
 	Matched,
 	/// Answered with a different one. Never polled again this run: the plan's
 	/// identifiers would answer, plausibly, about a unit they were not
@@ -733,41 +903,20 @@ enum Check {
 	Mismatch,
 }
 
-/// The controller's acceptance filter: the ids this plan's units answer on.
-///
-/// Hardware filtering is not an optimisation here, it is what makes the
-/// answer arrive at all. The frames a powertrain bus carries are almost
-/// entirely other people's, esp-hal's async driver queues every accepted one
-/// in a 32-deep channel, and a `try_send` into a full channel drops the
-/// frame. So on a live bus an unfiltered controller fills that queue between
-/// the request and its answer, and the answer is what falls off the end.
-///
-/// The filter is one ESP32 "single standard" filter: an 11-bit code and, in
-/// this API's direction, a mask whose set bits are the ones that must match.
-/// Two answer ids that differ in one bit (`7E8`/`7E9` is the usual pair) cost
-/// that bit; ids scattered further make the filter a superset, which is
-/// harmless — [`vag_uds_can::IsoTpCan`] compares the id exactly, and always
-/// did. Data frames only: nothing in UDS is remote-transmission.
-///
-/// `None` when the plan polls nobody, since a filter matching nothing would
-/// be the same silence with a harder-to-find cause.
-fn response_filter() -> Option<SingleStandardFilter> {
-	/// An 11-bit id is all a standard filter can hold.
-	const SFF: u16 = 0x7FF;
-	let (mut common, mut any) = (SFF, 0u16);
-	for unit in PLAN.units {
-		common &= unit.response & SFF;
-		any |= unit.response & SFF;
-	}
-	if PLAN.units.is_empty() {
-		return None;
-	}
-	// A bit that is set in one answer id and clear in another cannot be
-	// insisted on, so it is dropped from the mask.
-	let must_match = !(any & !common) & SFF;
+/// The acceptance filter for the plan's own answer ids; `None` when the plan
+/// polls nobody, since a filter matching nothing would be the same silence with
+/// a harder-to-find cause. See [`vag_uds_can::filter`] for why a filter at all.
+fn plan_filter() -> Option<StandardFilter> {
+	StandardFilter::covering(PLAN.units.iter().map(|unit| unit.response))
+}
+
+/// The same filter in esp-hal's type: one ESP32 "single standard" filter, an
+/// 11-bit code and, in this API's direction, a mask whose set bits are the ones
+/// that must match. Data frames only: nothing in UDS is remote-transmission.
+fn twai_filter(filter: StandardFilter) -> Option<SingleStandardFilter> {
 	Some(SingleStandardFilter::new_from_code_mask(
-		StandardId::new(common)?,
-		StandardId::new(must_match)?,
+		StandardId::new(filter.code)?,
+		StandardId::new(filter.must_match)?,
 		// RTR clear, and that much is insisted on.
 		false,
 		true,
@@ -777,15 +926,38 @@ fn response_filter() -> Option<SingleStandardFilter> {
 	))
 }
 
-/// One `0x22` exchange with one unit, and what came of it.
-struct Exchange {
-	backend: TwaiBackend<'static>,
-	answer: Result<Vec<u8>, UdsError>,
-	/// Entries swept out of the receive queue before asking.
-	swept: usize,
+/// Moves the controller's filter, and says so the first time with what it cost.
+///
+/// esp-hal `=1.0.0-rc.0` sets a filter only in reset mode: `stop()` enters it,
+/// `set_filter` stores the value, `start()` writes it to the acceptance
+/// registers and leaves reset (clearing the error counters, as the bus-off
+/// restart relies on). That is a handful of register writes — the measured
+/// cost is the note — plus, on the wire, the 11 recessive bits a controller
+/// leaving reset waits for before it takes part: at most one frame's length on
+/// a busy bus, well under a millisecond. It happens only between exchanges,
+/// after nothing is in flight and before the stale-frame sweep, so no answer
+/// can be lost to it. The async driver's receive queue is software and survives
+/// the restart; the sweep empties it.
+fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bool) -> TwaiBackend<'static> {
+	let Some(twai_filter) = twai_filter(filter) else {
+		return backend;
+	};
+	let started = Instant::now();
+	let backend = backend.refilter(twai_filter);
+	let cost = started.elapsed();
+	if !*said {
+		*said = true;
+		note!(
+			"can: the filter follows the exchange — moved to {:03X}/{:03X} in {} µs (said once)",
+			filter.code,
+			filter.must_match,
+			cost.as_micros()
+		);
+	}
+	backend
 }
 
-/// One exchange: sweep, wrap, ask, unwrap.
+/// One exchange: sweep, address, send, wait out `7F xx 78`, unwrap.
 ///
 /// The wrappers are stateless, so building them per exchange costs nothing,
 /// and the sweep is what it buys: whatever the controller queued *since the
@@ -793,36 +965,60 @@ struct Exchange {
 /// another tester on the same response id — is thrown away here rather than
 /// taken as this request's answer, which is how every read of a unit ends up
 /// one behind until a request gets nothing back.
-async fn exchange(mut backend: TwaiBackend<'static>, unit: &Unit, did: u16) -> Exchange {
+async fn exchange(mut backend: TwaiBackend<'static>, unit: Unit, pdu: &[u8]) -> (TwaiBackend<'static>, Result<Vec<u8>, TransportError>, usize) {
 	let swept = backend.drain().await;
-	let mut uds = AsyncUdsClient::new(IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response)));
-	let answer = match with_timeout(EXCHANGE_DEADLINE, uds.read_data_by_identifier_within(did, READ_TIMEOUT)).await {
-		Ok(answer) => answer,
-		Err(_elapsed) => Err(UdsError::Transport(TransportError::Timeout)),
-	};
-	Exchange {
-		backend: uds.into_transport().into_backend(),
-		answer,
-		swept,
+	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
+	let result = transact(&mut link, pdu).await;
+	(link.into_backend(), result, swept)
+}
+
+async fn transact(link: &mut IsoTpCan<TwaiBackend<'static>>, pdu: &[u8]) -> Result<Vec<u8>, TransportError> {
+	match with_timeout(SEND_DEADLINE, link.send(pdu)).await {
+		Ok(sent) => sent?,
+		Err(_elapsed) => return Err(TransportError::Timeout),
+	}
+	let sid = pdu.first().copied().unwrap_or(0);
+	let mut answer = receive(link, RESPONSE_TIMEOUT).await?;
+	// The planner takes a `78` that reaches it as a refusal; the shell's job is
+	// that one does not (`schedule` module docs).
+	let pending_since = Instant::now();
+	while matches!(answer.as_slice(), [NEGATIVE, s, RESPONSE_PENDING, ..] if *s == sid) {
+		let left = PENDING_DEADLINE.checked_sub(pending_since.elapsed()).unwrap_or(Duration::MIN);
+		if left == Duration::MIN {
+			return Err(TransportError::Timeout);
+		}
+		let wait = if left < PENDING_WAIT { left } else { PENDING_WAIT };
+		answer = receive(link, core::time::Duration::from_millis(wait.as_millis())).await?;
+	}
+	Ok(answer)
+}
+
+/// One answer PDU within `timeout`, with a backstop over the transport's own
+/// deadline for the flow-control frame it may transmit.
+async fn receive(link: &mut IsoTpCan<TwaiBackend<'static>>, timeout: core::time::Duration) -> Result<Vec<u8>, TransportError> {
+	let backstop = Duration::from_millis(timeout.as_millis() as u64) + SEND_DEADLINE;
+	with_timeout(backstop, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
+}
+
+/// What the planner is told about an exchange.
+fn answer_of(result: Result<Vec<u8>, TransportError>) -> Answer {
+	match result {
+		Ok(pdu) => Answer::Pdu(pdu),
+		Err(TransportError::Timeout) => Answer::NoAnswer,
+		Err(_) => Answer::BusError,
 	}
 }
 
-/// Nothing came back at all — as opposed to a refusal, which is an answer.
-fn silent(answer: &Result<Vec<u8>, UdsError>) -> bool {
-	matches!(answer, Err(UdsError::Transport(TransportError::Timeout)))
-}
-
-/// The controller after an exchange: restarted if it went bus-off, and the
-/// gap before the next request either way.
+/// The controller after an exchange: restarted if it went bus-off.
 ///
 /// Bus-off is sticky. Once the controller has counted its way there, esp-hal
 /// answers every transmit and receive with `BusOff` until it is put through
 /// reset mode again — so without this, one bad moment on the bus would be
 /// dashes until somebody pulled the plug. `stop()` hands back the
 /// configuration, mode and all; `start()` clears the error counters and
-/// leaves reset; both keep the async driver.
-async fn settle(backend: TwaiBackend<'static>, answer: &Result<Vec<u8>, UdsError>, bus_off: &mut bool) -> TwaiBackend<'static> {
-	if let Err(UdsError::Transport(TransportError::Disconnected)) = answer {
+/// leaves reset; both keep the async driver and the filter's registers.
+async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, TransportError>, bus_off: &mut bool) -> TwaiBackend<'static> {
+	if let Err(TransportError::Disconnected) = result {
 		if !*bus_off {
 			*bus_off = true;
 			note!("can: controller went bus-off — restarting it");
@@ -835,114 +1031,345 @@ async fn settle(backend: TwaiBackend<'static>, answer: &Result<Vec<u8>, UdsError
 		*bus_off = false;
 		note!("can: controller is back on the bus");
 	}
-	Timer::after(READ_GAP).await;
 	backend
 }
 
-/// Says, once, that the sweep found something. The mechanism is silent by
-/// design; one line is what proves it earned its place.
-fn sweep(swept: usize, unit: &Unit, did: u16, said: &mut bool) {
-	if swept > 0 && !*said {
-		*said = true;
-		note!(
-			"can: swept {swept} stale frame(s) before {:03X} {:04X} — a late reply, or another tester",
-			unit.request,
-			did
-		);
+/// The bus: one planner, one exchange at a time, and the panel as its first
+/// consumer.
+///
+/// **One conversation at a time, re-addressed per exchange** — the same shape
+/// as `vag-cli-core`'s `read_batch`: there is one CAN controller, one ISO-TP
+/// state, and a unit is a `(request, response)` pair the transport is built
+/// around. The planner says what goes out next — the visible page's channels
+/// at their rates, hidden pages at 1 Hz, a BLE host's requests between them —
+/// and when; this task puts it on the pair, waits for the answer, stamps its
+/// arrival, and routes what the planner makes of it.
+#[embassy_executor::task]
+async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings: &'static Shared) -> ! {
+	let mut panel = PanelReads::new();
+	let mut filter = FilterFollower::new(plan_filter());
+	let mut filter_said = false;
+	let mut swept_said = false;
+	let mut bus_off = false;
+
+	panel.start(bus);
+	let mut pages_seen = Instant::MIN;
+
+	loop {
+		if PAGES_CHANGED.signaled() || pages_seen.elapsed() >= PAGE_RECHECK {
+			PAGES_CHANGED.reset();
+			pages_seen = Instant::now();
+			panel.follow_pages(bus, settings).await;
+		}
+
+		let next = bus.lock(|p| p.borrow_mut().due(ms()));
+		match next {
+			Next::Send(out) => {
+				if let Some(moved) = filter.before(out.unit.response) {
+					backend = refilter(backend, moved, &mut filter_said);
+				}
+				let (returned, result, swept) = exchange(backend, out.unit, &out.pdu).await;
+				let at = ms();
+				if swept > 0 && !swept_said {
+					swept_said = true;
+					note!(
+						"can: swept {swept} stale frame(s) before {:03X} {:02X?} — a late reply, or another tester",
+						out.unit.request,
+						&out.pdu[..out.pdu.len().min(3)]
+					);
+				}
+				backend = settle(returned, &result, &mut bus_off).await;
+				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(result)));
+				for delivery in deliveries {
+					if let Some(delivery) = panel.take(delivery, bus).await {
+						remote(delivery);
+					}
+				}
+			}
+			Next::Idle { until_ms } => {
+				let recheck = pages_seen + PAGE_RECHECK;
+				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
+				if let Either3::Third(()) = select3(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait()).await {
+					// `wait` consumed the signal; the top of the loop looks for it.
+					PAGES_CHANGED.signal(());
+				}
+			}
+		}
 	}
 }
 
-/// Polls the plan's channels off the car and keeps [`VALUES`] current.
-///
-/// **One conversation at a time, re-addressed per exchange** — the same
-/// shape as `vag-cli-core`'s `read_batch`, and not by accident: there is one
-/// CAN controller, one ISO-TP state, and a unit is a `(request, response)`
-/// pair the transport is built around. So the backend is wrapped for one
-/// read, unwrapped, swept, and wrapped for the next. No actor, no queue,
-/// nothing in flight while another unit is being asked.
-///
-/// Before a unit is polled its part number is read and compared to the
-/// plan's (`05`, "the car check"). This image is built for one car; on
-/// another the same identifiers answer and the answers mean something else.
-/// A mismatch is said once and the unit is left alone for the rest of the
-/// run. No answer is said once and retried — ignition off looks like that —
-/// and when no unit answers at all the retries slow to [`DEAD_BUS_GAP`].
-///
-/// Every failure lands in the store as `None` before anything else happens,
-/// so the panel never shows a number the bus has stopped confirming; what is
-/// *said* about a failure is said on the change, because the USB line is
-/// shared with the frame stream and a note per tick would be noise.
-#[embassy_executor::task]
-async fn can_task(mut backend: TwaiBackend<'static>) -> ! {
-	let mut checks = [Check::Pending; UNIT_COUNT];
-	// Per channel: whether the last read decoded, or `None` before the first.
-	let mut answering = [None::<bool>; CHANNEL_COUNT];
-	let mut swept_said = false;
-	let mut bus_off = false;
-	let mut dead_bus = false;
-
-	loop {
-		for (u, unit) in PLAN.units.iter().enumerate() {
-			if checks[u] == Check::Mismatch {
-				continue;
+/// A delivery that is not the panel's is the BLE session's.
+fn remote(delivery: Delivery) {
+	match delivery {
+		Delivery::Raw { req, answer, at_ms, .. } => {
+			if REMOTE_ANSWERS.try_send((req, answer, at_ms)).is_err() {
+				note!("ble: an answer found its queue full and was lost");
 			}
-			if checks[u] != Check::Matched {
-				let ex = exchange(backend, unit, did::PART_NUMBER).await;
-				sweep(ex.swept, unit, did::PART_NUMBER, &mut swept_said);
-				checks[u] = judge(unit, &ex.answer, checks[u]);
-				backend = settle(ex.backend, &ex.answer, &mut bus_off).await;
-				if checks[u] != Check::Matched {
+		}
+		reading @ (Delivery::Reading { .. } | Delivery::Missed { .. }) => {
+			if REMOTE_READINGS.try_send(reading).is_err() {
+				// No compare-and-swap on this core (riscv32imc), and one writer: this task.
+				READINGS_DROPPED.store(READINGS_DROPPED.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+			}
+		}
+		// The panel is the only one that reads once.
+		Delivery::Once { .. } => {}
+	}
+}
+
+/// One panel subscription.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PanelSub {
+	id: SubId,
+	shown: bool,
+	period_ms: u32,
+}
+
+/// The panel as a consumer of the planner: the part-number check per unit, a
+/// subscription per channel worth reading, and the notes about both.
+///
+/// Before a unit's channels are subscribed its part number is read and compared
+/// to the plan's (`05`, "the car check"). This image is built for one car; on
+/// another the same identifiers answer and the answers mean something else. A
+/// mismatch is said once and the unit is left alone for the rest of the run. No
+/// answer is said once and retried — ignition off looks like that — as often as
+/// the planner's backoff allows, which doubles to 2 s a unit.
+///
+/// Every failure lands in [`VALUES`] as `None` before anything else happens, so
+/// the panel never shows a number the bus has stopped confirming; what is
+/// *said* about a failure is said on the change, because the USB line is shared
+/// with the frame stream and a note per reading would be noise.
+struct PanelReads {
+	checks: [Check; UNIT_COUNT],
+	/// The part-number read out for each unit, if one is.
+	part_reads: [Option<ReqId>; UNIT_COUNT],
+	subs: [Option<PanelSub>; CHANNEL_COUNT],
+	/// Per channel: whether the last reading decoded, or `None` before the first.
+	answering: [Option<bool>; CHANNEL_COUNT],
+	/// What the pages ask for now: the page on the glass, and every page.
+	shown: Vec<u16>,
+	listed: Vec<u16>,
+	dead_bus: bool,
+}
+
+impl PanelReads {
+	fn new() -> Self {
+		PanelReads {
+			checks: [Check::Pending; UNIT_COUNT],
+			part_reads: [None; UNIT_COUNT],
+			subs: [None; CHANNEL_COUNT],
+			answering: [None; CHANNEL_COUNT],
+			shown: Vec::new(),
+			listed: Vec::new(),
+			dead_bus: false,
+		}
+	}
+
+	/// Ask every unit its part number.
+	fn start(&mut self, bus: &Bus) {
+		for u in 0..PLAN.units.len() {
+			self.ask_part_number(u, bus);
+		}
+	}
+
+	fn ask_part_number(&mut self, u: usize, bus: &Bus) {
+		let unit = unit_of(u);
+		self.part_reads[u] = Some(bus.lock(|p| p.borrow_mut().read_once(ms(), Class::Foreground, unit, did::PART_NUMBER)));
+	}
+
+	/// Re-read the pages and move every subscription that no longer matches them.
+	async fn follow_pages(&mut self, bus: &Bus, settings: &Shared) {
+		let (shown, listed) = {
+			let s = settings.lock().await;
+			let shown: Vec<u16> = match s.config.pages.get(usize::from(s.config.active_page)) {
+				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
+				Some(page) => page.cells.iter().copied().collect(),
+				None => Vec::new(),
+			};
+			// Every page's cells, charts included: a chart samples its channel
+			// every frame whether or not it is shown.
+			let listed: Vec<u16> = s.config.pages.iter().flat_map(|page| page.cells.iter().copied()).collect();
+			(shown, listed)
+		};
+		if shown == self.shown && listed == self.listed {
+			return;
+		}
+		self.shown = shown;
+		self.listed = listed;
+		for u in 0..PLAN.units.len() {
+			if self.checks[u] == Check::Matched {
+				self.subscribe_unit(u, bus);
+			}
+		}
+	}
+
+	/// Make one unit's subscriptions what the pages ask for: subscribe what is
+	/// missing, move what changed class or rate, drop what is on no page.
+	fn subscribe_unit(&mut self, u: usize, bus: &Bus) {
+		let unit = unit_of(u);
+		let request = PLAN.units[u].request;
+		let mut wanted: [Option<(bool, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
+		for rate in PLAN.rates(&self.shown, &self.listed) {
+			wanted[usize::from(rate.channel)] = Some((rate.shown, rate.period_ms));
+		}
+		let now = ms();
+		bus.lock(|p| {
+			let mut planner = p.borrow_mut();
+			for (index, channel) in PLAN.channels.iter().enumerate() {
+				if channel.unit != request {
 					continue;
 				}
+				let current = self.subs[index];
+				match (current, wanted[index]) {
+					(Some(sub), Some((shown, period_ms))) if sub.shown == shown && sub.period_ms == period_ms => {}
+					(current, wanted) => {
+						if let Some(sub) = current {
+							planner.unsubscribe(sub.id);
+						}
+						self.subs[index] = wanted.map(|(shown, period_ms)| {
+							let class = if shown { Class::Foreground } else { Class::Background };
+							PanelSub {
+								id: planner.subscribe(now, class, unit, channel.did, period_ms, None),
+								shown,
+								period_ms,
+							}
+						});
+					}
+				}
 			}
+		});
+	}
 
-			let mut heard = false;
-			for (index, channel) in PLAN.channels_of(unit) {
-				let ex = exchange(backend, unit, channel.did).await;
-				sweep(ex.swept, unit, channel.did, &mut swept_said);
-				heard |= !silent(&ex.answer);
-				let value = ex.answer.as_ref().ok().and_then(|data| channel.decode(data));
-				store(index, value).await;
+	/// Drop every subscription of one unit and clear its values.
+	async fn unsubscribe_unit(&mut self, u: usize, bus: &Bus) {
+		let request = PLAN.units[u].request;
+		for (index, channel) in PLAN.channels.iter().enumerate() {
+			if channel.unit == request {
+				if let Some(sub) = self.subs[index].take() {
+					bus.lock(|p| p.borrow_mut().unsubscribe(sub.id));
+				}
+				store(index, None, STALE).await;
+			}
+		}
+	}
 
-				let slot = &mut answering[usize::from(index)];
-				if *slot != Some(value.is_some()) {
-					*slot = Some(value.is_some());
-					match &ex.answer {
-						Ok(data) if value.is_none() => note!(
+	/// Take a delivery if it is the panel's; hand it back otherwise.
+	async fn take(&mut self, delivery: Delivery, bus: &Bus) -> Option<Delivery> {
+		match &delivery {
+			Delivery::Once { req, result, .. } => {
+				let Some(u) = self.part_reads.iter().position(|r| *r == Some(*req)) else {
+					return Some(delivery);
+				};
+				self.part_reads[u] = None;
+				let previous = self.checks[u];
+				self.checks[u] = judge(u, result.as_deref(), previous);
+				match self.checks[u] {
+					Check::Matched => self.subscribe_unit(u, bus),
+					Check::Absent => self.ask_part_number(u, bus),
+					Check::Mismatch | Check::Pending => {}
+				}
+				self.say_dead_bus();
+				None
+			}
+			Delivery::Reading { sub, data, .. } => {
+				let Some(index) = self.channel_of(*sub) else {
+					return Some(delivery);
+				};
+				let channel = &PLAN.channels[index];
+				let value = channel.decode(data);
+				store(index, value, self.fresh_for(index)).await;
+				if self.answering[index] != Some(value.is_some()) {
+					self.answering[index] = Some(value.is_some());
+					match value {
+						None => note!(
 							"can: {:03X} {:04X} answered {} byte(s), the plan wants bits {}+{}",
-							unit.request,
+							channel.unit,
 							channel.did,
 							data.len(),
 							channel.bit_offset,
 							channel.bit_length
 						),
-						Ok(_) => note!("can: {:03X} {:04X} {} is answering", unit.request, channel.did, channel.label),
-						Err(e) => note!("can: {:03X} {:04X} {}: {e}", unit.request, channel.did, channel.label),
+						Some(_) => note!("can: {:03X} {:04X} {} is answering", channel.unit, channel.did, channel.label),
 					}
 				}
-				backend = settle(ex.backend, &ex.answer, &mut bus_off).await;
+				None
 			}
-			// A unit that said nothing to a whole pass is asked one thing
-			// per cycle from here on — its part number — until it speaks.
-			if !heard && PLAN.channels_of(unit).next().is_some() {
-				checks[u] = Check::Absent;
-				note!("can: {:03X} went silent — will keep asking", unit.request);
+			Delivery::Missed { sub, why, .. } => {
+				let Some(index) = self.channel_of(*sub) else {
+					return Some(delivery);
+				};
+				let channel = &PLAN.channels[index];
+				store(index, None, STALE).await;
+				if self.answering[index] != Some(false) {
+					self.answering[index] = Some(false);
+					note!("can: {:03X} {:04X} {}: {}", channel.unit, channel.did, channel.label, miss_text(*why));
+				}
+				// A unit that stops answering is asked one thing — its part
+				// number — until it speaks, not every channel.
+				if *why == Miss::NoAnswer {
+					if let Some(u) = PLAN.units.iter().position(|unit| unit.request == channel.unit) {
+						if self.checks[u] == Check::Matched {
+							self.checks[u] = Check::Absent;
+							note!("can: {:03X} went silent — will keep asking", channel.unit);
+							self.unsubscribe_unit(u, bus).await;
+							self.ask_part_number(u, bus);
+							self.say_dead_bus();
+						}
+					}
+				}
+				None
 			}
+			Delivery::Raw { .. } => Some(delivery),
 		}
+	}
 
+	fn channel_of(&self, sub: SubId) -> Option<usize> {
+		self.subs.iter().position(|s| s.is_some_and(|s| s.id == sub))
+	}
+
+	/// Three periods of a channel read slower than [`STALE`] allows, else [`STALE`].
+	fn fresh_for(&self, index: usize) -> Duration {
+		let period = self.subs[index].map_or(0, |s| s.period_ms);
+		let three = Duration::from_millis(u64::from(period) * 3);
+		if three > STALE { three } else { STALE }
+	}
+
+	/// Said on the change: no unit answers, or one does again.
+	fn say_dead_bus(&mut self) {
 		// `is_empty` on the plan rather than `UNIT_COUNT > 0`: with the empty plan a
 		// CI build links, the constant comparison is one clippy refuses.
-		let dead = !PLAN.units.is_empty() && checks.iter().all(|c| *c == Check::Absent);
-		if dead != dead_bus {
-			dead_bus = dead;
+		let dead = !PLAN.units.is_empty() && self.checks.iter().all(|c| *c == Check::Absent);
+		if dead != self.dead_bus {
+			self.dead_bus = dead;
 			if dead {
-				note!("can: no unit answers — asking every {} s until one does", DEAD_BUS_GAP.as_secs());
+				note!(
+					"can: no unit answers — asking each for its part number every {} s at most until one does",
+					Budget::default().backoff_cap_ms / 1000
+				);
 			} else {
 				note!("can: the bus is answering again");
 			}
 		}
-		Timer::after(if dead_bus { DEAD_BUS_GAP } else { CYCLE_GAP }).await;
 	}
+}
+
+fn unit_of(u: usize) -> Unit {
+	Unit {
+		request: PLAN.units[u].request,
+		response: PLAN.units[u].response,
+	}
+}
+
+fn miss_text(why: Miss) -> heapless::String<32> {
+	let mut out = heapless::String::new();
+	let _ = match why {
+		Miss::NoAnswer => write!(out, "no answer"),
+		Miss::BusError => write!(out, "bus error"),
+		Miss::Refused(nrc) => write!(out, "refused, NRC {nrc:02X}"),
+		Miss::Absent => write!(out, "left out of the answer"),
+		Miss::Malformed => write!(out, "answer did not parse"),
+	};
+	out
 }
 
 /// What the unit's part number says, against the plan's.
@@ -951,7 +1378,8 @@ async fn can_task(mut backend: TwaiBackend<'static>) -> ! {
 /// car, and a NUL is the other thing a fixed-width field is padded with — so
 /// the padding is trimmed before comparing, exactly as the survey that the
 /// plan was built from trimmed it.
-fn judge(unit: &Unit, answer: &Result<Vec<u8>, UdsError>, previous: Check) -> Check {
+fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> Check {
+	let unit = &PLAN.units[u];
 	match answer {
 		Ok(data) => {
 			let reported = core::str::from_utf8(data).map(|s| s.trim_end_matches([' ', '\0']));
@@ -978,9 +1406,9 @@ fn judge(unit: &Unit, answer: &Result<Vec<u8>, UdsError>, previous: Check) -> Ch
 				}
 			}
 		}
-		Err(e) => {
+		Err(why) => {
 			if previous != Check::Absent {
-				note!("can: {:03X} did not answer F187 ({e}) — will keep asking", unit.request);
+				note!("can: {:03X} did not answer F187 ({}) — will keep asking", unit.request, miss_text(*why));
 			}
 			Check::Absent
 		}
@@ -988,12 +1416,13 @@ fn judge(unit: &Unit, answer: &Result<Vec<u8>, UdsError>, previous: Check) -> Ch
 }
 
 /// Puts one reading in the store. `None` clears the slot, timestamp and all.
-async fn store(index: u16, value: Option<f32>) {
+async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 	let mut values = VALUES.lock().await;
-	if let Some(slot) = values.get_mut(usize::from(index)) {
+	if let Some(slot) = values.get_mut(index) {
 		*slot = Slot {
 			value,
 			at: value.map(|_| Instant::now()),
+			fresh_for,
 		};
 	}
 }
@@ -1011,7 +1440,7 @@ const FRAME_MS: u64 = 200;
 /// the panel.
 ///
 /// Labels, units and decimals come from the plan; values come from
-/// [`VALUES`], where the CAN task left them. A cell whose channel has not
+/// [`VALUES`], where the bus task left them. A cell whose channel has not
 /// answered is drawn with `None`, and the renderer draws a dash. Nothing here
 /// invents a number.
 #[embassy_executor::task]
@@ -1159,9 +1588,9 @@ async fn remote_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static,
 }
 
 /// The configuration protocol, in its first and deliberately dumbest form:
-/// lines of text. A binary framing with a CRC is what a real client wants, but
-/// text is what a person with a terminal can drive, and being able to drive it
-/// by hand is worth more right now than being able to parse it fast.
+/// lines of text. It shares the UART service with the framed UDS link, which
+/// starts every message with a NUL that no text line has (`link`'s docs), and
+/// text is what a person with a terminal can drive by hand.
 async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 	let mut out: heapless::String<UART_MTU> = heapless::String::new();
 	let Ok(line) = core::str::from_utf8(raw) else {
@@ -1221,6 +1650,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 					} else {
 						s.config.active_page = v;
 						s.unsaved = true;
+						PAGES_CHANGED.signal(());
 						let _ = write!(out, "ok: page {v}");
 					}
 				}
@@ -1265,6 +1695,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 						Ok(()) => {
 							s.config = config;
 							s.unsaved = false;
+							PAGES_CHANGED.signal(());
 							let _ = write!(out, "ok: reloaded from flash");
 						}
 						Err(reason) => {
@@ -1281,6 +1712,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 			let mut s = settings.lock().await;
 			s.config = Config::default();
 			s.unsaved = true;
+			PAGES_CHANGED.signal(());
 			let _ = write!(out, "ok: defaults in memory — 'save' to keep them");
 		}
 		Some("erase") => {
