@@ -40,6 +40,7 @@ use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -64,10 +65,11 @@ use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_render::pages::Mismatch;
+use vag_dash_render::plan::{PartAnswer, PartCheck};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::identity::did;
 use vag_uds_client::remote::Session;
-use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit};
+use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
 use vag_uds_transport::link::{self, Piece, Reassembler};
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
@@ -162,7 +164,7 @@ static SETTINGS: StaticCell<Shared> = StaticCell::new();
 /// A **blocking** mutex, held only for a planner call — a few map operations,
 /// microseconds — and never across an `.await`. What waits on the bus waits
 /// outside it.
-type Bus = BlockingMutex<CriticalSectionRawMutex, RefCell<Planner>>;
+type Bus = BlockingMutex<NoopRawMutex, RefCell<Planner>>;
 
 static BUS: StaticCell<Bus> = StaticCell::new();
 
@@ -646,6 +648,9 @@ async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_,
 	REMOTE_READINGS.clear();
 	info!("[gatt] ATT MTU {} at connect", conn.raw().att_mtu());
 
+	// Drops counted before this connection subscribed anything are not its drops.
+	READINGS_DROPPED.store(0, Ordering::Relaxed);
+
 	let mut session = Session::new();
 	select4(
 		gatt_events(server, conn),
@@ -654,8 +659,29 @@ async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_,
 		uds_server(&mut session, settings, bus),
 	)
 	.await;
+	// The host is gone: what it wrote and nobody read yet is not sent to the car, the
+	// exchange it has queued is cancelled, and its subscriptions leave the planner.
+	INBOX.clear();
 	bus.lock(|planner| session.close(&mut planner.borrow_mut()));
+	remote_subscriptions(&session);
 	BUS_WAKE.signal(());
+}
+
+/// The live session's planner subscriptions, where the bus task can see them: a
+/// delivery for none of them is nobody's and is dropped there (`remote`).
+static REMOTE_SUBS: BlockingMutex<CriticalSectionRawMutex, RefCell<heapless::Vec<SubId, { vag_uds_client::guard::MAX_SUBSCRIPTIONS }>>> =
+	BlockingMutex::new(RefCell::new(heapless::Vec::new()));
+
+/// Publish which subscriptions the session owns now. Held for a copy of at most
+/// [`MAX_SUBSCRIPTIONS`](vag_uds_client::guard::MAX_SUBSCRIPTIONS) ids.
+fn remote_subscriptions(session: &Session) {
+	REMOTE_SUBS.lock(|subs| {
+		let mut subs = subs.borrow_mut();
+		subs.clear();
+		for id in session.subscriptions() {
+			let _ = subs.push(id);
+		}
+	});
 }
 
 /// The bytes of one notification: the negotiated ATT MTU less the 3-byte
@@ -683,8 +709,14 @@ async fn gatt_events<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'
 						let _ = chunk.extend_from_slice(&data[..data.len().min(UART_MTU)]);
 						// Awaited before the write is acknowledged: a host that
 						// writes faster than the board reads is held at the ATT
-						// layer instead of being queued without end.
-						INBOX.send(chunk).await;
+						// layer instead of being queued without end. Raced against
+						// the connection, because while this waits no event —
+						// the disconnect included — is read, and a session left
+						// open serves a host that is gone.
+						if let Either::Second(()) = select(INBOX.send(chunk), gone(conn)).await {
+							info!("[gatt] disconnected while the session was full");
+							return;
+						}
 					}
 				}
 				// Dropping the event also replies, but the reply is the point,
@@ -698,6 +730,26 @@ async fn gatt_events<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'
 		}
 	};
 	info!("[gatt] disconnected: {reason:?}");
+}
+
+/// How often a stalled write looks whether its connection is still there.
+const GONE_POLL: Duration = Duration::from_millis(50);
+
+/// Resolves once the connection has dropped. Polled, because the event that says
+/// so is the one `gatt_events` cannot read while it waits.
+async fn gone<P: PacketPool>(conn: &GattConnection<'_, '_, P>) {
+	while conn.raw().is_connected() {
+		Timer::after(GONE_POLL).await;
+	}
+}
+
+/// One text line as the link carries it: its bytes and a `\n`, which is how a client
+/// knows where a line cut into several notifications ends.
+fn text_line(text: &str) -> Vec<u8> {
+	let mut line = Vec::with_capacity(text.len() + 1);
+	line.extend_from_slice(text.as_bytes());
+	line.push(b'\n');
+	line
 }
 
 /// The one writer of notifications.
@@ -716,15 +768,12 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 			let _ = out.extend_from_slice(bytes);
 			let _ = tx.notify(conn, &out).await;
 		};
-		match outgoing {
-			// A text reply is one notification, as it always was: `dashcfg`
-			// reads one per command.
-			Outgoing::Text(line) => send(&line[..line.len().min(size)]).await,
-			Outgoing::Frame(frame) => {
-				for piece in link::chunks(&frame, size) {
-					send(piece).await;
-				}
-			}
+		// Both cut at the notification size: a frame's reassembler and a text line's
+		// `\n` say where each ends. The first state push goes out before the MTU
+		// exchange, at 20 bytes a notification, and must still arrive whole.
+		let (Outgoing::Text(bytes) | Outgoing::Frame(bytes)) = outgoing;
+		for piece in link::chunks(&bytes, size) {
+			send(piece).await;
 		}
 	}
 }
@@ -734,7 +783,7 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 /// client that shows the wrong thing most of the time.
 async fn state_pushes(settings: &Shared) {
 	loop {
-		OUTBOX.send(Outgoing::Text(state_line(settings).await.into_bytes().to_vec())).await;
+		OUTBOX.send(Outgoing::Text(text_line(&state_line(settings).await))).await;
 		STATE_CHANGED.wait().await;
 	}
 }
@@ -765,7 +814,7 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				let mut out = Vec::new();
 				for piece in reassembler.push(&chunk) {
 					match piece {
-						Piece::Text(bytes) => OUTBOX.send(Outgoing::Text(command(settings, &bytes).await.into_bytes().to_vec())).await,
+						Piece::Text(bytes) => OUTBOX.send(Outgoing::Text(text_line(&command(settings, &bytes).await))).await,
 						Piece::Message(message) => out.extend(bus.lock(|p| session.push(ms(), &mut p.borrow_mut(), message))),
 						Piece::Error(e) => note!("ble: a malformed frame from the host was dropped: {e}"),
 					}
@@ -776,7 +825,9 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 			Either4::Third(delivery) => session.deliver(&delivery).into_iter().collect(),
 			Either4::Fourth(()) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
 		};
-		// Whatever the session did may have given the planner work.
+		// Whatever the session did may have given the planner work, and changed which
+		// subscriptions are its.
+		remote_subscriptions(session);
 		BUS_WAKE.signal(());
 		for message in out {
 			match link::encode(&message) {
@@ -864,6 +915,10 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 /// 300 the round-robin used: a host's request may be a fault list of many
 /// frames from a unit behind the gateway.
 const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
+/// How long a request that suppressed its positive response (`3E 80`, `10 81`) waits
+/// for the refusal that is its only possible answer. ISO 14229-2's default
+/// P2server_max is 50 ms; three times that leaves room for a unit behind the gateway.
+const SUPPRESSED_WAIT: core::time::Duration = core::time::Duration::from_millis(150);
 /// After `7F xx 78` (response pending), how long to wait for the next answer:
 /// ISO 14229-2's default P2*server_max, 5000 ms.
 const PENDING_WAIT: Duration = Duration::from_secs(5);
@@ -978,7 +1033,11 @@ async fn transact(link: &mut IsoTpCan<TwaiBackend<'static>>, pdu: &[u8]) -> Resu
 		Err(_elapsed) => return Err(TransportError::Timeout),
 	}
 	let sid = pdu.first().copied().unwrap_or(0);
-	let mut answer = receive(link, RESPONSE_TIMEOUT).await?;
+	// A request that suppressed its positive response is answered only by a refusal,
+	// and a refusal comes within P2: waiting the full deadline for silence would hold
+	// the bus for nothing. `answer_of` turns the timeout into `NotExpected`.
+	let first = if expects_no_answer(pdu) { SUPPRESSED_WAIT } else { RESPONSE_TIMEOUT };
+	let mut answer = receive(link, first).await?;
 	// The planner takes a `78` that reaches it as a refusal; the shell's job is
 	// that one does not (`schedule` module docs).
 	let pending_since = Instant::now();
@@ -1000,10 +1059,13 @@ async fn receive(link: &mut IsoTpCan<TwaiBackend<'static>>, timeout: core::time:
 	with_timeout(backstop, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
 }
 
-/// What the planner is told about an exchange.
-fn answer_of(result: Result<Vec<u8>, TransportError>) -> Answer {
+/// What the planner is told about an exchange of `request`. Silence after a request
+/// that asked for it is [`Answer::NotExpected`], not an absent unit: the panel keeps
+/// reading that unit and nothing is backed off.
+fn answer_of(request: &[u8], result: Result<Vec<u8>, TransportError>) -> Answer {
 	match result {
 		Ok(pdu) => Answer::Pdu(pdu),
+		Err(TransportError::Timeout) if expects_no_answer(request) => Answer::NotExpected,
 		Err(TransportError::Timeout) => Answer::NoAnswer,
 		Err(_) => Answer::BusError,
 	}
@@ -1061,6 +1123,7 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 			pages_seen = Instant::now();
 			panel.follow_pages(bus, settings).await;
 		}
+		panel.ask_again_when_due(bus);
 
 		let next = bus.lock(|p| p.borrow_mut().due(ms()));
 		match next {
@@ -1079,7 +1142,7 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 					);
 				}
 				backend = settle(returned, &result, &mut bus_off).await;
-				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(result)));
+				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(&out.pdu, result)));
 				for delivery in deliveries {
 					if let Some(delivery) = panel.take(delivery, bus).await {
 						remote(delivery);
@@ -1088,6 +1151,7 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 			}
 			Next::Idle { until_ms } => {
 				let recheck = pages_seen + PAGE_RECHECK;
+				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
 				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
 				if let Either3::Third(()) = select3(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait()).await {
 					// `wait` consumed the signal; the top of the loop looks for it.
@@ -1098,7 +1162,9 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 	}
 }
 
-/// A delivery that is not the panel's is the BLE session's.
+/// A delivery that is not the panel's is the BLE session's — if the session owns it.
+/// A reading for a subscription nobody owns any more (a unit the panel just dropped,
+/// or a host that left) is nobody's: dropped here, and not counted as a drop.
 fn remote(delivery: Delivery) {
 	match delivery {
 		Delivery::Raw { req, answer, at_ms, .. } => {
@@ -1106,6 +1172,7 @@ fn remote(delivery: Delivery) {
 				note!("ble: an answer found its queue full and was lost");
 			}
 		}
+		Delivery::Reading { sub, .. } | Delivery::Missed { sub, .. } if !REMOTE_SUBS.lock(|subs| subs.borrow().contains(&sub)) => {}
 		reading @ (Delivery::Reading { .. } | Delivery::Missed { .. }) => {
 			if REMOTE_READINGS.try_send(reading).is_err() {
 				// No compare-and-swap on this core (riscv32imc), and one writer: this task.
@@ -1150,6 +1217,9 @@ struct PanelReads {
 	shown: Vec<u16>,
 	listed: Vec<u16>,
 	dead_bus: bool,
+	/// A unit whose part-number answer did not parse is asked again no sooner than
+	/// this: the answer reset the planner's backoff, so the pace is kept here.
+	part_retry_at: [Option<Instant>; UNIT_COUNT],
 }
 
 impl PanelReads {
@@ -1162,7 +1232,24 @@ impl PanelReads {
 			shown: Vec::new(),
 			listed: Vec::new(),
 			dead_bus: false,
+			part_retry_at: [None; UNIT_COUNT],
 		}
+	}
+
+	/// Ask again every unit whose garbled part number has waited long enough.
+	fn ask_again_when_due(&mut self, bus: &Bus) {
+		let now = Instant::now();
+		for u in 0..PLAN.units.len() {
+			if self.part_retry_at[u].is_some_and(|at| at <= now) {
+				self.part_retry_at[u] = None;
+				self.ask_part_number(u, bus);
+			}
+		}
+	}
+
+	/// When the next such retry is due, for the bus task's sleep.
+	fn next_retry(&self) -> Option<Instant> {
+		self.part_retry_at.iter().flatten().min().copied()
 	}
 
 	/// Ask every unit its part number.
@@ -1262,11 +1349,21 @@ impl PanelReads {
 				};
 				self.part_reads[u] = None;
 				let previous = self.checks[u];
-				self.checks[u] = judge(u, result.as_deref(), previous);
-				match self.checks[u] {
-					Check::Matched => self.subscribe_unit(u, bus),
-					Check::Absent => self.ask_part_number(u, bus),
-					Check::Mismatch | Check::Pending => {}
+				match judge(u, result.as_deref(), previous) {
+					PartCheck::Matched => {
+						self.checks[u] = Check::Matched;
+						self.subscribe_unit(u, bus);
+					}
+					PartCheck::Mismatch => self.checks[u] = Check::Mismatch,
+					PartCheck::Absent => {
+						self.checks[u] = Check::Absent;
+						self.ask_part_number(u, bus);
+					}
+					PartCheck::RetryLater => {
+						self.checks[u] = Check::Absent;
+						let cap = Duration::from_millis(u64::from(Budget::default().backoff_cap_ms));
+						self.part_retry_at[u] = Some(Instant::now() + cap);
+					}
 				}
 				self.say_dead_bus();
 				None
@@ -1372,47 +1469,47 @@ fn miss_text(why: Miss) -> heapless::String<32> {
 	out
 }
 
-/// What the unit's part number says, against the plan's.
-///
-/// `F187` carries the number padded — one trailing space on the reference
-/// car, and a NUL is the other thing a fixed-width field is padded with — so
-/// the padding is trimmed before comparing, exactly as the survey that the
-/// plan was built from trimmed it.
-fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> Check {
+/// What the unit's part-number answer means, decided by
+/// [`vag_dash_render::plan::Unit::check_part`] (host-tested there) and said here, once
+/// per change: a match, a mismatch (another number, not text, or a refusal to say —
+/// never polled this run), silence (asked again under the planner's backoff), or an
+/// answer that did not parse (asked again after the backoff's cap).
+fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 	let unit = &PLAN.units[u];
-	match answer {
-		Ok(data) => {
-			let reported = core::str::from_utf8(data).map(|s| s.trim_end_matches([' ', '\0']));
-			match reported {
-				Ok(reported) if reported == unit.part_number => {
-					note!("can: {:03X} is {} as planned", unit.request, unit.part_number);
-					Check::Matched
-				}
-				Ok(reported) => {
-					note!(
-						"can: {:03X} is {reported:?}, the plan was built for {} — not polling it",
-						unit.request,
-						unit.part_number
-					);
-					Check::Mismatch
-				}
-				Err(_) => {
-					note!(
-						"can: {:03X} answered F187 with {:02X?}, not a part number — not polling it",
-						unit.request,
-						data
-					);
-					Check::Mismatch
-				}
-			}
+	let part = match answer {
+		Ok(data) => PartAnswer::Data(data),
+		Err(Miss::Refused(nrc)) => PartAnswer::Refused(*nrc),
+		Err(Miss::NoAnswer) => PartAnswer::NoAnswer,
+		Err(Miss::BusError) => PartAnswer::BusError,
+		Err(Miss::Malformed | Miss::Absent) => PartAnswer::Malformed,
+	};
+	let check = unit.check_part(part);
+	match (check, answer) {
+		(PartCheck::Matched, _) => note!("can: {:03X} is {} as planned", unit.request, unit.part_number),
+		(PartCheck::Mismatch, Ok(data)) => match core::str::from_utf8(data) {
+			Ok(reported) => note!(
+				"can: {:03X} is {:?}, the plan was built for {} — not polling it",
+				unit.request,
+				reported.trim_end_matches([' ', '\0']),
+				unit.part_number
+			),
+			Err(_) => note!(
+				"can: {:03X} answered F187 with {:02X?}, not a part number — not polling it",
+				unit.request,
+				data
+			),
+		},
+		(PartCheck::Mismatch, Err(why)) => note!(
+			"can: {:03X} refused F187 ({}) — cannot check it against the plan, not polling it",
+			unit.request,
+			miss_text(*why)
+		),
+		(PartCheck::Absent | PartCheck::RetryLater, Err(why)) if previous != Check::Absent => {
+			note!("can: {:03X} did not answer F187 ({}) — will keep asking", unit.request, miss_text(*why));
 		}
-		Err(why) => {
-			if previous != Check::Absent {
-				note!("can: {:03X} did not answer F187 ({}) — will keep asking", unit.request, miss_text(*why));
-			}
-			Check::Absent
-		}
+		_ => {}
 	}
+	check
 }
 
 /// Puts one reading in the store. `None` clears the slot, timestamp and all.
