@@ -10,7 +10,7 @@ anyhow = "1"
 # On Linux this wants `libdbus-1-dev` present at build time — see .github/ci.yml.
 btleplug = "0.11"
 futures = "0.3"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "time", "sync"] }
 uuid = "1"
 # `NusPipe` is a `link::Pipe`: the UDS framing to the board travels over it.
 vag-uds-transport = { path = "../../uds/vag-uds-transport" }

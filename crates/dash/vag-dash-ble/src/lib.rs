@@ -13,9 +13,10 @@ use btleplug::platform::Manager;
 pub use btleplug::platform::{Adapter, Peripheral};
 use futures::{Stream, StreamExt};
 use std::collections::BTreeMap;
-use std::pin::Pin;
+use std::future::Future;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, Stdin};
+use tokio::sync::mpsc;
 use uuid::{Uuid, uuid};
 use vag_uds_transport::TransportError;
 use vag_uds_transport::link::{self, Pipe};
@@ -26,6 +27,19 @@ use vag_uds_transport::link::{self, Pipe};
 pub const NUS_SERVICE: Uuid = uuid!("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
 pub const NUS_RX: Uuid = uuid!("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
 pub const NUS_TX: Uuid = uuid!("6e400003-b5a3-f393-e0a9-e50e24dcca9e");
+
+/// How much longer a scan for boards listens once the first one is heard: long enough
+/// for a second board nearby to be heard too, short enough that the usual case — one
+/// board — connects at once.
+pub const SCAN_SETTLE: Duration = Duration::from_secs(1);
+
+/// How often a scan for boards looks at what it has heard so far.
+const SCAN_LOOK: Duration = Duration::from_millis(250);
+
+/// How long connecting to a device may take, service discovery included. CoreBluetooth
+/// never gives up on a connection by itself, so without a bound a board that went out of
+/// range between the scan and the connect hangs the command.
+pub const CONNECT_WITHIN: Duration = Duration::from_secs(10);
 
 /// One reader for the whole process. Two `BufReader`s over the same stdin
 /// silently eat each other's input: the first buffers everything available and
@@ -106,7 +120,13 @@ pub async fn scan(adapter: &Adapter, seconds: u64) -> Result<Vec<Found>> {
 	adapter.start_scan(ScanFilter::default()).await?;
 	tokio::time::sleep(Duration::from_secs(seconds)).await;
 	adapter.stop_scan().await?;
+	let mut out = heard(adapter).await?;
+	sort(&mut out);
+	Ok(out)
+}
 
+/// Everything the adapter has heard so far, unsorted.
+async fn heard(adapter: &Adapter) -> Result<Vec<Found>> {
 	let mut out = Vec::new();
 	for peripheral in adapter.peripherals().await? {
 		let Some(props) = peripheral.properties().await? else {
@@ -120,23 +140,56 @@ pub async fn scan(adapter: &Adapter, seconds: u64) -> Result<Vec<Found>> {
 			manufacturer: props.manufacturer_data.into_iter().collect(),
 		});
 	}
-	out.sort_by(|a, b| {
+	Ok(out)
+}
+
+fn sort(found: &mut [Found]) {
+	found.sort_by(|a, b| {
 		b.speaks_nus()
 			.cmp(&a.speaks_nus())
 			.then(a.name.is_none().cmp(&b.name.is_none()))
 			.then(b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)))
 	});
-	Ok(out)
 }
 
-/// The dash boards in range: what one [`scan`] pass heard offering the Nordic UART
-/// Service, in [`scan`]'s order — named first, then the strongest signal.
+/// The dash boards in range: what a scan heard offering the Nordic UART Service, in
+/// [`scan`]'s order — named first, then the strongest signal.
 ///
-/// The board advertises the service's UUID (in its scan response) and the name
-/// `vagcan-dash`. A device heard only by name has not been heard in full and is not
-/// taken for a board; a name is not proof of anything anyway.
-pub async fn scan_boards(adapter: &Adapter, seconds: u64) -> Result<Vec<Found>> {
-	Ok(scan(adapter, seconds).await?.into_iter().filter(Found::speaks_nus).collect())
+/// The scan stops [`SCAN_SETTLE`] after the first board is heard, and at `cap` when none
+/// is ([`scan_done`]). The board advertises the service's UUID (in its scan response)
+/// and the name `vagcan-dash`. A device heard only by name has not been heard in full
+/// and is not taken for a board; a name is not proof of anything anyway.
+pub async fn scan_boards(adapter: &Adapter, cap: Duration) -> Result<Vec<Found>> {
+	adapter.start_scan(ScanFilter::default()).await?;
+	let listened = listen_for_boards(adapter, cap).await;
+	// Stopped whatever the listening came to, so a failed look leaves no radio scanning.
+	let stopped = adapter.stop_scan().await;
+	let mut boards = listened?;
+	stopped?;
+	sort(&mut boards);
+	Ok(boards)
+}
+
+async fn listen_for_boards(adapter: &Adapter, cap: Duration) -> Result<Vec<Found>> {
+	let started = tokio::time::Instant::now();
+	let mut first = None;
+	loop {
+		tokio::time::sleep(SCAN_LOOK).await;
+		let boards: Vec<Found> = heard(adapter).await?.into_iter().filter(Found::speaks_nus).collect();
+		let elapsed = started.elapsed();
+		if first.is_none() && !boards.is_empty() {
+			first = Some(elapsed);
+		}
+		if scan_done(elapsed, first, cap) {
+			return Ok(boards);
+		}
+	}
+}
+
+/// Whether a scan for boards has listened long enough, `elapsed` in, having heard its
+/// first board at `first_board`: [`SCAN_SETTLE`] after that, or at `cap` if none came.
+fn scan_done(elapsed: Duration, first_board: Option<Duration>, cap: Duration) -> bool {
+	elapsed >= cap || first_board.is_some_and(|first| elapsed >= first + SCAN_SETTLE)
 }
 
 pub fn list(found: &[Found]) {
@@ -174,9 +227,24 @@ pub async fn prompt_choice(lines: &mut Lines, count: usize) -> Result<usize> {
 
 /// Connect and find the pipe. Fails with a listing of what the device *does*
 /// offer, because "not supported" is not an answer anyone can act on.
+///
+/// Connecting and discovering are given [`CONNECT_WITHIN`] together; past it the
+/// connection attempt is cancelled and the error says what to check.
 pub async fn open_nus(p: &Peripheral) -> Result<(Characteristic, Characteristic)> {
-	p.connect().await?;
-	p.discover_services().await?;
+	let name = match p.properties().await {
+		Ok(Some(props)) => props.local_name,
+		_ => None,
+	}
+	.unwrap_or_else(|| p.id().to_string());
+	let attempt = async {
+		p.connect().await?;
+		p.discover_services().await?;
+		anyhow::Ok(())
+	};
+	if let Err(failed) = within(CONNECT_WITHIN, &name, attempt).await {
+		p.disconnect().await.ok();
+		return Err(failed);
+	}
 	let chars = p.characteristics();
 	let rx = chars.iter().find(|c| c.uuid == NUS_RX).cloned();
 	let tx = chars.iter().find(|c| c.uuid == NUS_TX).cloned();
@@ -193,6 +261,17 @@ pub async fn open_nus(p: &Peripheral) -> Result<(Characteristic, Characteristic)
 	}
 }
 
+/// A connection `attempt` to `name`, given up on after `limit`.
+async fn within<T>(limit: Duration, name: &str, attempt: impl Future<Output = Result<T>>) -> Result<T> {
+	match tokio::time::timeout(limit, attempt).await {
+		Ok(done) => done,
+		Err(_) => bail!(
+			"could not connect to {name} over BLE within {} s — ignition on and in range?",
+			limit.as_secs()
+		),
+	}
+}
+
 /// Writes to the board are cut to this many bytes.
 ///
 /// btleplug 0.11 has no call for the ATT MTU the platform agreed, so this is a size
@@ -206,16 +285,16 @@ pub const WRITE_CHUNK: usize = 180;
 /// The Nordic UART Service of a connected board, as a [`Pipe`]: writes go to RX,
 /// notifications on TX come back as chunks.
 ///
-/// A notification stream in btleplug does not end when the device goes away, so the
-/// adapter's events are watched beside it and a disconnect of this device closes the
-/// pipe. Dropping the pipe asks the platform to disconnect, as far as a runtime is
-/// still there to do it.
+/// Notifications are taken off btleplug by a task of their own ([`pump`]) into a queue
+/// with no bound, the moment they land, so nothing waits on whoever reads the pipe.
+/// Dropping the pipe stops that task and asks the platform to disconnect, as far as a
+/// runtime is still there to do it.
 pub struct NusPipe {
 	peripheral: Peripheral,
 	rx: Characteristic,
 	write_type: WriteType,
-	notifications: Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
-	events: Pin<Box<dyn Stream<Item = CentralEvent> + Send>>,
+	chunks: mpsc::UnboundedReceiver<Vec<u8>>,
+	pump: tokio::task::JoinHandle<()>,
 	closed: bool,
 }
 
@@ -239,14 +318,54 @@ impl NusPipe {
 		} else {
 			WriteType::WithoutResponse
 		};
+		let (to, chunks) = mpsc::unbounded_channel();
+		let id = peripheral.id();
+		let gone = move |event: &CentralEvent| matches!(event, CentralEvent::DeviceDisconnected(gone) if *gone == id);
 		Ok(NusPipe {
 			peripheral: peripheral.clone(),
 			rx,
 			write_type,
-			notifications,
-			events,
+			chunks,
+			pump: tokio::spawn(pump(notifications, events, gone, to)),
 			closed: false,
 		})
+	}
+}
+
+/// Move every TX notification into `to` as it arrives, until `gone` says the device has
+/// disconnected, either stream ends, or the pipe is dropped.
+///
+/// Its own task, so notifications leave btleplug's broadcast channel the moment they land:
+/// that channel holds 16 (btleplug 0.11, macOS), and a receiver that falls further behind
+/// loses the oldest without a word — `Peripheral::notifications` filters the `Lagged`
+/// error out (`notifications_stream_from_broadcast_receiver`), so a loss cannot be seen
+/// from here. A lost chunk still shows at the reassembler, which the remote bus takes as
+/// a broken link rather than go on reading bytes it cannot trust.
+async fn pump<E>(
+	mut notifications: impl Stream<Item = ValueNotification> + Unpin,
+	mut events: impl Stream<Item = E> + Unpin,
+	gone: impl Fn(&E) -> bool,
+	to: mpsc::UnboundedSender<Vec<u8>>,
+) {
+	loop {
+		tokio::select! {
+			biased;
+			notified = notifications.next() => match notified {
+				Some(n) if n.uuid == NUS_TX => {
+					if to.send(n.value).is_err() {
+						return;
+					}
+				}
+				Some(_) => {}
+				None => return,
+			},
+			event = events.next() => match event {
+				Some(event) if gone(&event) => return,
+				Some(_) => {}
+				None => return,
+			},
+			() = to.closed() => return,
+		}
 	}
 }
 
@@ -269,30 +388,16 @@ impl Pipe for NusPipe {
 		if self.closed {
 			return None;
 		}
-		let id = self.peripheral.id();
-		loop {
-			// Both are streams, and a stream's `next` is cancel-safe, so this is too.
-			tokio::select! {
-				biased;
-				notified = self.notifications.next() => match notified {
-					Some(n) if n.uuid == NUS_TX => return Some(n.value),
-					Some(_) => {}
-					None => break,
-				},
-				event = self.events.next() => match event {
-					Some(CentralEvent::DeviceDisconnected(gone)) if gone == id => break,
-					Some(_) => {}
-					None => break,
-				},
-			}
-		}
-		self.closed = true;
-		None
+		// A channel's `recv` is cancel-safe, so this is too.
+		let chunk = self.chunks.recv().await;
+		self.closed = chunk.is_none();
+		chunk
 	}
 }
 
 impl Drop for NusPipe {
 	fn drop(&mut self) {
+		self.pump.abort();
 		let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
 		let peripheral = self.peripheral.clone();
 		runtime.spawn(async move {
@@ -338,6 +443,7 @@ pub fn flush() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use futures::stream;
 
 	#[test]
 	fn a_process_started_from_an_app_that_may_be_killed_is_warned_first() {
@@ -350,5 +456,57 @@ mod tests {
 	fn terminal_and_no_app_at_all_are_not_warned() {
 		assert_eq!(bluetooth_warning(Some("com.apple.Terminal")), None);
 		assert_eq!(bluetooth_warning(None), None);
+	}
+
+	#[test]
+	fn a_scan_stops_a_moment_after_the_first_board_and_at_the_cap_when_none_comes() {
+		let cap = Duration::from_secs(4);
+		let ms = Duration::from_millis;
+		assert!(!scan_done(ms(250), None, cap), "nothing yet, still listening");
+		assert!(!scan_done(ms(3750), None, cap));
+		assert!(scan_done(ms(4000), None, cap), "the cap, with nothing heard");
+		assert!(!scan_done(ms(1000), Some(ms(500)), cap), "a second board may still be coming");
+		assert!(scan_done(ms(1500), Some(ms(500)), cap), "settled a second after the first board");
+		assert!(scan_done(ms(4000), Some(ms(3750)), cap), "never past the cap");
+	}
+
+	#[tokio::test]
+	async fn a_connection_that_never_completes_is_given_up_on_and_says_what_to_check() {
+		let failed = within(Duration::from_millis(10), "vagcan-dash", std::future::pending::<Result<()>>())
+			.await
+			.expect_err("given up on");
+		let text = failed.to_string();
+		assert!(text.contains("could not connect to vagcan-dash over BLE within"), "{text}");
+		assert!(text.contains("ignition on and in range"), "{text}");
+		assert_eq!(within(Duration::from_secs(1), "vagcan-dash", async { Ok(7) }).await.unwrap(), 7);
+	}
+
+	fn notified(uuid: Uuid, value: Vec<u8>) -> ValueNotification {
+		ValueNotification { uuid, value }
+	}
+
+	#[tokio::test]
+	async fn the_pump_forwards_every_tx_notification_in_order_and_stops_at_this_devices_disconnect() {
+		let mut burst: Vec<ValueNotification> = (0..1000u16).map(|i| notified(NUS_TX, i.to_le_bytes().to_vec())).collect();
+		burst.insert(3, notified(NUS_RX, vec![0xEE]));
+		let notifications = stream::iter(burst).chain(stream::pending());
+		// Another device's disconnect first, then this one's.
+		let events = stream::iter([false, true]).chain(stream::pending());
+		let (to, mut chunks) = mpsc::unbounded_channel();
+		pump(notifications, events, |gone: &bool| *gone, to).await;
+		for i in 0..1000u16 {
+			assert_eq!(chunks.recv().await, Some(i.to_le_bytes().to_vec()), "chunk {i}");
+		}
+		assert_eq!(chunks.recv().await, None, "the pump has stopped, so the pipe reads closed");
+	}
+
+	#[tokio::test]
+	async fn the_pump_stops_when_nobody_reads_the_pipe_any_more() {
+		let (to, chunks) = mpsc::unbounded_channel();
+		drop(chunks);
+		let events = stream::pending::<bool>();
+		tokio::time::timeout(Duration::from_secs(1), pump(stream::pending(), events, |_: &bool| false, to))
+			.await
+			.expect("stopped");
 	}
 }
