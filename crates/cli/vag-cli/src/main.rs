@@ -555,8 +555,27 @@ async fn run() -> Result<ExitCode> {
 			ExitCode::FAILURE
 		});
 	};
-	dispatch_or_offer(command, cli.slcan).await
+	// `dev sniff` watches Ctrl-C itself, to stop and print what it saw.
+	if matches!(command, Command::Dev { tool: Dev::Sniff { .. } }) {
+		return dispatch_or_offer(command, cli.slcan).await;
+	}
+	tokio::select! {
+		finished = dispatch_or_offer(command, cli.slcan) => finished,
+		_ = tokio::signal::ctrl_c() => {
+			// The command is dropped here, and every bus handle with it: each bus task ends
+			// and drops its link, and a serial link closes its channel on the way
+			// (`SlcanBackend::closing_on_drop`) — which is what takes the dash board out of
+			// the adapter mode `--slcan` put it in. Those tasks run on the blocking pool,
+			// whose shutdown would also wait for anything else parked there, so the process
+			// ends after a moment instead.
+			tokio::time::sleep(INTERRUPT_GRACE).await;
+			std::process::exit(130);
+		}
+	}
 }
+
+/// How long an interrupted command's links get to close before the process ends.
+const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Run one command; if it stopped for want of label data, offer to make the
 /// data and then run it again.

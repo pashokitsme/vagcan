@@ -99,10 +99,36 @@ pub struct SlcanBackend<S> {
 	/// read, handed out by [`CanBackend::recv_frame`] before anything new — see
 	/// [`Self::status_flags`].
 	pending: std::collections::VecDeque<KeptFrame>,
+	/// Writes `C\r` without waiting, when set: see [`Self::closing_on_drop`].
+	closer: Option<fn(&mut S)>,
 }
 
 /// A frame kept through a command's wait: when it was read, and what it decoded to.
 type KeptFrame = (std::time::Instant, Result<(u32, Vec<u8>), CanError>);
+
+/// Put `C\r` on `stream` if it takes it now, and never wait: a best effort from `Drop`.
+fn close_now<S: AsyncWrite + Unpin>(stream: &mut S) {
+	let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+	let mut written = 0;
+	while written < CLOSE.len() {
+		match std::pin::Pin::new(&mut *stream).poll_write(&mut cx, &CLOSE[written..]) {
+			std::task::Poll::Ready(Ok(n)) if n > 0 => written += n,
+			_ => return,
+		}
+	}
+	let _ = std::pin::Pin::new(&mut *stream).poll_flush(&mut cx);
+}
+
+/// Lawicel's channel close.
+const CLOSE: &[u8] = b"C\r";
+
+impl<S> Drop for SlcanBackend<S> {
+	fn drop(&mut self) {
+		if let Some(close) = self.closer {
+			close(&mut self.stream);
+		}
+	}
+}
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 	pub fn new(stream: S) -> Self {
@@ -110,7 +136,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> SlcanBackend<S> {
 			stream,
 			buf: Vec::new(),
 			pending: std::collections::VecDeque::new(),
+			closer: None,
 		}
+	}
+
+	/// Close the channel when this backend is dropped, however the run ends — the bus
+	/// task returning, a command failing half way, the process winding down after Ctrl-C.
+	///
+	/// A CANable only stops listening. The vag-dash board's `dash` image, made an adapter by
+	/// `--slcan`, leaves its adapter mode on `C`, so without it a run that ends leaves the
+	/// panel blank until the next host's handshake or the cable. Best effort: `C\r` is
+	/// written only if the port takes it at once.
+	pub fn closing_on_drop(mut self) -> Self {
+		self.closer = Some(close_now::<S>);
+		self
 	}
 
 	/// Send the channel-open sequence in [`SlcanMode::Normal`] — see
@@ -335,15 +374,32 @@ pub fn classify_usb(path: String, vid: u16, pid: u16, product: Option<String>) -
 /// A read that times out is not an error here, only "nothing yet"; any other
 /// read error ends the probe as "no answer".
 pub fn answers_version<P: std::io::Read + std::io::Write>(port: &mut P, wait: Duration) -> bool {
+	matches!(ask_version(port, wait), Heard::Version)
+}
+
+/// What came back to `V`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heard {
+	/// A version line, and nothing framed.
+	Version,
+	/// A NUL byte: the start of a framed message. Whatever else came, something on the port
+	/// speaks the link, and that is never an slcan image.
+	Framed,
+	Nothing,
+}
+
+/// [`answers_version`], telling a port that speaks the link apart from one that is silent.
+fn ask_version<P: std::io::Read + std::io::Write>(port: &mut P, wait: Duration) -> Heard {
 	let deadline = std::time::Instant::now() + wait;
 	if port.write_all(b"V\r").and_then(|()| port.flush()).is_err() {
-		return false;
+		return Heard::Nothing;
 	}
 	let mut pending: Vec<u8> = Vec::new();
 	let mut chunk = [0u8; 256];
 	while std::time::Instant::now() < deadline {
 		match port.read(&mut chunk) {
-			Ok(0) => return false,
+			Ok(0) => return Heard::Nothing,
+			Ok(n) if chunk[..n].contains(&link::MARKER) => return Heard::Framed,
 			Ok(n) => pending.extend_from_slice(&chunk[..n]),
 			Err(e)
 				if matches!(
@@ -353,7 +409,7 @@ pub fn answers_version<P: std::io::Read + std::io::Write>(port: &mut P, wait: Du
 			{
 				continue;
 			}
-			Err(_) => return false,
+			Err(_) => return Heard::Nothing,
 		}
 		while let Some(end) = pending.iter().position(|&b| b == b'\r' || b == b'\n') {
 			let line: Vec<u8> = pending.drain(..=end).collect();
@@ -361,11 +417,11 @@ pub fn answers_version<P: std::io::Read + std::io::Write>(port: &mut P, wait: Du
 			let line = line.trim_ascii();
 			let line = &line[line.iter().take_while(|&&b| b == 0x07).count()..];
 			if is_version_reply(line) {
-				return true;
+				return Heard::Version;
 			}
 		}
 	}
-	false
+	Heard::Nothing
 }
 
 /// `V` followed by exactly four hex digits.
@@ -388,14 +444,18 @@ pub enum HelloAnswer {
 /// Whether the port answers a framed Hello ([`vag_uds_transport::link`]) within `wait`.
 ///
 /// Sends the Hello and reads until `wait` runs out or the reply arrives. The display
-/// image's text and an slcan image's frames are text to the link and skipped. The first
-/// time framed bytes come back without the reply — stale readings for an earlier host, a
-/// half frame — the Hello is sent once more, within the same wait, with the scanner reset.
+/// image's text and an slcan image's frames are text to the link and skipped. The Hello is
+/// sent once more, within the same wait: the first time framed bytes come back without the
+/// reply — stale readings for an earlier host, a half frame — with the scanner reset; or,
+/// when nothing framed has come by half the wait, as it is — a board booting, or its
+/// console busy, answers late, and a half reply already on its way must survive.
 ///
 /// A read that times out is only "nothing yet"; any other read error ends the probe with
 /// what was seen so far.
 pub fn answers_hello<P: std::io::Read + std::io::Write>(port: &mut P, wait: Duration) -> HelloAnswer {
-	let deadline = std::time::Instant::now() + wait;
+	let started = std::time::Instant::now();
+	let deadline = started + wait;
+	let halfway = started + wait / 2;
 	let Ok(hello) = link::encode(&Message::Hello) else {
 		return HelloAnswer::Silent;
 	};
@@ -407,6 +467,12 @@ pub fn answers_hello<P: std::io::Read + std::io::Write>(port: &mut P, wait: Dura
 	let (mut framed, mut asked_again) = (false, false);
 	let mut chunk = [0u8; 256];
 	while std::time::Instant::now() < deadline {
+		if !asked_again && std::time::Instant::now() >= halfway {
+			asked_again = true;
+			if !say_hello(port) {
+				break;
+			}
+		}
 		let n = match port.read(&mut chunk) {
 			Ok(0) => break,
 			Ok(n) => n,
@@ -455,47 +521,76 @@ pub enum BoardAnswer {
 	Unopened(String),
 }
 
-/// Ask an open board port which image it runs: Hello first ([`answers_hello`]), and slcan's
-/// `V` ([`answers_version`]) only when nothing framed came back.
+/// Ask an open board port which image it runs: Hello first ([`answers_hello`], up to
+/// `hello_wait` with one Hello more), and slcan's `V` ([`answers_version`], up to
+/// `version_wait`) only when nothing framed came back.
 ///
-/// **A `V` never goes to a board that speaks the link.** It is an slcan command line,
+/// **A `V` never goes to a board known to speak the link.** It is an slcan command line,
 /// and the `dash` image takes one as the switch into its adapter mode, blanking the
-/// panel. So framed bytes without a reply still make the answer `Dash`.
+/// panel. So framed bytes without a reply still make the answer `Dash`, and so does a NUL
+/// among what came back to `V`.
+///
+/// **A `V` answered is checked once.** A `dash` image too slow for both Hellos takes the
+/// `V` as that switch and answers it as the adapter does. So `C` follows — it ends adapter
+/// mode, and on an slcan image closes a channel nothing uses — and one more Hello: a reply
+/// then is the `dash` image, back in panel mode; silence is the `slcan` image, and a CR
+/// ends the line the Hello's bytes started there.
 ///
 /// The `V` is sent after a CR of its own: an slcan image took the Hello's bytes as the
 /// start of a line, and would read `V` as the end of that line rather than a command.
-pub fn ask_board<P: std::io::Read + std::io::Write>(port: &mut P, wait: Duration) -> BoardAnswer {
-	match answers_hello(port, wait) {
-		HelloAnswer::Reply(reply) => BoardAnswer::Dash { version: reply.version },
-		HelloAnswer::Framed => BoardAnswer::Dash { version: "unknown".into() },
-		HelloAnswer::Silent => {
-			if port.write_all(b"\r").and_then(|()| port.flush()).is_err() {
-				return BoardAnswer::Silent;
+pub fn ask_board<P: std::io::Read + std::io::Write>(port: &mut P, hello_wait: Duration, version_wait: Duration) -> BoardAnswer {
+	let dash = |answer: HelloAnswer| match answer {
+		HelloAnswer::Reply(reply) => Some(BoardAnswer::Dash { version: reply.version }),
+		HelloAnswer::Framed => Some(BoardAnswer::Dash { version: "unknown".into() }),
+		HelloAnswer::Silent => None,
+	};
+	let say = |port: &mut P, bytes: &[u8]| port.write_all(bytes).and_then(|()| port.flush()).is_ok();
+	if let Some(found) = dash(answers_hello(port, hello_wait)) {
+		return found;
+	}
+	if !say(port, b"\r") {
+		return BoardAnswer::Silent;
+	}
+	match ask_version(port, version_wait) {
+		Heard::Nothing => BoardAnswer::Silent,
+		Heard::Framed => BoardAnswer::Dash { version: "unknown".into() },
+		Heard::Version => {
+			if !say(port, b"C\r") {
+				return BoardAnswer::Slcan;
 			}
-			match answers_version(port, wait) {
-				true => BoardAnswer::Slcan,
-				false => BoardAnswer::Silent,
+			match dash(answers_hello(port, version_wait)) {
+				Some(found) => found,
+				None => {
+					say(port, b"\r");
+					BoardAnswer::Slcan
+				}
 			}
 		}
 	}
 }
 
-/// How long a board gets to answer each question, Hello and then `V`. Either image
-/// replies within a USB round trip, milliseconds; this is generous for that and short
-/// enough not to be noticed in front of a command.
+/// How long a board gets to answer `V`, and a Hello after it. The `slcan` image replies
+/// within a USB round trip, milliseconds; this is generous for that and short enough not
+/// to be noticed in front of a command.
 #[cfg(feature = "slcan")]
 pub const BOARD_PROBE_WAIT: Duration = Duration::from_millis(300);
 
-/// Open the board's port and ask it which image it runs — see [`ask_board`]. Only ever
-/// call this on a [`BOARD_USB`] port: asking an unknown device a question is writing
-/// bytes into somebody else's console.
+/// How long a board gets to answer the first Hello, with one Hello more halfway: longer
+/// than [`BOARD_PROBE_WAIT`], because the `V` that follows silence would switch a `dash`
+/// image that is only slow — booting, or its console busy — into its adapter mode.
+#[cfg(feature = "slcan")]
+pub const HELLO_WAIT: Duration = Duration::from_secs(1);
+
+/// Open the board's port and ask it which image it runs — see [`ask_board`]: Hello for up
+/// to [`HELLO_WAIT`], then `V` for up to `wait`. Only ever call this on a [`BOARD_USB`]
+/// port: asking an unknown device a question is writing bytes into somebody else's console.
 #[cfg(feature = "slcan")]
 pub fn probe_board(path: &str, baud: u32, wait: Duration) -> BoardAnswer {
 	match tokio_serial::new(path, baud).timeout(Duration::from_millis(50)).open() {
 		Ok(mut port) => {
 			// Whatever the image printed before the question is not an answer to it.
 			let _ = port.clear(tokio_serial::ClearBuffer::Input);
-			ask_board(&mut port, wait)
+			ask_board(&mut port, HELLO_WAIT, wait)
 		}
 		Err(e) => BoardAnswer::Unopened(e.to_string()),
 	}
@@ -520,7 +615,7 @@ impl SlcanBackend<tokio_serial::SerialStream> {
 		let stream = tokio_serial::new(path, baud)
 			.open_native_async()
 			.map_err(|e| CanError::Io(e.to_string()))?;
-		let mut backend = SlcanBackend::new(stream);
+		let mut backend = SlcanBackend::new(stream).closing_on_drop();
 		backend.open_channel_mode(bitrate, mode).await?;
 		Ok(backend)
 	}
@@ -738,7 +833,7 @@ mod tests {
 	fn a_board_that_answers_hello_is_the_dash_image_and_is_never_sent_v() {
 		for before in [&b""[..], DISPLAY_TEXT] {
 			let mut port = ScriptedPort::new(before).on(&hello(), &hello_reply("0.1.0")).on(b"V\r", b"V0101\r");
-			assert_eq!(ask_board(&mut port, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
 			assert_eq!(port.written, hello(), "Hello and nothing else");
 		}
 	}
@@ -747,12 +842,111 @@ mod tests {
 	fn a_board_that_does_not_answer_hello_but_answers_v_is_the_slcan_image() {
 		// With a channel left open, frames arrive ahead of everything.
 		let mut port = ScriptedPort::new(b"t7E8025003\r").on(b"V\r", b"T17F0001080102030405060708\rV0101\r");
-		assert_eq!(ask_board(&mut port, WAIT), BoardAnswer::Slcan);
+		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Slcan);
 		assert_eq!(
 			port.written,
-			[hello(), b"\r".to_vec(), b"V\r".to_vec()].concat(),
-			"V after Hello, on a line of its own"
+			[
+				hello(),
+				hello(),
+				b"\r".to_vec(),
+				b"V\r".to_vec(),
+				b"C\r".to_vec(),
+				hello(),
+				hello(),
+				b"\r".to_vec()
+			]
+			.concat(),
+			"two Hellos, V on a line of its own, then C and a Hello to be sure it was no slow dash image"
 		);
+	}
+
+	/// The `dash` image slow to answer: it misses its first `ignored` Hellos, answers every
+	/// one after, takes `V` as the switch into adapter mode (answering it as the adapter
+	/// does) and leaves adapter mode on `C`. Reads come seven bytes at a time.
+	struct SlowDash {
+		ignored: usize,
+		hellos: usize,
+		adapter: bool,
+		readable: Vec<u8>,
+		written: Vec<u8>,
+	}
+
+	impl SlowDash {
+		fn new(ignored: usize) -> Self {
+			SlowDash {
+				ignored,
+				hellos: 0,
+				adapter: false,
+				readable: Vec::new(),
+				written: Vec::new(),
+			}
+		}
+	}
+
+	impl std::io::Read for SlowDash {
+		fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+			if self.readable.is_empty() {
+				return Err(std::io::ErrorKind::TimedOut.into());
+			}
+			let n = self.readable.len().min(buf.len()).min(7);
+			buf[..n].copy_from_slice(&self.readable[..n]);
+			self.readable.drain(..n);
+			Ok(n)
+		}
+	}
+
+	impl std::io::Write for SlowDash {
+		fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+			self.written.extend_from_slice(buf);
+			if buf == hello().as_slice() {
+				self.hellos += 1;
+				if self.hellos > self.ignored {
+					self.readable.extend(hello_reply("0.1.0"));
+				}
+			} else if buf == b"V\r" {
+				self.adapter = true;
+				self.readable.extend_from_slice(b"V0101\r");
+			} else if buf == b"C\r" && self.adapter {
+				self.adapter = false;
+				self.readable.push(b'\r');
+			}
+			Ok(buf.len())
+		}
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn a_dash_image_that_misses_the_first_hello_is_found_by_the_second_and_never_sent_v() {
+		let mut port = SlowDash::new(1);
+		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+		assert_eq!(port.written, [hello(), hello()].concat());
+		assert!(!port.adapter);
+	}
+
+	#[test]
+	fn a_dash_image_too_slow_for_both_hellos_is_taken_out_of_adapter_mode_and_found() {
+		let mut port = SlowDash::new(2);
+		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "0.1.0".into() });
+		assert!(!port.adapter, "the probe's C ended the adapter mode its V started");
+		assert_eq!(
+			port.written,
+			[hello(), hello(), b"\r".to_vec(), b"V\r".to_vec(), b"C\r".to_vec(), hello()].concat()
+		);
+	}
+
+	#[test]
+	fn a_nul_among_the_answer_to_v_is_never_the_slcan_image() {
+		let stale = link::encode(&Message::Reading(link::Reading {
+			sub: 1,
+			at_ms: 5,
+			outcome: link::Outcome::NoAnswer,
+		}))
+		.unwrap();
+		let mut port = ScriptedPort::new(b"").on(b"V\r", &[stale, b"V0101\r".to_vec()].concat());
+		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+		assert!(!port.written.windows(2).any(|w| w == b"C\r"), "nothing more once it spoke the link");
 	}
 
 	#[test]
@@ -760,7 +954,7 @@ mod tests {
 		for before in [&b""[..], DISPLAY_TEXT] {
 			// An older display image: text before, and text after the questions.
 			let mut port = ScriptedPort::new(before).on(b"V\r", b"FRAME 256 64 AAAA\r\n");
-			assert_eq!(ask_board(&mut port, WAIT), BoardAnswer::Silent);
+			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Silent);
 			assert!(port.sent_v());
 		}
 	}
@@ -774,7 +968,7 @@ mod tests {
 		.unwrap();
 		for (before, answer) in [(stale.clone(), Vec::new()), (Vec::new(), b"\x00\x7A\x02\x00".to_vec())] {
 			let mut port = ScriptedPort::new(&before).on(&hello(), &answer).on(b"V\r", b"V0101\r");
-			assert_eq!(ask_board(&mut port, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+			assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
 			assert!(!port.sent_v(), "V would switch the dash image into its adapter mode");
 			assert_eq!(port.written, [hello(), hello()].concat(), "one Hello more, within the wait");
 		}
@@ -800,6 +994,32 @@ mod tests {
 		assert!(!board.known, "{board:?}");
 		let canable = classify_usb("/dev/cu.usbmodem206E37A148451".into(), 0x16d0, 0x117e, None);
 		assert!(canable.known && !canable.board, "{canable:?}");
+	}
+
+	#[tokio::test]
+	async fn a_backend_opened_to_close_on_drop_closes_the_channel_when_dropped() {
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let mut backend = SlcanBackend::new(client).closing_on_drop();
+		backend.open_channel(SlcanBitrate::Rate500k).await.unwrap();
+		drop(backend);
+		let mut got = Vec::new();
+		adapter.read_to_end(&mut got).await.unwrap();
+		assert_eq!(got, b"C\rS6\rM0\rO\rC\r");
+	}
+
+	#[tokio::test]
+	async fn a_plain_backend_says_nothing_when_dropped_and_a_full_port_does_not_block_the_drop() {
+		let (client, mut adapter) = tokio::io::duplex(256);
+		let backend = SlcanBackend::new(client);
+		drop(backend);
+		let mut got = Vec::new();
+		adapter.read_to_end(&mut got).await.unwrap();
+		assert!(got.is_empty(), "{got:?}");
+		// A port with no room: the drop gives up rather than waits.
+		let (client, _adapter) = tokio::io::duplex(1);
+		let mut backend = SlcanBackend::new(client).closing_on_drop();
+		backend.write_all(b"x").await.unwrap();
+		drop(backend);
 	}
 
 	#[tokio::test]

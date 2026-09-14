@@ -2068,6 +2068,14 @@ impl Writer {
 			return true;
 		}
 		self.stalled = true;
+		if adapter_mode() {
+			// The slcan host stopped reading: its process is gone or stopped. Adapter mode
+			// ends as it does when the cable is pulled, so a host that died does not leave
+			// the panel blank. A quiet bus with a dead host writes nothing and so never
+			// stalls: that still takes `C`, the cable, or the next host's `\rC\r`.
+			note!("usb: the slcan host stopped reading — adapter mode is over");
+			USB_GONE_FOR_CONSOLE.signal(());
+		}
 		if USB_CLIENT.active() {
 			note!("usb: the host stopped reading — its session is closed");
 			USB_GONE_FOR_SESSION.signal(());
