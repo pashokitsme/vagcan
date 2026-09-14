@@ -72,14 +72,16 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
+Updated 2026-09-14.
+
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
 - [x] ODIS project as the main data source, with fault text from ODIS
 - [x] `setup` in about 4 s on an ODIS project
 - [x] Dash reads the car: 4 channels from 2 units, values and chart pages
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
-- [ ] UDS over BLE: read faults from a laptop without a cable
-- [ ] Laptop reads the car through the dash while its screen keeps working
+- [ ] UDS over BLE: read faults from a laptop without a cable (built, waiting for the bench)
+- [ ] Laptop reads the car through the dash while its screen keeps working (built, waiting for the bench)
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with the cruise-control buttons while cruise is off
 - [ ] `vagcan faults` on the car with fault text from ODIS only

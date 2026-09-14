@@ -1,8 +1,35 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-13
+# vagcan roadmap — history, 2026-08-02 to 2026-09-14
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current.
+
+---
+
+## Where things stood on the morning of 2026-09-14 — the dash merged, before the scheduler
+
+**Milestone: the dash works.** `dash` was merged to `master` (PR #1, `b41059a`) on
+2026-09-13. Waiting on the physical OLED.
+
+- **Car read.** `dash` on the reference car answered `7E0`/`7E1`; the panel, through
+  `dashsim`, showed coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C
+  (2026-09-13). Record: `research/dash/can-bring-up.md`.
+- **Board as a CAN adapter.** The `slcan` image, bench 2026-09-13 (§9.4 there): whole
+  frames both ways, listen-only acknowledges nothing, 3,726 frames/s for 12 s with the
+  drop flags clear. `vagcan devices` counts the board only when it answers `V`.
+- **Data.** ODIS is the primary source, fault text included (`research/odis-dtc/`).
+  VCDS is the fallback. Proven rows (23: `8V0906264H` 3, `0CW300041G` 12,
+  `5E0920740D` 8) are in `~/.vagcan/data/SK37X/measurements/`, restored from
+  `0e263b1^:catalogs/vehicles/` on 2026-09-13. `setup` on `SK37X`: ≈3–4 s.
+- **Review before the merge.** Three rounds, four lenses, no blocking objection. Findings
+  and fixes are in merge commits `9669f81`, `65ce209`, `9185a28` and after.
+- **Removed 2026-09-13:** the deep-sleep module and `sleeptest` (owner: pin-1 power
+  makes sleep moot); `USAGE.md` (owner, `bff9dc3`; the command table now lives in
+  `README.md`).
+
+**Not verified on hardware:** the board's `V` probe and busy-port message, `F` through
+`dev sniff` on the board, the stored-config check at boot, whether opening the board's
+port twice resets it.
 
 ---
 

@@ -25,7 +25,7 @@ item 7 (the `frame` mirror) unnecessary.
 - **Framing:** length + message type + body, cut into NUS-MTU chunks. BLE's link layer
   already guarantees delivery and integrity. The type byte separates UDS from the
   text settings protocol `dashcfg` already speaks on the same NUS (`12`).
-- **Always visible** (owner, 2026-09-13; implemented 2026-09-14, branch `fw-bus`): "мы можем видимость всегда включенной держать и
+- **Always visible** (owner, 2026-09-13; implemented 2026-09-14): "мы можем видимость всегда включенной держать и
   не париться с этим? антенна всё равно далеко не бьёт". The board has one button (BOOT,
   inside the enclosure) and no wake button, so a long-press gate is not practical. No
   pairing in the first step.
@@ -97,9 +97,9 @@ item 7 (the `frame` mirror) unnecessary.
 
 - Host transport and board message handling covered by hardware-free tests (mock NUS on the
   host, the board's decode/allowlist/chunking in a host-testable crate). *(Board side done
-  2026-09-14, branch `fw-bus`: `vag_uds_client::remote::Session` — guard, planner, readings,
+  2026-09-14: `vag_uds_client::remote::Session` — guard, planner, readings,
   walk lock, close — tested against a real planner and a simulated bus; the firmware's NUS
-  server wraps it. Host side done 2026-09-14, branch `bus-ble`: `link::Pipe` and
+  server wraps it. Host side done 2026-09-14: `link::Pipe` and
   `pipe_pair`; `vag_dash_ble::NusPipe` (notifications drained by a task of their own,
   connect bounded to 10 s) and `scan_boards` (stops 1 s after the first board); 
   `Bus::start_remote` in `vag-cli-core/src/bus/remote.rs`, tested against a scripted board —
@@ -121,5 +121,5 @@ item 7 (the `frame` mirror) unnecessary.
   the CANable with `dev sniff --device … --active` (no unit answers on the bench). *(The
   board's half passed 2026-09-14 with the bench tool `bleuds` in place of `vagcan`:
   `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` itself is still to
-  run: the host transport is implemented, on `bus-ble`.)*
+  run: the first attempt found the bench pair dead, §9.7; plan in `17-bench-ble-usb.md`.)*
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.
