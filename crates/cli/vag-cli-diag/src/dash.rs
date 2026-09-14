@@ -39,8 +39,8 @@ pub enum Tool {
 	/// "<VIN>"`, then a `[[channel]]` with `ref = "01:IDE00025"`, then a
 	/// `[[page]]` with `kind = "values"`, `title = "MAIN"` and `cells =
 	/// ["01:IDE00025"]`. A channel is `<unit>:<text id>` or
-	/// `<unit>:<DID>[@<bit offset>]`, and may carry its own `label` and
-	/// `decimals`; a page is `values` (1 to 4 cells) or `chart` (one `cell`
+	/// `<unit>:<DID>[@<bit offset>]`, and may carry its own `label`,
+	/// `decimals` and `hz` (readings a second while shown, 2 otherwise); a page is `values` (1 to 4 cells) or `chart` (one `cell`
 	/// between `min` and `max`).
 	///
 	/// The firmware's own build runs this same build —

@@ -84,6 +84,24 @@ pub struct Channel {
 	/// catalog declaring it. Carried so the device can say which is which;
 	/// it changes nothing about how the value is read.
 	pub proven: bool,
+	/// Readings a second while a page showing it is on the glass — the owner's
+	/// `hz` in `dash.toml`, 2 when it gives none. Never derived on the board.
+	pub hz: f32,
+}
+
+/// The slowest a channel on no visible page is read: once a second, or its own
+/// rate if that is slower (owner, 2026-09-14, `todo/dash/14` §2).
+pub const HIDDEN_PERIOD_MS: u32 = 1000;
+
+/// How the panel wants one channel read right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rate {
+	/// Index into [`Plan::channels`].
+	pub channel: u16,
+	/// On the page on the glass: read at its own rate, ahead of other work.
+	/// Otherwise only on pages not shown: read at [`HIDDEN_PERIOD_MS`] at most, last.
+	pub shown: bool,
+	pub period_ms: u32,
 }
 
 /// What one page shows. Indices are into [`Plan::channels`].
@@ -158,6 +176,33 @@ impl Plan {
 		self.units.iter().find(|u| u.request == channel.unit)
 	}
 
+	/// How every channel worth reading is to be read, in plan order: the ones
+	/// `shown` at their own rate, the ones only `listed` (on some page, not the
+	/// one on the glass) no faster than [`HIDDEN_PERIOD_MS`], and a channel on
+	/// no page not at all. A chart samples its channel every frame whether or
+	/// not it is shown, so the caller lists every page's cells, charts included.
+	pub fn rates<'a>(&'a self, shown: &'a [u16], listed: &'a [u16]) -> impl Iterator<Item = Rate> + 'a {
+		self.channels.iter().enumerate().filter_map(move |(i, channel)| {
+			let index = i as u16;
+			let own = channel.period_ms();
+			if shown.contains(&index) {
+				Some(Rate {
+					channel: index,
+					shown: true,
+					period_ms: own,
+				})
+			} else if listed.contains(&index) {
+				Some(Rate {
+					channel: index,
+					shown: false,
+					period_ms: own.max(HIDDEN_PERIOD_MS),
+				})
+			} else {
+				None
+			}
+		})
+	}
+
 	/// The channels one unit owns, in plan order — what one addressed
 	/// conversation asks for before the backend is handed to the next unit.
 	pub fn channels_of(&self, unit: &Unit) -> impl Iterator<Item = (u16, &'static Channel)> {
@@ -171,6 +216,18 @@ impl Plan {
 }
 
 impl Channel {
+	/// Milliseconds between two readings at [`Channel::hz`], never below one. A
+	/// rate that is not a positive number — only a hand-edited plan could hold
+	/// one, the generator refuses it — reads as 2 Hz rather than as a flood.
+	pub fn period_ms(&self) -> u32 {
+		const FALLBACK_MS: u32 = 500;
+		if !(self.hz.is_finite() && self.hz > 0.0) {
+			return FALLBACK_MS;
+		}
+		// `+ 0.5` and a cast: `f32::round` is not in `core`. The cast saturates.
+		((1000.0 / self.hz + 0.5) as u32).max(1)
+	}
+
 	/// Cut the raw integer out of a positive response's data bytes (everything
 	/// after the `62 <hi> <lo>` echo) and scale it.
 	///
@@ -258,6 +315,7 @@ mod tests {
 			unit_text: "",
 			label: "",
 			proven: false,
+			hz: 2.0,
 		}
 	}
 
@@ -347,6 +405,49 @@ mod tests {
 		assert_eq!(PLAN.chart(2), Some(load));
 		let all: std::vec::Vec<Chart> = PLAN.charts().collect();
 		assert_eq!(all, [boost, load], "slots are dense and in plan order");
+	}
+
+	#[test]
+	fn a_period_is_the_rate_inverted_and_a_nonsense_rate_is_two_hertz() {
+		let at = |hz| Channel {
+			hz,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		assert_eq!(at(2.0).period_ms(), 500);
+		assert_eq!(at(10.0).period_ms(), 100);
+		assert_eq!(at(0.5).period_ms(), 2000);
+		assert_eq!(at(3.0).period_ms(), 333);
+		assert_eq!(at(100_000.0).period_ms(), 1, "never zero");
+		assert_eq!(at(0.0).period_ms(), 500);
+		assert_eq!(at(-1.0).period_ms(), 500);
+		assert_eq!(at(f32::NAN).period_ms(), 500);
+	}
+
+	#[test]
+	fn the_shown_page_reads_at_its_rates_hidden_pages_at_one_hertz_at_most_and_the_rest_not_at_all() {
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const SLOW: Channel = Channel {
+			hz: 0.25,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const MIXED: [Channel; 4] = [FAST, FAST, SLOW, channel(0, 8, false, true, 1.0, 0.0)];
+		let plan = Plan { channels: &MIXED, ..PLAN };
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.shown, r.period_ms)).collect()
+		};
+		assert_eq!(
+			rates(&[0], &[0, 1, 2]),
+			[(0, true, 100), (1, false, 1000), (2, false, 4000)],
+			"a hidden channel no faster than 1 Hz, a slower one at its own rate, channel 3 on no page not read"
+		);
+		assert_eq!(
+			rates(&[1, 3], &[0, 1, 2]),
+			[(0, false, 1000), (1, true, 100), (2, false, 4000), (3, true, 500)],
+			"switching pages swaps who is shown"
+		);
 	}
 
 	#[test]
