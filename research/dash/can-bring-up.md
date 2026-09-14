@@ -778,3 +778,20 @@ and Terminal waited for the owner's "Allow" once.
   console, watched throughout, said nothing about bus-off or errors. Open: whether it takes
   the longer unacknowledged stretch, and what state the controller is in — the next run is
   an hour unacknowledged with the console captured from the start.
+
+### 9.6 After the review fixes, 2026-09-14
+
+Same bench as §9.5, `dash` from `fw-bus` at `e5fdb96` with the info log on (for the heap),
+console captured throughout, CANable `--active` for 120 s.
+
+| check | seen |
+|---|---|
+| a | found in 250–500 ms, seven connections, re-advertising after each |
+| b | `7E0 22 F1 90` on the pair, NoAnswer after 6.2 s; `710 22 F1 87`, NoAnswer after 0.57 s; filter moved to `77A/7FF` in 129 µs |
+| c | `2E…` Refused in 63 ms, nothing on the pair; `1003` → `7E0 22 F4 0D`, then Refused (no road speed) after 2.8 s |
+| response-id sweep | `bleuds --sweep-response 7E0 7E8 50 F40D 100`: **49 refused** ("request id 7E0 already answers on 7E8 in this connection"), 4 readings for the one accepted. Heap `Current usage` 48,092 before, 48,560 after; `Max usage` 49,016 → 49,096. |
+| `3E 80` | `7E0 3E 80` at 43.387 s, the panel's `7E0 22 F1 87` 152 ms later (the 150 ms suppressed wait), then every 2.5 s as before — no extra backoff, no burst of F187. Host: NoAnswer after 7.4 s (the silent unit's backoff before it went out). |
+
+- The first sweep run counted 17 of 49: `bleuds` sent all 50 subscriptions before reading
+  notifications, and btleplug's bounded broadcast channel dropped the rest. Fixed in the
+  tool (`e5fdb96`); the board had sent them.
