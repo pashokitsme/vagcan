@@ -795,3 +795,29 @@ console captured throughout, CANable `--active` for 120 s.
 - The first sweep run counted 17 of 49: `bleuds` sent all 50 subscriptions before reading
   notifications, and btleplug's bounded broadcast channel dropped the rest. Fixed in the
   tool (`e5fdb96`); the board had sent them.
+
+### 9.7 The pair went dead, 2026-09-14 12:14–12:31
+
+First end-to-end run of `vagcan` over BLE (branch `ble-uds` at `09a82fd`, board on `dash`
+with the §9.6 fixes, `benchecu --bench --unit 7E0 --unit 7E1 --unit 710` on the CANable,
+tools started from Terminal.app with `open -a Terminal <script>.command` — `osascript`
+to Terminal timed out waiting for an automation permission nobody was there to grant).
+
+| check | seen |
+|---|---|
+| `vagcan info --device ble` | found and connected (`using vagcan-dash over BLE`), then no result within 90 s |
+| `bleuds --subscribe 7E0 7E8 F40D 100 10` | 4 Readings, all NoAnswer, 3 s apart (the planner's backoff on a silent unit) |
+| `vagcan watch --device ble --did 01:F40D --hz 10 --for 15` | connected, identified 7E0 from the project, CSV rows with no values; killed at 60 s because start-up over BLE took 52 s |
+| `benchecu`, 170 s | **no request at all** |
+| `vagcan dev sniff --active` on the CANable, 12 s | 0 frames |
+| board reset (`espflash reset`), same run again | same: no request reached `benchecu` |
+| `bench.sh 15 cantx` | **FAIL, 0 frames** — the reference transmit test that passed in §5.2 and §9 |
+| `rxwatch` on the board while `vagcan info` transmits from the CANable, 30 s | 0 frames, 0 errors |
+
+Both directions dead, on images that each passed on this pair earlier the same day, and a
+reset does not bring it back: a physical fault of the pair (wire, connector, termination)
+or of the CANable, not firmware. The "pair went quiet once" of §9.5 may have been the same
+fault showing first. **Needs the owner at the bench.** The board was left on `dash`.
+
+Not yet judged because of it: whether `watch` plain mode's CSV rows every ~20 ms with ~5 s
+gaps (on a bus where nothing answers) is a host defect; re-run on a working pair.
