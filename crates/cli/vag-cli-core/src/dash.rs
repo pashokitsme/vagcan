@@ -772,7 +772,19 @@ pub fn build(
 		if index_of.contains_key(&wanted.reference) {
 			return Err(Error::Duplicate(wanted.reference.clone()));
 		}
-		let resolved = resolve_channel(wanted, &offered, answered, units, &mut notes)?;
+		let mut resolution = Vec::new();
+		let resolved = resolve_channel(wanted, &offered, answered, units, &mut resolution)?;
+		// The same row under its other spelling is the same row: `01:IDE00191` and `01:202A`
+		// would otherwise both be added, both subscribed and both drawable (review,
+		// 2026-09-15).
+		if let Some(at) = channels
+			.iter()
+			.position(|c| (c.unit, c.did, c.bit_offset, c.bit_length) == (resolved.unit, resolved.did, resolved.bit_offset, resolved.bit_length))
+		{
+			let first = input.channels[at].reference.clone();
+			return Err(Error::Duplicate(first));
+		}
+		notes.append(&mut resolution);
 		let index = channels.len() as u16;
 		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
@@ -808,12 +820,17 @@ pub fn build(
 			hz: wanted.hz,
 			setpoint: None,
 		};
+		// Resolved into a log of its own: a setpoint that turns out to be a channel the input
+		// already has is not added, and a build log saying it was would be a lie.
+		let mut resolution = Vec::new();
 		let resolved = match index_of.get(&reference) {
 			// Already a `[[channel]]`: the owner's own, with the rate they gave it.
 			Some(index) => channels[*index as usize].clone(),
-			None => resolve_channel(&hidden, &offered, answered, units, &mut notes)?,
+			None => resolve_channel(&hidden, &offered, answered, units, &mut resolution)?,
 		};
-		let row = |c: &Channel| (c.unit, c.did, c.bit_offset);
+		// The width is part of the row: two fields can share an identifier and an offset and
+		// mean different things (review, 2026-09-15).
+		let row = |c: &Channel| (c.unit, c.did, c.bit_offset, c.bit_length);
 		if row(&resolved) == row(&channels[i]) {
 			return refuse("is the channel itself — the same unit, identifier and bits, however it is spelled");
 		}
@@ -821,20 +838,18 @@ pub fn build(
 		let existing = channels.iter().position(|c| row(c) == row(&resolved)).map(|at| at as u16);
 		if let Some(index) = existing
 			&& usize::from(index) < input.channels.len()
+			&& input.channels[usize::from(index)].setpoint.is_some()
 		{
-			let declared = &input.channels[usize::from(index)];
-			if declared.setpoint.is_some() {
-				return refuse("has a setpoint of its own");
-			}
-			// Both halves are asked for in one request only if both are due at the same rate;
-			// at two rates the difference is between numbers up to a period apart.
-			if channels[usize::from(index)].hz != channels[i].hz {
-				return refuse(&format!(
-					"is read at {} Hz and the channel it explains at {} Hz — a pair is read in one request, so they share a rate",
-					channels[usize::from(index)].hz,
-					channels[i].hz
-				));
-			}
+			return refuse("has a setpoint of its own");
+		}
+		// Both halves go out in one request only if both are due at the same rate; at two rates
+		// the difference is between numbers up to a period apart. True of a setpoint the input
+		// declares and of one two channels share (review, 2026-09-15).
+		if resolved.hz != channels[i].hz {
+			return refuse(&format!(
+				"is read at {} Hz and the channel it explains at {} Hz — a pair is read in one request, so they share a rate",
+				resolved.hz, channels[i].hz
+			));
 		}
 		if resolved.unit_text != channels[i].unit_text {
 			return refuse(&format!(
@@ -850,6 +865,7 @@ pub fn build(
 				let index = channels.len() as u16;
 				channels.push(resolved);
 				index_of.insert(reference.clone(), index);
+				notes.append(&mut resolution);
 				index
 			}
 		};
@@ -1091,7 +1107,6 @@ fn decimals_for(factor: f64) -> u8 {
 	(-factor.log10()).ceil().clamp(0.0, 3.0) as u8
 }
 
-/// The plan as Rust source: a `static PLAN` of `vag_dash_render::plan::Plan`.
 /// The alarm types the generated plan names, so nothing is imported unused.
 fn alarm_imports(plan: &Plan) -> Vec<&'static str> {
 	let mut imports = vec!["Alarm"];
@@ -1105,6 +1120,7 @@ fn alarm_imports(plan: &Plan) -> Vec<&'static str> {
 	imports
 }
 
+/// The plan as Rust source: a `static PLAN` of `vag_dash_render::plan::Plan`.
 pub fn to_rust(plan: &Plan) -> String {
 	use std::fmt::Write as _;
 	// `build` refuses a non-finite scaling, and `Debug` of a finite `f32`
@@ -1603,6 +1619,30 @@ mod tests {
 		let rust = to_rust(&built.plan);
 		assert!(rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, PageId, Rule};"), "{rust}");
 		assert!(!rust.contains("Direction"), "{rust}");
+	}
+
+	#[test]
+	fn two_channels_sharing_an_undeclared_setpoint_must_share_its_rate() {
+		// The second pairing would read the same specified value at another rate, so the
+		// difference would be between numbers up to a period apart.
+		let why = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 10\n[[channel]]\nref = \"01:IDE00999\"\nsetpoint = \"01:IDE00190\"\n",
+		)
+		.unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("share a rate")), "{why}");
+	}
+
+	#[test]
+	fn one_row_declared_under_both_spellings_is_a_duplicate() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[channel]]\nref = \"01:202A\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Duplicate(r) if r.to_string() == "01:IDE00191"), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_that_is_already_a_channel_leaves_one_line_in_the_log() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:2029\"\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap();
+		let resolutions = built.notes.iter().filter(|n| n.contains("2029@0/16")).count();
+		assert_eq!(resolutions, 1, "the row is resolved once and logged once: {:?}", built.notes);
 	}
 
 	#[test]

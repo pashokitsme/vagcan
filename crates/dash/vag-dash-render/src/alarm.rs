@@ -270,6 +270,12 @@ impl<'a> Alarm<'a> {
 		worst
 	}
 
+	/// What the rule compares for one channel of its own, by name rather than by rank.
+	fn reading_of(&self, channel: ChannelId, value_of: &impl Fn(ChannelId) -> Option<f32>) -> Option<f32> {
+		let i = self.channels.iter().position(|c| *c == channel)?;
+		self.reading(i, channel, value_of)
+	}
+
 	/// What the rule compares: the reading itself, or how far it is from the value its unit
 	/// asked for, as a share of that value.
 	///
@@ -498,23 +504,28 @@ fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Opt
 		// Counting, for **one channel**: a rule watching four cylinders must not add a second
 		// of one to a second of another, and a channel that comes back and goes out again
 		// starts over.
-		Episode::Rising { offender, since_ms } => match worst {
-			Some((c, v)) if rule.trips(v) && c == offender => {
-				if now_ms.saturating_sub(since_ms) >= rule.hold_ms() {
-					Episode::Firing { offender: c }
-				} else {
-					Episode::Rising { offender, since_ms }
-				}
+		Episode::Rising { offender, since_ms } => {
+			// The count belongs to the channel that started it, and is kept while **that
+			// channel** is still out — not while it is still the worst. Two cylinders trading
+			// places every poll are both out the whole time, and a rule that restarted on
+			// every swap would never fire (review, 2026-09-15).
+			let still_out = rule.reading_of(offender, value_of).is_some_and(|v| rule.trips(v));
+			match (still_out, worst) {
+				(true, _) if now_ms.saturating_sub(since_ms) >= rule.hold_ms() => Episode::Firing {
+					// Once it fires, the cell to invert is the worst one, as everywhere else.
+					offender: worst.map_or(offender, |(c, _)| c),
+				},
+				(true, _) => Episode::Rising { offender, since_ms },
+				// It came back, or stopped answering, and somebody else is out: that channel's
+				// own count starts here rather than inheriting this one's seconds.
+				(false, Some((c, v))) if rule.trips(v) => start_at(c, now_ms),
+				// Nobody is out, or there is no evidence at all — nothing answered, or the
+				// specified value is under the floor. The count ends: a hold that survived the
+				// gaps between what it was counting would not be a hold, and a transient is
+				// what this state exists to swallow.
+				_ => Episode::Clear,
 			}
-			// A different channel is the worst one now: the hold belongs to one channel, so
-			// this one's starts here rather than inheriting the other's seconds.
-			Some((c, v)) if rule.trips(v) => start_at(c, now_ms),
-			// Back inside, or no evidence at all — nothing answered, or the specified value is
-			// under the floor. Both end the count: a hold that survived the gaps between what
-			// it was counting would not be a hold, and a transient is what this state exists
-			// to swallow.
-			_ => Episode::Clear,
-		},
+		}
 		Episode::Firing { offender } => match worst {
 			// The offender follows the engine: a worse cylinder is the one worth
 			// pointing at, even mid-episode.
@@ -650,6 +661,31 @@ mod tests {
 		let up = alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 2_000);
 		assert_eq!(up.shown.page, DRIFT_PAGE);
 		assert_eq!(up.shown.offending, Some(DRIFTING[1]));
+	}
+
+	#[test]
+	fn two_channels_taking_turns_at_being_worst_still_fire() {
+		// Both are out the whole second; which one is worse changes every poll. The rule
+		// counts the drift, not the ranking.
+		let mut alarms = Alarms::new([drift()]);
+		let readings = |a: f32, b: f32| {
+			[
+				Reading::new(DRIFTING[0], Some(a)),
+				Reading::new(SPECIFIED[0], Some(2.0)),
+				Reading::new(DRIFTING[1], Some(b)),
+				Reading::new(SPECIFIED[1], Some(2.0)),
+			]
+		};
+		let mut fired = None;
+		for step in 0..=20u64 {
+			// 12 % and 13 % out, swapping places each poll.
+			let (a, b) = if step % 2 == 0 { (2.26, 2.24) } else { (2.24, 2.26) };
+			let up = alarms.poll(WAS_SHOWING, &readings(a, b), step * 100);
+			if up.shown.page == DRIFT_PAGE && fired.is_none() {
+				fired = Some(step * 100);
+			}
+		}
+		assert_eq!(fired, Some(1_000), "it fires on the hold, whoever is worst that poll");
 	}
 
 	#[test]

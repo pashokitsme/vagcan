@@ -101,7 +101,9 @@ alarm can watch it.
 - The pair lives on **one unit**. Both identifiers are then asked for in one request, so the
   two numbers come from the same moment.
 - The specified value needs no `[[channel]]` of its own — the build adds it, at its channel's
-  rate — and it is never offered as a cell. Declaring it as well is allowed; it is added once.
+  rate — and it is never offered as a cell. Declaring it as well is allowed; it is added once,
+  whichever spelling each of them uses. Its `hz` must then be the channel's: two rates are two
+  moments, and the build refuses that.
 - The pair reads in one unit of measure, or the build refuses it.
 - A channel with no `setpoint` shows exactly what it always did.
 
@@ -152,5 +154,10 @@ Every refusal names the thing that failed:
 - an alarm whose page is not a values page showing every channel it watches — two pages under
   one title is the same refusal — one whose `release` is on the wrong side of its `trip`, one
   over a channel with no `setpoint`, or an unknown `kind`;
-- a `setpoint` on another unit, in another unit of measure, pointing at its own channel, or at
-  a channel that has a `setpoint` of its own.
+- a `setpoint` on another unit, in another unit of measure, pointing at its own channel, at a
+  channel that has a `setpoint` of its own, or read at a different `hz` from the channel it
+  explains — including when two channels share one specified value and ask for it at two rates.
+
+A row is compared by what it resolves to, never by how it is spelled: `01:IDE00191` and
+`01:202A` are one row, so declaring both is the duplicate refusal and pairing one with the
+other is the "is the channel itself" refusal.
