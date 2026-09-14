@@ -39,10 +39,129 @@
 //! gives back whole messages.
 //!
 //! No clocks and no I/O here: `no_std` + `alloc`, the same code on the board and
-//! on the laptop.
+//! on the laptop. [`Pipe`] is the seam the I/O plugs into; an in-memory pair of
+//! them ([`pipe_pair`]) is here for the tests of whatever talks through one.
 
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::{MaybeSend, TransportError};
+
+/// The byte pipe this framing travels over: BLE NUS now, perhaps the USB cable later.
+///
+/// It carries chunks, not messages. A [`write`](Pipe::write) may be cut at the link's
+/// MTU on the way, and a [`read`](Pipe::read) is one chunk as it arrived, so a reader
+/// runs a [`Reassembler`]. Static dispatch, native `async fn`, like the other seams.
+#[allow(async_fn_in_trait)]
+pub trait Pipe: MaybeSend {
+	/// Put `bytes` on the pipe, cut to the link's chunk size by the implementation.
+	async fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
+
+	/// The next chunk the other end sent, or `None` once the pipe has closed.
+	///
+	/// Must be cancel-safe: a reader waits on it beside other work, and a chunk taken
+	/// by a future that is then dropped is a chunk lost.
+	async fn read(&mut self) -> Option<Vec<u8>>;
+}
+
+#[cfg(all(feature = "std", any(test, feature = "test-util")))]
+pub use memory::{MemoryPipe, pipe_pair};
+
+/// Two [`Pipe`] ends joined in memory.
+#[cfg(all(feature = "std", any(test, feature = "test-util")))]
+mod memory {
+	use alloc::collections::VecDeque;
+	use alloc::vec::Vec;
+	use core::task::{Poll, Waker};
+	use std::sync::{Arc, Mutex};
+
+	use super::{Pipe, chunks};
+	use crate::TransportError;
+
+	/// One direction: what was written and not yet read.
+	#[derive(Default)]
+	struct Lane {
+		chunks: VecDeque<Vec<u8>>,
+		reader: Option<Waker>,
+		closed: bool,
+	}
+
+	/// One end of a [`pipe_pair`]. Dropping it closes both directions: the other
+	/// end reads what was already written, then `None`, and its writes fail.
+	pub struct MemoryPipe {
+		inbox: Arc<Mutex<Lane>>,
+		outbox: Arc<Mutex<Lane>>,
+		chunk: usize,
+	}
+
+	/// Two joined ends. Every write is cut into chunks of at most `chunk` bytes, as a
+	/// BLE link cuts it at the MTU.
+	pub fn pipe_pair(chunk: usize) -> (MemoryPipe, MemoryPipe) {
+		let a_to_b = Arc::new(Mutex::new(Lane::default()));
+		let b_to_a = Arc::new(Mutex::new(Lane::default()));
+		(
+			MemoryPipe {
+				inbox: b_to_a.clone(),
+				outbox: a_to_b.clone(),
+				chunk,
+			},
+			MemoryPipe {
+				inbox: a_to_b,
+				outbox: b_to_a,
+				chunk,
+			},
+		)
+	}
+
+	impl MemoryPipe {
+		/// Change the size writes from this end are cut to from now on: a link whose
+		/// MTU is agreed only after it connected.
+		pub fn set_chunk(&mut self, chunk: usize) {
+			self.chunk = chunk;
+		}
+	}
+
+	impl Pipe for MemoryPipe {
+		async fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+			let mut lane = self.outbox.lock().unwrap_or_else(|e| e.into_inner());
+			if lane.closed {
+				return Err(TransportError::Disconnected);
+			}
+			lane.chunks.extend(chunks(bytes, self.chunk).map(<[u8]>::to_vec));
+			if let Some(reader) = lane.reader.take() {
+				reader.wake();
+			}
+			Ok(())
+		}
+
+		async fn read(&mut self) -> Option<Vec<u8>> {
+			core::future::poll_fn(|cx| {
+				let mut lane = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
+				match lane.chunks.pop_front() {
+					Some(chunk) => Poll::Ready(Some(chunk)),
+					None if lane.closed => Poll::Ready(None),
+					None => {
+						lane.reader = Some(cx.waker().clone());
+						Poll::Pending
+					}
+				}
+			})
+			.await
+		}
+	}
+
+	impl Drop for MemoryPipe {
+		fn drop(&mut self) {
+			for lane in [&self.inbox, &self.outbox] {
+				let mut lane = lane.lock().unwrap_or_else(|e| e.into_inner());
+				lane.closed = true;
+				if let Some(reader) = lane.reader.take() {
+					reader.wake();
+				}
+			}
+		}
+	}
+}
 
 /// First byte of every framed message. Text on the same pipe never starts with it.
 pub const MARKER: u8 = 0x00;
@@ -815,6 +934,38 @@ mod tests {
 		assert!(r.push(&frame[..6]).is_empty());
 		r.reset();
 		assert_eq!(one_message(r.push(&frame)), request());
+	}
+
+	#[tokio::test]
+	async fn a_memory_pipe_carries_writes_cut_at_its_chunk_size() {
+		let (mut host, mut board) = pipe_pair(4);
+		host.write(&[1, 2, 3, 4, 5, 6, 7, 8, 9]).await.unwrap();
+		assert_eq!(board.read().await, Some(vec![1, 2, 3, 4]));
+		assert_eq!(board.read().await, Some(vec![5, 6, 7, 8]));
+		assert_eq!(board.read().await, Some(vec![9]));
+		board.set_chunk(244);
+		board.write(&[0; 300]).await.unwrap();
+		assert_eq!(host.read().await.map(|c| c.len()), Some(244));
+		assert_eq!(host.read().await.map(|c| c.len()), Some(56));
+	}
+
+	#[tokio::test]
+	async fn a_dropped_end_closes_the_pipe_after_what_it_wrote() {
+		let (mut host, mut board) = pipe_pair(244);
+		board.write(b"last").await.unwrap();
+		drop(board);
+		assert_eq!(host.read().await, Some(b"last".to_vec()), "written before the drop, still read");
+		assert_eq!(host.read().await, None);
+		assert!(matches!(host.write(b"x").await, Err(TransportError::Disconnected)));
+	}
+
+	#[tokio::test]
+	async fn a_read_given_up_on_loses_nothing() {
+		let (mut host, mut board) = pipe_pair(244);
+		// A read that is waited on and then abandoned, the way a `select!` abandons one.
+		assert!(tokio::time::timeout(core::time::Duration::from_millis(10), host.read()).await.is_err());
+		board.write(b"kept").await.unwrap();
+		assert_eq!(host.read().await, Some(b"kept".to_vec()));
 	}
 
 	#[test]
