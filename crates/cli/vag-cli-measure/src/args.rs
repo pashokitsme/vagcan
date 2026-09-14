@@ -17,8 +17,8 @@ pub struct Args {
 	pub tool: Option<crate::Tool>,
 	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
 	/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
-	/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
-	/// when there is none.
+	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
+	/// when asked.
 	#[arg(long, value_name = "PATH|ble|ble:NAME")]
 	pub device: Option<String>,
 	/// Use this car file instead of the one kept for this car's VIN.

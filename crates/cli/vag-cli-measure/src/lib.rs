@@ -171,8 +171,8 @@ pub enum Tool {
 	Setup {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
 		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
-		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
-		/// when there is none.
+		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
+		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// The speed a coastdown pass opens at. Narrowing the range separates

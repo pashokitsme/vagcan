@@ -91,7 +91,7 @@ pub enum Tool {
 		iv_cache: Option<String>,
 		/// Adapter to use with --from-car: a serial path (a USB-CAN adapter, or the dash
 		/// board on its USB cable), `ble` for the board over Bluetooth, or `ble:<name>`. Omit
-		/// it to use the one adapter or board on USB, or the board over BLE when there is none.
+		/// it to use the one adapter or board on USB; Bluetooth is looked for only when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
