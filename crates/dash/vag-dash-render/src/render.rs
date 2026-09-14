@@ -694,7 +694,9 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 	// whole row keeps it or none of it does: one cell a line shorter than its neighbours reads
 	// as meaning something, the way an odd face would (see this function's note).
 	let wants_deviation = cells.iter().any(|cell| cell.deviation != Deviation::None);
-	let dev_h = if wants_deviation { text_height(&theme.unit, "0") } else { 0 };
+	// The label's face, not the unit's: the difference is a number a person reads, and at the
+	// unit's size it was too small to read at a glance (owner, 2026-09-15).
+	let dev_h = if wants_deviation { text_height(&theme.label, "0") } else { 0 };
 
 	// One pixel of air above and below the number. Any less and the tiers touch,
 	// which reads as one smeared block rather than three things.
@@ -852,7 +854,7 @@ fn draw_value<D>(
 		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
 		if let (Some(baseline), Some(text)) = (layout.dev_baseline, deviation_text(cell))
 			&& theme
-				.unit
+				.label
 				.render_aligned(
 					text.as_str(),
 					Point::new(centre, baseline),
@@ -986,6 +988,9 @@ where
 	}
 }
 
+/// The numeral face a difference is drawn in where it fits: the ladder's smallest.
+const SMALL_NUMERALS: usize = 2;
+
 /// The chart's header rows: the header text, and the first link icon beside it. The trace
 /// starts under them.
 const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
@@ -1053,7 +1058,20 @@ where
 		report.value_shrunk = true;
 	}
 	let plot_top = HEADER_ROWS;
-	let plot_x = value_w as i32 + 4;
+	// The column the number and its difference share: the wider of the two decides where the
+	// trace starts, or a long difference would run under it.
+	let deviation = deviation_text(cell);
+	let dev_numerals = deviation
+		.as_ref()
+		.filter(|text| measure(&theme.numerals[SMALL_NUMERALS], text.as_str()) <= width / 3)
+		.map(|_| &theme.numerals[SMALL_NUMERALS]);
+	let dev_w = match (&deviation, dev_numerals) {
+		(None, _) => 0,
+		(Some(text), Some(numerals)) => measure(numerals, text.as_str()),
+		(Some(text), None) => text_width(&theme.label, text.as_str()),
+	};
+	let column_w = value_w.max(dev_w) as i32;
+	let plot_x = column_w + 4;
 	let plot_bottom = height as i32 - 1;
 	// The trace ends before the icons' column **whether or not a host is connected**: the icons
 	// stand one under the other, so a second one is beside the trace's top rows, and a plot
@@ -1086,25 +1104,40 @@ where
 	// page: the number is what the eye came for, and on the floor it reads as an
 	// afterthought under the trace. The difference from the specified value, when there is
 	// one, takes the floor under it.
-	let deviation = deviation_text(cell);
-	let dev_h = if deviation.is_some() { text_height(&theme.unit, "0") as i32 } else { 0 };
+	// The difference is drawn in the numeral ladder's smallest face where it fits under the
+	// number, and in the label's face where it does not (owner, 2026-09-15: bigger, and
+	// centred). Both are centred in the column they share.
+	let dev_h = match (&deviation, dev_numerals) {
+		(None, _) => 0,
+		(Some(_), Some(numerals)) => numeral_height(numerals, "0") as i32,
+		(Some(_), None) => text_height(&theme.label, "0") as i32,
+	};
 	let band_bottom = height as i32 - 1 - if dev_h > 0 { dev_h + 1 } else { 0 };
 	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
 	let value_baseline = plot_top + (band_bottom - plot_top - value_h as i32) / 2 + value_h as i32;
-	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, value_baseline), ink, target);
-	if let Some(text) = deviation
-		&& theme
-			.unit
-			.render(
-				text.as_str(),
-				Point::new(0, height as i32 - 1),
-				VerticalPosition::Baseline,
-				FontColor::Transparent(ink),
-				target,
-			)
-			.is_err()
-	{
-		report.glyph_missing = true;
+	let value_x = (column_w - value_w as i32) / 2;
+	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(value_x, value_baseline), ink, target);
+	if let Some(text) = deviation {
+		let floor = height as i32 - 1;
+		let x = (column_w - dev_w as i32) / 2;
+		match dev_numerals {
+			Some(numerals) => draw_numerals(numerals, text.as_str(), Point::new(x, floor), ink, target),
+			None => {
+				if theme
+					.label
+					.render(
+						text.as_str(),
+						Point::new(x, floor),
+						VerticalPosition::Baseline,
+						FontColor::Transparent(ink),
+						target,
+					)
+					.is_err()
+				{
+					report.glyph_missing = true;
+				}
+			}
+		}
 	}
 
 	if plot_w < 8 || max <= min {
@@ -1519,6 +1552,48 @@ mod tests {
 		let plain = Cell::new("НАДДУВ", Some(1.92), "bar", 2);
 		let head = chart_header(&plain, 0.0, 2.5, 120, 0.2);
 		assert!(head.as_str().contains("24s"), "without one the seconds stay: {:?}", head.as_str());
+	}
+
+	#[test]
+	fn a_difference_wider_than_the_number_keeps_the_trace_out_of_its_column() {
+		// `-12.34` is wider than `9.9`, so the column is the difference's and the trace starts
+		// past it.
+		let samples = [9.9f32; 200];
+		let cell = drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34));
+		let frame = Frame::Chart {
+			cell: drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34)),
+			min: 0.0,
+			max: 20.0,
+			samples: &samples,
+			seconds_per_sample: 0.2,
+		};
+		let mut display = tall();
+		let report = draw(&frame, &Theme::bold_mono(), &mut display);
+		assert!(!report.value_overrun, "{report:?}");
+
+		let theme = Theme::bold_mono();
+		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, TALL.width / 3);
+		let dev_w = measure(&theme.numerals[SMALL_NUMERALS], deviation_text(&cell).unwrap().as_str());
+		assert!(dev_w > value_w, "the difference is the wider of the two");
+		// Nothing of the trace in the column: the rows under the header, left of where the
+		// plot starts, hold only the number and the difference.
+		let mut plain = tall();
+		draw(
+			&Frame::Chart {
+				cell: drifting("ДАВЛЕНИЕ", 9.9, "bar", 2, Deviation::Value(-12.34)),
+				min: 0.0,
+				max: 20.0,
+				samples: &[],
+				seconds_per_sample: 0.2,
+			},
+			&theme,
+			&mut plain,
+		);
+		let column = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(dev_w, TALL.height - HEADER_ROWS as u32));
+		assert!(
+			column.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
+			"the trace stays out of the number's column"
+		);
 	}
 
 	// --- the link icons ---------------------------------------------------------------
