@@ -45,6 +45,15 @@
 //! direction = "above"              # or "below"
 //! trip = 105                       # fires at or past this
 //! release = 100                    # clears only once back past this
+//!
+//! [[alarm]]                        # the other kind: drift from a specified value
+//! kind = "drift"
+//! channels = ["01:IDE00191"]       # each with a `setpoint` of its own
+//! page = "MAIN"
+//! percent = 10                     # fires past this share of the specified value
+//! release_percent = 6              # clears under this share
+//! hold_ms = 1000                   # and only once the drift has held that long
+//! min_setpoint = 0.5               # under this specified value the rule says nothing
 //! ```
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
@@ -196,15 +205,31 @@ pub enum Direction {
 	Above,
 }
 
+/// What an `[[alarm]]` watches for: a threshold, or drift from a specified value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlarmRuleInput {
+	Threshold {
+		direction: Direction,
+		trip: f64,
+		release: f64,
+	},
+	/// `todo/dash/18-setpoints-and-drift.md` §4. Every channel it watches must have a
+	/// `setpoint`, or there is nothing to be far from.
+	Drift {
+		percent: f64,
+		release_percent: f64,
+		hold_ms: u64,
+		min_setpoint: f64,
+	},
+}
+
 /// One `[[alarm]]` of the input: the owner's rule, never the code's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlarmInput {
 	pub channels: Vec<Reference>,
 	/// The title of the values page the rule raises.
 	pub page: String,
-	pub direction: Direction,
-	pub trip: f64,
-	pub release: f64,
+	pub rule: AlarmRuleInput,
 }
 
 /// The whole input, parsed and nothing more.
@@ -348,30 +373,62 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 				})
 				.collect::<Result<Vec<_>, _>>()?;
 			let page = string(table.get("page"), &format!("alarm #{n}'s page"))?;
-			let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
-				"below" => Direction::Below,
-				"above" => Direction::Above,
-				other => {
-					return Err(Error::Parse(format!(
-						"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
-					)));
-				}
-			};
 			// The board compares in `f32`, so a threshold past what one holds is refused
 			// rather than turned into an infinity nothing ever reaches.
 			let threshold = |what: &str| match number(table.get(what)) {
 				Some(v) if v.is_finite() && (v as f32).is_finite() => Ok(v),
 				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
 			};
-			let trip = threshold("trip")?;
-			let release = threshold("release")?;
-			alarms.push(AlarmInput {
-				channels,
-				page,
-				direction,
-				trip,
-				release,
-			});
+			// No `kind` is the threshold rule, so every `dash.toml` written before drift
+			// existed still builds.
+			let rule = match table.get("kind").and_then(Item::as_str).map(str::trim).unwrap_or("threshold") {
+				"threshold" => {
+					let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
+						"below" => Direction::Below,
+						"above" => Direction::Above,
+						other => {
+							return Err(Error::Parse(format!(
+								"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
+							)));
+						}
+					};
+					AlarmRuleInput::Threshold {
+						direction,
+						trip: threshold("trip")?,
+						release: threshold("release")?,
+					}
+				}
+				"drift" => {
+					let share = |what: &str| match threshold(what)? {
+						v if v > 0.0 => Ok(v),
+						v => Err(Error::Parse(format!("dash.toml: alarm #{n}: {what} {v} is not above zero"))),
+					};
+					let hold_ms = match table.get("hold_ms").and_then(Item::as_integer) {
+						Some(ms) if ms >= 0 => ms as u64,
+						_ => {
+							return Err(Error::Parse(format!(
+								"dash.toml: alarm #{n} needs hold_ms, whole milliseconds the drift has to hold"
+							)));
+						}
+					};
+					let min_setpoint = match threshold("min_setpoint")? {
+						v if v >= 0.0 => v,
+						v => return Err(Error::Parse(format!("dash.toml: alarm #{n}: min_setpoint {v} is below zero"))),
+					};
+					AlarmRuleInput::Drift {
+						percent: share("percent")?,
+						release_percent: share("release_percent")?,
+						hold_ms,
+						min_setpoint,
+					}
+				}
+				other => {
+					return Err(Error::Parse(format!(
+						"dash.toml: alarm #{n}: kind {other:?} is not \"threshold\" or \"drift\""
+					)));
+				}
+			};
+			alarms.push(AlarmInput { channels, page, rule });
 		}
 	}
 	Ok(Input {
@@ -520,15 +577,33 @@ pub enum Page {
 	Values { title: String, cells: Vec<u16> },
 }
 
+/// One alarm's rule, resolved. `specified` is indices into the plan's channels, one per
+/// watched channel, in the same order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AlarmRule {
+	Threshold {
+		direction: Direction,
+		trip: f64,
+		release: f64,
+	},
+	Drift {
+		specified: Vec<u16>,
+		percent: f64,
+		release_percent: f64,
+		hold_ms: u64,
+		min_setpoint: f64,
+	},
+}
+
 /// One alarm, resolved: indices into the plan's channels and pages, which is what
 /// `vag_dash_render::alarm::ChannelId` and `PageId` are for an image built for one plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alarm {
 	pub channels: Vec<u16>,
 	pub page: u16,
-	pub direction: Direction,
-	pub trip: f64,
-	pub release: f64,
+	#[serde(flatten)]
+	pub rule: AlarmRule,
 }
 
 /// The plan, as `plan.json` holds it. [`to_rust`] writes the same content as
@@ -871,36 +946,75 @@ pub fn build(
 				wanted.page
 			)));
 		}
-		let (trip, release) = (wanted.trip, wanted.release);
+		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
 		// Compared as the board will compare them, in `f32`: two thresholds a hair apart in
 		// the file can be one value there, and one value is no hysteresis.
-		let (board_trip, board_release) = (trip as f32, release as f32);
-		match wanted.direction {
-			Direction::Below if board_release <= board_trip => {
-				return Err(refuse(format!(
-					"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
-				)));
+		let rule = match wanted.rule {
+			AlarmRuleInput::Threshold { direction, trip, release } => {
+				let (board_trip, board_release) = (trip as f32, release as f32);
+				match direction {
+					Direction::Below if board_release <= board_trip => {
+						return Err(refuse(format!(
+							"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
+						)));
+					}
+					Direction::Above if board_release >= board_trip => {
+						return Err(refuse(format!(
+							"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
+						)));
+					}
+					_ => {}
+				}
+				notes.push(format!(
+					"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
+					refs.join(", "),
+					if direction == Direction::Below { "below" } else { "above" },
+					wanted.page
+				));
+				AlarmRule::Threshold { direction, trip, release }
 			}
-			Direction::Above if board_release >= board_trip => {
-				return Err(refuse(format!(
-					"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
-				)));
+			AlarmRuleInput::Drift {
+				percent,
+				release_percent,
+				hold_ms,
+				min_setpoint,
+			} => {
+				if release_percent as f32 >= percent as f32 {
+					return Err(refuse(format!(
+						"release_percent {release_percent} is not under percent {percent} — a drift alarm releases under where it trips"
+					)));
+				}
+				// Every watched channel needs the other half of its pair, or the rule has
+				// nothing to measure against.
+				let mut specified = Vec::new();
+				for (r, index) in wanted.channels.iter().zip(&watched) {
+					match channels[*index as usize].setpoint {
+						Some(s) => specified.push(s),
+						None => {
+							return Err(refuse(format!(
+								"{r} has no setpoint — a drift rule watches channels the plan pairs with a specified value"
+							)));
+						}
+					}
+				}
+				notes.push(format!(
+					"alarm #{n}: {} more than {percent}% from its specified value for {hold_ms} ms, released under {release_percent}%, ignored under {min_setpoint} → page {:?}",
+					refs.join(", "),
+					wanted.page
+				));
+				AlarmRule::Drift {
+					specified,
+					percent,
+					release_percent,
+					hold_ms,
+					min_setpoint,
+				}
 			}
-			_ => {}
-		}
-		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
-		notes.push(format!(
-			"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
-			refs.join(", "),
-			if wanted.direction == Direction::Below { "below" } else { "above" },
-			wanted.page
-		));
+		};
 		alarms.push(Alarm {
 			channels: watched,
 			page: page as u16,
-			direction: wanted.direction,
-			trip,
-			release,
+			rule,
 		});
 	}
 
@@ -969,7 +1083,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	if plan.alarms.is_empty() {
 		let _ = writeln!(out, "use vag_dash_render::alarm::Alarm;");
 	} else {
-		let _ = writeln!(out, "use vag_dash_render::alarm::{{Alarm, ChannelId, Direction, PageId}};");
+		let _ = writeln!(out, "use vag_dash_render::alarm::{{Alarm, ChannelId, Direction, PageId, Rule}};");
 	}
 	let _ = writeln!(out);
 	let _ = writeln!(
@@ -1034,26 +1148,49 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out, "];");
 	let _ = writeln!(out);
 	for (i, a) in plan.alarms.iter().enumerate() {
-		let list: Vec<String> = a.channels.iter().map(|c| format!("ChannelId({c})")).collect();
-		let _ = writeln!(
-			out,
-			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = [{}];",
-			a.channels.len(),
-			list.join(", ")
-		);
-	}
-	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
-	for (i, a) in plan.alarms.iter().enumerate() {
-		let direction = match a.direction {
-			Direction::Below => "Below",
-			Direction::Above => "Above",
+		let ids = |channels: &[u16]| {
+			let list: Vec<String> = channels.iter().map(|c| format!("ChannelId({c})")).collect();
+			format!("[{}]", list.join(", "))
 		};
 		let _ = writeln!(
 			out,
-			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), trip: {}, release: {}, direction: Direction::{direction} }},",
-			a.page,
-			float(a.trip),
-			float(a.release)
+			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = {};",
+			a.channels.len(),
+			ids(&a.channels)
+		);
+		if let AlarmRule::Drift { specified, .. } = &a.rule {
+			let _ = writeln!(out, "static ALARM_SPECIFIED_{i}: [ChannelId; {}] = {};", specified.len(), ids(specified));
+		}
+	}
+	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
+	for (i, a) in plan.alarms.iter().enumerate() {
+		let rule = match &a.rule {
+			AlarmRule::Threshold { direction, trip, release } => format!(
+				"Rule::Threshold {{ trip: {}, release: {}, direction: Direction::{} }}",
+				float(*trip),
+				float(*release),
+				match direction {
+					Direction::Below => "Below",
+					Direction::Above => "Above",
+				}
+			),
+			AlarmRule::Drift {
+				percent,
+				release_percent,
+				hold_ms,
+				min_setpoint,
+				..
+			} => format!(
+				"Rule::Drift {{ specified: &ALARM_SPECIFIED_{i}, percent: {}, release_percent: {}, hold_ms: {hold_ms}, min_setpoint: {} }}",
+				float(*percent),
+				float(*release_percent),
+				float(*min_setpoint)
+			),
+		};
+		let _ = writeln!(
+			out,
+			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), rule: {rule} }},",
+			a.page
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -1319,6 +1456,71 @@ mod tests {
 		.unwrap_err();
 		assert!(
 			matches!(&why, Error::Setpoint { why, .. } if why.contains("setpoint of its own")),
+			"{why}"
+		);
+	}
+
+	/// The drift rule the tests build on: page `A` shows the drifting channel.
+	fn drift_alarm(percent: f64, release_percent: f64) -> String {
+		format!(
+			"[[alarm]]\nkind = \"drift\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\npercent = {percent:?}\nrelease_percent = {release_percent:?}\nhold_ms = 1000\nmin_setpoint = 0.5\n"
+		)
+	}
+
+	#[test]
+	fn a_drift_rule_reaches_both_outputs_with_the_pair_it_watches() {
+		let built = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 6.0)
+		))
+		.unwrap();
+		assert_eq!(
+			built.plan.alarms,
+			vec![Alarm {
+				channels: vec![0],
+				page: 0,
+				rule: AlarmRule::Drift {
+					specified: vec![1],
+					percent: 10.0,
+					release_percent: 6.0,
+					hold_ms: 1000,
+					min_setpoint: 0.5,
+				},
+			}]
+		);
+		let json = built.plan.to_json();
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert!(json.contains("\"kind\": \"drift\""), "{json}");
+		let rust = to_rust(&built.plan);
+		assert!(rust.contains("static ALARM_SPECIFIED_0: [ChannelId; 1] = [ChannelId(1)];"), "{rust}");
+		assert!(
+			rust.contains("rule: Rule::Drift { specified: &ALARM_SPECIFIED_0, percent: 10.0, release_percent: 6.0, hold_ms: 1000, min_setpoint: 0.5 }"),
+			"{rust}"
+		);
+	}
+
+	#[test]
+	fn a_drift_rule_over_a_channel_with_no_specified_value_is_refused() {
+		let why = build_with_setpoint(&format!("[[channel]]\nref = \"01:IDE00191\"\n{}", drift_alarm(10.0, 6.0))).unwrap_err();
+		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("has no setpoint")), "{why}");
+	}
+
+	#[test]
+	fn a_drift_rule_that_does_not_release_under_its_percent_is_refused() {
+		let why = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 10.0)
+		))
+		.unwrap_err();
+		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("releases under")), "{why}");
+	}
+
+	#[test]
+	fn an_alarm_of_an_unknown_kind_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nkind = \"wobble\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\n")
+			.unwrap_err();
+		assert!(
+			matches!(&why, Error::Parse(why) if why.contains("is not \"threshold\" or \"drift\"")),
 			"{why}"
 		);
 	}
@@ -1899,16 +2101,20 @@ mod tests {
 				Alarm {
 					channels: vec![2],
 					page: 1,
-					direction: Direction::Above,
-					trip: 10.0,
-					release: 8.0
+					rule: AlarmRule::Threshold {
+						direction: Direction::Above,
+						trip: 10.0,
+						release: 8.0
+					},
 				},
 				Alarm {
 					channels: vec![1, 0],
 					page: 0,
-					direction: Direction::Below,
-					trip: 0.0,
-					release: 1.0
+					rule: AlarmRule::Threshold {
+						direction: Direction::Below,
+						trip: 0.0,
+						release: 1.0
+					},
 				},
 			],
 			"the file's order is the priority"
@@ -1925,7 +2131,7 @@ mod tests {
 
 		let rust = to_rust(&built.plan);
 		assert!(
-			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId};"),
+			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
 			"{rust}"
 		);
 		assert!(rust.contains("alarms: &ALARMS }"), "{rust}");
@@ -1935,7 +2141,9 @@ mod tests {
 		);
 		assert!(rust.contains("static ALARMS: [Alarm<'static>; 2] = ["), "{rust}");
 		assert!(
-			rust.contains("Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), trip: 10.0, release: 8.0, direction: Direction::Above },"),
+			rust.contains(
+				"Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), rule: Rule::Threshold { trip: 10.0, release: 8.0, direction: Direction::Above } },"
+			),
 			"{rust}"
 		);
 

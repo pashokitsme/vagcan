@@ -566,7 +566,7 @@ mod tests {
 
 	#[test]
 	fn a_channel_an_alarm_watches_is_read_at_its_own_rate_whatever_page_is_up() {
-		use crate::alarm::{Direction, PageId};
+		use crate::alarm::{Direction, PageId, Rule};
 		const FAST: Channel = Channel {
 			hz: 10.0,
 			..channel(0, 8, false, true, 1.0, 0.0)
@@ -576,9 +576,11 @@ mod tests {
 		static ALARMS: [Alarm<'static>; 1] = [Alarm {
 			channels: &WATCHED,
 			page: PageId(2),
-			trip: 10.0,
-			release: 8.0,
-			direction: Direction::Above,
+			rule: Rule::Threshold {
+				trip: 10.0,
+				release: 8.0,
+				direction: Direction::Above,
+			},
 		}];
 		let plan = Plan {
 			channels: &CHANNELS,

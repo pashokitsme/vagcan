@@ -155,7 +155,7 @@ impl<'a, const N: usize> Screen<'a, N> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::alarm::{Direction, HOLD_MS};
+	use crate::alarm::{Direction, HOLD_MS, Rule};
 	use crate::plan::{Channel, Page, Plan};
 
 	/// Pages: 0 and 1 are the driver's, 2 explains `HIGH`, 3 explains `LOW`.
@@ -167,16 +167,20 @@ mod tests {
 		Alarm {
 			channels: &HIGH_CHANNELS,
 			page: PageId(2),
-			trip: 10.0,
-			release: 8.0,
-			direction: Direction::Above,
+			rule: Rule::Threshold {
+				trip: 10.0,
+				release: 8.0,
+				direction: Direction::Above,
+			},
 		},
 		Alarm {
 			channels: &LOW_CHANNELS,
 			page: PageId(3),
-			trip: 0.0,
-			release: 1.0,
-			direction: Direction::Below,
+			rule: Rule::Threshold {
+				trip: 0.0,
+				release: 1.0,
+				direction: Direction::Below,
+			},
 		},
 	];
 
