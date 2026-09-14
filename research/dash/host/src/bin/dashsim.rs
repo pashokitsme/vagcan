@@ -162,6 +162,9 @@ enum Invocation {
 	Demo,
 	/// `--preview DIR`; `None` when the directory is missing.
 	Preview(Option<String>),
+	/// `--snap FILE` / `--hello-snap FILE`: one frame off the board into a PNG, after a
+	/// Hello when `hello`; `None` when the file is missing.
+	Snap { file: Option<String>, hello: bool },
 	List,
 	Help,
 	Unknown(String),
@@ -173,6 +176,14 @@ fn parse(first: Option<&str>, second: Option<&str>) -> Invocation {
 	match first {
 		Some("--demo") => Invocation::Demo,
 		Some("--preview") => Invocation::Preview(second.map(str::to_string)),
+		Some("--snap") => Invocation::Snap {
+			file: second.map(str::to_string),
+			hello: false,
+		},
+		Some("--hello-snap") => Invocation::Snap {
+			file: second.map(str::to_string),
+			hello: true,
+		},
 		Some("--list") => Invocation::List,
 		Some("--help" | "-h") => Invocation::Help,
 		// Nothing else starts with a dash; a port path never does.
@@ -191,6 +202,12 @@ usage:
   dashsim --demo          draw one synthetic frame and exit (no board needed)
   dashsim --preview DIR   render the layout preview scenarios (placeholder values) to
                           PNGs in DIR and print each one's report (no board needed)
+  dashsim --snap FILE     write the panel as the board draws it to the PNG FILE; the
+                          frame is the third after the port opens, and the board's log
+                          lines meanwhile go to stderr
+  dashsim --hello-snap FILE
+                          the same after saying Hello on the link first, as a host on
+                          the cable does — the frame then shows the USB link icon
   dashsim --help          this text
 
 keys: space = short press, L = long press, b = braille, q = quit";
@@ -206,6 +223,8 @@ fn main() -> Result<()> {
 			Ok(())
 		}
 		Invocation::Preview(None) => bail!("--preview needs a directory to write the PNGs to\n\n{USAGE}"),
+		Invocation::Snap { file: Some(file), hello } => snap(&guess_port()?, std::path::Path::new(&file), hello),
+		Invocation::Snap { file: None, .. } => bail!("--snap and --hello-snap need the PNG file to write\n\n{USAGE}"),
 		Invocation::List => list_ports(),
 		Invocation::Help => {
 			println!("{USAGE}");
@@ -250,6 +269,52 @@ fn pick_board(ports: &[serialport::SerialPortInfo]) -> Result<String> {
 		[] => bail!("no ESP32 board found (USB vendor {ESPRESSIF_VID:04x}) — plug it in, pass its port explicitly, or --list to see the ports"),
 		several => bail!("several ESP32 boards found — pass one explicitly:\n  {}", several.join("\n  ")),
 	}
+}
+
+/// Frames skipped before the one written: the board draws one every 200 ms, so the
+/// third is drawn at least 400 ms after the port opened — after the Hello, when one
+/// was sent, has reached the board.
+const SNAP_SKIP: usize = 2;
+
+/// How long a snap waits for its frame. A board in adapter mode sends none.
+const SNAP_WAIT: Duration = Duration::from_secs(5);
+
+/// One frame off the board, as `--preview` writes its scenarios.
+fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {
+	let mut port = serialport::new(port_name, BAUD)
+		.timeout(Duration::from_millis(200))
+		.open()
+		.with_context(|| format!("opening {port_name}"))?;
+	if hello {
+		let bytes = vag_uds_transport::link::encode(&vag_uds_transport::link::Message::Hello)?;
+		port.write_all(&bytes).context("saying Hello")?;
+	}
+	let mut reader = BufReader::new(port);
+	let mut line = Vec::new();
+	let deadline = Instant::now() + SNAP_WAIT;
+	let mut seen = 0;
+	while Instant::now() < deadline {
+		match read_board(&mut reader, &mut line) {
+			Ok(Heard::Said(FromBoard::Frame(bitmap))) => {
+				if seen < SNAP_SKIP {
+					seen += 1;
+					continue;
+				}
+				let mut canvas = preview::Canvas::new(embedded_graphics::prelude::Size::new(bitmap.width, bitmap.height));
+				canvas.lit.clone_from(&bitmap.pixels);
+				let out = std::fs::File::create(file).with_context(|| format!("creating {}", file.display()))?;
+				preview::encode_png(&canvas, std::io::BufWriter::new(out))?;
+				println!("{}", file.display());
+				return Ok(());
+			}
+			Ok(Heard::Said(FromBoard::Log(text))) => eprintln!("{text}"),
+			Ok(Heard::End) => bail!("{port_name} closed before a frame came"),
+			Ok(_) => {}
+			Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+			Err(e) => return Err(e).with_context(|| format!("reading {port_name}")),
+		}
+	}
+	bail!("no frame from {port_name} in {} s — is the board in adapter mode, or not on the dash image?", SNAP_WAIT.as_secs())
 }
 
 fn run(port_name: &str) -> Result<()> {
@@ -849,6 +914,9 @@ mod tests {
 	fn preview_takes_the_directory_after_it() {
 		assert!(matches!(parse(Some("--preview"), Some("out")), Invocation::Preview(Some(d)) if d == "out"));
 		assert!(matches!(parse(Some("--preview"), None), Invocation::Preview(None)));
+		assert!(matches!(parse(Some("--snap"), Some("a.png")), Invocation::Snap { file: Some(f), hello: false } if f == "a.png"));
+		assert!(matches!(parse(Some("--hello-snap"), Some("a.png")), Invocation::Snap { file: Some(_), hello: true }));
+		assert!(matches!(parse(Some("--snap"), None), Invocation::Snap { file: None, .. }));
 	}
 
 	#[test]

@@ -499,6 +499,16 @@ fn set_visibility(v: Visibility) {
 	VISIBILITY.store(v as u8, Ordering::Relaxed);
 }
 
+/// Which hosts the board is serving, for the icons in the panel's corner: a host on the
+/// cable that said Hello ([`USB_LINKED`]), and a BLE central connected — the LED's
+/// [`Visibility::Connected`], `dashcfg` included.
+fn links() -> vag_dash_render::Links {
+	vag_dash_render::Links {
+		usb: USB_LINKED.load(Ordering::Relaxed),
+		ble: visibility() == Visibility::Connected,
+	}
+}
+
 /// The board's clock in milliseconds since boot — what the planner, the guard
 /// and every timestamp sent to a host are on.
 fn ms() -> u64 {
@@ -2036,6 +2046,10 @@ async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 /// bottleneck.
 const FRAME_MS: u64 = 200;
 
+/// The window the adapter screen's kb/s is measured over: a figure a person can read
+/// before it changes, five frames long.
+const RATE_WINDOW_MS: u64 = 1000;
+
 /// The longest `FRAME` line: two hex digits per run of pixels at worst, and its header.
 const FRAME_LINE: usize = vag_dash_fw::panel::WIDTH * vag_dash_fw::panel::HEIGHT / 8 * 2 + 32;
 
@@ -2069,7 +2083,8 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	use vag_dash_render::history::History;
-	use vag_dash_render::{Cell, Frame, Theme, draw};
+	use vag_dash_render::{Board, Cell, Frame, Rates, Theme, draw_with};
+	use vag_uds_can::wire::BitRate;
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
 	let framebuffer = FRAMEBUFFER.init(Framebuffer::new());
@@ -2094,14 +2109,25 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 	let mut no_range_said: Option<u16> = None;
 	// An alarm page this board does not hold is said once per miss.
 	let mut missed_said: Option<u16> = None;
+	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
+	// first window starts there and nothing from an earlier session is in it.
+	let mut meters: Option<(BitRate, BitRate)> = None;
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
 
 		if adapter_mode() {
 			screen.lock(|cell| cell.borrow_mut().adapter());
+			let (tx_meter, rx_meter) = meters.get_or_insert((BitRate::new(RATE_WINDOW_MS), BitRate::new(RATE_WINDOW_MS)));
+			let (tx_bits, rx_bits) = SLCAN_PORT.bits();
+			let now = ms();
+			let rates = match (tx_meter.update(now, tx_bits), rx_meter.update(now, rx_bits)) {
+				(Some(tx_bps), Some(rx_bps)) => Some(Rates { tx_bps, rx_bps }),
+				_ => None,
+			};
 			framebuffer.clear_all();
-			let report = draw(&Frame::Adapter(SLCAN_PORT.status()), &theme, framebuffer);
+			let board = Board { links: links(), rates };
+			let report = draw_with(&Frame::Adapter(SLCAN_PORT.status()), &board, &theme, framebuffer);
 			let compromised = report != vag_dash_render::render::Report::default();
 			if compromised != last_compromised {
 				last_compromised = compromised;
@@ -2109,6 +2135,8 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 			}
 			continue;
 		}
+		meters = None;
+		let board = Board { links: links(), rates: None };
 
 		// A copy, so the lock is held for a memcpy and not for a frame.
 		let values = *VALUES.lock().await;
@@ -2178,14 +2206,14 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				for index in indices.iter().take(4) {
 					let _ = cells.push(cell_of(*index));
 				}
-				draw(&Frame::Values { cells: &cells }, &theme, framebuffer)
+				draw_with(&Frame::Values { cells: &cells }, &board, &theme, framebuffer)
 			}
 			PageKind::Chart => {
 				let index = indices.first().copied().unwrap_or(0);
 				match PLAN.chart(index) {
 					Some(chart) => {
 						let samples = histories[chart.slot].samples();
-						draw(
+						draw_with(
 							&Frame::Chart {
 								cell: cell_of(index),
 								min: chart.min,
@@ -2193,6 +2221,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 								samples,
 								seconds_per_sample: FRAME_MS as f32 / 1000.0,
 							},
+							&board,
 							&theme,
 							framebuffer,
 						)
@@ -2206,7 +2235,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 							note!("panel: the plan has no chart range for channel {index} — showing it as a value");
 						}
 						let cells = [cell_of(index)];
-						draw(&Frame::Values { cells: &cells }, &theme, framebuffer)
+						draw_with(&Frame::Values { cells: &cells }, &board, &theme, framebuffer)
 					}
 				}
 			}
@@ -2274,6 +2303,14 @@ static USB_GONE_FOR_SESSION: Signal<CriticalSectionRawMutex, ()> = Signal::new()
 
 /// Whether a host is attached: its start-of-frame counter moved at the last look.
 static USB_PRESENT: AtomicBool = AtomicBool::new(false);
+
+/// A framed-link host holds the cable, for its icon: set by its Hello, cleared when its
+/// session closes (the cable pulled, a host that stopped reading while it held something)
+/// and whenever the cable stops taking what is written. The last is what ends the icon of
+/// a host that exited between commands: its session held nothing, so nothing closed it,
+/// and a port nobody has open takes no packets. A cable that only powers the board, or
+/// `dashsim` reading the panel, says no Hello and shows no icon.
+static USB_LINKED: AtomicBool = AtomicBool::new(false);
 
 /// How often the host's start-of-frame counter is looked at. It moves every millisecond
 /// while a host is attached (USB 2.0 full speed), so a hundred milliseconds without a
@@ -2475,6 +2512,7 @@ impl Writer {
 			return true;
 		}
 		self.stalled = true;
+		USB_LINKED.store(false, Ordering::Relaxed);
 		if adapter_mode() {
 			// The slcan host stopped reading: its process is gone or stopped. Adapter mode
 			// ends as it does when the cable is pulled, so a host that died does not leave
@@ -2603,6 +2641,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 					// A host that says hello is here and reading, whatever an earlier stall said.
 					USB_GONE_FOR_SESSION.reset();
 					client.reset();
+					USB_LINKED.store(true, Ordering::Relaxed);
 				}
 				let out = take_message(&mut session, bus, message);
 				// A cable subscribe may have taken the board's timing channel from the radio
@@ -2644,6 +2683,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 /// The host on the cable is gone: its subscriptions leave the planner, its queued
 /// exchange is cancelled, and nothing it sent and nobody read is sent to the car.
 fn close_usb_session(session: &mut Session, bus: &Bus) {
+	USB_LINKED.store(false, Ordering::Relaxed);
 	bus.lock(|p| session.close(ms(), &mut p.borrow_mut()));
 	USB_MESSAGES.clear();
 	critical_section::with(|_| USB_INBOUND_BYTES.store(0, Ordering::Relaxed));
