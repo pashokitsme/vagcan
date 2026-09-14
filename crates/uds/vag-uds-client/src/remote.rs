@@ -78,6 +78,8 @@
 //! [`RADIO_BUS_SHARE_PERMILLE`](crate::guard::RADIO_BUS_SHARE_PERMILLE) of a sliding
 //! [`RATE_WINDOW_MS`](crate::guard::RATE_WINDOW_MS) its next request waits
 //! ([`Session::bus_time_wait`]) — back-pressure, nothing dropped. The cable is not charged.
+//! The share is the board's, like the guard's memory: a Hello or a reconnect does not clear
+//! it, and an exchange a close could not recall is charged when it answers (R3-N1).
 //!
 //! Neither bounds bus time. The planner caps sends, not how long a unit takes to answer,
 //! and a timing read on a unit slower than its period is due again the moment it answers.
@@ -138,7 +140,19 @@ pub struct Session {
 	/// first, for the radio's bus-time share (`Guard::RADIO_BUS_SHARE_PERMILLE`). Always
 	/// empty on the cable, which is not held to it.
 	bus_time: VecDeque<(u64, u64)>,
+	/// Exchanges already on the bus when the session let them go, oldest first, at most
+	/// [`MAX_GONE`]: their answers find nobody, but are charged ([`Session::awaited`]).
+	gone: VecDeque<ReqId>,
 }
+
+/// The most exchanges a session remembers letting go. The planner has one out at a time, so
+/// one is the steady state; the rest cover answers still queued to the session. Past it the
+/// oldest is forgotten, and an answer that was lost does not pin a slot.
+const MAX_GONE: usize = 4;
+
+/// The most planner exchanges one session's answers can be for: the one it waits for, and
+/// those it let go ([`Session::awaited`]). A shell that publishes them sizes its list by it.
+pub const MAX_AWAITED: usize = MAX_GONE + 1;
 
 #[derive(Debug, Clone, Copy)]
 struct Live {
@@ -239,6 +253,21 @@ impl Session {
 		}
 	}
 
+	/// Whether the [`Delivery::Raw`] for `req` is this session's: the exchange it waits for,
+	/// or one a close let go while it was on the bus ([`Session::awaited`]).
+	pub fn awaits(&self, req: ReqId) -> bool {
+		self.awaited().any(|awaited| awaited == req)
+	}
+
+	/// Every planner exchange whose [`Delivery::Raw`] is this session's — at most
+	/// [`MAX_AWAITED`]. Besides [`Session::awaiting`], the exchanges a close or
+	/// [`Session::refuse_pending`] could not recall: nobody is told their answer, but the
+	/// time they held the bus is charged when it comes, or a Hello after each request would
+	/// hold the bus uncharged (PR #2 review round 3, R3-N1).
+	pub fn awaited(&self) -> impl Iterator<Item = ReqId> + '_ {
+		self.awaiting().into_iter().chain(self.gone.iter().copied())
+	}
+
 	/// Take one message from the host. Subscriptions are acted on now; a request
 	/// is queued and begun by [`Session::poll`]. Messages only the board sends
 	/// (`Answer`, `Reading`) mean nothing from the host and are ignored.
@@ -290,12 +319,10 @@ impl Session {
 	/// still waits for is answered [`Outcome::Refused`] with `reason`, in the order they
 	/// came — the one being dealt with first. An exchange handed to the planner is
 	/// cancelled if it has not gone out; one already on the bus finds nobody when it is
-	/// answered. Subscriptions stay: the planner keeps them and they resume when the bus
+	/// answered, and is charged. Subscriptions stay: the planner keeps them and they resume when the bus
 	/// does, the way the panel's own do.
 	pub fn refuse_pending(&mut self, planner: &mut Planner, reason: &str) -> Vec<Message> {
-		if let Some(req) = self.awaiting() {
-			planner.cancel(req);
-		}
+		self.let_go(planner);
 		let current = self.current.take().map(|current| match current {
 			Current::Waiting { request, .. } | Current::Speed { request, .. } => request.seq,
 			Current::Forwarded { seq, .. } => seq,
@@ -373,6 +400,11 @@ impl Session {
 			return Vec::new();
 		};
 		let (req, sent_ms, now_ms) = (*req, *sent_ms, *at_ms);
+		if let Some(at) = self.gone.iter().position(|gone| *gone == req) {
+			self.gone.remove(at);
+			self.charge_bus_time(now_ms, sent_ms);
+			return self.poll(now_ms, planner);
+		}
 		let mut out = Vec::new();
 		match self.current.take() {
 			Some(Current::Speed { request, req: out_req }) if out_req == req => {
@@ -438,19 +470,31 @@ impl Session {
 	/// The connection is gone, or a Hello starts it over: every subscription leaves the
 	/// planner, nothing queued is begun, and the exchange handed to the planner is cancelled
 	/// if it has not gone out ([`Planner::cancel`]). One already on the bus cannot be
-	/// recalled; its answer finds nobody. The guard frees the subscription slots
-	/// ([`Guard::close`]): over the radio its memory stays, on the cable it is the reset.
+	/// recalled; its answer finds nobody, and its bus time is charged when it comes. The
+	/// guard frees the subscription slots ([`Guard::close`]): over the radio its memory
+	/// stays, on the cable it is the reset. The radio's bus-time share stays too — it is the
+	/// board's, as the guard's rate window is (R3-N1); the cable never has one.
 	pub fn close(&mut self, now_ms: u64, planner: &mut Planner) {
 		for (_, live) in core::mem::take(&mut self.subs) {
 			planner.unsubscribe(live.id);
 		}
-		if let Some(req) = self.awaiting() {
-			planner.cancel(req);
-		}
+		self.let_go(planner);
 		self.queue.clear();
 		self.current = None;
-		self.bus_time.clear();
 		self.guard.close(now_ms);
+	}
+
+	/// Stop waiting for the exchange handed to the planner: cancelled if it has not gone out,
+	/// else remembered as gone, so its answer is still charged ([`Session::awaited`]).
+	fn let_go(&mut self, planner: &mut Planner) {
+		let Some(req) = self.awaiting() else { return };
+		if planner.cancel(req) {
+			return;
+		}
+		if self.gone.len() == MAX_GONE {
+			self.gone.pop_front();
+		}
+		self.gone.push_back(req);
 	}
 
 	/// Do what the guard decided. `speed_cleared`: the verdict follows a speed read that

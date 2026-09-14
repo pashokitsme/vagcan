@@ -98,7 +98,7 @@ impl Board {
 					self.now += self.latency;
 					for delivery in self.planner.answered(self.now, out.token, answer) {
 						match &delivery {
-							Delivery::Raw { req, .. } if self.session.awaiting() == Some(*req) => {
+							Delivery::Raw { req, .. } if self.session.awaits(*req) => {
 								let out = self.session.answered(&mut self.planner, &delivery);
 								self.to_host.extend(out);
 							}
@@ -1153,6 +1153,73 @@ fn a_radio_host_holds_at_most_a_quarter_of_the_bus_by_time_and_the_cable_is_not_
 			);
 		}
 	}
+}
+
+/// A Hello is a close, and the radio session is the board's for its whole life: a host that
+/// says Hello before every request is held to the same quarter of the bus as one that does
+/// not (PR #2 review round 3, R3-N1 — the close cleared the share, and such a host held 95%).
+#[test]
+fn a_hello_before_each_request_does_not_reset_the_radio_bus_time_share() {
+	const TIMEOUT_MS: u64 = 500;
+	const WINDOW_MS: u64 = 10_000;
+	const RUN_MS: u64 = 60_000;
+	let mut board = Board::new(Bus::Silent);
+	board.latency = TIMEOUT_MS;
+	let mut n = 0u16;
+	while board.now < RUN_MS {
+		if board.session.queued() == 0 {
+			// What the firmware does with a Hello.
+			board.session.close(board.now, &mut board.planner);
+			let unit = Unit {
+				request: 0x600 + n % 60,
+				response: 0x680 + n % 60,
+			};
+			board.hear(request(n as u8, unit, &[0x3E, 0x00]));
+			n += 1;
+		}
+		board.run_until(board.now + 1);
+	}
+	let sent: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();
+	let busiest = (0..RUN_MS - WINDOW_MS)
+		.step_by(50)
+		.map(|from| bus_time(&sent, TIMEOUT_MS, from, from + WINDOW_MS))
+		.max()
+		.unwrap();
+	assert!(
+		busiest <= WINDOW_MS / 4 + TIMEOUT_MS,
+		"a quarter of ten seconds, and the exchange that crossed it: {busiest} ms"
+	);
+}
+
+/// A Hello cannot recall an exchange already on the bus. Its answer still comes, to the
+/// session that sent it, and the time it held the bus is still that radio host's.
+#[test]
+fn an_exchange_on_the_bus_when_a_hello_comes_is_still_charged_when_it_answers() {
+	const TIMEOUT_MS: u64 = 500;
+	let mut planner = Planner::new(Budget::board());
+	let mut session = Session::new();
+	let mut now = 0;
+	for n in 0..5u16 {
+		let unit = Unit {
+			request: 0x600 + n,
+			response: 0x680 + n,
+		};
+		session.push(now, &mut planner, request(n as u8, unit, &[0x3E, 0x00]));
+		let Next::Send(out) = planner.due(now) else {
+			panic!("request {n} did not go out at {now} ms")
+		};
+		session.close(now, &mut planner);
+		now += TIMEOUT_MS;
+		for delivery in planner.answered(now, out.token, BusAnswer::NoAnswer) {
+			let Delivery::Raw { req, .. } = &delivery else { continue };
+			assert!(session.awaits(*req), "the answer to request {n} found nobody");
+			assert!(session.answered(&mut planner, &delivery).is_empty(), "the host that asked is gone");
+		}
+	}
+	// Two and a half seconds of the last ten is the quarter: the next request waits.
+	session.push(now, &mut planner, request(9, GATEWAY, &[0x3E, 0x00]));
+	assert!(matches!(planner.due(now), Next::Idle { .. }), "sent at once");
+	assert!(session.wake_at().is_some_and(|at| at > now), "{:?}", session.wake_at());
 }
 
 /// One stopwatch at a time, and the owner's comes first: a timing subscription from the

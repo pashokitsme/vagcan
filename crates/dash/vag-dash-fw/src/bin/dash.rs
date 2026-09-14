@@ -92,7 +92,7 @@ use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
 use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
 use vag_uds_client::identity::did;
-use vag_uds_client::remote::Session;
+use vag_uds_client::remote::{MAX_AWAITED, Session};
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
 use vag_uds_transport::link::{self, HelloReply, Message, Piece, Reassembler};
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
@@ -251,7 +251,8 @@ struct Client {
 
 struct Owned {
 	subs: heapless::Vec<SubId, MAX_SUBSCRIPTIONS>,
-	awaiting: Option<ReqId>,
+	/// `Session::awaited`: the exchanges whose answers are the session's.
+	awaited: heapless::Vec<ReqId, MAX_AWAITED>,
 	/// `Session::is_active`: while it holds, the USB console takes no slcan line.
 	active: bool,
 	/// `Session::queued_bytes`, for the reader that stops at `QUEUED_PDU_BYTES`.
@@ -266,7 +267,7 @@ impl Client {
 			dropped: AtomicU32::new(0),
 			owned: BlockingMutex::new(RefCell::new(Owned {
 				subs: heapless::Vec::new(),
-				awaiting: None,
+				awaited: heapless::Vec::new(),
 				active: false,
 				queued_bytes: 0,
 			})),
@@ -283,7 +284,10 @@ impl Client {
 			for id in session.subscriptions() {
 				let _ = owned.subs.push(id);
 			}
-			owned.awaiting = session.awaiting();
+			owned.awaited.clear();
+			for req in session.awaited() {
+				let _ = owned.awaited.push(req);
+			}
 			owned.active = session.is_active();
 			owned.queued_bytes = session.queued_bytes();
 		});
@@ -298,7 +302,7 @@ impl Client {
 	}
 
 	fn awaits(&self, req: ReqId) -> bool {
-		self.owned.lock(|owned| owned.borrow().awaiting == Some(req))
+		self.owned.lock(|owned| owned.borrow().awaited.contains(&req))
 	}
 
 	fn active(&self) -> bool {
