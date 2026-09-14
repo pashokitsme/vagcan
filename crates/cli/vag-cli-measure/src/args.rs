@@ -100,6 +100,25 @@ pub struct Cli {
 	#[arg(long, value_name = "ID", global = true)]
 	pub project: Option<String>,
 
+	/// Use the dash board's USB cable as a plain slcan adapter rather than reading through
+	/// its `dash` image. `vagcan` carries the same global flag.
+	#[arg(long, global = true)]
+	pub slcan: bool,
+
 	#[command(flatten)]
 	pub args: Args,
+}
+
+#[cfg(test)]
+mod tests {
+	use clap::Parser as _;
+
+	use super::Cli;
+
+	#[test]
+	fn slcan_is_global_as_it_is_on_vagcan() {
+		assert!(Cli::try_parse_from(["vagcan-measure", "--slcan"]).unwrap().slcan);
+		assert!(Cli::try_parse_from(["vagcan-measure", "setup", "--slcan"]).unwrap().slcan);
+		assert!(!Cli::try_parse_from(["vagcan-measure"]).unwrap().slcan);
+	}
 }

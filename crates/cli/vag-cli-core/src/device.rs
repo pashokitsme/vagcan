@@ -1,4 +1,5 @@
-//! Choosing what to talk to the car through: a USB-CAN adapter, or the dash board over BLE.
+//! Choosing what to talk to the car through: a USB-CAN adapter, or the dash board on its
+//! cable or over BLE.
 //!
 //! A person running this on a car has exactly one adapter plugged in, so
 //! requiring them to paste a `/dev/cu.usbmodem…` path every time is friction
@@ -12,6 +13,13 @@
 //! adapter found, the scan is made anyway, so a command run next to the car with
 //! nothing plugged in simply connects. A command the BLE link cannot carry resolves a
 //! cable only ([`resolve_cable_for`]).
+//!
+//! **The dash board on its USB cable is the third** (`todo/dash/14-one-bus-three-clients.md`
+//! §3). Its ids are every ESP32's, so each such port is asked: a board that answers Hello
+//! runs the `dash` image and is read through, as over BLE, with its panel still running
+//! ([`Target::BoardUsb`]); one that answers slcan's `V` runs the `slcan` image and is an
+//! adapter. Either is a recognised adapter in the choice. `--slcan` makes a `dash` board a
+//! plain adapter too, and changes nothing else.
 
 /// The rate every slcan adapter on this project's bench runs at.
 ///
@@ -25,23 +33,33 @@ pub const ADAPTER_BAUD: u32 = 115_200;
 pub const BLE_SCAN: std::time::Duration = std::time::Duration::from_secs(4);
 
 use anyhow::{Context as _, Result, bail};
-use vag_uds_can::{AdapterInfo, BOARD_PROBE_WAIT, BoardAnswer, SerialSlcan, SlcanBackend, SlcanBitrate, SlcanMode, list_adapters, probe_board};
+use vag_uds_can::{
+	AdapterInfo, BOARD_PROBE_WAIT, BoardAnswer, CanError, HANDSHAKE_WAIT, SerialPipe, SerialSlcan, SlcanBackend, SlcanBitrate, SlcanMode,
+	list_adapters, probe_board,
+};
 
 use crate::bus::{Budget, Bus, Carrier};
 use crate::ui::menu::{Asker, Item};
 
 /// How a vag-dash board reads in the listing, by what it answered.
-const BOARD_SLCAN: &str = "vag-dash board — slcan firmware answering";
 const BOARD_DASH: &str = "vag-dash board — dash image (reads through the board, panel keeps running)";
-const BOARD_SILENT: &str = "vag-dash board — not answering slcan (display firmware? flash the slcan image)";
+const BOARD_SLCAN: &str = "vag-dash board — slcan image";
+const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (an older dash image? reflash `dash` or `slcan`)";
+
+/// Why `--slcan` is refused with `--device ble…`.
+pub const SLCAN_OVER_BLE: &str = "--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE";
 
 /// Why no board was heard, as far as this side can tell.
 const NO_BOARD: &str = "the board is powered from the OBD port, so the ignition must be on, and it must be in range of this computer.";
 
 /// What a command talks to the car through, once `--device` is resolved.
 pub enum Target<H = BleHandle> {
-	/// A USB-CAN adapter — or the board on its `slcan` image — at this serial path.
+	/// A USB-CAN adapter at this serial path — or the board on its `slcan` image, or on its
+	/// `dash` image made a plain adapter by `--slcan`.
 	Serial(String),
+	/// The dash board on its USB cable, on its `dash` image: read through the framed link,
+	/// as over BLE, with the panel still running.
+	BoardUsb { path: String },
 	/// The dash board over BLE.
 	Ble(Board<H>),
 }
@@ -75,14 +93,16 @@ pub fn ble_request(requested: &str) -> Option<Option<&str>> {
 
 /// Resolve what to talk to the car through (module docs).
 ///
-/// A path is a serial device, checked as [`resolve_cable_with`] checks one. `ble` and
-/// `ble:<name>` scan for the dash board. Nothing at all runs the cable choice, and when
-/// that finds no USB-CAN adapter, scans for the board.
-pub async fn resolve(requested: Option<&str>) -> Result<Target> {
+/// A path is a USB device: an slcan adapter, or the dash board on its cable, checked as
+/// [`named_usb`] checks one. `ble` and `ble:<name>` scan for the dash board. Nothing at all
+/// runs the USB choice, and when that finds no adapter, scans for the board — unless
+/// `slcan`, which asks for a USB adapter and nothing else.
+pub async fn resolve(requested: Option<&str>, slcan: bool) -> Result<Target> {
 	// Never shown: with nobody at the keyboard the choice refuses before the menu is asked.
 	let mut console = crate::ui::Console::new("--device ble:<name>");
 	resolve_with(
 		requested,
+		slcan,
 		list_adapters().map_err(Into::into),
 		probe,
 		scan_ble,
@@ -97,6 +117,7 @@ pub async fn resolve(requested: Option<&str>) -> Result<Target> {
 /// port or a radio.
 pub async fn resolve_with<H>(
 	requested: Option<&str>,
+	slcan: bool,
 	listing: Result<Vec<AdapterInfo>>,
 	probe: impl FnMut(&str) -> BoardAnswer,
 	scan: impl AsyncFnOnce() -> Result<Vec<Board<H>>>,
@@ -105,19 +126,23 @@ pub async fn resolve_with<H>(
 ) -> Result<Target<H>> {
 	if let Some(requested) = requested {
 		return match ble_request(requested) {
+			Some(_) if slcan => bail!("{SLCAN_OVER_BLE}"),
 			Some(name) => {
 				eprintln!("looking for the dash board over BLE…");
 				// The adapter's own error as it came: on macOS it says where access is allowed.
 				let boards = scan().await?;
 				choose_board(boards, name, can_ask, asker).map(Target::Ble)
 			}
-			None => resolve_cable_with(Some(requested), listing, probe).map(Target::Serial),
+			None => named_usb(requested, listing, probe).map(|usb| usb.target(slcan)),
 		};
 	}
-	let no_cable = match choose_serial(listing, probe)? {
-		Serial::Picked(path) => return Ok(Target::Serial(path)),
-		Serial::Nothing(why) => why,
+	let no_cable = match choose_usb(listing, probe, slcan)? {
+		Found::Picked(usb) => return Ok(usb.target(slcan)),
+		Found::Nothing(why) => why,
 	};
+	if slcan {
+		bail!("{no_cable}\n--slcan asks for a USB adapter, so the dash board was not looked for over BLE.");
+	}
 	eprintln!("no USB-CAN adapter found — looking for the dash board over BLE…");
 	let boards = match scan().await {
 		Ok(boards) if boards.is_empty() => bail!("{no_cable}\nNo dash board answered over BLE either: {NO_BOARD}"),
@@ -227,99 +252,142 @@ fn probe(path: &str) -> BoardAnswer {
 	probe_board(path, ADAPTER_BAUD, BOARD_PROBE_WAIT)
 }
 
-/// What the cable choice came to with no `--device`.
-enum Serial {
-	Picked(String),
+/// A USB device the choice settled on, before `--slcan` has had its say.
+enum Usb {
+	/// Something that speaks slcan: a CAN adapter, or the board on its `slcan` image.
+	Adapter(String),
+	/// The board on its `dash` image: it answered Hello.
+	Dash(String),
+}
+
+impl Usb {
+	/// `--slcan` makes a `dash` board a plain adapter: the slcan channel-open sequence
+	/// switches the image into its adapter mode (`vag_uds_client::console`).
+	fn target<H>(self, slcan: bool) -> Target<H> {
+		match self {
+			Usb::Adapter(path) => Target::Serial(path),
+			Usb::Dash(path) if slcan => Target::Serial(path),
+			Usb::Dash(path) => Target::BoardUsb { path },
+		}
+	}
+}
+
+/// What the USB choice came to with no `--device`.
+enum Found {
+	Picked(Usb),
 	/// No USB-CAN adapter at all, and why, in full.
 	Nothing(String),
 }
 
-/// Resolve a serial adapter, for a command the BLE link cannot carry.
+/// Why a command that does not go through the dash board is refused, on each way to it.
+pub struct NotThroughTheBoard<'a> {
+	/// With `--device ble…`; also added under "no USB-CAN adapter found".
+	pub over_ble: &'a str,
+	/// With the board on its cable, on its `dash` image, and no `--slcan`.
+	pub over_usb: &'a str,
+}
+
+/// Resolve a serial adapter, for a command that does not go through the dash board.
 ///
-/// `--device ble…` is refused with `why` before anything is scanned or opened. Otherwise
-/// a cable is resolved as [`resolve_cable_with`] does — with `why` added when none is
-/// found, so nobody is left wondering why the board was not tried.
-pub fn resolve_cable_for(requested: Option<&str>, why: &str) -> Result<String> {
-	resolve_cable_for_with(requested, why, list_adapters().map_err(Into::into), probe)
+/// Refused before a session starts: `--device ble…` with `why.over_ble` ([`SLCAN_OVER_BLE`]
+/// with `slcan`), and the board on its `dash` image with `why.over_usb` — unless `slcan`
+/// made it a plain adapter, where the cable's own guards apply. Otherwise a USB device is
+/// resolved as [`resolve_with`] resolves one, with `why.over_ble` added when none is found,
+/// so nobody is left wondering why the board over BLE was not tried.
+pub fn resolve_cable_for(requested: Option<&str>, slcan: bool, why: &NotThroughTheBoard) -> Result<String> {
+	resolve_cable_for_with(requested, slcan, why, list_adapters().map_err(Into::into), probe)
 }
 
 /// [`resolve_cable_for`] with the listing and the board probe handed in.
 pub fn resolve_cable_for_with(
 	requested: Option<&str>,
-	why: &str,
+	slcan: bool,
+	why: &NotThroughTheBoard,
 	listing: Result<Vec<AdapterInfo>>,
 	probe: impl FnMut(&str) -> BoardAnswer,
 ) -> Result<String> {
 	if requested.is_some_and(|r| ble_request(r).is_some()) {
-		bail!("{why}");
+		bail!("{}", if slcan { SLCAN_OVER_BLE } else { why.over_ble });
 	}
-	if requested.is_some() {
-		return resolve_cable_with(requested, listing, probe);
-	}
-	match choose_serial(listing, probe)? {
-		Serial::Picked(path) => Ok(path),
-		Serial::Nothing(no_cable) => bail!("{no_cable}\n{why}"),
+	let usb = match requested {
+		Some(path) => named_usb(path, listing, probe)?,
+		None => match choose_usb(listing, probe, slcan)? {
+			Found::Picked(usb) => usb,
+			Found::Nothing(no_cable) if slcan => bail!("{no_cable}"),
+			Found::Nothing(no_cable) => bail!("{no_cable}\n{}", why.over_ble),
+		},
+	};
+	match usb.target::<()>(slcan) {
+		Target::Serial(path) => Ok(path),
+		Target::BoardUsb { .. } | Target::Ble(_) => bail!("{}", why.over_usb),
 	}
 }
 
-/// Resolve the serial adapter to open.
+/// The USB device `--device` names.
 ///
-/// With `--device` given, that path is used — no guessing behind the user's
-/// back — with one check: a vag-dash board that does not answer slcan is
-/// refused at once, because opening it would only time out and blame the car.
-/// Without it: exactly one candidate is used automatically, none or several is
-/// an error that lists what was found, because silently picking one of two
-/// adapters is how you end up talking to the wrong bus.
+/// That path is used — no guessing behind the user's back — with one check: a vag-dash
+/// board that answers neither Hello nor slcan is refused at once, because opening it would
+/// only time out and blame the car.
 ///
-/// A vag-dash board ([`vag_uds_can::BOARD_USB`]) counts as an adapter only when
-/// it answers slcan's `V` query: its ids are every ESP32's, and it runs either
-/// the display image or the adapter image under them. Nothing else is ever
+/// A vag-dash board ([`vag_uds_can::BOARD_USB`]) is asked because its ids are every ESP32's,
+/// and it runs the display image or the adapter image under them. Nothing else is ever
 /// asked anything.
-pub fn resolve_cable_with(requested: Option<&str>, listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer) -> Result<String> {
-	if let Some(path) = requested {
-		// A listing that fails says nothing about the path, so the path is
-		// honoured as given; only a path the listing names as a board is asked.
-		let board = listing
-			.ok()
-			.and_then(|found| found.into_iter().find(|a| a.board && same_node(&a.path, path)));
-		// Asked on the listed `cu.*` node, which is the one to open.
-		if let Some(board) = board {
-			match probe(&board.path) {
-				BoardAnswer::Slcan => {}
-				answer => bail!("{}", not_an_adapter(path, &answer)),
-			}
-		}
-		return Ok(path.to_string());
-	}
-	match choose_serial(listing, probe)? {
-		Serial::Picked(path) => Ok(path),
-		Serial::Nothing(why) => bail!("{why}"),
+fn named_usb(path: &str, listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer) -> Result<Usb> {
+	// A listing that fails says nothing about the path, so the path is
+	// honoured as given; only a path the listing names as a board is asked.
+	let board = listing
+		.ok()
+		.and_then(|found| found.into_iter().find(|a| a.board && same_node(&a.path, path)));
+	let Some(board) = board else {
+		return Ok(Usb::Adapter(path.to_string()));
+	};
+	// Asked on the listed `cu.*` node, which is the one to open.
+	match probe(&board.path) {
+		BoardAnswer::Slcan => Ok(Usb::Adapter(path.to_string())),
+		BoardAnswer::Dash { .. } => Ok(Usb::Dash(path.to_string())),
+		answer => bail!("{}", not_an_adapter(path, &answer)),
 	}
 }
 
-/// The cable choice with no `--device` (see [`resolve_cable_with`]). "No USB-CAN adapter
-/// at all" is an answer rather than an error, because [`resolve_with`] looks for the
-/// board over BLE next.
-fn choose_serial(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer) -> Result<Serial> {
-	// Which boards would not open, kept apart from the silent ones: a busy port
-	// may well be a working slcan board, and that wants different advice.
+/// The USB choice with no `--device`.
+///
+/// Exactly one candidate is used automatically, and said; several is an error that lists
+/// what was found, because silently picking one of two adapters is how you end up talking
+/// to the wrong bus. "No USB-CAN adapter at all" is an answer rather than an error, because
+/// [`resolve_with`] looks for the board over BLE next. `slcan` only changes what is said
+/// about a `dash` board picked.
+fn choose_usb(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) -> BoardAnswer, slcan: bool) -> Result<Found> {
+	// Which boards would not open, kept apart from the silent ones: a busy port may well
+	// be a working board, and that wants different advice. Which answered Hello, because
+	// those are read through rather than opened as adapters.
 	let mut unopened: Vec<String> = Vec::new();
+	let mut dash: Vec<String> = Vec::new();
 	let found = probed(listing?, |path| {
 		let answer = probe(path);
-		if matches!(answer, BoardAnswer::Unopened(_)) {
-			unopened.push(path.to_string());
+		match answer {
+			BoardAnswer::Unopened(_) => unopened.push(path.to_string()),
+			BoardAnswer::Dash { .. } => dash.push(path.to_string()),
+			BoardAnswer::Slcan | BoardAnswer::Silent => {}
 		}
 		answer
 	});
 
 	// A recognised CAN adapter wins outright. Someone with a CANable plugged in
 	// next to an Arduino means the CANable, and making them spell that out
-	// every time is friction for nothing. A board that answered `V` is one.
+	// every time is friction for nothing. A board that answered Hello or `V` is one.
 	let known: Vec<&AdapterInfo> = found.iter().filter(|a| a.known).collect();
 	match known.as_slice() {
+		[only] if dash.contains(&only.path) => {
+			let how = match slcan {
+				true => "vag-dash board — dash image, a plain adapter by --slcan",
+				false => only.description.as_str(),
+			};
+			eprintln!("using {} ({how})", only.path);
+			return Ok(Found::Picked(Usb::Dash(only.path.clone())));
+		}
 		[only] => {
 			eprintln!("using {} ({})", only.path, only.description);
-			return Ok(Serial::Picked(only.path.clone()));
+			return Ok(Found::Picked(Usb::Adapter(only.path.clone())));
 		}
 		[] => {}
 		several => bail!("several CAN adapters found — say which one:\n{}", device_lines(several.iter().copied())),
@@ -330,7 +398,7 @@ fn choose_serial(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) 
 	// thing somebody plugged in meaning to use.
 	let (silent, others): (Vec<&AdapterInfo>, Vec<&AdapterInfo>) = found.iter().partition(|a| a.board);
 	match (others.as_slice(), silent.as_slice()) {
-		([], []) => Ok(Serial::Nothing(
+		([], []) => Ok(Found::Nothing(
 			"no USB-CAN adapter found.\n\
              Plug one in and check it enumerated: `vagcan devices`.\n\
              If it is plugged in but missing, unplug and replug it — the adapter can \
@@ -356,19 +424,19 @@ fn choose_serial(listing: Result<Vec<AdapterInfo>>, mut probe: impl FnMut(&str) 
 			}
 			if !silent.is_empty() {
 				why.push_str(&format!(
-					"\n{}\nIt is running the display firmware (or another image), not the adapter one. Flash its \
+					"\n{}\nIt answers neither Hello nor slcan — likely an older `dash` image. Reflash its `dash` or \
                      `slcan` image (research/dash/can-bring-up.md §9.2).",
 					lines(&silent)
 				));
 			}
-			Ok(Serial::Nothing(format!("{why}\nOr plug in a CAN adapter.")))
+			Ok(Found::Nothing(format!("{why}\nOr plug in a CAN adapter.")))
 		}
 		([only], _) => {
 			for board in &silent {
 				eprintln!("not using {} ({})", board.path, board.description);
 			}
 			eprintln!("using {} ({})", only.path, only.description);
-			Ok(Serial::Picked(only.path.clone()))
+			Ok(Found::Picked(Usb::Adapter(only.path.clone())))
 		}
 		(_, _) => bail!("several serial devices found — say which one:\n{}", device_lines(found.iter())),
 	}
@@ -394,30 +462,29 @@ fn not_an_adapter(path: &str, answer: &BoardAnswer) -> String {
              Another program (a monitor, `dashsim`, another vagcan) may be holding the port."
 		),
 		_ => format!(
-			"{path} is a vag-dash board that does not answer slcan — it is running the display firmware \
-             (or another image), not the adapter one, and a car command on it would only time out.\n\
-             Flash its `slcan` image (research/dash/can-bring-up.md §9.2), name a CAN adapter, or use \
-             the board over BLE: `--device ble`."
+			"{path} is a vag-dash board that answers neither Hello nor slcan — likely an older `dash` image, \
+             and a car command on it would only time out.\n\
+             Reflash its `dash` or `slcan` image (research/dash/can-bring-up.md §9.2), name a CAN adapter, \
+             or use the board over BLE: `--device ble`."
 		),
 	}
 }
 
 /// Every candidate adapter, for `vagcan devices` — each vag-dash board asked
-/// for its slcan version first, so the list says which image it runs.
+/// which image it runs first, so the list says.
 pub fn list() -> Result<Vec<AdapterInfo>> {
 	Ok(probed(list_adapters()?, probe))
 }
 
-/// The listing with every board's answer folded in: a board that answered is a
-/// recognised adapter, and every board's description says what it answered.
+/// The listing with every board's answer folded in: a board that answered Hello or `V`
+/// is a recognised adapter, and every board's description says what it answered.
 /// Only boards are probed. Recognised adapters sort first again afterwards.
 pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardAnswer) -> Vec<AdapterInfo> {
 	for adapter in found.iter_mut().filter(|a| a.board) {
 		let answer = probe(&adapter.path);
-		adapter.known = answer == BoardAnswer::Slcan;
+		adapter.known = matches!(answer, BoardAnswer::Slcan | BoardAnswer::Dash { .. });
 		adapter.description = match answer {
 			BoardAnswer::Slcan => BOARD_SLCAN.to_string(),
-			// Not an slcan adapter, so not picked as one; reading through it is the link's.
 			BoardAnswer::Dash { version } => format!("{BOARD_DASH}, {version}"),
 			BoardAnswer::Silent => BOARD_SILENT.to_string(),
 			BoardAnswer::Unopened(why) => format!("vag-dash board — could not be opened to ask its firmware ({why})"),
@@ -441,7 +508,7 @@ pub fn render_list(found: &[AdapterInfo]) -> String {
 		out.push_str(&format!("{mark} {}\n    {}\n", a.path, a.description));
 	}
 	out.push_str("\n* = recognised CAN adapter. Pass one with --device, or omit --device when\n");
-	out.push_str("  only one is connected.");
+	out.push_str("  only one is connected. --slcan makes a dash board a plain adapter.");
 	out
 }
 
@@ -465,15 +532,26 @@ pub async fn open(path: &str, baud: u32, mode: SlcanMode) -> Result<SerialSlcan>
 /// Open what `target` names and hand it to a bus: what every car command talks to the
 /// car through.
 ///
-/// A cable is opened and given to the scheduler with its default budget. The board over
-/// BLE is connected and given to [`Bus::start_remote`], because it runs the scheduler
-/// itself. `dev sniff` is the one command that opens a cable without this, because it
-/// reads frames, not answers.
+/// A cable is opened and given to the scheduler with its default budget. The dash board,
+/// on its cable or over BLE, is connected and given to [`Bus::start_remote`], because it
+/// runs the scheduler itself; on its cable a session starts with a Hello
+/// ([`vag_uds_can::StreamPipe::handshake`]). `dev sniff` is the one command that opens a
+/// cable without this, because it reads frames, not answers.
 pub async fn open_bus(target: &Target) -> Result<Bus> {
 	match target {
 		Target::Serial(path) => {
 			let adapter = open(path, ADAPTER_BAUD, SlcanMode::Normal).await?;
 			Ok(Bus::start(adapter, Budget::default()))
+		}
+		Target::BoardUsb { path } => {
+			let (pipe, _) = SerialPipe::open_board(path, ADAPTER_BAUD).await.map_err(|failed| match failed {
+				CanError::Timeout => anyhow::anyhow!(
+					"the dash board on {path} did not answer Hello within {} ms — run `vagcan devices` to see what it is running",
+					HANDSHAKE_WAIT.as_millis()
+				),
+				failed => anyhow::Error::new(failed).context(open_failure(path)),
+			})?;
+			Ok(Bus::start_remote(pipe, &format!("the dash board on {path}"), Carrier::Usb))
 		}
 		Target::Ble(board) => {
 			let pipe = vag_dash_ble::NusPipe::connect(&board.handle.adapter, &board.handle.peripheral)
@@ -484,9 +562,10 @@ pub async fn open_bus(target: &Target) -> Result<Bus> {
 	}
 }
 
-/// [`resolve`] and [`open_bus`] in one, for a command whose `--device` is all it needs.
-pub async fn connect(requested: Option<&str>) -> Result<Bus> {
-	open_bus(&resolve(requested).await?).await
+/// [`resolve`] and [`open_bus`] in one, for a command whose `--device` and `--slcan` are
+/// all it needs.
+pub async fn connect(requested: Option<&str>, slcan: bool) -> Result<Bus> {
+	open_bus(&resolve(requested, slcan).await?).await
 }
 
 /// What to say when the adapter will not open.
@@ -535,33 +614,57 @@ mod tests {
 	fn never(path: &str) -> BoardAnswer {
 		panic!("probed {path}, which is not an Espressif board")
 	}
+	fn dash() -> BoardAnswer {
+		BoardAnswer::Dash { version: "0.1.0".into() }
+	}
+
+	/// Refusals with no command's words in them: `core` knows no command.
+	const WHY: NotThroughTheBoard<'static> = NotThroughTheBoard {
+		over_ble: "refused over BLE",
+		over_usb: "refused through the dash board",
+	};
+
+	/// The USB choice for a command that does not go through the board, without `--slcan`.
+	fn cable(requested: Option<&str>, listing: Result<Vec<AdapterInfo>>, probe: impl FnMut(&str) -> BoardAnswer) -> Result<String> {
+		resolve_cable_for_with(requested, false, &WHY, listing, probe)
+	}
+
+	/// [`resolve_with`] without `--slcan`.
+	async fn resolve_as<H>(
+		requested: Option<&str>,
+		listing: Result<Vec<AdapterInfo>>,
+		probe: impl FnMut(&str) -> BoardAnswer,
+		scan: impl AsyncFnOnce() -> Result<Vec<Board<H>>>,
+		can_ask: bool,
+		asker: &mut impl Asker,
+	) -> Result<Target<H>> {
+		resolve_with(requested, false, listing, probe, scan, can_ask, asker).await
+	}
 
 	#[test]
 	fn a_board_on_the_display_image_does_not_take_the_canables_place() {
 		// The owner's desk. Master auto-picked the CANable; the board's ids
 		// alone must not turn that into "several devices — say which one".
-		let picked = resolve_cable_with(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Silent)).unwrap();
+		let picked = cable(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Silent)).unwrap();
 		assert_eq!(picked, CANABLE);
 	}
 
 	#[test]
 	fn a_board_on_the_display_image_alone_is_a_firmware_error_not_a_car_timeout() {
-		let err = resolve_cable_with(None, Ok(vec![board()]), answering(BoardAnswer::Silent))
-			.unwrap_err()
-			.to_string();
+		let err = cable(None, Ok(vec![board()]), answering(BoardAnswer::Silent)).unwrap_err().to_string();
 		assert!(err.contains(BOARD), "{err}");
 		assert!(err.contains("slcan"), "{err}");
-		assert!(err.contains("firmware"), "{err}");
+		assert!(err.contains("Reflash"), "{err}");
 	}
 
 	#[test]
 	fn a_board_on_the_slcan_image_alone_is_picked() {
-		assert_eq!(resolve_cable_with(None, Ok(vec![board()]), answering(BoardAnswer::Slcan)).unwrap(), BOARD);
+		assert_eq!(cable(None, Ok(vec![board()]), answering(BoardAnswer::Slcan)).unwrap(), BOARD);
 	}
 
 	#[test]
 	fn a_board_on_the_slcan_image_next_to_a_canable_is_a_question() {
-		let err = resolve_cable_with(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Slcan))
+		let err = cable(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Slcan))
 			.unwrap_err()
 			.to_string();
 		assert!(err.contains("say which one") && err.contains(CANABLE) && err.contains(BOARD), "{err}");
@@ -571,21 +674,18 @@ mod tests {
 	fn a_silent_board_does_not_win_over_an_unrecognised_adapter() {
 		// It used to: its ids made it "known", so it beat a device that may
 		// well be the slcan adapter somebody meant.
-		let picked = resolve_cable_with(None, Ok(vec![anonymous(), board()]), answering(BoardAnswer::Silent)).unwrap();
+		let picked = cable(None, Ok(vec![anonymous(), board()]), answering(BoardAnswer::Silent)).unwrap();
 		assert_eq!(picked, "/dev/cu.usbserial-A10");
 	}
 
 	#[test]
 	fn a_busy_board_says_so() {
-		let err = resolve_cable_with(None, Ok(vec![board()]), answering(BoardAnswer::Unopened("Resource busy".into())))
+		let err = cable(None, Ok(vec![board()]), answering(BoardAnswer::Unopened("Resource busy".into())))
 			.unwrap_err()
 			.to_string();
 		assert!(err.contains("Resource busy"), "{err}");
 		// A busy slcan board is a working adapter; reflashing it is the wrong advice.
-		assert!(
-			!err.contains("Flash") && !err.contains("display firmware"),
-			"firmware advice for a busy port: {err}"
-		);
+		assert!(!err.contains("eflash"), "firmware advice for a busy port: {err}");
 		assert!(err.contains("close"), "say what to do about the port: {err}");
 	}
 
@@ -594,7 +694,7 @@ mod tests {
 		const SECOND: &str = "/dev/cu.usbmodem1201";
 		let mut second = board();
 		second.path = SECOND.into();
-		let err = resolve_cable_with(None, Ok(vec![board(), second]), |path| match path {
+		let err = cable(None, Ok(vec![board(), second]), |path| match path {
 			BOARD => BoardAnswer::Unopened("Resource busy".into()),
 			_ => BoardAnswer::Silent,
 		})
@@ -602,48 +702,52 @@ mod tests {
 		.to_string();
 		assert!(err.contains(BOARD) && err.contains(SECOND), "{err}");
 		assert!(err.contains("Resource busy") && err.contains("close"), "{err}");
-		assert!(err.contains("Flash"), "the silent one still needs its image: {err}");
+		assert!(err.contains("Reflash"), "the silent one still needs its image: {err}");
 	}
 
 	#[test]
 	fn an_explicit_board_that_does_not_answer_fails_fast() {
 		for path in [BOARD, "/dev/tty.usbmodem1101"] {
-			let err = resolve_cable_with(Some(path), Ok(vec![canable(), board()]), answering(BoardAnswer::Silent))
+			let err = cable(Some(path), Ok(vec![canable(), board()]), answering(BoardAnswer::Silent))
 				.unwrap_err()
 				.to_string();
-			assert!(err.contains("firmware"), "{path}: {err}");
+			assert!(err.contains("Reflash"), "{path}: {err}");
 			assert!(err.contains("--device ble"), "the board has another way in: {err}");
 		}
 	}
 
 	#[test]
 	fn an_explicit_board_that_answers_is_used() {
-		assert_eq!(
-			resolve_cable_with(Some(BOARD), Ok(vec![board()]), answering(BoardAnswer::Slcan)).unwrap(),
-			BOARD
-		);
+		assert_eq!(cable(Some(BOARD), Ok(vec![board()]), answering(BoardAnswer::Slcan)).unwrap(), BOARD);
 	}
 
 	#[test]
 	fn only_espressif_boards_are_ever_probed() {
-		assert_eq!(resolve_cable_with(None, Ok(vec![canable(), anonymous()]), never).unwrap(), CANABLE);
-		assert_eq!(
-			resolve_cable_with(Some(CANABLE), Ok(vec![canable(), anonymous()]), never).unwrap(),
-			CANABLE
-		);
+		assert_eq!(cable(None, Ok(vec![canable(), anonymous()]), never).unwrap(), CANABLE);
+		assert_eq!(cable(Some(CANABLE), Ok(vec![canable(), anonymous()]), never).unwrap(), CANABLE);
 		let listed = probed(vec![canable(), anonymous()], never);
 		assert_eq!(listed, vec![canable(), anonymous()]);
 	}
 
 	#[test]
 	fn the_listing_says_which_image_the_board_is_running() {
+		let through = render_list(&probed(vec![board()], answering(dash())));
+		assert!(through.contains(&format!("* {BOARD}")), "{through}");
+		assert!(
+			through.contains("vag-dash board — dash image (reads through the board, panel keeps running), 0.1.0"),
+			"{through}"
+		);
+
 		let slcan = render_list(&probed(vec![board()], answering(BoardAnswer::Slcan)));
 		assert!(slcan.contains(&format!("* {BOARD}")), "{slcan}");
-		assert!(slcan.contains("slcan firmware answering"), "{slcan}");
+		assert!(slcan.contains("vag-dash board — slcan image"), "{slcan}");
 
-		let display = render_list(&probed(vec![board()], answering(BoardAnswer::Silent)));
-		assert!(display.contains(&format!("  {BOARD}")), "{display}");
-		assert!(display.contains("not answering slcan"), "{display}");
+		let silent = render_list(&probed(vec![board()], answering(BoardAnswer::Silent)));
+		assert!(silent.contains(&format!("  {BOARD}")), "{silent}");
+		assert!(
+			silent.contains("answers neither Hello nor slcan") && silent.contains("reflash"),
+			"{silent}"
+		);
 	}
 
 	#[test]
@@ -662,7 +766,7 @@ mod tests {
 	#[test]
 	fn an_explicit_device_is_used_verbatim() {
 		// Never second-guess an explicit choice, even a path that looks odd.
-		assert_eq!(resolve_cable_for(Some("/dev/whatever"), "unused").unwrap(), "/dev/whatever");
+		assert_eq!(resolve_cable_for(Some("/dev/whatever"), false, &WHY).unwrap(), "/dev/whatever");
 	}
 
 	#[test]
@@ -717,7 +821,7 @@ mod tests {
 	fn chosen(target: Result<Target<()>>) -> Board<()> {
 		match target {
 			Ok(Target::Ble(board)) => board,
-			Ok(Target::Serial(path)) => panic!("chose the serial device {path}, expected a board"),
+			Ok(Target::Serial(path) | Target::BoardUsb { path }) => panic!("chose the USB device {path}, expected a board over BLE"),
 			Err(e) => panic!("refused: {e:#}"),
 		}
 	}
@@ -725,7 +829,17 @@ mod tests {
 	fn serial(target: Result<Target<()>>) -> String {
 		match target {
 			Ok(Target::Serial(path)) => path,
+			Ok(Target::BoardUsb { path }) => panic!("chose to read through the dash board on {path}, expected a plain adapter"),
 			Ok(Target::Ble(board)) => panic!("chose {} over BLE, expected a cable", board.name),
+			Err(e) => panic!("refused: {e:#}"),
+		}
+	}
+
+	fn board_usb(target: Result<Target<()>>) -> String {
+		match target {
+			Ok(Target::BoardUsb { path }) => path,
+			Ok(Target::Serial(path)) => panic!("chose {path} as a plain adapter, expected to read through the dash board"),
+			Ok(Target::Ble(board)) => panic!("chose {} over BLE, expected the board's cable", board.name),
 			Err(e) => panic!("refused: {e:#}"),
 		}
 	}
@@ -750,7 +864,7 @@ mod tests {
 	async fn ble_takes_the_one_board_it_hears_even_with_a_cable_plugged_in() {
 		let mut menu = Scripted::new(vec![]);
 		let board = chosen(
-			resolve_with(
+			resolve_as(
 				Some("ble"),
 				Ok(vec![canable()]),
 				never,
@@ -766,14 +880,14 @@ mod tests {
 
 	#[tokio::test]
 	async fn ble_with_no_board_in_range_says_it_needs_the_ignition_and_range() {
-		let err = refused(resolve_with(Some("ble"), Ok(vec![]), never, hears(vec![]), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(Some("ble"), Ok(vec![]), never, hears(vec![]), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("ignition") && err.contains("range"), "{err}");
 	}
 
 	#[tokio::test]
 	async fn ble_with_several_boards_asks_which() {
 		let mut menu = Scripted::new(vec![Answer::Pick(1)]);
-		let board = chosen(resolve_with(Some("ble"), Ok(vec![]), never, hears(two()), true, &mut menu).await);
+		let board = chosen(resolve_as(Some("ble"), Ok(vec![]), never, hears(two()), true, &mut menu).await);
 		assert_eq!(board.name, "vagcan-dash-garage");
 		assert_eq!(menu.last_labels(), vec!["vagcan-dash", "vagcan-dash-garage"]);
 		assert!(menu.last_menu().contains("-80 dBm"), "{}", menu.last_menu());
@@ -782,7 +896,7 @@ mod tests {
 	#[tokio::test]
 	async fn ble_with_several_boards_and_nobody_to_ask_lists_them_and_refuses() {
 		let mut menu = Scripted::new(vec![]);
-		let err = refused(resolve_with(Some("ble"), Ok(vec![]), never, hears(two()), false, &mut menu).await);
+		let err = refused(resolve_as(Some("ble"), Ok(vec![]), never, hears(two()), false, &mut menu).await);
 		assert!(
 			err.contains("--device ble:vagcan-dash ") && err.contains("--device ble:vagcan-dash-garage "),
 			"{err}"
@@ -793,16 +907,16 @@ mod tests {
 	#[tokio::test]
 	async fn ble_by_name_picks_that_board_without_asking() {
 		let mut menu = Scripted::new(vec![]);
-		let board = chosen(resolve_with(Some("ble:vagcan-dash-garage"), Ok(vec![]), never, hears(two()), true, &mut menu).await);
+		let board = chosen(resolve_as(Some("ble:vagcan-dash-garage"), Ok(vec![]), never, hears(two()), true, &mut menu).await);
 		assert_eq!(board.id, "BBBB");
 		assert!(menu.seen.is_empty());
 	}
 
 	#[tokio::test]
 	async fn ble_by_a_name_nobody_answers_to_says_what_was_heard() {
-		let err = refused(resolve_with(Some("ble:kitchen"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(Some("ble:kitchen"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("kitchen") && err.contains("--device ble:vagcan-dash-garage"), "{err}");
-		let err = refused(resolve_with(Some("ble:"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(Some("ble:"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("needs a board's name"), "{err}");
 	}
 
@@ -810,7 +924,7 @@ mod tests {
 	async fn two_boards_of_one_name_are_told_apart_by_id() {
 		let same = || vec![heard("vagcan-dash", "AAAA", -50), heard("vagcan-dash", "BBBB", -70)];
 		let err = refused(
-			resolve_with(
+			resolve_as(
 				Some("ble:vagcan-dash"),
 				Ok(vec![]),
 				never,
@@ -821,13 +935,13 @@ mod tests {
 			.await,
 		);
 		assert!(err.contains("--device ble:AAAA") && err.contains("--device ble:BBBB"), "{err}");
-		let board = chosen(resolve_with(Some("ble:BBBB"), Ok(vec![]), never, hears(same()), false, &mut Scripted::new(vec![])).await);
+		let board = chosen(resolve_as(Some("ble:BBBB"), Ok(vec![]), never, hears(same()), false, &mut Scripted::new(vec![])).await);
 		assert_eq!(board.id, "BBBB");
 	}
 
 	#[tokio::test]
 	async fn a_bluetooth_failure_is_shown_as_it_came() {
-		let err = refused(resolve_with(Some("ble"), Ok(vec![]), never, denied(), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(Some("ble"), Ok(vec![]), never, denied(), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("Bluetooth access was denied"), "{err}");
 	}
 
@@ -840,18 +954,18 @@ mod tests {
 		];
 		for (listing, answer) in cases {
 			let only = hears(vec![heard("vagcan-dash", "A", -60)]);
-			let board = chosen(resolve_with(None, Ok(listing), answering(answer), only, false, &mut Scripted::new(vec![])).await);
+			let board = chosen(resolve_as(None, Ok(listing), answering(answer), only, false, &mut Scripted::new(vec![])).await);
 			assert_eq!(board.name, "vagcan-dash");
 		}
 	}
 
 	#[tokio::test]
 	async fn with_no_cable_and_no_board_both_are_said() {
-		let err = refused(resolve_with(None, Ok(vec![]), never, hears(vec![]), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(None, Ok(vec![]), never, hears(vec![]), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("no USB-CAN adapter found"), "{err}");
 		assert!(err.contains("No dash board answered over BLE either"), "{err}");
 		let err = refused(
-			resolve_with(
+			resolve_as(
 				None,
 				Ok(vec![board()]),
 				answering(BoardAnswer::Silent),
@@ -862,14 +976,14 @@ mod tests {
 			.await,
 		);
 		assert!(
-			err.contains("Flash") && err.contains("over BLE either"),
+			err.contains("Reflash") && err.contains("over BLE either"),
 			"the cable's advice stays: {err}"
 		);
 	}
 
 	#[tokio::test]
 	async fn with_no_cable_a_failed_scan_is_said_under_the_cable_message() {
-		let err = refused(resolve_with(None, Ok(vec![]), never, denied(), true, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(None, Ok(vec![]), never, denied(), true, &mut Scripted::new(vec![])).await);
 		assert!(
 			err.contains("no USB-CAN adapter found") && err.contains("Bluetooth access was denied"),
 			"{err}"
@@ -880,24 +994,24 @@ mod tests {
 	async fn with_no_cable_several_boards_are_asked_about_or_refused() {
 		let mut menu = Scripted::new(vec![Answer::Pick(0)]);
 		assert_eq!(
-			chosen(resolve_with(None, Ok(vec![]), never, hears(two()), true, &mut menu).await).id,
+			chosen(resolve_as(None, Ok(vec![]), never, hears(two()), true, &mut menu).await).id,
 			"AAAA"
 		);
-		let err = refused(resolve_with(None, Ok(vec![]), never, hears(two()), false, &mut Scripted::new(vec![])).await);
+		let err = refused(resolve_as(None, Ok(vec![]), never, hears(two()), false, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("--device ble:vagcan-dash-garage"), "{err}");
 	}
 
 	#[tokio::test]
 	async fn a_cable_a_path_or_an_ambiguous_listing_never_scans() {
 		let menu = &mut Scripted::new(vec![]);
-		let picked = serial(resolve_with(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Silent), no_scan(), true, menu).await);
+		let picked = serial(resolve_as(None, Ok(vec![canable(), board()]), answering(BoardAnswer::Silent), no_scan(), true, menu).await);
 		assert_eq!(picked, CANABLE);
 		assert_eq!(
-			serial(resolve_with(Some(CANABLE), Ok(vec![canable()]), never, no_scan(), true, menu).await),
+			serial(resolve_as(Some(CANABLE), Ok(vec![canable()]), never, no_scan(), true, menu).await),
 			CANABLE
 		);
 		let second = vag_uds_can::classify_usb("/dev/cu.usbserial-B20".into(), 0x0403, 0x6001, None);
-		let err = refused(resolve_with(None, Ok(vec![anonymous(), second]), never, no_scan(), true, menu).await);
+		let err = refused(resolve_as(None, Ok(vec![anonymous(), second]), never, no_scan(), true, menu).await);
 		assert!(err.contains("say which one"), "several cables are a question about cables: {err}");
 	}
 
@@ -914,14 +1028,111 @@ mod tests {
 
 	#[test]
 	fn a_command_that_needs_a_cable_refuses_ble_and_says_why_when_no_cable_is_found() {
-		const WHY: &str = "a sweep is refused over BLE; use a cable";
 		for requested in ["ble", "ble:vagcan-dash"] {
-			let err = resolve_cable_for_with(Some(requested), WHY, Ok(vec![canable()]), never).unwrap_err();
-			assert_eq!(err.to_string(), WHY);
+			let err = cable(Some(requested), Ok(vec![canable()]), never).unwrap_err();
+			assert_eq!(err.to_string(), WHY.over_ble);
 		}
-		let err = resolve_cable_for_with(None, WHY, Ok(vec![]), never).unwrap_err().to_string();
-		assert!(err.contains("no USB-CAN adapter found") && err.contains(WHY), "{err}");
-		assert_eq!(resolve_cable_for_with(None, WHY, Ok(vec![canable()]), never).unwrap(), CANABLE);
-		assert_eq!(resolve_cable_for_with(Some(CANABLE), WHY, Ok(vec![canable()]), never).unwrap(), CANABLE);
+		let err = cable(None, Ok(vec![]), never).unwrap_err().to_string();
+		assert!(err.contains("no USB-CAN adapter found") && err.contains(WHY.over_ble), "{err}");
+		assert_eq!(cable(None, Ok(vec![canable()]), never).unwrap(), CANABLE);
+		assert_eq!(cable(Some(CANABLE), Ok(vec![canable()]), never).unwrap(), CANABLE);
+	}
+
+	// --- the board on its USB cable ---
+
+	#[tokio::test]
+	async fn a_dash_board_alone_is_read_through_and_nothing_is_scanned() {
+		let menu = &mut Scripted::new(vec![]);
+		let alone = resolve_as(None, Ok(vec![board()]), answering(dash()), no_scan(), true, menu).await;
+		assert_eq!(board_usb(alone), BOARD);
+		// Beside a device that is no recognised adapter it still wins, as a CANable does.
+		let beside = resolve_as(None, Ok(vec![anonymous(), board()]), answering(dash()), no_scan(), true, menu).await;
+		assert_eq!(board_usb(beside), BOARD);
+	}
+
+	#[tokio::test]
+	async fn a_dash_board_next_to_a_canable_is_a_question_naming_both() {
+		let menu = &mut Scripted::new(vec![]);
+		let err = refused(resolve_as(None, Ok(vec![canable(), board()]), answering(dash()), no_scan(), true, menu).await);
+		assert!(err.contains("several CAN adapters found — say which one"), "{err}");
+		assert!(
+			err.contains(&format!("--device {CANABLE}")) && err.contains(&format!("--device {BOARD}")),
+			"{err}"
+		);
+		assert!(err.contains("dash image"), "{err}");
+	}
+
+	#[tokio::test]
+	async fn a_dash_board_named_by_its_path_is_read_through_and_slcan_makes_it_an_adapter() {
+		let menu = &mut Scripted::new(vec![]);
+		for path in [BOARD, "/dev/tty.usbmodem1101"] {
+			let listing = || Ok(vec![canable(), board()]);
+			let through = resolve_as(Some(path), listing(), answering(dash()), no_scan(), true, menu).await;
+			assert_eq!(board_usb(through), path);
+			let adapter = resolve_with(Some(path), true, listing(), answering(dash()), no_scan(), true, menu).await;
+			assert_eq!(serial(adapter), path);
+		}
+	}
+
+	#[tokio::test]
+	async fn slcan_makes_a_dash_board_an_adapter_and_changes_nothing_else() {
+		let menu = &mut Scripted::new(vec![]);
+		let alone = resolve_with(None, true, Ok(vec![board()]), answering(dash()), no_scan(), true, menu).await;
+		assert_eq!(serial(alone), BOARD);
+		let canable_only = resolve_with(None, true, Ok(vec![canable()]), never, no_scan(), true, menu).await;
+		assert_eq!(serial(canable_only), CANABLE);
+		let slcan_image = resolve_with(None, true, Ok(vec![board()]), answering(BoardAnswer::Slcan), no_scan(), true, menu).await;
+		assert_eq!(serial(slcan_image), BOARD);
+		let named = resolve_with(Some(CANABLE), true, Ok(vec![canable()]), never, no_scan(), true, menu).await;
+		assert_eq!(serial(named), CANABLE);
+		let both = resolve_with(None, true, Ok(vec![canable(), board()]), answering(dash()), no_scan(), true, menu).await;
+		assert!(refused(both).contains("say which one"));
+	}
+
+	#[tokio::test]
+	async fn slcan_over_ble_is_refused_and_with_no_usb_adapter_nothing_is_scanned() {
+		let menu = &mut Scripted::new(vec![]);
+		for requested in ["ble", "ble:vagcan-dash"] {
+			let err = refused(resolve_with(Some(requested), true, Ok(vec![]), never, no_scan(), true, menu).await);
+			assert_eq!(err, SLCAN_OVER_BLE);
+		}
+		let err = refused(resolve_with(None, true, Ok(vec![]), never, no_scan(), true, menu).await);
+		assert!(err.contains("no USB-CAN adapter found") && err.contains("--slcan"), "{err}");
+	}
+
+	#[test]
+	fn what_does_not_go_through_the_board_is_refused_on_each_way_to_it_unless_slcan_makes_the_cable_an_adapter() {
+		// `vagcan`'s three such commands — survey, identify, sniff — each with its own words.
+		let commands = [
+			NotThroughTheBoard {
+				over_ble: "survey over BLE",
+				over_usb: "survey through the board",
+			},
+			NotThroughTheBoard {
+				over_ble: "identify over BLE",
+				over_usb: "identify through the board",
+			},
+			NotThroughTheBoard {
+				over_ble: "sniff over BLE",
+				over_usb: "sniff needs --slcan",
+			},
+		];
+		for why in &commands {
+			for slcan in [false, true] {
+				// The board picked with no `--device`, and named by its path.
+				for requested in [None, Some(BOARD)] {
+					let got = resolve_cable_for_with(requested, slcan, why, Ok(vec![board()]), answering(dash()));
+					match slcan {
+						false => assert_eq!(got.unwrap_err().to_string(), why.over_usb, "{requested:?}"),
+						true => assert_eq!(got.unwrap(), BOARD, "{requested:?}"),
+					}
+				}
+				for requested in ["ble", "ble:vagcan-dash"] {
+					let got = resolve_cable_for_with(Some(requested), slcan, why, Ok(vec![board()]), never);
+					let expected = if slcan { SLCAN_OVER_BLE } else { why.over_ble };
+					assert_eq!(got.unwrap_err().to_string(), expected, "{requested}");
+				}
+			}
+		}
 	}
 }
