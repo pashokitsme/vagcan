@@ -969,8 +969,9 @@ mod tests {
 	#[test]
 	fn every_preview_is_named_as_one_and_names_are_unique() {
 		let shots = preview::render_all();
-		// Values ×4 links, two cells, a long label, the chart ×2, the adapter ×3.
-		assert_eq!(shots.len(), 11);
+		// Values ×4 links, two cells, a long label, a drifting page, the chart ×2, a drifting
+		// chart, the adapter ×3.
+		assert_eq!(shots.len(), 13);
 		let mut names: Vec<&str> = shots.iter().map(|s| s.name.as_str()).collect();
 		assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
 		names.sort_unstable();
