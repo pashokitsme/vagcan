@@ -772,4 +772,9 @@ and Terminal waited for the owner's "Allow" once.
   closed while Terminal waited for the Bluetooth prompt), two `--active` sniffs (10:50 and
   10:52) saw **no frame at all** — not the panel's reads, not a `bleuds` request — though
   the board answered the `bleuds` request NoAnswer after 7.5 s. A reset (espflash monitor)
-  brought the frames back at once. No note was captured for that window.
+  brought the frames back at once. No note was captured for that window. **Not
+  reproduced in 5 minutes:** left unacknowledged from 10:55:46 and sniffed again at 11:01:25,
+  the board put 17 frames on the pair in 20 s (`22 F1 87` to both units every 2.5 s), and the
+  console, watched throughout, said nothing about bus-off or errors. Open: whether it takes
+  the longer unacknowledged stretch, and what state the controller is in — the next run is
+  an hour unacknowledged with the console captured from the start.
