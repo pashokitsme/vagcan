@@ -129,6 +129,13 @@ pub struct Channel {
 	/// Readings a second while a page showing it is on the glass — the owner's
 	/// `hz` in `dash.toml`, 2 when it gives none. Never derived on the board.
 	pub hz: f32,
+	/// The channel holding what the unit asked for, by its index into
+	/// [`Plan::channels`] — `None` where the plan pairs this one with nothing
+	/// (`todo/dash/18-setpoints-and-drift.md`).
+	///
+	/// Both are on the same unit and due together, so the planner asks for them in one `22`
+	/// and the difference is between two numbers from the same moment.
+	pub setpoint: Option<u16>,
 }
 
 /// The slowest a channel on no visible page is read: once a second, or its own
@@ -387,6 +394,7 @@ mod tests {
 			label: "",
 			proven: false,
 			hz: 2.0,
+			setpoint: None,
 		}
 	}
 

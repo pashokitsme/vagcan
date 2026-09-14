@@ -23,6 +23,7 @@
 //! label = "ОЖ"                     # optional; the glossary's wording otherwise
 //! decimals = 0                     # optional; derived from the scaling otherwise
 //! hz = 10                          # optional; how often the panel reads it, 2 otherwise
+//! setpoint = "01:IDE00190"         # optional; what the unit asked for, on the same unit
 //!
 //! [[channel]]
 //! ref = "02:IDE00102"
@@ -164,6 +165,11 @@ pub struct ChannelInput {
 	/// [`DEFAULT_HZ`] when absent. Written by the owner, never derived: a rate taken
 	/// from a unit of measure would be a guess about what the owner wants to see.
 	pub hz: Option<f64>,
+	/// The channel holding what the unit asked for, where the owner paired one
+	/// (`todo/dash/18-setpoints-and-drift.md`). Written down and never guessed: the label
+	/// files spell the two halves of a pair three different ways, and a wrong pair shows a
+	/// difference that means nothing.
+	pub setpoint: Option<Reference>,
 }
 
 /// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
@@ -258,11 +264,20 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 					}
 				},
 			};
+			let setpoint = match table.get("setpoint") {
+				None => None,
+				Some(item) => Some(Reference::parse(
+					item
+						.as_str()
+						.ok_or_else(|| Error::Parse(format!("dash.toml: {reference}: setpoint is not a string")))?,
+				)?),
+			};
 			channels.push(ChannelInput {
 				reference,
 				label,
 				decimals,
 				hz,
+				setpoint,
 			});
 		}
 	}
@@ -407,6 +422,12 @@ pub enum Error {
 	TooManyAlarms(usize),
 	/// More `[[page]]` tables than the board holds, [`MAX_PAGES`].
 	TooManyPages(usize),
+	/// A `setpoint` the plan cannot pair with its channel.
+	Setpoint {
+		channel: Reference,
+		setpoint: Reference,
+		why: String,
+	},
 }
 
 impl fmt::Display for Error {
@@ -438,6 +459,9 @@ impl fmt::Display for Error {
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
 			Error::Alarm(n, why) => write!(f, "alarm #{n}: {why}"),
 			Error::TooManyPages(n) => write!(f, "{n} [[page]] tables, and the board holds at most {MAX_PAGES}"),
+			Error::Setpoint { channel, setpoint, why } => {
+				write!(f, "{channel}: its setpoint {setpoint} {why}")
+			}
 			Error::TooManyAlarms(n) => write!(
 				f,
 				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
@@ -479,6 +503,10 @@ pub struct Channel {
 	pub hz: f64,
 	/// Where the row came from: its text id, or the catalog's own name.
 	pub source: String,
+	/// The channel holding what the unit asked for, by index into the plan's channels. A
+	/// `plan.json` written before setpoints existed has none.
+	#[serde(default)]
+	pub setpoint: Option<u16>,
 }
 
 fn default_hz() -> f64 {
@@ -534,6 +562,118 @@ pub struct Built {
 	pub notes: Vec<String>,
 }
 
+/// One `[[channel]]` against what the car reported and what the project knows: the same rules
+/// for a channel the owner named and for a specified value it paired with (`todo/dash/18`).
+fn resolve_channel(
+	wanted: &ChannelInput,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+	notes: &mut Vec<String>,
+) -> Result<Channel, Error> {
+	let request = wanted.reference.request();
+	if !units.iter().any(|u| u.request == request) {
+		return Err(Error::UnknownUnit(request));
+	}
+	let matches: Vec<&poll::Channel> = offered
+		.iter()
+		.filter(|c| c.request == request && c.def.is_some())
+		.filter(|c| match &wanted.reference {
+			Reference::TextId { text_id, .. } => c.text_id.as_deref() == Some(text_id.as_str()),
+			Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
+		})
+		.collect();
+	// A text id can name a field the device cannot show beside one it can:
+	// on the reference car every OBD-II parameter's id also sits on its
+	// "supported" bit in the `F400`/`F420`/… masks, an enum with no unit. A
+	// numeric cell can only take a linear row, so only those are candidates;
+	// what remains ambiguous is ambiguous.
+	let (linear, other): (Vec<&poll::Channel>, Vec<&poll::Channel>) = matches
+		.iter()
+		.partition(|c| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_))));
+	let found = match (linear.as_slice(), other.as_slice()) {
+		([one], _) => *one,
+		([], []) => return Err(Error::Undeclared(wanted.reference.clone())),
+		([], [first, ..]) => {
+			let kind = match first.def.as_ref().map(|d| &d.scaling) {
+				Some(Scaling::Enum { .. }) => "an enumeration",
+				Some(Scaling::Anchor { .. }) => "a single proven point with no slope",
+				_ => "not a quantity",
+			};
+			return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
+		}
+		(many, _) => {
+			let names = many
+				.iter()
+				.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
+				.collect();
+			return Err(Error::Ambiguous(wanted.reference.clone(), names));
+		}
+	};
+	let def = found.def.as_ref().expect("filtered on def");
+	let ReadId::Uds(did) = def.address;
+	let (factor, offset) = match &def.scaling {
+		Scaling::Linear(s) => (s.factor, s.offset),
+		Scaling::Enum { .. } => return Err(Error::NotLinear(wanted.reference.clone(), "an enumeration".to_string())),
+		Scaling::Anchor { .. } => {
+			return Err(Error::NotLinear(
+				wanted.reference.clone(),
+				"a single proven point with no slope".to_string(),
+			));
+		}
+	};
+	if !factor.is_finite() || !offset.is_finite() {
+		return Err(Error::NotFinite(wanted.reference.clone()));
+	}
+	// What the catalog declares is one thing; what the car answers is the
+	// survey's to say. Silence where the survey asked is a refusal to build
+	// on — an identifier that never comes back is a dash forever, and a
+	// plan is for showing numbers. Where the survey never asked, nothing
+	// is claimed either way (`Answered::saw`), and a standard OBD-II row
+	// says so in the log, because the standard mandates it and this car
+	// may still not carry it.
+	let standard = !found.proven && found.text_id.is_none();
+	match answered.and_then(|a| a.saw(request, did)) {
+		Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
+		None if standard => notes.push(format!(
+			"{}: a standard OBD-II row; the survey has no record of the car answering {did:04X}",
+			wanted.reference
+		)),
+		_ => {}
+	}
+	let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
+	let label = wanted.label.clone().unwrap_or_else(|| found.label());
+	let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
+	let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
+	let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
+	notes.push(format!(
+		"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
+		wanted.reference,
+		if signed { "i" } else { "u" },
+		if big_endian { "BE" } else { "LE" },
+		if bit_length % 8 == 0 { "" } else { " bits" },
+		if found.proven { "proven" } else { "declared" },
+		source
+	));
+	Ok(Channel {
+		unit: request,
+		did,
+		bit_offset,
+		bit_length,
+		signed,
+		big_endian,
+		factor,
+		offset,
+		decimals,
+		unit_text: def.unit.to_string(),
+		label,
+		proven: found.proven,
+		hz,
+		source,
+		setpoint: None,
+	})
+}
+
 /// Resolve an input against what the car reported and what the project knows.
 ///
 /// `units` are the car's own words about itself (from its survey); `store` and
@@ -554,111 +694,67 @@ pub fn build(
 	let mut index_of: BTreeMap<Reference, u16> = BTreeMap::new();
 
 	for wanted in &input.channels {
-		let request = wanted.reference.request();
 		if index_of.contains_key(&wanted.reference) {
 			return Err(Error::Duplicate(wanted.reference.clone()));
 		}
-		if !units.iter().any(|u| u.request == request) {
-			return Err(Error::UnknownUnit(request));
-		}
-		let matches: Vec<&poll::Channel> = offered
-			.iter()
-			.filter(|c| c.request == request && c.def.is_some())
-			.filter(|c| match &wanted.reference {
-				Reference::TextId { text_id, .. } => c.text_id.as_deref() == Some(text_id.as_str()),
-				Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
-			})
-			.collect();
-		// A text id can name a field the device cannot show beside one it can:
-		// on the reference car every OBD-II parameter's id also sits on its
-		// "supported" bit in the `F400`/`F420`/… masks, an enum with no unit. A
-		// numeric cell can only take a linear row, so only those are candidates;
-		// what remains ambiguous is ambiguous.
-		let (linear, other): (Vec<&poll::Channel>, Vec<&poll::Channel>) = matches
-			.iter()
-			.partition(|c| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_))));
-		let found = match (linear.as_slice(), other.as_slice()) {
-			([one], _) => *one,
-			([], []) => return Err(Error::Undeclared(wanted.reference.clone())),
-			([], [first, ..]) => {
-				let kind = match first.def.as_ref().map(|d| &d.scaling) {
-					Some(Scaling::Enum { .. }) => "an enumeration",
-					Some(Scaling::Anchor { .. }) => "a single proven point with no slope",
-					_ => "not a quantity",
-				};
-				return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
-			}
-			(many, _) => {
-				let names = many
-					.iter()
-					.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
-					.collect();
-				return Err(Error::Ambiguous(wanted.reference.clone(), names));
-			}
-		};
-		let def = found.def.as_ref().expect("filtered on def");
-		let ReadId::Uds(did) = def.address;
-		let (factor, offset) = match &def.scaling {
-			Scaling::Linear(s) => (s.factor, s.offset),
-			Scaling::Enum { .. } => return Err(Error::NotLinear(wanted.reference.clone(), "an enumeration".to_string())),
-			Scaling::Anchor { .. } => {
-				return Err(Error::NotLinear(
-					wanted.reference.clone(),
-					"a single proven point with no slope".to_string(),
-				));
-			}
-		};
-		if !factor.is_finite() || !offset.is_finite() {
-			return Err(Error::NotFinite(wanted.reference.clone()));
-		}
-		// What the catalog declares is one thing; what the car answers is the
-		// survey's to say. Silence where the survey asked is a refusal to build
-		// on — an identifier that never comes back is a dash forever, and a
-		// plan is for showing numbers. Where the survey never asked, nothing
-		// is claimed either way (`Answered::saw`), and a standard OBD-II row
-		// says so in the log, because the standard mandates it and this car
-		// may still not carry it.
-		let standard = !found.proven && found.text_id.is_none();
-		match answered.and_then(|a| a.saw(request, did)) {
-			Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
-			None if standard => notes.push(format!(
-				"{}: a standard OBD-II row; the survey has no record of the car answering {did:04X}",
-				wanted.reference
-			)),
-			_ => {}
-		}
-		let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
-		let label = wanted.label.clone().unwrap_or_else(|| found.label());
-		let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
-		let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
-		let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
-		notes.push(format!(
-			"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
-			wanted.reference,
-			if signed { "i" } else { "u" },
-			if big_endian { "BE" } else { "LE" },
-			if bit_length % 8 == 0 { "" } else { " bits" },
-			if found.proven { "proven" } else { "declared" },
-			source
-		));
+		let resolved = resolve_channel(wanted, &offered, answered, units, &mut notes)?;
 		let index = channels.len() as u16;
-		channels.push(Channel {
-			unit: request,
-			did,
-			bit_offset,
-			bit_length,
-			signed,
-			big_endian,
-			factor,
-			offset,
-			decimals,
-			unit_text: def.unit.to_string(),
-			label,
-			proven: found.proven,
-			hz,
-			source,
-		});
+		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
+	}
+
+	// Second pass, so a setpoint may name a channel the input declares later — and so a
+	// setpoint the input does not declare at all is appended once, after everything the
+	// owner asked for by name.
+	for (i, wanted) in input.channels.iter().enumerate() {
+		let Some(reference) = wanted.setpoint.clone() else {
+			continue;
+		};
+		let refuse = |why: &str| {
+			Err(Error::Setpoint {
+				channel: wanted.reference.clone(),
+				setpoint: reference.clone(),
+				why: why.to_string(),
+			})
+		};
+		if reference == wanted.reference {
+			return refuse("is the channel itself");
+		}
+		if reference.request() != wanted.reference.request() {
+			// Two units are two exchanges and two moments; the difference between them would
+			// be partly the delay (`todo/dash/18` §2).
+			return refuse("is on another unit — a pair is read in one request, so both halves live on one");
+		}
+		if input.channels.iter().any(|c| c.reference == reference && c.setpoint.is_some()) {
+			return refuse("has a setpoint of its own");
+		}
+		let index = match index_of.get(&reference) {
+			Some(index) => *index,
+			None => {
+				// Not a `[[channel]]` of its own: resolved with the same rules, at its
+				// channel's rate, and never offered as a cell.
+				let hidden = ChannelInput {
+					reference: reference.clone(),
+					label: None,
+					decimals: wanted.decimals,
+					hz: wanted.hz,
+					setpoint: None,
+				};
+				let resolved = resolve_channel(&hidden, &offered, answered, units, &mut notes)?;
+				let index = channels.len() as u16;
+				channels.push(resolved);
+				index_of.insert(reference.clone(), index);
+				index
+			}
+		};
+		if channels[index as usize].unit_text != channels[i].unit_text {
+			return refuse(&format!(
+				"reads in {:?} against the channel's {:?}",
+				channels[index as usize].unit_text, channels[i].unit_text
+			));
+		}
+		channels[i].setpoint = Some(index);
+		notes.push(format!("{}: its specified value is {reference}", wanted.reference));
 	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
@@ -896,7 +992,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	for c in &plan.channels {
 		let _ = writeln!(
 			out,
-			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {} }},",
+			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {} }},",
 			c.unit,
 			c.did,
 			c.bit_offset,
@@ -909,7 +1005,11 @@ pub fn to_rust(plan: &Plan) -> String {
 			c.unit_text,
 			c.label,
 			c.proven,
-			float(c.hz)
+			float(c.hz),
+			match c.setpoint {
+				Some(index) => format!("Some({index})"),
+				None => "None".to_string(),
+			}
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -1142,6 +1242,87 @@ mod tests {
 		)
 	}
 
+	/// A unit with a channel and the specified value behind it, and whatever the test appends.
+	fn build_with_setpoint(extra: &str) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x202A, "Boost pressure", "IDE00191", 0, 16, false, true, 0.001, 0.0),
+					reading(0x2029, "Boost pressure commanded value", "IDE00190", 0, 16, false, true, 0.001, 0.0),
+					Reading {
+						unit: Some("bar".to_string()),
+						..reading(0x2030, "In another unit", "IDE00999", 0, 16, false, true, 0.001, 0.0)
+					},
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let text = format!("vin = \"TESTVIN0000000001\"\n{extra}{}", values_page_titled("A", &["01:IDE00191"]),);
+		build(
+			&parse_input(&text)?,
+			&store,
+			&extracted,
+			&[identity(ENGINE, "PART1", "EV_Test")],
+			None,
+			Language::En,
+		)
+	}
+
+	#[test]
+	fn a_setpoint_becomes_a_channel_of_its_own_and_its_index_is_kept() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 10\n").unwrap();
+		assert_eq!(built.plan.channels.len(), 2, "the specified value was added");
+		let actual = &built.plan.channels[0];
+		let specified = &built.plan.channels[1];
+		assert_eq!(actual.setpoint, Some(1));
+		assert_eq!(specified.did, 0x2029);
+		assert_eq!(specified.setpoint, None, "the pair does not nest");
+		assert_eq!(specified.hz, actual.hz, "read as often as the channel it explains");
+		assert_eq!(specified.unit, actual.unit, "one unit, so one request");
+		assert!(to_rust(&built.plan).contains("setpoint: Some(1)"), "the firmware's plan carries it");
+	}
+
+	#[test]
+	fn a_setpoint_the_input_already_declares_is_not_added_twice() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap();
+		assert_eq!(built.plan.channels.len(), 2);
+		assert_eq!(built.plan.channels[0].setpoint, Some(1));
+	}
+
+	#[test]
+	fn a_setpoint_on_another_unit_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"02:IDE00190\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("another unit")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_in_another_unit_of_measure_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00999\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("reads in")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_that_is_the_channel_itself_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00191\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("the channel itself")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_with_a_setpoint_of_its_own_is_refused() {
+		let why = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n[[channel]]\nref = \"01:IDE00190\"\nsetpoint = \"01:IDE00999\"\n",
+		)
+		.unwrap_err();
+		assert!(
+			matches!(&why, Error::Setpoint { why, .. } if why.contains("setpoint of its own")),
+			"{why}"
+		);
+	}
+
 	#[test]
 	fn references_parse_both_spellings() {
 		assert_eq!(
@@ -1251,6 +1432,7 @@ mod tests {
 			label: "",
 			proven: c.proven,
 			hz: c.hz as f32,
+			setpoint: c.setpoint,
 		};
 		assert_eq!(device.decode(&[0xB2, 0x02]), Some(690.0), "690 /min, not 45570");
 		assert!(to_rust(&built.plan).contains("big_endian: false"));
@@ -1675,8 +1857,8 @@ mod tests {
 		.unwrap();
 		assert_eq!(built.plan.channels.iter().map(|c| c.hz).collect::<Vec<_>>(), [10.0, DEFAULT_HZ]);
 		let rust = to_rust(&built.plan);
-		assert!(rust.contains("proven: false, hz: 10.0 }"), "{rust}");
-		assert!(rust.contains("proven: false, hz: 2.0 }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 10.0, setpoint: None }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 2.0, setpoint: None }"), "{rust}");
 		assert!(built.notes[0].contains("at 10 Hz"), "{}", built.notes[0]);
 
 		// A plan.json from before rates reads as the default.
