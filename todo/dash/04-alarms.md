@@ -1,6 +1,14 @@
 # dash / 04 — alarms: retard and misfires take the screen
 
-**Subsystem:** dash · **Crate:** `vag-dash-render` · **Needs the car:** partly (thresholds)
+**Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
+**Needs the car:** partly (thresholds)
+
+**State (2026-09-14):** wired on branch `alarms`, hardware-free tests only. Rules are
+`[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
+`plan.rs`; the board reads their channels at full rate on every page, takes the screen,
+inverts the offending cell and silences on a short press. Open: the misfire rule's
+numbers (a car measurement), a run on the car, and the demo from a recorded drive (no
+hardware-free replay exists — see "Done when").
 
 ## Goal
 
@@ -10,21 +18,42 @@ threshold, replaces whatever is showing with the view that explains why.
 Agreed with the owner 2026-08-20. The reference device does this with a red LED and a
 buzzer past −2°; we do it with the screen, which carries more.
 
-## The rule
+## The rule — `[[alarm]]` in `dash.toml`
 
+Rules are the owner's data, never code (controller, 2026-09-14):
+
+```toml
+[[alarm]]
+channels = ["01:IDE…", "01:IDE…"]   # refs that appear under [[channel]]
+page = "RETARD"                      # title of a values page showing all of them
+direction = "below"                  # or "above"
+trip = -2.0                          # fires at or beyond
+release = -1.5                       # clears only past this, back the other way
 ```
-Alarm {
-  channels: [Channel],      // e.g. the four retard channels
-  page:     PageRef,        // the values page to raise
-  trip:     f32,            // fire at or beyond
-  release:  f32,            // clear only past this, back the other way
-  direction: Below | Above,
-}
-```
+
+Order in the file is priority. At most **4** rules (`alarm::MAX_ALARMS`): each rule's
+channels are read at full rate on every page, and one press ends one episode.
 
 Two rules to start: **ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
-`Below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
-per 1000 revolutions is not a quantity anyone should guess a threshold for).
+`below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
+per 1000 revolutions is not a quantity anyone should guess a threshold for). Neither is
+in the owner's `dash.toml` yet; the owner writes them.
+
+`vagcan dev dash build` refuses, with the rule's number (`alarm #n: …`):
+
+| what | message |
+|---|---|
+| a channel not under `[[channel]]` | `01:X is not in the [[channel]] list` |
+| no channels | `watches no channels` |
+| no values page with that title | `no values page is titled "X" — a chart page has no title and cannot explain an alarm` |
+| two values pages with that title | `N values pages are titled "X" — give them different titles` |
+| the page misses a watched channel | `page "X" does not show 01:Y — the page an alarm raises shows every channel it watches` |
+| `release` on the wrong side | `release R is not above trip T — a "below" alarm releases above where it trips` (and the `above` mirror) |
+| more than 4 rules | `N [[alarm]] rules, and the board holds at most 4 — …` |
+
+Shape errors (`direction` not `below`/`above`, a missing or non-finite `trip`/`release`,
+a missing `page`) are refused when `dash.toml` is parsed. A `plan.json` from before alarms
+loads with no rules.
 
 ## The behaviour, which is the hard part
 
@@ -41,13 +70,17 @@ the display into a single frozen screen for the rest of the drive. A short press
 the current episode; a *new* crossing after the release arms it again.
 
 **One button, so the short press is modal** (settled with the owner 2026-08-25, and it
-supersedes what this file said about a third button). The device has a single button
-because configuration moved to BLE:
+supersedes what this file said about a third button). BLE is always on (2026-09-13/14), so
+the long press no longer has a job:
 
 | gesture | normally | while an alarm is showing |
 |---|---|---|
-| short press | next page | silence this episode |
-| held 3 s | start advertising for configuration | same |
+| short press (BOOT, `dashsim` `BTN S`) | next page | silence this episode |
+| held 3 s | nothing | nothing |
+
+`dashcfg`'s `set page` is **not a press**: it moves the page cursor and leaves the alarm
+up; when the alarm hands back, it hands back to the page that was set. On the adapter
+screen (`--slcan`) no alarm runs and a short press turns the page as always.
 
 The silence is bounded by evidence rather than by a timer: it lasts until the value
 releases, and the rule is armed again by the next crossing after that. A rule that has
@@ -63,37 +96,40 @@ it costs nothing in burn-in.
 ## The polling consequence — the non-obvious cost
 
 An alarm has to watch channels that are not being displayed. So the polled set is the
-**union** of the current page's channels and every armed alarm's: four on screen, four
-retard, four misfire — twelve, where a page alone would be four.
+**union** of the current page's channels and every rule's: four on screen, four retard,
+four misfire — twelve, where a page alone would be four.
 
-What saves the frame rate is that `0x22` takes several identifiers in one request, and
-the survey records this car answering batched reads (`"batched": true` in
-`research/dumps/survey-parked.jsonl`). Twelve channels on the engine is then one exchange,
-not twelve. **How many identifiers this ECU accepts per request is a bench measurement**
-and it is the first number wanted from hardware — see `06`. Until it is known, the plan
-must not assume batching: build the request set from the union and split it by a limit
-the plan carries.
+`Plan::rates` makes that union: a channel any rule watches is `foreground` at its own
+`hz` on every page, never the hidden-page 1 Hz, whether or not its rule is silenced. The
+board's panel subscribes by it, so a page switch moves the page's channels and leaves
+the alarms' alone. The planner packs due identifiers of one unit into one `0x22` request
+and learns a unit that refuses that (`todo/dash/14` §2). How many identifiers this ECU
+accepts per request is still a bench measurement — see `06`.
 
-## Where it lives — `crates/dash/vag-dash-render/src/alarm.rs` (done)
+## Where it lives
 
-The machine is in **`vag-dash-render`**, not in the firmware, and that is a testability
-decision: `crates/dash/vag-dash-fw` is not a workspace member and cannot be built for the host,
-so anything living there is untested by CI. The module is `no_std`, allocation-free and
-does not touch the drawing code — it decides *which* page is on the glass, and it is the
-only thing that ever sets `Cell::alarm`.
+- **`vag-dash-render/src/alarm.rs`** — the state machine (15 tests). `no_std`,
+  allocation-free, reads no clock. `Alarm` is plain data the plan carries as a `static`.
+- **`vag-dash-render/src/screen.rs`** — `Screen`: the page cursor, the alarms and the short
+  press, which the firmware only feeds (7 tests). The cursor stays the board's
+  (`Config::active_page`: saved, set over BLE, reported by `state`); `Screen` reads and
+  moves it and never keeps a copy.
+- **`vag-dash-render/src/plan.rs`** — `Plan::alarms`; `ChannelId` is the plan's channel
+  index and `PageId` its page index, because an image is built for one plan. `Plan::rates`
+  keeps watched channels foreground.
+- **`vag-cli-core/src/dash.rs`** — `[[alarm]]` parsed, checked, written to `plan.json` and
+  `plan.rs`.
+- **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
+  cursor and the value store (`None` when stale, the existing `STALE` rule), draws
+  `shown.page`, and inverts the cell whose channel is `shown.offending`; the button task
+  routes a short press through `Screen::press`. A takeover and its end are said on USB.
 
 ```rust
-let mut alarms = Alarms::new([
-  Alarm::below(&RETARD, RETARD_PAGE, -2.0, -1.5),
-  Alarm::above(&MISFIRE, MISFIRE_PAGE, trip, release),
-]);
-
-// Every frame: what the caller would show, what the car said, and the time.
-let Update { shown, changed } = alarms.poll(current_page, &readings, now_ms);
-// `shown.page` to render; `shown.offending` is the ChannelId to draw inverted.
-
+let mut screen = Screen::<ALARM_COUNT>::new(PLAN.alarms);
+// Every frame: the page the driver chose, the clock, the store.
+let Update { shown, changed } = screen.frame(config.active_page, now_ms, |i| value_of(i));
 // The one button:
-if alarms.press() == Press::NextPage { current_page = plan.next(current_page); }
+if screen.press(&mut config.active_page, pages) == Press::NextPage { /* paged */ }
 ```
 
 Four decisions worth writing down:
@@ -104,41 +140,45 @@ Four decisions worth writing down:
 - **"Where you were" is not remembered here.** The caller passes the page it *would* be
   showing on every poll and that is what comes back. A second copy of the caller's own
   cursor is a second copy that can drift.
-- **Pages and channels are identities** (`PageId`, `ChannelId`), not positions. The
-  polled set is a union whose order changes with the page, so a position is not a name.
+- **Pages and channels are identities** (`PageId`, `ChannelId`), not positions in the
+  polled set, whose order changes with the page.
 - **Rules are in priority order**, and two firing in the same poll resolve by that order
   rather than by whichever the loop saw first.
 
 ## Tests
 
-Pure logic, no display: drive a synthetic series through the state machine. Fifteen tests
-in `alarm.rs`, all green:
+`alarm.rs` (15): one takeover for a value oscillating across the trip; release at the
+release value; the 2.5 s hold and the hand-back by page identity; silence, re-arm after a
+release, silence while still out; priority; the worst cell and its freeze through the
+hold; a channel that stops answering neither trips nor releases.
 
-- A value oscillating across the trip point produces **one** takeover, not many.
-- Release at the release threshold, not the trip threshold.
-- The view stays up 2.5 s after the value returns inside, and hands back to the page that
-  was showing before — asserted by page identity, not by index.
-- Silencing ends the episode; a fresh crossing after a release re-arms; a silenced rule
-  stays silent while the value is still out.
-- Two alarms crossing in the same poll resolve by priority; silencing the showing one
-  lets the one behind it through.
-- The inverted cell is the *worst* channel, it follows the engine mid-episode, and it
-  freezes on the last offender through the hold.
-- A channel that stops answering neither trips nor releases — the button is the way out.
+`screen.rs` (7, neutral channels and thresholds): a hidden page's channel takes the screen
+with its page and cell; silence then re-arm after a release; the cursor moves only on
+`NextPage`, and the hold hands back to where the cursor is *now*; two rules by priority,
+one press each; a stale channel neither trips nor releases; the adapter screen runs no
+alarms and a press there pages; a plan with no alarms only pages.
 
-Still owed by the caller, not by this module:
+`plan.rs`: a watched channel is foreground at its own rate on every page. `dash.rs`: every
+refusal above, the `plan.json` round trip, an old `plan.json` without alarms, and the
+generated `static`.
 
-- The polled set is the union of page and armed alarms, and splits at the plan's batch
-  limit. `Alarms::watched()` supplies the alarms' half; the union and the split belong to
-  the plan.
-- Inversion covers exactly the offending cell's rectangle — already covered in
-  `render.rs` by `an_alarm_inverts_its_own_column_and_leaves_the_others_alone`.
+Inversion covers exactly the offending cell's rectangle — `render.rs`,
+`an_alarm_inverts_its_own_column_and_leaves_the_others_alone`.
 
 ## Done when
 
 The retard alarm can be demonstrated in the simulator (`03`) from a recorded drive, and
 the flicker test passes on a series built to sit exactly on the threshold.
 
-The flicker test passes. What is left is wiring: the firmware feeding `Alarms::poll` from
-the plan's readings and routing its one button through `Alarms::press`, and the misfire
-rule's two numbers, which are a bench measurement and not a guess.
+The flicker test passes, and the wiring is done. The demo cannot be run without hardware
+today (checked 2026-09-14):
+
+- `dashsim` shows the board's own frames — it needs the board, and the bench CAN pair is
+  dead (`research/dash/can-bring-up.md` §9.7).
+- `vagcan watch` replays a `watch --out` recording through the *terminal* view, not the
+  dash renderer; `vag-dash-render/examples/panel.rs` renders fixed stand-in frames.
+- The recorded drives (`research/dumps/drive-gear.csv`, `drive-gearbox.csv`) are gearbox
+  channels; none holds `200A`–`200D`.
+
+Left: record a drive with the retard channels, then either feed it to a host renderer or
+show it on the board through `dashsim`; the misfire rule's two numbers, from the car.

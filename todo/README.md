@@ -57,7 +57,12 @@ port twice resets it.
    mode), then `research/dash/can-bring-up.md`.
 3. **Bench session** — the unverified items above.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`: the render side is done, the firmware wiring is not.
+5. **Alarms on the board** — `dash/04`. Wired on branch `alarms` (2026-09-14),
+   hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
+   channels foreground at their own rate, takeover and silence through
+   `vag_dash_render::screen`. Next: the misfire rule's numbers and a run on the car. The
+   demo from a recorded drive waits for a recording with the retard channels and a way to
+   replay it (none is hardware-free today).
 6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
