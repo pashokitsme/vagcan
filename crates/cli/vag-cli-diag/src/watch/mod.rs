@@ -2528,7 +2528,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 			tokio::select! {
 				got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
 					Some((_, sample)) => app.take(sample),
-					None => anyhow::bail!("the link to the car closed"),
+					None => return Err(link_closed(&bus)),
 				},
 				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 			}
@@ -2572,7 +2572,9 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		tokio::select! {
 			got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
 				Some((_, sample)) => app.take(sample),
-				None => break Err(anyhow::anyhow!("the link to the car closed")),
+				// Broken out of rather than drawn: the terminal is handed back below, and
+				// the reason is printed after it, where it stays readable.
+				None => break Err(link_closed(&bus)),
 			},
 			() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 		}
@@ -2592,6 +2594,12 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	}
 	println!("{} readings in {:.1}s — {:.1} Hz a channel", app.readings, bus.secs(), app.poll_rate());
 	result
+}
+
+/// Why every subscription ended: the bus's own reason when it has one — "the BLE
+/// connection to vagcan-dash dropped" — and otherwise that the link closed.
+fn link_closed(bus: &vag_cli_core::bus::Bus) -> anyhow::Error {
+	anyhow::anyhow!(bus.closed().unwrap_or_else(|| "the link to the car closed".to_string()))
 }
 
 /// When the row after one due at `due` is, seen at `now`: a period on, or a period

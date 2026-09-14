@@ -19,8 +19,10 @@
 /// and three crates open that cable now.
 pub const ADAPTER_BAUD: u32 = 115_200;
 
-/// How long a BLE scan listens before the boards it heard are counted: `dashcfg`'s figure.
-pub const BLE_SCAN_SECS: u64 = 4;
+/// The longest a BLE scan for boards listens: `dashcfg`'s figure. A scan that hears a
+/// board stops [`vag_dash_ble::SCAN_SETTLE`] after it, so only a scan that hears nothing
+/// takes this long.
+pub const BLE_SCAN: std::time::Duration = std::time::Duration::from_secs(4);
 
 use anyhow::{Context as _, Result, bail};
 use vag_uds_can::{AdapterInfo, BOARD_PROBE_WAIT, BoardAnswer, SerialSlcan, SlcanBackend, SlcanBitrate, SlcanMode, list_adapters, probe_board};
@@ -185,7 +187,7 @@ fn signal<H>(board: &Board<H>) -> String {
 /// The boards in range, over this computer's first Bluetooth adapter.
 async fn scan_ble() -> Result<Vec<Board>> {
 	let adapter = vag_dash_ble::adapter().await?;
-	let found = vag_dash_ble::scan_boards(&adapter, BLE_SCAN_SECS).await?;
+	let found = vag_dash_ble::scan_boards(&adapter, BLE_SCAN).await?;
 	Ok(
 		found
 			.into_iter()
@@ -200,6 +202,24 @@ async fn scan_ble() -> Result<Vec<Board>> {
 			})
 			.collect(),
 	)
+}
+
+/// The dash boards in range, for `vagcan devices`.
+pub async fn list_boards() -> Result<Vec<Board>> {
+	scan_ble().await
+}
+
+/// The boards a BLE scan heard, for a human. A scan that could not be made is one line
+/// — the Bluetooth adapter's own error — and not a failure of the whole listing.
+pub fn render_boards<H>(heard: &Result<Vec<Board<H>>>) -> String {
+	match heard {
+		Err(why) => format!("Dash boards over BLE: not looked for — {why:#}"),
+		Ok(boards) if boards.is_empty() => format!("Dash boards over BLE: none heard — {NO_BOARD}"),
+		Ok(boards) => format!(
+			"Dash boards over BLE:\n\n{}\n\nPass one with --device ble:<name>, or --device ble when only one is in range.",
+			choices(boards)
+		),
+	}
 }
 
 fn probe(path: &str) -> BoardAnswer {
@@ -876,6 +896,17 @@ mod tests {
 		let second = vag_uds_can::classify_usb("/dev/cu.usbserial-B20".into(), 0x0403, 0x6001, None);
 		let err = refused(resolve_with(None, Ok(vec![anonymous(), second]), never, no_scan(), true, menu).await);
 		assert!(err.contains("say which one"), "several cables are a question about cables: {err}");
+	}
+
+	#[test]
+	fn the_device_listing_names_boards_over_ble_or_says_in_one_line_why_it_could_not_look() {
+		let text = render_boards(&Ok(two()));
+		assert!(text.contains("--device ble:vagcan-dash ") && text.contains("-80 dBm"), "{text}");
+		let none = render_boards::<()>(&Ok(vec![]));
+		assert!(none.contains("none heard") && none.contains("ignition"), "{none}");
+		let failed = render_boards::<()>(&Err(anyhow::anyhow!("no Bluetooth adapter")));
+		assert_eq!(failed.lines().count(), 1, "{failed}");
+		assert!(failed.contains("no Bluetooth adapter"), "{failed}");
 	}
 
 	#[test]

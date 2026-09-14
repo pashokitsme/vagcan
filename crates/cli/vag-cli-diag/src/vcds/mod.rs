@@ -92,7 +92,7 @@ pub enum Tool {
 		/// Adapter to use with --from-car: a serial path, `ble` for the dash board over
 		/// Bluetooth, or `ble:<name>`. Omit it to use the one connected, or the board
 		/// over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
 

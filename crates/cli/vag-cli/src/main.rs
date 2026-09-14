@@ -147,7 +147,7 @@ enum Command {
 		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
 
@@ -162,7 +162,7 @@ enum Command {
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is. `--identify <unit>`
 		/// needs a cable: it is a sweep, and a sweep is refused over BLE.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Have the units name themselves: part number and component name, for
 		/// every unit the gateway lists. Slower, and a unit that does not
@@ -200,7 +200,7 @@ enum Command {
 		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
 		/// gateway lists.
@@ -250,7 +250,7 @@ enum Command {
 		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
 		/// a request id (713, 70E). `vagcan units` lists this car's.
@@ -276,7 +276,7 @@ enum Command {
 		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
 		/// before the colon is a unit — short number or request id — and a
@@ -593,6 +593,8 @@ async fn dispatch(command: Command) -> Result<()> {
 		}),
 		Command::Devices => {
 			println!("{}", device::render_list(&device::list()?));
+			eprintln!("\nlooking for dash boards over BLE…");
+			println!("\n{}", device::render_boards(&device::list_boards().await));
 			Ok(())
 		}
 		Command::Info { device } => {

@@ -172,7 +172,7 @@ pub enum Tool {
 		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
 		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
 		/// or the dash board over BLE when no USB-CAN adapter is.
-		#[arg(long, value_name = "PATH")]
+		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// The speed a coastdown pass opens at. Narrowing the range separates
 		/// drag from rolling resistance less well, and the fit says by how much.
@@ -248,6 +248,10 @@ pub trait Feed {
 	fn next(&mut self) -> impl std::future::Future<Output = Option<Arrival>>;
 	/// Read each of `reads` once, asked together, and hand back what answered.
 	fn read_once(&mut self, reads: &[(u16, u16)]) -> impl std::future::Future<Output = Vec<(u16, u16, Vec<u8>)>>;
+	/// Why the feed ended, when it knows — "the BLE connection to vagcan-dash dropped".
+	fn closed(&self) -> Option<String> {
+		None
+	}
 }
 
 /// The live feed: one subscription per polled read, on the bus.
@@ -281,6 +285,10 @@ fn unit_of(request: u16) -> Option<vag_cli_core::bus::Unit> {
 }
 
 impl Feed for LiveFeed {
+	fn closed(&self) -> Option<String> {
+		self.bus.closed()
+	}
+
 	async fn next(&mut self) -> Option<Arrival> {
 		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs, &mut self.cursor).await?;
 		Some(Arrival {
@@ -1276,7 +1284,8 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 						records.extend(one);
 					}
 				}
-				None => break Err(anyhow::anyhow!("the link to the car closed")),
+				// The reason is the error, printed once the terminal has been handed back.
+				None => break Err(anyhow::anyhow!(feed.closed().unwrap_or_else(|| "the link to the car closed".to_string()))),
 			},
 			() = sleep_for(wait) => {}
 		}
@@ -2274,6 +2283,55 @@ mod tests {
 		assert!(ended.is_err());
 		let asked = calls.load(std::sync::atomic::Ordering::SeqCst);
 		assert!(asked <= 3, "the feed was asked {asked} times in 400 ms of silence");
+	}
+
+	/// A feed whose link broke, and which says why.
+	struct Dropped;
+
+	impl Feed for Dropped {
+		async fn next(&mut self) -> Option<Arrival> {
+			None
+		}
+
+		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
+			Vec::new()
+		}
+
+		fn closed(&self) -> Option<String> {
+			Some("the BLE connection to vagcan-dash dropped".to_string())
+		}
+	}
+
+	#[tokio::test]
+	async fn a_broken_link_ends_the_drive_with_its_own_reason() {
+		let (store, units) = reference();
+		let opts = Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let ended = tokio::time::timeout(Duration::from_secs(5), drive(Dropped, prepared, &opts, false))
+			.await
+			.expect("the drive ends when the feed does");
+		assert_eq!(
+			ended.expect_err("ended by the link").to_string(),
+			"the BLE connection to vagcan-dash dropped"
+		);
 	}
 
 	/// A car that answers reads and remembers every byte it was sent.
