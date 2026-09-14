@@ -135,7 +135,96 @@ where
 			samples,
 			seconds_per_sample,
 		} => chart(cell, *min, *max, samples, *seconds_per_sample, theme, target),
+		Frame::Adapter(state) => adapter(state, target),
 	}
+}
+
+/// The adapter screen's words, decided before any pixel so they can be tested as words.
+struct AdapterText {
+	/// The bit rate, or that the channel is closed.
+	rate: Buf,
+	/// Normal or listen-only; empty while the channel is closed.
+	mode: &'static str,
+	/// `rx …`, `tx …`, `err …`.
+	counters: [Buf; 3],
+}
+
+/// What the screen says: `SLCAN`, the rate and mode on the left, the counters on the right.
+const ADAPTER_TITLE: &str = "SLCAN";
+
+fn adapter_text(state: &crate::frame::Adapter) -> AdapterText {
+	let mut rate = Buf::new();
+	let mode = match state.kbit {
+		Some(kbit) => {
+			let _ = write!(rate, "{kbit} kbit/s");
+			if state.listen_only { "listen-only" } else { "normal" }
+		}
+		None => {
+			let _ = rate.write_str("closed");
+			""
+		}
+	};
+	let counter = |name: &str, n: u32| {
+		let mut buf = Buf::new();
+		let _ = write!(buf, "{name} {n}");
+		buf
+	};
+	AdapterText {
+		rate,
+		mode,
+		counters: [counter("rx", state.rx), counter("tx", state.tx), counter("err", state.errors)],
+	}
+}
+
+/// The board as a CAN adapter (`Frame::Adapter`).
+///
+/// Its own faces rather than the theme's: the theme's numerals are digits only and its
+/// label face is the smallest there is, and this screen is one word and a few figures
+/// read from a metre away. Left half: `SLCAN` large, the bit rate and the mode under it.
+/// Right half: the three counters. A line that does not fit its half, or the height, is
+/// reported as a label overrun and drawn only if it fits the height.
+fn adapter<D>(state: &crate::frame::Adapter, target: &mut D) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let mut report = Report::default();
+	let area = target.bounding_box();
+	let (width, height) = (area.size.width, area.size.height);
+	let half = width / 2;
+	let title = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_inb16_mr>();
+	let small = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_6x10_tr>();
+	let text = adapter_text(state);
+	let ink = BinaryColor::On;
+
+	let mut put = |font: &FontRenderer, line: &str, x: i32, y: u32, report: &mut Report| -> u32 {
+		if line.is_empty() {
+			return y;
+		}
+		let h = text_height(font, line).max(text_height(font, "Ag"));
+		if text_width(font, line) + PAD > half {
+			report.label_overrun = true;
+		}
+		if y + h > height {
+			report.label_overrun = true;
+			return y;
+		}
+		if font
+			.render(line, Point::new(x, y as i32), VerticalPosition::Top, FontColor::Transparent(ink), target)
+			.is_err()
+		{
+			report.glyph_missing = true;
+		}
+		y + h + 1
+	};
+
+	let y = put(&title, ADAPTER_TITLE, 0, 0, &mut report);
+	let y = put(&small, text.rate.as_str(), 0, y + 1, &mut report);
+	put(&small, text.mode, 0, y, &mut report);
+	let mut y = 0;
+	for counter in &text.counters {
+		y = put(&small, counter.as_str(), half as i32 + PAD as i32, y, &mut report);
+	}
+	report
 }
 
 fn values<D>(cells: &[Cell<'_>], theme: &Theme, target: &mut D) -> Report
@@ -852,5 +941,58 @@ mod tests {
 		let mut display = panel();
 		let report = values(&cells, &Theme::bold_mono(), &mut display);
 		assert!(report.label_overrun, "{report:?}");
+	}
+
+	// --- the adapter screen -----------------------------------------------------------
+
+	use crate::frame::Adapter;
+
+	fn adapter_state(kbit: Option<u32>, listen_only: bool) -> Adapter {
+		Adapter {
+			kbit,
+			listen_only,
+			rx: 4_294_967_295,
+			tx: 12,
+			errors: 0,
+		}
+	}
+
+	#[test]
+	fn the_adapter_screen_says_the_rate_the_mode_and_the_counters() {
+		let open = adapter_text(&adapter_state(Some(500), false));
+		assert_eq!(open.rate.as_str(), "500 kbit/s");
+		assert_eq!(open.mode, "normal");
+		let counters: [&str; 3] = [open.counters[0].as_str(), open.counters[1].as_str(), open.counters[2].as_str()];
+		assert_eq!(counters, ["rx 4294967295", "tx 12", "err 0"]);
+
+		let silent = adapter_text(&adapter_state(Some(125), true));
+		assert_eq!((silent.rate.as_str(), silent.mode), ("125 kbit/s", "listen-only"));
+
+		let closed = adapter_text(&adapter_state(None, true));
+		assert_eq!((closed.rate.as_str(), closed.mode), ("closed", ""), "a closed channel has no mode");
+	}
+
+	#[test]
+	fn the_adapter_screen_fits_the_panel_with_the_largest_counters() {
+		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
+		let report = draw(&Frame::Adapter(adapter_state(Some(1000), true)), &Theme::bold_mono(), &mut display);
+		assert_eq!(report, Report::default(), "nothing overran and no glyph was missing");
+		let left = (0..120).any(|x| (0..16).any(|y| lit(&display, x, y)));
+		let right = (131..256).any(|x| (0..32).any(|y| lit(&display, x, y)));
+		assert!(left, "SLCAN is on the left");
+		assert!(right, "the counters are on the right");
+		assert!(
+			(0..256).all(|x| (0..64).all(|y| !lit(&display, x, y) || x < 128 || x >= 128 + PAD as i32)),
+			"the halves do not touch"
+		);
+	}
+
+	#[test]
+	fn on_a_short_panel_what_does_not_fit_the_height_is_reported_not_drawn_over() {
+		let mut display = panel();
+		let report = draw(&Frame::Adapter(adapter_state(Some(500), false)), &Theme::bold_mono(), &mut display);
+		assert!(report.label_overrun, "the mode line has no room on 32 pixels: {report:?}");
+		assert!(!report.glyph_missing, "{report:?}");
+		assert!((131..256).any(|x| (22..32).any(|y| lit(&display, x, y))), "all three counters still fit");
 	}
 }
