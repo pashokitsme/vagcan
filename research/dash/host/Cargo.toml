@@ -20,6 +20,12 @@ path = "src/lib.rs"
 name = "bleecho"
 path = "src/bin/bleecho.rs"
 
+# One framed UDS request or subscription to the dash over BLE — the bench check
+# of the board's side of `todo/dash/16`.
+[[bin]]
+name = "bleuds"
+path = "src/bin/bleuds.rs"
+
 [[bin]]
 name = "dashsim"
 path = "src/bin/dashsim.rs"
@@ -34,6 +40,8 @@ vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
 # For one number: the gap under which two presses are one, so `dashsim` and
 # the board disagree about nothing.
 vag-dash-render = { path = "../../../crates/dash/vag-dash-render" }
+# The link codec `bleuds` speaks, the same source the board links.
+vag-uds-transport = { path = "../../../crates/uds/vag-uds-transport" }
 thiserror = "2"
 serialport = "4"
 crossterm = "0.28"
