@@ -83,6 +83,10 @@ makes "parallel with the display" true instead of a time-share: the two clients
 - **Rates come from the plan, never from a heuristic.** `hz` per channel in `dash.toml`,
   default 2 Hz. No rate derived from a unit of measure.
 - **Ceiling 100 exchanges/s; the panel keeps at least 25/s** while a laptop is served.
+- **Precedence per slot:** Timing (stopwatch) → a Remote or Background item due for
+  longer than 5 s (`starve_after_ms`; nothing waits forever) → Foreground under its 25/s
+  floor → Remote → Foreground above the floor → Background; within a rank, the most
+  overdue first. A Timing request carries only Timing identifiers.
 - **Shape.** A `no_std` core with no clock and no bus (`due(now) -> request`,
   `answered(now, request, answer) -> deliveries`), tested on the laptop.
 - **One layer everywhere, now** (owner: "Общий слой, используется везде вместо текущего
@@ -264,7 +268,7 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 |---|---|---|---|
 | 1 | chart/page defect, with a `dashsim` repro | bench | **done**, merged (`599ba68`); a stale stored config no longer hides the plan's pages (review round 1) — not yet seen on the board |
 | 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dash` stops printing `FRAME` | bench | **folded into 4 and `16`** (owner could not see a reason for it alone): the message types arrive with the first transport that needs them |
-| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **not started.** Today `can_task` reads every channel of every unit in turn, 50 ms between reads and 200 ms between rounds — ≈2 Hz a channel, ≈9 exchanges/s, visible page or not. To be discussed with the owner; natural to build with 4 |
+| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **core done (branch `scheduler-core`), shells not started** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. Before it, `can_task` reads every channel of every unit in turn, 50 ms between reads and 200 ms between rounds — ≈2 Hz a channel, ≈9 exchanges/s, visible page or not. To be discussed with the owner; natural to build with 4 |
 | 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **next** (owner: "реализуй") |
 | 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
 | 6 | stopwatch page | car, one straight road | on `380B` (§6), after 3 |

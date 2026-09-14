@@ -20,6 +20,7 @@ pub mod isotp;
 mod pdu;
 #[cfg(feature = "std")]
 pub mod read;
+pub mod schedule;
 pub mod uds;
 pub mod uds_async;
 #[cfg(feature = "std")]
