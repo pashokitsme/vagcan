@@ -29,3 +29,5 @@ crossterm = "0.28"
 [dev-dependencies]
 vag-cli-core = { path = "../vag-cli-core", features = ["test-util"] }
 tempfile = "3"
+# A paused clock, for a loop test whose deadline is minutes of real time.
+tokio = { workspace = true, features = ["test-util"] }

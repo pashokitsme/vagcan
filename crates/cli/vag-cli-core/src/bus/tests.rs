@@ -234,6 +234,50 @@ async fn a_late_answer_already_waiting_on_the_cable_is_discarded_before_the_next
 	assert_eq!(data, [2]);
 }
 
+/// A link whose exchange never ends: a backend that ignores its own deadline.
+struct Stuck;
+
+impl vag_uds_can::UnitLink for Stuck {
+	type Channel = Stuck;
+
+	fn to_unit(self, _request: CanId, _response: CanId) -> Stuck {
+		self
+	}
+
+	fn release(channel: Stuck) -> Stuck {
+		channel
+	}
+}
+
+impl AsyncIsoTpTransport for Stuck {
+	async fn send(&mut self, _pdu: &[u8]) -> Result<(), TransportError> {
+		Ok(())
+	}
+
+	async fn recv(&mut self, _timeout: Duration) -> Result<Vec<u8>, TransportError> {
+		std::future::pending().await
+	}
+}
+
+/// A one-shot read has a deadline of its own, queue and answer together: whatever holds
+/// the task up, its caller gets a miss rather than waiting for ever.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_shot_read_the_task_never_gets_to_is_a_miss_after_its_deadline() {
+	let bus = Bus::start(Stuck, Budget::default());
+	let asked = std::time::Instant::now();
+	let (once, all) = tokio::time::timeout(Duration::from_secs(10), async {
+		tokio::join!(
+			bus.read_once(Class::Foreground, ENGINE, 0xF190),
+			bus.read_all(Class::Foreground, &[(ENGINE, 0x0133), (ABSENT, 0x0146)])
+		)
+	})
+	.await
+	.expect("the reads come back rather than wait for ever");
+	assert_eq!(once, Err(Miss::NoAnswer));
+	assert_eq!(all, vec![Err(Miss::NoAnswer), Err(Miss::NoAnswer)]);
+	assert!(asked.elapsed() >= ONCE_DEADLINE, "not before the deadline: {:?}", asked.elapsed());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_busy_subscription_does_not_keep_the_others_waiting() {
 	let (link, _, _) = car(&[(0x7E0, 0x1000, &[1]), (0x7E1, 0x2000, &[2])]);
