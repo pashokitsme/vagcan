@@ -153,9 +153,10 @@ enum Command {
 
 	/// Identify the car: VIN, engine and gearbox passports.
 	Info {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
@@ -167,9 +168,10 @@ enum Command {
 	/// not have. `--identify` has every unit name itself; `--identify <unit>`
 	/// has one of them say everything it knows.
 	Units {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is. `--identify <unit>`
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none. `--identify <unit>`
 		/// needs a cable adapter: it is a sweep, and a sweep does not run through the dash
 		/// board (`--slcan` makes its cable one).
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
@@ -207,9 +209,10 @@ enum Command {
 	/// the memory was cleared. Read-only — clearing faults is a write, which
 	/// this tool cannot do.
 	Faults {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
@@ -257,9 +260,10 @@ enum Command {
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
 	/// something else by them, so those are shown as bytes with the reason.
 	Sensors {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
@@ -283,9 +287,10 @@ enum Command {
 	/// nothing can name — and `u` shows both. Without a survey nothing is hidden
 	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part

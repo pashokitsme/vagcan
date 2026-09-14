@@ -169,9 +169,10 @@ pub enum Tool {
 	/// two coastdown passes — one in each direction — whose fit is what makes
 	/// `--full` available. It keeps whatever was already answered.
 	Setup {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// The speed a coastdown pass opens at. Narrowing the range separates
