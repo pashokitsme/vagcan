@@ -253,6 +253,16 @@ pub trait Feed {
 	fn closed(&self) -> Option<String> {
 		None
 	}
+	/// The reads that ended since the last call while the feed goes on, each with why —
+	/// the dash board refused it. The speed is never among them: its end ends the feed.
+	fn ended(&mut self) -> Vec<(u16, u16, String)> {
+		Vec::new()
+	}
+}
+
+/// One line for a read that is no longer read: "gear (7E1 1234) is no longer read: {why}".
+fn no_longer_read(what: &str, request: u16, did: u16, why: &str) -> String {
+	format!("{what} ({request:03X} {did:04X}) is no longer read: {why}")
 }
 
 /// The live feed: one subscription per polled read, on the bus.
@@ -265,6 +275,8 @@ pub struct LiveFeed {
 	speed: (u16, u16),
 	/// Why it ended, once it has.
 	ended: Option<String>,
+	/// Other reads that ended while the feed goes on, with why, not yet asked for.
+	refused: Vec<(u16, u16, String)>,
 }
 
 impl LiveFeed {
@@ -282,6 +294,7 @@ impl LiveFeed {
 			cursor: 0,
 			speed: plan.speed,
 			ended: None,
+			refused: Vec::new(),
 		}
 	}
 }
@@ -300,22 +313,27 @@ impl Feed for LiveFeed {
 		self.bus.closed().or_else(|| self.ended.clone())
 	}
 
+	fn ended(&mut self) -> Vec<(u16, u16, String)> {
+		std::mem::take(&mut self.refused)
+	}
+
 	/// The speed's subscription ending ends the feed: the speed is what closes a cycle,
 	/// so without it nothing would be shown again, and [`closed`](Feed::closed) says why.
-	/// Any other read that ends is one last miss.
+	/// Any other read that ends is one last miss, and its reason waits for
+	/// [`ended`](Feed::ended) — unless the link broke, whose reason ends the run.
 	async fn next(&mut self) -> Option<Arrival> {
 		if self.ended.is_some() {
 			return None;
 		}
 		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs, &mut self.cursor).await?;
-		if let Some(why) = &sample.ended
-			&& (sample.unit.request, sample.did) == self.speed
-		{
-			self.ended = Some(format!(
-				"the vehicle speed ({:03X} {:04X}) is no longer read: {why}",
-				sample.unit.request, sample.did
-			));
-			return None;
+		let address = (sample.unit.request, sample.did);
+		match &sample.ended {
+			Some(why) if address == self.speed => {
+				self.ended = Some(no_longer_read("the vehicle speed", address.0, address.1, why));
+				return None;
+			}
+			Some(why) if self.bus.closed().is_none() => self.refused.push((address.0, address.1, why.clone())),
+			_ => {}
 		}
 		Some(Arrival {
 			request: sample.unit.request,
@@ -1188,7 +1206,31 @@ fn road_load(car: &carfile::CarFile, opts: &Options<'_>) -> Result<(power::RoadL
 /// leading speed, a reading or a miss, and carries everything else that arrived
 /// since the last one, each value with its own time. The loop waits on the next
 /// arrival and the next frame together, and drains the keyboard after either.
-async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool) -> Result<()> {
+async fn drive<F: Feed>(feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool) -> Result<()> {
+	drive_to(feed, prepared, opts, full_screen, &mut |line: &str| eprintln!("{line}")).await
+}
+
+/// Lines held while the full screen is up, said once it is given back: declared before
+/// the screen, it drops after it, on any return.
+struct Held<'a> {
+	lines: Vec<String>,
+	say: &'a mut (dyn FnMut(&str) + Send),
+}
+
+impl Drop for Held<'_> {
+	fn drop(&mut self) {
+		for line in self.lines.drain(..) {
+			(self.say)(&line);
+		}
+	}
+}
+
+/// [`drive`], with where a read that ended is said handed in.
+///
+/// A read other than the speed can end while the run goes on: the dash board refused it
+/// (its walk rule, its caps). One line per read says why — at once on the plain console,
+/// and after the full screen is given back otherwise, where a line would land on top of it.
+async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool, say: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
 	let Prepared {
 		plan,
 		mut meta,
@@ -1230,6 +1272,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 	let mut last_frame: Option<Instant> = None;
 	let mut cycled = true;
 
+	let mut held = Held { lines: Vec::new(), say };
 	// Held for the length of the drive, and given back by `Drop`: every `?`
 	// below this line is a run that ended badly on somebody's dashboard, and it
 	// must not also be a shell left with no echo and no cursor.
@@ -1314,6 +1357,18 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 				None => break Err(anyhow::anyhow!(feed.closed().unwrap_or_else(|| "the link to the car closed".to_string()))),
 			},
 			() = sleep_for(wait) => {}
+		}
+
+		for (request, did, why) in feed.ended() {
+			let what = plan
+				.by_address
+				.get(&(request, did))
+				.map_or_else(|| "a reading".to_string(), |channel| channel.def.name.to_string());
+			let line = no_longer_read(&what, request, did, &why);
+			match terminal.is_some() {
+				true => held.lines.push(line),
+				false => (held.say)(&line),
+			}
 		}
 
 		if terminal.is_some() {
@@ -1517,6 +1572,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 		// while drawing, so it goes first and this guard leaves the screen after.
 		drop(terminal);
 		drop(screen);
+		drop(held);
 		for record in &recorded {
 			println!("{}", report::results(&record.run, &record.derived, &meta.setting));
 		}
@@ -2464,6 +2520,95 @@ mod tests {
 			.expect("the run ends rather than wait for a speed that will not come");
 		let why = ended.expect_err("ended by the refusal").to_string();
 		assert!(why.contains(REFUSAL), "{why}");
+	}
+
+	/// Any other read the board refuses — its walk rule, its caps — goes on as a miss and
+	/// the run goes on, but the reason is said, one line per read. A read that ends because
+	/// the link broke is not among them: the link's reason ends the run.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_reading_the_board_refuses_is_said_once_and_the_run_goes_on() {
+		use vag_uds_transport::link::{self, Message, Outcome, Piece, Pipe, Reading, Reassembler, pipe_pair};
+		const REFUSAL: &str = "8 evenly spaced identifiers";
+		let (store, units) = reference();
+		let opts = Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let speed = prepared.plan.speed;
+		let refused = prepared
+			.plan
+			.polled
+			.iter()
+			.map(|poll| (poll.request, poll.did))
+			.find(|&address| address != speed)
+			.expect("a read besides the speed");
+		let name = prepared.plan.by_address[&refused].def.name.to_string();
+		let (host, mut board) = pipe_pair(244);
+		let bus = vag_cli_core::bus::Bus::start_remote(host, "vagcan-dash", vag_cli_core::bus::Carrier::Ble);
+		let feed = LiveFeed::new(bus, &prepared.plan);
+		// The board: refuses that one read, reads every other every 20 ms, then goes away.
+		tokio::spawn(async move {
+			let mut reassembler = Reassembler::new();
+			let mut live: Vec<(u16, u16)> = Vec::new();
+			let mut at_ms = 1_000u32;
+			for _ in 0..40 {
+				let mut out = Vec::new();
+				tokio::select! {
+					chunk = board.read() => {
+						let Some(chunk) = chunk else { return };
+						for piece in reassembler.push(&chunk) {
+							let Piece::Message(Message::Subscribe(s)) = piece else { continue };
+							match (s.request_id, s.did) == refused {
+								true => out.push(Reading { sub: s.sub, at_ms, outcome: Outcome::Refused(REFUSAL.into()) }),
+								false => live.push((s.sub, s.did)),
+							}
+						}
+					}
+					() = tokio::time::sleep(Duration::from_millis(20)) => {
+						at_ms += 20;
+						for &(sub, did) in &live {
+							let [hi, lo] = did.to_be_bytes();
+							out.push(Reading { sub, at_ms, outcome: Outcome::Pdu(vec![0x62, hi, lo, 0x02]) });
+						}
+					}
+				}
+				for reading in out {
+					if board.write(&link::encode(&Message::Reading(reading)).unwrap()).await.is_err() {
+						return;
+					}
+				}
+			}
+		});
+		let mut said: Vec<String> = Vec::new();
+		let mut say = |line: &str| said.push(line.to_string());
+		let ended = tokio::time::timeout(Duration::from_secs(5), drive_to(feed, prepared, &opts, false, &mut say))
+			.await
+			.expect("the run ends when the board goes away");
+		let why = ended.expect_err("ended by the link").to_string();
+		assert!(why.contains("dropped"), "the run went on until the link went: {why}");
+		assert_eq!(
+			said,
+			[format!(
+				"{name} ({:03X} {:04X}) is no longer read: refused by the dash board — {REFUSAL}",
+				refused.0, refused.1
+			)]
+		);
 	}
 
 	/// A feed from a car that says nothing for a while and then goes away, counting
