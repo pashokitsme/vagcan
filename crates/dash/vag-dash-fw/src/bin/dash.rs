@@ -336,6 +336,11 @@ static MODE_FOR_BUS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static MODE_FOR_BLE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static MODE_FOR_USB: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// Raised when the cable host takes the board's timing channel (S-F3), so the BLE session
+/// wakes to end its preempted subscription and tell its host — a BLE session with nothing
+/// else live would otherwise not wake until its next event.
+static TIMING_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 /// What a host asking for the bus in adapter mode is told.
 const ADAPTER_MODE: &str = "the board is in adapter mode";
 
@@ -1088,13 +1093,16 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 			}
 			INBOX.receive().await
 		};
-		let event = select(
+		let event = select3(
 			select4(inbox, client.answers.receive(), client.readings.receive(), Timer::at(wake)),
 			MODE_FOR_BLE.wait(),
+			// The cable took this session's timing channel (S-F3): wake to poll, which ends
+			// the preempted subscription and tells the host why.
+			TIMING_TAKEN.wait(),
 		)
 		.await;
 		let out = match event {
-			Either::First(Either4::First(chunk)) => {
+			Either3::First(Either4::First(chunk)) => {
 				let mut out = Vec::new();
 				for piece in reassembler.push(&chunk) {
 					match piece {
@@ -1109,10 +1117,10 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				}
 				out
 			}
-			Either::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
-			Either::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
-			Either::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
-			Either::Second(()) => mode_changed(session, bus),
+			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either3::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
+			Either3::First(Either4::Fourth(())) | Either3::Third(()) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
+			Either3::Second(()) => mode_changed(session, bus),
 		};
 		// Whatever the session did may have given the planner work, and changed which
 		// subscriptions are its.
@@ -2577,7 +2585,11 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 					USB_GONE_FOR_SESSION.reset();
 					client.reset();
 				}
-				take_message(&mut session, bus, message)
+				let out = take_message(&mut session, bus, message);
+				// A cable subscribe may have taken the board's timing channel from the radio
+				// (S-F3); wake the BLE session so it ends that subscription and tells its host.
+				TIMING_TAKEN.signal(());
+				out
 			}
 			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
 			Either3::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
