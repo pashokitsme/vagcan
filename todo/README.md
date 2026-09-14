@@ -63,7 +63,7 @@ stored-config check at boot, whether opening the board's port twice resets it (�
 
 1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2: unplug USB in adapter mode, a USB flood.
 2. **`ble-uds` → `master`** — PR #2; review closed and CI green 2026-09-14, merge when the owner says.
-3. **Link icons and the adapter screen** — owner, 2026-09-14. 7×9 icons, one under the other (top right on values pages; on the chart left of a text column of label, number, range and seconds), for the
+3. **Link icons and the adapter screen** — owner, 2026-09-14. Top right: 7×9 icons, one under the other, for the
    USB cable and BLE while a host holds the link. `--slcan` mode: "SLCAN" top left in the
    medium font, the speed centred with ▲▼ in kb/s, bit rate and error counters centred below.
    Wired on branch `link-icons` (2026-09-14): USB icon from a cable host's Hello until its
