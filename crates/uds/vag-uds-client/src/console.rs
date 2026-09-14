@@ -33,8 +33,10 @@
 //!   subscription or a request ([`crate::remote::Session::is_active`]). While one is,
 //!   slcan lines are not taken.
 //! - **Leaving** is on `C`, decided here the moment the line is seen so the lines after
-//!   it in the same chunk are judged in panel mode, and on a USB disconnect, which only
-//!   the firmware can see ([`Console::disconnected`]).
+//!   it in the same chunk are judged in panel mode, and when the host is gone, which only
+//!   the firmware can see ([`Console::disconnected`]): its start-of-frame packets stop,
+//!   or it stops taking what the adapter writes. A dead host on a quiet bus is neither;
+//!   that takes `C` — the next host's handshake sends one — or the cable.
 //!
 //! In adapter mode lines are cut exactly as the standalone `slcan` image cuts them —
 //! the same [`LineParser`]: `\r` ends a line, `\n` is ignored, a line too long to be a
@@ -243,11 +245,18 @@ impl Console {
 
 	/// One chunk from the host. `link_active`: whether a framed link client holds a
 	/// session on this carrier now.
-	pub fn push(&mut self, chunk: &[u8], link_active: bool) -> Vec<Input> {
+	///
+	/// A Request or a Subscribe routed within the chunk makes the link active for the rest
+	/// of it: the session will hold it by the time anything is done with what follows, and
+	/// the caller's word was taken before it came.
+	pub fn push(&mut self, chunk: &[u8], mut link_active: bool) -> Vec<Input> {
 		let mut out = Vec::new();
 		for piece in self.reassembler.push(chunk) {
 			match piece {
-				Piece::Message(message) => out.push(Input::Message(message)),
+				Piece::Message(message) => {
+					link_active |= matches!(message, Message::Request(_) | Message::Subscribe(_));
+					out.push(Input::Message(message));
+				}
 				Piece::Error(why) => out.push(Input::Malformed(why)),
 				Piece::Text(bytes) => {
 					for byte in bytes {
@@ -496,8 +505,11 @@ mod tests {
 	#[test]
 	fn fed_one_byte_at_a_time_the_console_says_the_same() {
 		let mut stream = Vec::new();
+		// An unsubscribe holds nothing, so it does not make the link active; its id is two
+		// carriage returns, which must stay inside the frame.
+		let unsubscribe = Message::Unsubscribe { sub: 0x0D0D };
 		stream.extend_from_slice(b"BTN S\n");
-		stream.extend(link::encode(&request()).unwrap());
+		stream.extend(link::encode(&unsubscribe).unwrap());
 		stream.extend_from_slice(b"C\rS6\rO\r");
 		stream.extend(link::encode(&Message::Hello).unwrap());
 		stream.extend_from_slice(b"t7E0322F190\rC\rBTN L\n");
@@ -508,7 +520,7 @@ mod tests {
 			whole,
 			vec![
 				Input::Press(Button::Short),
-				Input::Message(request()),
+				Input::Message(unsubscribe),
 				Input::Closed,
 				Input::EnterAdapter,
 				slcan(b"S6"),
@@ -519,6 +531,40 @@ mod tests {
 				Input::LeaveAdapter,
 				Input::Press(Button::Long),
 			]
+		);
+	}
+
+	#[test]
+	fn a_request_or_subscribe_makes_the_link_active_for_the_rest_of_its_chunk() {
+		let subscribe = Message::Subscribe(vag_uds_transport::link::Subscribe {
+			sub: 1,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			did: 0x2000,
+			period_ms: 100,
+		});
+		for message in [request(), subscribe] {
+			let mut bytes = link::encode(&message).unwrap();
+			bytes.extend_from_slice(b"V\r");
+			let mut console = Console::new();
+			assert_eq!(
+				console.push(&bytes, false),
+				vec![
+					Input::Message(message.clone()),
+					Input::Ignored {
+						line: CommandLine::new(b"V"),
+						why: Ignored::LinkActive
+					}
+				]
+			);
+			assert_eq!(console.mode(), Mode::Panel);
+		}
+		// A Hello holds nothing: what follows it in the chunk may still switch.
+		let mut bytes = link::encode(&Message::Hello).unwrap();
+		bytes.extend_from_slice(b"V\r");
+		assert_eq!(
+			Console::new().push(&bytes, false),
+			vec![Input::Message(Message::Hello), Input::EnterAdapter, slcan(b"V")]
 		);
 	}
 
