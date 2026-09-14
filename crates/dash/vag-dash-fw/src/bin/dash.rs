@@ -59,6 +59,7 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
+use embassy_sync::waitqueue::MultiWakerRegistration;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::Async;
@@ -354,6 +355,99 @@ static INBOX: Channel<CriticalSectionRawMutex, UartData, 4> = Channel::new();
 /// What goes back to the central. One task notifies, so a framed message cut
 /// into chunks is never interleaved with a text line.
 static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
+
+/// The bytes in `OUTBOX` and in the notifier's hands.
+static OUTBOX_BYTES: QueuedBytes = QueuedBytes::new();
+
+/// Bytes one queue for a host may hold — sent and not yet written out — before the task
+/// that fills it waits: back-pressure, nothing dropped. Per queue: `OUTBOX` (BLE) and
+/// `USB_OUT` (the cable).
+///
+/// A queue counts eight items, and an item is a 20-byte text line or an encoded link frame
+/// of up to 4.2 KB (`link::MAX_BODY` and its header): eight frames were 33.6 KB. Counted in
+/// bytes a queue holds at most 8 KB, the item its writer is putting on the wire included:
+/// an item goes past the cap only into an empty queue, and no item is larger than the cap.
+/// Worst case per queue beside that: each task waiting to send holds its one encoded item —
+/// a frame of 4.2 KB from the session on either carrier — so about 12.2 KB a queue, 24.4 KB
+/// for both. Not measured.
+const QUEUED_OUT_BYTES: usize = 8 * 1024;
+
+/// A queue's bytes, counted from the send until its writer has put them on the wire
+/// ([`QUEUED_OUT_BYTES`]).
+struct QueuedBytes {
+	/// Bytes counted, and the tasks waiting for room. Two senders to the cable's queue are
+	/// two tasks, so not a `Signal`: it holds one waiter, and two would wake each other
+	/// without end.
+	state: BlockingMutex<CriticalSectionRawMutex, RefCell<(usize, MultiWakerRegistration<4>)>>,
+}
+
+impl QueuedBytes {
+	const fn new() -> Self {
+		QueuedBytes {
+			state: BlockingMutex::new(RefCell::new((0, MultiWakerRegistration::new()))),
+		}
+	}
+
+	/// Send `item`, of `bytes`, once they fit under the cap — an empty queue takes any item.
+	/// Cancelled before the queue has it — a session ending while it waits — nothing is
+	/// counted.
+	async fn send<T, const N: usize>(&self, queue: &Channel<CriticalSectionRawMutex, T, N>, item: T, bytes: usize) {
+		core::future::poll_fn(|cx| {
+			self.state.lock(|state| {
+				let (queued, waiting) = &mut *state.borrow_mut();
+				if *queued == 0 || *queued + bytes <= QUEUED_OUT_BYTES {
+					*queued += bytes;
+					core::task::Poll::Ready(())
+				} else {
+					waiting.register(cx.waker());
+					core::task::Poll::Pending
+				}
+			})
+		})
+		.await;
+		let mut refund = Refund {
+			counted: self,
+			bytes,
+			armed: true,
+		};
+		queue.send(item).await;
+		refund.armed = false;
+	}
+
+	/// `bytes` are out of the writer's hands.
+	fn written(&self, bytes: usize) {
+		self.state.lock(|state| {
+			let (queued, waiting) = &mut *state.borrow_mut();
+			*queued = queued.saturating_sub(bytes);
+			waiting.wake();
+		});
+	}
+
+	/// The queue was cleared, and whatever its writer held is gone with it.
+	fn clear(&self) {
+		self.state.lock(|state| {
+			let (queued, waiting) = &mut *state.borrow_mut();
+			*queued = 0;
+			waiting.wake();
+		});
+	}
+}
+
+/// Gives counted bytes back when a send is dropped before its queue took the item.
+struct Refund<'a> {
+	counted: &'a QueuedBytes,
+	bytes: usize,
+	/// Still the sender's: the queue has not taken the item.
+	armed: bool,
+}
+
+impl Drop for Refund<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.counted.written(self.bytes);
+		}
+	}
+}
 
 enum Outgoing {
 	/// One text line, one notification.
@@ -788,6 +882,8 @@ async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_,
 	// Nothing from a previous connection is this one's.
 	INBOX.clear();
 	OUTBOX.clear();
+	// The last connection's notifier may have ended with an item in its hands, uncounted out.
+	OUTBOX_BYTES.clear();
 	BLE_CLIENT.reset();
 	info!("[gatt] ATT MTU {} at connect", conn.raw().att_mtu());
 
@@ -907,6 +1003,7 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 				core::future::pending::<()>().await;
 			}
 		}
+		OUTBOX_BYTES.written(bytes.len());
 	}
 }
 
@@ -915,7 +1012,9 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 /// client that shows the wrong thing most of the time.
 async fn state_pushes(settings: &Shared) {
 	loop {
-		OUTBOX.send(Outgoing::Text(text_line(&state_line(settings).await))).await;
+		let line = text_line(&state_line(settings).await);
+		let bytes = line.len();
+		OUTBOX_BYTES.send(&OUTBOX, Outgoing::Text(line), bytes).await;
 		STATE_CHANGED.wait().await;
 	}
 }
@@ -976,7 +1075,11 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				let mut out = Vec::new();
 				for piece in reassembler.push(&chunk) {
 					match piece {
-						Piece::Text(bytes) => OUTBOX.send(Outgoing::Text(text_line(&command(settings, &bytes).await))).await,
+						Piece::Text(bytes) => {
+							let line = text_line(&command(settings, &bytes).await);
+							let bytes = line.len();
+							OUTBOX_BYTES.send(&OUTBOX, Outgoing::Text(line), bytes).await;
+						}
 						Piece::Message(message) => out.extend(take_message(session, bus, message)),
 						Piece::Error(e) => note!("ble: a malformed frame from the host was dropped: {e}"),
 					}
@@ -994,7 +1097,10 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 		BUS_WAKE.signal(());
 		for message in out {
 			match link::encode(&message) {
-				Ok(frame) => OUTBOX.send(Outgoing::Frame(frame)).await,
+				Ok(frame) => {
+					let bytes = frame.len();
+					OUTBOX_BYTES.send(&OUTBOX, Outgoing::Frame(frame), bytes).await;
+				}
 				Err(e) => note!("ble: an answer for the host did not encode: {e}"),
 			}
 		}
@@ -2094,6 +2200,9 @@ static USB_MESSAGES: Channel<CriticalSectionRawMutex, Message, 4> = Channel::new
 /// Bytes for the cable, each written whole.
 static USB_OUT: Channel<CriticalSectionRawMutex, UsbOut, 8> = Channel::new();
 
+/// The bytes in `USB_OUT` and in the writer's hands ([`QUEUED_OUT_BYTES`]).
+static USB_OUT_BYTES: QueuedBytes = QueuedBytes::new();
+
 enum UsbOut {
 	/// One encoded link frame. Cut short by a stall, it is closed with filler later.
 	Frame(Vec<u8>),
@@ -2207,11 +2316,14 @@ async fn usb_writer_task(usb: UsbSerialJtagTx<'static, Async>) -> ! {
 		)
 		.await;
 		match event {
+			// Counted out once written, or given up on: either way out of the writer's hands.
 			Either4::First(UsbOut::Frame(bytes)) => {
 				writer.put(&bytes, true).await;
+				USB_OUT_BYTES.written(bytes.len());
 			}
 			Either4::First(UsbOut::Text(bytes)) => {
 				writer.put(&bytes, false).await;
+				USB_OUT_BYTES.written(bytes.len());
 			}
 			Either4::Second(packed) => {
 				if !writer.put(&packet, false).await {
@@ -2397,7 +2509,7 @@ async fn take_console_input(input: ConsoleInput) {
 			SLCAN_IN.send(SlcanIn::Leave).await;
 			set_mode(Mode::Panel);
 		}
-		ConsoleInput::Closed => USB_OUT.send(UsbOut::Text(alloc::vec![b'\r'])).await,
+		ConsoleInput::Closed => USB_OUT_BYTES.send(&USB_OUT, UsbOut::Text(alloc::vec![b'\r']), 1).await,
 		ConsoleInput::Ignored {
 			line,
 			why: Ignored::LinkActive,
@@ -2461,7 +2573,8 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 					continue;
 				}
 			};
-			if let Either::Second(()) = select(USB_OUT.send(UsbOut::Frame(frame)), USB_GONE_FOR_SESSION.wait()).await {
+			let bytes = frame.len();
+			if let Either::Second(()) = select(USB_OUT_BYTES.send(&USB_OUT, UsbOut::Frame(frame), bytes), USB_GONE_FOR_SESSION.wait()).await {
 				close_usb_session(&mut session, bus);
 				client.publish(&session);
 				break;
