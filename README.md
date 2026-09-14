@@ -23,7 +23,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
 | `vagcan setup` | Reads an ODIS project or a VCDS installation once, offline. Takes seconds for ODIS, minutes for VCDS |
-| `vagcan devices` | Lists USB-CAN adapters and dash boards (USB and BLE) |
+| `vagcan devices` | Lists USB-CAN adapters and dash boards on USB |
 | `vagcan info` | VIN, engine and gearbox identity |
 | `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
