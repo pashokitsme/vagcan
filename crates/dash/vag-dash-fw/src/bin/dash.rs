@@ -13,6 +13,17 @@
 //!   UDS link (`vag_uds_transport::link`) side by side. A host across the radio
 //!   is not trusted, so every framed request passes the board's own guard
 //!   (`vag_uds_client::guard`, `todo/dash/16`).
+//! * **USB** carries the same framed link, for a host on the cable, which is trusted
+//!   more (`Guard::cable`): a second client of the planner with a session of its own,
+//!   beside the BLE one. The cable also carries `dashsim`'s `FRAME` and `BTN` lines and
+//!   the log, and **one task writes it** (`usb_writer_task`), so no line lands inside
+//!   a frame. What each incoming byte is, `vag_uds_client::console` decides.
+//! * **Adapter mode** (`todo/dash/14` §3, mode 2): an slcan command line on the cable
+//!   while no link client holds a session there makes the board a plain slcan adapter
+//!   — `vagcan --slcan` — running `vag_dash_fw::slcan`, the standalone `slcan` image's
+//!   bridge. The planner then sends nothing (its subscriptions stay), framed requests
+//!   over either carrier are refused, and the panel shows the adapter's counters. It
+//!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -34,7 +45,7 @@ use alloc::vec::Vec;
 use bt_hci::controller::ExternalController;
 use core::cell::RefCell;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
@@ -46,14 +57,16 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
+use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::peripherals::{GPIO1, GPIO6, TWAI0};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::twai::filter::SingleStandardFilter;
 use esp_hal::twai::{BaudRate, StandardId, TwaiConfiguration, TwaiMode};
-use esp_hal::usb_serial_jtag::UsbSerialJtag;
+use esp_hal::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
 use esp_wifi::ble::controller::BleConnector;
 use log::{info, warn};
 use static_cell::StaticCell;
@@ -62,15 +75,19 @@ use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
+use vag_dash_fw::usb;
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{PartAnswer, PartCheck};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
+use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
+use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
 use vag_uds_client::identity::did;
 use vag_uds_client::remote::Session;
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
-use vag_uds_transport::link::{self, Piece, Reassembler};
+use vag_uds_transport::link::{self, HelloReply, Message, Piece, Reassembler};
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 extern crate alloc;
@@ -179,18 +196,143 @@ static PAGES_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Answers to the BLE session's raw exchanges: the request, the answer, and the
-/// board's clock when it arrived. The session waits for one at a time, so four
-/// slots never fill; one left over from a connection that is gone is ignored by
-/// the next.
-static REMOTE_ANSWERS: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 4> = Channel::new();
+/// Queue a line for the laptop, in [`usb::LINES`] with the log. Drops it if the queue
+/// is full rather than waiting: a note is never worth stalling the thing it is
+/// describing.
+///
+/// The USB port carries the frame stream, and **exactly one task may write to
+/// it** (`usb_writer_task`): a log line printed from anywhere else lands in the middle
+/// of a frame and destroys it. This is the same rule
+/// `.archive/tasks/done/dash/10-c3-recon.md` records for Wi-Fi event handlers,
+/// arrived at from the other direction: a callback may push to a channel; the
+/// writing belongs to one task.
+macro_rules! note {
+    ($($arg:tt)*) => {
+        vag_dash_fw::usb::say(format_args!($($arg)*))
+    };
+}
 
-/// Planner deliveries for the BLE session's subscriptions. **Drop semantics**
-/// (owner, 2026-09-14): a reading that finds this full is thrown away and
-/// counted in [`READINGS_DROPPED`] — the next one is newer anyway, and a bus
-/// that waited for a radio would starve the panel.
-static REMOTE_READINGS: Channel<CriticalSectionRawMutex, Delivery, 16> = Channel::new();
-static READINGS_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// One framed-link client of the planner — the BLE connection, or the host on the USB
+/// cable — as the bus task reaches it. Each has a session of its own.
+struct Client {
+	/// Answers to the session's raw exchanges: the request, the answer, and the
+	/// board's clock when it arrived. The session waits for one at a time, so four
+	/// slots never fill; one left over from a session that is gone is ignored by
+	/// the next.
+	answers: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 4>,
+	/// Planner deliveries for the session's subscriptions. **Drop semantics**
+	/// (owner, 2026-09-14): a reading that finds this full is thrown away and
+	/// counted in `dropped` — the next one is newer anyway, and a bus that waited
+	/// for a host would starve the panel.
+	readings: Channel<CriticalSectionRawMutex, Delivery, 16>,
+	dropped: AtomicU32,
+	/// What the session owns now, where the bus task can see it: a delivery for none
+	/// of it is nobody's and is dropped there (`remote`).
+	owned: BlockingMutex<CriticalSectionRawMutex, RefCell<Owned>>,
+}
+
+struct Owned {
+	subs: heapless::Vec<SubId, MAX_SUBSCRIPTIONS>,
+	awaiting: Option<ReqId>,
+	/// `Session::is_active`: while it holds, the USB console takes no slcan line.
+	active: bool,
+	/// `Session::queued_bytes`, for the reader that stops at `QUEUED_PDU_BYTES`.
+	queued_bytes: usize,
+}
+
+impl Client {
+	const fn new() -> Self {
+		Client {
+			answers: Channel::new(),
+			readings: Channel::new(),
+			dropped: AtomicU32::new(0),
+			owned: BlockingMutex::new(RefCell::new(Owned {
+				subs: heapless::Vec::new(),
+				awaiting: None,
+				active: false,
+				queued_bytes: 0,
+			})),
+		}
+	}
+
+	/// Publish what `session` owns now. Held for a copy of at most
+	/// [`MAX_SUBSCRIPTIONS`] ids. Called after every step of the session with no await
+	/// in between, so the bus task never sees an exchange it has not been told is owned.
+	fn publish(&self, session: &Session) {
+		self.owned.lock(|owned| {
+			let mut owned = owned.borrow_mut();
+			owned.subs.clear();
+			for id in session.subscriptions() {
+				let _ = owned.subs.push(id);
+			}
+			owned.awaiting = session.awaiting();
+			owned.active = session.is_active();
+			owned.queued_bytes = session.queued_bytes();
+		});
+	}
+
+	fn queued_bytes(&self) -> usize {
+		self.owned.lock(|owned| owned.borrow().queued_bytes)
+	}
+
+	fn owns(&self, sub: SubId) -> bool {
+		self.owned.lock(|owned| owned.borrow().subs.contains(&sub))
+	}
+
+	fn awaits(&self, req: ReqId) -> bool {
+		self.owned.lock(|owned| owned.borrow().awaiting == Some(req))
+	}
+
+	fn active(&self) -> bool {
+		self.owned.lock(|owned| owned.borrow().active)
+	}
+
+	/// A new session: nothing queued for the last one is this one's, and drops counted
+	/// before it subscribed anything are not its drops.
+	fn reset(&self) {
+		self.answers.clear();
+		self.readings.clear();
+		self.dropped.store(0, Ordering::Relaxed);
+	}
+
+	/// Say, on each doubling, that readings were dropped. `said` is the count last said.
+	fn say_dropped(&self, carrier: &str, said: &mut u32) {
+		let dropped = self.dropped.load(Ordering::Relaxed);
+		if dropped != *said && dropped >= said.saturating_mul(2).max(1) {
+			*said = dropped;
+			note!("{carrier}: {dropped} reading(s) dropped — the link is slower than its subscriptions");
+		}
+	}
+}
+
+static BLE_CLIENT: Client = Client::new();
+static USB_CLIENT: Client = Client::new();
+
+/// Which of its two jobs the board is doing ([`Mode`] as a byte): read by the BLE and USB
+/// sessions, the bus task, the panel and the writer, each without waiting for another.
+static MODE: AtomicU8 = AtomicU8::new(MODE_PANEL);
+const MODE_PANEL: u8 = 0;
+const MODE_ADAPTER: u8 = 1;
+
+/// Raised with every mode change, one per consumer: a signal wakes one waiter.
+static MODE_FOR_BUS: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static MODE_FOR_BLE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static MODE_FOR_USB: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// What a host asking for the bus in adapter mode is told.
+const ADAPTER_MODE: &str = "the board is in adapter mode";
+
+fn adapter_mode() -> bool {
+	MODE.load(Ordering::Relaxed) == MODE_ADAPTER
+}
+
+fn set_mode(mode: Mode) {
+	MODE.store(if mode == Mode::Adapter { MODE_ADAPTER } else { MODE_PANEL }, Ordering::Relaxed);
+	MODE_FOR_BUS.signal(());
+	MODE_FOR_BLE.signal(());
+	MODE_FOR_USB.signal(());
+	STATE_CHANGED.signal(());
+}
 
 /// Bytes the central wrote to the UART service, in arrival order. Small on
 /// purpose: a full one holds the next write's ATT response back, which is the
@@ -211,29 +353,6 @@ enum Outgoing {
 /// `Visibility as u8`. An atomic rather than the mutex because the LED task
 /// reads it constantly and must never wait for a flash write.
 static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
-
-/// Lines for the laptop, queued rather than printed.
-///
-/// The USB port carries the frame stream, and **exactly one task may write to
-/// it**: a log line printed from anywhere else lands in the middle of a frame
-/// and destroys it. Measured, not feared — logging the render report once per
-/// frame corrupted 30 frames out of 30. So everything that wants to say
-/// something puts it here and `panel_task` writes it between frames.
-///
-/// This is the same rule `.archive/tasks/done/dash/10-c3-recon.md` records for Wi-Fi event handlers,
-/// arrived at from the other direction: a callback may push to a channel; the
-/// writing belongs to one task.
-static NOTES: Channel<CriticalSectionRawMutex, heapless::String<128>, 8> = Channel::new();
-
-/// Queue a line for the laptop. Drops it if the queue is full rather than
-/// waiting: a note is never worth stalling the thing it is describing.
-macro_rules! note {
-    ($($arg:tt)*) => {{
-        let mut line: heapless::String<128> = heapless::String::new();
-        let _ = write!(line, $($arg)*);
-        let _ = NOTES.try_send(line);
-    }};
-}
 
 /// Presses arriving from the panel simulator over USB. They go through the
 /// **same** handling as the physical button rather than a parallel path — a
@@ -260,7 +379,8 @@ fn ms() -> u64 {
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-	esp_println::logger::init_logger_from_env();
+	// First: the log is queued for the one USB writer, never printed (`vag_dash_fw::usb`).
+	vag_dash_fw::usb::init_logger();
 
 	let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 	esp_alloc::heap_allocator!(size: 72 * 1024);
@@ -303,28 +423,6 @@ async fn main(spawner: Spawner) {
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::default()))));
 
-	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — the
-	// wiring is `todo/dash/15-enclosure.md` §3. **Normal mode, not the
-	// listen-only default `can.rs` argues for**, and the reason is the whole
-	// job: a `0x22` request has to be transmitted, and a controller that
-	// cannot acknowledge cannot be answered either. What goes out is what the
-	// planner sends: the plan's reads, and a BLE host's requests after the
-	// board's guard — both inside the same read-only allowlist.
-	let mut twai = TwaiConfiguration::new(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, BaudRate::B500K, TwaiMode::Normal);
-	// The controller is told which ids to hand up **before** it is started,
-	// because a car's powertrain bus is not quiet: the engine alone broadcasts
-	// thousands of frames a second, the driver's receive queue is 32 deep, and
-	// a full queue drops what arrives next. Without a filter that "next" is the
-	// answer to the request we just sent, and the first run on the car said so
-	// — every exchange opened by sweeping the queue's full 32 entries. The
-	// filter starts as the plan's own answer ids and follows each exchange from
-	// there (`bus_task`), so nothing about any car reaches the source.
-	if let Some(filter) = plan_filter().and_then(twai_filter) {
-		twai.set_filter(filter);
-	}
-	let twai = twai.into_async().start();
-	let backend = TwaiBackend::new(twai);
-
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);
 	let timer1 = TimerGroup::new(peripherals.TIMG0);
 	let wifi_init = esp_wifi::init(timer1.timer0, rng).expect("radio init");
@@ -335,18 +433,26 @@ async fn main(spawner: Spawner) {
 	let transport = BleConnector::new(&wifi_init, peripherals.BT);
 	let controller: ExternalController<_, 20> = ExternalController::new(transport);
 
-	// One driver owns the USB port for the frame stream and the command line.
-	// `esp-println` keeps writing its log to the same peripheral; the two
-	// interleave at worst within a line, and a mangled frame is *reported* by
-	// the simulator rather than drawn, which is the failure mode to want.
+	// One driver owns the USB port: one task writes it (frames, answers, the log),
+	// one reads it (the framed link, `dashsim`'s buttons, slcan lines). Nothing
+	// else touches the peripheral while they run.
 	let (usb_rx, usb_tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
 
 	// Never `.ok()` a spawn: the arena is finite and a full one fails silently.
-	if let Err(e) = spawner.spawn(panel_task(usb_tx, settings)) {
-		warn!("SPAWN panel FAILED: {e:?}");
+	if let Err(e) = spawner.spawn(usb_writer_task(usb_tx)) {
+		warn!("SPAWN usb writer FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(remote_task(usb_rx)) {
-		warn!("SPAWN remote FAILED: {e:?}");
+	if let Err(e) = spawner.spawn(usb_reader_task(usb_rx)) {
+		warn!("SPAWN usb reader FAILED: {e:?}");
+	}
+	if let Err(e) = spawner.spawn(usb_presence_task()) {
+		warn!("SPAWN usb presence FAILED: {e:?}");
+	}
+	if let Err(e) = spawner.spawn(usb_session_task(bus)) {
+		warn!("SPAWN usb session FAILED: {e:?}");
+	}
+	if let Err(e) = spawner.spawn(panel_task(settings)) {
+		warn!("SPAWN panel FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(led_task(led)) {
 		warn!("SPAWN led FAILED: {e:?}");
@@ -357,8 +463,12 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(heap_task()) {
 		warn!("SPAWN heap FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(bus_task(backend, bus, settings)) {
-		warn!("SPAWN bus FAILED: {e:?}");
+	// The bus. GPIO1 reads the transceiver's RXD, GPIO6 drives its TXD — the
+	// wiring is `todo/dash/15-enclosure.md` §3. The task builds the controller
+	// itself, once per mode: filtered and in normal mode for the planner, as the
+	// adapter's host asks for in adapter mode.
+	if let Err(e) = spawner.spawn(can_task(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, bus, settings)) {
+		warn!("SPAWN can FAILED: {e:?}");
 	}
 
 	run(controller, settings, bus).await;
@@ -644,12 +754,8 @@ async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_,
 	// Nothing from a previous connection is this one's.
 	INBOX.clear();
 	OUTBOX.clear();
-	REMOTE_ANSWERS.clear();
-	REMOTE_READINGS.clear();
+	BLE_CLIENT.reset();
 	info!("[gatt] ATT MTU {} at connect", conn.raw().att_mtu());
-
-	// Drops counted before this connection subscribed anything are not its drops.
-	READINGS_DROPPED.store(0, Ordering::Relaxed);
 
 	let mut session = Session::new();
 	select4(
@@ -663,25 +769,8 @@ async fn serve<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_,
 	// exchange it has queued is cancelled, and its subscriptions leave the planner.
 	INBOX.clear();
 	bus.lock(|planner| session.close(&mut planner.borrow_mut()));
-	remote_subscriptions(&session);
+	BLE_CLIENT.publish(&session);
 	BUS_WAKE.signal(());
-}
-
-/// The live session's planner subscriptions, where the bus task can see them: a
-/// delivery for none of them is nobody's and is dropped there (`remote`).
-static REMOTE_SUBS: BlockingMutex<CriticalSectionRawMutex, RefCell<heapless::Vec<SubId, { vag_uds_client::guard::MAX_SUBSCRIPTIONS }>>> =
-	BlockingMutex::new(RefCell::new(heapless::Vec::new()));
-
-/// Publish which subscriptions the session owns now. Held for a copy of at most
-/// [`MAX_SUBSCRIPTIONS`](vag_uds_client::guard::MAX_SUBSCRIPTIONS) ids.
-fn remote_subscriptions(session: &Session) {
-	REMOTE_SUBS.lock(|subs| {
-		let mut subs = subs.borrow_mut();
-		subs.clear();
-		for id in session.subscriptions() {
-			let _ = subs.push(id);
-		}
-	});
 }
 
 /// The bytes of one notification: the negotiated ATT MTU less the 3-byte
@@ -793,41 +882,72 @@ async fn state_pushes(settings: &Shared) {
 /// never has more than one.
 const SESSION_QUEUE_MAX: usize = 4;
 
-/// The link's two protocols: `dashcfg`'s text commands, answered as before, and
-/// framed UDS messages, through the session.
+/// PDU bytes one carrier's host may have waiting on the board — in its session, and for
+/// the cable in `USB_MESSAGES` too — past which the board stops reading that carrier.
+/// Back-pressure: nothing is dropped, the host waits.
+///
+/// Worst case per carrier, a host sending nothing but 4095-byte requests: under the cap
+/// (4 KB) when a read is allowed, plus the one request that read completes (4 KB), the
+/// reassembler's frame in progress (4.2 KB), and the one exchange the planner holds
+/// (4 KB) — about 16.5 KB, 33 KB for both carriers at once, beside the radio's share of
+/// the 72 KB heap. Not measured: the bench was down when this was written.
+const QUEUED_PDU_BYTES: usize = 4096;
+
+/// The PDU bytes a message brings.
+fn pdu_bytes(message: &Message) -> usize {
+	match message {
+		Message::Request(request) => request.pdu.len(),
+		_ => 0,
+	}
+}
+
+/// When a session with nothing to wake for wakes anyway: an hour away, not
+/// `Instant::MAX` — an alarm that far out is a question for the time driver a session
+/// loop does not need to ask.
+fn session_wake(session: &Session) -> Instant {
+	session.wake_at().map_or(Instant::now() + Duration::from_secs(3600), Instant::from_millis)
+}
+
+/// The link's two protocols over BLE: `dashcfg`'s text commands, answered as before,
+/// and framed UDS messages, through the session.
 async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'static Bus) {
+	let client = &BLE_CLIENT;
 	let mut reassembler = Reassembler::new();
 	let mut dropped_said = 0;
 	loop {
-		// Nothing to wake for is an hour away, not `Instant::MAX`: an alarm that far
-		// out is a question for the time driver this loop does not need to ask.
-		let wake = session.wake_at().map_or(Instant::now() + Duration::from_secs(3600), Instant::from_millis);
-		let full = session.queued() >= SESSION_QUEUE_MAX;
+		let wake = session_wake(session);
+		let full = session.queued() >= SESSION_QUEUE_MAX || session.queued_bytes() >= QUEUED_PDU_BYTES;
 		let inbox = async {
 			if full {
 				core::future::pending::<()>().await;
 			}
 			INBOX.receive().await
 		};
-		let out = match select4(inbox, REMOTE_ANSWERS.receive(), REMOTE_READINGS.receive(), Timer::at(wake)).await {
-			Either4::First(chunk) => {
+		let event = select(
+			select4(inbox, client.answers.receive(), client.readings.receive(), Timer::at(wake)),
+			MODE_FOR_BLE.wait(),
+		)
+		.await;
+		let out = match event {
+			Either::First(Either4::First(chunk)) => {
 				let mut out = Vec::new();
 				for piece in reassembler.push(&chunk) {
 					match piece {
 						Piece::Text(bytes) => OUTBOX.send(Outgoing::Text(text_line(&command(settings, &bytes).await))).await,
-						Piece::Message(message) => out.extend(bus.lock(|p| session.push(ms(), &mut p.borrow_mut(), message))),
+						Piece::Message(message) => out.extend(take_message(session, bus, message)),
 						Piece::Error(e) => note!("ble: a malformed frame from the host was dropped: {e}"),
 					}
 				}
 				out
 			}
-			Either4::Second((req, answer, at)) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
-			Either4::Third(delivery) => session.deliver(&delivery).into_iter().collect(),
-			Either4::Fourth(()) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
+			Either::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either::First(Either4::Third(delivery)) => session.deliver(&delivery).into_iter().collect(),
+			Either::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
+			Either::Second(()) => mode_changed(session, bus),
 		};
 		// Whatever the session did may have given the planner work, and changed which
 		// subscriptions are its.
-		remote_subscriptions(session);
+		client.publish(session);
 		BUS_WAKE.signal(());
 		for message in out {
 			match link::encode(&message) {
@@ -835,12 +955,44 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				Err(e) => note!("ble: an answer for the host did not encode: {e}"),
 			}
 		}
-		let dropped = READINGS_DROPPED.load(Ordering::Relaxed);
-		if dropped != dropped_said && dropped >= dropped_said.saturating_mul(2).max(1) {
-			dropped_said = dropped;
-			note!("ble: {dropped} reading(s) dropped — the link is slower than its subscriptions");
-		}
+		client.say_dropped("ble", &mut dropped_said);
 	}
+}
+
+/// One framed message from a host, on either carrier.
+///
+/// A Hello starts the session over — whatever an earlier host left on this carrier is
+/// closed — and is answered with what this image is. In adapter mode everything that
+/// would reach the bus is refused, and says why.
+fn take_message(session: &mut Session, bus: &Bus, message: Message) -> Vec<Message> {
+	bus.lock(|p| {
+		let mut planner = p.borrow_mut();
+		match message {
+			Message::Hello => {
+				session.close(&mut planner);
+				alloc::vec![hello_reply()]
+			}
+			message if adapter_mode() => session.push_refused(ms(), &mut planner, message, ADAPTER_MODE),
+			message => session.push(ms(), &mut planner, message),
+		}
+	})
+}
+
+/// The board changed mode: entering adapter mode refuses what the session's host waits
+/// for. Its subscriptions stay, and resume with the bus.
+fn mode_changed(session: &mut Session, bus: &Bus) -> Vec<Message> {
+	match adapter_mode() {
+		true => bus.lock(|p| session.refuse_pending(&mut p.borrow_mut(), ADAPTER_MODE)),
+		false => Vec::new(),
+	}
+}
+
+/// What this image is, for a Hello.
+fn hello_reply() -> Message {
+	Message::HelloReply(HelloReply {
+		image: "dash".into(),
+		version: env!("CARGO_PKG_VERSION").into(),
+	})
 }
 
 /// Renders the one line that describes the device completely enough for a
@@ -857,6 +1009,9 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 		u8::from(s.unsaved),
 		s.store.as_ref().map_or(0, Store::generation)
 	);
+	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
+	// BLE this is how a person sees that the cable made the board an adapter.
+	let _ = write!(out, " mode={}", if adapter_mode() { "adapter" } else { "panel" });
 	if let Some(page) = s.config.pages.get(usize::from(s.config.active_page)) {
 		let kind = match page.kind {
 			PageKind::Chart => "chart",
@@ -1020,14 +1175,20 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 /// another tester on the same response id — is thrown away here rather than
 /// taken as this request's answer, which is how every read of a unit ends up
 /// one behind until a request gets nothing back.
-async fn exchange(mut backend: TwaiBackend<'static>, unit: Unit, pdu: &[u8]) -> (TwaiBackend<'static>, Result<Vec<u8>, TransportError>, usize) {
+///
+/// The backend is lent, not given: an exchange given up for adapter mode leaves the
+/// controller with its caller, which quiesces it before dropping it.
+async fn exchange(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &[u8]) -> (Result<Vec<u8>, TransportError>, usize) {
 	let swept = backend.drain().await;
 	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let result = transact(&mut link, pdu).await;
-	(link.into_backend(), result, swept)
+	(result, swept)
 }
 
-async fn transact(link: &mut IsoTpCan<TwaiBackend<'static>>, pdu: &[u8]) -> Result<Vec<u8>, TransportError> {
+/// One unit's ISO-TP over the lent controller.
+type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
+
+async fn transact(link: &mut Link<'_>, pdu: &[u8]) -> Result<Vec<u8>, TransportError> {
 	match with_timeout(SEND_DEADLINE, link.send(pdu)).await {
 		Ok(sent) => sent?,
 		Err(_elapsed) => return Err(TransportError::Timeout),
@@ -1054,7 +1215,7 @@ async fn transact(link: &mut IsoTpCan<TwaiBackend<'static>>, pdu: &[u8]) -> Resu
 
 /// One answer PDU within `timeout`, with a backstop over the transport's own
 /// deadline for the flow-control frame it may transmit.
-async fn receive(link: &mut IsoTpCan<TwaiBackend<'static>>, timeout: core::time::Duration) -> Result<Vec<u8>, TransportError> {
+async fn receive(link: &mut Link<'_>, timeout: core::time::Duration) -> Result<Vec<u8>, TransportError> {
 	let backstop = Duration::from_millis(timeout.as_millis() as u64) + SEND_DEADLINE;
 	with_timeout(backstop, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
 }
@@ -1106,18 +1267,73 @@ async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Transpor
 /// at their rates, hidden pages at 1 Hz, a BLE host's requests between them —
 /// and when; this task puts it on the pair, waits for the answer, stamps its
 /// arrival, and routes what the planner makes of it.
+///
+/// **The pins are this task's in both modes.** In panel mode it builds the planner's
+/// controller ([`open_panel_bus`]) and runs [`panel_bus`] until the console asks for
+/// adapter mode; then it gives the same pins to [`vag_dash_fw::slcan`] until that
+/// session ends, and builds the planner's controller again. The panel's subscriptions
+/// and part checks outlive both: the planner keeps them, and they resume.
 #[embassy_executor::task]
-async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings: &'static Shared) -> ! {
+async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'static>, bus: &'static Bus, settings: &'static Shared) -> ! {
 	let mut panel = PanelReads::new();
+	panel.start(bus);
+	loop {
+		// SAFETY: `clone_unchecked` asks that a clone and its original never both drive
+		// the peripheral. The originals stay in this task and are used for nothing but
+		// making clones, and one set of clones at a time is alive: `panel_bus` owns its
+		// controller until it returns and drops it, and `slcan::serve` returns with the
+		// adapter's controller closed, the adapter dropped at the end of its block.
+		// (`vag_dash_fw::slcan::Adapter` keeps the same invariant for its own clones.)
+		let (twai, rx, tx) = unsafe { (twai0.clone_unchecked(), rx_pin.clone_unchecked(), tx_pin.clone_unchecked()) };
+		if adapter_wanted() {
+			SLCAN_PORT.reset_counts();
+			let mut adapter = Adapter::new(&SLCAN_PORT, twai, rx, tx);
+			slcan::serve(&mut adapter, &mut QueuedCommands).await;
+			// That session took its `Leave`; the next one has not ended.
+			ADAPTER_ENDING.store(false, Ordering::Relaxed);
+			continue;
+		}
+		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
+	}
+}
+
+/// The planner's controller.
+///
+/// **Normal mode, not the listen-only default `can.rs` argues for**, and the reason is
+/// the whole job: a `0x22` request has to be transmitted, and a controller that cannot
+/// acknowledge cannot be answered either. What goes out is what the planner sends: the
+/// plan's reads, and a host's requests after the board's guard — all inside the same
+/// read-only allowlist.
+///
+/// The controller is told which ids to hand up **before** it is started, because a
+/// car's powertrain bus is not quiet: the engine alone broadcasts thousands of frames a
+/// second, the driver's receive queue is 32 deep, and a full queue drops what arrives
+/// next. Without a filter that "next" is the answer to the request we just sent, and
+/// the first run on the car said so — every exchange opened by sweeping the queue's
+/// full 32 entries. The filter starts as the plan's own answer ids and follows each
+/// exchange from there ([`panel_bus`]), so nothing about any car reaches the source.
+fn open_panel_bus(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'static>) -> TwaiBackend<'static> {
+	let mut twai = TwaiConfiguration::new(twai0, rx_pin, tx_pin, BaudRate::B500K, TwaiMode::Normal);
+	if let Some(filter) = plan_filter().and_then(twai_filter) {
+		twai.set_filter(filter);
+	}
+	TwaiBackend::new(twai.into_async().start())
+}
+
+/// The bus in panel mode, until the board has to become an adapter. Returns with the
+/// controller dropped.
+async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bus: &'static Bus, settings: &'static Shared) {
+	// The controller was just built with the plan's filter.
 	let mut filter = FilterFollower::new(plan_filter());
 	let mut filter_said = false;
 	let mut swept_said = false;
 	let mut bus_off = false;
-
-	panel.start(bus);
 	let mut pages_seen = Instant::MIN;
 
 	loop {
+		if adapter_wanted() {
+			return;
+		}
 		if PAGES_CHANGED.signaled() || pages_seen.elapsed() >= PAGE_RECHECK {
 			PAGES_CHANGED.reset();
 			pages_seen = Instant::now();
@@ -1131,7 +1347,23 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 				if let Some(moved) = filter.before(out.unit.response) {
 					backend = refilter(backend, moved, &mut filter_said);
 				}
-				let (returned, result, swept) = exchange(backend, out.unit, &out.pdu).await;
+				// The mode is polled first, every time the two are woken: once the board is an
+				// adapter the exchange is not polled again, so no frame of it — a flow control
+				// half way through an answer — starts after that.
+				let exchanged = select(adapter_requested(), exchange(&mut backend, out.unit, &out.pdu)).await;
+				let (result, swept) = match exchanged {
+					Either::Second(done) => done,
+					Either::First(()) => {
+						// The exchange is given up. A frame of it may be on the wire: the
+						// controller is quiesced before it is dropped, so it is not reset in
+						// the middle of one. The planner still has to hear of the exchange,
+						// or it would wait for this answer forever.
+						backend.quiesce().await;
+						let deliveries = bus.lock(|p| p.borrow_mut().answered(ms(), out.token, Answer::BusError));
+						deliver(deliveries, panel, bus).await;
+						return;
+					}
+				};
 				let at = ms();
 				if swept > 0 && !swept_said {
 					swept_said = true;
@@ -1141,19 +1373,16 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 						&out.pdu[..out.pdu.len().min(3)]
 					);
 				}
-				backend = settle(returned, &result, &mut bus_off).await;
+				backend = settle(backend, &result, &mut bus_off).await;
 				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(&out.pdu, result)));
-				for delivery in deliveries {
-					if let Some(delivery) = panel.take(delivery, bus).await {
-						remote(delivery);
-					}
-				}
+				deliver(deliveries, panel, bus).await;
 			}
 			Next::Idle { until_ms } => {
 				let recheck = pages_seen + PAGE_RECHECK;
 				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
 				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
-				if let Either3::Third(()) = select3(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait()).await {
+				let woke = select4(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait(), adapter_requested()).await;
+				if let Either4::Third(()) = woke {
 					// `wait` consumed the signal; the top of the loop looks for it.
 					PAGES_CHANGED.signal(());
 				}
@@ -1162,21 +1391,99 @@ async fn bus_task(mut backend: TwaiBackend<'static>, bus: &'static Bus, settings
 	}
 }
 
-/// A delivery that is not the panel's is the BLE session's — if the session owns it.
-/// A reading for a subscription nobody owns any more (a unit the panel just dropped,
-/// or a host that left) is nobody's: dropped here, and not counted as a drop.
+/// Each delivery to the panel if it is the panel's, and to a host's session otherwise.
+async fn deliver(deliveries: impl IntoIterator<Item = Delivery>, panel: &mut PanelReads, bus: &Bus) {
+	for delivery in deliveries {
+		if let Some(delivery) = panel.take(delivery, bus).await {
+			remote(delivery);
+		}
+	}
+}
+
+/// How many lines the adapter's ring holds in this image: an eighth of a second of a
+/// saturated bus, 512 lines, 18 KB. The standalone `slcan` image holds 2,048; this one
+/// keeps its radio, its heap and its panel beside the ring, and a host that stalls for
+/// longer is told by `F` bit 3, as it would be there.
+const ADAPTER_RING: usize = 512;
+
+/// The adapter's output, waiting for `usb_writer_task`, and its counters for the panel.
+static SLCAN_PORT: Port<ADAPTER_RING> = Port::new();
+
+/// What the console hands the adapter.
+enum SlcanIn {
+	/// One slcan command line.
+	Line(CommandLine),
+	/// Adapter mode is over: close the channel and give the pins back.
+	Leave,
+}
+
+/// The console's slcan lines, in order. A full one holds the USB reader back, which
+/// holds the host back.
+static SLCAN_IN: Channel<CriticalSectionRawMutex, SlcanIn, 16> = Channel::new();
+
+/// The adapter's commands in this image: the console's queue, ending at `Leave`.
+struct QueuedCommands;
+
+/// Set, and raised, when the console queues `Leave`: the session is ending. Cleared once
+/// the session has taken its `Leave`.
+static ADAPTER_ENDING: AtomicBool = AtomicBool::new(false);
+static ADAPTER_ENDING_RAISED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+impl Commands for QueuedCommands {
+	/// A channel's `receive` is cancel-safe, so this is too.
+	async fn next(&mut self) -> Option<CommandLine> {
+		match SLCAN_IN.receive().await {
+			SlcanIn::Line(line) => Some(line),
+			SlcanIn::Leave => None,
+		}
+	}
+
+	async fn ending(&self) {
+		while !ADAPTER_ENDING.load(Ordering::Relaxed) {
+			ADAPTER_ENDING_RAISED.wait().await;
+		}
+	}
+}
+
+/// Whether an adapter session has to run: the board is in adapter mode, or lines of one
+/// are already queued. The second matters when the console entered and left adapter
+/// mode before this task noticed: those lines, and the `Leave` behind them, still
+/// belong to an adapter session and are run through one, rather than left for the next.
+fn adapter_wanted() -> bool {
+	adapter_mode() || !SLCAN_IN.is_empty()
+}
+
+/// Resolves once an adapter session has to run.
+async fn adapter_requested() {
+	while !adapter_wanted() {
+		MODE_FOR_BUS.wait().await;
+	}
+}
+
+/// A delivery that is not the panel's is a host's — the session that owns it, over BLE
+/// or the cable. A reading for a subscription nobody owns any more (a unit the panel
+/// just dropped, or a host that left) is nobody's: dropped here, and not counted as a
+/// drop; so is the answer to an exchange whose session closed after it went out.
 fn remote(delivery: Delivery) {
+	let clients = [&BLE_CLIENT, &USB_CLIENT];
 	match delivery {
 		Delivery::Raw { req, answer, at_ms, .. } => {
-			if REMOTE_ANSWERS.try_send((req, answer, at_ms)).is_err() {
-				note!("ble: an answer found its queue full and was lost");
+			let Some(client) = clients.into_iter().find(|client| client.awaits(req)) else {
+				return;
+			};
+			if client.answers.try_send((req, answer, at_ms)).is_err() {
+				note!("link: an answer found its queue full and was lost");
 			}
 		}
-		Delivery::Reading { sub, .. } | Delivery::Missed { sub, .. } if !REMOTE_SUBS.lock(|subs| subs.borrow().contains(&sub)) => {}
-		reading @ (Delivery::Reading { .. } | Delivery::Missed { .. }) => {
-			if REMOTE_READINGS.try_send(reading).is_err() {
+		Delivery::Reading { sub, .. } | Delivery::Missed { sub, .. } => {
+			let Some(client) = clients.into_iter().find(|client| client.owns(sub)) else {
+				return;
+			};
+			if client.readings.try_send(delivery).is_err() {
 				// No compare-and-swap on this core (riscv32imc), and one writer: this task.
-				READINGS_DROPPED.store(READINGS_DROPPED.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+				client
+					.dropped
+					.store(client.dropped.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
 			}
 		}
 		// The panel is the only one that reads once.
@@ -1530,7 +1837,18 @@ async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 /// bottleneck.
 const FRAME_MS: u64 = 200;
 
-/// Draws the current page and ships the pixels out of the USB port.
+/// The longest `FRAME` line: two hex digits per run of pixels at worst, and its header.
+const FRAME_LINE: usize = vag_dash_fw::panel::WIDTH * vag_dash_fw::panel::HEIGHT / 8 * 2 + 32;
+
+/// The last frame drawn, as its `FRAME` line, for `usb_writer_task`. A static and not
+/// a task local: four kilobytes in the embassy arena, which every task shares, is a
+/// fifth of it.
+static PANEL_LINE: Mutex<CriticalSectionRawMutex, heapless::String<FRAME_LINE>> = Mutex::new(heapless::String::new());
+
+/// Raised when [`PANEL_LINE`] holds a frame not yet written.
+static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Draws the current page and leaves its pixels for the USB port.
 ///
 /// This is the real renderer on real pixels: `vag_dash_render::draw` into a 256×64
 /// framebuffer. What the laptop shows is not an impression of the panel, it is
@@ -1540,8 +1858,12 @@ const FRAME_MS: u64 = 200;
 /// [`VALUES`], where the bus task left them. A cell whose channel has not
 /// answered is drawn with `None`, and the renderer draws a dash. Nothing here
 /// invents a number.
+///
+/// In adapter mode the page is the adapter's: `SLCAN`, the bit rate and the counters.
+/// It is drawn into the framebuffer — the glass, when the panel is fitted — and not
+/// sent as a `FRAME` line, because then the cable is an slcan host's.
 #[embassy_executor::task]
-async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>, settings: &'static Shared) -> ! {
+async fn panel_task(settings: &'static Shared) -> ! {
 	use vag_dash_render::history::History;
 	use vag_dash_render::{Cell, Frame, Theme, draw};
 
@@ -1569,6 +1891,17 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
+
+		if adapter_mode() {
+			framebuffer.clear_all();
+			let report = draw(&Frame::Adapter(SLCAN_PORT.status()), &theme, framebuffer);
+			let compromised = report != vag_dash_render::render::Report::default();
+			if compromised != last_compromised {
+				last_compromised = compromised;
+				note!("panel: {report:?}");
+			}
+			continue;
+		}
 
 		let (kind, indices) = {
 			let s = settings.lock().await;
@@ -1641,47 +1974,393 @@ async fn panel_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, 
 			note!("panel: {report:?}");
 		}
 
-		use embedded_io_async::Write as _;
-		// Notes first, whole lines, before the frame starts. Nothing may be
-		// written between the frame's first byte and its newline.
-		while let Ok(note) = NOTES.try_receive() {
-			let _ = usb.write_all(note.as_bytes()).await;
-			let _ = usb.write_all(b"\r\n").await;
-		}
-		let mut line: heapless::String<{ vag_dash_fw::panel::WIDTH * vag_dash_fw::panel::HEIGHT / 8 * 2 + 32 }> = heapless::String::new();
-		if framebuffer.write_frame(&mut line).is_ok() {
-			let _ = usb.write_all(line.as_bytes()).await;
-			let _ = usb.write_all(b"\r\n").await;
+		// Left for the writer, which puts it on the wire whole between everything else.
+		let mut line = PANEL_LINE.lock().await;
+		line.clear();
+		if framebuffer.write_frame(&mut *line).is_ok() {
+			PANEL_READY.signal(());
 		}
 	}
 }
 
-/// Reads `BTN S` / `BTN L` from the simulator and injects them as presses.
+/// Framed messages from the host on the cable, for its session. Small: a full one holds
+/// the reader back, and so the host.
+static USB_MESSAGES: Channel<CriticalSectionRawMutex, Message, 4> = Channel::new();
+
+/// Bytes for the cable, each written whole.
+static USB_OUT: Channel<CriticalSectionRawMutex, UsbOut, 8> = Channel::new();
+
+enum UsbOut {
+	/// One encoded link frame. Cut short by a stall, it is closed with filler later.
+	Frame(Vec<u8>),
+	/// Text, such as the `\r` a bare `C` is answered with.
+	Text(Vec<u8>),
+}
+
+/// PDU bytes of requests the reader has put in `USB_MESSAGES` that the session has not
+/// taken yet: the channel's share of `QUEUED_PDU_BYTES`. Two writers, so changed in a
+/// critical section.
+static USB_INBOUND_BYTES: AtomicU32 = AtomicU32::new(0);
+
+/// Raised whenever the cable's session has taken something in, or let something go: the
+/// reader, stopped at the cap, looks again.
+static USB_ROOM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+fn inbound(add: usize, take: usize) {
+	critical_section::with(|_| {
+		let now = USB_INBOUND_BYTES.load(Ordering::Relaxed) as usize;
+		USB_INBOUND_BYTES.store(now.saturating_add(add).saturating_sub(take) as u32, Ordering::Relaxed);
+	});
+}
+
+/// What the host on the cable has waiting on the board, in PDU bytes.
+fn usb_backlog() -> usize {
+	USB_INBOUND_BYTES.load(Ordering::Relaxed) as usize + USB_CLIENT.queued_bytes()
+}
+
+/// The host is gone, for the console: its cable was pulled. One signal per consumer.
+static USB_GONE_FOR_CONSOLE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// The host is gone or not reading, for its session.
+static USB_GONE_FOR_SESSION: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Whether a host is attached: its start-of-frame counter moved at the last look.
+static USB_PRESENT: AtomicBool = AtomicBool::new(false);
+
+/// How often the host's start-of-frame counter is looked at. It moves every millisecond
+/// while a host is attached (USB 2.0 full speed), so a hundred milliseconds without a
+/// move is a cable pulled or a host asleep, never a slow one.
+const PRESENCE_POLL: Duration = Duration::from_millis(100);
+
+/// How long one write may wait for the host to take it. A host that reads takes a
+/// packet within a few milliseconds; one that has not taken it in a second is not
+/// reading — a port nobody has open, a process stopped — and waiting longer only
+/// stalls every other line behind it.
+const WRITE_STALL: Duration = Duration::from_secs(1);
+
+/// Watches for the host: esp-hal `=1.0.0-rc.0` has no event for a USB disconnect, and
+/// the peripheral's start-of-frame counter is one (`vag_dash_fw::usb::sof_frame`).
 #[embassy_executor::task]
-async fn remote_task(mut usb: esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static, esp_hal::Async>) -> ! {
-	use embedded_io_async::Read as _;
-	let mut buffer = [0u8; 64];
-	let mut line: heapless::String<64> = heapless::String::new();
+async fn usb_presence_task() -> ! {
+	let mut last = usb::sof_frame();
 	loop {
-		// The async read cannot fail on this peripheral, but going through
-		// `Result` keeps the shape right if it ever moves to a UART.
-		let n = usb.read(&mut buffer).await.unwrap_or(0);
-		for &byte in &buffer[..n] {
-			if byte == b'\n' || byte == b'\r' {
-				match line.trim() {
-					"BTN S" => REMOTE_PRESS.signal(Press::Short),
-					"BTN L" => REMOTE_PRESS.signal(Press::Long),
-					"" => {}
-					other => note!("remote: ignoring {other:?}"),
+		Timer::after(PRESENCE_POLL).await;
+		let frame = usb::sof_frame();
+		let present = frame != last;
+		last = frame;
+		let was = USB_PRESENT.load(Ordering::Relaxed);
+		USB_PRESENT.store(present, Ordering::Relaxed);
+		match (was, present) {
+			(true, false) => {
+				// Said when a host next reads: nothing reaches one before.
+				note!("usb: the host went away — its session is closed, adapter mode is over");
+				USB_GONE_FOR_CONSOLE.signal(());
+				USB_GONE_FOR_SESSION.signal(());
+			}
+			(false, true) => USB_GONE_FOR_SESSION.reset(),
+			_ => {}
+		}
+	}
+}
+
+/// The one task that writes the cable. Everything the board says there comes through
+/// here, whole: the host's link frames first, then the adapter's lines, then log lines
+/// and notes, then the panel's `FRAME` line — so a log line can never be written in
+/// the middle of a frame's bytes. In adapter mode only slcan goes out: the host there is
+/// an slcan client, whose reader takes a line starting with `t` for a CAN frame.
+///
+/// While no host is attached nothing but the adapter's ring is taken off the queues, so
+/// what was said at boot is there when one arrives; the queues that fill drop as they
+/// always do. The ring is drained, its lines counted as lost: nothing else reads it, and a
+/// full ring would hold the adapter's next reply — and the adapter — until a host came.
+#[embassy_executor::task]
+async fn usb_writer_task(usb: UsbSerialJtagTx<'static, Async>) -> ! {
+	let mut writer = Writer {
+		usb,
+		stalled: false,
+		owed: 0,
+	};
+	let mut carry: Option<Line> = None;
+	let mut packet = Packet::new();
+	loop {
+		if !USB_PRESENT.load(Ordering::Relaxed) {
+			writer.stalled = true;
+			let drained = select(Timer::after(PRESENCE_POLL), SLCAN_PORT.next_packet(&mut carry, &mut packet)).await;
+			if let Either::Second(packed) = drained {
+				SLCAN_PORT.lost(packed);
+				SLCAN_PORT.written(packed, &mut carry);
+			}
+			continue;
+		}
+		let event = select4(
+			USB_OUT.receive(),
+			SLCAN_PORT.next_packet(&mut carry, &mut packet),
+			usb::LINES.receive(),
+			PANEL_READY.wait(),
+		)
+		.await;
+		match event {
+			Either4::First(UsbOut::Frame(bytes)) => {
+				writer.put(&bytes, true).await;
+			}
+			Either4::First(UsbOut::Text(bytes)) => {
+				writer.put(&bytes, false).await;
+			}
+			Either4::Second(packed) => {
+				if !writer.put(&packet, false).await {
+					SLCAN_PORT.lost(packed);
 				}
-				line.clear();
-			} else if line.push(byte as char).is_err() {
-				// A line longer than anything we understand is a desynchronised
-				// stream, not a command. Drop it rather than let it wrap.
-				line.clear();
+				SLCAN_PORT.written(packed, &mut carry);
+			}
+			Either4::Third(line) => {
+				if !adapter_mode() && writer.put(line.as_bytes(), false).await {
+					writer.put(b"\r\n", false).await;
+				}
+			}
+			Either4::Fourth(()) => {
+				if !adapter_mode() {
+					let line = PANEL_LINE.lock().await;
+					if writer.put(line.as_bytes(), false).await {
+						writer.put(b"\r\n", false).await;
+					}
+				}
 			}
 		}
 	}
+}
+
+/// The port, and whether the host stopped taking what is written.
+struct Writer {
+	usb: UsbSerialJtagTx<'static, Async>,
+	/// A write gave up waiting, and its last packet may still be in the endpoint.
+	stalled: bool,
+	/// Body bytes of a link frame cut short by a stall, not yet sent as filler.
+	owed: usize,
+}
+
+/// One USB-Serial-JTAG packet: what the endpoint holds, and what esp-hal writes at a time.
+const USB_PACKET: usize = 64;
+
+impl Writer {
+	/// Write `bytes` whole; `false` when they were not written whole, because no host is
+	/// taking them.
+	///
+	/// esp-hal's write waits for the host to take each packet, which with no host
+	/// reading is forever, so each packet gets [`WRITE_STALL`]. A packet whose wait ran
+	/// out is already in the endpoint; the rest is not written. Until the host has taken
+	/// that packet nothing more is written, because a write into a full endpoint overruns
+	/// it.
+	///
+	/// A link frame (`frame`) cut that way is a frame the host's reassembler is still
+	/// inside: whatever came next would be read as its body. So when the host takes
+	/// packets again, the rest of its length goes first as zeros, and then
+	/// [`link::BROKEN_FRAME`], a header nobody sends. The zeros close the cut frame where
+	/// it was declared to end; the header makes a host that goes on reading drop the link
+	/// as having lost data. (The cut frame itself may decode, padded — its first packet
+	/// holds its header and status, and zeros are a valid payload — and reach that host
+	/// just before the header ends its link. A new host's handshake discards both.)
+	async fn put(&mut self, bytes: &[u8], frame: bool) -> bool {
+		if self.stalled {
+			if !usb::packet_taken() {
+				return false;
+			}
+			self.stalled = false;
+			if self.owed > 0 {
+				const ZEROS: [u8; USB_PACKET] = [0; USB_PACKET];
+				while self.owed > 0 {
+					let n = self.owed.min(USB_PACKET);
+					if !self.packet(&ZEROS[..n]).await {
+						self.owed -= n;
+						return false;
+					}
+					self.owed -= n;
+				}
+				if !self.packet(&link::BROKEN_FRAME).await {
+					return false;
+				}
+			}
+		}
+		let mut sent = 0;
+		for chunk in bytes.chunks(USB_PACKET) {
+			sent += chunk.len();
+			if !self.packet(chunk).await {
+				if frame {
+					self.owed = bytes.len() - sent;
+				}
+				return false;
+			}
+		}
+		true
+	}
+
+	/// One packet of at most [`USB_PACKET`] bytes; `false` when the host did not take it in
+	/// [`WRITE_STALL`] — it is in the endpoint all the same.
+	async fn packet(&mut self, bytes: &[u8]) -> bool {
+		if with_timeout(WRITE_STALL, embedded_io_async::Write::write_all(&mut self.usb, bytes))
+			.await
+			.is_ok()
+		{
+			return true;
+		}
+		self.stalled = true;
+		if adapter_mode() {
+			// The slcan host stopped reading: its process is gone or stopped. Adapter mode
+			// ends as it does when the cable is pulled, so a host that died does not leave
+			// the panel blank. A quiet bus with a dead host writes nothing and so never
+			// stalls: that still takes `C`, the cable, or the next host's `\rC\r`.
+			note!("usb: the slcan host stopped reading — adapter mode is over");
+			USB_GONE_FOR_CONSOLE.signal(());
+		}
+		if USB_CLIENT.active() {
+			note!("usb: the host stopped reading — its session is closed");
+			USB_GONE_FOR_SESSION.signal(());
+		}
+		false
+	}
+}
+
+/// Everything the host sends on the cable, through `vag_uds_client::console`.
+#[embassy_executor::task]
+async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
+	let mut console = Console::new();
+	let mut buffer = [0u8; 64];
+	loop {
+		// Past the cap the host is not read: it waits, and nothing it sent is dropped.
+		let full = usb_backlog() >= QUEUED_PDU_BYTES;
+		let read = async {
+			if full {
+				USB_ROOM.wait().await;
+				return None;
+			}
+			Some(embedded_io_async::Read::read(&mut usb, &mut buffer).await)
+		};
+		let event = select(read, USB_GONE_FOR_CONSOLE.wait()).await;
+		match event {
+			Either::First(None) => {}
+			Either::First(Some(read)) => {
+				// The async read cannot fail on this peripheral, but going through
+				// `Result` keeps the shape right if it ever moves to a UART.
+				let n = read.unwrap_or(0);
+				for input in console.push_at(&buffer[..n], USB_CLIENT.active(), ms()) {
+					take_console_input(input).await;
+				}
+			}
+			Either::Second(()) => {
+				if let Some(input) = console.disconnected() {
+					take_console_input(input).await;
+				}
+			}
+		}
+	}
+}
+
+/// Act on one thing the console decided.
+async fn take_console_input(input: ConsoleInput) {
+	match input {
+		ConsoleInput::Message(message) => {
+			inbound(pdu_bytes(&message), 0);
+			USB_MESSAGES.send(message).await;
+		}
+		ConsoleInput::Malformed(why) => note!("usb: a malformed frame from the host was dropped: {why}"),
+		// The simulator's presses go through the same handling as the physical button.
+		ConsoleInput::Press(console::Button::Short) => REMOTE_PRESS.signal(Press::Short),
+		ConsoleInput::Press(console::Button::Long) => REMOTE_PRESS.signal(Press::Long),
+		ConsoleInput::EnterAdapter => {
+			note!("usb: slcan on the cable — the board is a CAN adapter until C or the cable is pulled");
+			set_mode(Mode::Adapter);
+		}
+		ConsoleInput::Slcan(line) => SLCAN_IN.send(SlcanIn::Line(line)).await,
+		ConsoleInput::LeaveAdapter => {
+			// Said before the queue is waited on: the adapter may be the one holding it up.
+			ADAPTER_ENDING.store(true, Ordering::Relaxed);
+			ADAPTER_ENDING_RAISED.signal(());
+			SLCAN_IN.send(SlcanIn::Leave).await;
+			set_mode(Mode::Panel);
+			note!("usb: adapter mode is over — the panel reads the car again");
+		}
+		ConsoleInput::Closed => USB_OUT.send(UsbOut::Text(alloc::vec![b'\r'])).await,
+		ConsoleInput::Ignored {
+			line,
+			why: Ignored::LinkActive,
+		} => note!("usb: {line:?} not taken — a link client holds a session on the cable"),
+		ConsoleInput::Ignored {
+			line,
+			why: Ignored::NotACommand,
+		} => note!("remote: ignoring {line:?}"),
+	}
+}
+
+/// The host on the cable: a second client of the planner, beside BLE, with a session
+/// of its own held to the cable's guard (`Guard::cable`).
+#[embassy_executor::task]
+async fn usb_session_task(bus: &'static Bus) -> ! {
+	let client = &USB_CLIENT;
+	let mut session = Session::with_guard(Guard::cable());
+	let mut dropped_said = 0;
+	loop {
+		let wake = session_wake(&session);
+		let full = session.queued() >= SESSION_QUEUE_MAX || session.queued_bytes() >= QUEUED_PDU_BYTES;
+		let inbox = async {
+			if full {
+				core::future::pending::<()>().await;
+			}
+			USB_MESSAGES.receive().await
+		};
+		let event = select3(
+			select4(inbox, client.answers.receive(), client.readings.receive(), Timer::at(wake)),
+			MODE_FOR_USB.wait(),
+			USB_GONE_FOR_SESSION.wait(),
+		)
+		.await;
+		let out = match event {
+			Either3::First(Either4::First(message)) => {
+				inbound(0, pdu_bytes(&message));
+				if message == Message::Hello {
+					// A host that says hello is here and reading, whatever an earlier stall said.
+					USB_GONE_FOR_SESSION.reset();
+					client.reset();
+				}
+				take_message(&mut session, bus, message)
+			}
+			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either3::First(Either4::Third(delivery)) => session.deliver(&delivery).into_iter().collect(),
+			Either3::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
+			Either3::Second(()) => mode_changed(&mut session, bus),
+			Either3::Third(()) => {
+				close_usb_session(&mut session, bus);
+				Vec::new()
+			}
+		};
+		client.publish(&session);
+		USB_ROOM.signal(());
+		BUS_WAKE.signal(());
+		for message in out {
+			let frame = match link::encode(&message) {
+				Ok(frame) => frame,
+				Err(e) => {
+					note!("usb: an answer for the host did not encode: {e}");
+					continue;
+				}
+			};
+			if let Either::Second(()) = select(USB_OUT.send(UsbOut::Frame(frame)), USB_GONE_FOR_SESSION.wait()).await {
+				close_usb_session(&mut session, bus);
+				client.publish(&session);
+				break;
+			}
+		}
+		client.say_dropped("usb", &mut dropped_said);
+	}
+}
+
+/// The host on the cable is gone: its subscriptions leave the planner, its queued
+/// exchange is cancelled, and nothing it sent and nobody read is sent to the car.
+fn close_usb_session(session: &mut Session, bus: &Bus) {
+	bus.lock(|p| session.close(&mut p.borrow_mut()));
+	USB_MESSAGES.clear();
+	critical_section::with(|_| USB_INBOUND_BYTES.store(0, Ordering::Relaxed));
+	USB_CLIENT.reset();
+	USB_CLIENT.publish(session);
+	USB_ROOM.signal(());
+	BUS_WAKE.signal(());
 }
 
 /// The configuration protocol, in its first and deliberately dumbest form:

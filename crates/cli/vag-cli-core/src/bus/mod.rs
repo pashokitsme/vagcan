@@ -96,6 +96,25 @@ pub const MAX_PENDING: usize = 30;
 /// one behind it.
 pub const REMOTE_GRACE: Duration = Duration::from_millis(vag_uds_client::guard::RATE_WINDOW_MS + 15_000);
 
+/// What a bus over the dash board ([`Bus::start_remote`]) runs on. The framing is the
+/// same on both; only what is said when the link breaks differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carrier {
+	/// Bluetooth LE, the board's UART service.
+	Ble,
+	/// The board's USB cable, with its `dash` image running.
+	Usb,
+}
+
+impl std::fmt::Display for Carrier {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Carrier::Ble => "BLE",
+			Carrier::Usb => "USB",
+		})
+	}
+}
+
 /// When a sample arrived, on the bus's own clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct At {
@@ -124,8 +143,8 @@ pub enum ExchangeError {
 	NoAnswer,
 	/// The link failed under the request.
 	Link(TransportError),
-	/// The dash board would not put it on the bus, and said why (a bus over BLE only;
-	/// see `remote.rs`).
+	/// The dash board would not put it on the bus, and said why (a bus over the board
+	/// only; see `remote.rs`).
 	Refused(String),
 	/// The bus has shut down.
 	Closed,
@@ -211,19 +230,20 @@ impl Bus {
 	}
 
 	/// The same handles over a byte pipe to the dash board, which runs the planner and
-	/// its guard itself: this task only forwards (`remote.rs`). `peer` names the board in
-	/// what is said when it refuses something or the connection drops.
+	/// its guard itself: this task only forwards (`remote.rs`). `peer` names the board, and
+	/// `carrier` what the pipe runs on, in what is said when it refuses something or the
+	/// connection drops.
 	///
 	/// Must be called inside a tokio runtime. Runs on a blocking-pool thread for the
 	/// reason [`Bus::start`] does.
-	pub fn start_remote<P: vag_uds_transport::link::Pipe + Send + 'static>(pipe: P, peer: &str) -> Bus {
+	pub fn start_remote<P: vag_uds_transport::link::Pipe + Send + 'static>(pipe: P, peer: &str, carrier: Carrier) -> Bus {
 		let (commands, inbox) = mpsc::unbounded_channel();
 		let started = Instant::now();
 		let runtime = tokio::runtime::Handle::current();
 		let peer = peer.to_string();
 		let closed = Arc::new(std::sync::OnceLock::new());
 		let told = closed.clone();
-		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, inbox, started, told)));
+		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, carrier, inbox, started, told)));
 		Bus {
 			commands,
 			started,

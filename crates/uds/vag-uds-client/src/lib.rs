@@ -12,6 +12,7 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod address;
+pub mod console;
 pub mod dtc;
 pub mod gateway;
 pub mod guard;

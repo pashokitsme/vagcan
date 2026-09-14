@@ -16,7 +16,7 @@
 // crate's module instead of a local file.
 mod overview;
 
-use vag_cli_core::device::{ADAPTER_BAUD, Target};
+use vag_cli_core::device::{ADAPTER_BAUD, NotThroughTheBoard, Target};
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
 use vag_cli_diag::{anomaly, dash, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
@@ -91,6 +91,15 @@ struct Cli {
 	#[arg(long, global = true, value_name = "ID")]
 	project: Option<String>,
 
+	/// Use the dash board's USB cable as a plain slcan adapter.
+	///
+	/// Without it, a dash board on its `dash` image is read through: the board runs the
+	/// requests and its panel keeps running. With it, the board stops the panel and relays
+	/// CAN frames the way a CANable does — what `dev sniff` needs, and what lets a sweep run
+	/// on the bench. It changes nothing for any other adapter, and means nothing over BLE.
+	#[arg(long, global = true)]
+	slcan: bool,
+
 	/// Nothing at all is a question — "what is this and what do I type" — and
 	/// clap's answer to it was `error: requires a subcommand`, which is true of
 	/// the grammar and useless to a person. `None` is that question, and
@@ -144,9 +153,10 @@ enum Command {
 
 	/// Identify the car: VIN, engine and gearbox passports.
 	Info {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 	},
@@ -158,10 +168,12 @@ enum Command {
 	/// not have. `--identify` has every unit name itself; `--identify <unit>`
 	/// has one of them say everything it knows.
 	Units {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is. `--identify <unit>`
-		/// needs a cable: it is a sweep, and a sweep is refused over BLE.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none. `--identify <unit>`
+		/// needs a cable adapter: it is a sweep, and a sweep does not run through the dash
+		/// board (`--slcan` makes its cable one).
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Have the units name themselves: part number and component name, for
@@ -197,9 +209,10 @@ enum Command {
 	/// the memory was cleared. Read-only — clearing faults is a write, which
 	/// this tool cannot do.
 	Faults {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
@@ -247,9 +260,10 @@ enum Command {
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
 	/// something else by them, so those are shown as bytes with the reason.
 	Sensors {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
@@ -273,9 +287,10 @@ enum Command {
 	/// nothing can name — and `u` shows both. Without a survey nothing is hidden
 	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
-		/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
-		/// `ble:<name>` for one board by name. Omit it to use the one adapter connected,
-		/// or the dash board over BLE when no USB-CAN adapter is.
+		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// name. Omit it to use the one adapter or board on USB, or the dash board over BLE
+		/// when there is none.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
 		device: Option<String>,
 		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
@@ -375,8 +390,9 @@ enum Dev {
 	/// and that is what makes every control unit watchable: run this once and
 	/// `vagcan watch` offers all of them from then on.
 	Survey {
-		/// Adapter to use: a serial path. Omit it when only one is connected. Not `ble`:
-		/// a sweep is refused over BLE.
+		/// Adapter to use: a serial path. Omit it when only one is connected. Not `ble`, and
+		/// not the dash board's `dash` image: a sweep does not run through the board.
+		/// `--slcan` makes the board's cable a plain adapter.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
 		/// Hex ranges for the units named by --blind. Only means anything with
@@ -426,7 +442,7 @@ enum Dev {
 	/// the bus and this one records the whole conversation.
 	Sniff {
 		/// Adapter to use: a serial path. Omit it when only one is connected. Not `ble`:
-		/// the BLE link carries no CAN frames.
+		/// the BLE link carries no CAN frames. The dash board's cable needs `--slcan`.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
 		/// Write every frame to this capture file (JSON lines).
@@ -540,8 +556,27 @@ async fn run() -> Result<ExitCode> {
 			ExitCode::FAILURE
 		});
 	};
-	dispatch_or_offer(command).await
+	// `dev sniff` watches Ctrl-C itself, to stop and print what it saw.
+	if matches!(command, Command::Dev { tool: Dev::Sniff { .. } }) {
+		return dispatch_or_offer(command, cli.slcan).await;
+	}
+	tokio::select! {
+		finished = dispatch_or_offer(command, cli.slcan) => finished,
+		_ = tokio::signal::ctrl_c() => {
+			// The command is dropped here, and every bus handle with it: each bus task ends
+			// and drops its link, and a serial link closes its channel on the way
+			// (`SlcanBackend::closing_on_drop`) — which is what takes the dash board out of
+			// the adapter mode `--slcan` put it in. Those tasks run on the blocking pool,
+			// whose shutdown would also wait for anything else parked there, so the process
+			// ends after a moment instead.
+			tokio::time::sleep(INTERRUPT_GRACE).await;
+			std::process::exit(130);
+		}
+	}
 }
+
+/// How long an interrupted command's links get to close before the process ends.
+const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Run one command; if it stopped for want of label data, offer to make the
 /// data and then run it again.
@@ -559,11 +594,11 @@ async fn run() -> Result<ExitCode> {
 /// that raises it has opened an adapter or printed any of the command's own
 /// output yet — `faults` opens its label files before the port and says so in
 /// as many words. One retry, and only after an explicit `y`.
-async fn dispatch_or_offer(command: Command) -> Result<ExitCode> {
+async fn dispatch_or_offer(command: Command, slcan: bool) -> Result<ExitCode> {
 	// Kept before the first run consumes it: it is what "carry on with what you
 	// asked for" is made of.
 	let again = command.clone();
-	let Err(err) = dispatch(command).await else {
+	let Err(err) = dispatch(command, slcan).await else {
 		return Ok(ExitCode::SUCCESS);
 	};
 	// Not this shortage, or nobody at the keyboard: report it the ordinary way
@@ -576,13 +611,13 @@ async fn dispatch_or_offer(command: Command) -> Result<ExitCode> {
 		// The shortage above is the refusal, and it has been said once.
 		return Ok(ExitCode::FAILURE);
 	}
-	dispatch(again).await?;
+	dispatch(again, slcan).await?;
 	Ok(ExitCode::SUCCESS)
 }
 
 /// The command surface: one arm per command, each handing off to the crate that
-/// does the work.
-async fn dispatch(command: Command) -> Result<()> {
+/// does the work. `slcan` is the global `--slcan`, for every command that picks a device.
+async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 	match command {
 		Command::Setup { dir, refresh } => setup::run(setup::Options {
 			dir: dir.as_deref(),
@@ -599,7 +634,7 @@ async fn dispatch(command: Command) -> Result<()> {
 			Ok(())
 		}
 		Command::Info { device } => {
-			let target = device::resolve(device.as_deref()).await?;
+			let target = device::resolve(device.as_deref(), slcan).await?;
 			info(async || device::open_bus(&target).await).await
 		}
 		// The two depths of the same question. `--identify <unit>` names one
@@ -610,7 +645,7 @@ async fn dispatch(command: Command) -> Result<()> {
 			identify: Some(Some(ecu)),
 			while_driving,
 		} => {
-			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), IDENTIFY_OVER_BLE)?);
+			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), slcan, &IDENTIFY)?);
 			identification(async || device::open_bus(&target).await, &ecu, while_driving).await
 		}
 		// `requires = "identify"` above stops `units --while-driving` at the
@@ -625,11 +660,11 @@ async fn dispatch(command: Command) -> Result<()> {
 		),
 		// Resolved inside `open`, not here: `units` reads the label files first.
 		Command::Units { device, identify, .. } => {
-			let open = async || device::connect(device.as_deref()).await;
+			let open = async || device::connect(device.as_deref(), slcan).await;
 			units(open, identify.is_some()).await
 		}
 		Command::Sensors { device, ecu } => {
-			let target = device::resolve(device.as_deref()).await?;
+			let target = device::resolve(device.as_deref(), slcan).await?;
 			sensors(async || device::open_bus(&target).await, &ecu).await
 		}
 		Command::Watch {
@@ -662,7 +697,7 @@ async fn dispatch(command: Command) -> Result<()> {
 				(None, false) => watch::View::Plain(None),
 				(None, true) => watch::View::FullScreen,
 			};
-			let target = device::resolve(device.as_deref()).await?;
+			let target = device::resolve(device.as_deref(), slcan).await?;
 			watch::run(
 				async || device::open_bus(&target).await,
 				watch::Options {
@@ -679,7 +714,7 @@ async fn dispatch(command: Command) -> Result<()> {
 		#[cfg(feature = "measure")]
 		Command::Measure(args) => {
 			measure::dispatch(args, &data_dir(None)?, async |device: Option<String>| {
-				device::connect(device.as_deref()).await
+				device::connect(device.as_deref(), slcan).await
 			})
 			.await
 		}
@@ -699,7 +734,7 @@ async fn dispatch(command: Command) -> Result<()> {
 			iv_cache,
 			..
 		} => {
-			let target = device::resolve(device.as_deref()).await?;
+			let target = device::resolve(device.as_deref(), slcan).await?;
 			faults::run(
 				async || device::open_bus(&target).await,
 				ecu.as_deref(),
@@ -711,12 +746,12 @@ async fn dispatch(command: Command) -> Result<()> {
 			)
 			.await
 		}
-		Command::Dev { tool } => dispatch_dev(tool).await,
+		Command::Dev { tool } => dispatch_dev(tool, slcan).await,
 	}
 }
 
 /// The workshop group: one arm per tool under `vagcan dev`.
-async fn dispatch_dev(tool: Dev) -> Result<()> {
+async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 	match tool {
 		Dev::Survey { diff: Some(files), .. } => survey::run_diff(&files[0], &files[1]),
 		Dev::Survey {
@@ -730,7 +765,7 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 			while_driving,
 			..
 		} => {
-			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), SWEEP_OVER_BLE)?);
+			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), slcan, &SURVEY)?);
 			survey::run(
 				async || device::open_bus(&target).await,
 				survey::Options {
@@ -753,7 +788,7 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 			active,
 		} => {
 			sniff::run(
-				&device::resolve_cable_for(device.as_deref(), SNIFF_OVER_BLE)?,
+				&device::resolve_cable_for(device.as_deref(), slcan, &SNIFF)?,
 				ADAPTER_BAUD,
 				out.as_deref(),
 				diag_only,
@@ -772,7 +807,7 @@ async fn dispatch_dev(tool: Dev) -> Result<()> {
 		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
-				let target = device::resolve(device.as_deref()).await?;
+				let target = device::resolve(device.as_deref(), slcan).await?;
 				let name = odx_name_from_car(async || device::open_bus(&target).await, &ecu).await?;
 				println!("control unit {ecu} names its label file {name:?}\n");
 				labels::resolve_odx(&dir, &name, &iv_cache)
@@ -827,17 +862,35 @@ fn parse_ecu(text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
 }
 
-/// Why `dev survey` needs a cable. The board refuses a sweep itself
-/// (`vag_uds_client::guard`); this says so before anything is scanned or opened.
+/// Why `dev survey` does not run through the dash board. Over BLE the board refuses a
+/// sweep itself (`vag_uds_client::guard`); over its cable the safe default is the same
+/// (`todo/dash/14-one-bus-three-clients.md` §8). Both are said before a session starts.
+const SURVEY: NotThroughTheBoard<'static> = NotThroughTheBoard {
+	over_ble: SWEEP_OVER_BLE,
+	over_usb: SWEEP_OVER_USB,
+};
 const SWEEP_OVER_BLE: &str = "`dev survey` is a sweep, and a sweep is refused over BLE — use a cable";
+const SWEEP_OVER_USB: &str =
+	"`dev survey` is a sweep, and a sweep does not run through the dash board — use a cable adapter, or `--slcan` on the bench";
 
-/// Why `units --identify <unit>` needs a cable: it walks `F100–F1FF`, which the board's
-/// walk rule refuses by its eighth identifier.
+/// Why `units --identify <unit>` does not run through the dash board: it walks
+/// `F100–F1FF`, which the board's walk rule refuses over BLE by its eighth identifier.
+const IDENTIFY: NotThroughTheBoard<'static> = NotThroughTheBoard {
+	over_ble: IDENTIFY_OVER_BLE,
+	over_usb: IDENTIFY_OVER_USB,
+};
 const IDENTIFY_OVER_BLE: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep is refused over BLE — use a cable";
+const IDENTIFY_OVER_USB: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep does not run through the dash board — use a cable \
+                                 adapter, or `--slcan` on the bench";
 
-/// Why `dev sniff` needs a cable: it reads CAN frames, and the BLE link carries whole
-/// answers only.
+/// Why `dev sniff` needs an adapter: it reads CAN frames, and the link to the dash board
+/// carries whole answers only.
+const SNIFF: NotThroughTheBoard<'static> = NotThroughTheBoard {
+	over_ble: SNIFF_OVER_BLE,
+	over_usb: SNIFF_OVER_USB,
+};
 const SNIFF_OVER_BLE: &str = "`dev sniff` reads CAN frames, and the BLE link carries none — use a cable";
+const SNIFF_OVER_USB: &str = "`dev sniff` reads CAN frames; through the dash board that needs `--slcan`, which makes it a plain adapter";
 
 /// Address one control unit over UDS.
 fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Channel> {
@@ -1336,19 +1389,45 @@ mod tests {
 	#[tokio::test]
 	async fn what_the_board_refuses_is_refused_here_before_anything_is_opened() {
 		// Hardware-free: each is refused on the `--device` spelling alone, before a
-		// scan, a port or a connection.
+		// scan, a port or a connection. Through the board's cable the same table is
+		// `device`'s to test, with the probe handed in.
 		for device in ["ble", "ble:vagcan-dash"] {
 			let cases = [
 				(vec!["vagcan", "dev", "survey", "--device", device], SWEEP_OVER_BLE),
 				(vec!["vagcan", "units", "--identify", "01", "--device", device], IDENTIFY_OVER_BLE),
 				(vec!["vagcan", "dev", "sniff", "--device", device], SNIFF_OVER_BLE),
+				// A command that reads through the board is refused only for `--slcan`.
+				(vec!["vagcan", "info", "--device", device], ""),
 			];
 			for (args, why) in cases {
-				let command = Cli::try_parse_from(args.clone()).unwrap().command.expect("a command");
-				let refused = dispatch(command).await.expect_err("refused");
-				assert_eq!(refused.to_string(), why, "{args:?}");
+				for slcan in [false, true] {
+					if why.is_empty() && !slcan {
+						continue;
+					}
+					let mut args = args.clone();
+					args.extend(slcan.then_some("--slcan"));
+					let cli = Cli::try_parse_from(args.clone()).unwrap();
+					let refused = dispatch(cli.command.expect("a command"), cli.slcan).await.expect_err("refused");
+					let why = if slcan { device::SLCAN_OVER_BLE } else { why };
+					assert_eq!(refused.to_string(), why, "{args:?}");
+				}
 			}
 		}
+	}
+
+	#[test]
+	fn slcan_is_one_flag_for_every_command_wherever_it_is_written() {
+		for args in [
+			&["vagcan", "--slcan", "info"][..],
+			&["vagcan", "info", "--slcan"],
+			&["vagcan", "dev", "sniff", "--slcan"],
+			&["vagcan", "units", "--identify", "01", "--slcan"],
+		] {
+			assert!(Cli::try_parse_from(args).unwrap().slcan, "{args:?}");
+		}
+		assert!(!Cli::try_parse_from(["vagcan", "info"]).unwrap().slcan);
+		#[cfg(feature = "measure")]
+		assert!(Cli::try_parse_from(["vagcan", "measure", "--slcan"]).unwrap().slcan);
 	}
 
 	#[test]

@@ -60,8 +60,12 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
-- **CAN adapter mode**: flashed with the `slcan` image, the board works with every `vagcan` command like a CANable.
-- **UDS over BLE**: on the `dash` image, `vagcan` reads the car through the board with no cable. The panel keeps working. The board refuses sweeps, so `dev survey`, `units --identify <unit>` and `dev sniff` need a cable.
+- **UDS over the USB cable**: on the `dash` image, `vagcan` reads the car through the board like through a CANable, and the panel keeps working. `vagcan devices` lists it as `dash image`.
+- **UDS over BLE**: the same with no cable, slower.
+- **Sweeps need a plain adapter**: through the board `dev survey` and `units --identify <unit>` are refused, and `dev sniff` needs `--slcan`.
+- **`--slcan`**: `vagcan --slcan …` makes the `dash` image a plain slcan adapter for that run, with no reflash. The panel shows `SLCAN`, the bit rate and frame counters. It ends when that run ends, or when the cable is pulled.
+- **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
+- **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
 - **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
 
@@ -170,9 +174,12 @@ vagcan watch              # live values from several units at once
 
 | `--device` | What it uses |
 |---|---|
-| omitted | the one USB-CAN adapter; with none, the board over BLE |
+| omitted | the one USB-CAN adapter or dash board on USB; with none, the board over BLE |
+| a serial path | that adapter, or that dash board on USB |
 | `ble` | the board over BLE; asks which when there are several |
 | `ble:<name>` | the board with that name, without asking |
+
+Add `--slcan` to use a dash board on USB as a plain adapter (`vagcan --slcan dev sniff`).
 
 ```sh
 vagcan faults --device ble

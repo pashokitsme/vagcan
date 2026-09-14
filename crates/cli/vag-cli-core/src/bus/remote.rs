@@ -32,8 +32,9 @@
 //! - **What is to be said is said when the bus closes**, not when it happens: a line on
 //!   stderr in the middle of a run lands on top of `watch`'s or `measure`'s full screen
 //!   and stays there. The cable task keeps its own note the same way.
-//! - **The board's text** — `dashcfg`'s state line, pushed on connecting — shares the
-//!   pipe and is ignored.
+//! - **The board's text** — `dashcfg`'s state line over BLE, the image's log lines over
+//!   USB — shares the pipe and is ignored. So is a HelloReply: the Hello was asked by
+//!   whoever opened the pipe, before the bus started.
 //! - **When the link breaks** — the pipe closes, a write fails, or a frame does not
 //!   reassemble, which on a link that guarantees delivery means a chunk was lost — every
 //!   subscription gets a last [`Miss::BusError`] and ends, whatever is waiting fails,
@@ -71,7 +72,7 @@ use vag_uds_transport::TransportError;
 use vag_uds_transport::link::{self, LinkError, Message, Outcome, Piece, Pipe, Reassembler};
 
 use super::task::{answers, sleep_until};
-use super::{At, Command, ExchangeError, Miss, OnceReply, READ_DEADLINE, REMOTE_GRACE, RawReply, Sample, Unit};
+use super::{At, Carrier, Command, ExchangeError, Miss, OnceReply, READ_DEADLINE, REMOTE_GRACE, RawReply, Sample, Unit};
 
 /// ReadDataByIdentifier, its positive answer, and a negative answer's first byte (ISO 14229-1).
 const READ: u8 = 0x22;
@@ -118,6 +119,8 @@ enum Event {
 struct Remote {
 	/// The board's name, for what is said when something goes wrong.
 	peer: String,
+	/// What the pipe runs on, for the same.
+	carrier: Carrier,
 	started: Instant,
 	/// Live subscriptions by the id on the wire.
 	subs: HashMap<u16, Sub>,
@@ -153,12 +156,14 @@ impl Drop for Remote {
 pub(super) async fn run<P: Pipe>(
 	mut pipe: P,
 	peer: String,
+	carrier: Carrier,
 	mut inbox: mpsc::UnboundedReceiver<Command>,
 	started: Instant,
 	closed: Arc<OnceLock<String>>,
 ) {
 	let mut state = Remote {
 		peer,
+		carrier,
 		started,
 		subs: HashMap::new(),
 		wire: HashMap::new(),
@@ -179,7 +184,7 @@ pub(super) async fn run<P: Pipe>(
 		// Then everything already asked, before the next request is put out.
 		loop {
 			match inbox.try_recv() {
-				Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return,
+				Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return state.part(&mut pipe).await,
 				Ok(command) => state.apply(command),
 				Err(TryRecvError::Empty) => break,
 			}
@@ -187,7 +192,7 @@ pub(super) async fn run<P: Pipe>(
 		state.launch();
 		for frame in std::mem::take(&mut state.outbox) {
 			if let Err(failed) = pipe.write(&frame).await {
-				break 'live format!("writing to {} over BLE failed: {failed}", state.peer);
+				break 'live format!("writing to {} over {} failed: {failed}", state.peer, state.carrier);
 			}
 			// A write over BLE takes tens of milliseconds; what arrived meanwhile is taken
 			// in before the next one.
@@ -208,7 +213,7 @@ pub(super) async fn run<P: Pipe>(
 					break broken;
 				}
 			}
-			Event::Command(None | Some(Command::Shutdown)) => return,
+			Event::Command(None | Some(Command::Shutdown)) => return state.part(&mut pipe).await,
 			Event::Command(Some(command)) => state.apply(command),
 			Event::Deadline => state.expire(),
 		}
@@ -236,7 +241,26 @@ async fn ready<F: Future>(future: F) -> Option<F::Output> {
 	.await
 }
 
+/// How long a bus over the cable waits to put its parting Hello on the pipe.
+const PART_WAIT: Duration = Duration::from_millis(100);
+
 impl Remote {
+	/// The bus is ending with the link up — every handle dropped, a shutdown, or a
+	/// command dropped on Ctrl-C. Over the cable it says Hello once more: the board takes
+	/// a Hello as the start of a new session on that carrier and closes the old one, so a
+	/// host that exits with the cable in does not leave its subscriptions polling the car.
+	/// Best effort and bounded. Over BLE the disconnect itself closes the session. A host
+	/// killed outright (`kill -9`) sends nothing; its session lasts until the next host's
+	/// Hello, a stalled write on the board, or the cable.
+	async fn part<P: Pipe>(&self, pipe: &mut P) {
+		if self.carrier != Carrier::Usb {
+			return;
+		}
+		if let Ok(hello) = link::encode(&Message::Hello) {
+			let _ = tokio::time::timeout(PART_WAIT, pipe.write(&hello)).await;
+		}
+	}
+
 	fn at(&self, arrived: Instant) -> At {
 		let since = arrived.saturating_duration_since(self.started);
 		At {
@@ -287,7 +311,7 @@ impl Remote {
 	/// One chunk off the pipe, or its end. `Some(why)` when the link broke.
 	fn chunk(&mut self, chunk: Option<Vec<u8>>, reassembler: &mut Reassembler) -> Option<String> {
 		let Some(chunk) = chunk else {
-			return Some(format!("the BLE connection to {} dropped", self.peer));
+			return Some(format!("the {} connection to {} dropped", self.carrier, self.peer));
 		};
 		// The arrival, before anything else is done with it.
 		let arrived = Instant::now();
@@ -296,13 +320,14 @@ impl Remote {
 				Piece::Message(message) => self.heard(message, arrived),
 				// The settings protocol's.
 				Piece::Text(_) => {}
-				// The link guarantees delivery and integrity, so a frame that does not
-				// reassemble is a chunk lost on this side (see `vag_dash_ble::pump`), and
-				// nothing after it can be trusted to be what it looks like.
+				// BLE and USB both guarantee delivery and integrity, so a frame that does not
+				// reassemble is a chunk lost on this side — a notification channel
+				// (`vag_dash_ble::pump`) or a FIFO that overflowed — and nothing after it can
+				// be trusted to be what it looks like.
 				Piece::Error(why) => {
 					return Some(format!(
-						"the BLE link to {} lost data ({why}), so what it sends can no longer be trusted",
-						self.peer
+						"the {} link to {} lost data ({why}), so what it sends can no longer be trusted",
+						self.carrier, self.peer
 					));
 				}
 			}
@@ -342,7 +367,7 @@ impl Remote {
 	fn subscribe(&mut self, key: u64, unit: Unit, did: u16, period_ms: u32, to: mpsc::UnboundedSender<Sample>) {
 		let now = self.at(Instant::now());
 		if self.subs.len() >= MAX_SUBSCRIPTIONS {
-			let why = format!("over BLE the board holds at most {MAX_SUBSCRIPTIONS} subscriptions at once");
+			let why = format!("the dash board holds at most {MAX_SUBSCRIPTIONS} subscriptions at once");
 			return self.end(unit, did, now, &to, &why);
 		}
 		let sub = self.free_sub();
@@ -426,7 +451,9 @@ impl Remote {
 			Message::Reading(reading) => self.reading(reading, arrived),
 			Message::Answer(answer) => self.answer(answer, arrived),
 			// Only a host sends these.
-			Message::Request(_) | Message::Subscribe(_) | Message::Unsubscribe { .. } => {}
+			Message::Request(_) | Message::Subscribe(_) | Message::Unsubscribe { .. } | Message::Hello => {}
+			// Asked for before the bus starts, by whoever opened the pipe; nothing here waits for it.
+			Message::HelloReply(_) => {}
 		}
 	}
 

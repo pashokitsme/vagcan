@@ -1,9 +1,10 @@
 //! UDS over a byte pipe: the framing between the host and the dash board.
 //!
-//! The pipe is BLE NUS now and may be the USB cable later. It already carries
-//! `dashcfg`'s plain-text commands (`state`, `set brightness 3`…) and the board's
-//! text notifications, and neither ever starts with a NUL byte. So a framed
-//! message starts with one:
+//! The pipe is BLE NUS or the board's USB cable, and the framing is the same on both.
+//! BLE carries `dashcfg`'s plain-text commands (`state`, `set brightness 3`…) and the
+//! board's text notifications beside it; the cable carries `dashsim`'s `FRAME` and
+//! `BTN` lines, the board's log lines and slcan command lines. None of that text ever
+//! starts with a NUL byte. So a framed message starts with one:
 //!
 //! ```text
 //! 0x00  marker
@@ -21,6 +22,14 @@
 //! | `0x03` | Subscribe   | host → board | `sub u16, request_id u16, response_id u16, did u16, period_ms u16` |
 //! | `0x04` | Unsubscribe | host → board | `sub u16`                                                          |
 //! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                          |
+//! | `0x07` | Hello       | host → board | empty                                                              |
+//! | `0x08` | HelloReply  | board → host | `image_len u8, image…, version…` (both UTF-8)                      |
+//!
+//! `0x06` is not assigned. A Hello asks the board which image it runs, without a byte
+//! of slcan: a host that has to tell the `dash` image from the `slcan` one on the cable
+//! asks this first, because slcan's `V` would switch the `dash` image into its adapter
+//! mode. The board answers it on either carrier, and takes it as the start of a new
+//! session on that carrier: whatever an earlier host left there is closed.
 //!
 //! Status, in an Answer and a Reading alike: `0` the payload is the unit's
 //! answer PDU, `1` no answer (timeout, no payload — and the answer to a request that
@@ -48,7 +57,7 @@ use alloc::vec::Vec;
 
 use crate::{MaybeSend, TransportError};
 
-/// The byte pipe this framing travels over: BLE NUS now, perhaps the USB cable later.
+/// The byte pipe this framing travels over: BLE NUS, or the board's USB cable.
 ///
 /// It carries chunks, not messages. A [`write`](Pipe::write) may be cut at the link's
 /// MTU on the way, and a [`read`](Pipe::read) is one chunk as it arrived, so a reader
@@ -168,6 +177,11 @@ mod memory {
 pub const MARKER: u8 = 0x00;
 /// Marker, type and the two length bytes.
 pub const HEADER_LEN: usize = 4;
+/// A header with a type nobody sends and no body: sent after a frame that had to be cut
+/// short and then completed with filler, so a host that goes on reading is told the link
+/// lost data instead of trusting what the filler made of it. The reassembler rejects it
+/// by its type and starts clean after it.
+pub const BROKEN_FRAME: [u8; HEADER_LEN] = [MARKER, 0xFF, 0x00, 0x00];
 /// The largest body the reassembler accepts. The largest body this link sends is a
 /// Reading's, 7 + [`MAX_PDU`] bytes; anything past this cap is not a message.
 pub const MAX_BODY: usize = 4200;
@@ -181,6 +195,13 @@ const TYPE_ANSWER: u8 = 0x02;
 const TYPE_SUBSCRIBE: u8 = 0x03;
 const TYPE_UNSUBSCRIBE: u8 = 0x04;
 const TYPE_READING: u8 = 0x05;
+const TYPE_HELLO: u8 = 0x07;
+const TYPE_HELLO_REPLY: u8 = 0x08;
+
+/// Whether a header's type byte names a message this framing has.
+fn known_type(kind: u8) -> bool {
+	matches!(kind, TYPE_REQUEST..=TYPE_READING | TYPE_HELLO | TYPE_HELLO_REPLY)
+}
 
 const STATUS_PDU: u8 = 0;
 const STATUS_NO_ANSWER: u8 = 1;
@@ -244,6 +265,15 @@ pub enum Outcome {
 	BusError(String),
 }
 
+/// What the board says it is, in answer to [`Message::Hello`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelloReply {
+	/// The firmware image: `dash` for the display image. At most 255 bytes.
+	pub image: String,
+	/// The image's version, as it names it.
+	pub version: String,
+}
+
 /// One framed message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -252,6 +282,8 @@ pub enum Message {
 	Subscribe(Subscribe),
 	Unsubscribe { sub: u16 },
 	Reading(Reading),
+	Hello,
+	HelloReply(HelloReply),
 }
 
 /// Why a message could not be encoded or was not accepted.
@@ -290,6 +322,8 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 		Message::Subscribe(_) => TYPE_SUBSCRIBE,
 		Message::Unsubscribe { .. } => TYPE_UNSUBSCRIBE,
 		Message::Reading(_) => TYPE_READING,
+		Message::Hello => TYPE_HELLO,
+		Message::HelloReply(_) => TYPE_HELLO_REPLY,
 	};
 	// The length is filled in once the body is written.
 	let mut out = alloc::vec![MARKER, kind, 0, 0];
@@ -314,6 +348,13 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 			out.extend_from_slice(&r.sub.to_le_bytes());
 			out.extend_from_slice(&r.at_ms.to_le_bytes());
 			put_outcome(&mut out, &r.outcome);
+		}
+		Message::Hello => {}
+		Message::HelloReply(h) => {
+			// `check` has held the image to 255 bytes.
+			out.push(h.image.len() as u8);
+			out.extend_from_slice(h.image.as_bytes());
+			out.extend_from_slice(h.version.as_bytes());
 		}
 	}
 	let body_len = out.len() - HEADER_LEN;
@@ -363,7 +404,8 @@ fn check(message: &Message) -> Result<(), LinkError> {
 		| Message::Reading(Reading {
 			outcome: Outcome::Pdu(pdu), ..
 		}) => pdu,
-		Message::Answer(_) | Message::Reading(_) | Message::Unsubscribe { .. } => return Ok(()),
+		Message::HelloReply(h) if h.image.len() > usize::from(u8::MAX) => return Err(LinkError::Malformed("image name over 255 bytes")),
+		Message::Answer(_) | Message::Reading(_) | Message::Unsubscribe { .. } | Message::Hello | Message::HelloReply(_) => return Ok(()),
 	};
 	match pdu.len() {
 		0 => Err(LinkError::Malformed("empty PDU")),
@@ -442,6 +484,25 @@ fn decode(kind: u8, body: &[u8]) -> Result<Message, LinkError> {
 				outcome: take_outcome(*status, payload)?,
 			})
 		}
+		TYPE_HELLO if body.is_empty() => Message::Hello,
+		TYPE_HELLO => return Err(LinkError::Malformed("hello has no body")),
+		TYPE_HELLO_REPLY => {
+			let [len, rest @ ..] = body else {
+				return Err(LinkError::Malformed("hello reply shorter than its fields"));
+			};
+			let Some((image, version)) = rest.split_at_checked(usize::from(*len)) else {
+				return Err(LinkError::Malformed("hello reply image runs past its body"));
+			};
+			let text = |bytes: &[u8]| {
+				core::str::from_utf8(bytes)
+					.map(String::from)
+					.map_err(|_| LinkError::Malformed("hello reply is not UTF-8"))
+			};
+			Message::HelloReply(HelloReply {
+				image: text(image)?,
+				version: text(version)?,
+			})
+		}
 		other => return Err(LinkError::UnknownType(other)),
 	};
 	check(&message)?;
@@ -477,6 +538,11 @@ impl Reassembler {
 		self.partial.clear();
 	}
 
+	/// Whether a frame is in progress: its first bytes have come and its last have not.
+	pub fn in_frame(&self) -> bool {
+		!self.partial.is_empty()
+	}
+
 	/// Feed one chunk; get back everything it completed.
 	pub fn push(&mut self, chunk: &[u8]) -> Vec<Piece> {
 		let mut out = Vec::new();
@@ -497,7 +563,7 @@ impl Reassembler {
 				}
 				let kind = self.partial[1];
 				let len = self.body_len();
-				let untrusted = if !(TYPE_REQUEST..=TYPE_READING).contains(&kind) {
+				let untrusted = if !known_type(kind) {
 					Some(LinkError::UnknownType(kind))
 				} else if len > MAX_BODY {
 					Some(LinkError::Oversize(len))
@@ -682,7 +748,70 @@ mod tests {
 			reading(Outcome::NoAnswer),
 			reading(Outcome::Refused("8 evenly spaced identifiers".into())),
 			reading(Outcome::BusError("bus off".into())),
+			Message::Hello,
+			hello_reply(),
 		]
+	}
+
+	fn hello_reply() -> Message {
+		Message::HelloReply(HelloReply {
+			image: "dash".into(),
+			version: "0.1.0".into(),
+		})
+	}
+
+	#[test]
+	fn hello_and_its_reply_are_encoded_byte_for_byte() {
+		assert_eq!(encode(&Message::Hello).unwrap(), vec![0x00, 0x07, 0x00, 0x00]);
+		assert_eq!(
+			encode(&hello_reply()).unwrap(),
+			vec![0x00, 0x08, 0x0A, 0x00, 4, b'd', b'a', b's', b'h', b'0', b'.', b'1', b'.', b'0']
+		);
+		let empty = Message::HelloReply(HelloReply {
+			image: String::new(),
+			version: String::new(),
+		});
+		assert_eq!(encode(&empty).unwrap(), vec![0x00, 0x08, 0x01, 0x00, 0]);
+		let mut r = Reassembler::new();
+		assert_eq!(one_message(r.push(&encode(&empty).unwrap())), empty);
+	}
+
+	#[test]
+	fn a_malformed_hello_or_reply_costs_only_its_own_frame() {
+		let mut bytes = Vec::new();
+		// A hello with a body.
+		bytes.extend_from_slice(&[0x00, 0x07, 0x01, 0x00, 0xAA]);
+		// A reply with no length byte.
+		bytes.extend_from_slice(&[0x00, 0x08, 0x00, 0x00]);
+		// A reply whose image length runs past the body.
+		bytes.extend_from_slice(&[0x00, 0x08, 0x03, 0x00, 5, b'd', b'a']);
+		// A reply whose version is not UTF-8.
+		bytes.extend_from_slice(&[0x00, 0x08, 0x03, 0x00, 1, b'd', 0xFF]);
+		bytes.extend(encode(&Message::Hello).unwrap());
+		let mut r = Reassembler::new();
+		let pieces = r.push(&bytes);
+		assert_eq!(pieces.len(), 5, "{pieces:?}");
+		assert!(
+			pieces[..4].iter().all(|p| matches!(p, Piece::Error(LinkError::Malformed(_)))),
+			"{pieces:?}"
+		);
+		assert_eq!(pieces[4], Piece::Message(Message::Hello));
+	}
+
+	#[test]
+	fn an_image_name_over_255_bytes_is_refused_by_the_encoder() {
+		let long = Message::HelloReply(HelloReply {
+			image: "x".repeat(256),
+			version: String::new(),
+		});
+		assert!(matches!(encode(&long), Err(LinkError::Malformed(_))));
+	}
+
+	#[test]
+	fn type_six_is_not_assigned() {
+		let mut r = Reassembler::new();
+		assert_eq!(r.push(&[0x00, 0x06, 0x00, 0x00]), vec![Piece::Error(LinkError::UnknownType(0x06))]);
+		assert_eq!(r.push(&[0x00, 0x09, 0x00, 0x00]), vec![Piece::Error(LinkError::UnknownType(0x09))]);
 	}
 
 	#[test]
@@ -945,6 +1074,51 @@ mod tests {
 			"{pieces:?}"
 		);
 		assert_eq!(pieces[7], Piece::Message(request()));
+	}
+
+	#[test]
+	fn a_frame_in_progress_is_known_until_it_ends_or_is_reset() {
+		let frame = encode(&request()).unwrap();
+		let mut r = Reassembler::new();
+		assert!(!r.in_frame());
+		r.push(&frame[..1]);
+		assert!(r.in_frame(), "the marker alone starts a frame");
+		r.push(&frame[1..]);
+		assert!(!r.in_frame());
+		r.push(&frame[..6]);
+		r.reset();
+		assert!(!r.in_frame());
+		r.push(b"text");
+		assert!(!r.in_frame(), "text is no frame");
+	}
+
+	/// What the board's writer sends when a host that stopped reading reads again: the
+	/// rest of the cut frame's length in zeros, then a header nobody sends. The cut frame
+	/// ends where it was declared to end, the header breaks the link, and a frame after it
+	/// — a HelloReply to the next host — is read whole.
+	#[test]
+	fn zeros_for_a_cut_frame_and_an_unknown_header_resynchronise_the_stream() {
+		let long = encode(&answer(Outcome::Pdu((0..200).map(|i| i as u8).collect()))).unwrap();
+		let sent = 64;
+		let mut stream = long[..sent].to_vec();
+		stream.extend(core::iter::repeat_n(0u8, long.len() - sent));
+		stream.extend_from_slice(&BROKEN_FRAME);
+		let next = encode(&Message::Hello).unwrap();
+		let mut r = Reassembler::new();
+		let mut pieces = r.push(&stream);
+		assert!(!r.in_frame(), "the cut frame and the broken header are both closed");
+		pieces.extend(r.push(&next));
+		assert!(pieces.contains(&Piece::Error(LinkError::UnknownType(BROKEN_FRAME[1]))), "{pieces:?}");
+		assert_eq!(pieces.last(), Some(&Piece::Message(Message::Hello)));
+		// Byte by byte the same holds. (Read in one chunk with what follows it, the header
+		// costs the rest of that chunk, as any untrusted header does; a host's handshake
+		// that sees it says Hello again.)
+		let mut all = stream.clone();
+		all.extend(&next);
+		let mut r = Reassembler::new();
+		let pieces: Vec<Piece> = chunks(&all, 1).flat_map(|c| r.push(c)).collect();
+		assert!(pieces.contains(&Piece::Error(LinkError::UnknownType(BROKEN_FRAME[1]))), "{pieces:?}");
+		assert_eq!(pieces.last(), Some(&Piece::Message(Message::Hello)));
 	}
 
 	#[test]

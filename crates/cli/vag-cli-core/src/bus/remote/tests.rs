@@ -10,10 +10,12 @@ use std::time::Duration;
 
 use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
 use vag_uds_client::{AsyncUdsClient, UdsError};
-use vag_uds_transport::link::{self, Answer, MemoryPipe, Message, Outcome, Piece, Pipe, Reading, Reassembler, Request, Subscribe, pipe_pair};
+use vag_uds_transport::link::{
+	self, Answer, HelloReply, MemoryPipe, Message, Outcome, Piece, Pipe, Reading, Reassembler, Request, Subscribe, pipe_pair,
+};
 use vag_uds_transport::{CanId, TransportError};
 
-use crate::bus::{Bus, Class, ExchangeError, Miss, Sample, Subscription, Unit, next_of};
+use crate::bus::{Bus, Carrier, Class, ExchangeError, Miss, Sample, Subscription, Unit, next_of};
 
 const ENGINE: Unit = Unit {
 	request: 0x7E0,
@@ -78,7 +80,7 @@ fn start_chunked(chunk: usize) -> (Bus, Board) {
 		reassembler: Reassembler::new(),
 		heard: VecDeque::new(),
 	};
-	(Bus::start_remote(host, PEER), board)
+	(Bus::start_remote(host, PEER, Carrier::Ble), board)
 }
 
 fn subscribed(message: Message) -> Subscribe {
@@ -324,6 +326,38 @@ async fn text_from_the_board_and_readings_cut_into_small_notifications_are_told_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn over_the_cable_a_reply_to_hello_and_the_images_text_are_ignored_and_a_break_says_usb() {
+	const ON_USB: &str = "the dash board on /dev/cu.usbmodem1101";
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	// What the handshake can leave behind it: a reply to a Hello sent again, and a log line.
+	let reply = HelloReply {
+		image: "dash".into(),
+		version: "0.1.0".into(),
+	};
+	board.send(Message::HelloReply(reply)).await;
+	board.pipe.write(b"can: 7E0 timeout\r\n").await.unwrap();
+	let bus = Bus::start_remote(host, ON_USB, Carrier::Usb);
+
+	let mut sub = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
+	let id = subscribed(board.next().await).sub;
+	board.pipe.write(b"FRAME 256 64 AAAA\r\n").await.unwrap();
+	board.send(reading(id, 10, Outcome::Pdu(vec![0x62, 0x20, 0x29, 7]))).await;
+	assert_eq!(sample(&mut sub).await.value, Ok(vec![7]));
+
+	drop(board);
+	assert_eq!(sample(&mut sub).await.value, Err(Miss::BusError));
+	assert_eq!(
+		bus.closed().as_deref(),
+		Some("the USB connection to the dash board on /dev/cu.usbmodem1101 dropped")
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_connection_fails_what_is_out_ends_every_subscription_and_every_later_command() {
 	let (bus, mut board) = start();
 	let mut sub = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
@@ -505,7 +539,7 @@ async fn a_request_that_suppressed_its_answer_and_was_not_refused_is_a_success_w
 #[tokio::test(flavor = "multi_thread")]
 async fn readings_streaming_in_while_subscribes_are_written_are_taken_in_between_the_writes() {
 	let lane = Arc::new(Mutex::new(Lane::default()));
-	let bus = Bus::start_remote(Eager(lane.clone()), PEER);
+	let bus = Bus::start_remote(Eager(lane.clone()), PEER, Carrier::Ble);
 	let mut subs: Vec<Subscription> = (0..30u16)
 		.map(|i| bus.subscribe(Class::Foreground, ENGINE, 0x2000 + i, Duration::from_millis(100), None))
 		.collect();
@@ -524,4 +558,49 @@ async fn readings_streaming_in_while_subscribes_are_written_are_taken_in_between
 		"nothing left unread when the next write went out: {:?}",
 		lane.unread_at_writes
 	);
+}
+
+/// A bus over the cable parts with a Hello, which closes its session on the board, so its
+/// subscriptions stop polling the car when the host exits with the cable still in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bus_over_the_cable_says_hello_when_it_ends() {
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	let bus = Bus::start_remote(host, PEER, Carrier::Usb);
+	let sub = bus.subscribe(Class::Foreground, ENGINE, 0x2000, Duration::from_millis(100), None);
+	assert!(matches!(board.next().await, Message::Subscribe(_)));
+	drop(sub);
+	drop(bus);
+	// The unsubscribe may not go out first: the Hello closes the whole session anyway.
+	let mut parting = board.next().await;
+	if matches!(parting, Message::Unsubscribe { .. }) {
+		parting = board.next().await;
+	}
+	assert_eq!(parting, Message::Hello);
+	let closed = tokio::time::timeout(PATIENCE, board.recv()).await.expect("the pipe closes");
+	assert_eq!(closed, None);
+
+	// A shutdown asked for parts the same way.
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	let bus = Bus::start_remote(host, PEER, Carrier::Usb);
+	bus.shutdown();
+	assert_eq!(board.next().await, Message::Hello);
+}
+
+/// Over BLE the disconnect closes the board's session, and nothing more is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bus_over_ble_ends_without_a_word() {
+	let (bus, mut board) = start();
+	drop(bus);
+	let closed = tokio::time::timeout(PATIENCE, board.recv()).await.expect("the pipe closes");
+	assert_eq!(closed, None);
 }

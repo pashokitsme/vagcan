@@ -465,7 +465,7 @@ identifier, bit layout, scaling, unit, label. The image links it. A project cach
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
 fixed list of identifiers cannot sweep.
 
-**One bus, one conversation, on the board too.** `bus_task` owns the TWAI controller and
+**One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
 runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
 time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
 only when it matches the plan: the visible page at each channel's `hz` from `dash.toml`
@@ -488,17 +488,30 @@ boot. Framed UDS messages (`vag_uds_transport::link`) share the service: each re
 passes the board's guard (`vag_uds_client::guard`) and then the planner; subscriptions are
 polled on the board's clock. `vag_uds_client::remote` is that session, host-tested.
 
-**Two firmware images.**
+**The USB cable: the same link, and a second mode.** The cable carries the same framed
+link as BLE, to a second session of its own beside the BLE one, held to
+`Guard::cable()`: the allowlist, no `10 02`, the speed gate, the memory bounds — and no
+rate cap or sweep rules, because a cable is trusted as a CANable is. The laptop tells the
+`dash` image apart with a framed Hello before any slcan byte, then drives it with
+`Bus::start_remote` exactly as over BLE. An slcan command line on the cable, with no link
+session holding anything, switches the image to **adapter mode** (`vagcan --slcan`): the
+standalone `slcan` image's bridge, `vag_dash_fw::slcan`, takes the pins; the planner sends
+nothing and keeps its subscriptions; framed requests on either carrier are refused; the
+panel shows `SLCAN` and counters. `C`, or the host's start-of-frame packets stopping,
+ends it. `vag_uds_client::console` makes those choices, host-tested. One task writes
+the cable, so no log line lands inside a frame.
+
+**Firmware images.**
 
 | image | what it is |
 |---|---|
-| `dash` | the display: plan, polling, panel, BLE settings |
-| `slcan` | the board as a LAWICEL slcan adapter over USB, for every `vagcan` command. Answers `V` with `V0101`; `vagcan devices` counts an Espressif port as an adapter only when it does |
+| `dash` | the display: plan, polling, panel, BLE settings; UDS over BLE and USB; adapter mode |
+| `slcan` | the board as a LAWICEL slcan adapter over USB and nothing else. Answers `V` with `V0101` |
 | `rxwatch` | listen-only frame counter (`--features ack` acknowledges, for the car) |
 | `cantx`, `cantest`, `rxprobe` | bench tools that drive the bus; built only with `--features bench` |
 
-The planned single image with both modes, the laptop reading the car *through* the
-running dash, and UDS over BLE are designed in `todo/dash/14` and `todo/dash/16`.
+`vagcan devices` asks an Espressif port for a Hello first and for `V` only when no Hello
+came, so it never switches a `dash` image by asking.
 
 ---
 

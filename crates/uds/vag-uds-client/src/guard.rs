@@ -35,6 +35,29 @@
 //!
 //! One `Guard` per connection; dropping it is the reset. No clock inside — the
 //! caller passes milliseconds from any monotonic source.
+//!
+//! # Two profiles
+//!
+//! [`Guard::new`] is the radio's, everything above. [`Guard::cable`] is for the
+//! board's USB cable, which is trusted more (`CLAUDE.md`: the board guards itself on
+//! links that are *not* a cable), the way a CANable on the same laptop is:
+//!
+//! | rule                                               | radio | cable |
+//! |----------------------------------------------------|-------|-------|
+//! | service allowlist                                  | yes   | yes   |
+//! | `10 02` refused                                    | yes   | yes   |
+//! | road speed 0 before another session change         | yes   | yes   |
+//! | one response id per request id, [`MAX_UNITS`]      | yes   | yes   |
+//! | [`MAX_SUBSCRIPTIONS`], [`MIN_PERIOD_MS`]           | yes   | yes   |
+//! | rate cap                                           | yes   | no    |
+//! | [`MAX_IDENTIFIERS_PER_REQUEST`]                    | yes   | no    |
+//! | walk rule, [`MAX_DISTINCT_IDENTIFIERS`]            | yes   | no    |
+//!
+//! The per-request identifier cap goes with the rate cap it exists for ("identifiers
+//! count, not requests"); a cable host is bounded by ISO-TP's PDU size instead. And
+//! with no walk rule and no distinct cap the cable profile keeps no identifiers at
+//! all, so its memory is the units map and the subscription slots, as bounded as the
+//! radio's.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
@@ -192,10 +215,22 @@ struct Admitted {
 	needs_speed: bool,
 }
 
+/// Which rules a [`Guard`] holds a link to (module docs, "Two profiles").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+	/// A host across the radio: every rule.
+	#[default]
+	Radio,
+	/// A host on the board's USB cable: no rate cap and no sweep rules.
+	Cable,
+}
+
 /// One connection's view of what has been asked.
 #[derive(Debug, Default)]
 pub struct Guard {
+	profile: Profile,
 	/// `(when, units)` of everything that counted toward the rate cap, oldest first.
+	/// Always empty under [`Profile::Cable`].
 	window: VecDeque<(u64, u32)>,
 	/// Every unit addressed, at most [`MAX_UNITS`].
 	units: BTreeMap<u16, UnitHistory>,
@@ -206,7 +241,8 @@ pub struct Guard {
 #[derive(Debug, Default)]
 struct UnitHistory {
 	/// Every different identifier forwarded or subscribed; at most
-	/// [`MAX_DISTINCT_IDENTIFIERS`], so a list is smaller than a set.
+	/// [`MAX_DISTINCT_IDENTIFIERS`], so a list is smaller than a set. Always empty
+	/// under [`Profile::Cable`], which has no rule that reads it.
 	asked: Vec<u16>,
 	locked: bool,
 	/// The response id this request id answers on, from the first request or
@@ -215,8 +251,33 @@ struct UnitHistory {
 }
 
 impl Guard {
+	/// The radio's guard: every rule.
 	pub fn new() -> Self {
 		Self::default()
+	}
+
+	/// The USB cable's guard (module docs, "Two profiles").
+	pub fn cable() -> Self {
+		Guard {
+			profile: Profile::Cable,
+			..Self::default()
+		}
+	}
+
+	pub fn profile(&self) -> Profile {
+		self.profile
+	}
+
+	/// A fresh guard of the same profile: what a new connection starts from.
+	pub fn renewed(&self) -> Self {
+		Guard {
+			profile: self.profile,
+			..Self::default()
+		}
+	}
+
+	fn radio(&self) -> bool {
+		self.profile == Profile::Radio
 	}
 
 	/// Decide what to do with one request from the host.
@@ -225,6 +286,13 @@ impl Guard {
 			Ok(admitted) => admitted,
 			Err(refusal) => return Verdict::Refuse(refusal),
 		};
+		if !self.radio() {
+			return if admitted.needs_speed {
+				Verdict::CheckSpeedFirst
+			} else {
+				Verdict::Forward
+			};
+		}
 		// A speed read is a request too: there has to be room for it and for the
 		// session change it clears.
 		let need = admitted.cost + u32::from(admitted.needs_speed);
@@ -242,7 +310,9 @@ impl Guard {
 	/// the read made just then. The read itself reached the car, so it counts one
 	/// unit toward the rate cap whatever is decided.
 	pub fn speed(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8], kmh: Option<u8>) -> Verdict {
-		self.window.push_back((now_ms, 1));
+		if self.radio() {
+			self.window.push_back((now_ms, 1));
+		}
 		let admitted = match self.admit(request_id, response_id, pdu) {
 			Ok(admitted) => admitted,
 			Err(refusal) => return Verdict::Refuse(refusal),
@@ -252,6 +322,7 @@ impl Guard {
 		}
 		match kmh {
 			None => Verdict::Refuse(Refusal::SpeedUnknown),
+			Some(0) if !self.radio() => Verdict::Forward,
 			Some(0) => match self.wait(now_ms, admitted.cost) {
 				Some(until) => Verdict::WaitUntil(until),
 				None => Verdict::Forward,
@@ -263,6 +334,10 @@ impl Guard {
 	/// Record a request that was actually sent. Refused and delayed requests are
 	/// never passed here, so they do not count.
 	pub fn forwarded(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8]) {
+		if !self.radio() {
+			self.record(request_id, response_id, &[]);
+			return;
+		}
 		let dids = identifiers(pdu);
 		let cost = if pdu.first() == Some(&READ_BY_IDENTIFIER) {
 			dids.len() as u32
@@ -310,8 +385,12 @@ impl Guard {
 
 	/// Note the unit and the identifiers that reached it.
 	fn record(&mut self, request_id: u16, response_id: u16, dids: &[u16]) {
+		let radio = self.radio();
 		let unit = self.units.entry(request_id).or_default();
 		unit.response.get_or_insert(response_id);
+		if !radio {
+			return;
+		}
 		for did in dids {
 			if !unit.asked.contains(did) {
 				unit.asked.push(*did);
@@ -373,6 +452,9 @@ impl Guard {
 	/// gets an entry only once something reaches it or it is locked, so a
 	/// refusal costs the board no memory.
 	fn admit_reads(&mut self, request_id: u16, dids: &[u16]) -> Result<(), Refusal> {
+		if !self.radio() {
+			return Ok(());
+		}
 		let asked = match self.units.get(&request_id) {
 			Some(unit) if unit.locked => return Err(Refusal::Locked),
 			Some(unit) => unit.asked.as_slice(),
@@ -1386,5 +1468,115 @@ mod tests {
 		// one extra window to do it.
 		assert!(now >= 50_000, "the cap slowed the poll: {now} ms");
 		assert!(now < 60_000 + RATE_WINDOW_MS, "and did not stall it: {now} ms");
+	}
+
+	// --- the cable profile ----------------------------------------------------------
+
+	#[test]
+	fn profiles_are_what_they_are_built_as_and_survive_renewal() {
+		assert_eq!(Guard::new().profile(), Profile::Radio);
+		assert_eq!(Guard::cable().profile(), Profile::Cable);
+		assert_eq!(Guard::cable().renewed().profile(), Profile::Cable);
+		assert_eq!(Guard::new().renewed().profile(), Profile::Radio);
+	}
+
+	#[test]
+	fn the_cable_keeps_the_allowlist_and_refuses_the_programming_session() {
+		let mut guard = Guard::cable();
+		for sid in [0x14, 0x2E, 0x27, 0x31, 0x34, 0x11, 0x28, 0x85] {
+			assert_eq!(
+				guard.check(0, ENGINE, resp(ENGINE), &[sid, 0x00]),
+				Verdict::Refuse(Refusal::ServiceNotAllowed(sid))
+			);
+		}
+		for session in [0x02, 0x82] {
+			assert_eq!(
+				guard.check(0, ENGINE, resp(ENGINE), &[0x10, session]),
+				Verdict::Refuse(Refusal::ProgrammingSession)
+			);
+		}
+		assert_eq!(
+			guard.speed(0, ENGINE, resp(ENGINE), &[0x10, 0x02], Some(0)),
+			Verdict::Refuse(Refusal::ProgrammingSession)
+		);
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[]), Verdict::Refuse(Refusal::Empty));
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x22, 0xF1]),
+			Verdict::Refuse(Refusal::MalformedIdentifiers)
+		);
+	}
+
+	#[test]
+	fn the_cable_keeps_the_speed_gate_on_session_changes() {
+		let mut guard = Guard::cable();
+		assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x03]), Verdict::CheckSpeedFirst);
+		assert_eq!(
+			guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(30)),
+			Verdict::Refuse(Refusal::Moving(30))
+		);
+		assert_eq!(
+			guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], None),
+			Verdict::Refuse(Refusal::SpeedUnknown)
+		);
+		assert_eq!(guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(0)), Verdict::Forward);
+		assert_eq!(
+			guard.check(0, 0x713, resp(0x713), &[0x10, 0x01]),
+			Verdict::Forward,
+			"default needs no speed"
+		);
+	}
+
+	#[test]
+	fn the_cable_has_no_rate_cap() {
+		let mut guard = Guard::cable();
+		for _ in 0..10 * RATE_LIMIT {
+			forward_now(&mut guard, 0, ENGINE, &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E]));
+		}
+		for _ in 0..10 * RATE_LIMIT {
+			assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x03]), Verdict::CheckSpeedFirst);
+			assert_eq!(guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(0)), Verdict::Forward);
+			guard.forwarded(0, 0x713, resp(0x713), &[0x10, 0x03]);
+		}
+		assert!(guard.window.is_empty(), "nothing counted, so nothing kept");
+	}
+
+	#[test]
+	fn the_cable_has_no_walk_rule_no_distinct_cap_and_no_per_request_cap() {
+		let mut guard = Guard::cable();
+		// `units --identify <unit>`: all of F100–F1FF, one at a time and then in one request.
+		for did in 0xF100u16..=0xF1FF {
+			forward_now(&mut guard, 0, 0x714, &rdbi(&[did]));
+		}
+		let all: Vec<u16> = (0xF100u16..=0xF1FF).collect();
+		forward_now(&mut guard, 0, 0x714, &rdbi(&all));
+		assert_eq!(guard.check_subscribe(0x714, resp(0x714), 0xF1FF, MIN_PERIOD_MS), Verdict::Forward);
+		assert!(
+			guard.units.values().all(|unit| unit.asked.is_empty() && !unit.locked),
+			"no identifier is kept: memory is units and slots only"
+		);
+	}
+
+	#[test]
+	fn the_cable_keeps_the_memory_bounds() {
+		let mut guard = Guard::cable();
+		for unit in 0x700..0x700 + MAX_UNITS as u16 {
+			forward_now(&mut guard, 0, unit, &[0x3E, 0x00]);
+		}
+		let next = 0x700 + MAX_UNITS as u16;
+		assert_eq!(guard.check(0, next, resp(next), &[0x3E, 0x00]), Verdict::Refuse(Refusal::TooManyUnits));
+		assert!(matches!(
+			guard.check(0, 0x700, 0x123, &[0x3E, 0x00]),
+			Verdict::Refuse(Refusal::OtherResponseId { .. })
+		));
+
+		let mut guard = Guard::cable();
+		assert_eq!(
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF40D, MIN_PERIOD_MS - 1),
+			Verdict::Refuse(Refusal::PeriodTooShort)
+		);
+		for sub in 0..MAX_SUBSCRIPTIONS as u16 {
+			subscribe(&mut guard, sub, ENGINE, 0x2000 + sub, 100).unwrap();
+		}
+		assert_eq!(subscribe(&mut guard, 100, ENGINE, 0x2100, 100), Err(Refusal::TooManySubscriptions));
 	}
 }

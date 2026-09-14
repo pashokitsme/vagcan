@@ -80,4 +80,24 @@ pub enum Frame<'a> {
 		/// printing its own.
 		seconds_per_sample: f32,
 	},
+	/// The board as a plain CAN adapter — the `dash` image's mode 2, `vagcan --slcan`:
+	/// the host drives the pair and the panel says so instead of showing cells
+	/// (`todo/dash/14` §3).
+	Adapter(Adapter),
+}
+
+/// What the adapter screen shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Adapter {
+	/// The open channel's bit rate in kbit/s; `None` while the channel is closed.
+	pub kbit: Option<u32>,
+	/// The channel is open listen-only: nothing is acknowledged and nothing sent.
+	pub listen_only: bool,
+	/// Frames taken off the bus.
+	pub rx: u32,
+	/// Frames the host put on the bus that completed.
+	pub tx: u32,
+	/// What went wrong: frames the ring had no room for, transmits refused,
+	/// controller faults.
+	pub errors: u32,
 }
