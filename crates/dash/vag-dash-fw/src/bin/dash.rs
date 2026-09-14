@@ -1038,7 +1038,7 @@ async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Transpor
 /// consumer.
 ///
 /// **One conversation at a time, re-addressed per exchange** — the same shape
-/// as `vag-cli-core`'s `read_batch`: there is one CAN controller, one ISO-TP
+/// as the laptop's `vag_cli_core::bus`: there is one CAN controller, one ISO-TP
 /// state, and a unit is a `(request, response)` pair the transport is built
 /// around. The planner says what goes out next — the visible page's channels
 /// at their rates, hidden pages at 1 Hz, a BLE host's requests between them —
