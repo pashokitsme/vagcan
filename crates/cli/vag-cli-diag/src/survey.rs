@@ -401,15 +401,30 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 	// An explicit list skips the gateway read, so one unit can be re-run
 	// without the rest.
 	let requested = only.map(|spec| crate::declared::unit_list("--only", spec)).transpose()?;
-	let mut sink = match out {
-		Some(path) => {
-			let file = std::fs::File::create(path).with_context(|| format!("creating {path:?}"))?;
-			Some(std::io::BufWriter::new(file))
-		}
+	// Opened without truncating: `open` also resolves the device, and a run that
+	// cannot name its adapter must not empty a survey already there. A path that
+	// cannot be created still fails here, before the port.
+	let file = match out {
+		Some(path) => Some(
+			std::fs::OpenOptions::new()
+				.write(true)
+				.create(true)
+				.truncate(false)
+				.open(path)
+				.with_context(|| format!("creating {path:?}"))?,
+		),
 		None => None,
 	};
 
 	let mut backend = open().await?;
+
+	let mut sink = match (file, out) {
+		(Some(file), Some(path)) => {
+			file.set_len(0).with_context(|| format!("emptying {path:?}"))?;
+			Some(std::io::BufWriter::new(file))
+		}
+		_ => None,
+	};
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.
@@ -909,5 +924,49 @@ mod tests {
 			..Default::default()
 		};
 		assert!(!report.summary().contains("fault"), "{}", report.summary());
+	}
+
+	/// `dev survey --out` options with nothing else asked for.
+	fn survey_to(out: &str) -> Options<'_> {
+		Options {
+			range: None,
+			out: Some(out),
+			delay_ms: 0,
+			only: None,
+			blind: None,
+			extended: false,
+			while_driving: false,
+		}
+	}
+
+	/// No adapter, several, a dash board refused for a sweep: `open` resolves the device,
+	/// and a run that cannot name one has written nothing, so it must not empty the file.
+	#[tokio::test]
+	async fn a_device_that_does_not_resolve_leaves_an_existing_out_file_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("survey.jsonl");
+		std::fs::write(&path, b"yesterday's survey").unwrap();
+		let out = path.to_string_lossy().into_owned();
+		let refused = run(
+			async || -> Result<vag_cli_core::bus::Bus> { anyhow::bail!("no adapter found") },
+			survey_to(&out),
+		)
+		.await
+		.expect_err("no device");
+		assert_eq!(refused.to_string(), "no adapter found");
+		assert_eq!(std::fs::read(&path).unwrap(), b"yesterday's survey", "--out was truncated");
+	}
+
+	/// The adapter is a single-user resource: a `--out` that cannot be created fails
+	/// before the port is opened, not after.
+	#[tokio::test]
+	async fn a_bad_out_path_fails_before_the_port_is_opened() {
+		let refused = run(
+			async || -> Result<vag_cli_core::bus::Bus> { panic!("the port was opened") },
+			survey_to("/nonexistent/vagcan-test/survey.jsonl"),
+		)
+		.await
+		.expect_err("no such directory");
+		assert!(format!("{refused:#}").contains("creating"), "{refused:#}");
 	}
 }
