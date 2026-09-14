@@ -2452,7 +2452,8 @@ impl Writer {
 			if !self.packet(chunk).await {
 				if frame {
 					self.owed = bytes.len() - sent;
-					self.broken_owed = true;
+					// Only a real cut: a stall on a frame's last packet leaves it whole once taken.
+					self.broken_owed = self.owed > 0;
 				}
 				return false;
 			}
