@@ -189,6 +189,51 @@ async fn a_late_answer_to_an_earlier_request_is_not_taken_for_this_one() {
 	);
 }
 
+/// A CAN bus with frames already waiting on it before a request goes out, and a unit that
+/// answers each read of `1000` with the next count.
+struct LateCan {
+	waiting: std::collections::VecDeque<(u32, Vec<u8>)>,
+	count: u8,
+}
+
+impl vag_uds_can::CanBackend for LateCan {
+	async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), vag_uds_can::CanError> {
+		if id == 0x7E0 && data[..4] == [0x03, 0x22, 0x10, 0x00] {
+			self.count += 1;
+			self.waiting.push_back((0x7E8, vec![0x04, 0x62, 0x10, 0x00, self.count, 0, 0, 0]));
+		}
+		Ok(())
+	}
+
+	async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), vag_uds_can::CanError> {
+		match self.waiting.pop_front() {
+			Some(frame) => Ok(frame),
+			None => {
+				tokio::time::sleep(timeout.min(Duration::from_millis(5))).await;
+				Err(vag_uds_can::CanError::Timeout)
+			}
+		}
+	}
+}
+
+/// An answer that arrived after an identical request stopped waiting for it echoes the
+/// same identifier, so matching cannot tell it from the real one. It is already on the
+/// link when the next request goes out, and is discarded before the send, as the board
+/// does: otherwise a repeating read runs one answer behind for the rest of the run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_answer_already_waiting_on_the_cable_is_discarded_before_the_next_send() {
+	let late = (0x7E8, vec![0x04, 0x62, 0x10, 0x00, 0x99, 0, 0, 0]);
+	let link = LateCan {
+		waiting: [late].into(),
+		count: 0,
+	};
+	let bus = Bus::start(link, Budget::default());
+	let (data, _) = bus.read_once(Class::Foreground, ENGINE, 0x1000).await.unwrap();
+	assert_eq!(data, [1], "this request's answer, not the late one for the last");
+	let (data, _) = bus.read_once(Class::Foreground, ENGINE, 0x1000).await.unwrap();
+	assert_eq!(data, [2]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_busy_subscription_does_not_keep_the_others_waiting() {
 	let (link, _, _) = car(&[(0x7E0, 0x1000, &[1]), (0x7E1, 0x2000, &[2])]);

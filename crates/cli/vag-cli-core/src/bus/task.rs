@@ -249,10 +249,14 @@ impl State {
 
 /// Address `unit`, put `pdu` on the link, and take the final answer back.
 ///
+/// What the link already holds is thrown away first ([`UnitLink::discard_stale`]): a late
+/// answer to an identical request echoes this one's identifier, and [`answers`] cannot
+/// tell it from the real one.
+///
 /// Not cancel-safe: dropped mid-exchange, it leaves the slot empty. The task drops it
 /// only on its way out.
 async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout: Duration) -> Heard {
-	let Some(link) = slot.take() else {
+	let Some(mut link) = slot.take() else {
 		return Heard {
 			answer: Answer::BusError,
 			at: Instant::now(),
@@ -260,6 +264,7 @@ async fn talk<L: UnitLink>(slot: &mut Option<L>, unit: Unit, pdu: &[u8], timeout
 			discarded: 0,
 		};
 	};
+	link.discard_stale().await;
 	let mut channel = link.to_unit(CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let heard = exchange(&mut channel, pdu, timeout).await;
 	*slot = Some(L::release(channel));
