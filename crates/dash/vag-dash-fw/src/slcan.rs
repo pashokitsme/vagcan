@@ -11,7 +11,7 @@
 //!
 //! | command | does | reply |
 //! |---|---|---|
-//! | `C` | close the channel; drops queued frames | `\r` |
+//! | `C` | close the channel; drops queued frames. With anything after it (`C1`): refused, nothing closes — the rule `vag_uds_client::console::closes` holds the `dash` image's console to | `\r`; `\x07` with arguments |
 //! | `S4` `S5` `S6` `S8` | 125 / 250 / 500 / 1000 kbit/s, closed only | `\r`, else `\x07` |
 //! | other `S` | a rate this controller does not have: **unsets** the rate, so the next `O` is refused too | `\x07` |
 //! | `M0` / `M1` | normal / listen-only for the next `O`, closed only | `\r`; `\x07` for any other argument, or on an open channel |
@@ -722,7 +722,10 @@ impl<const N: usize> Adapter<N> {
 			return reply(OK);
 		};
 		match head {
-			b'C' => {
+			// `C` alone, by the rule the `dash` image's console leaves adapter mode by: a `C1`
+			// that closed the channel here would leave that console in adapter mode with the
+			// channel shut. With arguments it is refused below, and nothing closes.
+			b'C' if vag_uds_client::console::closes(line) => {
 				self.close();
 				reply(OK)
 			}

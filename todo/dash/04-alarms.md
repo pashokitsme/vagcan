@@ -3,7 +3,7 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-14):** wired on branch `alarms`, hardware-free tests only. Rules are
+**State (2026-09-14):** wired on `ble-uds`, hardware-free tests only. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
 `plan.rs`; the board reads their channels at full rate on every page, takes the screen,
 inverts the offending cell and silences on a short press. Open: the misfire rule's
