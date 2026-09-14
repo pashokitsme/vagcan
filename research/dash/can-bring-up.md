@@ -883,6 +883,7 @@ from Terminal.app (`open -a Terminal x.command`). `benchecu --bench --device C -
 | `vagcan --slcan dev sniff --device B` while `vagcan info --device C` transmits | 25,945 frames of `7E0` in 10 s (the CANable retransmitting unacknowledged), whole |
 | standalone `slcan` image | `vagcan devices` → `slcan image`; `\r`→`\r`, `V`→`V0101`, `F`→`F00`, `C`→`\r`; `--slcan dev sniff` 19,816 frames in 6 s, no drops; reflashed `dash` → `dash image` |
 | `vagcan measure --device B` with part numbers | resolved `7E1 380B 3804 3809 380A 3816 F40D` and `7E0 2029 202A 206E F410 F40D`; ran at **10 Hz, not 50**: ~98 requests/s total, the board's 100/s ceiling, every host subscription `Class::Remote` because the link's Subscribe carries no class. After it ended the panel polled its plan (`202A 202F F405`, `028D`) at 2/s — the part check matched |
+| the board's USB output, 60 s with nobody connected (in place of `dashsim`, which needs a terminal) | 291 `FRAME` lines (one per 200 ms), every one `FRAME 256 64 <hex>` and 1,319 characters long, 0 malformed, 0 other lines, 0 NUL bytes — no log line or link frame inside the panel stream |
 
 **Open from this run:** a timing flag on the link's Subscribe so `measure`'s speed channel is
 `Class::Timing` on the board (in progress, branch `timing-link`); then `measure` over USB and BLE
