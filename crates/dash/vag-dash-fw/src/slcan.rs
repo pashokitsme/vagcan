@@ -370,10 +370,19 @@ pub trait Commands {
 	/// The next command line, or `None` when the adapter's session is over (the `dash`
 	/// image leaving adapter mode). Must be cancel-safe: it is raced against the bus.
 	async fn next(&mut self) -> Option<CommandLine>;
+
+	/// Resolves once the session's end is on its way — behind the lines still to come.
+	/// A reply that finds the port's ring full is given up then, rather than hold the
+	/// adapter until a host that has gone reads it. The default never resolves: the
+	/// standalone image's session never ends.
+	async fn ending(&self) {
+		core::future::pending::<()>().await
+	}
 }
 
 /// Run the adapter: command lines in, replies and bus frames out, until
-/// [`Commands::next`] says the session is over — then the channel is closed. One task
+/// [`Commands::next`] says the session is over — then the controller goes, and the
+/// replies already in the ring stay for the writer (`C`'s own `\r` among them). One task
 /// owns both ends so that nothing about the controller — open, closed, which mode — is
 /// ever shared.
 pub async fn serve<const N: usize, C: Commands>(adapter: &mut Adapter<N>, commands: &mut C) {
@@ -390,10 +399,10 @@ pub async fn serve<const N: usize, C: Commands>(adapter: &mut Adapter<N>, comman
 		match event {
 			Event::Command(Some(line)) => {
 				let reply = adapter.command(line.as_bytes()).await;
-				adapter.answer(reply).await;
+				adapter.answer(reply, &*commands).await;
 			}
 			Event::Command(None) => {
-				adapter.close();
+				adapter.end();
 				return;
 			}
 			Event::Bus(result) => {
@@ -674,22 +683,33 @@ impl<const N: usize> Adapter<N> {
 		self.port.lines.clear();
 	}
 
+	/// The session is over without a `C` of this adapter's own: the controller goes, and
+	/// nothing queued for the host is cleared — the replies already in the ring are the
+	/// host's, the `\r` to the `C` that ended the session among them, and the writer sends
+	/// them. (A `C` inside a session is [`Adapter::close`], which clears.)
+	fn end(&mut self) {
+		self.bus = None;
+		self.port.kbit.store(0, Ordering::Relaxed);
+	}
+
 	/// A reply goes into the ring whatever the ring holds — the host that
 	/// asked is waiting for it, unlike a bus frame, which has a successor.
 	/// While it waits for room the bus is still attended: what arrives then
 	/// has nowhere to go and is counted here, rather than left to overflow
-	/// esp-hal's queue where nothing counts it.
-	async fn answer(&mut self, reply: Line) {
+	/// esp-hal's queue where nothing counts it. It waits no longer than the session:
+	/// once [`Commands::ending`] resolves, a reply with no room is given up.
+	async fn answer<C: Commands>(&mut self, reply: Line, commands: &C) {
 		let port = self.port;
 		let Some(Open { rx, .. }) = self.bus.as_mut() else {
-			port.lines.send(reply).await;
+			let _ = select(port.lines.send(reply), commands.ending()).await;
 			return;
 		};
 		let copy = reply.clone();
-		if let Err(fault) = attend(port, rx, &mut self.intake, port.lines.send(reply)).await {
+		let sent = select(attend(port, rx, &mut self.intake, port.lines.send(reply)), commands.ending()).await;
+		if let Either::First(Err(fault)) = sent {
 			// The send was dropped with the fault; the reply still has to go.
 			self.repair(fault);
-			port.lines.send(copy).await;
+			let _ = select(port.lines.send(copy), commands.ending()).await;
 		}
 	}
 

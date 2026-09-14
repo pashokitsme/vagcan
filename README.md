@@ -64,6 +64,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **UDS over BLE**: the same with no cable, slower.
 - **Sweeps need a plain adapter**: through the board `dev survey` and `units --identify <unit>` are refused, and `dev sniff` needs `--slcan`.
 - **`--slcan`**: `vagcan --slcan …` makes the `dash` image a plain slcan adapter for that run, with no reflash. The panel shows `SLCAN`, the bit rate and frame counters. It ends when that run ends, or when the cable is pulled.
+- **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
 - **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
