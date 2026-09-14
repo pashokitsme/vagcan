@@ -61,6 +61,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE turns on after the button is held for 3 s.
 - **CAN adapter mode**: flashed with the `slcan` image, the board works with every `vagcan` command like a CANable.
+- **UDS over BLE**: on the `dash` image, `vagcan` reads the car through the board with no cable. The panel keeps working. The board refuses sweeps, so `dev survey`, `units --identify <unit>` and `dev sniff` need a cable.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
 - **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
 
@@ -163,6 +164,18 @@ vagcan info               # VIN, engine, gearbox
 vagcan units --identify   # every control unit the gateway knows about
 vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
+```
+
+**Through the dash board over BLE:** no cable needed. With no USB-CAN adapter plugged in, `vagcan` finds the board itself and says which one it uses. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
+
+| `--device` | What it uses |
+|---|---|
+| omitted | the one USB-CAN adapter; with none, the board over BLE |
+| `ble` | the board over BLE; asks which when there are several |
+| `ble:<name>` | the board with that name, without asking |
+
+```sh
+vagcan faults --device ble
 ```
 
 **No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …` to read a recorded drive.

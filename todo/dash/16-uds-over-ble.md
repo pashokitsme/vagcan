@@ -96,7 +96,14 @@ item 7 (the `frame` mirror) unnecessary.
 ## Done when
 
 - Host transport and board message handling covered by hardware-free tests (mock NUS on the
-  host, the board's decode/allowlist/chunking in a host-testable crate).
+  host, the board's decode/allowlist/chunking in a host-testable crate). *(Host side done
+  2026-09-14, branch `bus-ble`: `link::Pipe` and `pipe_pair`; `vag_dash_ble::NusPipe` and
+  `scan_boards`; `Bus::start_remote` in `vag-cli-core/src/bus/remote.rs`, tested against a
+  scripted board — subscriptions on the board's clock, one-shot reads, exchanges and every
+  outcome, refusals, notifications of 20 and 244 bytes with the state line between, a drop
+  mid-exchange, the 33rd subscription; `--device ble` / `ble:<name>` and the fallback with no
+  cable in `device.rs`, every branch tested; `dev survey`, `units --identify <unit>` and
+  `dev sniff` refused over BLE before anything is opened. Not run against the board yet.)*
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
   on a negative answer and on no answer, allowed on 0; the rate cap delaying; a run of 8
   refused in any order and through padding; a multi-identifier request over 4 refused, and
