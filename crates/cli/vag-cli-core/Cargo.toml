@@ -22,6 +22,12 @@ vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
+# `device.rs` finds the dash board over BLE and opens its UART as the bus's pipe.
+vag-dash-ble = { path = "../../dash/vag-dash-ble" }
+# The plan generator (`dash.rs`) writes the firmware's `vag_dash_render::plan` and refuses
+# more alarms than `vag_dash_render::alarm::MAX_ALARMS`; its tests assert on the board's own
+# decoder. One definition of the cap, not a copy here.
+vag-dash-render = { path = "../../dash/vag-dash-render" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde.workspace = true
@@ -30,9 +36,12 @@ toml_edit.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 dirs = "6"
+# The bus scheduler's shell (`bus.rs`): one task owns the link, handles talk to
+# it over channels, and it keeps time with tokio's clock.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
+# `link::pipe_pair`: the remote bus's tests talk to a scripted board through it.
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
 tempfile = "3"
-# The firmware's own decoder, so the plan generator's tests assert on the
-# value the board would show and not on a flag.
-vag-dash-render = { path = "../../dash/vag-dash-render" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

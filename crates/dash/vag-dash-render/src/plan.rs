@@ -22,6 +22,8 @@
 //! byte-order flag (`0x380A`, 690 /min read as 45570 by a reader that assumed
 //! big-endian) is exactly the bug a host test catches for free.
 
+use crate::alarm::{Alarm, ChannelId};
+
 /// The whole interface between the laptop and the device.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plan {
@@ -37,6 +39,13 @@ pub struct Plan {
 	/// configuration refer to these by index.
 	pub channels: &'static [Channel],
 	pub pages: &'static [Page],
+	/// The owner's `[[alarm]]` rules, in priority order. A [`ChannelId`] is an
+	/// index into [`Plan::channels`] and a [`PageId`](crate::alarm::PageId) an index
+	/// into [`Plan::pages`]: an image is built for one plan, so an index is a name
+	/// that cannot drift. The generator has checked each rule — its page is a values
+	/// page holding every channel it watches, and its release is on the far side of
+	/// its trip — and carries at most [`MAX_ALARMS`](crate::alarm::MAX_ALARMS).
+	pub alarms: &'static [Alarm<'static>],
 }
 
 /// One control unit and how to address it.
@@ -51,6 +60,39 @@ pub struct Unit {
 	/// `F187`, as the unit reported it when the plan was built. What the
 	/// firmware compares against at start-up.
 	pub part_number: &'static str,
+}
+
+/// What came back when a unit was asked its part number (`F187`), as
+/// [`Unit::check_part`] needs it — the scheduler's own types stay out of this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartAnswer<'a> {
+	/// The record's bytes, identifier echo stripped.
+	Data(&'a [u8]),
+	/// A negative response, by its NRC.
+	Refused(u8),
+	/// Nothing within the deadline.
+	NoAnswer,
+	/// The bus failed under the request.
+	BusError,
+	/// An answer that is not a response to what was asked.
+	Malformed,
+}
+
+/// What a part-number answer makes of a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartCheck {
+	/// The number the plan was built against: poll the unit.
+	Matched,
+	/// A definite answer that is not that number — another number, not text, or a
+	/// refusal to say. Never polled this run: the plan's identifiers would answer,
+	/// plausibly, about a unit they were not resolved for, and a unit that will not say
+	/// what it is cannot be checked.
+	Mismatch,
+	/// Not there (yet): ask again, as often as the scheduler's backoff allows.
+	Absent,
+	/// Something came back that did not parse. It was an answer, so the scheduler does
+	/// not back the unit off; ask again no sooner than the backoff's cap.
+	RetryLater,
 }
 
 /// One value: where it is on the bus, how to cut it out, how to scale it, and
@@ -84,6 +126,26 @@ pub struct Channel {
 	/// catalog declaring it. Carried so the device can say which is which;
 	/// it changes nothing about how the value is read.
 	pub proven: bool,
+	/// Readings a second while a page showing it is on the glass — the owner's
+	/// `hz` in `dash.toml`, 2 when it gives none. Never derived on the board.
+	pub hz: f32,
+}
+
+/// The slowest a channel on no visible page is read: once a second, or its own
+/// rate if that is slower (owner, 2026-09-14, `todo/dash/14` §2).
+pub const HIDDEN_PERIOD_MS: u32 = 1000;
+
+/// How the panel wants one channel read right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rate {
+	/// Index into [`Plan::channels`].
+	pub channel: u16,
+	/// Read at its own rate, ahead of other work: it is on the page on the glass,
+	/// or an alarm watches it — and an alarm watches whatever page is up, so its
+	/// channels are never demoted. Otherwise only on pages not shown: read at
+	/// [`HIDDEN_PERIOD_MS`] at most, last.
+	pub foreground: bool,
+	pub period_ms: u32,
 }
 
 /// What one page shows. Indices are into [`Plan::channels`].
@@ -158,6 +220,41 @@ impl Plan {
 		self.units.iter().find(|u| u.request == channel.unit)
 	}
 
+	/// How every channel worth reading is to be read, in plan order: the ones
+	/// `shown` and the ones an alarm watches at their own rate, the ones only
+	/// `listed` (on some page, not the one on the glass) no faster than
+	/// [`HIDDEN_PERIOD_MS`], and a channel on no page not at all. A chart samples
+	/// its channel every frame whether or not it is shown, so the caller lists
+	/// every page's cells, charts included. An alarm's channels are the plan's
+	/// business, not the caller's: they are foreground on every page, so no page
+	/// switch can drop the reading that would trip the rule.
+	pub fn rates<'a>(&'a self, shown: &'a [u16], listed: &'a [u16]) -> impl Iterator<Item = Rate> + 'a {
+		self.channels.iter().enumerate().filter_map(move |(i, channel)| {
+			let index = i as u16;
+			let own = channel.period_ms();
+			if shown.contains(&index) || self.watched(index) {
+				Some(Rate {
+					channel: index,
+					foreground: true,
+					period_ms: own,
+				})
+			} else if listed.contains(&index) {
+				Some(Rate {
+					channel: index,
+					foreground: false,
+					period_ms: own.max(HIDDEN_PERIOD_MS),
+				})
+			} else {
+				None
+			}
+		})
+	}
+
+	/// Whether any alarm watches the channel at `index`.
+	pub fn watched(&self, index: u16) -> bool {
+		self.alarms.iter().any(|alarm| alarm.channels.contains(&ChannelId(index)))
+	}
+
 	/// The channels one unit owns, in plan order — what one addressed
 	/// conversation asks for before the backend is handed to the next unit.
 	pub fn channels_of(&self, unit: &Unit) -> impl Iterator<Item = (u16, &'static Channel)> {
@@ -170,7 +267,38 @@ impl Plan {
 	}
 }
 
+impl Unit {
+	/// The car check (`05`): what this unit's answer to `F187` means for polling it.
+	///
+	/// `F187` carries the number padded — one trailing space on the reference car, and a
+	/// NUL is the other thing a fixed-width field is padded with — so the padding is
+	/// trimmed before comparing, exactly as the survey the plan was built from trimmed it.
+	pub fn check_part(&self, answer: PartAnswer<'_>) -> PartCheck {
+		match answer {
+			PartAnswer::Data(data) => match core::str::from_utf8(data) {
+				Ok(reported) if reported.trim_end_matches([' ', '\0']) == self.part_number => PartCheck::Matched,
+				_ => PartCheck::Mismatch,
+			},
+			PartAnswer::Refused(_) => PartCheck::Mismatch,
+			PartAnswer::NoAnswer | PartAnswer::BusError => PartCheck::Absent,
+			PartAnswer::Malformed => PartCheck::RetryLater,
+		}
+	}
+}
+
 impl Channel {
+	/// Milliseconds between two readings at [`Channel::hz`], never below one. A
+	/// rate that is not a positive number — only a hand-edited plan could hold
+	/// one, the generator refuses it — reads as 2 Hz rather than as a flood.
+	pub fn period_ms(&self) -> u32 {
+		const FALLBACK_MS: u32 = 500;
+		if !(self.hz.is_finite() && self.hz > 0.0) {
+			return FALLBACK_MS;
+		}
+		// `+ 0.5` and a cast: `f32::round` is not in `core`. The cast saturates.
+		((1000.0 / self.hz + 0.5) as u32).max(1)
+	}
+
 	/// Cut the raw integer out of a positive response's data bytes (everything
 	/// after the `62 <hi> <lo>` echo) and scale it.
 	///
@@ -258,6 +386,7 @@ mod tests {
 			unit_text: "",
 			label: "",
 			proven: false,
+			hz: 2.0,
 		}
 	}
 
@@ -320,6 +449,7 @@ mod tests {
 		units: &[],
 		channels: &CHANNELS,
 		pages: &PAGES,
+		alarms: &[],
 	};
 
 	#[test]
@@ -347,6 +477,121 @@ mod tests {
 		assert_eq!(PLAN.chart(2), Some(load));
 		let all: std::vec::Vec<Chart> = PLAN.charts().collect();
 		assert_eq!(all, [boost, load], "slots are dense and in plan order");
+	}
+
+	const PARTED: Unit = Unit {
+		request: 0x7E0,
+		response: 0x7E8,
+		part_number: "PART1",
+	};
+
+	/// The car check (`05`): what an answer to `F187` makes of a unit.
+	#[test]
+	fn a_part_number_matches_after_its_padding_and_anything_definite_else_is_a_mismatch() {
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1")), PartCheck::Matched);
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1 ")), PartCheck::Matched, "a space pads it");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART1\0\0")), PartCheck::Matched, "so does a NUL");
+		assert_eq!(PARTED.check_part(PartAnswer::Data(b"PART2")), PartCheck::Mismatch);
+		assert_eq!(PARTED.check_part(PartAnswer::Data(&[0xFF, 0xFE])), PartCheck::Mismatch, "not text");
+	}
+
+	/// A unit that refuses `F187` cannot be checked against the plan, and a unit that
+	/// cannot be checked is not polled: asking again changes nothing it would say.
+	#[test]
+	fn a_refused_part_number_is_a_mismatch_not_a_retry() {
+		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x31)), PartCheck::Mismatch);
+		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x22)), PartCheck::Mismatch);
+	}
+
+	/// Silence is a unit that is not there yet (ignition off): asked again, at the pace
+	/// the scheduler's backoff sets. An answer that did not parse was an answer, which
+	/// resets that backoff — so it waits on its own, no faster than the backoff's cap.
+	#[test]
+	fn silence_is_asked_again_and_a_garbled_answer_later() {
+		assert_eq!(PARTED.check_part(PartAnswer::NoAnswer), PartCheck::Absent);
+		assert_eq!(PARTED.check_part(PartAnswer::BusError), PartCheck::Absent);
+		assert_eq!(PARTED.check_part(PartAnswer::Malformed), PartCheck::RetryLater);
+	}
+
+	#[test]
+	fn a_period_is_the_rate_inverted_and_a_nonsense_rate_is_two_hertz() {
+		let at = |hz| Channel {
+			hz,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		assert_eq!(at(2.0).period_ms(), 500);
+		assert_eq!(at(10.0).period_ms(), 100);
+		assert_eq!(at(0.5).period_ms(), 2000);
+		assert_eq!(at(3.0).period_ms(), 333);
+		assert_eq!(at(100_000.0).period_ms(), 1, "never zero");
+		assert_eq!(at(0.0).period_ms(), 500);
+		assert_eq!(at(-1.0).period_ms(), 500);
+		assert_eq!(at(f32::NAN).period_ms(), 500);
+	}
+
+	#[test]
+	fn the_shown_page_reads_at_its_rates_hidden_pages_at_one_hertz_at_most_and_the_rest_not_at_all() {
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const SLOW: Channel = Channel {
+			hz: 0.25,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const MIXED: [Channel; 4] = [FAST, FAST, SLOW, channel(0, 8, false, true, 1.0, 0.0)];
+		let plan = Plan { channels: &MIXED, ..PLAN };
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
+		};
+		assert_eq!(
+			rates(&[0], &[0, 1, 2]),
+			[(0, true, 100), (1, false, 1000), (2, false, 4000)],
+			"a hidden channel no faster than 1 Hz, a slower one at its own rate, channel 3 on no page not read"
+		);
+		assert_eq!(
+			rates(&[1, 3], &[0, 1, 2]),
+			[(0, false, 1000), (1, true, 100), (2, false, 4000), (3, true, 500)],
+			"switching pages swaps who is shown"
+		);
+	}
+
+	#[test]
+	fn a_channel_an_alarm_watches_is_read_at_its_own_rate_whatever_page_is_up() {
+		use crate::alarm::{Direction, PageId};
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const CHANNELS: [Channel; 3] = [FAST, FAST, channel(0, 8, false, true, 1.0, 0.0)];
+		static WATCHED: [ChannelId; 1] = [ChannelId(1)];
+		static ALARMS: [Alarm<'static>; 1] = [Alarm {
+			channels: &WATCHED,
+			page: PageId(2),
+			trip: 10.0,
+			release: 8.0,
+			direction: Direction::Above,
+		}];
+		let plan = Plan {
+			channels: &CHANNELS,
+			alarms: &ALARMS,
+			..PLAN
+		};
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
+		};
+		assert!(plan.watched(1) && !plan.watched(0) && !plan.watched(2));
+		assert_eq!(
+			rates(&[0], &[0, 1, 2]),
+			[(0, true, 100), (1, true, 100), (2, false, 1000)],
+			"channel 1 is on a hidden page and still at 10 Hz, ahead of other work"
+		);
+		assert_eq!(
+			rates(&[2], &[0, 1, 2]),
+			[(0, false, 1000), (1, true, 100), (2, true, 500)],
+			"a page switch demotes what was shown and not what the alarm watches"
+		);
+		assert_eq!(rates(&[], &[]), [(1, true, 100)], "watched even with no page asking for it");
 	}
 
 	#[test]
@@ -443,6 +688,7 @@ mod tests {
 			units: &UNITS,
 			channels: &CHANNELS,
 			pages: &PAGES,
+			alarms: &[],
 		};
 		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);

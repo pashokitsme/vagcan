@@ -15,8 +15,11 @@ pub struct Args {
 	/// `setup` describes this car once; `view` opens a saved session.
 	#[command(subcommand)]
 	pub tool: Option<crate::Tool>,
-	/// Adapter to use. Omit it when only one is connected.
-	#[arg(long, value_name = "PATH")]
+	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+	/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
+	/// when asked.
+	#[arg(long, value_name = "PATH|ble|ble:NAME")]
 	pub device: Option<String>,
 	/// Use this car file instead of the one kept for this car's VIN.
 	#[arg(long, value_name = "FILE")]
@@ -98,6 +101,25 @@ pub struct Cli {
 	#[arg(long, value_name = "ID", global = true)]
 	pub project: Option<String>,
 
+	/// Use the dash board's USB cable as a plain slcan adapter rather than reading through
+	/// its `dash` image. `vagcan` carries the same global flag.
+	#[arg(long, global = true)]
+	pub slcan: bool,
+
 	#[command(flatten)]
 	pub args: Args,
+}
+
+#[cfg(test)]
+mod tests {
+	use clap::Parser as _;
+
+	use super::Cli;
+
+	#[test]
+	fn slcan_is_global_as_it_is_on_vagcan() {
+		assert!(Cli::try_parse_from(["vagcan-measure", "--slcan"]).unwrap().slcan);
+		assert!(Cli::try_parse_from(["vagcan-measure", "setup", "--slcan"]).unwrap().slcan);
+		assert!(!Cli::try_parse_from(["vagcan-measure"]).unwrap().slcan);
+	}
 }

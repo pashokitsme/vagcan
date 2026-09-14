@@ -12,10 +12,11 @@ use vag_dash_render::pages::{self, Layout, Mismatch};
 
 use crate::plan::PLAN;
 
-/// How many pages the panel can hold, and how many cells fit on one. Both are
-/// bounded because the storage is: a configuration has to fit in a flash
-/// sector with room for its header.
-pub const MAX_PAGES: usize = 8;
+// How many pages the panel can hold, and how many cells fit on one. Both are
+// bounded because the storage is: a configuration has to fit in a flash
+// sector with room for its header. The page count is defined beside the plan
+// type, because the generator refuses a plan with more pages than this.
+pub use vag_dash_render::pages::MAX_PAGES;
 pub const MAX_CELLS: usize = 8;
 
 /// Bumped whenever the meaning of a field changes. A stored blob whose version
@@ -87,16 +88,6 @@ impl Default for Config {
 }
 
 impl Config {
-	/// What a short press does: the next page, wrapping at the end. Says
-	/// whether the page changed — with one page it does not, and there is
-	/// nothing to mark unsaved.
-	pub fn next_page(&mut self) -> bool {
-		let before = self.active_page;
-		// `pages` is bounded by `MAX_PAGES`, so the count fits.
-		self.active_page = vag_dash_render::pages::next(before, self.pages.len() as u8);
-		self.active_page != before
-	}
-
 	/// How this configuration's pages differ from the plan's, if they do — see
 	/// [`vag_dash_render::pages::mismatch`] for why a difference means the
 	/// configuration is stale rather than chosen.

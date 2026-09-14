@@ -27,9 +27,10 @@
 use alloc::format;
 use alloc::vec::Vec;
 use core::time::Duration;
-use embassy_time::{Duration as EmbassyDuration, with_timeout};
+use embassy_time::{Duration as EmbassyDuration, Instant, Timer, with_timeout};
 use embedded_can::Frame as _;
 use esp_hal::Async;
+use esp_hal::twai::filter::SingleStandardFilter;
 use esp_hal::twai::{EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, Twai};
 use vag_uds_can::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, CanError};
 
@@ -65,6 +66,23 @@ impl<'d> TwaiBackend<'d> {
 		self.twai
 	}
 
+	/// The same backend with a different acceptance filter.
+	///
+	/// esp-hal writes a filter to the controller only in reset mode, so this is
+	/// `stop()`, `set_filter`, `start()`: register writes, the error counters
+	/// cleared (as a bus-off restart clears them), and the controller waiting for
+	/// 11 recessive bits before it takes part again. Call it between exchanges,
+	/// never with a transmission pending. The async driver's receive queue is
+	/// software and outlives it; [`TwaiBackend::drain`] is what empties that.
+	pub fn refilter(self, filter: SingleStandardFilter) -> Self {
+		let mut config = self.twai.stop();
+		config.set_filter(filter);
+		TwaiBackend {
+			twai: config.start(),
+			self_reception: self.self_reception,
+		}
+	}
+
 	/// Empties the driver's receive queue without waiting, and says how many
 	/// entries it held.
 	///
@@ -97,6 +115,42 @@ impl<'d> TwaiBackend<'d> {
 			}
 		}
 		swept
+	}
+}
+
+/// How long [`TwaiBackend::quiesce`] waits for the transmit buffer. The longest classic
+/// frame at 500 kbit/s is well under a millisecond on the wire; this is room for the
+/// interrupt that releases the buffer, and a bound for a controller that never does.
+const QUIESCE_WAIT: EmbassyDuration = EmbassyDuration::from_millis(50);
+
+impl TwaiBackend<'_> {
+	/// Before the controller is dropped with a transmit perhaps pending.
+	///
+	/// Dropping the driver gates the peripheral's clock, and a controller reset in the
+	/// middle of its own frame leaves the bus a cut frame that every other node flags
+	/// with an error frame — on a car, the powertrain CAN. So: `ABORT_TX`, which cancels a
+	/// transmission that has not started, and then wait until the transmit buffer is
+	/// released (`TX_BUF_ST`), which a frame already on the wire does only once it has
+	/// completed or failed. Bounded by [`QUIESCE_WAIT`].
+	pub async fn quiesce(&mut self) {
+		let regs = esp_hal::peripherals::TWAI0::regs();
+		regs.cmd().write(|w| w.abort_tx().set_bit());
+		let deadline = Instant::now() + QUIESCE_WAIT;
+		while regs.status().read().tx_buf_st().bit_is_clear() && Instant::now() < deadline {
+			Timer::after(EmbassyDuration::from_millis(1)).await;
+		}
+	}
+}
+
+/// The backend lent to one exchange, so the exchange can be given up without giving the
+/// controller up with it ([`TwaiBackend::quiesce`] is what follows).
+impl CanBackend for &mut TwaiBackend<'_> {
+	async fn send_frame(&mut self, id: u32, data: &[u8]) -> Result<(), CanError> {
+		(**self).send_frame(id, data).await
+	}
+
+	async fn recv_frame(&mut self, timeout: Duration) -> Result<(u32, Vec<u8>), CanError> {
+		(**self).recv_frame(timeout).await
 	}
 }
 

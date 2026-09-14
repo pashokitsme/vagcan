@@ -105,9 +105,10 @@ breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 TL;DR: read the whole car over CAN, with channels, scalings and fault text from a VW
 ODIS-Service project (a VCDS installation is the fallback, drives on the car override
 both), on **tokio / edition 2024**, macOS M4, TDD with hardware checkpoints. The live
-transport is a generic slcan USB-CAN adapter (`vag-uds-can`) or the dash board running
-its `slcan` image. The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX
-clone is dead — research archived under `.archive/research/`.
+transport is a generic slcan USB-CAN adapter (`vag-uds-can`), or the dash board: over its
+USB cable or BLE through its own scheduler, or as a plain adapter (`--slcan`, or its
+`slcan` image). The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX clone
+is dead — research archived under `.archive/research/`.
 
 ## Project structure
 
@@ -145,8 +146,9 @@ crates/            all Rust. Three families and the product.
                        build-std config. Build it from its own directory.
   cli/               what a person runs, in four layers.
     vag-cli-core       what both command crates stand on: which car this is,
-                       what channels it has, how to poll them, where its files
-                       live, the terminal widgets. Knows no command.
+                       what channels it has, the bus that polls them (the one owner of
+                       the link: a cable, or the dash board over USB or BLE), where
+                       its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
                        faults, the guarded sweeps, watch, setup, vcds tooling
     vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.
@@ -167,7 +169,9 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        hardware hand-off; `bench.sh` the one-command bench; `probes/` is
                        firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
-                       and the buttons) and `bleecho`
+                       and the buttons), `bleecho`, `bleuds` (one framed UDS request or
+                       subscription over BLE) and `benchecu` (the CANable answering as
+                       a control unit; bench pair only, refuses on car traffic)
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against
                        the reference car's stored faults (ODIS 15/15, VCDS 11/15)
@@ -220,19 +224,24 @@ style.
 ## Tech stack & architecture (locked)
 
 - **Rust edition 2024, MSRV 1.85. Async runtime: tokio.**
-- **One bus, one conversation at a time.** There is no connection actor and no
-  `mpsc`/`oneshot` multiplexer — the one that existed was written for the HEX clone
-  and went with it. A single backend value is *owned*, not shared: a caller takes it,
-  wraps it in an `IsoTpCan` addressed to one unit, runs one exchange to completion,
-  and unwraps it for the next unit (`vag-cli-core/src/plan.rs::read_batch`). Talking
-  to the engine and the gearbox is a sequence of re-addressed groups, and ownership
-  is what makes two exchanges in flight impossible. Do not describe this as
-  concurrent, and do not reintroduce an `Arc<Mutex<device>>` to fake it.
+- **One bus, one conversation at a time, one owner.** On the laptop the scheduler task
+  (`vag-cli-core/src/bus`, over `vag_uds_client::schedule::Planner`) is the single
+  owner of the link. Everything else holds a cheap `Bus` handle and talks to the task
+  over a channel: `subscribe(unit, did, period)` (dropping the `Subscription`
+  unsubscribes), `read_once`, `exchange`. The task addresses the link to one unit,
+  runs one exchange to completion and releases it; the planner never has two requests
+  out, so exactly one exchange is in flight. Do not add a second owner of the link,
+  do not open the adapter beside a running `Bus` (only `dev sniff` opens it bare, for
+  frames), and do not reintroduce an `Arc<Mutex<link>>`.
 - **Pluggable backend, static dispatch:** `vag_uds_can::CanBackend` (send/receive one
   frame) under `vag_uds_transport::AsyncIsoTpTransport` (send/receive one PDU), native
-  async-fn-in-trait, no `dyn`/`async-trait`. The live backends are `SlcanBackend`
-  over a serial port and the firmware's `TwaiBackend`; the same `vag-uds-*` crates
-  compile `no_std` for the board under embassy (`default-features = false`).
+  async-fn-in-trait, no `dyn`/`async-trait`. `vag_uds_can::UnitLink` is the seam a
+  command addresses one unit through: every `CanBackend` is one (ISO-TP per unit), a
+  link that carries whole PDUs implements it directly, and `Bus` is one too — so a
+  command generic over `UnitLink` runs through the scheduler unchanged. The live
+  backends are `SlcanBackend` over a serial port and the firmware's `TwaiBackend`; the
+  same `vag-uds-*` crates compile `no_std` for the board under embassy
+  (`default-features = false`).
 - `vag-data-labels`/`vag-data-db` stay sync (CPU-bound). **Label lookup must be
   FAST** — `vagcan setup` caches the parsed label files to SQLite under
   `~/.vagcan/data/<project>/cache.sqlite`.

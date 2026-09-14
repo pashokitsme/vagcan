@@ -5,32 +5,44 @@ This file is the detail behind it: state, decisions, open items, and what is dea
 dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14.
 
-## Where things stand (2026-09-14)
+## Where things stand (2026-09-14, evening)
 
-**Milestone: the dash works.** `dash` was merged to `master` (PR #1, `b41059a`) on
-2026-09-13. Waiting on the physical OLED.
+**Milestone: one scheduler on the board and the laptop, and the laptop reads the car
+through the board.** Built on branch `ble-uds` (not on `master` yet), reviewed lens by
+lens, hardware-free tests (1,545 in the workspace at `213f6ec`). The first end-to-end bench run found
+the CAN pair dead (`research/dash/can-bring-up.md` §9.7) — the transceiver module was unpowered;
+after the owner's repair the bench passed (§9.9, §9.10): BLE and USB subscriptions at their
+rates, `watch` through the board at 100 ms, both carriers at once, adapter mode in and out,
+the `slcan` image, and `measure` through the board at 50 Hz.
 
-- **Car read.** `dash` on the reference car answered `7E0`/`7E1`; the panel, through
-  `dashsim`, showed coolant 51 °C, boost 0.99 bar, oil 42.0 °C, gearbox 39 °C
-  (2026-09-13). Record: `research/dash/can-bring-up.md`.
-- **Board as a CAN adapter.** The `slcan` image, bench 2026-09-13 (§9.4 there): whole
-  frames both ways, listen-only acknowledges nothing, 3,726 frames/s for 12 s with the
-  drop flags clear. `vagcan devices` counts the board only when it answers `V`.
-- **Data.** ODIS is the primary source, fault text included (`research/odis-dtc/`).
-  VCDS is the fallback. Proven rows (23: `8V0906264H` 3, `0CW300041G` 12,
-  `5E0920740D` 8) are in `~/.vagcan/data/SK37X/measurements/`, restored from
-  `0e263b1^:catalogs/vehicles/` on 2026-09-13. `setup` on `SK37X`: ≈3–4 s.
-- **Review before the merge.** Three rounds, four lenses, no blocking objection. Findings
-  and fixes are in merge commits `9669f81`, `65ce209`, `9185a28` and after.
-- **Removed 2026-09-13:** the deep-sleep module and `sleeptest` (owner: pin-1 power
-  makes sleep moot); `USAGE.md` (owner, `bff9dc3`; the command table now lives in
-  `README.md`).
+- **Scheduler** (`dash/14` §2). `vag_uds_client::schedule::Planner`, `no_std`, no clock:
+  subscriptions with drop semantics, one read per `(unit, did)`, a unit's due
+  identifiers in one `22`, ceiling 100/s, panel floor 25/s, nothing starves. Laptop:
+  `vag-cli-core/src/bus` owns the link, every car command runs through it, `watch` and
+  `measure` subscribe (`read_batch` is gone). Board: replaces `can_task`'s round-robin;
+  `hz` per channel in `dash.toml`, default 2; the acceptance filter follows the exchange.
+- **UDS over BLE** (`dash/16`). The board always advertises and guards itself
+  (`vag_uds_client::guard`); the laptop has `--device ble` and `ble:<name>`, and never scans BLE unasked. `watch` and `measure` run on board-side
+  subscriptions stamped with the board's clock.
+- **The board over its USB cable, and `--slcan`** (`dash/14` §3, §7 item 4). The framed
+  link on USB with `Guard::cable`; a Hello/HelloReply probe tells the `dash` image apart
+  without sending it `V`; `vagcan --slcan` makes the `dash` image a plain adapter for
+  one run.
+- **Bench tools.** `bleuds` (one framed request or subscription over BLE) and `benchecu`
+  (the CANable answering as a unit; bench pair only, stops on car traffic).
+- **Bench, 2026-09-14.** The board's half of UDS over BLE passed with `bleuds` (§9.5, §9.6);
+  the pair then went dead — an unpowered SN65HVD230, 1.56 V on its 3.3 V pin (§9.7, §9.8) —
+  and after the repair `vagcan` through the board passed over BLE and USB (§9.9), with
+  `measure` at 50 Hz once the link carried a timing channel (§9.10).
+- **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
+  --hz` given explicitly wins over the saved rate.
 
-**Not verified on hardware:** the board's `V` probe and busy-port message, `F` through
-`dev sniff` on the board, the stored-config check at boot, whether opening the board's
-port twice resets it.
+**Not verified on hardware:** the car — the list is [`dash/17`](dash/17-bench-ble-usb.md) §4
+(faults, info, watch, measure through the board; the moving-car guard; alarms; the cable on
+car traffic). On the bench: unplugging USB in adapter mode, a USB flood of large requests, the
+stored-config check at boot, whether opening the board's port twice resets it (§2, §3).
 
-## Decisions (owner, 2026-09-13)
+## Decisions (owner)
 
 | decision | designed in |
 |---|---|
@@ -42,45 +54,57 @@ port twice resets it.
 | No `frame` mirror; no separate link crate | `dash/14` §7 |
 | Enclosure redesigned, `flat` layout, snap-in boards; CAD in `~/CAD/projects/vagcan/` | `dash/15` |
 | M3 (whole-car measurement coverage by survey) off the list (2026-09-10) | — |
+| The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) | `dash/14` §2 |
+| BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **UDS over BLE** — `dash/16`. Host transport and the board's guards under
-   hardware-free tests, then the bench.
-2. **`BoardTransport` and `vagcan --slcan`** — `dash/14` §7 item 4. The scheduler (item 3)
-   is to be discussed with the owner.
-3. **Bench session** — the unverified items above.
+1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2: unplug USB in adapter mode, a USB flood.
+2. **`ble-uds` → `master`** — PR #2; review closed and CI green 2026-09-14, merge when the owner says.
+3. **Link icons and the adapter screen** — owner, 2026-09-14. Top right: 7×9 icons for the
+   USB cable and BLE while a host holds the link. `--slcan` mode: "SLCAN" top left in the
+   medium font, the speed centred with ▲▼ in kb/s, bit rate and error counters centred below.
+   Rendered in `dashsim --preview` on branch `panel-preview` (`vag_dash_render::frame::Board`,
+   `draw_with`); not wired into the firmware: real link state, TX/RX rate on the slcan port.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`: the render side is done, the firmware wiring is not.
+5. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
+   hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
+   channels foreground at their own rate, takeover and silence through
+   `vag_dash_render::screen`. Next: the owner writes the rules into `dash.toml`; the misfire rule's numbers and a run on the car. The
+   demo from a recorded drive waits for a recording with the retard channels and a way to
+   replay it (none is hardware-free today).
 6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-7. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+7. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+   watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
+8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-9. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
-10. **Questions only the car answers** — `dash/06`.
-11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
+11. **Questions only the car answers** — `dash/06`.
+12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-13. **`watch` and `measure` across all fifteen units** — measured against the file, not
+14. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | render done, firmware wiring open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `ble-uds`, hardware-free; rules, misfire numbers and a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
-| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | next task |
+| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | built on `ble-uds`; bench passed (`research/dash/can-bring-up.md` §9.9–9.10), car pending |
+| [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work |
 
 Finished task files are in `.archive/tasks/done/`; superseded designs in `.archive/specs/`.
 
@@ -161,6 +185,11 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   where it would live.
 
 ## Parked (designed, not being implemented now)
+- **The BLE stack out of the firmware's build** (2026-09-14) — `vag-dash-fw`'s `build.rs`
+  generates the plan through `vag-cli-core`, which now depends on `vag-dash-ble`
+  (btleplug), so CI's firmware job installs libdbus. Cleaner: `vag-dash-ble` behind a
+  default `ble` feature of `vag-cli-core` (the BLE branches of `device.rs`), with the
+  firmware's build-dependency on `default-features = false`.
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan retired with
   `docs/superpowers/` in `2e4721b`. Below-the-seam refactor.
 

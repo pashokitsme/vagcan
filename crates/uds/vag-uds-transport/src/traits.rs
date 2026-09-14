@@ -38,10 +38,11 @@ pub trait IsoTpTransport {
 /// Async ISO-TP channel: the seam the async UDS client rides.
 ///
 /// One implementor owns the physical link outright — `IsoTpCan` over a
-/// `CanBackend` — and is addressed to one unit at a time; talking to another
-/// unit is unwrapping the backend and wrapping it again (see
-/// `vag-cli-core/src/plan.rs::read_batch`). There is no actor and no shared
-/// handle: the one that existed served the HEX clone and went with it.
+/// `CanBackend`, or a link that carries whole PDUs itself — and is addressed to
+/// one unit at a time; talking to another unit is releasing the link and
+/// addressing it again (`vag_uds_can::UnitLink`). On the laptop one scheduler
+/// task owns the link (`vag-cli-core/src/bus`) and everything else reaches the
+/// car through its handles; nothing shares the link itself.
 /// Consumers (uds-async) use STATIC dispatch (`T: AsyncIsoTpTransport`) — no
 /// `dyn`, no `async_trait`.
 // Static dispatch only, so callers that spawn add their own `Send` bounds on

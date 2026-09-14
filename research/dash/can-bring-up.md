@@ -739,3 +739,184 @@ FIFO to overflow, which 3,726 frames/s did not do even with the reader stopped �
 the bridge keeps draining the FIFO into the ring whatever the host does. `slcan_probe`
 hangs if run during a storm: it reads until 300 ms of quiet, and after its `L` there
 is none.
+
+### 9.5 `dash` with the planner and UDS over BLE, 2026-09-14
+
+Image `dash` from branch `fw-bus` (planner shell, BLE always on, the NUS UDS server), real
+plan (VIN …8917, units `7E0`/`7E1`), flashed with the §9.2 command. Bench pair as in §9.3,
+no car, so no unit answers. CANable: `vagcan dev sniff --device /dev/cu.usbmodem206E37A148451
+--active`. BLE host: `research/dash/host` `bleuds`, run from Terminal.app — a process
+started by the Claude app has no Bluetooth usage description and macOS kills it (TCC),
+and Terminal waited for the owner's "Allow" once.
+
+| check | seen |
+|---|---|
+| a. visible without a button | `bleuds` found `vagcan-dash` after 251–765 ms of scanning, connected in ~0.9 s, six connections in a row, re-advertising after each. `dashcfg`: state pushed on connect, `get` answered (`brightness 128 page 0 of 2 \| 0:values[2, 3, 0, 1] \| 1:chart[1]`). |
+| b. requests reach the pair | `7E0 7E8 22F190` → `7E0 22 F1 90` on the pair, Answer NoAnswer after 5.8 s. `710 77A 22F187` → `710 22 F1 87`, NoAnswer after 0.6 s; the board noted `the filter follows the exchange — moved to 77A/7FF in 121 µs`. |
+| c. guard | `2EF19000` → Refused `service 0x2E not allowed` in 89 ms, `1002` → Refused `programming session` in 91 ms, nothing on the pair for either. `1003` → `7E0 22 F4 0D` on the pair, then Refused `the engine did not report road speed` after 932 ms. |
+| d. subscription | `--subscribe 7E0 7E8 F40D 100 5`: 2 Readings (NoAnswer) in 5 s, and on the pair `22 F4 0D` batched into the panel's part-number read (`22 F1 87 F4 0D`) twice, 2.5 s apart. After the disconnect no `F4 0D` at all. **Not ~10 Hz**: see below. |
+| e. the panel keeps polling | `22 F1 87` to `7E0` and `7E1` alternately, each unit every 2.5 s (the planner's 2 s backoff cap plus the 500 ms answer deadline), before, during and after the BLE runs; `FRAME` lines keep coming on USB. |
+
+- **A silent unit is asked at its backoff rate, whoever asks.** The planner backs off a
+  unit that does not answer (250 ms doubling to 2 s) and holds every candidate of that unit
+  to it: the panel's `F187`, a Remote request, the Timing speed read, a subscription. On
+  this bench every unit is silent, so the 100 ms subscription was read at 2.5 s, a request
+  to `7E0` waited up to 2.5 s before it went out (b's 5.8 s), and the speed read waited for
+  the next slot too. A unit that answers is not backed off; the 10 Hz check needs one.
+- **ATT MTU**: 23 at connect, 251 agreed by macOS right after (`[host] agreed att MTU of
+  251`), so notifications are 20 bytes for the first moments and 244 from then on.
+- **Heap** (72 KB): 46,140 used after the BLE host is built, ~47,900 idle with the planner
+  running, 48,852 at most across the BLE sessions. `Current usage` stays flat; `Total
+  allocated` grows ~3 KB per 15 s with the part-number retries.
+- **The pair went quiet once.** After ~50 minutes with nobody acknowledging (the CANable
+  closed while Terminal waited for the Bluetooth prompt), two `--active` sniffs (10:50 and
+  10:52) saw **no frame at all** — not the panel's reads, not a `bleuds` request — though
+  the board answered the `bleuds` request NoAnswer after 7.5 s. A reset (espflash monitor)
+  brought the frames back at once. No note was captured for that window. **Not
+  reproduced in 5 minutes:** left unacknowledged from 10:55:46 and sniffed again at 11:01:25,
+  the board put 17 frames on the pair in 20 s (`22 F1 87` to both units every 2.5 s), and the
+  console, watched throughout, said nothing about bus-off or errors. Open: whether it takes
+  the longer unacknowledged stretch, and what state the controller is in — the next run is
+  an hour unacknowledged with the console captured from the start.
+
+### 9.6 After the review fixes, 2026-09-14
+
+Same bench as §9.5, `dash` from `fw-bus` at `e5fdb96` with the info log on (for the heap),
+console captured throughout, CANable `--active` for 120 s.
+
+| check | seen |
+|---|---|
+| a | found in 250–500 ms, seven connections, re-advertising after each |
+| b | `7E0 22 F1 90` on the pair, NoAnswer after 6.2 s; `710 22 F1 87`, NoAnswer after 0.57 s; filter moved to `77A/7FF` in 129 µs |
+| c | `2E…` Refused in 63 ms, nothing on the pair; `1003` → `7E0 22 F4 0D`, then Refused (no road speed) after 2.8 s |
+| response-id sweep | `bleuds --sweep-response 7E0 7E8 50 F40D 100`: **49 refused** ("request id 7E0 already answers on 7E8 in this connection"), 4 readings for the one accepted. Heap `Current usage` 48,092 before, 48,560 after; `Max usage` 49,016 → 49,096. |
+| `3E 80` | `7E0 3E 80` at 43.387 s, the panel's `7E0 22 F1 87` 152 ms later (the 150 ms suppressed wait), then every 2.5 s as before — no extra backoff, no burst of F187. Host: NoAnswer after 7.4 s (the silent unit's backoff before it went out). |
+
+- The first sweep run counted 17 of 49: `bleuds` sent all 50 subscriptions before reading
+  notifications, and btleplug's bounded broadcast channel dropped the rest. Fixed in the
+  tool (`e5fdb96`); the board had sent them.
+
+### 9.7 The pair went dead, 2026-09-14 12:14–12:31
+
+First end-to-end run of `vagcan` over BLE (branch `ble-uds` at `09a82fd`, board on `dash`
+with the §9.6 fixes, `benchecu --bench --unit 7E0 --unit 7E1 --unit 710` on the CANable,
+tools started from Terminal.app with `open -a Terminal <script>.command` — `osascript`
+to Terminal timed out waiting for an automation permission nobody was there to grant).
+
+| check | seen |
+|---|---|
+| `vagcan info --device ble` | found and connected (`using vagcan-dash over BLE`), then no result within 90 s |
+| `bleuds --subscribe 7E0 7E8 F40D 100 10` | 4 Readings, all NoAnswer, 3 s apart (the planner's backoff on a silent unit) |
+| `vagcan watch --device ble --did 01:F40D --hz 10 --for 15` | connected, identified 7E0 from the project, CSV rows with no values; killed at 60 s because start-up over BLE took 52 s |
+| `benchecu`, 170 s | **no request at all** |
+| `vagcan dev sniff --active` on the CANable, 12 s | 0 frames |
+| board reset (`espflash reset`), same run again | same: no request reached `benchecu` |
+| `bench.sh 15 cantx` | **FAIL, 0 frames** — the reference transmit test that passed in §5.2 and §9 |
+| `rxwatch` on the board while `vagcan info` transmits from the CANable, 30 s | 0 frames, 0 errors |
+
+Both directions dead, on images that each passed on this pair earlier the same day, and a
+reset does not bring it back: a physical fault of the pair (wire, connector, termination)
+or of the CANable, not firmware. The "pair went quiet once" of §9.5 may have been the same
+fault showing first. **Needs the owner at the bench.** The board was left on `dash`.
+
+Not yet judged because of it: whether `watch` plain mode's CSV rows every ~20 ms with ~5 s
+gaps (on a bus where nothing answers) is a host defect; re-run on a working pair.
+
+**Timeline, rebuilt from commit and capture times:** the pair last worked at the §9.6 check
+(commit `c6b1339`, 11:41: `F187` to both units on the pair). Nothing touched the hardware
+between then and 12:19 — the 12:14 attempt was an `osascript` launch that timed out before
+running anything — and at 12:19 `benchecu` heard no request from its first second. The
+owner's own `bench.sh` runs at 14:56 and 16:04–16:06 failed too, after replugging and RST.
+
+**`rxprobe`, 16:08 (no CAN controller involved):** idle `R was high 0% of 47618 samples, 0
+change(s)` — STUCK LOW; echo `D recessive -> R low` in every round; `rise took 200001 µs
+<-- never`. The transceiver's `R` never goes recessive, whatever `D` does: the pair is held
+dominant, or the module's `R`/supply/`CRX` path is broken. Not firmware — it survives
+reflashing, RST and replug, and `rxprobe` drives the pads by hand. Next, by hand: unplug
+the CANable from the pair and run `rxprobe` again (`R` high at idle → the CANable side
+holds the bus; still low → the board's module or its wiring), and measure CAN-H/CAN-L
+at idle (recessive: both ≈2.5 V, difference ≈0), the module's 3.3 V, and H–L resistance
+unpowered.
+
+### 9.8 What runs with the pair still dead, 2026-09-14 15:49–16:01
+
+`ble-uds` after the alarms merge, `dash` rebuilt with the real plan. The pair was re-tested
+first and is still dead: `bench.sh 15 cantx` FAIL at 15:49 and 15:56, and an `--active`
+sniff on the CANable saw no frame of the `dash` image in 10 s. So nothing below reached a
+bus; it is the board's USB and BLE links on their own.
+
+| check | seen |
+|---|---|
+| `vagcan devices` | `vag-dash board — dash image (reads through the board, panel keeps running), 0.1.0` — the Hello probe on real hardware; also 1 s after `espflash reset`; over BLE `--device ble:vagcan-dash -44 dBm` |
+| `vagcan dev survey --device B`, `vagcan dev sniff --device B` | refused before opening, with the two refusal texts |
+| `vagcan info --device B` (USB link) | ran, ended "The car did not answer" after 120 s |
+| slcan by hand on `B` | `V` → `V0101\r`, `F` → `F00\r`, `C` → `\r` — **but** the first image sent the note "usb: adapter mode is over…" *before* the `\r`; fixed (note moved behind `serve`), re-flashed, `C` → `\r` first |
+| `vagcan --slcan dev sniff --device B --seconds 4` | listen-only at 500 kbit/s, 0 frames, clean exit; the board answered Hello again right after |
+| `dashcfg` (Terminal.app) | connected; `get` answered; the state panel cut `cells=[2, 3, 0, 1]` at `[2,` — `dashcfg` split the list on its spaces; fixed |
+| `bleuds 7E0 7E8 22F190` | Answer NoAnswer after 8.8 s |
+| `bleuds 7E0 7E8 2EF19000` | Refused in 91 ms: `service 0x2E not allowed: this link only reads` |
+| `vagcan info --device ble` | connected, ended "The car did not answer" after 127 s |
+
+### 9.9 The pair repaired; `vagcan` through the board, 2026-09-14 17:32–17:44
+
+**The fault** (§9.7, §9.8): the SN65HVD230 module read 1.56 V on its 3.3 V pin and CAN-H/CAN-L
+sat at 0 V — the transceiver was unpowered, which is exactly `rxprobe`'s "R stuck low".
+Repaired by the owner; cause on the supply path to the module, not the firmware.
+
+After the repair: `bench.sh 15 cantx` **PASS, 62,122 frames in 15 s**; `dash` (real plan) polls
+`F187` to `7E0`/`7E1` on the pair. Board `B` = `/dev/cu.usbmodem1101`, CANable `C`. BLE runs
+from Terminal.app (`open -a Terminal x.command`). `benchecu --bench --device C --unit 7E0
+--unit 7E1 --unit 710` answered `F40D` (0 km/h); from 17:42 also `--part 7E0=… --part 7E1=…`
+(F187, from the plan's own units).
+
+| check | seen |
+|---|---|
+| `vagcan info --device ble` | identity reads on `7E0`/`7E1` at `benchecu` (F187 F189 F18C F190 F191 F197 0600); "the car did not answer" (nothing but F40D served) |
+| `bleuds --subscribe 7E0 7E8 F40D 100 10` | **101 readings in 9,981 ms of board time, 10.0 Hz**; `benchecu` 10/s |
+| `vagcan watch --device ble --did 01:F40D --hz 10 --for 20` | 199 rows, all with value 0, spacing 100 ms, max gap 102 ms; requests stop on the pair when it ends |
+| `vagcan devices` | the board over USB as `dash image … 0.1.0`, over BLE as `ble:vagcan-dash` |
+| `vagcan info --device B` (USB) | the whole identity sequence at `benchecu` within 1 s |
+| `vagcan watch --device B --did 01:F40D --hz 10 --for 12` | 119 rows, all with value, spacing 100 ms, max gap 105 ms; `benchecu` 10/s |
+| `kill -9` a `watch --device B` | its `F40D` requests stopped on the pair 1–2 s later, before any new host |
+| `kill -STOP` a `watch --device B` 3 s, `kill -CONT` | nothing broke: macOS buffered the board's output; the subscription kept polling; a new `info` worked |
+| `vagcan watch --device ble` (45 s) + `vagcan info --device B` + `vagcan --slcan dev sniff --device B` + `info --device B` again | the BLE `watch` wrote rows every 100 ms (max gap 102 ms) through all of it; the USB `info` ran beside it; adapter mode entered and left (`adapter: no frames dropped` — `F` read from the board); the second `info` was not refused. CANable `--active` saw 32 whole frames, 0 incomplete |
+| `vagcan --slcan dev sniff --device B` while `vagcan info --device C` transmits | 25,945 frames of `7E0` in 10 s (the CANable retransmitting unacknowledged), whole |
+| standalone `slcan` image | `vagcan devices` → `slcan image`; `\r`→`\r`, `V`→`V0101`, `F`→`F00`, `C`→`\r`; `--slcan dev sniff` 19,816 frames in 6 s, no drops; reflashed `dash` → `dash image` |
+| `vagcan measure --device B` with part numbers | resolved `7E1 380B 3804 3809 380A 3816 F40D` and `7E0 2029 202A 206E F410 F40D`; ran at **10 Hz, not 50**: ~98 requests/s total, the board's 100/s ceiling, every host subscription `Class::Remote` because the link's Subscribe carries no class. After it ended the panel polled its plan (`202A 202F F405`, `028D`) at 2/s — the part check matched |
+| the board's USB output, 60 s with nobody connected (in place of `dashsim`, which needs a terminal) | 291 `FRAME` lines (one per 200 ms), every one `FRAME 256 64 <hex>` and 1,319 characters long, 0 malformed, 0 other lines, 0 NUL bytes — no log line or link frame inside the panel stream |
+
+**Open from this run:** a timing flag on the link's Subscribe so `measure`'s speed channel is
+`Class::Timing` on the board (in progress, branch `timing-link`); then `measure` over USB and BLE
+at 50 Hz. Not run: `dashsim` 2 min, unplugging USB in adapter mode, a 4095-byte USB flood,
+the hour-long unacknowledged stall test.
+
+### 9.10 `measure` at 50 Hz through the board, 2026-09-14 18:09–18:25
+
+§9.9 found `measure --device B` at 10 Hz: the link's Subscribe carried no class, so the
+speed channel was thinned at the board's 100/s ceiling like any host channel. Fixed on
+`timing-link` (merged `213f6ec`): Subscribe carries a priority byte; the board takes one
+timing subscription at a time across BLE and USB together and polls it as `Class::Timing`;
+on the board the panel's floor goes ahead of it (a review found a host's timing channel on a
+unit answering in ≥ 20 ms would otherwise starve the panel — 0 of 120 panel sends in the
+planner at 25 ms latency). `benchecu --part 7E0=… --part 7E1=…` served F187 from the plan's units.
+
+| check | seen |
+|---|---|
+| `vagcan measure --device B`, before the fix (§9.9) | speed channel ≈ 8–10/s, ~98 requests/s in all |
+| `vagcan measure --device B`, `timing-link` image | `7E1 F40D` **49–51/s**; the other channels thinned (≈ 3–4/s), the panel's `202A` 10/s, `F405`/`028D` 2/s |
+| `bleuds --subscribe 7E0 7E8 F40D 20 10 --timing` | **501 readings in 10,002 ms of board time, 50.0 Hz**; `benchecu` 47–50/s |
+| `vagcan measure --device ble` | `7E1 F40D` **49–51/s** for the whole run |
+| `vagcan measure --device B` after the merge (`213f6ec`, panel floor first) | `7E1 F40D` 47–50/s, `202A` 9–11/s, `028D` 2/s |
+
+### 9.11 A radio host's bus-time share across Hellos, 2026-09-14 21:14–21:18
+
+PR #2 review round 3 (R3-N1): `Session::close`, run by every Hello and disconnect, cleared
+the radio host's bus-time share, so a host saying Hello before each request was held only by
+the rate cap. Fixed in `4169d2c` (the share is the board's; an exchange a close cannot recall
+is still charged). `bleuds --hello-each 600 12`: one connection, a Hello before each `3E 00`
+to `600+n` (nobody answers; the board's timeout is 500 ms).
+
+| image | seen |
+|---|---|
+| `ce869b2`, before | 12 exchanges in **11.8 s**, each answered 0.6–1.6 s after its request — about 6 s of bus in any 10 s |
+| `4169d2c`, after | five answered in 0.6–1.0 s, the sixth **6.7 s** after its request (11.6 s from the start), then five more and the eleventh 6.7 s again — five 500 ms exchanges per ~10.5 s, the 25% share |

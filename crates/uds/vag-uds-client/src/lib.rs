@@ -12,13 +12,17 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod address;
+pub mod console;
 pub mod dtc;
 pub mod gateway;
+pub mod guard;
 pub mod identity;
 pub mod isotp;
 mod pdu;
 #[cfg(feature = "std")]
 pub mod read;
+pub mod remote;
+pub mod schedule;
 pub mod uds;
 pub mod uds_async;
 #[cfg(feature = "std")]
@@ -26,6 +30,7 @@ pub use address::UnitAddress;
 pub use dtc::RawDtc;
 pub use identity::EcuIdentity;
 pub use isotp::SoftwareIsoTp;
+pub use pdu::check_read_only;
 #[cfg(feature = "std")]
 pub use read::{Reading, UdsReadExt};
 pub use uds::{UdsClient, UdsError};

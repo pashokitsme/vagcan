@@ -399,6 +399,16 @@ was moved, and it is why `vagcan measure` and the standalone `vagcan-measure` ca
 one set of flags and one `dispatch`, and why a build can leave the stopwatch out
 (`--no-default-features`) without touching a line of diagnostics.
 
+**One owner of the link: the bus.** Every command that talks to the car gets a `Bus`
+(`vag-cli-core/src/bus`), not the adapter. One task owns the adapter and runs the
+scheduler (`vag_uds_client::schedule::Planner`): consumers subscribe to a `(unit,
+identifier)` at a rate or read it once, the scheduler puts one request on the bus at a
+time, merges due identifiers of one unit into one `22 d1 … dn`, keeps under 100
+exchanges a second, and hands every answer to everyone who asked for it, stamped with
+when it arrived. `watch` and `measure` subscribe; `info`, `units`, `faults`, `survey`
+use the `Bus` as an ordinary link, and each exchange queues in the same scheduler.
+`dev sniff` alone opens the adapter bare, because it reads frames.
+
 There is exactly one edge between families, `vag-uds-client -> vag-data-labels`, and it
 exists for a single module: `read.rs`, decoding a measurement against a catalog. It goes
 behind the `std` feature, because the board executes a plan with the scaling already
@@ -455,11 +465,14 @@ identifier, bit layout, scaling, unit, label. The image links it. A project cach
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
 fixed list of identifiers cannot sweep.
 
-**One bus, one conversation, on the board too.** `can_task` owns the TWAI controller. It
-reads each unit's part number (`F187`) first and polls the unit only when it matches the
-plan, then reads the plan's identifiers one exchange at a time through the same
-`vag-uds-client` and allowlist the laptop uses. Bus-off restarts the controller; a unit
-that goes silent is asked only for its part number until it answers.
+**One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
+runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
+time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
+only when it matches the plan: the visible page and every alarm's channels at each channel's `hz` from `dash.toml`
+(2 Hz by default), other pages at 1 Hz. A BLE host's requests go through the same planner.
+The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
+when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent
+is asked only for its part number until it answers.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
@@ -467,22 +480,38 @@ the board that is a 1-bit framebuffer; until the OLED is fitted, the board sends
 USB and `dashsim` (`research/dash/host`) draws it in a terminal. The layout is decided
 only on the board.
 
-**Settings over BLE.** The board advertises a Nordic UART service after a 3-second button
-press. `dashcfg` sends text commands (`state`, `set brightness N`, `set page N`, `save`,
-`load`, `defaults`). Settings are stored in a flash partition; a stored page list that
-does not match the current plan is discarded at boot.
+**BLE, always on.** The board advertises a Nordic UART service from boot and again after
+every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,
+`set brightness N`, `set page N`, `save`, `load`, `defaults`). Settings are stored in a
+flash partition; a stored page list that does not match the current plan is discarded at
+boot. Framed UDS messages (`vag_uds_transport::link`) share the service: each request
+passes the board's guard (`vag_uds_client::guard`) and then the planner; subscriptions are
+polled on the board's clock. `vag_uds_client::remote` is that session, host-tested.
 
-**Two firmware images.**
+**The USB cable: the same link, and a second mode.** The cable carries the same framed
+link as BLE, to a second session of its own beside the BLE one, held to
+`Guard::cable()`: the allowlist, no `10 02`, the speed gate, the memory bounds — and no
+rate cap or sweep rules, because a cable is trusted as a CANable is. The laptop tells the
+`dash` image apart with a framed Hello before any slcan byte, then drives it with
+`Bus::start_remote` exactly as over BLE. An slcan command line on the cable, with no link
+session holding anything, switches the image to **adapter mode** (`vagcan --slcan`): the
+standalone `slcan` image's bridge, `vag_dash_fw::slcan`, takes the pins; the planner sends
+nothing and keeps its subscriptions; framed requests on either carrier are refused; the
+panel shows `SLCAN` and counters. `C`, or the host's start-of-frame packets stopping,
+ends it. `vag_uds_client::console` makes those choices, host-tested. One task writes
+the cable, so no log line lands inside a frame.
+
+**Firmware images.**
 
 | image | what it is |
 |---|---|
-| `dash` | the display: plan, polling, panel, BLE settings |
-| `slcan` | the board as a LAWICEL slcan adapter over USB, for every `vagcan` command. Answers `V` with `V0101`; `vagcan devices` counts an Espressif port as an adapter only when it does |
+| `dash` | the display: plan, polling, panel, BLE settings; UDS over BLE and USB; adapter mode |
+| `slcan` | the board as a LAWICEL slcan adapter over USB and nothing else. Answers `V` with `V0101` |
 | `rxwatch` | listen-only frame counter (`--features ack` acknowledges, for the car) |
 | `cantx`, `cantest`, `rxprobe` | bench tools that drive the bus; built only with `--features bench` |
 
-The planned single image with both modes, the laptop reading the car *through* the
-running dash, and UDS over BLE are designed in `todo/dash/14` and `todo/dash/16`.
+`vagcan devices` asks an Espressif port for a Hello first and for `V` only when no Hello
+came, so it never switches a `dash` image by asking.
 
 ---
 

@@ -123,6 +123,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/dash/vag-dash-fw
+      # `build.rs`'s plan generator is `vag-cli-core`, a host build-dependency, and
+      # `vag-cli-core` finds the board over BLE (`vag-dash-ble` → btleplug → BlueZ over
+      # D-Bus), so the host half of this build needs libdbus. libudev: `serialport`.
+      - name: system deps for the plan generator (btleplug, serialport)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
       - name: cargo fmt --check
         run: cargo fmt -- --check
       - name: cargo clippy --bins -D warnings
@@ -134,7 +139,7 @@ jobs:
         run: cargo clippy --release --bins --all-features -- -D warnings
 
   bench-host:
-    name: bench host (dashsim, bleecho)
+    name: bench host (dashsim, bleecho, bleuds, benchecu)
     runs-on: ubuntu-latest
     defaults:
       run:

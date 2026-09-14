@@ -13,5 +13,9 @@ async fn main() -> anyhow::Result<()> {
 		vag_cli_core::project::select(id);
 	}
 	let catalogs = vag_cli_core::datadir::or_default(None, || Ok(vag_cli_core::project::current()?.measurements_dir()))?;
-	vag_cli_measure::dispatch(cli.args, &catalogs.to_string_lossy()).await
+	let slcan = cli.slcan;
+	vag_cli_measure::dispatch(cli.args, &catalogs.to_string_lossy(), async |device: Option<String>| {
+		vag_cli_core::device::connect(device.as_deref(), slcan).await
+	})
+	.await
 }

@@ -225,15 +225,30 @@ impl<W: Write> SniffSession<W> {
 /// The loop polls the adapter with a short receive window rather than awaiting
 /// frames inside a `select!`: Ctrl-C and marker input then reach us between
 /// whole frames, and no half-consumed serial read can be cancelled.
-pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: bool, seconds: Option<u64>, active: bool) -> anyhow::Result<()> {
+///
+/// `resolve` names the adapter. It is called before `--out` is created, and the
+/// adapter is opened after.
+pub async fn run(
+	resolve: impl FnOnce() -> anyhow::Result<String>,
+	baud: u32,
+	out: Option<&str>,
+	diag_only: bool,
+	seconds: Option<u64>,
+	active: bool,
+) -> anyhow::Result<()> {
 	use anyhow::Context as _;
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::time::{Duration, Instant, SystemTime};
 	use vag_uds_can::SlcanMode;
 
-	// The capture file is opened first: the adapter is a single-user resource,
-	// and a --out path that cannot be created should not cost the port.
+	// The device is resolved first: creating --out truncates it, and a run that
+	// cannot name its adapter must not empty a capture already there. Resolving
+	// holds no port.
+	let device_path = resolve()?;
+	// The capture file is created before the adapter is opened: the adapter is a
+	// single-user resource, and a --out path that cannot be created should not
+	// cost the port.
 	let capture: Option<Box<dyn Write>> = match out {
 		Some(path) => {
 			let file = std::fs::File::create(path).with_context(|| format!("creating capture file {path:?}"))?;
@@ -243,7 +258,7 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 	};
 
 	let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
-	let mut backend = crate::device::open(device_path, baud, mode).await?;
+	let mut backend = crate::device::open(&device_path, baud, mode).await?;
 	let started = Instant::now();
 	let unix_us = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
@@ -726,6 +741,38 @@ mod tests {
 		// (`vag-uds-capture`'s record docs).
 		let all: Vec<u64> = read_records(&capture[..]).unwrap().into_iter().map(|r| r.ts_us).collect();
 		assert!(all.windows(2).all(|w| w[0] <= w[1]), "time went backwards: {all:?}");
+	}
+
+	/// No adapter, several, `--device ble`, a dash board without `--slcan`: a run that
+	/// cannot name its adapter has written nothing, so it must not empty the file first.
+	#[tokio::test]
+	async fn a_device_that_does_not_resolve_leaves_an_existing_out_file_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("capture.log");
+		std::fs::write(&path, b"yesterday's capture").unwrap();
+		let out = path.to_string_lossy().into_owned();
+		let refused = run(|| anyhow::bail!("no adapter found"), 115_200, Some(&out), false, Some(1), false)
+			.await
+			.expect_err("no device");
+		assert_eq!(refused.to_string(), "no adapter found");
+		assert_eq!(std::fs::read(&path).unwrap(), b"yesterday's capture", "--out was truncated");
+	}
+
+	/// The adapter is a single-user resource: a `--out` that cannot be created fails
+	/// before the port is opened, not after.
+	#[tokio::test]
+	async fn a_bad_out_path_fails_before_the_port_is_opened() {
+		let refused = run(
+			|| Ok("/nonexistent/vagcan-test/port".to_string()),
+			115_200,
+			Some("/nonexistent/vagcan-test/capture.log"),
+			false,
+			Some(1),
+			false,
+		)
+		.await
+		.expect_err("no such directory");
+		assert!(format!("{refused:#}").contains("creating capture file"), "{refused:#}");
 	}
 
 	#[test]

@@ -23,7 +23,7 @@
 //! `0x14`, which the client's allowlist rejects.
 
 use anyhow::{Context, Result};
-use vag_uds_can::{IsoTpCan, SlcanMode};
+use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
 use vag_uds_client::dtc::{CarTime, FaultContext, UnitStamp};
 use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
@@ -405,10 +405,12 @@ fn parse_code(text: &str) -> Option<[u8; 3]> {
 }
 
 /// Read faults from the car (see the module docs).
+///
+/// `open` takes the link to the car, and is called only once every argument
+/// has been checked.
 #[allow(clippy::too_many_arguments)]
-pub async fn run(
-	device_path: &str,
-	baud: u32,
+pub async fn run<L: UnitLink>(
+	open: impl AsyncFnOnce() -> Result<L>,
 	only: Option<&str>,
 	details: bool,
 	all_codes: bool,
@@ -429,7 +431,7 @@ pub async fn run(
 	let mut namers = Namers::open(iv_cache)?;
 	let requested = only.map(|spec| crate::declared::unit_list("--ecu", spec)).transpose()?;
 
-	let mut backend = crate::device::open(device_path, baud, SlcanMode::Normal).await?;
+	let mut backend = open().await?;
 
 	if extended {
 		// An extended session is workshop mode; see `crate::safety`.
@@ -443,7 +445,7 @@ pub async fn run(
 		Some(ids) => ids,
 		None => {
 			let gw = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
-			let mut uds = AsyncUdsClient::new(IsoTpCan::new(backend, CanId::Standard(gw.request), CanId::Standard(gw.response)));
+			let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(gw.request), CanId::Standard(gw.response)));
 			let listed = match uds.read_data_by_identifier(gateway::INSTALLATION_LIST).await {
 				Ok(bitmap) => gateway::decode_installation_list(&bitmap),
 				Err(e) => {
@@ -451,7 +453,7 @@ pub async fn run(
 					Vec::new()
 				}
 			};
-			backend = uds.into_transport().into_backend();
+			backend = L::release(uds.into_transport());
 			// The engine, the gearbox and the gateway itself are never in the
 			// list — the first two live on the other id block, and the
 			// gateway does not list itself.
@@ -496,11 +498,7 @@ pub async fn run(
 	for (at, request) in order.into_iter().enumerate() {
 		progress.update(&format!("reading faults — {request:03X}, unit {} of {count}", at + 1));
 		let Some(address) = UnitAddress::from_request(request) else { continue };
-		let mut uds = AsyncUdsClient::new(IsoTpCan::new(
-			backend,
-			CanId::Standard(address.request),
-			CanId::Standard(address.response),
-		));
+		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 		// See `crate::safety`: an extended session is workshop mode, and this
 		// command reads faults perfectly well without one.
 		if extended {
@@ -547,7 +545,7 @@ pub async fn run(
 				}
 				Err(e) => println!("\n{}  {:03X}  no supported list ({e})", address.label(), request),
 			}
-			backend = uds.into_transport().into_backend();
+			backend = L::release(uds.into_transport());
 			continue;
 		}
 
@@ -625,7 +623,7 @@ pub async fn run(
 			}
 			total += show.len();
 		}
-		backend = uds.into_transport().into_backend();
+		backend = L::release(uds.into_transport());
 	}
 
 	if supported {
