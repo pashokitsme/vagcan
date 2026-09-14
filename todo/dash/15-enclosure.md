@@ -177,7 +177,8 @@ Owner's answers (calipers where it says so; the rest stays `# GUESS` in `housing
 - **ESP32-C3 SuperMini:** L 22.4 × W 18.8 (calipers). T and H still the ruler's.
 - **Buck:** L 22.0 × **W 11.9** (calipers) — a narrower board than the ruler's 17 mm; T, H and
   pad layout unknown.
-- **SSD1322, MP1584EN, ESP** are on the desk; the drawing's numbers for the display stand.
+- **MP1584EN, ESP** are on the desk; the drawing's numbers for the display stand. *(Corrected
+  2026-09-15, owner: the SSD1322 has not arrived — this line said it was on the desk.)*
 - **Faceplate:** smoked acrylic on hand, **3 mm**, large enough.
 - **Mount:** no vent clip this round — taped to the dashboard, so the back is a flat face.
 - **Cable:** fixed, leaves through the **left** end (USB-C stays right).

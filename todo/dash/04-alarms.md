@@ -3,7 +3,8 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-14):** wired on `ble-uds`, hardware-free tests only. Rules are
+**State (2026-09-15):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
+(`18`) since PR #4 (2026-09-15) — hardware-free tests only. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
 `plan.rs`; the board reads their channels at full rate on every page, takes the screen,
 inverts the offending cell and silences on a short press. Open: the misfire rule's
@@ -187,8 +188,8 @@ the flicker test passes on a series built to sit exactly on the threshold.
 The flicker test passes, and the wiring is done. The demo cannot be run without hardware
 today (checked 2026-09-14):
 
-- `dashsim` shows the board's own frames — it needs the board, and the bench CAN pair is
-  dead (`research/dash/can-bring-up.md` §9.7).
+- `dashsim` shows the board's own frames — it needs the board on the bench, and nothing on the
+  bench answers `200A`–`200D`.
 - `vagcan watch` replays a `watch --out` recording through the *terminal* view, not the
   dash renderer; `vag-dash-render/examples/panel.rs` renders fixed stand-in frames.
 - The recorded drives (`research/dumps/drive-gear.csv`, `drive-gearbox.csv`) are gearbox

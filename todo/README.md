@@ -3,44 +3,43 @@
 The short roadmap is in [`README.md`](../README.md#roadmap) and is kept current there.
 This file is the detail behind it: state, decisions, open items, and what is dead. Older
 dated status sections moved verbatim to
-[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14.
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14 and
+2026-09-15.
 
-## Where things stand (2026-09-14, evening)
+## Where things stand (2026-09-15)
 
-**Milestone: one scheduler on the board and the laptop, and the laptop reads the car
-through the board.** Built on branch `ble-uds` (not on `master` yet), reviewed lens by
-lens, hardware-free tests (1,545 in the workspace at `213f6ec`). The first end-to-end bench run found
-the CAN pair dead (`research/dash/can-bring-up.md` §9.7) — the transceiver module was unpowered;
-after the owner's repair the bench passed (§9.9, §9.10): BLE and USB subscriptions at their
-rates, `watch` through the board at 100 ms, both carriers at once, adapter mode in and out,
-the `slcan` image, and `measure` through the board at 50 Hz.
+**Milestone: the scheduler, the board's links and a channel's specified value are on
+`master`.** The evening-of-2026-09-14 status moved to the history file on
+2026-09-15.
 
-- **Scheduler** (`dash/14` §2). `vag_uds_client::schedule::Planner`, `no_std`, no clock:
-  subscriptions with drop semantics, one read per `(unit, did)`, a unit's due
-  identifiers in one `22`, ceiling 100/s, panel floor 25/s, nothing starves. Laptop:
-  `vag-cli-core/src/bus` owns the link, every car command runs through it, `watch` and
-  `measure` subscribe (`read_batch` is gone). Board: replaces `can_task`'s round-robin;
-  `hz` per channel in `dash.toml`, default 2; the acceptance filter follows the exchange.
-- **UDS over BLE** (`dash/16`). The board always advertises and guards itself
-  (`vag_uds_client::guard`); the laptop has `--device ble` and `ble:<name>`, and never scans BLE unasked. `watch` and `measure` run on board-side
-  subscriptions stamped with the board's clock.
-- **The board over its USB cable, and `--slcan`** (`dash/14` §3, §7 item 4). The framed
-  link on USB with `Guard::cable`; a Hello/HelloReply probe tells the `dash` image apart
-  without sending it `V`; `vagcan --slcan` makes the `dash` image a plain adapter for
-  one run.
-- **Bench tools.** `bleuds` (one framed request or subscription over BLE) and `benchecu`
-  (the CANable answering as a unit; bench pair only, stops on car traffic).
-- **Bench, 2026-09-14.** The board's half of UDS over BLE passed with `bleuds` (§9.5, §9.6);
-  the pair then went dead — an unpowered SN65HVD230, 1.56 V on its 3.3 V pin (§9.7, §9.8) —
-  and after the repair `vagcan` through the board passed over BLE and USB (§9.9), with
-  `measure` at 50 Hz once the link carried a timing channel (§9.10).
-- **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
-  --hz` given explicitly wins over the saved rate.
+- **PR #2, `ble-uds`, merged 2026-09-14** (`77c01c5`): one scheduler on the board and the
+  laptop, UDS over BLE, the board over its USB cable and `--slcan`, alarms on the board.
+- **PR #3, `link-icons`, merged 2026-09-14** (`0dd1c90`): link icons in a column at the
+  panel's right edge, the adapter screen's kb/s (bench: `benchecu` at 20 frames/s → 111 bits a
+  frame, 2,280 bit/s each way; `research/dash/can-bring-up.md` §9.12), `dashsim --snap`.
+- **PR #4, `setpoint-drift`, merged 2026-09-15** (`7d8e0a5`): `setpoint` pairs a channel with the value its
+  unit asked for; the panel shows the difference; `[[alarm]] kind = "drift"` watches it
+  (`dash/18`). Four review rounds, the last with no findings. Workspace tests: 1,655 at
+  `38dfdef`. CI's bench host job failed on a stale preview count, fixed in `97487d3`; CI
+  green on it 2026-09-15.
+  The file format is [`docs/dash/dash-toml.md`](../docs/dash/dash-toml.md).
+- **Stopwatch sources on the ESC, recorded 2026-09-15** (`dash/14` §6, `dash/13`, `dash/17`
+  §4): wheel speeds `1800`–`1803` and longitudinal acceleration `1822` on `713`, declared by
+  the ODIS project and never asked — the parked survey skipped `18xx`.
+- **Bench hardware, 2026-09-15.** The SuperMini's `3V3` pad is dead; the owner moved the
+  SN65HVD230 to `5V` and the pair carries frames again. Out of spec: the transceiver's `RXD`
+  now drives the C3's `GPIO1` at 5 V, and the pin takes 3.6 V (§9.12). The board and the
+  CANable then dropped off USB together twice; both at once points at the cable or the hub,
+  not checked.
+- **The owner's `dash.toml`** pairs boost `202A` with its specified value `2029`
+  (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
 
-**Not verified on hardware:** the car — the list is [`dash/17`](dash/17-bench-ble-usb.md) §4
-(faults, info, watch, measure through the board; the moving-car guard; alarms; the cable on
-car traffic). On the bench: unplugging USB in adapter mode, a USB flood of large requests, the
-stored-config check at boot, whether opening the board's port twice resets it (§2, §3).
+**Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
+info, watch, measure through the board; the moving-car guard; alarms; the cable on car
+traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
+On the bench: unplugging USB in adapter mode, a USB flood of large requests (`dash/17` §2
+items 8 and 13), the stored-config check at boot, whether opening the board's port twice
+resets it (§3).
 
 ## Decisions (owner)
 
@@ -56,38 +55,38 @@ stored-config check at boot, whether opening the board's port twice resets it (�
 | M3 (whole-car measurement coverage by survey) off the list (2026-09-10) | — |
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) | `dash/14` §2 |
 | BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
+| Link icons in a column at the right edge; the chart ends before it, connected or not; no icons on the adapter screen so far (2026-09-14) | `PR #3` |
+| A channel's specified value written by hand as `setpoint`, never guessed from names; the panel shows the difference, not the value; a drift alarm is a percentage, a hold and a floor (2026-09-14/15) | `dash/18` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2: unplug USB in adapter mode, a USB flood.
-2. **`ble-uds` → `master`** — PR #2; review closed and CI green 2026-09-14, merge when the owner says.
-3. **Link icons and the adapter screen** — owner, 2026-09-14. Top right: 7×9 icons, one under the other, for the
-   USB cable and BLE while a host holds the link. `--slcan` mode: "SLCAN" top left in the
-   medium font, the speed centred with ▲▼ in kb/s, bit rate and error counters centred below.
-   Wired on branch `link-icons` (2026-09-14): USB icon from a cable host's Hello until its
-   session closes or the cable stops reading; BLE icon while a central is connected; kb/s
-   from nominal frame bits over 1 s windows (`vag_uds_can::wire`). Icons checked on the bench
-   through `dashsim --snap`, and the kb/s against `benchecu` at 20 frames/s
-   (`research/dash/can-bring-up.md` §9.12). Ready to merge.
-4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
+1. **The transceiver back on 3.3 V** — hardware, the owner's hands. `RXD` at 5 V into `GPIO1`
+   is past the C3's rating; a wire to the regulator's output, or a 3.3 V regulator off `5V`
+   (`research/dash/can-bring-up.md` §9.12). Before the car.
+2. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8 and 13: unplug USB
+   in adapter mode, a USB flood.
+3. **OLED and enclosure** — `dash/15`; waits for the panel.
+4. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
-   `vag_dash_render::screen`. Next: the owner writes the rules into `dash.toml`; the misfire rule's numbers and a run on the car. The
-   demo from a recorded drive waits for a recording with the retard channels and a way to
-   replay it (none is hardware-free today).
-6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
+   `vag_dash_render::screen`; the drift rule came with PR #4. Next: the owner writes the rules into
+   `dash.toml`; the misfire rule's numbers and a run on the car. The demo from a recorded drive
+   waits for a recording with the retard channels and a way to replay it (none is
+   hardware-free today).
+5. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-7. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+6. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
    watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
+7. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+   then the owner's `percent`, `hold_ms` and `min_setpoint`.
 8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
 9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
-   freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
+    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
 10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
     ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
     `dash/17` §4).
@@ -103,16 +102,16 @@ stored-config check at boot, whether opening the board's port twice resets it (�
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `ble-uds`, hardware-free; rules, misfire numbers and a car run open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | on `master` (PR #2), hardware-free; rules, misfire numbers and a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
-| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | built on `ble-uds`; bench passed (`research/dash/can-bring-up.md` §9.9–9.10), car pending |
-| [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work |
-| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — built on `setpoint-drift` 2026-09-15, hardware-free; waits for a pair in the owner's `dash.toml` |
+| [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work; §2 items 8 and 13 and §3 open, §4 is the car |
+| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 
-Finished task files are in `.archive/tasks/done/`; superseded designs in `.archive/specs/`.
+Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
+2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
 
 ## Command names in older documents
 
@@ -134,7 +133,7 @@ dev: survey sniff glossary recording dash vcds
 | `vagcan properties` | gone — it is `units --identify <unit>`, and now carries the moving-car guard |
 
 Every command the skills under `.claude/skills/` name was run against `--help` on
-2026-09-13 and resolves.
+2026-09-15 and resolves.
 
 ## Dead and archived (kept as negative results — do not retry)
 

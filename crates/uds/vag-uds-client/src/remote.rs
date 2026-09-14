@@ -1,6 +1,6 @@
 //! One host's UDS session with the board, across a link that is not a cable.
 //!
-//! The board's side of `todo/dash/16-uds-over-ble.md`, with no I/O: link
+//! The board's side of `.archive/tasks/done/dash/16-uds-over-ble.md`, with no I/O: link
 //! [`Message`]s from the host go in, [`Guard`] decides, the [`Planner`] puts
 //! what passes on the bus between the panel's own reads, and link messages for
 //! the host come out. The firmware owns the radio, the clock and the planner's

@@ -29,6 +29,8 @@ unpowered transceiver.
 ## 0. The pair
 
 - Repaired 2026-09-14: the transceiver module was unpowered (1.56 V on its 3.3 V pin; §9.7–§9.9).
+- 2026-09-15: the SuperMini's `3V3` pad died; the transceiver runs from `5V`, which puts `RXD`
+  into `GPIO1` past the C3's rating. Back to 3.3 V before the car (§9.12).
 - `research/dash/bench.sh 15 cantx` → PASS. Then reflash `dash` with the real plan.
 - Power the board from the 12 V bench supply, not USB, so unplugging USB does not reset it.
 

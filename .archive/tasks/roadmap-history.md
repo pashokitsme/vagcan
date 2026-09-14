@@ -1,8 +1,47 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-14
+# vagcan roadmap — history, 2026-08-02 to 2026-09-14 (evening)
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current.
+
+---
+
+## Where things stood on the evening of 2026-09-14 — PR #2 in review
+
+**Milestone: one scheduler on the board and the laptop, and the laptop reads the car
+through the board.** Built on branch `ble-uds` (not on `master` yet), reviewed lens by
+lens, hardware-free tests (1,545 in the workspace at `213f6ec`). The first end-to-end bench run found
+the CAN pair dead (`research/dash/can-bring-up.md` §9.7) — the transceiver module was unpowered;
+after the owner's repair the bench passed (§9.9, §9.10): BLE and USB subscriptions at their
+rates, `watch` through the board at 100 ms, both carriers at once, adapter mode in and out,
+the `slcan` image, and `measure` through the board at 50 Hz.
+
+- **Scheduler** (`dash/14` §2). `vag_uds_client::schedule::Planner`, `no_std`, no clock:
+  subscriptions with drop semantics, one read per `(unit, did)`, a unit's due
+  identifiers in one `22`, ceiling 100/s, panel floor 25/s, nothing starves. Laptop:
+  `vag-cli-core/src/bus` owns the link, every car command runs through it, `watch` and
+  `measure` subscribe (`read_batch` is gone). Board: replaces `can_task`'s round-robin;
+  `hz` per channel in `dash.toml`, default 2; the acceptance filter follows the exchange.
+- **UDS over BLE** (`dash/16`). The board always advertises and guards itself
+  (`vag_uds_client::guard`); the laptop has `--device ble` and `ble:<name>`, and never scans BLE unasked. `watch` and `measure` run on board-side
+  subscriptions stamped with the board's clock.
+- **The board over its USB cable, and `--slcan`** (`dash/14` §3, §7 item 4). The framed
+  link on USB with `Guard::cable`; a Hello/HelloReply probe tells the `dash` image apart
+  without sending it `V`; `vagcan --slcan` makes the `dash` image a plain adapter for
+  one run.
+- **Bench tools.** `bleuds` (one framed request or subscription over BLE) and `benchecu`
+  (the CANable answering as a unit; bench pair only, stops on car traffic).
+- **Bench, 2026-09-14.** The board's half of UDS over BLE passed with `bleuds` (§9.5, §9.6);
+  the pair then went dead — an unpowered SN65HVD230, 1.56 V on its 3.3 V pin (§9.7, §9.8) —
+  and after the repair `vagcan` through the board passed over BLE and USB (§9.9), with
+  `measure` at 50 Hz once the link carried a timing channel (§9.10).
+- **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
+  --hz` given explicitly wins over the saved rate.
+
+**Not verified on hardware:** the car — the list is [`dash/17`](dash/17-bench-ble-usb.md) §4
+(faults, info, watch, measure through the board; the moving-car guard; alarms; the cable on
+car traffic). On the bench: unplugging USB in adapter mode, a USB flood of large requests, the
+stored-config check at boot, whether opening the board's port twice resets it (§2, §3).
 
 ---
 

@@ -51,12 +51,13 @@ drama and a real collapse into a flat line.
 
 | file | state |
 |---|---|
-| [`04-alarms.md`](04-alarms.md) | render side done; firmware wiring open |
+| [`04-alarms.md`](04-alarms.md) | on the board: threshold rules (PR #2), the drift rule (PR #4); the owner's rules and a car run open |
 | [`06-car-and-bench.md`](06-car-and-bench.md) | questions only the car answers |
 | [`13-screens.md`](13-screens.md) | channel menu for pages |
 | [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md) | design and work order (§7) |
 | [`15-enclosure.md`](15-enclosure.md) | enclosure hand-off |
-| [`16-uds-over-ble.md`](16-uds-over-ble.md) | UDS over BLE — next |
+| [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 items 8 and 13 open, §4 is the car |
+| [`18-setpoints-and-drift.md`](18-setpoints-and-drift.md) | a channel's specified value and the drift alarm — merged (PR #4); car pending |
 
-Done: `01`, `02`, `03`, `05`, `10`, `11`, `12` in `.archive/tasks/done/dash/`.
+Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.
 Superseded: `07`, `08`, `09` in `.archive/specs/dash/`.

@@ -1,5 +1,13 @@
 # dash / CAN bring-up on the car — hand-off
 
+**State, 2026-09-15, the bench.** The pair carries frames, with the transceiver on the wrong
+supply: the SuperMini's `3V3` pad died, and the owner moved the SN65HVD230 to `5V`. Its `RXD`
+now drives `GPIO1` at 5 V, past the C3's 3.6 V; put it back on 3.3 V before the car. On that
+supply the adapter screen's kb/s was measured (111 bits a frame, 2,280 bit/s each way at 20
+frames/s) and the link icons were read off `dashsim --snap` frames (§9.12). The board and the
+CANable dropped off USB together twice afterwards; both at once points at the cable or the
+hub, which nobody has checked yet.
+
 **State, 2026-09-13, the bench.** **The board is an adapter, proven on the bench.** The
 `slcan` image speaks slcan on the USB console and `vagcan --device` drives it like the
 CANable (§9) — the exclusive adapter mode, mode 2, of

@@ -3,7 +3,7 @@
 //! The dash board is always visible over BLE and does no pairing, so whoever is
 //! on the other end is not trusted: every request it relays passes through a
 //! [`Guard`] first. A check the host makes is a courtesy, never the enforcement.
-//! The rules are `todo/dash/16-uds-over-ble.md`, "The board's own guards":
+//! The rules are `.archive/tasks/done/dash/16-uds-over-ble.md`, "The board's own guards":
 //!
 //! - **Services:** only the read-only allowlist `0x22 0x19 0x10 0x3E` (the same
 //!   list the client refuses to leave).

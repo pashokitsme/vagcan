@@ -89,7 +89,8 @@ answers:
   10, 19, rest  7F <sid> 11
 
 It listens 2 s before answering. A frame on any id but the --unit ids and 7DF
-is another node: it stops, then or at any time after.
+is another node: it stops, then or at any time after. A vagcan command asks the
+gateway (710) before any unit, so answering one needs --unit 710 as well.
 
 prints: once a second the requests seen per unit and identifier (7E0 F40D 10/s),
 and a total at exit.";

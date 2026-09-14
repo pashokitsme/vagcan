@@ -3,6 +3,10 @@
 **Subsystem:** dash + uds · **Needs the car:** once, for the end-to-end check ·
 **Opened 2026-09-13** · **Starts after `dash` is merged to `master`** (owner).
 
+**Done, 2026-09-14** — merged in PR #2 (`77c01c5`), bench passed (`research/dash/can-bring-up.md`
+§9.9–9.10). Moved here on 2026-09-15. The one item left, the car, is
+`todo/dash/17-bench-ble-usb.md` §4.
+
 Replaces item 8 of `14` §7 ("the same link over BLE NUS; measure the PDU rate") and makes
 item 7 (the `frame` mirror) unnecessary.
 

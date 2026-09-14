@@ -91,9 +91,9 @@ bus, so a screen of four cells refreshes at ≈50 Hz if it wants to, and a 10-ce
 | # | from | shows |
 |---|---|---|
 | D1 | E2 − 1.0 | boost as gauge pressure (0 = atmospheric), what a boost gauge shows |
-| D2 | E2 vs E3 | boost error, actual − commanded |
+| D2 | E2 vs E3 | boost error, actual − commanded — **built** as a `setpoint` pair, the difference on the panel (`18`, 2026-09-15) |
 | D3 | G3 / G4 | gear ratio in effect; with G1, clutch slip |
-| D4 | E19 or E20 over time | **0–60 and 0–100 stopwatch** (`todo/dash/14`): armed at 0 km/h, the two times print when the speed crosses; the chart page projects speed on time for the run |
+| D4 | gearbox `380B` over time (decided 2026-09-13, `14` §6; `E19`/`E20` were the candidates) | **0–60 and 0–100 stopwatch**: armed at 0 km/h, the two times print when the speed crosses; the chart page projects speed on time for the run |
 | D5 | E12 with E19 | l/100 km instantaneous |
 
 ## What the owner said on 2026-09-13
