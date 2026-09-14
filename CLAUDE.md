@@ -49,6 +49,15 @@ touches, so the tree never drifts out of format between `cargo fmt` runs. Notes:
   run it — for them the CI `fmt` job is the backstop. Needs `jq` and `rustfmt` on
   `PATH`; if either is missing the hook no-ops rather than failing the edit.
 
+**Two crates the workspace commands never reach.** `research/dash/host` and
+`crates/dash/vag-dash-fw` are not workspace members, so `cargo fmt --all`, `cargo test
+--workspace` and workspace clippy skip them — and CI checks each on its own. Before a push
+that touches them, run `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test` in `research/dash/host`, and the firmware's clippy
+(`VAGCAN_DASH_NO_CAR=1 cargo clippy --release --bins -- -D warnings`) in
+`crates/dash/vag-dash-fw`. Missed twice: an unformatted `dashsim` failed PR #3's CI
+(2026-09-14), and a preview count its tests pin failed PR #4's (2026-09-15).
+
 ## Safety (MANDATORY)
 
 This tool only reads, and reading is not the same as harmless: an identifier sweep is a

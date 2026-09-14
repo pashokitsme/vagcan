@@ -220,6 +220,21 @@ mixed in.
   decision, not refuted), so it is listed as the owner's call in the next goals. The owner
   decided the same day: delete it, entirely.
 
+### Rules established on the 2026-09-15 pass
+
+- **A status line naming a branch is checked against git, not against its own prose.**
+  `todo/README.md` said `ble-uds` was "not on `master` yet" and `link-icons` "ready to merge"
+  a day after PR #2 and PR #3 had merged. `git log origin/master --merges` (or
+  `git merge-base --is-ancestor <branch> origin/master`) is Phase 1's check for every branch a
+  status line names.
+- **Phase 1's gates include the two crates `--workspace` does not reach.** `research/dash/host`
+  (fmt, clippy, tests) and `crates/dash/vag-dash-fw` (clippy) are not workspace members and CI
+  checks each; `CLAUDE.md` has the commands. Twice in two days a green workspace hid a red CI.
+- **Scratch worktrees are checked before they are removed.** A `git worktree remove --force`
+  of a prototype chained after its own `git status` took the prototype's uncommitted edits
+  with it (a rendered variant the owner had already seen, so nothing of value). Read the
+  status, then decide; save a patch when anything is modified.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
