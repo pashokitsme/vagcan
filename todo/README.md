@@ -69,8 +69,8 @@ stored-config check at boot, whether opening the board's port twice resets it (�
    Wired on branch `link-icons` (2026-09-14): USB icon from a cable host's Hello until its
    session closes or the cable stops reading; BLE icon while a central is connected; kb/s
    from nominal frame bits over 1 s windows (`vag_uds_can::wire`). Icons checked on the bench
-   through `dashsim --snap` (`research/dash/can-bring-up.md` §9.12). Left: the kb/s on the
-   bench — the pair went silent (no frames either way) before it could be read.
+   through `dashsim --snap`, and the kb/s against `benchecu` at 20 frames/s
+   (`research/dash/can-bring-up.md` §9.12). Ready to merge.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
 5. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched

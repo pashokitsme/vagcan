@@ -940,17 +940,31 @@ The owner then asked for the icons in a column (a label beside them should not l
 second host). Reflashed 22:47: `--hello-snap` during a `bleuds` connection shows USB over BLE at
 the right edge, `НАДДУВ` in place.
 
-**Not verified: the adapter screen's kb/s.** In adapter mode the board sends no `FRAME` line,
-so it was read through a temporary log patch (not committed). `vagcan --slcan watch --device B
---did 7E0:F40D` against `benchecu` on `C`: the adapter's counts were `rx 0 tx 0 err 9` — every
-transmit refused. The pair was then silent in panel mode too: `benchecu --unit 7E0 --unit 7E1
---unit 7E2 --unit 714` saw no requests in 8 s, `vagcan dev sniff --device C --active` saw 0
-frames in 8.5 s, and the board logged `7E1 did not answer F187` / `no unit answers`. At 21:17
-(§9.11) the same pair carried exchanges. Same picture as §9.7–§9.8 before the repair in §9.9:
-look at the SN65HVD230 module's 3.3 V pin and CAN-H/CAN-L first.
+**The adapter screen's kb/s, checked 2026-09-15 00:18.** The 3.3 V pad on the board died; the
+owner moved the transceiver to 5 V and the pair carries frames again (see the note below). In
+adapter mode the board sends no `FRAME` line, so the rates were read through a temporary log
+patch (not committed: a `note!` in panel mode of the last and peak `Rates`, with `Port::status`
+and `Port::bits`).
 
-To finish once the pair carries frames: re-apply the log patch (a `note!` in panel mode of the
-last and peak `Rates` measured in adapter mode, with `Port::status` and `Port::bits`), run
-`vagcan --slcan watch --device B --did 7E0:F40D --hz 20` against `benchecu`, leave adapter mode
-with `C`, and check the rates against the frame counts: each exchange is one request and one
-answer frame, each counted at 47–111 bits (`vag_uds_can::wire::frame_bits`).
+`benchecu --bench --device C --unit 710 --unit 7E0 --unit 7E1 --part 7E0=… --part 7E1=…`, then
+`vagcan --slcan watch --device B --did 7E0:F40D --hz 20` for 12 s, then `C`:
+
+| seen | figure |
+|---|---|
+| `benchecu` | `7E0 F40D` at **20/s** for 12 s |
+| the board's counts | rx 249, tx 249, err 0 |
+| its bit counts | tx 27,639 and rx 27,639 for those frames — **111 bits each**, the nominal length of an 8-byte standard frame (`vag_uds_can::wire::frame_bits`), so both the request and the padded answer are counted whole |
+| the meter's peak | **2,280 bit/s each way** = 20.5 frames/s × 111, which the screen shows as `2.3 kb/s` |
+
+The bit counts are cumulative and never reset (only differences are read), so the session's
+totals carried 555 tx and 111 rx bits from the run before it; subtracted above.
+
+First attempt failed for a bench reason, not a board one: `watch` asks the gateway on `710` at
+start, and `benchecu` stops when a frame appears on an id it was not told to answer. Give it
+`--unit 710`.
+
+**The 3.3 V pad is dead (2026-09-15).** `3V3` on the SuperMini gives nothing; the transceiver
+now runs from `5V`. The SN65HVD230 is a 3.3 V part and its `RXD` drives the ESP32-C3's `GPIO1`
+at its own supply — the C3's pins take 3.6 V. Powering the module from 3.3 V again (a wire to
+the regulator's output, or a small 3.3 V regulator off `5V`) is the fix; a divider on `RXD`
+is the stopgap.
