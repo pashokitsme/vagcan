@@ -35,6 +35,8 @@ dirs = "6"
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
+# `link::pipe_pair`: the remote bus's tests talk to a scripted board through it.
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # The firmware's own decoder, so the plan generator's tests assert on the

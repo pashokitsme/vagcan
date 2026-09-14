@@ -138,7 +138,8 @@ pub(super) async fn run<L: UnitLink>(link: L, budget: Budget, mut inbox: mpsc::U
 	}
 }
 
-async fn sleep_until(wake: Option<Instant>) {
+/// Wake at `wake`, or never. Shared with the remote task.
+pub(super) async fn sleep_until(wake: Option<Instant>) {
 	match wake {
 		Some(at) => tokio::time::sleep_until(at).await,
 		None => std::future::pending().await,

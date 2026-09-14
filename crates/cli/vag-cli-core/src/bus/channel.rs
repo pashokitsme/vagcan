@@ -61,6 +61,8 @@ impl AsyncIsoTpTransport for BusChannel {
 			Err(ExchangeError::Link(why)) => Err(why),
 			Err(ExchangeError::Closed) => Err(TransportError::Disconnected),
 			Err(ExchangeError::Forbidden(why)) => Err(TransportError::Protocol(why.to_string())),
+			// The board's own words, so the reason reaches whoever reads the error.
+			Err(refused @ ExchangeError::Refused(_)) => Err(TransportError::Protocol(refused.to_string())),
 		}
 	}
 }
