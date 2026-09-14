@@ -158,8 +158,8 @@ where
 /// plug is drawn to the same cell so the pair reads as a pair.
 pub const ICON: Size = Size::new(7, 9);
 
-/// Between two icons.
-const ICON_GAP: u32 = 4;
+/// Dark rows between two icons, one under the other: as many as above them.
+const ICON_GAP: u32 = 2;
 
 /// Dark rows above the icons: an icon touching the edge of the glass reads as cut off
 /// (owner, on the first preview).
@@ -172,18 +172,25 @@ const ICON_RIGHT: u32 = 4;
 /// Dark columns between the icons and the label or chart header they narrow.
 const ICON_CLEARANCE: i32 = 4;
 
-/// Where the link icons go: the top-right corner, [`ICON_TOP`] down and [`ICON_RIGHT`] in, USB left of BLE. `None` when
-/// nothing is connected — then nothing is drawn and nothing is narrowed for them.
+/// Where the link icons go: a column in the top-right corner, [`ICON_TOP`] down and
+/// [`ICON_RIGHT`] in, USB above BLE. `None` when nothing is connected — then nothing is
+/// drawn.
+///
+/// A column and not a row (owner, 2026-09-14): the room it takes from the rightmost label is
+/// one icon wide whether one host is connected or two, so what fits there does not depend on
+/// how many hosts there are — and that label is whatever the plan puts last.
 pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
 	let n = u32::from(links.usb) + u32::from(links.ble);
 	if n == 0 {
 		return None;
 	}
-	let w = n * ICON.width + (n - 1) * ICON_GAP;
-	Some(Rectangle::new(
-		Point::new(width as i32 - (ICON_RIGHT + w) as i32, ICON_TOP as i32),
-		Size::new(w, ICON.height),
-	))
+	let h = n * ICON.height + (n - 1) * ICON_GAP;
+	Some(Rectangle::new(Point::new(icon_column(width), ICON_TOP as i32), Size::new(ICON.width, h)))
+}
+
+/// The icons' left edge, connected or not.
+fn icon_column(width: u32) -> i32 {
+	width as i32 - (ICON_RIGHT + ICON.width) as i32
 }
 
 fn draw_icons<D>(links: Links, width: u32, ink: BinaryColor, target: &mut D)
@@ -196,7 +203,7 @@ where
 	let mut at = area.top_left;
 	if links.usb {
 		usb_icon(at, ink, target);
-		at.x += (ICON.width + ICON_GAP) as i32;
+		at.y += (ICON.height + ICON_GAP) as i32;
 	}
 	if links.ble {
 		ble_icon(at, ink, target);
@@ -905,9 +912,8 @@ where
 	}
 }
 
-/// The chart's header rows: the header text, and the link icons beside it. The trace starts
-/// under them, at the same row whether or not a host is connected, so a phone connecting
-/// does not move the scale.
+/// The chart's header rows: the header text, and the first link icon beside it. The trace
+/// starts under them.
 const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
 
 /// How many columns the trace will take: one sample is one column, and there
@@ -960,7 +966,10 @@ where
 	let plot_top = HEADER_ROWS;
 	let plot_x = value_w as i32 + 4;
 	let plot_bottom = height as i32 - 1;
-	let plot_w = width as i32 - plot_x;
+	// The trace ends before the icons' column **whether or not a host is connected**: the icons
+	// stand one under the other, so a second one is beside the trace's top rows, and a plot
+	// that widened when the last host left would change how many seconds the chart holds.
+	let plot_w = icon_column(width) - ICON_CLEARANCE - plot_x;
 	// The geometry is settled before the header is written, because the header
 	// counts what the trace draws and the trace is only as wide as the plot.
 	let drawn = drawn_columns(samples.len(), plot_w);
@@ -1347,11 +1356,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_icons_sit_two_pixels_in_from_the_corner_and_two_pixels_apart() {
+	fn the_icons_stand_in_a_column_two_pixels_down_four_in_and_two_apart() {
 		assert_eq!(icon_box(Links::NONE, 256), None, "nothing connected, nothing drawn");
 		assert_eq!(icon_box(USB, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
 		assert_eq!(icon_box(BLE, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
-		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(234, 2), Size::new(18, 9))));
+		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(245, 2), Size::new(7, 20))));
 	}
 
 	#[test]
@@ -1375,8 +1384,8 @@ mod tests {
 			}
 			assert!(lit_in(&display, right), "{links:?}: the corner cell has its icon");
 			if links == BOTH {
-				assert!(lit_in(&display, Rectangle::new(Point::new(234, 2), ICON)), "and the one left of it");
-				assert!(!lit_in(&display, Rectangle::new(Point::new(241, 2), Size::new(4, 9))), "the gap is dark");
+				assert!(lit_in(&display, Rectangle::new(Point::new(245, 13), ICON)), "and the one under it");
+				assert!(!lit_in(&display, Rectangle::new(Point::new(245, 11), Size::new(7, 2))), "the gap is dark");
 			}
 		}
 
@@ -1393,7 +1402,7 @@ mod tests {
 			let report = values(&temps("КОРОБКА"), links, &Theme::bold_mono(), &mut display);
 			assert!(!report.label_overrun && !report.glyph_missing, "{links:?}: {report:?}");
 			assert!(icon_box_holds_only_the_icons(&display, links), "{links:?}");
-			// `КОРОБКА` is 34 px and the room beside two icons 35: it fits, and the clearance
+			// `КОРОБКА` is 34 px and the room beside the icons 46: it fits, and the clearance
 			// before the icons stays dark.
 			let area = icon_box(links, TALL.width).unwrap();
 			let clearance = Rectangle::new(
@@ -1418,6 +1427,44 @@ mod tests {
 	}
 
 	#[test]
+	fn a_second_host_takes_no_more_room_from_the_rightmost_label() {
+		for last in ["ОЖ", "НАДДУВ", "КОРОБКА", "ТЕМП.МАСЛА"] {
+			let cells = temps(last);
+			let (mut one, mut two) = (tall(), tall());
+			let alone = values(&cells, USB, &Theme::bold_mono(), &mut one);
+			let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut two);
+			assert_eq!(alone.label_overrun, beside.label_overrun, "{last}");
+			let labels = Rectangle::new(Point::new(0, 0), Size::new(241, ICON_TOP + ICON.height));
+			assert!(
+				labels.points().all(|p| one.get_pixel(p) == two.get_pixel(p)),
+				"{last}: the label row did not move"
+			);
+		}
+	}
+
+	#[test]
+	fn a_value_never_lights_a_pixel_beside_the_icons() {
+		for n in 1..=4 {
+			for (value, decimals) in [(78.0, 0), (1234.0, 0), (12345.0, 0), (104.5, 1), (-40.5, 1)] {
+				let cells: std::vec::Vec<Cell<'_>> = (0..n).map(|_| Cell::new("ОЖ", Some(value), "°C", decimals)).collect();
+				let mut display = tall();
+				values(&cells, BOTH, &Theme::bold_mono(), &mut display);
+				let mut alone = tall();
+				draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone);
+				let area = icon_box(BOTH, TALL.width).unwrap();
+				let around = Rectangle::new(
+					area.top_left - Point::new(ICON_CLEARANCE, 0),
+					area.size + Size::new(ICON_CLEARANCE as u32, ICON_GAP),
+				);
+				assert!(
+					around.points().all(|p| display.get_pixel(p) == alone.get_pixel(p)),
+					"{n} cells of {value}: a value reached the icons"
+				);
+			}
+		}
+	}
+
+	#[test]
 	fn a_rightmost_label_that_fits_only_without_the_icons_is_reported_with_them() {
 		let cells = temps("ТЕМП.МАСЛА");
 		let mut display = tall();
@@ -1425,7 +1472,7 @@ mod tests {
 		assert!(!alone.label_overrun, "it fits its column: {alone:?}");
 		let mut display = tall();
 		let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut display);
-		assert!(beside.label_overrun, "it does not fit beside two icons: {beside:?}");
+		assert!(beside.label_overrun, "it does not fit beside the icons: {beside:?}");
 	}
 
 	#[test]
@@ -1438,7 +1485,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_chart_header_gives_way_to_the_icons_and_the_trace_stays_under_them() {
+	fn a_chart_header_gives_way_to_the_icons_and_the_trace_ends_before_their_column() {
 		// Pinned at the top of the scale, so the trace runs along the highest row it can.
 		let samples = [2.5f32; 240];
 		fn pinned<'a>(label: &'a str, samples: &'a [f32]) -> Frame<'a> {
@@ -1456,13 +1503,23 @@ mod tests {
 		let report = draw_with(&chart("НАДДУВ"), &board, &Theme::bold_mono(), &mut display);
 		assert!(!report.label_overrun, "{report:?}");
 		assert!(icon_box_holds_only_the_icons(&display, BOTH));
+		let end = icon_column(TALL.width) - ICON_CLEARANCE;
+		assert!(lit(&display, end - 1, HEADER_ROWS), "the trace runs along its top row to the clearance");
 		assert!(
-			(200..256).any(|x| lit(&display, x, HEADER_ROWS)),
-			"the trace is on its top row, under the icons"
+			(end..TALL.width as i32)
+				.all(|x| (HEADER_ROWS..TALL.height as i32).all(|y| !lit(&display, x, y) || icon_box(BOTH, TALL.width).unwrap().contains(Point::new(x, y)))),
+			"nothing of the trace in the clearance or the icons' column"
+		);
+		let mut plain = tall();
+		draw(&chart("НАДДУВ"), &Theme::bold_mono(), &mut plain);
+		let under = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(end as u32, TALL.height - HEADER_ROWS as u32));
+		assert!(
+			under.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
+			"the trace is the same picture with no host connected"
 		);
 
 		// Lengthen the label a letter at a time: the icons never let a longer header through,
-		// and some length fits the whole width but not the width less two icons.
+		// and some length fits the whole width but not the width less the icons.
 		let mut collided = false;
 		for n in 1..40 {
 			let long: std::string::String = core::iter::repeat_n('Ж', n).collect();

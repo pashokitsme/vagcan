@@ -751,7 +751,7 @@ mod preview {
 		let two = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("НАДДУВ", Some(1.82), "bar", 2)];
 		shots.push(shot("values2-links-usb-ble", &Frame::Values { cells: &two }, linked(BOTH)));
 
-		// The rightmost label fits its column alone and not beside two icons.
+		// The rightmost label fits its column alone and not beside the icons.
 		let long = [
 			Cell::new("ОЖ", Some(93.0), "°C", 0),
 			Cell::new("НАДДУВ", Some(1.82), "bar", 2),

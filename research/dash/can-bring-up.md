@@ -936,6 +936,10 @@ off those frames.
 | the same with `--hello-snap` | both icons; `НАДДУВ` moved left beside them |
 | `--snap` after `bleuds` ended | no icons |
 
+The owner then asked for the icons in a column (a label beside them should not lose room to a
+second host). Reflashed 22:47: `--hello-snap` during a `bleuds` connection shows USB over BLE at
+the right edge, `НАДДУВ` in place.
+
 **Not verified: the adapter screen's kb/s.** In adapter mode the board sends no `FRAME` line,
 so it was read through a temporary log patch (not committed). `vagcan --slcan watch --device B
 --did 7E0:F40D` against `benchecu` on `C`: the adapter's counts were `rx 0 tx 0 err 9` — every
