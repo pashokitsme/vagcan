@@ -273,7 +273,13 @@ impl AsyncIsoTpTransport for Stuck {
 /// the task up, its caller gets a miss rather than waiting for ever.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_one_shot_read_the_task_never_gets_to_is_a_miss_after_its_deadline() {
-	let bus = Bus::start(Stuck, Budget::default());
+	// No timing channel here to starve behind: a zero bound keeps the wait short.
+	let budget = Budget {
+		starve_after_ms: 0,
+		..Budget::default()
+	};
+	let deadline = once_deadline(&budget);
+	let bus = Bus::start(Stuck, budget);
 	let asked = std::time::Instant::now();
 	let (once, all) = tokio::time::timeout(Duration::from_secs(10), async {
 		tokio::join!(
@@ -285,7 +291,87 @@ async fn a_one_shot_read_the_task_never_gets_to_is_a_miss_after_its_deadline() {
 	.expect("the reads come back rather than wait for ever");
 	assert_eq!(once, Err(Miss::NoAnswer));
 	assert_eq!(all, vec![Err(Miss::NoAnswer), Err(Miss::NoAnswer)]);
-	assert!(asked.elapsed() >= ONCE_DEADLINE, "not before the deadline: {:?}", asked.elapsed());
+	assert!(asked.elapsed() >= deadline, "not before the deadline: {:?}", asked.elapsed());
+}
+
+/// An engine whose timing read answers just inside its deadline, and a gearbox that says
+/// `78` before it answers: a one-shot's worst case on a cable.
+struct Starving {
+	/// When the gearbox was asked.
+	sent: Arc<Mutex<Option<std::time::Instant>>>,
+}
+
+struct StarvingChannel {
+	link: Starving,
+	request: u16,
+	pdu: Option<Vec<u8>>,
+	pending_said: bool,
+}
+
+impl vag_uds_can::UnitLink for Starving {
+	type Channel = StarvingChannel;
+
+	fn to_unit(self, request: CanId, _response: CanId) -> StarvingChannel {
+		let CanId::Standard(request) = request else { panic!("extended id") };
+		StarvingChannel {
+			link: self,
+			request,
+			pdu: None,
+			pending_said: false,
+		}
+	}
+
+	fn release(channel: StarvingChannel) -> Starving {
+		channel.link
+	}
+}
+
+impl AsyncIsoTpTransport for StarvingChannel {
+	async fn send(&mut self, pdu: &[u8]) -> Result<(), TransportError> {
+		if self.request != ENGINE.request {
+			*self.link.sent.lock().unwrap() = Some(std::time::Instant::now());
+		}
+		self.pdu = Some(pdu.to_vec());
+		Ok(())
+	}
+
+	async fn recv(&mut self, _timeout: Duration) -> Result<Vec<u8>, TransportError> {
+		let Some(pdu) = self.pdu.clone() else {
+			return Err(TransportError::Timeout);
+		};
+		let wait = match self.request {
+			// The exchange out ahead of the one-shot runs very nearly to its deadline.
+			request if request == ENGINE.request => READ_DEADLINE - Duration::from_millis(20),
+			_ if !self.pending_said => {
+				self.pending_said = true;
+				return Ok(vec![0x7F, 0x22, 0x78]);
+			}
+			_ => Duration::from_secs(1),
+		};
+		tokio::time::sleep(wait).await;
+		self.pdu = None;
+		Ok(vec![0x62, pdu[1], pdu[2], 1])
+	}
+}
+
+/// A one-shot waits behind a timing channel until it starves, then behind the exchange
+/// already out, then through its own unit's `78`: its deadline covers all three.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_shot_read_starved_behind_a_timing_channel_still_gets_its_answer() {
+	let sent = Arc::new(Mutex::new(None));
+	let bus = Bus::start(Starving { sent: sent.clone() }, Budget::default());
+	let _speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let gearbox = Unit {
+		request: 0x7E1,
+		response: 0x7E9,
+	};
+	let asked = std::time::Instant::now();
+	let read = bus.read_once(Class::Foreground, gearbox, 0x1000).await;
+	let answered = asked.elapsed();
+	let waited = sent.lock().unwrap().expect("the one-shot went out").duration_since(asked);
+	let starve = Duration::from_millis(u64::from(Budget::default().starve_after_ms));
+	assert!(waited >= starve, "it waited behind the timing channel until it starved: {waited:?}");
+	assert_eq!(read.map(|(data, _)| data), Ok(vec![1]), "answered {answered:?} after it was asked");
 }
 
 #[tokio::test(flavor = "multi_thread")]
