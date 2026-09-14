@@ -132,22 +132,79 @@ fn number(cell: &Cell<'_>) -> Buf {
 	buf
 }
 
-/// The deviation line's text: a dash where the pair has not answered, `None` where the channel
-/// has no specified value at all and the line is not drawn.
-fn deviation_text(cell: &Cell<'_>) -> Option<Buf> {
-	let mut buf = Buf::new();
+/// Rows between the sign and the digits it qualifies.
+const SIGN_GAP: i32 = 1;
+
+/// The difference as it is drawn: the sign in a smaller face than the digits (owner,
+/// 2026-09-15), so `+` and `-` do not shout as loudly as the number.
+struct Difference {
+	/// `"+"` or `"-"`, in the unit's face. `None` for the dash of a pair that has not
+	/// answered — a dash is not a sign.
+	sign: Option<&'static str>,
+	digits: Buf,
+}
+
+/// What a cell's difference reads as: `None` where the channel has no specified value at all
+/// and the line is not drawn.
+fn difference(cell: &Cell<'_>) -> Option<Difference> {
+	let mut digits = Buf::new();
 	match cell.deviation {
-		Deviation::None => return None,
+		Deviation::None => None,
 		Deviation::Unknown => {
-			let _ = buf.write_str("--");
+			let _ = digits.write_str("--");
+			Some(Difference { sign: None, digits })
 		}
-		// Always signed: the sign is the whole reading. `+0.07` is the unit asking for less
-		// than it got, `-0.07` for more.
+		// Always signed: the sign is half the reading. `+0.07` is the unit getting more than
+		// it asked for, `-0.07` less.
 		Deviation::Value(v) => {
-			let _ = write!(buf, "{:+.*}", cell.decimals as usize, v);
+			let magnitude = if v < 0.0 { -v } else { v };
+			let _ = write!(digits, "{:.*}", cell.decimals as usize, magnitude);
+			Some(Difference {
+				sign: Some(if v < 0.0 { "-" } else { "+" }),
+				digits,
+			})
 		}
 	}
-	Some(buf)
+}
+
+/// How wide it is drawn, the sign and its gap included.
+fn difference_width(theme: &Theme, text: &Difference) -> u32 {
+	let sign = text.sign.map_or(0, |s| text_width(&theme.unit, s) + SIGN_GAP as u32);
+	sign + text_width(&theme.label, text.digits.as_str())
+}
+
+/// Draws it on `baseline`, centred on `centre`.
+fn draw_difference<D>(text: &Difference, centre: i32, baseline: i32, theme: &Theme, ink: BinaryColor, target: &mut D, report: &mut Report)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let mut x = centre - difference_width(theme, text) as i32 / 2;
+	if let Some(sign) = text.sign {
+		let drawn = theme.unit.render(
+			sign,
+			Point::new(x, baseline),
+			VerticalPosition::Baseline,
+			FontColor::Transparent(ink),
+			target,
+		);
+		if drawn.is_err() {
+			report.glyph_missing = true;
+		}
+		x += text_width(&theme.unit, sign) as i32 + SIGN_GAP;
+	}
+	if theme
+		.label
+		.render(
+			text.digits.as_str(),
+			Point::new(x, baseline),
+			VerticalPosition::Baseline,
+			FontColor::Transparent(ink),
+			target,
+		)
+		.is_err()
+	{
+		report.glyph_missing = true;
+	}
 }
 
 /// Draw one frame with nothing connected and no rates measured. Returns what did not fit.
@@ -892,20 +949,8 @@ fn draw_value<D>(
 		let (top, bottom) = layout.band;
 		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
 		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
-		if let (Some(baseline), Some(text)) = (layout.dev_baseline, deviation_text(cell))
-			&& theme
-				.label
-				.render_aligned(
-					text.as_str(),
-					Point::new(centre, baseline),
-					VerticalPosition::Baseline,
-					HorizontalAlignment::Center,
-					FontColor::Transparent(ink),
-					target,
-				)
-				.is_err()
-		{
-			report.glyph_missing = true;
+		if let (Some(baseline), Some(text)) = (layout.dev_baseline, difference(cell)) {
+			draw_difference(&text, centre, baseline, theme, ink, target, report);
 		}
 		if layout.with_unit && !cell.unit.is_empty() {
 			// Unit last, on the floor, centred under the number. It is the
@@ -1097,9 +1142,9 @@ where
 	let plot_top = HEADER_ROWS;
 	// The column the number and its difference share: the wider of the two decides where the
 	// trace starts, or a long difference would run under it.
-	let deviation = deviation_text(cell);
+	let deviation = difference(cell);
 	// The label's face: the numeral ladder's smallest was too big here (owner, 2026-09-15).
-	let dev_w = deviation.as_ref().map_or(0, |text| text_width(&theme.label, text.as_str()));
+	let dev_w = deviation.as_ref().map_or(0, |text| difference_width(theme, text));
 	let column_w = value_w.max(dev_w) as i32;
 	let plot_x = column_w + 4;
 	let plot_bottom = height as i32 - 1;
@@ -1141,19 +1186,8 @@ where
 	let value_baseline = plot_top + (band_bottom - plot_top - value_h as i32) / 2 + value_h as i32;
 	let value_x = (column_w - value_w as i32) / 2;
 	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(value_x, value_baseline), ink, target);
-	if let Some(text) = deviation
-		&& theme
-			.label
-			.render(
-				text.as_str(),
-				Point::new((column_w - dev_w as i32) / 2, height as i32 - 1),
-				VerticalPosition::Baseline,
-				FontColor::Transparent(ink),
-				target,
-			)
-			.is_err()
-	{
-		report.glyph_missing = true;
+	if let Some(text) = deviation {
+		draw_difference(&text, column_w / 2, height as i32 - 1, theme, ink, target, &mut report);
 	}
 
 	if plot_w < 8 || max <= min {
@@ -1590,7 +1624,7 @@ mod tests {
 		let theme = Theme::bold_mono();
 		let cell = of(9.0);
 		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, TALL.width / 3);
-		let dev_w = text_width(&theme.label, deviation_text(&cell).unwrap().as_str());
+		let dev_w = difference_width(&theme, &difference(&cell).unwrap());
 		assert!(dev_w > value_w, "the difference is the wider of the two: {dev_w} against {value_w}");
 
 		// Nothing of the trace in the column: with no samples at all the same rows hold the
