@@ -26,6 +26,13 @@ path = "src/bin/bleecho.rs"
 name = "bleuds"
 path = "src/bin/bleuds.rs"
 
+# A CANable answering as a control unit on a bench pair, so the board's
+# scheduler sees a unit that answers and its rates can be measured. Transmits:
+# refuses without `--bench`, and stops on traffic from any other node.
+[[bin]]
+name = "benchecu"
+path = "src/bin/benchecu.rs"
+
 [[bin]]
 name = "dashsim"
 path = "src/bin/dashsim.rs"
@@ -34,7 +41,8 @@ path = "src/bin/dashsim.rs"
 anyhow = "1"
 btleplug = "0.11"
 futures = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
+# `signal`: `benchecu` prints its total on Ctrl-C.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time", "signal"] }
 uuid = "1"
 vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
 # For one number: the gap under which two presses are one, so `dashsim` and
@@ -42,6 +50,10 @@ vag-dash-ble = { path = "../../../crates/dash/vag-dash-ble" }
 vag-dash-render = { path = "../../../crates/dash/vag-dash-render" }
 # The link codec `bleuds` speaks, the same source the board links.
 vag-uds-transport = { path = "../../../crates/uds/vag-uds-transport" }
+# `benchecu`: the slcan backend it answers through, and the rule pairing a
+# request id with its response id.
+vag-uds-can = { path = "../../../crates/uds/vag-uds-can", features = ["slcan"] }
+vag-uds-client = { path = "../../../crates/uds/vag-uds-client" }
 thiserror = "2"
 serialport = "4"
 crossterm = "0.28"
