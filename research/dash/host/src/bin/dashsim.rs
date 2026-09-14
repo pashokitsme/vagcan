@@ -630,7 +630,7 @@ mod preview {
 	use std::path::Path;
 	use vag_dash_render::frame::Adapter;
 	use vag_dash_render::render::Report;
-	use vag_dash_render::{Board, Cell, Frame, Links, Rates, Theme, draw_with};
+	use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Rates, Theme, draw_with};
 
 	/// The panel the board has.
 	pub const PANEL: Size = Size::new(256, 64);
@@ -766,6 +766,17 @@ mod preview {
 		];
 		shots.push(shot("values4-long-label-links-usb-ble", &Frame::Values { cells: &long }, linked(BOTH)));
 
+		// A page where two channels have a specified value behind them: boost is 0.07 bar over
+		// what the engine asked for, the throttle 1.2° under it, and the gearbox's specified
+		// value has not answered. Temperatures have none at all.
+		let drifting = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.92), "bar", 2).with_deviation(Deviation::Value(0.07)),
+			Cell::new("ДРОССЕЛЬ", Some(42.8), "°", 1).with_deviation(Deviation::Value(-1.2)),
+			Cell::new("КОРОБКА", Some(78.0), "°C", 0).with_deviation(Deviation::Unknown),
+		];
+		shots.push(shot("values4-deviation-links-usb-ble", &Frame::Values { cells: &drifting }, linked(BOTH)));
+
 		// A boost-shaped trace: spool, plateau, a dip, back on it.
 		let samples: Vec<f32> = (0..256)
 			.map(|i| {
@@ -784,6 +795,14 @@ mod preview {
 		};
 		shots.push(shot("chart-boost-links-none", &chart, linked(Links::NONE)));
 		shots.push(shot("chart-boost-links-usb-ble", &chart, linked(BOTH)));
+		let chart_deviation = Frame::Chart {
+			cell: Cell::new("НАДДУВ", Some(1.92), "bar", 2).with_deviation(Deviation::Value(0.07)),
+			min: 0.0,
+			max: 2.5,
+			samples: &samples,
+			seconds_per_sample: 0.2,
+		};
+		shots.push(shot("chart-boost-deviation-links-usb-ble", &chart_deviation, linked(BOTH)));
 
 		// The adapter screen.
 		let adapter = |kbit, listen_only, rx, tx, errors| Adapter {

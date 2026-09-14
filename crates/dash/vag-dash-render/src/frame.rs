@@ -24,6 +24,12 @@ pub struct Cell<'a> {
 	/// Places after the point. Boost wants two, a temperature wants none, and
 	/// deciding per cell is cheaper than deciding per panel.
 	pub decimals: u8,
+	/// What the unit asked for, against what it got.
+	///
+	/// A pair the plan wrote down (`todo/dash/18-setpoints-and-drift.md`): boost commanded and
+	/// boost measured. The difference is what a person can read at a glance; the two numbers
+	/// side by side are two numbers to subtract while driving.
+	pub deviation: Deviation,
 	/// Draw this cell inverted — black on white.
 	///
 	/// This is how an alarm shows *which* cylinder. Filling the whole panel
@@ -39,6 +45,7 @@ impl<'a> Cell<'a> {
 			value,
 			unit,
 			decimals,
+			deviation: Deviation::None,
 			alarm: false,
 		}
 	}
@@ -47,6 +54,28 @@ impl<'a> Cell<'a> {
 		self.alarm = true;
 		self
 	}
+
+	pub const fn with_deviation(mut self, deviation: Deviation) -> Self {
+		self.deviation = deviation;
+		self
+	}
+}
+
+/// How far a channel is from the value its control unit asked for.
+///
+/// Three states and not an `Option<f32>`, because "this channel has no specified value" and
+/// "it has one and nobody has answered yet" are different things on the glass: the first keeps
+/// the cell's three lines, the second keeps four and draws a dash in the fourth. Collapsing
+/// them would make the row jump the moment a setpoint stopped answering.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Deviation {
+	/// The plan pairs this channel with nothing.
+	#[default]
+	None,
+	/// It is paired, and one of the two has not answered.
+	Unknown,
+	/// `actual − specified`, in the cell's own unit.
+	Value(f32),
 }
 
 /// What to draw.
