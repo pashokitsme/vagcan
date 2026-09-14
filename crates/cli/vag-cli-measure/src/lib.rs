@@ -1233,7 +1233,15 @@ fn road_load(car: &carfile::CarFile, opts: &Options<'_>) -> Result<(power::RoadL
 /// since the last one, each value with its own time. The loop waits on the next
 /// arrival and the next frame together, and drains the keyboard after either.
 async fn drive<F: Feed>(feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool) -> Result<()> {
-	drive_to(feed, prepared, opts, full_screen, &mut |line: &str| eprintln!("{line}")).await
+	drive_to(
+		feed,
+		prepared,
+		opts,
+		full_screen,
+		&mut |line: &str| eprintln!("{line}"),
+		&mut |text: &str| println!("{text}"),
+	)
+	.await
 }
 
 /// Lines held while the full screen is up, said once it is given back: declared before
@@ -1251,12 +1259,22 @@ impl Drop for Held<'_> {
 	}
 }
 
-/// [`drive`], with where a read that ended is said handed in.
+/// [`drive`], with where a read that ended is said, and where the console's text goes,
+/// handed in.
 ///
 /// A read other than the speed can end while the run goes on: the dash board refused it
 /// (its walk rule, its caps). One line per read says why — at once on the plain console,
 /// and after the full screen is given back otherwise, where a line would land on top of it.
-async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool, say: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
+/// `print` takes everything else written to the console: the plain line per cycle and
+/// the results tables.
+async fn drive_to<F: Feed>(
+	mut feed: F,
+	prepared: Prepared,
+	opts: &Options<'_>,
+	full_screen: bool,
+	say: &mut (dyn FnMut(&str) + Send),
+	print: &mut (dyn FnMut(&str) + Send),
+) -> Result<()> {
 	let Prepared {
 		plan,
 		mut meta,
@@ -1347,7 +1365,7 @@ async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, 
 				Some(terminal) => {
 					terminal.draw(|frame| ui::draw(frame, &screen))?;
 				}
-				None => println!("{}", ui::plain_line(&screen)),
+				None => print(&ui::plain_line(&screen)),
 			}
 		}
 
@@ -1400,7 +1418,11 @@ async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, 
 									table = Some(again);
 								}
 							}
-							false => println!("{again}"),
+							// Twice on the plain console: the second says why it is there.
+							false => {
+								print(messages::DENSITY_MEASURED);
+								print(&again);
+							}
 						}
 					}
 					if let Some(path) = opts.out {
@@ -1509,7 +1531,7 @@ async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, 
 							table = Some(text);
 							last_frame = None;
 						}
-						false => println!("{text}"),
+						false => print(&text),
 					}
 					// The barometer and the ambient sensor are read here and
 					// nowhere else: once per run, and at the end of it, because
@@ -1597,12 +1619,12 @@ async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, 
 		drop(screen);
 		drop(held);
 		for record in &recorded {
-			println!("{}", report::results(&record.run, &record.derived, &meta.setting));
+			print(&report::results(&record.run, &record.derived, &meta.setting));
 		}
 	}
 	let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
 	if unsaved > 0 {
-		println!("{}", messages::unsaved_on_quit(unsaved));
+		print(&messages::unsaved_on_quit(unsaved));
 	}
 	result
 }
@@ -2562,6 +2584,109 @@ mod tests {
 		assert!(next - asked < FRAME, "the feed waited {:?} for the density read", next - asked);
 	}
 
+	/// A feed that plays its arrivals, answers the density read at once, and closes the
+	/// second time it runs dry — the first wait is when that answer is taken in.
+	struct Answered {
+		arrivals: std::collections::VecDeque<Arrival>,
+		answers: BTreeMap<(u16, u16), Vec<u8>>,
+		waited: bool,
+	}
+
+	impl Feed for Answered {
+		async fn next(&mut self) -> Option<Arrival> {
+			if let Some(arrival) = self.arrivals.pop_front() {
+				return Some(arrival);
+			}
+			if !self.waited {
+				self.waited = true;
+				std::future::pending::<()>().await;
+			}
+			None
+		}
+
+		type Once = std::future::Ready<Vec<(u16, u16, Vec<u8>)>>;
+
+		fn read_once(&mut self, reads: &[(u16, u16)]) -> Self::Once {
+			std::future::ready(
+				reads
+					.iter()
+					.filter_map(|(request, did)| self.answers.get(&(*request, *did)).map(|data| (*request, *did, data.clone())))
+					.collect(),
+			)
+		}
+	}
+
+	/// On the plain console a `--full` run's results go up at once and again when the
+	/// density read answers. The second table says why it is there; the first does not.
+	#[tokio::test(start_paused = true)]
+	async fn the_plain_console_says_why_the_results_are_printed_again() {
+		const AGAIN: &str = "With the measured air density:";
+		let (store, units) = reference();
+		let dir = tempfile::tempdir().unwrap();
+		let car_path = dir.path().join("car.json");
+		let mut car = carfile::CarFile::new("TESTVIN0000000000");
+		car.i_wheels_kgm2 = Some(carfile::Sourced::new(1.0, carfile::Source::Stated));
+		car.i_engine_kgm2 = Some(carfile::Sourced::new(0.1, carfile::Source::Stated));
+		car.save(&car_path).unwrap();
+		let car_text = car_path.to_string_lossy().to_string();
+		let opts = Options {
+			car: Some(&car_text),
+			catalogs: "",
+			full: true,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: Some(1500.0),
+			tyre: Some("205/55R16"),
+			cda: Some(0.7),
+			crr: Some(0.011),
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves under --full");
+		// 101 kPa and 15 °C, as SAE J1979 spells them: 1 kPa/bit and A − 40 °C.
+		let answers = prepared
+			.plan
+			.by_address
+			.iter()
+			.filter_map(|((request, did), channel)| match channel.key {
+				"barometer" => Some(((*request, *did), vec![101u8])),
+				"ambient" => Some(((*request, *did), vec![55u8])),
+				_ => None,
+			})
+			.collect();
+		let feed = Answered {
+			arrivals: launch(&prepared.plan),
+			answers,
+			waited: false,
+		};
+		let mut printed: Vec<String> = Vec::new();
+		let mut print = |text: &str| printed.push(text.to_string());
+		let ended = tokio::time::timeout(
+			Duration::from_secs(3600),
+			drive_to(feed, prepared, &opts, false, &mut |_: &str| {}, &mut print),
+		)
+		.await
+		.expect("the drive ends");
+		assert!(ended.is_err(), "a feed that ends is a link that closed");
+
+		let tables: Vec<usize> = printed
+			.iter()
+			.enumerate()
+			.filter(|(_, text)| text.contains("ρ "))
+			.map(|(at, _)| at)
+			.collect();
+		assert_eq!(tables.len(), 2, "at once, then with the measured density: {printed:#?}");
+		assert!(!printed[..tables[0]].iter().any(|text| text == AGAIN), "{printed:#?}");
+		assert_eq!(printed[tables[1] - 1], AGAIN, "{printed:#?}");
+		assert_eq!(printed.iter().filter(|text| *text == AGAIN).count(), 1, "{printed:#?}");
+	}
+
 	/// The speed is what closes a cycle. When the dash board refuses it — another host
 	/// holds its one timing channel — the other readings keep coming and nothing is ever
 	/// shown, so the run ends at once with the board's reason.
@@ -2709,9 +2834,12 @@ mod tests {
 		});
 		let mut said: Vec<String> = Vec::new();
 		let mut say = |line: &str| said.push(line.to_string());
-		let ended = tokio::time::timeout(Duration::from_secs(5), drive_to(feed, prepared, &opts, false, &mut say))
-			.await
-			.expect("the run ends when the board goes away");
+		let ended = tokio::time::timeout(
+			Duration::from_secs(5),
+			drive_to(feed, prepared, &opts, false, &mut say, &mut |_: &str| {}),
+		)
+		.await
+		.expect("the run ends when the board goes away");
 		let why = ended.expect_err("ended by the link").to_string();
 		assert!(why.contains("dropped"), "the run went on until the link went: {why}");
 		assert_eq!(

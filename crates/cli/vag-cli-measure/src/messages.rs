@@ -249,6 +249,10 @@ pub fn unsaved_on_quit(runs: usize) -> String {
 	format!("{runs} runs not saved.   [s] save    [q] again to discard")
 }
 
+/// Above a run's results printed again on the plain console, once the density read
+/// has answered: the table before it had the standard atmosphere's.
+pub const DENSITY_MEASURED: &str = "With the measured air density:";
+
 /// The session was written out.
 ///
 /// It names the path because saving is explicit here by design, and an
