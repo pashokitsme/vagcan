@@ -83,6 +83,11 @@ makes "parallel with the display" true instead of a time-share: the two clients
 - **Rates come from the plan, never from a heuristic.** `hz` per channel in `dash.toml`,
   default 2 Hz. No rate derived from a unit of measure.
 - **Ceiling 100 exchanges/s; the panel keeps at least 25/s** while a laptop is served.
+- **A slow timing unit may leave `measure`'s other channels at one read per 5 s** (owner,
+  2026-09-14: «Ну пусть ошибку дропаем. measure не основной кейс всё же»). When the unit
+  holding the timing channel answers in ≥ 21 ms, the speed channel keeps what the bus allows
+  after the panel's floor, and everything else gets only the starvation rule's one read per
+  `starve_after_ms`. Accepted as is; no share cap for the timing channel.
 - **Precedence per slot:** Timing (stopwatch) → a Remote or Background item due for
   longer than 5 s (`starve_after_ms`; nothing waits forever) → Foreground under its 25/s
   floor → Remote → Foreground above the floor → Background; within a rank, the most
