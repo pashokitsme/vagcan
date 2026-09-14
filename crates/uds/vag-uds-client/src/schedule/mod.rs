@@ -28,9 +28,11 @@
 //!   An answer that does not read exactly one way is not guessed: its identifiers go
 //!   out singly next time.
 //! - A unit is single-only for the planner's lifetime once it answers a
-//!   multi-identifier request definitely against it: an NRC, an empty positive answer,
-//!   or three unsplittable answers in a row while not every record length is known.
-//!   Silence never teaches this: no answer is an absent unit, backed off like any other.
+//!   multi-identifier request definitely against it: NRC `13` (incorrect length or format)
+//!   or `14` (response too long), an empty positive answer, or three unsplittable answers
+//!   in a row while not every record length is known. Any other NRC (`31`, a transient
+//!   `21`/`22`) sends that batch's identifiers singly for one round. Silence never teaches
+//!   anything: no answer is an absent unit, backed off like any other.
 //! - A request for a [`Class::Timing`] identifier carries only Timing identifiers
 //!   (normally one), and no other request carries one, so the speed answer stays short.
 //!

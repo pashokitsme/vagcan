@@ -33,6 +33,9 @@ struct FakeUnit {
 	silent: bool,
 	refuses_multi: bool,
 	refuses_multi_empty: bool,
+	/// Refuses multi-identifier requests with this NRC while the count lasts, then answers
+	/// them: a transient refusal, or one that says nothing about batching.
+	multi_nrc: Option<(u8, core::cell::Cell<u32>)>,
 }
 
 impl FakeUnit {
@@ -69,6 +72,10 @@ impl Car {
 		}
 		if dids.len() > 1 && u.refuses_multi {
 			return Answer::Pdu(vec![0x7F, 0x22, 0x13]);
+		}
+		if let Some((nrc, left)) = u.multi_nrc.as_ref().filter(|(_, left)| dids.len() > 1 && left.get() > 0) {
+			left.set(left.get() - 1);
+			return Answer::Pdu(vec![0x7F, 0x22, *nrc]);
 		}
 		if dids.len() == 1 && !u.records.contains_key(&dids[0]) {
 			return Answer::Pdu(vec![0x7F, 0x22, 0x31]);
@@ -322,6 +329,49 @@ fn a_unit_refusing_multi_identifier_requests_is_asked_singly_for_good() {
 	for sub in subs {
 		assert!(sim.readings_of(sub).len() >= 49, "{}", sim.readings_of(sub).len());
 		assert!(sim.misses_of(sub).is_empty(), "a refused batch is retried, not missed");
+	}
+}
+
+/// ISO 14229-1 has two refusals that are about the request's shape: `13` (incorrect message
+/// length or invalid format) and `14` (response too long). Only they teach single-only; the
+/// same NRC for every multi request keeps the unit single-only for good.
+#[test]
+fn only_a_length_or_format_refusal_teaches_single_only() {
+	for nrc in [0x13, 0x14] {
+		let mut fake = FakeUnit::with(&[(0x1000, &[1]), (0x1001, &[2])]);
+		fake.multi_nrc = Some((nrc, core::cell::Cell::new(u32::MAX)));
+		let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
+		let subs: Vec<SubId> = (0..2).map(|i| sim.p.subscribe(0, Class::Foreground, A, 0x1000 + i, 100, None)).collect();
+		sim.run_until(2000);
+		let multi = sim.sends.iter().filter(|(_, o)| dids_of(&o.pdu).len() > 1).count();
+		assert_eq!(multi, 1, "NRC {nrc:02X}: learned once");
+		for sub in subs {
+			assert!(sim.readings_of(sub).len() >= 19, "NRC {nrc:02X}");
+		}
+	}
+}
+
+/// Any other NRC to a multi-identifier request — `31` (none of them supported), `21` busy,
+/// `22` conditions not correct — says nothing about batching: that batch goes out singly for
+/// one round, and the unit is batched again after.
+#[test]
+fn another_refusal_of_a_multi_request_sends_that_batch_singly_for_one_round() {
+	for nrc in [0x21, 0x22, 0x31] {
+		let mut fake = FakeUnit::with(&[(0x1000, &[1]), (0x1001, &[2])]);
+		fake.multi_nrc = Some((nrc, core::cell::Cell::new(1)));
+		let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
+		let subs: Vec<SubId> = (0..2).map(|i| sim.p.subscribe(0, Class::Foreground, A, 0x1000 + i, 100, None)).collect();
+		sim.run_until(2000);
+		let shapes: Vec<usize> = sim.sends.iter().map(|(_, o)| dids_of(&o.pdu).len()).collect();
+		assert_eq!(shapes[..3], [2, 1, 1], "NRC {nrc:02X}: refused, then that batch singly: {shapes:?}");
+		assert!(
+			shapes[3..].iter().all(|n| *n == 2),
+			"NRC {nrc:02X}: batched again after one round: {shapes:?}"
+		);
+		for sub in subs {
+			assert!(sim.readings_of(sub).len() >= 19, "NRC {nrc:02X}");
+			assert!(sim.misses_of(sub).is_empty(), "NRC {nrc:02X}: a retry, not a loss");
+		}
 	}
 }
 

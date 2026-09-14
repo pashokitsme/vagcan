@@ -15,6 +15,11 @@ const RDBI: u8 = 0x22;
 const RDBI_POSITIVE: u8 = RDBI + 0x40;
 /// A negative response's first byte (ISO 14229-1).
 const NEGATIVE: u8 = 0x7F;
+/// The two NRCs about a request's shape (ISO 14229-1): incorrect message length or invalid
+/// format, and response too long. The only refusals of a multi-identifier request that teach
+/// single-only.
+const INCORRECT_LENGTH_OR_FORMAT: u8 = 0x13;
+const RESPONSE_TOO_LONG: u8 = 0x14;
 /// Consecutive multi-identifier answers that would not split, from a unit whose record
 /// lengths are not all known, after which the unit is asked singly for good. Owner,
 /// 2026-09-14.
@@ -56,8 +61,8 @@ pub struct Planner {
 struct UnitState {
 	reads: BTreeMap<u16, Read>,
 	raws: VecDeque<Raw>,
-	/// Learned from a definite answer, never from silence: an NRC or an empty positive
-	/// answer to a multi-identifier request, or [`UNSPLITTABLE_RUN`] unsplittable ones.
+	/// Learned from a definite answer, never from silence: a `13`/`14` NRC or an empty
+	/// positive answer to a multi-identifier request, or [`UNSPLITTABLE_RUN`] unsplittable ones.
 	single_only: bool,
 	/// Multi-identifier answers in a row that would not split.
 	unsplittable_run: u8,
@@ -563,10 +568,17 @@ impl Planner {
 					}
 				}
 			}
-			Heard::Refused(_) => {
+			// Only a refusal of the request's shape says the unit will not batch. Any other
+			// (`31` none of them supported, `21`/`22` transient) is about the identifiers or the
+			// moment: that batch goes out singly for one round, and the unit batches again after.
+			Heard::Refused(nrc) => {
 				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
-				state.single_only = true;
+				if matches!(nrc, INCORRECT_LENGTH_OR_FORMAT | RESPONSE_TOO_LONG) {
+					state.single_only = true;
+				} else {
+					state.singly.extend(dids.iter().copied());
+				}
 				retry(state, now, onces);
 			}
 			Heard::Empty => {
