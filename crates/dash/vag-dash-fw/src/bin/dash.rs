@@ -1325,6 +1325,14 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 			slcan::serve(&mut adapter, &mut QueuedCommands).await;
 			// That session took its `Leave`; the next one has not ended.
 			ADAPTER_ENDING.store(false, Ordering::Relaxed);
+			// Queued after the adapter's last reply is in its ring, and the writer takes the
+			// ring before log lines when both are ready, so the host sees the `\r` first.
+			// `load` then `store`, not `swap`: riscv32imc has no atomic compare-and-swap. One
+			// executor on one core, and nothing sets it between the two.
+			if ADAPTER_LEFT_BY_C.load(Ordering::Relaxed) {
+				ADAPTER_LEFT_BY_C.store(false, Ordering::Relaxed);
+				note!("usb: adapter mode is over — the panel reads the car again");
+			}
 			continue;
 		}
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
@@ -2340,6 +2348,12 @@ async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
 	}
 }
 
+/// Set when a `C` ended adapter mode, so the session's end is noted by the adapter's
+/// task once `serve` has returned — after the `C`'s own `\r`, not before it. Noted from
+/// the console, the line reached the host ahead of the reply: a Lawicel host reading the
+/// answer to `C` took the note's first byte for it (bench, 2026-09-14).
+static ADAPTER_LEFT_BY_C: AtomicBool = AtomicBool::new(false);
+
 /// Act on one thing the console decided.
 async fn take_console_input(input: ConsoleInput) {
 	match input {
@@ -2360,9 +2374,9 @@ async fn take_console_input(input: ConsoleInput) {
 			// Said before the queue is waited on: the adapter may be the one holding it up.
 			ADAPTER_ENDING.store(true, Ordering::Relaxed);
 			ADAPTER_ENDING_RAISED.signal(());
+			ADAPTER_LEFT_BY_C.store(true, Ordering::Relaxed);
 			SLCAN_IN.send(SlcanIn::Leave).await;
 			set_mode(Mode::Panel);
-			note!("usb: adapter mode is over — the panel reads the car again");
 		}
 		ConsoleInput::Closed => USB_OUT.send(UsbOut::Text(alloc::vec![b'\r'])).await,
 		ConsoleInput::Ignored {

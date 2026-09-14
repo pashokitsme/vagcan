@@ -821,3 +821,22 @@ fault showing first. **Needs the owner at the bench.** The board was left on `da
 
 Not yet judged because of it: whether `watch` plain mode's CSV rows every ~20 ms with ~5 s
 gaps (on a bus where nothing answers) is a host defect; re-run on a working pair.
+
+### 9.8 What runs with the pair still dead, 2026-09-14 15:49–16:01
+
+`ble-uds` after the alarms merge, `dash` rebuilt with the real plan. The pair was re-tested
+first and is still dead: `bench.sh 15 cantx` FAIL at 15:49 and 15:56, and an `--active`
+sniff on the CANable saw no frame of the `dash` image in 10 s. So nothing below reached a
+bus; it is the board's USB and BLE links on their own.
+
+| check | seen |
+|---|---|
+| `vagcan devices` | `vag-dash board — dash image (reads through the board, panel keeps running), 0.1.0` — the Hello probe on real hardware; also 1 s after `espflash reset`; over BLE `--device ble:vagcan-dash -44 dBm` |
+| `vagcan dev survey --device B`, `vagcan dev sniff --device B` | refused before opening, with the two refusal texts |
+| `vagcan info --device B` (USB link) | ran, ended "The car did not answer" after 120 s |
+| slcan by hand on `B` | `V` → `V0101\r`, `F` → `F00\r`, `C` → `\r` — **but** the first image sent the note "usb: adapter mode is over…" *before* the `\r`; fixed (note moved behind `serve`), re-flashed, `C` → `\r` first |
+| `vagcan --slcan dev sniff --device B --seconds 4` | listen-only at 500 kbit/s, 0 frames, clean exit; the board answered Hello again right after |
+| `dashcfg` (Terminal.app) | connected; `get` answered; the state panel cut `cells=[2, 3, 0, 1]` at `[2,` — `dashcfg` split the list on its spaces; fixed |
+| `bleuds 7E0 7E8 22F190` | Answer NoAnswer after 8.8 s |
+| `bleuds 7E0 7E8 2EF19000` | Refused in 91 ms: `service 0x2E not allowed: this link only reads` |
+| `vagcan info --device ble` | connected, ended "The car did not answer" after 127 s |

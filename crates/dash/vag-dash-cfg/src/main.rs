@@ -38,10 +38,22 @@ impl DashState {
 	fn parse(line: &str) -> Option<Self> {
 		let rest = line.strip_prefix("state ")?;
 		let mut s = Self::default();
-		for token in rest.split_whitespace() {
+		let mut tokens = rest.split_whitespace();
+		while let Some(token) = tokens.next() {
 			let Some((key, value)) = token.split_once('=') else {
 				continue;
 			};
+			// A list is printed as `[2, 3, 0, 1]`, spaces and all: the value runs to the
+			// token that closes it, or it would stop at `[2,`.
+			let mut value = value.to_string();
+			if value.starts_with('[') {
+				while !value.ends_with(']') {
+					let Some(more) = tokens.next() else { break };
+					value.push(' ');
+					value.push_str(more);
+				}
+			}
+			let value = value.as_str();
 			match key {
 				"page" => {
 					if let Some((now, total)) = value.split_once('/') {
@@ -246,5 +258,14 @@ mod tests {
 		let mut buffer = LineBuffer::default();
 		assert_eq!(buffer.push(b"ok: page 1\nstate page=1/2"), ["ok: page 1"]);
 		assert_eq!(buffer.push(b" gen=5\n"), ["state page=1/2 gen=5"]);
+	}
+
+	#[test]
+	fn a_list_value_keeps_its_spaces() {
+		// The firmware's own line, as the bench read it on 2026-09-14.
+		let state = super::DashState::parse("state page=0/2 brightness=128 unsaved=1 gen=5 mode=panel kind=values cells=[2, 3, 0, 1]").unwrap();
+		assert_eq!(state.cells.as_deref(), Some("[2, 3, 0, 1]"));
+		assert_eq!(state.kind.as_deref(), Some("values"));
+		assert_eq!(state.generation, Some(5));
 	}
 }

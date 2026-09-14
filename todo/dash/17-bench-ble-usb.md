@@ -11,6 +11,12 @@ none of it has run end to end: the first run found the CAN pair dead in both dir
 started by the Claude app is killed by macOS on its first Bluetooth call, and `osascript`
 to Terminal waits for an automation permission; `open -a Terminal <script>.command` works.
 
+**2026-09-14 16:01 — the pair is still dead**; what runs without it passed
+(`research/dash/can-bring-up.md` §9.8): the Hello probe (also right after a reset), the
+refusals, `V`/`F`/`C` in adapter mode, `--slcan dev sniff` opening and closing, `dashcfg`,
+`bleuds` forwarding and refusing, `vagcan info` over USB and over BLE up to "the car did not
+answer". Two defects found and fixed there. Everything that needs frames on the pair is open.
+
 ## 0. The pair
 
 - `research/dash/bench.sh 15 cantx` → PASS. Then reflash `dash` with the real plan.
