@@ -34,6 +34,10 @@ const WRITE_CHUNK: usize = 20;
 /// How long to wait for an Answer. The board may hold a request behind its rate
 /// cap (10 s window) or a unit's response-pending (10 s).
 const ANSWER_WAIT: Duration = Duration::from_secs(25);
+/// How long `--sweep-response` listens, counted from its first subscription: the 50
+/// writes take a few seconds at one ATT round trip each, and the rest is for the
+/// accepted subscription's readings.
+const SWEEP_LISTEN: Duration = Duration::from_secs(10);
 
 enum Mode {
 	Request {
@@ -224,40 +228,53 @@ async fn main() -> Result<()> {
 				period_ms,
 			} => {
 				println!("> Subscribe {request:03X} under {count} response ids from {first_response:03X}, {did:04X} every {period_ms} ms");
-				for n in 0..count {
-					send(&Message::Subscribe(Subscribe {
-						sub: n + 1,
-						request_id: request,
-						response_id: first_response.wrapping_add(n) & 0x7FF,
-						did,
-						period_ms,
-					}))
-					.await?;
-				}
+				// Notifications are read while the subscriptions go out, not after:
+				// btleplug hands them over through a bounded broadcast channel, and a
+				// reader that waits for its own writes to finish loses what the board
+				// answered meanwhile (the first run counted 17 of 49 refusals that way).
+				let sending = async {
+					for n in 0..count {
+						send(&Message::Subscribe(Subscribe {
+							sub: n + 1,
+							request_id: request,
+							response_id: first_response.wrapping_add(n) & 0x7FF,
+							did,
+							period_ms,
+						}))
+						.await?;
+					}
+					anyhow::Ok(())
+				};
 				let (mut refused, mut readings) = (0u32, 0u32);
 				let mut first_refusal = None;
-				let end = tokio::time::sleep(Duration::from_secs(5));
-				tokio::pin!(end);
-				loop {
-					tokio::select! {
-						() = &mut end => break,
-						n = notifications.next() => {
-							let Some(n) = n else { bail!("the board went away") };
-							for piece in reassembler.push(&n.value) {
-								match piece {
-									Piece::Message(Message::Reading(r)) => match r.outcome {
-										Outcome::Refused(why) => {
-											refused += 1;
-											first_refusal.get_or_insert(why);
-										}
-										_ => readings += 1,
-									},
-									other => show(other),
+				let collecting = async {
+					let end = tokio::time::sleep(SWEEP_LISTEN);
+					tokio::pin!(end);
+					loop {
+						tokio::select! {
+							() = &mut end => break,
+							n = notifications.next() => {
+								let Some(n) = n else { bail!("the board went away") };
+								for piece in reassembler.push(&n.value) {
+									match piece {
+										Piece::Message(Message::Reading(r)) => match r.outcome {
+											Outcome::Refused(why) => {
+												refused += 1;
+												first_refusal.get_or_insert(why);
+											}
+											_ => readings += 1,
+										},
+										other => show(other),
+									}
 								}
 							}
 						}
 					}
-				}
+					anyhow::Ok(())
+				};
+				let (sent, collected) = tokio::join!(sending, collecting);
+				sent?;
+				collected?;
 				for n in 0..count {
 					send(&Message::Unsubscribe { sub: n + 1 }).await?;
 				}
