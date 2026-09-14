@@ -15,6 +15,10 @@ const RDBI: u8 = 0x22;
 const RDBI_POSITIVE: u8 = RDBI + 0x40;
 /// A negative response's first byte (ISO 14229-1).
 const NEGATIVE: u8 = 0x7F;
+/// Consecutive multi-identifier answers that would not split, from a unit whose record
+/// lengths are not all known, after which the unit is asked singly for good. Owner,
+/// 2026-09-14.
+const UNSPLITTABLE_RUN: u8 = 3;
 
 /// The one scheduler every consumer of the bus goes through. See [`super`].
 #[derive(Debug)]
@@ -36,25 +40,17 @@ pub struct Planner {
 struct UnitState {
 	reads: BTreeMap<u16, Read>,
 	raws: VecDeque<Raw>,
-	batching: Batching,
-	/// A multi-identifier request failed; the next request is a single identifier, and
-	/// if that is answered the unit is single-only.
-	probe: bool,
+	/// Learned from a definite answer, never from silence: an NRC or an empty positive
+	/// answer to a multi-identifier request, or [`UNSPLITTABLE_RUN`] unsplittable ones.
+	single_only: bool,
+	/// Multi-identifier answers in a row that would not split.
+	unsplittable_run: u8,
 	/// Identifiers whose last multi-identifier answer could not be split, or left them
 	/// out while a one-shot waited: they go out alone next time.
 	singly: BTreeSet<u16>,
 	failures: u32,
 	/// Not asked again before this.
 	retry_at: u64,
-}
-
-/// What a unit has shown about multi-identifier requests.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum Batching {
-	#[default]
-	Unproven,
-	Works,
-	SingleOnly,
 }
 
 /// One `(unit, identifier)`: read once for all who want it.
@@ -121,8 +117,13 @@ enum Pick {
 /// How an answer to a `22` request reads.
 enum Heard {
 	Records(Records),
-	/// Positive, but not cut exactly one way (or cut into nothing).
-	Unsplittable,
+	/// Positive, but not cut exactly one way (or cut into nothing); whether every
+	/// requested record's length was known.
+	Unsplittable {
+		lengths_known: bool,
+	},
+	/// Positive and empty, to a multi-identifier request.
+	Empty,
 	Refused(u8),
 	Silent(Miss),
 	Malformed,
@@ -144,6 +145,11 @@ impl Read {
 		let subs = (!self.subs.is_empty()).then_some(self.next_due);
 		let onces = self.onces.iter().map(|o| o.since_ms).min();
 		subs.into_iter().chain(onces).min()
+	}
+
+	/// Whether a stopwatch-grade consumer wants this read. Such a read travels alone.
+	fn is_timing(&self) -> bool {
+		self.subs.iter().any(|s| s.class == Class::Timing) || self.onces.iter().any(|o| o.class == Class::Timing)
 	}
 
 	/// The best class among what is due at `now`.
@@ -210,6 +216,11 @@ impl Planner {
 
 	/// Stop a subscription. Its identifier leaves future requests once nobody else wants
 	/// it; a reading already in flight is not delivered to it.
+	///
+	/// Cheap enough to call once per handle when a client drops all of its subscriptions
+	/// at once: two map lookups and a scan of that identifier's own subscribers, no
+	/// allocation, nothing recomputed for other identifiers (a shared read's period is
+	/// derived from its live subscribers on use).
 	pub fn unsubscribe(&mut self, id: SubId) {
 		let Some((unit, did)) = self.subs.remove(&id) else {
 			return;
@@ -279,7 +290,8 @@ impl Planner {
 					Pick::Raw => (0, 0),
 					Pick::Read(did) => (1, did),
 				};
-				let rank = (tier(class, under_floor), due, *unit, kind, did);
+				let starved = now.saturating_sub(due) > u64::from(self.budget.starve_after_ms);
+				let rank = (tier(class, under_floor, starved), due, *unit, kind, did);
 				if best.as_ref().is_none_or(|(held, _, _)| rank < *held) {
 					best = Some((rank, class, pick));
 				}
@@ -349,7 +361,7 @@ impl Planner {
 				match answer {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
-					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit, false),
+					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
 				}
 				out.push(Delivery::Raw {
 					req: raw.id,
@@ -368,10 +380,10 @@ impl Planner {
 		let heard = self.read_answer(unit, &dids, answer);
 		match heard {
 			Heard::Records(records) => {
-				self.heard_from(unit, !multi);
+				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
 				if multi {
-					state.batching = Batching::Works;
+					state.unsplittable_run = 0;
 				}
 				for (did, waiting) in onces {
 					let data = records.iter().find(|(d, _)| *d == did).map(|(_, data)| data);
@@ -414,7 +426,7 @@ impl Planner {
 				}
 			}
 			Heard::Refused(nrc) if !multi => {
-				self.heard_from(unit, !multi);
+				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
 				for (did, waiting) in onces {
 					if let Some(read) = state.reads.get(&did) {
@@ -434,30 +446,34 @@ impl Planner {
 				}
 			}
 			Heard::Refused(_) => {
-				self.heard_from(unit, !multi);
+				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
-				state.probe = true;
+				state.single_only = true;
 				retry(state, now, onces);
 			}
-			Heard::Unsplittable => {
-				self.heard_from(unit, !multi);
+			Heard::Empty => {
+				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
+				state.single_only = true;
+				retry(state, now, onces);
+			}
+			Heard::Unsplittable { lengths_known } => {
+				self.heard_from(unit);
+				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
+				if !lengths_known {
+					state.unsplittable_run = state.unsplittable_run.saturating_add(1);
+					state.single_only |= state.unsplittable_run >= UNSPLITTABLE_RUN;
+				}
 				state.singly.extend(dids.iter().copied());
 				retry(state, now, onces);
 			}
-			Heard::Silent(Miss::NoAnswer) if multi && self.units[&unit].batching == Batching::Unproven => {
-				// Silent to a first multi-identifier request: a dead unit or one that
-				// ignores them. A single identifier tells which.
-				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
-				state.probe = true;
-				retry(state, now, onces);
-			}
+			// No answer is an absent unit, never evidence against batching.
 			Heard::Silent(why) => {
 				self.back_off(now, unit, why, out);
 				fail_onces(onces, unit, why, now, out);
 			}
 			Heard::Malformed => {
-				self.heard_from(unit, !multi);
+				self.heard_from(unit);
 				let state = &self.units[&unit];
 				for did in &dids {
 					if let Some(read) = state.reads.get(did) {
@@ -489,31 +505,27 @@ impl Planner {
 					Some((echo, data)) if *echo == pdu::did_bytes(*did) => Heard::Records(alloc::vec![(*did, data.to_vec())]),
 					_ => Heard::Malformed,
 				},
+				_ if payload.is_empty() => Heard::Empty,
 				_ => {
 					let reads = &self.units[&unit].reads;
 					let lengths: Option<Vec<(u16, u16)>> = dids.iter().map(|d| Some((*d, reads.get(d)?.record_len()?))).collect();
+					let lengths_known = lengths.is_some();
 					let records = lengths
 						.and_then(|l| split_by_lengths(payload, &l))
 						.or_else(|| split_records(payload, dids))
 						.filter(|r| !r.is_empty());
-					records.map_or(Heard::Unsplittable, Heard::Records)
+					records.map_or(Heard::Unsplittable { lengths_known }, Heard::Records)
 				}
 			},
 			_ => Heard::Malformed,
 		}
 	}
 
-	/// The unit answered something: it is alive. If the answer was to a single-identifier
-	/// read while a failed batch was being probed, the unit is single-only from now on.
-	fn heard_from(&mut self, unit: Unit, single_read: bool) {
-		let Some(state) = self.units.get_mut(&unit) else {
-			return;
-		};
-		state.failures = 0;
-		state.retry_at = 0;
-		if state.probe && single_read {
-			state.probe = false;
-			state.batching = Batching::SingleOnly;
+	/// The unit answered something: it is alive.
+	fn heard_from(&mut self, unit: Unit) {
+		if let Some(state) = self.units.get_mut(&unit) {
+			state.failures = 0;
+			state.retry_at = 0;
 		}
 	}
 
@@ -540,17 +552,23 @@ impl Planner {
 
 /// Pick the identifiers of one request: the trigger, then every other wanted identifier
 /// of its unit by how overdue it is, up to the cap — or the trigger alone when the unit
-/// is single-only, being probed, or the trigger must go singly.
+/// is single-only or the trigger must go singly.
+///
+/// Timing reads never share a request with anything else: a Timing request carries only
+/// Timing identifiers (normally one), so the speed answer stays short, and no other
+/// request pulls a Timing identifier in and lengthens its answer.
 fn batch(state: &UnitState, trigger: u16, now: u64, budget: &Budget) -> Vec<u16> {
 	let mut dids = alloc::vec![trigger];
-	let alone = state.batching == Batching::SingleOnly || state.probe || state.singly.contains(&trigger);
-	if alone {
+	if state.single_only || state.singly.contains(&trigger) {
 		return dids;
 	}
+	let timing = state.reads.get(&trigger).is_some_and(Read::is_timing);
 	let mut others: Vec<(u64, u16)> = state
 		.reads
 		.iter()
-		.filter(|(did, read)| **did != trigger && !state.singly.contains(did) && read.wanted(now, budget.pull_forward_permille))
+		.filter(|(did, read)| {
+			**did != trigger && !state.singly.contains(did) && read.is_timing() == timing && read.wanted(now, budget.pull_forward_permille)
+		})
 		.filter_map(|(did, read)| Some((read.due()?, *did)))
 		.collect();
 	others.sort_unstable();
@@ -596,13 +614,14 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 }
 
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
-fn tier(class: Class, foreground_under_floor: bool) -> u8 {
+fn tier(class: Class, foreground_under_floor: bool, starved: bool) -> u8 {
 	match class {
 		Class::Timing => 0,
-		Class::Foreground if foreground_under_floor => 1,
-		Class::Remote => 2,
-		Class::Foreground => 3,
-		Class::Background => 4,
+		Class::Remote | Class::Background if starved => 1,
+		Class::Foreground if foreground_under_floor => 2,
+		Class::Remote => 3,
+		Class::Foreground => 4,
+		Class::Background => 5,
 	}
 }
 

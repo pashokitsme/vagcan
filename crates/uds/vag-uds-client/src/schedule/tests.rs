@@ -32,7 +32,7 @@ struct FakeUnit {
 	records: BTreeMap<u16, Vec<u8>>,
 	silent: bool,
 	refuses_multi: bool,
-	silent_to_multi: bool,
+	refuses_multi_empty: bool,
 }
 
 impl FakeUnit {
@@ -64,8 +64,8 @@ impl Car {
 			return Answer::Pdu(pdu);
 		}
 		let dids = dids_of(&out.pdu);
-		if dids.len() > 1 && u.silent_to_multi {
-			return Answer::NoAnswer;
+		if dids.len() > 1 && u.refuses_multi_empty {
+			return Answer::Pdu(vec![0x62]);
 		}
 		if dids.len() > 1 && u.refuses_multi {
 			return Answer::Pdu(vec![0x7F, 0x22, 0x13]);
@@ -326,16 +326,55 @@ fn a_unit_refusing_multi_identifier_requests_is_asked_singly_for_good() {
 }
 
 #[test]
-fn a_unit_silent_to_multi_identifier_requests_but_answering_singles_is_asked_singly() {
+fn a_unit_off_during_its_first_multi_request_is_not_taught_single_only() {
 	let mut fake = FakeUnit::with(&[(0x1000, &[1]), (0x1001, &[2])]);
-	fake.silent_to_multi = true;
+	fake.silent = true;
+	let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
+	let one = sim.p.subscribe(0, Class::Foreground, A, 0x1000, 100, None);
+	let two = sim.p.subscribe(0, Class::Foreground, A, 0x1001, 100, None);
+	sim.run_until(600);
+	assert!(sim.sends.len() >= 2, "backed off and retried: {:?}", sim.sends);
+
+	// The ignition comes on.
+	sim.car.units.get_mut(&A).unwrap().silent = false;
+	sim.run_until(5000);
+	assert!(
+		sim.sends.iter().all(|(_, o)| dids_of(&o.pdu).len() == 2),
+		"silence is no evidence against batching: {:?}",
+		sim.sends.iter().map(|(t, o)| (*t, dids_of(&o.pdu))).collect::<Vec<_>>()
+	);
+	assert!(sim.readings_of(one).len() >= 40 && sim.readings_of(two).len() >= 40);
+	assert_eq!(sim.misses_of(one).first(), Some(&Miss::NoAnswer));
+}
+
+#[test]
+fn an_empty_positive_answer_to_a_multi_request_teaches_single_only() {
+	let mut fake = FakeUnit::with(&[(0x1000, &[1]), (0x1001, &[2])]);
+	fake.refuses_multi_empty = true;
 	let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
 	let one = sim.p.subscribe(0, Class::Foreground, A, 0x1000, 100, None);
 	let two = sim.p.subscribe(0, Class::Foreground, A, 0x1001, 100, None);
 	sim.run_until(2000);
 
-	assert_eq!(sim.sends.iter().filter(|(_, o)| dids_of(&o.pdu).len() > 1).count(), 1);
+	let multi: Vec<u64> = sim.sends.iter().filter(|(_, o)| dids_of(&o.pdu).len() > 1).map(|(t, _)| *t).collect();
+	assert_eq!(multi, vec![0]);
 	assert!(sim.readings_of(one).len() >= 19 && sim.readings_of(two).len() >= 19);
+}
+
+#[test]
+fn three_unsplittable_answers_in_a_row_teach_single_only() {
+	// 0x1001's echo sits inside 0x1000's record and no length is known: every multi
+	// answer reads two ways.
+	let fake = FakeUnit::with(&[(0x1000, &[0x10, 0x01, 0xAA]), (0x1001, &[0xBB])]);
+	let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
+	let long = sim.p.subscribe(0, Class::Foreground, A, 0x1000, 100, None);
+	let short = sim.p.subscribe(0, Class::Foreground, A, 0x1001, 100, None);
+	sim.run_until(3000);
+
+	let multi = sim.sends.iter().filter(|(_, o)| dids_of(&o.pdu).len() > 1).count();
+	assert_eq!(multi, 3, "{:?}", sim.sends.iter().map(|(t, o)| (*t, dids_of(&o.pdu))).collect::<Vec<_>>());
+	assert!(sim.readings_of(long).len() >= 29 && sim.readings_of(short).len() >= 29);
+	assert!(sim.readings_of(long).iter().all(|(d, _)| *d == [0x10, 0x01, 0xAA]));
 }
 
 #[test]
@@ -645,5 +684,91 @@ fn a_dead_unit_backs_off_without_starving_the_others() {
 	for sub in dead_subs {
 		let misses = sim.misses_of(sub);
 		assert!(misses.len() >= 5 && misses.iter().all(|m| *m == Miss::NoAnswer), "{misses:?}");
+	}
+}
+
+#[test]
+fn a_timing_request_is_never_padded() {
+	let fake = FakeUnit::with(&[(0x1000, &[1]), (0x1001, &[2]), (0x1002, &[3]), (0x1003, &[4])]);
+	let mut sim = Sim::new(Budget::default(), car(&[(A, fake)]));
+	let speed = sim.p.subscribe(0, Class::Timing, A, 0x1000, 20, None);
+	for did in 0x1001..=0x1003 {
+		sim.p.subscribe(0, Class::Foreground, A, did, 20, None);
+	}
+	// A one-shot of the speed identifier itself still rides with it.
+	let once = sim.p.read_once(0, Class::Remote, A, 0x1000);
+	sim.run_until(2000);
+
+	for (t, o) in &sim.sends {
+		let dids = dids_of(&o.pdu);
+		if dids.contains(&0x1000) {
+			assert_eq!(dids, vec![0x1000], "at {t}");
+		}
+	}
+	assert!(sim.sends.iter().any(|(_, o)| dids_of(&o.pdu).len() == 3), "the rest still batches");
+	assert!(sim.readings_of(speed).len() >= 99);
+	assert!(
+		sim
+			.got
+			.iter()
+			.any(|d| matches!(d, Delivery::Once { req, result: Ok(_), .. } if *req == once))
+	);
+}
+
+#[test]
+fn a_waiting_read_is_not_starved_forever() {
+	let timing = unit(0x10);
+	let fg: Vec<Unit> = (0..4).map(unit).collect();
+	let slow = unit(0x30);
+	let remote = unit(0x20);
+	let mut sim = Sim::new(Budget::default(), car_of(fg.iter().copied().chain([timing, slow, remote]), 0x1000));
+	sim.p.subscribe(0, Class::Timing, timing, 0x1000, 20, None);
+	for u in &fg {
+		sim.p.subscribe(0, Class::Foreground, *u, 0x1000, 10, None);
+	}
+	let background = sim.p.subscribe(0, Class::Background, slow, 0x1000, 100, None);
+	sim.run_until_with(60_000, flood(4, remote));
+
+	// Timing takes half the ceiling, the foreground and the laptop want the rest.
+	let readings = sim.readings_of(background);
+	assert!(readings.len() >= 10, "{}", readings.len());
+	let mut at: Vec<u64> = vec![0];
+	at.extend(readings.iter().map(|(_, t)| *t));
+	let worst = at.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+	let starve = Budget::default().starve_after_ms;
+	assert!(worst <= u64::from(starve) + 200, "worst wait {worst} ms");
+	assert!(busiest_second(&sim.sends.iter().map(|(t, _)| *t).collect::<Vec<_>>()) <= 100);
+}
+
+#[test]
+fn a_remote_client_with_20_subscriptions_disconnects() {
+	let records: Vec<(u16, Vec<u8>)> = (0..10).map(|i| (0x1000 + i, vec![i as u8])).collect();
+	let unit_records: Vec<(u16, &[u8])> = records.iter().map(|(d, r)| (*d, r.as_slice())).collect();
+	let mut sim = Sim::new(
+		Budget::default(),
+		car(&[(A, FakeUnit::with(&unit_records)), (B, FakeUnit::with(&unit_records))]),
+	);
+	let panel_a = sim.p.subscribe(0, Class::Foreground, A, 0x1000, 500, None);
+	let panel_b = sim.p.subscribe(0, Class::Foreground, B, 0x1000, 500, None);
+	let client: Vec<SubId> = [A, B]
+		.iter()
+		.flat_map(|u| records.iter().map(move |(did, _)| (*u, *did)))
+		.map(|(u, did)| sim.p.subscribe(0, Class::Remote, u, did, 50, None))
+		.collect();
+	assert_eq!(client.len(), 20);
+	sim.run_until(2000);
+
+	// The link drops: every handle of that client is dropped at once.
+	let gone_at = sim.now;
+	for sub in client {
+		sim.p.unsubscribe(sub);
+	}
+	sim.run_until(8000);
+
+	let after: Vec<&(u64, Outgoing)> = sim.sends.iter().filter(|(t, _)| *t >= gone_at).collect();
+	assert!(after.iter().all(|(_, o)| dids_of(&o.pdu) == [0x1000]), "{after:?}");
+	for (u, panel) in [(A, panel_a), (B, panel_b)] {
+		assert_eq!(sim.sends_to(u, 3000, 8000), 10, "the panel's 500 ms period, unchanged");
+		assert!(sim.readings_of(panel).iter().filter(|(_, t)| *t >= 3000).count() >= 10);
 	}
 }

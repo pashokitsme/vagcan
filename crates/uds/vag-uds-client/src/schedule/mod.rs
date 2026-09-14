@@ -27,9 +27,12 @@
 //!   ([`split_by_lengths`]), by the unique-parse search otherwise ([`split_records`]).
 //!   An answer that does not read exactly one way is not guessed: its identifiers go
 //!   out singly next time.
-//! - A unit that refuses a multi-identifier request (any NRC), or is silent to one
-//!   before it has ever answered one, is asked a single identifier next; if that is
-//!   answered the unit is single-only for the planner's lifetime.
+//! - A unit is single-only for the planner's lifetime once it answers a
+//!   multi-identifier request definitely against it: an NRC, an empty positive answer,
+//!   or three unsplittable answers in a row while not every record length is known.
+//!   Silence never teaches this: no answer is an absent unit, backed off like any other.
+//! - A request for a [`Class::Timing`] identifier carries only Timing identifiers
+//!   (normally one), and no other request carries one, so the speed answer stays short.
 //!
 //! # Budget
 //!
@@ -38,11 +41,13 @@
 //! the best by, in order:
 //!
 //! 1. [`Class::Timing`] — never thinned.
-//! 2. [`Class::Foreground`] while it has had fewer than `foreground_floor_per_s` sends
+//! 2. A `Remote` or `Background` item due for longer than [`Budget::starve_after_ms`] —
+//!    nothing waits forever.
+//! 3. [`Class::Foreground`] while it has had fewer than `foreground_floor_per_s` sends
 //!    in the last 1000 ms — the floor.
-//! 3. [`Class::Remote`] — waits when the budget is short, never dropped.
-//! 4. [`Class::Foreground`] above its floor.
-//! 5. [`Class::Background`] — thinned first.
+//! 4. [`Class::Remote`] — waits when the budget is short, never dropped.
+//! 5. [`Class::Foreground`] above its floor.
+//! 6. [`Class::Background`] — thinned first.
 //!
 //! and within one rank, the most overdue first. A read shared by several classes ranks
 //! as the best of the classes due in it. Nothing is ever dropped: over budget means
@@ -129,6 +134,9 @@ pub struct Budget {
 	/// The longest wait between attempts on a silent unit. Default 2 s, the firmware's
 	/// `DEAD_BUS_GAP` before the planner.
 	pub backoff_cap_ms: u32,
+	/// A `Remote` or `Background` item due for longer than this ranks just below
+	/// `Timing` until it is sent, so nothing waits forever. Owner, 2026-09-14: 5 s.
+	pub starve_after_ms: u32,
 }
 
 impl Default for Budget {
@@ -140,6 +148,7 @@ impl Default for Budget {
 			pull_forward_permille: 250,
 			backoff_first_ms: 250,
 			backoff_cap_ms: 2000,
+			starve_after_ms: 5000,
 		}
 	}
 }
