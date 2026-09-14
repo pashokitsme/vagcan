@@ -859,8 +859,11 @@ fn duration_arg(text: &str) -> Result<Duration, String> {
 /// Parse how the user named a control unit — `01`, `17`, or a request id like
 /// `70E`. Which id block it lives on, and therefore which response rule
 /// applies, is decided by `vag_uds_client::address`.
-fn parse_ecu(text: &str) -> Result<UnitAddress> {
-	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("--ecu: {e}"))
+///
+/// `flag` is the flag the unit was typed on (`--ecu`, `--identify`), and what an
+/// error is said under.
+fn parse_ecu(flag: &str, text: &str) -> Result<UnitAddress> {
+	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
 }
 
 /// Why `dev survey` does not run through the dash board. Over BLE the board refuses a
@@ -905,11 +908,11 @@ fn address_unit<L: UnitLink>(link: L, unit: UnitAddress) -> AsyncUdsClient<L::Ch
 async fn info<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>) -> Result<()> {
 	// One link, two control units: read the engine, then release the link and
 	// address the gearbox rather than re-opening it.
-	let engine_unit = parse_ecu("01")?;
+	let engine_unit = vag_uds_client::address::parse("01").expect("01 is a unit number");
 	let mut engine_uds = address_unit(open().await?, engine_unit);
 	let engine = engine_uds.read_identity().await;
 
-	let gearbox_unit = parse_ecu("02")?;
+	let gearbox_unit = vag_uds_client::address::parse("02").expect("02 is a unit number");
 	let mut gearbox_uds = address_unit(L::release(engine_uds.into_transport()), gearbox_unit);
 	let gearbox = gearbox_uds.read_identity().await;
 
@@ -938,7 +941,7 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 	use render::SensorLine;
 	use vag_data_labels::obd::{self, PIDS};
 
-	let unit = parse_ecu(ecu_text)?;
+	let unit = parse_ecu("--ecu", ecu_text)?;
 	let established = unit.is_emissions_related();
 	let mut uds = address_unit(open().await?, unit);
 
@@ -971,7 +974,7 @@ async fn sensors<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &
 async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str) -> Result<String> {
 	const ODX_FILE_NAME: u16 = 0xF19E;
 
-	let unit = parse_ecu(ecu_text)?;
+	let unit = parse_ecu("--ecu", ecu_text)?;
 	let mut uds = address_unit(open().await?, unit);
 	let data = uds
 		.read_data_by_identifier(ODX_FILE_NAME)
@@ -1126,7 +1129,7 @@ fn glossary_command() -> Result<()> {
 /// the two fields that name it, this asks one unit the whole 256-identifier
 /// block and names what answers.
 async fn identification<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, ecu_text: &str, while_driving: bool) -> Result<()> {
-	let unit = parse_ecu(ecu_text)?;
+	let unit = parse_ecu("--identify", ecu_text)?;
 	let ranges = scan::parse_ranges(props::IDENT_RANGE).expect("the built-in range parses");
 
 	let mut backend = open().await?;
@@ -1457,6 +1460,25 @@ mod tests {
 			let said = format!("{refused:#}");
 			assert_ne!(said, device::SLCAN_OVER_BLE, "the device was resolved first: {args:?}");
 			assert!(said.contains(why), "{args:?}: {said}");
+		}
+	}
+
+	/// A unit that does not parse is said under the flag the person typed: `units` takes
+	/// its unit on `--identify`, and an error about `--ecu` there names a flag not given.
+	#[tokio::test]
+	async fn a_unit_that_does_not_parse_is_named_by_the_flag_typed() {
+		let cases = [
+			(vec!["vagcan", "units", "--identify", "ZZZ"], "--identify: "),
+			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu: "),
+		];
+		for (args, flag) in cases {
+			let mut args = args.clone();
+			// A device refused without hardware: the parse has to come first to be seen.
+			args.extend(["--device", "ble", "--slcan"]);
+			let cli = Cli::try_parse_from(args.clone()).unwrap();
+			let refused = dispatch(cli.command.expect("a command"), cli.slcan).await.expect_err("refused");
+			let said = format!("{refused:#}");
+			assert!(said.starts_with(flag), "{args:?}: {said}");
 		}
 	}
 
