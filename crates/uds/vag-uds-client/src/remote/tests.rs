@@ -445,3 +445,110 @@ fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() 
 	assert!(panel_reads >= 9, "the panel kept reading: {panel_reads} in 1 s");
 	board.planner.unsubscribe(panel);
 }
+
+// --- the USB cable's session, and the board's adapter mode -------------------------
+
+const ADAPTER: &str = "the board is in adapter mode";
+
+/// In adapter mode nothing a host asks reaches the guard or the bus; the refusal says why.
+#[test]
+fn in_adapter_mode_requests_and_subscriptions_are_refused_and_nothing_is_sent() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let out = board
+		.session
+		.push_refused(0, &mut board.planner, request(4, ENGINE, &[0x22, 0xF1, 0x90]), ADAPTER);
+	let [Message::Answer(answer)] = out.as_slice() else { panic!("{out:?}") };
+	assert_eq!((answer.seq, refused(&answer.outcome)), (4, ADAPTER));
+	let out = board
+		.session
+		.push_refused(7, &mut board.planner, subscribe(9, ENGINE, 0x2000, 100), ADAPTER);
+	let [Message::Reading(reading)] = out.as_slice() else {
+		panic!("{out:?}")
+	};
+	assert_eq!((reading.sub, reading.at_ms, refused(&reading.outcome)), (9, 7, ADAPTER));
+	assert!(board.session.push_refused(0, &mut board.planner, Message::Hello, ADAPTER).is_empty());
+	board.run_until(1000);
+	assert!(board.sent.is_empty(), "{:02X?}", board.pdus_sent());
+	assert!(!board.session.is_active());
+}
+
+/// A subscription given again in adapter mode ends the live one, and an unsubscribe still frees.
+#[test]
+fn in_adapter_mode_a_live_subscription_can_still_be_replaced_or_dropped() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.hear(subscribe(1, ENGINE, 0x2000, 100));
+	board.hear(subscribe(2, ENGINE, 0x2001, 100));
+	assert_eq!(board.session.subscriptions().count(), 2);
+	board
+		.session
+		.push_refused(0, &mut board.planner, subscribe(1, ENGINE, 0x2002, 100), ADAPTER);
+	board
+		.session
+		.push_refused(0, &mut board.planner, Message::Unsubscribe { sub: 2 }, ADAPTER);
+	assert_eq!(board.session.subscriptions().count(), 0);
+	board.run_until(1000);
+	assert!(board.sent.is_empty(), "{:02X?}", board.pdus_sent());
+}
+
+/// Entering adapter mode refuses what the host waits for, in order, and keeps its
+/// subscriptions for when the bus comes back.
+#[test]
+fn refusing_the_pending_answers_each_request_once_and_keeps_the_subscriptions() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.hear(subscribe(5, ENGINE, 0x2000, 100));
+	board.hear(request(1, GATEWAY, &[0x22, 0xF1, 0x87]));
+	board.hear(request(2, GATEWAY, &[0x22, 0xF1, 0x89]));
+	assert_eq!(board.session.queued(), 2);
+	let refusals = board.session.refuse_pending(&mut board.planner, ADAPTER);
+	board.to_host.extend(refusals);
+	let answers = board.answers();
+	assert_eq!(answers.len(), 2, "{answers:?}");
+	assert_eq!((answers[0].0, refused(&answers[0].1)), (1, ADAPTER));
+	assert_eq!((answers[1].0, refused(&answers[1].1)), (2, ADAPTER));
+	assert_eq!(board.session.queued(), 0);
+	assert!(board.session.is_active(), "the subscription is still held");
+	board.run_until(1000);
+	assert!(
+		board.sent.iter().all(|(_, o)| o.unit == ENGINE),
+		"the refused requests never went out: {:02X?}",
+		board.pdus_sent()
+	);
+	assert!(!board.readings(5).is_empty(), "the subscription is read again");
+}
+
+#[test]
+fn a_session_is_active_while_it_holds_a_subscription_or_a_request() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	assert!(!board.session.is_active());
+	board.hear(subscribe(1, ENGINE, 0x2000, 100));
+	assert!(board.session.is_active());
+	board.hear(Message::Unsubscribe { sub: 1 });
+	assert!(!board.session.is_active());
+	board.hear(request(1, ENGINE, &[0x22, 0xF1, 0x90]));
+	assert!(board.session.is_active());
+	board.run_until(100);
+	assert_eq!(board.answers().len(), 1);
+	assert!(!board.session.is_active(), "answered, nothing held");
+}
+
+/// The cable's session holds the cable's guard, and keeps it across a close.
+#[test]
+fn a_cable_session_walks_a_range_the_radio_refuses_and_stays_a_cable_session_after_close() {
+	let walk = |board: &mut Board| {
+		for (seq, did) in (0xF100u16..0xF110).enumerate() {
+			board.hear(request(seq as u8, ENGINE, &[0x22, (did >> 8) as u8, did as u8]));
+			let until = board.now + 20;
+			board.run_until(until);
+		}
+		board.answers().iter().filter(|(_, o)| matches!(o, Outcome::Refused(_))).count()
+	};
+	let mut radio = Board::new(Bus::Answering { kmh: 0 });
+	assert!(walk(&mut radio) > 0, "the radio refuses the walk");
+
+	let mut cable = Board::new(Bus::Answering { kmh: 0 });
+	cable.session = Session::with_guard(crate::guard::Guard::cable());
+	assert_eq!(walk(&mut cable), 0, "{:?}", cable.answers());
+	cable.session.close(&mut cable.planner);
+	cable.to_host.clear();
+	assert_eq!(walk(&mut cable), 0, "still the cable's guard after a close");
+}

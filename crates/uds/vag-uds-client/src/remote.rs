@@ -88,8 +88,24 @@ enum Current {
 }
 
 impl Session {
+	/// A session across the radio: [`Guard::new`].
 	pub fn new() -> Self {
 		Self::default()
+	}
+
+	/// A session held to `guard`'s profile — [`Guard::cable`] for the board's USB cable.
+	pub fn with_guard(guard: Guard) -> Self {
+		Session {
+			guard: guard.renewed(),
+			..Self::default()
+		}
+	}
+
+	/// Whether a host holds anything here: a live subscription, or a request queued or
+	/// out. A carrier that also takes other protocols (the USB cable's slcan lines)
+	/// does not let them in while this is so.
+	pub fn is_active(&self) -> bool {
+		!self.subs.is_empty() || self.queued() > 0
 	}
 
 	/// Requests waiting behind the current one. A shell that stops reading the
@@ -129,10 +145,68 @@ impl Session {
 			Message::Request(request) => self.queue.push_back(request),
 			Message::Subscribe(s) => self.subscribe(now_ms, planner, s, &mut out),
 			Message::Unsubscribe { sub } => self.unsubscribe(planner, sub),
-			Message::Answer(_) | Message::Reading(_) => {}
+			// A Hello is the shell's to answer: only it knows the image, and it closes the
+			// session first ([`Session::close`]).
+			Message::Answer(_) | Message::Reading(_) | Message::Hello | Message::HelloReply(_) => {}
 		}
 		out.extend(self.poll(now_ms, planner));
 		out
+	}
+
+	/// Take one message from the host while the board puts nothing on the bus — the
+	/// `dash` image in its adapter mode, where the USB cable's host drives the pair itself.
+	///
+	/// A request is answered [`Outcome::Refused`] with `reason`, a subscription gets one
+	/// refused [`Reading`], and neither reaches the guard or the planner: nothing is
+	/// counted, nothing is queued to go out later. A subscription given again under a
+	/// live `sub` ends the live one first, as [`Session::push`] would replace it. An
+	/// unsubscribe is honoured, since it only frees.
+	pub fn push_refused(&mut self, now_ms: u64, planner: &mut Planner, message: Message, reason: &str) -> Vec<Message> {
+		match message {
+			Message::Request(request) => vec![Message::Answer(Answer {
+				seq: request.seq,
+				outcome: Outcome::Refused(String::from(reason)),
+			})],
+			Message::Subscribe(s) => {
+				self.unsubscribe(planner, s.sub);
+				vec![Message::Reading(Reading {
+					sub: s.sub,
+					at_ms: now_ms as u32,
+					outcome: Outcome::Refused(String::from(reason)),
+				})]
+			}
+			Message::Unsubscribe { sub } => {
+				self.unsubscribe(planner, sub);
+				Vec::new()
+			}
+			Message::Answer(_) | Message::Reading(_) | Message::Hello | Message::HelloReply(_) => Vec::new(),
+		}
+	}
+
+	/// The board stops putting anything on the bus: every request this session's host
+	/// still waits for is answered [`Outcome::Refused`] with `reason`, in the order they
+	/// came — the one being dealt with first. An exchange handed to the planner is
+	/// cancelled if it has not gone out; one already on the bus finds nobody when it is
+	/// answered. Subscriptions stay: the planner keeps them and they resume when the bus
+	/// does, the way the panel's own do.
+	pub fn refuse_pending(&mut self, planner: &mut Planner, reason: &str) -> Vec<Message> {
+		if let Some(req) = self.awaiting() {
+			planner.cancel(req);
+		}
+		let current = self.current.take().map(|current| match current {
+			Current::Waiting { request, .. } | Current::Speed { request, .. } => request.seq,
+			Current::Forwarded { seq, .. } => seq,
+		});
+		current
+			.into_iter()
+			.chain(self.queue.drain(..).map(|request| request.seq))
+			.map(|seq| {
+				Message::Answer(Answer {
+					seq,
+					outcome: Outcome::Refused(String::from(reason)),
+				})
+			})
+			.collect()
 	}
 
 	/// Move the request queue as far as it goes at `now_ms`.
@@ -221,7 +295,7 @@ impl Session {
 		}
 		self.queue.clear();
 		self.current = None;
-		self.guard = Guard::new();
+		self.guard = self.guard.renewed();
 	}
 
 	fn act(&mut self, now_ms: u64, planner: &mut Planner, request: Request, verdict: Verdict, out: &mut Vec<Message>) {
