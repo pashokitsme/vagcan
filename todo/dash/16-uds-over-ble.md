@@ -41,30 +41,47 @@ item 7 (the `frame` mirror) unnecessary.
   transport, so over BLE it does not run at all. And an allowlist by service lets
   `10 02` through, and cannot tell one read from a sweep. So, on the board, per BLE
   request, before anything reaches the pair:
+  Implemented in `vag_uds_client::guard` (2026-09-14); the figures are its constants.
   - **`10 02` (programming session) is refused outright** over BLE, whatever the car is
-    doing. Nothing this project does needs it.
+    doing. Nothing this project does needs it. Bit 7 of the session byte only suppresses
+    the answer (ISO 14229-1), so the board masks it first: `10 82` is `10 02`, refused;
+    `10 81` is `10 01`, allowed.
   - **Any other session change except `10 01` (default) is refused unless the board has
     just read road speed 0 from the engine** — `22 F40D` to `7E0`/`7E8`, the SAE J1979
     parameter on the ISO 15765-4 engine address (`safety.rs` reads the same), asked
     immediately before the request is forwarded, not taken from the panel's last poll.
     No answer, a negative response, or any non-zero speed is "moving": refused, and the
     refusal says which. `10 01` is always allowed — returning a unit to default is the
-    safe direction.
-  - **A sweep limit, per BLE connection:** at most 20 UDS requests in any 10 s, and a
-    third strictly consecutive identifier to one unit (`22 n`, `22 n+1`, `22 n+2` on
-    one request id, in the connection's order) is refused and every further `0x22` to that
-    unit is refused until the connection drops. A walk is what `dev survey` and
-    `units --identify <unit>` (all of `F100–F1FF`) do and what the service allowlist cannot see —
-    both are refused over BLE by it, as they should be. Identification reads at most two
-    adjacent identifiers (`F190`, `F191`), and faults and a watch page none in a row. The
-    numbers are a starting point for the owner to set, not measured.
+    safe direction. The speed read is a request to the car too: it counts one toward the
+    rate cap, whether the session change is then allowed or not.
+  - **A rate cap, per BLE connection:** at most 20 counted units in any 10 s — one per
+    identifier in a `0x22`, one per other request, one per speed read. Over the cap the
+    board **delays** the request until it fits; it never refuses or drops it (owner:
+    slowing is allowed, dropping is forbidden).
   - **Identifiers count, not requests** (review round 3, 2026-09-13): one `0x22` request
-    can carry many identifiers, and the project relies on that (`ARCHITECTURE.md`, one
-    request tests a whole batch), so `22 F100 F101 … F1FF` would pass a per-request cap.
-    Over BLE the board allows at most 4 identifiers in one request, counts every identifier
-    inside a request toward the rate cap and the walk rule, treats any fixed stride
-    (`n`, `n+2`, `n+4` …) as a walk, and caps the distinct identifiers asked of one unit
-    per connection (a starting figure: 32).
+    can carry many identifiers, so `22 F100 F101 … F1FF` would pass a per-request cap.
+    Over BLE the board allows at most **4 identifiers in one request**, so the host must
+    batch at most 4 over this link (`plan::BATCH` is 8 on the cable).
+  - **A walk rule, per unit, per connection, blind to order:** the board keeps the set of
+    different identifiers asked of each unit. A request that would put 8 evenly spaced
+    identifiers into that set (`WALK_RUN = 8`, any non-zero stride: `F100…F107`,
+    `2000 2002 … 200E`) is refused, and every further `0x22` to that unit is refused until
+    the connection drops. Order, repeats and padding do not change the set, so they do
+    not dodge it. `dev survey` and `units --identify <unit>` (all of `F100–F1FF`) are
+    refused by their 8th identifier. A watch page with a few neighbours (`2029 202A 202B`)
+    passes; identification and faults ask no run at all. (It replaced "three in a row",
+    which refused such watch pages and was dodged by padding.)
+  - **Caps, per connection:** at most 32 different identifiers per unit, and at most 64
+    units (`MAX_UNITS`) — the board's memory for all of it stays under 8 KB.
+  - **Subscriptions:** `measure` reads speed at 50 Hz and `watch` polls a page; across a
+    radio link neither works as one request per reading, and timing has to be taken where
+    the bus is. So the host subscribes (`did`, period) and the board polls on its own clock
+    and streams timestamped readings (`link.rs`, types `0x03`–`0x05`). A subscription is
+    only ever `22 did`. Its identifier counts once, at subscribe time, toward the walk
+    rule and the identifier and unit caps; a locked unit refuses subscriptions. It does
+    **not** count toward the rate cap, and neither do the board's polls, so a 20-channel
+    watch starts at once. At most 32 live subscriptions per connection, none faster than
+    20 ms; an unsubscribe frees a slot.
   - The host may still check road speed itself, over this transport, as a courtesy that
     fails early with a better message — never as the enforcement.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
@@ -76,11 +93,13 @@ item 7 (the `frame` mirror) unnecessary.
 - Host transport and board message handling covered by hardware-free tests (mock NUS on the
   host, the board's decode/allowlist/chunking in a host-testable crate).
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
-  on a negative answer and on no answer, allowed on 0; the rate cap; a consecutive walk
-  refused at its third identifier; a multi-identifier request over 4 refused, and
-  its identifiers counted; a stride walk refused; the distinct-identifier cap; `units
-  --identify` refused (it walks `F100–F1FF`); and the request sequences `info` and `faults`
-  actually send passing every limit.
+  on a negative answer and on no answer, allowed on 0; the rate cap delaying; a run of 8
+  refused in any order and through padding; a multi-identifier request over 4 refused, and
+  its identifiers counted; a stride run refused; the distinct-identifier and unit caps;
+  `units --identify` refused (it walks `F100–F1FF`); subscriptions and their limits; and
+  the request sequences `info`, `faults`, a watch page and a measure session passing every
+  limit. *(Guard and wire format done 2026-09-14, `vag_uds_client::guard`,
+  `vag_uds_transport::link`.)*
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
   the CANable with `dev sniff --device … --active` (no unit answers on the bench).
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.
