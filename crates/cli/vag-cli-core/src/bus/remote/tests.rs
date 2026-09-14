@@ -215,6 +215,18 @@ async fn a_reading_that_is_no_record_is_a_miss_and_a_refusal_ends_the_subscripti
 	board.quiet().await;
 }
 
+/// One refusal, one spelling: a subscription's end, a one-shot read's note and an
+/// exchange's error all say it the same way.
+#[test]
+fn a_refusal_by_the_board_is_spelled_one_way_everywhere() {
+	const SAID: &str = "refused by the dash board — the car is moving";
+	assert_eq!(ExchangeError::Refused("the car is moving".into()).to_string(), SAID);
+	assert_eq!(
+		super::once_refused(PEER, ENGINE, 0xF40D, "the car is moving"),
+		format!("{PEER}: 7E0 F40D was not read: {SAID}")
+	);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_one_shot_read_is_a_request_of_that_one_identifier() {
 	let (bus, mut board) = start();

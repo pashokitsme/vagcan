@@ -71,15 +71,21 @@ pub const PENDING_WAIT: Duration = Duration::from_secs(5);
 /// exchange's caller gets as a success with no data.
 pub const SUPPRESSED_WAIT: Duration = Duration::from_millis(150);
 
-/// How long a one-shot read ([`Bus::read_once`], [`Bus::read_all`]) waits, queue and answer
-/// together, before its caller gets [`Miss::NoAnswer`]: one scheduled read's deadline and
-/// one response-pending wait. A bus over the dash board adds [`REMOTE_GRACE`].
+/// How long a one-shot read ([`Bus::read_once`], [`Bus::read_all`]) on a bus under `budget`
+/// waits, queue and answer together, before its caller gets [`Miss::NoAnswer`]:
 ///
-/// The task bounds each exchange on its own; this bounds the caller, whatever holds the
-/// task up — a queue in front of the read, a unit that keeps saying `78`, a backend that
-/// does not honour its deadline. A read given up on may still go out later; its answer
-/// then reaches nobody.
-pub const ONCE_DEADLINE: Duration = Duration::from_millis(READ_DEADLINE.as_millis() as u64 + PENDING_WAIT.as_millis() as u64);
+/// - [`Budget::starve_after_ms`], the longest it waits behind a timing channel before it
+///   goes ahead of it;
+/// - [`READ_DEADLINE`], for the exchange already out when it does;
+/// - [`PENDING_WAIT`], for its own unit saying `78` before it answers.
+///
+/// A bus over the dash board adds [`REMOTE_GRACE`]. The task bounds each exchange on its
+/// own; this bounds the caller, whatever holds the task up — a queue in front of the read,
+/// a unit that keeps saying `78`, a backend that does not honour its deadline. A read given
+/// up on may still go out later; its answer then reaches nobody.
+pub fn once_deadline(budget: &Budget) -> Duration {
+	Duration::from_millis(u64::from(budget.starve_after_ms)) + READ_DEADLINE + PENDING_WAIT
+}
 
 /// How many `7F xx 78` in a row one request may be answered with before the unit counts
 /// as not answering: the async UDS client's own limit, so an exchange through the bus
@@ -172,13 +178,19 @@ impl std::fmt::Display for ExchangeError {
 			ExchangeError::Forbidden(why) => write!(f, "{why}"),
 			ExchangeError::NoAnswer => write!(f, "no answer"),
 			ExchangeError::Link(why) => write!(f, "{why}"),
-			ExchangeError::Refused(why) => write!(f, "refused by the dash board: {why}"),
+			ExchangeError::Refused(why) => f.write_str(&refused_by_board(why)),
 			ExchangeError::Closed => write!(f, "the bus has shut down"),
 		}
 	}
 }
 
 impl std::error::Error for ExchangeError {}
+
+/// A refusal by the dash board in words, one spelling wherever it surfaces: a
+/// subscription's end, a one-shot read's note, an exchange's error.
+fn refused_by_board(why: &str) -> String {
+	format!("refused by the dash board — {why}")
+}
 
 /// Where a one-shot read's result goes.
 type OnceReply = oneshot::Sender<Result<(Vec<u8>, At), Miss>>;
@@ -226,9 +238,9 @@ pub struct Bus {
 	keys: Arc<AtomicU64>,
 	/// Why the link broke under the task, once it has (see [`Bus::closed`]).
 	closed: Arc<std::sync::OnceLock<String>>,
-	/// What a one-shot read waits past [`ONCE_DEADLINE`]: nothing on a cable,
+	/// How long a one-shot read waits: [`once_deadline`] of the planner's budget, plus
 	/// [`REMOTE_GRACE`] over the dash board.
-	grace: Duration,
+	once_wait: Duration,
 }
 
 impl Bus {
@@ -239,13 +251,14 @@ impl Bus {
 		let (commands, inbox) = mpsc::unbounded_channel();
 		let started = Instant::now();
 		let runtime = tokio::runtime::Handle::current();
+		let once_wait = once_deadline(&budget);
 		tokio::task::spawn_blocking(move || runtime.block_on(task::run(link, budget, inbox, started)));
 		Bus {
 			commands,
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
 			closed: Arc::new(std::sync::OnceLock::new()),
-			grace: Duration::ZERO,
+			once_wait,
 		}
 	}
 
@@ -269,7 +282,8 @@ impl Bus {
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
 			closed,
-			grace: REMOTE_GRACE,
+			// The board plans under its own budget.
+			once_wait: once_deadline(&Budget::board()) + REMOTE_GRACE,
 		}
 	}
 
@@ -316,8 +330,8 @@ impl Bus {
 	}
 
 	/// Read `did` of `unit` once. It rides with anything of that unit due soon. A read that
-	/// has not come back within [`ONCE_DEADLINE`] (and the grace of a bus over the board)
-	/// is [`Miss::NoAnswer`].
+	/// has not come back within [`once_deadline`] of the budget (plus [`REMOTE_GRACE`] over
+	/// the board) is [`Miss::NoAnswer`].
 	pub async fn read_once(&self, class: Class, unit: Unit, did: u16) -> Result<(Vec<u8>, At), Miss> {
 		self.read_all(class, &[(unit, did)]).await.pop().unwrap_or(Err(Miss::BusError))
 	}
@@ -326,7 +340,7 @@ impl Bus {
 	/// those of one unit ride in one request; the results come back in the order asked.
 	/// One deadline for all of them, as for [`read_once`](Self::read_once).
 	pub async fn read_all(&self, class: Class, reads: &[(Unit, u16)]) -> Vec<Result<(Vec<u8>, At), Miss>> {
-		let until = Instant::now() + ONCE_DEADLINE + self.grace;
+		let until = Instant::now() + self.once_wait;
 		let waiting: Vec<_> = reads
 			.iter()
 			.map(|&(unit, did)| {

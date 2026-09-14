@@ -247,12 +247,24 @@ pub trait Feed {
 	/// has gone. Must be safe to drop unfinished: the loop waits on it beside the
 	/// keyboard.
 	fn next(&mut self) -> impl std::future::Future<Output = Option<Arrival>>;
-	/// Read each of `reads` once, asked together, and hand back what answered.
-	fn read_once(&mut self, reads: &[(u16, u16)]) -> impl std::future::Future<Output = Vec<(u16, u16, Vec<u8>)>>;
+	/// A one-shot read out, which does not hold the feed: the loop reads the feed while it waits.
+	type Once: std::future::Future<Output = Vec<(u16, u16, Vec<u8>)>> + Unpin;
+	/// Read each of `reads` once, asked together; the read hands back what answered.
+	fn read_once(&mut self, reads: &[(u16, u16)]) -> Self::Once;
 	/// Why the feed ended, when it knows — "the BLE connection to vagcan-dash dropped".
 	fn closed(&self) -> Option<String> {
 		None
 	}
+	/// The reads that ended since the last call while the feed goes on, each with why —
+	/// the dash board refused it. The speed is never among them: its end ends the feed.
+	fn ended(&mut self) -> Vec<(u16, u16, String)> {
+		Vec::new()
+	}
+}
+
+/// One line for a read that is no longer read: "gear (7E1 1234) is no longer read: {why}".
+fn no_longer_read(what: &str, request: u16, did: u16, why: &str) -> String {
+	format!("{what} ({request:03X} {did:04X}) is no longer read: {why}")
 }
 
 /// The live feed: one subscription per polled read, on the bus.
@@ -265,6 +277,8 @@ pub struct LiveFeed {
 	speed: (u16, u16),
 	/// Why it ended, once it has.
 	ended: Option<String>,
+	/// Other reads that ended while the feed goes on, with why, not yet asked for.
+	refused: Vec<(u16, u16, String)>,
 }
 
 impl LiveFeed {
@@ -282,6 +296,7 @@ impl LiveFeed {
 			cursor: 0,
 			speed: plan.speed,
 			ended: None,
+			refused: Vec::new(),
 		}
 	}
 }
@@ -300,22 +315,27 @@ impl Feed for LiveFeed {
 		self.bus.closed().or_else(|| self.ended.clone())
 	}
 
+	fn ended(&mut self) -> Vec<(u16, u16, String)> {
+		std::mem::take(&mut self.refused)
+	}
+
 	/// The speed's subscription ending ends the feed: the speed is what closes a cycle,
 	/// so without it nothing would be shown again, and [`closed`](Feed::closed) says why.
-	/// Any other read that ends is one last miss.
+	/// Any other read that ends is one last miss, and its reason waits for
+	/// [`ended`](Feed::ended) — unless the link broke, whose reason ends the run.
 	async fn next(&mut self) -> Option<Arrival> {
 		if self.ended.is_some() {
 			return None;
 		}
 		let (_, sample) = vag_cli_core::bus::next_of(&mut self.subs, &mut self.cursor).await?;
-		if let Some(why) = &sample.ended
-			&& (sample.unit.request, sample.did) == self.speed
-		{
-			self.ended = Some(format!(
-				"the vehicle speed ({:03X} {:04X}) is no longer read: {why}",
-				sample.unit.request, sample.did
-			));
-			return None;
+		let address = (sample.unit.request, sample.did);
+		match &sample.ended {
+			Some(why) if address == self.speed => {
+				self.ended = Some(no_longer_read("the vehicle speed", address.0, address.1, why));
+				return None;
+			}
+			Some(why) if self.bus.closed().is_none() => self.refused.push((address.0, address.1, why.clone())),
+			_ => {}
 		}
 		Some(Arrival {
 			request: sample.unit.request,
@@ -325,18 +345,42 @@ impl Feed for LiveFeed {
 		})
 	}
 
-	async fn read_once(&mut self, reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
+	type Once = OnceReads;
+
+	/// Run on a task of its own, beside the feed; the bus bounds how long it takes.
+	fn read_once(&mut self, reads: &[(u16, u16)]) -> OnceReads {
 		let addressed: Vec<((u16, u16), (vag_cli_core::bus::Unit, u16))> = reads
 			.iter()
 			.filter_map(|&(request, did)| Some(((request, did), (unit_of(request)?, did))))
 			.collect();
-		let asked: Vec<(vag_cli_core::bus::Unit, u16)> = addressed.iter().map(|(_, read)| *read).collect();
-		let answers = self.bus.read_all(vag_cli_core::bus::Class::Foreground, &asked).await;
-		addressed
-			.into_iter()
-			.zip(answers)
-			.filter_map(|(((request, did), _), answer)| Some((request, did, answer.ok()?.0)))
-			.collect()
+		let bus = self.bus.clone();
+		OnceReads(tokio::spawn(async move {
+			let asked: Vec<(vag_cli_core::bus::Unit, u16)> = addressed.iter().map(|(_, read)| *read).collect();
+			let answers = bus.read_all(vag_cli_core::bus::Class::Foreground, &asked).await;
+			addressed
+				.into_iter()
+				.zip(answers)
+				.filter_map(|(((request, did), _), answer)| Some((request, did, answer.ok()?.0)))
+				.collect()
+		}))
+	}
+}
+
+/// The live feed's one-shot read, running on its own task: what answered, or nothing if
+/// the task failed. Dropped, it is abandoned, and an answer still to come reaches nobody.
+pub struct OnceReads(tokio::task::JoinHandle<Vec<(u16, u16, Vec<u8>)>>);
+
+impl std::future::Future for OnceReads {
+	type Output = Vec<(u16, u16, Vec<u8>)>;
+
+	fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+		std::pin::Pin::new(&mut self.0).poll(cx).map(Result::unwrap_or_default)
+	}
+}
+
+impl Drop for OnceReads {
+	fn drop(&mut self) {
+		self.0.abort();
 	}
 }
 
@@ -1188,7 +1232,31 @@ fn road_load(car: &carfile::CarFile, opts: &Options<'_>) -> Result<(power::RoadL
 /// leading speed, a reading or a miss, and carries everything else that arrived
 /// since the last one, each value with its own time. The loop waits on the next
 /// arrival and the next frame together, and drains the keyboard after either.
-async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool) -> Result<()> {
+async fn drive<F: Feed>(feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool) -> Result<()> {
+	drive_to(feed, prepared, opts, full_screen, &mut |line: &str| eprintln!("{line}")).await
+}
+
+/// Lines held while the full screen is up, said once it is given back: declared before
+/// the screen, it drops after it, on any return.
+struct Held<'a> {
+	lines: Vec<String>,
+	say: &'a mut (dyn FnMut(&str) + Send),
+}
+
+impl Drop for Held<'_> {
+	fn drop(&mut self) {
+		for line in self.lines.drain(..) {
+			(self.say)(&line);
+		}
+	}
+}
+
+/// [`drive`], with where a read that ended is said handed in.
+///
+/// A read other than the speed can end while the run goes on: the dash board refused it
+/// (its walk rule, its caps). One line per read says why — at once on the plain console,
+/// and after the full screen is given back otherwise, where a line would land on top of it.
+async fn drive_to<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, full_screen: bool, say: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
 	let Prepared {
 		plan,
 		mut meta,
@@ -1222,6 +1290,8 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 	let mut speed_kmh = 0.0f64;
 	let mut clock = 0.0f64;
 	let mut density: Option<(f64, bool)> = opts.air_density.map(|rho| (rho, false));
+	// The density read out at the end of a run, with the index of the run it is for.
+	let mut density_read: Option<(usize, F::Once)> = None;
 	// What arrived since the last cycle closed.
 	let mut set = session::SampleSet::default();
 	let mut records: Records = Vec::new();
@@ -1230,6 +1300,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 	let mut last_frame: Option<Instant> = None;
 	let mut cycled = true;
 
+	let mut held = Held { lines: Vec::new(), say };
 	// Held for the length of the drive, and given back by `Drop`: every `?`
 	// below this line is a run that ended badly on somebody's dashboard, and it
 	// must not also be a shell left with no echo and no cursor.
@@ -1313,7 +1384,43 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 				// The reason is the error, printed once the terminal has been handed back.
 				None => break Err(anyhow::anyhow!(feed.closed().unwrap_or_else(|| "the link to the car closed".to_string()))),
 			},
+			answers = density_in(&mut density_read) => {
+				let for_run = density_read.take().map(|(run, _)| run);
+				if let Some(measured) = density_from(&plan, answers) {
+					density = Some((measured, true));
+					apply_density(&mut meta, density);
+					if let Some(last) = recorded.last_mut().filter(|last| Some(last.run.index) == for_run) {
+						last.derived = report::recompute(&last.run, &meta.setting);
+						let again = report::results(&last.run, &last.derived, &meta.setting);
+						match terminal.is_some() {
+							// Over the table only while it is still up: a run kept or thrown
+							// away since has taken it down.
+							true => {
+								if table.is_some() {
+									table = Some(again);
+								}
+							}
+							false => println!("{again}"),
+						}
+					}
+					if let Some(path) = opts.out {
+						write_session(path, &meta, &recorded, &session)?;
+					}
+				}
+			}
 			() = sleep_for(wait) => {}
+		}
+
+		for (request, did, why) in feed.ended() {
+			let what = plan
+				.by_address
+				.get(&(request, did))
+				.map_or_else(|| "a reading".to_string(), |channel| channel.def.name.to_string());
+			let line = no_longer_read(&what, request, did, &why);
+			match terminal.is_some() {
+				true => held.lines.push(line),
+				false => (held.say)(&line),
+			}
 		}
 
 		if terminal.is_some() {
@@ -1394,53 +1501,24 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 						session.on_command(session::Command::Save);
 						discarded_unsaved = 0;
 					}
-					// The results table goes up at once; the plain console prints
-					// them once the density has had its chance to change them.
-					let mut text = Some(text);
-					if terminal.is_some() {
-						table = text.take();
+					// The results go up at once — the table on the next pass, the plain
+					// console's text now — and again once the density read below has
+					// changed them.
+					match terminal.is_some() {
+						true => {
+							table = Some(text);
+							last_frame = None;
+						}
+						false => println!("{text}"),
 					}
 					// The barometer and the ambient sensor are read here and
 					// nowhere else: once per run, and at the end of it, because
 					// that sensor heat-soaks at a standstill and +10 K reads the
-					// air density 3.4 % low. Bounded, and the keyboard is still
-					// taken while it waits.
+					// air density 3.4 % low. The read goes out now and its answer is
+					// taken in above, while the car and the keyboard go on being
+					// read; the bus bounds how long it can take.
 					if full && !plan.density.is_empty() {
-						let reading = tokio::time::timeout(DENSITY_WAIT, read_density(&mut feed, &plan));
-						tokio::pin!(reading);
-						let measured = loop {
-							tokio::select! {
-								biased;
-								got = &mut reading => break got.ok().flatten(),
-								() = tokio::time::sleep(FRAME) => {
-									if terminal.is_some() {
-										let unsaved = session.unsaved().saturating_sub(discarded_unsaved);
-										drain(&mut controls, &mut session, unsaved, &mut warning, &mut pending, &mut quit)?;
-										if quit {
-											break None;
-										}
-									}
-								}
-							}
-						};
-						if let Some(measured) = measured {
-							density = Some((measured, true));
-							apply_density(&mut meta, density);
-							if let Some(last) = recorded.last_mut() {
-								last.derived = report::recompute(&last.run, &meta.setting);
-								let again = report::results(&last.run, &last.derived, &meta.setting);
-								match terminal.is_some() {
-									true => table = Some(again),
-									false => text = Some(again),
-								}
-							}
-							if let Some(path) = opts.out {
-								write_session(path, &meta, &recorded, &session)?;
-							}
-						}
-					}
-					if let Some(text) = text {
-						println!("{text}");
+						density_read = recorded.last().map(|last| (last.run.index, feed.read_once(&plan.density)));
 					}
 				}
 				session::Event::Armed => {}
@@ -1517,6 +1595,7 @@ async fn drive<F: Feed>(mut feed: F, prepared: Prepared, opts: &Options<'_>, ful
 		// while drawing, so it goes first and this guard leaves the screen after.
 		drop(terminal);
 		drop(screen);
+		drop(held);
 		for record in &recorded {
 			println!("{}", report::results(&record.run, &record.derived, &meta.setting));
 		}
@@ -1560,11 +1639,13 @@ fn write_session(path: &str, meta: &Meta, recorded: &[Recorded], session: &sessi
 	std::fs::write(path, text).with_context(|| format!("writing {path}"))
 }
 
-/// The longest the loop waits for the density read at the end of a run: what the bus
-/// gives a one-shot read over the dash board. The live feed's read comes back by then
-/// on its own; this bounds any feed.
-const DENSITY_WAIT: Duration =
-	Duration::from_millis(vag_cli_core::bus::ONCE_DEADLINE.as_millis() as u64 + vag_cli_core::bus::REMOTE_GRACE.as_millis() as u64);
+/// The density read's answers once they are in; never, while none is out.
+async fn density_in<R: std::future::Future + Unpin>(read: &mut Option<(usize, R)>) -> R::Output {
+	match read {
+		Some((_, read)) => read.await,
+		None => std::future::pending().await,
+	}
+}
 
 /// Put the density in force for the power model, and say where it came from.
 fn apply_density(meta: &mut Meta, density: Option<(f64, bool)>) {
@@ -1582,10 +1663,9 @@ fn apply_density(meta: &mut Meta, density: Option<(f64, bool)>) {
 	}
 }
 
-/// Read the barometer and the ambient sensor, once, and turn them into a
-/// density.
-async fn read_density<F: Feed>(feed: &mut F, plan: &Plan) -> Option<f64> {
-	let answers = feed.read_once(&plan.density).await;
+/// The density from the barometer's and the ambient sensor's one-shot answers, when both
+/// answered.
+fn density_from(plan: &Plan, answers: Vec<(u16, u16, Vec<u8>)>) -> Option<f64> {
 	let mut pressure_kpa = None;
 	let mut ambient_c = None;
 	for (request, did, data) in answers {
@@ -2196,12 +2276,16 @@ mod tests {
 			self.arrivals.pop_front()
 		}
 
-		async fn read_once(&mut self, reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
+		type Once = std::future::Ready<Vec<(u16, u16, Vec<u8>)>>;
+
+		fn read_once(&mut self, reads: &[(u16, u16)]) -> Self::Once {
 			self.asked.push(reads.to_vec());
-			reads
-				.iter()
-				.filter_map(|(request, did)| self.answers.get(&(*request, *did)).map(|data| (*request, *did, data.clone())))
-				.collect()
+			std::future::ready(
+				reads
+					.iter()
+					.filter_map(|(request, did)| self.answers.get(&(*request, *did)).map(|data| (*request, *did, data.clone())))
+					.collect(),
+			)
 		}
 	}
 
@@ -2223,7 +2307,7 @@ mod tests {
 			answers,
 			asked: Vec::new(),
 		};
-		let rho = read_density(&mut feed, &plan).await.expect("both answered");
+		let rho = density_from(&plan, feed.read_once(&plan.density).await).expect("both answered");
 		assert_eq!(feed.asked.len(), 1, "once per run, both together");
 		assert_eq!(feed.asked[0].len(), 2);
 		assert!((rho - 1.2211).abs() < 1e-3, "{rho}");
@@ -2340,12 +2424,14 @@ mod tests {
 	}
 
 	impl Feed for NoDensity {
+		type Once = std::future::Pending<Vec<(u16, u16, Vec<u8>)>>;
+
 		async fn next(&mut self) -> Option<Arrival> {
 			self.arrivals.pop_front()
 		}
 
-		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
-			std::future::pending().await
+		fn read_once(&mut self, _reads: &[(u16, u16)]) -> Self::Once {
+			std::future::pending()
 		}
 	}
 
@@ -2392,6 +2478,88 @@ mod tests {
 		assert!(ended.is_err(), "a feed that ends is a link that closed");
 		let written: Value = serde_json::from_str(&std::fs::read_to_string(&out).expect("--out was written")).unwrap();
 		assert_eq!(written["runs"].as_array().map(Vec::len), Some(1), "{written}");
+	}
+
+	/// What a [`Watched`] feed was asked, in order, and when.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	enum Asked {
+		Next,
+		Density,
+	}
+
+	/// A feed whose one-shot reads never come back, logging every call in order.
+	struct Watched {
+		arrivals: std::collections::VecDeque<Arrival>,
+		log: std::sync::Arc<std::sync::Mutex<Vec<(Asked, tokio::time::Instant)>>>,
+	}
+
+	impl Feed for Watched {
+		async fn next(&mut self) -> Option<Arrival> {
+			self.log.lock().unwrap().push((Asked::Next, tokio::time::Instant::now()));
+			self.arrivals.pop_front()
+		}
+
+		type Once = std::future::Pending<Vec<(u16, u16, Vec<u8>)>>;
+
+		fn read_once(&mut self, _reads: &[(u16, u16)]) -> Self::Once {
+			self.log.lock().unwrap().push((Asked::Density, tokio::time::Instant::now()));
+			std::future::pending()
+		}
+	}
+
+	/// The density read at the end of a run can take a one-shot's whole deadline, and the
+	/// car goes on meanwhile: the feed is read while the read waits, not after it.
+	#[tokio::test(start_paused = true)]
+	async fn the_feed_is_read_while_the_density_read_waits() {
+		let (store, units) = reference();
+		let dir = tempfile::tempdir().unwrap();
+		let car_path = dir.path().join("car.json");
+		let mut car = carfile::CarFile::new("TESTVIN0000000000");
+		car.i_wheels_kgm2 = Some(carfile::Sourced::new(1.0, carfile::Source::Stated));
+		car.i_engine_kgm2 = Some(carfile::Sourced::new(0.1, carfile::Source::Stated));
+		car.save(&car_path).unwrap();
+		let car_text = car_path.to_string_lossy().to_string();
+		let opts = Options {
+			car: Some(&car_text),
+			catalogs: "",
+			full: true,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: Some(1500.0),
+			tyre: Some("205/55R16"),
+			cda: Some(0.7),
+			crr: Some(0.011),
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves under --full");
+		assert!(!prepared.plan.density.is_empty(), "the density is read at the end of a run");
+		let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+		let feed = Watched {
+			arrivals: launch(&prepared.plan),
+			log: log.clone(),
+		};
+		let ended = tokio::time::timeout(Duration::from_secs(3600), drive(feed, prepared, &opts, false))
+			.await
+			.expect("the drive ends");
+		assert!(ended.is_err(), "a feed that ends is a link that closed");
+		let log = log.lock().unwrap();
+		let at = log
+			.iter()
+			.position(|(asked, _)| *asked == Asked::Density)
+			.expect("the density was asked for at the end of the run");
+		let (_, asked) = log[at];
+		let (_, next) = *log[at..]
+			.iter()
+			.find(|(asked, _)| *asked == Asked::Next)
+			.expect("the feed was read after the density was asked for");
+		assert!(next - asked < FRAME, "the feed waited {:?} for the density read", next - asked);
 	}
 
 	/// The speed is what closes a cycle. When the dash board refuses it — another host
@@ -2466,6 +2634,95 @@ mod tests {
 		assert!(why.contains(REFUSAL), "{why}");
 	}
 
+	/// Any other read the board refuses — its walk rule, its caps — goes on as a miss and
+	/// the run goes on, but the reason is said, one line per read. A read that ends because
+	/// the link broke is not among them: the link's reason ends the run.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_reading_the_board_refuses_is_said_once_and_the_run_goes_on() {
+		use vag_uds_transport::link::{self, Message, Outcome, Piece, Pipe, Reading, Reassembler, pipe_pair};
+		const REFUSAL: &str = "8 evenly spaced identifiers";
+		let (store, units) = reference();
+		let opts = Options {
+			car: None,
+			catalogs: "",
+			full: false,
+			minimal: false,
+			marks: vec![(0, 50)],
+			accel_window_s: 0.3,
+			out: None,
+			quiet: true,
+			mass_kg: None,
+			tyre: None,
+			cda: None,
+			crr: None,
+			inertia_factor: None,
+			grade_percent: 0.0,
+			headwind_ms: 0.0,
+			air_density: None,
+			speed_scale: 1.0,
+		};
+		let prepared = prepare(&store, &crate::extracted::Extracted::none(), &units, None, &opts).expect("the fixture resolves");
+		let speed = prepared.plan.speed;
+		let refused = prepared
+			.plan
+			.polled
+			.iter()
+			.map(|poll| (poll.request, poll.did))
+			.find(|&address| address != speed)
+			.expect("a read besides the speed");
+		let name = prepared.plan.by_address[&refused].def.name.to_string();
+		let (host, mut board) = pipe_pair(244);
+		let bus = vag_cli_core::bus::Bus::start_remote(host, "vagcan-dash", vag_cli_core::bus::Carrier::Ble);
+		let feed = LiveFeed::new(bus, &prepared.plan);
+		// The board: refuses that one read, reads every other every 20 ms, then goes away.
+		tokio::spawn(async move {
+			let mut reassembler = Reassembler::new();
+			let mut live: Vec<(u16, u16)> = Vec::new();
+			let mut at_ms = 1_000u32;
+			for _ in 0..40 {
+				let mut out = Vec::new();
+				tokio::select! {
+					chunk = board.read() => {
+						let Some(chunk) = chunk else { return };
+						for piece in reassembler.push(&chunk) {
+							let Piece::Message(Message::Subscribe(s)) = piece else { continue };
+							match (s.request_id, s.did) == refused {
+								true => out.push(Reading { sub: s.sub, at_ms, outcome: Outcome::Refused(REFUSAL.into()) }),
+								false => live.push((s.sub, s.did)),
+							}
+						}
+					}
+					() = tokio::time::sleep(Duration::from_millis(20)) => {
+						at_ms += 20;
+						for &(sub, did) in &live {
+							let [hi, lo] = did.to_be_bytes();
+							out.push(Reading { sub, at_ms, outcome: Outcome::Pdu(vec![0x62, hi, lo, 0x02]) });
+						}
+					}
+				}
+				for reading in out {
+					if board.write(&link::encode(&Message::Reading(reading)).unwrap()).await.is_err() {
+						return;
+					}
+				}
+			}
+		});
+		let mut said: Vec<String> = Vec::new();
+		let mut say = |line: &str| said.push(line.to_string());
+		let ended = tokio::time::timeout(Duration::from_secs(5), drive_to(feed, prepared, &opts, false, &mut say))
+			.await
+			.expect("the run ends when the board goes away");
+		let why = ended.expect_err("ended by the link").to_string();
+		assert!(why.contains("dropped"), "the run went on until the link went: {why}");
+		assert_eq!(
+			said,
+			[format!(
+				"{name} ({:03X} {:04X}) is no longer read: refused by the dash board — {REFUSAL}",
+				refused.0, refused.1
+			)]
+		);
+	}
+
 	/// A feed from a car that says nothing for a while and then goes away, counting
 	/// how often the loop came back to ask it.
 	struct Quiet {
@@ -2480,8 +2737,10 @@ mod tests {
 			None
 		}
 
-		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
-			Vec::new()
+		type Once = std::future::Ready<Vec<(u16, u16, Vec<u8>)>>;
+
+		fn read_once(&mut self, _reads: &[(u16, u16)]) -> Self::Once {
+			std::future::ready(Vec::new())
 		}
 	}
 
@@ -2527,12 +2786,14 @@ mod tests {
 	struct Dropped;
 
 	impl Feed for Dropped {
+		type Once = std::future::Ready<Vec<(u16, u16, Vec<u8>)>>;
+
 		async fn next(&mut self) -> Option<Arrival> {
 			None
 		}
 
-		async fn read_once(&mut self, _reads: &[(u16, u16)]) -> Vec<(u16, u16, Vec<u8>)> {
-			Vec::new()
+		fn read_once(&mut self, _reads: &[(u16, u16)]) -> Self::Once {
+			std::future::ready(Vec::new())
 		}
 
 		fn closed(&self) -> Option<String> {
