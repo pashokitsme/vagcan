@@ -21,7 +21,8 @@
 //! there is untested by CI. The alarm machine is `no_std`, allocation-free, has
 //! no dependency on this crate's drawing code, and is the only thing that ever
 //! sets [`Cell::alarm`]; it costs a laptop nothing and it earns a synthetic
-//! clock.
+//! clock. [`screen`] puts it together with the page cursor and the button, so
+//! the firmware only feeds it a clock, the store's values and a press.
 //!
 //! Sizes are in pixels and the panel is 32 of them tall, which is the single
 //! fact that shapes every decision here. Four tiers of text — the label over two
@@ -39,6 +40,7 @@ pub mod history;
 pub mod pages;
 pub mod plan;
 pub mod render;
+pub mod screen;
 pub mod theme;
 
 pub use frame::{Cell, Frame};

@@ -1604,7 +1604,7 @@ impl PanelReads {
 		let request = PLAN.units[u].request;
 		let mut wanted: [Option<(bool, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
 		for rate in PLAN.rates(&self.shown, &self.listed) {
-			wanted[usize::from(rate.channel)] = Some((rate.shown, rate.period_ms));
+			wanted[usize::from(rate.channel)] = Some((rate.foreground, rate.period_ms));
 		}
 		let now = ms();
 		bus.lock(|p| {

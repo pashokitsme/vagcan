@@ -22,6 +22,8 @@
 //! byte-order flag (`0x380A`, 690 /min read as 45570 by a reader that assumed
 //! big-endian) is exactly the bug a host test catches for free.
 
+use crate::alarm::{Alarm, ChannelId};
+
 /// The whole interface between the laptop and the device.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plan {
@@ -37,6 +39,13 @@ pub struct Plan {
 	/// configuration refer to these by index.
 	pub channels: &'static [Channel],
 	pub pages: &'static [Page],
+	/// The owner's `[[alarm]]` rules, in priority order. A [`ChannelId`] is an
+	/// index into [`Plan::channels`] and a [`PageId`](crate::alarm::PageId) an index
+	/// into [`Plan::pages`]: an image is built for one plan, so an index is a name
+	/// that cannot drift. The generator has checked each rule — its page is a values
+	/// page holding every channel it watches, and its release is on the far side of
+	/// its trip — and carries at most [`MAX_ALARMS`](crate::alarm::MAX_ALARMS).
+	pub alarms: &'static [Alarm<'static>],
 }
 
 /// One control unit and how to address it.
@@ -131,9 +140,11 @@ pub const HIDDEN_PERIOD_MS: u32 = 1000;
 pub struct Rate {
 	/// Index into [`Plan::channels`].
 	pub channel: u16,
-	/// On the page on the glass: read at its own rate, ahead of other work.
-	/// Otherwise only on pages not shown: read at [`HIDDEN_PERIOD_MS`] at most, last.
-	pub shown: bool,
+	/// Read at its own rate, ahead of other work: it is on the page on the glass,
+	/// or an alarm watches it — and an alarm watches whatever page is up, so its
+	/// channels are never demoted. Otherwise only on pages not shown: read at
+	/// [`HIDDEN_PERIOD_MS`] at most, last.
+	pub foreground: bool,
 	pub period_ms: u32,
 }
 
@@ -210,30 +221,38 @@ impl Plan {
 	}
 
 	/// How every channel worth reading is to be read, in plan order: the ones
-	/// `shown` at their own rate, the ones only `listed` (on some page, not the
-	/// one on the glass) no faster than [`HIDDEN_PERIOD_MS`], and a channel on
-	/// no page not at all. A chart samples its channel every frame whether or
-	/// not it is shown, so the caller lists every page's cells, charts included.
+	/// `shown` and the ones an alarm watches at their own rate, the ones only
+	/// `listed` (on some page, not the one on the glass) no faster than
+	/// [`HIDDEN_PERIOD_MS`], and a channel on no page not at all. A chart samples
+	/// its channel every frame whether or not it is shown, so the caller lists
+	/// every page's cells, charts included. An alarm's channels are the plan's
+	/// business, not the caller's: they are foreground on every page, so no page
+	/// switch can drop the reading that would trip the rule.
 	pub fn rates<'a>(&'a self, shown: &'a [u16], listed: &'a [u16]) -> impl Iterator<Item = Rate> + 'a {
 		self.channels.iter().enumerate().filter_map(move |(i, channel)| {
 			let index = i as u16;
 			let own = channel.period_ms();
-			if shown.contains(&index) {
+			if shown.contains(&index) || self.watched(index) {
 				Some(Rate {
 					channel: index,
-					shown: true,
+					foreground: true,
 					period_ms: own,
 				})
 			} else if listed.contains(&index) {
 				Some(Rate {
 					channel: index,
-					shown: false,
+					foreground: false,
 					period_ms: own.max(HIDDEN_PERIOD_MS),
 				})
 			} else {
 				None
 			}
 		})
+	}
+
+	/// Whether any alarm watches the channel at `index`.
+	pub fn watched(&self, index: u16) -> bool {
+		self.alarms.iter().any(|alarm| alarm.channels.contains(&ChannelId(index)))
 	}
 
 	/// The channels one unit owns, in plan order — what one addressed
@@ -430,6 +449,7 @@ mod tests {
 		units: &[],
 		channels: &CHANNELS,
 		pages: &PAGES,
+		alarms: &[],
 	};
 
 	#[test]
@@ -522,7 +542,7 @@ mod tests {
 		const MIXED: [Channel; 4] = [FAST, FAST, SLOW, channel(0, 8, false, true, 1.0, 0.0)];
 		let plan = Plan { channels: &MIXED, ..PLAN };
 		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
-			plan.rates(shown, listed).map(|r| (r.channel, r.shown, r.period_ms)).collect()
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
 		};
 		assert_eq!(
 			rates(&[0], &[0, 1, 2]),
@@ -534,6 +554,44 @@ mod tests {
 			[(0, false, 1000), (1, true, 100), (2, false, 4000), (3, true, 500)],
 			"switching pages swaps who is shown"
 		);
+	}
+
+	#[test]
+	fn a_channel_an_alarm_watches_is_read_at_its_own_rate_whatever_page_is_up() {
+		use crate::alarm::{Direction, PageId};
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		const CHANNELS: [Channel; 3] = [FAST, FAST, channel(0, 8, false, true, 1.0, 0.0)];
+		static WATCHED: [ChannelId; 1] = [ChannelId(1)];
+		static ALARMS: [Alarm<'static>; 1] = [Alarm {
+			channels: &WATCHED,
+			page: PageId(2),
+			trip: 10.0,
+			release: 8.0,
+			direction: Direction::Above,
+		}];
+		let plan = Plan {
+			channels: &CHANNELS,
+			alarms: &ALARMS,
+			..PLAN
+		};
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
+		};
+		assert!(plan.watched(1) && !plan.watched(0) && !plan.watched(2));
+		assert_eq!(
+			rates(&[0], &[0, 1, 2]),
+			[(0, true, 100), (1, true, 100), (2, false, 1000)],
+			"channel 1 is on a hidden page and still at 10 Hz, ahead of other work"
+		);
+		assert_eq!(
+			rates(&[2], &[0, 1, 2]),
+			[(0, false, 1000), (1, true, 100), (2, true, 500)],
+			"a page switch demotes what was shown and not what the alarm watches"
+		);
+		assert_eq!(rates(&[], &[]), [(1, true, 100)], "watched even with no page asking for it");
 	}
 
 	#[test]
@@ -630,6 +688,7 @@ mod tests {
 			units: &UNITS,
 			channels: &CHANNELS,
 			pages: &PAGES,
+			alarms: &[],
 		};
 		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);

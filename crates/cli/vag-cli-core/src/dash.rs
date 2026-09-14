@@ -673,7 +673,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out);
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &[] }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);

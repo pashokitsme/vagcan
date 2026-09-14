@@ -91,7 +91,20 @@ impl Direction {
 	}
 }
 
+/// The most rules one plan may carry.
+///
+/// Every rule's channels are read at their own rate all the time, whatever page
+/// is up, so each rule is a standing cost on the bus budget; and one press ends
+/// one episode, so a driver with more rules out at once than this presses more
+/// than they read. The generator refuses a `dash.toml` with more.
+pub const MAX_ALARMS: usize = 4;
+
 /// One rule: some channels, a page that explains them, and two thresholds.
+///
+/// Plain data, so a plan can carry it as a `static`: the generator writes the
+/// fields directly, having already checked what [`Alarm::below`] and
+/// [`Alarm::above`] assert.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Alarm<'a> {
 	/// Watched whether or not they are on the screen. Borrowed, because the plan
 	/// outlives the machine and this crate has no allocator.
@@ -161,10 +174,10 @@ impl<'a> Alarm<'a> {
 	/// past it; *every* channel has to be past `release` to clear it, which is
 	/// the worst one being past it. Ties keep the earlier channel, so a page of
 	/// four identical readings always highlights the same cell.
-	fn worst(&self, readings: &[Reading]) -> Option<(ChannelId, f32)> {
+	fn worst(&self, value_of: &impl Fn(ChannelId) -> Option<f32>) -> Option<(ChannelId, f32)> {
 		let mut worst: Option<(ChannelId, f32)> = None;
 		for want in self.channels {
-			let Some(v) = value_of(*want, readings) else { continue };
+			let Some(v) = value_of(*want) else { continue };
 			match worst {
 				Some((_, best)) if !self.direction.worse(v, best) => {}
 				_ => worst = Some((*want, v)),
@@ -314,8 +327,16 @@ impl<'a, const N: usize> Alarms<'a, N> {
 	/// that "back to where you were" cannot drift out of step with the caller's
 	/// own idea of where that is.
 	pub fn poll(&mut self, page: PageId, readings: &[Reading], now_ms: u64) -> Update {
+		self.poll_with(page, |channel| value_of(channel, readings), now_ms)
+	}
+
+	/// [`Alarms::poll`], with the readings as a lookup rather than a list: what the
+	/// board has is a store indexed by channel, and copying the watched part of it
+	/// into a slice first would need a buffer this crate has no allocator for.
+	/// `None` is the same no-evidence it is in a [`Reading`].
+	pub fn poll_with(&mut self, page: PageId, value_of: impl Fn(ChannelId) -> Option<f32>, now_ms: u64) -> Update {
 		for i in 0..N {
-			self.episodes[i] = step(&self.rules[i], self.episodes[i], readings, now_ms);
+			self.episodes[i] = step(&self.rules[i], self.episodes[i], &value_of, now_ms);
 		}
 
 		self.showing = (0..N).find(|&i| self.episodes[i].showing().is_some());
@@ -335,8 +356,8 @@ impl<'a, const N: usize> Alarms<'a, N> {
 
 /// One rule, one poll. Pulled out of the loop because it is the state machine
 /// and everything around it is bookkeeping.
-fn step(rule: &Alarm<'_>, episode: Episode, readings: &[Reading], now_ms: u64) -> Episode {
-	let worst = rule.worst(readings);
+fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Option<f32>, now_ms: u64) -> Episode {
+	let worst = rule.worst(value_of);
 	match episode {
 		Episode::Clear => match worst {
 			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c },
