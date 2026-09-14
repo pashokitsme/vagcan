@@ -25,7 +25,7 @@ item 7 (the `frame` mirror) unnecessary.
 - **Framing:** length + message type + body, cut into NUS-MTU chunks. BLE's link layer
   already guarantees delivery and integrity. The type byte separates UDS from the
   text settings protocol `dashcfg` already speaks on the same NUS (`12`).
-- **Always visible** (owner, 2026-09-13): "мы можем видимость всегда включенной держать и
+- **Always visible** (owner, 2026-09-13; implemented 2026-09-14, branch `fw-bus`): "мы можем видимость всегда включенной держать и
   не париться с этим? антенна всё равно далеко не бьёт". The board has one button (BOOT,
   inside the enclosure) and no wake button, so a long-press gate is not practical. No
   pairing in the first step.
@@ -96,7 +96,10 @@ item 7 (the `frame` mirror) unnecessary.
 ## Done when
 
 - Host transport and board message handling covered by hardware-free tests (mock NUS on the
-  host, the board's decode/allowlist/chunking in a host-testable crate).
+  host, the board's decode/allowlist/chunking in a host-testable crate). *(Board side done
+  2026-09-14, branch `fw-bus`: `vag_uds_client::remote::Session` — guard, planner, readings,
+  walk lock, close — tested against a real planner and a simulated bus; the firmware's NUS
+  server wraps it. Host transport not started.)*
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
   on a negative answer and on no answer, allowed on 0; the rate cap delaying; a run of 8
   refused in any order and through padding; a multi-identifier request over 4 refused, and
@@ -106,5 +109,8 @@ item 7 (the `frame` mirror) unnecessary.
   limit. *(Guard and wire format done 2026-09-14, `vag_uds_client::guard`,
   `vag_uds_transport::link`.)*
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
-  the CANable with `dev sniff --device … --active` (no unit answers on the bench).
+  the CANable with `dev sniff --device … --active` (no unit answers on the bench). *(The
+  board's half passed 2026-09-14 with the bench tool `bleuds` in place of `vagcan`:
+  `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` waits for the host
+  transport.)*
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.

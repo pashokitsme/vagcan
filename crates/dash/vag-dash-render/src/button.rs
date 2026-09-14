@@ -6,7 +6,7 @@
 //! | gesture | normally | while an alarm is showing |
 //! |---|---|---|
 //! | short press | next page | silence this episode |
-//! | held 3 s | start advertising for configuration | same |
+//! | held 3 s | nothing (it opened BLE until BLE became always on, 2026-09-14) | same |
 //!
 //! Nothing here touches hardware. It is a state machine over a clock and a
 //! level, and it lives in this crate for the same reason [`alarm`](crate::alarm)

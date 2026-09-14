@@ -465,11 +465,14 @@ identifier, bit layout, scaling, unit, label. The image links it. A project cach
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
 fixed list of identifiers cannot sweep.
 
-**One bus, one conversation, on the board too.** `can_task` owns the TWAI controller. It
-reads each unit's part number (`F187`) first and polls the unit only when it matches the
-plan, then reads the plan's identifiers one exchange at a time through the same
-`vag-uds-client` and allowlist the laptop uses. Bus-off restarts the controller; a unit
-that goes silent is asked only for its part number until it answers.
+**One bus, one conversation, on the board too.** `bus_task` owns the TWAI controller and
+runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
+time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
+only when it matches the plan: the visible page at each channel's `hz` from `dash.toml`
+(2 Hz by default), other pages at 1 Hz. A BLE host's requests go through the same planner.
+The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
+when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent
+is asked only for its part number until it answers.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
@@ -477,10 +480,13 @@ the board that is a 1-bit framebuffer; until the OLED is fitted, the board sends
 USB and `dashsim` (`research/dash/host`) draws it in a terminal. The layout is decided
 only on the board.
 
-**Settings over BLE.** The board advertises a Nordic UART service after a 3-second button
-press. `dashcfg` sends text commands (`state`, `set brightness N`, `set page N`, `save`,
-`load`, `defaults`). Settings are stored in a flash partition; a stored page list that
-does not match the current plan is discarded at boot.
+**BLE, always on.** The board advertises a Nordic UART service from boot and again after
+every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,
+`set brightness N`, `set page N`, `save`, `load`, `defaults`). Settings are stored in a
+flash partition; a stored page list that does not match the current plan is discarded at
+boot. Framed UDS messages (`vag_uds_transport::link`) share the service: each request
+passes the board's guard (`vag_uds_client::guard`) and then the planner; subscriptions are
+polled on the board's clock. `vag_uds_client::remote` is that session, host-tested.
 
 **Two firmware images.**
 

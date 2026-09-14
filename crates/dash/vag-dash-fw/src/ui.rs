@@ -9,20 +9,20 @@
 
 pub use vag_dash_render::button::{Button, DEBOUNCE_MS, LONG_PRESS_MS, PRESS_GAP_MS, Press};
 
-/// What the device is doing about being configurable, which is also what the
-/// LED is saying.
+/// What the radio is doing, which is also what the LED is saying.
+///
+/// BLE is always on (owner, 2026-09-13/14): the board advertises from boot and
+/// again after every disconnect, with no button to press. There is no
+/// access-control story in being visible; the board's guard is what bounds
+/// what a stranger in range can ask of the car (`todo/dash/16`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Visibility {
-	/// Not advertising. There is nothing on the air to connect to, which is
-	/// the entire security model: reaching this device requires standing next
-	/// to it and pressing the button.
+	/// Not advertising: before the radio is up, or while advertising could not
+	/// be started and is being retried.
 	Dark = 0,
-	/// Advertising, waiting for a client, on a bounded window.
+	/// Advertising, waiting for a client.
 	Advertising = 1,
 	/// A client is connected.
 	Connected = 2,
 }
-
-/// How long advertising stays up with nobody connecting.
-pub const ADVERTISE_WINDOW_SECS: u64 = 180;

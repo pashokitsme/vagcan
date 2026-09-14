@@ -739,3 +739,59 @@ FIFO to overflow, which 3,726 frames/s did not do even with the reader stopped �
 the bridge keeps draining the FIFO into the ring whatever the host does. `slcan_probe`
 hangs if run during a storm: it reads until 300 ms of quiet, and after its `L` there
 is none.
+
+### 9.5 `dash` with the planner and UDS over BLE, 2026-09-14
+
+Image `dash` from branch `fw-bus` (planner shell, BLE always on, the NUS UDS server), real
+plan (VIN …8917, units `7E0`/`7E1`), flashed with the §9.2 command. Bench pair as in §9.3,
+no car, so no unit answers. CANable: `vagcan dev sniff --device /dev/cu.usbmodem206E37A148451
+--active`. BLE host: `research/dash/host` `bleuds`, run from Terminal.app — a process
+started by the Claude app has no Bluetooth usage description and macOS kills it (TCC),
+and Terminal waited for the owner's "Allow" once.
+
+| check | seen |
+|---|---|
+| a. visible without a button | `bleuds` found `vagcan-dash` after 251–765 ms of scanning, connected in ~0.9 s, six connections in a row, re-advertising after each. `dashcfg`: state pushed on connect, `get` answered (`brightness 128 page 0 of 2 \| 0:values[2, 3, 0, 1] \| 1:chart[1]`). |
+| b. requests reach the pair | `7E0 7E8 22F190` → `7E0 22 F1 90` on the pair, Answer NoAnswer after 5.8 s. `710 77A 22F187` → `710 22 F1 87`, NoAnswer after 0.6 s; the board noted `the filter follows the exchange — moved to 77A/7FF in 121 µs`. |
+| c. guard | `2EF19000` → Refused `service 0x2E not allowed` in 89 ms, `1002` → Refused `programming session` in 91 ms, nothing on the pair for either. `1003` → `7E0 22 F4 0D` on the pair, then Refused `the engine did not report road speed` after 932 ms. |
+| d. subscription | `--subscribe 7E0 7E8 F40D 100 5`: 2 Readings (NoAnswer) in 5 s, and on the pair `22 F4 0D` batched into the panel's part-number read (`22 F1 87 F4 0D`) twice, 2.5 s apart. After the disconnect no `F4 0D` at all. **Not ~10 Hz**: see below. |
+| e. the panel keeps polling | `22 F1 87` to `7E0` and `7E1` alternately, each unit every 2.5 s (the planner's 2 s backoff cap plus the 500 ms answer deadline), before, during and after the BLE runs; `FRAME` lines keep coming on USB. |
+
+- **A silent unit is asked at its backoff rate, whoever asks.** The planner backs off a
+  unit that does not answer (250 ms doubling to 2 s) and holds every candidate of that unit
+  to it: the panel's `F187`, a Remote request, the Timing speed read, a subscription. On
+  this bench every unit is silent, so the 100 ms subscription was read at 2.5 s, a request
+  to `7E0` waited up to 2.5 s before it went out (b's 5.8 s), and the speed read waited for
+  the next slot too. A unit that answers is not backed off; the 10 Hz check needs one.
+- **ATT MTU**: 23 at connect, 251 agreed by macOS right after (`[host] agreed att MTU of
+  251`), so notifications are 20 bytes for the first moments and 244 from then on.
+- **Heap** (72 KB): 46,140 used after the BLE host is built, ~47,900 idle with the planner
+  running, 48,852 at most across the BLE sessions. `Current usage` stays flat; `Total
+  allocated` grows ~3 KB per 15 s with the part-number retries.
+- **The pair went quiet once.** After ~50 minutes with nobody acknowledging (the CANable
+  closed while Terminal waited for the Bluetooth prompt), two `--active` sniffs (10:50 and
+  10:52) saw **no frame at all** — not the panel's reads, not a `bleuds` request — though
+  the board answered the `bleuds` request NoAnswer after 7.5 s. A reset (espflash monitor)
+  brought the frames back at once. No note was captured for that window. **Not
+  reproduced in 5 minutes:** left unacknowledged from 10:55:46 and sniffed again at 11:01:25,
+  the board put 17 frames on the pair in 20 s (`22 F1 87` to both units every 2.5 s), and the
+  console, watched throughout, said nothing about bus-off or errors. Open: whether it takes
+  the longer unacknowledged stretch, and what state the controller is in — the next run is
+  an hour unacknowledged with the console captured from the start.
+
+### 9.6 After the review fixes, 2026-09-14
+
+Same bench as §9.5, `dash` from `fw-bus` at `e5fdb96` with the info log on (for the heap),
+console captured throughout, CANable `--active` for 120 s.
+
+| check | seen |
+|---|---|
+| a | found in 250–500 ms, seven connections, re-advertising after each |
+| b | `7E0 22 F1 90` on the pair, NoAnswer after 6.2 s; `710 22 F1 87`, NoAnswer after 0.57 s; filter moved to `77A/7FF` in 129 µs |
+| c | `2E…` Refused in 63 ms, nothing on the pair; `1003` → `7E0 22 F4 0D`, then Refused (no road speed) after 2.8 s |
+| response-id sweep | `bleuds --sweep-response 7E0 7E8 50 F40D 100`: **49 refused** ("request id 7E0 already answers on 7E8 in this connection"), 4 readings for the one accepted. Heap `Current usage` 48,092 before, 48,560 after; `Max usage` 49,016 → 49,096. |
+| `3E 80` | `7E0 3E 80` at 43.387 s, the panel's `7E0 22 F1 87` 152 ms later (the 150 ms suppressed wait), then every 2.5 s as before — no extra backoff, no burst of F187. Host: NoAnswer after 7.4 s (the silent unit's backoff before it went out). |
+
+- The first sweep run counted 17 of 49: `bleuds` sent all 50 subscriptions before reading
+  notifications, and btleplug's bounded broadcast channel dropped the rest. Fixed in the
+  tool (`e5fdb96`); the board had sent them.
