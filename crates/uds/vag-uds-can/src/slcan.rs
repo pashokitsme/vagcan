@@ -528,7 +528,9 @@ pub enum BoardAnswer {
 /// **A `V` never goes to a board known to speak the link.** It is an slcan command line,
 /// and the `dash` image takes one as the switch into its adapter mode, blanking the
 /// panel. So framed bytes without a reply still make the answer `Dash`, and so does a NUL
-/// among what came back to `V`.
+/// among what came back to `V` — after which `C` goes, because a console reader that woke
+/// late takes the Hellos and the `V` in one chunk: it answers the Hellos, and the `V` still
+/// switches it.
 ///
 /// **A `V` answered is checked once.** A `dash` image too slow for both Hellos takes the
 /// `V` as that switch and answers it as the adapter does. So `C` follows — it ends adapter
@@ -553,7 +555,13 @@ pub fn ask_board<P: std::io::Read + std::io::Write>(port: &mut P, hello_wait: Du
 	}
 	match ask_version(port, version_wait) {
 		Heard::Nothing => BoardAnswer::Silent,
-		Heard::Framed => BoardAnswer::Dash { version: "unknown".into() },
+		Heard::Framed => {
+			// A console reader that woke late took the Hellos and the `V` in one chunk: the
+			// replies came back with the `V`'s answer, and the `V` switched it into adapter mode.
+			// `C` ends that; a board that stayed in panel mode answers it `\r` and changes nothing.
+			say(port, b"C\r");
+			BoardAnswer::Dash { version: "unknown".into() }
+		}
 		Heard::Version => {
 			if !say(port, b"C\r") {
 				return BoardAnswer::Slcan;
@@ -917,6 +925,64 @@ mod tests {
 		}
 	}
 
+	/// The `dash` image whose console reader wakes late — just booted, or held up: nothing
+	/// written to it is read until the `V\r` is in its FIFO, and then all of it is taken in one
+	/// chunk. Every Hello is answered, and the `V` is the switch into adapter mode, answered
+	/// as the adapter does. `C` leaves adapter mode.
+	#[derive(Default)]
+	struct LateDash {
+		unread: Vec<u8>,
+		adapter: bool,
+		readable: Vec<u8>,
+		written: Vec<u8>,
+	}
+
+	impl std::io::Read for LateDash {
+		fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+			if self.readable.is_empty() {
+				return Err(std::io::ErrorKind::TimedOut.into());
+			}
+			let n = self.readable.len().min(buf.len()).min(7);
+			buf[..n].copy_from_slice(&self.readable[..n]);
+			self.readable.drain(..n);
+			Ok(n)
+		}
+	}
+
+	impl std::io::Write for LateDash {
+		fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+			self.written.extend_from_slice(buf);
+			if buf == b"C\r" && self.adapter {
+				self.adapter = false;
+				self.readable.push(b'\r');
+				return Ok(buf.len());
+			}
+			self.unread.extend_from_slice(buf);
+			if self.unread.windows(2).any(|w| w == b"V\r") {
+				let hello = hello();
+				let hellos = self.unread.windows(hello.len()).filter(|w| *w == hello.as_slice()).count();
+				for _ in 0..hellos {
+					self.readable.extend(hello_reply("0.1.0"));
+				}
+				self.readable.extend_from_slice(b"V0101\r");
+				self.adapter = true;
+				self.unread.clear();
+			}
+			Ok(buf.len())
+		}
+		fn flush(&mut self) -> std::io::Result<()> {
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn a_dash_image_that_reads_the_hellos_and_v_in_one_late_chunk_is_taken_out_of_adapter_mode() {
+		let mut port = LateDash::default();
+		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
+		assert!(!port.adapter, "the probe left the adapter mode its V started: the panel shows SLCAN");
+		assert!(port.written.ends_with(b"V\rC\r"), "{:?}", port.written.escape_ascii().to_string());
+	}
+
 	#[test]
 	fn a_dash_image_that_misses_the_first_hello_is_found_by_the_second_and_never_sent_v() {
 		let mut port = SlowDash::new(1);
@@ -946,7 +1012,11 @@ mod tests {
 		.unwrap();
 		let mut port = ScriptedPort::new(b"").on(b"V\r", &[stale, b"V0101\r".to_vec()].concat());
 		assert_eq!(ask_board(&mut port, WAIT, WAIT), BoardAnswer::Dash { version: "unknown".into() });
-		assert!(!port.written.windows(2).any(|w| w == b"C\r"), "nothing more once it spoke the link");
+		assert_eq!(
+			port.written,
+			[hello(), hello(), b"\r".to_vec(), b"V\r".to_vec(), b"C\r".to_vec()].concat(),
+			"C, in case the V switched it, and no V or Hello more once it spoke the link"
+		);
 	}
 
 	#[test]
