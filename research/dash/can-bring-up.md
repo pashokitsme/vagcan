@@ -856,3 +856,36 @@ bus; it is the board's USB and BLE links on their own.
 | `bleuds 7E0 7E8 22F190` | Answer NoAnswer after 8.8 s |
 | `bleuds 7E0 7E8 2EF19000` | Refused in 91 ms: `service 0x2E not allowed: this link only reads` |
 | `vagcan info --device ble` | connected, ended "The car did not answer" after 127 s |
+
+### 9.9 The pair repaired; `vagcan` through the board, 2026-09-14 17:32–17:44
+
+**The fault** (§9.7, §9.8): the SN65HVD230 module read 1.56 V on its 3.3 V pin and CAN-H/CAN-L
+sat at 0 V — the transceiver was unpowered, which is exactly `rxprobe`'s "R stuck low".
+Repaired by the owner; cause on the supply path to the module, not the firmware.
+
+After the repair: `bench.sh 15 cantx` **PASS, 62,122 frames in 15 s**; `dash` (real plan) polls
+`F187` to `7E0`/`7E1` on the pair. Board `B` = `/dev/cu.usbmodem1101`, CANable `C`. BLE runs
+from Terminal.app (`open -a Terminal x.command`). `benchecu --bench --device C --unit 7E0
+--unit 7E1 --unit 710` answered `F40D` (0 km/h); from 17:42 also `--part 7E0=… --part 7E1=…`
+(F187, from the plan's own units).
+
+| check | seen |
+|---|---|
+| `vagcan info --device ble` | identity reads on `7E0`/`7E1` at `benchecu` (F187 F189 F18C F190 F191 F197 0600); "the car did not answer" (nothing but F40D served) |
+| `bleuds --subscribe 7E0 7E8 F40D 100 10` | **101 readings in 9,981 ms of board time, 10.0 Hz**; `benchecu` 10/s |
+| `vagcan watch --device ble --did 01:F40D --hz 10 --for 20` | 199 rows, all with value 0, spacing 100 ms, max gap 102 ms; requests stop on the pair when it ends |
+| `vagcan devices` | the board over USB as `dash image … 0.1.0`, over BLE as `ble:vagcan-dash` |
+| `vagcan info --device B` (USB) | the whole identity sequence at `benchecu` within 1 s |
+| `vagcan watch --device B --did 01:F40D --hz 10 --for 12` | 119 rows, all with value, spacing 100 ms, max gap 105 ms; `benchecu` 10/s |
+| `kill -9` a `watch --device B` | its `F40D` requests stopped on the pair 1–2 s later, before any new host |
+| `kill -STOP` a `watch --device B` 3 s, `kill -CONT` | nothing broke: macOS buffered the board's output; the subscription kept polling; a new `info` worked |
+| `vagcan watch --device ble` (45 s) + `vagcan info --device B` + `vagcan --slcan dev sniff --device B` + `info --device B` again | the BLE `watch` wrote rows every 100 ms (max gap 102 ms) through all of it; the USB `info` ran beside it; adapter mode entered and left (`adapter: no frames dropped` — `F` read from the board); the second `info` was not refused. CANable `--active` saw 32 whole frames, 0 incomplete |
+| `vagcan --slcan dev sniff --device B` while `vagcan info --device C` transmits | 25,945 frames of `7E0` in 10 s (the CANable retransmitting unacknowledged), whole |
+| standalone `slcan` image | `vagcan devices` → `slcan image`; `\r`→`\r`, `V`→`V0101`, `F`→`F00`, `C`→`\r`; `--slcan dev sniff` 19,816 frames in 6 s, no drops; reflashed `dash` → `dash image` |
+| `vagcan measure --device B` with part numbers | resolved `7E1 380B 3804 3809 380A 3816 F40D` and `7E0 2029 202A 206E F410 F40D`; ran at **10 Hz, not 50**: ~98 requests/s total, the board's 100/s ceiling, every host subscription `Class::Remote` because the link's Subscribe carries no class. After it ended the panel polled its plan (`202A 202F F405`, `028D`) at 2/s — the part check matched |
+| the board's USB output, 60 s with nobody connected (in place of `dashsim`, which needs a terminal) | 291 `FRAME` lines (one per 200 ms), every one `FRAME 256 64 <hex>` and 1,319 characters long, 0 malformed, 0 other lines, 0 NUL bytes — no log line or link frame inside the panel stream |
+
+**Open from this run:** a timing flag on the link's Subscribe so `measure`'s speed channel is
+`Class::Timing` on the board (in progress, branch `timing-link`); then `measure` over USB and BLE
+at 50 Hz. Not run: `dashsim` 2 min, unplugging USB in adapter mode, a 4095-byte USB flood,
+the hour-long unacknowledged stall test.
