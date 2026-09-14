@@ -559,3 +559,48 @@ async fn readings_streaming_in_while_subscribes_are_written_are_taken_in_between
 		lane.unread_at_writes
 	);
 }
+
+/// A bus over the cable parts with a Hello, which closes its session on the board, so its
+/// subscriptions stop polling the car when the host exits with the cable still in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bus_over_the_cable_says_hello_when_it_ends() {
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	let bus = Bus::start_remote(host, PEER, Carrier::Usb);
+	let sub = bus.subscribe(Class::Foreground, ENGINE, 0x2000, Duration::from_millis(100), None);
+	assert!(matches!(board.next().await, Message::Subscribe(_)));
+	drop(sub);
+	drop(bus);
+	// The unsubscribe may not go out first: the Hello closes the whole session anyway.
+	let mut parting = board.next().await;
+	if matches!(parting, Message::Unsubscribe { .. }) {
+		parting = board.next().await;
+	}
+	assert_eq!(parting, Message::Hello);
+	let closed = tokio::time::timeout(PATIENCE, board.recv()).await.expect("the pipe closes");
+	assert_eq!(closed, None);
+
+	// A shutdown asked for parts the same way.
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	let bus = Bus::start_remote(host, PEER, Carrier::Usb);
+	bus.shutdown();
+	assert_eq!(board.next().await, Message::Hello);
+}
+
+/// Over BLE the disconnect closes the board's session, and nothing more is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bus_over_ble_ends_without_a_word() {
+	let (bus, mut board) = start();
+	drop(bus);
+	let closed = tokio::time::timeout(PATIENCE, board.recv()).await.expect("the pipe closes");
+	assert_eq!(closed, None);
+}

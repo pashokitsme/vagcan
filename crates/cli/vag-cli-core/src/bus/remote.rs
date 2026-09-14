@@ -184,7 +184,7 @@ pub(super) async fn run<P: Pipe>(
 		// Then everything already asked, before the next request is put out.
 		loop {
 			match inbox.try_recv() {
-				Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return,
+				Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return state.part(&mut pipe).await,
 				Ok(command) => state.apply(command),
 				Err(TryRecvError::Empty) => break,
 			}
@@ -213,7 +213,7 @@ pub(super) async fn run<P: Pipe>(
 					break broken;
 				}
 			}
-			Event::Command(None | Some(Command::Shutdown)) => return,
+			Event::Command(None | Some(Command::Shutdown)) => return state.part(&mut pipe).await,
 			Event::Command(Some(command)) => state.apply(command),
 			Event::Deadline => state.expire(),
 		}
@@ -241,7 +241,26 @@ async fn ready<F: Future>(future: F) -> Option<F::Output> {
 	.await
 }
 
+/// How long a bus over the cable waits to put its parting Hello on the pipe.
+const PART_WAIT: Duration = Duration::from_millis(100);
+
 impl Remote {
+	/// The bus is ending with the link up — every handle dropped, a shutdown, or a
+	/// command dropped on Ctrl-C. Over the cable it says Hello once more: the board takes
+	/// a Hello as the start of a new session on that carrier and closes the old one, so a
+	/// host that exits with the cable in does not leave its subscriptions polling the car.
+	/// Best effort and bounded. Over BLE the disconnect itself closes the session. A host
+	/// killed outright (`kill -9`) sends nothing; its session lasts until the next host's
+	/// Hello, a stalled write on the board, or the cable.
+	async fn part<P: Pipe>(&self, pipe: &mut P) {
+		if self.carrier != Carrier::Usb {
+			return;
+		}
+		if let Ok(hello) = link::encode(&Message::Hello) {
+			let _ = tokio::time::timeout(PART_WAIT, pipe.write(&hello)).await;
+		}
+	}
+
 	fn at(&self, arrived: Instant) -> At {
 		let since = arrived.saturating_duration_since(self.started);
 		At {
