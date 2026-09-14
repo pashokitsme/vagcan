@@ -463,7 +463,8 @@ An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
 the project's cache, and writes a Rust `static` with every channel resolved — unit,
 identifier, bit layout, scaling, unit, label. The image links it. A project cache is
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
-fixed list of identifiers cannot sweep.
+fixed list of identifiers cannot sweep. What may be written in that file — channels, pages,
+alarms, a channel's specified value — is [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
 
 **One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
 runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
