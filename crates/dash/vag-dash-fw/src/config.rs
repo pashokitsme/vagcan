@@ -12,10 +12,11 @@ use vag_dash_render::pages::{self, Layout, Mismatch};
 
 use crate::plan::PLAN;
 
-/// How many pages the panel can hold, and how many cells fit on one. Both are
-/// bounded because the storage is: a configuration has to fit in a flash
-/// sector with room for its header.
-pub const MAX_PAGES: usize = 8;
+// How many pages the panel can hold, and how many cells fit on one. Both are
+// bounded because the storage is: a configuration has to fit in a flash
+// sector with room for its header. The page count is defined beside the plan
+// type, because the generator refuses a plan with more pages than this.
+pub use vag_dash_render::pages::MAX_PAGES;
 pub const MAX_CELLS: usize = 8;
 
 /// Bumped whenever the meaning of a field changes. A stored blob whose version

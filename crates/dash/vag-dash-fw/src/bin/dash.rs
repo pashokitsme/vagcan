@@ -86,7 +86,7 @@ use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{PartAnswer, PartCheck};
-use vag_dash_render::screen::Screen;
+use vag_dash_render::screen::{Change, Screen};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
 use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
@@ -198,6 +198,12 @@ static BUS_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Raised whenever the pages or the page on the glass may have changed, so the
 /// panel's subscriptions follow.
 static PAGES_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The page the panel last drew — the cursor's, or an alarm's during a takeover — for the
+/// bus task, which reads the page on the glass in the foreground. [`NO_PAGE`] before the
+/// first frame, when the cursor's page is the one about to be drawn.
+static GLASS_PAGE: AtomicU8 = AtomicU8::new(NO_PAGE);
+const NO_PAGE: u8 = u8::MAX;
 
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -1603,7 +1609,13 @@ impl PanelReads {
 	async fn follow_pages(&mut self, bus: &Bus, settings: &Shared) {
 		let (shown, listed) = {
 			let s = settings.lock().await;
-			let shown: Vec<u16> = match s.config.pages.get(usize::from(s.config.active_page)) {
+			// The page on the glass, which during a takeover is the alarm's and not the
+			// cursor's: its cells are the ones being looked at (`Glass::page_changed`).
+			let glass = match GLASS_PAGE.load(Ordering::Relaxed) {
+				NO_PAGE => s.config.active_page,
+				page => page,
+			};
+			let shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
 				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
 				Some(page) => page.cells.iter().copied().collect(),
 				None => Vec::new(),
@@ -1921,8 +1933,8 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 	let mut last_compromised = false;
 	// A chart page whose channel the plan gives no range for is said once.
 	let mut no_range_said: Option<u16> = None;
-	// Whether an alarm had the glass last frame: a takeover and its end are said once.
-	let mut alarm_up = false;
+	// An alarm page this board does not hold is said once per miss.
+	let mut missed_said: Option<u16> = None;
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
@@ -1945,24 +1957,43 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
 		// The cursor is read here and passed in, never copied into the screen: it is what
 		// `set page` and `save` act on, and what an alarm hands back to.
-		let (kind, indices, shown) = {
+		let (kind, indices, glass) = {
 			let s = settings.lock().await;
-			let update = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, now.as_millis(), value_of));
-			match s.config.pages.get(usize::from(update.shown.page.0)) {
-				Some(page) => (page.kind, page.cells.clone(), update.shown),
+			// `pages` is bounded by `MAX_PAGES`, so the count fits.
+			let pages = s.config.pages.len() as u8;
+			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, pages, now.as_millis(), value_of));
+			match s.config.pages.get(usize::from(glass.page)) {
+				Some(page) => (page.kind, page.cells.clone(), glass),
 				None => continue,
 			}
 		};
-		match (shown.offending, alarm_up) {
-			(Some(channel), false) => note!(
-				"alarm: {} took the screen — page {}",
-				PLAN.channel(channel.0).map_or("?", |c| c.label),
-				usize::from(shown.page.0) + 1
+		// The bus reads the page on the glass in the foreground, so a takeover and a
+		// hand-back move its subscriptions as much as a page turn does.
+		GLASS_PAGE.store(glass.page, Ordering::Relaxed);
+		if glass.page_changed {
+			PAGES_CHANGED.signal(());
+		}
+		let page_no = usize::from(glass.page) + 1;
+		match glass.change {
+			Some(Change::Took { rule }) if glass.missed.is_none() => note!(
+				"alarm: rule {} — {} took the screen, page {page_no}",
+				rule + 1,
+				glass.offending.and_then(|c| PLAN.channel(c.0)).map_or("?", |c| c.label)
 			),
-			(None, true) => note!("alarm: over — back to page {}", usize::from(shown.page.0) + 1),
+			Some(Change::Over) => note!("alarm: over — back to page {page_no}"),
+			Some(Change::Silenced) => note!("alarm: silenced — back to page {page_no}"),
 			_ => {}
 		}
-		alarm_up = shown.offending.is_some();
+		let missed = glass.missed.map(|page| page.0);
+		if missed != missed_said {
+			missed_said = missed;
+			if let Some(page) = missed {
+				note!(
+					"alarm: its page {} is not on this board — showing page {page_no}; rebuild the plan",
+					usize::from(page) + 1
+				);
+			}
+		}
 		for chart in PLAN.charts() {
 			histories[chart.slot].push(chart.channel, value_of(chart.channel));
 		}
@@ -1974,7 +2005,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				Some(channel) => Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals),
 				None => Cell::new("?", None, "", 0),
 			};
-			if shown.offending == Some(ChannelId(index)) {
+			if glass.offending == Some(ChannelId(index)) {
 				cell.alarmed()
 			} else {
 				cell

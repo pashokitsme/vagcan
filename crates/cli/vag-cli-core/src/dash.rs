@@ -75,6 +75,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
+use vag_dash_render::pages::MAX_PAGES;
 use vag_data_labels::catalog::{CatalogStore, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
@@ -404,6 +405,8 @@ pub enum Error {
 	Alarm(usize, String),
 	/// More `[[alarm]]` rules than [`MAX_ALARMS`].
 	TooManyAlarms(usize),
+	/// More `[[page]]` tables than the board holds, [`MAX_PAGES`].
+	TooManyPages(usize),
 }
 
 impl fmt::Display for Error {
@@ -434,6 +437,7 @@ impl fmt::Display for Error {
 			Error::PageRefersToUnknown { page, reference } => write!(f, "page #{page}: {reference} is not in the [[channel]] list"),
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
 			Error::Alarm(n, why) => write!(f, "alarm #{n}: {why}"),
+			Error::TooManyPages(n) => write!(f, "{n} [[page]] tables, and the board holds at most {MAX_PAGES}"),
 			Error::TooManyAlarms(n) => write!(
 				f,
 				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
@@ -677,6 +681,11 @@ pub fn build(
 		});
 	}
 
+	// The board holds `MAX_PAGES`, and an alarm raises a page by its plan index: a page
+	// past the board's is one an alarm could name and the glass could never show.
+	if input.pages.len() > MAX_PAGES {
+		return Err(Error::TooManyPages(input.pages.len()));
+	}
 	let mut pages = Vec::new();
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
@@ -767,15 +776,18 @@ pub fn build(
 			)));
 		}
 		let (trip, release) = (wanted.trip, wanted.release);
+		// Compared as the board will compare them, in `f32`: two thresholds a hair apart in
+		// the file can be one value there, and one value is no hysteresis.
+		let (board_trip, board_release) = (trip as f32, release as f32);
 		match wanted.direction {
-			Direction::Below if release <= trip => {
+			Direction::Below if board_release <= board_trip => {
 				return Err(refuse(format!(
-					"release {release} is not above trip {trip} — a \"below\" alarm releases above where it trips"
+					"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
 				)));
 			}
-			Direction::Above if release >= trip => {
+			Direction::Above if board_release >= board_trip => {
 				return Err(refuse(format!(
-					"release {release} is not below trip {trip} — an \"above\" alarm releases below where it trips"
+					"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
 				)));
 			}
 			_ => {}
@@ -1806,6 +1818,24 @@ mod tests {
 			)
 		);
 		assert_eq!(build_with_alarms(&good.repeat(MAX_ALARMS)).unwrap().plan.alarms.len(), MAX_ALARMS);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00003"], "B", "above", 100.000001, 100.0)),
+			"alarm #1: release 100 is not below trip 100 — an \"above\" alarm releases below where it trips",
+			"apart in the file, one value in the board's f32"
+		);
+	}
+
+	/// An alarm raises its page by plan index, and the board holds `MAX_PAGES`: a plan
+	/// with more is one whose alarm could name a page the glass never shows.
+	#[test]
+	fn more_pages_than_the_board_holds_are_refused() {
+		// The fixture has three pages of its own.
+		let extra = |n: usize| values_page_titled("P", &["01:IDE00001"]).repeat(n);
+		assert_eq!(
+			build_with_alarms(&extra(MAX_PAGES - 2)).unwrap_err().to_string(),
+			format!("{} [[page]] tables, and the board holds at most 8", MAX_PAGES + 1)
+		);
+		assert_eq!(build_with_alarms(&extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
 	}
 
 	#[test]

@@ -91,7 +91,7 @@ stored-config check at boot, whether opening the board's port twice resets it).
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | render done, firmware wiring open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `alarms`, hardware-free; misfire numbers and a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |

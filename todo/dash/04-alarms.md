@@ -50,6 +50,10 @@ in the owner's `dash.toml` yet; the owner writes them.
 | the page misses a watched channel | `page "X" does not show 01:Y — the page an alarm raises shows every channel it watches` |
 | `release` on the wrong side | `release R is not above trip T — a "below" alarm releases above where it trips` (and the `above` mirror) |
 | more than 4 rules | `N [[alarm]] rules, and the board holds at most 4 — …` |
+| more than 8 pages (`pages::MAX_PAGES`, the board's) | `N [[page]] tables, and the board holds at most 8` |
+
+`trip` and `release` are compared in `f32`, as the board compares them: `trip = 100.000001`
+with `release = 100` is one value there, and refused.
 
 Shape errors (`direction` not `below`/`above`, a missing or non-finite `trip`/`release`,
 a missing `page`) are refused when `dash.toml` is parsed. A `plan.json` from before alarms
@@ -102,7 +106,10 @@ four misfire — twelve, where a page alone would be four.
 `Plan::rates` makes that union: a channel any rule watches is `foreground` at its own
 `hz` on every page, never the hidden-page 1 Hz, whether or not its rule is silenced. The
 board's panel subscribes by it, so a page switch moves the page's channels and leaves
-the alarms' alone. The planner packs due identifiers of one unit into one `0x22` request
+the alarms' alone. **The page read in the foreground is the page on the glass**, not the
+cursor's: during a takeover the alarm page's other cells run at their rates and the
+cursor page, not drawn, drops to 1 Hz. The panel publishes the drawn page and signals the
+bus on `Glass::page_changed` — a takeover and a hand-back as much as a page turn. The planner packs due identifiers of one unit into one `0x22` request
 and learns a unit that refuses that (`todo/dash/14` §2). How many identifiers this ECU
 accepts per request is still a bench measurement — see `06`.
 
@@ -111,7 +118,9 @@ accepts per request is still a bench measurement — see `06`.
 - **`vag-dash-render/src/alarm.rs`** — the state machine (15 tests). `no_std`,
   allocation-free, reads no clock. `Alarm` is plain data the plan carries as a `static`.
 - **`vag-dash-render/src/screen.rs`** — `Screen`: the page cursor, the alarms and the short
-  press, which the firmware only feeds (7 tests). The cursor stays the board's
+  press, which the firmware only feeds (9 tests). `frame` answers a `Glass`: the page to
+  draw, the cell to invert, whether the page changed, a page the board does not hold, and
+  what to say (`Took { rule }`, `Over`, `Silenced`). The cursor stays the board's
   (`Config::active_page`: saved, set over BLE, reported by `state`); `Screen` reads and
   moves it and never keeps a copy.
 - **`vag-dash-render/src/plan.rs`** — `Plan::alarms`; `ChannelId` is the plan's channel
@@ -121,13 +130,15 @@ accepts per request is still a bench measurement — see `06`.
   `plan.rs`.
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws
-  `shown.page`, and inverts the cell whose channel is `shown.offending`; the button task
-  routes a short press through `Screen::press`. A takeover and its end are said on USB.
+  `glass.page`, and inverts the cell whose channel is `glass.offending`; it publishes the
+  drawn page for the bus task's subscriptions. The button task routes a short press
+  through `Screen::press`. On USB: each takeover (per rule), `over`, `silenced`, and once
+  an alarm page the board does not hold — the cursor's page is drawn instead of freezing.
 
 ```rust
 let mut screen = Screen::<ALARM_COUNT>::new(PLAN.alarms);
 // Every frame: the page the driver chose, the clock, the store.
-let Update { shown, changed } = screen.frame(config.active_page, now_ms, |i| value_of(i));
+let glass = screen.frame(config.active_page, pages, now_ms, |i| value_of(i));
 // The one button:
 if screen.press(&mut config.active_page, pages) == Press::NextPage { /* paged */ }
 ```
@@ -147,16 +158,19 @@ Four decisions worth writing down:
 
 ## Tests
 
-`alarm.rs` (15): one takeover for a value oscillating across the trip; release at the
+`alarm.rs` (15, neutral channels and thresholds): one takeover for a value oscillating across the trip; release at the
 release value; the 2.5 s hold and the hand-back by page identity; silence, re-arm after a
 release, silence while still out; priority; the worst cell and its freeze through the
 hold; a channel that stops answering neither trips nor releases.
 
-`screen.rs` (7, neutral channels and thresholds): a hidden page's channel takes the screen
-with its page and cell; silence then re-arm after a release; the cursor moves only on
-`NextPage`, and the hold hands back to where the cursor is *now*; two rules by priority,
-one press each; a stale channel neither trips nor releases; the adapter screen runs no
-alarms and a press there pages; a plan with no alarms only pages.
+`screen.rs` (9, neutral channels and thresholds): a hidden page's channel takes the screen
+with its page and cell, and the takeover and hand-back change the page; during a takeover
+the foreground channels are the alarm page's (through `Plan::rates`); an alarm page past
+the board's pages draws the cursor page; silence then re-arm after a release, said as
+`Silenced`; the cursor moves only on `NextPage`, and the hold hands back to where the
+cursor is *now*; two rules by priority, each a `Took` of its own; a stale channel neither
+trips nor releases; the adapter screen runs no alarms and a press there pages; a plan with
+no alarms only pages.
 
 `plan.rs`: a watched channel is foreground at its own rate on every page. `dash.rs`: every
 refusal above, the `plan.json` round trip, an old `plan.json` without alarms, and the
