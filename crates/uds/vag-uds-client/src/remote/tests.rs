@@ -61,17 +61,21 @@ struct Board {
 	session: Session,
 	bus: Bus,
 	now: u64,
+	/// How long the bus takes to answer each request, in ms.
+	latency: u64,
 	sent: Vec<(u64, Outgoing)>,
 	to_host: Vec<Message>,
 }
 
 impl Board {
+	/// The firmware's budget ([`Budget::board`]); the bus answers in 5 ms.
 	fn new(bus: Bus) -> Self {
 		Board {
-			planner: Planner::new(Budget::default()),
+			planner: Planner::new(Budget::board()),
 			session: Session::new(),
 			bus,
 			now: 0,
+			latency: 5,
 			sent: Vec::new(),
 			to_host: Vec::new(),
 		}
@@ -91,7 +95,7 @@ impl Board {
 				Next::Send(out) => {
 					let answer = self.bus.answer(&out);
 					self.sent.push((self.now, out.clone()));
-					self.now += 5;
+					self.now += self.latency;
 					for delivery in self.planner.answered(self.now, out.token, answer) {
 						match &delivery {
 							Delivery::Raw { req, answer, at_ms, .. } if self.session.awaiting() == Some(*req) => {
@@ -147,12 +151,21 @@ fn request(seq: u8, unit: Unit, pdu: &[u8]) -> Message {
 }
 
 fn subscribe(sub: u16, unit: Unit, did: u16, period_ms: u16) -> Message {
+	subscribe_as(sub, unit, did, period_ms, Priority::Normal)
+}
+
+fn timing(sub: u16, unit: Unit, did: u16, period_ms: u16) -> Message {
+	subscribe_as(sub, unit, did, period_ms, Priority::Timing)
+}
+
+fn subscribe_as(sub: u16, unit: Unit, did: u16, period_ms: u16, priority: Priority) -> Message {
 	Message::Subscribe(Subscribe {
 		sub,
 		request_id: unit.request,
 		response_id: unit.response,
 		did,
 		period_ms,
+		priority,
 	})
 }
 
@@ -231,10 +244,12 @@ fn the_speed_read_goes_ahead_of_the_panels_reads() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	let a = board.planner.subscribe(0, Class::Foreground, ENGINE, 0x1000, 10, None);
 	let b = board.planner.subscribe(0, Class::Foreground, GATEWAY, 0x1001, 10, None);
-	board.run_until(50);
+	// A second in, the panel has had its floor. Under it, the board's budget sends the panel
+	// first (`Budget::timing_yields_to_floor`), and the speed read waits at most for that.
+	board.run_until(1000);
 	board.hear(request(1, GATEWAY, &[0x10, 0x03]));
 	let before = board.sent.len();
-	board.run_until(80);
+	board.run_until(1030);
 	assert_eq!(board.sent[before].1.pdu, [0x22, 0xF4, 0x0D], "{:02X?}", &board.pdus_sent()[before..]);
 	board.planner.unsubscribe(a);
 	board.planner.unsubscribe(b);
@@ -403,6 +418,7 @@ fn subscribing_one_request_id_under_every_response_id_leaves_memory_bounded() {
 			response_id,
 			did: 0xF40D,
 			period_ms: 100,
+			priority: Priority::Normal,
 		}));
 		refused += board
 			.readings(1)
@@ -545,6 +561,202 @@ fn a_session_is_active_while_it_holds_a_subscription_or_a_request() {
 	board.run_until(100);
 	assert_eq!(board.answers().len(), 1);
 	assert!(!board.session.is_active(), "answered, nothing held");
+}
+
+// --- timing subscriptions -----------------------------------------------------------
+
+/// The identifiers of a `22` request.
+fn dids_of(pdu: &[u8]) -> Vec<u16> {
+	pdu[1..].chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect()
+}
+
+/// The bench's `measure` over the board (2026-09-14): every host subscription ran as the
+/// board's Remote class, the planner sat at its ceiling, and the speed channel came at
+/// 10 Hz. Marked timing, beside fifteen normal channels and the panel, under the board's
+/// budget: the panel keeps everything it asks (under its floor) at every answer latency,
+/// and no second holds more than the ceiling. A bus that answers in 5 ms gives the timing
+/// channel its 50 Hz and the normal channels slowed, not dropped. One that answers in 25
+/// or 45 ms — slower than the period, as a unit behind the gateway may — leaves the timing
+/// read always due, and it gets what the panel leaves. Under one identifier per request
+/// too, where every read is an exchange of its own; on either carrier's guard.
+#[test]
+fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_at_any_latency() {
+	const MINUTE_MS: u64 = 60_000;
+	const PANEL_PERIOD_MS: u32 = 500;
+	const GEARBOX: Unit = Unit {
+		request: 0x7E1,
+		response: 0x7E9,
+	};
+	let single = Budget {
+		max_dids_per_request: 1,
+		..Budget::board()
+	};
+	let runs = [Budget::board(), single]
+		.into_iter()
+		.flat_map(|budget| [5, 25, 45].map(|latency| (budget, latency)));
+	for (budget, latency) in runs {
+		for guard in [Guard::new(), Guard::cable()] {
+			let mut board = Board::new(Bus::Answering { kmh: 0 });
+			board.planner = Planner::new(budget);
+			board.latency = latency;
+			board.session = Session::with_guard(guard);
+			// The panel: four channels at 2 Hz, on a unit of its own.
+			let panel: Vec<u16> = (0..4u16).map(|n| 0x3000 + n * n).collect();
+			for did in &panel {
+				board.planner.subscribe(0, Class::Foreground, GATEWAY, *did, PANEL_PERIOD_MS, None);
+			}
+			board.hear(timing(1, ENGINE, 0xF40D, 20));
+			// Fifteen normal channels at 50, 75 and 100 ms over two units. Squares: no eight
+			// of them evenly spaced, so the walk rule has nothing to say.
+			for n in 0..15u16 {
+				let unit = if n % 2 == 0 { ENGINE } else { GEARBOX };
+				board.hear(subscribe(10 + n, unit, 0x2000 + n * n, 50 + 25 * (n % 3)));
+			}
+			board.run_until(MINUTE_MS);
+			let label = format!("{budget:?}, latency {latency} ms, {:?}", board.session.guard.profile());
+
+			assert!(
+				board.to_host.iter().all(|m| !matches!(
+					m,
+					Message::Reading(Reading {
+						outcome: Outcome::Refused(_),
+						..
+					})
+				)),
+				"{label}: nothing refused"
+			);
+			let speed = board.readings(1).iter().filter(|(_, o)| matches!(o, Outcome::Pdu(_))).count();
+			if latency < 20 {
+				assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
+			} else {
+				let rest = board.sent.iter().filter(|(_, o)| o.unit != GATEWAY).count();
+				assert!(
+					speed * 100 >= rest * 95,
+					"{label}: the timing channel got {speed} of the {rest} sends the panel left"
+				);
+			}
+
+			for did in &panel {
+				let reads = board
+					.sent
+					.iter()
+					.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(did))
+					.count();
+				let asked = (MINUTE_MS / u64::from(PANEL_PERIOD_MS)) as usize;
+				assert!(reads + 1 >= asked, "{label}: panel {did:04X} read {reads} times of {asked}");
+			}
+
+			// Slower than the period, the timing read is always due, and the normal channels
+			// wait behind it: only a fast bus says anything about them.
+			for n in (0..15u16).filter(|_| latency < 20) {
+				let got = board.readings(10 + n).len();
+				assert!(got >= 60, "{label}: normal channel {n} got {got} readings in a minute");
+			}
+
+			let times: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();
+			let busiest = (0..times.len())
+				.map(|i| times[i..].iter().take_while(|&&t| t < times[i] + 1000).count())
+				.max()
+				.unwrap_or(0);
+			assert!(busiest <= usize::from(budget.ceiling_per_s), "{label}: {busiest} sends in one second");
+		}
+	}
+}
+
+/// One timing subscription per connection, on the radio and the cable alike; a normal one
+/// still passes beside it, and unsubscribing or replacing the timing one frees its slot.
+#[test]
+fn a_second_timing_subscription_is_refused_and_an_unsubscribe_frees_the_slot() {
+	for guard in [Guard::new(), Guard::cable()] {
+		let mut board = Board::new(Bus::Answering { kmh: 0 });
+		board.session = Session::with_guard(guard);
+		board.hear(timing(1, ENGINE, 0xF40D, 20));
+		board.hear(timing(2, GATEWAY, 0x1000, 100));
+		let second = board.readings(2);
+		assert_eq!(second.len(), 1, "{second:?}");
+		assert!(refused(&second[0].1).contains("timing"), "{second:?}");
+
+		board.hear(subscribe(3, GATEWAY, 0x1000, 100));
+		board.hear(timing(1, ENGINE, 0xF40D, 40));
+		board.run_until(500);
+		assert!(!board.readings(3).is_empty(), "a normal subscription passes beside it");
+		assert!(
+			board.readings(1).iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))),
+			"given again under its own id, the timing subscription is replaced, not refused"
+		);
+
+		board.hear(Message::Unsubscribe { sub: 1 });
+		board.to_host.clear();
+		board.hear(timing(2, GATEWAY, 0x1001, 100));
+		let now = board.now;
+		board.run_until(now + 500);
+		let freed = board.readings(2);
+		assert!(!freed.is_empty(), "{freed:?}");
+		assert!(freed.iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))), "{freed:?}");
+	}
+}
+
+/// What a session answered to one subscribe: `Some(reason)` for a refused reading of
+/// `sub`, `None` when it was taken without a word.
+fn refusal_of(out: &[Message], sub: u16) -> Option<String> {
+	match out {
+		[] => None,
+		[
+			Message::Reading(Reading {
+				sub: of,
+				outcome: Outcome::Refused(why),
+				..
+			}),
+		] if *of == sub => Some(why.clone()),
+		other => panic!("{other:?}"),
+	}
+}
+
+/// One stopwatch at a time on the board: a timing subscription held over the radio refuses
+/// one over the cable, and the cable gets it — and is polled — once the radio's session
+/// closes. It frees the same way when its holder gives its id again as normal, or
+/// unsubscribes.
+#[test]
+fn the_boards_one_timing_channel_is_held_across_connections_until_its_holder_lets_go() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let mut usb = Session::with_guard(Guard::cable());
+
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "the radio takes the channel: {:?}", board.to_host);
+	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	let why = refusal_of(&out, 7).expect("the cable is refused while the radio holds it");
+	assert_eq!(why, "another client holds the board's timing channel");
+	assert_eq!(usb.subscriptions().count(), 0);
+	let out = usb.push(0, &mut board.planner, subscribe(8, GATEWAY, 0x1001, 100));
+	assert_eq!(refusal_of(&out, 8), None, "a normal subscription is not held to it");
+
+	board.session.close(&mut board.planner);
+	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None, "the radio's session closed, so the channel is free");
+	board.run_until(200);
+	let polled = board
+		.sent
+		.iter()
+		.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(&0x1000))
+		.count();
+	assert!(polled >= 9, "the cable's timing channel is polled: {polled} in 200 ms");
+
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	let last = board.readings(1).pop().expect("a reading for the radio");
+	assert_eq!(refused(&last.1), "another client holds the board's timing channel");
+
+	let now = board.now;
+	let out = usb.push(now, &mut board.planner, subscribe(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None);
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "given again as normal, the cable let go: {:?}", board.to_host);
+
+	board.hear(Message::Unsubscribe { sub: 1 });
+	let out = usb.push(now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None, "unsubscribed, the radio let go");
+	usb.close(&mut board.planner);
+	assert_eq!(board.planner.timing_subscriptions(), 0);
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.

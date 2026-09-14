@@ -26,7 +26,8 @@
 //!
 //! Handled as they arrive, not behind a request that is waiting: a `measure`
 //! session subscribing while a slow read is out should not wait for it.
-//! [`Guard::check_subscribe`] then [`Planner::subscribe`] as [`Class::Remote`];
+//! [`Guard::check_subscribe`] then [`Planner::subscribe`] — as [`Class::Remote`], or as
+//! [`Class::Timing`] when the host marked it [`Priority::Timing`];
 //! a refusal is a [`Reading`] with [`Outcome::Refused`]. Every planner delivery
 //! for a live subscription becomes a [`Reading`] ([`Session::deliver`]) stamped
 //! with the moment the answer arrived. A subscription given again under a live
@@ -36,13 +37,40 @@
 //! session to that unit ends with a [`Reading`] saying so. [`Session::close`]
 //! — the connection is gone — ends all of them: a dead consumer takes its
 //! subscriptions with it.
+//!
+//! # Why a host may hold a timing subscription
+//!
+//! `measure` times a run from one speed channel at 50 Hz. As [`Class::Remote`] it waits
+//! behind everything else once the planner is at its ceiling, and on the bench it came
+//! at 10 Hz (2026-09-14). [`Class::Timing`] goes ahead of a host's other work, so how many
+//! timing subscriptions hosts hold is bounded by two rules:
+//!
+//! - **per connection**, the guard's
+//!   [`MAX_TIMING_SUBSCRIPTIONS`](crate::guard::MAX_TIMING_SUBSCRIPTIONS), polled no
+//!   faster than [`MIN_PERIOD_MS`](crate::guard::MIN_PERIOD_MS);
+//! - **for the whole board, one timing channel** (one stopwatch at a time, 2026-09-14).
+//!   The board runs a radio session and a cable session side by side on one planner, so a
+//!   timing subscription is forwarded only while that planner holds no other
+//!   ([`Planner::timing_subscriptions`]); otherwise it is refused with
+//!   [`Refusal::TimingChannelHeld`]. The channel frees when its holder unsubscribes,
+//!   gives its id again as normal, or its session closes — a disconnect, a Hello, a
+//!   stalled writer.
+//!
+//! Neither bounds bus time. The planner caps sends, not how long a unit takes to answer,
+//! and a timing read on a unit slower than its period is due again the moment it answers.
+//! So on the board the panel's floor goes ahead of a host's timing channel
+//! ([`Budget::board`](crate::schedule::Budget::board), `timing_yields_to_floor`): the
+//! panel keeps its floor, and the timing channel gets what is left — 50 a second from a
+//! unit that answers in a few milliseconds, less from a slow one. A host's other
+//! subscriptions stay `Remote` and get what the timing channel leaves: slowed when the bus
+//! is short, and with a slow timing unit nothing while the run lasts.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use vag_uds_transport::link::{Answer, Message, Outcome, Reading, Request, Subscribe};
+use vag_uds_transport::link::{Answer, Message, Outcome, Priority, Reading, Request, Subscribe};
 
 use crate::guard::{Guard, Refusal, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict, road_speed};
 use crate::schedule::{self, Class, Delivery, Miss, Planner, ReqId, SubId, Unit};
@@ -355,14 +383,20 @@ impl Session {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
 		self.unsubscribe(planner, s.sub);
-		match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms) {
+		let verdict = match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms, s.priority) {
+			// One stopwatch at a time on the board (module docs): the planner every session
+			// shares already holds a timing subscription, and it is not this one, which went above.
+			Verdict::Forward if s.priority == Priority::Timing && planner.timing_subscriptions() > 0 => Verdict::Refuse(Refusal::TimingChannelHeld),
+			verdict => verdict,
+		};
+		match verdict {
 			Verdict::Forward => {
 				let unit = Unit {
 					request: s.request_id,
 					response: s.response_id,
 				};
-				let id = planner.subscribe(now_ms, Class::Remote, unit, s.did, u32::from(s.period_ms), None);
-				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did);
+				let id = planner.subscribe(now_ms, class_of(s.priority), unit, s.did, u32::from(s.period_ms), None);
+				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did, s.priority);
 				self.subs.insert(
 					s.sub,
 					Live {
@@ -396,6 +430,15 @@ impl Session {
 			self.unsubscribe(planner, sub);
 			out.push(refused_reading(sub, now_ms, Refusal::Locked));
 		}
+	}
+}
+
+/// The planner class a host's subscription is polled as (module docs, "Why a host may
+/// hold a timing subscription").
+fn class_of(priority: Priority) -> Class {
+	match priority {
+		Priority::Normal => Class::Remote,
+		Priority::Timing => Class::Timing,
 	}
 }
 

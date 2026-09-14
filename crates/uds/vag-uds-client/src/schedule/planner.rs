@@ -320,6 +320,19 @@ impl Planner {
 		self.units.len()
 	}
 
+	/// How many live [`Class::Timing`] subscriptions the planner holds, from every
+	/// consumer. The board's sessions share one planner and read this to keep one
+	/// stopwatch at a time (`remote::Session`).
+	pub fn timing_subscriptions(&self) -> usize {
+		self
+			.units
+			.values()
+			.flat_map(|state| state.reads.values())
+			.flat_map(|read| &read.subs)
+			.filter(|sub| sub.class == Class::Timing)
+			.count()
+	}
+
 	/// Read `did` of `unit` once; the result comes as exactly one [`Delivery::Once`].
 	pub fn read_once(&mut self, now_ms: u64, class: Class, unit: Unit, did: u16) -> ReqId {
 		let id = ReqId(self.fresh());
@@ -375,7 +388,13 @@ impl Planner {
 					Pick::Read(did) => (1, did),
 				};
 				let starved = now.saturating_sub(due) > u64::from(self.budget.starve_after_ms);
-				let rank = (tier(class, under_floor, starved), due, *unit, kind, did);
+				let rank = (
+					tier(class, under_floor, starved, self.budget.timing_yields_to_floor),
+					due,
+					*unit,
+					kind,
+					did,
+				);
 				if best.as_ref().is_none_or(|(held, _, _)| rank < *held) {
 					best = Some((rank, class, pick));
 				}
@@ -725,14 +744,18 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 }
 
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
-fn tier(class: Class, foreground_under_floor: bool, starved: bool) -> u8 {
+///
+/// `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`]) moves the foreground under
+/// its floor ahead of timing; everything else keeps its order.
+fn tier(class: Class, foreground_under_floor: bool, starved: bool, timing_yields_to_floor: bool) -> u8 {
 	match class {
-		Class::Timing => 0,
-		Class::Remote | Class::Background if starved => 1,
-		Class::Foreground if foreground_under_floor => 2,
-		Class::Remote => 3,
-		Class::Foreground => 4,
-		Class::Background => 5,
+		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 0,
+		Class::Timing => 1,
+		Class::Remote | Class::Background if starved => 2,
+		Class::Foreground if foreground_under_floor => 3,
+		Class::Remote => 4,
+		Class::Foreground => 5,
+		Class::Background => 6,
 	}
 }
 

@@ -15,15 +15,15 @@
 //!
 //! Every multi-byte field is little-endian.
 //!
-//! | type   | name        | direction    | body                                                               |
-//! |--------|-------------|--------------|--------------------------------------------------------------------|
-//! | `0x01` | Request     | host → board | `seq u8, request_id u16, response_id u16, pdu…`                    |
-//! | `0x02` | Answer      | board → host | `seq u8, status u8, payload…`                                      |
-//! | `0x03` | Subscribe   | host → board | `sub u16, request_id u16, response_id u16, did u16, period_ms u16` |
-//! | `0x04` | Unsubscribe | host → board | `sub u16`                                                          |
-//! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                          |
-//! | `0x07` | Hello       | host → board | empty                                                              |
-//! | `0x08` | HelloReply  | board → host | `image_len u8, image…, version…` (both UTF-8)                      |
+//! | type   | name        | direction    | body                                                                            |
+//! |--------|-------------|--------------|---------------------------------------------------------------------------------|
+//! | `0x01` | Request     | host → board | `seq u8, request_id u16, response_id u16, pdu…`                                 |
+//! | `0x02` | Answer      | board → host | `seq u8, status u8, payload…`                                                   |
+//! | `0x03` | Subscribe   | host → board | `sub u16, request_id u16, response_id u16, did u16, period_ms u16, priority u8` |
+//! | `0x04` | Unsubscribe | host → board | `sub u16`                                                                       |
+//! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                                       |
+//! | `0x07` | Hello       | host → board | empty                                                                           |
+//! | `0x08` | HelloReply  | board → host | `image_len u8, image…, version…` (both UTF-8)                                   |
 //!
 //! `0x06` is not assigned. A Hello asks the board which image it runs, without a byte
 //! of slcan: a host that has to tell the `dash` image from the `slcan` one on the cable
@@ -42,6 +42,13 @@
 //! taken where the bus is. `at_ms` is the board's clock, milliseconds since
 //! boot, at the moment the answer arrived. The period floor is the board's
 //! guard's to enforce, not the codec's. A one-shot read is a Request.
+//!
+//! `priority` says how the board's planner ranks those polls: `0` normal, the host's
+//! work, which waits when the bus is short; `1` timing, a stopwatch's channel, which goes
+//! ahead of the host's other work (`vag_uds_client::schedule::Class::Timing`). Any other value is
+//! malformed. How many timing subscriptions a host may hold is the guard's to enforce
+//! too. The byte is last, after the fixed-width fields, so the body is always eleven
+//! bytes.
 //!
 //! BLE's link layer guarantees delivery and integrity, so there is no checksum.
 //! What the link does *not* keep is message boundaries: a write or a
@@ -208,6 +215,9 @@ const STATUS_NO_ANSWER: u8 = 1;
 const STATUS_REFUSED: u8 = 2;
 const STATUS_BUS_ERROR: u8 = 3;
 
+const PRIORITY_NORMAL: u8 = 0;
+const PRIORITY_TIMING: u8 = 1;
+
 /// One UDS request for the board to put on the bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -241,6 +251,34 @@ pub struct Subscribe {
 	/// The identifier read: the board sends `22 did`.
 	pub did: u16,
 	pub period_ms: u16,
+	pub priority: Priority,
+}
+
+/// How the board's planner ranks a [`Subscribe`]'s polls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Priority {
+	/// The host's work: waits when the bus is short, never dropped.
+	#[default]
+	Normal,
+	/// A stopwatch's channel: ahead of the host's other work. The board allows one at a time.
+	Timing,
+}
+
+impl Priority {
+	fn byte(self) -> u8 {
+		match self {
+			Priority::Normal => PRIORITY_NORMAL,
+			Priority::Timing => PRIORITY_TIMING,
+		}
+	}
+
+	fn from_byte(byte: u8) -> Option<Self> {
+		match byte {
+			PRIORITY_NORMAL => Some(Priority::Normal),
+			PRIORITY_TIMING => Some(Priority::Timing),
+			_ => None,
+		}
+	}
 }
 
 /// One result of a [`Subscribe`].
@@ -342,6 +380,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 			for field in [s.sub, s.request_id, s.response_id, s.did, s.period_ms] {
 				out.extend_from_slice(&field.to_le_bytes());
 			}
+			out.push(s.priority.byte());
 		}
 		Message::Unsubscribe { sub } => out.extend_from_slice(&sub.to_le_bytes()),
 		Message::Reading(r) => {
@@ -455,8 +494,8 @@ fn decode(kind: u8, body: &[u8]) -> Result<Message, LinkError> {
 			})
 		}
 		TYPE_SUBSCRIBE => {
-			let [a, b, c, d, e, f, g, h, i, j] = body else {
-				return Err(LinkError::Malformed("subscribe is ten bytes"));
+			let [a, b, c, d, e, f, g, h, i, j, k] = body else {
+				return Err(LinkError::Malformed("subscribe is eleven bytes"));
 			};
 			Message::Subscribe(Subscribe {
 				sub: u16::from_le_bytes([*a, *b]),
@@ -464,6 +503,7 @@ fn decode(kind: u8, body: &[u8]) -> Result<Message, LinkError> {
 				response_id: u16::from_le_bytes([*e, *f]),
 				did: u16::from_le_bytes([*g, *h]),
 				period_ms: u16::from_le_bytes([*i, *j]),
+				priority: Priority::from_byte(*k).ok_or(LinkError::Malformed("unknown subscription priority"))?,
 			})
 		}
 		TYPE_UNSUBSCRIBE => {
@@ -723,6 +763,18 @@ mod tests {
 			response_id: 0x7E9,
 			did: 0xF40D,
 			period_ms: 20,
+			priority: Priority::Normal,
+		})
+	}
+
+	fn timing_subscribe() -> Message {
+		Message::Subscribe(Subscribe {
+			sub: 0x0304,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			did: 0xF40D,
+			period_ms: 20,
+			priority: Priority::Timing,
 		})
 	}
 
@@ -743,6 +795,7 @@ mod tests {
 			answer(Outcome::Refused("the car is moving".into())),
 			answer(Outcome::BusError("bus off".into())),
 			subscribe(),
+			timing_subscribe(),
 			Message::Unsubscribe { sub: 0xBEEF },
 			reading(Outcome::Pdu(vec![0x62, 0xF4, 0x0D, 57])),
 			reading(Outcome::NoAnswer),
@@ -818,7 +871,11 @@ mod tests {
 	fn subscribe_unsubscribe_and_reading_are_encoded_byte_for_byte() {
 		assert_eq!(
 			encode(&subscribe()).unwrap(),
-			vec![0x00, 0x03, 0x0A, 0x00, 0x02, 0x01, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00]
+			vec![0x00, 0x03, 0x0B, 0x00, 0x02, 0x01, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x00]
+		);
+		assert_eq!(
+			encode(&timing_subscribe()).unwrap(),
+			vec![0x00, 0x03, 0x0B, 0x00, 0x04, 0x03, 0xE0, 0x07, 0xE8, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x01]
 		);
 		assert_eq!(
 			encode(&Message::Unsubscribe { sub: 0xBEEF }).unwrap(),
@@ -875,26 +932,33 @@ mod tests {
 	}
 
 	#[test]
-	fn the_period_floor_is_not_the_codecs_business() {
-		let fast = Message::Subscribe(Subscribe {
-			sub: 1,
-			request_id: 0x7E1,
-			response_id: 0x7E9,
-			did: 0xF40D,
-			period_ms: 0,
-		});
+	fn the_period_floor_and_the_timing_cap_are_not_the_codecs_business() {
+		let fast = |sub| {
+			Message::Subscribe(Subscribe {
+				sub,
+				request_id: 0x7E1,
+				response_id: 0x7E9,
+				did: 0xF40D,
+				period_ms: 0,
+				priority: Priority::Timing,
+			})
+		};
 		let mut r = Reassembler::new();
-		assert_eq!(one_message(r.push(&encode(&fast).unwrap())), fast);
+		let mut bytes = encode(&fast(1)).unwrap();
+		bytes.extend(encode(&fast(2)).unwrap());
+		assert_eq!(r.push(&bytes), vec![Piece::Message(fast(1)), Piece::Message(fast(2))]);
 	}
 
 	#[test]
 	fn malformed_subscriptions_and_readings_cost_only_their_own_frame() {
 		let mut bytes = Vec::new();
-		// A subscribe one byte short, and one byte long.
-		bytes.extend_from_slice(&[0x00, 0x03, 0x09, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14]);
-		bytes.extend_from_slice(&[0x00, 0x03, 0x0B, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x00]);
+		// A subscribe one byte short (the ten-byte form, before the priority), and one byte long.
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0A, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00]);
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0C, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x00, 0x00]);
 		// A subscribe with a response id over 11 bits.
-		bytes.extend_from_slice(&[0x00, 0x03, 0x0A, 0x00, 1, 0, 0xE1, 0x07, 0x00, 0x08, 0x0D, 0xF4, 0x14, 0x00]);
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0B, 0x00, 1, 0, 0xE1, 0x07, 0x00, 0x08, 0x0D, 0xF4, 0x14, 0x00, 0x00]);
+		// A subscribe with a priority nobody assigned.
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0B, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x02]);
 		// An unsubscribe of three bytes.
 		bytes.extend_from_slice(&[0x00, 0x04, 0x03, 0x00, 1, 0, 0]);
 		// A reading without its status.
@@ -905,12 +969,12 @@ mod tests {
 		bytes.extend(encode(&subscribe()).unwrap());
 		let mut r = Reassembler::new();
 		let pieces = r.push(&bytes);
-		assert_eq!(pieces.len(), 8, "{pieces:?}");
+		assert_eq!(pieces.len(), 9, "{pieces:?}");
 		assert!(
-			pieces[..7].iter().all(|p| matches!(p, Piece::Error(LinkError::Malformed(_)))),
+			pieces[..8].iter().all(|p| matches!(p, Piece::Error(LinkError::Malformed(_)))),
 			"{pieces:?}"
 		);
-		assert_eq!(pieces[7], Piece::Message(subscribe()));
+		assert_eq!(pieces[8], Piece::Message(subscribe()));
 	}
 
 	#[test]
@@ -921,6 +985,7 @@ mod tests {
 			response_id: 0x7E8,
 			did: 0xF40D,
 			period_ms: 20,
+			priority: Priority::Normal,
 		});
 		assert!(matches!(encode(&bad_id), Err(LinkError::Malformed(_))));
 		assert!(matches!(encode(&reading(Outcome::Pdu(vec![]))), Err(LinkError::Malformed(_))));

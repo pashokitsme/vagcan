@@ -442,7 +442,7 @@ async fn main(spawner: Spawner) {
 	// Settings are read before the radio starts: a panel that cannot find its
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
-	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::default()))));
+	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
 	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms))));
 
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);

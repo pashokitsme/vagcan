@@ -40,7 +40,10 @@
 //! 1000 ms window holds more than the ceiling. When a slot opens, the candidate sent is
 //! the best by, in order:
 //!
-//! 1. [`Class::Timing`] — never thinned.
+//! 1. [`Class::Timing`] — never thinned; but under [`Budget::timing_yields_to_floor`]
+//!    (the board's [`Budget::board`]) 3 goes before it. A cap on timing consumers bounds
+//!    how many there are, not bus time: a timing read on a unit that answers slower than
+//!    its period is due again the moment it answers, and takes every slot ranked below it.
 //! 2. A `Remote` or `Background` item due for longer than [`Budget::starve_after_ms`] —
 //!    nothing waits forever.
 //! 3. [`Class::Foreground`] while it has had fewer than `foreground_floor_per_s` sends
@@ -95,16 +98,17 @@ pub struct Unit {
 ///
 /// | class | board | laptop |
 /// |---|---|---|
-/// | `Timing` | the stopwatch's speed channel during a run | `measure` |
+/// | `Timing` | the stopwatch's speed channel during a run; a host's one timing subscription | `measure` |
 /// | `Foreground` | the visible page, the stalk poll | `watch`, `info`, `faults` |
-/// | `Remote` | the laptop's PDUs over USB or BLE | — |
+/// | `Remote` | the laptop's PDUs and normal subscriptions over USB or BLE | — |
 /// | `Background` | pages not shown | anything polled for later |
 ///
 /// The order of the variants is the order of precedence, floor aside (see the module
 /// docs): `Timing` first, `Background` last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
-	/// Never thinned.
+	/// Never thinned — except that on the board the foreground's floor goes first
+	/// ([`Budget::timing_yields_to_floor`]).
 	Timing,
 	/// Keeps [`Budget::foreground_floor_per_s`] whenever it wants it; above the floor it
 	/// yields to `Remote`.
@@ -139,6 +143,26 @@ pub struct Budget {
 	/// A `Remote` or `Background` item due for longer than this ranks just below
 	/// `Timing` until it is sent, so nothing waits forever. Owner, 2026-09-14: 5 s.
 	pub starve_after_ms: u32,
+	/// Whether [`Class::Foreground`] under its floor goes ahead of [`Class::Timing`].
+	///
+	/// `true` on the board ([`Budget::board`]): a host's timing channel on a unit that
+	/// answers slower than its period is due again the moment it answers and would take
+	/// every slot, so the panel's floor comes first and timing gets what is left. `false`
+	/// on the laptop ([`Budget::default`]): a cable `measure`'s own foreground channels
+	/// must not push its speed channel back. Decided 2026-09-14, in review of the timing
+	/// link.
+	pub timing_yields_to_floor: bool,
+}
+
+impl Budget {
+	/// The dash board's budget: [`Budget::default`], with the panel's floor ahead of a
+	/// host's timing channel ([`Budget::timing_yields_to_floor`]).
+	pub fn board() -> Self {
+		Budget {
+			timing_yields_to_floor: true,
+			..Self::default()
+		}
+	}
 }
 
 impl Default for Budget {
@@ -151,6 +175,7 @@ impl Default for Budget {
 			backoff_first_ms: 250,
 			backoff_cap_ms: 2000,
 			starve_after_ms: 5000,
+			timing_yields_to_floor: false,
 		}
 	}
 }

@@ -572,6 +572,7 @@ mod tests {
 			response_id: 0x7E8,
 			did: 0x2000,
 			period_ms: 100,
+			priority: vag_uds_transport::link::Priority::Normal,
 		});
 		for message in [request(), subscribe] {
 			let mut bytes = link::encode(&message).unwrap();

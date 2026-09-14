@@ -631,6 +631,63 @@ fn timing_at_50_hz_is_never_thinned() {
 	assert!(worst_gap <= 20, "a reading every 20 ms, never later: worst {worst_gap} ms");
 }
 
+/// A timing unit that answers slower than its period is due again the moment it answers.
+/// With [`Budget::timing_yields_to_floor`] (the board) the panel under its floor still goes
+/// first — all 120 of its reads a minute at 2 Hz, at every latency — and timing gets every
+/// other send. Without it (the laptop) timing keeps its place ahead of everything: a unit
+/// that answers inside the period leaves the panel gaps, a slower one takes every send.
+#[test]
+fn a_slow_timing_unit_yields_to_the_panels_floor_only_where_the_budget_says() {
+	let timing = unit(0x10);
+	let panel = unit(0x11);
+	let cells: Vec<u16> = (0..4).map(|n| 0x2000 + n).collect();
+	let records: Vec<(u16, &[u8])> = cells.iter().map(|did| (*did, &[0u8][..])).collect();
+	for latency in [5, 25, 45] {
+		for yields in [true, false] {
+			let budget = Budget {
+				timing_yields_to_floor: yields,
+				..Budget::default()
+			};
+			assert_eq!(yields, budget == Budget::board());
+			let mut sim = Sim::new(
+				budget,
+				car(&[(timing, FakeUnit::with(&[(0x1000, &[0])])), (panel, FakeUnit::with(&records))]),
+			);
+			sim.latency = latency;
+			let speed = sim.p.subscribe(0, Class::Timing, timing, 0x1000, 20, Some(1));
+			let subs: Vec<SubId> = cells
+				.iter()
+				.map(|did| sim.p.subscribe(0, Class::Foreground, panel, *did, 500, Some(1)))
+				.collect();
+			sim.run_until(60_000);
+
+			let label = format!("latency {latency} ms, timing_yields_to_floor {yields}");
+			let panel_reads: Vec<usize> = subs.iter().map(|sub| sim.readings_of(*sub).len()).collect();
+			let speed_reads = sim.readings_of(speed).len();
+			let panel_sends = sim.sends_to(panel, 0, 60_000);
+			assert_eq!(
+				speed_reads + panel_sends,
+				sim.sends.len(),
+				"{label}: every send is the panel's or the timing channel's"
+			);
+			if yields || latency < 20 {
+				assert!(
+					panel_reads.iter().all(|n| *n >= 120),
+					"{label}: the panel keeps its floor: {panel_reads:?}"
+				);
+			} else {
+				assert_eq!(panel_sends, 0, "{label}: timing takes every send, as on the laptop");
+			}
+			if latency < 20 {
+				assert!(
+					speed_reads >= 2990,
+					"{label}: a unit answering inside the period keeps 50 Hz: {speed_reads}"
+				);
+			}
+		}
+	}
+}
+
 #[test]
 fn nothing_is_dropped() {
 	let fg: Vec<Unit> = (0..4).map(unit).collect();

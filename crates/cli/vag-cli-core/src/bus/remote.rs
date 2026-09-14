@@ -7,7 +7,7 @@
 //!
 //! | a handle asks                              | on the pipe                                 | back                     |
 //! |--------------------------------------------|---------------------------------------------|--------------------------|
-//! | [`subscribe`](super::Bus::subscribe)       | `Subscribe { sub, ids, did, period_ms }`     | a `Reading` per poll      |
+//! | [`subscribe`](super::Bus::subscribe)       | `Subscribe { sub, ids, did, period_ms, priority }` | a `Reading` per poll |
 //! | dropping the subscription                  | `Unsubscribe { sub }`                        | —                        |
 //! | [`read_once`](super::Bus::read_once)       | `Request` of `22 did`                        | its `Answer`, read as a `Reading` is |
 //! | [`exchange`](super::Bus::exchange)         | `Request` of the whole PDU                   | its `Answer`             |
@@ -18,12 +18,18 @@
 //! - **The pipe is read first.** What it already holds is taken in before the commands
 //!   waiting, and again after every write — a write over BLE takes tens of milliseconds,
 //!   and a board streaming readings does not wait for the host to finish writing.
-//! - **[`Class`](super::Class) and [`Budget`](super::Budget) are not sent.** The link has
-//!   no field for either: the board classes all remote work itself, as its own class.
+//! - **Of [`Class`](super::Class), only `Timing` is sent**, as a Subscribe's `priority`:
+//!   timing for [`Class::Timing`](super::Class::Timing), normal for every other class,
+//!   which the board polls as its own `Remote` class. A one-shot read and an exchange
+//!   carry no priority, and [`Budget`](super::Budget) has no field at all.
 //! - **A period under [`MIN_PERIOD_MS`] is raised to it**, the guard's floor, rather than
 //!   sent to be refused.
 //! - **At most [`MAX_SUBSCRIPTIONS`] live**, the guard's cap: the next one is refused
 //!   here, with that reason, rather than sent to be refused.
+//! - **At most [`MAX_TIMING_SUBSCRIPTIONS`] of them timing**, the guard's cap too: the
+//!   next is refused here in the guard's words. `measure` makes one, its speed channel.
+//!   The board also keeps one timing channel for all its hosts: while another host holds
+//!   it, the board refuses the subscription, and it ends as any refusal does.
 //! - **A refusal by the board ends a subscription** — on the board it has already ended
 //!   (`vag_uds_client::remote`). The subscriber gets one [`Miss::BusError`] and then the
 //!   end of its stream. The planner's [`Miss`] has no variant for a refusal by the link,
@@ -67,12 +73,12 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::time::Instant;
-use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
+use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MAX_TIMING_SUBSCRIPTIONS, MIN_PERIOD_MS, Refusal};
 use vag_uds_transport::TransportError;
-use vag_uds_transport::link::{self, LinkError, Message, Outcome, Piece, Pipe, Reassembler};
+use vag_uds_transport::link::{self, LinkError, Message, Outcome, Piece, Pipe, Priority, Reassembler};
 
 use super::task::{answers, sleep_until};
-use super::{At, Carrier, Command, ExchangeError, Miss, OnceReply, READ_DEADLINE, REMOTE_GRACE, RawReply, Sample, Unit};
+use super::{At, Carrier, Class, Command, ExchangeError, Miss, OnceReply, READ_DEADLINE, REMOTE_GRACE, RawReply, Sample, Unit};
 
 /// ReadDataByIdentifier, its positive answer, and a negative answer's first byte (ISO 14229-1).
 const READ: u8 = 0x22;
@@ -83,6 +89,7 @@ const NEGATIVE: u8 = 0x7F;
 struct Sub {
 	unit: Unit,
 	did: u16,
+	priority: Priority,
 	to: mpsc::UnboundedSender<Sample>,
 }
 
@@ -339,12 +346,13 @@ impl Remote {
 		match command {
 			Command::Subscribe {
 				key,
+				class,
 				unit,
 				did,
 				period_ms,
 				to,
 				..
-			} => self.subscribe(key, unit, did, period_ms, to),
+			} => self.subscribe(key, class, unit, did, period_ms, to),
 			Command::Unsubscribe { key } => {
 				if let Some(sub) = self.wire.remove(&key) {
 					self.subs.remove(&sub);
@@ -364,11 +372,16 @@ impl Remote {
 		}
 	}
 
-	fn subscribe(&mut self, key: u64, unit: Unit, did: u16, period_ms: u32, to: mpsc::UnboundedSender<Sample>) {
+	fn subscribe(&mut self, key: u64, class: Class, unit: Unit, did: u16, period_ms: u32, to: mpsc::UnboundedSender<Sample>) {
 		let now = self.at(Instant::now());
 		if self.subs.len() >= MAX_SUBSCRIPTIONS {
 			let why = format!("the dash board holds at most {MAX_SUBSCRIPTIONS} subscriptions at once");
 			return self.end(unit, did, now, &to, &why);
+		}
+		let priority = priority_of(class);
+		let timing = self.subs.values().filter(|live| live.priority == Priority::Timing).count();
+		if priority == Priority::Timing && timing >= MAX_TIMING_SUBSCRIPTIONS {
+			return self.end(unit, did, now, &to, &Refusal::TooManyTimingSubscriptions.to_string());
 		}
 		let sub = self.free_sub();
 		let asked = link::Subscribe {
@@ -377,10 +390,11 @@ impl Remote {
 			response_id: unit.response,
 			did,
 			period_ms: u16::try_from(period_ms).unwrap_or(u16::MAX).max(MIN_PERIOD_MS),
+			priority,
 		};
 		match self.send(&Message::Subscribe(asked)) {
 			Ok(()) => {
-				self.subs.insert(sub, Sub { unit, did, to });
+				self.subs.insert(sub, Sub { unit, did, priority, to });
 				self.wire.insert(key, sub);
 			}
 			Err(why) => self.end(unit, did, now, &to, &why.to_string()),
@@ -572,6 +586,14 @@ impl Remote {
 				let _ = to.send(Err(ExchangeError::Link(TransportError::Io(why.to_string()))));
 			}
 		}
+	}
+}
+
+/// How a subscription of `class` is marked on the link (module docs).
+fn priority_of(class: Class) -> Priority {
+	match class {
+		Class::Timing => Priority::Timing,
+		Class::Foreground | Class::Remote | Class::Background => Priority::Normal,
 	}
 }
 
