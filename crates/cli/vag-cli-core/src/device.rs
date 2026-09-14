@@ -32,6 +32,7 @@ use crate::ui::menu::{Asker, Item};
 
 /// How a vag-dash board reads in the listing, by what it answered.
 const BOARD_SLCAN: &str = "vag-dash board — slcan firmware answering";
+const BOARD_DASH: &str = "vag-dash board — dash image (reads through the board, panel keeps running)";
 const BOARD_SILENT: &str = "vag-dash board — not answering slcan (display firmware? flash the slcan image)";
 
 /// Why no board was heard, as far as this side can tell.
@@ -416,6 +417,8 @@ pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardA
 		adapter.known = answer == BoardAnswer::Slcan;
 		adapter.description = match answer {
 			BoardAnswer::Slcan => BOARD_SLCAN.to_string(),
+			// Not an slcan adapter, so not picked as one; reading through it is the link's.
+			BoardAnswer::Dash { version } => format!("{BOARD_DASH}, {version}"),
 			BoardAnswer::Silent => BOARD_SILENT.to_string(),
 			BoardAnswer::Unopened(why) => format!("vag-dash board — could not be opened to ask its firmware ({why})"),
 		};

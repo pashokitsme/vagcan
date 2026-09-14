@@ -18,6 +18,8 @@
 extern crate alloc;
 
 pub mod backend;
+#[cfg(feature = "std")]
+pub mod board;
 pub mod error;
 pub mod filter;
 pub mod isotp;
@@ -29,13 +31,17 @@ pub mod sniff;
 mod time;
 
 pub use backend::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, from_raw_id, to_raw_id};
+#[cfg(feature = "slcan")]
+pub use board::SerialPipe;
+#[cfg(feature = "std")]
+pub use board::{HANDSHAKE_WAIT, StreamPipe};
 pub use error::CanError;
 pub use filter::{FilterFollower, StandardFilter};
 pub use isotp::IsoTpCan;
 pub use link::UnitLink;
 #[cfg(feature = "slcan")]
-pub use slcan::{AdapterInfo, BOARD_PROBE_WAIT, BOARD_USB, BoardAnswer, SerialSlcan, classify_usb, list_adapters, probe_board};
+pub use slcan::{AdapterInfo, BOARD_PROBE_WAIT, BOARD_USB, SerialSlcan, classify_usb, list_adapters, probe_board};
 #[cfg(feature = "std")]
-pub use slcan::{SlcanBackend, SlcanBitrate, SlcanMode};
+pub use slcan::{BoardAnswer, SlcanBackend, SlcanBitrate, SlcanMode};
 #[cfg(feature = "std")]
 pub use sniff::{DEFAULT_ASSEMBLY_TIMEOUT, IsoTpSniffer, SnifferPdu};
