@@ -1,7 +1,7 @@
 //! The dash: reads the plan's channels off the car, draws them, and serves the
 //! car over BLE.
 //!
-//! * **The bus** is one task, `bus_task`, and one scheduler:
+//! * **The bus** is one task, `can_task`, and one scheduler:
 //!   [`vag_uds_client::schedule::Planner`]. The panel subscribes to the
 //!   channels of the page on the glass at their own rates and to the rest at
 //!   1 Hz; a BLE host's requests and subscriptions go through the same planner
@@ -229,14 +229,18 @@ macro_rules! note {
 /// cable — as the bus task reaches it. Each has a session of its own.
 struct Client {
 	/// Answers to the session's raw exchanges: the request, the answer, and the
-	/// board's clock when it arrived. The session waits for one at a time, so four
-	/// slots never fill; one left over from a session that is gone is ignored by
-	/// the next.
-	answers: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 4>,
+	/// board's clock when it arrived. The session waits for one at a time, so **one
+	/// slot** holds every answer it will read; one left over from a session that is gone is
+	/// ignored by the next (S-F4: a raw answer keeps its full ~4.1 KB, so the queue is one
+	/// deep, not four).
+	answers: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 1>,
 	/// Planner deliveries for the session's subscriptions. **Drop semantics**
 	/// (owner, 2026-09-14): a reading that finds this full is thrown away and
 	/// counted in `dropped` — the next one is newer anyway, and a bus that waited
-	/// for a host would starve the panel.
+	/// for a host would starve the panel. In steady state every reading is at most
+	/// `MAX_READING_BYTES`: a subscription whose reading is larger ends on its first
+	/// delivery (`Session::deliver`, S-F4), so a big record is delivered once and never
+	/// again — the 16 slots hold ~0.5 KB each rather than filling with ~4.1 KB records.
 	readings: Channel<CriticalSectionRawMutex, Delivery, 16>,
 	dropped: AtomicU32,
 	/// What the session owns now, where the bus task can see it: a delivery for none
@@ -1037,11 +1041,21 @@ const SESSION_QUEUE_MAX: usize = 4;
 /// the cable in `USB_MESSAGES` too — past which the board stops reading that carrier.
 /// Back-pressure: nothing is dropped, the host waits.
 ///
-/// Worst case per carrier, a host sending nothing but 4095-byte requests: under the cap
-/// (4 KB) when a read is allowed, plus the one request that read completes (4 KB), the
-/// reassembler's frame in progress (4.2 KB), and the one exchange the planner holds
-/// (4 KB) — about 16.5 KB, 33 KB for both carriers at once, beside the radio's share of
-/// the 72 KB heap. Not measured: the bench was down when this was written.
+/// Worst case for one carrier's host, all the queues it can pin at once on the 72 KB heap
+/// (not measured: the bench was down when this was written):
+///
+/// - **inbound**, sending nothing but 4095-byte requests: under this cap (4 KB) when a read
+///   is allowed, plus the request that read completes (4 KB), the reassembler's frame in
+///   progress (4.2 KB), and the one exchange the planner holds (4 KB) — about 16.5 KB;
+/// - **outbound** ([`QUEUED_OUT_BYTES`], 8 KB) plus the one encoded item the notifier/writer
+///   holds (4.2 KB) — about 12 KB;
+/// - **answers** ([`Client::answers`]), one raw answer of up to 4.1 KB;
+/// - **readings** ([`Client::readings`]), 16 records each capped at `MAX_READING_BYTES`
+///   (`Session::deliver` ends a bigger one, S-F4) — about 8 KB.
+///
+/// About 41 KB for one carrier, ~57 KB for both at once (only one holds a full raw answer at
+/// a time), beside the radio stack's share. The readings and answers queues are the S-F4
+/// additions; before them this counted only the inbound side.
 const QUEUED_PDU_BYTES: usize = 4096;
 
 /// The PDU bytes a message brings.
@@ -1096,7 +1110,7 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				out
 			}
 			Either::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
-			Either::First(Either4::Third(delivery)) => session.deliver(&delivery).into_iter().collect(),
+			Either::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
 			Either::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
 			Either::Second(()) => mode_changed(session, bus),
 		};
@@ -2566,7 +2580,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 				take_message(&mut session, bus, message)
 			}
 			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
-			Either3::First(Either4::Third(delivery)) => session.deliver(&delivery).into_iter().collect(),
+			Either3::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
 			Either3::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
 			Either3::Second(()) => mode_changed(&mut session, bus),
 			Either3::Third(()) => {

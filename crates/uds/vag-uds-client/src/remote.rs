@@ -59,9 +59,24 @@
 //!   The board runs a radio session and a cable session side by side on one planner, so a
 //!   timing subscription is forwarded only while that planner holds no other
 //!   ([`Planner::timing_subscriptions`]); otherwise it is refused with
-//!   [`Refusal::TimingChannelHeld`]. The channel frees when its holder unsubscribes,
-//!   gives its id again as normal, or its session closes — a disconnect, a Hello, a
-//!   stalled writer.
+//!   [`Refusal::TimingChannelHeld`] — except that the **cable's owner comes first**
+//!   (S-F3): a cable timing subscription preempts a radio-held one
+//!   ([`Planner::preempt_timing`]), and the radio session learns of it on its next poll
+//!   ([`Session::drain_taken_timing`]) and ends its subscription with
+//!   [`Refusal::TimingChannelTaken`]. A radio host never preempts the cable. The channel
+//!   frees when its holder unsubscribes, gives its id again as normal, or its session
+//!   closes — a disconnect, a Hello, a stalled writer.
+//!
+//! # Bus time
+//!
+//! A request to an id nobody answers holds the bus for the whole answer timeout, and a
+//! different id each time dodges the planner's per-unit backoff, so a stranger over the
+//! radio could deny the panel and the cable host the bus (S-F3). Each radio session is
+//! charged the time its exchanges hold the bus ([`Session::charge_bus_time`], measured
+//! send to final answer, `78` waits included); past
+//! [`RADIO_BUS_SHARE_PERMILLE`](crate::guard::RADIO_BUS_SHARE_PERMILLE) of a sliding
+//! [`RATE_WINDOW_MS`](crate::guard::RATE_WINDOW_MS) its next request waits
+//! ([`Session::bus_time_wait`]) — back-pressure, nothing dropped. The cable is not charged.
 //!
 //! Neither bounds bus time. The planner caps sends, not how long a unit takes to answer,
 //! and a timing read on a unit slower than its period is due again the moment it answers.
@@ -80,13 +95,23 @@ use alloc::vec::Vec;
 
 use vag_uds_transport::link::{Answer, Message, Outcome, Priority, Reading, Request, Subscribe};
 
-use crate::guard::{Guard, Refusal, SPEED_FRESH_MS, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict, road_speed};
+use crate::guard::{
+	Guard, Profile, RADIO_BUS_SHARE_PERMILLE, RATE_WINDOW_MS, Refusal, SPEED_FRESH_MS, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict,
+	road_speed,
+};
 use crate::schedule::{self, Class, Delivery, Miss, Planner, ReqId, SubId, Unit};
 
 /// ReadDataByIdentifier's positive response and a negative response's first byte (ISO 14229-1).
 const RDBI: u8 = 0x22;
 const RDBI_POSITIVE: u8 = 0x62;
 const NEGATIVE: u8 = 0x7F;
+
+/// The largest a subscription reading may be — the board delivers it and its subscription
+/// ends past this (S-F4, `Session::deliver`). A watch cell or `measure`'s speed is a few
+/// bytes; the board's reading queue holds a bounded number of them, so a big record would
+/// starve the heap. 512 bytes leaves any real channel room to spare. A big record is a
+/// one-shot's job, over a raw exchange, which is not capped.
+pub const MAX_READING_BYTES: usize = 512;
 
 /// The engine, where road speed is read (ISO 15765-4's first address pair).
 const SPEED_UNIT: Unit = Unit {
@@ -108,6 +133,10 @@ pub struct Session {
 	queue: VecDeque<Request>,
 	/// The request being dealt with.
 	current: Option<Current>,
+	/// `(when it left the bus, how long it held it)` of this host's exchanges, oldest
+	/// first, for the radio's bus-time share (`Guard::RADIO_BUS_SHARE_PERMILLE`). Always
+	/// empty on the cable, which is not held to it.
+	bus_time: VecDeque<(u64, u64)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,11 +149,17 @@ struct Live {
 enum Current {
 	/// Over the rate cap; checked again at `until_ms`.
 	Waiting { request: Request, until_ms: u64 },
-	/// The speed read `req` is out.
-	Speed { request: Request, req: ReqId },
+	/// The speed read `req` is out; it went to the planner at `since_ms`.
+	Speed { request: Request, req: ReqId, since_ms: u64 },
 	/// The request itself is out as `req`; `sid` is its service. `fresh` for a session
-	/// change a speed read cleared.
-	Forwarded { seq: u8, sid: u8, req: ReqId, fresh: Option<Fresh> },
+	/// change a speed read cleared; it went to the planner at `since_ms`.
+	Forwarded {
+		seq: u8,
+		sid: u8,
+		req: ReqId,
+		fresh: Option<Fresh>,
+		since_ms: u64,
+	},
 }
 
 /// A session change handed to the planner while its road speed reading is fresh.
@@ -282,44 +317,57 @@ impl Session {
 			.collect()
 	}
 
-	/// Move the request queue as far as it goes at `now_ms`.
+	/// Move the request queue as far as it goes at `now_ms`. A radio host over its bus-time
+	/// share ([`Session::bus_time_wait`]) has its next request held here first, whatever the
+	/// guard would say.
 	pub fn poll(&mut self, now_ms: u64, planner: &mut Planner) -> Vec<Message> {
 		let mut out = Vec::new();
+		self.drain_taken_timing(now_ms, planner, &mut out);
 		loop {
-			let (request, verdict) = match self.current.take() {
+			// A fresh start (a queued request, or one done waiting) is held while the host is
+			// over its bus-time share; a session change resumed from its stale reading is not
+			// a new start — it reads speed again, and that read is charged when it answers.
+			let request = match self.current.take() {
 				None => match self.queue.pop_front() {
-					Some(request) => {
-						let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
-						(request, verdict)
-					}
+					Some(request) => request,
 					None => break,
 				},
-				Some(Current::Waiting { request, until_ms }) if until_ms <= now_ms => {
-					let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
-					(request, verdict)
-				}
+				Some(Current::Waiting { request, until_ms }) if until_ms <= now_ms => request,
 				Some(Current::Forwarded {
 					seq,
 					sid,
 					req,
 					fresh: Some(fresh),
+					since_ms,
 				}) if fresh.not_after_ms < now_ms => {
 					if !planner.cancel(req) {
 						// It went out while the reading was fresh: its answer is coming.
-						self.current = Some(Current::Forwarded { seq, sid, req, fresh: None });
+						self.current = Some(Current::Forwarded {
+							seq,
+							sid,
+							req,
+							fresh: None,
+							since_ms,
+						});
 						break;
 					}
 					// It did not, and the planner will not send it now: start again, speed read
 					// and all.
 					let request = fresh.request;
 					let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
-					(request, verdict)
+					self.act(now_ms, planner, request, verdict, false, &mut out);
+					continue;
 				}
 				Some(blocked) => {
 					self.current = Some(blocked);
 					break;
 				}
 			};
+			if let Some(until_ms) = self.bus_time_wait(now_ms) {
+				self.current = Some(Current::Waiting { request, until_ms });
+				break;
+			}
+			let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
 			self.act(now_ms, planner, request, verdict, false, &mut out);
 		}
 		out
@@ -330,7 +378,12 @@ impl Session {
 	pub fn answered(&mut self, now_ms: u64, planner: &mut Planner, req: ReqId, answer: &schedule::Answer) -> Vec<Message> {
 		let mut out = Vec::new();
 		match self.current.take() {
-			Some(Current::Speed { request, req: out_req }) if out_req == req => {
+			Some(Current::Speed {
+				request,
+				req: out_req,
+				since_ms,
+			}) if out_req == req => {
+				self.charge_bus_time(now_ms, since_ms);
 				let kmh = match answer {
 					schedule::Answer::Pdu(pdu) => road_speed(pdu),
 					_ => None,
@@ -338,7 +391,14 @@ impl Session {
 				let verdict = self.guard.speed(now_ms, request.request_id, request.response_id, &request.pdu, kmh);
 				self.act(now_ms, planner, request, verdict, true, &mut out);
 			}
-			Some(Current::Forwarded { seq, sid, req: out_req, .. }) if out_req == req => {
+			Some(Current::Forwarded {
+				seq,
+				sid,
+				req: out_req,
+				since_ms,
+				..
+			}) if out_req == req => {
+				self.charge_bus_time(now_ms, since_ms);
 				out.push(Message::Answer(Answer {
 					seq,
 					outcome: outcome_of(sid, answer),
@@ -352,9 +412,20 @@ impl Session {
 
 	/// The [`Reading`] a planner delivery makes for this session's host, if the
 	/// delivery is for one of its live subscriptions.
-	pub fn deliver(&self, delivery: &Delivery) -> Option<Message> {
+	///
+	/// A reading larger than [`MAX_READING_BYTES`] is not passed on: a subscription is for
+	/// small, frequent records (a watch cell, `measure`'s speed), and a big one would sit in
+	/// the board's bounded reading queue and starve the heap (S-F4). It comes back as a
+	/// failed reading and the subscription **ends** — a big record is a one-shot's job, over
+	/// a raw exchange, which keeps its full size.
+	pub fn deliver(&mut self, now_ms: u64, planner: &mut Planner, delivery: &Delivery) -> Option<Message> {
 		let (sub, at_ms, outcome) = match delivery {
 			Delivery::Reading { sub, did, data, at_ms, .. } => {
+				let host_sub = self.host_sub(*sub)?;
+				if 3 + data.len() > MAX_READING_BYTES {
+					self.unsubscribe(now_ms, planner, host_sub);
+					return Some(refused_reading(host_sub, *at_ms, Refusal::ReadingTooLarge));
+				}
 				let mut pdu = Vec::with_capacity(3 + data.len());
 				pdu.push(RDBI_POSITIVE);
 				pdu.extend_from_slice(&did.to_be_bytes());
@@ -364,12 +435,17 @@ impl Session {
 			Delivery::Missed { sub, why, at_ms, .. } => (*sub, *at_ms, missed(*why)),
 			Delivery::Once { .. } | Delivery::Raw { .. } => return None,
 		};
-		let host_sub = self.subs.iter().find(|(_, live)| live.id == sub).map(|(host, _)| *host)?;
+		let host_sub = self.host_sub(sub)?;
 		Some(Message::Reading(Reading {
 			sub: host_sub,
 			at_ms: at_ms as u32,
 			outcome,
 		}))
+	}
+
+	/// The host's id for one of this session's planner subscriptions.
+	fn host_sub(&self, id: SubId) -> Option<u16> {
+		self.subs.iter().find(|(_, live)| live.id == id).map(|(host, _)| *host)
 	}
 
 	/// The connection is gone, or a Hello starts it over: every subscription leaves the
@@ -386,6 +462,7 @@ impl Session {
 		}
 		self.queue.clear();
 		self.current = None;
+		self.bus_time.clear();
 		self.guard.close(now_ms);
 	}
 
@@ -398,7 +475,11 @@ impl Session {
 				let req = planner
 					.exchange(now_ms, Class::Timing, SPEED_UNIT, SPEED_REQUEST.to_vec())
 					.expect("a read is inside the allowlist");
-				self.current = Some(Current::Speed { request, req });
+				self.current = Some(Current::Speed {
+					request,
+					req,
+					since_ms: now_ms,
+				});
 			}
 			Verdict::Refuse(refusal) => {
 				if refusal == Refusal::Walk {
@@ -426,7 +507,13 @@ impl Session {
 						self.guard.forwarded(now_ms, request.request_id, request.response_id, &request.pdu);
 						let (seq, sid) = (request.seq, request.pdu[0]);
 						let fresh = not_after_ms.map(|not_after_ms| Fresh { request, not_after_ms });
-						self.current = Some(Current::Forwarded { seq, sid, req, fresh });
+						self.current = Some(Current::Forwarded {
+							seq,
+							sid,
+							req,
+							fresh,
+							since_ms: now_ms,
+						});
 					}
 					// The guard's allowlist is the planner's; this is the second lock on one door.
 					Err(e) => out.push(Message::Answer(Answer {
@@ -442,13 +529,16 @@ impl Session {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
 		self.unsubscribe(now_ms, planner, s.sub);
+		// One stopwatch at a time on the board (module docs): if the planner every session
+		// shares already holds a timing subscription, and it is not this one (which went
+		// above), the cable takes it from whoever holds it (S-F3) and the radio is refused.
+		let held = s.priority == Priority::Timing && planner.timing_subscriptions() > 0;
+		let cable = self.guard.profile() == Profile::Cable;
 		let verdict = match self
 			.guard
 			.check_subscribe(now_ms, s.request_id, s.response_id, s.did, s.period_ms, s.priority)
 		{
-			// One stopwatch at a time on the board (module docs): the planner every session
-			// shares already holds a timing subscription, and it is not this one, which went above.
-			Verdict::Forward if s.priority == Priority::Timing && planner.timing_subscriptions() > 0 => Verdict::Refuse(Refusal::TimingChannelHeld),
+			Verdict::Forward if held && !cable => Verdict::Refuse(Refusal::TimingChannelHeld),
 			verdict => verdict,
 		};
 		match verdict {
@@ -458,6 +548,12 @@ impl Session {
 					response: s.response_id,
 				};
 				let id = planner.subscribe(now_ms, class_of(s.priority), unit, s.did, u32::from(s.period_ms), None);
+				// The cable took the channel: end every other timing subscription in the planner.
+				// Its holder — the radio session — learns of it on its next poll
+				// ([`Session::drain_taken_timing`]) and tells its host.
+				if held && cable {
+					planner.preempt_timing(id);
+				}
 				self.guard.subscribed(now_ms, s.sub, s.request_id, s.response_id, s.did, s.priority);
 				self.subs.insert(
 					s.sub,
@@ -483,6 +579,55 @@ impl Session {
 			planner.unsubscribe(live.id);
 			self.guard.unsubscribed(now_ms, sub);
 		}
+	}
+
+	/// A subscription of this session the planner no longer holds was preempted — the cable
+	/// took the board's one timing channel (S-F3). Each ends with a [`Reading`] saying so.
+	/// (Only preemption drops a live subscription silently; every other end goes through
+	/// [`Session::unsubscribe`], which takes it out of `subs` too.)
+	fn drain_taken_timing(&mut self, now_ms: u64, planner: &mut Planner, out: &mut Vec<Message>) {
+		let taken: Vec<u16> = self
+			.subs
+			.iter()
+			.filter(|(_, live)| !planner.holds(live.id))
+			.map(|(sub, _)| *sub)
+			.collect();
+		for sub in taken {
+			self.unsubscribe(now_ms, planner, sub);
+			out.push(refused_reading(sub, now_ms, Refusal::TimingChannelTaken));
+		}
+	}
+
+	/// Charge the bus the time an exchange held it — sent to the planner at `since_ms`,
+	/// answered now — for the radio's bus-time share. Nothing on the cable.
+	fn charge_bus_time(&mut self, now_ms: u64, since_ms: u64) {
+		if self.guard.profile() == Profile::Radio {
+			self.bus_time.push_back((now_ms, now_ms.saturating_sub(since_ms)));
+		}
+	}
+
+	/// When the radio host's next request may start: `None` while it holds under
+	/// [`RADIO_BUS_SHARE_PERMILLE`] of the bus over the last [`RATE_WINDOW_MS`], else the
+	/// moment enough of its held time ages out. Never gates the cable.
+	fn bus_time_wait(&mut self, now_ms: u64) -> Option<u64> {
+		if self.guard.profile() != Profile::Radio {
+			return None;
+		}
+		let expiry = |at: u64| at.saturating_add(RATE_WINDOW_MS);
+		self.bus_time.retain(|&(at, _)| expiry(at) > now_ms);
+		let share = RATE_WINDOW_MS * RADIO_BUS_SHARE_PERMILLE / 1000;
+		let used: u64 = self.bus_time.iter().map(|&(_, held)| held).sum();
+		if used < share {
+			return None;
+		}
+		let mut left = used;
+		for &(at, held) in &self.bus_time {
+			left -= held;
+			if left < share {
+				return Some(expiry(at));
+			}
+		}
+		self.bus_time.back().map(|&(at, _)| expiry(at))
 	}
 
 	/// The guard locked `request_id`: its subscriptions of this session end, each said.

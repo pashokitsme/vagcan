@@ -340,13 +340,35 @@ impl Planner {
 	/// consumer. The board's sessions share one planner and read this to keep one
 	/// stopwatch at a time (`remote::Session`).
 	pub fn timing_subscriptions(&self) -> usize {
+		self.timing_ids().count()
+	}
+
+	fn timing_ids(&self) -> impl Iterator<Item = SubId> + '_ {
 		self
 			.units
 			.values()
 			.flat_map(|state| state.reads.values())
 			.flat_map(|read| &read.subs)
 			.filter(|sub| sub.class == Class::Timing)
-			.count()
+			.map(|sub| sub.id)
+	}
+
+	/// Take the board's timing channel for `keep`: unsubscribe every other
+	/// [`Class::Timing`] subscription and return their ids, so a session can tell the
+	/// hosts that held them. One stopwatch at a time, and the cable takes it from the radio
+	/// (`remote::Session`, S-F3). `keep`'s own subscription, if any, is left untouched.
+	pub fn preempt_timing(&mut self, keep: SubId) -> Vec<SubId> {
+		let taken: Vec<SubId> = self.timing_ids().filter(|id| *id != keep).collect();
+		for id in &taken {
+			self.unsubscribe(*id);
+		}
+		taken
+	}
+
+	/// Whether `sub` is still a live subscription the planner holds. A session that had one
+	/// preempted ([`preempt_timing`](Self::preempt_timing)) learns of it here.
+	pub fn holds(&self, sub: SubId) -> bool {
+		self.subs.contains_key(&sub)
 	}
 
 	/// Read `did` of `unit` once; the result comes as exactly one [`Delivery::Once`].

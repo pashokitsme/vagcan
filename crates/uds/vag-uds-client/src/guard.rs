@@ -83,8 +83,16 @@ use crate::pdu::READ_ONLY_ALLOWLIST;
 
 /// Counted units allowed in any [`RATE_WINDOW_MS`]. A starting figure, not measured.
 pub const RATE_LIMIT: u32 = 20;
-/// The sliding window the rate cap is taken over.
+/// The sliding window the rate cap is taken over, and the bus-time share too.
 pub const RATE_WINDOW_MS: u64 = 10_000;
+/// The most of the bus, by time, a radio host may hold in any [`RATE_WINDOW_MS`], in
+/// thousandths (PR #2 review, S-F3). A request to an id nobody answers holds the bus for
+/// the whole answer timeout, and a different id each time dodges the planner's per-unit
+/// backoff, so a stranger could deny the panel and another host the bus. Past this the
+/// radio host's next request waits (back-pressure, nothing dropped). 250 = a quarter, so
+/// the panel and the cable keep three quarters. The cable is not held to it. A starting
+/// figure: the owner may tune it.
+pub const RADIO_BUS_SHARE_PERMILLE: u64 = 250;
 /// Identifiers allowed in one `0x22` request.
 pub const MAX_IDENTIFIERS_PER_REQUEST: usize = 4;
 /// Different identifiers of one unit the radio guard remembers asked. A starting figure.
@@ -199,6 +207,13 @@ pub enum Refusal {
 	/// session over the planner every connection shares (`remote::Session`), not by a
 	/// guard, which sees one connection.
 	TimingChannelHeld,
+	/// This connection's timing channel was preempted by the cable host — the owner comes
+	/// first (`remote::Session`, S-F3). Only a radio host is ever told this.
+	TimingChannelTaken,
+	/// A subscription's reading was larger than the board delivers over a subscription
+	/// (`remote::MAX_READING_BYTES`, S-F4); the subscription ended. A big record is a
+	/// one-shot's job.
+	ReadingTooLarge,
 }
 
 impl Refusal {
@@ -223,6 +238,8 @@ impl Refusal {
 			Refusal::TooManySubscriptions => "too many subscriptions",
 			Refusal::TooManyTimingSubscriptions => "too many timing subscriptions",
 			Refusal::TimingChannelHeld => "another client holds the board's timing channel",
+			Refusal::TimingChannelTaken => "the board's timing channel was taken by the cable host",
+			Refusal::ReadingTooLarge => "reading too large for a subscription: use a one-shot read",
 		}
 	}
 }
@@ -1382,6 +1399,8 @@ mod tests {
 			Refusal::TooManySubscriptions,
 			Refusal::TooManyTimingSubscriptions,
 			Refusal::TimingChannelHeld,
+			Refusal::TimingChannelTaken,
+			Refusal::ReadingTooLarge,
 		];
 		for refusal in all {
 			let reason = refusal.reason();
