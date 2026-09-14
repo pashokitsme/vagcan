@@ -4,7 +4,12 @@
 //! ```text
 //! bleuds 7E0 7E8 22F190                         # one Request, print the Answer
 //! bleuds --subscribe 7E0 7E8 F40D 100 5         # read F40D every 100 ms for 5 s
+//! bleuds --sweep-response 7E0 7E8 50 F40D 100   # 50 response ids under one request id
 //! ```
+//!
+//! The sweep is the heap attack the board's guard refuses: one request id under many
+//! response ids, one subscription each, in one connection. All but the first must come
+//! back refused.
 //!
 //! Connects to the first device named `vagcan-dash` (or `--name <name>`), sends
 //! `vag_uds_transport::link` frames on the Nordic UART Service, and prints what
@@ -43,11 +48,21 @@ enum Mode {
 		period_ms: u16,
 		seconds: u64,
 	},
+	/// One request id under `count` response ids, one subscription each, in one
+	/// connection: the board must refuse all but the first and hold no more for them.
+	SweepResponse {
+		request: u16,
+		first_response: u16,
+		count: u16,
+		did: u16,
+		period_ms: u16,
+	},
 }
 
 fn usage() -> ! {
 	eprintln!("usage: bleuds [--name NAME] <request id> <response id> <hex pdu>");
 	eprintln!("       bleuds [--name NAME] --subscribe <request id> <response id> <did> <period ms> <seconds>");
+	eprintln!("       bleuds [--name NAME] --sweep-response <request id> <first response id> <count> <did> <period ms>");
 	std::process::exit(2);
 }
 
@@ -83,6 +98,13 @@ fn parse(args: &[String]) -> Result<(String, Mode)> {
 			did: hex_u16(did)?,
 			period_ms: period.parse().context("period is milliseconds")?,
 			seconds: seconds.parse().context("seconds is a number")?,
+		},
+		[flag, request, first, count, did, period] if flag == "--sweep-response" => Mode::SweepResponse {
+			request: hex_u16(request)?,
+			first_response: hex_u16(first)?,
+			count: count.parse().context("count is a number")?,
+			did: hex_u16(did)?,
+			period_ms: period.parse().context("period is milliseconds")?,
 		},
 		[request, response, pdu] => Mode::Request {
 			request: hex_u16(request)?,
@@ -191,13 +213,57 @@ async fn main() -> Result<()> {
 					}
 				}
 				send(&Message::Unsubscribe { sub: SUB }).await?;
-				match first {
-					Some(first) if count > 1 => println!(
-						"{count} readings over {} ms of board time: {:.1} Hz",
-						last - first,
-						f64::from(count - 1) * 1000.0 / f64::from((last - first).max(1))
-					),
-					_ => println!("{count} reading(s)"),
+				report_rate(count, first, last);
+				Ok(())
+			}
+			Mode::SweepResponse {
+				request,
+				first_response,
+				count,
+				did,
+				period_ms,
+			} => {
+				println!("> Subscribe {request:03X} under {count} response ids from {first_response:03X}, {did:04X} every {period_ms} ms");
+				for n in 0..count {
+					send(&Message::Subscribe(Subscribe {
+						sub: n + 1,
+						request_id: request,
+						response_id: first_response.wrapping_add(n) & 0x7FF,
+						did,
+						period_ms,
+					}))
+					.await?;
+				}
+				let (mut refused, mut readings) = (0u32, 0u32);
+				let mut first_refusal = None;
+				let end = tokio::time::sleep(Duration::from_secs(5));
+				tokio::pin!(end);
+				loop {
+					tokio::select! {
+						() = &mut end => break,
+						n = notifications.next() => {
+							let Some(n) = n else { bail!("the board went away") };
+							for piece in reassembler.push(&n.value) {
+								match piece {
+									Piece::Message(Message::Reading(r)) => match r.outcome {
+										Outcome::Refused(why) => {
+											refused += 1;
+											first_refusal.get_or_insert(why);
+										}
+										_ => readings += 1,
+									},
+									other => show(other),
+								}
+							}
+						}
+					}
+				}
+				for n in 0..count {
+					send(&Message::Unsubscribe { sub: n + 1 }).await?;
+				}
+				println!("{refused} subscription(s) refused, {readings} reading(s) for the one accepted");
+				if let Some(why) = first_refusal {
+					println!("  first refusal: {why}");
 				}
 				Ok(())
 			}
@@ -208,6 +274,18 @@ async fn main() -> Result<()> {
 	board.disconnect().await.ok();
 	println!("disconnected");
 	result
+}
+
+/// The rate of a subscription on the board's clock.
+fn report_rate(count: u32, first: Option<u32>, last: u32) {
+	match first {
+		Some(first) if count > 1 => println!(
+			"{count} readings over {} ms of board time: {:.1} Hz",
+			last - first,
+			f64::from(count - 1) * 1000.0 / f64::from((last - first).max(1))
+		),
+		_ => println!("{count} reading(s)"),
+	}
 }
 
 /// Scan until a device with `name` shows up.
