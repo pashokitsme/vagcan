@@ -8,7 +8,8 @@
 //! The dash board backs off a unit that does not answer, so on a bench with no
 //! car its scheduler never runs at the rate it would on one. This puts the
 //! CANable on the pair as that unit: it answers `22 F40D` with a fixed road
-//! speed, refuses the rest, and counts what it was asked each second — so a
+//! speed and `22 F187` with the part number `--part` gives that unit, refuses
+//! the rest, and counts what it was asked each second — so a
 //! subscription's rate over BLE is measured at the bus end, by the fixture.
 //!
 //! It transmits, so it guards itself (`CLAUDE.md` Safety): nothing starts
@@ -42,6 +43,9 @@ const MAX_PDU: usize = 4095;
 /// Vehicle speed, one byte in km/h: OBD-II PID `0D` (SAE J1979), mirrored at
 /// `F400 + PID`. A protocol identifier, not one car's.
 const DID_SPEED: u16 = 0xF40D;
+/// The manufacturer's spare part number (ISO 14229-1 Annex C). Served only with
+/// a `--part`: the text comes from the command line, never from here.
+const DID_PART_NUMBER: u16 = 0xF187;
 
 /// ISO 14229-1 negative response codes.
 const NRC_SERVICE_NOT_SUPPORTED: u8 = 0x11;
@@ -64,16 +68,18 @@ Expects a bench pair: the board and a CANable on one terminated CAN bus at
 
 usage:
   benchecu --bench --device <serial path> --unit <request id> [--unit ...]
-           [--speed-kmh <0..255>] [--seconds <N>]
+           [--part <request id>=<text> ...] [--speed-kmh <0..255>] [--seconds <N>]
 
   --bench       required; says this is a bench pair
   --device      the CANable's serial port, e.g. /dev/cu.usbmodem1101
   --unit        request id to answer, hex; repeatable (7E0 answers on 7E8, 714 on 77E)
+  --part        what F187 reads on that --unit, ASCII; repeatable; without it F187 is refused
   --speed-kmh   what F40D reads, default 0
   --seconds     stop after N seconds of answering; otherwise Ctrl-C
 
 answers:
-  22 F40D ...   62 F40D <speed> for each F40D asked; nothing served: 7F 22 31
+  22 <ids>      62, then in request order: F40D <speed> for each F40D, and
+                F187 <text> for each F187 on a unit with --part; nothing served: 7F 22 31
   3E 00         7E 00
   3E 80         no answer
   10, 19, rest  7F <sid> 11
@@ -97,8 +103,15 @@ enum Invocation {
 struct Config {
 	device: String,
 	units: Vec<UnitAddress>,
+	/// What `F187` reads, by request id; a unit not here refuses it.
+	parts: BTreeMap<u16, String>,
 	speed_kmh: u8,
 	seconds: Option<u64>,
+}
+
+/// A hex request id like `7E0`.
+fn request_id(text: &str) -> Result<u16, String> {
+	u16::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| format!("{text:?} is not a hex request id like 7E0"))
 }
 
 fn parse(args: &[String]) -> Result<Invocation, String> {
@@ -108,16 +121,26 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 	if !args.iter().any(|a| a == "--bench") {
 		return Ok(Invocation::Refused);
 	}
-	let (mut device, mut units, mut speed_kmh, mut seconds) = (None, Vec::new(), 0u8, None);
+	let (mut device, mut units, mut parts, mut speed_kmh, mut seconds) = (None, Vec::new(), BTreeMap::new(), 0u8, None);
 	let mut rest = args.iter();
 	while let Some(flag) = rest.next() {
 		let mut value = || rest.next().ok_or_else(|| format!("{flag} wants a value"));
 		match flag.as_str() {
 			"--bench" => {}
 			"--device" => device = Some(value()?.clone()),
+			"--part" => {
+				let text = value()?;
+				let (id, part) = text
+					.split_once('=')
+					.ok_or_else(|| format!("--part {text:?} is not <request id>=<text>"))?;
+				if part.is_empty() || !part.is_ascii() {
+					return Err(format!("--part {text:?}: the text is empty or not ASCII"));
+				}
+				parts.insert(request_id(id)?, part.to_string());
+			}
 			"--unit" => {
 				let text = value()?;
-				let id = u16::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|_| format!("{text:?} is not a hex request id like 7E0"))?;
+				let id = request_id(text)?;
 				// The response id by the same rule the client addresses units with.
 				let unit = UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} is in neither diagnostic block (700-7BF or 7E0-7E7)"))?;
 				if !units.contains(&unit) {
@@ -133,9 +156,13 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 	if units.is_empty() {
 		return Err("at least one --unit <request id> is required".to_string());
 	}
+	if let Some(id) = parts.keys().find(|&&id| !units.iter().any(|u| u.request == id)) {
+		return Err(format!("--part {id:03X} is not one of the --unit ids"));
+	}
 	Ok(Invocation::Run(Config {
 		device,
 		units,
+		parts,
 		speed_kmh,
 		seconds,
 	}))
@@ -396,8 +423,9 @@ fn negative(sid: u8, nrc: u8) -> Vec<u8> {
 	vec![0x7F, sid, nrc]
 }
 
-/// The unit's answer to one request PDU; `None` for no answer.
-fn answer(pdu: &[u8], speed_kmh: u8) -> Option<Vec<u8>> {
+/// The unit's answer to one request PDU; `None` for no answer. `part` is what
+/// `F187` reads on this unit; without one it is refused like any identifier.
+fn answer(pdu: &[u8], speed_kmh: u8, part: Option<&str>) -> Option<Vec<u8>> {
 	let (&sid, rest) = pdu.split_first()?;
 	match sid {
 		0x22 => {
@@ -407,9 +435,16 @@ fn answer(pdu: &[u8], speed_kmh: u8) -> Option<Vec<u8>> {
 			// Only what is served, in request order.
 			let mut positive = vec![sid + 0x40];
 			for did in rest.as_chunks::<2>().0.iter().map(|&p| u16::from_be_bytes(p)) {
-				if did == DID_SPEED {
-					positive.extend_from_slice(&did.to_be_bytes());
-					positive.push(speed_kmh);
+				match (did, part) {
+					(DID_SPEED, _) => {
+						positive.extend_from_slice(&did.to_be_bytes());
+						positive.push(speed_kmh);
+					}
+					(DID_PART_NUMBER, Some(part)) => {
+						positive.extend_from_slice(&did.to_be_bytes());
+						positive.extend_from_slice(part.as_bytes());
+					}
+					_ => {}
 				}
 			}
 			Some(match positive.len() {
@@ -547,7 +582,7 @@ async fn serve<B: CanBackend>(backend: &mut B, config: &Config, counts: &mut Cou
 			Received::FlowControl(frame) => backend.send_frame(u32::from(unit.response), &frame).await.map_err(Stop::Can)?,
 			Received::Request(pdu) => {
 				counts.saw(unit.request, &pdu);
-				if let Some(reply) = answer(&pdu, config.speed_kmh)
+				if let Some(reply) = answer(&pdu, config.speed_kmh, config.parts.get(&unit.request).map(String::as_str))
 					&& let Transmit::Abandoned(why) = transmit(backend, unit, &reply, &requests).await?
 				{
 					println!("{:03X} response abandoned: {why}", unit.request);
@@ -656,6 +691,25 @@ mod tests {
 		assert!(parse(&args("--bench --unit 7E0")).is_err());
 		assert!(parse(&args("--bench --device /dev/x")).is_err());
 		assert!(parse(&args("--bench --device /dev/x --unit 7E0 --speed-kmh 256")).is_err());
+	}
+
+	#[test]
+	fn a_part_number_is_given_per_unit() {
+		let Ok(Invocation::Run(config)) = parse(&args("--bench --device /dev/x --part 7E1=TESTPART01 --unit 7E0 --unit 7E1")) else {
+			panic!("a --part for a --unit runs, in either order");
+		};
+		assert_eq!(config.parts, BTreeMap::from([(0x7E1, "TESTPART01".to_string())]));
+		let Ok(Invocation::Run(bare)) = parse(&args("--bench --device /dev/x --unit 7E0")) else {
+			panic!("--part is optional");
+		};
+		assert!(bare.parts.is_empty());
+		assert!(
+			parse(&args("--bench --device /dev/x --unit 7E0 --part 7E1=TESTPART01")).is_err(),
+			"7E1 is not a --unit"
+		);
+		assert!(parse(&args("--bench --device /dev/x --unit 7E0 --part 7E0")).is_err());
+		assert!(parse(&args("--bench --device /dev/x --unit 7E0 --part 7E0=")).is_err());
+		assert!(parse(&args("--bench --device /dev/x --unit 7E0 --part XYZ=TESTPART01")).is_err());
 	}
 
 	#[test]
@@ -804,19 +858,37 @@ mod tests {
 
 	#[test]
 	fn the_answer_table() {
-		assert_eq!(answer(&[0x22, 0xF1, 0x87, 0xF4, 0x0D], 42), Some(vec![0x62, 0xF4, 0x0D, 42]));
+		assert_eq!(answer(&[0x22, 0xF1, 0x87, 0xF4, 0x0D], 42, None), Some(vec![0x62, 0xF4, 0x0D, 42]));
 		assert_eq!(
-			answer(&[0x22, 0xF4, 0x0D, 0xF1, 0x87, 0xF4, 0x0D], 7),
+			answer(&[0x22, 0xF4, 0x0D, 0xF1, 0x87, 0xF4, 0x0D], 7, None),
 			Some(vec![0x62, 0xF4, 0x0D, 7, 0xF4, 0x0D, 7])
 		);
-		assert_eq!(answer(&[0x22, 0xF1, 0x87], 42), Some(vec![0x7F, 0x22, 0x31]));
-		assert_eq!(answer(&[0x22, 0xF4], 42), Some(vec![0x7F, 0x22, 0x13]));
-		assert_eq!(answer(&[0x3E, 0x00], 0), Some(vec![0x7E, 0x00]));
-		assert_eq!(answer(&[0x3E, 0x80], 0), None);
-		assert_eq!(answer(&[0x10, 0x03], 0), Some(vec![0x7F, 0x10, 0x11]));
-		assert_eq!(answer(&[0x19, 0x02, 0xFF], 0), Some(vec![0x7F, 0x19, 0x11]));
-		assert_eq!(answer(&[0x2E, 0xF1, 0x90, 0x00], 0), Some(vec![0x7F, 0x2E, 0x11]));
-		assert_eq!(answer(&[], 0), None);
+		assert_eq!(answer(&[0x22, 0xF1, 0x87], 42, None), Some(vec![0x7F, 0x22, 0x31]));
+		assert_eq!(answer(&[0x22, 0xF4], 42, None), Some(vec![0x7F, 0x22, 0x13]));
+		assert_eq!(answer(&[0x3E, 0x00], 0, None), Some(vec![0x7E, 0x00]));
+		assert_eq!(answer(&[0x3E, 0x80], 0, None), None);
+		assert_eq!(answer(&[0x10, 0x03], 0, None), Some(vec![0x7F, 0x10, 0x11]));
+		assert_eq!(answer(&[0x19, 0x02, 0xFF], 0, None), Some(vec![0x7F, 0x19, 0x11]));
+		assert_eq!(answer(&[0x2E, 0xF1, 0x90, 0x00], 0, None), Some(vec![0x7F, 0x2E, 0x11]));
+		assert_eq!(answer(&[], 0, None), None);
+	}
+
+	#[test]
+	fn a_part_number_is_served_only_by_a_unit_given_one() {
+		let part = Some("TESTPART01");
+		let f187 = [&[0xF1, 0x87][..], b"TESTPART01"].concat();
+		assert_eq!(answer(&[0x22, 0xF1, 0x87], 0, part), Some([&[0x62][..], &f187].concat()));
+		assert_eq!(
+			answer(&[0x22, 0xF1, 0x87, 0xF4, 0x0D], 42, part),
+			Some([&[0x62][..], &f187, &[0xF4, 0x0D, 42]].concat()),
+			"both records, in request order"
+		);
+		assert_eq!(
+			answer(&[0x22, 0xF4, 0x0D, 0xF1, 0x87], 42, part),
+			Some([&[0x62, 0xF4, 0x0D, 42][..], &f187].concat())
+		);
+		// No --part: F187 is refused, as before.
+		assert_eq!(answer(&[0x22, 0xF1, 0x87], 0, None), Some(vec![0x7F, 0x22, 0x31]));
 	}
 
 	#[test]
@@ -835,6 +907,7 @@ mod tests {
 		let config = Config {
 			device: String::new(),
 			units: vec![engine()],
+			parts: BTreeMap::new(),
 			speed_kmh: 42,
 			seconds: None,
 		};
