@@ -905,6 +905,11 @@ where
 	}
 }
 
+/// The chart's header rows: the header text, and the link icons beside it. The trace starts
+/// under them, at the same row whether or not a host is connected, so a phone connecting
+/// does not move the scale.
+const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
+
 /// How many columns the trace will take: one sample is one column, and there
 /// are only so many columns.
 ///
@@ -913,11 +918,6 @@ where
 /// is the same rule from the other side — the oldest samples are never drawn,
 /// so the header must not count them either. A `History<256>` on a plot 150
 /// columns wide said 51 s over a picture holding 30.
-/// The chart's header rows: the header text, and the link icons beside it. The trace starts
-/// under them, at the same row whether or not a host is connected, so a phone connecting
-/// does not move the scale.
-const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
-
 fn drawn_columns(samples: usize, plot_w: i32) -> usize {
 	samples.min(plot_w.max(0) as usize)
 }

@@ -2588,6 +2588,9 @@ async fn take_console_input(input: ConsoleInput) {
 		ConsoleInput::Press(console::Button::Short) => REMOTE_PRESS.signal(Press::Short),
 		ConsoleInput::Press(console::Button::Long) => REMOTE_PRESS.signal(Press::Long),
 		ConsoleInput::EnterAdapter => {
+			// The cable is an slcan host's now, not a link host's: after `C` the icon waits
+			// for a Hello again, whoever keeps the port open.
+			USB_LINKED.store(false, Ordering::Relaxed);
 			note!("usb: slcan on the cable — the board is a CAN adapter until C or the cable is pulled");
 			set_mode(Mode::Adapter);
 		}

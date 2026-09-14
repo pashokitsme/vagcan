@@ -279,6 +279,10 @@ const SNAP_SKIP: usize = 2;
 /// How long a snap waits for its frame. A board in adapter mode sends none.
 const SNAP_WAIT: Duration = Duration::from_secs(5);
 
+/// Bytes past which a line with no `\n` is thrown away: twice the buffer the firmware keeps
+/// its `FRAME` line in (`FRAME_LINE` in `vag-dash-fw`'s `dash.rs`), so no panel line is cut.
+const SNAP_LINE_MAX: usize = 2 * (256 * 64 / 8 * 2 + 32);
+
 /// One frame off the board, as `--preview` writes its scenarios.
 fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {
 	let mut port = serialport::new(port_name, BAUD)
@@ -289,29 +293,44 @@ fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {
 		let bytes = vag_uds_transport::link::encode(&vag_uds_transport::link::Message::Hello)?;
 		port.write_all(&bytes).context("saying Hello")?;
 	}
-	let mut reader = BufReader::new(port);
-	let mut line = Vec::new();
+	// Read in chunks and cut lines here, not with `read_until`: a board in adapter mode ends
+	// its lines with `\r` alone, and on a busy bus a `read_until(b'\n')` gets bytes inside
+	// every timeout and never returns — past the deadline and without bound.
+	let mut chunk = [0u8; 1024];
+	let mut pending: Vec<u8> = Vec::new();
 	let deadline = Instant::now() + SNAP_WAIT;
 	let mut seen = 0;
 	while Instant::now() < deadline {
-		match read_board(&mut reader, &mut line) {
-			Ok(Heard::Said(FromBoard::Frame(bitmap))) => {
-				if seen < SNAP_SKIP {
-					seen += 1;
-					continue;
-				}
-				let mut canvas = preview::Canvas::new(embedded_graphics::prelude::Size::new(bitmap.width, bitmap.height));
-				canvas.lit.clone_from(&bitmap.pixels);
-				let out = std::fs::File::create(file).with_context(|| format!("creating {}", file.display()))?;
-				preview::encode_png(&canvas, std::io::BufWriter::new(out))?;
-				println!("{}", file.display());
-				return Ok(());
-			}
-			Ok(Heard::Said(FromBoard::Log(text))) => eprintln!("{text}"),
-			Ok(Heard::End) => bail!("{port_name} closed before a frame came"),
-			Ok(_) => {}
-			Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+		let n = match port.read(&mut chunk) {
+			Ok(0) => bail!("{port_name} closed before a frame came"),
+			Ok(n) => n,
+			Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
 			Err(e) => return Err(e).with_context(|| format!("reading {port_name}")),
+		};
+		pending.extend_from_slice(&chunk[..n]);
+		while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = pending.drain(..=end).collect();
+			// A line holding a NUL is the link's, as in `read_board`.
+			if line.contains(&0) {
+				continue;
+			}
+			match said(&String::from_utf8_lossy(&line)) {
+				Heard::Said(FromBoard::Frame(_)) if seen < SNAP_SKIP => seen += 1,
+				Heard::Said(FromBoard::Frame(bitmap)) => {
+					let mut canvas = preview::Canvas::new(embedded_graphics::prelude::Size::new(bitmap.width, bitmap.height));
+					canvas.lit.clone_from(&bitmap.pixels);
+					let out = std::fs::File::create(file).with_context(|| format!("creating {}", file.display()))?;
+					preview::encode_png(&canvas, std::io::BufWriter::new(out))?;
+					println!("{}", file.display());
+					return Ok(());
+				}
+				Heard::Said(FromBoard::Log(text)) => eprintln!("{text}"),
+				_ => {}
+			}
+		}
+		// No `\n` in more than any panel line holds: not the panel's stream.
+		if pending.len() > SNAP_LINE_MAX {
+			pending.clear();
 		}
 	}
 	bail!("no frame from {port_name} in {} s — is the board in adapter mode, or not on the dash image?", SNAP_WAIT.as_secs())
