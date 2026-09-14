@@ -17,6 +17,13 @@ refusals, `V`/`F`/`C` in adapter mode, `--slcan dev sniff` opening and closing, 
 `bleuds` forwarding and refusing, `vagcan info` over USB and over BLE up to "the car did not
 answer". Two defects found and fixed there. Everything that needs frames on the pair is open.
 
+**2026-09-14 17:44 — pair repaired (the transceiver module was unpowered); most of §1 and §2
+passed** (`research/dash/can-bring-up.md` §9.9): BLE subscription 10.0 Hz, `watch` over BLE and
+USB at 100 ms, both carriers at once, adapter mode in and out, `kill -9`, the `slcan` image.
+**Failed:** `measure` over the board runs at 10 Hz — the link carries no class, so the speed
+channel is thinned at the board's ceiling (fix on `timing-link`). **Not run yet:** `dashsim`,
+unplug in adapter mode, USB flood, the hour-long stall test, the car.
+
 ## 0. The pair
 
 - **16:08 `rxprobe`: the transceiver's `R` is stuck low and never follows `D`** (§9.7). By hand:
