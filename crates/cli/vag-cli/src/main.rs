@@ -788,7 +788,7 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 			seconds,
 			active,
 		} => {
-			// Resolved when the adapter is opened: `--out` is created first.
+			// Resolved before `--out` is created, which truncates it; the adapter is opened after.
 			sniff::run(
 				|| device::resolve_cable_for(device.as_deref(), slcan, &SNIFF),
 				ADAPTER_BAUD,
@@ -1431,13 +1431,15 @@ mod tests {
 	/// What a command can check without the car goes before the device is resolved: a
 	/// typo must not cost a Bluetooth scan, a menu or a port. `--device ble --slcan` is the
 	/// device refusal that needs no hardware, so it shows which came first.
+	///
+	/// `dev sniff --out` is not among them: creating the file truncates it, so the device
+	/// is resolved first and the file is created before the port is opened (`sniff`'s tests).
 	#[tokio::test]
 	async fn arguments_are_checked_before_the_device_is_resolved() {
 		const NOWHERE: &str = "/nonexistent/vagcan-test";
 		let survey = format!("{NOWHERE}/survey.jsonl");
 		let keys = format!("{NOWHERE}/rod-keys.json");
-		let capture = format!("{NOWHERE}/capture.log");
-		let cases: [(Vec<&str>, &str); 6] = [
+		let cases: [(Vec<&str>, &str); 5] = [
 			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu"),
 			(
 				vec!["vagcan", "watch", "--data", NOWHERE, "--survey", &survey, "--for", "1"],
@@ -1446,7 +1448,6 @@ mod tests {
 			(vec!["vagcan", "faults", "--ecu", "ZZZ", "--iv-cache", &keys], ""),
 			(vec!["vagcan", "units", "--identify", "ZZZ"], "ZZZ"),
 			(vec!["vagcan", "dev", "survey", "--only", "ZZZ"], "--only"),
-			(vec!["vagcan", "dev", "sniff", "--out", &capture], "creating capture file"),
 		];
 		for (args, why) in cases {
 			let mut args = args.clone();
