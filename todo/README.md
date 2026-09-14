@@ -173,6 +173,11 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   where it would live.
 
 ## Parked (designed, not being implemented now)
+- **The BLE stack out of the firmware's build** (2026-09-14) — `vag-dash-fw`'s `build.rs`
+  generates the plan through `vag-cli-core`, which now depends on `vag-dash-ble`
+  (btleplug), so CI's firmware job installs libdbus. Cleaner: `vag-dash-ble` behind a
+  default `ble` feature of `vag-cli-core` (the BLE branches of `device.rs`), with the
+  firmware's build-dependency on `default-features = false`.
 - **Cross-platform `no_std` core + `vag-runtime-*`** — spec + M1 plan retired with
   `docs/superpowers/` in `2e4721b`. Below-the-seam refactor.
 
