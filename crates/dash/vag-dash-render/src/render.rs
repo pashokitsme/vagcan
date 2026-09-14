@@ -47,10 +47,6 @@ const PAD: u32 = 3;
 /// off the glass; pulled in, the cell reads as one block.
 const ROW_INSET: i32 = 2;
 
-/// Rows between the difference and the unit under it — one more than between the other lines
-/// (owner, 2026-09-15).
-const DEV_GAP: i32 = 2;
-
 /// What did not fit.
 ///
 /// Returned rather than logged because there is nowhere to log to on the board,
@@ -639,7 +635,16 @@ where
 		{
 			right = right.min(icons.top_left.x - ICON_CLEARANCE);
 		}
-		draw_label(cell.label, centre, (left, right), &theme.label, ink, target, &mut report);
+		draw_label(
+			cell.label,
+			centre,
+			(left, right),
+			layout.label_top,
+			&theme.label,
+			ink,
+			target,
+			&mut report,
+		);
 		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
 	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
@@ -670,6 +675,13 @@ struct RowLayout {
 	/// unit. `None` when no cell in the row has a specified value, or when the panel had no
 	/// room for a fourth line (then [`Report::deviation_dropped`] says so).
 	dev_baseline: Option<i32>,
+	/// Where the label's ink starts, and the baseline the unit sits on.
+	///
+	/// Every line's place is decided here, not at the edges: the air left over after the ink
+	/// is split evenly between the lines, so three lines and four lines both read as one
+	/// block rather than as text pushed against the top and bottom (owner, 2026-09-15).
+	label_top: i32,
+	unit_baseline: i32,
 }
 
 /// One face and one unit policy for the whole row.
@@ -724,20 +736,35 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		step = stacked_step;
 	}
 	if fits(step, dev_h) {
-		let top = ROW_INSET + label_h as i32 + 1;
-		let floor = height as i32 - 1 - ROW_INSET;
-		// The unit sits on the floor, inset; the difference above it, with a row more air.
-		let dev_baseline = (dev_h > 0).then(|| floor - if unit_h > 0 { unit_h as i32 + DEV_GAP } else { 0 });
-		let bottom = match dev_baseline {
-			Some(baseline) => baseline - dev_h as i32,
-			None => floor - unit_h as i32,
-		};
+		// The ink of every line, and the air to share between them.
+		let value_h = numeral_height(&theme.numerals[step], "0") as i32;
+		let heights = [label_h as i32, value_h, dev_h as i32, unit_h as i32];
+		let ink: i32 = heights.iter().sum();
+		let drawn = heights.iter().filter(|h| **h > 0).count() as i32;
+		let gaps = (drawn - 1).max(1);
+		let air = (height as i32 - 2 * ROW_INSET - ink).max(0);
+		// The remainder goes above the number, the widest gap on the page anyway.
+		let (gap, over) = (air / gaps, air % gaps);
+
+		let mut y = ROW_INSET;
+		let label_top = y;
+		y += label_h as i32 + gap + over;
+		let value_top = y;
+		y += value_h + gap;
+		let dev_baseline = (dev_h > 0).then(|| {
+			let baseline = y + dev_h as i32;
+			y = baseline + gap;
+			baseline
+		});
+		let unit_baseline = if unit_h > 0 { y + unit_h as i32 } else { height as i32 - 1 - ROW_INSET };
 		return RowLayout {
 			step,
 			with_unit: unit_h > 0,
 			tiered: true,
-			band: (top, bottom),
+			band: (value_top, value_top + value_h),
 			dev_baseline,
+			label_top,
+			unit_baseline,
 		};
 	}
 
@@ -771,6 +798,8 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		tiered: false,
 		band: (0, height as i32 - 1),
 		dev_baseline: None,
+		label_top: 0,
+		unit_baseline: height as i32 - 1,
 	}
 }
 
@@ -792,7 +821,8 @@ fn unit_width(cell: &Cell<'_>, theme: &Theme, report: &mut Report) -> u32 {
 /// A label that fits is moved only as far as it must to stay inside — a short one stays over
 /// its number, a long one in a narrowed column slides left. One that does not fit is
 /// reported and drawn centred on its room anyway: it will collide, and the report says so.
-fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
+#[allow(clippy::too_many_arguments)]
+fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), top: i32, font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -809,7 +839,7 @@ where
 		};
 		let drawn = font.render(
 			label,
-			Point::new(x - ink_box.top_left.x, ROW_INSET),
+			Point::new(x - ink_box.top_left.x, top),
 			VerticalPosition::Top,
 			FontColor::Transparent(ink),
 			target,
@@ -821,7 +851,7 @@ where
 	}
 	let drawn = font.render_aligned(
 		label,
-		Point::new(centre, ROW_INSET),
+		Point::new(centre, top),
 		VerticalPosition::Top,
 		HorizontalAlignment::Center,
 		FontColor::Transparent(ink),
@@ -884,7 +914,7 @@ fn draw_value<D>(
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(centre, height as i32 - 1 - ROW_INSET),
+					Point::new(centre, layout.unit_baseline),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
