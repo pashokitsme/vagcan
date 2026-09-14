@@ -43,16 +43,18 @@
 //! the best by, in order:
 //!
 //! 1. Anything that is not [`Class::Timing`] and has been due for longer than
-//!    [`Budget::starve_after_ms`] — nothing waits forever. Under
-//!    [`Budget::timing_yields_to_floor`] (the board's [`Budget::board`]) 3 goes before it.
+//!    [`Budget::starve_after_ms`] — nothing waits forever, on the board as on the laptop.
 //! 2. [`Class::Timing`] — not thinned: no reading is lost, and one is late only when a
 //!    starved item goes first, which costs it at most about one slot per starving read per
 //!    `starve_after_ms`. A cap on timing consumers bounds how many there are, not bus time:
 //!    a timing read on a unit that answers slower than its period is due again the moment it
 //!    answers, and without rank 1 it would take every slot below it for good (PR #2 review,
-//!    2026-09-14: one-shots and raw requests were never delivered at 21 ms).
+//!    2026-09-14: one-shots and raw requests were never delivered at 21 ms). Under
+//!    [`Budget::timing_yields_to_floor`] (the board's [`Budget::board`]) 3 goes before it.
 //! 3. [`Class::Foreground`] while it has had fewer than `foreground_floor_per_s` sends
-//!    in the last 1000 ms — the floor.
+//!    in the last 1000 ms — the floor. It goes before Timing on the board, but never before a
+//!    starved item (1): the panel is always under its floor, so a host request sharing a unit
+//!    with the panel's reads would otherwise never go out (PR #2 review round 1 regression).
 //! 4. [`Class::Remote`] — waits when the budget is short, never dropped.
 //! 5. [`Class::Foreground`] above its floor.
 //! 6. [`Class::Background`] — thinned first.
@@ -114,7 +116,8 @@ pub struct Unit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
 	/// Not thinned: ahead of everything but a starved item and, on the board, the
-	/// foreground's floor ([`Budget::timing_yields_to_floor`]).
+	/// foreground under its floor ([`Budget::timing_yields_to_floor`]) — which still yields
+	/// to a starved item itself.
 	Timing,
 	/// Keeps [`Budget::foreground_floor_per_s`] whenever it wants it; above the floor it
 	/// yields to `Remote`.
@@ -153,10 +156,12 @@ pub struct Budget {
 	///
 	/// `true` on the board ([`Budget::board`]): a host's timing channel on a unit that
 	/// answers slower than its period is due again the moment it answers and would take
-	/// every slot, so the panel's floor comes first and timing gets what is left. `false`
-	/// on the laptop ([`Budget::default`]): a cable `measure`'s own foreground channels
-	/// must not push its speed channel back. Decided 2026-09-14, in review of the timing
-	/// link.
+	/// every slot, so the panel's floor comes ahead of Timing and timing gets what is left.
+	/// It comes ahead of Timing only, never ahead of a starved item — the panel is always
+	/// under its floor, so a host request sharing a unit with the panel would otherwise never
+	/// go out (PR #2 review round 1 regression). `false` on the laptop ([`Budget::default`]):
+	/// a cable `measure`'s own foreground channels must not push its speed channel back.
+	/// Decided 2026-09-14, in review of the timing link.
 	pub timing_yields_to_floor: bool,
 }
 

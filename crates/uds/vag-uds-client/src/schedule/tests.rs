@@ -199,6 +199,73 @@ fn car(units: &[(Unit, FakeUnit)]) -> Car {
 	}
 }
 
+/// The second question of the PR #2 round-1 regression check (`research/dash/can-bring-up.md`
+/// §9.10): `measure` through the board on a 30 ms unit read its timing speed channel at 14/s,
+/// while a 30 ms unit allows ≈33 exchanges a second. Is the ranking at fault?
+///
+/// It is not. This is the measure shape — the board budget, a 30 ms answer, the panel at 2 Hz
+/// on both units, the host's speed channel as `Class::Timing` on one and its other channels
+/// as `Class::Remote` — and the planner gives the timing channel the whole bus but the panel's
+/// floor: the panel keeps every read it asks, and timing takes at least 80 % of the exchanges
+/// the latency allows once the panel's share is set aside. The host's normal identifiers ride
+/// in the panel's requests (compression: the same one exchange whether it carries two
+/// identifiers or eight), so they cost the timing channel no bus time. The 14/s on the bench is
+/// real-hardware latency and the panel's part-number checks, not the ranking.
+#[test]
+fn a_measure_shaped_timing_channel_takes_the_bus_the_latency_allows_beyond_the_panels_floor() {
+	const LATENCY_MS: u64 = 30;
+	const RUN_MS: u64 = 22_000;
+	let engine: Vec<(u16, &[u8])> = [0x2029u16, 0x202A, 0x206E, 0xF40D, 0xF410, 0x202F, 0xF405]
+		.iter()
+		.map(|d| (*d, &[0u8][..]))
+		.collect();
+	let gearbox: Vec<(u16, &[u8])> = [0xF40Du16, 0x028D, 0x3804, 0x3809, 0x380A, 0x380B, 0x3816]
+		.iter()
+		.map(|d| (*d, &[0u8][..]))
+		.collect();
+	let mut sim = Sim::new(Budget::board(), car(&[(A, FakeUnit::with(&engine)), (B, FakeUnit::with(&gearbox))]));
+	sim.latency = LATENCY_MS;
+	// The panel, Foreground at 2 Hz on both units.
+	let panel_dids = [(A, 0x202Fu16), (A, 0xF405), (B, 0x028D)];
+	let panel: Vec<SubId> = panel_dids
+		.iter()
+		.map(|(u, did)| sim.p.subscribe(0, Class::Foreground, *u, *did, 500, None))
+		.collect();
+	// The host's speed channel as Timing, and its other channels as the board's Remote.
+	let speed = sim.p.subscribe(0, Class::Timing, B, 0xF40D, 20, None);
+	for did in [0x2029, 0x202A, 0x206E, 0xF40D, 0xF410] {
+		sim.p.subscribe(0, Class::Remote, A, did, 100, None);
+	}
+	for did in [0x3804, 0x3809, 0x380A, 0x380B, 0x3816] {
+		sim.p.subscribe(0, Class::Remote, B, did, 500, None);
+	}
+	sim.run_until(RUN_MS);
+
+	// The panel keeps its floor: every panel channel is read at its full 2 Hz.
+	let asked = (RUN_MS / 500) as usize;
+	for (sub, (_, did)) in panel.iter().zip(panel_dids) {
+		let reads = sim.readings_of(*sub).len();
+		assert!(reads + 1 >= asked, "panel {did:04X} read {reads} of {asked}");
+	}
+
+	// Timing takes at least 80 % of the exchanges the latency allows once the panel's share
+	// is set aside. A send is the panel's when it carries a panel identifier — one exchange,
+	// whatever else rides in it.
+	let allowed = RUN_MS / LATENCY_MS;
+	let panel_set: BTreeSet<u16> = panel_dids.iter().map(|(_, d)| *d).collect();
+	let panel_sends = sim
+		.sends
+		.iter()
+		.filter(|(_, o)| dids_of(&o.pdu).iter().any(|d| panel_set.contains(d)))
+		.count() as u64;
+	let timing = sim.readings_of(speed).len() as u64;
+	let beyond_floor = allowed.saturating_sub(panel_sends);
+	assert!(
+		timing * 10 >= beyond_floor * 8,
+		"timing {timing} of the {beyond_floor} exchanges beyond the panel's {panel_sends} sends (latency allows {allowed})"
+	);
+}
+
 #[test]
 fn two_subscribers_to_one_identifier_share_one_read() {
 	let mut sim = Sim::new(Budget::default(), car(&[(A, FakeUnit::with(&[(0x1000, &[7])]))]));
