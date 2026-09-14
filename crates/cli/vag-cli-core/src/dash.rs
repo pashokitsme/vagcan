@@ -37,6 +37,13 @@
 //! cell = "01:IDE00025"
 //! min = 70
 //! max = 110
+//!
+//! [[alarm]]                        # optional; at most 4, in priority order
+//! channels = ["01:IDE00025"]       # each under [[channel]], all shown on `page`
+//! page = "MAIN"                    # the title of a values page
+//! direction = "above"              # or "below"
+//! trip = 105                       # fires at or past this
+//! release = 100                    # clears only once back past this
 //! ```
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
@@ -67,6 +74,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item};
+use vag_dash_render::alarm::MAX_ALARMS;
 use vag_data_labels::catalog::{CatalogStore, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
@@ -171,6 +179,27 @@ pub enum PageInput {
 	Chart { cell: Reference, min: f64, max: f64 },
 }
 
+/// Which way a reading has to go for an `[[alarm]]` to fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+	/// At or below `trip`; clears above `release`.
+	Below,
+	/// At or above `trip`; clears below `release`.
+	Above,
+}
+
+/// One `[[alarm]]` of the input: the owner's rule, never the code's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlarmInput {
+	pub channels: Vec<Reference>,
+	/// The title of the values page the rule raises.
+	pub page: String,
+	pub direction: Direction,
+	pub trip: f64,
+	pub release: f64,
+}
+
 /// The whole input, parsed and nothing more.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Input {
@@ -179,6 +208,8 @@ pub struct Input {
 	pub survey: Option<PathBuf>,
 	pub channels: Vec<ChannelInput>,
 	pub pages: Vec<PageInput>,
+	/// In the file's order, which is priority.
+	pub alarms: Vec<AlarmInput>,
 }
 
 /// Parse a build input. Only the shape is checked here; whether the car has
@@ -279,12 +310,61 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 	if pages.is_empty() {
 		return Err(Error::Parse("dash.toml: no [[page]]".to_string()));
 	}
+
+	let mut alarms = Vec::new();
+	if let Some(item) = doc.get("alarm") {
+		// A single `[alarm]` table would otherwise be skipped without a word, and an alarm
+		// the owner believes is armed and is not is the one failure an alarm cannot have.
+		let tables = item
+			.as_array_of_tables()
+			.ok_or_else(|| Error::Parse("dash.toml: alarm must be written as [[alarm]] tables, one per rule".to_string()))?;
+		for (i, table) in tables.iter().enumerate() {
+			let n = i + 1;
+			let channels = table
+				.get("channels")
+				.and_then(Item::as_array)
+				.ok_or_else(|| Error::Parse(format!("dash.toml: alarm #{n} has no channels list")))?
+				.iter()
+				.map(|v| {
+					v.as_str()
+						.ok_or_else(|| Error::Parse(format!("dash.toml: alarm #{n}: a channel is not a string")))
+						.and_then(Reference::parse)
+				})
+				.collect::<Result<Vec<_>, _>>()?;
+			let page = string(table.get("page"), &format!("alarm #{n}'s page"))?;
+			let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
+				"below" => Direction::Below,
+				"above" => Direction::Above,
+				other => {
+					return Err(Error::Parse(format!(
+						"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
+					)));
+				}
+			};
+			// The board compares in `f32`, so a threshold past what one holds is refused
+			// rather than turned into an infinity nothing ever reaches.
+			let threshold = |what: &str| match number(table.get(what)) {
+				Some(v) if v.is_finite() && (v as f32).is_finite() => Ok(v),
+				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
+			};
+			let trip = threshold("trip")?;
+			let release = threshold("release")?;
+			alarms.push(AlarmInput {
+				channels,
+				page,
+				direction,
+				trip,
+				release,
+			});
+		}
+	}
 	Ok(Input {
 		vin,
 		language,
 		survey,
 		channels,
 		pages,
+		alarms,
 	})
 }
 
@@ -320,6 +400,10 @@ pub enum Error {
 		reference: Reference,
 	},
 	Page(usize, String),
+	/// An `[[alarm]]` the board could not honour, by its number in the file.
+	Alarm(usize, String),
+	/// More `[[alarm]]` rules than [`MAX_ALARMS`].
+	TooManyAlarms(usize),
 }
 
 impl fmt::Display for Error {
@@ -349,6 +433,11 @@ impl fmt::Display for Error {
 			),
 			Error::PageRefersToUnknown { page, reference } => write!(f, "page #{page}: {reference} is not in the [[channel]] list"),
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
+			Error::Alarm(n, why) => write!(f, "alarm #{n}: {why}"),
+			Error::TooManyAlarms(n) => write!(
+				f,
+				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
+			),
 		}
 	}
 }
@@ -399,6 +488,17 @@ pub enum Page {
 	Values { title: String, cells: Vec<u16> },
 }
 
+/// One alarm, resolved: indices into the plan's channels and pages, which is what
+/// `vag_dash_render::alarm::ChannelId` and `PageId` are for an image built for one plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alarm {
+	pub channels: Vec<u16>,
+	pub page: u16,
+	pub direction: Direction,
+	pub trip: f64,
+	pub release: f64,
+}
+
 /// The plan, as `plan.json` holds it. [`to_rust`] writes the same content as
 /// the `static` the firmware links.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -408,6 +508,9 @@ pub struct Plan {
 	pub units: Vec<Unit>,
 	pub channels: Vec<Channel>,
 	pub pages: Vec<Page>,
+	/// In priority order. A `plan.json` written before alarms existed has none.
+	#[serde(default)]
+	pub alarms: Vec<Alarm>,
 }
 
 impl Plan {
@@ -610,6 +713,89 @@ pub fn build(
 		}
 	}
 
+	// Alarms last: a rule names channels and a page, and both are resolved by now.
+	if input.alarms.len() > MAX_ALARMS {
+		return Err(Error::TooManyAlarms(input.alarms.len()));
+	}
+	let mut alarms = Vec::new();
+	for (i, wanted) in input.alarms.iter().enumerate() {
+		let n = i + 1;
+		let refuse = |why: String| Error::Alarm(n, why);
+		if wanted.channels.is_empty() {
+			return Err(refuse("watches no channels".to_string()));
+		}
+		let watched = wanted
+			.channels
+			.iter()
+			.map(|r| {
+				index_of
+					.get(r)
+					.copied()
+					.ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list")))
+			})
+			.collect::<Result<Vec<u16>, _>>()?;
+		// The page is named by title, and only a values page has one: a takeover shows
+		// cells, and a chart has one cell and no room to invert it.
+		let titled: Vec<(usize, &Vec<u16>)> = pages
+			.iter()
+			.enumerate()
+			.filter_map(|(p, page)| match page {
+				Page::Values { title, cells } if *title == wanted.page => Some((p, cells)),
+				_ => None,
+			})
+			.collect();
+		let (page, cells) = match titled.as_slice() {
+			[one] => *one,
+			[] => {
+				return Err(refuse(format!(
+					"no values page is titled {:?} — a chart page has no title and cannot explain an alarm",
+					wanted.page
+				)));
+			}
+			many => {
+				return Err(refuse(format!(
+					"{} values pages are titled {:?} — give them different titles",
+					many.len(),
+					wanted.page
+				)));
+			}
+		};
+		if let Some((r, _)) = wanted.channels.iter().zip(&watched).find(|&(_, index)| !cells.contains(index)) {
+			return Err(refuse(format!(
+				"page {:?} does not show {r} — the page an alarm raises shows every channel it watches",
+				wanted.page
+			)));
+		}
+		let (trip, release) = (wanted.trip, wanted.release);
+		match wanted.direction {
+			Direction::Below if release <= trip => {
+				return Err(refuse(format!(
+					"release {release} is not above trip {trip} — a \"below\" alarm releases above where it trips"
+				)));
+			}
+			Direction::Above if release >= trip => {
+				return Err(refuse(format!(
+					"release {release} is not below trip {trip} — an \"above\" alarm releases below where it trips"
+				)));
+			}
+			_ => {}
+		}
+		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
+		notes.push(format!(
+			"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
+			refs.join(", "),
+			if wanted.direction == Direction::Below { "below" } else { "above" },
+			wanted.page
+		));
+		alarms.push(Alarm {
+			channels: watched,
+			page: page as u16,
+			direction: wanted.direction,
+			trip,
+			release,
+		});
+	}
+
 	Ok(Built {
 		plan: Plan {
 			vin: input.vin.clone(),
@@ -617,6 +803,7 @@ pub fn build(
 			units: plan_units,
 			channels,
 			pages,
+			alarms,
 		},
 		notes,
 	})
@@ -670,10 +857,16 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out, "// Generated by `vagcan dev dash build` for VIN {}.", plan.vin);
 	let _ = writeln!(out, "// Derived from VW's data and one owner's car: do not edit, do not commit.");
 	let _ = writeln!(out, "use vag_dash_render::plan::{{Channel, Page, Plan, Unit}};");
+	// A plan with no rules names none of the other alarm types, so none is imported unused.
+	if plan.alarms.is_empty() {
+		let _ = writeln!(out, "use vag_dash_render::alarm::Alarm;");
+	} else {
+		let _ = writeln!(out, "use vag_dash_render::alarm::{{Alarm, ChannelId, Direction, PageId}};");
+	}
 	let _ = writeln!(out);
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &[] }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);
@@ -725,6 +918,31 @@ pub fn to_rust(plan: &Plan) -> String {
 				let _ = writeln!(out, "\tPage::Values {{ title: {title:?}, cells: &CELLS_{i} }},");
 			}
 		}
+	}
+	let _ = writeln!(out, "];");
+	let _ = writeln!(out);
+	for (i, a) in plan.alarms.iter().enumerate() {
+		let list: Vec<String> = a.channels.iter().map(|c| format!("ChannelId({c})")).collect();
+		let _ = writeln!(
+			out,
+			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = [{}];",
+			a.channels.len(),
+			list.join(", ")
+		);
+	}
+	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
+	for (i, a) in plan.alarms.iter().enumerate() {
+		let direction = match a.direction {
+			Direction::Below => "Below",
+			Direction::Above => "Above",
+		};
+		let _ = writeln!(
+			out,
+			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), trip: {}, release: {}, direction: Direction::{direction} }},",
+			a.page,
+			float(a.trip),
+			float(a.release)
+		);
 	}
 	let _ = writeln!(out, "];");
 	out
@@ -864,8 +1082,52 @@ mod tests {
 	}
 
 	fn values_page(cells: &[&str]) -> String {
+		values_page_titled("T", cells)
+	}
+
+	fn values_page_titled(title: &str, cells: &[&str]) -> String {
 		let list: Vec<String> = cells.iter().map(|c| format!("\"{c}\"")).collect();
-		format!("[[page]]\nkind = \"values\"\ntitle = \"T\"\ncells = [{}]\n", list.join(", "))
+		format!("[[page]]\nkind = \"values\"\ntitle = \"{title}\"\ncells = [{}]\n", list.join(", "))
+	}
+
+	fn alarm(channels: &[&str], page: &str, direction: &str, trip: f64, release: f64) -> String {
+		let list: Vec<String> = channels.iter().map(|c| format!("\"{c}\"")).collect();
+		format!(
+			"[[alarm]]\nchannels = [{}]\npage = \"{page}\"\ndirection = \"{direction}\"\ntrip = {trip:?}\nrelease = {release:?}\n",
+			list.join(", ")
+		)
+	}
+
+	/// Three neutral channels on one unit; values pages `A` (channels 0 and 1) and `B`
+	/// (channel 2), a chart of channel 0; then whatever the test appends.
+	fn build_with_alarms(extra: &str) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1002, "Two", "IDE00002", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1003, "Three", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let text = format!(
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00002\"\n[[channel]]\nref = \"01:IDE00003\"\n{}{}[[page]]\nkind = \"chart\"\ncell = \"01:IDE00001\"\nmin = 0\nmax = 10\n{extra}",
+			values_page_titled("A", &["01:IDE00001", "01:IDE00002"]),
+			values_page_titled("B", &["01:IDE00003"]),
+		);
+		build(
+			&parse_input(&text)?,
+			&store,
+			&extracted,
+			&[identity(ENGINE, "PART1", "EV_Test")],
+			None,
+			Language::En,
+		)
 	}
 
 	#[test]
@@ -1427,6 +1689,172 @@ mod tests {
 			values_page(&["01:IDE00025"])
 		);
 		assert_eq!(parse_input(&text).unwrap().channels[0].hz, Some(MAX_HZ));
+	}
+
+	#[test]
+	fn alarms_reach_both_outputs_in_file_order_by_plan_index() {
+		let text = format!(
+			"{}{}",
+			alarm(&["01:IDE00003"], "B", "above", 10.0, 8.0),
+			alarm(&["01:IDE00002", "01:IDE00001"], "A", "below", 0.0, 1.0)
+		);
+		let built = build_with_alarms(&text).unwrap();
+		assert_eq!(
+			built.plan.alarms,
+			vec![
+				Alarm {
+					channels: vec![2],
+					page: 1,
+					direction: Direction::Above,
+					trip: 10.0,
+					release: 8.0
+				},
+				Alarm {
+					channels: vec![1, 0],
+					page: 0,
+					direction: Direction::Below,
+					trip: 0.0,
+					release: 1.0
+				},
+			],
+			"the file's order is the priority"
+		);
+		assert!(
+			built.notes.iter().any(|n| n.starts_with("alarm #1: 01:IDE00003 at or above 10")),
+			"{:?}",
+			built.notes
+		);
+
+		let json = built.plan.to_json();
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert!(json.contains("\"direction\": \"above\""), "{json}");
+
+		let rust = to_rust(&built.plan);
+		assert!(
+			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId};"),
+			"{rust}"
+		);
+		assert!(rust.contains("alarms: &ALARMS }"), "{rust}");
+		assert!(
+			rust.contains("static ALARM_CHANNELS_1: [ChannelId; 2] = [ChannelId(1), ChannelId(0)];"),
+			"{rust}"
+		);
+		assert!(rust.contains("static ALARMS: [Alarm<'static>; 2] = ["), "{rust}");
+		assert!(
+			rust.contains("Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), trip: 10.0, release: 8.0, direction: Direction::Above },"),
+			"{rust}"
+		);
+
+		// A plan.json from before alarms loads with none, and its Rust imports nothing unused.
+		let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+		old.as_object_mut().unwrap().remove("alarms");
+		let old = Plan::from_json(&old.to_string()).unwrap();
+		assert!(old.alarms.is_empty());
+		let rust = to_rust(&old);
+		assert!(rust.contains("use vag_dash_render::alarm::Alarm;\n"), "{rust}");
+		assert!(rust.contains("static ALARMS: [Alarm<'static>; 0] = ["), "{rust}");
+		assert!(!rust.contains("ChannelId"), "{rust}");
+	}
+
+	#[test]
+	fn an_alarm_the_board_could_not_honour_is_refused_and_the_message_says_why() {
+		let refused = |text: &str| build_with_alarms(text).unwrap_err().to_string();
+		let good = alarm(&["01:IDE00001"], "A", "below", 0.0, 1.0);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00009"], "A", "below", 0.0, 1.0)),
+			"alarm #1: 01:IDE00009 is not in the [[channel]] list"
+		);
+		assert_eq!(refused(&alarm(&[], "A", "below", 0.0, 1.0)), "alarm #1: watches no channels");
+		assert_eq!(
+			refused(&alarm(&["01:IDE00001"], "NOPE", "below", 0.0, 1.0)),
+			"alarm #1: no values page is titled \"NOPE\" — a chart page has no title and cannot explain an alarm"
+		);
+		assert_eq!(
+			refused(&format!(
+				"{}{}",
+				values_page_titled("A", &["01:IDE00003"]),
+				alarm(&["01:IDE00003"], "A", "above", 1.0, 0.0)
+			)),
+			"alarm #1: 2 values pages are titled \"A\" — give them different titles"
+		);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00003", "01:IDE00001"], "B", "above", 10.0, 8.0)),
+			"alarm #1: page \"B\" does not show 01:IDE00001 — the page an alarm raises shows every channel it watches"
+		);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00001"], "A", "below", 0.0, -1.0)),
+			"alarm #1: release -1 is not above trip 0 — a \"below\" alarm releases above where it trips"
+		);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00001"], "A", "below", 0.5, 0.5)),
+			"alarm #1: release 0.5 is not above trip 0.5 — a \"below\" alarm releases above where it trips",
+			"no band is no hysteresis"
+		);
+		assert_eq!(
+			refused(&alarm(&["01:IDE00003"], "B", "above", 10.0, 12.0)),
+			"alarm #1: release 12 is not below trip 10 — an \"above\" alarm releases below where it trips"
+		);
+		assert!(
+			refused(&format!("{good}{}", alarm(&["01:IDE00009"], "A", "below", 0.0, 1.0))).starts_with("alarm #2: "),
+			"a rule is named by its place in the file"
+		);
+		assert_eq!(
+			refused(&good.repeat(MAX_ALARMS + 1)),
+			format!(
+				"{} [[alarm]] rules, and the board holds at most 4 — each rule's channels are read at full rate on every page",
+				MAX_ALARMS + 1
+			)
+		);
+		assert_eq!(build_with_alarms(&good.repeat(MAX_ALARMS)).unwrap().plan.alarms.len(), MAX_ALARMS);
+	}
+
+	#[test]
+	fn an_alarm_of_the_wrong_shape_is_refused_when_the_input_is_read() {
+		let shape = |table: &str| {
+			let text = format!(
+				"vin = \"X\"\n[[channel]]\nref = \"01:IDE00001\"\n{}{table}",
+				values_page(&["01:IDE00001"])
+			);
+			parse_input(&text).unwrap_err().to_string()
+		};
+		let with = |lines: &str| format!("[[alarm]]\nchannels = [\"01:IDE00001\"]\npage = \"T\"\n{lines}\n");
+		assert_eq!(
+			shape(&with("direction = \"sideways\"\ntrip = 1\nrelease = 0")),
+			"dash.toml: alarm #1: direction \"sideways\" is not \"below\" or \"above\""
+		);
+		assert_eq!(
+			shape(&with("trip = 1\nrelease = 0")),
+			"dash.toml: alarm #1's direction is missing or not a string"
+		);
+		assert_eq!(
+			shape(&with("direction = \"above\"\nrelease = 0")),
+			"dash.toml: alarm #1 needs trip, a finite number"
+		);
+		assert_eq!(
+			shape(&with("direction = \"above\"\ntrip = 1\nrelease = \"low\"")),
+			"dash.toml: alarm #1 needs release, a finite number"
+		);
+		assert_eq!(
+			shape(&with("direction = \"above\"\ntrip = 1e40\nrelease = 0")),
+			"dash.toml: alarm #1 needs trip, a finite number",
+			"past what the board's f32 holds"
+		);
+		assert_eq!(
+			shape(&with("direction = \"above\"\ntrip = nan\nrelease = 0")),
+			"dash.toml: alarm #1 needs trip, a finite number"
+		);
+		assert_eq!(
+			shape("[[alarm]]\npage = \"T\"\ndirection = \"above\"\ntrip = 1\nrelease = 0\n"),
+			"dash.toml: alarm #1 has no channels list"
+		);
+		assert_eq!(
+			shape("[[alarm]]\nchannels = [\"01:IDE00001\"]\ndirection = \"above\"\ntrip = 1\nrelease = 0\n"),
+			"dash.toml: alarm #1's page is missing or not a string"
+		);
+		assert_eq!(
+			shape("[alarm]\npage = \"T\"\n"),
+			"dash.toml: alarm must be written as [[alarm]] tables, one per rule"
+		);
 	}
 
 	/// The one writer is [`build_for_car`], it needs a VIN, and no test may

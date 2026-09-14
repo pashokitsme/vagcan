@@ -24,6 +24,10 @@ vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
 # `device.rs` finds the dash board over BLE and opens its UART as the bus's pipe.
 vag-dash-ble = { path = "../../dash/vag-dash-ble" }
+# The plan generator (`dash.rs`) writes the firmware's `vag_dash_render::plan` and refuses
+# more alarms than `vag_dash_render::alarm::MAX_ALARMS`; its tests assert on the board's own
+# decoder. One definition of the cap, not a copy here.
+vag-dash-render = { path = "../../dash/vag-dash-render" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde.workspace = true
@@ -41,6 +45,3 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-# The firmware's own decoder, so the plan generator's tests assert on the
-# value the board would show and not on a flag.
-vag-dash-render = { path = "../../dash/vag-dash-render" }

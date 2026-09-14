@@ -102,6 +102,7 @@ fn no_car() {
 		units: Vec::new(),
 		channels: Vec::new(),
 		pages: Vec::new(),
+		alarms: Vec::new(),
 	};
 	println!("cargo:warning=plan: {NO_CAR_ENV} is set — an EMPTY plan, for checking the build only; do not flash this image");
 	let out_dir = std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR for a build script");
