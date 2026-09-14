@@ -134,7 +134,7 @@ jobs:
         run: cargo clippy --release --bins --all-features -- -D warnings
 
   bench-host:
-    name: bench host (dashsim, bleecho)
+    name: bench host (dashsim, bleecho, bleuds, benchecu)
     runs-on: ubuntu-latest
     defaults:
       run:
