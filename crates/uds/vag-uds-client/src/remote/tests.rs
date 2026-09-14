@@ -28,6 +28,10 @@ enum Bus {
 
 impl Bus {
 	fn answer(self, out: &Outgoing) -> BusAnswer {
+		// What the board's shell reports for a request that asked for silence and got it.
+		if crate::schedule::expects_no_answer(&out.pdu) {
+			return BusAnswer::NotExpected;
+		}
 		match self {
 			Bus::Silent => BusAnswer::NoAnswer,
 			Bus::Answering { kmh } => match out.pdu.as_slice() {
@@ -384,4 +388,60 @@ fn a_replaced_subscription_polls_once_at_the_new_period() {
 	board.hear(subscribe(1, ENGINE, 0x1000, 500));
 	board.run_until(1000);
 	assert_eq!(board.sent.len(), 2, "{:?}", board.sent.iter().map(|(t, _)| *t).collect::<Vec<_>>());
+}
+/// The heap attack from across the radio: one request id paired with every response id,
+/// subscribed as fast as the link carries it. One passes; the planner and the guard hold
+/// one unit, not two thousand.
+#[test]
+fn subscribing_one_request_id_under_every_response_id_leaves_memory_bounded() {
+	let mut board = Board::new(Bus::Silent);
+	let mut refused = 0;
+	for response_id in 0..=0x7FFu16 {
+		board.hear(Message::Subscribe(Subscribe {
+			sub: 1,
+			request_id: 0x7E0,
+			response_id,
+			did: 0xF40D,
+			period_ms: 100,
+		}));
+		refused += board
+			.readings(1)
+			.iter()
+			.filter(|(_, o)| matches!(o, Outcome::Refused(why) if why.contains("answers on")))
+			.count();
+		board.to_host.clear();
+	}
+	assert_eq!(refused, 0x7FF, "all but the first response id");
+	// `sub: 1` given again replaces the live one before the guard refuses the new
+	// pair, so the first subscription is gone too: at most one unit is ever held.
+	assert!(board.planner.units_held() <= 1, "{} units held", board.planner.units_held());
+	board.session.close(&mut board.planner);
+	assert_eq!(board.planner.units_held(), 0);
+}
+
+/// A host that leaves takes its queued request with it: nothing it asked reaches the car
+/// after the connection is gone.
+#[test]
+fn closing_cancels_the_request_the_planner_has_not_sent() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.hear(request(1, GATEWAY, &[0x22, 0xF1, 0x87]));
+	assert!(board.session.awaiting().is_some(), "handed to the planner");
+	board.session.close(&mut board.planner);
+	board.run_until(2000);
+	assert!(board.sent.is_empty(), "{:02X?}", board.pdus_sent());
+}
+
+/// `3E 80` answered with the silence it asked for: the host is told no answer came, and
+/// the panel reading the same unit keeps its rate.
+#[test]
+fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let panel = board.planner.subscribe(0, Class::Foreground, ENGINE, 0x1000, 100, None);
+	board.run_until(100);
+	board.hear(request(3, ENGINE, &[0x3E, 0x80]));
+	board.run_until(1000);
+	assert_eq!(board.answers(), [(3, Outcome::NoAnswer)]);
+	let panel_reads = board.sent.iter().filter(|(_, o)| o.pdu == [0x22, 0x10, 0x00]).count();
+	assert!(panel_reads >= 9, "the panel kept reading: {panel_reads} in 1 s");
+	board.planner.unsubscribe(panel);
 }

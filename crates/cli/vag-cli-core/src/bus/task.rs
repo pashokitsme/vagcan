@@ -222,7 +222,9 @@ impl State {
 						// The shell hands every answer over as a PDU, so this is never
 						// produced here; kept total so a refusal is still a refusal.
 						Answer::Refused(nrc) => Ok((vec![NEGATIVE, 0, nrc], at)),
-						Answer::NoAnswer => Err(ExchangeError::NoAnswer),
+						// Silence after a request that suppressed its positive response is
+						// what was asked for; to the caller it is still no answer.
+						Answer::NoAnswer | Answer::NotExpected => Err(ExchangeError::NoAnswer),
 						Answer::BusError => {
 							Err(ExchangeError::Link(error.take().unwrap_or_else(|| {
 								TransportError::Io(format!("the link failed talking to {:03X}", unit.request))

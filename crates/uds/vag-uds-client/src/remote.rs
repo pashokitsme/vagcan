@@ -106,6 +106,12 @@ impl Session {
 		}
 	}
 
+	/// The planner subscriptions this session owns: every delivery for one of them is
+	/// this session's host's, and a delivery for none of them is nobody's.
+	pub fn subscriptions(&self) -> impl Iterator<Item = SubId> + '_ {
+		self.subs.values().map(|live| live.id)
+	}
+
 	/// The planner exchange whose [`Delivery::Raw`] this session waits for.
 	pub fn awaiting(&self) -> Option<ReqId> {
 		match self.current {
@@ -136,13 +142,13 @@ impl Session {
 			let (request, verdict) = match self.current.take() {
 				None => match self.queue.pop_front() {
 					Some(request) => {
-						let verdict = self.guard.check(now_ms, request.request_id, &request.pdu);
+						let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
 						(request, verdict)
 					}
 					None => break,
 				},
 				Some(Current::Waiting { request, until_ms }) if until_ms <= now_ms => {
-					let verdict = self.guard.check(now_ms, request.request_id, &request.pdu);
+					let verdict = self.guard.check(now_ms, request.request_id, request.response_id, &request.pdu);
 					(request, verdict)
 				}
 				Some(blocked) => {
@@ -165,7 +171,7 @@ impl Session {
 					schedule::Answer::Pdu(pdu) => road_speed(pdu),
 					_ => None,
 				};
-				let verdict = self.guard.speed(now_ms, request.request_id, &request.pdu, kmh);
+				let verdict = self.guard.speed(now_ms, request.request_id, request.response_id, &request.pdu, kmh);
 				self.act(now_ms, planner, request, verdict, &mut out);
 			}
 			Some(Current::Forwarded { seq, sid, req: out_req }) if out_req == req => {
@@ -203,11 +209,15 @@ impl Session {
 	}
 
 	/// The connection is gone: every subscription leaves the planner, nothing
-	/// queued is begun. An exchange already handed to the planner still goes out
-	/// once (the planner cannot take one back); its answer finds nobody.
+	/// queued is begun, and the exchange handed to the planner is cancelled if it has not
+	/// gone out ([`Planner::cancel`]). One already on the bus cannot be recalled; its
+	/// answer finds nobody.
 	pub fn close(&mut self, planner: &mut Planner) {
 		for (_, live) in core::mem::take(&mut self.subs) {
 			planner.unsubscribe(live.id);
+		}
+		if let Some(req) = self.awaiting() {
+			planner.cancel(req);
 		}
 		self.queue.clear();
 		self.current = None;
@@ -239,7 +249,7 @@ impl Session {
 				};
 				match planner.exchange(now_ms, Class::Remote, unit, request.pdu.clone()) {
 					Ok(req) => {
-						self.guard.forwarded(now_ms, request.request_id, &request.pdu);
+						self.guard.forwarded(now_ms, request.request_id, request.response_id, &request.pdu);
 						self.current = Some(Current::Forwarded {
 							seq: request.seq,
 							sid: request.pdu[0],
@@ -260,14 +270,14 @@ impl Session {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
 		self.unsubscribe(planner, s.sub);
-		match self.guard.check_subscribe(s.request_id, s.did, s.period_ms) {
+		match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms) {
 			Verdict::Forward => {
 				let unit = Unit {
 					request: s.request_id,
 					response: s.response_id,
 				};
 				let id = planner.subscribe(now_ms, Class::Remote, unit, s.did, u32::from(s.period_ms), None);
-				self.guard.subscribed(s.sub, s.request_id, s.did);
+				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did);
 				self.subs.insert(
 					s.sub,
 					Live {
@@ -314,6 +324,9 @@ fn outcome_of(sid: u8, answer: &schedule::Answer) -> Outcome {
 		schedule::Answer::Refused(nrc) => Outcome::Pdu(vec![NEGATIVE, sid, *nrc]),
 		schedule::Answer::NoAnswer => Outcome::NoAnswer,
 		schedule::Answer::BusError => Outcome::BusError(String::from("the bus failed under the request")),
+		// The request suppressed its positive response and no refusal came: status 1, no
+		// answer — which is what was asked for (`link`'s status table says so).
+		schedule::Answer::NotExpected => Outcome::NoAnswer,
 	}
 }
 

@@ -22,6 +22,11 @@
 //!   [`WALK_RUN`] evenly spaced ones (a walk — refused, and `0x22` to that unit
 //!   locked for the rest of the connection); at most [`MAX_DISTINCT_IDENTIFIERS`]
 //!   different identifiers per unit and [`MAX_UNITS`] units per connection.
+//! - **Units:** a unit is a request id and the one response id it answers on. The first
+//!   request or subscription that reaches a request id binds its response id for the
+//!   connection; the same request id on another response id is refused
+//!   ([`Refusal::OtherResponseId`]). Without it a host could name one request id under
+//!   every response id and make the board hold state for each.
 //! - **Subscriptions:** the board polls one identifier for the host on its own
 //!   clock ([`Guard::check_subscribe`]). The identifier counts once toward the
 //!   sweep rules when subscribed; neither the subscribe nor the board's polls
@@ -115,6 +120,9 @@ pub enum Refusal {
 	TooManyDistinct,
 	/// The connection would address more than [`MAX_UNITS`] units.
 	TooManyUnits,
+	/// A request id this connection already addressed on another response id. A unit
+	/// answers on one; a host that names others is sweeping what the board remembers.
+	OtherResponseId { request: u16, answers_on: u16 },
 	/// A subscription period under [`MIN_PERIOD_MS`].
 	PeriodTooShort,
 	/// [`MAX_SUBSCRIPTIONS`] are already live.
@@ -138,6 +146,7 @@ impl Refusal {
 			Refusal::Locked => "reads of this unit are locked until reconnect",
 			Refusal::TooManyDistinct => "too many different identifiers from this unit",
 			Refusal::TooManyUnits => "too many units in one connection",
+			Refusal::OtherResponseId { .. } => "this request id already answers on another response id",
 			Refusal::PeriodTooShort => "subscription period too short",
 			Refusal::TooManySubscriptions => "too many subscriptions",
 		}
@@ -155,6 +164,9 @@ impl fmt::Display for Refusal {
 			Refusal::Walk => write!(f, "{WALK_RUN} evenly spaced identifiers: reads of this unit locked until reconnect"),
 			Refusal::TooManyDistinct => write!(f, "more than {MAX_DISTINCT_IDENTIFIERS} different identifiers from this unit"),
 			Refusal::TooManyUnits => write!(f, "more than {MAX_UNITS} units in one connection"),
+			Refusal::OtherResponseId { request, answers_on } => {
+				write!(f, "request id {request:03X} already answers on {answers_on:03X} in this connection")
+			}
 			Refusal::PeriodTooShort => write!(f, "subscription period under {MIN_PERIOD_MS} ms"),
 			Refusal::TooManySubscriptions => write!(f, "more than {MAX_SUBSCRIPTIONS} subscriptions"),
 			other => f.write_str(other.reason()),
@@ -197,6 +209,9 @@ struct UnitHistory {
 	/// [`MAX_DISTINCT_IDENTIFIERS`], so a list is smaller than a set.
 	asked: Vec<u16>,
 	locked: bool,
+	/// The response id this request id answers on, from the first request or
+	/// subscription that reached it; any other is refused for the connection.
+	response: Option<u16>,
 }
 
 impl Guard {
@@ -205,8 +220,8 @@ impl Guard {
 	}
 
 	/// Decide what to do with one request from the host.
-	pub fn check(&mut self, now_ms: u64, request_id: u16, pdu: &[u8]) -> Verdict {
-		let admitted = match self.admit(request_id, pdu) {
+	pub fn check(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8]) -> Verdict {
+		let admitted = match self.admit(request_id, response_id, pdu) {
 			Ok(admitted) => admitted,
 			Err(refusal) => return Verdict::Refuse(refusal),
 		};
@@ -226,14 +241,14 @@ impl Guard {
 	/// Call it after [`Guard::check`] answered [`Verdict::CheckSpeedFirst`], with
 	/// the read made just then. The read itself reached the car, so it counts one
 	/// unit toward the rate cap whatever is decided.
-	pub fn speed(&mut self, now_ms: u64, request_id: u16, pdu: &[u8], kmh: Option<u8>) -> Verdict {
+	pub fn speed(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8], kmh: Option<u8>) -> Verdict {
 		self.window.push_back((now_ms, 1));
-		let admitted = match self.admit(request_id, pdu) {
+		let admitted = match self.admit(request_id, response_id, pdu) {
 			Ok(admitted) => admitted,
 			Err(refusal) => return Verdict::Refuse(refusal),
 		};
 		if !admitted.needs_speed {
-			return self.check(now_ms, request_id, pdu);
+			return self.check(now_ms, request_id, response_id, pdu);
 		}
 		match kmh {
 			None => Verdict::Refuse(Refusal::SpeedUnknown),
@@ -247,7 +262,7 @@ impl Guard {
 
 	/// Record a request that was actually sent. Refused and delayed requests are
 	/// never passed here, so they do not count.
-	pub fn forwarded(&mut self, now_ms: u64, request_id: u16, pdu: &[u8]) {
+	pub fn forwarded(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8]) {
 		let dids = identifiers(pdu);
 		let cost = if pdu.first() == Some(&READ_BY_IDENTIFIER) {
 			dids.len() as u32
@@ -255,7 +270,7 @@ impl Guard {
 			1
 		};
 		self.window.push_back((now_ms, cost));
-		self.record(request_id, &dids);
+		self.record(request_id, response_id, &dids);
 	}
 
 	/// Decide whether the board may poll `did` on `request_id` every `period_ms`.
@@ -263,13 +278,15 @@ impl Guard {
 	/// [`Verdict::Forward`] or [`Verdict::Refuse`], never a wait: a subscribe does
 	/// not count toward the rate cap, so a watch page starts at once. Its
 	/// identifier counts toward the walk rule and the distinct and unit caps.
-	pub fn check_subscribe(&mut self, request_id: u16, did: u16, period_ms: u16) -> Verdict {
+	pub fn check_subscribe(&mut self, request_id: u16, response_id: u16, did: u16, period_ms: u16) -> Verdict {
 		let checked = if period_ms < MIN_PERIOD_MS {
 			Err(Refusal::PeriodTooShort)
 		} else if self.subscriptions.len() >= MAX_SUBSCRIPTIONS {
 			Err(Refusal::TooManySubscriptions)
 		} else {
-			self.admit_unit(request_id).and_then(|()| self.admit_reads(request_id, &[did]))
+			self
+				.admit_unit(request_id, response_id)
+				.and_then(|()| self.admit_reads(request_id, &[did]))
 		};
 		match checked {
 			Ok(()) => Verdict::Forward,
@@ -279,11 +296,11 @@ impl Guard {
 
 	/// Record a subscription the board started. A live `sub` given again is
 	/// replaced, not counted twice.
-	pub fn subscribed(&mut self, sub: u16, request_id: u16, did: u16) {
+	pub fn subscribed(&mut self, sub: u16, request_id: u16, response_id: u16, did: u16) {
 		if !self.subscriptions.contains(&sub) {
 			self.subscriptions.push(sub);
 		}
-		self.record(request_id, &[did]);
+		self.record(request_id, response_id, &[did]);
 	}
 
 	/// Free a subscription's slot. Its identifier stays asked for the connection.
@@ -292,8 +309,9 @@ impl Guard {
 	}
 
 	/// Note the unit and the identifiers that reached it.
-	fn record(&mut self, request_id: u16, dids: &[u16]) {
+	fn record(&mut self, request_id: u16, response_id: u16, dids: &[u16]) {
 		let unit = self.units.entry(request_id).or_default();
+		unit.response.get_or_insert(response_id);
 		for did in dids {
 			if !unit.asked.contains(did) {
 				unit.asked.push(*did);
@@ -302,12 +320,12 @@ impl Guard {
 	}
 
 	/// The rules that do not depend on time. Refusing a walk locks the unit.
-	fn admit(&mut self, request_id: u16, pdu: &[u8]) -> Result<Admitted, Refusal> {
+	fn admit(&mut self, request_id: u16, response_id: u16, pdu: &[u8]) -> Result<Admitted, Refusal> {
 		let (&sid, rest) = pdu.split_first().ok_or(Refusal::Empty)?;
 		if !READ_ONLY_ALLOWLIST.contains(&sid) {
 			return Err(Refusal::ServiceNotAllowed(sid));
 		}
-		self.admit_unit(request_id)?;
+		self.admit_unit(request_id, response_id)?;
 		match sid {
 			SESSION_CONTROL => {
 				let [session] = rest else {
@@ -334,12 +352,21 @@ impl Guard {
 		}
 	}
 
-	/// A unit not yet addressed needs a free slot.
-	fn admit_unit(&self, request_id: u16) -> Result<(), Refusal> {
-		if self.units.len() >= MAX_UNITS && !self.units.contains_key(&request_id) {
-			return Err(Refusal::TooManyUnits);
+	/// A unit is a request id and the one response id it answers on. One already
+	/// addressed passes on that pair and is refused on any other; a new one needs a free
+	/// slot. So [`MAX_UNITS`] bounds pairs, not only request ids.
+	fn admit_unit(&self, request_id: u16, response_id: u16) -> Result<(), Refusal> {
+		match self.units.get(&request_id) {
+			Some(UnitHistory {
+				response: Some(answers_on), ..
+			}) if *answers_on != response_id => Err(Refusal::OtherResponseId {
+				request: request_id,
+				answers_on: *answers_on,
+			}),
+			Some(_) => Ok(()),
+			None if self.units.len() >= MAX_UNITS => Err(Refusal::TooManyUnits),
+			None => Ok(()),
 		}
-		Ok(())
 	}
 
 	/// The sweep rules for identifiers about to be asked of one unit. A unit
@@ -442,6 +469,11 @@ mod tests {
 	const GEARBOX: u16 = 0x7E1;
 	const GATEWAY: u16 = 0x710;
 
+	/// The response id the tests pair a request id with: synthetic, one per request id.
+	fn resp(request_id: u16) -> u16 {
+		request_id + 8
+	}
+
 	fn rdbi(dids: &[u16]) -> Vec<u8> {
 		let mut pdu = vec![0x22];
 		for did in dids {
@@ -461,16 +493,16 @@ mod tests {
 	/// allowed. Each exchange with the car takes 30 ms. Returns the refusal, if any.
 	fn drive(guard: &mut Guard, now: &mut u64, request_id: u16, pdu: &[u8], kmh: Option<u8>) -> Result<(), Refusal> {
 		for _ in 0..8 {
-			let verdict = match guard.check(*now, request_id, pdu) {
+			let verdict = match guard.check(*now, request_id, resp(request_id), pdu) {
 				Verdict::CheckSpeedFirst => {
 					*now += 30;
-					guard.speed(*now, request_id, pdu, kmh)
+					guard.speed(*now, request_id, resp(request_id), pdu, kmh)
 				}
 				other => other,
 			};
 			match verdict {
 				Verdict::Forward => {
-					guard.forwarded(*now, request_id, pdu);
+					guard.forwarded(*now, request_id, resp(request_id), pdu);
 					*now += 30;
 					return Ok(());
 				}
@@ -486,14 +518,14 @@ mod tests {
 	}
 
 	fn forward_now(guard: &mut Guard, now: u64, request_id: u16, pdu: &[u8]) {
-		assert_eq!(guard.check(now, request_id, pdu), Verdict::Forward, "{pdu:02X?}");
-		guard.forwarded(now, request_id, pdu);
+		assert_eq!(guard.check(now, request_id, resp(request_id), pdu), Verdict::Forward, "{pdu:02X?}");
+		guard.forwarded(now, request_id, resp(request_id), pdu);
 	}
 
 	fn subscribe(guard: &mut Guard, sub: u16, request_id: u16, did: u16, period_ms: u16) -> Result<(), Refusal> {
-		match guard.check_subscribe(request_id, did, period_ms) {
+		match guard.check_subscribe(request_id, resp(request_id), did, period_ms) {
 			Verdict::Forward => {
-				guard.subscribed(sub, request_id, did);
+				guard.subscribed(sub, request_id, resp(request_id), did);
 				Ok(())
 			}
 			Verdict::Refuse(r) => Err(r),
@@ -505,14 +537,17 @@ mod tests {
 
 	#[test]
 	fn an_empty_request_is_refused() {
-		assert_eq!(Guard::new().check(0, ENGINE, &[]), Verdict::Refuse(Refusal::Empty));
+		assert_eq!(Guard::new().check(0, ENGINE, resp(ENGINE), &[]), Verdict::Refuse(Refusal::Empty));
 	}
 
 	#[test]
 	fn services_outside_the_allowlist_are_refused() {
 		let mut guard = Guard::new();
 		for sid in [0x14, 0x2E, 0x27, 0x31, 0x34, 0x11, 0x28, 0x85] {
-			assert_eq!(guard.check(0, ENGINE, &[sid, 0x00]), Verdict::Refuse(Refusal::ServiceNotAllowed(sid)));
+			assert_eq!(
+				guard.check(0, ENGINE, resp(ENGINE), &[sid, 0x00]),
+				Verdict::Refuse(Refusal::ServiceNotAllowed(sid))
+			);
 		}
 	}
 
@@ -529,14 +564,17 @@ mod tests {
 	#[test]
 	fn the_programming_session_is_refused_whatever_the_car_is_doing() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x02]), Verdict::Refuse(Refusal::ProgrammingSession));
 		assert_eq!(
-			guard.check(0, ENGINE, &[0x10, 0x82]),
+			guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x02]),
+			Verdict::Refuse(Refusal::ProgrammingSession)
+		);
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x82]),
 			Verdict::Refuse(Refusal::ProgrammingSession),
 			"the suppress-response bit does not disguise it"
 		);
 		assert_eq!(
-			guard.speed(0, ENGINE, &[0x10, 0x02], Some(0)),
+			guard.speed(0, ENGINE, resp(ENGINE), &[0x10, 0x02], Some(0)),
 			Verdict::Refuse(Refusal::ProgrammingSession),
 			"not even on a stationary car"
 		);
@@ -545,34 +583,37 @@ mod tests {
 	#[test]
 	fn the_default_session_is_always_allowed_without_a_speed_read() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x01]), Verdict::Forward);
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x81]), Verdict::Forward);
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x01]), Verdict::Forward);
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x81]), Verdict::Forward);
 	}
 
 	#[test]
 	fn a_session_request_that_is_not_two_bytes_is_refused() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(0, ENGINE, &[0x10]), Verdict::Refuse(Refusal::MalformedSession));
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x03, 0x00]), Verdict::Refuse(Refusal::MalformedSession));
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x10]), Verdict::Refuse(Refusal::MalformedSession));
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x03, 0x00]),
+			Verdict::Refuse(Refusal::MalformedSession)
+		);
 	}
 
 	#[test]
 	fn another_session_change_asks_for_road_speed_first() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x03]), Verdict::CheckSpeedFirst);
-		assert_eq!(guard.check(0, 0x713, &[0x10, 0x03]), Verdict::CheckSpeedFirst);
-		assert_eq!(guard.check(0, 0x713, &[0x10, 0x40]), Verdict::CheckSpeedFirst);
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x03]), Verdict::CheckSpeedFirst);
+		assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x03]), Verdict::CheckSpeedFirst);
+		assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x40]), Verdict::CheckSpeedFirst);
 	}
 
 	#[test]
 	fn a_session_change_on_a_stationary_car_is_forwarded() {
-		assert_eq!(Guard::new().speed(0, 0x713, &[0x10, 0x03], Some(0)), Verdict::Forward);
+		assert_eq!(Guard::new().speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(0)), Verdict::Forward);
 	}
 
 	#[test]
 	fn a_session_change_on_a_moving_car_is_refused_with_its_speed() {
 		assert_eq!(
-			Guard::new().speed(0, 0x713, &[0x10, 0x03], Some(12)),
+			Guard::new().speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(12)),
 			Verdict::Refuse(Refusal::Moving(12))
 		);
 		assert_eq!(Refusal::Moving(12).to_string(), "session change refused: the car is moving at 12 km/h");
@@ -581,10 +622,13 @@ mod tests {
 	#[test]
 	fn a_session_change_without_a_speed_answer_counts_as_moving() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.speed(0, 0x713, &[0x10, 0x03], None), Verdict::Refuse(Refusal::SpeedUnknown));
+		assert_eq!(
+			guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], None),
+			Verdict::Refuse(Refusal::SpeedUnknown)
+		);
 		// A negative answer decodes to no speed, and is refused the same way.
 		assert_eq!(
-			guard.speed(0, 0x713, &[0x10, 0x03], road_speed(&[0x7F, 0x22, 0x31])),
+			guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], road_speed(&[0x7F, 0x22, 0x31])),
 			Verdict::Refuse(Refusal::SpeedUnknown)
 		);
 	}
@@ -616,10 +660,13 @@ mod tests {
 		// twentieth session change can see.
 		let mut guard = Guard::new();
 		for _ in 0..RATE_LIMIT - 1 {
-			assert_eq!(guard.check(0, 0x713, &[0x10, 0x03]), Verdict::CheckSpeedFirst);
-			assert_eq!(guard.speed(0, 0x713, &[0x10, 0x03], Some(40)), Verdict::Refuse(Refusal::Moving(40)));
+			assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x03]), Verdict::CheckSpeedFirst);
+			assert_eq!(
+				guard.speed(0, 0x713, resp(0x713), &[0x10, 0x03], Some(40)),
+				Verdict::Refuse(Refusal::Moving(40))
+			);
 		}
-		assert_eq!(guard.check(0, 0x713, &[0x10, 0x03]), Verdict::WaitUntil(RATE_WINDOW_MS));
+		assert_eq!(guard.check(0, 0x713, resp(0x713), &[0x10, 0x03]), Verdict::WaitUntil(RATE_WINDOW_MS));
 	}
 
 	#[test]
@@ -628,8 +675,12 @@ mod tests {
 		for _ in 0..RATE_LIMIT - 1 {
 			forward_now(&mut guard, 0, ENGINE, &[0x3E, 0x00]);
 		}
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x03]), Verdict::WaitUntil(RATE_WINDOW_MS));
-		assert_eq!(guard.check(0, ENGINE, &[0x10, 0x01]), Verdict::Forward, "one unit still fits");
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x03]), Verdict::WaitUntil(RATE_WINDOW_MS));
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x10, 0x01]),
+			Verdict::Forward,
+			"one unit still fits"
+		);
 	}
 
 	// --- rate -----------------------------------------------------------------
@@ -640,20 +691,26 @@ mod tests {
 		for i in 0..RATE_LIMIT as u64 {
 			forward_now(&mut guard, i * 100, ENGINE, &[0x3E, 0x00]);
 		}
-		assert_eq!(guard.check(2_000, ENGINE, &[0x3E, 0x00]), Verdict::WaitUntil(RATE_WINDOW_MS));
-		assert_eq!(guard.check(9_999, ENGINE, &[0x3E, 0x00]), Verdict::WaitUntil(RATE_WINDOW_MS));
-		assert_eq!(guard.check(10_000, ENGINE, &[0x3E, 0x00]), Verdict::Forward);
+		assert_eq!(
+			guard.check(2_000, ENGINE, resp(ENGINE), &[0x3E, 0x00]),
+			Verdict::WaitUntil(RATE_WINDOW_MS)
+		);
+		assert_eq!(
+			guard.check(9_999, ENGINE, resp(ENGINE), &[0x3E, 0x00]),
+			Verdict::WaitUntil(RATE_WINDOW_MS)
+		);
+		assert_eq!(guard.check(10_000, ENGINE, resp(ENGINE), &[0x3E, 0x00]), Verdict::Forward);
 	}
 
 	#[test]
 	fn refused_and_delayed_requests_do_not_count_toward_the_rate() {
 		let mut guard = Guard::new();
 		for _ in 0..100 {
-			assert!(matches!(guard.check(0, ENGINE, &[0x2E, 0xF1, 0x90]), Verdict::Refuse(_)));
+			assert!(matches!(guard.check(0, ENGINE, resp(ENGINE), &[0x2E, 0xF1, 0x90]), Verdict::Refuse(_)));
 			// Asked, never sent.
-			let _ = guard.check(0, ENGINE, &[0x3E, 0x00]);
+			let _ = guard.check(0, ENGINE, resp(ENGINE), &[0x3E, 0x00]);
 		}
-		assert_eq!(guard.check(0, ENGINE, &[0x3E, 0x00]), Verdict::Forward);
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x3E, 0x00]), Verdict::Forward);
 	}
 
 	#[test]
@@ -664,7 +721,7 @@ mod tests {
 		for _ in 0..5 {
 			forward_now(&mut guard, 0, ENGINE, &batch);
 		}
-		assert_eq!(guard.check(0, GEARBOX, &[0x3E, 0x00]), Verdict::WaitUntil(RATE_WINDOW_MS));
+		assert_eq!(guard.check(0, GEARBOX, resp(GEARBOX), &[0x3E, 0x00]), Verdict::WaitUntil(RATE_WINDOW_MS));
 	}
 
 	#[test]
@@ -675,10 +732,10 @@ mod tests {
 		}
 		// 18 used: four identifiers need the two oldest gone, at 0 and 1 ms.
 		assert_eq!(
-			guard.check(18, GEARBOX, &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E])),
+			guard.check(18, GEARBOX, resp(GEARBOX), &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E])),
 			Verdict::WaitUntil(10_001)
 		);
-		assert_eq!(guard.check(18, GEARBOX, &rdbi(&[0xF190, 0xF187])), Verdict::Forward);
+		assert_eq!(guard.check(18, GEARBOX, resp(GEARBOX), &rdbi(&[0xF190, 0xF187])), Verdict::Forward);
 	}
 
 	// --- identifier requests ----------------------------------------------------
@@ -686,10 +743,16 @@ mod tests {
 	#[test]
 	fn a_read_that_is_not_whole_identifiers_is_refused() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(0, ENGINE, &[0x22]), Verdict::Refuse(Refusal::MalformedIdentifiers));
-		assert_eq!(guard.check(0, ENGINE, &[0x22, 0xF1]), Verdict::Refuse(Refusal::MalformedIdentifiers));
 		assert_eq!(
-			guard.check(0, ENGINE, &[0x22, 0xF1, 0x90, 0xF1]),
+			guard.check(0, ENGINE, resp(ENGINE), &[0x22]),
+			Verdict::Refuse(Refusal::MalformedIdentifiers)
+		);
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x22, 0xF1]),
+			Verdict::Refuse(Refusal::MalformedIdentifiers)
+		);
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &[0x22, 0xF1, 0x90, 0xF1]),
 			Verdict::Refuse(Refusal::MalformedIdentifiers)
 		);
 	}
@@ -698,10 +761,13 @@ mod tests {
 	fn more_than_four_identifiers_in_one_request_is_refused() {
 		let mut guard = Guard::new();
 		assert_eq!(
-			guard.check(0, ENGINE, &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E, 0xF1A2])),
+			guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E, 0xF1A2])),
 			Verdict::Refuse(Refusal::TooManyIdentifiers)
 		);
-		assert_eq!(guard.check(0, ENGINE, &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E])), Verdict::Forward);
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF190, 0xF187, 0xF197, 0xF19E])),
+			Verdict::Forward
+		);
 	}
 
 	// --- walks ------------------------------------------------------------------
@@ -714,7 +780,10 @@ mod tests {
 		for did in &shuffled[..WALK_RUN - 1] {
 			drive(&mut guard, &mut now, ENGINE, &rdbi(&[*did]), None).unwrap();
 		}
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[shuffled[7]])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[shuffled[7]])),
+			Verdict::Refuse(Refusal::Walk)
+		);
 	}
 
 	#[test]
@@ -746,7 +815,7 @@ mod tests {
 		for n in 0..7u16 {
 			drive(&mut guard, &mut now, ENGINE, &rdbi(&[0x2000 + 2 * n]), None).unwrap();
 		}
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[0x200E])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0x200E])), Verdict::Refuse(Refusal::Walk));
 	}
 
 	#[test]
@@ -756,7 +825,7 @@ mod tests {
 		for n in (1..8u16).rev() {
 			drive(&mut guard, &mut now, ENGINE, &rdbi(&[0x0100 + 0x1111 * n]), None).unwrap();
 		}
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[0x0100])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0x0100])), Verdict::Refuse(Refusal::Walk));
 	}
 
 	#[test]
@@ -764,7 +833,7 @@ mod tests {
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0xF100, 0xF101, 0xF102, 0xF103]));
 		assert_eq!(
-			guard.check(0, ENGINE, &rdbi(&[0xF107, 0xF105, 0xF104, 0xF106])),
+			guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF107, 0xF105, 0xF104, 0xF106])),
 			Verdict::Refuse(Refusal::Walk)
 		);
 	}
@@ -804,13 +873,16 @@ mod tests {
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003]));
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0x2004, 0x2005, 0x2006]));
-		assert_eq!(guard.check(0, ENGINE, &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
 		// Any read, however harmless, and however much later.
-		assert_eq!(guard.check(0, ENGINE, &rdbi(&[0xF190])), Verdict::Refuse(Refusal::Locked));
-		assert_eq!(guard.check(3_600_000, ENGINE, &rdbi(&[0x2000])), Verdict::Refuse(Refusal::Locked));
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF190])), Verdict::Refuse(Refusal::Locked));
+		assert_eq!(
+			guard.check(3_600_000, ENGINE, resp(ENGINE), &rdbi(&[0x2000])),
+			Verdict::Refuse(Refusal::Locked)
+		);
 		// Other services to that unit, and reads of other units, are unaffected.
-		assert_eq!(guard.check(3_600_000, ENGINE, &[0x19, 0x02, 0xFF]), Verdict::Forward);
-		assert_eq!(guard.check(3_600_000, GEARBOX, &rdbi(&[0xF190])), Verdict::Forward);
+		assert_eq!(guard.check(3_600_000, ENGINE, resp(ENGINE), &[0x19, 0x02, 0xFF]), Verdict::Forward);
+		assert_eq!(guard.check(3_600_000, GEARBOX, resp(GEARBOX), &rdbi(&[0xF190])), Verdict::Forward);
 	}
 
 	#[test]
@@ -818,7 +890,7 @@ mod tests {
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003]));
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0x2004, 0x2005, 0x2006]));
-		assert_eq!(guard.check(0, ENGINE, &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
 		drop(guard);
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, ENGINE, &rdbi(&[0x2007]));
@@ -841,7 +913,7 @@ mod tests {
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, 0x714, &rdbi(&[0xF100, 0xF101, 0xF102, 0xF103]));
 		assert_eq!(
-			guard.check(0, 0x714, &rdbi(&[0xF104, 0xF105, 0xF106, 0xF107])),
+			guard.check(0, 0x714, resp(0x714), &rdbi(&[0xF104, 0xF105, 0xF106, 0xF107])),
 			Verdict::Refuse(Refusal::Walk)
 		);
 	}
@@ -856,7 +928,10 @@ mod tests {
 		for did in &dids[..32] {
 			drive(&mut guard, &mut now, ENGINE, &rdbi(&[*did]), None).unwrap();
 		}
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[dids[32]])), Verdict::Refuse(Refusal::TooManyDistinct));
+		assert_eq!(
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[dids[32]])),
+			Verdict::Refuse(Refusal::TooManyDistinct)
+		);
 		drive(&mut guard, &mut now, ENGINE, &rdbi(&[dids[3]]), None).expect("a repeat is not a new identifier");
 		drive(&mut guard, &mut now, GEARBOX, &rdbi(&[dids[32]]), None).expect("the cap is per unit");
 	}
@@ -870,14 +945,61 @@ mod tests {
 			drive(&mut guard, &mut now, ENGINE, &rdbi(&[*did]), None).unwrap();
 		}
 		assert_eq!(
-			guard.check(now, ENGINE, &rdbi(&[dids[31], dids[32]])),
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[dids[31], dids[32]])),
 			Verdict::Refuse(Refusal::TooManyDistinct)
 		);
 		assert_eq!(
-			guard.check(now + 2 * RATE_WINDOW_MS, ENGINE, &rdbi(&[dids[31], dids[31]])),
+			guard.check(now + 2 * RATE_WINDOW_MS, ENGINE, resp(ENGINE), &rdbi(&[dids[31], dids[31]])),
 			Verdict::Forward,
 			"one new identifier asked twice is one"
 		);
+	}
+
+	/// A unit answers on one id. A host that pairs a request id it already used with
+	/// another response id is not addressing a unit, it is making the board remember
+	/// one more thing — and a board that remembers one per response id runs out of heap.
+	#[test]
+	fn a_request_id_answers_on_one_response_id_per_connection() {
+		let mut guard = Guard::new();
+		let mut now = 0;
+		drive(&mut guard, &mut now, ENGINE, &rdbi(&[0xF190]), None).unwrap();
+		let other = resp(ENGINE) + 1;
+		let refused = Verdict::Refuse(Refusal::OtherResponseId {
+			request: ENGINE,
+			answers_on: resp(ENGINE),
+		});
+		assert_eq!(guard.check(now, ENGINE, other, &rdbi(&[0xF190])), refused);
+		assert_eq!(guard.check_subscribe(ENGINE, other, 0xF40D, 100), refused);
+		assert_eq!(
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0xF190])),
+			Verdict::Forward,
+			"the pair in use still passes"
+		);
+
+		// A subscription binds the pair as well.
+		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100), Verdict::Forward);
+		guard.subscribed(1, GEARBOX, resp(GEARBOX), 0xF40D);
+		assert!(matches!(
+			guard.check(now, GEARBOX, 0x123, &[0x3E, 0x00]),
+			Verdict::Refuse(Refusal::OtherResponseId { .. })
+		));
+	}
+
+	/// The attack the rule exists for: one request id, every response id, as fast as the
+	/// link carries it. One subscription passes; the rest are refused, and the guard's
+	/// own memory does not grow with them.
+	#[test]
+	fn sweeping_response_ids_under_one_request_id_is_refused_and_costs_no_memory() {
+		let mut guard = Guard::new();
+		let mut forwarded = 0;
+		for response_id in 0..=0x7FF {
+			if guard.check_subscribe(ENGINE, response_id, 0xF40D, 100) == Verdict::Forward {
+				guard.subscribed(1, ENGINE, response_id, 0xF40D);
+				forwarded += 1;
+			}
+		}
+		assert_eq!(forwarded, 1);
+		assert_eq!(guard.units.len(), 1);
 	}
 
 	#[test]
@@ -889,12 +1011,18 @@ mod tests {
 		}
 		let next = 0x700 + MAX_UNITS as u16;
 		now += RATE_WINDOW_MS;
-		assert_eq!(guard.check(now, next, &[0x3E, 0x00]), Verdict::Refuse(Refusal::TooManyUnits));
-		assert_eq!(guard.check(now, next, &rdbi(&[0xF190])), Verdict::Refuse(Refusal::TooManyUnits));
-		assert_eq!(guard.check(now, next, &[0x10, 0x03]), Verdict::Refuse(Refusal::TooManyUnits));
-		assert_eq!(guard.check_subscribe(next, 0xF40D, 20), Verdict::Refuse(Refusal::TooManyUnits));
+		assert_eq!(guard.check(now, next, resp(next), &[0x3E, 0x00]), Verdict::Refuse(Refusal::TooManyUnits));
 		assert_eq!(
-			guard.check(now, 0x700, &rdbi(&[0xF190])),
+			guard.check(now, next, resp(next), &rdbi(&[0xF190])),
+			Verdict::Refuse(Refusal::TooManyUnits)
+		);
+		assert_eq!(guard.check(now, next, resp(next), &[0x10, 0x03]), Verdict::Refuse(Refusal::TooManyUnits));
+		assert_eq!(
+			guard.check_subscribe(next, resp(next), 0xF40D, 20),
+			Verdict::Refuse(Refusal::TooManyUnits)
+		);
+		assert_eq!(
+			guard.check(now, 0x700, resp(0x700), &rdbi(&[0xF190])),
 			Verdict::Forward,
 			"a unit already addressed still is"
 		);
@@ -905,10 +1033,10 @@ mod tests {
 	fn a_refused_request_does_not_take_a_unit_slot() {
 		let mut guard = Guard::new();
 		for unit in 0..1000u16 {
-			let _ = guard.check(0, unit, &[0x2E, 0xF1, 0x90]);
-			let _ = guard.check(0, unit, &rdbi(&[1, 2, 3, 4, 5]));
+			let _ = guard.check(0, unit, resp(unit), &[0x2E, 0xF1, 0x90]);
+			let _ = guard.check(0, unit, resp(unit), &rdbi(&[1, 2, 3, 4, 5]));
 		}
-		assert_eq!(guard.check(0, 0x7FF, &[0x3E, 0x00]), Verdict::Forward);
+		assert_eq!(guard.check(0, 0x7FF, resp(0x7FF), &[0x3E, 0x00]), Verdict::Forward);
 	}
 
 	#[test]
@@ -921,19 +1049,26 @@ mod tests {
 		now += 2 * RATE_WINDOW_MS;
 		forward_now(&mut guard, now, GEARBOX, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003]));
 		forward_now(&mut guard, now, GEARBOX, &rdbi(&[0x2004, 0x2005, 0x2006]));
-		assert_eq!(guard.check(now, GEARBOX, &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check(now, GEARBOX, resp(GEARBOX), &rdbi(&[0x2007])), Verdict::Refuse(Refusal::Walk));
 		for _ in 0..RATE_LIMIT - 7 {
 			forward_now(&mut guard, now, 0x713, &[0x3E, 0x00]);
 		}
-		assert!(matches!(guard.check(now, 0x713, &[0x3E, 0x00]), Verdict::WaitUntil(_)));
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[0x4000])), Verdict::Refuse(Refusal::TooManyDistinct));
+		assert!(matches!(guard.check(now, 0x713, resp(0x713), &[0x3E, 0x00]), Verdict::WaitUntil(_)));
+		assert_eq!(
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0x4000])),
+			Verdict::Refuse(Refusal::TooManyDistinct)
+		);
 		for sub in 0..MAX_SUBSCRIPTIONS as u16 {
 			subscribe(&mut guard, sub, 0x714, 0x2029, 100).unwrap();
 		}
 
 		let mut guard = Guard::new();
-		assert_eq!(guard.check(now, GEARBOX, &rdbi(&[0xF190])), Verdict::Forward, "lock gone");
-		assert_eq!(guard.check(now, ENGINE, &rdbi(&[0x4000])), Verdict::Forward, "distinct count gone");
+		assert_eq!(guard.check(now, GEARBOX, resp(GEARBOX), &rdbi(&[0xF190])), Verdict::Forward, "lock gone");
+		assert_eq!(
+			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0x4000])),
+			Verdict::Forward,
+			"distinct count gone"
+		);
 		for _ in 0..RATE_LIMIT {
 			forward_now(&mut guard, now, 0x713, &[0x3E, 0x00]);
 		}
@@ -973,6 +1108,13 @@ mod tests {
 			(Refusal::PeriodTooShort, MIN_PERIOD_MS.to_string()),
 			(Refusal::TooManySubscriptions, MAX_SUBSCRIPTIONS.to_string()),
 			(Refusal::ServiceNotAllowed(0x2E), "0x2E".to_string()),
+			(
+				Refusal::OtherResponseId {
+					request: 0x7E0,
+					answers_on: 0x7E8,
+				},
+				"7E8".to_string(),
+			),
 		] {
 			assert!(refusal.to_string().contains(&figure), "{refusal:?}: {refusal} lacks {figure}");
 		}
@@ -988,7 +1130,7 @@ mod tests {
 			forward_now(&mut guard, 0, ENGINE, &[0x3E, 0x00]);
 		}
 		assert_eq!(
-			guard.check_subscribe(GEARBOX, 0xF40D, 20),
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 20),
 			Verdict::Forward,
 			"a full rate window does not delay it"
 		);
@@ -997,9 +1139,15 @@ mod tests {
 	#[test]
 	fn a_period_under_twenty_milliseconds_is_refused() {
 		let mut guard = Guard::new();
-		assert_eq!(guard.check_subscribe(GEARBOX, 0xF40D, 19), Verdict::Refuse(Refusal::PeriodTooShort));
-		assert_eq!(guard.check_subscribe(GEARBOX, 0xF40D, 0), Verdict::Refuse(Refusal::PeriodTooShort));
-		assert_eq!(guard.check_subscribe(GEARBOX, 0xF40D, MIN_PERIOD_MS), Verdict::Forward);
+		assert_eq!(
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 19),
+			Verdict::Refuse(Refusal::PeriodTooShort)
+		);
+		assert_eq!(
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 0),
+			Verdict::Refuse(Refusal::PeriodTooShort)
+		);
+		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, MIN_PERIOD_MS), Verdict::Forward);
 	}
 
 	#[test]
@@ -1042,9 +1190,12 @@ mod tests {
 			guard.unsubscribed(sub);
 		}
 		subscribe(&mut guard, 0, ENGINE, dids[7], 100).expect("already asked");
-		assert_eq!(guard.check_subscribe(ENGINE, 0x4000, 100), Verdict::Refuse(Refusal::TooManyDistinct));
 		assert_eq!(
-			guard.check(0, ENGINE, &rdbi(&[0x4000])),
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0x4000, 100),
+			Verdict::Refuse(Refusal::TooManyDistinct)
+		);
+		assert_eq!(
+			guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0x4000])),
 			Verdict::Refuse(Refusal::TooManyDistinct),
 			"subscribed identifiers count for reads too"
 		);
@@ -1056,15 +1207,15 @@ mod tests {
 		for (sub, did) in (0xF100..0xF107).enumerate() {
 			subscribe(&mut guard, sub as u16, ENGINE, did, 100).unwrap();
 		}
-		assert_eq!(guard.check_subscribe(ENGINE, 0xF107, 100), Verdict::Refuse(Refusal::Walk));
-		assert_eq!(guard.check_subscribe(ENGINE, 0xF190, 100), Verdict::Refuse(Refusal::Locked));
-		assert_eq!(guard.check(0, ENGINE, &rdbi(&[0xF190])), Verdict::Refuse(Refusal::Locked));
+		assert_eq!(guard.check_subscribe(ENGINE, resp(ENGINE), 0xF107, 100), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check_subscribe(ENGINE, resp(ENGINE), 0xF190, 100), Verdict::Refuse(Refusal::Locked));
+		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF190])), Verdict::Refuse(Refusal::Locked));
 
 		// And reads followed by a subscribe complete a walk the same way.
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, GEARBOX, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003]));
 		forward_now(&mut guard, 0, GEARBOX, &rdbi(&[0x2004, 0x2005, 0x2006]));
-		assert_eq!(guard.check_subscribe(GEARBOX, 0x2007, 100), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0x2007, 100), Verdict::Refuse(Refusal::Walk));
 	}
 
 	#[test]
@@ -1086,7 +1237,10 @@ mod tests {
 		for did in squares(31) {
 			drive(&mut guard, &mut now, GEARBOX, &rdbi(&[did]), None).unwrap();
 		}
-		assert_eq!(guard.check(now, GEARBOX, &rdbi(&[0x4000])), Verdict::Refuse(Refusal::TooManyDistinct));
+		assert_eq!(
+			guard.check(now, GEARBOX, resp(GEARBOX), &rdbi(&[0x4000])),
+			Verdict::Refuse(Refusal::TooManyDistinct)
+		);
 	}
 
 	#[test]
