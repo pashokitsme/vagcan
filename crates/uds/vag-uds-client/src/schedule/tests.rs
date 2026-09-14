@@ -615,6 +615,7 @@ fn only_read_only_services_are_accepted_for_a_raw_exchange() {
 			req,
 			unit: A,
 			answer: Answer::Refused(0x22),
+			sent_ms: 0,
 			at_ms: 9
 		}]
 	);

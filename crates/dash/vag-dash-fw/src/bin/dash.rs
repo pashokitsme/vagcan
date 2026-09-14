@@ -228,12 +228,13 @@ macro_rules! note {
 /// One framed-link client of the planner — the BLE connection, or the host on the USB
 /// cable — as the bus task reaches it. Each has a session of its own.
 struct Client {
-	/// Answers to the session's raw exchanges: the request, the answer, and the
-	/// board's clock when it arrived. The session waits for one at a time, so **one
+	/// Answers to the session's raw exchanges, as the planner delivered them: the request,
+	/// the answer, and the board's clock when it went out and when it arrived (a radio host
+	/// is charged the time between). The session waits for one at a time, so **one
 	/// slot** holds every answer it will read; one left over from a session that is gone is
 	/// ignored by the next (S-F4: a raw answer keeps its full ~4.1 KB, so the queue is one
 	/// deep, not four).
-	answers: Channel<CriticalSectionRawMutex, (ReqId, Answer, u64), 1>,
+	answers: Channel<CriticalSectionRawMutex, Delivery, 1>,
 	/// Planner deliveries for the session's subscriptions. **Drop semantics**
 	/// (owner, 2026-09-14): a reading that finds this full is thrown away and
 	/// counted in `dropped` — the next one is newer anyway, and a bus that waited
@@ -1117,7 +1118,7 @@ async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'sta
 				}
 				out
 			}
-			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either3::First(Either4::Second(delivery)) => bus.lock(|p| session.answered(&mut p.borrow_mut(), &delivery)),
 			Either3::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
 			Either3::First(Either4::Fourth(())) | Either3::Third(()) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
 			Either3::Second(()) => mode_changed(session, bus),
@@ -1655,11 +1656,11 @@ async fn adapter_requested() {
 fn remote(delivery: Delivery) {
 	let clients = [&BLE_CLIENT, &USB_CLIENT];
 	match delivery {
-		Delivery::Raw { req, answer, at_ms, .. } => {
+		Delivery::Raw { req, .. } => {
 			let Some(client) = clients.into_iter().find(|client| client.awaits(req)) else {
 				return;
 			};
-			if client.answers.try_send((req, answer, at_ms)).is_err() {
+			if client.answers.try_send(delivery).is_err() {
 				note!("link: an answer found its queue full and was lost");
 			}
 		}
@@ -2604,7 +2605,7 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 				TIMING_TAKEN.signal(());
 				out
 			}
-			Either3::First(Either4::Second((req, answer, at))) => bus.lock(|p| session.answered(at, &mut p.borrow_mut(), req, &answer)),
+			Either3::First(Either4::Second(delivery)) => bus.lock(|p| session.answered(&mut p.borrow_mut(), &delivery)),
 			Either3::First(Either4::Third(delivery)) => bus.lock(|p| session.deliver(ms(), &mut p.borrow_mut(), &delivery)).into_iter().collect(),
 			Either3::First(Either4::Fourth(())) => bus.lock(|p| session.poll(ms(), &mut p.borrow_mut())),
 			Either3::Second(()) => mode_changed(&mut session, bus),
