@@ -142,6 +142,12 @@ pub struct Sample {
 	pub at: At,
 	/// The record's bytes, identifier echo stripped; or why there are none this time.
 	pub value: Result<Vec<u8>, Miss>,
+	/// `Some` on the last sample of a subscription that ends while its consumer still
+	/// holds it, with why, in words for a person: the dash board refused it ("refused by
+	/// the dash board — the car is moving"), or the link to the board broke. Its `value`
+	/// is then [`Miss::BusError`], and the stream ends after it. A subscription on a
+	/// cable never ends this way; it ends only with the bus.
+	pub ended: Option<String>,
 }
 
 /// Why a raw exchange came back without an answer.
@@ -305,6 +311,7 @@ impl Bus {
 			did,
 			rx,
 			commands: self.commands.clone(),
+			ended: None,
 		}
 	}
 
@@ -381,17 +388,30 @@ pub struct Subscription {
 	did: u16,
 	rx: mpsc::UnboundedReceiver<Sample>,
 	commands: mpsc::UnboundedSender<Command>,
+	/// Why it ended, once its last sample ([`Sample::ended`]) has been delivered.
+	ended: Option<String>,
 }
 
 impl Subscription {
-	/// The next reading or miss, in arrival order. `None` once the bus has shut down.
+	/// The next reading or miss, in arrival order. `None` once the subscription has ended
+	/// ([`ended`](Self::ended) says why, when there is a reason) or the bus has shut down.
 	pub async fn next(&mut self) -> Option<Sample> {
-		self.rx.recv().await
+		std::future::poll_fn(|cx| self.poll_next(cx)).await
 	}
 
 	/// [`next`](Self::next) as a poll, for waiting on several at once ([`next_of`]).
 	pub fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Sample>> {
-		self.rx.poll_recv(cx)
+		let polled = self.rx.poll_recv(cx);
+		if let Poll::Ready(Some(Sample { ended: Some(why), .. })) = &polled {
+			self.ended = Some(why.clone());
+		}
+		polled
+	}
+
+	/// Why this subscription ended while it was held, once its last sample has been
+	/// delivered: the words [`Sample::ended`] carried. `None` while it is live.
+	pub fn ended(&self) -> Option<&str> {
+		self.ended.as_deref()
 	}
 
 	pub fn unit(&self) -> Unit {

@@ -242,7 +242,13 @@ impl State {
 
 	fn to_subscriber(&self, sub: SubId, unit: Unit, did: u16, at: At, value: Result<Vec<u8>, Miss>) {
 		if let Some(to) = self.subs.get(&sub) {
-			let _ = to.send(Sample { unit, did, at, value });
+			let _ = to.send(Sample {
+				unit,
+				did,
+				at,
+				value,
+				ended: None,
+			});
 		}
 	}
 }

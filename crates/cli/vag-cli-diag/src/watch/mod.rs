@@ -332,6 +332,10 @@ pub struct App {
 	waiting: Option<u16>,
 	/// What the bus last said about each read the selection subscribes to.
 	heard: std::collections::BTreeMap<(u16, u16), Heard>,
+	/// The reads whose subscription ended while the run went on, and why — the dash board
+	/// refused them. Not waited on, and not asked for again until the read is unticked and
+	/// ticked, or the rate changes.
+	ended: std::collections::BTreeMap<(u16, u16), String>,
 	/// When the readings of the last [`RATE_WINDOW_S`] arrived, for the rate the
 	/// footer shows.
 	arrivals: std::collections::VecDeque<f64>,
@@ -373,6 +377,7 @@ impl App {
 			live: true,
 			waiting: None,
 			heard: std::collections::BTreeMap::new(),
+			ended: std::collections::BTreeMap::new(),
 			arrivals: std::collections::VecDeque::new(),
 			readings: 0,
 			status: String::new(),
@@ -599,7 +604,38 @@ impl App {
 	}
 
 	/// The text for a row's value cell, and how old the reading is.
+	/// A read that ended shows `ended` where its age would grow.
 	fn value_of(&self, row: &DisplayRow) -> (String, String) {
+		let (value, age) = self.value_and_age(row);
+		let ended = [row.actual, row.specified]
+			.into_iter()
+			.flatten()
+			.any(|c| self.ended.contains_key(&(c.request, c.did)));
+		match ended {
+			true => (value, "ended".to_string()),
+			false => (value, age),
+		}
+	}
+
+	/// How a read that ended is named to a person: "01 Engine 202A: refused by the dash
+	/// board — the car is moving".
+	fn ended_line(&self, request: u16, did: u16, why: &str) -> String {
+		format!("{} {did:04X}: {why}", self.unit_heading(request))
+	}
+
+	/// The footer's word on the reads that ended: the first, and how many more.
+	fn ended_note(&self) -> String {
+		let Some((&(request, did), why)) = self.ended.iter().next() else {
+			return String::new();
+		};
+		let more = match self.ended.len() - 1 {
+			0 => String::new(),
+			n => format!(" (and {n} more)"),
+		};
+		format!("  · {}{more}", self.ended_line(request, did, why))
+	}
+
+	fn value_and_age(&self, row: &DisplayRow) -> (String, String) {
 		let read = |c: Option<&Channel>| c.and_then(|c| self.latest.get(&(c.request, c.did)).map(|(t, d)| (c.render(d), *t)));
 		match (read(row.actual), read(row.specified)) {
 			(Some((a, t)), Some((s, u))) => {
@@ -863,6 +899,15 @@ impl App {
 	fn take(&mut self, sample: vag_cli_core::bus::Sample) {
 		let key = (sample.unit.request, sample.did);
 		let at = sample.at.secs;
+		// The last sample of a subscription that ended: the read is no longer being read,
+		// so it is not waited on, and why is kept for the footer. Only a read still
+		// subscribed, for the reason given below.
+		if let Some(why) = sample.ended {
+			if self.heard.remove(&key).is_some() {
+				self.ended.insert(key, why);
+			}
+			return;
+		}
 		// Only silence and a failed bus are waiting: a refusal, an identifier left out
 		// or an answer that does not parse all came from a unit that is there.
 		let answered = !matches!(sample.value, Err(vag_cli_core::bus::Miss::NoAnswer | vag_cli_core::bus::Miss::BusError));
@@ -1076,12 +1121,14 @@ fn draw_live(frame: &mut Frame, app: &mut App) {
 		}
 		None => String::new(),
 	};
+	// Said as soon as it happens, on the line that is always on screen.
+	let ended = app.ended_note();
 	// Built before the layout, because how many rows it wraps to is what the
 	// footer's height has to be. It was one row and did not wrap: on a replay
 	// at eighty columns the playback keys ran off the end of it, taking `[q]
 	// quit` with them.
 	let help = format!(
-		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [,] settings  [q] quit{}{waiting}",
+		" {rate}{} of {} shown · [tab] unit  [c] configure  [g] chart  [s] lines  [,] settings  [q] quit{}{waiting}{ended}",
 		app.rows().len(),
 		app.channels.iter().filter(|c| c.selected).count(),
 		app.status
@@ -2030,15 +2077,35 @@ fn resubscribe(app: &mut App, bus: &Bus, subs: &mut Vec<Subscription>, period: &
 	if asked != *period {
 		subs.clear();
 		*period = asked;
+		// A new rate is a new attempt at every read, the ones that ended included.
+		app.ended.clear();
 	}
 	subs.retain(|sub| wanted.contains_key(&(sub.unit().request, sub.did())));
+	// An unticked read forgets that it ended: ticked again, it is asked for again.
+	app.ended.retain(|key, _| wanted.contains_key(key));
 	for (&(request, did), unit) in &wanted {
+		// Asking again at once would be refused again at once, every pass of the loop.
+		if app.ended.contains_key(&(request, did)) {
+			continue;
+		}
 		if !subs.iter().any(|sub| (sub.unit().request, sub.did()) == (request, did)) {
 			subs.push(bus.subscribe(Class::Foreground, *unit, did, asked, None));
 			app.heard.insert((request, did), Heard { at: now, answered: true });
 		}
 	}
 	app.heard.retain(|key, _| wanted.contains_key(key));
+}
+
+/// Take one sample off `subs` into `app`. A subscription that ended is let go of, and
+/// the line naming it and why comes back — the plain view prints it, the screen already
+/// shows it in the footer.
+fn take_from(app: &mut App, subs: &mut Vec<Subscription>, sample: vag_cli_core::bus::Sample) -> Option<String> {
+	let key = (sample.unit.request, sample.did);
+	let why = sample.ended.clone();
+	app.take(sample);
+	let why = why?;
+	subs.retain(|sub| (sub.unit().request, sub.did()) != key);
+	Some(app.ended_line(key.0, key.1, &why))
 }
 
 /// How often each watched read is asked for, from the rate the settings screen
@@ -2536,7 +2603,16 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 			let wake = deadline.map_or(next_row, |d| d.min(next_row));
 			tokio::select! {
 				got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
-					Some((_, sample)) => app.take(sample),
+					Some((_, sample)) => {
+						if let Some(line) = take_from(&mut app, &mut subs, sample) {
+							// Every subscription ends when the link breaks: the run is over.
+							if bus.closed().is_some() {
+								return Err(link_closed(&bus));
+							}
+							// At once, and on stderr: stdout is the CSV.
+							eprintln!("{line}");
+						}
+					}
 					None => return Err(link_closed(&bus)),
 				},
 				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
@@ -2580,7 +2656,13 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		// the next frame, the keys are taken straight after it.
 		tokio::select! {
 			got = vag_cli_core::bus::next_of(&mut subs, &mut cursor) => match got {
-				Some((_, sample)) => app.take(sample),
+				// A read that ended goes into the footer at once. Every one ends when the
+				// link breaks, and then the run is over.
+				Some((_, sample)) => {
+					if take_from(&mut app, &mut subs, sample).is_some() && bus.closed().is_some() {
+						break Err(link_closed(&bus));
+					}
+				}
 				// Broken out of rather than drawn: the terminal is handed back below, and
 				// the reason is printed after it, where it stays readable.
 				None => break Err(link_closed(&bus)),
@@ -3210,6 +3292,7 @@ mod tests {
 					secs,
 				},
 				value: Ok(vec![0x03, 0xE8]),
+				ended: None,
 			});
 		}
 		a.clock = 2.0;
@@ -3220,6 +3303,7 @@ mod tests {
 			did: 0x202A,
 			at: At { ms: 2100, secs: 2.1 },
 			value: Err(Miss::NoAnswer),
+			ended: None,
 		});
 		assert_eq!(a.latest[&(0x7E0, 0x202A)].0, 2.0, "a miss keeps the last value, ageing");
 		assert!(!a.heard[&(0x7E0, 0x202A)].answered);
@@ -3244,6 +3328,7 @@ mod tests {
 				did: 0x202A,
 				at: At { ms: 1000, secs: 1.0 },
 				value: Err(why),
+				ended: None,
 			});
 			assert_eq!(waited_on(&a.heard, 1.0, 0.1), None, "{why:?} is an answer");
 			assert_eq!(a.heard[&(0x7E0, 0x202A)].at, 1.0, "{why:?} is heard from");
@@ -3256,9 +3341,128 @@ mod tests {
 				did: 0x202A,
 				at: At { ms: 1000, secs: 1.0 },
 				value: Err(why),
+				ended: None,
 			});
 			assert_eq!(waited_on(&a.heard, 1.0, 0.1), Some(0x7E0), "{why:?} is waited on");
 		}
+	}
+
+	/// A read the dash board refuses has ended on the board: it is not a unit being read,
+	/// and the footer must not spin on it.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_read_the_board_refuses_is_not_waited_on() {
+		use vag_uds_transport::link::{self, Message, Outcome, Piece, Pipe, Reading, Reassembler, pipe_pair};
+		let (host, mut board) = pipe_pair(244);
+		let bus = Bus::start_remote(host, "vagcan-dash", vag_cli_core::bus::Carrier::Ble);
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+		let mut subs = Vec::new();
+		let mut period = live_period(&a);
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+
+		let mut reassembler = Reassembler::new();
+		let sub = loop {
+			let chunk = tokio::time::timeout(Duration::from_secs(2), board.read()).await.unwrap().unwrap();
+			if let Some(Piece::Message(Message::Subscribe(s))) = reassembler.push(&chunk).into_iter().next() {
+				break s.sub;
+			}
+		};
+		let refused = Reading {
+			sub,
+			at_ms: 10,
+			outcome: Outcome::Refused("the car is moving".into()),
+		};
+		board.write(&link::encode(&Message::Reading(refused)).unwrap()).await.unwrap();
+
+		let mut cursor = 0;
+		while let Ok(Some((_, sample))) = tokio::time::timeout(Duration::from_millis(300), vag_cli_core::bus::next_of(&mut subs, &mut cursor)).await {
+			a.take(sample);
+		}
+		a.clock = bus.secs();
+		assert_eq!(
+			waited_on(&a.heard, a.clock, period.as_secs_f64()),
+			None,
+			"a refused read is not a unit being read"
+		);
+	}
+
+	/// The next Subscribe the host sends a scripted board.
+	async fn subscribe_heard(
+		board: &mut vag_uds_transport::link::MemoryPipe,
+		reassembler: &mut vag_uds_transport::link::Reassembler,
+		heard: &mut std::collections::VecDeque<vag_uds_transport::link::Subscribe>,
+	) -> vag_uds_transport::link::Subscribe {
+		use vag_uds_transport::link::{Message, Piece, Pipe};
+		loop {
+			if let Some(subscribe) = heard.pop_front() {
+				return subscribe;
+			}
+			let chunk = tokio::time::timeout(Duration::from_secs(2), board.read())
+				.await
+				.expect("the host subscribed")
+				.expect("the pipe is open");
+			for piece in reassembler.push(&chunk) {
+				if let Piece::Message(Message::Subscribe(subscribe)) = piece {
+					heard.push_back(subscribe);
+				}
+			}
+		}
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn a_refused_read_says_why_at_once_and_is_asked_for_again_only_when_the_choice_changes() {
+		use vag_uds_transport::link::{self, Message, Outcome, Pipe, Reading, Reassembler, pipe_pair};
+		let (host, mut board) = pipe_pair(244);
+		let bus = Bus::start_remote(host, "vagcan-dash", vag_cli_core::bus::Carrier::Ble);
+		let mut a = App::new(vec![
+			proven(0x7E0, 0x202A, "Boost pressure", "bar"),
+			proven(0x7E0, 0x2029, "Boost pressure, specified", "bar"),
+		]);
+		let mut subs = Vec::new();
+		let mut period = live_period(&a);
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		let (mut reassembler, mut heard) = (Reassembler::new(), std::collections::VecDeque::new());
+		let mut asked = Vec::new();
+		for _ in 0..2 {
+			asked.push(subscribe_heard(&mut board, &mut reassembler, &mut heard).await);
+		}
+		let boost = asked.iter().find(|s| s.did == 0x202A).expect("202A subscribed").sub;
+		let refused = Reading {
+			sub: boost,
+			at_ms: 10,
+			outcome: Outcome::Refused("the car is moving".into()),
+		};
+		board.write(&link::encode(&Message::Reading(refused)).unwrap()).await.unwrap();
+
+		let mut lines = Vec::new();
+		let mut cursor = 0;
+		while let Ok(Some((_, sample))) = tokio::time::timeout(Duration::from_millis(300), vag_cli_core::bus::next_of(&mut subs, &mut cursor)).await {
+			lines.extend(take_from(&mut a, &mut subs, sample));
+		}
+		assert_eq!(lines.len(), 1, "{lines:?}");
+		assert!(lines[0].contains("202A: refused by the dash board — the car is moving"), "{lines:?}");
+		assert!(a.ended_note().contains("202A: refused by the dash board — the car is moving"));
+		assert_eq!(subs.len(), 1, "the ended subscription is let go of, the other still reads");
+		let footer = live_text(&mut a, 160, 12);
+		assert!(footer.contains("refused by the dash board"), "{footer}");
+
+		// Not asked for again on the next pass...
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		assert_eq!(subs.len(), 1);
+		assert!(
+			tokio::time::timeout(Duration::from_millis(150), board.read()).await.is_err(),
+			"nothing sent to the board"
+		);
+		// ...but a new rate is a new attempt at both.
+		a.hz = 2.0;
+		resubscribe(&mut a, &bus, &mut subs, &mut period);
+		assert_eq!(subs.len(), 2);
+		assert!(a.ended.is_empty());
+		let mut again: Vec<u16> = Vec::new();
+		for _ in 0..2 {
+			again.push(subscribe_heard(&mut board, &mut reassembler, &mut heard).await.did);
+		}
+		again.sort_unstable();
+		assert_eq!(again, [0x2029, 0x202A]);
 	}
 
 	/// A CAN bus nobody answers on: enough to hand a [`Bus`] something to own.

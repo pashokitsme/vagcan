@@ -31,19 +31,23 @@
 //!   The board also keeps one timing channel for all its hosts: while another host holds
 //!   it, the board refuses the subscription, and it ends as any refusal does.
 //! - **A refusal by the board ends a subscription** — on the board it has already ended
-//!   (`vag_uds_client::remote`). The subscriber gets one [`Miss::BusError`] and then the
-//!   end of its stream. The planner's [`Miss`] has no variant for a refusal by the link,
-//!   and it is shared with the board, whose session matches it exhaustively. An
-//!   exchange's refusal is [`ExchangeError::Refused`], carrying the board's words.
-//! - **What is to be said is said when the bus closes**, not when it happens: a line on
-//!   stderr in the middle of a run lands on top of `watch`'s or `measure`'s full screen
-//!   and stays there. The cable task keeps its own note the same way.
+//!   (`vag_uds_client::remote`). The subscriber gets one last [`Miss::BusError`] whose
+//!   [`Sample::ended`](super::Sample::ended) carries the board's words, at once, and then
+//!   the end of its stream; so does one refused here. The planner's [`Miss`] has no
+//!   variant for a refusal by the link, and it is shared with the board, whose session
+//!   matches it exhaustively. An exchange's refusal is [`ExchangeError::Refused`],
+//!   carrying the board's words.
+//! - **A one-shot read's refusal is said when the bus closes**, not when it happens: its
+//!   miss has nowhere to carry words, and a line on stderr in the middle of a run lands
+//!   on top of `watch`'s or `measure`'s full screen and stays there. The cable task keeps
+//!   its own note the same way.
 //! - **The board's text** — `dashcfg`'s state line over BLE, the image's log lines over
 //!   USB — shares the pipe and is ignored. So is a HelloReply: the Hello was asked by
 //!   whoever opened the pipe, before the bus started.
 //! - **When the link breaks** — the pipe closes, a write fails, or a frame does not
 //!   reassemble, which on a link that guarantees delivery means a chunk was lost — every
-//!   subscription gets a last [`Miss::BusError`] and ends, whatever is waiting fails,
+//!   subscription gets a last [`Miss::BusError`] carrying the reason and ends, whatever is
+//!   waiting fails,
 //!   every later command fails with the reason, and [`Bus::closed`](super::Bus::closed)
 //!   says it, so a consumer can show why its streams ended.
 //!
@@ -391,12 +395,12 @@ impl Remote {
 		let now = self.at(Instant::now());
 		if self.subs.len() >= MAX_SUBSCRIPTIONS {
 			let why = format!("the dash board holds at most {MAX_SUBSCRIPTIONS} subscriptions at once");
-			return self.end(unit, did, now, &to, &why);
+			return end(unit, did, now, &to, &why);
 		}
 		let priority = priority_of(class);
 		let timing = self.subs.values().filter(|live| live.priority == Priority::Timing).count();
 		if priority == Priority::Timing && timing >= MAX_TIMING_SUBSCRIPTIONS {
-			return self.end(unit, did, now, &to, &Refusal::TooManyTimingSubscriptions.to_string());
+			return end(unit, did, now, &to, &Refusal::TooManyTimingSubscriptions.to_string());
 		}
 		let sub = self.free_sub();
 		let asked = link::Subscribe {
@@ -412,7 +416,7 @@ impl Remote {
 				self.subs.insert(sub, Sub { unit, did, priority, to });
 				self.wire.insert(key, sub);
 			}
-			Err(why) => self.end(unit, did, now, &to, &why.to_string()),
+			Err(why) => end(unit, did, now, &to, &why.to_string()),
 		}
 	}
 
@@ -425,18 +429,6 @@ impl Remote {
 				return sub;
 			}
 		}
-	}
-
-	/// A subscription that will not be read: one miss now, why at the close. Its stream
-	/// ends when the caller lets go of `to`.
-	fn end(&mut self, unit: Unit, did: u16, at: At, to: &mpsc::UnboundedSender<Sample>, why: &str) {
-		self.note(format!("{}: {:03X} {did:04X} was not read: {why}", self.peer, unit.request));
-		let _ = to.send(Sample {
-			unit,
-			did,
-			at,
-			value: Err(Miss::BusError),
-		});
 	}
 
 	/// Put the next request on the pipe, when none is out.
@@ -496,14 +488,20 @@ impl Remote {
 			Outcome::Refused(why) => {
 				if let Some(sub) = self.subs.remove(&reading.sub) {
 					self.wire.retain(|_, wire| *wire != reading.sub);
-					self.end(unit, did, at, &sub.to, &format!("refused by the dash board: {why}"));
+					end(unit, did, at, &sub.to, &format!("refused by the dash board — {why}"));
 				}
 				return;
 			}
 			outcome => read_value(did, outcome),
 		};
 		if let Some(sub) = self.subs.get(&reading.sub) {
-			let _ = sub.to.send(Sample { unit, did, at, value });
+			let _ = sub.to.send(Sample {
+				unit,
+				did,
+				at,
+				value,
+				ended: None,
+			});
 		}
 	}
 
@@ -569,12 +567,7 @@ impl Remote {
 		let now = self.at(Instant::now());
 		self.wire.clear();
 		for (_, sub) in self.subs.drain() {
-			let _ = sub.to.send(Sample {
-				unit: sub.unit,
-				did: sub.did,
-				at: now,
-				value: Err(Miss::BusError),
-			});
+			end(sub.unit, sub.did, now, &sub.to, why);
 		}
 		let waiting: Vec<Ask> = self.flying.take().map(|f| f.ask).into_iter().chain(self.asks.drain(..)).collect();
 		for ask in waiting {
@@ -592,8 +585,9 @@ impl Remote {
 	/// A command after the link broke for `why`.
 	fn refuse(&self, command: Command, why: &str) {
 		match command {
-			// Dropping its sender here ends the new subscription's stream at once.
-			Command::Subscribe { .. } | Command::Unsubscribe { .. } | Command::Shutdown => {}
+			// Its last sample says why; dropping its sender then ends its stream.
+			Command::Subscribe { unit, did, to, .. } => end(unit, did, self.at(Instant::now()), &to, why),
+			Command::Unsubscribe { .. } | Command::Shutdown => {}
 			Command::ReadOnce { to, .. } => {
 				let _ = to.send(Err(Miss::BusError));
 			}
@@ -602,6 +596,18 @@ impl Remote {
 			}
 		}
 	}
+}
+
+/// A subscription that will not be read any more: its last sample, a miss carrying `why`
+/// (module docs). Its stream ends when the caller lets go of `to`.
+fn end(unit: Unit, did: u16, at: At, to: &mpsc::UnboundedSender<Sample>, why: &str) {
+	let _ = to.send(Sample {
+		unit,
+		did,
+		at,
+		value: Err(Miss::BusError),
+		ended: Some(why.to_string()),
+	});
 }
 
 /// How a subscription of `class` is marked on the link (module docs).

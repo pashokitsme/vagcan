@@ -31,3 +31,5 @@ vag-cli-core = { path = "../vag-cli-core", features = ["test-util"] }
 tempfile = "3"
 # A paused clock, for a loop test whose deadline is minutes of real time.
 tokio = { workspace = true, features = ["test-util"] }
+# `link::pipe_pair`: the live feed over a bus to a scripted dash board.
+vag-uds-transport = { path = "../../uds/vag-uds-transport", features = ["test-util"] }
