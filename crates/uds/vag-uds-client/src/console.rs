@@ -300,6 +300,13 @@ impl Console {
 		out
 	}
 
+	/// The caller was away: waiting on a queue of its own — back-pressure — not on the host.
+	/// The gap a frame in progress is given up after ([`FRAME_GAP_MS`]) restarts from
+	/// `now_ms`, so only the host's silence counts toward it.
+	pub fn resume(&mut self, now_ms: u64) {
+		self.last_byte_ms = self.last_byte_ms.max(now_ms);
+	}
+
 	/// The cable was pulled (or the host stopped the bus): what was in progress is
 	/// forgotten, and adapter mode ends.
 	pub fn disconnected(&mut self) -> Option<Input> {
@@ -625,6 +632,23 @@ mod tests {
 			heard.extend(console.push_at(core::slice::from_ref(byte), false, 1_000 + at as u64 * (FRAME_GAP_MS - 1)));
 		}
 		assert_eq!(heard, vec![Input::Message(request())]);
+	}
+
+	#[test]
+	fn the_board_s_own_wait_between_two_halves_of_a_frame_is_not_the_host_s_silence() {
+		let frame = link::encode(&request()).unwrap();
+		let mut console = Console::new();
+		assert!(console.push_at(&frame[..6], false, 1_000).is_empty());
+		// Handing on what the first half said waited 300 ms on a full queue; the host sent
+		// the rest meanwhile, and it is read the moment the board looks again.
+		console.resume(1_000 + 300);
+		assert_eq!(console.push_at(&frame[6..], false, 1_000 + 301), vec![Input::Message(request())]);
+
+		// The host's own silence past the gap, after a resume, still gives the frame up.
+		let mut console = Console::new();
+		console.push_at(&frame[..6], false, 1_000);
+		console.resume(1_300);
+		assert_eq!(console.push_at(&frame[6..], false, 1_300 + FRAME_GAP_MS)[0], Input::Malformed(UNFINISHED));
 	}
 
 	#[test]

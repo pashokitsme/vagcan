@@ -2323,6 +2323,12 @@ async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
 	let mut console = Console::new();
 	let mut buffer = [0u8; 64];
 	loop {
+		// What the board waited on since the last chunk — `USB_ROOM` below, or a full
+		// `USB_MESSAGES`, `SLCAN_IN` or `USB_OUT` while handing that chunk on — is its own
+		// back-pressure, not the host's silence: the host's rest of a frame was sent meanwhile
+		// and sits in the FIFO. Counted, a 200 ms wait gave the frame up and read its tail as
+		// text, which could switch the board into adapter mode. Only the read counts.
+		console.resume(ms());
 		// Past the cap the host is not read: it waits, and nothing it sent is dropped.
 		let full = usb_backlog() >= QUEUED_PDU_BYTES;
 		let read = async {
