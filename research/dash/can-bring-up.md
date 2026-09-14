@@ -889,3 +889,21 @@ from Terminal.app (`open -a Terminal x.command`). `benchecu --bench --device C -
 `Class::Timing` on the board (in progress, branch `timing-link`); then `measure` over USB and BLE
 at 50 Hz. Not run: `dashsim` 2 min, unplugging USB in adapter mode, a 4095-byte USB flood,
 the hour-long unacknowledged stall test.
+
+### 9.10 `measure` at 50 Hz through the board, 2026-09-14 18:09–18:25
+
+§9.9 found `measure --device B` at 10 Hz: the link's Subscribe carried no class, so the
+speed channel was thinned at the board's 100/s ceiling like any host channel. Fixed on
+`timing-link` (merged `213f6ec`): Subscribe carries a priority byte; the board takes one
+timing subscription at a time across BLE and USB together and polls it as `Class::Timing`;
+on the board the panel's floor goes ahead of it (a review found a host's timing channel on a
+unit answering in ≥ 20 ms would otherwise starve the panel — 0 of 120 panel sends in the
+planner at 25 ms latency). `benchecu --part 7E0=… --part 7E1=…` served F187 from the plan's units.
+
+| check | seen |
+|---|---|
+| `vagcan measure --device B`, before the fix (§9.9) | speed channel ≈ 8–10/s, ~98 requests/s in all |
+| `vagcan measure --device B`, `timing-link` image | `7E1 F40D` **49–51/s**; the other channels thinned (≈ 3–4/s), the panel's `202A` 10/s, `F405`/`028D` 2/s |
+| `bleuds --subscribe 7E0 7E8 F40D 20 10 --timing` | **501 readings in 10,002 ms of board time, 50.0 Hz**; `benchecu` 47–50/s |
+| `vagcan measure --device ble` | `7E1 F40D` **49–51/s** for the whole run |
+| `vagcan measure --device B` after the merge (`213f6ec`, panel floor first) | `7E1 F40D` 47–50/s, `202A` 9–11/s, `028D` 2/s |

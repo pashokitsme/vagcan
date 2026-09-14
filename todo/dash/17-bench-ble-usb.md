@@ -20,9 +20,11 @@ answer". Two defects found and fixed there. Everything that needs frames on the 
 **2026-09-14 17:44 — pair repaired (the transceiver module was unpowered); most of §1 and §2
 passed** (`research/dash/can-bring-up.md` §9.9): BLE subscription 10.0 Hz, `watch` over BLE and
 USB at 100 ms, both carriers at once, adapter mode in and out, `kill -9`, the `slcan` image.
-**Failed:** `measure` over the board runs at 10 Hz — the link carries no class, so the speed
-channel is thinned at the board's ceiling (fix on `timing-link`). **Not run yet:** `dashsim`,
-unplug in adapter mode, USB flood, the hour-long stall test, the car.
+**18:25 — `measure` through the board at 50 Hz over USB and BLE** (§9.10, after the timing
+channel was added to the link). The board's USB output is clean for a minute (§9.9, in place of
+`dashsim`). **Not run yet:** unplug USB in adapter mode (needs a hand at the bench), a 4095-byte
+USB flood, the car. The hour-long stall test is dropped: both "quiet pair" episodes were the
+unpowered transceiver.
 
 ## 0. The pair
 

@@ -10,7 +10,10 @@ dated status sections moved verbatim to
 **Milestone: one scheduler on the board and the laptop, and the laptop reads the car
 through the board.** Built on branch `ble-uds` (not on `master` yet), reviewed lens by
 lens, hardware-free tests (1,522 in the workspace). The first end-to-end bench run found
-the CAN pair dead (`research/dash/can-bring-up.md` §9.7).
+the CAN pair dead (`research/dash/can-bring-up.md` §9.7) — the transceiver module was unpowered;
+after the owner's repair the bench passed (§9.9, §9.10): BLE and USB subscriptions at their
+rates, `watch` through the board at 100 ms, both carriers at once, adapter mode in and out,
+the `slcan` image, and `measure` through the board at 50 Hz.
 
 - **Scheduler** (`dash/14` §2). `vag_uds_client::schedule::Planner`, `no_std`, no clock:
   subscriptions with drop semantics, one read per `(unit, did)`, a unit's due
@@ -28,9 +31,10 @@ the CAN pair dead (`research/dash/can-bring-up.md` §9.7).
   one run.
 - **Bench tools.** `bleuds` (one framed request or subscription over BLE) and `benchecu`
   (the CANable answering as a unit; bench pair only, stops on car traffic).
-- **Bench, 2026-09-14.** The board's half of UDS over BLE passed with `bleuds`
-  (§9.5, §9.6). `vagcan` over BLE connected and subscribed, but no frame crossed the pair
-  in either direction, `cantx` included (§9.7). **Needs the owner at the bench.**
+- **Bench, 2026-09-14.** The board's half of UDS over BLE passed with `bleuds` (§9.5, §9.6);
+  the pair then went dead — an unpowered SN65HVD230, 1.56 V on its 3.3 V pin (§9.7, §9.8) —
+  and after the repair `vagcan` through the board passed over BLE and USB (§9.9), with
+  `measure` at 50 Hz once the link carried a timing channel (§9.10).
 - **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
   --hz` given explicitly wins over the saved rate.
 
@@ -58,11 +62,12 @@ stored-config check at boot, whether opening the board's port twice resets it).
 
 **Without the car**
 
-1. **Bench: `vagcan` through the board** — [`dash/17`](dash/17-bench-ble-usb.md). Fix the
-   CAN pair first (§9.7), then BLE end to end with `benchecu`, the USB link and `--slcan`.
-2. **`ble-uds` → `master`** — after the bench, by pull request.
-3. **Why the pair went quiet** — §9.5, §9.7: an hour unacknowledged with the board's
-   console captured, once the pair works again.
+1. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: `vagcan faults
+   --device ble` with the panel updating, `info`/`watch` over USB, a subscription on a unit
+   that answers. What is left on the bench: unplug USB in adapter mode, a USB flood.
+2. **`ble-uds` → `master`** — PR #2; the bench passed, merge when the owner says.
+3. **The alarm rules** — the owner writes `[[alarm]]` into `dash.toml`; the misfire numbers
+   are a car measurement.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
 5. **Alarms on the board** — `dash/04`. Wired on branch `alarms` (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
