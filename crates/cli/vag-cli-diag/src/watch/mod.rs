@@ -2049,6 +2049,19 @@ fn live_period(app: &App) -> Duration {
 	Duration::from_secs_f64(1.0 / app.hz.max(crate::config::MIN_HZ))
 }
 
+/// The rate a run starts at: `--hz` when given, the saved setting otherwise.
+///
+/// The flag wins for one run; the setting is what the screen changes and what the
+/// next run starts from. A flag equal to the built-in default is still a flag —
+/// `--hz 10` with 50 saved used to poll at 50, because it could not be told from
+/// no flag at all.
+fn effective_hz(flag: Option<f64>, saved: f64) -> f64 {
+	match flag {
+		Some(hz) => hz.clamp(crate::config::MIN_HZ, crate::config::MAX_HZ),
+		None => saved,
+	}
+}
+
 /// One CSV row of whatever is selected, writing the header first.
 ///
 /// A raw column is marked, because a four-digit hex value and a four-digit
@@ -2316,7 +2329,8 @@ pub enum View {
 
 pub struct Options<'a> {
 	pub preselect: &'a [(u16, u16)],
-	pub hz: f64,
+	/// `--hz`, when given.
+	pub hz: Option<f64>,
 	pub out: Option<&'a str>,
 	pub survey: Option<&'a str>,
 	pub catalogs: &'a str,
@@ -2460,12 +2474,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		app.hz = crate::config::hz(&settings);
 		app.show_key = crate::config::show_key(&settings);
 	}
-	// The flag wins for one run; the setting is what the screen changes and
-	// what the next run starts from. `--hz` left at its own default means
-	// nobody asked for a rate, so the setting stands.
-	if (hz - crate::config::DEFAULT_HZ).abs() > f64::EPSILON {
-		app.hz = hz.clamp(crate::config::MIN_HZ, crate::config::MAX_HZ);
-	}
+	app.hz = effective_hz(hz, app.hz);
 	// This car's own marks, if it has any: the handful somebody watches every
 	// drive, ticked before the screen appears. They come after `--did`, which
 	// is a person being explicit about this one run, and before the basics,
@@ -2616,6 +2625,14 @@ fn next_after(due: f64, now: f64, period: Duration) -> f64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn an_explicit_hz_wins_even_when_it_equals_the_default() {
+		assert_eq!(effective_hz(Some(crate::config::DEFAULT_HZ), 50.0), crate::config::DEFAULT_HZ);
+		assert_eq!(effective_hz(None, 50.0), 50.0);
+		assert_eq!(effective_hz(Some(1000.0), 2.0), crate::config::MAX_HZ);
+		assert_eq!(effective_hz(Some(0.0), 2.0), crate::config::MIN_HZ);
+	}
 
 	/// The reference car's own proven rows, when this machine has any.
 	///

@@ -283,9 +283,10 @@ enum Command {
 		/// bare list means the engine.
 		#[arg(long, value_name = "SPEC")]
 		did: Option<String>,
-		/// Target poll rate.
-		#[arg(long, default_value_t = 10.0, value_name = "HZ")]
-		hz: f64,
+		/// Poll rate for this run. Without it, the rate last set on the settings
+		/// screen (10 Hz when none was ever set).
+		#[arg(long, value_name = "HZ")]
+		hz: Option<f64>,
 		/// Also record to CSV.
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
