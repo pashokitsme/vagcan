@@ -14,15 +14,14 @@ item 7 (the `frame` mirror) unnecessary.
 
 ## Decided
 
-- **A transport, nothing more.** On the host, a second implementation of
-  `vag_uds_transport::AsyncIsoTpTransport` over BLE NUS (the scan and NUS pipe already live
-  in `vag-dash-ble`). `faults`, `info`, `units`, `watch` run through it unchanged, because
-  they never see frames. Speed does not matter; one fault read at a time is the use.
+- **A transport, nothing more.** On the host, `Bus::start_remote` over a `link::Pipe`
+  (`vag_dash_ble::NusPipe`): the same `Bus` a cable gives, so every car command runs through
+  it unchanged. Speed does not matter; one fault read at a time is the use.
 - **On the board, the `dash` image.** A NUS message carrying `(request id, response id,
   UDS PDU)` is queued between the panel's own reads; the board runs ISO-TP on its TWAI and
   sends the answer PDU back. The panel keeps running; the board stays the one talker.
-  No scheduler needed for this (`14` §2 stays separate work).
-- **Framing:** length + message type + body, cut into NUS-MTU chunks. BLE's link layer
+  It goes through the board's planner (`14` §2).
+- **Framing:** a NUL marker, a type byte, a u16 length, the body (`vag_uds_transport::link`), cut into NUS-MTU chunks. BLE's link layer
   already guarantees delivery and integrity. The type byte separates UDS from the
   text settings protocol `dashcfg` already speaks on the same NUS (`12`).
 - **Always visible** (owner, 2026-09-13; implemented 2026-09-14): "мы можем видимость всегда включенной держать и
@@ -112,8 +111,9 @@ item 7 (the `frame` mirror) unnecessary.
 - **Zero friction is the point** (owner, 2026-09-14: "Сделать связь по BLE простой и
   доступной. Просто запускаю прогу и сразу коннекчусь"). No pairing, no confirmation, no
   button. Anyone nearby can read what the guards allow — VIN, faults — and that is
-  accepted. Without `--device`, when no cable adapter is found, `vagcan` scans BLE itself
-  and connects to the one board it finds, saying so.
+  accepted. BLE only when asked (owner, 2026-09-14 evening: «вообще можно сделать --ble для поиска ble
+  устройства, автопоиск выключить», then «ну либо --device ble»): no automatic scan, not
+  even with no cable adapter; `--device ble` scans, `--device ble:<name>` picks.
 
 ## Done when
 
@@ -128,9 +128,9 @@ item 7 (the `frame` mirror) unnecessary.
   subscriptions on the board's clock, one-shot reads, exchanges and every outcome, refusals,
   notifications of 20 and 244 bytes with the state line between, reads taken in between
   writes, a lost chunk breaking the link, a drop mid-exchange, the 33rd subscription;
-  `--device ble` / `ble:<name>` and the fallback with no cable in `device.rs`, every branch
+  `--device ble` / `ble:<name>` in `device.rs` (the automatic fallback with no cable was dropped by the owner on 2026-09-14), every branch
   tested; `dev survey`, `units --identify <unit>` and `dev sniff` refused over BLE before
-  anything is opened. The host side has not run against the board yet.)*
+  anything is opened. The host side ran against the board on 2026-09-14, `research/dash/can-bring-up.md` §9.9.)*
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,
   on a negative answer and on no answer, allowed on 0; the rate cap delaying; a run of 8
   refused in any order and through padding; a multi-identifier request over 4 refused, and
@@ -142,6 +142,5 @@ item 7 (the `frame` mirror) unnecessary.
 - Bench: `vagcan info --device ble` makes the board put `7E0 22 F1 90` on the pair, seen by
   the CANable with `dev sniff --device … --active` (no unit answers on the bench). *(The
   board's half passed 2026-09-14 with the bench tool `bleuds` in place of `vagcan`:
-  `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` itself is still to
-  run: the first attempt found the bench pair dead, §9.7; plan in `17-bench-ble-usb.md`.)*
+  `research/dash/can-bring-up.md` §9.5. `vagcan info --device ble` itself ran on 2026-09-14 once the pair was repaired, §9.9.)*
 - Car: `vagcan faults --device ble` lists the stored faults, the panel still updating.

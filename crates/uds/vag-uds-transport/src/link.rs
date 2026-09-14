@@ -341,8 +341,10 @@ pub enum Piece {
 	/// A whole framed message.
 	Message(Message),
 	/// Bytes that are not framed: the text protocol. Runs to the next NUL or the
-	/// end of the chunk, whichever is first — text is one command per write, so a
-	/// text piece never continues into the next chunk.
+	/// end of the chunk, whichever is first, so a piece is not a line. From a host,
+	/// text is one command per write and the board takes each piece as one. From the
+	/// board, a line longer than a notification continues into the next chunk and
+	/// ends at its `\n`: a reader joins the pieces up to it.
 	Text(Vec<u8>),
 	/// A frame that was rejected. The reassembler has already resynchronised.
 	Error(LinkError),

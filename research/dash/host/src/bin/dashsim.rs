@@ -113,6 +113,50 @@ enum FromBoard {
 	Gone(String),
 }
 
+/// What one read of the board's stream came to.
+enum Heard {
+	/// The port closed.
+	End,
+	/// A line with nothing for the panel.
+	Nothing,
+	Said(FromBoard),
+}
+
+/// One line off the board, kept in `line` across reads that time out.
+///
+/// The port carries more than text: the board's link frames (`vag_uds_transport::link`)
+/// for a host on the cable, and the filler its writer closes a stalled frame with — which a
+/// host killed mid-session leaves for the next one to read. So the line is bytes, not a
+/// `String`: `read_line` fails on the first byte past ASCII that is not UTF-8, and that
+/// failure used to end this reader for good. A line holding a NUL is the link's and is
+/// skipped; any other is read lossily.
+fn read_board<R: BufRead>(reader: &mut R, line: &mut Vec<u8>) -> std::io::Result<Heard> {
+	// A read that times out keeps what it read in `line` and says so; the next call goes on.
+	if reader.read_until(b'\n', line)? == 0 {
+		return Ok(Heard::End);
+	}
+	// A whole line, or at the end of the stream what there is of the last one.
+	let heard = if line.contains(&0) {
+		Heard::Nothing
+	} else {
+		said(&String::from_utf8_lossy(line))
+	};
+	line.clear();
+	Ok(heard)
+}
+
+/// A whole text line from the board: a panel frame, or a log line.
+fn said(text: &str) -> Heard {
+	let trimmed = text.trim_end_matches(['\r', '\n']);
+	Heard::Said(match frame::decode(trimmed) {
+		Ok(bitmap) => FromBoard::Frame(Box::new(bitmap)),
+		Err(frame::DecodeError::NotAFrame) => FromBoard::Log(strip_ansi(trimmed)),
+		// A malformed frame is worth seeing, not hiding: it
+		// means the two encoders have drifted apart.
+		Err(e) => FromBoard::Log(format!("[bad frame] {e}")),
+	})
+}
+
 /// What the one argument asks for.
 enum Invocation {
 	Demo,
@@ -206,28 +250,20 @@ fn run(port_name: &str) -> Result<()> {
 	let (tx, rx) = mpsc::channel();
 	std::thread::spawn(move || {
 		let mut reader = BufReader::new(port);
-		let mut line = String::new();
+		let mut line = Vec::new();
 		loop {
-			line.clear();
-			// A read timeout is not an error here: the board is simply quiet.
-			match reader.read_line(&mut line) {
-				Ok(0) => {
+			match read_board(&mut reader, &mut line) {
+				Ok(Heard::End) => {
 					let _ = tx.send(FromBoard::Gone("port closed".into()));
 					return;
 				}
-				Ok(_) => {
-					let trimmed = line.trim_end_matches(['\r', '\n']);
-					let message = match frame::decode(trimmed) {
-						Ok(bitmap) => FromBoard::Frame(Box::new(bitmap)),
-						Err(frame::DecodeError::NotAFrame) => FromBoard::Log(strip_ansi(trimmed)),
-						// A malformed frame is worth seeing, not hiding: it
-						// means the two encoders have drifted apart.
-						Err(e) => FromBoard::Log(format!("[bad frame] {e}")),
-					};
+				Ok(Heard::Nothing) => {}
+				Ok(Heard::Said(message)) => {
 					if tx.send(message).is_err() {
 						return;
 					}
 				}
+				// A read timeout is not an error here: the board is simply quiet.
 				Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
 				Err(e) => {
 					let _ = tx.send(FromBoard::Gone(e.to_string()));
@@ -519,6 +555,65 @@ mod tests {
 		let ports = [usb("/dev/cu.usbmodem1101", 0x303a, 0x1001), usb("/dev/cu.usbmodem2101", 0x303a, 0x1001)];
 		let err = pick_board(&ports).unwrap_err().to_string();
 		assert!(err.contains("/dev/cu.usbmodem1101") && err.contains("/dev/cu.usbmodem2101"), "{err}");
+	}
+
+	fn heard(reader: &mut impl BufRead, line: &mut Vec<u8>) -> String {
+		match read_board(reader, line) {
+			Ok(Heard::End) => "end".into(),
+			Ok(Heard::Nothing) => "nothing".into(),
+			Ok(Heard::Said(FromBoard::Frame(bitmap))) => format!("frame {}x{}", bitmap.width, bitmap.height),
+			Ok(Heard::Said(FromBoard::Log(text))) => format!("log {text}"),
+			Ok(Heard::Said(FromBoard::Gone(why))) => format!("gone {why}"),
+			Err(e) => format!("error {:?}", e.kind()),
+		}
+	}
+
+	#[test]
+	fn link_bytes_and_bytes_past_ascii_on_the_port_do_not_end_the_reader() {
+		let bitmap = Bitmap {
+			width: 4,
+			height: 2,
+			pixels: vec![true; 8],
+		};
+		let mut stream = Vec::new();
+		// The filler the board's writer closes a stalled frame with (`link::BROKEN_FRAME`),
+		// run into the log line after it: a line with a NUL is the link's, not the panel's.
+		stream.extend_from_slice(&[0x00, 0xFF, 0x00, 0x00]);
+		stream.extend_from_slice(b"W - usb: the host went away\r\n");
+		// A stale Reading for a host killed mid-session: its bytes past 0x7F are not UTF-8.
+		stream.extend_from_slice(&[0x00, 0x05, 0x04, 0x00, 0x01, 0x00, 0x9C, 0xE8, b'\n']);
+		stream.extend_from_slice(b"W - caf\xE9\r\n");
+		stream.extend_from_slice(frame::encode(&bitmap).as_bytes());
+		stream.extend_from_slice(b"\r\n");
+		let mut reader = &stream[..];
+		let mut line = Vec::new();
+		let said: Vec<String> = (0..6).map(|_| heard(&mut reader, &mut line)).collect();
+		assert_eq!(said, ["nothing", "nothing", "log W - caf\u{FFFD}", "frame 4x2", "end", "end"]);
+	}
+
+	/// Reads one scripted piece at a time; `None` is a read that timed out.
+	struct Stutter(VecDeque<Option<&'static [u8]>>);
+
+	impl std::io::Read for Stutter {
+		fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+			match self.0.pop_front() {
+				Some(Some(bytes)) => {
+					buf[..bytes.len()].copy_from_slice(bytes);
+					Ok(bytes.len())
+				}
+				Some(None) => Err(std::io::ErrorKind::TimedOut.into()),
+				None => Ok(0),
+			}
+		}
+	}
+
+	#[test]
+	fn a_line_cut_by_a_read_timeout_is_kept_whole() {
+		let mut reader = BufReader::new(Stutter(VecDeque::from([Some(&b"I - hel"[..]), None, Some(&b"lo\r\n"[..])])));
+		let mut line = Vec::new();
+		assert_eq!(heard(&mut reader, &mut line), "error TimedOut");
+		assert_eq!(heard(&mut reader, &mut line), "log I - hello");
+		assert_eq!(heard(&mut reader, &mut line), "end");
 	}
 
 	#[test]

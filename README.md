@@ -23,7 +23,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 |---|---|
 | `vagcan` | Shows where you stand: adapter, car data, what to type next |
 | `vagcan setup` | Reads an ODIS project or a VCDS installation once, offline. Takes seconds for ODIS, minutes for VCDS |
-| `vagcan devices` | Lists connected CAN adapters |
+| `vagcan devices` | Lists USB-CAN adapters and dash boards (USB and BLE) |
 | `vagcan info` | VIN, engine and gearbox identity |
 | `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
@@ -64,7 +64,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **UDS over the USB cable**: on the `dash` image, `vagcan` reads the car through the board like through a CANable, and the panel keeps working. `vagcan devices` lists it as `dash image`.
 - **UDS over BLE**: the same with no cable, slower.
 - **Sweeps need a plain adapter**: through the board `dev survey` and `units --identify <unit>` are refused, and `dev sniff` needs `--slcan`.
-- **`--slcan`**: `vagcan --slcan …` makes the `dash` image a plain slcan adapter for that run, with no reflash. The panel shows `SLCAN`, the bit rate and frame counters. It ends when that run ends, or when the cable is pulled.
+- **`--slcan`**: `vagcan --slcan …` makes the `dash` image a plain slcan adapter for that run, with no reflash. The panel shows `SLCAN`, the bit rate and frame counters. It ends when that run ends.
 - **Laptop sleep ends it too**: a `--slcan` command running across a sleep gets no frames after it. Run it again.
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
@@ -80,7 +80,7 @@ Updated 2026-09-14.
 - [x] `setup` in about 4 s on an ODIS project
 - [x] Dash reads the car: 4 channels from 2 units, values and chart pages
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
-- [ ] UDS over BLE: read faults from a laptop without a cable (bench passed, waiting for the car)
+- [ ] UDS over BLE: read faults from a laptop without a cable (info, watch and measure passed on the bench; faults waits for the car)
 - [ ] Laptop reads the car through the dash while its screen keeps working (bench passed, waiting for the car)
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with the cruise-control buttons while cruise is off
@@ -173,11 +173,11 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. With no USB-CAN adapter plugged in, `vagcan` finds the board itself and says which one it uses. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
+**Through the dash board over BLE:** no cable needed. Add `--device ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
 
 | `--device` | What it uses |
 |---|---|
-| omitted | the one USB-CAN adapter or dash board on USB; with none, the board over BLE |
+| omitted | the one USB-CAN adapter or dash board on USB |
 | a serial path | that adapter, or that dash board on USB |
 | `ble` | the board over BLE; asks which when there are several |
 | `ble:<name>` | the board with that name, without asking |

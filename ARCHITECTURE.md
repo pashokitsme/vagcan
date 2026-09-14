@@ -468,7 +468,7 @@ fixed list of identifiers cannot sweep.
 **One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
 runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
 time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
-only when it matches the plan: the visible page at each channel's `hz` from `dash.toml`
+only when it matches the plan: the visible page and every alarm's channels at each channel's `hz` from `dash.toml`
 (2 Hz by default), other pages at 1 Hz. A BLE host's requests go through the same planner.
 The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
 when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent

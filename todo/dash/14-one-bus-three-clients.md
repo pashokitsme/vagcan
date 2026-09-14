@@ -160,18 +160,24 @@ A framed, typed message stream, the same over **USB-Serial-JTAG** and over **BLE
 (`.archive/tasks/done/dash/11-ble.md` measured BLE cannot carry a loaded *bus*; it can carry PDUs at `watch` rates —
 50 Hz × ~12 bytes is a kilobyte a second, and that measurement stands to be made):
 
-| message | direction | carries |
-|---|---|---|
-| `pdu` | both | `(unit address, UDS PDU)` — request up, answer down; the board tags answers with the request's id |
-| `frame` | down | a raw CAN frame the board saw, for `dev sniff` — on request, listen-only |
-| `image` | down | the panel's pixels, what `FRAME …` is today, for `dashsim` |
-| `button` / `page` | up | what the phone or laptop pressed, so `dashsim` keeps driving the board |
-| `config` | both | what `dashcfg` moves today over BLE (`12`) — folded in, one protocol |
-| `log` | down | firmware log lines, so the console is no longer a mix of logs and data |
+**As built (2026-09-14), `vag_uds_transport::link`:** a NUL marker, a type byte, a
+little-endian u16 body length, the body. No CRC: BLE's link layer and USB already check
+integrity. Text without a NUL between frames (the `dashcfg` commands and state lines,
+`FRAME` lines for `dashsim`, `BTN` presses) shares the carrier and is routed apart.
 
-Framing: COBS or a length prefix plus a CRC-16, whichever `postcard`'s ecosystem already
-does in `no_std`; `serde` on both ends, the message enum in **one crate both build**
-(`vag-dash-link`, `no_std` + `alloc` off), the way the plan's types are shared now.
+| type | message | direction | carries |
+|---|---|---|---|
+| `0x01` | Request | host → board | `seq`, request id, response id, a UDS PDU |
+| `0x02` | Answer | board → host | `seq`, status (PDU / no answer / refused + reason / bus error), payload |
+| `0x03` | Subscribe | host → board | sub id, request id, response id, identifier, period, priority (normal / timing) |
+| `0x04` | Unsubscribe | host → board | sub id |
+| `0x05` | Reading | board → host | sub id, board time of arrival, status, payload |
+| `0x07` / `0x08` | Hello / HelloReply | host ↔ board | tells the `dash` image apart without slcan; a Hello closes that carrier's session |
+| `0xFF` | broken frame | board → host | ends a frame the writer had to cut |
+
+The 2026-09-13 sketch above it (`pdu`/`frame`/`image`/`button`/`config`/`log`, COBS or a
+CRC-16, a `vag-dash-link` crate) was not built: no frame mirror (owner), no separate link
+crate, and the panel and presses stay text lines.
 
 ## 5. Pages, and the defect in front of them
 
@@ -271,8 +277,8 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 |---|---|---|---|
 | 1 | chart/page defect, with a `dashsim` repro | bench | **done**, merged (`599ba68`); a stale stored config no longer hides the plan's pages (review round 1) — not yet seen on the board |
 | 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dash` stops printing `FRAME` | bench | **folded into 4 and `16`** (owner could not see a reason for it alone): the message types arrive with the first transport that needs them |
-| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, on `ble-uds`** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `bus_task` runs it under embassy in place of `can_task`'s round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
-| 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented, not on hardware** (2026-09-14, on `ble-uds`): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); the bench pair was dead that day. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
+| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, on `ble-uds`** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `can_task` runs it under embassy in place of `can_task`'s round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
+| 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented; bench passed** (2026-09-14, on `ble-uds`; `research/dash/can-bring-up.md` §9.9–9.10): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); unplugging USB in adapter mode is not run yet. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
 | 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
 | 6 | stopwatch page | car, one straight road | on `380B` (§6), after 3 |
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
