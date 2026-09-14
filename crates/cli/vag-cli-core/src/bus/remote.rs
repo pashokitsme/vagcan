@@ -57,7 +57,7 @@ use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
 use vag_uds_transport::TransportError;
 use vag_uds_transport::link::{self, LinkError, Message, Outcome, Piece, Pipe, Reassembler};
 
-use super::task::sleep_until;
+use super::task::{answers, sleep_until};
 use super::{At, Command, ExchangeError, Miss, OnceReply, READ_DEADLINE, REMOTE_GRACE, RawReply, Sample, Unit};
 
 /// ReadDataByIdentifier, its positive answer, and a negative answer's first byte (ISO 14229-1).
@@ -360,8 +360,14 @@ impl Remote {
 				};
 				let _ = to.send(value.map(|data| (data, at)));
 			}
-			Ask::Raw { to, .. } => {
+			Ask::Raw { pdu: asked, to, .. } => {
 				let result = match answer.outcome {
+					// The board matches answers to requests itself; this is the cable's own
+					// rule applied once more, so another request's bytes never pass for these.
+					Outcome::Pdu(pdu) if !answers(&asked, &pdu) => Err(ExchangeError::Link(TransportError::Protocol(format!(
+						"{} answered the request with bytes that do not answer it",
+						self.peer
+					)))),
 					Outcome::Pdu(pdu) => Ok((pdu, at)),
 					Outcome::NoAnswer => Err(ExchangeError::NoAnswer),
 					Outcome::Refused(why) => Err(ExchangeError::Refused(why)),

@@ -247,6 +247,14 @@ async fn an_exchange_comes_back_as_the_board_answered_it() {
 	let (bus, mut board) = start();
 	let answered = exchanged(&bus, &mut board, Outcome::Pdu(vec![0x7F, 0x10, 0x22])).await;
 	assert_eq!(answered.unwrap(), [0x7F, 0x10, 0x22], "a negative answer is the client's to decode");
+	let positive = exchanged(&bus, &mut board, Outcome::Pdu(vec![0x50, 0x03, 0x00, 0x32, 0x01, 0xF4])).await;
+	assert_eq!(positive.unwrap(), [0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]);
+	// `50 01` answers `10 01`, not the `10 03` that was asked.
+	let another = exchanged(&bus, &mut board, Outcome::Pdu(vec![0x50, 0x01])).await;
+	assert!(
+		matches!(&another, Err(ExchangeError::Link(TransportError::Protocol(why))) if why.contains("do not answer")),
+		"{another:?}"
+	);
 	let silent = exchanged(&bus, &mut board, Outcome::NoAnswer).await;
 	assert!(matches!(silent, Err(ExchangeError::NoAnswer)), "{silent:?}");
 	let refused = exchanged(&bus, &mut board, Outcome::Refused("the car is moving".into())).await;
