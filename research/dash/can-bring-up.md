@@ -907,3 +907,16 @@ planner at 25 ms latency). `benchecu --part 7E0=… --part 7E1=…` served F187 
 | `bleuds --subscribe 7E0 7E8 F40D 20 10 --timing` | **501 readings in 10,002 ms of board time, 50.0 Hz**; `benchecu` 47–50/s |
 | `vagcan measure --device ble` | `7E1 F40D` **49–51/s** for the whole run |
 | `vagcan measure --device B` after the merge (`213f6ec`, panel floor first) | `7E1 F40D` 47–50/s, `202A` 9–11/s, `028D` 2/s |
+
+### 9.11 A radio host's bus-time share across Hellos, 2026-09-14 21:14–21:18
+
+PR #2 review round 3 (R3-N1): `Session::close`, run by every Hello and disconnect, cleared
+the radio host's bus-time share, so a host saying Hello before each request was held only by
+the rate cap. Fixed in `4169d2c` (the share is the board's; an exchange a close cannot recall
+is still charged). `bleuds --hello-each 600 12`: one connection, a Hello before each `3E 00`
+to `600+n` (nobody answers; the board's timeout is 500 ms).
+
+| image | seen |
+|---|---|
+| `ce869b2`, before | 12 exchanges in **11.8 s**, each answered 0.6–1.6 s after its request — about 6 s of bus in any 10 s |
+| `4169d2c`, after | five answered in 0.6–1.0 s, the sixth **6.7 s** after its request (11.6 s from the start), then five more and the eleventh 6.7 s again — five 500 ms exchanges per ~10.5 s, the 25% share |

@@ -6,6 +6,7 @@
 //! bleuds --subscribe 7E0 7E8 F40D 100 5         # read F40D every 100 ms for 5 s
 //! bleuds --timing --subscribe 7E0 7E8 F40D 20 5 # the same as a timing subscription
 //! bleuds --sweep-response 7E0 7E8 50 F40D 100   # 50 response ids under one request id
+//! bleuds --hello-each 600 12                    # 12 requests to silent ids, a Hello before each
 //! ```
 //!
 //! `--timing` marks the subscription timing (`link::Priority::Timing`): the board's
@@ -14,6 +15,12 @@
 //! The sweep is the heap attack the board's guard refuses: one request id under many
 //! response ids, one subscription each, in one connection. All but the first must come
 //! back refused.
+//!
+//! `--hello-each` is the bus-time attack of PR #2 review round 3 (R3-N1): `3E 00` to
+//! `<first>+n` (answered on `+0x80`, nobody there), one connection, a Hello before every
+//! request. The board holds a radio host to a quarter of the bus by time whatever its
+//! Hellos: the first five take the board's 500 ms answer timeout each, and the sixth
+//! waits until the first ages out of the 10 s window.
 //!
 //! Connects to the first device named `vagcan-dash` (or `--name <name>`), sends
 //! `vag_uds_transport::link` frames on the Nordic UART Service, and prints what
@@ -66,12 +73,18 @@ enum Mode {
 		did: u16,
 		period_ms: u16,
 	},
+	/// `count` requests nobody answers, one connection, a Hello before each (R3-N1).
+	HelloEach {
+		first_request: u16,
+		count: u16,
+	},
 }
 
 fn usage() -> ! {
 	eprintln!("usage: bleuds [--name NAME] <request id> <response id> <hex pdu>");
 	eprintln!("       bleuds [--name NAME] [--timing] --subscribe <request id> <response id> <did> <period ms> <seconds>");
 	eprintln!("       bleuds [--name NAME] --sweep-response <request id> <first response id> <count> <did> <period ms>");
+	eprintln!("       bleuds [--name NAME] --hello-each <first request id> <count>");
 	std::process::exit(2);
 }
 
@@ -123,6 +136,10 @@ fn parse(args: &[String]) -> Result<(String, Mode)> {
 			count: count.parse().context("count is a number")?,
 			did: hex_u16(did)?,
 			period_ms: period.parse().context("period is milliseconds")?,
+		},
+		[flag, first, count] if flag == "--hello-each" => Mode::HelloEach {
+			first_request: hex_u16(first)?,
+			count: count.parse().context("count is a number")?,
 		},
 		[request, response, pdu] => Mode::Request {
 			request: hex_u16(request)?,
@@ -301,6 +318,32 @@ async fn main() -> Result<()> {
 				}
 				Ok(())
 			}
+			Mode::HelloEach { first_request, count } => {
+				println!("> {count} x (Hello, Request {first_request:03X}+n/+0x80 3E 00)");
+				let started = Instant::now();
+				for n in 0..count {
+					let request_id = first_request.wrapping_add(n) & 0x7FF;
+					send(&Message::Hello).await?;
+					wait_for(&mut notifications, &mut reassembler, |m| matches!(m, Message::HelloReply(_))).await?;
+					let sent = Instant::now();
+					send(&Message::Request(Request {
+						seq: n as u8,
+						request_id,
+						response_id: request_id.wrapping_add(0x80) & 0x7FF,
+						pdu: vec![0x3E, 0x00],
+					}))
+					.await?;
+					let answer = wait_for(&mut notifications, &mut reassembler, |m| matches!(m, Message::Answer(_))).await?;
+					let Message::Answer(a) = answer else { unreachable!() };
+					println!(
+						"< {request_id:03X} answered {} ms after its request, {} ms from the start: {}",
+						sent.elapsed().as_millis(),
+						started.elapsed().as_millis(),
+						outcome(&a.outcome)
+					);
+				}
+				Ok(())
+			}
 		}
 	}
 	.await;
@@ -308,6 +351,31 @@ async fn main() -> Result<()> {
 	board.disconnect().await.ok();
 	println!("disconnected");
 	result
+}
+
+/// Read the board until a message `wanted` accepts, within [`ANSWER_WAIT`]; everything else
+/// is shown.
+async fn wait_for(
+	notifications: &mut (impl futures::Stream<Item = btleplug::api::ValueNotification> + Unpin),
+	reassembler: &mut Reassembler,
+	wanted: impl Fn(&Message) -> bool,
+) -> Result<Message> {
+	let deadline = tokio::time::sleep(ANSWER_WAIT);
+	tokio::pin!(deadline);
+	loop {
+		tokio::select! {
+			() = &mut deadline => bail!("nothing wanted in {} s", ANSWER_WAIT.as_secs()),
+			n = notifications.next() => {
+				let Some(n) = n else { bail!("the board went away") };
+				for piece in reassembler.push(&n.value) {
+					match piece {
+						Piece::Message(message) if wanted(&message) => return Ok(message),
+						other => show(other),
+					}
+				}
+			}
+		}
+	}
 }
 
 /// The rate of a subscription on the board's clock.
