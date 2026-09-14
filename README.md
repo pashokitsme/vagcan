@@ -173,11 +173,11 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. With no USB-CAN adapter plugged in, `vagcan` finds the board itself and says which one it uses. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
+**Through the dash board over BLE:** no cable needed. Add `--device ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
 
 | `--device` | What it uses |
 |---|---|
-| omitted | the one USB-CAN adapter or dash board on USB; with none, the board over BLE |
+| omitted | the one USB-CAN adapter or dash board on USB |
 | a serial path | that adapter, or that dash board on USB |
 | `ble` | the board over BLE; asks which when there are several |
 | `ble:<name>` | the board with that name, without asking |

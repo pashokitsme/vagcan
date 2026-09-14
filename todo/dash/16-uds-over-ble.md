@@ -111,8 +111,9 @@ item 7 (the `frame` mirror) unnecessary.
 - **Zero friction is the point** (owner, 2026-09-14: "Сделать связь по BLE простой и
   доступной. Просто запускаю прогу и сразу коннекчусь"). No pairing, no confirmation, no
   button. Anyone nearby can read what the guards allow — VIN, faults — and that is
-  accepted. Without `--device`, when no cable adapter is found, `vagcan` scans BLE itself
-  and connects to the one board it finds, saying so.
+  accepted. BLE only when asked (owner, 2026-09-14 evening: «вообще можно сделать --ble для поиска ble
+  устройства, автопоиск выключить», then «ну либо --device ble»): no automatic scan, not
+  even with no cable adapter; `--device ble` scans, `--device ble:<name>` picks.
 
 ## Done when
 
@@ -127,7 +128,7 @@ item 7 (the `frame` mirror) unnecessary.
   subscriptions on the board's clock, one-shot reads, exchanges and every outcome, refusals,
   notifications of 20 and 244 bytes with the state line between, reads taken in between
   writes, a lost chunk breaking the link, a drop mid-exchange, the 33rd subscription;
-  `--device ble` / `ble:<name>` and the fallback with no cable in `device.rs`, every branch
+  `--device ble` / `ble:<name>` in `device.rs` (the automatic fallback with no cable was dropped by the owner on 2026-09-14), every branch
   tested; `dev survey`, `units --identify <unit>` and `dev sniff` refused over BLE before
   anything is opened. The host side ran against the board on 2026-09-14, `research/dash/can-bring-up.md` §9.9.)*
 - The board's guards tested the same way: `10 02` refused; `10 03` refused on speed > 0,

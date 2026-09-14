@@ -22,8 +22,7 @@ the `slcan` image, and `measure` through the board at 50 Hz.
   `measure` subscribe (`read_batch` is gone). Board: replaces `can_task`'s round-robin;
   `hz` per channel in `dash.toml`, default 2; the acceptance filter follows the exchange.
 - **UDS over BLE** (`dash/16`). The board always advertises and guards itself
-  (`vag_uds_client::guard`); the laptop has `--device ble`, `ble:<name>`, and falls back
-  to BLE when no cable adapter is found. `watch` and `measure` run on board-side
+  (`vag_uds_client::guard`); the laptop has `--device ble` and `ble:<name>`, and never scans BLE unasked. `watch` and `measure` run on board-side
   subscriptions stamped with the board's clock.
 - **The board over its USB cable, and `--slcan`** (`dash/14` §3, §7 item 4). The framed
   link on USB with `Guard::cable`; a Hello/HelloReply probe tells the `dash` image apart
@@ -56,7 +55,7 @@ requests, the stored-config check at boot, whether opening the board's port twic
 | Enclosure redesigned, `flat` layout, snap-in boards; CAD in `~/CAD/projects/vagcan/` | `dash/15` |
 | M3 (whole-car measurement coverage by survey) off the list (2026-09-10) | — |
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) | `dash/14` §2 |
-| BLE with zero friction: no pairing, no button, BLE when no cable; `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
+| BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
 
 ## Next, in order
 
