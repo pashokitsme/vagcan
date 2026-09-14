@@ -312,10 +312,17 @@ fn state(facts: &Facts) -> String {
 				out.push_str(&format!("  {label}  {} — {}\n", adapter.path, adapter.description));
 			}
 		}
-		Adapters::Unrecognised(n) => out.push_str(&format!(
-			"  Adapter   none recognised — {n} other serial device(s) connected, see `vagcan devices`\n"
-		)),
-		Adapters::None => out.push_str("  Adapter   nothing connected\n"),
+		// No USB adapter: nothing looks for Bluetooth unasked, so say how to ask.
+		Adapters::Unrecognised(n) => {
+			out.push_str(&format!(
+				"  Adapter   none recognised — {n} other serial device(s) connected, see `vagcan devices`\n"
+			));
+			out.push_str(&format!("            {}\n", device::BLE_COMMAND_HINT));
+		}
+		Adapters::None => {
+			out.push_str("  Adapter   nothing connected\n");
+			out.push_str(&format!("            {}\n", device::BLE_COMMAND_HINT));
+		}
 		Adapters::Unknown(why) => {
 			out.push_str("  Adapter   could not be listed — `vagcan devices` says why\n");
 			out.push_str(&caused_by(why));
@@ -527,7 +534,7 @@ mod tests {
 		assert!(text.contains("VCDS"), "{text}");
 		assert!(text.contains("download"), "{text}");
 		// And it does not offer commands that cannot answer yet.
-		assert!(!text.contains("vagcan info"), "{text}");
+		assert!(!text.contains("which car is this?"), "{text}");
 	}
 
 	#[test]
@@ -543,7 +550,7 @@ mod tests {
 		assert!(text.contains("vagcan devices"), "{text}");
 		assert!(text.contains("vagcan dev vcds"), "{text}");
 		assert!(text.contains("vagcan dev recording"), "{text}");
-		assert!(!text.contains("vagcan info"), "{text}");
+		assert!(!text.contains("which car is this?"), "{text}");
 
 		// Serial devices with no CAN adapter among them is a different thing to
 		// look at, and says so rather than claiming nothing is connected.
@@ -553,6 +560,24 @@ mod tests {
 		});
 		assert!(other.contains("none recognised"), "{other}");
 		assert!(!other.contains("nothing connected"), "{other}");
+	}
+
+	/// Nothing looks for Bluetooth unasked, so with no USB adapter the screen says how to ask.
+	#[test]
+	fn no_usb_adapter_says_how_to_reach_a_board_over_bluetooth() {
+		for adapters in [Adapters::None, Adapters::Unrecognised(2)] {
+			let text = render(&Facts {
+				adapters,
+				cars: Cars::One(car()),
+			});
+			let hints: Vec<&str> = text.lines().filter(|line| line.contains("vagcan info --device ble")).collect();
+			assert_eq!(hints, ["            A dash board over Bluetooth: vagcan info --device ble"], "{text}");
+		}
+		let ready = render(&Facts {
+			adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
+			cars: Cars::One(car()),
+		});
+		assert!(!ready.contains("--device ble"), "{ready}");
 	}
 
 	#[test]

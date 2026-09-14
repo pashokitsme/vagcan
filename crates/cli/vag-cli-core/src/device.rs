@@ -55,6 +55,10 @@ pub const SLCAN_OVER_BLE: &str =
 /// nothing looks for it unasked.
 pub const BLE_HINT: &str = "A dash board over Bluetooth: --device ble";
 
+/// [`BLE_HINT`] where no car command is running — `vagcan devices` and the bare `vagcan`,
+/// which take no `--device` — so it names a command that does.
+pub const BLE_COMMAND_HINT: &str = "A dash board over Bluetooth: vagcan info --device ble";
+
 /// Why no board was heard, as far as this side can tell.
 const NO_BOARD: &str = "the board is powered from the OBD port, so the ignition must be on, and it must be in range of this computer.";
 
@@ -492,9 +496,9 @@ pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardA
 
 /// Render the device list for a human.
 ///
-/// Serial devices only, then [`BLE_HINT`]: `devices` never scans Bluetooth.
+/// Serial devices only, then [`BLE_COMMAND_HINT`]: `devices` never scans Bluetooth.
 pub fn render_list(found: &[AdapterInfo]) -> String {
-	format!("{}\n\n{BLE_HINT}", serial_list(found))
+	format!("{}\n\n{BLE_COMMAND_HINT}", serial_list(found))
 }
 
 fn serial_list(found: &[AdapterInfo]) -> String {
@@ -972,11 +976,12 @@ mod tests {
 		}
 	}
 
+	/// `devices` takes no `--device`, so the listing names a command that does.
 	#[test]
 	fn the_device_listing_ends_by_saying_how_to_reach_a_board_over_bluetooth() {
 		for found in [vec![], vec![canable()]] {
 			let text = render_list(&found);
-			assert!(text.ends_with("A dash board over Bluetooth: --device ble"), "{text}");
+			assert!(text.ends_with("A dash board over Bluetooth: vagcan info --device ble"), "{text}");
 		}
 	}
 

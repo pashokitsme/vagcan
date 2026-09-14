@@ -644,8 +644,12 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			identify: Some(Some(ecu)),
 			while_driving,
 		} => {
-			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), slcan, &IDENTIFY)?);
-			identification(async || device::open_bus(&target).await, &ecu, while_driving).await
+			// Resolved inside `open`: the unit is parsed first.
+			let open = async || {
+				let path = device::resolve_cable_for(device.as_deref(), slcan, &IDENTIFY)?;
+				device::open_bus(&Target::Serial(path)).await
+			};
+			identification(open, &ecu, while_driving).await
 		}
 		// `requires = "identify"` above stops `units --while-driving` at the
 		// parse, but `--identify` with no unit satisfies it and lands here,
@@ -759,9 +763,12 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 			while_driving,
 			..
 		} => {
-			let target = Target::Serial(device::resolve_cable_for(device.as_deref(), slcan, &SURVEY)?);
+			// Resolved inside `open`: the survey checks its own arguments first.
 			survey::run(
-				async || device::open_bus(&target).await,
+				async || {
+					let path = device::resolve_cable_for(device.as_deref(), slcan, &SURVEY)?;
+					device::open_bus(&Target::Serial(path)).await
+				},
 				survey::Options {
 					range: range.as_deref(),
 					out: out.as_deref(),
@@ -781,8 +788,9 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 			seconds,
 			active,
 		} => {
+			// Resolved when the adapter is opened: `--out` is created first.
 			sniff::run(
-				&device::resolve_cable_for(device.as_deref(), slcan, &SNIFF)?,
+				|| device::resolve_cable_for(device.as_deref(), slcan, &SNIFF),
 				ADAPTER_BAUD,
 				out.as_deref(),
 				diag_only,
@@ -1428,13 +1436,17 @@ mod tests {
 		const NOWHERE: &str = "/nonexistent/vagcan-test";
 		let survey = format!("{NOWHERE}/survey.jsonl");
 		let keys = format!("{NOWHERE}/rod-keys.json");
-		let cases: [(Vec<&str>, &str); 3] = [
+		let capture = format!("{NOWHERE}/capture.log");
+		let cases: [(Vec<&str>, &str); 6] = [
 			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu"),
 			(
 				vec!["vagcan", "watch", "--data", NOWHERE, "--survey", &survey, "--for", "1"],
 				"reading the survey",
 			),
 			(vec!["vagcan", "faults", "--ecu", "ZZZ", "--iv-cache", &keys], ""),
+			(vec!["vagcan", "units", "--identify", "ZZZ"], "ZZZ"),
+			(vec!["vagcan", "dev", "survey", "--only", "ZZZ"], "--only"),
+			(vec!["vagcan", "dev", "sniff", "--out", &capture], "creating capture file"),
 		];
 		for (args, why) in cases {
 			let mut args = args.clone();
