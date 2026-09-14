@@ -167,7 +167,9 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        hardware hand-off; `bench.sh` the one-command bench; `probes/` is
                        firmware that answered a question (wifi-ap, wifi-scan, wifi-sta,
                        ble-scan); `host/` is the bench rig — `dashsim` (be the panel
-                       and the buttons) and `bleecho`
+                       and the buttons), `bleecho`, `bleuds` (one framed UDS request or
+                       subscription over BLE) and `benchecu` (the CANable answering as
+                       a control unit; bench pair only, refuses on car traffic)
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against
                        the reference car's stored faults (ODIS 15/15, VCDS 11/15)

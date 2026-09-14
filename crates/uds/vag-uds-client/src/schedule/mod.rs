@@ -66,6 +66,8 @@
 //!   every [`Delivery`] is stamped with it, and `measure` times runs from it.
 //! - Rates come from the caller (the plan's `hz`); the planner derives none.
 
+#[cfg(test)]
+mod lifecycle_tests;
 mod planner;
 mod split;
 #[cfg(test)]
@@ -73,7 +75,7 @@ mod tests;
 
 use alloc::vec::Vec;
 
-pub use planner::Planner;
+pub use planner::{LEARNED_SINGLE_MAX, Planner};
 pub use split::{Records, split_by_lengths, split_records};
 
 /// A control unit: the id it is asked on and the id it answers on.
@@ -196,6 +198,24 @@ pub enum Answer {
 	NoAnswer,
 	/// The request could not be put on the bus, or the bus failed under it.
 	BusError,
+	/// Nothing came back, and nothing was asked for: the request suppressed its positive
+	/// response ([`expects_no_answer`]) and the shell waited a short while for a negative
+	/// one that did not come. Neither evidence that the unit is there nor that it is not:
+	/// the unit is not backed off, its backoff is not reset, and nobody else reading it
+	/// is told of a miss. Only a raw exchange gets it; a read always expects an answer.
+	NotExpected,
+}
+
+/// ISO 14229-1: bit 7 of a sub-function asks the server to suppress its positive response.
+const SUPPRESS_POSITIVE_RESPONSE: u8 = 0x80;
+
+/// Whether `pdu` is a request its unit answers only when it refuses it: a service with
+/// a sub-function whose suppress-positive-response bit is set (ISO 14229-1). Of the
+/// read-only allowlist that is DiagnosticSessionControl (`10`) and TesterPresent (`3E`);
+/// ReadDataByIdentifier has no sub-function, and ReadDTCInformation's does not support
+/// the bit, so `19 82` is a (malformed) request that still gets an answer.
+pub fn expects_no_answer(pdu: &[u8]) -> bool {
+	matches!(pdu, [0x10 | 0x3E, sub, ..] if sub & SUPPRESS_POSITIVE_RESPONSE != 0)
 }
 
 /// Why a subscriber got no reading, or a one-shot no data.

@@ -30,6 +30,7 @@ use core::time::Duration;
 use embassy_time::{Duration as EmbassyDuration, with_timeout};
 use embedded_can::Frame as _;
 use esp_hal::Async;
+use esp_hal::twai::filter::SingleStandardFilter;
 use esp_hal::twai::{EspTwaiError, EspTwaiFrame, ExtendedId, Id, StandardId, Twai};
 use vag_uds_can::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, CanError};
 
@@ -63,6 +64,23 @@ impl<'d> TwaiBackend<'d> {
 	/// Give the peripheral back (to stop it, or to reconfigure the bit rate).
 	pub fn into_twai(self) -> Twai<'d, Async> {
 		self.twai
+	}
+
+	/// The same backend with a different acceptance filter.
+	///
+	/// esp-hal writes a filter to the controller only in reset mode, so this is
+	/// `stop()`, `set_filter`, `start()`: register writes, the error counters
+	/// cleared (as a bus-off restart clears them), and the controller waiting for
+	/// 11 recessive bits before it takes part again. Call it between exchanges,
+	/// never with a transmission pending. The async driver's receive queue is
+	/// software and outlives it; [`TwaiBackend::drain`] is what empties that.
+	pub fn refilter(self, filter: SingleStandardFilter) -> Self {
+		let mut config = self.twai.stop();
+		config.set_filter(filter);
+		TwaiBackend {
+			twai: config.start(),
+			self_reception: self.self_reception,
+		}
 	}
 
 	/// Empties the driver's receive queue without waiting, and says how many

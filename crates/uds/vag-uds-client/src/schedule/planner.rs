@@ -20,11 +20,27 @@ const NEGATIVE: u8 = 0x7F;
 /// 2026-09-14.
 const UNSPLITTABLE_RUN: u8 = 3;
 
+/// How many units learned single-only are remembered after they are forgotten. Past it
+/// the knowledge is dropped, not grown: such a unit is asked a multi-identifier request
+/// once more and learned again, which costs one refused request.
+pub const LEARNED_SINGLE_MAX: usize = 64;
+
 /// The one scheduler every consumer of the bus goes through. See [`super`].
+///
+/// # What it holds
+///
+/// A unit's state lives while anything wants the unit: a live read, a queued exchange,
+/// the request in flight, or a backoff still running. When none of those is left the
+/// unit is forgotten — its identifiers, its unsplittable-answer run, its failure count —
+/// so what the planner holds is bounded by what its consumers ask at once, not by how
+/// many different units they have ever named. The one thing kept past that is
+/// single-only knowledge, in a set of at most [`LEARNED_SINGLE_MAX`] units.
 #[derive(Debug)]
 pub struct Planner {
 	budget: Budget,
 	units: BTreeMap<Unit, UnitState>,
+	/// Units that refused multi-identifier reads, remembered after they were forgotten.
+	learned_single: BTreeSet<Unit>,
 	/// Where each live subscription sits, for [`Planner::unsubscribe`].
 	subs: BTreeMap<SubId, (Unit, u16)>,
 	/// One counter for subscription, request and token ids: never reused.
@@ -182,6 +198,7 @@ impl Planner {
 		Planner {
 			budget,
 			units: BTreeMap::new(),
+			learned_single: BTreeSet::new(),
 			subs: BTreeMap::new(),
 			last_id: 0,
 			flight: None,
@@ -202,7 +219,7 @@ impl Planner {
 	/// subscribers disagree on it is treated as unknown.
 	pub fn subscribe(&mut self, now_ms: u64, class: Class, unit: Unit, did: u16, period_ms: u32, record_len: Option<u16>) -> SubId {
 		let id = SubId(self.fresh());
-		let read = self.units.entry(unit).or_default().reads.entry(did).or_default();
+		let read = self.unit_state(unit).reads.entry(did).or_default();
 		read.next_due = if read.subs.is_empty() { now_ms } else { read.next_due.min(now_ms) };
 		read.subs.push(Sub {
 			id,
@@ -235,12 +252,78 @@ impl Planner {
 				state.singly.remove(&did);
 			}
 		}
+		self.forget_if_idle(unit, None);
+	}
+
+	/// The state of `unit`, made if there is none — single-only from the start if that
+	/// was learned before the unit was last forgotten.
+	fn unit_state(&mut self, unit: Unit) -> &mut UnitState {
+		let single_only = self.learned_single.contains(&unit);
+		self.units.entry(unit).or_insert_with(|| UnitState {
+			single_only,
+			..UnitState::default()
+		})
+	}
+
+	/// Forget `unit` if nothing wants it any more (see [`Planner`]). Without the time a
+	/// backoff that was ever set keeps the unit; [`Planner::due`] forgets it once the
+	/// backoff has run out.
+	fn forget_if_idle(&mut self, unit: Unit, now_ms: Option<u64>) {
+		let in_flight = self.flight.as_ref().is_some_and(|f| f.unit == unit);
+		let Some(state) = self.units.get(&unit) else {
+			return;
+		};
+		if in_flight || !idle(state, now_ms) {
+			return;
+		}
+		if state.single_only && self.learned_single.len() < LEARNED_SINGLE_MAX {
+			self.learned_single.insert(unit);
+		}
+		self.units.remove(&unit);
+	}
+
+	/// Forget every unit nothing wants at `now_ms`. Called with nothing in flight.
+	fn forget_idle(&mut self, now_ms: u64) {
+		let learned = &mut self.learned_single;
+		self.units.retain(|unit, state| {
+			if !idle(state, Some(now_ms)) {
+				return true;
+			}
+			if state.single_only && learned.len() < LEARNED_SINGLE_MAX {
+				learned.insert(*unit);
+			}
+			false
+		});
+	}
+
+	/// Take back an exchange that is still queued, so a consumer that is gone does not
+	/// reach the car. `false` for one already in flight, answered, or unknown: what is on
+	/// the bus cannot be recalled, and its answer is delivered as usual.
+	pub fn cancel(&mut self, req: ReqId) -> bool {
+		let found = self
+			.units
+			.iter()
+			.find_map(|(unit, state)| state.raws.iter().position(|raw| raw.id == req).map(|at| (*unit, at)));
+		let Some((unit, at)) = found else {
+			return false;
+		};
+		if let Some(state) = self.units.get_mut(&unit) {
+			state.raws.remove(at);
+		}
+		self.forget_if_idle(unit, None);
+		true
+	}
+
+	/// How many units the planner holds state for.
+	#[cfg(test)]
+	pub(crate) fn units_held(&self) -> usize {
+		self.units.len()
 	}
 
 	/// Read `did` of `unit` once; the result comes as exactly one [`Delivery::Once`].
 	pub fn read_once(&mut self, now_ms: u64, class: Class, unit: Unit, did: u16) -> ReqId {
 		let id = ReqId(self.fresh());
-		let read = self.units.entry(unit).or_default().reads.entry(did).or_default();
+		let read = self.unit_state(unit).reads.entry(did).or_default();
 		read.onces.push(Once { id, class, since_ms: now_ms });
 		id
 	}
@@ -252,7 +335,7 @@ impl Planner {
 		let (&sid, rest) = pdu.split_first().ok_or_else(|| UdsError::Malformed(String::from("empty request")))?;
 		let pdu = pdu::encode_request(sid, rest)?;
 		let id = ReqId(self.fresh());
-		self.units.entry(unit).or_default().raws.push_back(Raw {
+		self.unit_state(unit).raws.push_back(Raw {
 			id,
 			class,
 			pdu,
@@ -266,6 +349,7 @@ impl Planner {
 		if self.flight.is_some() {
 			return Next::Idle { until_ms: None };
 		}
+		self.forget_idle(now_ms);
 		let now = now_ms;
 		while self.foreground_sends.front().is_some_and(|t| t + 1000 <= now) {
 			self.foreground_sends.pop_front();
@@ -374,6 +458,8 @@ impl Planner {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
 					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
+					// The silence the request asked for says nothing about the unit either way.
+					Answer::NotExpected => {}
 				}
 				out.push(Delivery::Raw {
 					req: raw.id,
@@ -384,6 +470,7 @@ impl Planner {
 			}
 			Flying::Read { dids, onces } => self.answered_read(now_ms, unit, dids, onces, answer, &mut out),
 		}
+		self.forget_if_idle(unit, Some(now_ms));
 		out
 	}
 
@@ -507,6 +594,8 @@ impl Planner {
 			Answer::NoAnswer => return Heard::Silent(Miss::NoAnswer),
 			Answer::BusError => return Heard::Silent(Miss::BusError),
 			Answer::Refused(nrc) => return Heard::Refused(nrc),
+			// A read always expects an answer; a shell that says otherwise is not answering it.
+			Answer::NotExpected => return Heard::Malformed,
 			Answer::Pdu(pdu) => pdu,
 		};
 		match pdu.as_slice() {
@@ -587,6 +676,16 @@ fn batch(state: &UnitState, trigger: u16, now: u64, budget: &Budget) -> Vec<u16>
 	let room = usize::from(budget.max_dids_per_request.max(1)) - 1;
 	dids.extend(others.into_iter().take(room).map(|(_, did)| did));
 	dids
+}
+
+/// Whether nothing wants a unit: no live read, nothing queued, and no backoff still
+/// running — with the time unknown, no backoff ever set.
+fn idle(state: &UnitState, now_ms: Option<u64>) -> bool {
+	let backoff_over = match now_ms {
+		Some(now) => state.retry_at <= now,
+		None => state.retry_at == 0,
+	};
+	state.reads.is_empty() && state.raws.is_empty() && backoff_over
 }
 
 /// A batch that will be asked again at once, differently: its one-shots wait on, its

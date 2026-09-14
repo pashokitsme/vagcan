@@ -23,7 +23,8 @@
 //! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                          |
 //!
 //! Status, in an Answer and a Reading alike: `0` the payload is the unit's
-//! answer PDU, `1` no answer (timeout, no payload), `2` refused by the board
+//! answer PDU, `1` no answer (timeout, no payload — and the answer to a request that
+//! suppressed its positive response, `3E 80` or `10 81`, when no refusal came), `2` refused by the board
 //! (payload: a short UTF-8 reason), `3` bus error (payload: a UTF-8 reason).
 //!
 //! A subscription asks the board to read `did` (`22 did`) every `period_ms` on
@@ -833,6 +834,25 @@ mod tests {
 				Piece::Message(answer(Outcome::NoAnswer))
 			]
 		);
+	}
+
+	/// The board cuts a text line at the notification size (20 bytes before the MTU
+	/// exchange) and ends it with `\n`. Every piece of it is still text, in order, and
+	/// joined they are the line.
+	#[test]
+	fn a_text_line_cut_across_notifications_is_text_in_every_piece() {
+		let line = b"state page=0/2 brightness=128 unsaved=1 gen=5\n";
+		let mut r = Reassembler::new();
+		let mut joined = Vec::new();
+		for chunk in chunks(line, 20) {
+			for piece in r.push(chunk) {
+				match piece {
+					Piece::Text(t) => joined.extend(t),
+					other => panic!("a piece of a text line came out as {other:?}"),
+				}
+			}
+		}
+		assert_eq!(joined, line);
 	}
 
 	#[test]

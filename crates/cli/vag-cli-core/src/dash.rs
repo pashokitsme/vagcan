@@ -22,6 +22,7 @@
 //! ref = "01:IDE00025"              # <unit>:<text id>, or <unit>:<DID>[@<bit offset>]
 //! label = "ОЖ"                     # optional; the glossary's wording otherwise
 //! decimals = 0                     # optional; derived from the scaling otherwise
+//! hz = 10                          # optional; how often the panel reads it, 2 otherwise
 //!
 //! [[channel]]
 //! ref = "02:IDE00102"
@@ -150,7 +151,18 @@ pub struct ChannelInput {
 	/// The panel's wording, when the glossary's is not it. Ten characters.
 	pub label: Option<String>,
 	pub decimals: Option<u8>,
+	/// How often the panel reads it while its page is shown, in readings a second.
+	/// [`DEFAULT_HZ`] when absent. Written by the owner, never derived: a rate taken
+	/// from a unit of measure would be a guess about what the owner wants to see.
+	pub hz: Option<f64>,
 }
+
+/// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
+pub const DEFAULT_HZ: f64 = 2.0;
+/// The fastest rate a channel may ask for: the board's whole ceiling of exchanges
+/// a second (`vag_uds_client::schedule::Budget::ceiling_per_s`), so one channel can
+/// never ask for more than the bus is given.
+pub const MAX_HZ: f64 = 100.0;
 
 /// One `[[page]]` of the input.
 #[derive(Debug, Clone, PartialEq)]
@@ -203,7 +215,23 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 				Some(d) => return Err(Error::Parse(format!("dash.toml: {reference}: decimals {d} is not 0..=3"))),
 				None => None,
 			};
-			channels.push(ChannelInput { reference, label, decimals });
+			let hz = match table.get("hz") {
+				None => None,
+				Some(item) => match item.as_float().or_else(|| item.as_integer().map(|n| n as f64)) {
+					Some(hz) if hz.is_finite() && hz > 0.0 && hz <= MAX_HZ => Some(hz),
+					_ => {
+						return Err(Error::Parse(format!(
+							"dash.toml: {reference}: hz must be a number above 0 and at most {MAX_HZ}"
+						)));
+					}
+				},
+			};
+			channels.push(ChannelInput {
+				reference,
+				label,
+				decimals,
+				hz,
+			});
 		}
 	}
 	if channels.is_empty() {
@@ -352,8 +380,16 @@ pub struct Channel {
 	pub unit_text: String,
 	pub label: String,
 	pub proven: bool,
+	/// Readings a second while the channel's page is shown. A `plan.json` written
+	/// before rates existed reads as [`DEFAULT_HZ`].
+	#[serde(default = "default_hz")]
+	pub hz: f64,
 	/// Where the row came from: its text id, or the catalog's own name.
 	pub source: String,
+}
+
+fn default_hz() -> f64 {
+	DEFAULT_HZ
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -488,8 +524,9 @@ pub fn build(
 		let label = wanted.label.clone().unwrap_or_else(|| found.label());
 		let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
 		let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
+		let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
 		notes.push(format!(
-			"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} {} ({})",
+			"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
 			wanted.reference,
 			if signed { "i" } else { "u" },
 			if big_endian { "BE" } else { "LE" },
@@ -511,6 +548,7 @@ pub fn build(
 			unit_text: def.unit.to_string(),
 			label,
 			proven: found.proven,
+			hz,
 			source,
 		});
 		index_of.insert(wanted.reference.clone(), index);
@@ -653,7 +691,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	for c in &plan.channels {
 		let _ = writeln!(
 			out,
-			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {} }},",
+			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {} }},",
 			c.unit,
 			c.did,
 			c.bit_offset,
@@ -665,7 +703,8 @@ pub fn to_rust(plan: &Plan) -> String {
 			c.decimals,
 			c.unit_text,
 			c.label,
-			c.proven
+			c.proven,
+			float(c.hz)
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -937,6 +976,7 @@ mod tests {
 			unit_text: "",
 			label: "",
 			proven: c.proven,
+			hz: c.hz as f32,
 		};
 		assert_eq!(device.decode(&[0xB2, 0x02]), Some(690.0), "690 /min, not 45570");
 		assert!(to_rust(&built.plan).contains("big_endian: false"));
@@ -1164,7 +1204,7 @@ mod tests {
 		let rust = to_rust(&built.plan);
 		assert!(rust.contains("pub static PLAN: Plan"), "{rust}");
 		assert!(rust.contains("language: \"ru\""), "{rust}");
-		assert!(rust.contains("did: 0xF405, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: \"°C\", label: \"ОЖ\", proven: false"), "{rust}");
+		assert!(rust.contains("did: 0xF405, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: \"°C\", label: \"ОЖ\", proven: false, hz: 2.0"), "{rust}");
 		assert!(rust.contains("static CELLS_0: [u16; 1] = [0];"), "{rust}");
 		assert!(rust.contains("Page::Values { title: \"T\", cells: &CELLS_0 }"), "{rust}");
 		assert!(rust.contains("do not commit"), "{rust}");
@@ -1321,6 +1361,72 @@ mod tests {
 		)
 		.unwrap_err();
 		assert!(matches!(err, Error::Page(2, _)), "{err}");
+	}
+
+	/// A channel's rate is the owner's: written in `dash.toml`, 2 Hz when not, and
+	/// carried unchanged into both outputs.
+	#[test]
+	fn a_rate_is_the_inputs_or_two_hertz_and_reaches_the_firmware() {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x2029, "Boost", "IDE00191", 0, 16, false, true, 0.001, 0.0),
+					reading(0xF405, "Engine Coolant Temperature", "IDE00025", 0, 8, false, true, 1.0, -40.0),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let text = format!(
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00191\"\nhz = 10\n[[channel]]\nref = \"01:IDE00025\"\n[[channel]]\nref = \"01:F405\"\nhz = 0.5\n{}",
+			values_page(&["01:IDE00191", "01:IDE00025"])
+		);
+		let input = parse_input(&text).unwrap();
+		assert_eq!(input.channels.iter().map(|c| c.hz).collect::<Vec<_>>(), [Some(10.0), None, Some(0.5)]);
+		let text = format!(
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00191\"\nhz = 10\n[[channel]]\nref = \"01:IDE00025\"\n{}",
+			values_page(&["01:IDE00191", "01:IDE00025"])
+		);
+		let built = build(
+			&parse_input(&text).unwrap(),
+			&store,
+			&extracted,
+			&[identity(ENGINE, "PART1", "EV_Test")],
+			None,
+			Language::En,
+		)
+		.unwrap();
+		assert_eq!(built.plan.channels.iter().map(|c| c.hz).collect::<Vec<_>>(), [10.0, DEFAULT_HZ]);
+		let rust = to_rust(&built.plan);
+		assert!(rust.contains("proven: false, hz: 10.0 }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 2.0 }"), "{rust}");
+		assert!(built.notes[0].contains("at 10 Hz"), "{}", built.notes[0]);
+
+		// A plan.json from before rates reads as the default.
+		let mut json: serde_json::Value = serde_json::from_str(&built.plan.to_json()).unwrap();
+		json["channels"][0].as_object_mut().unwrap().remove("hz");
+		let old = Plan::from_json(&json.to_string()).unwrap();
+		assert_eq!(old.channels[0].hz, DEFAULT_HZ);
+	}
+
+	#[test]
+	fn a_rate_that_is_not_a_positive_number_within_the_ceiling_is_refused() {
+		for bad in ["0", "-1", "100.5", "\"fast\"", "nan"] {
+			let text = format!(
+				"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\nhz = {bad}\n{}",
+				values_page(&["01:IDE00025"])
+			);
+			let err = parse_input(&text).unwrap_err();
+			assert!(err.to_string().contains("hz must be"), "{bad}: {err}");
+		}
+		let text = format!(
+			"vin = \"X\"\n[[channel]]\nref = \"01:IDE00025\"\nhz = 100\n{}",
+			values_page(&["01:IDE00025"])
+		);
+		assert_eq!(parse_input(&text).unwrap().channels[0].hz, Some(MAX_HZ));
 	}
 
 	/// The one writer is [`build_for_car`], it needs a VIN, and no test may

@@ -59,7 +59,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Pages** are set per car in `dash.toml` and switched with the board's button.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
-- **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE turns on after the button is held for 3 s.
+- **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
 - **CAN adapter mode**: flashed with the `slcan` image, the board works with every `vagcan` command like a CANable.
 - **UDS over BLE**: on the `dash` image, `vagcan` reads the car through the board with no cable. The panel keeps working. The board refuses sweeps, so `dev survey`, `units --identify <unit>` and `dev sniff` need a cable.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
