@@ -920,3 +920,33 @@ to `600+n` (nobody answers; the board's timeout is 500 ms).
 |---|---|
 | `ce869b2`, before | 12 exchanges in **11.8 s**, each answered 0.6–1.6 s after its request — about 6 s of bus in any 10 s |
 | `4169d2c`, after | five answered in 0.6–1.0 s, the sixth **6.7 s** after its request (11.6 s from the start), then five more and the eleventh 6.7 s again — five 500 ms exchanges per ~10.5 s, the 25% share |
+
+### 9.12 Link icons on the board; the pair silent again, 2026-09-14 22:14–22:22
+
+`link-icons` (`284b80b`, real plan) flashed. `dashsim --snap FILE` writes the frame the board
+sends; `--hello-snap FILE` says Hello on the link first. No panel fitted, so the icons were read
+off those frames.
+
+| check | seen |
+|---|---|
+| `--snap`, nobody connected | no icons |
+| `--hello-snap` | USB icon, top right |
+| `--snap` 3 s after that port closed | no icons — the writer's stall cleared the USB icon |
+| `bleuds --hello-each 600 6` from Terminal.app, `--snap` during it | BLE icon |
+| the same with `--hello-snap` | both icons; `НАДДУВ` moved left beside them |
+| `--snap` after `bleuds` ended | no icons |
+
+**Not verified: the adapter screen's kb/s.** In adapter mode the board sends no `FRAME` line,
+so it was read through a temporary log patch (not committed). `vagcan --slcan watch --device B
+--did 7E0:F40D` against `benchecu` on `C`: the adapter's counts were `rx 0 tx 0 err 9` — every
+transmit refused. The pair was then silent in panel mode too: `benchecu --unit 7E0 --unit 7E1
+--unit 7E2 --unit 714` saw no requests in 8 s, `vagcan dev sniff --device C --active` saw 0
+frames in 8.5 s, and the board logged `7E1 did not answer F187` / `no unit answers`. At 21:17
+(§9.11) the same pair carried exchanges. Same picture as §9.7–§9.8 before the repair in §9.9:
+look at the SN65HVD230 module's 3.3 V pin and CAN-H/CAN-L first.
+
+To finish once the pair carries frames: re-apply the log patch (a `note!` in panel mode of the
+last and peak `Rates` measured in adapter mode, with `Port::status` and `Port::bits`), run
+`vagcan --slcan watch --device B --did 7E0:F40D --hz 20` against `benchecu`, leave adapter mode
+with `C`, and check the rates against the frame counts: each exchange is one request and one
+answer frame, each counted at 47–111 bits (`vag_uds_can::wire::frame_bits`).
