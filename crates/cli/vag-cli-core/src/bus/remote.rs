@@ -1,7 +1,7 @@
 //! [`Bus::start_remote`](super::Bus::start_remote): the same [`Bus`](super::Bus) and
 //! [`Subscription`](super::Subscription) handles over a byte pipe to the dash board.
 //!
-//! The board runs the planner and the guard (`todo/dash/16-uds-over-ble.md`), so this
+//! The board runs the planner and the guard (`.archive/tasks/done/dash/16-uds-over-ble.md`), so this
 //! task plans nothing: it turns each command into a link message
 //! ([`vag_uds_transport::link`]) and each message back into what a handle waits for.
 //!

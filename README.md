@@ -83,7 +83,7 @@ Updated 2026-09-15.
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
 - [ ] UDS over BLE: read faults from a laptop without a cable (info, watch and measure passed on the bench; faults waits for the car)
 - [ ] Laptop reads the car through the dash while its screen keeps working (bench passed, waiting for the car)
-- [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, in review, waiting for the car)
+- [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with the cruise-control buttons while cruise is off
 - [ ] `vagcan faults` on the car with fault text from ODIS only

@@ -6,7 +6,7 @@
 //! for nothing. `--device` stays available for the ambiguous cases; when it is
 //! omitted we pick the obvious candidate and say which one we picked.
 //!
-//! **The dash board over BLE is the other way in** (`todo/dash/16-uds-over-ble.md`,
+//! **The dash board over BLE is the other way in** (`.archive/tasks/done/dash/16-uds-over-ble.md`,
 //! "Choosing the device" and "Zero friction"). `--device ble` scans for it, takes the
 //! one board heard and says so, and offers a menu when there are several; `--device
 //! ble:<name>` picks one by name without asking. **Nothing else ever scans** (owner,

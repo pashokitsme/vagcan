@@ -108,8 +108,8 @@ makes "parallel with the display" true instead of a time-share: the two clients
 ### Option A — the board is an slcan adapter (raw frames)
 
 The board speaks slcan over USB; `SlcanBackend` drives it unchanged; zero host code. This
-is what `todo/dash/09` asked for and what the `slcan` binary now under construction
-delivers. **It cannot share the bus with the panel.** The host sends raw frames on its own
+is what `todo/dash/09` asked for and what the `slcan` binary delivers (merged,
+`87dc9f2`). **It cannot share the bus with the panel.** The host sends raw frames on its own
 clock; the board can only *yield* — stop polling while the host is mid-exchange, detect
 the end by watching the bus, resume — and hope the host's flow-control frames arrive in
 time through USB. The panel goes stale while `watch` runs. It is an *exclusive* mode: a
@@ -154,7 +154,7 @@ transmitting raw frames from a bench.
 
 ### What this decides
 
-- The `slcan` binary (in progress on branch `slcan`) becomes the **exclusive adapter
+- The `slcan` binary (merged, `87dc9f2`) became the **exclusive adapter
   mode**, kept, documented as such. Not the answer to wish 1.
 - Wish 1 is Option B: `BoardTransport` on the host, the scheduler on the board.
 - One link, typed messages, replaces the ad-hoc `FRAME …` lines `dash` prints for `dashsim`.
@@ -295,16 +295,16 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 
 ## 7. Order, and what each needs
 
-| # | item | needs | state, 2026-09-13 |
+| # | item | needs | state, dated per row |
 |---|---|---|---|
 | 1 | chart/page defect, with a `dashsim` repro | bench | **done**, merged (`599ba68`); a stale stored config no longer hides the plan's pages (review round 1) — not yet seen on the board |
 | 2 | `vag-dash-link` crate + `image`/`log`/`button` over it; `dash` stops printing `FRAME` | bench | **folded into 4 and `16`** (owner could not see a reason for it alone): the message types arrive with the first transport that needs them |
-| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, on `ble-uds`** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `can_task` runs it under embassy in place of its old round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
-| 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented; bench passed** (2026-09-14, on `ble-uds`; `research/dash/can-bring-up.md` §9.9–9.10): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); unplugging USB in adapter mode is not run yet. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
+| 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, merged in PR #2** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `can_task` runs it under embassy in place of its old round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
+| 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented; bench passed** (2026-09-14, merged in PR #2; `research/dash/can-bring-up.md` §9.9–9.10): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); unplugging USB in adapter mode is not run yet. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
 | 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
 | 6 | stopwatch page | car, one straight road | on `380B` (§6), after 3 |
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
-| 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](16-uds-over-ble.md)**: UDS over BLE as a slow transport, first after the merge |
+| 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](../../.archive/tasks/done/dash/16-uds-over-ble.md)**: UDS over BLE as a slow transport, merged in PR #2 (2026-09-14) |
 | 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
 | 10 | the cruise lever as an event source, gate OFF (§6a) | car | **a probe first** (owner): read `1105` on `70C` and the engine's GRA status, to see that they answer and move |
 
@@ -314,6 +314,6 @@ BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5
 ## 8. What is not decided here
 
 - ~~The speed channel for the stopwatch~~ — decided 2026-09-13: `380B` (§6).
-- Whether `dev survey` (a sweep) may run through the board at all. A sweep is the most
-  invasive thing the tool does, and the board lives in the car; the safe default is **no** —
-  the exclusive slcan mode is for that, from a bench, with the guard the host has.
+- ~~Whether `dev survey` (a sweep) may run through the board~~ — decided 2026-09-14: **no**.
+  Through the board, `dev survey` and `units --identify <unit>` are refused before anything is
+  opened; a sweep runs over the exclusive slcan mode, from a bench, with the guard the host has.

@@ -40,9 +40,10 @@ decimals = 2
 
 - The specified channel need not have a `[[channel]]` of its own: the builder adds it, at the
   actual's `hz`, and it is not offered as a cell.
-- **Refused at build:** a `setpoint` whose unit differs from the channel's, one the resolved
-  variant does not declare, one on another unit (see below), or a `setpoint` pointing at a
-  channel that itself has one.
+- **Refused at build:** a `setpoint` on another unit (see below), in another unit of measure,
+  reading the same bits as its channel however it is spelled, one with a `setpoint` of its own,
+  or read at a different `hz` from the channel it explains. The list and its messages are
+  [`docs/dash/dash-toml.md`](../../docs/dash/dash-toml.md).
 - `Channel` in `plan.rs` gains `setpoint: Option<u16>` — the plan index of the specified
   channel, resolved on the laptop like everything else the board never resolves.
 
@@ -53,17 +54,18 @@ two exchanges and two moments, and the difference between them would be partly t
 
 ## 3. The screens
 
-`Cell` gains `deviation: Option<f32>` — the firmware computes `actual − specified`; the
-renderer only draws it. `None` where either side has not answered, drawn as a dash.
+`Cell` gains `deviation: Deviation` — `None` (no pair), `Unknown` (one of the two has not
+answered, drawn as a dash) or `Value(actual − specified)`. The firmware computes it; the renderer
+only draws it. As built after the owner's rounds on the previews (2026-09-15):
 
-- **Values page (up to four cells):** label, number, **deviation**, unit. The deviation line is
-  the small face, signed, without the unit (the unit is the line under it): `+0.07`.
-  Four lines instead of three, so the row's numerals step down one face — 27 → 25 px tall on
-  `bold_mono`. A cell without a setpoint keeps its three lines and the row keeps the larger
-  face when no cell in it has one.
-- **Chart page:** the deviation in the small face under the number. The header keeps the label
-  and the scale's range and **drops the seconds** (owner: the seconds are not worth the room).
-  A chart of a channel without a setpoint keeps the seconds.
+- **Values page (up to four cells):** label, number, **difference**, unit. The difference is in
+  the label's face without the unit, its sign drawn a pixel shorter than its digits. The row's
+  lines share the air between them (measured from their boxes), label and unit 2 px in from the
+  edges; on the 64-row panel the numerals keep their face. A row with no pair keeps its three
+  lines.
+- **Chart page:** the difference in the label's face, centred under the number in the column the
+  two share. The header keeps the label and the range and **drops the seconds**. A chart of a
+  channel with no pair keeps the seconds.
 - Nothing else moves: the link icons, the alarm inversion and the adapter screen are untouched.
 
 ## 4. The drift alarm
@@ -91,23 +93,24 @@ min_setpoint = 0.5    # below this specified value the rule says nothing
 - The existing `direction`/`trip`/`release` rules stay as they are; `kind` defaults to the
   threshold rule so every `dash.toml` written so far still builds.
 
-## 5. Built, 2026-09-15 (branch `setpoint-drift`)
+## 5. Built and merged, 2026-09-15 (PR #4, `7d8e0a5`)
 
 Everything above is in the tree and hardware-free green: `Deviation` on a cell and the two
 screens (`494df74`, `983e758`, `b546f6d`, `733aa43`), `setpoint` in `dash.toml` and the plan
 (`83d6d35`), the drift rule in the alarm machine and the builder (`0fa3a07`), and the board
 drawing the difference and reading a pair as a pair (`5816c53`).
 
-Left: the owner's own `dash.toml` — nothing pairs anything yet, so no board has drawn a real
-difference — and then the bench and the car.
+Four review rounds followed (`3910be5`, `3829702`, `38dfdef`), the last with no findings. The
+owner's `dash.toml` pairs boost `202A` with `2029` (2026-09-15). Left: a board drawing a real
+difference — the bench units do not answer these identifiers — and the car.
 
 ## 6. Done when
 
-- `cargo test --workspace` green, including: the builder refuses each of the four bad
-  `setpoint`s; a values row with a deviation steps its face down; a chart with a setpoint has no
-  seconds; a drift rule does not trip before `hold_ms` and does not trip under `min_setpoint`.
+- `cargo test --workspace` green, including: the builder refuses each bad `setpoint`; a values
+  row with a difference stays on the panel; a chart with a setpoint has no seconds; a drift rule
+  does not trip before `hold_ms` and does not trip under `min_setpoint`. *(Done 2026-09-15.)*
 - The firmware builds with a real plan, and `dashsim --preview` shows a values page and a chart
-  with and without a setpoint.
+  with and without a setpoint. *(Done 2026-09-15.)*
 - On the car: the owner's numbers for `percent`, `hold_ms` and `min_setpoint`, and a look at
   what boost's difference does on a real pull ([`17-bench-ble-usb.md`](17-bench-ble-usb.md) §4).
 

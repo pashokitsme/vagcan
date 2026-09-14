@@ -78,7 +78,7 @@ the server. Read-only bounds what can be *changed* about a car, not what can be
   `dash` or `slcan`. A new transmitting bench image goes behind the same feature.
 - **The board guards itself on any link that is not a cable.** A host across a radio is
   not trusted, so over BLE the board enforces the allowlist, the moving-car check and a
-  sweep limit on its own (`todo/dash/16-uds-over-ble.md`).
+  sweep limit on its own (`.archive/tasks/done/dash/16-uds-over-ble.md`).
 
 ## No car-specific data in the code (MANDATORY)
 

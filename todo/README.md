@@ -8,8 +8,8 @@ dated status sections moved verbatim to
 
 ## Where things stand (2026-09-15)
 
-**Milestone: the scheduler and the board's links are on `master`; a channel's specified
-value is in review.** The evening-of-2026-09-14 status moved to the history file on
+**Milestone: the scheduler, the board's links and a channel's specified value are on
+`master`.** The evening-of-2026-09-14 status moved to the history file on
 2026-09-15.
 
 - **PR #2, `ble-uds`, merged 2026-09-14** (`77c01c5`): one scheduler on the board and the
@@ -17,7 +17,7 @@ value is in review.** The evening-of-2026-09-14 status moved to the history file
 - **PR #3, `link-icons`, merged 2026-09-14** (`0dd1c90`): link icons in a column at the
   panel's right edge, the adapter screen's kb/s (bench: `benchecu` at 20 frames/s → 111 bits a
   frame, 2,280 bit/s each way; `research/dash/can-bring-up.md` §9.12), `dashsim --snap`.
-- **PR #4, `setpoint-drift`, open 2026-09-15**: `setpoint` pairs a channel with the value its
+- **PR #4, `setpoint-drift`, merged 2026-09-15** (`7d8e0a5`): `setpoint` pairs a channel with the value its
   unit asked for; the panel shows the difference; `[[alarm]] kind = "drift"` watches it
   (`dash/18`). Four review rounds, the last with no findings. Workspace tests: 1,655 at
   `38dfdef`. CI's bench host job failed on a stale preview count, fixed in `97487d3`; CI
@@ -65,39 +65,37 @@ resets it (§3).
 1. **The transceiver back on 3.3 V** — hardware, the owner's hands. `RXD` at 5 V into `GPIO1`
    is past the C3's rating; a wire to the regulator's output, or a 3.3 V regulator off `5V`
    (`research/dash/can-bring-up.md` §9.12). Before the car.
-2. **PR #4 → `master`** — `setpoint-drift`; review closed and CI green on `97487d3`,
-   2026-09-15. Merge when the owner says.
-3. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8 and 13: unplug USB
+2. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8 and 13: unplug USB
    in adapter mode, a USB flood.
-4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
+3. **OLED and enclosure** — `dash/15`; waits for the panel.
+4. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
-   `vag_dash_render::screen`; the drift rule is PR #4. Next: the owner writes the rules into
+   `vag_dash_render::screen`; the drift rule came with PR #4. Next: the owner writes the rules into
    `dash.toml`; the misfire rule's numbers and a run on the car. The demo from a recorded drive
    waits for a recording with the retard channels and a way to replay it (none is
    hardware-free today).
-6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
+5. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-7. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+6. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
    watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
-8. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+7. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-9. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-10. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
     freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-11. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
+10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
     ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
     `dash/17` §4).
-12. **Questions only the car answers** — `dash/06`.
-13. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+11. **Questions only the car answers** — `dash/06`.
+12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-14. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-15. **`watch` and `measure` across all fifteen units** — measured against the file, not
+14. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -109,11 +107,11 @@ resets it (§3).
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
-| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | on `master` (PR #2); bench passed (`research/dash/can-bring-up.md` §9.9–9.10), car pending |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work; §2 items 8 and 13 and §3 open, §4 is the car |
-| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — built on `setpoint-drift`, PR #4 in review 2026-09-15; the owner's `dash.toml` pairs boost; car pending |
+| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 
-Finished task files are in `.archive/tasks/done/`; superseded designs in `.archive/specs/`.
+Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
+2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
 
 ## Command names in older documents
 
