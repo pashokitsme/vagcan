@@ -348,6 +348,18 @@ impl Planner {
 		Next::Send(Outgoing { token, unit, pdu })
 	}
 
+	/// The raw exchange in flight, if the request [`due`](Self::due) last sent is one.
+	///
+	/// A read and a raw `22` look alike on the wire, and a shell that lets a consumer
+	/// choose how long its own exchange may wait (a presence probe waits far less
+	/// than a read) needs to know which of the two it is waiting for.
+	pub fn flying_raw(&self) -> Option<ReqId> {
+		match &self.flight.as_ref()?.what {
+			Flying::Raw(raw) => Some(raw.id),
+			Flying::Read { .. } => None,
+		}
+	}
+
 	/// Take the answer to the request in flight; `now_ms` is the moment it arrived.
 	/// An answer for any other token is ignored and returns nothing.
 	pub fn answered(&mut self, now_ms: u64, token: Token, answer: Answer) -> Vec<Delivery> {
