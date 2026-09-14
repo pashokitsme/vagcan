@@ -164,7 +164,10 @@ enum Invocation {
 	Preview(Option<String>),
 	/// `--snap FILE` / `--hello-snap FILE`: one frame off the board into a PNG, after a
 	/// Hello when `hello`; `None` when the file is missing.
-	Snap { file: Option<String>, hello: bool },
+	Snap {
+		file: Option<String>,
+		hello: bool,
+	},
 	List,
 	Help,
 	Unknown(String),
@@ -333,7 +336,10 @@ fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {
 			pending.clear();
 		}
 	}
-	bail!("no frame from {port_name} in {} s — is the board in adapter mode, or not on the dash image?", SNAP_WAIT.as_secs())
+	bail!(
+		"no frame from {port_name} in {} s — is the board in adapter mode, or not on the dash image?",
+		SNAP_WAIT.as_secs()
+	)
 }
 
 fn run(port_name: &str) -> Result<()> {
@@ -934,7 +940,10 @@ mod tests {
 		assert!(matches!(parse(Some("--preview"), Some("out")), Invocation::Preview(Some(d)) if d == "out"));
 		assert!(matches!(parse(Some("--preview"), None), Invocation::Preview(None)));
 		assert!(matches!(parse(Some("--snap"), Some("a.png")), Invocation::Snap { file: Some(f), hello: false } if f == "a.png"));
-		assert!(matches!(parse(Some("--hello-snap"), Some("a.png")), Invocation::Snap { file: Some(_), hello: true }));
+		assert!(matches!(
+			parse(Some("--hello-snap"), Some("a.png")),
+			Invocation::Snap { file: Some(_), hello: true }
+		));
 		assert!(matches!(parse(Some("--snap"), None), Invocation::Snap { file: None, .. }));
 	}
 
