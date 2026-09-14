@@ -95,9 +95,9 @@ pub struct Unit {
 ///
 /// | class | board | laptop |
 /// |---|---|---|
-/// | `Timing` | the stopwatch's speed channel during a run | `measure` |
+/// | `Timing` | the stopwatch's speed channel during a run; a host's one timing subscription | `measure` |
 /// | `Foreground` | the visible page, the stalk poll | `watch`, `info`, `faults` |
-/// | `Remote` | the laptop's PDUs over USB or BLE | — |
+/// | `Remote` | the laptop's PDUs and normal subscriptions over USB or BLE | — |
 /// | `Background` | pages not shown | anything polled for later |
 ///
 /// The order of the variants is the order of precedence, floor aside (see the module

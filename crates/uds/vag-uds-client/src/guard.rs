@@ -31,7 +31,9 @@
 //!   clock ([`Guard::check_subscribe`]). The identifier counts once toward the
 //!   sweep rules when subscribed; neither the subscribe nor the board's polls
 //!   count toward the rate cap. At most [`MAX_SUBSCRIPTIONS`] live, none faster
-//!   than [`MIN_PERIOD_MS`].
+//!   than [`MIN_PERIOD_MS`], and at most [`MAX_TIMING_SUBSCRIPTIONS`] of them marked
+//!   [`Priority::Timing`] — polls the board's planner never thins. A timing
+//!   subscription counts toward every other cap exactly like a normal one.
 //!
 //! One `Guard` per connection; dropping it is the reset. No clock inside — the
 //! caller passes milliseconds from any monotonic source.
@@ -49,6 +51,7 @@
 //! | road speed 0 before another session change         | yes   | yes   |
 //! | one response id per request id, [`MAX_UNITS`]      | yes   | yes   |
 //! | [`MAX_SUBSCRIPTIONS`], [`MIN_PERIOD_MS`]           | yes   | yes   |
+//! | [`MAX_TIMING_SUBSCRIPTIONS`]                       | yes   | yes   |
 //! | rate cap                                           | yes   | no    |
 //! | [`MAX_IDENTIFIERS_PER_REQUEST`]                    | yes   | no    |
 //! | walk rule, [`MAX_DISTINCT_IDENTIFIERS`]            | yes   | no    |
@@ -62,6 +65,8 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::fmt;
+
+use vag_uds_transport::link::Priority;
 
 use crate::pdu::READ_ONLY_ALLOWLIST;
 
@@ -87,6 +92,13 @@ pub const MAX_UNITS: usize = 64;
 pub const MAX_SUBSCRIPTIONS: usize = 32;
 /// The shortest subscription period: `measure` reads road speed at 50 Hz.
 pub const MIN_PERIOD_MS: u16 = 20;
+/// Live [`Priority::Timing`] subscriptions one connection may hold.
+///
+/// The board's planner never thins a timing poll, so this cap and [`MIN_PERIOD_MS`] are
+/// all that bound what a host takes that way: one channel at 20 ms is 50 exchanges a
+/// second of the planner's 100, and the panel's floor of 25 still fits beside it. One is
+/// what `measure` needs: its speed channel.
+pub const MAX_TIMING_SUBSCRIPTIONS: usize = 1;
 
 /// The engine's request id on the ISO 15765-4 address block.
 pub const SPEED_REQUEST_ID: u16 = 0x7E0;
@@ -150,6 +162,8 @@ pub enum Refusal {
 	PeriodTooShort,
 	/// [`MAX_SUBSCRIPTIONS`] are already live.
 	TooManySubscriptions,
+	/// [`MAX_TIMING_SUBSCRIPTIONS`] timing subscriptions are already live.
+	TooManyTimingSubscriptions,
 }
 
 impl Refusal {
@@ -172,6 +186,7 @@ impl Refusal {
 			Refusal::OtherResponseId { .. } => "this request id already answers on another response id",
 			Refusal::PeriodTooShort => "subscription period too short",
 			Refusal::TooManySubscriptions => "too many subscriptions",
+			Refusal::TooManyTimingSubscriptions => "too many timing subscriptions",
 		}
 	}
 }
@@ -192,6 +207,9 @@ impl fmt::Display for Refusal {
 			}
 			Refusal::PeriodTooShort => write!(f, "subscription period under {MIN_PERIOD_MS} ms"),
 			Refusal::TooManySubscriptions => write!(f, "more than {MAX_SUBSCRIPTIONS} subscriptions"),
+			Refusal::TooManyTimingSubscriptions => {
+				write!(f, "more than {MAX_TIMING_SUBSCRIPTIONS} timing subscription in one connection")
+			}
 			other => f.write_str(other.reason()),
 		}
 	}
@@ -234,8 +252,8 @@ pub struct Guard {
 	window: VecDeque<(u64, u32)>,
 	/// Every unit addressed, at most [`MAX_UNITS`].
 	units: BTreeMap<u16, UnitHistory>,
-	/// Live subscription ids, at most [`MAX_SUBSCRIPTIONS`].
-	subscriptions: Vec<u16>,
+	/// Live subscription ids and their priorities, at most [`MAX_SUBSCRIPTIONS`].
+	subscriptions: Vec<(u16, Priority)>,
 }
 
 #[derive(Debug, Default)]
@@ -348,16 +366,22 @@ impl Guard {
 		self.record(request_id, response_id, &dids);
 	}
 
-	/// Decide whether the board may poll `did` on `request_id` every `period_ms`.
+	/// Decide whether the board may poll `did` on `request_id` every `period_ms`, at
+	/// `priority`.
 	///
 	/// [`Verdict::Forward`] or [`Verdict::Refuse`], never a wait: a subscribe does
 	/// not count toward the rate cap, so a watch page starts at once. Its
-	/// identifier counts toward the walk rule and the distinct and unit caps.
-	pub fn check_subscribe(&mut self, request_id: u16, response_id: u16, did: u16, period_ms: u16) -> Verdict {
+	/// identifier counts toward the walk rule and the distinct and unit caps. A
+	/// [`Priority::Timing`] one is held to [`MAX_TIMING_SUBSCRIPTIONS`] as well, and to
+	/// every other rule exactly as a normal one. A caller replacing a live id frees it
+	/// first ([`Guard::unsubscribed`]), as the board's session does.
+	pub fn check_subscribe(&mut self, request_id: u16, response_id: u16, did: u16, period_ms: u16, priority: Priority) -> Verdict {
 		let checked = if period_ms < MIN_PERIOD_MS {
 			Err(Refusal::PeriodTooShort)
 		} else if self.subscriptions.len() >= MAX_SUBSCRIPTIONS {
 			Err(Refusal::TooManySubscriptions)
+		} else if priority == Priority::Timing && self.timing_subscriptions() >= MAX_TIMING_SUBSCRIPTIONS {
+			Err(Refusal::TooManyTimingSubscriptions)
 		} else {
 			self
 				.admit_unit(request_id, response_id)
@@ -370,17 +394,22 @@ impl Guard {
 	}
 
 	/// Record a subscription the board started. A live `sub` given again is
-	/// replaced, not counted twice.
-	pub fn subscribed(&mut self, sub: u16, request_id: u16, response_id: u16, did: u16) {
-		if !self.subscriptions.contains(&sub) {
-			self.subscriptions.push(sub);
+	/// replaced, not counted twice, and holds `priority` from now on.
+	pub fn subscribed(&mut self, sub: u16, request_id: u16, response_id: u16, did: u16, priority: Priority) {
+		match self.subscriptions.iter_mut().find(|(live, _)| *live == sub) {
+			Some(live) => live.1 = priority,
+			None => self.subscriptions.push((sub, priority)),
 		}
 		self.record(request_id, response_id, &[did]);
 	}
 
 	/// Free a subscription's slot. Its identifier stays asked for the connection.
 	pub fn unsubscribed(&mut self, sub: u16) {
-		self.subscriptions.retain(|&live| live != sub);
+		self.subscriptions.retain(|&(live, _)| live != sub);
+	}
+
+	fn timing_subscriptions(&self) -> usize {
+		self.subscriptions.iter().filter(|(_, priority)| *priority == Priority::Timing).count()
 	}
 
 	/// Note the unit and the identifiers that reached it.
@@ -605,9 +634,13 @@ mod tests {
 	}
 
 	fn subscribe(guard: &mut Guard, sub: u16, request_id: u16, did: u16, period_ms: u16) -> Result<(), Refusal> {
-		match guard.check_subscribe(request_id, resp(request_id), did, period_ms) {
+		subscribe_as(guard, sub, request_id, did, period_ms, Priority::Normal)
+	}
+
+	fn subscribe_as(guard: &mut Guard, sub: u16, request_id: u16, did: u16, period_ms: u16, priority: Priority) -> Result<(), Refusal> {
+		match guard.check_subscribe(request_id, resp(request_id), did, period_ms, priority) {
 			Verdict::Forward => {
-				guard.subscribed(sub, request_id, resp(request_id), did);
+				guard.subscribed(sub, request_id, resp(request_id), did, priority);
 				Ok(())
 			}
 			Verdict::Refuse(r) => Err(r),
@@ -1051,7 +1084,7 @@ mod tests {
 			answers_on: resp(ENGINE),
 		});
 		assert_eq!(guard.check(now, ENGINE, other, &rdbi(&[0xF190])), refused);
-		assert_eq!(guard.check_subscribe(ENGINE, other, 0xF40D, 100), refused);
+		assert_eq!(guard.check_subscribe(ENGINE, other, 0xF40D, 100, Priority::Normal), refused);
 		assert_eq!(
 			guard.check(now, ENGINE, resp(ENGINE), &rdbi(&[0xF190])),
 			Verdict::Forward,
@@ -1059,8 +1092,11 @@ mod tests {
 		);
 
 		// A subscription binds the pair as well.
-		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100), Verdict::Forward);
-		guard.subscribed(1, GEARBOX, resp(GEARBOX), 0xF40D);
+		assert_eq!(
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100, Priority::Normal),
+			Verdict::Forward
+		);
+		guard.subscribed(1, GEARBOX, resp(GEARBOX), 0xF40D, Priority::Normal);
 		assert!(matches!(
 			guard.check(now, GEARBOX, 0x123, &[0x3E, 0x00]),
 			Verdict::Refuse(Refusal::OtherResponseId { .. })
@@ -1075,8 +1111,8 @@ mod tests {
 		let mut guard = Guard::new();
 		let mut forwarded = 0;
 		for response_id in 0..=0x7FF {
-			if guard.check_subscribe(ENGINE, response_id, 0xF40D, 100) == Verdict::Forward {
-				guard.subscribed(1, ENGINE, response_id, 0xF40D);
+			if guard.check_subscribe(ENGINE, response_id, 0xF40D, 100, Priority::Normal) == Verdict::Forward {
+				guard.subscribed(1, ENGINE, response_id, 0xF40D, Priority::Normal);
 				forwarded += 1;
 			}
 		}
@@ -1100,7 +1136,7 @@ mod tests {
 		);
 		assert_eq!(guard.check(now, next, resp(next), &[0x10, 0x03]), Verdict::Refuse(Refusal::TooManyUnits));
 		assert_eq!(
-			guard.check_subscribe(next, resp(next), 0xF40D, 20),
+			guard.check_subscribe(next, resp(next), 0xF40D, 20, Priority::Normal),
 			Verdict::Refuse(Refusal::TooManyUnits)
 		);
 		assert_eq!(
@@ -1174,6 +1210,7 @@ mod tests {
 			Refusal::TooManyUnits,
 			Refusal::PeriodTooShort,
 			Refusal::TooManySubscriptions,
+			Refusal::TooManyTimingSubscriptions,
 		];
 		for refusal in all {
 			let reason = refusal.reason();
@@ -1189,6 +1226,7 @@ mod tests {
 			(Refusal::TooManyUnits, MAX_UNITS.to_string()),
 			(Refusal::PeriodTooShort, MIN_PERIOD_MS.to_string()),
 			(Refusal::TooManySubscriptions, MAX_SUBSCRIPTIONS.to_string()),
+			(Refusal::TooManyTimingSubscriptions, MAX_TIMING_SUBSCRIPTIONS.to_string()),
 			(Refusal::ServiceNotAllowed(0x2E), "0x2E".to_string()),
 			(
 				Refusal::OtherResponseId {
@@ -1212,7 +1250,7 @@ mod tests {
 			forward_now(&mut guard, 0, ENGINE, &[0x3E, 0x00]);
 		}
 		assert_eq!(
-			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 20),
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 20, Priority::Normal),
 			Verdict::Forward,
 			"a full rate window does not delay it"
 		);
@@ -1222,14 +1260,17 @@ mod tests {
 	fn a_period_under_twenty_milliseconds_is_refused() {
 		let mut guard = Guard::new();
 		assert_eq!(
-			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 19),
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 19, Priority::Normal),
 			Verdict::Refuse(Refusal::PeriodTooShort)
 		);
 		assert_eq!(
-			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 0),
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 0, Priority::Normal),
 			Verdict::Refuse(Refusal::PeriodTooShort)
 		);
-		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, MIN_PERIOD_MS), Verdict::Forward);
+		assert_eq!(
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, MIN_PERIOD_MS, Priority::Normal),
+			Verdict::Forward
+		);
 	}
 
 	#[test]
@@ -1247,6 +1288,88 @@ mod tests {
 			subscribe(&mut guard, 101, ENGINE, 0xF40D, 100),
 			Err(Refusal::TooManySubscriptions),
 			"unsubscribing a dead id frees nothing"
+		);
+	}
+
+	#[test]
+	fn one_timing_subscription_per_connection_on_the_radio_and_the_cable() {
+		for mut guard in [Guard::new(), Guard::cable()] {
+			let profile = guard.profile();
+			subscribe_as(&mut guard, 1, GEARBOX, 0xF40D, MIN_PERIOD_MS, Priority::Timing).unwrap();
+			assert_eq!(
+				subscribe_as(&mut guard, 2, ENGINE, 0xF40C, 100, Priority::Timing),
+				Err(Refusal::TooManyTimingSubscriptions),
+				"{profile:?}"
+			);
+			subscribe(&mut guard, 2, ENGINE, 0xF40C, 100).expect("a normal one passes beside it");
+
+			guard.unsubscribed(1);
+			subscribe_as(&mut guard, 3, ENGINE, 0xF40D, 100, Priority::Timing).expect("the freed timing slot");
+			assert_eq!(
+				guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100, Priority::Timing),
+				Verdict::Refuse(Refusal::TooManyTimingSubscriptions),
+				"{profile:?}"
+			);
+
+			// A live id given again holds its new priority: normal frees the timing slot,
+			// and a normal id marked timing takes it.
+			guard.subscribed(3, ENGINE, resp(ENGINE), 0xF40D, Priority::Normal);
+			guard.subscribed(2, ENGINE, resp(ENGINE), 0xF40C, Priority::Timing);
+			assert_eq!(
+				guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100, Priority::Timing),
+				Verdict::Refuse(Refusal::TooManyTimingSubscriptions),
+				"{profile:?}"
+			);
+			guard.subscribed(2, ENGINE, resp(ENGINE), 0xF40C, Priority::Normal);
+			assert_eq!(
+				guard.check_subscribe(GEARBOX, resp(GEARBOX), 0xF40D, 100, Priority::Timing),
+				Verdict::Forward,
+				"{profile:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_timing_subscription_counts_toward_every_other_cap_like_a_normal_one() {
+		for mut guard in [Guard::new(), Guard::cable()] {
+			let profile = guard.profile();
+			assert_eq!(
+				guard.check_subscribe(ENGINE, resp(ENGINE), 0xF40D, MIN_PERIOD_MS - 1, Priority::Timing),
+				Verdict::Refuse(Refusal::PeriodTooShort),
+				"{profile:?}"
+			);
+			subscribe_as(&mut guard, 0, ENGINE, 0xF40D, MIN_PERIOD_MS, Priority::Timing).unwrap();
+			for sub in 1..MAX_SUBSCRIPTIONS as u16 {
+				subscribe(&mut guard, sub, GEARBOX, 0x2000 + sub * sub, 100).unwrap();
+			}
+			assert_eq!(
+				subscribe(&mut guard, 100, GEARBOX, 0x2000, 100),
+				Err(Refusal::TooManySubscriptions),
+				"{profile:?}: the timing one holds a slot of the {MAX_SUBSCRIPTIONS}"
+			);
+			guard.unsubscribed(0);
+			assert_eq!(
+				guard.check_subscribe(ENGINE, 0x123, 0xF40D, MIN_PERIOD_MS, Priority::Timing),
+				Verdict::Refuse(Refusal::OtherResponseId {
+					request: ENGINE,
+					answers_on: resp(ENGINE),
+				}),
+				"{profile:?}"
+			);
+		}
+
+		// The radio's sweep rules see a timing identifier as any other.
+		let mut guard = Guard::new();
+		for (sub, did) in (0xF100..0xF107).enumerate() {
+			subscribe(&mut guard, sub as u16, ENGINE, did, 100).unwrap();
+		}
+		assert_eq!(
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF107, MIN_PERIOD_MS, Priority::Timing),
+			Verdict::Refuse(Refusal::Walk)
+		);
+		assert_eq!(
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF40D, MIN_PERIOD_MS, Priority::Timing),
+			Verdict::Refuse(Refusal::Locked)
 		);
 	}
 
@@ -1273,7 +1396,7 @@ mod tests {
 		}
 		subscribe(&mut guard, 0, ENGINE, dids[7], 100).expect("already asked");
 		assert_eq!(
-			guard.check_subscribe(ENGINE, resp(ENGINE), 0x4000, 100),
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0x4000, 100, Priority::Normal),
 			Verdict::Refuse(Refusal::TooManyDistinct)
 		);
 		assert_eq!(
@@ -1289,15 +1412,24 @@ mod tests {
 		for (sub, did) in (0xF100..0xF107).enumerate() {
 			subscribe(&mut guard, sub as u16, ENGINE, did, 100).unwrap();
 		}
-		assert_eq!(guard.check_subscribe(ENGINE, resp(ENGINE), 0xF107, 100), Verdict::Refuse(Refusal::Walk));
-		assert_eq!(guard.check_subscribe(ENGINE, resp(ENGINE), 0xF190, 100), Verdict::Refuse(Refusal::Locked));
+		assert_eq!(
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF107, 100, Priority::Normal),
+			Verdict::Refuse(Refusal::Walk)
+		);
+		assert_eq!(
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF190, 100, Priority::Normal),
+			Verdict::Refuse(Refusal::Locked)
+		);
 		assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &rdbi(&[0xF190])), Verdict::Refuse(Refusal::Locked));
 
 		// And reads followed by a subscribe complete a walk the same way.
 		let mut guard = Guard::new();
 		forward_now(&mut guard, 0, GEARBOX, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003]));
 		forward_now(&mut guard, 0, GEARBOX, &rdbi(&[0x2004, 0x2005, 0x2006]));
-		assert_eq!(guard.check_subscribe(GEARBOX, resp(GEARBOX), 0x2007, 100), Verdict::Refuse(Refusal::Walk));
+		assert_eq!(
+			guard.check_subscribe(GEARBOX, resp(GEARBOX), 0x2007, 100, Priority::Normal),
+			Verdict::Refuse(Refusal::Walk)
+		);
 	}
 
 	#[test]
@@ -1549,7 +1681,10 @@ mod tests {
 		}
 		let all: Vec<u16> = (0xF100u16..=0xF1FF).collect();
 		forward_now(&mut guard, 0, 0x714, &rdbi(&all));
-		assert_eq!(guard.check_subscribe(0x714, resp(0x714), 0xF1FF, MIN_PERIOD_MS), Verdict::Forward);
+		assert_eq!(
+			guard.check_subscribe(0x714, resp(0x714), 0xF1FF, MIN_PERIOD_MS, Priority::Normal),
+			Verdict::Forward
+		);
 		assert!(
 			guard.units.values().all(|unit| unit.asked.is_empty() && !unit.locked),
 			"no identifier is kept: memory is units and slots only"
@@ -1571,7 +1706,7 @@ mod tests {
 
 		let mut guard = Guard::cable();
 		assert_eq!(
-			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF40D, MIN_PERIOD_MS - 1),
+			guard.check_subscribe(ENGINE, resp(ENGINE), 0xF40D, MIN_PERIOD_MS - 1, Priority::Normal),
 			Verdict::Refuse(Refusal::PeriodTooShort)
 		);
 		for sub in 0..MAX_SUBSCRIPTIONS as u16 {

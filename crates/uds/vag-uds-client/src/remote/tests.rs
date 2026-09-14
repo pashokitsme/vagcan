@@ -147,12 +147,21 @@ fn request(seq: u8, unit: Unit, pdu: &[u8]) -> Message {
 }
 
 fn subscribe(sub: u16, unit: Unit, did: u16, period_ms: u16) -> Message {
+	subscribe_as(sub, unit, did, period_ms, Priority::Normal)
+}
+
+fn timing(sub: u16, unit: Unit, did: u16, period_ms: u16) -> Message {
+	subscribe_as(sub, unit, did, period_ms, Priority::Timing)
+}
+
+fn subscribe_as(sub: u16, unit: Unit, did: u16, period_ms: u16, priority: Priority) -> Message {
 	Message::Subscribe(Subscribe {
 		sub,
 		request_id: unit.request,
 		response_id: unit.response,
 		did,
 		period_ms,
+		priority,
 	})
 }
 
@@ -403,6 +412,7 @@ fn subscribing_one_request_id_under_every_response_id_leaves_memory_bounded() {
 			response_id,
 			did: 0xF40D,
 			period_ms: 100,
+			priority: Priority::Normal,
 		}));
 		refused += board
 			.readings(1)
@@ -545,6 +555,123 @@ fn a_session_is_active_while_it_holds_a_subscription_or_a_request() {
 	board.run_until(100);
 	assert_eq!(board.answers().len(), 1);
 	assert!(!board.session.is_active(), "answered, nothing held");
+}
+
+// --- timing subscriptions -----------------------------------------------------------
+
+/// The identifiers of a `22` request.
+fn dids_of(pdu: &[u8]) -> Vec<u16> {
+	pdu[1..].chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect()
+}
+
+/// The bench's `measure` over the board (2026-09-14): every host subscription ran as the
+/// board's Remote class, the planner sat at its ceiling, and the speed channel came at
+/// 10 Hz. Marked timing, it keeps 50 Hz beside fifteen normal channels and the panel;
+/// the panel keeps everything it asks (under its floor), the normal channels are slowed
+/// and not dropped, and no second holds more than the ceiling. Under the default budget,
+/// and under one identifier per request, where every read is an exchange of its own; on
+/// either carrier's guard.
+#[test]
+fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_panel() {
+	const MINUTE_MS: u64 = 60_000;
+	const PANEL_PERIOD_MS: u32 = 500;
+	const GEARBOX: Unit = Unit {
+		request: 0x7E1,
+		response: 0x7E9,
+	};
+	let single = Budget {
+		max_dids_per_request: 1,
+		..Budget::default()
+	};
+	for budget in [Budget::default(), single] {
+		for guard in [Guard::new(), Guard::cable()] {
+			let mut board = Board::new(Bus::Answering { kmh: 0 });
+			board.planner = Planner::new(budget);
+			board.session = Session::with_guard(guard);
+			// The panel: four channels at 2 Hz, on a unit of its own.
+			let panel: Vec<u16> = (0..4u16).map(|n| 0x3000 + n * n).collect();
+			for did in &panel {
+				board.planner.subscribe(0, Class::Foreground, GATEWAY, *did, PANEL_PERIOD_MS, None);
+			}
+			board.hear(timing(1, ENGINE, 0xF40D, 20));
+			// Fifteen normal channels at 50, 75 and 100 ms over two units. Squares: no eight
+			// of them evenly spaced, so the walk rule has nothing to say.
+			for n in 0..15u16 {
+				let unit = if n % 2 == 0 { ENGINE } else { GEARBOX };
+				board.hear(subscribe(10 + n, unit, 0x2000 + n * n, 50 + 25 * (n % 3)));
+			}
+			board.run_until(MINUTE_MS);
+			let label = format!("{budget:?}, {:?}", board.session.guard.profile());
+
+			assert!(
+				board.to_host.iter().all(|m| !matches!(
+					m,
+					Message::Reading(Reading {
+						outcome: Outcome::Refused(_),
+						..
+					})
+				)),
+				"{label}: nothing refused"
+			);
+			let speed = board.readings(1).iter().filter(|(_, o)| matches!(o, Outcome::Pdu(_))).count();
+			assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
+
+			for did in &panel {
+				let reads = board
+					.sent
+					.iter()
+					.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(did))
+					.count();
+				let asked = (MINUTE_MS / u64::from(PANEL_PERIOD_MS)) as usize;
+				assert!(reads + 1 >= asked, "{label}: panel {did:04X} read {reads} times of {asked}");
+			}
+
+			for n in 0..15u16 {
+				let got = board.readings(10 + n).len();
+				assert!(got >= 60, "{label}: normal channel {n} got {got} readings in a minute");
+			}
+
+			let times: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();
+			let busiest = (0..times.len())
+				.map(|i| times[i..].iter().take_while(|&&t| t < times[i] + 1000).count())
+				.max()
+				.unwrap_or(0);
+			assert!(busiest <= usize::from(budget.ceiling_per_s), "{label}: {busiest} sends in one second");
+		}
+	}
+}
+
+/// One timing subscription per connection, on the radio and the cable alike; a normal one
+/// still passes beside it, and unsubscribing or replacing the timing one frees its slot.
+#[test]
+fn a_second_timing_subscription_is_refused_and_an_unsubscribe_frees_the_slot() {
+	for guard in [Guard::new(), Guard::cable()] {
+		let mut board = Board::new(Bus::Answering { kmh: 0 });
+		board.session = Session::with_guard(guard);
+		board.hear(timing(1, ENGINE, 0xF40D, 20));
+		board.hear(timing(2, GATEWAY, 0x1000, 100));
+		let second = board.readings(2);
+		assert_eq!(second.len(), 1, "{second:?}");
+		assert!(refused(&second[0].1).contains("timing"), "{second:?}");
+
+		board.hear(subscribe(3, GATEWAY, 0x1000, 100));
+		board.hear(timing(1, ENGINE, 0xF40D, 40));
+		board.run_until(500);
+		assert!(!board.readings(3).is_empty(), "a normal subscription passes beside it");
+		assert!(
+			board.readings(1).iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))),
+			"given again under its own id, the timing subscription is replaced, not refused"
+		);
+
+		board.hear(Message::Unsubscribe { sub: 1 });
+		board.to_host.clear();
+		board.hear(timing(2, GATEWAY, 0x1001, 100));
+		let now = board.now;
+		board.run_until(now + 500);
+		let freed = board.readings(2);
+		assert!(!freed.is_empty(), "{freed:?}");
+		assert!(freed.iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))), "{freed:?}");
+	}
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.

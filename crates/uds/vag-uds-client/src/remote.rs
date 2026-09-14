@@ -26,7 +26,8 @@
 //!
 //! Handled as they arrive, not behind a request that is waiting: a `measure`
 //! session subscribing while a slow read is out should not wait for it.
-//! [`Guard::check_subscribe`] then [`Planner::subscribe`] as [`Class::Remote`];
+//! [`Guard::check_subscribe`] then [`Planner::subscribe`] — as [`Class::Remote`], or as
+//! [`Class::Timing`] when the host marked it [`Priority::Timing`];
 //! a refusal is a [`Reading`] with [`Outcome::Refused`]. Every planner delivery
 //! for a live subscription becomes a [`Reading`] ([`Session::deliver`]) stamped
 //! with the moment the answer arrived. A subscription given again under a live
@@ -36,13 +37,30 @@
 //! session to that unit ends with a [`Reading`] saying so. [`Session::close`]
 //! — the connection is gone — ends all of them: a dead consumer takes its
 //! subscriptions with it.
+//!
+//! # Why a host may hold a timing subscription
+//!
+//! `measure` times a run from one speed channel at 50 Hz. As [`Class::Remote`] it waits
+//! behind everything else once the planner is at its ceiling, and on the bench it came
+//! at 10 Hz (2026-09-14). [`Class::Timing`] is never thinned, so the guard alone bounds
+//! what a host takes that way: at most
+//! [`MAX_TIMING_SUBSCRIPTIONS`](crate::guard::MAX_TIMING_SUBSCRIPTIONS) per connection,
+//! polled no faster than [`MIN_PERIOD_MS`](crate::guard::MIN_PERIOD_MS) — one channel,
+//! at most 50 of the planner's 100 exchanges a second. The panel's floor of 25 fits in
+//! what is left, the ceiling is the
+//! planner's to hold whatever is asked, and every other subscription of the host stays
+//! `Remote`: slowed when the bus is short, never dropped.
+//!
+//! The bound is per connection, and the board runs a radio session and a cable session
+//! side by side: a timing subscription on each, to different identifiers, is 100 a second
+//! and the panel waits behind them while both last (`todo/dash/16`, open).
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use vag_uds_transport::link::{Answer, Message, Outcome, Reading, Request, Subscribe};
+use vag_uds_transport::link::{Answer, Message, Outcome, Priority, Reading, Request, Subscribe};
 
 use crate::guard::{Guard, Refusal, SPEED_REQUEST, SPEED_REQUEST_ID, SPEED_RESPONSE_ID, Verdict, road_speed};
 use crate::schedule::{self, Class, Delivery, Miss, Planner, ReqId, SubId, Unit};
@@ -355,14 +373,14 @@ impl Session {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
 		self.unsubscribe(planner, s.sub);
-		match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms) {
+		match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms, s.priority) {
 			Verdict::Forward => {
 				let unit = Unit {
 					request: s.request_id,
 					response: s.response_id,
 				};
-				let id = planner.subscribe(now_ms, Class::Remote, unit, s.did, u32::from(s.period_ms), None);
-				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did);
+				let id = planner.subscribe(now_ms, class_of(s.priority), unit, s.did, u32::from(s.period_ms), None);
+				self.guard.subscribed(s.sub, s.request_id, s.response_id, s.did, s.priority);
 				self.subs.insert(
 					s.sub,
 					Live {
@@ -396,6 +414,15 @@ impl Session {
 			self.unsubscribe(planner, sub);
 			out.push(refused_reading(sub, now_ms, Refusal::Locked));
 		}
+	}
+}
+
+/// The planner class a host's subscription is polled as (module docs, "Why a host may
+/// hold a timing subscription").
+fn class_of(priority: Priority) -> Class {
+	match priority {
+		Priority::Normal => Class::Remote,
+		Priority::Timing => Class::Timing,
 	}
 }
 

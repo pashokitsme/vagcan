@@ -11,7 +11,7 @@ use std::time::Duration;
 use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
 use vag_uds_client::{AsyncUdsClient, UdsError};
 use vag_uds_transport::link::{
-	self, Answer, HelloReply, MemoryPipe, Message, Outcome, Piece, Pipe, Reading, Reassembler, Request, Subscribe, pipe_pair,
+	self, Answer, HelloReply, MemoryPipe, Message, Outcome, Piece, Pipe, Priority, Reading, Reassembler, Request, Subscribe, pipe_pair,
 };
 use vag_uds_transport::{CanId, TransportError};
 
@@ -406,6 +406,59 @@ async fn a_subscription_past_the_boards_limit_is_refused_here() {
 	assert!(matches!(board.next().await, Message::Unsubscribe { .. }));
 	let _again = bus.subscribe(Class::Foreground, ENGINE, 0x3000, Duration::from_millis(500), None);
 	assert_eq!(subscribed(board.next().await).did, 0x3000);
+}
+
+/// `measure`'s speed channel is the one read the board must never thin: it goes out marked
+/// timing, and every other class goes out normal.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_timing_subscription_is_sent_as_timing() {
+	let (bus, mut board) = start();
+	let _speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let asked = subscribed(board.next().await);
+	assert_eq!((asked.did, asked.priority), (0xF40D, Priority::Timing));
+	let mut others = Vec::new();
+	for (class, did) in [(Class::Foreground, 0x2029), (Class::Remote, 0x202A), (Class::Background, 0x206E)] {
+		others.push(bus.subscribe(class, ENGINE, did, Duration::from_millis(100), None));
+		let asked = subscribed(board.next().await);
+		assert_eq!((asked.did, asked.priority), (did, Priority::Normal), "{class:?}");
+	}
+}
+
+/// The board's guard holds one timing subscription per connection; the second is refused
+/// here rather than sent to be refused. Dropping the first, or the board refusing it,
+/// frees the slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_timing_subscription_is_refused_here_until_the_first_ends() {
+	let (bus, mut board) = start();
+	let mut speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let first = subscribed(board.next().await);
+	assert_eq!(first.priority, Priority::Timing);
+
+	let mut second = bus.subscribe(Class::Timing, ENGINE, 0xF40C, Duration::from_millis(20), None);
+	assert_eq!(sample(&mut second).await.value, Err(Miss::BusError));
+	assert!(ended(&mut second).await);
+	board.quiet().await;
+	board.send(reading(first.sub, 10, Outcome::Pdu(vec![0x62, 0xF4, 0x0D, 5]))).await;
+	assert_eq!(sample(&mut speed).await.value, Ok(vec![5]), "the first still reads");
+
+	// A normal subscription is not held to the timing cap.
+	let _normal = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
+	assert_eq!(subscribed(board.next().await).priority, Priority::Normal);
+
+	drop(speed);
+	assert_eq!(board.next().await, Message::Unsubscribe { sub: first.sub });
+	let mut again = bus.subscribe(Class::Timing, ENGINE, 0xF40C, Duration::from_millis(20), None);
+	let again_id = subscribed(board.next().await);
+	assert_eq!((again_id.did, again_id.priority), (0xF40C, Priority::Timing));
+
+	// Refused by the board, it ends here too, and the slot is free again.
+	board
+		.send(reading(again_id.sub, 20, Outcome::Refused("more than 1 timing subscription".into())))
+		.await;
+	assert_eq!(sample(&mut again).await.value, Err(Miss::BusError));
+	assert!(ended(&mut again).await);
+	let _third = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	assert_eq!(subscribed(board.next().await).priority, Priority::Timing);
 }
 
 #[tokio::test(flavor = "multi_thread")]

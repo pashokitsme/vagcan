@@ -4,8 +4,12 @@
 //! ```text
 //! bleuds 7E0 7E8 22F190                         # one Request, print the Answer
 //! bleuds --subscribe 7E0 7E8 F40D 100 5         # read F40D every 100 ms for 5 s
+//! bleuds --timing --subscribe 7E0 7E8 F40D 20 5 # the same as a timing subscription
 //! bleuds --sweep-response 7E0 7E8 50 F40D 100   # 50 response ids under one request id
 //! ```
+//!
+//! `--timing` marks the subscription timing (`link::Priority::Timing`): the board's
+//! planner never thins it, and its guard allows one per connection.
 //!
 //! The sweep is the heap attack the board's guard refuses: one request id under many
 //! response ids, one subscription each, in one connection. All but the first must come
@@ -22,7 +26,7 @@ use btleplug::platform::{Adapter, Peripheral};
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 use vag_dash_ble::{hex, open_nus};
-use vag_uds_transport::link::{self, Message, Outcome, Piece, Reassembler, Request, Subscribe};
+use vag_uds_transport::link::{self, Message, Outcome, Piece, Priority, Reassembler, Request, Subscribe};
 
 const DEFAULT_NAME: &str = "vagcan-dash";
 /// How long to look for the board before giving up.
@@ -51,6 +55,7 @@ enum Mode {
 		did: u16,
 		period_ms: u16,
 		seconds: u64,
+		priority: Priority,
 	},
 	/// One request id under `count` response ids, one subscription each, in one
 	/// connection: the board must refuse all but the first and hold no more for them.
@@ -65,7 +70,7 @@ enum Mode {
 
 fn usage() -> ! {
 	eprintln!("usage: bleuds [--name NAME] <request id> <response id> <hex pdu>");
-	eprintln!("       bleuds [--name NAME] --subscribe <request id> <response id> <did> <period ms> <seconds>");
+	eprintln!("       bleuds [--name NAME] [--timing] --subscribe <request id> <response id> <did> <period ms> <seconds>");
 	eprintln!("       bleuds [--name NAME] --sweep-response <request id> <first response id> <count> <did> <period ms>");
 	std::process::exit(2);
 }
@@ -95,6 +100,13 @@ fn parse(args: &[String]) -> Result<(String, Mode)> {
 		name = args.remove(at + 1);
 		args.remove(at);
 	}
+	let priority = match args.iter().position(|a| a == "--timing") {
+		Some(at) => {
+			args.remove(at);
+			Priority::Timing
+		}
+		None => Priority::Normal,
+	};
 	let mode = match args.as_slice() {
 		[flag, request, response, did, period, seconds] if flag == "--subscribe" => Mode::Subscribe {
 			request: hex_u16(request)?,
@@ -102,7 +114,9 @@ fn parse(args: &[String]) -> Result<(String, Mode)> {
 			did: hex_u16(did)?,
 			period_ms: period.parse().context("period is milliseconds")?,
 			seconds: seconds.parse().context("seconds is a number")?,
+			priority,
 		},
+		_ if priority == Priority::Timing => usage(),
 		[flag, request, first, count, did, period] if flag == "--sweep-response" => Mode::SweepResponse {
 			request: hex_u16(request)?,
 			first_response: hex_u16(first)?,
@@ -183,15 +197,17 @@ async fn main() -> Result<()> {
 				did,
 				period_ms,
 				seconds,
+				priority,
 			} => {
 				const SUB: u16 = 1;
-				println!("> Subscribe {request:03X}/{response:03X} {did:04X} every {period_ms} ms for {seconds} s");
+				println!("> Subscribe {request:03X}/{response:03X} {did:04X} every {period_ms} ms for {seconds} s, {priority:?}");
 				send(&Message::Subscribe(Subscribe {
 					sub: SUB,
 					request_id: request,
 					response_id: response,
 					did,
 					period_ms,
+					priority,
 				}))
 				.await?;
 				let (mut count, mut first, mut last) = (0u32, None, 0u32);
@@ -240,6 +256,7 @@ async fn main() -> Result<()> {
 							response_id: first_response.wrapping_add(n) & 0x7FF,
 							did,
 							period_ms,
+							priority: Priority::Normal,
 						}))
 						.await?;
 					}

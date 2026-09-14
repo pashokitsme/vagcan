@@ -82,6 +82,19 @@ item 7 (the `frame` mirror) unnecessary.
     **not** count toward the rate cap, and neither do the board's polls, so a 20-channel
     watch starts at once. At most 32 live subscriptions per connection, none faster than
     20 ms; an unsubscribe frees a slot.
+  - **A timing flag** (2026-09-14, after `measure` over the board on the bench ran its
+    speed at 10 Hz: every host subscription ran as the board's `Remote` class, thinned at
+    the planner's 100/s ceiling). A Subscribe ends with a priority byte, `0` normal,
+    `1` timing. Normal runs as `Class::Remote`; timing as `Class::Timing`, never thinned.
+    At most **one timing subscription per connection** (`MAX_TIMING_SUBSCRIPTIONS`), on
+    the radio and the cable alike; a second is refused, and a timing subscription counts
+    toward every other cap like a normal one. One channel at ≥ 20 ms is ≤ 50 of the 100
+    exchanges a second, so the panel's floor of 25 still fits. The laptop's remote `Bus`
+    sends `timing` for a `Class::Timing` subscription, `normal` for any other class, and
+    refuses a second timing one itself.
+  - **Open:** that bound is per connection, and the board runs a radio session and a
+    cable session side by side. A timing subscription on each, to different identifiers,
+    takes the whole ceiling, and the panel waits behind them while both last.
   - The host may still check road speed itself, over this transport, as a courtesy that
     fails early with a better message — never as the enforcement.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
