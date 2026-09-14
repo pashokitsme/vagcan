@@ -2083,7 +2083,7 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	use vag_dash_render::history::History;
-	use vag_dash_render::{Board, Cell, Frame, Rates, Theme, draw_with};
+	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_with};
 	use vag_uds_can::wire::BitRate;
 
 	static FRAMEBUFFER: StaticCell<Framebuffer> = StaticCell::new();
@@ -2189,7 +2189,20 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 		// alarm's offending channel is drawn inverted, so the page says which one.
 		let cell_of = |index: u16| {
 			let cell = match PLAN.channel(index) {
-				Some(channel) => Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals),
+				Some(channel) => {
+					// A channel the plan paired with a specified value carries the difference;
+					// one of the two missing is `Unknown`, which keeps the line and draws a
+					// dash (`todo/dash/18`). The two come from one `22`, so they are of a
+					// moment.
+					let deviation = match channel.setpoint {
+						None => Deviation::None,
+						Some(specified) => match (value_of(index), value_of(specified)) {
+							(Some(actual), Some(wanted)) => Deviation::Value(actual - wanted),
+							_ => Deviation::Unknown,
+						},
+					};
+					Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals).with_deviation(deviation)
+				}
 				None => Cell::new("?", None, "", 0),
 			};
 			if glass.offending == Some(ChannelId(index)) {
