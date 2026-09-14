@@ -43,8 +43,8 @@ pub mod render;
 pub mod screen;
 pub mod theme;
 
-pub use frame::{Cell, Frame};
-pub use render::draw;
+pub use frame::{Board, Cell, Frame, Links, Rates};
+pub use render::{draw, draw_with};
 pub use theme::{Numerals, Theme};
 
 use embedded_graphics::geometry::Size;

@@ -157,9 +157,17 @@ fn said(text: &str) -> Heard {
 	})
 }
 
-/// What the one argument asks for.
+/// What the arguments ask for.
 enum Invocation {
 	Demo,
+	/// `--preview DIR`; `None` when the directory is missing.
+	Preview(Option<String>),
+	/// `--snap FILE` / `--hello-snap FILE`: one frame off the board into a PNG, after a
+	/// Hello when `hello`; `None` when the file is missing.
+	Snap {
+		file: Option<String>,
+		hello: bool,
+	},
 	List,
 	Help,
 	Unknown(String),
@@ -167,9 +175,18 @@ enum Invocation {
 	Guess,
 }
 
-fn parse(first: Option<&str>) -> Invocation {
+fn parse(first: Option<&str>, second: Option<&str>) -> Invocation {
 	match first {
 		Some("--demo") => Invocation::Demo,
+		Some("--preview") => Invocation::Preview(second.map(str::to_string)),
+		Some("--snap") => Invocation::Snap {
+			file: second.map(str::to_string),
+			hello: false,
+		},
+		Some("--hello-snap") => Invocation::Snap {
+			file: second.map(str::to_string),
+			hello: true,
+		},
 		Some("--list") => Invocation::List,
 		Some("--help" | "-h") => Invocation::Help,
 		// Nothing else starts with a dash; a port path never does.
@@ -183,17 +200,34 @@ const USAGE: &str = "\
 dashsim — be the panel and the buttons for a board running the `dash` image
 
 usage:
-  dashsim [PORT]    open PORT, or the one ESP32 board (USB vendor 303a) if omitted
-  dashsim --list    list the serial ports
-  dashsim --demo    draw one synthetic frame and exit (no board needed)
-  dashsim --help    this text
+  dashsim [PORT]          open PORT, or the one ESP32 board (USB vendor 303a) if omitted
+  dashsim --list          list the serial ports
+  dashsim --demo          draw one synthetic frame and exit (no board needed)
+  dashsim --preview DIR   render the layout preview scenarios (placeholder values) to
+                          PNGs in DIR and print each one's report (no board needed)
+  dashsim --snap FILE     write the panel as the board draws it to the PNG FILE; the
+                          frame is the third after the port opens, and the board's log
+                          lines meanwhile go to stderr
+  dashsim --hello-snap FILE
+                          the same after saying Hello on the link first, as a host on
+                          the cable does — the frame then shows the USB link icon
+  dashsim --help          this text
 
 keys: space = short press, L = long press, b = braille, q = quit";
 
 fn main() -> Result<()> {
-	let first = std::env::args().nth(1);
-	match parse(first.as_deref()) {
+	let args: Vec<String> = std::env::args().skip(1).take(2).collect();
+	match parse(args.first().map(String::as_str), args.get(1).map(String::as_str)) {
 		Invocation::Demo => demo(),
+		Invocation::Preview(Some(dir)) => {
+			for (name, report) in preview::write_all(std::path::Path::new(&dir))? {
+				println!("{name:<44} {report:?}");
+			}
+			Ok(())
+		}
+		Invocation::Preview(None) => bail!("--preview needs a directory to write the PNGs to\n\n{USAGE}"),
+		Invocation::Snap { file: Some(file), hello } => snap(&guess_port()?, std::path::Path::new(&file), hello),
+		Invocation::Snap { file: None, .. } => bail!("--snap and --hello-snap need the PNG file to write\n\n{USAGE}"),
 		Invocation::List => list_ports(),
 		Invocation::Help => {
 			println!("{USAGE}");
@@ -238,6 +272,74 @@ fn pick_board(ports: &[serialport::SerialPortInfo]) -> Result<String> {
 		[] => bail!("no ESP32 board found (USB vendor {ESPRESSIF_VID:04x}) — plug it in, pass its port explicitly, or --list to see the ports"),
 		several => bail!("several ESP32 boards found — pass one explicitly:\n  {}", several.join("\n  ")),
 	}
+}
+
+/// Frames skipped before the one written: the board draws one every 200 ms, so the
+/// third is drawn at least 400 ms after the port opened — after the Hello, when one
+/// was sent, has reached the board.
+const SNAP_SKIP: usize = 2;
+
+/// How long a snap waits for its frame. A board in adapter mode sends none.
+const SNAP_WAIT: Duration = Duration::from_secs(5);
+
+/// Bytes past which a line with no `\n` is thrown away: twice the buffer the firmware keeps
+/// its `FRAME` line in (`FRAME_LINE` in `vag-dash-fw`'s `dash.rs`), so no panel line is cut.
+const SNAP_LINE_MAX: usize = 2 * (256 * 64 / 8 * 2 + 32);
+
+/// One frame off the board, as `--preview` writes its scenarios.
+fn snap(port_name: &str, file: &std::path::Path, hello: bool) -> Result<()> {
+	let mut port = serialport::new(port_name, BAUD)
+		.timeout(Duration::from_millis(200))
+		.open()
+		.with_context(|| format!("opening {port_name}"))?;
+	if hello {
+		let bytes = vag_uds_transport::link::encode(&vag_uds_transport::link::Message::Hello)?;
+		port.write_all(&bytes).context("saying Hello")?;
+	}
+	// Read in chunks and cut lines here, not with `read_until`: a board in adapter mode ends
+	// its lines with `\r` alone, and on a busy bus a `read_until(b'\n')` gets bytes inside
+	// every timeout and never returns — past the deadline and without bound.
+	let mut chunk = [0u8; 1024];
+	let mut pending: Vec<u8> = Vec::new();
+	let deadline = Instant::now() + SNAP_WAIT;
+	let mut seen = 0;
+	while Instant::now() < deadline {
+		let n = match port.read(&mut chunk) {
+			Ok(0) => bail!("{port_name} closed before a frame came"),
+			Ok(n) => n,
+			Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+			Err(e) => return Err(e).with_context(|| format!("reading {port_name}")),
+		};
+		pending.extend_from_slice(&chunk[..n]);
+		while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = pending.drain(..=end).collect();
+			// A line holding a NUL is the link's, as in `read_board`.
+			if line.contains(&0) {
+				continue;
+			}
+			match said(&String::from_utf8_lossy(&line)) {
+				Heard::Said(FromBoard::Frame(_)) if seen < SNAP_SKIP => seen += 1,
+				Heard::Said(FromBoard::Frame(bitmap)) => {
+					let mut canvas = preview::Canvas::new(embedded_graphics::prelude::Size::new(bitmap.width, bitmap.height));
+					canvas.lit.clone_from(&bitmap.pixels);
+					let out = std::fs::File::create(file).with_context(|| format!("creating {}", file.display()))?;
+					preview::encode_png(&canvas, std::io::BufWriter::new(out))?;
+					println!("{}", file.display());
+					return Ok(());
+				}
+				Heard::Said(FromBoard::Log(text)) => eprintln!("{text}"),
+				_ => {}
+			}
+		}
+		// No `\n` in more than any panel line holds: not the panel's stream.
+		if pending.len() > SNAP_LINE_MAX {
+			pending.clear();
+		}
+	}
+	bail!(
+		"no frame from {port_name} in {} s — is the board in adapter mode, or not on the dash image?",
+		SNAP_WAIT.as_secs()
+	)
 }
 
 fn run(port_name: &str) -> Result<()> {
@@ -514,6 +616,213 @@ fn demo() -> Result<()> {
 	Ok(())
 }
 
+/// `--preview`: fixed scenarios through the real renderer into PNGs. No board, no terminal.
+///
+/// **These are preview scenarios with placeholder values, not readings.** Each value is
+/// chosen for its shape — digit count, label length, unit — so a person can judge whether
+/// the layout holds; none of it is a car's, none of it reaches the firmware or a plan, and
+/// every file is named `preview-…` so a picture is never mistaken for a capture.
+mod preview {
+	use anyhow::{Context, Result};
+	use embedded_graphics::pixelcolor::BinaryColor;
+	use embedded_graphics::prelude::*;
+	use std::io::Write;
+	use std::path::Path;
+	use vag_dash_render::frame::Adapter;
+	use vag_dash_render::render::Report;
+	use vag_dash_render::{Board, Cell, Frame, Links, Rates, Theme, draw_with};
+
+	/// The panel the board has.
+	pub const PANEL: Size = Size::new(256, 64);
+	/// Picture pixels per panel pixel, so a person can see the pixels.
+	pub const SCALE: u32 = 4;
+	pub const LIT: [u8; 3] = [0xF0, 0xF0, 0xF0];
+	pub const DARK: [u8; 3] = [0x00, 0x00, 0x00];
+	/// One panel pixel of it around the glass, so where the panel ends is visible.
+	pub const FRAME: [u8; 3] = [0x60, 0x60, 0x60];
+
+	/// A panel in memory.
+	pub struct Canvas {
+		pub size: Size,
+		pub lit: Vec<bool>,
+	}
+
+	impl Canvas {
+		pub fn new(size: Size) -> Self {
+			Canvas {
+				size,
+				lit: vec![false; (size.width * size.height) as usize],
+			}
+		}
+
+		fn get(&self, x: u32, y: u32) -> bool {
+			self.lit[(y * self.size.width + x) as usize]
+		}
+	}
+
+	impl OriginDimensions for Canvas {
+		fn size(&self) -> Size {
+			self.size
+		}
+	}
+
+	impl DrawTarget for Canvas {
+		type Color = BinaryColor;
+		type Error = std::convert::Infallible;
+
+		fn draw_iter<I>(&mut self, pixels: I) -> std::result::Result<(), Self::Error>
+		where
+			I: IntoIterator<Item = Pixel<BinaryColor>>,
+		{
+			for Pixel(p, colour) in pixels {
+				if p.x >= 0 && p.y >= 0 && (p.x as u32) < self.size.width && (p.y as u32) < self.size.height {
+					let i = (p.y as u32 * self.size.width + p.x as u32) as usize;
+					self.lit[i] = colour.is_on();
+				}
+			}
+			Ok(())
+		}
+	}
+
+	/// The panel at [`SCALE`], inside a [`FRAME`] one panel pixel wide, as an RGB PNG.
+	pub fn encode_png<W: Write>(canvas: &Canvas, out: W) -> Result<()> {
+		let (w, h) = ((canvas.size.width + 2) * SCALE, (canvas.size.height + 2) * SCALE);
+		let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+		for oy in 0..h {
+			for ox in 0..w {
+				let (px, py) = ((ox / SCALE) as i64 - 1, (oy / SCALE) as i64 - 1);
+				let inside = (0..i64::from(canvas.size.width)).contains(&px) && (0..i64::from(canvas.size.height)).contains(&py);
+				let colour = match inside {
+					false => FRAME,
+					true if canvas.get(px as u32, py as u32) => LIT,
+					true => DARK,
+				};
+				rgb.extend_from_slice(&colour);
+			}
+		}
+		let mut encoder = png::Encoder::new(out, w, h);
+		encoder.set_color(png::ColorType::Rgb);
+		encoder.set_depth(png::BitDepth::Eight);
+		let mut writer = encoder.write_header()?;
+		writer.write_image_data(&rgb)?;
+		writer.finish()?;
+		Ok(())
+	}
+
+	/// One scenario, drawn.
+	pub struct Shot {
+		pub name: String,
+		pub canvas: Canvas,
+		pub report: Report,
+	}
+
+	fn shot(name: &str, frame: &Frame<'_>, board: Board) -> Shot {
+		let mut canvas = Canvas::new(PANEL);
+		// The theme the firmware draws with (`vag-dash-fw`'s `panel_task`).
+		let report = draw_with(frame, &board, &Theme::bold_mono(), &mut canvas);
+		Shot {
+			name: format!("preview-{name}"),
+			canvas,
+			report,
+		}
+	}
+
+	const LINKS: [(&str, Links); 4] = [
+		("none", Links::NONE),
+		("usb", Links { usb: true, ble: false }),
+		("ble", Links { usb: false, ble: true }),
+		("usb-ble", Links { usb: true, ble: true }),
+	];
+	const BOTH: Links = LINKS[3].1;
+
+	fn linked(links: Links) -> Board {
+		Board { links, rates: None }
+	}
+
+	/// Every preview scenario, drawn. Placeholder values throughout — see the module.
+	pub fn render_all() -> Vec<Shot> {
+		let mut shots = Vec::new();
+
+		// A values page with labels as long as a real plan's and both kinds of unit.
+		let four = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			Cell::new("МАСЛО", Some(104.0), "°C", 0),
+			Cell::new("КОРОБКА", Some(78.0), "°C", 0),
+		];
+		for (tag, links) in LINKS {
+			shots.push(shot(&format!("values4-links-{tag}"), &Frame::Values { cells: &four }, linked(links)));
+		}
+
+		let two = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("НАДДУВ", Some(1.82), "bar", 2)];
+		shots.push(shot("values2-links-usb-ble", &Frame::Values { cells: &two }, linked(BOTH)));
+
+		// The rightmost label fits its column alone and not beside the icons.
+		let long = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			Cell::new("МАСЛО", Some(104.0), "°C", 0),
+			Cell::new("ТЕМП.МАСЛА", Some(104.0), "°C", 0),
+		];
+		shots.push(shot("values4-long-label-links-usb-ble", &Frame::Values { cells: &long }, linked(BOTH)));
+
+		// A boost-shaped trace: spool, plateau, a dip, back on it.
+		let samples: Vec<f32> = (0..256)
+			.map(|i| {
+				let t = i as f32 / 256.0;
+				let spool = (1.0 - (-t * 9.0).exp()) * 1.9;
+				let dip = if (0.55..0.62).contains(&t) { -1.4 } else { 0.0 };
+				(spool + dip + (i as f32 * 0.7).sin() * 0.04).max(0.0)
+			})
+			.collect();
+		let chart = Frame::Chart {
+			cell: Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			min: 0.0,
+			max: 2.5,
+			samples: &samples,
+			seconds_per_sample: 0.2,
+		};
+		shots.push(shot("chart-boost-links-none", &chart, linked(Links::NONE)));
+		shots.push(shot("chart-boost-links-usb-ble", &chart, linked(BOTH)));
+
+		// The adapter screen.
+		let adapter = |kbit, listen_only, rx, tx, errors| Adapter {
+			kbit,
+			listen_only,
+			rx,
+			tx,
+			errors,
+		};
+		let rates = |tx_bps, rx_bps| Some(Rates { tx_bps, rx_bps });
+		let screens = [
+			(
+				"adapter-500-normal-traffic",
+				adapter(Some(500), false, 1_284_311, 9_402, 3),
+				rates(12_400, 380_200),
+			),
+			("adapter-500-listen-only", adapter(Some(500), true, 431_907, 0, 0), rates(0, 214_600)),
+			("adapter-closed", adapter(None, false, 0, 0, 0), rates(0, 0)),
+		];
+		for (name, state, rates) in screens {
+			shots.push(shot(name, &Frame::Adapter(state), Board { links: Links::NONE, rates }));
+		}
+		shots
+	}
+
+	/// Render every scenario into `dir` as `<name>.png`; each name with its report.
+	pub fn write_all(dir: &Path) -> Result<Vec<(String, Report)>> {
+		std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+		let mut written = Vec::new();
+		for shot in render_all() {
+			let path = dir.join(format!("{}.png", shot.name));
+			let file = std::fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+			encode_png(&shot.canvas, std::io::BufWriter::new(file)).with_context(|| format!("writing {}", path.display()))?;
+			written.push((path.display().to_string(), shot.report));
+		}
+		Ok(written)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -619,10 +928,61 @@ mod tests {
 	#[test]
 	fn help_is_usage_not_a_port_name() {
 		for flag in ["--help", "-h"] {
-			assert!(matches!(parse(Some(flag)), Invocation::Help), "{flag}");
+			assert!(matches!(parse(Some(flag), None), Invocation::Help), "{flag}");
 		}
-		assert!(matches!(parse(Some("--bogus")), Invocation::Unknown(_)));
-		assert!(matches!(parse(Some("/dev/cu.usbmodem1101")), Invocation::Port(p) if p == "/dev/cu.usbmodem1101"));
-		assert!(matches!(parse(None), Invocation::Guess));
+		assert!(matches!(parse(Some("--bogus"), None), Invocation::Unknown(_)));
+		assert!(matches!(parse(Some("/dev/cu.usbmodem1101"), None), Invocation::Port(p) if p == "/dev/cu.usbmodem1101"));
+		assert!(matches!(parse(None, None), Invocation::Guess));
+	}
+
+	#[test]
+	fn preview_takes_the_directory_after_it() {
+		assert!(matches!(parse(Some("--preview"), Some("out")), Invocation::Preview(Some(d)) if d == "out"));
+		assert!(matches!(parse(Some("--preview"), None), Invocation::Preview(None)));
+		assert!(matches!(parse(Some("--snap"), Some("a.png")), Invocation::Snap { file: Some(f), hello: false } if f == "a.png"));
+		assert!(matches!(
+			parse(Some("--hello-snap"), Some("a.png")),
+			Invocation::Snap { file: Some(_), hello: true }
+		));
+		assert!(matches!(parse(Some("--snap"), None), Invocation::Snap { file: None, .. }));
+	}
+
+	#[test]
+	fn every_preview_is_named_as_one_and_names_are_unique() {
+		let shots = preview::render_all();
+		// Values ×4 links, two cells, a long label, the chart ×2, the adapter ×3.
+		assert_eq!(shots.len(), 11);
+		let mut names: Vec<&str> = shots.iter().map(|s| s.name.as_str()).collect();
+		assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
+		names.sort_unstable();
+		names.dedup();
+		assert_eq!(names.len(), shots.len(), "a name is used twice");
+		assert!(
+			shots.iter().all(|s| s.canvas.lit.iter().any(|&on| on)),
+			"every scenario put something on the glass"
+		);
+	}
+
+	#[test]
+	fn a_preview_png_is_the_panel_times_four_inside_a_one_pixel_frame() {
+		let mut canvas = preview::Canvas::new(preview::PANEL);
+		canvas.lit[0] = true;
+		let mut bytes = Vec::new();
+		preview::encode_png(&canvas, &mut bytes).unwrap();
+
+		let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+		let mut reader = decoder.read_info().unwrap();
+		let mut rgb = vec![0; reader.output_buffer_size()];
+		let info = reader.next_frame(&mut rgb).unwrap();
+		let scale = preview::SCALE;
+		assert_eq!((info.width, info.height), ((256 + 2) * scale, (64 + 2) * scale));
+		let at = |x: u32, y: u32| {
+			let i = ((y * info.width + x) * 3) as usize;
+			[rgb[i], rgb[i + 1], rgb[i + 2]]
+		};
+		assert_eq!(at(0, 0), preview::FRAME, "the frame");
+		assert_eq!(at(scale, scale), preview::LIT, "panel pixel (0, 0), lit");
+		assert_eq!(at(2 * scale, scale), preview::DARK, "panel pixel (1, 0), dark");
+		assert_eq!(at(info.width - 1, info.height - 1), preview::FRAME);
 	}
 }

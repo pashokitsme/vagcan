@@ -920,3 +920,51 @@ to `600+n` (nobody answers; the board's timeout is 500 ms).
 |---|---|
 | `ce869b2`, before | 12 exchanges in **11.8 s**, each answered 0.6–1.6 s after its request — about 6 s of bus in any 10 s |
 | `4169d2c`, after | five answered in 0.6–1.0 s, the sixth **6.7 s** after its request (11.6 s from the start), then five more and the eleventh 6.7 s again — five 500 ms exchanges per ~10.5 s, the 25% share |
+
+### 9.12 Link icons on the board; the pair silent again, 2026-09-14 22:14–22:22
+
+`link-icons` (`284b80b`, real plan) flashed. `dashsim --snap FILE` writes the frame the board
+sends; `--hello-snap FILE` says Hello on the link first. No panel fitted, so the icons were read
+off those frames.
+
+| check | seen |
+|---|---|
+| `--snap`, nobody connected | no icons |
+| `--hello-snap` | USB icon, top right |
+| `--snap` 3 s after that port closed | no icons — the writer's stall cleared the USB icon |
+| `bleuds --hello-each 600 6` from Terminal.app, `--snap` during it | BLE icon |
+| the same with `--hello-snap` | both icons; `НАДДУВ` moved left beside them |
+| `--snap` after `bleuds` ended | no icons |
+
+The owner then asked for the icons in a column (a label beside them should not lose room to a
+second host). Reflashed 22:47: `--hello-snap` during a `bleuds` connection shows USB over BLE at
+the right edge, `НАДДУВ` in place.
+
+**The adapter screen's kb/s, checked 2026-09-15 00:18.** The 3.3 V pad on the board died; the
+owner moved the transceiver to 5 V and the pair carries frames again (see the note below). In
+adapter mode the board sends no `FRAME` line, so the rates were read through a temporary log
+patch (not committed: a `note!` in panel mode of the last and peak `Rates`, with `Port::status`
+and `Port::bits`).
+
+`benchecu --bench --device C --unit 710 --unit 7E0 --unit 7E1 --part 7E0=… --part 7E1=…`, then
+`vagcan --slcan watch --device B --did 7E0:F40D --hz 20` for 12 s, then `C`:
+
+| seen | figure |
+|---|---|
+| `benchecu` | `7E0 F40D` at **20/s** for 12 s |
+| the board's counts | rx 249, tx 249, err 0 |
+| its bit counts | tx 27,639 and rx 27,639 for those frames — **111 bits each**, the nominal length of an 8-byte standard frame (`vag_uds_can::wire::frame_bits`), so both the request and the padded answer are counted whole |
+| the meter's peak | **2,280 bit/s each way** = 20.5 frames/s × 111, which the screen shows as `2.3 kb/s` |
+
+The bit counts are cumulative and never reset (only differences are read), so the session's
+totals carried 555 tx and 111 rx bits from the run before it; subtracted above.
+
+First attempt failed for a bench reason, not a board one: `watch` asks the gateway on `710` at
+start, and `benchecu` stops when a frame appears on an id it was not told to answer. Give it
+`--unit 710`.
+
+**The 3.3 V pad is dead (2026-09-15).** `3V3` on the SuperMini gives nothing; the transceiver
+now runs from `5V`. The SN65HVD230 is a 3.3 V part and its `RXD` drives the ESP32-C3's `GPIO1`
+at its own supply — the C3's pins take 3.6 V. Powering the module from 3.3 V again (a wire to
+the regulator's output, or a small 3.3 V regulator off `5V`) is the fix; a divider on `RXD`
+is the stopgap.

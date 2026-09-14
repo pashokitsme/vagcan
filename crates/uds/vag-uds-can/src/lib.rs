@@ -10,8 +10,9 @@
 //! [`backend`] (the [`CanBackend`] seam an ESP32-C3 TWAI driver implements),
 //! [`isotp`] (the segmentation state machine, byte-for-byte the same one the
 //! laptop runs) and [`link`] (the [`UnitLink`] seam a command addresses one unit
-//! at a time through), and [`filter`] (which answer ids the controller hands up,
-//! and when that has to move). [`slcan`] and [`sniff`] drop out: a serial port and a map
+//! at a time through), [`filter`] (which answer ids the controller hands up,
+//! and when that has to move), and [`wire`] (the bits a frame takes, and the bit rate
+//! the adapter screen shows). [`slcan`] and [`sniff`] drop out: a serial port and a map
 //! of whole-bus traffic are not things the board has.
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -29,6 +30,7 @@ pub mod slcan;
 #[cfg(feature = "std")]
 pub mod sniff;
 mod time;
+pub mod wire;
 
 pub use backend::{CAN_EFF_FLAG, CAN_EFF_MASK, CAN_SFF_MASK, CanBackend, from_raw_id, to_raw_id};
 #[cfg(feature = "slcan")]

@@ -25,12 +25,12 @@ use core::fmt::Write;
 use eg_seven_segment::SevenSegmentStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle};
+use embedded_graphics::primitives::{Line, PrimitiveStyle, Rectangle, Triangle};
 use embedded_graphics::text::Text;
 use u8g2_fonts::FontRenderer;
 use u8g2_fonts::types::{FontColor, HorizontalAlignment, VerticalPosition};
 
-use crate::frame::{Cell, Frame};
+use crate::frame::{Board, Cell, Frame, Links, Rates};
 use crate::theme::{Numerals, Theme};
 
 /// Breathing room each side of a cell's contents.
@@ -121,113 +121,441 @@ fn number(cell: &Cell<'_>) -> Buf {
 	buf
 }
 
-/// Draw one frame. Returns what did not fit.
+/// Draw one frame with nothing connected and no rates measured. Returns what did not fit.
 pub fn draw<D>(frame: &Frame<'_>, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
+	draw_with(frame, &Board::default(), theme, target)
+}
+
+/// Draw one frame with what the board says about itself: the link icons on the values and
+/// chart pages, the bus rates on the adapter screen. Returns what did not fit.
+pub fn draw_with<D>(frame: &Frame<'_>, board: &Board, theme: &Theme, target: &mut D) -> Report
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
 	match frame {
-		Frame::Values { cells } => values(cells, theme, target),
+		Frame::Values { cells } => values(cells, board.links, theme, target),
 		Frame::Chart {
 			cell,
 			min,
 			max,
 			samples,
 			seconds_per_sample,
-		} => chart(cell, *min, *max, samples, *seconds_per_sample, theme, target),
-		Frame::Adapter(state) => adapter(state, target),
+		} => chart(cell, *min, *max, samples, *seconds_per_sample, board.links, theme, target),
+		Frame::Adapter(state) => adapter(state, board.rates, target),
 	}
 }
+
+// --- the link icons ---------------------------------------------------------------------
+
+/// One link icon's cell, in pixels.
+///
+/// Drawn from primitives, not from a font: no face here has either symbol. Five columns
+/// is the narrowest a Bluetooth rune keeps its two arrowheads apart and nine rows is what
+/// its diagonals need at that width; the cell adds a clear column each side, and the USB
+/// plug is drawn to the same cell so the pair reads as a pair.
+pub const ICON: Size = Size::new(7, 9);
+
+/// Dark rows between two icons, one under the other: as many as above them.
+const ICON_GAP: u32 = 2;
+
+/// Dark rows above the icons: an icon touching the edge of the glass reads as cut off
+/// (owner, on the first preview).
+const ICON_TOP: u32 = 2;
+
+/// Dark columns right of the icons. Wider than [`ICON_TOP`] because columns read closer
+/// than rows on this panel (owner, on the second preview).
+const ICON_RIGHT: u32 = 4;
+
+/// Dark columns between the icons and the label or chart header they narrow.
+const ICON_CLEARANCE: i32 = 4;
+
+/// Where the link icons go: a column in the top-right corner, [`ICON_TOP`] down and
+/// [`ICON_RIGHT`] in, USB above BLE. `None` when nothing is connected — then nothing is
+/// drawn. Laid out for the board's 64-row panel: on 32 rows the second icon stands in the
+/// number band, and nothing reports it (no caller draws icons there).
+///
+/// A column and not a row (owner, 2026-09-14): the room it takes from the rightmost label is
+/// one icon wide whether one host is connected or two, so what fits there does not depend on
+/// how many hosts there are — and that label is whatever the plan puts last.
+pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
+	let n = u32::from(links.usb) + u32::from(links.ble);
+	if n == 0 {
+		return None;
+	}
+	let h = n * ICON.height + (n - 1) * ICON_GAP;
+	Some(Rectangle::new(Point::new(icon_column(width), ICON_TOP as i32), Size::new(ICON.width, h)))
+}
+
+/// The icons' left edge, connected or not.
+fn icon_column(width: u32) -> i32 {
+	width as i32 - (ICON_RIGHT + ICON.width) as i32
+}
+
+fn draw_icons<D>(links: Links, width: u32, ink: BinaryColor, target: &mut D)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let Some(area) = icon_box(links, width) else {
+		return;
+	};
+	let mut at = area.top_left;
+	if links.usb {
+		usb_icon(at, ink, target);
+		at.y += (ICON.height + ICON_GAP) as i32;
+	}
+	if links.ble {
+		ble_icon(at, ink, target);
+	}
+}
+
+/// A plug: two pins, the body, the cable.
+fn usb_icon<D>(at: Point, ink: BinaryColor, target: &mut D)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let stroke = PrimitiveStyle::with_stroke(ink, 1);
+	for (a, b) in [((2, 0), (2, 1)), ((4, 0), (4, 1)), ((2, 6), (4, 6)), ((3, 7), (3, 8))] {
+		let _ = Line::new(at + Point::from(a), at + Point::from(b)).into_styled(stroke).draw(target);
+	}
+	let _ = Rectangle::new(at + Point::new(1, 2), Size::new(5, 4))
+		.into_styled(PrimitiveStyle::with_fill(ink))
+		.draw(target);
+}
+
+/// The Bluetooth rune: the stem, and the two arrowheads crossing it.
+fn ble_icon<D>(at: Point, ink: BinaryColor, target: &mut D)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let stroke = PrimitiveStyle::with_stroke(ink, 1);
+	for (a, b) in [((3, 0), (3, 8)), ((3, 0), (5, 2)), ((5, 2), (1, 6)), ((1, 2), (5, 6)), ((5, 6), (3, 8))] {
+		let _ = Line::new(at + Point::from(a), at + Point::from(b)).into_styled(stroke).draw(target);
+	}
+}
+
+// --- the adapter screen -----------------------------------------------------------------
 
 /// The adapter screen's words, decided before any pixel so they can be tested as words.
 struct AdapterText {
-	/// The bit rate, or that the channel is closed.
+	/// TX then RX: `12.4 kb/s`, or `-- kb/s` while the board has not measured them.
+	speeds: [Buf; 2],
+	/// `500 kbit/s · normal`, `500 kbit/s · listen-only`, or `closed`.
 	rate: Buf,
-	/// Normal or listen-only; empty while the channel is closed.
-	mode: &'static str,
-	/// `rx …`, `tx …`, `err …`.
-	counters: [Buf; 3],
+	/// `rx N  tx N  err N`.
+	counters: Buf,
 }
 
-/// What the screen says: `SLCAN`, the rate and mode on the left, the counters on the right.
+/// The screen's name, in its top-left corner.
 const ADAPTER_TITLE: &str = "SLCAN";
 
-fn adapter_text(state: &crate::frame::Adapter) -> AdapterText {
+fn adapter_text(state: &crate::frame::Adapter, rates: Option<Rates>) -> AdapterText {
 	let mut rate = Buf::new();
-	let mode = match state.kbit {
-		Some(kbit) => {
-			let _ = write!(rate, "{kbit} kbit/s");
-			if state.listen_only { "listen-only" } else { "normal" }
-		}
-		None => {
-			let _ = rate.write_str("closed");
-			""
-		}
+	let _ = match state.kbit {
+		Some(kbit) => write!(rate, "{kbit} kbit/s \u{b7} {}", if state.listen_only { "listen-only" } else { "normal" }),
+		None => rate.write_str("closed"),
 	};
-	let counter = |name: &str, n: u32| {
+	let speed = |bps: Option<u32>| {
 		let mut buf = Buf::new();
-		let _ = write!(buf, "{name} {n}");
+		let _ = match bps {
+			Some(bps) => kbps(&mut buf, bps),
+			// Not measured is not zero traffic.
+			None => buf.write_str("--"),
+		};
+		let _ = buf.write_str(" kb/s");
 		buf
 	};
+	let mut counters = Buf::new();
+	let _ = write!(counters, "rx {}  tx {}  err {}", state.rx, state.tx, state.errors);
 	AdapterText {
+		speeds: [speed(rates.map(|r| r.tx_bps)), speed(rates.map(|r| r.rx_bps))],
 		rate,
-		mode,
-		counters: [counter("rx", state.rx), counter("tx", state.tx), counter("err", state.errors)],
+		counters,
 	}
 }
 
-/// The board as a CAN adapter (`Frame::Adapter`).
+/// Bits per second as kb/s (1 kb/s = 1000 bit/s, as CAN bit rates are counted): one
+/// decimal below 100 kb/s, none from there up. Integer arithmetic, rounded half up, and a
+/// value that rounds to 100.0 is written `100`.
+fn kbps(buf: &mut Buf, bps: u32) -> core::fmt::Result {
+	let bps = u64::from(bps);
+	let tenths = (bps + 50) / 100;
+	if tenths < 1000 {
+		write!(buf, "{}.{}", tenths / 10, tenths % 10)
+	} else {
+		write!(buf, "{}", (bps + 500) / 1000)
+	}
+}
+
+/// The adapter screen's three faces.
 ///
-/// Its own faces rather than the theme's: the theme's numerals are digits only and its
-/// label face is the smallest there is, and this screen is one word and a few figures
-/// read from a metre away. Left half: `SLCAN` large, the bit rate and the mode under it.
-/// Right half: the three counters. A line that does not fit its half, or the height, is
-/// reported as a label overrun and drawn only if it fits the height.
-fn adapter<D>(state: &crate::frame::Adapter, target: &mut D) -> Report
+/// Its own rather than the theme's: the theme's numerals are digits only and its label
+/// face is the smallest there is. The title is medium; the speeds are the line a person
+/// reads, so they get the largest face, monospaced so a changing figure does not shift;
+/// the rest is small, in a face that has `·`.
+struct AdapterFonts {
+	title: FontRenderer,
+	speed: FontRenderer,
+	small: FontRenderer,
+}
+
+impl AdapterFonts {
+	fn new() -> Self {
+		AdapterFonts {
+			title: FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_7x13B_tr>(),
+			speed: FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_9x15B_mr>(),
+			small: FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_6x10_tf>(),
+		}
+	}
+}
+
+/// Rows between two lines, and between the title and the first centred line.
+const LINE_GAP: i32 = 2;
+/// Between an arrow and its figure.
+const ARROW_GAP: i32 = 3;
+/// Between `… kb/s` and the next arrow.
+const PAIR_GAP: i32 = 14;
+/// Measures a face's line: ascender, descender and a stroke that reaches both.
+const LINE_PROBE: &str = "Ag/|";
+
+/// One string placed: where to anchor its top, and the box its ink covers.
+#[derive(Debug, Clone, Copy)]
+struct Placed {
+	origin: Point,
+	ink: Rectangle,
+}
+
+/// Where everything on the adapter screen lands. A line that does not fit the height is
+/// `None` and not drawn.
+#[derive(Debug)]
+struct AdapterLayout {
+	title: Option<Placed>,
+	/// TX arrow, TX figure, RX arrow, RX figure.
+	speed: Option<(Rectangle, Placed, Rectangle, Placed)>,
+	rate: Option<Placed>,
+	counters: Option<Placed>,
+}
+
+impl AdapterLayout {
+	/// Every box that will have ink in it.
+	fn boxes(&self) -> impl Iterator<Item = Rectangle> {
+		let speed = self.speed.map(|(up, tx, down, rx)| [up, tx.ink, down, rx.ink]);
+		self
+			.title
+			.map(|p| p.ink)
+			.into_iter()
+			.chain(speed.into_iter().flatten())
+			.chain(self.rate.map(|p| p.ink))
+			.chain(self.counters.map(|p| p.ink))
+	}
+}
+
+/// The ink box of `text` anchored at the origin by its top. `None` for nothing to draw, or
+/// a glyph the face lacks — which is reported.
+fn ink_at_origin(font: &FontRenderer, text: &str, report: &mut Report) -> Option<Rectangle> {
+	match font.get_rendered_dimensions(text, Point::zero(), VerticalPosition::Top) {
+		Ok(dims) => dims.bounding_box,
+		Err(_) => {
+			report.glyph_missing = true;
+			None
+		}
+	}
+}
+
+/// Place `text` so its ink starts at column `x`, on a line whose box starts at row `y`.
+/// `line_dy` is where the face's line box starts below its top anchor.
+fn place(font: &FontRenderer, text: &str, x: i32, y: i32, line_dy: i32, report: &mut Report) -> Option<Placed> {
+	let ink = ink_at_origin(font, text, report)?;
+	let origin = Point::new(x - ink.top_left.x, y - line_dy);
+	Some(Placed {
+		origin,
+		ink: Rectangle::new(origin + ink.top_left, ink.size),
+	})
+}
+
+/// The box of the pixels `text` actually lights, anchored at the origin by its top.
+fn lit_box(font: &FontRenderer, text: &str) -> Option<Rectangle> {
+	/// A target that keeps only the extent of what is drawn on it.
+	struct Extent(Option<(Point, Point)>);
+
+	impl Dimensions for Extent {
+		fn bounding_box(&self) -> Rectangle {
+			// Far wider than any glyph, on both sides of the anchor.
+			Rectangle::new(Point::new(-128, -128), Size::new(256, 256))
+		}
+	}
+
+	impl DrawTarget for Extent {
+		type Color = BinaryColor;
+		type Error = core::convert::Infallible;
+
+		fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(&mut self, pixels: I) -> Result<(), Self::Error> {
+			for Pixel(p, colour) in pixels {
+				if colour.is_on() {
+					self.0 = Some(match self.0 {
+						None => (p, p),
+						Some((lo, hi)) => (lo.component_min(p), hi.component_max(p)),
+					});
+				}
+			}
+			Ok(())
+		}
+	}
+
+	let mut extent = Extent(None);
+	font
+		.render(
+			text,
+			Point::zero(),
+			VerticalPosition::Top,
+			FontColor::Transparent(BinaryColor::On),
+			&mut extent,
+		)
+		.ok()?;
+	extent.0.map(|(lo, hi)| Rectangle::with_corners(lo, hi))
+}
+
+/// A face's line box below its top anchor: (offset, height).
+fn line_box(font: &FontRenderer) -> (i32, i32) {
+	font
+		.get_rendered_dimensions(LINE_PROBE, Point::zero(), VerticalPosition::Top)
+		.ok()
+		.and_then(|d| d.bounding_box)
+		.map_or((0, 0), |b| (b.top_left.y, b.size.height as i32))
+}
+
+/// The layout, measured: `SLCAN` in the top-left corner, as far in from its edges as the link
+/// icons are from theirs ([`ICON_TOP`], [`ICON_RIGHT`]); under it three centred lines —
+/// the speeds, the bit rate and mode, the counters — as a block centred in the rows under
+/// the title, starting no closer to it than [`LINE_GAP`]. A line wider than the panel is
+/// reported and drawn centred anyway; a line below the floor is reported and not drawn.
+fn adapter_layout(fonts: &AdapterFonts, text: &AdapterText, size: Size, report: &mut Report) -> AdapterLayout {
+	let (width, height) = (size.width as i32, size.height as i32);
+	// The floor is checked line by line, so a line below it is never placed; the sides are
+	// checked once everything is placed, from the ink boxes.
+	let fits = |top: i32, h: i32, report: &mut Report| {
+		let fits = top + h <= height;
+		report.label_overrun |= !fits;
+		fits
+	};
+
+	// Its ink, not its anchor, sits at the margin: the owner's, 2026-09-14 — flush with the corner
+	// it did not match the icons.
+	let title_ink = ink_at_origin(&fonts.title, ADAPTER_TITLE, report).unwrap_or_default();
+	let title_h = title_ink.size.height as i32;
+	let (title_x, title_y) = (ICON_RIGHT as i32, ICON_TOP as i32);
+	let title = if fits(title_y, title_h, report) {
+		place(&fonts.title, ADAPTER_TITLE, title_x, title_y, title_ink.top_left.y, report)
+	} else {
+		None
+	};
+
+	let (speed_dy, speed_h) = line_box(&fonts.speed);
+	let (small_dy, small_h) = line_box(&fonts.small);
+	// The arrows stand two rows shorter than a digit's lit pixels, centred on them, and are
+	// as wide as tall (odd, so the apex has a middle column). Measured by drawing: u8g2's
+	// dimensions are the glyph's cell, which for this face is five rows taller than the ink.
+	let digit = lit_box(&fonts.speed, "0").unwrap_or_default();
+	let arrow_h = (digit.size.height as i32 - 2).max(3);
+	let arrow_w = arrow_h | 1;
+
+	let block = speed_h + LINE_GAP + small_h + LINE_GAP + small_h;
+	let band = title_y + title_h + LINE_GAP;
+	let top = band + ((height - band - block) / 2).max(0);
+
+	let widths = text
+		.speeds
+		.each_ref()
+		.map(|s| ink_at_origin(&fonts.speed, s.as_str(), report).map_or(0, |b| b.size.width as i32));
+	let speed_w = 2 * (arrow_w + ARROW_GAP) + widths[0] + PAIR_GAP + widths[1];
+	let speed = if fits(top, speed_h, report) {
+		let x = (width - speed_w) / 2;
+		let arrow_top = top - speed_dy + digit.top_left.y + (digit.size.height as i32 - arrow_h) / 2;
+		let arrow = |x: i32| Rectangle::new(Point::new(x, arrow_top), Size::new(arrow_w as u32, arrow_h as u32));
+		let tx_x = x + arrow_w + ARROW_GAP;
+		let down_x = tx_x + widths[0] + PAIR_GAP;
+		let rx_x = down_x + arrow_w + ARROW_GAP;
+		let tx = place(&fonts.speed, text.speeds[0].as_str(), tx_x, top, speed_dy, report);
+		let rx = place(&fonts.speed, text.speeds[1].as_str(), rx_x, top, speed_dy, report);
+		tx.zip(rx).map(|(tx, rx)| (arrow(x), tx, arrow(down_x), rx))
+	} else {
+		None
+	};
+
+	let centred = |line: &str, top: i32, report: &mut Report| {
+		let w = ink_at_origin(&fonts.small, line, report).map_or(0, |b| b.size.width as i32);
+		if fits(top, small_h, report) {
+			place(&fonts.small, line, (width - w) / 2, top, small_dy, report)
+		} else {
+			None
+		}
+	};
+	let rate_top = top + speed_h + LINE_GAP;
+	let rate = centred(text.rate.as_str(), rate_top, report);
+	let counters = centred(text.counters.as_str(), rate_top + small_h + LINE_GAP, report);
+
+	let layout = AdapterLayout {
+		title,
+		speed,
+		rate,
+		counters,
+	};
+	let panel = Rectangle::new(Point::zero(), size);
+	if layout.boxes().any(|b| panel.intersection(&b) != b) {
+		report.label_overrun = true;
+	}
+	layout
+}
+
+/// The board as a CAN adapter (`Frame::Adapter`); the layout is [`adapter_layout`]'s.
+fn adapter<D>(state: &crate::frame::Adapter, rates: Option<Rates>, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
 	let mut report = Report::default();
-	let area = target.bounding_box();
-	let (width, height) = (area.size.width, area.size.height);
-	let half = width / 2;
-	let title = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_inb16_mr>();
-	let small = FontRenderer::new::<u8g2_fonts::fonts::u8g2_font_6x10_tr>();
-	let text = adapter_text(state);
+	let fonts = AdapterFonts::new();
+	let text = adapter_text(state, rates);
+	let layout = adapter_layout(&fonts, &text, target.bounding_box().size, &mut report);
 	let ink = BinaryColor::On;
 
-	let mut put = |font: &FontRenderer, line: &str, x: i32, y: u32, report: &mut Report| -> u32 {
-		if line.is_empty() {
-			return y;
-		}
-		let h = text_height(font, line).max(text_height(font, "Ag"));
-		if text_width(font, line) + PAD > half {
-			report.label_overrun = true;
-		}
-		if y + h > height {
-			report.label_overrun = true;
-			return y;
-		}
-		if font
-			.render(line, Point::new(x, y as i32), VerticalPosition::Top, FontColor::Transparent(ink), target)
-			.is_err()
-		{
-			report.glyph_missing = true;
-		}
-		y + h + 1
-	};
-
-	let y = put(&title, ADAPTER_TITLE, 0, 0, &mut report);
-	let y = put(&small, text.rate.as_str(), 0, y + 1, &mut report);
-	put(&small, text.mode, 0, y, &mut report);
-	let mut y = 0;
-	for counter in &text.counters {
-		y = put(&small, counter.as_str(), half as i32 + PAD as i32, y, &mut report);
+	put(&fonts.title, ADAPTER_TITLE, layout.title, target, &mut report);
+	if let Some((up, tx, down, rx)) = layout.speed {
+		put(&fonts.speed, text.speeds[0].as_str(), Some(tx), target, &mut report);
+		put(&fonts.speed, text.speeds[1].as_str(), Some(rx), target, &mut report);
+		let fill = PrimitiveStyle::with_fill(ink);
+		let (w, h) = (up.size.width as i32 - 1, up.size.height as i32 - 1);
+		let (u, d) = (up.top_left, down.top_left);
+		let _ = Triangle::new(u + Point::new(0, h), u + Point::new(w, h), u + Point::new(w / 2, 0))
+			.into_styled(fill)
+			.draw(target);
+		let _ = Triangle::new(d, d + Point::new(w, 0), d + Point::new(w / 2, h))
+			.into_styled(fill)
+			.draw(target);
 	}
+	put(&fonts.small, text.rate.as_str(), layout.rate, target, &mut report);
+	put(&fonts.small, text.counters.as_str(), layout.counters, target, &mut report);
 	report
 }
 
-fn values<D>(cells: &[Cell<'_>], theme: &Theme, target: &mut D) -> Report
+/// Draw one placed string, if it was placed.
+fn put<D>(font: &FontRenderer, line: &str, placed: Option<Placed>, target: &mut D, report: &mut Report)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	if let Some(p) = placed
+		&& font
+			.render(line, p.origin, VerticalPosition::Top, FontColor::Transparent(BinaryColor::On), target)
+			.is_err()
+	{
+		report.glyph_missing = true;
+	}
+}
+
+// --- the values page --------------------------------------------------------------------
+
+fn values<D>(cells: &[Cell<'_>], links: Links, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -243,6 +571,7 @@ where
 	// reads as a missing fifth column.
 	let cell_w = width / cells.len() as u32;
 	let inner = cell_w.saturating_sub(PAD * 2);
+	let icons = icon_box(links, width);
 
 	let layout = row_layout(cells, theme, inner, height, &mut report);
 	if layout.step > 0 {
@@ -268,9 +597,25 @@ where
 		};
 
 		let centre = x as i32 + w as i32 / 2;
-		draw_label(cell.label, centre, inner, &theme.label, ink, target, &mut report);
+		// The label's room is its column less the padding — and in the rightmost column,
+		// less the icons and the padding before them.
+		let left = x as i32 + PAD as i32;
+		let mut right = (x + w) as i32 - PAD as i32;
+		if i + 1 == cells.len()
+			&& let Some(icons) = icons
+		{
+			right = right.min(icons.top_left.x - ICON_CLEARANCE);
+		}
+		draw_label(cell.label, centre, (left, right), &theme.label, ink, target, &mut report);
 		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
+	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
+	let ink = if cells.last().is_some_and(|c| c.alarm) {
+		BinaryColor::Off
+	} else {
+		BinaryColor::On
+	};
+	draw_icons(links, width, ink, target);
 	report
 }
 
@@ -375,14 +720,37 @@ fn unit_width(cell: &Cell<'_>, theme: &Theme, report: &mut Report) -> u32 {
 	w
 }
 
-fn draw_label<D>(label: &str, centre: i32, w: u32, font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
+/// A label centred on `centre` inside its room, `span` = (first column, one past the last).
+///
+/// A label that fits is moved only as far as it must to stay inside — a short one stays over
+/// its number, a long one in a narrowed column slides left. One that does not fit is
+/// reported and drawn centred on its room anyway: it will collide, and the report says so.
+fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
-	if let Ok(Some(bounds)) = font.get_rendered_dimensions_aligned(label, Point::new(centre, 0), VerticalPosition::Top, HorizontalAlignment::Center)
-		&& bounds.size.width > w
+	let (left, right) = span;
+	if let Ok(dims) = font.get_rendered_dimensions(label, Point::zero(), VerticalPosition::Top)
+		&& let Some(ink_box) = dims.bounding_box
 	{
-		report.label_overrun = true;
+		let w = ink_box.size.width as i32;
+		let x = if w > right - left {
+			report.label_overrun = true;
+			(left + right) / 2 - w / 2
+		} else {
+			(centre - w / 2).clamp(left, right - w)
+		};
+		let drawn = font.render(
+			label,
+			Point::new(x - ink_box.top_left.x, 0),
+			VerticalPosition::Top,
+			FontColor::Transparent(ink),
+			target,
+		);
+		if drawn.is_err() {
+			report.glyph_missing = true;
+		}
+		return;
 	}
 	let drawn = font.render_aligned(
 		label,
@@ -548,6 +916,10 @@ where
 	}
 }
 
+/// The chart's header rows: the header text, and the first link icon beside it. The trace
+/// starts under them.
+const HEADER_ROWS: i32 = (ICON_TOP + ICON.height) as i32 + 1;
+
 /// How many columns the trace will take: one sample is one column, and there
 /// are only so many columns.
 ///
@@ -561,7 +933,7 @@ fn drawn_columns(samples: usize, plot_w: i32) -> usize {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, theme: &Theme, target: &mut D) -> Report
+fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, links: Links, theme: &Theme, target: &mut D) -> Report
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -595,10 +967,13 @@ where
 	if step > 0 {
 		report.value_shrunk = true;
 	}
-	let plot_top = 8;
+	let plot_top = HEADER_ROWS;
 	let plot_x = value_w as i32 + 4;
 	let plot_bottom = height as i32 - 1;
-	let plot_w = width as i32 - plot_x;
+	// The trace ends before the icons' column **whether or not a host is connected**: the icons
+	// stand one under the other, so a second one is beside the trace's top rows, and a plot
+	// that widened when the last host left would change how many seconds the chart holds.
+	let plot_w = icon_column(width) - ICON_CLEARANCE - plot_x;
 	// The geometry is settled before the header is written, because the header
 	// counts what the trace draws and the trace is only as wide as the plot.
 	let drawn = drawn_columns(samples.len(), plot_w);
@@ -614,19 +989,23 @@ where
 		cell.unit,
 		drawn as f32 * seconds_per_sample
 	);
-	if theme
-		.unit
-		.render(
-			tail.as_str(),
-			Point::new(after, 1),
-			VerticalPosition::Top,
-			FontColor::Transparent(ink),
-			target,
-		)
-		.is_err()
-	{
-		report.glyph_missing = true;
+	match theme.unit.render(
+		tail.as_str(),
+		Point::new(after, 1),
+		VerticalPosition::Top,
+		FontColor::Transparent(ink),
+		target,
+	) {
+		// The header's room is the width less the icons and the padding before them.
+		Ok(dim) => {
+			let room = icon_box(links, width).map_or(width as i32, |icons| icons.top_left.x - ICON_CLEARANCE);
+			if dim.bounding_box.is_some_and(|b| b.top_left.x + b.size.width as i32 > room) {
+				report.label_overrun = true;
+			}
+		}
+		Err(_) => report.glyph_missing = true,
 	}
+	draw_icons(links, width, ink, target);
 
 	// Centred in the band under the header, for the same reason as the values
 	// page: the number is what the eye came for, and on the floor it reads as an
@@ -724,7 +1103,7 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(-13.8), "", 1),
 		];
 		let mut display = panel();
-		let report = values(&cells, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		assert!(report.value_overrun, "{report:?}");
 		// Drawn anyway. A cell that rendered nothing would look like a channel
 		// that did not answer, and those two must never be confusable.
@@ -773,7 +1152,7 @@ mod tests {
 		assert!(layout.with_unit, "a stacked unit is never dropped for width");
 
 		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
-		let report = values(&cells, &theme, &mut display);
+		let report = values(&cells, Links::NONE, &theme, &mut display);
 		assert!(!report.unit_dropped, "{report:?}");
 		assert!(!report.value_overrun, "{report:?}");
 
@@ -811,7 +1190,7 @@ mod tests {
 		// the screen says it happened.
 		let cells = [Cell::new("ТЕСТ", Some(1.0), "\u{2192}", 0)];
 		let mut display = panel();
-		let report = values(&cells, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		assert!(report.glyph_missing, "{report:?}");
 	}
 
@@ -826,7 +1205,7 @@ mod tests {
 			Cell::new("ЦИЛ 4", Some(0.0), "", 1),
 		];
 		let mut display = panel();
-		values(&cells, &Theme::bold_mono(), &mut display);
+		values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		// The top-left corner of the alarmed column is lit ground; the same corner
 		// of its neighbours is not.
 		assert!(lit(&display, 65, 0), "the alarmed cell's ground is lit");
@@ -939,8 +1318,221 @@ mod tests {
 			Cell::new("МАСЛО", Some(93.0), "", 0),
 		];
 		let mut display = panel();
-		let report = values(&cells, &Theme::bold_mono(), &mut display);
+		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		assert!(report.label_overrun, "{report:?}");
+	}
+
+	// --- the link icons ---------------------------------------------------------------
+
+	/// The panel the board has.
+	const TALL: Size = Size::new(256, 64);
+
+	fn tall() -> SimulatorDisplay<BinaryColor> {
+		SimulatorDisplay::new(TALL)
+	}
+
+	const USB: Links = Links { usb: true, ble: false };
+	const BLE: Links = Links { usb: false, ble: true };
+	const BOTH: Links = Links { usb: true, ble: true };
+
+	fn lit_in(display: &SimulatorDisplay<BinaryColor>, area: Rectangle) -> bool {
+		area.points().any(|p| display.get_pixel(p) == BinaryColor::On)
+	}
+
+	/// Inside the icon box, `display` is pixel for pixel the icons drawn alone.
+	fn icon_box_holds_only_the_icons(display: &SimulatorDisplay<BinaryColor>, links: Links) -> bool {
+		let mut alone = tall();
+		draw_icons(links, TALL.width, BinaryColor::On, &mut alone);
+		icon_box(links, TALL.width)
+			.unwrap()
+			.points()
+			.all(|p| display.get_pixel(p) == alone.get_pixel(p))
+	}
+
+	/// A real plan's page: labels as long as the plan's, two kinds of unit.
+	fn temps<'a>(last: &'a str) -> [Cell<'a>; 4] {
+		[
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			Cell::new("МАСЛО", Some(104.0), "°C", 0),
+			Cell::new(last, Some(78.0), "°C", 0),
+		]
+	}
+
+	#[test]
+	fn the_icons_stand_in_a_column_two_pixels_down_four_in_and_two_apart() {
+		assert_eq!(icon_box(Links::NONE, 256), None, "nothing connected, nothing drawn");
+		assert_eq!(icon_box(USB, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
+		assert_eq!(icon_box(BLE, 256), Some(Rectangle::new(Point::new(245, 2), ICON)));
+		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(245, 2), Size::new(7, 20))));
+	}
+
+	#[test]
+	fn each_icon_draws_inside_its_own_cell_and_nowhere_else() {
+		let mut none = tall();
+		draw_icons(Links::NONE, TALL.width, BinaryColor::On, &mut none);
+		assert!(!lit_in(&none, none.bounding_box()), "no link, no pixel");
+
+		// Every lit pixel is inside the icon box, so the two dark rows above it and the two
+		// dark columns right of it are checked by the loop below.
+		let right = Rectangle::new(Point::new(245, 2), ICON);
+		for links in [USB, BLE, BOTH] {
+			let mut display = tall();
+			draw_icons(links, TALL.width, BinaryColor::On, &mut display);
+			let area = icon_box(links, TALL.width).unwrap();
+			for p in display.bounding_box().points() {
+				assert!(
+					display.get_pixel(p) == BinaryColor::Off || area.contains(p),
+					"{links:?}: {p:?} lit outside {area:?}"
+				);
+			}
+			assert!(lit_in(&display, right), "{links:?}: the corner cell has its icon");
+			if links == BOTH {
+				assert!(lit_in(&display, Rectangle::new(Point::new(245, 13), ICON)), "and the one under it");
+				assert!(!lit_in(&display, Rectangle::new(Point::new(245, 11), Size::new(7, 2))), "the gap is dark");
+			}
+		}
+
+		let (mut usb, mut ble) = (tall(), tall());
+		draw_icons(USB, TALL.width, BinaryColor::On, &mut usb);
+		draw_icons(BLE, TALL.width, BinaryColor::On, &mut ble);
+		assert!(right.points().any(|p| usb.get_pixel(p) != ble.get_pixel(p)), "two different pictures");
+	}
+
+	#[test]
+	fn a_label_never_lights_a_pixel_inside_the_icon_box() {
+		for links in [USB, BLE, BOTH] {
+			let mut display = tall();
+			let report = values(&temps("КОРОБКА"), links, &Theme::bold_mono(), &mut display);
+			assert!(!report.label_overrun && !report.glyph_missing, "{links:?}: {report:?}");
+			assert!(icon_box_holds_only_the_icons(&display, links), "{links:?}");
+			// `КОРОБКА` is 34 px and the room beside the icons 46: it fits, and the clearance
+			// before the icons stays dark.
+			let area = icon_box(links, TALL.width).unwrap();
+			let clearance = Rectangle::new(
+				Point::new(area.top_left.x - ICON_CLEARANCE, 0),
+				Size::new(ICON_CLEARANCE as u32, ICON_TOP + ICON.height),
+			);
+			assert!(!lit_in(&display, clearance), "{links:?}: the clearance before the icons is dark");
+		}
+	}
+
+	#[test]
+	fn a_short_rightmost_label_stays_over_its_number_beside_the_icons() {
+		let cells = temps("ОЖ");
+		let (mut plain, mut linked) = (tall(), tall());
+		values(&cells, Links::NONE, &Theme::bold_mono(), &mut plain);
+		values(&cells, BOTH, &Theme::bold_mono(), &mut linked);
+		let label_row = Rectangle::new(Point::new(192, 0), Size::new(40, 8));
+		assert!(
+			label_row.points().all(|p| plain.get_pixel(p) == linked.get_pixel(p)),
+			"a label with room to spare does not move"
+		);
+	}
+
+	#[test]
+	fn a_second_host_takes_no_more_room_from_the_rightmost_label() {
+		for last in ["ОЖ", "НАДДУВ", "КОРОБКА", "ТЕМП.МАСЛА"] {
+			let cells = temps(last);
+			let (mut one, mut two) = (tall(), tall());
+			let alone = values(&cells, USB, &Theme::bold_mono(), &mut one);
+			let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut two);
+			assert_eq!(alone.label_overrun, beside.label_overrun, "{last}");
+			let labels = Rectangle::new(Point::new(0, 0), Size::new(241, ICON_TOP + ICON.height));
+			assert!(
+				labels.points().all(|p| one.get_pixel(p) == two.get_pixel(p)),
+				"{last}: the label row did not move"
+			);
+		}
+	}
+
+	#[test]
+	fn a_value_never_lights_a_pixel_beside_the_icons() {
+		for n in 1..=4 {
+			for (value, decimals) in [(78.0, 0), (1234.0, 0), (12345.0, 0), (104.5, 1), (-40.5, 1)] {
+				let cells: std::vec::Vec<Cell<'_>> = (0..n).map(|_| Cell::new("ОЖ", Some(value), "°C", decimals)).collect();
+				let mut display = tall();
+				values(&cells, BOTH, &Theme::bold_mono(), &mut display);
+				let mut alone = tall();
+				draw_icons(BOTH, TALL.width, BinaryColor::On, &mut alone);
+				let area = icon_box(BOTH, TALL.width).unwrap();
+				let around = Rectangle::new(
+					area.top_left - Point::new(ICON_CLEARANCE, 0),
+					area.size + Size::new(ICON_CLEARANCE as u32, ICON_GAP),
+				);
+				assert!(
+					around.points().all(|p| display.get_pixel(p) == alone.get_pixel(p)),
+					"{n} cells of {value}: a value reached the icons"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn a_rightmost_label_that_fits_only_without_the_icons_is_reported_with_them() {
+		let cells = temps("ТЕМП.МАСЛА");
+		let mut display = tall();
+		let alone = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		assert!(!alone.label_overrun, "it fits its column: {alone:?}");
+		let mut display = tall();
+		let beside = values(&cells, BOTH, &Theme::bold_mono(), &mut display);
+		assert!(beside.label_overrun, "it does not fit beside the icons: {beside:?}");
+	}
+
+	#[test]
+	fn an_alarmed_rightmost_column_draws_its_icons_dark() {
+		let cells = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(78.0), "°C", 0).alarmed()];
+		let mut display = tall();
+		values(&cells, USB, &Theme::bold_mono(), &mut display);
+		assert!(lit(&display, 245, 5), "the ground beside the plug is lit");
+		assert!(!lit(&display, 247, 5), "the plug's body is dark on it");
+	}
+
+	#[test]
+	fn a_chart_header_gives_way_to_the_icons_and_the_trace_ends_before_their_column() {
+		// Pinned at the top of the scale, so the trace runs along the highest row it can.
+		let samples = [2.5f32; 240];
+		fn pinned<'a>(label: &'a str, samples: &'a [f32]) -> Frame<'a> {
+			Frame::Chart {
+				cell: Cell::new(label, Some(2.5), "bar", 2),
+				min: 0.0,
+				max: 2.5,
+				samples,
+				seconds_per_sample: 0.2,
+			}
+		}
+		let chart = |label: &'static str| pinned(label, &samples);
+		let board = Board { links: BOTH, rates: None };
+		let mut display = tall();
+		let report = draw_with(&chart("НАДДУВ"), &board, &Theme::bold_mono(), &mut display);
+		assert!(!report.label_overrun, "{report:?}");
+		assert!(icon_box_holds_only_the_icons(&display, BOTH));
+		let end = icon_column(TALL.width) - ICON_CLEARANCE;
+		assert!(lit(&display, end - 1, HEADER_ROWS), "the trace runs along its top row to the clearance");
+		assert!(
+			(end..TALL.width as i32)
+				.all(|x| (HEADER_ROWS..TALL.height as i32).all(|y| !lit(&display, x, y) || icon_box(BOTH, TALL.width).unwrap().contains(Point::new(x, y)))),
+			"nothing of the trace in the clearance or the icons' column"
+		);
+		let mut plain = tall();
+		draw(&chart("НАДДУВ"), &Theme::bold_mono(), &mut plain);
+		let under = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(end as u32, TALL.height - HEADER_ROWS as u32));
+		assert!(
+			under.points().all(|p| plain.get_pixel(p) == display.get_pixel(p)),
+			"the trace is the same picture with no host connected"
+		);
+
+		// Lengthen the label a letter at a time: the icons never let a longer header through,
+		// and some length fits the whole width but not the width less the icons.
+		let mut collided = false;
+		for n in 1..40 {
+			let long: std::string::String = core::iter::repeat_n('Ж', n).collect();
+			let alone = draw(&pinned(&long, &samples), &Theme::bold_mono(), &mut tall()).label_overrun;
+			let beside = draw_with(&pinned(&long, &samples), &board, &Theme::bold_mono(), &mut tall()).label_overrun;
+			assert!(!alone || beside, "{n} letters: the icons only take room away");
+			collided |= beside && !alone;
+		}
+		assert!(collided, "some header fits the panel but not beside the icons");
 	}
 
 	// --- the adapter screen -----------------------------------------------------------
@@ -957,42 +1549,139 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn the_adapter_screen_says_the_rate_the_mode_and_the_counters() {
-		let open = adapter_text(&adapter_state(Some(500), false));
-		assert_eq!(open.rate.as_str(), "500 kbit/s");
-		assert_eq!(open.mode, "normal");
-		let counters: [&str; 3] = [open.counters[0].as_str(), open.counters[1].as_str(), open.counters[2].as_str()];
-		assert_eq!(counters, ["rx 4294967295", "tx 12", "err 0"]);
-
-		let silent = adapter_text(&adapter_state(Some(125), true));
-		assert_eq!((silent.rate.as_str(), silent.mode), ("125 kbit/s", "listen-only"));
-
-		let closed = adapter_text(&adapter_state(None, true));
-		assert_eq!((closed.rate.as_str(), closed.mode), ("closed", ""), "a closed channel has no mode");
+	fn words(text: &AdapterText) -> [&str; 4] {
+		[
+			text.speeds[0].as_str(),
+			text.speeds[1].as_str(),
+			text.rate.as_str(),
+			text.counters.as_str(),
+		]
 	}
 
 	#[test]
-	fn the_adapter_screen_fits_the_panel_with_the_largest_counters() {
-		let mut display: SimulatorDisplay<BinaryColor> = SimulatorDisplay::new(Size::new(256, 64));
-		let report = draw(&Frame::Adapter(adapter_state(Some(1000), true)), &Theme::bold_mono(), &mut display);
+	fn the_adapter_screen_says_the_speeds_the_rate_the_mode_and_the_counters() {
+		let rates = Some(Rates {
+			tx_bps: 12_400,
+			rx_bps: 380_200,
+		});
+		let open = adapter_text(&adapter_state(Some(500), false), rates);
+		assert_eq!(
+			words(&open),
+			["12.4 kb/s", "380 kb/s", "500 kbit/s \u{b7} normal", "rx 4294967295  tx 12  err 0"]
+		);
+
+		let silent = adapter_text(&adapter_state(Some(125), true), rates);
+		assert_eq!(silent.rate.as_str(), "125 kbit/s \u{b7} listen-only");
+
+		let closed = adapter_text(&adapter_state(None, true), None);
+		assert_eq!(
+			words(&closed)[..3],
+			["-- kb/s", "-- kb/s", "closed"],
+			"a closed channel has no mode, and a rate not measured is not a zero"
+		);
+	}
+
+	#[test]
+	fn kb_per_s_has_one_decimal_below_a_hundred_and_none_from_there() {
+		for (bps, text) in [
+			(0, "0.0"),
+			(49, "0.0"),
+			(50, "0.1"),
+			(12_400, "12.4"),
+			(99_949, "99.9"),
+			(99_950, "100"),
+			(380_200, "380"),
+			(1_000_000, "1000"),
+			(u32::MAX, "4294967"),
+		] {
+			let mut buf = Buf::new();
+			kbps(&mut buf, bps).unwrap();
+			assert_eq!(buf.as_str(), text, "{bps} bit/s");
+		}
+	}
+
+	/// The adapter screen drawn on `size`, with the layout it was drawn from.
+	fn adapter_on(size: Size, state: Adapter, rates: Option<Rates>) -> (SimulatorDisplay<BinaryColor>, Report, AdapterLayout) {
+		let mut display = SimulatorDisplay::new(size);
+		let board = Board { links: Links::NONE, rates };
+		let report = draw_with(&Frame::Adapter(state), &board, &Theme::bold_mono(), &mut display);
+		let layout = adapter_layout(&AdapterFonts::new(), &adapter_text(&state, rates), size, &mut Report::default());
+		(display, report, layout)
+	}
+
+	fn lit_only_inside(display: &SimulatorDisplay<BinaryColor>, boxes: &[Rectangle]) {
+		for p in display.bounding_box().points() {
+			if display.get_pixel(p) == BinaryColor::On {
+				assert!(boxes.iter().any(|b| b.contains(p)), "{p:?} is lit outside every box");
+			}
+		}
+	}
+
+	#[test]
+	fn the_adapter_screen_fits_the_panel_and_nothing_overlaps() {
+		// Eight-digit counters and a megabit each way: past anything a session reaches.
+		let state = Adapter {
+			kbit: Some(1000),
+			listen_only: true,
+			rx: 99_999_999,
+			tx: 99_999_999,
+			errors: 99_999_999,
+		};
+		let rates = Some(Rates {
+			tx_bps: 1_000_000,
+			rx_bps: 1_000_000,
+		});
+		let (display, report, layout) = adapter_on(TALL, state, rates);
 		assert_eq!(report, Report::default(), "nothing overran and no glyph was missing");
-		let left = (0..120).any(|x| (0..16).any(|y| lit(&display, x, y)));
-		let right = (131..256).any(|x| (0..32).any(|y| lit(&display, x, y)));
-		assert!(left, "SLCAN is on the left");
-		assert!(right, "the counters are on the right");
+
+		let boxes: std::vec::Vec<Rectangle> = layout.boxes().collect();
+		assert_eq!(boxes.len(), 7, "every piece was placed: {layout:?}");
+		let panel = Rectangle::new(Point::zero(), TALL);
+		for (i, a) in boxes.iter().enumerate() {
+			assert_eq!(panel.intersection(a), *a, "{a:?} is inside the panel");
+			for b in &boxes[i + 1..] {
+				assert_eq!(a.intersection(b).size, Size::zero(), "{a:?} and {b:?} overlap");
+			}
+		}
+		lit_only_inside(&display, &boxes);
+
+		// `SLCAN` in the corner, at the icons' margins; the rest centred, in order down the panel.
+		let title = layout.title.unwrap().ink;
+		assert_eq!(title.top_left, Point::new(ICON_RIGHT as i32, ICON_TOP as i32));
+		let (up, _, _, rx) = layout.speed.unwrap();
+		let (rate, counters) = (layout.rate.unwrap().ink, layout.counters.unwrap().ink);
+		let centred = |left: i32, right: i32| (left - (TALL.width as i32 - right)).abs() <= 1;
+		assert!(centred(up.top_left.x, rx.ink.top_left.x + rx.ink.size.width as i32), "{up:?} {rx:?}");
+		for line in [rate, counters] {
+			assert!(centred(line.top_left.x, line.top_left.x + line.size.width as i32), "{line:?}");
+		}
+		assert!(title.top_left.y < up.top_left.y && up.top_left.y < rate.top_left.y && rate.top_left.y < counters.top_left.y);
+	}
+
+	#[test]
+	fn a_counter_line_wider_than_the_panel_is_reported() {
+		let state = Adapter {
+			kbit: Some(500),
+			listen_only: false,
+			rx: u32::MAX,
+			tx: u32::MAX,
+			errors: u32::MAX,
+		};
+		let (_, report, layout) = adapter_on(TALL, state, None);
+		assert!(report.label_overrun, "{report:?}");
 		assert!(
-			(0..256).all(|x| (0..64).all(|y| !lit(&display, x, y) || x < 128 || x >= 128 + PAD as i32)),
-			"the halves do not touch"
+			layout.counters.is_some_and(|c| c.ink.size.width > TALL.width),
+			"it is the counters, drawn anyway"
 		);
 	}
 
 	#[test]
 	fn on_a_short_panel_what_does_not_fit_the_height_is_reported_not_drawn_over() {
-		let mut display = panel();
-		let report = draw(&Frame::Adapter(adapter_state(Some(500), false)), &Theme::bold_mono(), &mut display);
-		assert!(report.label_overrun, "the mode line has no room on 32 pixels: {report:?}");
+		let (display, report, layout) = adapter_on(PANEL, adapter_state(Some(500), false), None);
+		assert!(report.label_overrun, "the lower lines have no room on 32 pixels: {report:?}");
 		assert!(!report.glyph_missing, "{report:?}");
-		assert!((131..256).any(|x| (22..32).any(|y| lit(&display, x, y))), "all three counters still fit");
+		assert!(layout.title.is_some() && layout.speed.is_some(), "the title and the speeds fit");
+		assert!(layout.counters.is_none(), "the counters do not, and are not drawn");
+		lit_only_inside(&display, &layout.boxes().collect::<std::vec::Vec<_>>());
 	}
 }

@@ -146,7 +146,10 @@
 //! Beside the flags, which clear on read, a [`Port`] keeps three running counts for
 //! the `dash` image's adapter screen ([`Port::status`]): frames taken off the bus,
 //! transmits the controller completed, and errors — frames the ring or the writer
-//! could not hold, transmits refused, controller faults.
+//! could not hold, transmits refused, controller faults. And two running bit counts
+//! ([`Port::bits`]) of the same frames taken and transmits completed, from which the
+//! screen's kb/s is measured: nominal frame lengths, stuff bits not counted
+//! (`vag_uds_can::wire`).
 //!
 //! This is the adapter, so it **may see a car** — it does on the bus exactly what the
 //! CANable does, which is whatever `vagcan` asks of it, and `vagcan`'s allowlist is what
@@ -239,6 +242,12 @@ pub struct Port<const N: usize> {
 	/// The open channel's rate in kbit/s; 0 while closed.
 	kbit: AtomicU32,
 	listen_only: AtomicBool,
+	/// Nominal bits of the frames taken off the bus and of the transmits completed
+	/// (`vag_uds_can::wire::frame_bits`), for the screen's kb/s. They **wrap** and are
+	/// never reset: only the difference between two looks means anything
+	/// (`vag_uds_can::wire::BitRate`). The adapter's task is their one writer.
+	rx_bits: AtomicU32,
+	tx_bits: AtomicU32,
 }
 
 /// What [`Port::next_packet`] packed: under which epoch, and how many lines.
@@ -265,7 +274,15 @@ impl<const N: usize> Port<N> {
 			lost: AtomicU32::new(0),
 			kbit: AtomicU32::new(0),
 			listen_only: AtomicBool::new(false),
+			rx_bits: AtomicU32::new(0),
+			tx_bits: AtomicU32::new(0),
 		}
+	}
+
+	/// The running bit counts, `(tx, rx)`: what the host put on the bus, and what was
+	/// taken off it. Wrapping; see the fields.
+	pub fn bits(&self) -> (u32, u32) {
+		(self.tx_bits.load(Ordering::Relaxed), self.rx_bits.load(Ordering::Relaxed))
 	}
 
 	/// What the adapter screen shows.
@@ -338,6 +355,14 @@ impl<const N: usize> Port<N> {
 
 	fn count(&self, count: &AtomicU32) {
 		critical_section::with(|_| bump(count, 1));
+	}
+
+	/// Add a frame's nominal bits to `count` — one of the bit counts, which only the
+	/// adapter's task writes, so load-then-store is whole.
+	fn add_bits(&self, count: &AtomicU32, frame: &EspTwaiFrame) {
+		let data = if frame.is_remote_frame() { 0 } else { frame.data().len() };
+		let bits = vag_uds_can::wire::frame_bits(matches!(frame.id(), embedded_can::Id::Extended(_)), data);
+		count.store(count.load(Ordering::Relaxed).wrapping_add(bits), Ordering::Relaxed);
 	}
 
 	fn take_lost(&self) -> u32 {
@@ -496,6 +521,7 @@ fn take<const N: usize>(port: &Port<N>, result: Result<EspTwaiFrame, EspTwaiErro
 				return Ok(());
 			}
 			port.count(&port.rx);
+			port.add_bits(&port.rx_bits, &frame);
 			if port.lines.try_send(encode(&frame)).is_err() {
 				intake.dropped = intake.dropped.saturating_add(1);
 				port.count(&port.errors);
@@ -875,6 +901,7 @@ impl<const N: usize> Adapter<N> {
 					// The buffer was released. Completed, or aborted by esp-hal's
 					// interrupt handler: `tx_complete` is the controller's verdict.
 					if regs.status().read().tx_complete().bit_is_set() {
+						port.add_bits(&port.tx_bits, &frame);
 						return reply(if head == b't' { b'z' } else { b'Z' }).with(OK);
 					}
 					let tec_after = regs.tx_err_cnt().read().tx_err_cnt().bits();
