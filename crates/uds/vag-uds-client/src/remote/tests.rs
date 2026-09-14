@@ -98,8 +98,8 @@ impl Board {
 					self.now += self.latency;
 					for delivery in self.planner.answered(self.now, out.token, answer) {
 						match &delivery {
-							Delivery::Raw { req, answer, at_ms, .. } if self.session.awaiting() == Some(*req) => {
-								let out = self.session.answered(*at_ms, &mut self.planner, *req, answer);
+							Delivery::Raw { req, .. } if self.session.awaiting() == Some(*req) => {
+								let out = self.session.answered(&mut self.planner, &delivery);
 								self.to_host.extend(out);
 							}
 							other => {
@@ -272,6 +272,42 @@ fn a_speed_cleared_session_change_goes_out_while_the_reading_is_fresh_beside_a_s
 	assert_eq!(board.sent.iter().filter(|(_, o)| o.pdu == [0x10, 0x03]).count(), 1);
 }
 
+/// PR #2 review round 2 (S2-N1), the reviewer's simulation reversed. A radio host reads
+/// `22 F190` back to back beside the cable's timing channel on a unit that answers in 30 ms,
+/// slower than the channel's 20 ms period, so it is due again the moment it answers. Each read
+/// then waits the planner's `starve_after_ms` (5 s) to go out, and holds the bus 30 ms.
+///
+/// The charge used to run from the moment the read was queued: 5 s a read, past the radio's
+/// 2.5 s share of 10 s, and the next read waited out the window too — 8 answers in 120 s. The
+/// bus time is what goes on the bus, send to answer: 30 ms a read, far under the share. So the
+/// reads come at the rate the queue allows, one per `starve_after_ms` plus an exchange or two:
+/// 120 000 / (5 000 + 2 × 30) = 23, and never more than 120 000 / 5 000 = 24.
+#[test]
+fn a_radio_hosts_bus_time_is_charged_from_the_send_not_from_the_queue() {
+	const RUN_MS: u64 = 120_000;
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.latency = 30;
+	// The panel on the timing unit, and the cable's timing channel.
+	board.planner.subscribe(0, Class::Foreground, GATEWAY, 0x1000, 500, None);
+	board.planner.subscribe(0, Class::Timing, GATEWAY, 0x1001, 20, None);
+	let mut seq = 0u8;
+	while board.now < RUN_MS {
+		if board.session.queued() == 0 {
+			seq = seq.wrapping_add(1);
+			board.hear(request(seq, ENGINE, &[0x22, 0xF1, 0x90]));
+		}
+		board.run_until(board.now + 1);
+	}
+	let starve = u64::from(Budget::board().starve_after_ms);
+	let answered = board.answers().len() as u64;
+	let held: Vec<u64> = board.session.bus_time.iter().map(|&(_, held)| held).collect();
+	assert!(
+		(RUN_MS / (starve + 2 * board.latency)..=RUN_MS / starve).contains(&answered),
+		"{answered} answers in {RUN_MS} ms; charged {held:?}"
+	);
+	assert!(held.iter().all(|&held| held == board.latency), "each read held the bus 30 ms: {held:?}");
+}
+
 /// A session change the speed read cleared, that cannot go out within `SPEED_FRESH_MS` of the
 /// speed answer — the bus is busy elsewhere — is not sent: the road speed is read again, and
 /// on a car now moving it is refused. Whichever of the shell's two loops looks first.
@@ -288,9 +324,7 @@ fn a_session_change_that_misses_its_fresh_speed_reading_is_not_sent_and_speed_is
 			assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "due first {due_first}");
 			let mut messages = Vec::new();
 			for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, kmh])) {
-				if let Delivery::Raw { req, answer, .. } = &delivery {
-					messages.extend(session.answered(at, planner, *req, answer));
-				}
+				messages.extend(session.answered(planner, &delivery));
 			}
 			messages
 		};
@@ -316,9 +350,7 @@ fn a_session_change_that_misses_its_fresh_speed_reading_is_not_sent_and_speed_is
 		// Meanwhile the car drove off.
 		let at = late + 5;
 		for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, 90])) {
-			if let Delivery::Raw { req, answer, .. } = &delivery {
-				to_host.extend(session.answered(at, &mut planner, *req, answer));
-			}
+			to_host.extend(session.answered(&mut planner, &delivery));
 		}
 		assert!(matches!(planner.due(at + 100), Next::Idle { .. }), "due first {due_first}");
 		let [Message::Answer(answer)] = to_host.as_slice() else {

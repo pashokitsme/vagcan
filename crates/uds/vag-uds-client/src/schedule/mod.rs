@@ -298,6 +298,14 @@ pub enum Delivery {
 		result: Result<Vec<u8>, Miss>,
 		at_ms: u64,
 	},
-	/// A raw exchange's answer, as it came.
-	Raw { req: ReqId, unit: Unit, answer: Answer, at_ms: u64 },
+	/// A raw exchange's answer, as it came. `sent_ms` is the `now_ms` given to the
+	/// [`Planner::due`] that sent it: from `sent_ms` to `at_ms` the exchange held the bus,
+	/// and the time it waited in the queue before is not in it.
+	Raw {
+		req: ReqId,
+		unit: Unit,
+		answer: Answer,
+		sent_ms: u64,
+		at_ms: u64,
+	},
 }
