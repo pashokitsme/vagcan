@@ -225,7 +225,16 @@ impl<W: Write> SniffSession<W> {
 /// The loop polls the adapter with a short receive window rather than awaiting
 /// frames inside a `select!`: Ctrl-C and marker input then reach us between
 /// whole frames, and no half-consumed serial read can be cancelled.
-pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: bool, seconds: Option<u64>, active: bool) -> anyhow::Result<()> {
+///
+/// `resolve` names the adapter, and is called only once `--out` has been created.
+pub async fn run(
+	resolve: impl FnOnce() -> anyhow::Result<String>,
+	baud: u32,
+	out: Option<&str>,
+	diag_only: bool,
+	seconds: Option<u64>,
+	active: bool,
+) -> anyhow::Result<()> {
 	use anyhow::Context as _;
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicBool, Ordering};
@@ -243,7 +252,8 @@ pub async fn run(device_path: &str, baud: u32, out: Option<&str>, diag_only: boo
 	};
 
 	let mode = if active { SlcanMode::Normal } else { SlcanMode::Silent };
-	let mut backend = crate::device::open(device_path, baud, mode).await?;
+	let device_path = resolve()?;
+	let mut backend = crate::device::open(&device_path, baud, mode).await?;
 	let started = Instant::now();
 	let unix_us = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
