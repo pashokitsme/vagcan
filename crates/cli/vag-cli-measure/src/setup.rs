@@ -888,7 +888,9 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<vag_cli_core::bus::Bus>, opt
 	while !stage.is_done() {
 		// One sample for each speed that arrives, with whatever else is freshest.
 		let Some(t) = reader.until_speed(&set, &mut subs).await else {
-			bail!("the link to the car closed");
+			// The link's reason when it broke, the board's when it refused the speed.
+			let why = bus.closed().or_else(|| subs.iter().find_map(|sub| sub.ended().map(str::to_string)));
+			bail!("{}", why.unwrap_or_else(|| "the link to the car closed".to_string()));
 		};
 		match reader.sample(&set, t) {
 			Some(sample) => {
@@ -996,13 +998,18 @@ impl Reader {
 	}
 
 	/// Take in arrivals until the leading speed's comes, and say when it did.
-	/// `None` once the bus has closed.
+	/// `None` once the bus has closed, or the leading speed's subscription has ended.
 	async fn until_speed(&mut self, set: &Set, subs: &mut [vag_cli_core::bus::Subscription]) -> Option<Seconds> {
 		loop {
 			let (_, sample) = vag_cli_core::bus::next_of(subs, &mut self.cursor).await?;
 			let (request, did) = (sample.unit.request, sample.did);
+			let leading = (request, did) == (set.leading.request, set.leading.did);
+			// A speed whose subscription ended will not come again.
+			if leading && sample.ended.is_some() {
+				return None;
+			}
 			self.take(request, did, sample.value.ok());
-			if (request, did) == (set.leading.request, set.leading.did) {
+			if leading {
 				return Some(sample.at.secs);
 			}
 		}

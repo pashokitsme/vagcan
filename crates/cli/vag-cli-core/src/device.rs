@@ -9,10 +9,11 @@
 //! **The dash board over BLE is the other way in** (`todo/dash/16-uds-over-ble.md`,
 //! "Choosing the device" and "Zero friction"). `--device ble` scans for it, takes the
 //! one board heard and says so, and offers a menu when there are several; `--device
-//! ble:<name>` picks one by name without asking. With no `--device` and no USB-CAN
-//! adapter found, the scan is made anyway, so a command run next to the car with
-//! nothing plugged in simply connects. A command the BLE link cannot carry resolves a
-//! cable only ([`resolve_cable_for`]).
+//! ble:<name>` picks one by name without asking. **Nothing else ever scans** (owner,
+//! 2026-09-14): with no `--device` the choice is USB only, and "no USB-CAN adapter found"
+//! ends with [`BLE_HINT`]. A scan started from an app macOS does not allow Bluetooth gets
+//! the process killed, and it prompts somebody who has no board at all. A command the BLE
+//! link cannot carry resolves a cable only ([`resolve_cable_for`]).
 //!
 //! **The dash board on its USB cable is the third** (`todo/dash/14-one-bus-three-clients.md`
 //! §3). Its ids are every ESP32's, so each such port is asked: a board that answers Hello
@@ -47,7 +48,12 @@ const BOARD_SLCAN: &str = "vag-dash board — slcan image";
 const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (an older dash image? reflash `dash` or `slcan`)";
 
 /// Why `--slcan` is refused with `--device ble…`.
-pub const SLCAN_OVER_BLE: &str = "--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE";
+pub const SLCAN_OVER_BLE: &str =
+	"--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE — drop --slcan, or name the board's serial path";
+
+/// How to reach the dash board over Bluetooth, said wherever no USB device was found:
+/// nothing looks for it unasked.
+pub const BLE_HINT: &str = "A dash board over Bluetooth: --device ble";
 
 /// Why no board was heard, as far as this side can tell.
 const NO_BOARD: &str = "the board is powered from the OBD port, so the ignition must be on, and it must be in range of this computer.";
@@ -95,8 +101,8 @@ pub fn ble_request(requested: &str) -> Option<Option<&str>> {
 ///
 /// A path is a USB device: an slcan adapter, or the dash board on its cable, checked as
 /// [`named_usb`] checks one. `ble` and `ble:<name>` scan for the dash board. Nothing at all
-/// runs the USB choice, and when that finds no adapter, scans for the board — unless
-/// `slcan`, which asks for a USB adapter and nothing else.
+/// runs the USB choice and nothing else: when it finds no adapter, the refusal ends with
+/// [`BLE_HINT`] rather than a scan.
 pub async fn resolve(requested: Option<&str>, slcan: bool) -> Result<Target> {
 	// Never shown: with nobody at the keyboard the choice refuses before the menu is asked.
 	let mut console = crate::ui::Console::new("--device ble:<name>");
@@ -142,16 +148,11 @@ pub async fn resolve_with<H>(
 		// A dash board is always a candidate here, so it is never the one left out.
 		Found::OnlyThroughTheBoard => unreachable!("a dash board is a candidate when it may be read through"),
 	};
-	if slcan {
-		bail!("{no_cable}\n--slcan asks for a USB adapter, so the dash board was not looked for over BLE.");
+	// No scan: Bluetooth is looked at only when `--device ble…` asks (module docs).
+	match slcan {
+		true => bail!("{no_cable}\n--slcan asks for a USB adapter."),
+		false => bail!("{no_cable}\n{BLE_HINT}"),
 	}
-	eprintln!("no USB-CAN adapter found — looking for the dash board over BLE…");
-	let boards = match scan().await {
-		Ok(boards) if boards.is_empty() => bail!("{no_cable}\nNo dash board answered over BLE either: {NO_BOARD}"),
-		Ok(boards) => boards,
-		Err(failed) => bail!("{no_cable}\nThe dash board could not be looked for over BLE either: {failed:#}"),
-	};
-	choose_board(boards, None, can_ask, asker).map(Target::Ble)
 }
 
 /// The one board heard, the one named, or the one chosen from a menu; refused when
@@ -230,24 +231,6 @@ async fn scan_ble() -> Result<Vec<Board>> {
 			})
 			.collect(),
 	)
-}
-
-/// The dash boards in range, for `vagcan devices`.
-pub async fn list_boards() -> Result<Vec<Board>> {
-	scan_ble().await
-}
-
-/// The boards a BLE scan heard, for a human. A scan that could not be made is one line
-/// — the Bluetooth adapter's own error — and not a failure of the whole listing.
-pub fn render_boards<H>(heard: &Result<Vec<Board<H>>>) -> String {
-	match heard {
-		Err(why) => format!("Dash boards over BLE: not looked for — {why:#}"),
-		Ok(boards) if boards.is_empty() => format!("Dash boards over BLE: none heard — {NO_BOARD}"),
-		Ok(boards) => format!(
-			"Dash boards over BLE:\n\n{}\n\nPass one with --device ble:<name>, or --device ble when only one is in range.",
-			choices(boards)
-		),
-	}
 }
 
 fn probe(path: &str) -> BoardAnswer {
@@ -508,7 +491,13 @@ pub fn probed(mut found: Vec<AdapterInfo>, mut probe: impl FnMut(&str) -> BoardA
 }
 
 /// Render the device list for a human.
+///
+/// Serial devices only, then [`BLE_HINT`]: `devices` never scans Bluetooth.
 pub fn render_list(found: &[AdapterInfo]) -> String {
+	format!("{}\n\n{BLE_HINT}", serial_list(found))
+}
+
+fn serial_list(found: &[AdapterInfo]) -> String {
 	if found.is_empty() {
 		return "No serial devices found.\n\n\
                 If your adapter is plugged in, unplug and replug it: it can enumerate on USB \
@@ -865,6 +854,14 @@ mod tests {
 	}
 
 	#[test]
+	fn slcan_over_ble_says_what_to_do_instead() {
+		assert!(
+			SLCAN_OVER_BLE.ends_with("— drop --slcan, or name the board's serial path"),
+			"{SLCAN_OVER_BLE}"
+		);
+	}
+
+	#[test]
 	fn only_ble_and_ble_with_a_name_mean_the_board() {
 		assert_eq!(ble_request("ble"), Some(None));
 		assert_eq!(ble_request("ble:vagcan-dash"), Some(Some("vagcan-dash")));
@@ -958,60 +955,29 @@ mod tests {
 		assert!(err.contains("Bluetooth access was denied"), "{err}");
 	}
 
+	/// Bluetooth is scanned only when `--device ble…` asks for it: on macOS a scan from an
+	/// app not allowed Bluetooth gets the process killed, and it prompts somebody who has
+	/// no board at all.
 	#[tokio::test]
-	async fn with_no_cable_adapter_the_board_over_ble_is_used() {
+	async fn with_no_cable_nothing_is_scanned_and_the_error_says_how_to_ask_for_ble() {
 		let cases = [
 			(vec![], BoardAnswer::Silent),
 			(vec![board()], BoardAnswer::Silent),
 			(vec![board()], BoardAnswer::Unopened("Resource busy".into())),
 		];
 		for (listing, answer) in cases {
-			let only = hears(vec![heard("vagcan-dash", "A", -60)]);
-			let board = chosen(resolve_as(None, Ok(listing), answering(answer), only, false, &mut Scripted::new(vec![])).await);
-			assert_eq!(board.name, "vagcan-dash");
+			let err = refused(resolve_as(None, Ok(listing), answering(answer), no_scan(), true, &mut Scripted::new(vec![])).await);
+			assert!(err.contains("no USB-CAN adapter found"), "{err}");
+			assert!(err.ends_with("A dash board over Bluetooth: --device ble"), "{err}");
 		}
 	}
 
-	#[tokio::test]
-	async fn with_no_cable_and_no_board_both_are_said() {
-		let err = refused(resolve_as(None, Ok(vec![]), never, hears(vec![]), true, &mut Scripted::new(vec![])).await);
-		assert!(err.contains("no USB-CAN adapter found"), "{err}");
-		assert!(err.contains("No dash board answered over BLE either"), "{err}");
-		let err = refused(
-			resolve_as(
-				None,
-				Ok(vec![board()]),
-				answering(BoardAnswer::Silent),
-				hears(vec![]),
-				true,
-				&mut Scripted::new(vec![]),
-			)
-			.await,
-		);
-		assert!(
-			err.contains("Reflash") && err.contains("over BLE either"),
-			"the cable's advice stays: {err}"
-		);
-	}
-
-	#[tokio::test]
-	async fn with_no_cable_a_failed_scan_is_said_under_the_cable_message() {
-		let err = refused(resolve_as(None, Ok(vec![]), never, denied(), true, &mut Scripted::new(vec![])).await);
-		assert!(
-			err.contains("no USB-CAN adapter found") && err.contains("Bluetooth access was denied"),
-			"{err}"
-		);
-	}
-
-	#[tokio::test]
-	async fn with_no_cable_several_boards_are_asked_about_or_refused() {
-		let mut menu = Scripted::new(vec![Answer::Pick(0)]);
-		assert_eq!(
-			chosen(resolve_as(None, Ok(vec![]), never, hears(two()), true, &mut menu).await).id,
-			"AAAA"
-		);
-		let err = refused(resolve_as(None, Ok(vec![]), never, hears(two()), false, &mut Scripted::new(vec![])).await);
-		assert!(err.contains("--device ble:vagcan-dash-garage"), "{err}");
+	#[test]
+	fn the_device_listing_ends_by_saying_how_to_reach_a_board_over_bluetooth() {
+		for found in [vec![], vec![canable()]] {
+			let text = render_list(&found);
+			assert!(text.ends_with("A dash board over Bluetooth: --device ble"), "{text}");
+		}
 	}
 
 	#[tokio::test]
@@ -1026,17 +992,6 @@ mod tests {
 		let second = vag_uds_can::classify_usb("/dev/cu.usbserial-B20".into(), 0x0403, 0x6001, None);
 		let err = refused(resolve_as(None, Ok(vec![anonymous(), second]), never, no_scan(), true, menu).await);
 		assert!(err.contains("say which one"), "several cables are a question about cables: {err}");
-	}
-
-	#[test]
-	fn the_device_listing_names_boards_over_ble_or_says_in_one_line_why_it_could_not_look() {
-		let text = render_boards(&Ok(two()));
-		assert!(text.contains("--device ble:vagcan-dash ") && text.contains("-80 dBm"), "{text}");
-		let none = render_boards::<()>(&Ok(vec![]));
-		assert!(none.contains("none heard") && none.contains("ignition"), "{none}");
-		let failed = render_boards::<()>(&Err(anyhow::anyhow!("no Bluetooth adapter")));
-		assert_eq!(failed.lines().count(), 1, "{failed}");
-		assert!(failed.contains("no Bluetooth adapter"), "{failed}");
 	}
 
 	#[test]

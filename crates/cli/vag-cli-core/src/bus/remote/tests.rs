@@ -205,7 +205,11 @@ async fn a_reading_that_is_no_record_is_a_miss_and_a_refusal_ends_the_subscripti
 	);
 
 	board.send(reading(id, 20, Outcome::Refused("8 evenly spaced identifiers".into()))).await;
-	assert_eq!(sample(&mut sub).await.value, Err(Miss::BusError));
+	let last = sample(&mut sub).await;
+	assert_eq!(last.value, Err(Miss::BusError));
+	let why = "refused by the dash board — 8 evenly spaced identifiers";
+	assert_eq!(last.ended.as_deref(), Some(why), "the board's words, with the sample, at once");
+	assert_eq!(sub.ended(), Some(why));
 	assert!(ended(&mut sub).await, "ended on the board, so ended here");
 	drop(sub);
 	board.quiet().await;
@@ -371,11 +375,9 @@ async fn a_dropped_connection_fails_what_is_out_ends_every_subscription_and_ever
 	let dropped = |result: &Result<_, ExchangeError>| matches!(result, Err(ExchangeError::Link(TransportError::Io(why))) if why == "the BLE connection to vagcan-dash dropped");
 	let failed = out.await.unwrap();
 	assert!(dropped(&failed), "{failed:?}");
-	assert_eq!(
-		sample(&mut sub).await.value,
-		Err(Miss::BusError),
-		"a last miss, so the stream's end reads as a failure"
-	);
+	let last = sample(&mut sub).await;
+	assert_eq!(last.value, Err(Miss::BusError), "a last miss, so the stream's end reads as a failure");
+	assert_eq!(last.ended.as_deref(), Some("the BLE connection to vagcan-dash dropped"));
 	assert!(ended(&mut sub).await);
 	assert_eq!(bus.closed().as_deref(), Some("the BLE connection to vagcan-dash dropped"));
 
@@ -383,6 +385,10 @@ async fn a_dropped_connection_fails_what_is_out_ends_every_subscription_and_ever
 	let later = bus.exchange(Class::Foreground, ENGINE, vec![0x22, 0xF1, 0x90]).await;
 	assert!(dropped(&later), "{later:?}");
 	let mut late = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
+	assert_eq!(
+		sample(&mut late).await.ended.as_deref(),
+		Some("the BLE connection to vagcan-dash dropped")
+	);
 	assert!(ended(&mut late).await);
 }
 
@@ -397,7 +403,9 @@ async fn a_subscription_past_the_boards_limit_is_refused_here() {
 	}
 
 	let mut over = bus.subscribe(Class::Foreground, ENGINE, 0x3000, Duration::from_millis(500), None);
-	assert_eq!(sample(&mut over).await.value, Err(Miss::BusError));
+	let last = sample(&mut over).await;
+	assert_eq!(last.value, Err(Miss::BusError));
+	assert!(last.ended.as_deref().is_some_and(|why| why.contains("at most")), "{last:?}");
 	assert!(ended(&mut over).await);
 	board.quiet().await;
 
@@ -647,6 +655,46 @@ async fn a_bus_over_the_cable_says_hello_when_it_ends() {
 	let bus = Bus::start_remote(host, PEER, Carrier::Usb);
 	bus.shutdown();
 	assert_eq!(board.next().await, Message::Hello);
+}
+
+/// The board's clock is a `u32` of milliseconds, and it wraps after 49.7 days: the gap
+/// across the wrap is still the board's gap, not every later reading at 0 s.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_board_clock_that_wraps_keeps_the_boards_gaps() {
+	let (bus, mut board) = start();
+	let mut speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let id = subscribed(board.next().await).sub;
+	for (at_ms, kmh) in [(u32::MAX - 9, 1), (10, 2), (30, 3)] {
+		board.send(reading(id, at_ms, Outcome::Pdu(vec![0x62, 0xF4, 0x0D, kmh]))).await;
+	}
+	let got = [sample(&mut speed).await, sample(&mut speed).await, sample(&mut speed).await];
+	let gaps = [got[1].at.secs - got[0].at.secs, got[2].at.secs - got[1].at.secs];
+	assert!(
+		(gaps[0] - 0.020).abs() < 1e-9 && (gaps[1] - 0.020).abs() < 1e-9,
+		"the board's gaps across its clock's wrap: {:?}",
+		got.iter().map(|s| s.at).collect::<Vec<_>>()
+	);
+}
+
+/// The parting Hello over the cable is written while the process may be exiting, when
+/// the runtime's timer has already shut down and polling one panics. A runtime with no
+/// timer at all stands in for that: the parting must not need one.
+#[test]
+fn parting_over_the_cable_needs_no_timer() {
+	let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+	let (host, board) = pipe_pair(64);
+	let mut board = Board {
+		pipe: board,
+		reassembler: Reassembler::new(),
+		heard: VecDeque::new(),
+	};
+	runtime.block_on(async move {
+		let (commands, inbox) = tokio::sync::mpsc::unbounded_channel::<crate::bus::Command>();
+		drop(commands);
+		let closed = Arc::new(std::sync::OnceLock::new());
+		super::run(host, PEER.to_string(), Carrier::Usb, inbox, tokio::time::Instant::now(), closed).await;
+	});
+	assert_eq!(runtime.block_on(board.recv()), Some(Message::Hello), "the Hello still went out");
 }
 
 /// Over BLE the disconnect closes the board's session, and nothing more is sent.
