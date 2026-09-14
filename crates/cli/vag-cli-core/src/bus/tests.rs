@@ -142,6 +142,16 @@ fn asked_for(script: &Mutex<Script>, did: u16) -> usize {
 		.count()
 }
 
+/// The closing note about late answers: nothing when there were none, and a short count
+/// when there were.
+#[test]
+fn late_answers_are_said_only_when_there_were_some() {
+	use super::task::late_note;
+	assert_eq!(late_note(0), None);
+	assert_eq!(late_note(1).as_deref(), Some("1 late answer from a control unit ignored"));
+	assert_eq!(late_note(3).as_deref(), Some("3 late answers from control units ignored"));
+}
+
 #[test]
 fn an_answer_is_only_taken_for_the_request_it_answers() {
 	use super::task::answers;

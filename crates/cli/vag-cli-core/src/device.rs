@@ -48,7 +48,8 @@ const BOARD_SLCAN: &str = "vag-dash board — slcan image";
 const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (an older dash image? reflash `dash` or `slcan`)";
 
 /// Why `--slcan` is refused with `--device ble…`.
-pub const SLCAN_OVER_BLE: &str = "--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE";
+pub const SLCAN_OVER_BLE: &str =
+	"--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE — drop --slcan, or name the board's serial path";
 
 /// How to reach the dash board over Bluetooth, said wherever no USB device was found:
 /// nothing looks for it unasked.
@@ -850,6 +851,14 @@ mod tests {
 			Ok(_) => panic!("chose something, expected a refusal"),
 			Err(e) => format!("{e:#}"),
 		}
+	}
+
+	#[test]
+	fn slcan_over_ble_says_what_to_do_instead() {
+		assert!(
+			SLCAN_OVER_BLE.ends_with("— drop --slcan, or name the board's serial path"),
+			"{SLCAN_OVER_BLE}"
+		);
 	}
 
 	#[test]

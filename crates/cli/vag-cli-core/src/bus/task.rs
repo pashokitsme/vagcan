@@ -49,17 +49,21 @@ struct State {
 }
 
 impl Drop for State {
-	/// Said once, when the bus closes: in the middle of a run this would land on top of
-	/// whatever the screen is drawing.
+	/// Said once, when the bus closes, and only when there were any: in the middle of a
+	/// run this would land on top of whatever the screen is drawing.
 	fn drop(&mut self) {
-		if self.discarded > 0 {
-			eprintln!(
-				"{} late {} from control units discarded rather than taken for the request after {}",
-				self.discarded,
-				if self.discarded == 1 { "answer" } else { "answers" },
-				if self.discarded == 1 { "it" } else { "them" },
-			);
+		if let Some(note) = late_note(self.discarded) {
+			eprintln!("{note}");
 		}
+	}
+}
+
+/// What the closing note says about `discarded` late answers: nothing for none.
+pub(super) fn late_note(discarded: usize) -> Option<String> {
+	match discarded {
+		0 => None,
+		1 => Some("1 late answer from a control unit ignored".to_string()),
+		n => Some(format!("{n} late answers from control units ignored")),
 	}
 }
 

@@ -633,10 +633,9 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			println!("{}", device::render_list(&device::list()?));
 			Ok(())
 		}
-		Command::Info { device } => {
-			let target = device::resolve(device.as_deref(), slcan).await?;
-			info(async || device::open_bus(&target).await).await
-		}
+		// Every car command resolves its device inside `open`, once what it can check
+		// without the car has been checked: a typo must not cost a Bluetooth scan or a menu.
+		Command::Info { device } => info(async || device::connect(device.as_deref(), slcan).await).await,
 		// The two depths of the same question. `--identify <unit>` names one
 		// unit and reads its whole identification block; `--identify` alone
 		// asks every unit the gateway lists for the two fields that name it.
@@ -663,10 +662,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			let open = async || device::connect(device.as_deref(), slcan).await;
 			units(open, identify.is_some()).await
 		}
-		Command::Sensors { device, ecu } => {
-			let target = device::resolve(device.as_deref(), slcan).await?;
-			sensors(async || device::open_bus(&target).await, &ecu).await
-		}
+		Command::Sensors { device, ecu } => sensors(async || device::connect(device.as_deref(), slcan).await, &ecu).await,
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -697,9 +693,8 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 				(None, false) => watch::View::Plain(None),
 				(None, true) => watch::View::FullScreen,
 			};
-			let target = device::resolve(device.as_deref(), slcan).await?;
 			watch::run(
-				async || device::open_bus(&target).await,
+				async || device::connect(device.as_deref(), slcan).await,
 				watch::Options {
 					preselect: &preselect,
 					hz,
@@ -734,9 +729,8 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			iv_cache,
 			..
 		} => {
-			let target = device::resolve(device.as_deref(), slcan).await?;
 			faults::run(
-				async || device::open_bus(&target).await,
+				async || device::connect(device.as_deref(), slcan).await,
 				ecu.as_deref(),
 				details,
 				all,
@@ -807,8 +801,7 @@ async fn dispatch_dev(tool: Dev, slcan: bool) -> Result<()> {
 		Dev::Vcds { tool } => match vcds::run(tool)? {
 			vcds::Outcome::Done => Ok(()),
 			vcds::Outcome::FromCar { dir, ecu, iv_cache, device } => {
-				let target = device::resolve(device.as_deref(), slcan).await?;
-				let name = odx_name_from_car(async || device::open_bus(&target).await, &ecu).await?;
+				let name = odx_name_from_car(async || device::connect(device.as_deref(), slcan).await, &ecu).await?;
 				println!("control unit {ecu} names its label file {name:?}\n");
 				labels::resolve_odx(&dir, &name, &iv_cache)
 			}
@@ -871,7 +864,7 @@ const SURVEY: NotThroughTheBoard<'static> = NotThroughTheBoard {
 };
 const SWEEP_OVER_BLE: &str = "`dev survey` is a sweep, and a sweep is refused over BLE — use a cable";
 const SWEEP_OVER_USB: &str =
-	"`dev survey` is a sweep, and a sweep does not run through the dash board — use a cable adapter, or `--slcan` on the bench";
+	"`dev survey` is a sweep, and a sweep does not run through the dash board — use a cable adapter, or `vagcan --slcan dev survey …`";
 
 /// Why `units --identify <unit>` does not run through the dash board: it walks
 /// `F100–F1FF`, which the board's walk rule refuses over BLE by its eighth identifier.
@@ -881,7 +874,7 @@ const IDENTIFY: NotThroughTheBoard<'static> = NotThroughTheBoard {
 };
 const IDENTIFY_OVER_BLE: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep is refused over BLE — use a cable";
 const IDENTIFY_OVER_USB: &str = "`units --identify <unit>` walks F100–F1FF, a sweep, and a sweep does not run through the dash board — use a cable \
-                                 adapter, or `--slcan` on the bench";
+                                 adapter, or `vagcan --slcan units --identify <unit>`";
 
 /// Why `dev sniff` needs an adapter: it reads CAN frames, and the link to the dash board
 /// carries whole answers only.
@@ -1412,6 +1405,45 @@ mod tests {
 					assert_eq!(refused.to_string(), why, "{args:?}");
 				}
 			}
+		}
+	}
+
+	#[test]
+	fn a_sweep_refused_through_the_board_says_the_command_that_runs_it_on_a_cable() {
+		assert!(SWEEP_OVER_USB.contains("`vagcan --slcan dev survey …`"), "{SWEEP_OVER_USB}");
+		assert!(
+			IDENTIFY_OVER_USB.contains("`vagcan --slcan units --identify <unit>`"),
+			"{IDENTIFY_OVER_USB}"
+		);
+		for why in [SWEEP_OVER_USB, IDENTIFY_OVER_USB] {
+			assert!(!why.contains("on the bench"), "{why}");
+		}
+	}
+
+	/// What a command can check without the car goes before the device is resolved: a
+	/// typo must not cost a Bluetooth scan, a menu or a port. `--device ble --slcan` is the
+	/// device refusal that needs no hardware, so it shows which came first.
+	#[tokio::test]
+	async fn arguments_are_checked_before_the_device_is_resolved() {
+		const NOWHERE: &str = "/nonexistent/vagcan-test";
+		let survey = format!("{NOWHERE}/survey.jsonl");
+		let keys = format!("{NOWHERE}/rod-keys.json");
+		let cases: [(Vec<&str>, &str); 3] = [
+			(vec!["vagcan", "sensors", "--ecu", "ZZZ"], "--ecu"),
+			(
+				vec!["vagcan", "watch", "--data", NOWHERE, "--survey", &survey, "--for", "1"],
+				"reading the survey",
+			),
+			(vec!["vagcan", "faults", "--ecu", "ZZZ", "--iv-cache", &keys], ""),
+		];
+		for (args, why) in cases {
+			let mut args = args.clone();
+			args.extend(["--device", "ble", "--slcan"]);
+			let cli = Cli::try_parse_from(args.clone()).unwrap();
+			let refused = dispatch(cli.command.expect("a command"), cli.slcan).await.expect_err("refused");
+			let said = format!("{refused:#}");
+			assert_ne!(said, device::SLCAN_OVER_BLE, "the device was resolved first: {args:?}");
+			assert!(said.contains(why), "{args:?}: {said}");
 		}
 	}
 

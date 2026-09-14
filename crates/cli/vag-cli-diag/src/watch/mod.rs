@@ -2571,6 +2571,8 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	let mut cursor = 0usize;
 	let mut period = live_period(&app);
 	resubscribe(&mut app, &bus, &mut subs, &mut period);
+	// What the closing line is timed from: the reads, not identifying the car before them.
+	let watching_since = bus.secs();
 
 	// No terminal wanted: a script, a pipe, or an agent that cannot press a
 	// key. Same subscriptions, no drawing and no input — and with no `--out` the
@@ -2618,7 +2620,7 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 				() = tokio::time::sleep(Duration::from_secs_f64((wake - app.clock).max(0.0))) => {}
 			}
 		}
-		eprintln!("{rows} rows, {} readings over {:.1} s", app.readings, bus.secs());
+		eprintln!("{rows} rows, {}", closing_line(app.readings, bus.secs() - watching_since));
 		return Ok(());
 	}
 
@@ -2683,8 +2685,17 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	if let Some(w) = sink.as_mut() {
 		w.flush()?;
 	}
-	println!("{} readings in {:.1}s — {:.1} Hz a channel", app.readings, bus.secs(), app.poll_rate());
+	println!("{}", closing_line(app.readings, bus.secs() - watching_since));
 	result
+}
+
+/// What a run ends by saying: every reading taken, over the time the reads ran. One total
+/// over one span, rather than a total beside the footer's rate over its last two seconds.
+fn closing_line(readings: u64, secs: f64) -> String {
+	match secs > 0.0 {
+		true => format!("{readings} readings in {secs:.1} s ({:.1} a second)", readings as f64 / secs),
+		false => format!("{readings} readings"),
+	}
 }
 
 /// Why every subscription ended: the bus's own reason when it has one — "the BLE
@@ -3255,6 +3266,15 @@ mod tests {
 			}
 		}
 		assert!(seen.len() > 1, "the fixture really does span units: {seen:02X?}");
+	}
+
+	/// The closing line is one total over one span — from the first subscription, not
+	/// from the bus's start, which includes identifying the car — and not a total beside
+	/// a rate over the last two seconds.
+	#[test]
+	fn the_closing_line_is_a_total_over_the_time_the_reads_ran() {
+		assert_eq!(closing_line(100, 10.0), "100 readings in 10.0 s (10.0 a second)");
+		assert_eq!(closing_line(0, 0.0), "0 readings");
 	}
 
 	#[test]
