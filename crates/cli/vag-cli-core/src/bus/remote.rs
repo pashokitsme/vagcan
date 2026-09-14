@@ -28,6 +28,8 @@
 //!   here, with that reason, rather than sent to be refused.
 //! - **At most [`MAX_TIMING_SUBSCRIPTIONS`] of them timing**, the guard's cap too: the
 //!   next is refused here in the guard's words. `measure` makes one, its speed channel.
+//!   The board also keeps one timing channel for all its hosts: while another host holds
+//!   it, the board refuses the subscription, and it ends as any refusal does.
 //! - **A refusal by the board ends a subscription** — on the board it has already ended
 //!   (`vag_uds_client::remote`). The subscriber gets one [`Miss::BusError`] and then the
 //!   end of its stream. The planner's [`Miss`] has no variant for a refusal by the link,

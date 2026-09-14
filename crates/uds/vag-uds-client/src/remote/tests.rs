@@ -674,6 +674,69 @@ fn a_second_timing_subscription_is_refused_and_an_unsubscribe_frees_the_slot() {
 	}
 }
 
+/// What a session answered to one subscribe: `Some(reason)` for a refused reading of
+/// `sub`, `None` when it was taken without a word.
+fn refusal_of(out: &[Message], sub: u16) -> Option<String> {
+	match out {
+		[] => None,
+		[
+			Message::Reading(Reading {
+				sub: of,
+				outcome: Outcome::Refused(why),
+				..
+			}),
+		] if *of == sub => Some(why.clone()),
+		other => panic!("{other:?}"),
+	}
+}
+
+/// One stopwatch at a time on the board: a timing subscription held over the radio refuses
+/// one over the cable, and the cable gets it — and is polled — once the radio's session
+/// closes. It frees the same way when its holder gives its id again as normal, or
+/// unsubscribes.
+#[test]
+fn the_boards_one_timing_channel_is_held_across_connections_until_its_holder_lets_go() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let mut usb = Session::with_guard(Guard::cable());
+
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "the radio takes the channel: {:?}", board.to_host);
+	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	let why = refusal_of(&out, 7).expect("the cable is refused while the radio holds it");
+	assert_eq!(why, "another client holds the board's timing channel");
+	assert_eq!(usb.subscriptions().count(), 0);
+	let out = usb.push(0, &mut board.planner, subscribe(8, GATEWAY, 0x1001, 100));
+	assert_eq!(refusal_of(&out, 8), None, "a normal subscription is not held to it");
+
+	board.session.close(&mut board.planner);
+	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None, "the radio's session closed, so the channel is free");
+	board.run_until(200);
+	let polled = board
+		.sent
+		.iter()
+		.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(&0x1000))
+		.count();
+	assert!(polled >= 9, "the cable's timing channel is polled: {polled} in 200 ms");
+
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	let last = board.readings(1).pop().expect("a reading for the radio");
+	assert_eq!(refused(&last.1), "another client holds the board's timing channel");
+
+	let now = board.now;
+	let out = usb.push(now, &mut board.planner, subscribe(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None);
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "given again as normal, the cable let go: {:?}", board.to_host);
+
+	board.hear(Message::Unsubscribe { sub: 1 });
+	let out = usb.push(now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None, "unsubscribed, the radio let go");
+	usb.close(&mut board.planner);
+	assert_eq!(board.planner.timing_subscriptions(), 0);
+}
+
 /// The cable's session holds the cable's guard, and keeps it across a close.
 #[test]
 fn a_cable_session_walks_a_range_the_radio_refuses_and_stays_a_cable_session_after_close() {

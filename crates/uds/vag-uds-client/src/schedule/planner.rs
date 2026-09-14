@@ -320,6 +320,19 @@ impl Planner {
 		self.units.len()
 	}
 
+	/// How many live [`Class::Timing`] subscriptions the planner holds, from every
+	/// consumer. The board's sessions share one planner and read this to keep one
+	/// stopwatch at a time (`remote::Session`).
+	pub fn timing_subscriptions(&self) -> usize {
+		self
+			.units
+			.values()
+			.flat_map(|state| state.reads.values())
+			.flat_map(|read| &read.subs)
+			.filter(|sub| sub.class == Class::Timing)
+			.count()
+	}
+
 	/// Read `did` of `unit` once; the result comes as exactly one [`Delivery::Once`].
 	pub fn read_once(&mut self, now_ms: u64, class: Class, unit: Unit, did: u16) -> ReqId {
 		let id = ReqId(self.fresh());

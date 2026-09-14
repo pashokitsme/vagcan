@@ -42,18 +42,24 @@
 //!
 //! `measure` times a run from one speed channel at 50 Hz. As [`Class::Remote`] it waits
 //! behind everything else once the planner is at its ceiling, and on the bench it came
-//! at 10 Hz (2026-09-14). [`Class::Timing`] is never thinned, so the guard alone bounds
-//! what a host takes that way: at most
-//! [`MAX_TIMING_SUBSCRIPTIONS`](crate::guard::MAX_TIMING_SUBSCRIPTIONS) per connection,
-//! polled no faster than [`MIN_PERIOD_MS`](crate::guard::MIN_PERIOD_MS) — one channel,
-//! at most 50 of the planner's 100 exchanges a second. The panel's floor of 25 fits in
-//! what is left, the ceiling is the
-//! planner's to hold whatever is asked, and every other subscription of the host stays
-//! `Remote`: slowed when the bus is short, never dropped.
+//! at 10 Hz (2026-09-14). [`Class::Timing`] is never thinned, so what hosts take that way
+//! is bounded by two rules, and only by them:
 //!
-//! The bound is per connection, and the board runs a radio session and a cable session
-//! side by side: a timing subscription on each, to different identifiers, is 100 a second
-//! and the panel waits behind them while both last (`todo/dash/16`, open).
+//! - **per connection**, the guard's
+//!   [`MAX_TIMING_SUBSCRIPTIONS`](crate::guard::MAX_TIMING_SUBSCRIPTIONS), polled no
+//!   faster than [`MIN_PERIOD_MS`](crate::guard::MIN_PERIOD_MS);
+//! - **for the whole board, one timing channel** (one stopwatch at a time, 2026-09-14).
+//!   The board runs a radio session and a cable session side by side on one planner, so a
+//!   timing subscription is forwarded only while that planner holds no other
+//!   ([`Planner::timing_subscriptions`]); otherwise it is refused with
+//!   [`Refusal::TimingChannelHeld`]. The channel frees when its holder unsubscribes,
+//!   gives its id again as normal, or its session closes — a disconnect, a Hello, a
+//!   stalled writer.
+//!
+//! One channel at 20 ms is at most 50 of the planner's 100 exchanges a second. The panel's
+//! floor of 25 fits in what is left, the ceiling is the planner's to hold whatever is
+//! asked, and every other subscription of a host stays `Remote`: slowed when the bus is
+//! short, never dropped.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};
@@ -373,7 +379,13 @@ impl Session {
 		// Given again, a live id is replaced: the old one goes first, so it does not
 		// hold the slot the new one needs.
 		self.unsubscribe(planner, s.sub);
-		match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms, s.priority) {
+		let verdict = match self.guard.check_subscribe(s.request_id, s.response_id, s.did, s.period_ms, s.priority) {
+			// One stopwatch at a time on the board (module docs): the planner every session
+			// shares already holds a timing subscription, and it is not this one, which went above.
+			Verdict::Forward if s.priority == Priority::Timing && planner.timing_subscriptions() > 0 => Verdict::Refuse(Refusal::TimingChannelHeld),
+			verdict => verdict,
+		};
+		match verdict {
 			Verdict::Forward => {
 				let unit = Unit {
 					request: s.request_id,

@@ -94,10 +94,11 @@ pub const MAX_SUBSCRIPTIONS: usize = 32;
 pub const MIN_PERIOD_MS: u16 = 20;
 /// Live [`Priority::Timing`] subscriptions one connection may hold.
 ///
-/// The board's planner never thins a timing poll, so this cap and [`MIN_PERIOD_MS`] are
-/// all that bound what a host takes that way: one channel at 20 ms is 50 exchanges a
-/// second of the planner's 100, and the panel's floor of 25 still fits beside it. One is
-/// what `measure` needs: its speed channel.
+/// The board's planner never thins a timing poll. This cap bounds what one connection
+/// takes that way, and the board's one timing channel ([`Refusal::TimingChannelHeld`])
+/// what all of them take together: one channel at 20 ms is 50 exchanges a second of the
+/// planner's 100, and the panel's floor of 25 still fits beside it. One is what `measure`
+/// needs: its speed channel.
 pub const MAX_TIMING_SUBSCRIPTIONS: usize = 1;
 
 /// The engine's request id on the ISO 15765-4 address block.
@@ -164,6 +165,10 @@ pub enum Refusal {
 	TooManySubscriptions,
 	/// [`MAX_TIMING_SUBSCRIPTIONS`] timing subscriptions are already live.
 	TooManyTimingSubscriptions,
+	/// Another connection holds the board's one timing channel. Decided by the board's
+	/// session over the planner every connection shares (`remote::Session`), not by a
+	/// guard, which sees one connection.
+	TimingChannelHeld,
 }
 
 impl Refusal {
@@ -187,6 +192,7 @@ impl Refusal {
 			Refusal::PeriodTooShort => "subscription period too short",
 			Refusal::TooManySubscriptions => "too many subscriptions",
 			Refusal::TooManyTimingSubscriptions => "too many timing subscriptions",
+			Refusal::TimingChannelHeld => "another client holds the board's timing channel",
 		}
 	}
 }
@@ -1211,6 +1217,7 @@ mod tests {
 			Refusal::PeriodTooShort,
 			Refusal::TooManySubscriptions,
 			Refusal::TooManyTimingSubscriptions,
+			Refusal::TimingChannelHeld,
 		];
 		for refusal in all {
 			let reason = refusal.reason();

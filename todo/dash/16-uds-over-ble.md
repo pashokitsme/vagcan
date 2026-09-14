@@ -92,9 +92,13 @@ item 7 (the `frame` mirror) unnecessary.
     exchanges a second, so the panel's floor of 25 still fits. The laptop's remote `Bus`
     sends `timing` for a `Class::Timing` subscription, `normal` for any other class, and
     refuses a second timing one itself.
-  - **Open:** that bound is per connection, and the board runs a radio session and a
-    cable session side by side. A timing subscription on each, to different identifiers,
-    takes the whole ceiling, and the panel waits behind them while both last.
+  - **One timing channel for the whole board** (decided 2026-09-14: one stopwatch at a
+    time). The board runs a radio session and a cable session side by side on one
+    planner, and a timing subscription on each would take the whole ceiling. So beside
+    the per-connection cap, a session forwards a timing subscription only while that
+    planner holds no other `Class::Timing` subscription; a second from either carrier is
+    refused, "another client holds the board's timing channel". It frees when the holder
+    unsubscribes, re-subscribes normal, or its session closes (disconnect, Hello, stall).
   - The host may still check road speed itself, over this transport, as a courtesy that
     fails early with a better message — never as the enforcement.
 - **Choosing the device:** `--device ble` scans and offers a menu of what answered, the
