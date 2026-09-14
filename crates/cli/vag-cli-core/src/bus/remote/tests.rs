@@ -408,8 +408,8 @@ async fn a_subscription_past_the_boards_limit_is_refused_here() {
 	assert_eq!(subscribed(board.next().await).did, 0x3000);
 }
 
-/// `measure`'s speed channel is the one read the board must never thin: it goes out marked
-/// timing, and every other class goes out normal.
+/// `measure`'s speed channel goes out marked timing, for the board to rank ahead of the
+/// host's other work; every other class goes out normal.
 #[tokio::test(flavor = "multi_thread")]
 async fn only_a_timing_subscription_is_sent_as_timing() {
 	let (bus, mut board) = start();

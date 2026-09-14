@@ -42,8 +42,8 @@
 //!
 //! `measure` times a run from one speed channel at 50 Hz. As [`Class::Remote`] it waits
 //! behind everything else once the planner is at its ceiling, and on the bench it came
-//! at 10 Hz (2026-09-14). [`Class::Timing`] is never thinned, so what hosts take that way
-//! is bounded by two rules, and only by them:
+//! at 10 Hz (2026-09-14). [`Class::Timing`] goes ahead of a host's other work, so how many
+//! timing subscriptions hosts hold is bounded by two rules:
 //!
 //! - **per connection**, the guard's
 //!   [`MAX_TIMING_SUBSCRIPTIONS`](crate::guard::MAX_TIMING_SUBSCRIPTIONS), polled no
@@ -56,10 +56,14 @@
 //!   gives its id again as normal, or its session closes — a disconnect, a Hello, a
 //!   stalled writer.
 //!
-//! One channel at 20 ms is at most 50 of the planner's 100 exchanges a second. The panel's
-//! floor of 25 fits in what is left, the ceiling is the planner's to hold whatever is
-//! asked, and every other subscription of a host stays `Remote`: slowed when the bus is
-//! short, never dropped.
+//! Neither bounds bus time. The planner caps sends, not how long a unit takes to answer,
+//! and a timing read on a unit slower than its period is due again the moment it answers.
+//! So on the board the panel's floor goes ahead of a host's timing channel
+//! ([`Budget::board`](crate::schedule::Budget::board), `timing_yields_to_floor`): the
+//! panel keeps its floor, and the timing channel gets what is left — 50 a second from a
+//! unit that answers in a few milliseconds, less from a slow one. A host's other
+//! subscriptions stay `Remote` and get what the timing channel leaves: slowed when the bus
+//! is short, and with a slow timing unit nothing while the run lasts.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::{String, ToString};

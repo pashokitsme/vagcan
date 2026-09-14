@@ -388,7 +388,13 @@ impl Planner {
 					Pick::Read(did) => (1, did),
 				};
 				let starved = now.saturating_sub(due) > u64::from(self.budget.starve_after_ms);
-				let rank = (tier(class, under_floor, starved), due, *unit, kind, did);
+				let rank = (
+					tier(class, under_floor, starved, self.budget.timing_yields_to_floor),
+					due,
+					*unit,
+					kind,
+					did,
+				);
 				if best.as_ref().is_none_or(|(held, _, _)| rank < *held) {
 					best = Some((rank, class, pick));
 				}
@@ -738,14 +744,18 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 }
 
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
-fn tier(class: Class, foreground_under_floor: bool, starved: bool) -> u8 {
+///
+/// `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`]) moves the foreground under
+/// its floor ahead of timing; everything else keeps its order.
+fn tier(class: Class, foreground_under_floor: bool, starved: bool, timing_yields_to_floor: bool) -> u8 {
 	match class {
-		Class::Timing => 0,
-		Class::Remote | Class::Background if starved => 1,
-		Class::Foreground if foreground_under_floor => 2,
-		Class::Remote => 3,
-		Class::Foreground => 4,
-		Class::Background => 5,
+		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 0,
+		Class::Timing => 1,
+		Class::Remote | Class::Background if starved => 2,
+		Class::Foreground if foreground_under_floor => 3,
+		Class::Remote => 4,
+		Class::Foreground => 5,
+		Class::Background => 6,
 	}
 }
 

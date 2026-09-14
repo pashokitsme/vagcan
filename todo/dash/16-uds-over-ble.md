@@ -85,11 +85,16 @@ item 7 (the `frame` mirror) unnecessary.
   - **A timing flag** (2026-09-14, after `measure` over the board on the bench ran its
     speed at 10 Hz: every host subscription ran as the board's `Remote` class, thinned at
     the planner's 100/s ceiling). A Subscribe ends with a priority byte, `0` normal,
-    `1` timing. Normal runs as `Class::Remote`; timing as `Class::Timing`, never thinned.
+    `1` timing. Normal runs as `Class::Remote`; timing as `Class::Timing`, ahead of a
+    host's other work.
     At most **one timing subscription per connection** (`MAX_TIMING_SUBSCRIPTIONS`), on
     the radio and the cable alike; a second is refused, and a timing subscription counts
-    toward every other cap like a normal one. One channel at ≥ 20 ms is ≤ 50 of the 100
-    exchanges a second, so the panel's floor of 25 still fits. The laptop's remote `Bus`
+    toward every other cap like a normal one. The caps bound subscriptions, not bus time:
+    a timing read on a unit slower than 20 ms is always due again. So on the board the
+    panel's floor goes ahead of a host's timing channel (`Budget::board()`,
+    `timing_yields_to_floor`, review of the first commit, 2026-09-14); with slow units the
+    timing channel gets what is left, and a host's normal subscriptions what it leaves.
+    The laptop keeps Timing first. The laptop's remote `Bus`
     sends `timing` for a `Class::Timing` subscription, `normal` for any other class, and
     refuses a second timing one itself.
   - **One timing channel for the whole board** (decided 2026-09-14: one stopwatch at a

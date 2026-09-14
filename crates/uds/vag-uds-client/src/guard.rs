@@ -32,7 +32,8 @@
 //!   sweep rules when subscribed; neither the subscribe nor the board's polls
 //!   count toward the rate cap. At most [`MAX_SUBSCRIPTIONS`] live, none faster
 //!   than [`MIN_PERIOD_MS`], and at most [`MAX_TIMING_SUBSCRIPTIONS`] of them marked
-//!   [`Priority::Timing`] — polls the board's planner never thins. A timing
+//!   [`Priority::Timing`] — polls the board's planner ranks ahead of a host's other
+//!   work. A timing
 //!   subscription counts toward every other cap exactly like a normal one.
 //!
 //! One `Guard` per connection; dropping it is the reset. No clock inside — the
@@ -94,11 +95,14 @@ pub const MAX_SUBSCRIPTIONS: usize = 32;
 pub const MIN_PERIOD_MS: u16 = 20;
 /// Live [`Priority::Timing`] subscriptions one connection may hold.
 ///
-/// The board's planner never thins a timing poll. This cap bounds what one connection
-/// takes that way, and the board's one timing channel ([`Refusal::TimingChannelHeld`])
-/// what all of them take together: one channel at 20 ms is 50 exchanges a second of the
-/// planner's 100, and the panel's floor of 25 still fits beside it. One is what `measure`
-/// needs: its speed channel.
+/// The board's planner ranks a timing poll ahead of a host's other work. This cap bounds
+/// how many timing subscriptions one connection holds, and the board's one timing channel
+/// ([`Refusal::TimingChannelHeld`]) how many all of them hold together. Neither bounds bus
+/// time: a unit that answers slower than the period is due again the moment it answers.
+/// What keeps the panel is the planner's rule on the board
+/// ([`Budget::timing_yields_to_floor`](crate::schedule::Budget::timing_yields_to_floor)):
+/// the panel under its floor goes ahead of the timing channel, which gets what is left.
+/// One is what `measure` needs: its speed channel.
 pub const MAX_TIMING_SUBSCRIPTIONS: usize = 1;
 
 /// The engine's request id on the ISO 15765-4 address block.

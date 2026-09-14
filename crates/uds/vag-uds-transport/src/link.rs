@@ -44,8 +44,8 @@
 //! guard's to enforce, not the codec's. A one-shot read is a Request.
 //!
 //! `priority` says how the board's planner ranks those polls: `0` normal, the host's
-//! work, which waits when the bus is short; `1` timing, a stopwatch's channel, which is
-//! never thinned (`vag_uds_client::schedule::Class::Timing`). Any other value is
+//! work, which waits when the bus is short; `1` timing, a stopwatch's channel, which goes
+//! ahead of the host's other work (`vag_uds_client::schedule::Class::Timing`). Any other value is
 //! malformed. How many timing subscriptions a host may hold is the guard's to enforce
 //! too. The byte is last, after the fixed-width fields, so the body is always eleven
 //! bytes.
@@ -260,7 +260,7 @@ pub enum Priority {
 	/// The host's work: waits when the bus is short, never dropped.
 	#[default]
 	Normal,
-	/// A stopwatch's channel: never thinned. The board's guard allows few of them.
+	/// A stopwatch's channel: ahead of the host's other work. The board allows one at a time.
 	Timing,
 }
 

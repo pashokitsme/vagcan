@@ -61,17 +61,21 @@ struct Board {
 	session: Session,
 	bus: Bus,
 	now: u64,
+	/// How long the bus takes to answer each request, in ms.
+	latency: u64,
 	sent: Vec<(u64, Outgoing)>,
 	to_host: Vec<Message>,
 }
 
 impl Board {
+	/// The firmware's budget ([`Budget::board`]); the bus answers in 5 ms.
 	fn new(bus: Bus) -> Self {
 		Board {
-			planner: Planner::new(Budget::default()),
+			planner: Planner::new(Budget::board()),
 			session: Session::new(),
 			bus,
 			now: 0,
+			latency: 5,
 			sent: Vec::new(),
 			to_host: Vec::new(),
 		}
@@ -91,7 +95,7 @@ impl Board {
 				Next::Send(out) => {
 					let answer = self.bus.answer(&out);
 					self.sent.push((self.now, out.clone()));
-					self.now += 5;
+					self.now += self.latency;
 					for delivery in self.planner.answered(self.now, out.token, answer) {
 						match &delivery {
 							Delivery::Raw { req, answer, at_ms, .. } if self.session.awaiting() == Some(*req) => {
@@ -240,10 +244,12 @@ fn the_speed_read_goes_ahead_of_the_panels_reads() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	let a = board.planner.subscribe(0, Class::Foreground, ENGINE, 0x1000, 10, None);
 	let b = board.planner.subscribe(0, Class::Foreground, GATEWAY, 0x1001, 10, None);
-	board.run_until(50);
+	// A second in, the panel has had its floor. Under it, the board's budget sends the panel
+	// first (`Budget::timing_yields_to_floor`), and the speed read waits at most for that.
+	board.run_until(1000);
 	board.hear(request(1, GATEWAY, &[0x10, 0x03]));
 	let before = board.sent.len();
-	board.run_until(80);
+	board.run_until(1030);
 	assert_eq!(board.sent[before].1.pdu, [0x22, 0xF4, 0x0D], "{:02X?}", &board.pdus_sent()[before..]);
 	board.planner.unsubscribe(a);
 	board.planner.unsubscribe(b);
@@ -566,13 +572,15 @@ fn dids_of(pdu: &[u8]) -> Vec<u16> {
 
 /// The bench's `measure` over the board (2026-09-14): every host subscription ran as the
 /// board's Remote class, the planner sat at its ceiling, and the speed channel came at
-/// 10 Hz. Marked timing, it keeps 50 Hz beside fifteen normal channels and the panel;
-/// the panel keeps everything it asks (under its floor), the normal channels are slowed
-/// and not dropped, and no second holds more than the ceiling. Under the default budget,
-/// and under one identifier per request, where every read is an exchange of its own; on
-/// either carrier's guard.
+/// 10 Hz. Marked timing, beside fifteen normal channels and the panel, under the board's
+/// budget: the panel keeps everything it asks (under its floor) at every answer latency,
+/// and no second holds more than the ceiling. A bus that answers in 5 ms gives the timing
+/// channel its 50 Hz and the normal channels slowed, not dropped. One that answers in 25
+/// or 45 ms — slower than the period, as a unit behind the gateway may — leaves the timing
+/// read always due, and it gets what the panel leaves. Under one identifier per request
+/// too, where every read is an exchange of its own; on either carrier's guard.
 #[test]
-fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_panel() {
+fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_at_any_latency() {
 	const MINUTE_MS: u64 = 60_000;
 	const PANEL_PERIOD_MS: u32 = 500;
 	const GEARBOX: Unit = Unit {
@@ -581,12 +589,16 @@ fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_pane
 	};
 	let single = Budget {
 		max_dids_per_request: 1,
-		..Budget::default()
+		..Budget::board()
 	};
-	for budget in [Budget::default(), single] {
+	let runs = [Budget::board(), single]
+		.into_iter()
+		.flat_map(|budget| [5, 25, 45].map(|latency| (budget, latency)));
+	for (budget, latency) in runs {
 		for guard in [Guard::new(), Guard::cable()] {
 			let mut board = Board::new(Bus::Answering { kmh: 0 });
 			board.planner = Planner::new(budget);
+			board.latency = latency;
 			board.session = Session::with_guard(guard);
 			// The panel: four channels at 2 Hz, on a unit of its own.
 			let panel: Vec<u16> = (0..4u16).map(|n| 0x3000 + n * n).collect();
@@ -601,7 +613,7 @@ fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_pane
 				board.hear(subscribe(10 + n, unit, 0x2000 + n * n, 50 + 25 * (n % 3)));
 			}
 			board.run_until(MINUTE_MS);
-			let label = format!("{budget:?}, {:?}", board.session.guard.profile());
+			let label = format!("{budget:?}, latency {latency} ms, {:?}", board.session.guard.profile());
 
 			assert!(
 				board.to_host.iter().all(|m| !matches!(
@@ -614,7 +626,15 @@ fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_pane
 				"{label}: nothing refused"
 			);
 			let speed = board.readings(1).iter().filter(|(_, o)| matches!(o, Outcome::Pdu(_))).count();
-			assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
+			if latency < 20 {
+				assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
+			} else {
+				let rest = board.sent.iter().filter(|(_, o)| o.unit != GATEWAY).count();
+				assert!(
+					speed * 100 >= rest * 95,
+					"{label}: the timing channel got {speed} of the {rest} sends the panel left"
+				);
+			}
 
 			for did in &panel {
 				let reads = board
@@ -626,7 +646,9 @@ fn a_timing_subscription_keeps_fifty_hertz_beside_fifteen_normal_ones_and_a_pane
 				assert!(reads + 1 >= asked, "{label}: panel {did:04X} read {reads} times of {asked}");
 			}
 
-			for n in 0..15u16 {
+			// Slower than the period, the timing read is always due, and the normal channels
+			// wait behind it: only a fast bus says anything about them.
+			for n in (0..15u16).filter(|_| latency < 20) {
 				let got = board.readings(10 + n).len();
 				assert!(got >= 60, "{label}: normal channel {n} got {got} readings in a minute");
 			}

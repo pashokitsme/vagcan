@@ -9,7 +9,7 @@
 //! ```
 //!
 //! `--timing` marks the subscription timing (`link::Priority::Timing`): the board's
-//! planner never thins it, and its guard allows one per connection.
+//! planner puts it ahead of the host's other work, and the board allows one at a time.
 //!
 //! The sweep is the heap attack the board's guard refuses: one request id under many
 //! response ids, one subscription each, in one connection. All but the first must come

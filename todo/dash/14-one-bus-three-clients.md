@@ -86,7 +86,10 @@ makes "parallel with the display" true instead of a time-share: the two clients
 - **Precedence per slot:** Timing (stopwatch) → a Remote or Background item due for
   longer than 5 s (`starve_after_ms`; nothing waits forever) → Foreground under its 25/s
   floor → Remote → Foreground above the floor → Background; within a rank, the most
-  overdue first. A Timing request carries only Timing identifiers.
+  overdue first. A Timing request carries only Timing identifiers. **On the board**
+  Foreground under its floor goes first, ahead of Timing (`Budget::timing_yields_to_floor`,
+  2026-09-14): a host's timing channel on a unit slower than its period is always due and
+  would take every slot, starved items included.
 - **Shape.** A `no_std` core with no clock and no bus (`due(now) -> request`,
   `answered(now, request, answer) -> deliveries`), tested on the laptop.
 - **One layer everywhere, now** (owner: "Общий слой, используется везде вместо текущего
