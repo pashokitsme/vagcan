@@ -1,0 +1,585 @@
+//! The board's USB console: one byte stream, three protocols, two modes.
+//!
+//! The `dash` image's USB-Serial-JTAG port carries, from the host:
+//!
+//! - **framed link messages** ([`vag_uds_transport::link`]), which start with a NUL —
+//!   `vagcan` reading the car through the board, the panel running beside it;
+//! - **`dashsim`'s button lines**, `BTN S` and `BTN L`, ended by `\n`;
+//! - **slcan (Lawicel) command lines**, CR-terminated ASCII — `vagcan --slcan`, which
+//!   makes the board a plain CAN adapter.
+//!
+//! `todo/dash/14-one-bus-three-clients.md` §3 decided the board's two modes and that
+//! the first bytes choose between them. [`Console`] is that choice, with no I/O and no
+//! clock, so it is tested here and the firmware only acts on what it says:
+//!
+//! | mode | a framed message | `BTN S` / `BTN L` | an slcan line (`\r`) | anything else |
+//! |---|---|---|---|---|
+//! | [`Mode::Panel`] | [`Input::Message`] | [`Input::Press`] | no link client: [`Input::EnterAdapter`] then [`Input::Slcan`]; a bare `C` is [`Input::Closed`] and switches nothing; a link client active: [`Input::Ignored`] | [`Input::Ignored`] |
+//! | [`Mode::Adapter`] | [`Input::Message`] | — | [`Input::Slcan`]; after a `C`, [`Input::LeaveAdapter`] | [`Input::Slcan`] (the adapter answers `\x07`) |
+//!
+//! - **A framed message never switches.** It is routed in either mode; what the board
+//!   does with one in adapter mode (answer a Hello, refuse the rest) is the shell's.
+//! - **Only a CR-terminated line of a command the adapter has switches**: `C S O L M t T
+//!   r R F E V v N Z`. A line ended by `\n` is a terminal or `dashsim`, not slcan.
+//! - **A bare `C` in panel mode is answered and switches nothing**: there is no channel
+//!   to close, and entering adapter mode only to leave it at once would blank the panel
+//!   for nothing. It is what a host sends to end an adapter session an earlier host left
+//!   open, whichever mode the board is in.
+//! - **"A link client is active"** is the caller's to say: a framed session holding a
+//!   subscription or a request ([`crate::remote::Session::is_active`]). While one is,
+//!   slcan lines are not taken.
+//! - **Leaving** is on `C`, decided here the moment the line is seen so the lines after
+//!   it in the same chunk are judged in panel mode, and on a USB disconnect, which only
+//!   the firmware can see ([`Console::disconnected`]).
+//!
+//! In adapter mode lines are cut exactly as the standalone `slcan` image cuts them —
+//! the same [`LineParser`]: `\r` ends a line, `\n` is ignored, a line too long to be a
+//! command comes back as the error byte alone. In panel mode `\n` ends a line too.
+
+use alloc::vec::Vec;
+use core::fmt;
+
+use vag_uds_transport::link::{LinkError, Message, Piece, Reassembler};
+
+/// The longest command line kept. A 29-bit frame with eight bytes is `T`, 8 hex of id,
+/// 1 of length and 16 of data: 26 bytes.
+pub const LINE_MAX: usize = 32;
+
+/// Lawicel's error reply, and what an overflowed line is handed on as.
+pub const BELL: u8 = 0x07;
+
+/// The slcan commands the board's adapter has: a CR-terminated line starting with one
+/// of these is slcan. (The `slcan` module of `vag-dash-fw` is the list's other half.)
+const SLCAN_COMMANDS: &[u8] = b"CSOLMtTrRFEVvNZ";
+
+/// One command line, without its terminator. Fixed-size: the standalone `slcan` image
+/// does not allocate in its steady state, and this is on its path for every frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CommandLine {
+	bytes: [u8; LINE_MAX],
+	len: u8,
+}
+
+impl CommandLine {
+	const EMPTY: CommandLine = CommandLine {
+		bytes: [0; LINE_MAX],
+		len: 0,
+	};
+
+	/// A line of `bytes`, cut at [`LINE_MAX`].
+	pub fn new(bytes: &[u8]) -> Self {
+		let mut line = Self::EMPTY;
+		let len = bytes.len().min(LINE_MAX);
+		line.bytes[..len].copy_from_slice(&bytes[..len]);
+		line.len = len as u8;
+		line
+	}
+
+	pub fn as_bytes(&self) -> &[u8] {
+		&self.bytes[..usize::from(self.len)]
+	}
+
+	fn push(&mut self, byte: u8) -> Result<(), ()> {
+		let slot = self.bytes.get_mut(usize::from(self.len)).ok_or(())?;
+		*slot = byte;
+		self.len += 1;
+		Ok(())
+	}
+}
+
+impl Default for CommandLine {
+	fn default() -> Self {
+		Self::EMPTY
+	}
+}
+
+impl fmt::Debug for CommandLine {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:?}", self.as_bytes().escape_ascii())
+	}
+}
+
+/// How a line ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+	Cr,
+	Lf,
+}
+
+/// Bytes into command lines.
+///
+/// `\r` ends a line. `\n` ends one only when built with [`LineParser::lines`]; built with
+/// [`LineParser::slcan`] it is ignored, so a terminal user's Enter (`\r\n`) is one
+/// command. A line too long to be any command is discarded whole — a desynchronised
+/// stream, not a command — and comes back as [`BELL`] alone, which no command matches.
+#[derive(Debug, Default)]
+pub struct LineParser {
+	line: CommandLine,
+	overflow: bool,
+	newline_ends: bool,
+}
+
+impl LineParser {
+	/// Lawicel's cut: `\r` only.
+	pub fn slcan() -> Self {
+		Self::default()
+	}
+
+	/// `\r` or `\n`.
+	pub fn lines() -> Self {
+		LineParser {
+			newline_ends: true,
+			..Self::default()
+		}
+	}
+
+	/// One byte in; the line it ended, if it ended one.
+	pub fn feed(&mut self, byte: u8) -> Option<(CommandLine, Ending)> {
+		let ending = match byte {
+			b'\r' => Ending::Cr,
+			b'\n' if self.newline_ends => Ending::Lf,
+			b'\n' => return None,
+			_ => {
+				if self.line.push(byte).is_err() {
+					self.overflow = true;
+				}
+				return None;
+			}
+		};
+		let done = if self.overflow { CommandLine::new(&[BELL]) } else { self.line };
+		self.line = CommandLine::EMPTY;
+		self.overflow = false;
+		Some((done, ending))
+	}
+
+	/// Forget a line in progress.
+	pub fn reset(&mut self) {
+		self.line = CommandLine::EMPTY;
+		self.overflow = false;
+	}
+}
+
+/// Which of its two jobs the board is doing (module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+	/// Mode 1: the panel, the planner, and framed link clients.
+	Panel,
+	/// Mode 2: a plain slcan adapter on the cable; the planner sends nothing.
+	Adapter,
+}
+
+/// `dashsim`'s two gestures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+	Short,
+	Long,
+}
+
+/// Why a line was not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ignored {
+	/// Not a button and not an slcan command ended by `\r`.
+	NotACommand,
+	/// An slcan command, while a framed link client holds a session.
+	LinkActive,
+}
+
+/// What the console made of the bytes, in the order they came.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Input {
+	/// A framed link message, in either mode.
+	Message(Message),
+	/// A frame that did not reassemble; dropped, and the stream resynchronised.
+	Malformed(LinkError),
+	/// A button line.
+	Press(Button),
+	/// Switch to [`Mode::Adapter`] now: the planner stops sending. The line that chose
+	/// it follows as [`Input::Slcan`].
+	EnterAdapter,
+	/// One slcan command line, for the adapter.
+	Slcan(CommandLine),
+	/// Back to [`Mode::Panel`]: the `C` that closed the adapter came just before.
+	LeaveAdapter,
+	/// A `C` in panel mode: answer Lawicel's `\r`, and nothing else.
+	Closed,
+	/// A line nobody takes.
+	Ignored { line: CommandLine, why: Ignored },
+}
+
+/// The console's state: which mode, and the frame and line in progress.
+#[derive(Debug)]
+pub struct Console {
+	mode: Mode,
+	reassembler: Reassembler,
+	parser: LineParser,
+}
+
+impl Default for Console {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
+impl Console {
+	/// Panel mode, nothing in progress: the board at boot.
+	pub fn new() -> Self {
+		Console {
+			mode: Mode::Panel,
+			reassembler: Reassembler::new(),
+			parser: LineParser::lines(),
+		}
+	}
+
+	pub fn mode(&self) -> Mode {
+		self.mode
+	}
+
+	/// One chunk from the host. `link_active`: whether a framed link client holds a
+	/// session on this carrier now.
+	pub fn push(&mut self, chunk: &[u8], link_active: bool) -> Vec<Input> {
+		let mut out = Vec::new();
+		for piece in self.reassembler.push(chunk) {
+			match piece {
+				Piece::Message(message) => out.push(Input::Message(message)),
+				Piece::Error(why) => out.push(Input::Malformed(why)),
+				Piece::Text(bytes) => {
+					for byte in bytes {
+						if let Some((line, ending)) = self.parser.feed(byte) {
+							self.line(line, ending, link_active, &mut out);
+						}
+					}
+				}
+			}
+		}
+		out
+	}
+
+	/// The cable was pulled (or the host stopped the bus): what was in progress is
+	/// forgotten, and adapter mode ends.
+	pub fn disconnected(&mut self) -> Option<Input> {
+		self.reassembler.reset();
+		self.parser.reset();
+		match self.mode {
+			Mode::Adapter => {
+				self.set(Mode::Panel);
+				Some(Input::LeaveAdapter)
+			}
+			Mode::Panel => None,
+		}
+	}
+
+	fn set(&mut self, mode: Mode) {
+		self.mode = mode;
+		self.parser.newline_ends = mode == Mode::Panel;
+	}
+
+	fn line(&mut self, line: CommandLine, ending: Ending, link_active: bool, out: &mut Vec<Input>) {
+		let text = line.as_bytes();
+		match self.mode {
+			Mode::Adapter => {
+				let close = text == b"C";
+				out.push(Input::Slcan(line));
+				if close {
+					self.set(Mode::Panel);
+					out.push(Input::LeaveAdapter);
+				}
+			}
+			Mode::Panel => match text.trim_ascii() {
+				b"" => {}
+				b"BTN S" => out.push(Input::Press(Button::Short)),
+				b"BTN L" => out.push(Input::Press(Button::Long)),
+				_ if ending == Ending::Cr && is_slcan_command(text) => {
+					if link_active {
+						out.push(Input::Ignored {
+							line,
+							why: Ignored::LinkActive,
+						});
+					} else if text == b"C" {
+						out.push(Input::Closed);
+					} else {
+						self.set(Mode::Adapter);
+						out.push(Input::EnterAdapter);
+						out.push(Input::Slcan(line));
+					}
+				}
+				_ => out.push(Input::Ignored {
+					line,
+					why: Ignored::NotACommand,
+				}),
+			},
+		}
+	}
+}
+
+/// Whether `line` starts with a command the board's adapter has.
+pub fn is_slcan_command(line: &[u8]) -> bool {
+	line.first().is_some_and(|head| SLCAN_COMMANDS.contains(head))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use alloc::vec;
+	use vag_uds_transport::link::{self, HelloReply, Request};
+
+	fn slcan(text: &[u8]) -> Input {
+		Input::Slcan(CommandLine::new(text))
+	}
+
+	fn request() -> Message {
+		Message::Request(Request {
+			seq: 1,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			// A PDU full of the bytes a line parser would take for terminators and commands.
+			pdu: vec![0x22, b'\r', b'\n', b'V', b'\r', b'C', b'\r'],
+		})
+	}
+
+	fn feed_bytewise(console: &mut Console, bytes: &[u8], link_active: bool) -> Vec<Input> {
+		bytes.iter().flat_map(|b| console.push(core::slice::from_ref(b), link_active)).collect()
+	}
+
+	#[test]
+	fn the_host_s_slcan_open_switches_to_adapter_mode_at_the_first_setting() {
+		let mut console = Console::new();
+		let inputs = console.push(b"C\rS6\rM0\rO\r", false);
+		assert_eq!(inputs, vec![Input::Closed, Input::EnterAdapter, slcan(b"S6"), slcan(b"M0"), slcan(b"O")]);
+		assert_eq!(console.mode(), Mode::Adapter);
+	}
+
+	#[test]
+	fn a_version_query_switches_and_is_handed_to_the_adapter() {
+		let mut console = Console::new();
+		assert_eq!(console.push(b"V\r", false), vec![Input::EnterAdapter, slcan(b"V")]);
+	}
+
+	#[test]
+	fn a_bare_close_in_panel_mode_is_answered_and_switches_nothing() {
+		let mut console = Console::new();
+		assert_eq!(console.push(b"C\r", false), vec![Input::Closed]);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn slcan_lines_are_not_taken_while_a_link_client_is_active() {
+		let mut console = Console::new();
+		for text in [&b"V"[..], b"S6", b"C", b"O"] {
+			let mut bytes = text.to_vec();
+			bytes.push(b'\r');
+			assert_eq!(
+				console.push(&bytes, true),
+				vec![Input::Ignored {
+					line: CommandLine::new(text),
+					why: Ignored::LinkActive
+				}]
+			);
+		}
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn a_framed_message_never_switches_in_either_mode() {
+		let mut console = Console::new();
+		let frame = link::encode(&request()).unwrap();
+		assert_eq!(console.push(&frame, false), vec![Input::Message(request())]);
+		assert_eq!(console.mode(), Mode::Panel);
+		console.push(b"O\r", false);
+		assert_eq!(console.mode(), Mode::Adapter);
+		assert_eq!(console.push(&frame, false), vec![Input::Message(request())]);
+		assert_eq!(
+			console.push(&link::encode(&Message::Hello).unwrap(), false),
+			vec![Input::Message(Message::Hello)]
+		);
+		assert_eq!(console.mode(), Mode::Adapter);
+	}
+
+	#[test]
+	fn dashsim_buttons_are_presses_however_the_line_ends() {
+		let mut console = Console::new();
+		assert_eq!(
+			console.push(b"BTN S\nBTN L\nBTN S\r\n", false),
+			vec![Input::Press(Button::Short), Input::Press(Button::Long), Input::Press(Button::Short)]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn a_command_ended_by_a_newline_is_a_terminal_not_slcan() {
+		let mut console = Console::new();
+		assert_eq!(
+			console.push(b"V\n", false),
+			vec![Input::Ignored {
+				line: CommandLine::new(b"V"),
+				why: Ignored::NotACommand
+			}]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn text_that_is_no_command_is_ignored_and_empty_lines_are_not_even_that() {
+		let mut console = Console::new();
+		assert_eq!(
+			console.push(b"\r\n\rhello\rB\r", false),
+			vec![
+				Input::Ignored {
+					line: CommandLine::new(b"hello"),
+					why: Ignored::NotACommand
+				},
+				Input::Ignored {
+					line: CommandLine::new(b"B"),
+					why: Ignored::NotACommand
+				},
+			]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn in_adapter_mode_every_line_is_the_adapter_s_and_close_leaves_at_once() {
+		let mut console = Console::new();
+		console.push(b"S6\r", false);
+		assert_eq!(
+			console.push(b"t7E0322F190\r\rBTN S\rC\rBTN S\n", false),
+			vec![
+				slcan(b"t7E0322F190"),
+				slcan(b""),
+				slcan(b"BTN S"),
+				slcan(b"C"),
+				Input::LeaveAdapter,
+				Input::Press(Button::Short)
+			]
+		);
+		assert_eq!(console.mode(), Mode::Panel);
+	}
+
+	#[test]
+	fn a_close_then_a_new_open_in_one_chunk_leaves_and_enters_again() {
+		let mut console = Console::new();
+		console.push(b"S6\rO\r", false);
+		assert_eq!(
+			console.push(b"C\rS6\rM0\rO\r", false),
+			vec![
+				slcan(b"C"),
+				Input::LeaveAdapter,
+				Input::EnterAdapter,
+				slcan(b"S6"),
+				slcan(b"M0"),
+				slcan(b"O")
+			]
+		);
+		assert_eq!(console.mode(), Mode::Adapter);
+	}
+
+	#[test]
+	fn in_adapter_mode_lines_are_cut_as_the_standalone_image_cuts_them() {
+		let mut console = Console::new();
+		console.push(b"O\r", false);
+		// `\n` is ignored, as a terminal's Enter sends `\r\n`: one command, not two.
+		assert_eq!(console.push(b"F\r\nV\r\n", false), vec![slcan(b"F"), slcan(b"V")]);
+		// A line too long to be any command comes back as the error byte alone.
+		let mut long = vec![b't'; 40];
+		long.push(b'\r');
+		assert_eq!(console.push(&long, false), vec![slcan(&[BELL])]);
+		assert_eq!(console.push(b"F\r", false), vec![slcan(b"F")], "the next line is clean");
+	}
+
+	#[test]
+	fn fed_one_byte_at_a_time_the_console_says_the_same() {
+		let mut stream = Vec::new();
+		stream.extend_from_slice(b"BTN S\n");
+		stream.extend(link::encode(&request()).unwrap());
+		stream.extend_from_slice(b"C\rS6\rO\r");
+		stream.extend(link::encode(&Message::Hello).unwrap());
+		stream.extend_from_slice(b"t7E0322F190\rC\rBTN L\n");
+		let whole = Console::new().push(&stream, false);
+		let bytewise = feed_bytewise(&mut Console::new(), &stream, false);
+		assert_eq!(whole, bytewise);
+		assert_eq!(
+			whole,
+			vec![
+				Input::Press(Button::Short),
+				Input::Message(request()),
+				Input::Closed,
+				Input::EnterAdapter,
+				slcan(b"S6"),
+				slcan(b"O"),
+				Input::Message(Message::Hello),
+				slcan(b"t7E0322F190"),
+				slcan(b"C"),
+				Input::LeaveAdapter,
+				Input::Press(Button::Long),
+			]
+		);
+	}
+
+	#[test]
+	fn a_broken_frame_is_reported_and_the_console_carries_on() {
+		let mut console = Console::new();
+		assert_eq!(
+			console.push(&[0x00, 0x7A, 0x02, 0x00, 1, 2], false),
+			vec![Input::Malformed(LinkError::UnknownType(0x7A))]
+		);
+		assert_eq!(console.push(b"BTN S\n", false), vec![Input::Press(Button::Short)]);
+	}
+
+	#[test]
+	fn a_disconnect_leaves_adapter_mode_and_forgets_what_was_in_progress() {
+		let mut console = Console::new();
+		assert_eq!(console.disconnected(), None, "nothing to leave");
+		console.push(b"O\rt7E0", false);
+		let reply = link::encode(&Message::HelloReply(HelloReply {
+			image: "dash".into(),
+			version: "0.1.0".into(),
+		}))
+		.unwrap();
+		console.push(&reply[..3], false);
+		assert_eq!(console.disconnected(), Some(Input::LeaveAdapter));
+		assert_eq!(console.mode(), Mode::Panel);
+		// Neither the half line nor the half frame survives into the next session.
+		assert_eq!(console.push(b"BTN S\n", false), vec![Input::Press(Button::Short)]);
+		assert_eq!(
+			console.push(&link::encode(&Message::Hello).unwrap(), false),
+			vec![Input::Message(Message::Hello)]
+		);
+	}
+
+	#[test]
+	fn the_command_letters_are_the_adapter_s() {
+		for head in b"CSOLMtTrRFEVvNZ" {
+			assert!(is_slcan_command(&[*head]), "{}", *head as char);
+		}
+		for head in b"BXxsWmUQ0 \x07" {
+			assert!(!is_slcan_command(&[*head]), "{}", *head as char);
+		}
+		assert!(!is_slcan_command(b""));
+	}
+
+	#[test]
+	fn the_slcan_parser_ignores_newlines_and_the_line_parser_ends_on_them() {
+		let mut slcan = LineParser::slcan();
+		let lines: Vec<_> = b"S6\r\nab\ncd\r".iter().filter_map(|b| slcan.feed(*b)).collect();
+		assert_eq!(
+			lines,
+			vec![(CommandLine::new(b"S6"), Ending::Cr), (CommandLine::new(b"abcd"), Ending::Cr)]
+		);
+		let mut text = LineParser::lines();
+		let lines: Vec<_> = b"ab\ncd\r".iter().filter_map(|b| text.feed(*b)).collect();
+		assert_eq!(lines, vec![(CommandLine::new(b"ab"), Ending::Lf), (CommandLine::new(b"cd"), Ending::Cr)]);
+	}
+
+	#[test]
+	fn a_line_of_exactly_the_maximum_is_kept_and_one_more_byte_is_an_overflow() {
+		let mut parser = LineParser::slcan();
+		let exact = [b'T'; LINE_MAX];
+		for b in exact {
+			assert_eq!(parser.feed(b), None);
+		}
+		assert_eq!(parser.feed(b'\r'), Some((CommandLine::new(&exact), Ending::Cr)));
+		for b in [b'T'; LINE_MAX + 1] {
+			parser.feed(b);
+		}
+		assert_eq!(parser.feed(b'\r'), Some((CommandLine::new(&[BELL]), Ending::Cr)));
+	}
+}
