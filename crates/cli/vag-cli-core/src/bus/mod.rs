@@ -181,6 +181,8 @@ pub struct Bus {
 	commands: mpsc::UnboundedSender<Command>,
 	started: Instant,
 	keys: Arc<AtomicU64>,
+	/// Why the link broke under the task, once it has (see [`Bus::closed`]).
+	closed: Arc<std::sync::OnceLock<String>>,
 }
 
 impl Bus {
@@ -196,6 +198,7 @@ impl Bus {
 			commands,
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
+			closed: Arc::new(std::sync::OnceLock::new()),
 		}
 	}
 
@@ -210,12 +213,23 @@ impl Bus {
 		let started = Instant::now();
 		let runtime = tokio::runtime::Handle::current();
 		let peer = peer.to_string();
-		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, inbox, started)));
+		let closed = Arc::new(std::sync::OnceLock::new());
+		let told = closed.clone();
+		tokio::task::spawn_blocking(move || runtime.block_on(remote::run(pipe, peer, inbox, started, told)));
 		Bus {
 			commands,
 			started,
 			keys: Arc::new(AtomicU64::new(0)),
+			closed,
 		}
+	}
+
+	/// Why the link broke under the bus, once it has — "the BLE connection to vagcan-dash
+	/// dropped" — so a consumer whose subscriptions ended can say why rather than only
+	/// that they did. `None` while the link is up, and for a cable, whose task does not
+	/// outlive its link.
+	pub fn closed(&self) -> Option<String> {
+		self.closed.get().cloned()
 	}
 
 	/// Seconds since the bus started: the clock every [`At::secs`] is on.

@@ -15,6 +15,9 @@
 //! - **Requests go out one at a time**, in the order asked, each with its own `seq`; the
 //!   board takes them one at a time anyway. An answer whose `seq` is not the one out is
 //!   late for a request already given up on, and dropped.
+//! - **The pipe is read first.** What it already holds is taken in before the commands
+//!   waiting, and again after every write — a write over BLE takes tens of milliseconds,
+//!   and a board streaming readings does not wait for the host to finish writing.
 //! - **[`Class`](super::Class) and [`Budget`](super::Budget) are not sent.** The link has
 //!   no field for either: the board classes all remote work itself, as its own class.
 //! - **A period under [`MIN_PERIOD_MS`] is raised to it**, the guard's floor, rather than
@@ -23,35 +26,45 @@
 //!   here, with that reason, rather than sent to be refused.
 //! - **A refusal by the board ends a subscription** — on the board it has already ended
 //!   (`vag_uds_client::remote`). The subscriber gets one [`Miss::BusError`] and then the
-//!   end of its stream, and the reason is said on stderr, once. The planner's [`Miss`]
-//!   has no variant for a refusal by the link, and it is shared with the board, whose
-//!   session matches it exhaustively; to a subscriber the effect is the same. An
+//!   end of its stream. The planner's [`Miss`] has no variant for a refusal by the link,
+//!   and it is shared with the board, whose session matches it exhaustively. An
 //!   exchange's refusal is [`ExchangeError::Refused`], carrying the board's words.
+//! - **What is to be said is said when the bus closes**, not when it happens: a line on
+//!   stderr in the middle of a run lands on top of `watch`'s or `measure`'s full screen
+//!   and stays there. The cable task keeps its own note the same way.
 //! - **The board's text** — `dashcfg`'s state line, pushed on connecting — shares the
 //!   pipe and is ignored.
-//! - **When the pipe closes**, every subscription ends, whatever is waiting fails, and
-//!   every later command fails with "the BLE connection to <board> dropped" until the
-//!   last handle is gone.
+//! - **When the link breaks** — the pipe closes, a write fails, or a frame does not
+//!   reassemble, which on a link that guarantees delivery means a chunk was lost — every
+//!   subscription gets a last [`Miss::BusError`] and ends, whatever is waiting fails,
+//!   every later command fails with the reason, and [`Bus::closed`](super::Bus::closed)
+//!   says it, so a consumer can show why its streams ended.
 //!
 //! # Time
 //!
 //! A `Reading` carries `at_ms`, the board's clock when the unit's answer reached the
-//! board. It is put on the bus clock with one offset, fixed at the first `Reading`:
-//! `secs = host_secs_at_first + (at_ms − at_ms_first) / 1000`. Differences between
-//! readings are the board's, taken where the bus is, and those are what `measure` times
-//! a run from; the radio's latency moves only the offset. The offset is never corrected,
-//! so a reading can be stamped a few milliseconds past [`Bus::secs`](super::Bus::secs)
-//! when the first one came through the radio slower than a later one. An `Answer`
-//! carries no board time: a one-shot read or an exchange is stamped when it arrived here.
+//! board. It is put on the bus clock with one offset, fixed at the first reading of a
+//! live subscription that is an answer or a no-answer:
+//! `secs = host_secs_at_first + (at_ms − at_ms_first) / 1000`. A refusal is stamped with
+//! the board's own now rather than an answer's arrival, so it does not fix the offset.
+//! Differences between readings are the board's, taken where the bus is, and those are
+//! what `measure` times a run from; the radio's latency moves only the offset. The offset
+//! is never corrected, so a reading can be stamped a few milliseconds past
+//! [`Bus::secs`](super::Bus::secs) when the first one came through the radio slower than
+//! a later one. An `Answer` carries no board time: a one-shot read or an exchange is
+//! stamped when it arrived here.
 //!
 //! # Deadlines
 //!
 //! A request waits its caller's deadline plus [`REMOTE_GRACE`]; see there.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::sync::{Arc, OnceLock};
+use std::task::Poll;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::time::Instant;
 use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
 use vag_uds_transport::TransportError;
@@ -96,14 +109,14 @@ struct Flying {
 
 /// What woke the task.
 enum Event {
-	Command(Option<Command>),
 	Chunk(Option<Vec<u8>>),
+	Command(Option<Command>),
 	Deadline,
 }
 
 /// Everything the task holds besides the pipe.
 struct Remote {
-	/// The board's name, for what is said when it goes away.
+	/// The board's name, for what is said when something goes wrong.
 	peer: String,
 	started: Instant,
 	/// Live subscriptions by the id on the wire.
@@ -116,14 +129,34 @@ struct Remote {
 	asks: VecDeque<Ask>,
 	flying: Option<Flying>,
 	next_seq: u8,
-	/// The first reading's board time and its arrival on the bus clock.
+	/// The anchoring reading's board time and its arrival on the bus clock.
 	clock: Option<(u32, f64)>,
 	/// Frames to write before waiting again.
 	outbox: Vec<Vec<u8>>,
+	/// What to tell the person when the bus closes, each line once.
+	notes: Vec<String>,
+}
+
+impl Drop for Remote {
+	/// Said once, when the bus closes: in the middle of a run it would land on top of
+	/// whatever the screen is drawing.
+	fn drop(&mut self) {
+		for line in &self.notes {
+			eprintln!("{line}");
+		}
+	}
 }
 
 /// Run until every handle is gone or one asks for a shutdown. Returning drops the pipe.
-pub(super) async fn run<P: Pipe>(mut pipe: P, peer: String, mut inbox: mpsc::UnboundedReceiver<Command>, started: Instant) {
+///
+/// When the link breaks, its reason goes into `closed` for [`Bus::closed`](super::Bus::closed).
+pub(super) async fn run<P: Pipe>(
+	mut pipe: P,
+	peer: String,
+	mut inbox: mpsc::UnboundedReceiver<Command>,
+	started: Instant,
+	closed: Arc<OnceLock<String>>,
+) {
 	let mut state = Remote {
 		peer,
 		started,
@@ -135,47 +168,72 @@ pub(super) async fn run<P: Pipe>(mut pipe: P, peer: String, mut inbox: mpsc::Unb
 		next_seq: 0,
 		clock: None,
 		outbox: Vec::new(),
+		notes: Vec::new(),
 	};
 	let mut reassembler = Reassembler::new();
-	'live: loop {
+	let broken = 'live: loop {
+		// What the pipe already holds comes first: the board does not wait for the host.
+		if let Some(broken) = state.take_in(&mut pipe, &mut reassembler).await {
+			break broken;
+		}
+		// Then everything already asked, before the next request is put out.
+		loop {
+			match inbox.try_recv() {
+				Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => return,
+				Ok(command) => state.apply(command),
+				Err(TryRecvError::Empty) => break,
+			}
+		}
 		state.launch();
 		for frame in std::mem::take(&mut state.outbox) {
-			if pipe.write(&frame).await.is_err() {
-				break 'live;
+			if let Err(failed) = pipe.write(&frame).await {
+				break 'live format!("writing to {} over BLE failed: {failed}", state.peer);
+			}
+			// A write over BLE takes tens of milliseconds; what arrived meanwhile is taken
+			// in before the next one.
+			if let Some(broken) = state.take_in(&mut pipe, &mut reassembler).await {
+				break 'live broken;
 			}
 		}
 		let deadline = state.flying.as_ref().map(|f| f.deadline);
 		let event = tokio::select! {
 			biased;
-			command = inbox.recv() => Event::Command(command),
 			chunk = pipe.read() => Event::Chunk(chunk),
+			command = inbox.recv() => Event::Command(command),
 			() = sleep_until(deadline) => Event::Deadline,
 		};
 		match event {
-			Event::Command(None | Some(Command::Shutdown)) => return,
-			Event::Command(Some(command)) => state.apply(command),
-			Event::Chunk(Some(chunk)) => {
-				// The arrival, before anything else is done with it.
-				let arrived = Instant::now();
-				for piece in reassembler.push(&chunk) {
-					// Text is the settings protocol's, and an error has cost only its frame.
-					if let Piece::Message(message) = piece {
-						state.heard(message, arrived);
-					}
+			Event::Chunk(chunk) => {
+				if let Some(broken) = state.chunk(chunk, &mut reassembler) {
+					break broken;
 				}
 			}
-			Event::Chunk(None) => break,
+			Event::Command(None | Some(Command::Shutdown)) => return,
+			Event::Command(Some(command)) => state.apply(command),
 			Event::Deadline => state.expire(),
 		}
-	}
+	};
 	drop(pipe);
-	state.dropped();
+	let _ = closed.set(broken.clone());
+	state.broke(&broken);
 	while let Some(command) = inbox.recv().await {
 		match command {
 			Command::Shutdown => return,
-			command => state.refuse(command),
+			command => state.refuse(command, &broken),
 		}
 	}
+}
+
+/// `future`'s output if it is ready now, without waiting for it.
+async fn ready<F: Future>(future: F) -> Option<F::Output> {
+	let mut future = std::pin::pin!(future);
+	std::future::poll_fn(|cx| {
+		Poll::Ready(match future.as_mut().poll(cx) {
+			Poll::Ready(output) => Some(output),
+			Poll::Pending => None,
+		})
+	})
+	.await
 }
 
 impl Remote {
@@ -187,10 +245,16 @@ impl Remote {
 		}
 	}
 
-	/// A board time on the bus clock (module docs, "Time").
-	fn board_at(&mut self, at_ms: u32, arrived: Instant) -> At {
-		let arrived = self.at(arrived).secs;
-		let (first_ms, first_secs) = *self.clock.get_or_insert((at_ms, arrived));
+	/// A board time on the bus clock (module docs, "Time"). `anchors` says whether this
+	/// reading may fix the offset; before one has, a board time is its arrival.
+	fn board_at(&mut self, at_ms: u32, arrived: Instant, anchors: bool) -> At {
+		let arrived = self.at(arrived);
+		if anchors && self.clock.is_none() {
+			self.clock = Some((at_ms, arrived.secs));
+		}
+		let Some((first_ms, first_secs)) = self.clock else {
+			return arrived;
+		};
 		let secs = (first_secs + (f64::from(at_ms) - f64::from(first_ms)) / 1000.0).max(0.0);
 		At {
 			ms: (secs * 1000.0) as u64,
@@ -198,9 +262,52 @@ impl Remote {
 		}
 	}
 
+	fn note(&mut self, line: String) {
+		if !self.notes.contains(&line) {
+			self.notes.push(line);
+		}
+	}
+
 	fn send(&mut self, message: &Message) -> Result<(), LinkError> {
 		self.outbox.push(link::encode(message)?);
 		Ok(())
+	}
+
+	/// Every chunk the pipe already holds, taken in without waiting. `Some(why)` when the
+	/// link broke.
+	async fn take_in<P: Pipe>(&mut self, pipe: &mut P, reassembler: &mut Reassembler) -> Option<String> {
+		while let Some(chunk) = ready(pipe.read()).await {
+			if let Some(broken) = self.chunk(chunk, reassembler) {
+				return Some(broken);
+			}
+		}
+		None
+	}
+
+	/// One chunk off the pipe, or its end. `Some(why)` when the link broke.
+	fn chunk(&mut self, chunk: Option<Vec<u8>>, reassembler: &mut Reassembler) -> Option<String> {
+		let Some(chunk) = chunk else {
+			return Some(format!("the BLE connection to {} dropped", self.peer));
+		};
+		// The arrival, before anything else is done with it.
+		let arrived = Instant::now();
+		for piece in reassembler.push(&chunk) {
+			match piece {
+				Piece::Message(message) => self.heard(message, arrived),
+				// The settings protocol's.
+				Piece::Text(_) => {}
+				// The link guarantees delivery and integrity, so a frame that does not
+				// reassemble is a chunk lost on this side (see `vag_dash_ble::pump`), and
+				// nothing after it can be trusted to be what it looks like.
+				Piece::Error(why) => {
+					return Some(format!(
+						"the BLE link to {} lost data ({why}), so what it sends can no longer be trusted",
+						self.peer
+					));
+				}
+			}
+		}
+		None
 	}
 
 	fn apply(&mut self, command: Command) {
@@ -266,10 +373,10 @@ impl Remote {
 		}
 	}
 
-	/// A subscription that will not be read: why, said once, and one miss. Its stream
+	/// A subscription that will not be read: one miss now, why at the close. Its stream
 	/// ends when the caller lets go of `to`.
-	fn end(&self, unit: Unit, did: u16, at: At, to: &mpsc::UnboundedSender<Sample>, why: &str) {
-		eprintln!("{}: {:03X} {did:04X} is not read: {why}", self.peer, unit.request);
+	fn end(&mut self, unit: Unit, did: u16, at: At, to: &mpsc::UnboundedSender<Sample>, why: &str) {
+		self.note(format!("{}: {:03X} {did:04X} was not read: {why}", self.peer, unit.request));
 		let _ = to.send(Sample {
 			unit,
 			did,
@@ -324,10 +431,11 @@ impl Remote {
 	}
 
 	fn reading(&mut self, reading: link::Reading, arrived: Instant) {
-		let at = self.board_at(reading.at_ms, arrived);
-		// Late for a subscription already dropped.
+		// Late for a subscription already dropped: it reaches nobody and sets no clock.
 		let Some(sub) = self.subs.get(&reading.sub) else { return };
 		let (unit, did) = (sub.unit, sub.did);
+		let anchors = matches!(reading.outcome, Outcome::Pdu(_) | Outcome::NoAnswer);
+		let at = self.board_at(reading.at_ms, arrived, anchors);
 		let value = match reading.outcome {
 			Outcome::Refused(why) => {
 				if let Some(sub) = self.subs.remove(&reading.sub) {
@@ -338,7 +446,9 @@ impl Remote {
 			}
 			outcome => read_value(did, outcome),
 		};
-		let _ = sub.to.send(Sample { unit, did, at, value });
+		if let Some(sub) = self.subs.get(&reading.sub) {
+			let _ = sub.to.send(Sample { unit, did, at, value });
+		}
 	}
 
 	fn answer(&mut self, answer: link::Answer, arrived: Instant) {
@@ -350,10 +460,10 @@ impl Remote {
 			Ask::Once { unit, did, to } => {
 				let value = match answer.outcome {
 					Outcome::Refused(why) => {
-						eprintln!(
+						self.note(format!(
 							"{}: {:03X} {did:04X} was not read: refused by the dash board: {why}",
 							self.peer, unit.request
-						);
+						));
 						Err(Miss::BusError)
 					}
 					outcome => read_value(did, outcome),
@@ -394,15 +504,19 @@ impl Remote {
 		}
 	}
 
-	fn gone(&self) -> TransportError {
-		TransportError::Io(format!("the BLE connection to {} dropped", self.peer))
-	}
-
-	/// The pipe has closed: every subscription ends and everything waiting fails.
-	fn dropped(&mut self) {
-		eprintln!("the BLE connection to {} dropped", self.peer);
-		self.subs.clear();
+	/// The link broke for `why`: every subscription gets a last miss and ends, and
+	/// everything waiting fails.
+	fn broke(&mut self, why: &str) {
+		let now = self.at(Instant::now());
 		self.wire.clear();
+		for (_, sub) in self.subs.drain() {
+			let _ = sub.to.send(Sample {
+				unit: sub.unit,
+				did: sub.did,
+				at: now,
+				value: Err(Miss::BusError),
+			});
+		}
 		let waiting: Vec<Ask> = self.flying.take().map(|f| f.ask).into_iter().chain(self.asks.drain(..)).collect();
 		for ask in waiting {
 			match ask {
@@ -410,14 +524,14 @@ impl Remote {
 					let _ = to.send(Err(Miss::BusError));
 				}
 				Ask::Raw { to, .. } => {
-					let _ = to.send(Err(ExchangeError::Link(self.gone())));
+					let _ = to.send(Err(ExchangeError::Link(TransportError::Io(why.to_string()))));
 				}
 			}
 		}
 	}
 
-	/// A command after the pipe closed.
-	fn refuse(&self, command: Command) {
+	/// A command after the link broke for `why`.
+	fn refuse(&self, command: Command, why: &str) {
 		match command {
 			// Dropping its sender here ends the new subscription's stream at once.
 			Command::Subscribe { .. } | Command::Unsubscribe { .. } | Command::Shutdown => {}
@@ -425,7 +539,7 @@ impl Remote {
 				let _ = to.send(Err(Miss::BusError));
 			}
 			Command::Exchange { to, .. } => {
-				let _ = to.send(Err(ExchangeError::Link(self.gone())));
+				let _ = to.send(Err(ExchangeError::Link(TransportError::Io(why.to_string()))));
 			}
 		}
 	}

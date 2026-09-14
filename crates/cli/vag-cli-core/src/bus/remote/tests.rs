@@ -4,6 +4,8 @@
 //! on a multi-threaded runtime, for the reason the cable bus's tests give.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
 use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
@@ -11,7 +13,7 @@ use vag_uds_client::{AsyncUdsClient, UdsError};
 use vag_uds_transport::link::{self, Answer, MemoryPipe, Message, Outcome, Piece, Pipe, Reading, Reassembler, Request, Subscribe, pipe_pair};
 use vag_uds_transport::{CanId, TransportError};
 
-use crate::bus::{Bus, Class, ExchangeError, Miss, Sample, Subscription, Unit};
+use crate::bus::{Bus, Class, ExchangeError, Miss, Sample, Subscription, Unit, next_of};
 
 const ENGINE: Unit = Unit {
 	request: 0x7E0,
@@ -329,12 +331,19 @@ async fn a_dropped_connection_fails_what_is_out_ends_every_subscription_and_ever
 	let asking = bus.clone();
 	let out = tokio::spawn(async move { asking.exchange(Class::Foreground, ENGINE, vec![0x19, 0x02, 0x08]).await });
 	requested(board.next().await);
+	assert_eq!(bus.closed(), None, "nothing to say while the link is up");
 	drop(board);
 
 	let dropped = |result: &Result<_, ExchangeError>| matches!(result, Err(ExchangeError::Link(TransportError::Io(why))) if why == "the BLE connection to vagcan-dash dropped");
 	let failed = out.await.unwrap();
 	assert!(dropped(&failed), "{failed:?}");
+	assert_eq!(
+		sample(&mut sub).await.value,
+		Err(Miss::BusError),
+		"a last miss, so the stream's end reads as a failure"
+	);
 	assert!(ended(&mut sub).await);
+	assert_eq!(bus.closed().as_deref(), Some("the BLE connection to vagcan-dash dropped"));
 
 	assert_eq!(bus.read_once(Class::Foreground, ENGINE, 0xF190).await, Err(Miss::BusError));
 	let later = bus.exchange(Class::Foreground, ENGINE, vec![0x22, 0xF1, 0x90]).await;
@@ -363,4 +372,133 @@ async fn a_subscription_past_the_boards_limit_is_refused_here() {
 	assert!(matches!(board.next().await, Message::Unsubscribe { .. }));
 	let _again = bus.subscribe(Class::Foreground, ENGINE, 0x3000, Duration::from_millis(500), None);
 	assert_eq!(subscribed(board.next().await).did, 0x3000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_answer_fixes_the_board_clock_not_a_refusal_stamped_with_the_boards_now() {
+	let (bus, mut board) = start();
+	let refused = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
+	let refused_id = subscribed(board.next().await).sub;
+	let mut speed = bus.subscribe(Class::Timing, ENGINE, 0xF40D, Duration::from_millis(20), None);
+	let speed_id = subscribed(board.next().await).sub;
+	// Refused at the board's own now, an hour past the answers that follow.
+	board
+		.send(reading(refused_id, 3_600_000, Outcome::Refused("the unit is locked".into())))
+		.await;
+	for (at_ms, kmh) in [(5_000, 1), (5_020, 2)] {
+		board.send(reading(speed_id, at_ms, Outcome::Pdu(vec![0x62, 0xF4, 0x0D, kmh]))).await;
+	}
+	let first = sample(&mut speed).await;
+	let second = sample(&mut speed).await;
+	assert!(
+		(second.at.secs - first.at.secs - 0.020).abs() < 1e-9,
+		"the board's gap between answers: {:?} then {:?}",
+		first.at,
+		second.at
+	);
+	assert!(
+		first.at.secs > 0.0 && first.at.secs <= bus.secs(),
+		"fixed at the first answer's arrival: {:?}",
+		first.at
+	);
+	drop(refused);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_that_does_not_reassemble_breaks_the_link_rather_than_being_read_past() {
+	let (bus, mut board) = start();
+	let mut sub = bus.subscribe(Class::Foreground, ENGINE, 0x2029, Duration::from_millis(100), None);
+	subscribed(board.next().await);
+	// An unknown type where a frame starts: what a lost chunk looks like from here.
+	board.pipe.write(&[0x00, 0x7A, 0x02, 0x00, 1, 2]).await.unwrap();
+	assert_eq!(sample(&mut sub).await.value, Err(Miss::BusError));
+	assert!(ended(&mut sub).await);
+	let why = bus.closed().expect("a reason");
+	assert!(why.contains("vagcan-dash") && why.contains("lost data"), "{why}");
+}
+
+/// Readings the eager board answers each subscribe with, at once.
+const READINGS_EACH: u16 = 4;
+/// Unread notifications btleplug's channel holds before it loses the oldest.
+const NOTIFICATION_SLOTS: usize = 16;
+
+/// The eager board's side: what the host has not read yet, and what it lost.
+#[derive(Default)]
+struct Lane {
+	unread: VecDeque<Vec<u8>>,
+	reader: Option<Waker>,
+	/// Chunks lost because [`NOTIFICATION_SLOTS`] were already unread.
+	lost: usize,
+	/// How many chunks the host had left unread at each of its writes.
+	unread_at_writes: Vec<usize>,
+	host: Reassembler,
+}
+
+/// A board that answers a subscribe the moment it is written, into a lane shaped like
+/// btleplug's notification channel: it holds [`NOTIFICATION_SLOTS`] unread chunks and
+/// loses the oldest past that.
+struct Eager(Arc<Mutex<Lane>>);
+
+impl Pipe for Eager {
+	async fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+		let mut lane = self.0.lock().unwrap();
+		let unread = lane.unread.len();
+		lane.unread_at_writes.push(unread);
+		let pieces = lane.host.push(bytes);
+		for piece in pieces {
+			let Piece::Message(Message::Subscribe(s)) = piece else { continue };
+			let [hi, lo] = s.did.to_be_bytes();
+			for i in 0..READINGS_EACH {
+				let answer = Outcome::Pdu(vec![0x62, hi, lo, i as u8]);
+				let frame = link::encode(&reading(s.sub, 1_000 + u32::from(i) * 20, answer)).unwrap();
+				if lane.unread.len() == NOTIFICATION_SLOTS {
+					lane.unread.pop_front();
+					lane.lost += 1;
+				}
+				lane.unread.push_back(frame);
+			}
+		}
+		if let Some(reader) = lane.reader.take() {
+			reader.wake();
+		}
+		Ok(())
+	}
+
+	async fn read(&mut self) -> Option<Vec<u8>> {
+		std::future::poll_fn(|cx| {
+			let mut lane = self.0.lock().unwrap();
+			match lane.unread.pop_front() {
+				Some(chunk) => Poll::Ready(Some(chunk)),
+				None => {
+					lane.reader = Some(cx.waker().clone());
+					Poll::Pending
+				}
+			}
+		})
+		.await
+	}
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn readings_streaming_in_while_subscribes_are_written_are_taken_in_between_the_writes() {
+	let lane = Arc::new(Mutex::new(Lane::default()));
+	let bus = Bus::start_remote(Eager(lane.clone()), PEER);
+	let mut subs: Vec<Subscription> = (0..30u16)
+		.map(|i| bus.subscribe(Class::Foreground, ENGINE, 0x2000 + i, Duration::from_millis(100), None))
+		.collect();
+	let mut cursor = 0;
+	for _ in 0..30 * READINGS_EACH {
+		let (_, got) = tokio::time::timeout(PATIENCE, next_of(&mut subs, &mut cursor))
+			.await
+			.expect("every reading arrives")
+			.expect("the bus is running");
+		assert!(got.value.is_ok(), "{got:?}");
+	}
+	let lane = lane.lock().unwrap();
+	assert_eq!(lane.lost, 0, "no reading lost to a full notification channel");
+	assert!(
+		lane.unread_at_writes.iter().all(|&unread| unread == 0),
+		"nothing left unread when the next write went out: {:?}",
+		lane.unread_at_writes
+	);
 }
