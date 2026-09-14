@@ -2432,15 +2432,29 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		Some(path) => Some(std::fs::read_to_string(path).with_context(|| format!("reading the survey {path:?}"))?),
 		None => None,
 	};
-	let mut sink = match out {
-		Some(path) => {
-			let file = std::fs::File::create(path).with_context(|| format!("creating {path:?}"))?;
-			Some(std::io::BufWriter::new(file))
-		}
+	// Opened without truncating: `open` also resolves the device, and a run that
+	// cannot name its adapter must not empty a recording already there.
+	let file = match out {
+		Some(path) => Some(
+			std::fs::OpenOptions::new()
+				.write(true)
+				.create(true)
+				.truncate(false)
+				.open(path)
+				.with_context(|| format!("creating {path:?}"))?,
+		),
 		None => None,
 	};
 
 	let bus = open().await?;
+
+	let mut sink = match (file, out) {
+		(Some(file), Some(path)) => {
+			file.set_len(0).with_context(|| format!("emptying {path:?}"))?;
+			Some(std::io::BufWriter::new(file))
+		}
+		_ => None,
+	};
 
 	// Which car this is, so its own survey can be found. One identifier read,
 	// and a car that will not say simply has no cache — everything below still
@@ -4406,5 +4420,45 @@ mod tests {
 		let mut sorted = order.clone();
 		sorted.sort();
 		assert_eq!(order, sorted);
+	}
+
+	/// `watch --out` options with nothing else asked for, and a run that ends on its own.
+	fn recording_to(out: &str) -> Options<'_> {
+		Options {
+			preselect: &[],
+			hz: None,
+			out: Some(out),
+			survey: None,
+			catalogs: "/definitely/not/here",
+			view: View::Plain(Some(Duration::from_secs(1))),
+		}
+	}
+
+	/// No adapter, several, a dash board refused: `open` resolves the device, and a run
+	/// that cannot name one has recorded nothing, so it must not empty yesterday's drive.
+	#[tokio::test]
+	async fn a_device_that_does_not_resolve_leaves_an_existing_out_file_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("drive.csv");
+		std::fs::write(&path, b"yesterday's drive").unwrap();
+		let out = path.to_string_lossy().into_owned();
+		let refused = run(async || -> Result<Bus> { anyhow::bail!("no adapter found") }, recording_to(&out))
+			.await
+			.expect_err("no device");
+		assert_eq!(refused.to_string(), "no adapter found");
+		assert_eq!(std::fs::read(&path).unwrap(), b"yesterday's drive", "--out was truncated");
+	}
+
+	/// The adapter is a single-user resource: a `--out` that cannot be created fails
+	/// before the port is opened, not after.
+	#[tokio::test]
+	async fn a_bad_out_path_fails_before_the_port_is_opened() {
+		let refused = run(
+			async || -> Result<Bus> { panic!("the port was opened") },
+			recording_to("/nonexistent/vagcan-test/drive.csv"),
+		)
+		.await
+		.expect_err("no such directory");
+		assert!(format!("{refused:#}").contains("creating"), "{refused:#}");
 	}
 }
