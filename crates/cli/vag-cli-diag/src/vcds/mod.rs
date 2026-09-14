@@ -89,7 +89,9 @@ pub enum Tool {
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
 		iv_cache: Option<String>,
-		/// Adapter to use with --from-car.
+		/// Adapter to use with --from-car: a serial path, `ble` for the dash board over
+		/// Bluetooth, or `ble:<name>`. Omit it to use the one connected, or the board
+		/// over BLE when no USB-CAN adapter is.
 		#[arg(long, value_name = "PATH")]
 		device: Option<String>,
 	},

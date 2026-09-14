@@ -22,6 +22,8 @@ vag-uds-can = { path = "../../uds/vag-uds-can", features = ["slcan"] }
 vag-uds-capture = { path = "../../uds/vag-uds-capture" }
 vag-data-labels = { path = "../../data/vag-data-labels" }
 vag-data-db = { path = "../../data/vag-data-db" }
+# `device.rs` finds the dash board over BLE and opens its UART as the bus's pipe.
+vag-dash-ble = { path = "../../dash/vag-dash-ble" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde.workspace = true

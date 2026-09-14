@@ -15,7 +15,9 @@ pub struct Args {
 	/// `setup` describes this car once; `view` opens a saved session.
 	#[command(subcommand)]
 	pub tool: Option<crate::Tool>,
-	/// Adapter to use. Omit it when only one is connected.
+	/// Adapter to use: a serial path, `ble` for the dash board over Bluetooth, or
+	/// `ble:<name>` for one board by name. Omit it to use the one adapter connected, or
+	/// the dash board over BLE when no USB-CAN adapter is.
 	#[arg(long, value_name = "PATH")]
 	pub device: Option<String>,
 	/// Use this car file instead of the one kept for this car's VIN.
