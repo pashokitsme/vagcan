@@ -31,3 +31,7 @@ pub const UNIT_COUNT: usize = PLAN.units.len();
 
 /// How many chart pages the plan has — how many histories the panel keeps.
 pub const CHART_COUNT: usize = PLAN.chart_count();
+
+/// How many `[[alarm]]` rules the plan carries — the size of the panel's alarm
+/// machine. The generator caps it at `vag_dash_render::alarm::MAX_ALARMS`.
+pub const ALARM_COUNT: usize = PLAN.alarms.len();

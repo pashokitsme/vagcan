@@ -11,6 +11,12 @@
 
 use crate::plan::Page;
 
+/// How many pages the board holds. Its stored configuration is bounded by a
+/// flash sector, so the page list is too; the plan generator refuses a
+/// `dash.toml` with more, so every plan page index — an alarm's page among
+/// them — is one the board has. One definition, for both ends.
+pub const MAX_PAGES: usize = 8;
+
 /// The page after `active`, of `count` pages, wrapping at the end.
 ///
 /// With one page the answer is that page. With none the answer is `0`, which

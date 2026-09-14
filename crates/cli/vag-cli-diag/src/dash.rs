@@ -41,7 +41,10 @@ pub enum Tool {
 	/// ["01:IDE00025"]`. A channel is `<unit>:<text id>` or
 	/// `<unit>:<DID>[@<bit offset>]`, and may carry its own `label`,
 	/// `decimals` and `hz` (readings a second while shown, 2 otherwise); a page is `values` (1 to 4 cells) or `chart` (one `cell`
-	/// between `min` and `max`).
+	/// between `min` and `max`). An optional `[[alarm]]` (at most 4, in priority order)
+	/// names `channels` from that list, the `page` title of a values page showing all of
+	/// them, `direction` (`below` or `above`), `trip` and `release`; the board then shows
+	/// that page when a value crosses `trip`, whatever page is up.
 	///
 	/// The firmware's own build runs this same build —
 	/// `VAGCAN_DASH_VIN=<VIN> cargo build` in `crates/dash/vag-dash-fw` — so

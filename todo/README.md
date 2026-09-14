@@ -64,7 +64,12 @@ stored-config check at boot, whether opening the board's port twice resets it).
 3. **Why the pair went quiet** — §9.5, §9.7: an hour unacknowledged with the board's
    console captured, once the pair works again.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`: the render side is done, the firmware wiring is not.
+5. **Alarms on the board** — `dash/04`. Wired on branch `alarms` (2026-09-14),
+   hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
+   channels foreground at their own rate, takeover and silence through
+   `vag_dash_render::screen`. Next: the misfire rule's numbers and a run on the car. The
+   demo from a recorded drive waits for a recording with the retard channels and a way to
+   replay it (none is hardware-free today).
 6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
@@ -86,7 +91,7 @@ stored-config check at boot, whether opening the board's port twice resets it).
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | render done, firmware wiring open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `alarms`, hardware-free; misfire numbers and a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |

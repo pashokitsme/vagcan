@@ -24,6 +24,10 @@
 //!   bridge. The planner then sends nothing (its subscriptions stay), framed requests
 //!   over either carrier are refused, and the panel shows the adapter's counters. It
 //!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
+//! * **Alarms** (`todo/dash/04`): the plan's `[[alarm]]` rules are read at full rate on
+//!   every page; past a threshold the rule's page takes the glass with the offending
+//!   cell inverted, and a short press silences the episode
+//!   ([`vag_dash_render::screen`]). The adapter screen runs none.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -74,13 +78,15 @@ use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
-use vag_dash_fw::plan::{CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::plan::{ALARM_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
+use vag_dash_render::alarm::{self, ChannelId};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{PartAnswer, PartCheck};
+use vag_dash_render::screen::{Change, Screen};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
 use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
@@ -192,6 +198,12 @@ static BUS_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Raised whenever the pages or the page on the glass may have changed, so the
 /// panel's subscriptions follow.
 static PAGES_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The page the panel last drew — the cursor's, or an alarm's during a takeover — for the
+/// bus task, which reads the page on the glass in the foreground. [`NO_PAGE`] before the
+/// first frame, when the cursor's page is the one about to be drawn.
+static GLASS_PAGE: AtomicU8 = AtomicU8::new(NO_PAGE);
+const NO_PAGE: u8 = u8::MAX;
 
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -359,6 +371,14 @@ static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 /// test rig that exercises different code from the real thing tests the rig.
 static REMOTE_PRESS: Signal<CriticalSectionRawMutex, Press> = Signal::new();
 
+/// The plan's alarms and what the glass showed last: polled by the panel every frame,
+/// pressed by the button. The page cursor is not in it — that stays `Config::active_page`,
+/// passed in each time. A **blocking** mutex, held for one call and never across an
+/// `.await`.
+type ScreenCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Screen<'static, ALARM_COUNT>>>;
+
+static SCREEN: StaticCell<ScreenCell> = StaticCell::new();
+
 fn visibility() -> Visibility {
 	match VISIBILITY.load(Ordering::Relaxed) {
 		1 => Visibility::Advertising,
@@ -401,11 +421,12 @@ async fn main(spawner: Spawner) {
 	// Which car this image is for, said once, before anything is asked of the
 	// bus: a plan and a car that disagree is the first thing to look for.
 	info!(
-		"plan: VIN {}, {} unit(s), {} channel(s), {} page(s), labels in {:?}",
+		"plan: VIN {}, {} unit(s), {} channel(s), {} page(s), {} alarm(s), labels in {:?}",
 		PLAN.vin,
 		PLAN.units.len(),
 		PLAN.channels.len(),
 		PLAN.pages.len(),
+		PLAN.alarms.len(),
 		PLAN.language
 	);
 	for unit in PLAN.units {
@@ -422,6 +443,7 @@ async fn main(spawner: Spawner) {
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::default()))));
+	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms))));
 
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);
 	let timer1 = TimerGroup::new(peripherals.TIMG0);
@@ -451,13 +473,13 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(usb_session_task(bus)) {
 		warn!("SPAWN usb session FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(panel_task(settings)) {
+	if let Err(e) = spawner.spawn(panel_task(settings, screen)) {
 		warn!("SPAWN panel FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(led_task(led)) {
 		warn!("SPAWN led FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(button_task(button, settings)) {
+	if let Err(e) = spawner.spawn(button_task(button, settings, screen)) {
 		warn!("SPAWN button FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(heap_task()) {
@@ -559,9 +581,11 @@ fn open_settings() -> Settings {
 
 /// Polls the button, debounces it, and acts.
 ///
-/// A short press moves to the next page. When `04`'s alarms exist, a short
-/// press *while an alarm is showing* silences that episode instead — the
-/// button is modal because the screen already says which mode it is in.
+/// A short press goes through the alarms first ([`Screen::press`]): while an
+/// alarm owns the glass it silences that episode and the page stays; otherwise
+/// the page cursor moves on. The button is modal because the screen already
+/// says which mode it is in. `set page` over BLE is not a press and does not
+/// come here.
 ///
 /// A long press does nothing any more: it used to open a three-minute BLE
 /// window, and BLE is now always on (owner, 2026-09-13/14).
@@ -572,7 +596,7 @@ fn open_settings() -> Settings {
 /// Taking a remote press at face value is what turned one held space bar
 /// into a dozen page turns.
 #[embassy_executor::task]
-async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
+async fn button_task(button: Input<'static>, settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	let mut machine = Button::new();
 	loop {
 		// Half the debounce interval: fast enough that no edge is missed,
@@ -584,14 +608,24 @@ async fn button_task(button: Input<'static>, settings: &'static Shared) -> ! {
 		match press {
 			Some(Press::Short) => {
 				let mut s = settings.lock().await;
-				let changed = s.config.next_page();
-				s.unsaved |= changed;
-				// One-based: this line is read by a person, and "page 0 of 2" reads as
-				// no page at all. The `state` line stays zero-based — it is a protocol.
-				note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
-				drop(s);
-				STATE_CHANGED.signal(());
-				PAGES_CHANGED.signal(());
+				let before = s.config.active_page;
+				// `pages` is bounded by `MAX_PAGES`, so the count fits.
+				let pages = s.config.pages.len() as u8;
+				match screen.lock(|cell| cell.borrow_mut().press(&mut s.config.active_page, pages)) {
+					alarm::Press::Silenced => {
+						drop(s);
+						note!("button: alarm silenced until its value comes back");
+					}
+					alarm::Press::NextPage => {
+						s.unsaved |= s.config.active_page != before;
+						// One-based: this line is read by a person, and "page 0 of 2" reads as
+						// no page at all. The `state` line stays zero-based — it is a protocol.
+						note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
+						drop(s);
+						STATE_CHANGED.signal(());
+						PAGES_CHANGED.signal(());
+					}
+				}
 			}
 			Some(Press::Long) => note!("button: held — nothing to do, BLE is always on"),
 			None => {}
@@ -1575,7 +1609,13 @@ impl PanelReads {
 	async fn follow_pages(&mut self, bus: &Bus, settings: &Shared) {
 		let (shown, listed) = {
 			let s = settings.lock().await;
-			let shown: Vec<u16> = match s.config.pages.get(usize::from(s.config.active_page)) {
+			// The page on the glass, which during a takeover is the alarm's and not the
+			// cursor's: its cells are the ones being looked at (`Glass::page_changed`).
+			let glass = match GLASS_PAGE.load(Ordering::Relaxed) {
+				NO_PAGE => s.config.active_page,
+				page => page,
+			};
+			let shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
 				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
 				Some(page) => page.cells.iter().copied().collect(),
 				None => Vec::new(),
@@ -1604,7 +1644,7 @@ impl PanelReads {
 		let request = PLAN.units[u].request;
 		let mut wanted: [Option<(bool, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
 		for rate in PLAN.rates(&self.shown, &self.listed) {
-			wanted[usize::from(rate.channel)] = Some((rate.shown, rate.period_ms));
+			wanted[usize::from(rate.channel)] = Some((rate.foreground, rate.period_ms));
 		}
 		let now = ms();
 		bus.lock(|p| {
@@ -1862,8 +1902,13 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// In adapter mode the page is the adapter's: `SLCAN`, the bit rate and the counters.
 /// It is drawn into the framebuffer — the glass, when the panel is fitted — and not
 /// sent as a `FRAME` line, because then the cable is an slcan host's.
+///
+/// Which page is drawn is [`Screen::frame`]'s answer: the page cursor, unless an alarm
+/// has taken the glass, in which case its page is drawn with the offending channel's cell
+/// inverted. The alarms see the same values the cells do, `None` once stale. On the
+/// adapter screen they are not polled.
 #[embassy_executor::task]
-async fn panel_task(settings: &'static Shared) -> ! {
+async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	use vag_dash_render::history::History;
 	use vag_dash_render::{Cell, Frame, Theme, draw};
 
@@ -1888,11 +1933,14 @@ async fn panel_task(settings: &'static Shared) -> ! {
 	let mut last_compromised = false;
 	// A chart page whose channel the plan gives no range for is said once.
 	let mut no_range_said: Option<u16> = None;
+	// An alarm page this board does not hold is said once per miss.
+	let mut missed_said: Option<u16> = None;
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
 
 		if adapter_mode() {
+			screen.lock(|cell| cell.borrow_mut().adapter());
 			framebuffer.clear_all();
 			let report = draw(&Frame::Adapter(SLCAN_PORT.status()), &theme, framebuffer);
 			let compromised = report != vag_dash_render::render::Report::default();
@@ -1903,26 +1951,65 @@ async fn panel_task(settings: &'static Shared) -> ! {
 			continue;
 		}
 
-		let (kind, indices) = {
-			let s = settings.lock().await;
-			let page = s.config.pages.get(usize::from(s.config.active_page));
-			match page {
-				Some(page) => (page.kind, page.cells.clone()),
-				None => continue,
-			}
-		};
 		// A copy, so the lock is held for a memcpy and not for a frame.
 		let values = *VALUES.lock().await;
 		let now = Instant::now();
 		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
+		// The cursor is read here and passed in, never copied into the screen: it is what
+		// `set page` and `save` act on, and what an alarm hands back to.
+		let (kind, indices, glass) = {
+			let s = settings.lock().await;
+			// `pages` is bounded by `MAX_PAGES`, so the count fits.
+			let pages = s.config.pages.len() as u8;
+			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, pages, now.as_millis(), value_of));
+			match s.config.pages.get(usize::from(glass.page)) {
+				Some(page) => (page.kind, page.cells.clone(), glass),
+				None => continue,
+			}
+		};
+		// The bus reads the page on the glass in the foreground, so a takeover and a
+		// hand-back move its subscriptions as much as a page turn does.
+		GLASS_PAGE.store(glass.page, Ordering::Relaxed);
+		if glass.page_changed {
+			PAGES_CHANGED.signal(());
+		}
+		let page_no = usize::from(glass.page) + 1;
+		match glass.change {
+			Some(Change::Took { rule }) if glass.missed.is_none() => note!(
+				"alarm: rule {} — {} took the screen, page {page_no}",
+				rule + 1,
+				glass.offending.and_then(|c| PLAN.channel(c.0)).map_or("?", |c| c.label)
+			),
+			Some(Change::Over) => note!("alarm: over — back to page {page_no}"),
+			Some(Change::Silenced) => note!("alarm: silenced — back to page {page_no}"),
+			_ => {}
+		}
+		let missed = glass.missed.map(|page| page.0);
+		if missed != missed_said {
+			missed_said = missed;
+			if let Some(page) = missed {
+				note!(
+					"alarm: its page {} is not on this board — showing page {page_no}; rebuild the plan",
+					usize::from(page) + 1
+				);
+			}
+		}
 		for chart in PLAN.charts() {
 			histories[chart.slot].push(chart.channel, value_of(chart.channel));
 		}
 		// A cell the plan cannot name draws as a question mark rather than
-		// vanishing: a missing column hides the fault, a wrong one shows it.
-		let cell_of = |index: u16| match PLAN.channel(index) {
-			Some(channel) => Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals),
-			None => Cell::new("?", None, "", 0),
+		// vanishing: a missing column hides the fault, a wrong one shows it. The
+		// alarm's offending channel is drawn inverted, so the page says which one.
+		let cell_of = |index: u16| {
+			let cell = match PLAN.channel(index) {
+				Some(channel) => Cell::new(channel.label, value_of(index), channel.unit_text, channel.decimals),
+				None => Cell::new("?", None, "", 0),
+			};
+			if glass.offending == Some(ChannelId(index)) {
+				cell.alarmed()
+			} else {
+				cell
+			}
 		};
 
 		framebuffer.clear_all();
