@@ -12,14 +12,26 @@
 //! body
 //! ```
 //!
-//! | type   | direction     | body                                                      |
-//! |--------|---------------|-----------------------------------------------------------|
-//! | `0x01` | host → board  | `seq u8, request_id u16 LE, response_id u16 LE, pdu…`     |
-//! | `0x02` | board → host  | `seq u8, status u8, payload…`                             |
+//! Every multi-byte field is little-endian.
 //!
-//! Answer status: `0` the payload is the answer PDU, `1` no answer (timeout),
-//! `2` refused by the board (payload: a short UTF-8 reason), `3` bus error
-//! (payload: a UTF-8 reason).
+//! | type   | name        | direction    | body                                                               |
+//! |--------|-------------|--------------|--------------------------------------------------------------------|
+//! | `0x01` | Request     | host → board | `seq u8, request_id u16, response_id u16, pdu…`                    |
+//! | `0x02` | Answer      | board → host | `seq u8, status u8, payload…`                                      |
+//! | `0x03` | Subscribe   | host → board | `sub u16, request_id u16, response_id u16, did u16, period_ms u16` |
+//! | `0x04` | Unsubscribe | host → board | `sub u16`                                                          |
+//! | `0x05` | Reading     | board → host | `sub u16, at_ms u32, status u8, payload…`                          |
+//!
+//! Status, in an Answer and a Reading alike: `0` the payload is the unit's
+//! answer PDU, `1` no answer (timeout, no payload), `2` refused by the board
+//! (payload: a short UTF-8 reason), `3` bus error (payload: a UTF-8 reason).
+//!
+//! A subscription asks the board to read `did` (`22 did`) every `period_ms` on
+//! its own clock and send each result as a Reading: timing an acceleration run
+//! or polling a watch page over a radio link only works if the timestamps are
+//! taken where the bus is. `at_ms` is the board's clock, milliseconds since
+//! boot, at the moment the answer arrived. The period floor is the board's
+//! guard's to enforce, not the codec's. A one-shot read is a Request.
 //!
 //! BLE's link layer guarantees delivery and integrity, so there is no checksum.
 //! What the link does *not* keep is message boundaries: a write or a
@@ -36,8 +48,8 @@ use alloc::vec::Vec;
 pub const MARKER: u8 = 0x00;
 /// Marker, type and the two length bytes.
 pub const HEADER_LEN: usize = 4;
-/// The largest body the reassembler accepts. A request body is at most
-/// 5 + [`MAX_PDU`] bytes; anything past this cap is not a message this link sends.
+/// The largest body the reassembler accepts. The largest body this link sends is a
+/// Reading's, 7 + [`MAX_PDU`] bytes; anything past this cap is not a message.
 pub const MAX_BODY: usize = 4200;
 /// The largest PDU ISO-TP carries: its length field is 12 bits (ISO 15765-2).
 pub const MAX_PDU: usize = 4095;
@@ -46,6 +58,9 @@ const MAX_STANDARD_ID: u16 = 0x7FF;
 
 const TYPE_REQUEST: u8 = 0x01;
 const TYPE_ANSWER: u8 = 0x02;
+const TYPE_SUBSCRIBE: u8 = 0x03;
+const TYPE_UNSUBSCRIBE: u8 = 0x04;
+const TYPE_READING: u8 = 0x05;
 
 const STATUS_PDU: u8 = 0;
 const STATUS_NO_ANSWER: u8 = 1;
@@ -73,7 +88,30 @@ pub struct Answer {
 	pub outcome: Outcome,
 }
 
-/// The status byte of an [`Answer`] and what it carries.
+/// Poll one identifier on the board's clock, until [`Message::Unsubscribe`] or disconnect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subscribe {
+	/// Chosen by the host, carried by every [`Reading`].
+	pub sub: u16,
+	/// 11-bit CAN id the board sends on.
+	pub request_id: u16,
+	/// 11-bit CAN id the board listens on.
+	pub response_id: u16,
+	/// The identifier read: the board sends `22 did`.
+	pub did: u16,
+	pub period_ms: u16,
+}
+
+/// One result of a [`Subscribe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reading {
+	pub sub: u16,
+	/// The board's clock, ms since boot, when the answer arrived.
+	pub at_ms: u32,
+	pub outcome: Outcome,
+}
+
+/// The status byte of an [`Answer`] or a [`Reading`] and what it carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
 	/// The unit's answer PDU, `1..=MAX_PDU` bytes.
@@ -91,6 +129,9 @@ pub enum Outcome {
 pub enum Message {
 	Request(Request),
 	Answer(Answer),
+	Subscribe(Subscribe),
+	Unsubscribe { sub: u16 },
+	Reading(Reading),
 }
 
 /// Why a message could not be encoded or was not accepted.
@@ -123,23 +164,15 @@ pub enum Piece {
 /// [`MAX_PDU`], a CAN id over 11 bits, a body over [`MAX_BODY`].
 pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 	check(message)?;
-	let (kind, body_len) = match message {
-		Message::Request(r) => (TYPE_REQUEST, 5 + r.pdu.len()),
-		Message::Answer(a) => (
-			TYPE_ANSWER,
-			2 + match &a.outcome {
-				Outcome::Pdu(pdu) => pdu.len(),
-				Outcome::NoAnswer => 0,
-				Outcome::Refused(reason) | Outcome::BusError(reason) => reason.len(),
-			},
-		),
+	let kind = match message {
+		Message::Request(_) => TYPE_REQUEST,
+		Message::Answer(_) => TYPE_ANSWER,
+		Message::Subscribe(_) => TYPE_SUBSCRIBE,
+		Message::Unsubscribe { .. } => TYPE_UNSUBSCRIBE,
+		Message::Reading(_) => TYPE_READING,
 	};
-	if body_len > MAX_BODY {
-		return Err(LinkError::Oversize(body_len));
-	}
-	let mut out = Vec::with_capacity(HEADER_LEN + body_len);
-	out.extend_from_slice(&[MARKER, kind]);
-	out.extend_from_slice(&(body_len as u16).to_le_bytes());
+	// The length is filled in once the body is written.
+	let mut out = alloc::vec![MARKER, kind, 0, 0];
 	match message {
 		Message::Request(r) => {
 			out.push(r.seq);
@@ -149,45 +182,91 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, LinkError> {
 		}
 		Message::Answer(a) => {
 			out.push(a.seq);
-			match &a.outcome {
-				Outcome::Pdu(pdu) => {
-					out.push(STATUS_PDU);
-					out.extend_from_slice(pdu);
-				}
-				Outcome::NoAnswer => out.push(STATUS_NO_ANSWER),
-				Outcome::Refused(reason) => {
-					out.push(STATUS_REFUSED);
-					out.extend_from_slice(reason.as_bytes());
-				}
-				Outcome::BusError(reason) => {
-					out.push(STATUS_BUS_ERROR);
-					out.extend_from_slice(reason.as_bytes());
-				}
+			put_outcome(&mut out, &a.outcome);
+		}
+		Message::Subscribe(s) => {
+			for field in [s.sub, s.request_id, s.response_id, s.did, s.period_ms] {
+				out.extend_from_slice(&field.to_le_bytes());
 			}
 		}
+		Message::Unsubscribe { sub } => out.extend_from_slice(&sub.to_le_bytes()),
+		Message::Reading(r) => {
+			out.extend_from_slice(&r.sub.to_le_bytes());
+			out.extend_from_slice(&r.at_ms.to_le_bytes());
+			put_outcome(&mut out, &r.outcome);
+		}
 	}
+	let body_len = out.len() - HEADER_LEN;
+	if body_len > MAX_BODY {
+		return Err(LinkError::Oversize(body_len));
+	}
+	out[2..HEADER_LEN].copy_from_slice(&(body_len as u16).to_le_bytes());
 	Ok(out)
+}
+
+/// A status byte and its payload.
+fn put_outcome(out: &mut Vec<u8>, outcome: &Outcome) {
+	match outcome {
+		Outcome::Pdu(pdu) => {
+			out.push(STATUS_PDU);
+			out.extend_from_slice(pdu);
+		}
+		Outcome::NoAnswer => out.push(STATUS_NO_ANSWER),
+		Outcome::Refused(reason) => {
+			out.push(STATUS_REFUSED);
+			out.extend_from_slice(reason.as_bytes());
+		}
+		Outcome::BusError(reason) => {
+			out.push(STATUS_BUS_ERROR);
+			out.extend_from_slice(reason.as_bytes());
+		}
+	}
 }
 
 /// The rules both ends hold a message to, beyond its framing.
 fn check(message: &Message) -> Result<(), LinkError> {
+	let ids = |request_id: u16, response_id: u16| {
+		if request_id > MAX_STANDARD_ID || response_id > MAX_STANDARD_ID {
+			return Err(LinkError::Malformed("CAN id over 11 bits"));
+		}
+		Ok(())
+	};
 	let pdu = match message {
 		Message::Request(r) => {
-			if r.request_id > MAX_STANDARD_ID || r.response_id > MAX_STANDARD_ID {
-				return Err(LinkError::Malformed("CAN id over 11 bits"));
-			}
+			ids(r.request_id, r.response_id)?;
 			&r.pdu
 		}
+		Message::Subscribe(s) => return ids(s.request_id, s.response_id),
 		Message::Answer(Answer {
 			outcome: Outcome::Pdu(pdu), ..
+		})
+		| Message::Reading(Reading {
+			outcome: Outcome::Pdu(pdu), ..
 		}) => pdu,
-		Message::Answer(_) => return Ok(()),
+		Message::Answer(_) | Message::Reading(_) | Message::Unsubscribe { .. } => return Ok(()),
 	};
 	match pdu.len() {
 		0 => Err(LinkError::Malformed("empty PDU")),
 		n if n > MAX_PDU => Err(LinkError::Malformed("PDU over ISO-TP's 4095 bytes")),
 		_ => Ok(()),
 	}
+}
+
+/// A status byte and its payload, back.
+fn take_outcome(status: u8, payload: &[u8]) -> Result<Outcome, LinkError> {
+	let reason = || {
+		core::str::from_utf8(payload)
+			.map(String::from)
+			.map_err(|_| LinkError::Malformed("reason is not UTF-8"))
+	};
+	Ok(match status {
+		STATUS_PDU => Outcome::Pdu(payload.to_vec()),
+		STATUS_NO_ANSWER if payload.is_empty() => Outcome::NoAnswer,
+		STATUS_NO_ANSWER => return Err(LinkError::Malformed("no-answer status with a payload")),
+		STATUS_REFUSED => Outcome::Refused(reason()?),
+		STATUS_BUS_ERROR => Outcome::BusError(reason()?),
+		_ => return Err(LinkError::Malformed("unknown status")),
+	})
 }
 
 /// Decode the body of a frame whose type is already known to be one of ours.
@@ -208,27 +287,46 @@ fn decode(kind: u8, body: &[u8]) -> Result<Message, LinkError> {
 			let [seq, status, payload @ ..] = body else {
 				return Err(LinkError::Malformed("answer shorter than its fields"));
 			};
-			let reason = || {
-				core::str::from_utf8(payload)
-					.map(String::from)
-					.map_err(|_| LinkError::Malformed("reason is not UTF-8"))
+			Message::Answer(Answer {
+				seq: *seq,
+				outcome: take_outcome(*status, payload)?,
+			})
+		}
+		TYPE_SUBSCRIBE => {
+			let [a, b, c, d, e, f, g, h, i, j] = body else {
+				return Err(LinkError::Malformed("subscribe is ten bytes"));
 			};
-			let outcome = match *status {
-				STATUS_PDU => Outcome::Pdu(payload.to_vec()),
-				STATUS_NO_ANSWER if payload.is_empty() => Outcome::NoAnswer,
-				STATUS_NO_ANSWER => return Err(LinkError::Malformed("no-answer status with a payload")),
-				STATUS_REFUSED => Outcome::Refused(reason()?),
-				STATUS_BUS_ERROR => Outcome::BusError(reason()?),
-				_ => return Err(LinkError::Malformed("unknown answer status")),
+			Message::Subscribe(Subscribe {
+				sub: u16::from_le_bytes([*a, *b]),
+				request_id: u16::from_le_bytes([*c, *d]),
+				response_id: u16::from_le_bytes([*e, *f]),
+				did: u16::from_le_bytes([*g, *h]),
+				period_ms: u16::from_le_bytes([*i, *j]),
+			})
+		}
+		TYPE_UNSUBSCRIBE => {
+			let [a, b] = body else {
+				return Err(LinkError::Malformed("unsubscribe is two bytes"));
 			};
-			Message::Answer(Answer { seq: *seq, outcome })
+			Message::Unsubscribe {
+				sub: u16::from_le_bytes([*a, *b]),
+			}
+		}
+		TYPE_READING => {
+			let [s0, s1, t0, t1, t2, t3, status, payload @ ..] = body else {
+				return Err(LinkError::Malformed("reading shorter than its fields"));
+			};
+			Message::Reading(Reading {
+				sub: u16::from_le_bytes([*s0, *s1]),
+				at_ms: u32::from_le_bytes([*t0, *t1, *t2, *t3]),
+				outcome: take_outcome(*status, payload)?,
+			})
 		}
 		other => return Err(LinkError::UnknownType(other)),
 	};
 	check(&message)?;
 	Ok(message)
 }
-
 /// Split an encoded frame into pieces of at most `max` bytes (a zero `max` is taken as 1).
 pub fn chunks(bytes: &[u8], max: usize) -> impl Iterator<Item = &[u8]> {
 	bytes.chunks(max.max(1))
@@ -279,7 +377,7 @@ impl Reassembler {
 				}
 				let kind = self.partial[1];
 				let len = self.body_len();
-				let untrusted = if kind != TYPE_REQUEST && kind != TYPE_ANSWER {
+				let untrusted = if !(TYPE_REQUEST..=TYPE_READING).contains(&kind) {
 					Some(LinkError::UnknownType(kind))
 				} else if len > MAX_BODY {
 					Some(LinkError::Oversize(len))
@@ -430,6 +528,157 @@ mod tests {
 			out.extend(r.push(p));
 		}
 		assert_eq!(one_message(out), message);
+	}
+
+	fn subscribe() -> Message {
+		Message::Subscribe(Subscribe {
+			sub: 0x0102,
+			request_id: 0x7E1,
+			response_id: 0x7E9,
+			did: 0xF40D,
+			period_ms: 20,
+		})
+	}
+
+	fn reading(outcome: Outcome) -> Message {
+		Message::Reading(Reading {
+			sub: 0x0102,
+			at_ms: 0x0A0B_0C0D,
+			outcome,
+		})
+	}
+
+	/// One of every message kind and status.
+	fn every_kind() -> Vec<Message> {
+		vec![
+			request(),
+			answer(Outcome::Pdu(vec![0x62, 0xF1, 0x90, 1, 2, 3])),
+			answer(Outcome::NoAnswer),
+			answer(Outcome::Refused("the car is moving".into())),
+			answer(Outcome::BusError("bus off".into())),
+			subscribe(),
+			Message::Unsubscribe { sub: 0xBEEF },
+			reading(Outcome::Pdu(vec![0x62, 0xF4, 0x0D, 57])),
+			reading(Outcome::NoAnswer),
+			reading(Outcome::Refused("8 evenly spaced identifiers".into())),
+			reading(Outcome::BusError("bus off".into())),
+		]
+	}
+
+	#[test]
+	fn subscribe_unsubscribe_and_reading_are_encoded_byte_for_byte() {
+		assert_eq!(
+			encode(&subscribe()).unwrap(),
+			vec![0x00, 0x03, 0x0A, 0x00, 0x02, 0x01, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00]
+		);
+		assert_eq!(
+			encode(&Message::Unsubscribe { sub: 0xBEEF }).unwrap(),
+			vec![0x00, 0x04, 0x02, 0x00, 0xEF, 0xBE]
+		);
+		assert_eq!(
+			encode(&reading(Outcome::Pdu(vec![0x62, 0xF4, 0x0D, 57]))).unwrap(),
+			vec![0x00, 0x05, 0x0B, 0x00, 0x02, 0x01, 0x0D, 0x0C, 0x0B, 0x0A, 0, 0x62, 0xF4, 0x0D, 57]
+		);
+		assert_eq!(
+			encode(&reading(Outcome::NoAnswer)).unwrap(),
+			vec![0x00, 0x05, 0x07, 0x00, 0x02, 0x01, 0x0D, 0x0C, 0x0B, 0x0A, 1]
+		);
+		assert_eq!(
+			encode(&reading(Outcome::Refused("no".into()))).unwrap(),
+			vec![0x00, 0x05, 0x09, 0x00, 0x02, 0x01, 0x0D, 0x0C, 0x0B, 0x0A, 2, b'n', b'o']
+		);
+	}
+
+	#[test]
+	fn every_kind_survives_a_round_trip_split_at_every_byte() {
+		for message in every_kind() {
+			let frame = encode(&message).unwrap();
+			for cut in 0..=frame.len() {
+				let mut r = Reassembler::new();
+				let mut pieces = r.push(&frame[..cut]);
+				pieces.extend(r.push(&frame[cut..]));
+				assert_eq!(one_message(pieces), message, "cut at {cut}");
+			}
+		}
+	}
+
+	#[test]
+	fn a_stream_of_every_kind_cut_at_a_small_mtu_reassembles_in_order() {
+		let mut stream = Vec::new();
+		for message in every_kind() {
+			stream.extend(encode(&message).unwrap());
+			stream.extend_from_slice(b"state");
+		}
+		let mut r = Reassembler::new();
+		let mut messages = Vec::new();
+		let mut text = Vec::new();
+		for chunk in chunks(&stream, 7) {
+			for piece in r.push(chunk) {
+				match piece {
+					Piece::Message(m) => messages.push(m),
+					Piece::Text(t) => text.extend(t),
+					Piece::Error(e) => panic!("{e}"),
+				}
+			}
+		}
+		assert_eq!(messages, every_kind());
+		assert_eq!(text, b"state".repeat(every_kind().len()));
+	}
+
+	#[test]
+	fn the_period_floor_is_not_the_codecs_business() {
+		let fast = Message::Subscribe(Subscribe {
+			sub: 1,
+			request_id: 0x7E1,
+			response_id: 0x7E9,
+			did: 0xF40D,
+			period_ms: 0,
+		});
+		let mut r = Reassembler::new();
+		assert_eq!(one_message(r.push(&encode(&fast).unwrap())), fast);
+	}
+
+	#[test]
+	fn malformed_subscriptions_and_readings_cost_only_their_own_frame() {
+		let mut bytes = Vec::new();
+		// A subscribe one byte short, and one byte long.
+		bytes.extend_from_slice(&[0x00, 0x03, 0x09, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14]);
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0B, 0x00, 1, 0, 0xE1, 0x07, 0xE9, 0x07, 0x0D, 0xF4, 0x14, 0x00, 0x00]);
+		// A subscribe with a response id over 11 bits.
+		bytes.extend_from_slice(&[0x00, 0x03, 0x0A, 0x00, 1, 0, 0xE1, 0x07, 0x00, 0x08, 0x0D, 0xF4, 0x14, 0x00]);
+		// An unsubscribe of three bytes.
+		bytes.extend_from_slice(&[0x00, 0x04, 0x03, 0x00, 1, 0, 0]);
+		// A reading without its status.
+		bytes.extend_from_slice(&[0x00, 0x05, 0x06, 0x00, 1, 0, 0, 0, 0, 0]);
+		// A reading whose data is empty, and one with an unknown status.
+		bytes.extend_from_slice(&[0x00, 0x05, 0x07, 0x00, 1, 0, 0, 0, 0, 0, 0]);
+		bytes.extend_from_slice(&[0x00, 0x05, 0x07, 0x00, 1, 0, 0, 0, 0, 0, 7]);
+		bytes.extend(encode(&subscribe()).unwrap());
+		let mut r = Reassembler::new();
+		let pieces = r.push(&bytes);
+		assert_eq!(pieces.len(), 8, "{pieces:?}");
+		assert!(
+			pieces[..7].iter().all(|p| matches!(p, Piece::Error(LinkError::Malformed(_)))),
+			"{pieces:?}"
+		);
+		assert_eq!(pieces[7], Piece::Message(subscribe()));
+	}
+
+	#[test]
+	fn the_encoder_refuses_a_bad_subscription_or_reading() {
+		let bad_id = Message::Subscribe(Subscribe {
+			sub: 0,
+			request_id: 0x800,
+			response_id: 0x7E8,
+			did: 0xF40D,
+			period_ms: 20,
+		});
+		assert!(matches!(encode(&bad_id), Err(LinkError::Malformed(_))));
+		assert!(matches!(encode(&reading(Outcome::Pdu(vec![]))), Err(LinkError::Malformed(_))));
+		assert!(matches!(
+			encode(&reading(Outcome::Refused("x".repeat(MAX_BODY)))),
+			Err(LinkError::Oversize(_))
+		));
 	}
 
 	#[test]
