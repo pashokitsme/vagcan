@@ -135,13 +135,40 @@ fn number(cell: &Cell<'_>) -> Buf {
 /// Rows between the sign and the digits it qualifies.
 const SIGN_GAP: i32 = 1;
 
-/// The difference as it is drawn: the sign in a smaller face than the digits (owner,
-/// 2026-09-15), so `+` and `-` do not shout as loudly as the number.
+/// The difference as it is drawn: the sign a pixel smaller than the digits, across and down
+/// (owner, 2026-09-15), so `+` and `-` do not shout as loudly as the number.
 struct Difference {
-	/// `"+"` or `"-"`, in the unit's face. `None` for the dash of a pair that has not
-	/// answered — a dash is not a sign.
-	sign: Option<&'static str>,
+	/// Whether the sign is a minus. `None` for the dash of a pair that has not answered — a
+	/// dash is not a sign.
+	sign: Option<bool>,
 	digits: Buf,
+}
+
+/// The sign's box: a pixel shorter than the digits beside it, and as wide as it is tall.
+///
+/// Drawn from two lines rather than set from a face, because a face's `+` is whatever size
+/// that face is — this one has to be one pixel smaller than the digits, whichever face they
+/// are in.
+fn sign_size(theme: &Theme) -> i32 {
+	(text_height(&theme.label, "0") as i32 - 1).max(3)
+}
+
+/// The sign, sitting on `baseline` with its left edge at `left`.
+fn draw_sign<D>(negative: bool, left: i32, baseline: i32, size: i32, ink: BinaryColor, target: &mut D)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let stroke = PrimitiveStyle::with_stroke(ink, 1);
+	let top = baseline - size + 1;
+	let middle = baseline - size / 2;
+	let _ = Line::new(Point::new(left, middle), Point::new(left + size - 1, middle))
+		.into_styled(stroke)
+		.draw(target);
+	if !negative {
+		let _ = Line::new(Point::new(left + size / 2, top), Point::new(left + size / 2, baseline))
+			.into_styled(stroke)
+			.draw(target);
+	}
 }
 
 /// What a cell's difference reads as: `None` where the channel has no specified value at all
@@ -159,17 +186,14 @@ fn difference(cell: &Cell<'_>) -> Option<Difference> {
 		Deviation::Value(v) => {
 			let magnitude = if v < 0.0 { -v } else { v };
 			let _ = write!(digits, "{:.*}", cell.decimals as usize, magnitude);
-			Some(Difference {
-				sign: Some(if v < 0.0 { "-" } else { "+" }),
-				digits,
-			})
+			Some(Difference { sign: Some(v < 0.0), digits })
 		}
 	}
 }
 
 /// How wide it is drawn, the sign and its gap included.
 fn difference_width(theme: &Theme, text: &Difference) -> u32 {
-	let sign = text.sign.map_or(0, |s| text_width(&theme.unit, s) + SIGN_GAP as u32);
+	let sign = text.sign.map_or(0, |_| (sign_size(theme) + SIGN_GAP) as u32);
 	sign + text_width(&theme.label, text.digits.as_str())
 }
 
@@ -179,18 +203,10 @@ where
 	D: DrawTarget<Color = BinaryColor>,
 {
 	let mut x = centre - difference_width(theme, text) as i32 / 2;
-	if let Some(sign) = text.sign {
-		let drawn = theme.unit.render(
-			sign,
-			Point::new(x, baseline),
-			VerticalPosition::Baseline,
-			FontColor::Transparent(ink),
-			target,
-		);
-		if drawn.is_err() {
-			report.glyph_missing = true;
-		}
-		x += text_width(&theme.unit, sign) as i32 + SIGN_GAP;
+	if let Some(negative) = text.sign {
+		let size = sign_size(theme);
+		draw_sign(negative, x, baseline, size, ink, target);
+		x += size + SIGN_GAP;
 	}
 	if theme
 		.label
@@ -1496,6 +1512,41 @@ mod tests {
 		let mut display = panel();
 		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		assert!(report.label_overrun, "{report:?}");
+	}
+
+	#[test]
+	fn the_difference_signs_are_a_pixel_shorter_than_its_digits() {
+		let theme = Theme::bold_mono();
+		let digits = text_height(&theme.label, "0") as i32;
+		let size = sign_size(&theme);
+		assert_eq!(size, digits - 1, "a pixel shorter than the digits, and as wide as it is tall");
+
+		// Drawn on a blank panel: the plus is a cross of two strokes, the minus one bar, both
+		// inside a box of `size` sitting on the baseline.
+		for negative in [false, true] {
+			let mut display = tall();
+			let baseline = 40;
+			draw_sign(negative, 10, baseline, size, BinaryColor::On, &mut display);
+			let lit: std::vec::Vec<Point> = display
+				.bounding_box()
+				.points()
+				.filter(|p| display.get_pixel(*p) == BinaryColor::On)
+				.collect();
+			let rows: std::vec::Vec<i32> = lit.iter().map(|p| p.y).collect();
+			let columns: std::vec::Vec<i32> = lit.iter().map(|p| p.x).collect();
+			let (top, bottom) = (*rows.iter().min().unwrap(), *rows.iter().max().unwrap());
+			let (left, right) = (*columns.iter().min().unwrap(), *columns.iter().max().unwrap());
+			assert_eq!(right - left + 1, size, "{negative}: as wide as its box");
+			assert_eq!(left, 10, "{negative}: drawn from the left edge it was given");
+			if negative {
+				assert_eq!(top, bottom, "a minus is one bar");
+				assert_eq!(lit.len() as i32, size);
+			} else {
+				assert_eq!(bottom, baseline, "the plus stands on the baseline");
+				assert_eq!(bottom - top + 1, size, "and is a pixel shorter than the digits beside it");
+				assert_eq!(lit.len() as i32, 2 * size - 1, "two strokes crossing once");
+			}
+		}
 	}
 
 	// --- a channel's specified value ----------------------------------------------------
