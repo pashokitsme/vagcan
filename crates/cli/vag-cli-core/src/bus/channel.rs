@@ -56,6 +56,9 @@ impl AsyncIsoTpTransport for BusChannel {
 			return Err(TransportError::Timeout);
 		};
 		match self.bus.exchange_within(Class::Foreground, unit, pdu, timeout).await {
+			// Empty is a request that suppressed its positive response and was not refused:
+			// to the client, the silence a CAN link gives it, only sooner.
+			Ok((answer, _)) if answer.is_empty() => Err(TransportError::Timeout),
 			Ok((answer, _)) => Ok(answer),
 			Err(ExchangeError::NoAnswer) => Err(TransportError::Timeout),
 			Err(ExchangeError::Link(why)) => Err(why),

@@ -93,6 +93,10 @@ impl AsyncIsoTpTransport for CarChannel {
 		if !script.records.keys().any(|(request, _)| *request == self.request) {
 			return Err(TransportError::Timeout);
 		}
+		// A unit that honours the suppress bit says nothing to `3E 80`; `10 82` it refuses.
+		if pdu == [0x3E, 0x80] {
+			return Err(TransportError::Timeout);
+		}
 		if pdu[0] != 0x22 {
 			return Ok(vec![0x7F, pdu[0], 0x11]);
 		}
@@ -389,6 +393,31 @@ async fn a_unit_that_does_not_answer_is_a_miss_for_its_subscriber() {
 	let bus = Bus::start(link, Budget::default());
 	let mut sub = bus.subscribe(Class::Foreground, ABSENT, 0x1000, Duration::from_millis(20), None);
 	assert_eq!(sample(&mut sub).await.value, Err(Miss::NoAnswer));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_that_suppressed_its_answer_is_a_success_after_a_short_wait() {
+	use vag_uds_can::UnitLink as _;
+	let (link, script, _) = car(&[(0x7E0, 0xF190, b"VIN")]);
+	let bus = Bus::start(link, Budget::default());
+	let (answer, _) = bus
+		.exchange(Class::Foreground, ENGINE, vec![0x3E, 0x80])
+		.await
+		.expect("no answer was the answer asked for");
+	assert!(answer.is_empty(), "{answer:?}");
+	let waited = script.lock().unwrap().asked.last().unwrap().2;
+	assert_eq!(waited, SUPPRESSED_WAIT, "the refusal is waited for, not the caller's whole deadline");
+
+	// A refusal still comes back as the refusal.
+	let (refused, _) = bus.exchange(Class::Foreground, ENGINE, vec![0x10, 0x82]).await.unwrap();
+	assert_eq!(refused, [0x7F, 0x10, 0x11]);
+	// And the unit is not taken for absent.
+	assert_eq!(bus.read_once(Class::Foreground, ENGINE, 0xF190).await.unwrap().0, b"VIN");
+
+	// Through the link seam it is the silence a CAN link gives a client, only sooner.
+	let mut channel = bus.clone().to_unit(CanId::Standard(0x7E0), CanId::Standard(0x7E8));
+	channel.send(&[0x3E, 0x80]).await.unwrap();
+	assert!(matches!(channel.recv(Duration::from_secs(2)).await, Err(TransportError::Timeout)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

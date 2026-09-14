@@ -63,6 +63,14 @@ pub const READ_DEADLINE: Duration = Duration::from_millis(500);
 /// ISO 14229-2's default P2*server_max, 5 s.
 pub const PENDING_WAIT: Duration = Duration::from_secs(5);
 
+/// How long a request that suppressed its positive response (`3E 80`, `10 81`) waits for
+/// the refusal that is its only possible answer: three times ISO 14229-2's default
+/// P2server_max (50 ms), room for a unit behind the gateway — the board's own figure
+/// (`vag-dash-fw`'s `SUPPRESSED_WAIT`). Silence after it is
+/// [`Answer::NotExpected`](vag_uds_client::schedule::Answer::NotExpected), which a raw
+/// exchange's caller gets as a success with no data.
+pub const SUPPRESSED_WAIT: Duration = Duration::from_millis(150);
+
 /// How many `7F xx 78` in a row one request may be answered with before the unit counts
 /// as not answering: the async UDS client's own limit, so an exchange through the bus
 /// gives up exactly where it did talking to the link directly.
@@ -295,7 +303,9 @@ impl Bus {
 	}
 
 	/// Send one whole UDS request to `unit` and return its answer as it came — a negative
-	/// response included — waiting [`vag_uds_client`]'s own default deadline.
+	/// response included — waiting [`vag_uds_client`]'s own default deadline. A request that
+	/// suppressed its positive response and was not refused comes back as an empty answer,
+	/// after [`SUPPRESSED_WAIT`] on a cable.
 	pub async fn exchange(&self, class: Class, unit: Unit, pdu: Vec<u8>) -> Result<(Vec<u8>, At), ExchangeError> {
 		self.exchange_within(class, unit, pdu, DEFAULT_EXCHANGE_DEADLINE).await
 	}
