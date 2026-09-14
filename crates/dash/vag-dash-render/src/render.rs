@@ -174,7 +174,8 @@ const ICON_CLEARANCE: i32 = 4;
 
 /// Where the link icons go: a column in the top-right corner, [`ICON_TOP`] down and
 /// [`ICON_RIGHT`] in, USB above BLE. `None` when nothing is connected — then nothing is
-/// drawn.
+/// drawn. Laid out for the board's 64-row panel: on 32 rows the second icon stands in the
+/// number band, and nothing reports it (no caller draws icons there).
 ///
 /// A column and not a row (owner, 2026-09-14): the room it takes from the rightmost label is
 /// one icon wide whether one host is connected or two, so what fits there does not depend on
@@ -425,7 +426,8 @@ fn line_box(font: &FontRenderer) -> (i32, i32) {
 		.map_or((0, 0), |b| (b.top_left.y, b.size.height as i32))
 }
 
-/// The layout, measured: `SLCAN` in the top-left corner; under it three centred lines —
+/// The layout, measured: `SLCAN` in the top-left corner, as far in from its edges as the link
+/// icons are from theirs ([`ICON_TOP`], [`ICON_RIGHT`]); under it three centred lines —
 /// the speeds, the bit rate and mode, the counters — as a block centred in the rows under
 /// the title, starting no closer to it than [`LINE_GAP`]. A line wider than the panel is
 /// reported and drawn centred anyway; a line below the floor is reported and not drawn.
@@ -439,11 +441,13 @@ fn adapter_layout(fonts: &AdapterFonts, text: &AdapterText, size: Size, report: 
 		fits
 	};
 
-	// Its ink, not its anchor, sits in the corner.
+	// Its ink, not its anchor, sits at the margin: the owner's, 2026-09-14 — flush with the corner
+	// it did not match the icons.
 	let title_ink = ink_at_origin(&fonts.title, ADAPTER_TITLE, report).unwrap_or_default();
 	let title_h = title_ink.size.height as i32;
-	let title = if fits(0, title_h, report) {
-		place(&fonts.title, ADAPTER_TITLE, 0, 0, title_ink.top_left.y, report)
+	let (title_x, title_y) = (ICON_RIGHT as i32, ICON_TOP as i32);
+	let title = if fits(title_y, title_h, report) {
+		place(&fonts.title, ADAPTER_TITLE, title_x, title_y, title_ink.top_left.y, report)
 	} else {
 		None
 	};
@@ -458,7 +462,7 @@ fn adapter_layout(fonts: &AdapterFonts, text: &AdapterText, size: Size, report: 
 	let arrow_w = arrow_h | 1;
 
 	let block = speed_h + LINE_GAP + small_h + LINE_GAP + small_h;
-	let band = title_h + LINE_GAP;
+	let band = title_y + title_h + LINE_GAP;
 	let top = band + ((height - band - block) / 2).max(0);
 
 	let widths = text
@@ -1641,9 +1645,9 @@ mod tests {
 		}
 		lit_only_inside(&display, &boxes);
 
-		// `SLCAN` in the corner; the rest centred, in order down the panel.
+		// `SLCAN` in the corner, at the icons' margins; the rest centred, in order down the panel.
 		let title = layout.title.unwrap().ink;
-		assert_eq!(title.top_left, Point::zero());
+		assert_eq!(title.top_left, Point::new(ICON_RIGHT as i32, ICON_TOP as i32));
 		let (up, _, _, rx) = layout.speed.unwrap();
 		let (rate, counters) = (layout.rate.unwrap().ink, layout.counters.unwrap().ink);
 		let centred = |left: i32, right: i32| (left - (TALL.width as i32 - right)).abs() <= 1;
