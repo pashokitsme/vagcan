@@ -102,7 +102,10 @@ impl Board {
 								let out = self.session.answered(*at_ms, &mut self.planner, *req, answer);
 								self.to_host.extend(out);
 							}
-							other => self.to_host.extend(self.session.deliver(other)),
+							other => {
+								let msg = self.session.deliver(self.now, &mut self.planner, other);
+								self.to_host.extend(msg);
+							}
 						}
 					}
 				}
@@ -239,6 +242,92 @@ fn an_extended_session_on_a_moving_car_is_refused_and_on_a_standing_one_forwarde
 	assert_eq!(standing.answers(), [(2, Outcome::Pdu(vec![0x50, 0x03]))]);
 }
 
+/// PR #2 review (S-F2), the reviewer's proof reversed. With a timing channel on a unit slower
+/// than its period, the session change the speed read cleared was queued as Remote and waited
+/// behind it for a minute, then went out on a car answering 90 km/h with no fresh read. Now it
+/// goes out while its speed reading is fresh, and never later without another one.
+#[test]
+fn a_speed_cleared_session_change_goes_out_while_the_reading_is_fresh_beside_a_slow_timing_channel() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	// A unit slower than the timing period: 30 ms to answer a 20 ms subscription.
+	board.latency = 30;
+	board.hear(timing(1, GATEWAY, 0x1000, 20));
+	board.run_until(200);
+	board.hear(request(9, GATEWAY, &[0x10, 0x03]));
+	board.run_until(2_000);
+	let speed_at = board.sent.iter().find(|(_, o)| o.pdu == [0x22, 0xF4, 0x0D]).map(|(t, _)| *t);
+	let session_at = board.sent.iter().find(|(_, o)| o.pdu == [0x10, 0x03]).map(|(t, _)| *t);
+	let fresh = speed_at.zip(session_at).map(|(speed, session)| session - (speed + board.latency));
+	assert!(
+		fresh.is_some_and(|after| after <= crate::guard::SPEED_FRESH_MS),
+		"speed read at {speed_at:?}, 10 03 at {session_at:?}"
+	);
+	assert_eq!(board.answers(), [(9, Outcome::Pdu(vec![0x50, 0x03]))]);
+
+	// The car drives off; the run ends. Nothing else is ever sent as a session change.
+	board.bus = Bus::Answering { kmh: 90 };
+	board.run_until(60_000);
+	board.hear(Message::Unsubscribe { sub: 1 });
+	board.run_until(61_000);
+	assert_eq!(board.sent.iter().filter(|(_, o)| o.pdu == [0x10, 0x03]).count(), 1);
+}
+
+/// A session change the speed read cleared, that cannot go out within `SPEED_FRESH_MS` of the
+/// speed answer — the bus is busy elsewhere — is not sent: the road speed is read again, and
+/// on a car now moving it is refused. Whichever of the shell's two loops looks first.
+#[test]
+fn a_session_change_that_misses_its_fresh_speed_reading_is_not_sent_and_speed_is_read_again() {
+	for due_first in [true, false] {
+		let mut planner = Planner::new(Budget::board());
+		let mut session = Session::new();
+		let mut to_host = session.push(0, &mut planner, request(1, GATEWAY, &[0x10, 0x03]));
+		let answer = |planner: &mut Planner, session: &mut Session, at: u64, kmh: u8| {
+			let Next::Send(out) = planner.due(at - 5) else {
+				panic!("nothing to send")
+			};
+			assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "due first {due_first}");
+			let mut messages = Vec::new();
+			for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, kmh])) {
+				if let Delivery::Raw { req, answer, .. } = &delivery {
+					messages.extend(session.answered(at, planner, *req, answer));
+				}
+			}
+			messages
+		};
+		to_host.extend(answer(&mut planner, &mut session, 20, 0));
+
+		// The bus was busy elsewhere until one millisecond past the reading's freshness.
+		let late = 20 + crate::guard::SPEED_FRESH_MS + 1;
+		let sent_late = |planner: &mut Planner| match planner.due(late) {
+			Next::Send(out) => Some(out),
+			Next::Idle { .. } => None,
+		};
+		let out = if due_first {
+			let out = sent_late(&mut planner);
+			to_host.extend(session.poll(late, &mut planner));
+			out.or_else(|| sent_late(&mut planner))
+		} else {
+			to_host.extend(session.poll(late, &mut planner));
+			sent_late(&mut planner)
+		};
+		let out = out.expect("a fresh speed read goes out");
+		assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "due first {due_first}: not the stale session change");
+
+		// Meanwhile the car drove off.
+		let at = late + 5;
+		for delivery in planner.answered(at, out.token, BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, 90])) {
+			if let Delivery::Raw { req, answer, .. } = &delivery {
+				to_host.extend(session.answered(at, &mut planner, *req, answer));
+			}
+		}
+		assert!(matches!(planner.due(at + 100), Next::Idle { .. }), "due first {due_first}");
+		let [Message::Answer(answer)] = to_host.as_slice() else {
+			panic!("due first {due_first}: {to_host:?}")
+		};
+		assert!(refused(&answer.outcome).contains("90 km/h"), "{answer:?}");
+	}
+}
+
 #[test]
 fn the_speed_read_goes_ahead_of_the_panels_reads() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
@@ -308,7 +397,8 @@ fn a_silent_or_refusing_unit_reads_as_no_answer_or_its_negative_response() {
 	assert!(board.readings(1).iter().all(|(_, o)| *o == Outcome::NoAnswer));
 	assert!(!board.readings(1).is_empty());
 
-	let session = Session {
+	let mut planner = Planner::new(Budget::board());
+	let mut session = Session {
 		subs: [(
 			5,
 			Live {
@@ -328,7 +418,7 @@ fn a_silent_or_refusing_unit_reads_as_no_answer_or_its_negative_response() {
 		at_ms: 12,
 	};
 	assert_eq!(
-		session.deliver(&refused),
+		session.deliver(0, &mut planner, &refused),
 		Some(Message::Reading(Reading {
 			sub: 5,
 			at_ms: 12,
@@ -342,7 +432,7 @@ fn a_silent_or_refusing_unit_reads_as_no_answer_or_its_negative_response() {
 		why: Miss::NoAnswer,
 		at_ms: 12,
 	};
-	assert_eq!(session.deliver(&someone_elses), None);
+	assert_eq!(session.deliver(0, &mut planner, &someone_elses), None);
 }
 
 #[test]
@@ -387,7 +477,7 @@ fn closing_ends_every_subscription_and_forgets_the_queue() {
 	board.hear(subscribe(2, GATEWAY, 0x1000, 50));
 	board.run_until(200);
 	board.hear(request(1, ENGINE, &[0x10, 0x03]));
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	let before = board.sent.len();
 	board.run_until(2000);
 	let after: Vec<&[u8]> = board.sent[before..].iter().map(|(_, o)| o.pdu.as_slice()).collect();
@@ -431,7 +521,7 @@ fn subscribing_one_request_id_under_every_response_id_leaves_memory_bounded() {
 	// `sub: 1` given again replaces the live one before the guard refuses the new
 	// pair, so the first subscription is gone too: at most one unit is ever held.
 	assert!(board.planner.units_held() <= 1, "{} units held", board.planner.units_held());
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	assert_eq!(board.planner.units_held(), 0);
 }
 
@@ -442,7 +532,7 @@ fn closing_cancels_the_request_the_planner_has_not_sent() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	board.hear(request(1, GATEWAY, &[0x22, 0xF1, 0x87]));
 	assert!(board.session.awaiting().is_some(), "handed to the planner");
-	board.session.close(&mut board.planner);
+	board.session.close(board.now, &mut board.planner);
 	board.run_until(2000);
 	assert!(board.sent.is_empty(), "{:02X?}", board.pdus_sent());
 }
@@ -626,12 +716,15 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 				"{label}: nothing refused"
 			);
 			let speed = board.readings(1).iter().filter(|(_, o)| matches!(o, Outcome::Pdu(_))).count();
+			// A normal channel starved for `starve_after_ms` goes ahead of the timing one: one
+			// send per channel per window at most, fewer where channels share a request.
+			let windows = (MINUTE_MS / u64::from(budget.starve_after_ms) + 1) as usize;
 			if latency < 20 {
 				assert!(speed >= 45 * 60, "{label}: the timing channel got {speed} readings in a minute");
 			} else {
 				let rest = board.sent.iter().filter(|(_, o)| o.unit != GATEWAY).count();
 				assert!(
-					speed * 100 >= rest * 95,
+					speed + 15 * windows >= rest,
 					"{label}: the timing channel got {speed} of the {rest} sends the panel left"
 				);
 			}
@@ -647,10 +740,11 @@ fn a_timing_subscription_beside_fifteen_normal_ones_leaves_the_panel_its_floor_a
 			}
 
 			// Slower than the period, the timing read is always due, and the normal channels
-			// wait behind it: only a fast bus says anything about them.
-			for n in (0..15u16).filter(|_| latency < 20) {
+			// wait behind it until they starve: then one reading each per window.
+			for n in 0..15u16 {
 				let got = board.readings(10 + n).len();
-				assert!(got >= 60, "{label}: normal channel {n} got {got} readings in a minute");
+				let least = if latency < 20 { 60 } else { windows - 2 };
+				assert!(got >= least, "{label}: normal channel {n} got {got} readings in a minute");
 			}
 
 			let times: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();
@@ -712,51 +806,315 @@ fn refusal_of(out: &[Message], sub: u16) -> Option<String> {
 	}
 }
 
-/// One stopwatch at a time on the board: a timing subscription held over the radio refuses
-/// one over the cable, and the cable gets it — and is polled — once the radio's session
-/// closes. It frees the same way when its holder gives its id again as normal, or
-/// unsubscribes.
+/// One stopwatch at a time on the board, and the cable's owner comes first (S-F3): a timing
+/// subscription held over the cable refuses one over the radio, and the radio gets it — and
+/// is polled — once the cable lets go, by closing, by giving its id again as normal, or by
+/// unsubscribing.
 #[test]
-fn the_boards_one_timing_channel_is_held_across_connections_until_its_holder_lets_go() {
+fn the_boards_one_timing_channel_is_held_by_the_cable_until_it_lets_go() {
 	let mut board = Board::new(Bus::Answering { kmh: 0 });
 	let mut usb = Session::with_guard(Guard::cable());
 
+	assert!(
+		usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20)).is_empty(),
+		"the cable takes it"
+	);
 	board.hear(timing(1, ENGINE, 0xF40D, 20));
-	assert!(board.to_host.is_empty(), "the radio takes the channel: {:?}", board.to_host);
-	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
-	let why = refusal_of(&out, 7).expect("the cable is refused while the radio holds it");
-	assert_eq!(why, "another client holds the board's timing channel");
-	assert_eq!(usb.subscriptions().count(), 0);
-	let out = usb.push(0, &mut board.planner, subscribe(8, GATEWAY, 0x1001, 100));
-	assert_eq!(refusal_of(&out, 8), None, "a normal subscription is not held to it");
+	let last = board.readings(1).pop().expect("the radio is refused while the cable holds it");
+	assert_eq!(refused(&last.1), "another client holds the board's timing channel");
+	assert_eq!(board.session.subscriptions().count(), 0);
+	board.hear(subscribe(2, ENGINE, 0xF40C, 100));
+	assert!(board.readings(2).is_empty(), "a normal subscription is not held to it");
 
-	board.session.close(&mut board.planner);
-	let out = usb.push(0, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
-	assert_eq!(refusal_of(&out, 7), None, "the radio's session closed, so the channel is free");
+	usb.close(board.now, &mut board.planner);
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "the cable's session closed, so the channel is free");
 	board.run_until(200);
 	let polled = board
 		.sent
 		.iter()
-		.filter(|(_, o)| o.unit == GATEWAY && dids_of(&o.pdu).contains(&0x1000))
+		.filter(|(_, o)| o.unit == ENGINE && dids_of(&o.pdu).contains(&0xF40D))
 		.count();
-	assert!(polled >= 9, "the cable's timing channel is polled: {polled} in 200 ms");
+	assert!(polled >= 9, "the radio's timing channel is polled: {polled} in 200 ms");
 
-	board.hear(timing(1, ENGINE, 0xF40D, 20));
-	let last = board.readings(1).pop().expect("a reading for the radio");
-	assert_eq!(refused(&last.1), "another client holds the board's timing channel");
+	// The radio holds it now; a cable timing subscription preempts it (S-F3).
+	let mut usb = Session::with_guard(Guard::cable());
+	assert!(
+		usb.push(board.now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20)).is_empty(),
+		"the cable takes it back"
+	);
+	board.run_until(board.now + 100);
+	assert_eq!(
+		refused(&board.readings(1).pop().unwrap().1),
+		"the board's timing channel was taken by the cable host"
+	);
 
+	// Given again as normal, the cable lets go, and the radio takes it.
 	let now = board.now;
-	let out = usb.push(now, &mut board.planner, subscribe(7, GATEWAY, 0x1000, 20));
-	assert_eq!(refusal_of(&out, 7), None);
+	assert!(usb.push(now, &mut board.planner, subscribe(7, GATEWAY, 0x1000, 20)).is_empty());
 	board.to_host.clear();
 	board.hear(timing(1, ENGINE, 0xF40D, 20));
 	assert!(board.to_host.is_empty(), "given again as normal, the cable let go: {:?}", board.to_host);
 
-	board.hear(Message::Unsubscribe { sub: 1 });
-	let out = usb.push(now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
-	assert_eq!(refusal_of(&out, 7), None, "unsubscribed, the radio let go");
-	usb.close(&mut board.planner);
+	// And an unsubscribe frees it the same way.
+	assert!(usb.push(now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20)).len() <= 1);
+	board.hear(Message::Unsubscribe { sub: 7 } /* wrong session, no-op */);
+	usb.push(now, &mut board.planner, Message::Unsubscribe { sub: 7 });
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "unsubscribed, the cable let go");
+	board.session.close(board.now, &mut board.planner);
 	assert_eq!(board.planner.timing_subscriptions(), 0);
+}
+
+// --- a subscription reading is bounded (PR #2 review, S-F4) -------------------------------
+
+/// A reading larger than `MAX_READING_BYTES` ends its subscription with a refusal, and a
+/// small one streams on. Watch and measure channels are a few bytes, so only a record meant
+/// for a one-shot trips it.
+#[test]
+fn a_reading_over_the_cap_ends_its_subscription_and_a_small_one_streams() {
+	use crate::guard::Refusal;
+
+	let big: Vec<u8> = (0..MAX_READING_BYTES as u16).map(|n| n as u8).collect();
+	let mut planner = Planner::new(Budget::board());
+	let mut session = Session::new();
+	// Two subscriptions this session owns: one that will get a big record, one small.
+	session.push(0, &mut planner, subscribe(1, ENGINE, 0x2000, 100));
+	session.push(0, &mut planner, subscribe(2, ENGINE, 0x2001, 100));
+	let big_id = session.subs[&1].id;
+	let small_id = session.subs[&2].id;
+
+	let oversized = Delivery::Reading {
+		sub: big_id,
+		unit: ENGINE,
+		did: 0x2000,
+		data: big,
+		at_ms: 50,
+	};
+	let msg = session.deliver(60, &mut planner, &oversized).expect("a reading for the host");
+	match msg {
+		Message::Reading(Reading {
+			sub: 1,
+			outcome: Outcome::Refused(why),
+			..
+		}) => {
+			assert_eq!(why, Refusal::ReadingTooLarge.to_string())
+		}
+		other => panic!("{other:?}"),
+	}
+	assert_eq!(session.subscriptions().count(), 1, "the big subscription ended");
+	assert!(!planner.holds(big_id), "and left the planner");
+
+	let small = Delivery::Reading {
+		sub: small_id,
+		unit: ENGINE,
+		did: 0x2001,
+		data: vec![0x11, 0x22],
+		at_ms: 70,
+	};
+	let msg = session.deliver(80, &mut planner, &small).expect("a reading");
+	assert!(
+		matches!(
+			msg,
+			Message::Reading(Reading {
+				sub: 2,
+				outcome: Outcome::Pdu(_),
+				..
+			})
+		),
+		"{msg:?}"
+	);
+	let _ = Miss::NoAnswer;
+}
+
+// --- the radio guard is the board's, not the connection's (PR #2 review, S-F1) -----------
+
+/// A `22` request for `dids`.
+fn rdbi(dids: &[u16]) -> Vec<u8> {
+	core::iter::once(0x22).chain(dids.iter().flat_map(|did| did.to_be_bytes())).collect()
+}
+
+/// Identifiers of the `22` requests that reached the bus.
+fn identifiers_sent(board: &Board) -> usize {
+	board
+		.pdus_sent()
+		.iter()
+		.filter(|p| p[0] == 0x22 && p[1..] != [0xF4, 0x0D])
+		.map(|p| (p.len() - 1) / 2)
+		.sum()
+}
+
+/// The reviewer's proof reversed. A Hello closes the session, and the close used to renew
+/// the radio guard: all of `F100–F1FF`, four a request with a Hello after each, reached the
+/// unit in 1.3 s. The memory now outlives it, and the sweep is refused by its eighth identifier.
+#[test]
+fn a_hello_between_requests_does_not_reset_the_radio_guard() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let all: Vec<u16> = (0xF100u16..=0xF1FF).collect();
+	for (seq, block) in all.chunks(4).enumerate() {
+		board.hear(request(seq as u8, GATEWAY, &rdbi(block)));
+		board.run_until(board.now + 20);
+		// What the firmware does with a Hello, on either carrier.
+		board.session.close(board.now, &mut board.planner);
+	}
+	let reads = identifiers_sent(&board);
+	assert!(reads < crate::guard::WALK_RUN, "{reads} identifiers reached the unit");
+	assert!(
+		board
+			.answers()
+			.iter()
+			.any(|(_, o)| matches!(o, Outcome::Refused(why) if why.contains("evenly spaced"))),
+		"{:?}",
+		board.answers()
+	);
+}
+
+/// A reconnect is a close of the same board's radio session: a unit a walk locked stays
+/// locked, and the rate window stays as full as it was.
+#[test]
+fn a_reconnect_keeps_the_lock_and_the_rate_window() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	board.hear(request(1, ENGINE, &rdbi(&[0x2000, 0x2001, 0x2002, 0x2003])));
+	board.run_until(100);
+	board.hear(request(2, ENGINE, &rdbi(&[0x2004, 0x2005, 0x2006, 0x2007])));
+	board.run_until(200);
+	assert!(refused(&board.answers()[1].1).contains("evenly spaced"), "{:?}", board.answers());
+
+	board.session.close(board.now, &mut board.planner);
+	board.to_host.clear();
+	board.hear(request(3, ENGINE, &rdbi(&[0xF190])));
+	board.run_until(300);
+	assert!(refused(&board.answers()[0].1).contains("locked"), "{:?}", board.answers());
+
+	// Four identifiers are in the window; sixteen more fill it.
+	for seq in 0..16 {
+		board.hear(request(10 + seq, GATEWAY, &[0x3E, 0x00]));
+	}
+	board.run_until(1_000);
+	assert_eq!(board.answers().len(), 17, "{:?}", board.answers());
+	board.session.close(board.now, &mut board.planner);
+	board.hear(request(30, GATEWAY, &[0x3E, 0x00]));
+	board.run_until(2_000);
+	assert_eq!(board.answers().len(), 17, "the full window outlived the reconnect");
+	board.run_until(RATE_WINDOW_MS + 1_000);
+	assert_eq!(board.answers().len(), 18, "and the request went out once it had room");
+}
+
+/// The units a radio host addressed count across reconnects, so the board's memory stays
+/// bounded by [`MAX_UNITS`](crate::guard::MAX_UNITS) whatever the host does with the link —
+/// and a unit ten minutes without a request frees its slot.
+#[test]
+fn the_units_cap_holds_across_reconnects_and_frees_with_time() {
+	use crate::guard::MAX_UNITS;
+	let unit = |n: u16| Unit {
+		request: 0x600 + n,
+		response: 0x700 + n,
+	};
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	for n in 0..MAX_UNITS as u16 {
+		board.hear(request(n as u8, unit(n), &[0x3E, 0x00]));
+		if n % 8 == 7 {
+			board.run_until(board.now + RATE_WINDOW_MS);
+			board.session.close(board.now, &mut board.planner);
+		}
+	}
+	board.run_until(board.now + RATE_WINDOW_MS);
+	assert!(board.answers().iter().all(|(_, o)| matches!(o, Outcome::Pdu(_))), "{:?}", board.answers());
+	board.to_host.clear();
+
+	let next = unit(MAX_UNITS as u16);
+	board.hear(request(99, next, &[0x3E, 0x00]));
+	board.run_until(board.now + 100);
+	assert!(refused(&board.answers()[0].1).contains("units"), "{:?}", board.answers());
+
+	board.to_host.clear();
+	board.run_until(board.now + 10 * 60_000);
+	board.hear(request(100, next, &[0x3E, 0x00]));
+	board.run_until(board.now + 100);
+	assert!(matches!(board.answers()[..], [(100, Outcome::Pdu(_))]), "{:?}", board.answers());
+}
+
+// --- bus time, and the timing channel between carriers (PR #2 review, S-F3) --------------
+
+/// How much of `[from, to)` the exchanges sent at `sent` held, each for `held_ms`.
+fn bus_time(sent: &[u64], held_ms: u64, from: u64, to: u64) -> u64 {
+	sent.iter().map(|t| (t + held_ms).min(to).saturating_sub((*t).max(from))).sum()
+}
+
+/// The reviewer's starvation by bus time: a request to an id nobody answers holds the bus
+/// for the whole answer timeout, and a different id each time dodges the planner's per-unit
+/// backoff. A radio host is charged the time its exchanges hold the bus: past a quarter of
+/// any ten seconds its next request waits. Slowed, never dropped. The cable is not charged.
+#[test]
+fn a_radio_host_holds_at_most_a_quarter_of_the_bus_by_time_and_the_cable_is_not_held_to_it() {
+	const TIMEOUT_MS: u64 = 500;
+	const WINDOW_MS: u64 = 10_000;
+	let unit = |n: u16| Unit {
+		request: 0x600 + n,
+		response: 0x680 + n,
+	};
+	for cable in [false, true] {
+		let mut board = Board::new(Bus::Silent);
+		board.latency = TIMEOUT_MS;
+		if cable {
+			board.session = Session::with_guard(Guard::cable());
+		}
+		for n in 0..60u16 {
+			board.hear(request(n as u8, unit(n), &[0x3E, 0x00]));
+		}
+		board.run_until(200_000);
+		assert_eq!(board.answers().len(), 60, "cable {cable}: every request answered");
+		assert!(board.answers().iter().all(|(_, o)| *o == Outcome::NoAnswer), "cable {cable}");
+
+		let sent: Vec<u64> = board.sent.iter().map(|(t, _)| *t).collect();
+		let busiest = (0..200_000 - WINDOW_MS)
+			.step_by(50)
+			.map(|from| bus_time(&sent, TIMEOUT_MS, from, from + WINDOW_MS))
+			.max()
+			.unwrap();
+		if cable {
+			assert!(busiest > WINDOW_MS / 2, "the cable is not held to the radio's share: {busiest} ms");
+		} else {
+			assert!(
+				busiest <= WINDOW_MS / 4 + TIMEOUT_MS,
+				"a quarter of ten seconds, and the exchange that crossed it: {busiest} ms"
+			);
+		}
+	}
+}
+
+/// One stopwatch at a time, and the owner's comes first: a timing subscription from the
+/// cable takes the board's timing channel from a radio host, whose subscription ends with a
+/// reading that says so. A radio host never takes it from the cable.
+#[test]
+fn a_cable_timing_subscription_takes_the_channel_from_the_radio_and_never_the_other_way() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	let mut usb = Session::with_guard(Guard::cable());
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	board.run_until(100);
+
+	let out = usb.push(board.now, &mut board.planner, timing(7, GATEWAY, 0x1000, 20));
+	assert_eq!(refusal_of(&out, 7), None, "the cable takes the channel");
+	board.run_until(300);
+	let last = board.readings(1).pop().expect("the radio is told");
+	assert_eq!(refused(&last.1), "the board's timing channel was taken by the cable host");
+	assert_eq!(board.session.subscriptions().count(), 0);
+	let before = board.sent.len();
+	board.run_until(600);
+	assert!(
+		board.sent[before..].iter().all(|(_, o)| o.unit == GATEWAY),
+		"the radio's channel is no longer polled"
+	);
+	assert_eq!(board.planner.timing_subscriptions(), 1);
+
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	let readings = board.readings(1);
+	assert_eq!(readings.len(), 1, "{readings:?}");
+	assert_eq!(refused(&readings[0].1), "another client holds the board's timing channel");
+	usb.close(board.now, &mut board.planner);
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.
@@ -776,7 +1134,7 @@ fn a_cable_session_walks_a_range_the_radio_refuses_and_stays_a_cable_session_aft
 	let mut cable = Board::new(Bus::Answering { kmh: 0 });
 	cable.session = Session::with_guard(crate::guard::Guard::cable());
 	assert_eq!(walk(&mut cable), 0, "{:?}", cable.answers());
-	cable.session.close(&mut cable.planner);
+	cable.session.close(cable.now, &mut cable.planner);
 	cable.to_host.clear();
 	assert_eq!(walk(&mut cable), 0, "still the cable's guard after a close");
 }

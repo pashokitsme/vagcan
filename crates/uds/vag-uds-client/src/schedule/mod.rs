@@ -28,9 +28,11 @@
 //!   An answer that does not read exactly one way is not guessed: its identifiers go
 //!   out singly next time.
 //! - A unit is single-only for the planner's lifetime once it answers a
-//!   multi-identifier request definitely against it: an NRC, an empty positive answer,
-//!   or three unsplittable answers in a row while not every record length is known.
-//!   Silence never teaches this: no answer is an absent unit, backed off like any other.
+//!   multi-identifier request definitely against it: NRC `13` (incorrect length or format)
+//!   or `14` (response too long), an empty positive answer, or three unsplittable answers
+//!   in a row while not every record length is known. Any other NRC (`31`, a transient
+//!   `21`/`22`) sends that batch's identifiers singly for one round. Silence never teaches
+//!   anything: no answer is an absent unit, backed off like any other.
 //! - A request for a [`Class::Timing`] identifier carries only Timing identifiers
 //!   (normally one), and no other request carries one, so the speed answer stays short.
 //!
@@ -40,12 +42,15 @@
 //! 1000 ms window holds more than the ceiling. When a slot opens, the candidate sent is
 //! the best by, in order:
 //!
-//! 1. [`Class::Timing`] — never thinned; but under [`Budget::timing_yields_to_floor`]
-//!    (the board's [`Budget::board`]) 3 goes before it. A cap on timing consumers bounds
-//!    how many there are, not bus time: a timing read on a unit that answers slower than
-//!    its period is due again the moment it answers, and takes every slot ranked below it.
-//! 2. A `Remote` or `Background` item due for longer than [`Budget::starve_after_ms`] —
-//!    nothing waits forever.
+//! 1. Anything that is not [`Class::Timing`] and has been due for longer than
+//!    [`Budget::starve_after_ms`] — nothing waits forever. Under
+//!    [`Budget::timing_yields_to_floor`] (the board's [`Budget::board`]) 3 goes before it.
+//! 2. [`Class::Timing`] — not thinned: no reading is lost, and one is late only when a
+//!    starved item goes first, which costs it at most about one slot per starving read per
+//!    `starve_after_ms`. A cap on timing consumers bounds how many there are, not bus time:
+//!    a timing read on a unit that answers slower than its period is due again the moment it
+//!    answers, and without rank 1 it would take every slot below it for good (PR #2 review,
+//!    2026-09-14: one-shots and raw requests were never delivered at 21 ms).
 //! 3. [`Class::Foreground`] while it has had fewer than `foreground_floor_per_s` sends
 //!    in the last 1000 ms — the floor.
 //! 4. [`Class::Remote`] — waits when the budget is short, never dropped.
@@ -53,8 +58,9 @@
 //! 6. [`Class::Background`] — thinned first.
 //!
 //! and within one rank, the most overdue first. A read shared by several classes ranks
-//! as the best of the classes due in it. Nothing is ever dropped: over budget means
-//! later. A unit that stops answering is backed off (doubling from
+//! as the best of the classes due in it; each queued raw exchange ranks by its own class,
+//! so a unit's Timing raw is not held behind a Remote one queued before it. Nothing is ever
+//! dropped: over budget means later. A unit that stops answering is backed off (doubling from
 //! [`Budget::backoff_first_ms`] to [`Budget::backoff_cap_ms`]), every subscriber of it is
 //! told [`Miss::NoAnswer`] per failed attempt, and the other units keep their slots.
 //!
@@ -107,8 +113,8 @@ pub struct Unit {
 /// docs): `Timing` first, `Background` last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
-	/// Never thinned — except that on the board the foreground's floor goes first
-	/// ([`Budget::timing_yields_to_floor`]).
+	/// Not thinned: ahead of everything but a starved item and, on the board, the
+	/// foreground's floor ([`Budget::timing_yields_to_floor`]).
 	Timing,
 	/// Keeps [`Budget::foreground_floor_per_s`] whenever it wants it; above the floor it
 	/// yields to `Remote`.
@@ -140,8 +146,8 @@ pub struct Budget {
 	/// The longest wait between attempts on a silent unit. Default 2 s, the firmware's
 	/// `DEAD_BUS_GAP` before the planner.
 	pub backoff_cap_ms: u32,
-	/// A `Remote` or `Background` item due for longer than this ranks just below
-	/// `Timing` until it is sent, so nothing waits forever. Owner, 2026-09-14: 5 s.
+	/// Anything but `Timing` due for longer than this ranks ahead of `Timing` (behind the
+	/// board's floor) until it is sent, so nothing waits forever. Owner, 2026-09-14: 5 s.
 	pub starve_after_ms: u32,
 	/// Whether [`Class::Foreground`] under its floor goes ahead of [`Class::Timing`].
 	///

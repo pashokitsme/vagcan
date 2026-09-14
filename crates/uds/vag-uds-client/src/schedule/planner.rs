@@ -15,6 +15,11 @@ const RDBI: u8 = 0x22;
 const RDBI_POSITIVE: u8 = RDBI + 0x40;
 /// A negative response's first byte (ISO 14229-1).
 const NEGATIVE: u8 = 0x7F;
+/// The two NRCs about a request's shape (ISO 14229-1): incorrect message length or invalid
+/// format, and response too long. The only refusals of a multi-identifier request that teach
+/// single-only.
+const INCORRECT_LENGTH_OR_FORMAT: u8 = 0x13;
+const RESPONSE_TOO_LONG: u8 = 0x14;
 /// Consecutive multi-identifier answers that would not split, from a unit whose record
 /// lengths are not all known, after which the unit is asked singly for good. Owner,
 /// 2026-09-14.
@@ -56,8 +61,8 @@ pub struct Planner {
 struct UnitState {
 	reads: BTreeMap<u16, Read>,
 	raws: VecDeque<Raw>,
-	/// Learned from a definite answer, never from silence: an NRC or an empty positive
-	/// answer to a multi-identifier request, or [`UNSPLITTABLE_RUN`] unsplittable ones.
+	/// Learned from a definite answer, never from silence: a `13`/`14` NRC or an empty
+	/// positive answer to a multi-identifier request, or [`UNSPLITTABLE_RUN`] unsplittable ones.
 	single_only: bool,
 	/// Multi-identifier answers in a row that would not split.
 	unsplittable_run: u8,
@@ -99,6 +104,15 @@ struct Raw {
 	class: Class,
 	pdu: Vec<u8>,
 	since_ms: u64,
+	/// Never sent after this ([`Planner::exchange_until`]).
+	not_after_ms: Option<u64>,
+}
+
+impl Raw {
+	/// Whether it may still go out at `now`.
+	fn sendable(&self, now: u64) -> bool {
+		self.not_after_ms.is_none_or(|last| now <= last)
+	}
 }
 
 #[derive(Debug)]
@@ -119,14 +133,15 @@ enum Flying {
 }
 
 /// How a candidate for the next slot sorts, lowest first: its [`tier`], when it came
-/// due (the most overdue first), then unit, raw before read, and identifier, so that ties
-/// break the same way every time.
-type Rank = (u8, u64, Unit, u8, u16);
+/// due (the most overdue first), then unit, raw before read, and the raw's id or the read's
+/// identifier, so that ties break the same way every time — and a unit's raws of one rank
+/// in the order they were queued.
+type Rank = (u8, u64, Unit, u8, u32);
 
 /// What a candidate for the next slot is.
 #[derive(Debug, Clone, Copy)]
 enum Pick {
-	Raw,
+	Raw(ReqId),
 	Read(u16),
 }
 
@@ -298,7 +313,8 @@ impl Planner {
 
 	/// Take back an exchange that is still queued, so a consumer that is gone does not
 	/// reach the car. `false` for one already in flight, answered, or unknown: what is on
-	/// the bus cannot be recalled, and its answer is delivered as usual.
+	/// the bus cannot be recalled, and its answer is delivered as usual. `true` for one that
+	/// expired unsent ([`Planner::exchange_until`]) — this is how its owner learns so.
 	pub fn cancel(&mut self, req: ReqId) -> bool {
 		let found = self
 			.units
@@ -324,13 +340,35 @@ impl Planner {
 	/// consumer. The board's sessions share one planner and read this to keep one
 	/// stopwatch at a time (`remote::Session`).
 	pub fn timing_subscriptions(&self) -> usize {
+		self.timing_ids().count()
+	}
+
+	fn timing_ids(&self) -> impl Iterator<Item = SubId> + '_ {
 		self
 			.units
 			.values()
 			.flat_map(|state| state.reads.values())
 			.flat_map(|read| &read.subs)
 			.filter(|sub| sub.class == Class::Timing)
-			.count()
+			.map(|sub| sub.id)
+	}
+
+	/// Take the board's timing channel for `keep`: unsubscribe every other
+	/// [`Class::Timing`] subscription and return their ids, so a session can tell the
+	/// hosts that held them. One stopwatch at a time, and the cable takes it from the radio
+	/// (`remote::Session`, S-F3). `keep`'s own subscription, if any, is left untouched.
+	pub fn preempt_timing(&mut self, keep: SubId) -> Vec<SubId> {
+		let taken: Vec<SubId> = self.timing_ids().filter(|id| *id != keep).collect();
+		for id in &taken {
+			self.unsubscribe(*id);
+		}
+		taken
+	}
+
+	/// Whether `sub` is still a live subscription the planner holds. A session that had one
+	/// preempted ([`preempt_timing`](Self::preempt_timing)) learns of it here.
+	pub fn holds(&self, sub: SubId) -> bool {
+		self.subs.contains_key(&sub)
 	}
 
 	/// Read `did` of `unit` once; the result comes as exactly one [`Delivery::Once`].
@@ -345,6 +383,21 @@ impl Planner {
 	/// [`Delivery::Raw`]. Refused at the door, and never queued, when its service is
 	/// outside the read-only allowlist.
 	pub fn exchange(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>) -> Result<ReqId, UdsError> {
+		self.queue_raw(now_ms, class, unit, pdu, None)
+	}
+
+	/// [`exchange`](Self::exchange), never sent after `not_after_ms`: a request whose reason
+	/// to go out goes stale — a session change cleared by a road speed read a moment ago.
+	///
+	/// Past it the exchange is not sent and nothing is delivered for it. It stays queued,
+	/// inert, until its owner takes it back with [`cancel`](Self::cancel), which answers
+	/// `true` because it never went out: the planner has no clock, so the owner, which set
+	/// the time, is the one that looks.
+	pub fn exchange_until(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>, not_after_ms: u64) -> Result<ReqId, UdsError> {
+		self.queue_raw(now_ms, class, unit, pdu, Some(not_after_ms))
+	}
+
+	fn queue_raw(&mut self, now_ms: u64, class: Class, unit: Unit, pdu: Vec<u8>, not_after_ms: Option<u64>) -> Result<ReqId, UdsError> {
 		let (&sid, rest) = pdu.split_first().ok_or_else(|| UdsError::Malformed(String::from("empty request")))?;
 		let pdu = pdu::encode_request(sid, rest)?;
 		let id = ReqId(self.fresh());
@@ -353,6 +406,7 @@ impl Planner {
 			class,
 			pdu,
 			since_ms: now_ms,
+			not_after_ms,
 		});
 		Ok(id)
 	}
@@ -372,20 +426,27 @@ impl Planner {
 		let mut best: Option<(Rank, Class, Pick)> = None;
 		let mut earliest: Option<u64> = None;
 		for (unit, state) in &self.units {
-			let raw = state.raws.front().map(|r| (r.since_ms, Some(r.class), Pick::Raw));
+			// Every queued raw is a candidate of its own class: a Timing raw is not held behind
+			// a Remote one in front of it.
+			// One past its `not_after_ms` is no candidate, and nothing to wake for either.
+			let raws = state
+				.raws
+				.iter()
+				.filter(|r| r.sendable(now))
+				.map(|r| (r.since_ms, Some(r.class), Pick::Raw(r.id)));
 			let reads = state
 				.reads
 				.iter()
 				.filter_map(|(did, read)| Some((read.due()?, read.class_due(now), Pick::Read(*did))));
-			for (due, class, pick) in raw.into_iter().chain(reads) {
+			for (due, class, pick) in raws.chain(reads) {
 				let ready = due.max(state.retry_at);
 				let Some(class) = class.filter(|_| ready <= now) else {
 					earliest = Some(earliest.map_or(ready, |e| e.min(ready)));
 					continue;
 				};
-				let (kind, did) = match pick {
-					Pick::Raw => (0, 0),
-					Pick::Read(did) => (1, did),
+				let (kind, key) = match pick {
+					Pick::Raw(id) => (0, id.0),
+					Pick::Read(did) => (1, u32::from(did)),
 				};
 				let starved = now.saturating_sub(due) > u64::from(self.budget.starve_after_ms);
 				let rank = (
@@ -393,7 +454,7 @@ impl Planner {
 					due,
 					*unit,
 					kind,
-					did,
+					key,
 				);
 				if best.as_ref().is_none_or(|(held, _, _)| rank < *held) {
 					best = Some((rank, class, pick));
@@ -419,8 +480,9 @@ impl Planner {
 		let budget = self.budget;
 		let state = self.units.get_mut(&unit).expect("the candidate's unit is held");
 		let (pdu, what) = match pick {
-			Pick::Raw => {
-				let raw = state.raws.pop_front().expect("the candidate raw is queued");
+			Pick::Raw(id) => {
+				let at = state.raws.iter().position(|raw| raw.id == id).expect("the candidate raw is queued");
+				let raw = state.raws.remove(at).expect("the candidate raw is queued");
 				(raw.pdu.clone(), Flying::Raw(raw))
 			}
 			Pick::Read(trigger) => {
@@ -563,10 +625,17 @@ impl Planner {
 					}
 				}
 			}
-			Heard::Refused(_) => {
+			// Only a refusal of the request's shape says the unit will not batch. Any other
+			// (`31` none of them supported, `21`/`22` transient) is about the identifiers or the
+			// moment: that batch goes out singly for one round, and the unit batches again after.
+			Heard::Refused(nrc) => {
 				self.heard_from(unit);
 				let state = self.units.get_mut(&unit).expect("a unit in flight is held");
-				state.single_only = true;
+				if matches!(nrc, INCORRECT_LENGTH_OR_FORMAT | RESPONSE_TOO_LONG) {
+					state.single_only = true;
+				} else {
+					state.singly.extend(dids.iter().copied());
+				}
 				retry(state, now, onces);
 			}
 			Heard::Empty => {
@@ -745,13 +814,14 @@ fn missed(sub: &Sub, unit: Unit, did: u16, why: Miss, now: u64) -> Delivery {
 
 /// Precedence of a candidate: lower goes first. See the module docs of [`super`].
 ///
-/// `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`]) moves the foreground under
-/// its floor ahead of timing; everything else keeps its order.
+/// `starved`: due for longer than [`Budget::starve_after_ms`]. Anything but Timing that is
+/// starved goes ahead of Timing; `timing_yields_to_floor` ([`Budget::timing_yields_to_floor`])
+/// puts the foreground under its floor ahead of both. Nothing on the laptop takes tier 0.
 fn tier(class: Class, foreground_under_floor: bool, starved: bool, timing_yields_to_floor: bool) -> u8 {
 	match class {
 		Class::Foreground if foreground_under_floor && timing_yields_to_floor => 0,
-		Class::Timing => 1,
-		Class::Remote | Class::Background if starved => 2,
+		Class::Timing => 2,
+		_ if starved => 1,
 		Class::Foreground if foreground_under_floor => 3,
 		Class::Remote => 4,
 		Class::Foreground => 5,
