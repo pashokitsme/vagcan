@@ -479,6 +479,11 @@ pub enum Error {
 	TooManyAlarms(usize),
 	/// More `[[page]]` tables than the board holds, [`MAX_PAGES`].
 	TooManyPages(usize),
+	/// One row declared twice under two spellings — `01:IDE00191` and `01:202A`.
+	SameRow {
+		first: Reference,
+		second: Reference,
+	},
 	/// A `setpoint` the plan cannot pair with its channel.
 	Setpoint {
 		channel: Reference,
@@ -506,6 +511,10 @@ impl fmt::Display for Error {
 			),
 			Error::NotLinear(r, s) => write!(f, "{r}: scaling is {s}, not linear — the device can multiply and nothing else"),
 			Error::Duplicate(r) => write!(f, "{r} is listed twice under [[channel]]"),
+			Error::SameRow { first, second } => write!(
+				f,
+				"{first} and {second} are the same row — one unit, identifier, bits and scaling written two ways; keep one [[channel]]"
+			),
 			Error::NotAnswered(r) => write!(f, "{r}: the survey asked the unit for this identifier and it did not answer"),
 			Error::NotFinite(r) => write!(f, "{r}: its scaling is not a finite number"),
 			Error::NoPartNumber(r) => write!(
@@ -635,6 +644,41 @@ impl Plan {
 pub struct Built {
 	pub plan: Plan,
 	pub notes: Vec<String>,
+}
+
+/// What a channel reads on the bus: unit, identifier, and the bits taken from the answer —
+/// which is what makes two resolved channels one channel, however each was spelled.
+///
+/// Scaling is not part of it, and need not be: `plan::available` offers one row per field
+/// (unit, identifier, bit offset), a later definition replacing an earlier one, so one field
+/// never resolves to two scalings.
+fn read_of(c: &Channel) -> (u16, u16, u32, u32) {
+	(c.unit, c.did, c.bit_offset, c.bit_length)
+}
+
+/// The plan index of a channel the input names, by what the name resolves to: a page cell or an
+/// alarm channel may spell a row differently from its `[[channel]]` and still mean it. `None`
+/// when no `[[channel]]` resolves to that row.
+fn index_by_row(
+	reference: &Reference,
+	channels: &[Channel],
+	index_of: &BTreeMap<Reference, u16>,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+) -> Option<u16> {
+	if let Some(index) = index_of.get(reference) {
+		return Some(*index);
+	}
+	let probe = ChannelInput {
+		reference: reference.clone(),
+		label: None,
+		decimals: None,
+		hz: None,
+		setpoint: None,
+	};
+	let resolved = resolve_channel(&probe, offered, answered, units, &mut Vec::new()).ok()?;
+	channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16)
 }
 
 /// One `[[channel]]` against what the car reported and what the project knows: the same rules
@@ -777,12 +821,11 @@ pub fn build(
 		// The same row under its other spelling is the same row: `01:IDE00191` and `01:202A`
 		// would otherwise both be added, both subscribed and both drawable (review,
 		// 2026-09-15).
-		if let Some(at) = channels
-			.iter()
-			.position(|c| (c.unit, c.did, c.bit_offset, c.bit_length) == (resolved.unit, resolved.did, resolved.bit_offset, resolved.bit_length))
-		{
-			let first = input.channels[at].reference.clone();
-			return Err(Error::Duplicate(first));
+		if let Some(at) = channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
+			return Err(Error::SameRow {
+				first: input.channels[at].reference.clone(),
+				second: wanted.reference.clone(),
+			});
 		}
 		notes.append(&mut resolution);
 		let index = channels.len() as u16;
@@ -828,33 +871,36 @@ pub fn build(
 			Some(index) => channels[*index as usize].clone(),
 			None => resolve_channel(&hidden, &offered, answered, units, &mut resolution)?,
 		};
-		// The width is part of the row: two fields can share an identifier and an offset and
-		// mean different things (review, 2026-09-15).
-		let row = |c: &Channel| (c.unit, c.did, c.bit_offset, c.bit_length);
-		if row(&resolved) == row(&channels[i]) {
+		// The same read is refused whatever the scaling: one raw value scaled two ways and
+		// subtracted from itself is not a difference anyone asked for. The width is part of the
+		// read — two fields can share an identifier and an offset (review, 2026-09-15).
+		if read_of(&resolved) == read_of(&channels[i]) {
 			return refuse("is the channel itself — the same unit, identifier and bits, however it is spelled");
 		}
-		// Its own `[[channel]]`, by the row it resolves to rather than by how it was written.
-		let existing = channels.iter().position(|c| row(c) == row(&resolved)).map(|at| at as u16);
+		// Its own `[[channel]]`, by the channel it resolves to rather than by how it was written.
+		let existing = channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16);
 		if let Some(index) = existing
 			&& usize::from(index) < input.channels.len()
 			&& input.channels[usize::from(index)].setpoint.is_some()
 		{
 			return refuse("has a setpoint of its own");
 		}
+		// What is actually paired: the existing channel where there is one — with the rate and
+		// unit it was declared with, however its spelling differs from this one — and the fresh
+		// resolution otherwise (review, 2026-09-15).
+		let paired = existing.map_or(&resolved, |index| &channels[usize::from(index)]);
 		// Both halves go out in one request only if both are due at the same rate; at two rates
-		// the difference is between numbers up to a period apart. True of a setpoint the input
-		// declares and of one two channels share (review, 2026-09-15).
-		if resolved.hz != channels[i].hz {
+		// the difference is between numbers up to a period apart.
+		if paired.hz != channels[i].hz {
 			return refuse(&format!(
 				"is read at {} Hz and the channel it explains at {} Hz — a pair is read in one request, so they share a rate",
-				resolved.hz, channels[i].hz
+				paired.hz, channels[i].hz
 			));
 		}
-		if resolved.unit_text != channels[i].unit_text {
+		if paired.unit_text != channels[i].unit_text {
 			return refuse(&format!(
 				"reads in {:?} against the channel's {:?}",
-				resolved.unit_text, channels[i].unit_text
+				paired.unit_text, channels[i].unit_text
 			));
 		}
 		let index = match existing {
@@ -902,7 +948,7 @@ pub fn build(
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
 		let index = |r: &Reference| {
-			index_of.get(r).copied().ok_or_else(|| Error::PageRefersToUnknown {
+			index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| Error::PageRefersToUnknown {
 				page: n,
 				reference: r.clone(),
 			})
@@ -948,12 +994,7 @@ pub fn build(
 		let watched = wanted
 			.channels
 			.iter()
-			.map(|r| {
-				index_of
-					.get(r)
-					.copied()
-					.ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list")))
-			})
+			.map(|r| index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list"))))
 			.collect::<Result<Vec<u16>, _>>()?;
 		// The page is named by title, and only a values page has one: a takeover shows
 		// cells, and a chart has one cell and no room to invert it.
@@ -1633,9 +1674,40 @@ mod tests {
 	}
 
 	#[test]
-	fn one_row_declared_under_both_spellings_is_a_duplicate() {
+	fn one_row_declared_under_both_spellings_is_refused_naming_both() {
 		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[channel]]\nref = \"01:202A\"\n").unwrap_err();
-		assert!(matches!(&why, Error::Duplicate(r) if r.to_string() == "01:IDE00191"), "{why}");
+		assert!(
+			matches!(&why, Error::SameRow { first, second } if first.to_string() == "01:IDE00191" && second.to_string() == "01:202A"),
+			"{why}"
+		);
+		let said = why.to_string();
+		assert!(said.contains("01:IDE00191") && said.contains("01:202A"), "{said}");
+	}
+
+	#[test]
+	fn a_setpoint_spelled_differently_from_its_channel_must_still_share_its_rate() {
+		// Spelled `01:2029`, declared as `01:IDE00190` at 2 Hz, paired with a 10 Hz channel: the
+		// rate compared is the declared channel's, not the fresh resolution's.
+		let why =
+			build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:2029\"\nhz = 10\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("share a rate")), "{why}");
+	}
+
+	#[test]
+	fn a_page_and_an_alarm_may_spell_a_channel_as_its_other_spelling() {
+		let built = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nchannels = [\"01:202A\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.5\nrelease = 2.3\n[[page]]\nkind = \"values\"\ntitle = \"B\"\ncells = [\"01:202A\"]\n",
+		)
+		.unwrap();
+		assert_eq!(built.plan.channels.len(), 1, "one row, one channel");
+		assert!(
+			built
+				.plan
+				.pages
+				.iter()
+				.any(|p| matches!(p, Page::Values { title, cells } if title == "B" && cells == &vec![0]))
+		);
+		assert_eq!(built.plan.alarms[0].channels, vec![0]);
 	}
 
 	#[test]

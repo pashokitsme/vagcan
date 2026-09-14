@@ -158,6 +158,11 @@ Every refusal names the thing that failed:
   channel that has a `setpoint` of its own, or read at a different `hz` from the channel it
   explains — including when two channels share one specified value and ask for it at two rates.
 
-A row is compared by what it resolves to, never by how it is spelled: `01:IDE00191` and
-`01:202A` are one row, so declaring both is the duplicate refusal and pairing one with the
-other is the "is the channel itself" refusal.
+A channel is compared by what it resolves to, never by how it is spelled:
+
+- `01:IDE00191` and `01:202A` are one channel. Declaring both is refused, naming both; a page
+  or an alarm may use either spelling for a channel declared under the other.
+- A `setpoint` that reads the same unit, identifier and bits as its channel is "the channel
+  itself".
+- The label data offers one row per field — a unit, an identifier and its bits — so one field is
+  never two channels with two scalings.
