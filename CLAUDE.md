@@ -105,9 +105,10 @@ breakdown is in **[`todo/README.md`](todo/README.md)**; read it before working.
 TL;DR: read the whole car over CAN, with channels, scalings and fault text from a VW
 ODIS-Service project (a VCDS installation is the fallback, drives on the car override
 both), on **tokio / edition 2024**, macOS M4, TDD with hardware checkpoints. The live
-transport is a generic slcan USB-CAN adapter (`vag-uds-can`) or the dash board running
-its `slcan` image. The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX
-clone is dead — research archived under `.archive/research/`.
+transport is a generic slcan USB-CAN adapter (`vag-uds-can`), or the dash board: over its
+USB cable or BLE through its own scheduler, or as a plain adapter (`--slcan`, or its
+`slcan` image). The dash (ESP32-C3 + OLED) reads the car since 2026-09-13. The HEX clone
+is dead — research archived under `.archive/research/`.
 
 ## Project structure
 
@@ -145,8 +146,9 @@ crates/            all Rust. Three families and the product.
                        build-std config. Build it from its own directory.
   cli/               what a person runs, in four layers.
     vag-cli-core       what both command crates stand on: which car this is,
-                       what channels it has, how to poll them, where its files
-                       live, the terminal widgets. Knows no command.
+                       what channels it has, the bus that polls them (the one owner of
+                       the link: a cable, or the dash board over USB or BLE), where
+                       its files live, the terminal widgets. Knows no command.
     vag-cli-diag       reading a car and the files that explain it: identify,
                        faults, the guarded sweeps, watch, setup, vcds tooling
     vag-cli-measure    binary `vagcan-measure` — the acceleration stopwatch.

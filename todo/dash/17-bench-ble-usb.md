@@ -28,10 +28,7 @@ unpowered transceiver.
 
 ## 0. The pair
 
-- **16:08 `rxprobe`: the transceiver's `R` is stuck low and never follows `D`** (§9.7). By hand:
-  CANable off the pair → `rxprobe` again; CAN-H/CAN-L at idle ≈2.5 V each; module 3.3 V;
-  H–L resistance unpowered.
-
+- Repaired 2026-09-14: the transceiver module was unpowered (1.56 V on its 3.3 V pin; §9.7–§9.9).
 - `research/dash/bench.sh 15 cantx` → PASS. Then reflash `dash` with the real plan.
 - Power the board from the 12 V bench supply, not USB, so unplugging USB does not reset it.
 
@@ -69,10 +66,8 @@ on a frame to any other id, so every unit a command addresses must be listed).
 
 ## 3. Older items carried here
 
-- The board's `V` probe and busy-port message; `F` through `dev sniff` on the board.
+- The busy-port message. (The board's `V`/Hello probe and `F` through `dev sniff` ran: §9.8, §9.9.)
 - The stored-config check at boot; whether opening the board's port twice resets it.
-- The pair going quiet (§9.5, §9.7): an hour with nothing acknowledging, the console captured
-  from boot, then an `--active` sniff — frames or not, and what the board noted.
 
 ## 4. The car, once
 

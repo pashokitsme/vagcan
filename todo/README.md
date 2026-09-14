@@ -9,7 +9,7 @@ dated status sections moved verbatim to
 
 **Milestone: one scheduler on the board and the laptop, and the laptop reads the car
 through the board.** Built on branch `ble-uds` (not on `master` yet), reviewed lens by
-lens, hardware-free tests (1,522 in the workspace). The first end-to-end bench run found
+lens, hardware-free tests (1,545 in the workspace at `213f6ec`). The first end-to-end bench run found
 the CAN pair dead (`research/dash/can-bring-up.md` §9.7) — the transceiver module was unpowered;
 after the owner's repair the bench passed (§9.9, §9.10): BLE and USB subscriptions at their
 rates, `watch` through the board at 100 ms, both carriers at once, adapter mode in and out,
@@ -38,10 +38,10 @@ the `slcan` image, and `measure` through the board at 50 Hz.
 - **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
   --hz` given explicitly wins over the saved rate.
 
-**Not verified on hardware:** everything of 2026-09-14 — the plan is
-[`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) — plus the older items it carries
-(the board's `V` probe and busy-port message, `F` through `dev sniff` on the board, the
-stored-config check at boot, whether opening the board's port twice resets it).
+**Not verified on hardware:** the car (`faults --device ble` with the panel updating,
+`info`/`watch` through the board), unplugging USB in adapter mode, a USB flood of large
+requests, the stored-config check at boot, whether opening the board's port twice resets it
+— [`dash/17`](dash/17-bench-ble-usb.md).
 
 ## Decisions (owner)
 
@@ -66,42 +66,40 @@ stored-config check at boot, whether opening the board's port twice resets it).
    --device ble` with the panel updating, `info`/`watch` over USB, a subscription on a unit
    that answers. What is left on the bench: unplug USB in adapter mode, a USB flood.
 2. **`ble-uds` → `master`** — PR #2; the bench passed, merge when the owner says.
-3. **The alarm rules** — the owner writes `[[alarm]]` into `dash.toml`; the misfire numbers
-   are a car measurement.
-4. **OLED and enclosure** — `dash/15`; waits for the panel.
-5. **Alarms on the board** — `dash/04`. Wired on branch `alarms` (2026-09-14),
+3. **OLED and enclosure** — `dash/15`; waits for the panel.
+4. **Alarms on the board** — `dash/04`. Wired on `ble-uds` (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
-   `vag_dash_render::screen`. Next: the misfire rule's numbers and a run on the car. The
+   `vag_dash_render::screen`. Next: the owner writes the rules into `dash.toml`; the misfire rule's numbers and a run on the car. The
    demo from a recorded drive waits for a recording with the retard channels and a way to
    replay it (none is hardware-free today).
-6. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
+5. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
    car's part numbers to believe.
 
 **With the car**
 
-7. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+6. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+7. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
    freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-9. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
-10. **Questions only the car answers** — `dash/06`.
-11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+8. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run.
+9. **Questions only the car answers** — `dash/06`.
+10. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+11. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-13. **`watch` and `measure` across all fifteen units** — measured against the file, not
+12. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `alarms`, hardware-free; misfire numbers and a car run open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | wired on `ble-uds`, hardware-free; rules, misfire numbers and a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
-| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | built on `ble-uds`; bench and car pending |
+| [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | built on `ble-uds`; bench passed (`research/dash/can-bring-up.md` §9.9–9.10), car pending |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work |
 
 Finished task files are in `.archive/tasks/done/`; superseded designs in `.archive/specs/`.
