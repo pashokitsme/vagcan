@@ -161,7 +161,11 @@ pub const ICON: Size = Size::new(7, 9);
 /// Between two icons.
 const ICON_GAP: u32 = 2;
 
-/// Where the link icons go: flush with the top-right corner, USB left of BLE. `None` when
+/// Dark rows above the icons and dark columns right of them: an icon touching the edge of
+/// the glass reads as cut off (owner, on the first preview).
+const ICON_MARGIN: u32 = 2;
+
+/// Where the link icons go: the top-right corner, [`ICON_MARGIN`] in from both edges, USB left of BLE. `None` when
 /// nothing is connected — then nothing is drawn and nothing is narrowed for them.
 pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
 	let n = u32::from(links.usb) + u32::from(links.ble);
@@ -169,7 +173,10 @@ pub fn icon_box(links: Links, width: u32) -> Option<Rectangle> {
 		return None;
 	}
 	let w = n * ICON.width + (n - 1) * ICON_GAP;
-	Some(Rectangle::new(Point::new(width as i32 - w as i32, 0), Size::new(w, ICON.height)))
+	Some(Rectangle::new(
+		Point::new(width as i32 - (ICON_MARGIN + w) as i32, ICON_MARGIN as i32),
+		Size::new(w, ICON.height),
+	))
 }
 
 fn draw_icons<D>(links: Links, width: u32, ink: BinaryColor, target: &mut D)
@@ -902,7 +909,7 @@ where
 /// The chart's header rows: the header text, and the link icons beside it. The trace starts
 /// under them, at the same row whether or not a host is connected, so a phone connecting
 /// does not move the scale.
-const HEADER_ROWS: i32 = ICON.height as i32 + 1;
+const HEADER_ROWS: i32 = (ICON_MARGIN + ICON.height) as i32 + 1;
 
 fn drawn_columns(samples: usize, plot_w: i32) -> usize {
 	samples.min(plot_w.max(0) as usize)
@@ -1333,11 +1340,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_icons_sit_in_the_top_right_corner_two_pixels_apart() {
+	fn the_icons_sit_two_pixels_in_from_the_corner_and_two_pixels_apart() {
 		assert_eq!(icon_box(Links::NONE, 256), None, "nothing connected, nothing drawn");
-		assert_eq!(icon_box(USB, 256), Some(Rectangle::new(Point::new(249, 0), ICON)));
-		assert_eq!(icon_box(BLE, 256), Some(Rectangle::new(Point::new(249, 0), ICON)));
-		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(240, 0), Size::new(16, 9))));
+		assert_eq!(icon_box(USB, 256), Some(Rectangle::new(Point::new(247, 2), ICON)));
+		assert_eq!(icon_box(BLE, 256), Some(Rectangle::new(Point::new(247, 2), ICON)));
+		assert_eq!(icon_box(BOTH, 256), Some(Rectangle::new(Point::new(238, 2), Size::new(16, 9))));
 	}
 
 	#[test]
@@ -1346,7 +1353,9 @@ mod tests {
 		draw_icons(Links::NONE, TALL.width, BinaryColor::On, &mut none);
 		assert!(!lit_in(&none, none.bounding_box()), "no link, no pixel");
 
-		let right = Rectangle::new(Point::new(249, 0), ICON);
+		// Every lit pixel is inside the icon box, so the two dark rows above it and the two
+		// dark columns right of it are checked by the loop below.
+		let right = Rectangle::new(Point::new(247, 2), ICON);
 		for links in [USB, BLE, BOTH] {
 			let mut display = tall();
 			draw_icons(links, TALL.width, BinaryColor::On, &mut display);
@@ -1359,8 +1368,8 @@ mod tests {
 			}
 			assert!(lit_in(&display, right), "{links:?}: the corner cell has its icon");
 			if links == BOTH {
-				assert!(lit_in(&display, Rectangle::new(Point::new(240, 0), ICON)), "and the one left of it");
-				assert!(!lit_in(&display, Rectangle::new(Point::new(247, 0), Size::new(2, 9))), "the gap is dark");
+				assert!(lit_in(&display, Rectangle::new(Point::new(238, 2), ICON)), "and the one left of it");
+				assert!(!lit_in(&display, Rectangle::new(Point::new(245, 2), Size::new(2, 9))), "the gap is dark");
 			}
 		}
 
@@ -1409,8 +1418,8 @@ mod tests {
 		let cells = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(78.0), "°C", 0).alarmed()];
 		let mut display = tall();
 		values(&cells, USB, &Theme::bold_mono(), &mut display);
-		assert!(lit(&display, 249, 3), "the ground beside the plug is lit");
-		assert!(!lit(&display, 251, 3), "the plug's body is dark on it");
+		assert!(lit(&display, 247, 5), "the ground beside the plug is lit");
+		assert!(!lit(&display, 249, 5), "the plug's body is dark on it");
 	}
 
 	#[test]
