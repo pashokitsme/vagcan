@@ -30,7 +30,7 @@ use embedded_graphics::text::Text;
 use u8g2_fonts::FontRenderer;
 use u8g2_fonts::types::{FontColor, HorizontalAlignment, VerticalPosition};
 
-use crate::frame::{Board, Cell, Frame, Links, Rates};
+use crate::frame::{Board, Cell, Deviation, Frame, Links, Rates};
 use crate::theme::{Numerals, Theme};
 
 /// Breathing room each side of a cell's contents.
@@ -40,6 +40,12 @@ use crate::theme::{Numerals, Theme};
 /// pixels is the smallest gap that still separates at a glance — which is the
 /// only kind of look this panel ever gets.
 const PAD: u32 = 3;
+
+/// Rows kept clear above the label and below the unit on a values page.
+///
+/// Owner, 2026-09-15: flush with the top and bottom edges the two small lines read as falling
+/// off the glass; pulled in, the cell reads as one block.
+const ROW_INSET: i32 = 2;
 
 /// What did not fit.
 ///
@@ -60,6 +66,11 @@ pub struct Report {
 	/// Not an error — it is the ladder working — but the generator should know,
 	/// because a page where every cell shrinks is a page with too many cells.
 	pub value_shrunk: bool,
+	/// A cell had a specified value to show and the panel had no room for the line.
+	///
+	/// The number and the unit survive; only the difference goes. A plan that sees this on
+	/// the board's own panel has asked for a page the glass cannot hold.
+	pub deviation_dropped: bool,
 	/// The font had no glyph for something it was asked to draw.
 	///
 	/// Reported because the alternative is what this cost an afternoon: a face
@@ -119,6 +130,97 @@ fn number(cell: &Cell<'_>) -> Buf {
 		}
 	}
 	buf
+}
+
+/// Rows between the sign and the digits it qualifies.
+const SIGN_GAP: i32 = 1;
+
+/// The difference as it is drawn: the sign a pixel smaller than the digits, across and down
+/// (owner, 2026-09-15), so `+` and `-` do not shout as loudly as the number.
+struct Difference {
+	/// Whether the sign is a minus. `None` for the dash of a pair that has not answered — a
+	/// dash is not a sign.
+	sign: Option<bool>,
+	digits: Buf,
+}
+
+/// The sign's box: a pixel shorter than the digits beside it, and as wide as it is tall.
+///
+/// Drawn from two lines rather than set from a face, because a face's `+` is whatever size
+/// that face is — this one has to be one pixel smaller than the digits, whichever face they
+/// are in.
+fn sign_size(theme: &Theme) -> i32 {
+	(text_height(&theme.label, "0") as i32 - 1).max(3)
+}
+
+/// The sign, sitting on `baseline` with its left edge at `left`.
+fn draw_sign<D>(negative: bool, left: i32, baseline: i32, size: i32, ink: BinaryColor, target: &mut D)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let stroke = PrimitiveStyle::with_stroke(ink, 1);
+	let top = baseline - size + 1;
+	let middle = baseline - size / 2;
+	let _ = Line::new(Point::new(left, middle), Point::new(left + size - 1, middle))
+		.into_styled(stroke)
+		.draw(target);
+	if !negative {
+		let _ = Line::new(Point::new(left + size / 2, top), Point::new(left + size / 2, baseline))
+			.into_styled(stroke)
+			.draw(target);
+	}
+}
+
+/// What a cell's difference reads as: `None` where the channel has no specified value at all
+/// and the line is not drawn.
+fn difference(cell: &Cell<'_>) -> Option<Difference> {
+	let mut digits = Buf::new();
+	match cell.deviation {
+		Deviation::None => None,
+		Deviation::Unknown => {
+			let _ = digits.write_str("--");
+			Some(Difference { sign: None, digits })
+		}
+		// Always signed: the sign is half the reading. `+0.07` is the unit getting more than
+		// it asked for, `-0.07` less.
+		Deviation::Value(v) => {
+			let magnitude = if v < 0.0 { -v } else { v };
+			let _ = write!(digits, "{:.*}", cell.decimals as usize, magnitude);
+			Some(Difference { sign: Some(v < 0.0), digits })
+		}
+	}
+}
+
+/// How wide it is drawn, the sign and its gap included.
+fn difference_width(theme: &Theme, text: &Difference) -> u32 {
+	let sign = text.sign.map_or(0, |_| (sign_size(theme) + SIGN_GAP) as u32);
+	sign + text_width(&theme.label, text.digits.as_str())
+}
+
+/// Draws it on `baseline`, centred on `centre`.
+fn draw_difference<D>(text: &Difference, centre: i32, baseline: i32, theme: &Theme, ink: BinaryColor, target: &mut D, report: &mut Report)
+where
+	D: DrawTarget<Color = BinaryColor>,
+{
+	let mut x = centre - difference_width(theme, text) as i32 / 2;
+	if let Some(negative) = text.sign {
+		let size = sign_size(theme);
+		draw_sign(negative, x, baseline, size, ink, target);
+		x += size + SIGN_GAP;
+	}
+	if theme
+		.label
+		.render(
+			text.digits.as_str(),
+			Point::new(x, baseline),
+			VerticalPosition::Baseline,
+			FontColor::Transparent(ink),
+			target,
+		)
+		.is_err()
+	{
+		report.glyph_missing = true;
+	}
 }
 
 /// Draw one frame with nothing connected and no rates measured. Returns what did not fit.
@@ -606,7 +708,16 @@ where
 		{
 			right = right.min(icons.top_left.x - ICON_CLEARANCE);
 		}
-		draw_label(cell.label, centre, (left, right), &theme.label, ink, target, &mut report);
+		draw_label(
+			cell.label,
+			centre,
+			(left, right),
+			layout.label_top,
+			&theme.label,
+			ink,
+			target,
+			&mut report,
+		);
 		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
 	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
@@ -620,6 +731,7 @@ where
 }
 
 /// What the whole row agreed on: one face, one unit policy, one arrangement.
+#[derive(Debug)]
 struct RowLayout {
 	/// Index into the theme's numeral ladder.
 	step: usize,
@@ -633,6 +745,19 @@ struct RowLayout {
 	/// different level from its neighbour's — a difference the eye reads as
 	/// meaning something when it means nothing.
 	band: (i32, i32),
+	/// The baseline of the deviation line, when the row has one: between the number and the
+	/// unit. `None` when no cell in the row has a specified value, or when the panel had no
+	/// room for a fourth line (then [`Report::deviation_dropped`] says so).
+	dev_baseline: Option<i32>,
+	/// Where the label's ink starts, and the baseline the unit sits on.
+	///
+	/// Every line's place is decided here, not at the edges: the air left after the lines'
+	/// boxes is shared between the gaps, so three lines and four lines both read as one block
+	/// rather than as text pushed against the top and bottom (owner, 2026-09-15). The gaps are
+	/// equal in the arithmetic, not on the glass: a numeral's box is a few rows taller than the
+	/// digits drawn in it, and that slack sits above the number.
+	label_top: i32,
+	unit_baseline: i32,
 }
 
 /// One face and one unit policy for the whole row.
@@ -663,18 +788,64 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 		.map(|c| text_height(&theme.unit, c.unit))
 		.max()
 		.unwrap_or(0);
-	let value_h = numeral_height(&theme.numerals[stacked_step], "0");
+	// A fourth line, of the small face, when any cell in the row has a specified value. The
+	// whole row keeps it or none of it does: one cell a line shorter than its neighbours reads
+	// as meaning something, the way an odd face would (see this function's note).
+	let wants_deviation = cells.iter().any(|cell| cell.deviation != Deviation::None);
+	// The label's face, not the unit's: the difference is a number a person reads, and at the
+	// unit's size it was too small to read at a glance (owner, 2026-09-15).
+	let dev_h = if wants_deviation { text_height(&theme.label, "0") } else { 0 };
 
 	// One pixel of air above and below the number. Any less and the tiers touch,
 	// which reads as one smeared block rather than three things.
-	if label_h + value_h + unit_h + 2 <= height {
-		let top = label_h as i32 + 1;
-		let bottom = height as i32 - unit_h as i32 - 1;
+	let fits = |step: usize, dev_h: u32| ROW_INSET as u32 * 2 + label_h + numeral_height(&theme.numerals[step], "0") + dev_h + unit_h + 2 <= height;
+	let mut step = stacked_step;
+	let mut dev_h = dev_h;
+	// The deviation buys its line from the number's face before it gives up: the number is
+	// still the thing being read, but a step of the ladder costs less than the difference.
+	while dev_h > 0 && step < theme.numerals.len() - 1 && !fits(step, dev_h) {
+		step += 1;
+	}
+	if dev_h > 0 && !fits(step, dev_h) {
+		report.deviation_dropped = true;
+		dev_h = 0;
+		step = stacked_step;
+	}
+	if fits(step, dev_h) {
+		// The boxes of the lines this row actually draws, and the air to share between them. A
+		// line of no height is not a line: a row of unlabelled cells has three boxes, not four,
+		// and counting a gap for the one that is not there pushed everything below it off the
+		// glass (review, 2026-09-15).
+		let value_h = numeral_height(&theme.numerals[step], "0") as i32;
+		let heights = [label_h as i32, value_h, dev_h as i32, unit_h as i32];
+		let ink: i32 = heights.iter().sum();
+		let drawn = heights.iter().filter(|h| **h > 0).count() as i32;
+		let gaps = (drawn - 1).max(1);
+		let air = (height as i32 - 2 * ROW_INSET - ink).max(0);
+		// The remainder goes above the number, the widest gap on the page anyway.
+		let (gap, over) = (air / gaps, air % gaps);
+		// One gap under a line, and only under one that was drawn.
+		let after = |h: i32, extra: i32| if h > 0 { h + gap + extra } else { 0 };
+
+		let mut y = ROW_INSET;
+		let label_top = y;
+		y += after(label_h as i32, over);
+		let value_top = y;
+		y += value_h + gap;
+		let dev_baseline = (dev_h > 0).then(|| {
+			let baseline = y + dev_h as i32;
+			y = baseline + gap;
+			baseline
+		});
+		let unit_baseline = if unit_h > 0 { y + unit_h as i32 } else { height as i32 - 1 - ROW_INSET };
 		return RowLayout {
-			step: stacked_step,
+			step,
 			with_unit: unit_h > 0,
 			tiered: true,
-			band: (top, bottom),
+			band: (value_top, value_top + value_h),
+			dev_baseline,
+			label_top,
+			unit_baseline,
 		};
 	}
 
@@ -699,11 +870,17 @@ fn row_layout(cells: &[Cell<'_>], theme: &Theme, inner: u32, height: u32, report
 			}
 		}
 	}
+	// The two-tier arrangement has the number and the unit on one line and no room for a
+	// third thing; a row that wanted a difference does not get one.
+	report.deviation_dropped |= wants_deviation;
 	RowLayout {
 		step,
 		with_unit,
 		tiered: false,
 		band: (0, height as i32 - 1),
+		dev_baseline: None,
+		label_top: 0,
+		unit_baseline: height as i32 - 1,
 	}
 }
 
@@ -725,7 +902,8 @@ fn unit_width(cell: &Cell<'_>, theme: &Theme, report: &mut Report) -> u32 {
 /// A label that fits is moved only as far as it must to stay inside — a short one stays over
 /// its number, a long one in a narrowed column slides left. One that does not fit is
 /// reported and drawn centred on its room anyway: it will collide, and the report says so.
-fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
+#[allow(clippy::too_many_arguments)]
+fn draw_label<D>(label: &str, centre: i32, span: (i32, i32), top: i32, font: &FontRenderer, ink: BinaryColor, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -742,7 +920,7 @@ where
 		};
 		let drawn = font.render(
 			label,
-			Point::new(x - ink_box.top_left.x, 0),
+			Point::new(x - ink_box.top_left.x, top),
 			VerticalPosition::Top,
 			FontColor::Transparent(ink),
 			target,
@@ -754,7 +932,7 @@ where
 	}
 	let drawn = font.render_aligned(
 		label,
-		Point::new(centre, 0),
+		Point::new(centre, top),
 		VerticalPosition::Top,
 		HorizontalAlignment::Center,
 		FontColor::Transparent(ink),
@@ -795,6 +973,9 @@ fn draw_value<D>(
 		let (top, bottom) = layout.band;
 		let baseline = top + (bottom - top - value_h as i32) / 2 + value_h as i32;
 		draw_numerals(numerals, text, Point::new(centre - value_w as i32 / 2, baseline), ink, target);
+		if let (Some(baseline), Some(text)) = (layout.dev_baseline, difference(cell)) {
+			draw_difference(&text, centre, baseline, theme, ink, target, report);
+		}
 		if layout.with_unit && !cell.unit.is_empty() {
 			// Unit last, on the floor, centred under the number. It is the
 			// smallest thing on the panel and the one you look at least.
@@ -802,7 +983,7 @@ fn draw_value<D>(
 				.unit
 				.render_aligned(
 					cell.unit,
-					Point::new(centre, height as i32 - 1),
+					Point::new(centre, layout.unit_baseline),
 					VerticalPosition::Baseline,
 					HorizontalAlignment::Center,
 					FontColor::Transparent(ink),
@@ -932,6 +1113,21 @@ fn drawn_columns(samples: usize, plot_w: i32) -> usize {
 	samples.min(plot_w.max(0) as usize)
 }
 
+/// The chart header's right-hand half: the scale's range, and how much time the trace holds.
+///
+/// **The seconds go when the channel has a specified value** (owner, 2026-09-14): the
+/// difference under the number is worth more than the window, and the header has room for one
+/// of them. A channel with no specified value keeps its seconds.
+fn chart_header(cell: &Cell<'_>, min: f32, max: f32, drawn: usize, seconds_per_sample: f32) -> Buf {
+	let mut head = Buf::new();
+	let d = cell.decimals as usize;
+	let _ = write!(head, "{min:.d$}-{max:.d$}{}", cell.unit);
+	if cell.deviation == Deviation::None {
+		let _ = write!(head, "  {:.0}s", drawn as f32 * seconds_per_sample);
+	}
+	head
+}
+
 #[allow(clippy::too_many_arguments)]
 fn chart<D>(cell: &Cell<'_>, min: f32, max: f32, samples: &[f32], seconds_per_sample: f32, links: Links, theme: &Theme, target: &mut D) -> Report
 where
@@ -968,7 +1164,13 @@ where
 		report.value_shrunk = true;
 	}
 	let plot_top = HEADER_ROWS;
-	let plot_x = value_w as i32 + 4;
+	// The column the number and its difference share: the wider of the two decides where the
+	// trace starts, or a long difference would run under it.
+	let deviation = difference(cell);
+	// The label's face: the numeral ladder's smallest was too big here (owner, 2026-09-15).
+	let dev_w = deviation.as_ref().map_or(0, |text| difference_width(theme, text));
+	let column_w = value_w.max(dev_w) as i32;
+	let plot_x = column_w + 4;
 	let plot_bottom = height as i32 - 1;
 	// The trace ends before the icons' column **whether or not a host is connected**: the icons
 	// stand one under the other, so a second one is beside the trace's top rows, and a plot
@@ -978,17 +1180,7 @@ where
 	// counts what the trace draws and the trace is only as wide as the plot.
 	let drawn = drawn_columns(samples.len(), plot_w);
 
-	let mut tail = Buf::new();
-	let _ = write!(
-		tail,
-		"{:.*}-{:.*}{}  {:.0}s",
-		cell.decimals as usize,
-		min,
-		cell.decimals as usize,
-		max,
-		cell.unit,
-		drawn as f32 * seconds_per_sample
-	);
+	let tail = chart_header(cell, min, max, drawn, seconds_per_sample);
 	match theme.unit.render(
 		tail.as_str(),
 		Point::new(after, 1),
@@ -1009,10 +1201,18 @@ where
 
 	// Centred in the band under the header, for the same reason as the values
 	// page: the number is what the eye came for, and on the floor it reads as an
-	// afterthought under the trace.
+	// afterthought under the trace. The difference from the specified value, when there is
+	// one, takes the floor under it.
+	// Both the number and the difference are centred in the column they share.
+	let dev_h = if deviation.is_some() { text_height(&theme.label, "0") as i32 } else { 0 };
+	let band_bottom = height as i32 - 1 - if dev_h > 0 { dev_h + 1 } else { 0 };
 	let value_h = numeral_height(&theme.numerals[step], buf.as_str());
-	let value_baseline = plot_top + (height as i32 - 1 - plot_top - value_h as i32) / 2 + value_h as i32;
-	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(0, value_baseline), ink, target);
+	let value_baseline = plot_top + (band_bottom - plot_top - value_h as i32) / 2 + value_h as i32;
+	let value_x = (column_w - value_w as i32) / 2;
+	draw_numerals(&theme.numerals[step], buf.as_str(), Point::new(value_x, value_baseline), ink, target);
+	if let Some(text) = deviation {
+		draw_difference(&text, column_w / 2, height as i32 - 1, theme, ink, target, &mut report);
+	}
 
 	if plot_w < 8 || max <= min {
 		report.value_overrun = plot_w < 8;
@@ -1320,6 +1520,206 @@ mod tests {
 		let mut display = panel();
 		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
 		assert!(report.label_overrun, "{report:?}");
+	}
+
+	#[test]
+	fn the_difference_signs_are_a_pixel_shorter_than_its_digits() {
+		let theme = Theme::bold_mono();
+		let digits = text_height(&theme.label, "0") as i32;
+		let size = sign_size(&theme);
+		assert_eq!(size, digits - 1, "a pixel shorter than the digits, and as wide as it is tall");
+
+		// Drawn on a blank panel: the plus is a cross of two strokes, the minus one bar, both
+		// inside a box of `size` sitting on the baseline.
+		for negative in [false, true] {
+			let mut display = tall();
+			let baseline = 40;
+			draw_sign(negative, 10, baseline, size, BinaryColor::On, &mut display);
+			let lit: std::vec::Vec<Point> = display
+				.bounding_box()
+				.points()
+				.filter(|p| display.get_pixel(*p) == BinaryColor::On)
+				.collect();
+			let rows: std::vec::Vec<i32> = lit.iter().map(|p| p.y).collect();
+			let columns: std::vec::Vec<i32> = lit.iter().map(|p| p.x).collect();
+			let (top, bottom) = (*rows.iter().min().unwrap(), *rows.iter().max().unwrap());
+			let (left, right) = (*columns.iter().min().unwrap(), *columns.iter().max().unwrap());
+			assert_eq!(right - left + 1, size, "{negative}: as wide as its box");
+			assert_eq!(left, 10, "{negative}: drawn from the left edge it was given");
+			if negative {
+				assert_eq!(top, bottom, "a minus is one bar");
+				assert_eq!(lit.len() as i32, size);
+			} else {
+				assert_eq!(bottom, baseline, "the plus stands on the baseline");
+				assert_eq!(bottom - top + 1, size, "and is a pixel shorter than the digits beside it");
+				assert_eq!(lit.len() as i32, 2 * size - 1, "two strokes crossing once");
+			}
+		}
+	}
+
+	#[test]
+	fn a_row_of_unlabelled_cells_still_fits_the_panel() {
+		// A line of no height is not a line, and must not be given a gap of its own: with one
+		// the unit slid off the bottom of the glass (review, 2026-09-15).
+		for deviation in [Deviation::None, Deviation::Value(0.07)] {
+			let cells = [Cell::new("", Some(1.92), "bar", 2).with_deviation(deviation)];
+			let theme = Theme::bold_mono();
+			let mut report = Report::default();
+			let layout = row_layout(&cells, &theme, TALL.width - 2 * PAD, TALL.height, &mut report);
+			assert!(layout.unit_baseline < TALL.height as i32, "{deviation:?}: {layout:?}");
+			if let Some(baseline) = layout.dev_baseline {
+				assert!(baseline < layout.unit_baseline, "{layout:?}");
+			}
+
+			let mut display = tall();
+			let report = values(&cells, Links::NONE, &theme, &mut display);
+			assert_eq!(report, Report::default(), "{deviation:?}: {report:?}");
+			// The bottom line is drawn, which it is not when it is pushed past the floor.
+			assert!(
+				(layout.unit_baseline - 6..=layout.unit_baseline).any(|y| lit_row(&display, y)),
+				"{deviation:?}: the unit is on the glass"
+			);
+		}
+	}
+
+	// --- a channel's specified value ----------------------------------------------------
+
+	/// A cell with a specified value behind it.
+	fn drifting<'a>(label: &'a str, value: f32, unit: &'a str, decimals: u8, deviation: Deviation) -> Cell<'a> {
+		Cell::new(label, Some(value), unit, decimals).with_deviation(deviation)
+	}
+
+	fn lit_row(display: &SimulatorDisplay<BinaryColor>, y: i32) -> bool {
+		(0..TALL.width as i32).any(|x| lit(display, x, y))
+	}
+
+	#[test]
+	fn a_cell_with_no_specified_value_is_drawn_exactly_as_before() {
+		let plain = [Cell::new("НАДДУВ", Some(1.82), "bar", 2), Cell::new("ОЖ", Some(93.0), "°C", 0)];
+		let marked = [
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2).with_deviation(Deviation::None),
+			Cell::new("ОЖ", Some(93.0), "°C", 0).with_deviation(Deviation::None),
+		];
+		let (mut a, mut b) = (tall(), tall());
+		let one = values(&plain, Links::NONE, &Theme::bold_mono(), &mut a);
+		let two = values(&marked, Links::NONE, &Theme::bold_mono(), &mut b);
+		assert_eq!(one, two);
+		assert!(a.bounding_box().points().all(|p| a.get_pixel(p) == b.get_pixel(p)));
+	}
+
+	#[test]
+	fn a_deviation_is_drawn_between_the_number_and_the_unit() {
+		let cells = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
+		let mut display = tall();
+		let report = values(&cells, Links::NONE, &Theme::bold_mono(), &mut display);
+		assert_eq!(report, Report::default(), "{report:?}");
+
+		let theme = Theme::bold_mono();
+		let layout = row_layout(&cells, &theme, TALL.width - 2 * PAD, TALL.height, &mut Report::default());
+		// The ink of a line ends a row above its baseline, so the line is looked for in the
+		// band between the number's floor and it.
+		let baseline = layout.dev_baseline.expect("the row keeps a line for the deviation");
+		assert!((layout.band.1..=baseline).any(|y| lit_row(&display, y)), "the deviation line is drawn");
+		assert!(baseline < TALL.height as i32 - 1, "above the unit");
+		assert!(
+			(baseline + 1..TALL.height as i32).any(|y| lit_row(&display, y)),
+			"the unit is still under it"
+		);
+	}
+
+	#[test]
+	fn an_unanswered_specified_value_draws_a_dash_and_keeps_the_line() {
+		let unknown = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Unknown)];
+		let answered = [drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07))];
+		let (mut a, mut b) = (tall(), tall());
+		values(&unknown, Links::NONE, &Theme::bold_mono(), &mut a);
+		values(&answered, Links::NONE, &Theme::bold_mono(), &mut b);
+		let layout = row_layout(&unknown, &Theme::bold_mono(), TALL.width - 2 * PAD, TALL.height, &mut Report::default());
+		let baseline = layout.dev_baseline.expect("the line is kept whether or not it answered");
+		assert!((layout.band.1..=baseline).any(|y| lit_row(&a, y)), "a dash is drawn");
+		assert!(
+			a.bounding_box().points().any(|p| a.get_pixel(p) != b.get_pixel(p)),
+			"and it is not the picture of an answered one"
+		);
+	}
+
+	#[test]
+	fn the_deviation_line_does_not_shrink_the_number_on_this_panel() {
+		let theme = Theme::bold_mono();
+		let cells: std::vec::Vec<Cell<'_>> = (0..4).map(|_| drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(-0.07))).collect();
+		let plain: std::vec::Vec<Cell<'_>> = (0..4).map(|_| Cell::new("НАДДУВ", Some(1.92), "bar", 2)).collect();
+		let inner = TALL.width / 4 - 2 * PAD;
+		let mut report = Report::default();
+		let with = row_layout(&cells, &theme, inner, TALL.height, &mut report);
+		let without = row_layout(&plain, &theme, inner, TALL.height, &mut Report::default());
+		assert_eq!(with.step, without.step, "the 64-row panel holds four lines at the same face");
+		assert!(!report.deviation_dropped, "{report:?}");
+	}
+
+	#[test]
+	fn a_panel_too_short_for_four_lines_drops_the_deviation_and_says_so() {
+		let cells = [drifting("ОЖ", 93.0, "°C", 0, Deviation::Value(1.0))];
+		let mut report = Report::default();
+		let layout = row_layout(&cells, &Theme::bold_mono(), PANEL.width - 2 * PAD, 24, &mut report);
+		assert!(report.deviation_dropped, "{report:?}");
+		assert!(layout.dev_baseline.is_none());
+	}
+
+	#[test]
+	fn a_chart_with_a_specified_value_shows_the_deviation_and_drops_the_seconds() {
+		let samples = [1.9f32; 120];
+		let cell = drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07));
+		let frame = Frame::Chart {
+			cell: drifting("НАДДУВ", 1.92, "bar", 2, Deviation::Value(0.07)),
+			min: 0.0,
+			max: 2.5,
+			samples: &samples,
+			seconds_per_sample: 0.2,
+		};
+		let mut display = tall();
+		let report = draw(&frame, &Theme::bold_mono(), &mut display);
+		assert_eq!(report, Report::default(), "{report:?}");
+
+		let head = chart_header(&cell, 0.0, 2.5, 120, 0.2);
+		assert!(head.as_str().contains("0.00-2.50bar"), "the range stays: {:?}", head.as_str());
+		assert!(!head.as_str().contains('s'), "no seconds: {:?}", head.as_str());
+		let plain = Cell::new("НАДДУВ", Some(1.92), "bar", 2);
+		let head = chart_header(&plain, 0.0, 2.5, 120, 0.2);
+		assert!(head.as_str().contains("24s"), "without one the seconds stay: {:?}", head.as_str());
+	}
+
+	#[test]
+	fn a_difference_wider_than_the_number_keeps_the_trace_out_of_its_column() {
+		// `-1234` is wider than `9`, so the column is the difference's and the trace starts past
+		// it rather than running under it.
+		static SAMPLES: [f32; 200] = [9.0; 200];
+		let of = |v: f32| Cell::new("ДАВЛЕНИЕ", Some(v), "bar", 0).with_deviation(Deviation::Value(-1234.0));
+		let frame = |samples: &'static [f32]| Frame::Chart {
+			cell: of(9.0),
+			min: 0.0,
+			max: 20.0,
+			samples,
+			seconds_per_sample: 0.2,
+		};
+		let mut display = tall();
+		let report = draw(&frame(&SAMPLES), &Theme::bold_mono(), &mut display);
+		assert!(!report.value_overrun, "{report:?}");
+
+		let theme = Theme::bold_mono();
+		let cell = of(9.0);
+		let (_, value_w, _) = fit(&theme.numerals, number(&cell).as_str(), 0, TALL.width / 3);
+		let dev_w = difference_width(&theme, &difference(&cell).unwrap());
+		assert!(dev_w > value_w, "the difference is the wider of the two: {dev_w} against {value_w}");
+
+		// Nothing of the trace in the column: with no samples at all the same rows hold the
+		// same pixels.
+		let mut empty = tall();
+		draw(&frame(&[]), &theme, &mut empty);
+		let column = Rectangle::new(Point::new(0, HEADER_ROWS), Size::new(dev_w, TALL.height - HEADER_ROWS as u32));
+		assert!(
+			column.points().all(|p| empty.get_pixel(p) == display.get_pixel(p)),
+			"the trace stays out of the number's column"
+		);
 	}
 
 	// --- the link icons ---------------------------------------------------------------

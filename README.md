@@ -57,7 +57,8 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
 - **Pages** are set per car in `dash.toml` and switched with the board's button.
-- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold the board shows the rule's page with the offending cell inverted. A short press silences it until the value comes back.
+- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted. A short press silences it until the value comes back.
+- **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.

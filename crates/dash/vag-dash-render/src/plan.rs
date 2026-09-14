@@ -22,7 +22,7 @@
 //! byte-order flag (`0x380A`, 690 /min read as 45570 by a reader that assumed
 //! big-endian) is exactly the bug a host test catches for free.
 
-use crate::alarm::{Alarm, ChannelId};
+use crate::alarm::{Alarm, ChannelId, Rule};
 
 /// The whole interface between the laptop and the device.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +129,13 @@ pub struct Channel {
 	/// Readings a second while a page showing it is on the glass — the owner's
 	/// `hz` in `dash.toml`, 2 when it gives none. Never derived on the board.
 	pub hz: f32,
+	/// The channel holding what the unit asked for, by its index into
+	/// [`Plan::channels`] — `None` where the plan pairs this one with nothing
+	/// (`todo/dash/18-setpoints-and-drift.md`).
+	///
+	/// Both are on the same unit and due together, so the planner asks for them in one `22`
+	/// and the difference is between two numbers from the same moment.
+	pub setpoint: Option<u16>,
 }
 
 /// The slowest a channel on no visible page is read: once a second, or its own
@@ -232,13 +239,13 @@ impl Plan {
 		self.channels.iter().enumerate().filter_map(move |(i, channel)| {
 			let index = i as u16;
 			let own = channel.period_ms();
-			if shown.contains(&index) || self.watched(index) {
+			if shown.contains(&index) || self.watched(index) || self.explains(index, shown) {
 				Some(Rate {
 					channel: index,
 					foreground: true,
 					period_ms: own,
 				})
-			} else if listed.contains(&index) {
+			} else if listed.contains(&index) || self.explains(index, listed) {
 				Some(Rate {
 					channel: index,
 					foreground: false,
@@ -250,9 +257,26 @@ impl Plan {
 		})
 	}
 
-	/// Whether any alarm watches the channel at `index`.
+	/// Whether any alarm watches the channel at `index`, either as a reading or as the
+	/// specified value a drift rule measures against.
 	pub fn watched(&self, index: u16) -> bool {
-		self.alarms.iter().any(|alarm| alarm.channels.contains(&ChannelId(index)))
+		self.alarms.iter().any(|alarm| {
+			alarm.channels.contains(&ChannelId(index))
+				|| match alarm.rule {
+					Rule::Threshold { .. } => false,
+					Rule::Drift { specified, .. } => specified.contains(&ChannelId(index)),
+				}
+		})
+	}
+
+	/// Whether the channel at `index` is the specified value of a channel in `set` — a
+	/// specified value is read exactly when the channel it explains is (`todo/dash/18` §2).
+	fn explains(&self, index: u16, set: &[u16]) -> bool {
+		self
+			.channels
+			.iter()
+			.enumerate()
+			.any(|(i, c)| c.setpoint == Some(index) && set.contains(&(i as u16)))
 	}
 
 	/// The channels one unit owns, in plan order — what one addressed
@@ -387,6 +411,7 @@ mod tests {
 			label: "",
 			proven: false,
 			hz: 2.0,
+			setpoint: None,
 		}
 	}
 
@@ -558,7 +583,7 @@ mod tests {
 
 	#[test]
 	fn a_channel_an_alarm_watches_is_read_at_its_own_rate_whatever_page_is_up() {
-		use crate::alarm::{Direction, PageId};
+		use crate::alarm::{Direction, PageId, Rule};
 		const FAST: Channel = Channel {
 			hz: 10.0,
 			..channel(0, 8, false, true, 1.0, 0.0)
@@ -568,9 +593,11 @@ mod tests {
 		static ALARMS: [Alarm<'static>; 1] = [Alarm {
 			channels: &WATCHED,
 			page: PageId(2),
-			trip: 10.0,
-			release: 8.0,
-			direction: Direction::Above,
+			rule: Rule::Threshold {
+				trip: 10.0,
+				release: 8.0,
+				direction: Direction::Above,
+			},
 		}];
 		let plan = Plan {
 			channels: &CHANNELS,
@@ -592,6 +619,32 @@ mod tests {
 			"a page switch demotes what was shown and not what the alarm watches"
 		);
 		assert_eq!(rates(&[], &[]), [(1, true, 100)], "watched even with no page asking for it");
+	}
+
+	#[test]
+	fn a_specified_value_is_read_exactly_when_the_channel_it_explains_is() {
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		// Channel 0 is paired with channel 1, which is on no page of its own.
+		const PAIRED: Channel = Channel { setpoint: Some(1), ..FAST };
+		const CHANNELS: [Channel; 3] = [PAIRED, FAST, channel(0, 8, false, true, 1.0, 0.0)];
+		let plan = Plan { channels: &CHANNELS, ..PLAN };
+		let rates = |shown: &[u16], listed: &[u16]| -> std::vec::Vec<(u16, bool, u32)> {
+			plan.rates(shown, listed).map(|r| (r.channel, r.foreground, r.period_ms)).collect()
+		};
+		assert_eq!(
+			rates(&[0], &[0, 2]),
+			[(0, true, 100), (1, true, 100), (2, false, 1000)],
+			"the specified value comes up with the channel it explains, at the same rate"
+		);
+		assert_eq!(
+			rates(&[2], &[0, 2]),
+			[(0, false, 1000), (1, false, 1000), (2, true, 500)],
+			"and goes to the background with it"
+		);
+		assert_eq!(rates(&[2], &[2]), [(2, true, 500)], "a pair on no page at all is not read");
 	}
 
 	#[test]

@@ -110,7 +110,7 @@ stored-config check at boot, whether opening the board's port twice resets it (�
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
 | [`dash/16-uds-over-ble.md`](dash/16-uds-over-ble.md) | built on `ble-uds`; bench passed (`research/dash/can-bring-up.md` §9.9–9.10), car pending |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench plan for 2026-09-14's work |
-| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — designed 2026-09-14, not built |
+| [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — built on `setpoint-drift` 2026-09-15, hardware-free; waits for a pair in the owner's `dash.toml` |
 
 Finished task files are in `.archive/tasks/done/`; superseded designs in `.archive/specs/`.
 

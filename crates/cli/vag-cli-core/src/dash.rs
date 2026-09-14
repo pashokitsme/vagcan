@@ -23,6 +23,7 @@
 //! label = "ОЖ"                     # optional; the glossary's wording otherwise
 //! decimals = 0                     # optional; derived from the scaling otherwise
 //! hz = 10                          # optional; how often the panel reads it, 2 otherwise
+//! setpoint = "01:IDE00190"         # optional; what the unit asked for, on the same unit
 //!
 //! [[channel]]
 //! ref = "02:IDE00102"
@@ -44,6 +45,15 @@
 //! direction = "above"              # or "below"
 //! trip = 105                       # fires at or past this
 //! release = 100                    # clears only once back past this
+//!
+//! [[alarm]]                        # the other kind: drift from a specified value
+//! kind = "drift"
+//! channels = ["01:IDE00191"]       # each with a `setpoint` of its own
+//! page = "MAIN"
+//! percent = 10                     # fires past this share of the specified value
+//! release_percent = 6              # clears under this share
+//! hold_ms = 1000                   # and only once the drift has held that long
+//! min_setpoint = 0.5               # under this specified value the rule says nothing
 //! ```
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
@@ -164,6 +174,11 @@ pub struct ChannelInput {
 	/// [`DEFAULT_HZ`] when absent. Written by the owner, never derived: a rate taken
 	/// from a unit of measure would be a guess about what the owner wants to see.
 	pub hz: Option<f64>,
+	/// The channel holding what the unit asked for, where the owner paired one
+	/// (`todo/dash/18-setpoints-and-drift.md`). Written down and never guessed: the label
+	/// files spell the two halves of a pair three different ways, and a wrong pair shows a
+	/// difference that means nothing.
+	pub setpoint: Option<Reference>,
 }
 
 /// A channel's rate when `dash.toml` gives none (owner, 2026-09-14).
@@ -190,15 +205,31 @@ pub enum Direction {
 	Above,
 }
 
+/// What an `[[alarm]]` watches for: a threshold, or drift from a specified value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlarmRuleInput {
+	Threshold {
+		direction: Direction,
+		trip: f64,
+		release: f64,
+	},
+	/// `todo/dash/18-setpoints-and-drift.md` §4. Every channel it watches must have a
+	/// `setpoint`, or there is nothing to be far from.
+	Drift {
+		percent: f64,
+		release_percent: f64,
+		hold_ms: u64,
+		min_setpoint: f64,
+	},
+}
+
 /// One `[[alarm]]` of the input: the owner's rule, never the code's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlarmInput {
 	pub channels: Vec<Reference>,
 	/// The title of the values page the rule raises.
 	pub page: String,
-	pub direction: Direction,
-	pub trip: f64,
-	pub release: f64,
+	pub rule: AlarmRuleInput,
 }
 
 /// The whole input, parsed and nothing more.
@@ -258,11 +289,20 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 					}
 				},
 			};
+			let setpoint = match table.get("setpoint") {
+				None => None,
+				Some(item) => Some(Reference::parse(
+					item
+						.as_str()
+						.ok_or_else(|| Error::Parse(format!("dash.toml: {reference}: setpoint is not a string")))?,
+				)?),
+			};
 			channels.push(ChannelInput {
 				reference,
 				label,
 				decimals,
 				hz,
+				setpoint,
 			});
 		}
 	}
@@ -333,30 +373,62 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 				})
 				.collect::<Result<Vec<_>, _>>()?;
 			let page = string(table.get("page"), &format!("alarm #{n}'s page"))?;
-			let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
-				"below" => Direction::Below,
-				"above" => Direction::Above,
-				other => {
-					return Err(Error::Parse(format!(
-						"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
-					)));
-				}
-			};
 			// The board compares in `f32`, so a threshold past what one holds is refused
 			// rather than turned into an infinity nothing ever reaches.
 			let threshold = |what: &str| match number(table.get(what)) {
 				Some(v) if v.is_finite() && (v as f32).is_finite() => Ok(v),
 				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
 			};
-			let trip = threshold("trip")?;
-			let release = threshold("release")?;
-			alarms.push(AlarmInput {
-				channels,
-				page,
-				direction,
-				trip,
-				release,
-			});
+			// No `kind` is the threshold rule, so every `dash.toml` written before drift
+			// existed still builds.
+			let rule = match table.get("kind").and_then(Item::as_str).map(str::trim).unwrap_or("threshold") {
+				"threshold" => {
+					let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
+						"below" => Direction::Below,
+						"above" => Direction::Above,
+						other => {
+							return Err(Error::Parse(format!(
+								"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
+							)));
+						}
+					};
+					AlarmRuleInput::Threshold {
+						direction,
+						trip: threshold("trip")?,
+						release: threshold("release")?,
+					}
+				}
+				"drift" => {
+					let share = |what: &str| match threshold(what)? {
+						v if v > 0.0 => Ok(v),
+						v => Err(Error::Parse(format!("dash.toml: alarm #{n}: {what} {v} is not above zero"))),
+					};
+					let hold_ms = match table.get("hold_ms").and_then(Item::as_integer) {
+						Some(ms) if ms >= 0 => ms as u64,
+						_ => {
+							return Err(Error::Parse(format!(
+								"dash.toml: alarm #{n} needs hold_ms, whole milliseconds the drift has to hold"
+							)));
+						}
+					};
+					let min_setpoint = match threshold("min_setpoint")? {
+						v if v >= 0.0 => v,
+						v => return Err(Error::Parse(format!("dash.toml: alarm #{n}: min_setpoint {v} is below zero"))),
+					};
+					AlarmRuleInput::Drift {
+						percent: share("percent")?,
+						release_percent: share("release_percent")?,
+						hold_ms,
+						min_setpoint,
+					}
+				}
+				other => {
+					return Err(Error::Parse(format!(
+						"dash.toml: alarm #{n}: kind {other:?} is not \"threshold\" or \"drift\""
+					)));
+				}
+			};
+			alarms.push(AlarmInput { channels, page, rule });
 		}
 	}
 	Ok(Input {
@@ -407,6 +479,17 @@ pub enum Error {
 	TooManyAlarms(usize),
 	/// More `[[page]]` tables than the board holds, [`MAX_PAGES`].
 	TooManyPages(usize),
+	/// One row declared twice under two spellings — `01:IDE00191` and `01:202A`.
+	SameRow {
+		first: Reference,
+		second: Reference,
+	},
+	/// A `setpoint` the plan cannot pair with its channel.
+	Setpoint {
+		channel: Reference,
+		setpoint: Reference,
+		why: String,
+	},
 }
 
 impl fmt::Display for Error {
@@ -428,6 +511,10 @@ impl fmt::Display for Error {
 			),
 			Error::NotLinear(r, s) => write!(f, "{r}: scaling is {s}, not linear — the device can multiply and nothing else"),
 			Error::Duplicate(r) => write!(f, "{r} is listed twice under [[channel]]"),
+			Error::SameRow { first, second } => write!(
+				f,
+				"{first} and {second} are the same row — one unit, identifier, bits and scaling written two ways; keep one [[channel]]"
+			),
 			Error::NotAnswered(r) => write!(f, "{r}: the survey asked the unit for this identifier and it did not answer"),
 			Error::NotFinite(r) => write!(f, "{r}: its scaling is not a finite number"),
 			Error::NoPartNumber(r) => write!(
@@ -438,6 +525,9 @@ impl fmt::Display for Error {
 			Error::Page(n, why) => write!(f, "page #{n}: {why}"),
 			Error::Alarm(n, why) => write!(f, "alarm #{n}: {why}"),
 			Error::TooManyPages(n) => write!(f, "{n} [[page]] tables, and the board holds at most {MAX_PAGES}"),
+			Error::Setpoint { channel, setpoint, why } => {
+				write!(f, "{channel}: its setpoint {setpoint} {why}")
+			}
 			Error::TooManyAlarms(n) => write!(
 				f,
 				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
@@ -479,6 +569,10 @@ pub struct Channel {
 	pub hz: f64,
 	/// Where the row came from: its text id, or the catalog's own name.
 	pub source: String,
+	/// The channel holding what the unit asked for, by index into the plan's channels. A
+	/// `plan.json` written before setpoints existed has none.
+	#[serde(default)]
+	pub setpoint: Option<u16>,
 }
 
 fn default_hz() -> f64 {
@@ -492,15 +586,33 @@ pub enum Page {
 	Values { title: String, cells: Vec<u16> },
 }
 
+/// One alarm's rule, resolved. `specified` is indices into the plan's channels, one per
+/// watched channel, in the same order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AlarmRule {
+	Threshold {
+		direction: Direction,
+		trip: f64,
+		release: f64,
+	},
+	Drift {
+		specified: Vec<u16>,
+		percent: f64,
+		release_percent: f64,
+		hold_ms: u64,
+		min_setpoint: f64,
+	},
+}
+
 /// One alarm, resolved: indices into the plan's channels and pages, which is what
 /// `vag_dash_render::alarm::ChannelId` and `PageId` are for an image built for one plan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Alarm {
 	pub channels: Vec<u16>,
 	pub page: u16,
-	pub direction: Direction,
-	pub trip: f64,
-	pub release: f64,
+	#[serde(flatten)]
+	pub rule: AlarmRule,
 }
 
 /// The plan, as `plan.json` holds it. [`to_rust`] writes the same content as
@@ -534,6 +646,153 @@ pub struct Built {
 	pub notes: Vec<String>,
 }
 
+/// What a channel reads on the bus: unit, identifier, and the bits taken from the answer —
+/// which is what makes two resolved channels one channel, however each was spelled.
+///
+/// Scaling is not part of it, and need not be: `plan::available` offers one row per field
+/// (unit, identifier, bit offset), a later definition replacing an earlier one, so one field
+/// never resolves to two scalings.
+fn read_of(c: &Channel) -> (u16, u16, u32, u32) {
+	(c.unit, c.did, c.bit_offset, c.bit_length)
+}
+
+/// The plan index of a channel the input names, by what the name resolves to: a page cell or an
+/// alarm channel may spell a row differently from its `[[channel]]` and still mean it. `None`
+/// when no `[[channel]]` resolves to that row.
+fn index_by_row(
+	reference: &Reference,
+	channels: &[Channel],
+	index_of: &BTreeMap<Reference, u16>,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+) -> Option<u16> {
+	if let Some(index) = index_of.get(reference) {
+		return Some(*index);
+	}
+	let probe = ChannelInput {
+		reference: reference.clone(),
+		label: None,
+		decimals: None,
+		hz: None,
+		setpoint: None,
+	};
+	let resolved = resolve_channel(&probe, offered, answered, units, &mut Vec::new()).ok()?;
+	channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16)
+}
+
+/// One `[[channel]]` against what the car reported and what the project knows: the same rules
+/// for a channel the owner named and for a specified value it paired with (`todo/dash/18`).
+fn resolve_channel(
+	wanted: &ChannelInput,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+	notes: &mut Vec<String>,
+) -> Result<Channel, Error> {
+	let request = wanted.reference.request();
+	if !units.iter().any(|u| u.request == request) {
+		return Err(Error::UnknownUnit(request));
+	}
+	let matches: Vec<&poll::Channel> = offered
+		.iter()
+		.filter(|c| c.request == request && c.def.is_some())
+		.filter(|c| match &wanted.reference {
+			Reference::TextId { text_id, .. } => c.text_id.as_deref() == Some(text_id.as_str()),
+			Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
+		})
+		.collect();
+	// A text id can name a field the device cannot show beside one it can:
+	// on the reference car every OBD-II parameter's id also sits on its
+	// "supported" bit in the `F400`/`F420`/… masks, an enum with no unit. A
+	// numeric cell can only take a linear row, so only those are candidates;
+	// what remains ambiguous is ambiguous.
+	let (linear, other): (Vec<&poll::Channel>, Vec<&poll::Channel>) = matches
+		.iter()
+		.partition(|c| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_))));
+	let found = match (linear.as_slice(), other.as_slice()) {
+		([one], _) => *one,
+		([], []) => return Err(Error::Undeclared(wanted.reference.clone())),
+		([], [first, ..]) => {
+			let kind = match first.def.as_ref().map(|d| &d.scaling) {
+				Some(Scaling::Enum { .. }) => "an enumeration",
+				Some(Scaling::Anchor { .. }) => "a single proven point with no slope",
+				_ => "not a quantity",
+			};
+			return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
+		}
+		(many, _) => {
+			let names = many
+				.iter()
+				.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
+				.collect();
+			return Err(Error::Ambiguous(wanted.reference.clone(), names));
+		}
+	};
+	let def = found.def.as_ref().expect("filtered on def");
+	let ReadId::Uds(did) = def.address;
+	let (factor, offset) = match &def.scaling {
+		Scaling::Linear(s) => (s.factor, s.offset),
+		Scaling::Enum { .. } => return Err(Error::NotLinear(wanted.reference.clone(), "an enumeration".to_string())),
+		Scaling::Anchor { .. } => {
+			return Err(Error::NotLinear(
+				wanted.reference.clone(),
+				"a single proven point with no slope".to_string(),
+			));
+		}
+	};
+	if !factor.is_finite() || !offset.is_finite() {
+		return Err(Error::NotFinite(wanted.reference.clone()));
+	}
+	// What the catalog declares is one thing; what the car answers is the
+	// survey's to say. Silence where the survey asked is a refusal to build
+	// on — an identifier that never comes back is a dash forever, and a
+	// plan is for showing numbers. Where the survey never asked, nothing
+	// is claimed either way (`Answered::saw`), and a standard OBD-II row
+	// says so in the log, because the standard mandates it and this car
+	// may still not carry it.
+	let standard = !found.proven && found.text_id.is_none();
+	match answered.and_then(|a| a.saw(request, did)) {
+		Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
+		None if standard => notes.push(format!(
+			"{}: a standard OBD-II row; the survey has no record of the car answering {did:04X}",
+			wanted.reference
+		)),
+		_ => {}
+	}
+	let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
+	let label = wanted.label.clone().unwrap_or_else(|| found.label());
+	let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
+	let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
+	let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
+	notes.push(format!(
+		"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
+		wanted.reference,
+		if signed { "i" } else { "u" },
+		if big_endian { "BE" } else { "LE" },
+		if bit_length % 8 == 0 { "" } else { " bits" },
+		if found.proven { "proven" } else { "declared" },
+		source
+	));
+	Ok(Channel {
+		unit: request,
+		did,
+		bit_offset,
+		bit_length,
+		signed,
+		big_endian,
+		factor,
+		offset,
+		decimals,
+		unit_text: def.unit.to_string(),
+		label,
+		proven: found.proven,
+		hz,
+		source,
+		setpoint: None,
+	})
+}
+
 /// Resolve an input against what the car reported and what the project knows.
 ///
 /// `units` are the car's own words about itself (from its survey); `store` and
@@ -554,111 +813,110 @@ pub fn build(
 	let mut index_of: BTreeMap<Reference, u16> = BTreeMap::new();
 
 	for wanted in &input.channels {
-		let request = wanted.reference.request();
 		if index_of.contains_key(&wanted.reference) {
 			return Err(Error::Duplicate(wanted.reference.clone()));
 		}
-		if !units.iter().any(|u| u.request == request) {
-			return Err(Error::UnknownUnit(request));
+		let mut resolution = Vec::new();
+		let resolved = resolve_channel(wanted, &offered, answered, units, &mut resolution)?;
+		// The same row under its other spelling is the same row: `01:IDE00191` and `01:202A`
+		// would otherwise both be added, both subscribed and both drawable (review,
+		// 2026-09-15).
+		if let Some(at) = channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
+			return Err(Error::SameRow {
+				first: input.channels[at].reference.clone(),
+				second: wanted.reference.clone(),
+			});
 		}
-		let matches: Vec<&poll::Channel> = offered
-			.iter()
-			.filter(|c| c.request == request && c.def.is_some())
-			.filter(|c| match &wanted.reference {
-				Reference::TextId { text_id, .. } => c.text_id.as_deref() == Some(text_id.as_str()),
-				Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
-			})
-			.collect();
-		// A text id can name a field the device cannot show beside one it can:
-		// on the reference car every OBD-II parameter's id also sits on its
-		// "supported" bit in the `F400`/`F420`/… masks, an enum with no unit. A
-		// numeric cell can only take a linear row, so only those are candidates;
-		// what remains ambiguous is ambiguous.
-		let (linear, other): (Vec<&poll::Channel>, Vec<&poll::Channel>) = matches
-			.iter()
-			.partition(|c| matches!(c.def.as_ref().map(|d| &d.scaling), Some(Scaling::Linear(_))));
-		let found = match (linear.as_slice(), other.as_slice()) {
-			([one], _) => *one,
-			([], []) => return Err(Error::Undeclared(wanted.reference.clone())),
-			([], [first, ..]) => {
-				let kind = match first.def.as_ref().map(|d| &d.scaling) {
-					Some(Scaling::Enum { .. }) => "an enumeration",
-					Some(Scaling::Anchor { .. }) => "a single proven point with no slope",
-					_ => "not a quantity",
-				};
-				return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
-			}
-			(many, _) => {
-				let names = many
-					.iter()
-					.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
-					.collect();
-				return Err(Error::Ambiguous(wanted.reference.clone(), names));
-			}
-		};
-		let def = found.def.as_ref().expect("filtered on def");
-		let ReadId::Uds(did) = def.address;
-		let (factor, offset) = match &def.scaling {
-			Scaling::Linear(s) => (s.factor, s.offset),
-			Scaling::Enum { .. } => return Err(Error::NotLinear(wanted.reference.clone(), "an enumeration".to_string())),
-			Scaling::Anchor { .. } => {
-				return Err(Error::NotLinear(
-					wanted.reference.clone(),
-					"a single proven point with no slope".to_string(),
-				));
-			}
-		};
-		if !factor.is_finite() || !offset.is_finite() {
-			return Err(Error::NotFinite(wanted.reference.clone()));
-		}
-		// What the catalog declares is one thing; what the car answers is the
-		// survey's to say. Silence where the survey asked is a refusal to build
-		// on — an identifier that never comes back is a dash forever, and a
-		// plan is for showing numbers. Where the survey never asked, nothing
-		// is claimed either way (`Answered::saw`), and a standard OBD-II row
-		// says so in the log, because the standard mandates it and this car
-		// may still not carry it.
-		let standard = !found.proven && found.text_id.is_none();
-		match answered.and_then(|a| a.saw(request, did)) {
-			Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
-			None if standard => notes.push(format!(
-				"{}: a standard OBD-II row; the survey has no record of the car answering {did:04X}",
-				wanted.reference
-			)),
-			_ => {}
-		}
-		let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
-		let label = wanted.label.clone().unwrap_or_else(|| found.label());
-		let decimals = wanted.decimals.unwrap_or_else(|| decimals_for(factor));
-		let source = found.text_id.clone().unwrap_or_else(|| def.name.to_string());
-		let hz = wanted.hz.unwrap_or(DEFAULT_HZ);
-		notes.push(format!(
-			"{label} ← {} {did:04X}@{bit_offset}/{bit_length} {} {}{} ×{factor} {offset:+} at {hz} Hz {} ({})",
-			wanted.reference,
-			if signed { "i" } else { "u" },
-			if big_endian { "BE" } else { "LE" },
-			if bit_length % 8 == 0 { "" } else { " bits" },
-			if found.proven { "proven" } else { "declared" },
-			source
-		));
+		notes.append(&mut resolution);
 		let index = channels.len() as u16;
-		channels.push(Channel {
-			unit: request,
-			did,
-			bit_offset,
-			bit_length,
-			signed,
-			big_endian,
-			factor,
-			offset,
-			decimals,
-			unit_text: def.unit.to_string(),
-			label,
-			proven: found.proven,
-			hz,
-			source,
-		});
+		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
+	}
+
+	// Second pass, so a setpoint may name a channel the input declares later — and so a
+	// setpoint the input does not declare at all is appended once, after everything the
+	// owner asked for by name.
+	for (i, wanted) in input.channels.iter().enumerate() {
+		let Some(reference) = wanted.setpoint.clone() else {
+			continue;
+		};
+		let refuse = |why: &str| {
+			Err(Error::Setpoint {
+				channel: wanted.reference.clone(),
+				setpoint: reference.clone(),
+				why: why.to_string(),
+			})
+		};
+		if reference.request() != wanted.reference.request() {
+			// Two units are two exchanges and two moments; the difference between them would
+			// be partly the delay (`todo/dash/18` §2).
+			return refuse("is on another unit — a pair is read in one request, so both halves live on one");
+		}
+		// **Resolved, then compared — never compared as spellings.** `01:IDE00191` and
+		// `01:202A` are two ways of writing one row, and a pair that looked different but read
+		// the same identifier would draw `+0.00` for ever and never trip a drift rule
+		// (review, 2026-09-15).
+		let hidden = ChannelInput {
+			reference: reference.clone(),
+			label: None,
+			decimals: wanted.decimals,
+			hz: wanted.hz,
+			setpoint: None,
+		};
+		// Resolved into a log of its own: a setpoint that turns out to be a channel the input
+		// already has is not added, and a build log saying it was would be a lie.
+		let mut resolution = Vec::new();
+		let resolved = match index_of.get(&reference) {
+			// Already a `[[channel]]`: the owner's own, with the rate they gave it.
+			Some(index) => channels[*index as usize].clone(),
+			None => resolve_channel(&hidden, &offered, answered, units, &mut resolution)?,
+		};
+		// The same read is refused whatever the scaling: one raw value scaled two ways and
+		// subtracted from itself is not a difference anyone asked for. The width is part of the
+		// read — two fields can share an identifier and an offset (review, 2026-09-15).
+		if read_of(&resolved) == read_of(&channels[i]) {
+			return refuse("is the channel itself — the same unit, identifier and bits, however it is spelled");
+		}
+		// Its own `[[channel]]`, by the channel it resolves to rather than by how it was written.
+		let existing = channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16);
+		if let Some(index) = existing
+			&& usize::from(index) < input.channels.len()
+			&& input.channels[usize::from(index)].setpoint.is_some()
+		{
+			return refuse("has a setpoint of its own");
+		}
+		// What is actually paired: the existing channel where there is one — with the rate and
+		// unit it was declared with, however its spelling differs from this one — and the fresh
+		// resolution otherwise (review, 2026-09-15).
+		let paired = existing.map_or(&resolved, |index| &channels[usize::from(index)]);
+		// Both halves go out in one request only if both are due at the same rate; at two rates
+		// the difference is between numbers up to a period apart.
+		if paired.hz != channels[i].hz {
+			return refuse(&format!(
+				"is read at {} Hz and the channel it explains at {} Hz — a pair is read in one request, so they share a rate",
+				paired.hz, channels[i].hz
+			));
+		}
+		if paired.unit_text != channels[i].unit_text {
+			return refuse(&format!(
+				"reads in {:?} against the channel's {:?}",
+				paired.unit_text, channels[i].unit_text
+			));
+		}
+		let index = match existing {
+			Some(index) => index,
+			None => {
+				// Not a `[[channel]]` of its own: added once, at its channel's rate, and never
+				// offered as a cell.
+				let index = channels.len() as u16;
+				channels.push(resolved);
+				index_of.insert(reference.clone(), index);
+				notes.append(&mut resolution);
+				index
+			}
+		};
+		channels[i].setpoint = Some(index);
+		notes.push(format!("{}: its specified value is {reference}", wanted.reference));
 	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
@@ -690,7 +948,7 @@ pub fn build(
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
 		let index = |r: &Reference| {
-			index_of.get(r).copied().ok_or_else(|| Error::PageRefersToUnknown {
+			index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| Error::PageRefersToUnknown {
 				page: n,
 				reference: r.clone(),
 			})
@@ -736,12 +994,7 @@ pub fn build(
 		let watched = wanted
 			.channels
 			.iter()
-			.map(|r| {
-				index_of
-					.get(r)
-					.copied()
-					.ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list")))
-			})
+			.map(|r| index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list"))))
 			.collect::<Result<Vec<u16>, _>>()?;
 		// The page is named by title, and only a values page has one: a takeover shows
 		// cells, and a chart has one cell and no room to invert it.
@@ -775,36 +1028,75 @@ pub fn build(
 				wanted.page
 			)));
 		}
-		let (trip, release) = (wanted.trip, wanted.release);
+		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
 		// Compared as the board will compare them, in `f32`: two thresholds a hair apart in
 		// the file can be one value there, and one value is no hysteresis.
-		let (board_trip, board_release) = (trip as f32, release as f32);
-		match wanted.direction {
-			Direction::Below if board_release <= board_trip => {
-				return Err(refuse(format!(
-					"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
-				)));
+		let rule = match wanted.rule {
+			AlarmRuleInput::Threshold { direction, trip, release } => {
+				let (board_trip, board_release) = (trip as f32, release as f32);
+				match direction {
+					Direction::Below if board_release <= board_trip => {
+						return Err(refuse(format!(
+							"release {board_release} is not above trip {board_trip} — a \"below\" alarm releases above where it trips"
+						)));
+					}
+					Direction::Above if board_release >= board_trip => {
+						return Err(refuse(format!(
+							"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
+						)));
+					}
+					_ => {}
+				}
+				notes.push(format!(
+					"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
+					refs.join(", "),
+					if direction == Direction::Below { "below" } else { "above" },
+					wanted.page
+				));
+				AlarmRule::Threshold { direction, trip, release }
 			}
-			Direction::Above if board_release >= board_trip => {
-				return Err(refuse(format!(
-					"release {board_release} is not below trip {board_trip} — an \"above\" alarm releases below where it trips"
-				)));
+			AlarmRuleInput::Drift {
+				percent,
+				release_percent,
+				hold_ms,
+				min_setpoint,
+			} => {
+				if release_percent as f32 >= percent as f32 {
+					return Err(refuse(format!(
+						"release_percent {release_percent} is not under percent {percent} — a drift alarm releases under where it trips"
+					)));
+				}
+				// Every watched channel needs the other half of its pair, or the rule has
+				// nothing to measure against.
+				let mut specified = Vec::new();
+				for (r, index) in wanted.channels.iter().zip(&watched) {
+					match channels[*index as usize].setpoint {
+						Some(s) => specified.push(s),
+						None => {
+							return Err(refuse(format!(
+								"{r} has no setpoint — a drift rule watches channels the plan pairs with a specified value"
+							)));
+						}
+					}
+				}
+				notes.push(format!(
+					"alarm #{n}: {} more than {percent}% from its specified value for {hold_ms} ms, released under {release_percent}%, ignored under {min_setpoint} → page {:?}",
+					refs.join(", "),
+					wanted.page
+				));
+				AlarmRule::Drift {
+					specified,
+					percent,
+					release_percent,
+					hold_ms,
+					min_setpoint,
+				}
 			}
-			_ => {}
-		}
-		let refs: Vec<String> = wanted.channels.iter().map(ToString::to_string).collect();
-		notes.push(format!(
-			"alarm #{n}: {} at or {} {trip}, released past {release} → page {:?}",
-			refs.join(", "),
-			if wanted.direction == Direction::Below { "below" } else { "above" },
-			wanted.page
-		));
+		};
 		alarms.push(Alarm {
 			channels: watched,
 			page: page as u16,
-			direction: wanted.direction,
-			trip,
-			release,
+			rule,
 		});
 	}
 
@@ -856,6 +1148,19 @@ fn decimals_for(factor: f64) -> u8 {
 	(-factor.log10()).ceil().clamp(0.0, 3.0) as u8
 }
 
+/// The alarm types the generated plan names, so nothing is imported unused.
+fn alarm_imports(plan: &Plan) -> Vec<&'static str> {
+	let mut imports = vec!["Alarm"];
+	if plan.alarms.is_empty() {
+		return imports;
+	}
+	imports.extend(["ChannelId", "PageId", "Rule"]);
+	if plan.alarms.iter().any(|a| matches!(a.rule, AlarmRule::Threshold { .. })) {
+		imports.push("Direction");
+	}
+	imports
+}
+
 /// The plan as Rust source: a `static PLAN` of `vag_dash_render::plan::Plan`.
 pub fn to_rust(plan: &Plan) -> String {
 	use std::fmt::Write as _;
@@ -869,12 +1174,16 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out, "// Generated by `vagcan dev dash build` for VIN {}.", plan.vin);
 	let _ = writeln!(out, "// Derived from VW's data and one owner's car: do not edit, do not commit.");
 	let _ = writeln!(out, "use vag_dash_render::plan::{{Channel, Page, Plan, Unit}};");
-	// A plan with no rules names none of the other alarm types, so none is imported unused.
-	if plan.alarms.is_empty() {
-		let _ = writeln!(out, "use vag_dash_render::alarm::Alarm;");
-	} else {
-		let _ = writeln!(out, "use vag_dash_render::alarm::{{Alarm, ChannelId, Direction, PageId}};");
-	}
+	// Only what the rules actually name: the firmware lints the generated file with
+	// `-D warnings`, so an unused import is a build that fails (review, 2026-09-15). A plan
+	// whose rules are all drift never names `Direction`; one with no rules names nothing but
+	// the type itself.
+	let mut imports = alarm_imports(plan);
+	imports.sort_unstable();
+	let _ = match imports.as_slice() {
+		[one] => writeln!(out, "use vag_dash_render::alarm::{one};"),
+		many => writeln!(out, "use vag_dash_render::alarm::{{{}}};", many.join(", ")),
+	};
 	let _ = writeln!(out);
 	let _ = writeln!(
 		out,
@@ -896,7 +1205,7 @@ pub fn to_rust(plan: &Plan) -> String {
 	for c in &plan.channels {
 		let _ = writeln!(
 			out,
-			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {} }},",
+			"\tChannel {{ unit: 0x{:03X}, did: 0x{:04X}, bit_offset: {}, bit_length: {}, signed: {}, big_endian: {}, factor: {}, offset: {}, decimals: {}, unit_text: {:?}, label: {:?}, proven: {}, hz: {}, setpoint: {} }},",
 			c.unit,
 			c.did,
 			c.bit_offset,
@@ -909,7 +1218,11 @@ pub fn to_rust(plan: &Plan) -> String {
 			c.unit_text,
 			c.label,
 			c.proven,
-			float(c.hz)
+			float(c.hz),
+			match c.setpoint {
+				Some(index) => format!("Some({index})"),
+				None => "None".to_string(),
+			}
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -934,26 +1247,49 @@ pub fn to_rust(plan: &Plan) -> String {
 	let _ = writeln!(out, "];");
 	let _ = writeln!(out);
 	for (i, a) in plan.alarms.iter().enumerate() {
-		let list: Vec<String> = a.channels.iter().map(|c| format!("ChannelId({c})")).collect();
-		let _ = writeln!(
-			out,
-			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = [{}];",
-			a.channels.len(),
-			list.join(", ")
-		);
-	}
-	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
-	for (i, a) in plan.alarms.iter().enumerate() {
-		let direction = match a.direction {
-			Direction::Below => "Below",
-			Direction::Above => "Above",
+		let ids = |channels: &[u16]| {
+			let list: Vec<String> = channels.iter().map(|c| format!("ChannelId({c})")).collect();
+			format!("[{}]", list.join(", "))
 		};
 		let _ = writeln!(
 			out,
-			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), trip: {}, release: {}, direction: Direction::{direction} }},",
-			a.page,
-			float(a.trip),
-			float(a.release)
+			"static ALARM_CHANNELS_{i}: [ChannelId; {}] = {};",
+			a.channels.len(),
+			ids(&a.channels)
+		);
+		if let AlarmRule::Drift { specified, .. } = &a.rule {
+			let _ = writeln!(out, "static ALARM_SPECIFIED_{i}: [ChannelId; {}] = {};", specified.len(), ids(specified));
+		}
+	}
+	let _ = writeln!(out, "static ALARMS: [Alarm<'static>; {}] = [", plan.alarms.len());
+	for (i, a) in plan.alarms.iter().enumerate() {
+		let rule = match &a.rule {
+			AlarmRule::Threshold { direction, trip, release } => format!(
+				"Rule::Threshold {{ trip: {}, release: {}, direction: Direction::{} }}",
+				float(*trip),
+				float(*release),
+				match direction {
+					Direction::Below => "Below",
+					Direction::Above => "Above",
+				}
+			),
+			AlarmRule::Drift {
+				percent,
+				release_percent,
+				hold_ms,
+				min_setpoint,
+				..
+			} => format!(
+				"Rule::Drift {{ specified: &ALARM_SPECIFIED_{i}, percent: {}, release_percent: {}, hold_ms: {hold_ms}, min_setpoint: {} }}",
+				float(*percent),
+				float(*release_percent),
+				float(*min_setpoint)
+			),
+		};
+		let _ = writeln!(
+			out,
+			"\tAlarm {{ channels: &ALARM_CHANNELS_{i}, page: PageId({}), rule: {rule} }},",
+			a.page
 		);
 	}
 	let _ = writeln!(out, "];");
@@ -1142,6 +1478,245 @@ mod tests {
 		)
 	}
 
+	/// A unit with a channel and the specified value behind it, and whatever the test appends.
+	fn build_with_setpoint(extra: &str) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x202A, "Boost pressure", "IDE00191", 0, 16, false, true, 0.001, 0.0),
+					reading(0x2029, "Boost pressure commanded value", "IDE00190", 0, 16, false, true, 0.001, 0.0),
+					Reading {
+						unit: Some("bar".to_string()),
+						..reading(0x2030, "In another unit", "IDE00999", 0, 16, false, true, 0.001, 0.0)
+					},
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let text = format!("vin = \"TESTVIN0000000001\"\n{extra}{}", values_page_titled("A", &["01:IDE00191"]),);
+		build(
+			&parse_input(&text)?,
+			&store,
+			&extracted,
+			&[identity(ENGINE, "PART1", "EV_Test")],
+			None,
+			Language::En,
+		)
+	}
+
+	#[test]
+	fn a_setpoint_becomes_a_channel_of_its_own_and_its_index_is_kept() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 10\n").unwrap();
+		assert_eq!(built.plan.channels.len(), 2, "the specified value was added");
+		let actual = &built.plan.channels[0];
+		let specified = &built.plan.channels[1];
+		assert_eq!(actual.setpoint, Some(1));
+		assert_eq!(specified.did, 0x2029);
+		assert_eq!(specified.setpoint, None, "the pair does not nest");
+		assert_eq!(specified.hz, actual.hz, "read as often as the channel it explains");
+		assert_eq!(specified.unit, actual.unit, "one unit, so one request");
+		assert!(to_rust(&built.plan).contains("setpoint: Some(1)"), "the firmware's plan carries it");
+	}
+
+	#[test]
+	fn a_setpoint_the_input_already_declares_is_not_added_twice() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap();
+		assert_eq!(built.plan.channels.len(), 2);
+		assert_eq!(built.plan.channels[0].setpoint, Some(1));
+	}
+
+	#[test]
+	fn a_setpoint_on_another_unit_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"02:IDE00190\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("another unit")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_in_another_unit_of_measure_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00999\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("reads in")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_that_is_the_channel_itself_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00191\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("the channel itself")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_with_a_setpoint_of_its_own_is_refused() {
+		let why = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n[[channel]]\nref = \"01:IDE00190\"\nsetpoint = \"01:IDE00999\"\n",
+		)
+		.unwrap_err();
+		assert!(
+			matches!(&why, Error::Setpoint { why, .. } if why.contains("setpoint of its own")),
+			"{why}"
+		);
+	}
+
+	/// The drift rule the tests build on: page `A` shows the drifting channel.
+	fn drift_alarm(percent: f64, release_percent: f64) -> String {
+		format!(
+			"[[alarm]]\nkind = \"drift\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\npercent = {percent:?}\nrelease_percent = {release_percent:?}\nhold_ms = 1000\nmin_setpoint = 0.5\n"
+		)
+	}
+
+	#[test]
+	fn a_drift_rule_reaches_both_outputs_with_the_pair_it_watches() {
+		let built = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 6.0)
+		))
+		.unwrap();
+		assert_eq!(
+			built.plan.alarms,
+			vec![Alarm {
+				channels: vec![0],
+				page: 0,
+				rule: AlarmRule::Drift {
+					specified: vec![1],
+					percent: 10.0,
+					release_percent: 6.0,
+					hold_ms: 1000,
+					min_setpoint: 0.5,
+				},
+			}]
+		);
+		let json = built.plan.to_json();
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert!(json.contains("\"kind\": \"drift\""), "{json}");
+		let rust = to_rust(&built.plan);
+		assert!(rust.contains("static ALARM_SPECIFIED_0: [ChannelId; 1] = [ChannelId(1)];"), "{rust}");
+		assert!(
+			rust.contains("rule: Rule::Drift { specified: &ALARM_SPECIFIED_0, percent: 10.0, release_percent: 6.0, hold_ms: 1000, min_setpoint: 0.5 }"),
+			"{rust}"
+		);
+	}
+
+	#[test]
+	fn a_drift_rule_over_a_channel_with_no_specified_value_is_refused() {
+		let why = build_with_setpoint(&format!("[[channel]]\nref = \"01:IDE00191\"\n{}", drift_alarm(10.0, 6.0))).unwrap_err();
+		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("has no setpoint")), "{why}");
+	}
+
+	#[test]
+	fn a_drift_rule_that_does_not_release_under_its_percent_is_refused() {
+		let why = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 10.0)
+		))
+		.unwrap_err();
+		assert!(matches!(&why, Error::Alarm(1, why) if why.contains("releases under")), "{why}");
+	}
+
+	#[test]
+	fn an_alarm_of_an_unknown_kind_is_refused() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nkind = \"wobble\"\nchannels = [\"01:IDE00191\"]\npage = \"A\"\n")
+			.unwrap_err();
+		assert!(
+			matches!(&why, Error::Parse(why) if why.contains("is not \"threshold\" or \"drift\"")),
+			"{why}"
+		);
+	}
+
+	#[test]
+	fn a_setpoint_spelled_as_an_identifier_is_the_same_row_as_its_text_id() {
+		// `01:202A` and `01:IDE00191` are one row written two ways: pairing a channel with
+		// itself that way drew `+0.00` for ever before the build compared resolved rows.
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:202A\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("the channel itself")), "{why}");
+	}
+
+	#[test]
+	fn a_setpoint_and_its_channel_spelled_differently_are_one_channel() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:2029\"\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap();
+		assert_eq!(built.plan.channels.len(), 2, "the specified value is not added twice");
+		assert_eq!(built.plan.channels[0].setpoint, Some(1));
+	}
+
+	#[test]
+	fn a_setpoint_read_at_another_rate_than_its_channel_is_refused() {
+		// Two rates are two moments, and the difference would be between numbers up to a
+		// period apart.
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 10\n[[channel]]\nref = \"01:IDE00190\"\n")
+			.unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("share a rate")), "{why}");
+	}
+
+	#[test]
+	fn a_plan_whose_rules_are_all_drift_does_not_import_direction() {
+		// The firmware lints the generated plan with `-D warnings`, so an unused import is a
+		// build that fails.
+		let built = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 6.0)
+		))
+		.unwrap();
+		let rust = to_rust(&built.plan);
+		assert!(rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, PageId, Rule};"), "{rust}");
+		assert!(!rust.contains("Direction"), "{rust}");
+	}
+
+	#[test]
+	fn two_channels_sharing_an_undeclared_setpoint_must_share_its_rate() {
+		// The second pairing would read the same specified value at another rate, so the
+		// difference would be between numbers up to a period apart.
+		let why = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 10\n[[channel]]\nref = \"01:IDE00999\"\nsetpoint = \"01:IDE00190\"\n",
+		)
+		.unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("share a rate")), "{why}");
+	}
+
+	#[test]
+	fn one_row_declared_under_both_spellings_is_refused_naming_both() {
+		let why = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\n[[channel]]\nref = \"01:202A\"\n").unwrap_err();
+		assert!(
+			matches!(&why, Error::SameRow { first, second } if first.to_string() == "01:IDE00191" && second.to_string() == "01:202A"),
+			"{why}"
+		);
+		let said = why.to_string();
+		assert!(said.contains("01:IDE00191") && said.contains("01:202A"), "{said}");
+	}
+
+	#[test]
+	fn a_setpoint_spelled_differently_from_its_channel_must_still_share_its_rate() {
+		// Spelled `01:2029`, declared as `01:IDE00190` at 2 Hz, paired with a 10 Hz channel: the
+		// rate compared is the declared channel's, not the fresh resolution's.
+		let why =
+			build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:2029\"\nhz = 10\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap_err();
+		assert!(matches!(&why, Error::Setpoint { why, .. } if why.contains("share a rate")), "{why}");
+	}
+
+	#[test]
+	fn a_page_and_an_alarm_may_spell_a_channel_as_its_other_spelling() {
+		let built = build_with_setpoint(
+			"[[channel]]\nref = \"01:IDE00191\"\n[[alarm]]\nchannels = [\"01:202A\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.5\nrelease = 2.3\n[[page]]\nkind = \"values\"\ntitle = \"B\"\ncells = [\"01:202A\"]\n",
+		)
+		.unwrap();
+		assert_eq!(built.plan.channels.len(), 1, "one row, one channel");
+		assert!(
+			built
+				.plan
+				.pages
+				.iter()
+				.any(|p| matches!(p, Page::Values { title, cells } if title == "B" && cells == &vec![0]))
+		);
+		assert_eq!(built.plan.alarms[0].channels, vec![0]);
+	}
+
+	#[test]
+	fn a_setpoint_that_is_already_a_channel_leaves_one_line_in_the_log() {
+		let built = build_with_setpoint("[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:2029\"\n[[channel]]\nref = \"01:IDE00190\"\n").unwrap();
+		let resolutions = built.notes.iter().filter(|n| n.contains("2029@0/16")).count();
+		assert_eq!(resolutions, 1, "the row is resolved once and logged once: {:?}", built.notes);
+	}
+
 	#[test]
 	fn references_parse_both_spellings() {
 		assert_eq!(
@@ -1251,6 +1826,7 @@ mod tests {
 			label: "",
 			proven: c.proven,
 			hz: c.hz as f32,
+			setpoint: c.setpoint,
 		};
 		assert_eq!(device.decode(&[0xB2, 0x02]), Some(690.0), "690 /min, not 45570");
 		assert!(to_rust(&built.plan).contains("big_endian: false"));
@@ -1675,8 +2251,8 @@ mod tests {
 		.unwrap();
 		assert_eq!(built.plan.channels.iter().map(|c| c.hz).collect::<Vec<_>>(), [10.0, DEFAULT_HZ]);
 		let rust = to_rust(&built.plan);
-		assert!(rust.contains("proven: false, hz: 10.0 }"), "{rust}");
-		assert!(rust.contains("proven: false, hz: 2.0 }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 10.0, setpoint: None }"), "{rust}");
+		assert!(rust.contains("proven: false, hz: 2.0, setpoint: None }"), "{rust}");
 		assert!(built.notes[0].contains("at 10 Hz"), "{}", built.notes[0]);
 
 		// A plan.json from before rates reads as the default.
@@ -1717,16 +2293,20 @@ mod tests {
 				Alarm {
 					channels: vec![2],
 					page: 1,
-					direction: Direction::Above,
-					trip: 10.0,
-					release: 8.0
+					rule: AlarmRule::Threshold {
+						direction: Direction::Above,
+						trip: 10.0,
+						release: 8.0
+					},
 				},
 				Alarm {
 					channels: vec![1, 0],
 					page: 0,
-					direction: Direction::Below,
-					trip: 0.0,
-					release: 1.0
+					rule: AlarmRule::Threshold {
+						direction: Direction::Below,
+						trip: 0.0,
+						release: 1.0
+					},
 				},
 			],
 			"the file's order is the priority"
@@ -1743,7 +2323,7 @@ mod tests {
 
 		let rust = to_rust(&built.plan);
 		assert!(
-			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId};"),
+			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
 			"{rust}"
 		);
 		assert!(rust.contains("alarms: &ALARMS }"), "{rust}");
@@ -1753,7 +2333,9 @@ mod tests {
 		);
 		assert!(rust.contains("static ALARMS: [Alarm<'static>; 2] = ["), "{rust}");
 		assert!(
-			rust.contains("Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), trip: 10.0, release: 8.0, direction: Direction::Above },"),
+			rust.contains(
+				"Alarm { channels: &ALARM_CHANNELS_0, page: PageId(1), rule: Rule::Threshold { trip: 10.0, release: 8.0, direction: Direction::Above } },"
+			),
 			"{rust}"
 		);
 

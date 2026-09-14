@@ -99,7 +99,38 @@ impl Direction {
 /// than they read. The generator refuses a `dash.toml` with more.
 pub const MAX_ALARMS: usize = 4;
 
-/// One rule: some channels, a page that explains them, and two thresholds.
+/// What a rule watches for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rule<'a> {
+	/// A reading past a threshold, in one direction, with hysteresis.
+	Threshold {
+		/// Fires at this value, in `direction`.
+		trip: f32,
+		/// Clears only once past this one, back the other way.
+		release: f32,
+		direction: Direction,
+	},
+	/// A reading too far from what its control unit asked for
+	/// (`todo/dash/18-setpoints-and-drift.md` §4).
+	Drift {
+		/// The specified value of each watched channel, in the same order: the plan pairs
+		/// them, so the rule reads both halves through the same lookup the rest does.
+		specified: &'a [ChannelId],
+		/// Fires when `|actual − specified|` passes this share of `|specified|`.
+		percent: f32,
+		/// Clears under this share.
+		release_percent: f32,
+		/// And only once it has been past `percent` this long without a break. A
+		/// turbocharger lags its own setpoint on every throttle stab; without this the rule
+		/// fires on every gear change.
+		hold_ms: u64,
+		/// Below this specified value the rule says nothing: a percentage of nearly zero is
+		/// noise, not drift.
+		min_setpoint: f32,
+	},
+}
+
+/// One rule: some channels, a page that explains them, and what counts as wrong.
 ///
 /// Plain data, so a plan can carry it as a `static`: the generator writes the
 /// fields directly, having already checked what [`Alarm::below`] and
@@ -113,11 +144,7 @@ pub struct Alarm<'a> {
 	/// the takeover an explanation rather than an interruption — and the plan
 	/// generator is what checks it, because pages live in the plan.
 	pub page: PageId,
-	/// Fires at this value, in `direction`.
-	pub trip: f32,
-	/// Clears only once past this one, back the other way.
-	pub release: f32,
-	pub direction: Direction,
+	pub rule: Rule<'a>,
 }
 
 impl<'a> Alarm<'a> {
@@ -131,9 +158,43 @@ impl<'a> Alarm<'a> {
 		Alarm {
 			channels,
 			page,
-			trip,
-			release,
-			direction: Direction::Below,
+			rule: Rule::Threshold {
+				trip,
+				release,
+				direction: Direction::Below,
+			},
+		}
+	}
+
+	/// A rule that fires when a channel has been more than `percent` away from what its unit
+	/// asked for, for `hold_ms` without a break, and clears under `release_percent`.
+	pub fn drift(
+		channels: &'a [ChannelId],
+		specified: &'a [ChannelId],
+		page: PageId,
+		percent: f32,
+		release_percent: f32,
+		hold_ms: u64,
+		min_setpoint: f32,
+	) -> Self {
+		debug_assert!(
+			specified.len() == channels.len(),
+			"a drift rule pairs every channel it watches with a specified value"
+		);
+		debug_assert!(
+			release_percent < percent,
+			"a drift alarm releases under where it trips, or it has no hysteresis at all"
+		);
+		Alarm {
+			channels,
+			page,
+			rule: Rule::Drift {
+				specified,
+				percent,
+				release_percent,
+				hold_ms,
+				min_setpoint,
+			},
 		}
 	}
 
@@ -147,23 +208,41 @@ impl<'a> Alarm<'a> {
 		Alarm {
 			channels,
 			page,
-			trip,
-			release,
-			direction: Direction::Above,
+			rule: Rule::Threshold {
+				trip,
+				release,
+				direction: Direction::Above,
+			},
+		}
+	}
+
+	/// How long a reading has to stay wrong before the rule fires. Zero for a threshold: a
+	/// temperature past its limit is past it now.
+	fn hold_ms(&self) -> u64 {
+		match self.rule {
+			Rule::Threshold { .. } => 0,
+			Rule::Drift { hold_ms, .. } => hold_ms,
 		}
 	}
 
 	fn trips(&self, v: f32) -> bool {
-		match self.direction {
-			Direction::Below => v <= self.trip,
-			Direction::Above => v >= self.trip,
+		match self.rule {
+			Rule::Threshold { trip, direction, .. } => match direction {
+				Direction::Below => v <= trip,
+				Direction::Above => v >= trip,
+			},
+			// `v` is the share of the specified value the channel is away from it.
+			Rule::Drift { percent, .. } => v >= percent,
 		}
 	}
 
 	fn releases(&self, v: f32) -> bool {
-		match self.direction {
-			Direction::Below => v > self.release,
-			Direction::Above => v < self.release,
+		match self.rule {
+			Rule::Threshold { release, direction, .. } => match direction {
+				Direction::Below => v > release,
+				Direction::Above => v < release,
+			},
+			Rule::Drift { release_percent, .. } => v < release_percent,
 		}
 	}
 
@@ -176,15 +255,52 @@ impl<'a> Alarm<'a> {
 	/// four identical readings always highlights the same cell.
 	fn worst(&self, value_of: &impl Fn(ChannelId) -> Option<f32>) -> Option<(ChannelId, f32)> {
 		let mut worst: Option<(ChannelId, f32)> = None;
-		for want in self.channels {
-			let Some(v) = value_of(*want) else { continue };
+		for (i, want) in self.channels.iter().enumerate() {
+			let Some(v) = self.reading(i, *want, value_of) else { continue };
+			let further = match self.rule {
+				Rule::Threshold { direction, .. } => direction,
+				// The further from the specified value, the worse — whichever side it is on.
+				Rule::Drift { .. } => Direction::Above,
+			};
 			match worst {
-				Some((_, best)) if !self.direction.worse(v, best) => {}
+				Some((_, best)) if !further.worse(v, best) => {}
 				_ => worst = Some((*want, v)),
 			}
 		}
 		worst
 	}
+
+	/// What the rule compares for one channel of its own, by name rather than by rank.
+	fn reading_of(&self, channel: ChannelId, value_of: &impl Fn(ChannelId) -> Option<f32>) -> Option<f32> {
+		let i = self.channels.iter().position(|c| *c == channel)?;
+		self.reading(i, channel, value_of)
+	}
+
+	/// What the rule compares: the reading itself, or how far it is from the value its unit
+	/// asked for, as a share of that value.
+	///
+	/// `None` where there is no evidence — the channel or its specified value has not
+	/// answered — and where the specified value is under `min_setpoint`, because a percentage
+	/// of nearly zero says nothing about the engine.
+	fn reading(&self, i: usize, channel: ChannelId, value_of: &impl Fn(ChannelId) -> Option<f32>) -> Option<f32> {
+		match self.rule {
+			Rule::Threshold { .. } => value_of(channel),
+			Rule::Drift { specified, min_setpoint, .. } => {
+				let actual = value_of(channel)?;
+				let wanted = value_of(*specified.get(i)?)?;
+				let magnitude = abs(wanted);
+				if magnitude < min_setpoint || magnitude == 0.0 {
+					return None;
+				}
+				Some(abs(actual - wanted) / magnitude * 100.0)
+			}
+		}
+	}
+}
+
+/// `f32::abs` is in `std`; this crate is `no_std` and needs the three lines.
+fn abs(v: f32) -> f32 {
+	if v < 0.0 { -v } else { v }
 }
 
 /// A channel not in the readings reads as unanswered, which is the truth: a
@@ -199,6 +315,9 @@ fn value_of(channel: ChannelId, readings: &[Reading]) -> Option<f32> {
 enum Episode {
 	/// Nothing wrong, armed.
 	Clear,
+	/// Out of bounds, but not yet for as long as the rule asks. Nothing is on the screen
+	/// (`todo/dash/18` §4: a turbo lags its setpoint on every throttle stab).
+	Rising { offender: ChannelId, since_ms: u64 },
 	/// Out of bounds now. `offender` is the cell to invert and follows the worst
 	/// channel while it lasts.
 	Firing { offender: ChannelId },
@@ -213,7 +332,7 @@ impl Episode {
 	fn showing(self) -> Option<ChannelId> {
 		match self {
 			Episode::Firing { offender } | Episode::Holding { offender, .. } => Some(offender),
-			Episode::Clear | Episode::Silenced => None,
+			Episode::Clear | Episode::Rising { .. } | Episode::Silenced => None,
 		}
 	}
 }
@@ -300,7 +419,15 @@ impl<'a, const N: usize> Alarms<'a, N> {
 	/// there is nowhere to remember them without an allocator, and the caller is
 	/// already walking the union.
 	pub fn watched(&self) -> impl Iterator<Item = ChannelId> + '_ {
-		self.rules.iter().flat_map(|r| r.channels.iter().copied())
+		self.rules.iter().flat_map(|r| {
+			// A drift rule needs both halves of every pair: the specified value is as much a
+			// reading as the actual one, and a rule cannot see what nobody asks for.
+			let specified = match r.rule {
+				Rule::Threshold { .. } => [].as_slice(),
+				Rule::Drift { specified, .. } => specified,
+			};
+			r.channels.iter().chain(specified.iter()).copied()
+		})
 	}
 
 	/// A short press.
@@ -363,11 +490,42 @@ impl<'a, const N: usize> Alarms<'a, N> {
 /// and everything around it is bookkeeping.
 fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Option<f32>, now_ms: u64) -> Episode {
 	let worst = rule.worst(value_of);
+	// A rule with no hold fires the moment it trips; one with a hold starts counting.
+	let start_at = |c: ChannelId, at: u64| match rule.hold_ms() {
+		0 => Episode::Firing { offender: c },
+		_ => Episode::Rising { offender: c, since_ms: at },
+	};
+	let start = |c: ChannelId| start_at(c, now_ms);
 	match episode {
 		Episode::Clear => match worst {
-			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c },
+			Some((c, v)) if rule.trips(v) => start(c),
 			_ => Episode::Clear,
 		},
+		// Counting, for **one channel**: a rule watching four cylinders must not add a second
+		// of one to a second of another, and a channel that comes back and goes out again
+		// starts over.
+		Episode::Rising { offender, since_ms } => {
+			// The count belongs to the channel that started it, and is kept while **that
+			// channel** is still out — not while it is still the worst. Two cylinders trading
+			// places every poll are both out the whole time, and a rule that restarted on
+			// every swap would never fire (review, 2026-09-15).
+			let still_out = rule.reading_of(offender, value_of).is_some_and(|v| rule.trips(v));
+			match (still_out, worst) {
+				(true, _) if now_ms.saturating_sub(since_ms) >= rule.hold_ms() => Episode::Firing {
+					// Once it fires, the cell to invert is the worst one, as everywhere else.
+					offender: worst.map_or(offender, |(c, _)| c),
+				},
+				(true, _) => Episode::Rising { offender, since_ms },
+				// It came back, or stopped answering, and somebody else is out: that channel's
+				// own count starts here rather than inheriting this one's seconds.
+				(false, Some((c, v))) if rule.trips(v) => start_at(c, now_ms),
+				// Nobody is out, or there is no evidence at all — nothing answered, or the
+				// specified value is under the floor. The count ends: a hold that survived the
+				// gaps between what it was counting would not be a hold, and a transient is
+				// what this state exists to swallow.
+				_ => Episode::Clear,
+			}
+		}
 		Episode::Firing { offender } => match worst {
 			// The offender follows the engine: a worse cylinder is the one worth
 			// pointing at, even mid-episode.
@@ -382,7 +540,8 @@ fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Opt
 		},
 		Episode::Holding { offender, until_ms } => match worst {
 			// Out again before the hold expired: the same episode continues, so it
-			// does not re-announce itself and the driver's silence still applies.
+			// does not re-announce itself and the driver's silence still applies. A rule with
+			// a hold does not have to earn it a second time inside one episode.
 			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c },
 			_ if now_ms >= until_ms => Episode::Clear,
 			_ => Episode::Holding { offender, until_ms },
@@ -424,6 +583,202 @@ mod tests {
 	/// Fires at or above 10, clears below 8.
 	fn single() -> Alarm<'static> {
 		Alarm::above(&SINGLE, SINGLE_PAGE, 10.0, 8.0)
+	}
+
+	// --- drift: a channel against what its unit asked for ------------------------------
+
+	/// Two channels, each paired with the specified value the plan resolved for it.
+	const DRIFTING: [ChannelId; 2] = [ChannelId(10), ChannelId(11)];
+	const SPECIFIED: [ChannelId; 2] = [ChannelId(20), ChannelId(21)];
+	const DRIFT_PAGE: PageId = PageId(4);
+	/// Over 10 % for a second fires it; under 6 % clears it; a specified value under 0.5 is
+	/// not worth a percentage.
+	fn drift() -> Alarm<'static> {
+		Alarm::drift(&DRIFTING, &SPECIFIED, DRIFT_PAGE, 10.0, 6.0, 1_000, 0.5)
+	}
+
+	/// One drifting channel and its specified value; the second pair says nothing.
+	fn pair(actual: Option<f32>, specified: Option<f32>) -> [Reading; 2] {
+		[Reading::new(DRIFTING[0], actual), Reading::new(SPECIFIED[0], specified)]
+	}
+
+	#[test]
+	fn a_drift_rule_is_polled_with_both_halves_of_every_pair() {
+		let alarms = Alarms::new([drift()]);
+		let watched: std::vec::Vec<ChannelId> = alarms.watched().collect();
+		for channel in DRIFTING.iter().chain(SPECIFIED.iter()) {
+			assert!(watched.contains(channel), "{channel:?} is polled");
+		}
+	}
+
+	#[test]
+	fn a_drift_rule_fires_only_once_it_has_held() {
+		let mut alarms = Alarms::new([drift()]);
+		// 2.2 against 2.0 is 10 %, which trips — but not yet.
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0).shown, Shown::page(WAS_SHOWING));
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 999).shown, Shown::page(WAS_SHOWING));
+		let up = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000);
+		assert_eq!(up.shown.page, DRIFT_PAGE, "a second of drift is the rule's own condition");
+		assert_eq!(up.shown.offending, Some(DRIFTING[0]));
+	}
+
+	#[test]
+	fn a_transient_never_fires_and_starts_the_count_over() {
+		let mut alarms = Alarms::new([drift()]);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+		// Back inside before the second is up: a throttle stab, not drift.
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.0), Some(2.0)), 500).shown, Shown::page(WAS_SHOWING));
+		// Out again: the count is the new one's, so 1 100 is too early and 1 600 is not.
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 600);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_100).shown,
+			Shown::page(WAS_SHOWING)
+		);
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_600).shown.page, DRIFT_PAGE);
+	}
+
+	#[test]
+	fn a_hold_belongs_to_one_channel_and_is_not_handed_over() {
+		let mut alarms = Alarms::new([drift()]);
+		let both = |a: f32, b: f32| {
+			[
+				Reading::new(DRIFTING[0], Some(a)),
+				Reading::new(SPECIFIED[0], Some(2.0)),
+				Reading::new(DRIFTING[1], Some(b)),
+				Reading::new(SPECIFIED[1], Some(2.0)),
+			]
+		};
+		// The first channel is out for 900 ms, then comes back as the second goes out.
+		alarms.poll(WAS_SHOWING, &both(2.2, 2.0), 0);
+		alarms.poll(WAS_SHOWING, &both(2.2, 2.0), 900);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 1_000).shown,
+			Shown::page(WAS_SHOWING),
+			"the second channel does not inherit the first one's second"
+		);
+		// It earns its own, from where it started.
+		assert_eq!(alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 1_999).shown, Shown::page(WAS_SHOWING));
+		let up = alarms.poll(WAS_SHOWING, &both(2.0, 2.2), 2_000);
+		assert_eq!(up.shown.page, DRIFT_PAGE);
+		assert_eq!(up.shown.offending, Some(DRIFTING[1]));
+	}
+
+	#[test]
+	fn two_channels_taking_turns_at_being_worst_still_fire() {
+		// Both are out the whole second; which one is worse changes every poll. The rule
+		// counts the drift, not the ranking.
+		let mut alarms = Alarms::new([drift()]);
+		let readings = |a: f32, b: f32| {
+			[
+				Reading::new(DRIFTING[0], Some(a)),
+				Reading::new(SPECIFIED[0], Some(2.0)),
+				Reading::new(DRIFTING[1], Some(b)),
+				Reading::new(SPECIFIED[1], Some(2.0)),
+			]
+		};
+		let mut fired = None;
+		for step in 0..=20u64 {
+			// 12 % and 13 % out, swapping places each poll.
+			let (a, b) = if step % 2 == 0 { (2.26, 2.24) } else { (2.24, 2.26) };
+			let up = alarms.poll(WAS_SHOWING, &readings(a, b), step * 100);
+			if up.shown.page == DRIFT_PAGE && fired.is_none() {
+				fired = Some(step * 100);
+			}
+		}
+		assert_eq!(fired, Some(1_000), "it fires on the hold, whoever is worst that poll");
+	}
+
+	#[test]
+	fn a_hold_does_not_survive_a_gap_in_the_evidence() {
+		let mut alarms = Alarms::new([drift()]);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+		// Half a minute with the specified value under the floor: no evidence either way, and
+		// the count is not kept across it.
+		alarms.poll(WAS_SHOWING, &pair(Some(0.1), Some(0.4)), 30_000);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 60_000).shown,
+			Shown::page(WAS_SHOWING),
+			"one sample after the gap is not a second of drift"
+		);
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 61_000).shown.page, DRIFT_PAGE);
+
+		// The same for a value that sits in the hysteresis band meanwhile, and for a pair that
+		// stops answering.
+		for quiet in [pair(Some(2.16), Some(2.0)), pair(None, None)] {
+			let mut alarms = Alarms::new([drift()]);
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+			alarms.poll(WAS_SHOWING, &quiet, 500);
+			assert_eq!(
+				alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000).shown,
+				Shown::page(WAS_SHOWING)
+			);
+		}
+	}
+
+	#[test]
+	fn a_specified_value_under_the_floor_says_nothing() {
+		let mut alarms = Alarms::new([drift()]);
+		// 0.4 asked for, 0.1 delivered: 75 % out, and meaningless.
+		for now in [0, 1_000, 5_000] {
+			assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(0.1), Some(0.4)), now).shown, Shown::page(WAS_SHOWING));
+		}
+	}
+
+	#[test]
+	fn a_pair_that_has_not_answered_says_nothing() {
+		let mut alarms = Alarms::new([drift()]);
+		for readings in [pair(None, Some(2.0)), pair(Some(2.2), None), pair(None, None)] {
+			assert_eq!(alarms.poll(WAS_SHOWING, &readings, 5_000).shown, Shown::page(WAS_SHOWING));
+		}
+	}
+
+	#[test]
+	fn a_drift_rule_clears_under_its_release_and_holds_the_view_first() {
+		let mut alarms = Alarms::new([drift()]);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000).shown.page, DRIFT_PAGE);
+		// 2.1 against 2.0 is 5 %, under the release.
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.1), Some(2.0)), 1_100).shown.page,
+			DRIFT_PAGE,
+			"the view is held so the driver can read it"
+		);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.1), Some(2.0)), 1_100 + HOLD_MS).shown,
+			Shown::page(WAS_SHOWING)
+		);
+	}
+
+	#[test]
+	fn the_offending_cell_is_the_one_furthest_from_what_it_was_asked_for() {
+		let mut alarms = Alarms::new([drift()]);
+		// The first is 10 % out, the second 25 %: the second is the one to point at, either
+		// way round.
+		let readings = [
+			Reading::new(DRIFTING[0], Some(2.2)),
+			Reading::new(SPECIFIED[0], Some(2.0)),
+			Reading::new(DRIFTING[1], Some(2.5)),
+			Reading::new(SPECIFIED[1], Some(2.0)),
+		];
+		alarms.poll(WAS_SHOWING, &readings, 0);
+		let up = alarms.poll(WAS_SHOWING, &readings, 1_000);
+		assert_eq!(up.shown.offending, Some(DRIFTING[1]));
+	}
+
+	#[test]
+	fn a_press_silences_a_drift_episode_until_it_releases() {
+		let mut alarms = Alarms::new([drift()]);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000);
+		assert_eq!(alarms.press(), Press::Silenced);
+		assert_eq!(
+			alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 2_000).shown,
+			Shown::page(WAS_SHOWING)
+		);
+		// Released, so the rule is armed again — and has to hold once more.
+		alarms.poll(WAS_SHOWING, &pair(Some(2.0), Some(2.0)), 3_000);
+		alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 4_000);
+		assert_eq!(alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 5_000).shown.page, DRIFT_PAGE);
 	}
 
 	/// The group's four readings, in channel order.

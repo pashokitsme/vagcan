@@ -46,6 +46,13 @@ pub enum Tool {
 	/// them, `direction` (`below` or `above`), `trip` and `release`; the board then shows
 	/// that page when a value crosses `trip`, whatever page is up.
 	///
+	/// A channel may also carry `setpoint = "<unit>:<row>"` — what its unit asked for, on the
+	/// same unit — and the panel then draws the difference under the number. An `[[alarm]]`
+	/// with `kind = "drift"` watches that difference: `percent`, `release_percent`, `hold_ms`
+	/// (how long it has to hold) and `min_setpoint` (under which the rule says nothing).
+	///
+	/// `docs/dash/dash-toml.md` is the whole grammar, with the limits and every refusal.
+	///
 	/// The firmware's own build runs this same build —
 	/// `VAGCAN_DASH_VIN=<VIN> cargo build` in `crates/dash/vag-dash-fw` — so
 	/// this command is for reading the result and the reasons, not a step
