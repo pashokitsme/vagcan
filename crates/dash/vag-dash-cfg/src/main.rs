@@ -11,7 +11,7 @@ use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _, WriteType};
 use btleplug::platform::Peripheral;
 use futures::StreamExt;
 use std::time::Duration;
-use vag_dash_ble::{Lines, flush, open_nus, render, scan, stdin_lines};
+use vag_dash_ble::{Lines, flush, open_nus, scan, stdin_lines};
 
 const DEFAULT_NAME: &str = "vagcan-dash";
 const SCAN_SECS: u64 = 4;
@@ -137,6 +137,7 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 	// connecting, but a notification sent before the subscription lands is
 	// dropped by design — so the first state always comes from a request.
 	p.write(&rx, b"state", write_type).await?;
+	let mut text = LineBuffer::default();
 
 	println!("\ncommands: set brightness N | set page N | save | load | defaults | erase | q");
 	println!("the device pushes its state whenever its button is pressed.\n");
@@ -149,8 +150,10 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 				// appear the moment it happens, not after the next command.
 				biased;
 				Some(n) = notifications.next() => {
-						print!("\r");
-						report(&n.value, name);
+						for line in text.push(&n.value) {
+								print!("\r");
+								report(&line, name);
+						}
 						print!("dash> ");
 						flush();
 				}
@@ -167,10 +170,23 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 								println!("  write failed: {e}");
 								continue;
 						}
-						match tokio::time::timeout(Duration::from_secs(3), notifications.next()).await {
-								Ok(Some(n)) => report(&n.value, name),
-								Ok(None) => break,
-								Err(_) => println!("  (no reply in 3 s — the connection may have dropped)"),
+						// A reply is a line, and a line may come in several notifications.
+						let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+						let mut replied = false;
+						while !replied {
+								match tokio::time::timeout_at(deadline, notifications.next()).await {
+										Ok(Some(n)) => {
+												for line in text.push(&n.value) {
+														report(&line, name);
+														replied = true;
+												}
+										}
+										Ok(None) => return Ok(()),
+										Err(_) => {
+												println!("  (no reply in 3 s — the connection may have dropped)");
+												break;
+										}
+								}
 						}
 				}
 		}
@@ -181,12 +197,54 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 
 /// A state push gets drawn as a panel; anything else is the device answering a
 /// command, and is printed as it came.
-fn report(bytes: &[u8], name: &str) {
-	match std::str::from_utf8(bytes) {
-		Ok(text) => match DashState::parse(text) {
-			Some(state) => state.show(name),
-			None => println!("  {text}"),
-		},
-		Err(_) => println!("  {}", render(bytes)),
+fn report(line: &str, name: &str) {
+	match DashState::parse(line) {
+		Some(state) => state.show(name),
+		None => println!("  {line}"),
+	}
+}
+
+/// The board's text, joined across notifications and cut into lines.
+///
+/// The board ends every reply and every state push with `\n` and cuts it at the
+/// notification size — 20 bytes before the ATT MTU exchange, 244 after — so one
+/// notification is not one line. Bytes that are not UTF-8 are shown replaced rather
+/// than dropped: a mangled line is a thing to see.
+#[derive(Debug, Default)]
+struct LineBuffer {
+	partial: Vec<u8>,
+}
+
+impl LineBuffer {
+	/// Take one notification; get back every line it completed, without its `\n`.
+	fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+		self.partial.extend_from_slice(bytes);
+		let mut lines = Vec::new();
+		while let Some(end) = self.partial.iter().position(|&b| b == b'\n') {
+			let line: Vec<u8> = self.partial.drain(..=end).collect();
+			lines.push(String::from_utf8_lossy(&line[..end]).trim_end_matches('\r').to_string());
+		}
+		lines
+	}
+}
+#[cfg(test)]
+mod tests {
+	use super::LineBuffer;
+
+	/// The board ends every text reply with `\n` and cuts it at the notification size,
+	/// 20 bytes before the MTU exchange: a line is only a line once its end has come.
+	#[test]
+	fn a_line_cut_into_notifications_comes_out_whole_and_once() {
+		let mut buffer = LineBuffer::default();
+		assert!(buffer.push(b"state page=0/2 brigh").is_empty());
+		assert!(buffer.push(b"tness=128 unsaved=1 ").is_empty());
+		assert_eq!(buffer.push(b"gen=5\n"), ["state page=0/2 brightness=128 unsaved=1 gen=5"]);
+	}
+
+	#[test]
+	fn two_lines_in_one_notification_are_two_lines_and_a_tail_waits() {
+		let mut buffer = LineBuffer::default();
+		assert_eq!(buffer.push(b"ok: page 1\nstate page=1/2"), ["ok: page 1"]);
+		assert_eq!(buffer.push(b" gen=5\n"), ["state page=1/2 gen=5"]);
 	}
 }
