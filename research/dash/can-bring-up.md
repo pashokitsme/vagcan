@@ -1030,3 +1030,7 @@ with no reboot loop, and over BLE, from Terminal.app, with `benchecu` as above:
 
 Same image, same crates: BLE starts on rev v1.1 and not on rev v0.4. The owner keeps the old
 board on the bench (transceiver still on 5 V) and the new one as a spare.
+
+The August recon firmware (`~/esp/c3-recon/ble`, `scan` and `peri` — the code BLE first ran
+on, same crate versions) hangs on the new board the same way, right after esp-wifi's
+configuration line (23:04). The new board is back on `dash --no-default-features`.
