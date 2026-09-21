@@ -34,6 +34,12 @@ dated status sections moved verbatim to
 - **The owner's `dash.toml`** pairs boost `202A` with its specified value `2029`
   (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
 
+- **New board, 2026-09-22.** The old SuperMini's pins broke; on the new one (C3 rev v0.4) the
+  BLE controller never starts while Wi-Fi scans, cause not found
+  (`research/dash/ble-controller-hang.md`). The firmware got a `ble` feature (default on); this
+  board runs `dash --no-default-features`. The USB bench passed on it except `dash/17` §2 item
+  11: a stopped host keeps the board in adapter mode (`research/dash/can-bring-up.md` §9.13).
+
 **Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
 info, watch, measure through the board; the moving-car guard; alarms; the cable on car
 traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).

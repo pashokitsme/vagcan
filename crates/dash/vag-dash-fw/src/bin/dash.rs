@@ -34,6 +34,10 @@
 //! divider was retired), so anything it notified there would be invented — it
 //! once was, a 100→0 ramp. It comes back only with a real measurement behind it.
 //!
+//! BLE is the `ble` feature, on by default. `--no-default-features` builds the dash with no
+//! radio at all — for a board whose BLE controller does not start (2026-09-22,
+//! `research/dash/can-bring-up.md` §9.13); every other part above runs unchanged.
+//!
 //! What none of these do is put the device in the phone's *Settings* list —
 //! see `.archive/tasks/done/dash/10-c3-recon.md`. That needs HID-over-GATT and nothing else.
 
@@ -46,11 +50,13 @@
 )]
 
 use alloc::vec::Vec;
+#[cfg(feature = "ble")]
 use bt_hci::controller::ExternalController;
 use core::cell::RefCell;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use embassy_executor::Spawner;
+#[cfg(feature = "ble")]
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, Either3, Either4, select, select3, select4};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -68,13 +74,16 @@ use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::peripherals::{GPIO1, GPIO6, TWAI0};
 use esp_hal::timer::systimer::SystemTimer;
+#[cfg(feature = "ble")]
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::twai::filter::SingleStandardFilter;
 use esp_hal::twai::{BaudRate, StandardId, TwaiConfiguration, TwaiMode};
 use esp_hal::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx, UsbSerialJtagTx};
+#[cfg(feature = "ble")]
 use esp_wifi::ble::controller::BleConnector;
 use log::{info, warn};
 use static_cell::StaticCell;
+#[cfg(feature = "ble")]
 use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
@@ -94,7 +103,9 @@ use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
 use vag_uds_client::identity::did;
 use vag_uds_client::remote::{MAX_AWAITED, Session};
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
-use vag_uds_transport::link::{self, HelloReply, Message, Piece, Reassembler};
+use vag_uds_transport::link::{self, HelloReply, Message};
+#[cfg(feature = "ble")]
+use vag_uds_transport::link::{Piece, Reassembler};
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 extern crate alloc;
@@ -103,11 +114,14 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 /// The name the phone shows. Kept in sync with the Wi-Fi AP so one device is
 /// recognisable in both lists.
+#[cfg(feature = "ble")]
 const DEVICE_NAME: &str = "vagcan-dash";
 
 /// One central at a time is all a dash needs.
+#[cfg(feature = "ble")]
 const CONNECTIONS_MAX: usize = 1;
 /// Signalling + ATT.
+#[cfg(feature = "ble")]
 const L2CAP_CHANNELS_MAX: usize = 2;
 
 /// The longest payload the UART service carries in one go.
@@ -117,24 +131,30 @@ const L2CAP_CHANNELS_MAX: usize = 2;
 /// no matter how large the negotiated MTU is. macOS negotiates ATT MTU 251,
 /// so 248 bytes are usable on the air; 244 leaves room for a framing header
 /// and stays inside the MTU-255 packet pool.
+#[cfg(feature = "ble")]
 const UART_MTU: usize = 244;
 
 /// The payload of one notification before the central has negotiated anything:
 /// ATT's default MTU of 23 less the 3-byte notification header (Bluetooth Core,
 /// Vol 3 Part F §3.2.8). The floor under [`notify_size`].
+#[cfg(feature = "ble")]
 const ATT_DEFAULT_PAYLOAD: usize = 20;
 
+#[cfg(feature = "ble")]
 type UartData = heapless::Vec<u8, UART_MTU>;
 
 /// The GATT macro backs every characteristic with `[u8; T::MAX_SIZE]`, so the
 /// type must have a bounded size. `&'static str` does not — its `MAX_SIZE` is
 /// `usize::MAX` and the array fails to lay out. A `heapless::String` does.
+#[cfg(feature = "ble")]
 type DisString = heapless::String<16>;
 
+#[cfg(feature = "ble")]
 fn dis(s: &str) -> DisString {
 	DisString::try_from(s).expect("DIS string too long")
 }
 
+#[cfg(feature = "ble")]
 #[gatt_server]
 struct Server {
 	dis: DeviceInformationService,
@@ -142,6 +162,7 @@ struct Server {
 }
 
 /// 0x180A. Static strings, read-only — this is what "a profile" mostly is.
+#[cfg(feature = "ble")]
 #[gatt_service(uuid = service::DEVICE_INFORMATION)]
 struct DeviceInformationService {
 	#[characteristic(uuid = characteristic::MANUFACTURER_NAME_STRING, read, value = dis("vagcan"))]
@@ -155,6 +176,7 @@ struct DeviceInformationService {
 /// The Nordic UART Service. Note the direction names are from the *central's*
 /// point of view, which is the usual source of confusion: `rx` is what the
 /// phone writes to us, `tx` is what we notify back.
+#[cfg(feature = "ble")]
 #[gatt_service(uuid = "6e400001-b5a3-f393-e0a9-e50e24dcca9e")]
 struct NordicUartService {
 	#[characteristic(uuid = "6e400002-b5a3-f393-e0a9-e50e24dcca9e", write, write_without_response)]
@@ -168,6 +190,7 @@ struct NordicUartService {
 struct Settings {
 	/// `None` when the board was flashed against the default partition table
 	/// and has nowhere to keep anything. The panel still works; it just forgets.
+	#[cfg_attr(not(feature = "ble"), allow(dead_code))]
 	store: Option<Store>,
 	config: Config,
 	/// Set by every change, cleared by a save. Without it, "did that survive?"
@@ -364,13 +387,16 @@ fn set_mode(mode: Mode) {
 /// Bytes the central wrote to the UART service, in arrival order. Small on
 /// purpose: a full one holds the next write's ATT response back, which is the
 /// host's back-pressure.
+#[cfg(feature = "ble")]
 static INBOX: Channel<CriticalSectionRawMutex, UartData, 4> = Channel::new();
 
 /// What goes back to the central. One task notifies, so a framed message cut
 /// into chunks is never interleaved with a text line.
+#[cfg(feature = "ble")]
 static OUTBOX: Channel<CriticalSectionRawMutex, Outgoing, 8> = Channel::new();
 
 /// The bytes in `OUTBOX` and in the notifier's hands.
+#[cfg(feature = "ble")]
 static OUTBOX_BYTES: QueuedBytes = QueuedBytes::new();
 
 /// Bytes one queue for a host may hold — sent and not yet written out — before the task
@@ -438,6 +464,7 @@ impl QueuedBytes {
 	}
 
 	/// The queue was cleared, and whatever its writer held is gone with it.
+	#[cfg_attr(not(feature = "ble"), allow(dead_code))]
 	fn clear(&self) {
 		self.state.lock(|state| {
 			let (queued, waiting) = &mut *state.borrow_mut();
@@ -463,6 +490,7 @@ impl Drop for Refund<'_> {
 	}
 }
 
+#[cfg(feature = "ble")]
 enum Outgoing {
 	/// One text line, one notification.
 	Text(Vec<u8>),
@@ -495,6 +523,7 @@ fn visibility() -> Visibility {
 	}
 }
 
+#[cfg(feature = "ble")]
 fn set_visibility(v: Visibility) {
 	VISIBILITY.store(v as u8, Ordering::Relaxed);
 }
@@ -563,14 +592,19 @@ async fn main(spawner: Spawner) {
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
 	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms))));
 
+	#[cfg(feature = "ble")]
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);
+	#[cfg(feature = "ble")]
 	let timer1 = TimerGroup::new(peripherals.TIMG0);
+	#[cfg(feature = "ble")]
 	let wifi_init = esp_wifi::init(timer1.timer0, rng).expect("radio init");
 
 	// The controller stays up for the life of the device. Tearing it down would
 	// free ~46 KB and reintroduce the one allocation pattern that can fragment
 	// this heap (see .archive/tasks/done/dash/11-ble.md).
+	#[cfg(feature = "ble")]
 	let transport = BleConnector::new(&wifi_init, peripherals.BT);
+	#[cfg(feature = "ble")]
 	let controller: ExternalController<_, 20> = ExternalController::new(transport);
 
 	// One driver owns the USB port: one task writes it (frames, answers, the log),
@@ -611,7 +645,11 @@ async fn main(spawner: Spawner) {
 		warn!("SPAWN can FAILED: {e:?}");
 	}
 
+	#[cfg(feature = "ble")]
 	run(controller, settings, bus).await;
+	// Without the radio every job is a spawned task; `main` only has to stay.
+	#[cfg(not(feature = "ble"))]
+	core::future::pending::<()>().await;
 }
 
 fn open_settings() -> Settings {
@@ -792,6 +830,7 @@ async fn heap_task() -> ! {
 	}
 }
 
+#[cfg(feature = "ble")]
 async fn run<C: Controller>(controller: C, settings: &'static Shared, bus: &'static Bus) {
 	// A fixed random address keeps the device recognisable across reflashes.
 	// A shipping device would derive this from its own MAC.
@@ -856,6 +895,7 @@ async fn run<C: Controller>(controller: C, settings: &'static Shared, bus: &'sta
 }
 
 /// Must run forever alongside everything else; it is the host's pump.
+#[cfg(feature = "ble")]
 async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
 	loop {
 		if let Err(e) = runner.run().await {
@@ -864,6 +904,7 @@ async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
 	}
 }
 
+#[cfg(feature = "ble")]
 async fn start_advertising<'values, C: Controller>(
 	name: &'values str,
 	peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
@@ -895,6 +936,7 @@ async fn start_advertising<'values, C: Controller>(
 }
 
 /// 6e400001-b5a3-f393-e0a9-e50e24dcca9e, little-endian as the air format wants.
+#[cfg(feature = "ble")]
 const NUS_UUID_LE: [u8; 16] = [
 	0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, 0x01, 0x00, 0x40, 0x6e,
 ];
@@ -906,6 +948,7 @@ const NUS_UUID_LE: [u8; 16] = [
 /// the planner (drop semantics) and the reassembler goes. The session itself is the
 /// board's, `run` keeps one for every connection: its radio guard remembers what the
 /// last host asked (`vag_uds_client::guard`, "Memory"), so a reconnect is no reset.
+#[cfg(feature = "ble")]
 async fn serve<P: PacketPool>(
 	server: &Server<'_>,
 	conn: &GattConnection<'_, '_, P>,
@@ -943,11 +986,13 @@ async fn serve<P: PacketPool>(
 /// trouble-host 0.2.4 exposes the MTU as `Connection::att_mtu` and does not
 /// clip a notification to it, so this is where it is kept. macOS asks for 251
 /// at connect (the figure `UART_MTU`'s note records), which makes this 244.
+#[cfg(feature = "ble")]
 fn notify_size<P: PacketPool>(conn: &GattConnection<'_, '_, P>) -> usize {
 	usize::from(conn.raw().att_mtu()).saturating_sub(3).clamp(ATT_DEFAULT_PAYLOAD, UART_MTU)
 }
 
 /// Writes into the UART characteristic, handed on as they came.
+#[cfg(feature = "ble")]
 async fn gatt_events<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
 	let rx = &server.uart.rx;
 	let reason = loop {
@@ -985,10 +1030,12 @@ async fn gatt_events<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'
 }
 
 /// How often a stalled write looks whether its connection is still there.
+#[cfg(feature = "ble")]
 const GONE_POLL: Duration = Duration::from_millis(50);
 
 /// Resolves once the connection has dropped. Polled, because the event that says
 /// so is the one `gatt_events` cannot read while it waits.
+#[cfg(feature = "ble")]
 async fn gone<P: PacketPool>(conn: &GattConnection<'_, '_, P>) {
 	while conn.raw().is_connected() {
 		Timer::after(GONE_POLL).await;
@@ -997,6 +1044,7 @@ async fn gone<P: PacketPool>(conn: &GattConnection<'_, '_, P>) {
 
 /// One text line as the link carries it: its bytes and a `\n`, which is how a client
 /// knows where a line cut into several notifications ends.
+#[cfg(feature = "ble")]
 fn text_line(text: &str) -> Vec<u8> {
 	let mut line = Vec::with_capacity(text.len() + 1);
 	line.extend_from_slice(text.as_bytes());
@@ -1005,6 +1053,7 @@ fn text_line(text: &str) -> Vec<u8> {
 }
 
 /// The one writer of notifications.
+#[cfg(feature = "ble")]
 async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
 	let tx = &server.uart.tx;
 	let mut said_mtu = 0;
@@ -1043,6 +1092,7 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 /// Pushes the state line: once on connecting, and again whenever the button
 /// changes something. A client that has to poll to notice a button press is a
 /// client that shows the wrong thing most of the time.
+#[cfg(feature = "ble")]
 async fn state_pushes(settings: &Shared) {
 	loop {
 		let line = text_line(&state_line(settings).await);
@@ -1095,6 +1145,7 @@ fn session_wake(session: &Session) -> Instant {
 
 /// The link's two protocols over BLE: `dashcfg`'s text commands, answered as before,
 /// and framed UDS messages, through the session.
+#[cfg(feature = "ble")]
 async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'static Bus) {
 	let client = &BLE_CLIENT;
 	let mut reassembler = Reassembler::new();
@@ -1192,6 +1243,7 @@ fn hello_reply() -> Message {
 
 /// Renders the one line that describes the device completely enough for a
 /// client to draw its own view of it.
+#[cfg(feature = "ble")]
 async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	let mut out: heapless::String<UART_MTU> = heapless::String::new();
 	let s = settings.lock().await;
@@ -2715,6 +2767,7 @@ fn close_usb_session(session: &mut Session, bus: &Bus) {
 /// lines of text. It shares the UART service with the framed UDS link, which
 /// starts every message with a NUL that no text line has (`link`'s docs), and
 /// text is what a person with a terminal can drive by hand.
+#[cfg(feature = "ble")]
 async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 	let mut out: heapless::String<UART_MTU> = heapless::String::new();
 	let Ok(line) = core::str::from_utf8(raw) else {

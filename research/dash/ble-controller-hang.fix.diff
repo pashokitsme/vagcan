@@ -1,0 +1,61 @@
+--- /Users/pavel.smirnov/Source/repos/vcds/research/dash/probes/src/bin/ble-scan.rs	2026-09-14 00:08:57
++++ probe-fix/src/bin/ble-scan.rs	2026-09-22 01:14:24
+@@ -34,6 +34,7 @@
+ 
+     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+     esp_alloc::heap_allocator!(size: 72 * 1024);
++    info!("reset reason {:?}", esp_hal::system::reset_reason());
+ 
+     let timer0 = SystemTimer::new(peripherals.SYSTIMER);
+     esp_hal_embassy::init(timer0.alarm0);
+@@ -42,12 +43,50 @@
+     let timer1 = TimerGroup::new(peripherals.TIMG0);
+     let wifi_init = esp_wifi::init(timer1.timer0, rng).expect("radio init");
+ 
++    // ---- experiment: registers before, then IDF's steps esp-wifi 0.15 skips ----
++    dump("before");
++    if option_env!("BLE_FIX").is_some() {
++        unsafe {
++            // IDF esp_bt_controller_init: periph_module_reset(PERIPH_BT_MODULE) =
++            // BTBB_RST|BTBB_REG_RST|RW_BTMAC_RST|RW_BTLP_RST|RW_BTMAC_REG_RST|RW_BTLP_REG_RST
++            // (clk_gate_ll.h). esp-wifi's pulse lacks the two BTLP bits (10, 12).
++            const BT_RST: u32 = (1 << 3) | (1 << 13) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12);
++            let rst = 0x6002_6018 as *mut u32; // APB_CTRL.WIFI_RST_EN
++            rst.write_volatile(rst.read_volatile() | BT_RST);
++            rst.write_volatile(rst.read_volatile() & !BT_RST);
++            // IDF btdm_low_power_mode_init, sleep off: main XTAL as BT LP clock.
++            unsafe extern "C" {
++                fn btdm_lpclk_select_src(sel: u32) -> bool;
++                fn btdm_lpclk_set_div(div: u32) -> bool;
++            }
++            let a = btdm_lpclk_select_src(0); // BTDM_LPCLK_SEL_XTAL
++            let b = btdm_lpclk_set_div(40); // esp_clk_xtal_freq() / MHZ
++            info!("BLE_FIX applied: select_src={a} set_div={b}");
++        }
++        dump("after fix");
++    }
++    info!("BleConnector::new ...");
+     let transport = BleConnector::new(&wifi_init, peripherals.BT);
++    info!("BleConnector::new returned");
+     let controller: ExternalController<_, 20> = ExternalController::new(transport);
+ 
+     run(controller).await;
+ }
+ 
++fn dump(tag: &str) {
++    let r = |a: usize| unsafe { (a as *const u32).read_volatile() };
++    info!(
++        "[{tag}] BT_LPCK_DIV_INT={:#010x} BT_LPCK_DIV_FRAC={:#010x} WIFI_CLK_EN={:#010x} WIFI_RST_EN={:#010x} RTC_DIG_PWC={:#010x} RTC_DIG_ISO={:#010x} RTC_CLK_CONF={:#010x}",
++        r(0x600c_0020),
++        r(0x600c_0024),
++        r(0x6002_6014),
++        r(0x6002_6018),
++        r(0x6000_8088),
++        r(0x6000_808c),
++        r(0x6000_8070),
++    );
++}
++
+ async fn run<C>(controller: C)
+ where
+     C: Controller + ControllerCmdSync<LeSetScanParams>,

@@ -132,6 +132,9 @@ jobs:
         run: cargo fmt -- --check
       - name: cargo clippy --bins -D warnings
         run: cargo clippy --release --bins -- -D warnings
+      # `ble` is on by default; a board whose BLE does not start runs without it.
+      - name: cargo clippy --bins --no-default-features -D warnings
+        run: cargo clippy --release --bins --no-default-features -- -D warnings
       # The only step that lints the `bench` tools — `cantest`, `cantx`, `rxprobe` build
       # only with `--features bench` — and `rxwatch --features ack`, the car-run build
       # (Normal mode).

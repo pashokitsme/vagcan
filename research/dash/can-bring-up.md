@@ -976,3 +976,44 @@ now runs from `5V`. The SN65HVD230 is a 3.3 V part and its `RXD` drives the ESP3
 at its own supply — the C3's pins take 3.6 V. Powering the module from 3.3 V again (a wire to
 the regulator's output, or a small 3.3 V regulator off `5V`) is the fix; a divider on `RXD`
 is the stopgap.
+
+### 9.13 A new board whose BLE does not start; the bench over USB, 2026-09-22 00:44–01:51
+
+The owner broke the old SuperMini's pins and fitted a new one (ESP32-C3 rev v0.4, 40 MHz
+crystal, 4 MB, MAC `3c:0f:02:a5:fe:80`). `bench.sh 15 cantx` passed on it. Board `B` =
+`/dev/cu.usbmodem1101`, later `/dev/cu.usbmodem101`; CANable `C`.
+
+**`dash` boot-loops every ~10 s.** Breadcrumb prints (temporary, not committed) put the hang
+after `esp_wifi::init`, in `BleConnector::new`; the RWDT then reboots it. A sampled PC read
+`spiflash_erase_sector` — an IRAM symbol espflash resolved wrongly, not a flash erase. Same
+result after `espflash erase-flash` and a reflash.
+
+| image on the new board | seen |
+|---|---|
+| probe `wifi-scan` | scans: 1–3 networks, −55…−73 dBm — power, crystal and antenna work |
+| probe `ble-scan` | hangs in `BleConnector::new`; PC in `esp_wifi::common_adapter::semphr_take` |
+| `ble-scan` + the two ESP-IDF steps esp-wifi 0.15.1 skips (BT reset bits 10/12, BT LP clock on XTAL ÷ 40; `ble-controller-hang.fix.diff`) | both applied (`BT_LPCK_DIV_INT` 0xff → 0x28), still hangs — after a flash reset and after a cold replug |
+
+Cause not found; the research is `ble-controller-hang.md`. Until it is, the firmware has a
+`ble` feature (default on) and this board runs `dash` built with `--no-default-features`.
+
+**The bench over USB, `dash` without BLE, real plan.** `benchecu --bench --device C --unit 7E0
+--unit 7E1 --unit 710 --part 7E0=8V0906264H --part 7E1=0CW300041G`.
+
+| check (`dash/17`) | seen |
+|---|---|
+| boot, part check | the panel polls `2029`+`202A` (the boost pair), `202F`, `F405` at 4/s, `028D` 2/s; `F187` matched on both units |
+| `vagcan info --device B` | both part numbers read; the identity set on `7E0`/`7E1` at `benchecu` |
+| `vagcan watch --device B --did 01:F40D --hz 10 --for 12` | 119 rows, 10.0/s, gaps 98–102 ms, no empty value |
+| `vagcan measure --device B` | `7E1 F40D` 45–50/s; `2029`/`202A` 10/s, `380x` 12–16/s, `028D` 4–6/s |
+| `kill -9` a `watch --device B` | its `F40D` stopped within ~1 s; the next `info` worked |
+| §2 item 9: Ctrl-C a `--slcan dev sniff --device B` | the panel polled again at once |
+| `kill -9` an adapter-mode host, the pair busy (`C` transmitting unacknowledged) | `FRAME` lines back within 3 s |
+| `kill -9` an adapter-mode host, the pair silent | still in adapter mode after 30 s; ended by the next host's Hello |
+| §2 item 11: `kill -STOP` an adapter-mode host 5 s, pair busy, then `kill -9` | **fails**: still in adapter mode right after (no `FRAME` in the next 1 s); ~1 s was expected |
+| `dashsim --snap`, MAIN page | the deviation line `--` under `НАДДУВ`, between number and unit; all values dashes (`benchecu` refuses `2029`/`202A`) — PR #4's first frame from the board |
+| §2 item 16: `slcan` image | `devices` → `slcan image`; `\r`→`\r`, `V`→`V0101`, `F`→`F00`, `C`→`\r`; `--slcan dev sniff` with `C` transmitting: 24,751 frames in 6.7 s, 0 incomplete, none dropped |
+
+Twice the bench itself failed mid-run: the CANable dropped off USB once, and after it was
+replugged the pair carried nothing (`C` heard no frame even `--active`) until the owner
+refixed the wiring.

@@ -65,6 +65,13 @@ path = "./src/bin/rxprobe.rs"
 required-features = ["bench"]
 
 [features]
+default = ["ble"]
+# The radio: the BLE controller, the GATT server, UDS and `dashcfg` over BLE. Off
+# (`--no-default-features`) for a board whose BLE controller does not start — the
+# ESP32-C3 SuperMini fitted on 2026-09-22 hangs in `BleConnector::new` while its
+# Wi-Fi scans (`research/dash/can-bring-up.md` §9.13). Without it the panel, the
+# bus, USB and adapter mode run as before, and no radio host exists to guard.
+ble = []
 # `rxwatch` in Normal mode: it still sends no frames, but it acknowledges the
 # ones it hears — which on the car is the first dominant bit of ours the
 # gateway registers (its heartbeat drops from 3106/s to 2 Hz). Off by default

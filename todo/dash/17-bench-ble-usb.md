@@ -66,6 +66,12 @@ on a frame to any other id, so every unit a command addresses must be listed).
 15. `vagcan devices` within a second of the board booting → still `dash image`, `mode=panel`.
 16. Flash `slcan`; `vagcan devices` → `slcan image`; §9.4 still holds. Reflash `dash`.
 
+**Run 2026-09-22** on the new board, USB only, `dash` without BLE (`can-bring-up.md` §9.13):
+items 1, 3, 9, 16 pass; item 11 **fails** — a stopped host keeps the board in adapter mode (the
+design ends it on `C` or on the cable's start-of-frame packets, and a stopped process sends
+neither); a killed host on a silent pair does the same until the next Hello. BLE items (§1, 4,
+13) wait on the board's BLE (`research/dash/ble-controller-hang.md`).
+
 ## 3. Older items carried here
 
 - The busy-port message. (The board's `V`/Hello probe and `F` through `dev sniff` ran: §9.8, §9.9.)
