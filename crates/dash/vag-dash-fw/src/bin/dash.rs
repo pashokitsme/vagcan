@@ -2615,7 +2615,19 @@ async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
 				USB_ROOM.wait().await;
 				return None;
 			}
-			Some(embedded_io_async::Read::read(&mut usb, &mut buffer).await)
+			// esp-hal 1.0.0-rc.0's async read can sleep through data already in the FIFO: its
+			// futures enable their interrupt with a read-modify-write of `int_ena` that the
+			// handler also writes, so a receive interrupt landing inside the transmit side's
+			// write is written back as still armed, and the read waits for a packet the host
+			// cannot send until this one is taken. Seen on the bench: a 4095-byte flood with
+			// BLE running left the board deaf on USB for good (2026-09-22, §9.14). A read
+			// begins by draining the FIFO, so starting it again picks such bytes up. Inside
+			// this wait, not around it, so the host's silence still counts as one gap.
+			loop {
+				if let Either::First(read) = select(embedded_io_async::Read::read(&mut usb, &mut buffer), Timer::after(USB_READ_RECHECK)).await {
+					return Some(read);
+				}
+			}
 		};
 		let event = select(read, USB_GONE_FOR_CONSOLE.wait()).await;
 		match event {
@@ -2636,6 +2648,9 @@ async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
 		}
 	}
 }
+
+/// How long a USB read waits before it looks at the FIFO again (`usb_reader_task`).
+const USB_READ_RECHECK: Duration = Duration::from_millis(50);
 
 /// Set when a `C` ended adapter mode, so the session's end is noted by the adapter's
 /// task once `serve` has returned — after the `C`'s own `\r`, not before it. Noted from

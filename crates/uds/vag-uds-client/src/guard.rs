@@ -57,6 +57,7 @@
 //! | rule                                               | radio | cable |
 //! |----------------------------------------------------|-------|-------|
 //! | service allowlist                                  | yes   | yes   |
+//! | [`MAX_REQUEST_BYTES`]                              | yes   | yes   |
 //! | `10 02` refused                                    | yes   | yes   |
 //! | road speed 0 before another session change         | yes   | yes   |
 //! | one response id per request id, [`MAX_UNITS`]      | yes   | yes   |
@@ -68,7 +69,7 @@
 //! | memory outlives a close, forgotten with time       | yes   | no: a close is the reset |
 //!
 //! The per-request identifier cap goes with the rate cap it exists for ("identifiers
-//! count, not requests"); a cable host is bounded by ISO-TP's PDU size instead. And
+//! count, not requests"); a cable host is bounded by [`MAX_REQUEST_BYTES`] instead. And
 //! with no walk rule and no distinct cap the cable profile keeps no identifiers at
 //! all, so its memory is the units map and the subscription slots, as bounded as the
 //! radio's.
@@ -93,6 +94,12 @@ pub const RATE_WINDOW_MS: u64 = 10_000;
 /// the panel and the cable keep three quarters. The cable is not held to it. A starting
 /// figure: the owner may tune it.
 pub const RADIO_BUS_SHARE_PERMILLE: u64 = 250;
+/// The longest request either link forwards, in bytes. ISO-TP carries 4095, and the
+/// board copies a request on its way to the bus: 4095-byte requests over the cable ran
+/// its 72 KB heap, most of it the BLE controller's, out in seconds and it panicked
+/// (2026-09-22, `research/dash/can-bring-up.md` §9.14). Nothing the allowlist admits
+/// needs more: 64 bytes is a `0x22` of 31 identifiers, and vagcan's longest is about 21.
+pub const MAX_REQUEST_BYTES: usize = 64;
 /// Identifiers allowed in one `0x22` request.
 pub const MAX_IDENTIFIERS_PER_REQUEST: usize = 4;
 /// Different identifiers of one unit the radio guard remembers asked. A starting figure.
@@ -171,6 +178,8 @@ pub enum Verdict {
 pub enum Refusal {
 	/// No bytes at all.
 	Empty,
+	/// More than [`MAX_REQUEST_BYTES`] bytes.
+	TooLong,
 	/// A service outside the read-only allowlist.
 	ServiceNotAllowed(u8),
 	/// A session request that is not exactly `10 xx`.
@@ -222,6 +231,7 @@ impl Refusal {
 	pub fn reason(&self) -> &'static str {
 		match self {
 			Refusal::Empty => "empty request",
+			Refusal::TooLong => "request too long for this link",
 			Refusal::ServiceNotAllowed(_) => "service not allowed: this link only reads",
 			Refusal::MalformedSession => "malformed session request",
 			Refusal::ProgrammingSession => "programming session is never allowed over this link",
@@ -248,6 +258,7 @@ impl fmt::Display for Refusal {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Refusal::ServiceNotAllowed(sid) => write!(f, "service 0x{sid:02X} not allowed: this link only reads"),
+			Refusal::TooLong => write!(f, "request over {MAX_REQUEST_BYTES} bytes: nothing this link forwards is longer"),
 			Refusal::MalformedSession => f.write_str("malformed session request: it is 10 and one byte"),
 			Refusal::Moving(kmh) => write!(f, "session change refused: the car is moving at {kmh} km/h"),
 			Refusal::MalformedIdentifiers => f.write_str("malformed read request: 22 and whole two-byte identifiers"),
@@ -550,6 +561,9 @@ impl Guard {
 	/// The rules that do not depend on time. Refusing a walk locks the unit.
 	fn admit(&mut self, now_ms: u64, request_id: u16, response_id: u16, pdu: &[u8]) -> Result<Admitted, Refusal> {
 		let (&sid, rest) = pdu.split_first().ok_or(Refusal::Empty)?;
+		if pdu.len() > MAX_REQUEST_BYTES {
+			return Err(Refusal::TooLong);
+		}
 		if !READ_ONLY_ALLOWLIST.contains(&sid) {
 			return Err(Refusal::ServiceNotAllowed(sid));
 		}
@@ -1481,6 +1495,22 @@ mod tests {
 		);
 	}
 
+	/// A request longer than [`MAX_REQUEST_BYTES`] is refused on either link, before it is
+	/// copied anywhere: 4095-byte requests over the cable exhausted the board's heap
+	/// (2026-09-22, `research/dash/can-bring-up.md` §9.14).
+	#[test]
+	fn a_request_past_the_byte_cap_is_refused_on_the_radio_and_the_cable() {
+		let at_cap: Vec<u8> = [0x22].into_iter().chain([0xF4, 0x0D].repeat((MAX_REQUEST_BYTES - 1) / 2)).collect();
+		assert!(at_cap.len() <= MAX_REQUEST_BYTES && at_cap.len() + 2 > MAX_REQUEST_BYTES);
+		let over: Vec<u8> = [at_cap.as_slice(), &[0xF4, 0x0D]].concat();
+		for mut guard in [Guard::new(), Guard::cable()] {
+			let profile = guard.profile();
+			assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &over), Verdict::Refuse(Refusal::TooLong), "{profile:?}");
+			assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x19, 0x02, 0xFF]), Verdict::Forward, "{profile:?}");
+		}
+		assert_eq!(Guard::cable().check(0, ENGINE, resp(ENGINE), &at_cap), Verdict::Forward);
+	}
+
 	#[test]
 	fn one_timing_subscription_per_connection_on_the_radio_and_the_cable() {
 		for mut guard in [Guard::new(), Guard::cable()] {
@@ -1865,12 +1895,15 @@ mod tests {
 	#[test]
 	fn the_cable_has_no_walk_rule_no_distinct_cap_and_no_per_request_cap() {
 		let mut guard = Guard::cable();
-		// `units --identify <unit>`: all of F100–F1FF, one at a time and then in one request.
+		// All of F100–F1FF, one at a time and then as many to a request as
+		// [`MAX_REQUEST_BYTES`] holds — past the radio's four, and evenly spaced.
 		for did in 0xF100u16..=0xF1FF {
 			forward_now(&mut guard, 0, 0x714, &rdbi(&[did]));
 		}
 		let all: Vec<u16> = (0xF100u16..=0xF1FF).collect();
-		forward_now(&mut guard, 0, 0x714, &rdbi(&all));
+		for request in all.chunks((MAX_REQUEST_BYTES - 1) / 2) {
+			forward_now(&mut guard, 0, 0x714, &rdbi(request));
+		}
 		assert_eq!(
 			guard.check_subscribe(0, 0x714, resp(0x714), 0xF1FF, MIN_PERIOD_MS, Priority::Normal),
 			Verdict::Forward

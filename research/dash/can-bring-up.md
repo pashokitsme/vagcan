@@ -1034,3 +1034,21 @@ board on the bench (transceiver still on 5 V) and the new one as a spare.
 The August recon firmware (`~/esp/c3-recon/ble`, `scan` and `peri` — the code BLE first ran
 on, same crate versions) hangs on the new board the same way, right after esp-wifi's
 configuration line (23:04). The new board is back on `dash --no-default-features`.
+
+### 9.14 The old board with alarms and BLE; a USB flood, 2026-09-22 02:10–02:48
+
+Old board (rev v1.1), default `dash` (BLE on), the owner's `dash.toml` with the four
+recommended `[[alarm]]` rules (13 channels, 4 pages). `benchecu` as in §9.13.
+
+| check (`dash/17`) | seen |
+|---|---|
+| boot with the new plan (§3, stored-config check) | `config generation 5 does not fit this plan … running on defaults`, then the two `settings:` notes — the old config discarded, the plan's pages shown |
+| the alarms' channels | `200A`–`200D` and `291D`–`2920` polled on the MAIN page beside its own, 4/s each |
+| USB stream, 120 s, nobody connected (§2 item 2) | 579 `FRAME` lines, every whole one decodes to 256×64; only the capture's first and last cut; no other line, no NUL |
+| the port opened twice at once (§3) | no reset: no boot line, the panel kept polling |
+| §2 item 13: 4095-byte requests over USB, `info` and `measure` over BLE | **before**: `memory allocation of 4095 bytes failed` in ~9 s — `usb_session_task` → `Session::push` → `poll` → `act`, the PDU copied on its way to the planner (and again by `queue_raw`), on a 72 KB heap the BLE controller holds most of |
+| the same, with `guard::MAX_REQUEST_BYTES` = 64 | no panic, no reset; every request refused (`request over 64 bytes`); `info` over BLE in 4 s; the USB host slowed |
+| … but after it | **the board went deaf on USB** (`answers neither Hello nor slcan`, `BTN S` ignored) while its `FRAME`s kept coming. Markers (temporary) showed the reader idle in `read` and every queue empty: esp-hal rc.0's async read missed its wake-up — `int_ena` is read-modify-written by the task and the handler alike, so a receive interrupt inside the transmit side's write is written back as armed |
+| the same with the read re-checked every 50 ms | two 60 s runs, 3,060 and 4,537 refusals at 200–300 KiB/s, no panic, no reset; `devices` answers after each |
+| `measure --device ble` during the flood | `7E1 F40D` 18–23/s, not ~50: the cable's 300 KiB/s of refused requests takes the CPU. Not a bus effect |
+

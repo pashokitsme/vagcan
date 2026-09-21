@@ -73,6 +73,10 @@ design ends it on `C` or on the cable's start-of-frame packets, and a stopped pr
 neither); a killed host on a silent pair does the same until the next Hello. BLE items (§1, 4,
 13) wait on the board's BLE (`research/dash/ble-controller-hang.md`).
 
+**Run 2026-09-22, old board with BLE** (§9.14): item 2 and §3 pass; item 13 found a heap
+panic (fixed: `guard::MAX_REQUEST_BYTES`) and then a USB read that never woke (fixed: the
+reader re-checks the FIFO every 50 ms); both runs after the fixes pass.
+
 ## 3. Older items carried here
 
 - The busy-port message. (The board's `V`/Hello probe and `F` through `dev sniff` ran: §9.8, §9.9.)
