@@ -63,19 +63,18 @@ resets it (§3).
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) | `dash/14` §2 |
 | BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
 | Link icons in a column at the right edge; the chart ends before it, connected or not; no icons on the adapter screen so far (2026-09-14) | `PR #3` |
+| The bench board's transceiver stays on 5 V: its 3V3 trace is broken, and the board is expendable (2026-09-22). The risk is `RXD` at 5 V into `GPIO1`, not the car's bus; if the board acts up in the car, unplug it | `research/dash/can-bring-up.md` §9.12 |
 | A channel's specified value written by hand as `setpoint`, never guessed from names; the panel shows the difference, not the value; a drift alarm is a percentage, a hold and a floor (2026-09-14/15) | `dash/18` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **The transceiver back on 3.3 V** — hardware, the owner's hands. `RXD` at 5 V into `GPIO1`
-   is past the C3's rating; a wire to the regulator's output, or a 3.3 V regulator off `5V`
-   (`research/dash/can-bring-up.md` §9.12). Before the car.
-2. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8 and 13: unplug USB
-   in adapter mode, a USB flood.
-3. **OLED and enclosure** — `dash/15`; waits for the panel.
-4. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
+1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8, 11 and 13: unplug USB
+   in adapter mode, a stopped host leaving the board in adapter mode (fails, 2026-09-22), a USB
+   flood.
+2. **OLED and enclosure** — `dash/15`; waits for the panel.
+3. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
    `vag_dash_render::screen`; the drift rule came with PR #4. Next: the owner writes the rules into
@@ -85,22 +84,22 @@ resets it (§3).
 
 **With the car**
 
-5. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+4. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
    watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
-6. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+5. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-7. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+6. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+7. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
     freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-9. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
+8. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
     ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
     `dash/17` §4).
-10. **Questions only the car answers** — `dash/06`.
-11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+9. **Questions only the car answers** — `dash/06`.
+10. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+11. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-13. **`watch` and `measure` across all fifteen units** — measured against the file, not
+12. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
