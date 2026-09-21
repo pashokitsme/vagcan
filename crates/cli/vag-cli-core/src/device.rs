@@ -60,7 +60,7 @@ pub const BLE_HINT: &str = "A dash board over Bluetooth: --device ble";
 pub const BLE_COMMAND_HINT: &str = "A dash board over Bluetooth: vagcan info --device ble";
 
 /// Why no board was heard, as far as this side can tell.
-const NO_BOARD: &str = "the board is powered from the OBD port, so the ignition must be on, and it must be in range of this computer.";
+const NO_BOARD: &str = "an adapter on the OBD port is powered by it, so the ignition must be on, and it must be in range of this computer.";
 
 /// What a command talks to the car through, once `--device` is resolved.
 pub enum Target<H = BleHandle> {
@@ -138,7 +138,7 @@ pub async fn resolve_with<H>(
 		return match ble_request(requested) {
 			Some(_) if slcan => bail!("{SLCAN_OVER_BLE}"),
 			Some(name) => {
-				eprintln!("looking for the dash board over BLE…");
+				eprintln!("looking for an adapter over BLE…");
 				// The adapter's own error as it came: on macOS it says where access is allowed.
 				let boards = scan().await?;
 				choose_board(boards, name, can_ask, asker).map(Target::Ble)
@@ -164,21 +164,21 @@ pub async fn resolve_with<H>(
 fn choose_board<H>(mut boards: Vec<Board<H>>, name: Option<&str>, can_ask: bool, asker: &mut impl Asker) -> Result<Board<H>> {
 	if let Some(name) = name {
 		if name.is_empty() {
-			bail!("`--device ble:` needs a board's name after the colon, e.g. `--device ble:vagcan-dash`");
+			bail!("`--device ble:` needs an adapter's name after the colon, e.g. `--device ble:vagcan-dash`");
 		}
 		let heard = choices(&boards);
 		boards.retain(|b| b.name == name || b.id == name);
 		match boards.len() {
-			0 if heard.is_empty() => bail!("no dash board named {name} answered over BLE: {NO_BOARD}"),
-			0 => bail!("no dash board named {name} answered over BLE. Heard:\n{heard}"),
+			0 if heard.is_empty() => bail!("no adapter named {name} answered over BLE: {NO_BOARD}"),
+			0 => bail!("no adapter named {name} answered over BLE. Heard:\n{heard}"),
 			1 => {}
-			_ => bail!("several dash boards are named {name} — name one by its id:\n{}", choices(&boards)),
+			_ => bail!("several adapters are named {name} — name one by its id:\n{}", choices(&boards)),
 		}
 	}
 	let at = match boards.len() {
-		0 => bail!("no dash board found over BLE: {NO_BOARD}"),
+		0 => bail!("no adapter found over BLE: {NO_BOARD}"),
 		1 => 0,
-		_ if !can_ask => bail!("several dash boards answered over BLE — say which one:\n{}", choices(&boards)),
+		_ if !can_ask => bail!("several adapters answered over BLE — say which one:\n{}", choices(&boards)),
 		_ => {
 			let details: Vec<String> = boards.iter().map(signal).collect();
 			let items: Vec<Item<'_>> = boards
@@ -186,9 +186,9 @@ fn choose_board<H>(mut boards: Vec<Board<H>>, name: Option<&str>, can_ask: bool,
 				.zip(&details)
 				.map(|(board, detail)| Item { label: &board.name, detail })
 				.collect();
-			match asker.ask("Which dash board?", &items, 0)? {
+			match asker.ask("Which adapter?", &items, 0)? {
 				Some(at) => at,
-				None => bail!("no dash board chosen"),
+				None => bail!("no adapter chosen"),
 			}
 		}
 	};
@@ -931,7 +931,7 @@ mod tests {
 		let err = refused(resolve_as(Some("ble:kitchen"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
 		assert!(err.contains("kitchen") && err.contains("--device ble:vagcan-dash-garage"), "{err}");
 		let err = refused(resolve_as(Some("ble:"), Ok(vec![]), never, hears(two()), true, &mut Scripted::new(vec![])).await);
-		assert!(err.contains("needs a board's name"), "{err}");
+		assert!(err.contains("needs an adapter's name"), "{err}");
 	}
 
 	#[tokio::test]
