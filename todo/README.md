@@ -75,27 +75,25 @@ resets it (§3).
    `dash.toml`; the misfire rule's numbers and a run on the car. The demo from a recorded drive
    waits for a recording with the retard channels and a way to replay it (none is
    hardware-free today).
-5. **Car picks its project** — `project::covering()` returns `None`; blocked on which of a
-   car's part numbers to believe.
 
 **With the car**
 
-6. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+5. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
    watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
-7. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+6. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-8. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+7. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
     freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-10. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
+9. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
     ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
     `dash/17` §4).
-11. **Questions only the car answers** — `dash/06`.
-12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+10. **Questions only the car answers** — `dash/06`.
+11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-14. **`watch` and `measure` across all fifteen units** — measured against the file, not
+13. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -190,6 +188,11 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   where it would live.
 
 ## Parked (designed, not being implemented now)
+- **The car picks its project** (parked by the owner, 2026-09-21, until a second ODIS
+  project is at hand) — `project::covering()` returns `None`, and the resolution order around
+  it is built and tested. Which of a car's part numbers identifies its platform (`5E0` × 3
+  against the MQB-shared `8V0`, `5Q0`, `3Q0`, `0CW`) needs a second project's `.vi` pool to
+  check against; with one project installed the sole-project step already picks it.
 - **The BLE stack out of the firmware's build** (2026-09-14) — `vag-dash-fw`'s `build.rs`
   generates the plan through `vag-cli-core`, which now depends on `vag-dash-ble`
   (btleplug), so CI's firmware job installs libdbus. Cleaner: `vag-dash-ble` behind a
