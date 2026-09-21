@@ -155,7 +155,7 @@ enum Command {
 	/// Identify the car: VIN, engine and gearbox passports.
 	Info {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
@@ -170,7 +170,7 @@ enum Command {
 	/// has one of them say everything it knows.
 	Units {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 		/// when asked. `--identify <unit>`
 		/// needs a cable adapter: it is a sweep, and a sweep does not run through the dash
@@ -211,7 +211,7 @@ enum Command {
 	/// this tool cannot do.
 	Faults {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
@@ -262,7 +262,7 @@ enum Command {
 	/// something else by them, so those are shown as bytes with the reason.
 	Sensors {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]
@@ -289,7 +289,7 @@ enum Command {
 	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
 		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 		/// when asked.
 		#[arg(long, value_name = "PATH|ble|ble:NAME")]

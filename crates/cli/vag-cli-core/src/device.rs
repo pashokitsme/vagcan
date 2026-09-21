@@ -51,13 +51,13 @@ const BOARD_SILENT: &str = "vag-dash board — answers neither Hello nor slcan (
 pub const SLCAN_OVER_BLE: &str =
 	"--slcan makes the board's USB cable a plain adapter; it has no meaning over BLE — drop --slcan, or name the board's serial path";
 
-/// How to reach the dash board over Bluetooth, said wherever no USB device was found:
+/// How to reach an adapter over Bluetooth, said wherever no USB device was found:
 /// nothing looks for it unasked.
-pub const BLE_HINT: &str = "A dash board over Bluetooth: --device ble";
+pub const BLE_HINT: &str = "An adapter over Bluetooth: --device ble";
 
 /// [`BLE_HINT`] where no car command is running — `vagcan devices` and the bare `vagcan`,
 /// which take no `--device` — so it names a command that does.
-pub const BLE_COMMAND_HINT: &str = "A dash board over Bluetooth: vagcan info --device ble";
+pub const BLE_COMMAND_HINT: &str = "An adapter over Bluetooth: vagcan info --device ble";
 
 /// Why no board was heard, as far as this side can tell.
 const NO_BOARD: &str = "an adapter on the OBD port is powered by it, so the ignition must be on, and it must be in range of this computer.";
@@ -972,7 +972,7 @@ mod tests {
 		for (listing, answer) in cases {
 			let err = refused(resolve_as(None, Ok(listing), answering(answer), no_scan(), true, &mut Scripted::new(vec![])).await);
 			assert!(err.contains("no USB-CAN adapter found"), "{err}");
-			assert!(err.ends_with("A dash board over Bluetooth: --device ble"), "{err}");
+			assert!(err.ends_with("An adapter over Bluetooth: --device ble"), "{err}");
 		}
 	}
 
@@ -981,7 +981,7 @@ mod tests {
 	fn the_device_listing_ends_by_saying_how_to_reach_a_board_over_bluetooth() {
 		for found in [vec![], vec![canable()]] {
 			let text = render_list(&found);
-			assert!(text.ends_with("A dash board over Bluetooth: vagcan info --device ble"), "{text}");
+			assert!(text.ends_with("An adapter over Bluetooth: vagcan info --device ble"), "{text}");
 		}
 	}
 

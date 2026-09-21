@@ -16,7 +16,7 @@ pub struct Args {
 	#[command(subcommand)]
 	pub tool: Option<crate::Tool>,
 	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-	/// cable), `ble` for the dash board over Bluetooth, or `ble:<name>` for one board by
+	/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
 	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
 	/// when asked.
 	#[arg(long, value_name = "PATH|ble|ble:NAME")]

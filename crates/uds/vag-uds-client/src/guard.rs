@@ -1398,6 +1398,7 @@ mod tests {
 	fn reasons_carry_no_figures_and_the_display_text_does() {
 		let all = [
 			Refusal::Empty,
+			Refusal::TooLong,
 			Refusal::ServiceNotAllowed(0x2E),
 			Refusal::MalformedSession,
 			Refusal::ProgrammingSession,
@@ -1424,6 +1425,7 @@ mod tests {
 			assert!(!text.is_empty() && text.len() <= 100, "{refusal:?}: {text:?}");
 		}
 		for (refusal, figure) in [
+			(Refusal::TooLong, MAX_REQUEST_BYTES.to_string()),
 			(Refusal::TooManyIdentifiers, MAX_IDENTIFIERS_PER_REQUEST.to_string()),
 			(Refusal::Walk, WALK_RUN.to_string()),
 			(Refusal::TooManyDistinct, MAX_DISTINCT_IDENTIFIERS.to_string()),
@@ -1505,7 +1507,11 @@ mod tests {
 		let over: Vec<u8> = [at_cap.as_slice(), &[0xF4, 0x0D]].concat();
 		for mut guard in [Guard::new(), Guard::cable()] {
 			let profile = guard.profile();
-			assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &over), Verdict::Refuse(Refusal::TooLong), "{profile:?}");
+			assert_eq!(
+				guard.check(0, ENGINE, resp(ENGINE), &over),
+				Verdict::Refuse(Refusal::TooLong),
+				"{profile:?}"
+			);
 			assert_eq!(guard.check(0, ENGINE, resp(ENGINE), &[0x19, 0x02, 0xFF]), Verdict::Forward, "{profile:?}");
 		}
 		assert_eq!(Guard::cable().check(0, ENGINE, resp(ENGINE), &at_cap), Verdict::Forward);
