@@ -35,8 +35,9 @@ dated status sections moved verbatim to
   (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
 
 - **New board, 2026-09-22.** The old SuperMini's pins broke; on the new one (C3 rev v0.4) the
-  BLE controller never starts while Wi-Fi scans, cause not found
-  (`research/dash/ble-controller-hang.md`). The firmware got a `ble` feature (default on); this
+  BLE controller never starts while Wi-Fi scans; the old board (rev v1.1) runs BLE with the
+  same image, so the chip revision is the lead (`research/dash/ble-controller-hang.md`). The
+  old board stays on the bench, the new one is a spare. The firmware got a `ble` feature (default on); this
   board runs `dash --no-default-features`. The USB bench passed on it except `dash/17` §2 item
   11: a stopped host keeps the board in adapter mode (`research/dash/can-bring-up.md` §9.13).
 

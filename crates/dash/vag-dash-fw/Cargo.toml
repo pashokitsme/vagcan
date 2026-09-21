@@ -68,8 +68,8 @@ required-features = ["bench"]
 default = ["ble"]
 # The radio: the BLE controller, the GATT server, UDS and `dashcfg` over BLE. Off
 # (`--no-default-features`) for a board whose BLE controller does not start — the
-# ESP32-C3 SuperMini fitted on 2026-09-22 hangs in `BleConnector::new` while its
-# Wi-Fi scans (`research/dash/can-bring-up.md` §9.13). Without it the panel, the
+# ESP32-C3 SuperMini fitted on 2026-09-22, a rev v0.4 chip, hangs in `BleConnector::new`
+# while its Wi-Fi scans; a rev v1.1 board runs BLE with the same image (`research/dash/can-bring-up.md` §9.13). Without it the panel, the
 # bus, USB and adapter mode run as before, and no radio host exists to guard.
 ble = []
 # `rxwatch` in Normal mode: it still sends no frames, but it acknowledges the

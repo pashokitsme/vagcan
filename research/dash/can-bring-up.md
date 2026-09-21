@@ -1017,3 +1017,16 @@ Cause not found; the research is `ble-controller-hang.md`. Until it is, the firm
 Twice the bench itself failed mid-run: the CANable dropped off USB once, and after it was
 replugged the pair carried nothing (`C` heard no frame even `--active`) until the owner
 refixed the wiring.
+
+**The old board again, 01:59.** The owner put the old SuperMini back (its pins are broken but
+it works): ESP32-C3 **rev v1.1**, MAC `44:b1:76:19:70:54`. The default `dash` (with BLE) boots
+with no reboot loop, and over BLE, from Terminal.app, with `benchecu` as above:
+
+| check | seen |
+|---|---|
+| `vagcan info --device ble` | both part numbers in ~4 s |
+| `bleuds --subscribe 7E0 7E8 F40D 100 10` | readings every 100 ms of board time |
+| `vagcan watch --device ble --did 01:F40D --hz 10 --for 15` | 149 rows, 10.0/s, gaps 98–102 ms, no empty value |
+
+Same image, same crates: BLE starts on rev v1.1 and not on rev v0.4. The owner keeps the old
+board on the bench (transceiver still on 5 V) and the new one as a spare.
