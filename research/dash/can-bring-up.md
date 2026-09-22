@@ -1050,5 +1050,17 @@ recommended `[[alarm]]` rules (13 channels, 4 pages). `benchecu` as in §9.13.
 | the same, with `guard::MAX_REQUEST_BYTES` = 64 | no panic, no reset; every request refused (`request over 64 bytes`); `info` over BLE in 4 s; the USB host slowed |
 | … but after it | **the board went deaf on USB** (`answers neither Hello nor slcan`, `BTN S` ignored) while its `FRAME`s kept coming. Markers (temporary) showed the reader idle in `read` and every queue empty: esp-hal rc.0's async read missed its wake-up — `int_ena` is read-modify-written by the task and the handler alike, so a receive interrupt inside the transmit side's write is written back as armed |
 | the same with the read re-checked every 50 ms | two 60 s runs, 3,060 and 4,537 refusals at 200–300 KiB/s, no panic, no reset; `devices` answers after each |
-| `measure --device ble` during the flood | `7E1 F40D` 18–23/s, not ~50: the cable's 300 KiB/s of refused requests takes the CPU. Not a bus effect |
+| `measure --device ble` during the flood | `7E1 F40D` 18–23/s, not ~50: the cable's 300 KiB/s of refused requests takes the CPU. Not a bus effect || the same, a 50 ms re-check only when `SERIAL_OUT_EP_DATA_AVAIL` says a packet waits (review: every new read is one more racy `int_ena` write, and the mirror race would stall the writer) | one of five 60 s runs still panicked: `memory allocation of 4095 bytes failed` — the frame was gathered whole (a `Vec` doubling to 8 KB) and its PDU decoded (4 KB more) before the guard saw it |
+| `Reassembler::with_max_body(console::MAX_HOST_BODY)` = 69 on the board, USB and BLE: a longer frame is passed over as it streams | three 60 s runs with BLE: no panic, ~930 `over this end's 69-byte cap` notes each, the host slowed to ~62 KiB/s, `devices` answers after each |
+
+**`measure` over BLE is slower than on 2026-09-14, flood or not.** `7E1 F40D` 18–23/s under
+`vagcan measure --device ble` alone — with the alarm plan and with the plan before it — and
+`bleuds --subscribe 7E1 7E9 F40D 20 10 --timing` 434 readings in 9,984 ms = **43.4 Hz**; §9.10
+had 49–51/s and 50.0 Hz on this board. Not investigated yet.
+
+**Adapter mode and a stopped host (§2 item 11), measured.** `C` transmitting unacknowledged,
+`--slcan dev sniff --device B` stopped with `kill -STOP`, then killed, then 1 s read for
+`FRAME` lines: still adapter mode after 5 s; the panel back after 15, 30 and 60 s. The stall
+exit works, only slower than the ~1 s the plan says: macOS takes the board's output into its
+own buffer for as long as it has room.
 

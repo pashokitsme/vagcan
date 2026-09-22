@@ -1148,7 +1148,7 @@ fn session_wake(session: &Session) -> Instant {
 #[cfg(feature = "ble")]
 async fn uds_server(session: &mut Session, settings: &'static Shared, bus: &'static Bus) {
 	let client = &BLE_CLIENT;
-	let mut reassembler = Reassembler::new();
+	let mut reassembler = Reassembler::with_max_body(console::MAX_HOST_BODY);
 	let mut dropped_said = 0;
 	loop {
 		let wake = session_wake(session);
@@ -2621,11 +2621,17 @@ async fn usb_reader_task(mut usb: UsbSerialJtagRx<'static, Async>) -> ! {
 			// write is written back as still armed, and the read waits for a packet the host
 			// cannot send until this one is taken. Seen on the bench: a 4095-byte flood with
 			// BLE running left the board deaf on USB for good (2026-09-22, §9.14). A read
-			// begins by draining the FIFO, so starting it again picks such bytes up. Inside
-			// this wait, not around it, so the host's silence still counts as one gap.
+			// begins by draining the FIFO, so starting it again picks such bytes up — and only
+			// then: a new read is one more of those writes, and the mirror race would stall
+			// the writer instead. Inside this wait, so the host's silence is still one gap.
 			loop {
-				if let Either::First(read) = select(embedded_io_async::Read::read(&mut usb, &mut buffer), Timer::after(USB_READ_RECHECK)).await {
-					return Some(read);
+				let mut read = core::pin::pin!(embedded_io_async::Read::read(&mut usb, &mut buffer));
+				loop {
+					match select(read.as_mut(), Timer::after(USB_READ_RECHECK)).await {
+						Either::First(read) => return Some(read),
+						Either::Second(()) if vag_dash_fw::usb::rx_waiting() => break,
+						Either::Second(()) => {}
+					}
 				}
 			}
 		};

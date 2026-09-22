@@ -235,6 +235,13 @@ pub const FRAME_GAP_MS: u64 = 200;
 /// What a frame given up after [`FRAME_GAP_MS`] is reported as.
 pub const UNFINISHED: LinkError = LinkError::Malformed("a frame the host never finished");
 
+/// The longest framed message a host sends the board, in body bytes: a Request's `seq`,
+/// request id and response id, then a PDU of at most [`crate::guard::MAX_REQUEST_BYTES`].
+/// Longer frames are passed over as they arrive, never gathered — a flood of 4 KB
+/// requests ran the board's heap out while they were (2026-09-22). A Subscribe (11) and
+/// a Hello (0) are well inside it. The board's BLE link uses it too.
+pub const MAX_HOST_BODY: usize = 5 + crate::guard::MAX_REQUEST_BYTES;
+
 impl Default for Console {
 	fn default() -> Self {
 		Self::new()
@@ -246,7 +253,7 @@ impl Console {
 	pub fn new() -> Self {
 		Console {
 			mode: Mode::Panel,
-			reassembler: Reassembler::new(),
+			reassembler: Reassembler::with_max_body(MAX_HOST_BODY),
 			parser: LineParser::lines(),
 			last_byte_ms: 0,
 		}
@@ -638,6 +645,33 @@ mod tests {
 		assert_eq!(
 			Console::new().push(&bytes, false),
 			vec![Input::Message(Message::Hello), Input::EnterAdapter, slcan(b"V")]
+		);
+	}
+
+	#[test]
+	fn a_request_too_long_for_the_board_is_passed_over_and_the_next_message_heard() {
+		let long = link::encode(&Message::Request(Request {
+			seq: 1,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			pdu: vec![0x22; 4095],
+		}))
+		.unwrap();
+		let hello = link::encode(&Message::Hello).unwrap();
+		let mut console = Console::new();
+		let mut heard = Vec::new();
+		for chunk in [long.as_slice(), hello.as_slice()].concat().chunks(64) {
+			heard.extend(console.push_at(chunk, false, 1_000));
+		}
+		assert_eq!(
+			heard,
+			vec![
+				Input::Malformed(LinkError::OverCap {
+					len: 4100,
+					cap: MAX_HOST_BODY
+				}),
+				Input::Message(Message::Hello)
+			]
 		);
 	}
 

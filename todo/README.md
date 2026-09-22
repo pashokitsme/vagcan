@@ -70,9 +70,9 @@ resets it (§3).
 
 **Without the car**
 
-1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 items 8 and 11: unplug USB
-   in adapter mode, a stopped host leaving the board in adapter mode (fails, 2026-09-22). Item
-   13, the USB flood, passes since 2026-09-22 after two fixes (`research/dash/can-bring-up.md` §9.14).
+1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 item 8: unplug USB in
+   adapter mode. Items 11 and 13 pass since 2026-09-22 (13 after three fixes); `measure` over
+   BLE runs at ~20/s where 2026-09-14 had ~50 — open (`research/dash/can-bring-up.md` §9.14).
 2. **OLED and enclosure** — `dash/15`; waits for the panel.
 3. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched

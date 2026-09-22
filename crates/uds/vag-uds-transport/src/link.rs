@@ -329,6 +329,9 @@ pub enum Message {
 pub enum LinkError {
 	#[error("message body of {0} bytes is over the {MAX_BODY}-byte cap")]
 	Oversize(usize),
+	/// A body within the link's cap but over what this end takes ([`Reassembler::with_max_body`]).
+	#[error("message body of {len} bytes is over this end's {cap}-byte cap")]
+	OverCap { len: usize, cap: usize },
 	#[error("unknown message type 0x{0:02X}")]
 	UnknownType(u8),
 	#[error("malformed message: {0}")]
@@ -564,10 +567,25 @@ pub fn chunks(bytes: &[u8], max: usize) -> impl Iterator<Item = &[u8]> {
 /// that frame. A frame that never finishes cannot be told from a slow one
 /// without a clock: the owner calls [`Reassembler::reset`] when the connection
 /// drops.
-#[derive(Debug, Default)]
+///
+/// An owner that expects only short messages says so with [`Reassembler::with_max_body`]:
+/// a frame with a trusted length over that cap is passed over as it streams, never
+/// held, and said as one [`Piece::Error`] — the board, which a 4 KB request flood ran out
+/// of heap while the frames were being gathered (2026-09-22).
+#[derive(Debug)]
 pub struct Reassembler {
 	/// The frame in progress, header included. Empty between frames.
 	partial: Vec<u8>,
+	/// The longest body kept; [`MAX_BODY`] unless the owner said less.
+	max_body: usize,
+	/// Body bytes of a frame over `max_body` still to pass over.
+	skipping: usize,
+}
+
+impl Default for Reassembler {
+	fn default() -> Self {
+		Self::with_max_body(MAX_BODY)
+	}
 }
 
 impl Reassembler {
@@ -575,14 +593,24 @@ impl Reassembler {
 		Self::default()
 	}
 
+	/// A reassembler that keeps no body longer than `max_body` bytes (at most [`MAX_BODY`]).
+	pub fn with_max_body(max_body: usize) -> Self {
+		Self {
+			partial: Vec::new(),
+			max_body: max_body.min(MAX_BODY),
+			skipping: 0,
+		}
+	}
+
 	/// Forget any frame in progress.
 	pub fn reset(&mut self) {
 		self.partial.clear();
+		self.skipping = 0;
 	}
 
 	/// Whether a frame is in progress: its first bytes have come and its last have not.
 	pub fn in_frame(&self) -> bool {
-		!self.partial.is_empty()
+		!self.partial.is_empty() || self.skipping > 0
 	}
 
 	/// Feed one chunk; get back everything it completed.
@@ -590,6 +618,12 @@ impl Reassembler {
 		let mut out = Vec::new();
 		let mut at = 0;
 		while at < chunk.len() {
+			if self.skipping > 0 {
+				let take = self.skipping.min(chunk.len() - at);
+				self.skipping -= take;
+				at += take;
+				continue;
+			}
 			if self.partial.is_empty() && chunk[at] != MARKER {
 				let end = chunk[at..].iter().position(|&b| b == MARKER).map_or(chunk.len(), |p| at + p);
 				out.push(Piece::Text(chunk[at..end].to_vec()));
@@ -619,6 +653,14 @@ impl Reassembler {
 					self.partial.clear();
 					break;
 				}
+				if len > self.max_body {
+					// Trusted, only longer than this owner takes: pass over exactly that.
+					out.push(Piece::Error(LinkError::OverCap { len, cap: self.max_body }));
+					self.partial.clear();
+					self.skipping = len;
+					continue;
+				}
+				self.partial.reserve_exact(len);
 			}
 			let whole = HEADER_LEN + self.body_len();
 			let take = (whole - self.partial.len()).min(chunk.len() - at);
@@ -1068,6 +1110,60 @@ mod tests {
 		let pieces = r.push(&[0x00, 0x01, 0x69, 0x10, 0xAA, 0xBB]);
 		assert_eq!(pieces, vec![Piece::Error(LinkError::Oversize(MAX_BODY + 1))]);
 		assert_eq!(one_message(r.push(&encode(&request()).unwrap())), request());
+	}
+
+	/// A frame whose length is trusted but over the owner's cap is passed over byte by byte
+	/// and never held: the board keeps only a header of it (2026-09-22, a 4 KB request flood
+	/// ran its heap out while the frame was being gathered).
+	#[test]
+	fn a_frame_over_the_owners_cap_is_skipped_whole_and_the_next_one_heard() {
+		let big = encode(&Message::Request(Request {
+			seq: 1,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			pdu: vec![0x22; 100],
+		}))
+		.unwrap();
+		let small = encode(&request()).unwrap();
+		let mut r = Reassembler::with_max_body(69);
+		let pieces = r.push(&[big.as_slice(), small.as_slice()].concat());
+		assert_eq!(
+			pieces,
+			vec![Piece::Error(LinkError::OverCap { len: 105, cap: 69 }), Piece::Message(request())]
+		);
+		assert!(!r.in_frame());
+
+		// Cut anywhere, the same: the skip crosses chunks and never grows the buffer.
+		let mut r = Reassembler::with_max_body(69);
+		let mut heard = Vec::new();
+		for piece in [big.as_slice(), small.as_slice()].concat().chunks(7) {
+			heard.extend(r.push(piece));
+			assert!(r.partial.capacity() <= HEADER_LEN.max(small.len()), "{}", r.partial.capacity());
+		}
+		assert_eq!(
+			heard,
+			vec![Piece::Error(LinkError::OverCap { len: 105, cap: 69 }), Piece::Message(request())]
+		);
+
+		// Mid-skip it is a frame in progress, and a reset forgets it.
+		let mut r = Reassembler::with_max_body(69);
+		assert_eq!(r.push(&big[..20]), vec![Piece::Error(LinkError::OverCap { len: 105, cap: 69 })]);
+		assert!(r.in_frame());
+		r.reset();
+		assert!(!r.in_frame());
+		assert_eq!(one_message(r.push(&small)), request());
+	}
+
+	#[test]
+	fn the_default_cap_is_the_links() {
+		let whole = encode(&Message::Request(Request {
+			seq: 1,
+			request_id: 0x7E0,
+			response_id: 0x7E8,
+			pdu: vec![0x22; MAX_PDU],
+		}))
+		.unwrap();
+		assert!(matches!(one_message(Reassembler::new().push(&whole)), Message::Request(_)));
 	}
 
 	#[test]

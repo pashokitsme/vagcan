@@ -75,7 +75,10 @@ neither); a killed host on a silent pair does the same until the next Hello. BLE
 
 **Run 2026-09-22, old board with BLE** (§9.14): item 2 and §3 pass; item 13 found a heap
 panic (fixed: `guard::MAX_REQUEST_BYTES`) and then a USB read that never woke (fixed: the
-reader re-checks the FIFO every 50 ms); both runs after the fixes pass.
+reader re-checks the FIFO every 50 ms), then a third (fixed: the board passes over a frame
+longer than `console::MAX_HOST_BODY` instead of gathering it); three runs after that pass.
+Item 11 passes, but in 5–15 s rather than ~1 s — macOS buffers the board's output for a
+stopped host. `measure` over BLE runs at ~20/s, not ~50: open (§9.14).
 
 ## 3. Older items carried here
 

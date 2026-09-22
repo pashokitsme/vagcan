@@ -101,6 +101,12 @@ pub fn sof_frame() -> u16 {
 	USB_DEVICE::regs().fram_num().read().sof_frame_index().bits()
 }
 
+/// Whether a packet from the host sits in the receive FIFO: `SERIAL_OUT_EP_DATA_AVAIL`.
+/// A read only; nothing is written, so it cannot race the driver's interrupt handler.
+pub fn rx_waiting() -> bool {
+	USB_DEVICE::regs().ep1_conf().read().serial_out_ep_data_avail().bit_is_set()
+}
+
 /// Whether the host has taken the last packet written: `SERIAL_IN_EP_DATA_FREE`, which
 /// goes low when a packet is committed and high again once the host has read it. A
 /// write while it is low overruns the 64-byte endpoint buffer, so a writer that gave up
