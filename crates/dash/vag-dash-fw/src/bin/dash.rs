@@ -1057,8 +1057,12 @@ fn text_line(text: &str) -> Vec<u8> {
 async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, '_, P>) {
 	let tx = &server.uart.tx;
 	let mut said_mtu = 0;
+	let mut carry: Option<Outgoing> = None;
 	loop {
-		let outgoing = OUTBOX.receive().await;
+		let outgoing = match carry.take() {
+			Some(outgoing) => outgoing,
+			None => OUTBOX.receive().await,
+		};
 		let size = notify_size(conn);
 		if size != said_mtu {
 			said_mtu = size;
@@ -1072,7 +1076,22 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 		// Both cut at the notification size: a frame's reassembler and a text line's
 		// `\n` say where each ends. The first state push goes out before the MTU
 		// exchange, at 20 bytes a notification, and must still arrive whole.
-		let (Outgoing::Text(bytes) | Outgoing::Frame(bytes)) = outgoing;
+		let (Outgoing::Text(mut bytes) | Outgoing::Frame(mut bytes)) = outgoing;
+		// What is already queued goes in the same notification, up to its size. A reading is
+		// ~12 bytes, and one notification each cost the bus: `measure` over BLE got ~20
+		// speed reads a second where the cable got ~48, the radio stack's time taken from the
+		// bus task (2026-09-22, §9.15). Nothing waits here, so nothing is later for it.
+		let mut taken = bytes.len();
+		while bytes.len() < size {
+			let Ok(next) = OUTBOX.try_receive() else { break };
+			let (Outgoing::Text(more) | Outgoing::Frame(more)) = &next;
+			if bytes.len() + more.len() > size {
+				carry = Some(next);
+				break;
+			}
+			bytes.extend_from_slice(more);
+			taken += more.len();
+		}
 		for piece in link::chunks(&bytes, size) {
 			if let Err(e) = send(piece).await {
 				// A chunk lost is a hole in the host's stream with nothing to say so: its
@@ -1085,7 +1104,7 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 				core::future::pending::<()>().await;
 			}
 		}
-		OUTBOX_BYTES.written(bytes.len());
+		OUTBOX_BYTES.written(taken);
 	}
 }
 

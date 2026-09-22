@@ -72,7 +72,7 @@ resets it (§3).
 
 1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 item 8: unplug USB in
    adapter mode. Items 11 and 13 pass since 2026-09-22 (13 after three fixes); `measure` over
-   BLE runs at ~20/s where 2026-09-14 had ~50 — open (`research/dash/can-bring-up.md` §9.14).
+   BLE: ~20/s → 34–38/s after packing notifications, the cable 45–48/s (`research/dash/can-bring-up.md` §9.15).
 2. **OLED and enclosure** — `dash/15`; waits for the panel.
 3. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched

@@ -1064,3 +1064,23 @@ had 49–51/s and 50.0 Hz on this board. Not investigated yet.
 exit works, only slower than the ~1 s the plan says: macOS takes the board's output into its
 own buffer for as long as it has room.
 
+### 9.15 `measure` over BLE: one notification per reading, 2026-09-22 03:13–03:25
+
+§9.14 left `measure --device ble` at ~20 speed reads a second. Taken apart on the old board,
+`benchecu` as in §9.13, rates are `7E1 F40D` at `benchecu`:
+
+| image | `measure` over USB | `measure` over BLE | `bleuds … F40D 20 10 --timing` |
+|---|---|---|---|
+| empty plan (`VAGCAN_DASH_NO_CAR`, bench only) | 50/s | 40–42/s | 50.0 Hz |
+| the owner's plan (13 channels, alarms) | 45–48/s | 18–23/s | 43.4 Hz |
+| the same, frames packed into notifications | — | **34–38/s** (measure: 33–43 Hz) | **48.2 Hz** |
+
+Not the planner: a radio host's subscriptions get the same classes as the cable's, and the
+radio's bus-time share is charged to raw exchanges only. Not back-pressure: readings have drop
+semantics and none were dropped. The cost is the radio's: every queued frame — a reading is
+about 12 bytes — went as its own notification, and 60 and more a second took the bus task's
+time. The notifier now packs what is already queued into one notification up to its size;
+nothing waits for more. `dashcfg`, `info`, `watch` (10.0/s, gaps 98–102 ms) and a flood with
+BLE pass on it. Still under the cable's 45–48/s with the panel loaded; §9.10's 49–51/s was a
+plan of five channels.
+
