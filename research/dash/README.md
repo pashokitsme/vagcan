@@ -101,6 +101,10 @@ command; `can-bring-up.md` §5.3 says how to read its verdict. It leaves the
 board running the bench image and says so as its last line: reflash `dash` or
 `slcan` before the board goes anywhere near a car.
 
+`usbflood.py` (here) floods the `dash` image's USB cable with 4095-byte framed
+requests for `todo/dash/17` §2 item 13; its docstring says what it takes and
+writes. It found three faults on 2026-09-22 (`can-bring-up.md` §9.14).
+
 ## References
 
 Datasheets the dash hardware is read against. Cited by part and section rather

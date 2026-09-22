@@ -3,12 +3,13 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-15):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
-(`18`) since PR #4 (2026-09-15) — hardware-free tests only. Rules are
+**State (2026-09-22):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
+(`18`) since PR #4 (2026-09-15); the four recommended rules below are in the owner's `dash.toml`
+since 2026-09-22, and on the bench the board polls their channels on every page. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
 `plan.rs`; the board reads their channels at full rate on every page, takes the screen,
-inverts the offending cell and silences on a short press. Open: the misfire rule's
-numbers (a car measurement), a run on the car, and the demo from a recorded drive (no
+inverts the offending cell and silences on a short press. Open: a run on the car, where
+the misfire window and every threshold are checked, and the demo from a recorded drive (no
 hardware-free replay exists — see "Done when").
 
 ## Goal
@@ -37,8 +38,21 @@ channels are read at full rate on every page, and one press ends one episode.
 
 Two rules to start: **ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
 `below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
-per 1000 revolutions is not a quantity anyone should guess a threshold for). Neither is
-in the owner's `dash.toml` yet; the owner writes them.
+per 1000 revolutions is not a quantity anyone should guess a threshold for).
+
+**In the owner's `dash.toml` since 2026-09-22**, with values researched on that day (the
+research note is not in the repository; its sources are summarised here). None is VW's own
+number for this ECU, and the car confirms each:
+
+| rule | channels | values | resting on |
+|---|---|---|---|
+| misfires, `above` | `291D`–`2920` (a count per 1000 revolutions, ×1) | trip 5, release 3 | VW's 0…2 per cylinder in the `06J-906-026-CCT` label (another engine unit); CARB 13 CCR 1968.2's 1 % = 20 per 1000 revolutions; if too eager, 20 / 10 |
+| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −2.0, release −1.5 | about one knock step (1.5–2.25° on the sibling `8V0906264L`, community data); if too eager, −3.0 / −2.0 |
+| coolant, `above` | `F405` | trip 115, release 110 | the top of VW's 80…115 °C warm spec (EA888 gen1/2 labels); release inferred |
+| boost drift | `202A` against `2029` | 10 %, release 5 %, 2000 ms, floor 1.3 bar | inference only; the floor matters because the pressures are absolute (~0.99 bar at rest) |
+
+Unknown until the car: whether the misfire window rolls or latches and what it reads at idle,
+the retard's sign and how often −2.0 comes on the owner's fuel, the boost lag on a tip-in.
 
 `vagcan dev dash build` refuses, with the rule's number (`alarm #n: …`):
 

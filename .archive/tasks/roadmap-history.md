@@ -1,8 +1,46 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-14 (evening)
+# vagcan roadmap — history, 2026-08-02 to 2026-09-15
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
-old → new table is in `todo/README.md`. Nothing here is current.
+old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
+on 2026-09-22.
+
+---
+
+## Where things stood on 2026-09-15 — PR #2, #3 and #4 merged
+
+**Milestone: the scheduler, the board's links and a channel's specified value are on
+`master`.** The evening-of-2026-09-14 status moved to the history file on
+2026-09-15.
+
+- **PR #2, `ble-uds`, merged 2026-09-14** (`77c01c5`): one scheduler on the board and the
+  laptop, UDS over BLE, the board over its USB cable and `--slcan`, alarms on the board.
+- **PR #3, `link-icons`, merged 2026-09-14** (`0dd1c90`): link icons in a column at the
+  panel's right edge, the adapter screen's kb/s (bench: `benchecu` at 20 frames/s → 111 bits a
+  frame, 2,280 bit/s each way; `research/dash/can-bring-up.md` §9.12), `dashsim --snap`.
+- **PR #4, `setpoint-drift`, merged 2026-09-15** (`7d8e0a5`): `setpoint` pairs a channel with the value its
+  unit asked for; the panel shows the difference; `[[alarm]] kind = "drift"` watches it
+  (`dash/18`). Four review rounds, the last with no findings. Workspace tests: 1,655 at
+  `38dfdef`. CI's bench host job failed on a stale preview count, fixed in `97487d3`; CI
+  green on it 2026-09-15.
+  The file format is [`docs/dash/dash-toml.md`](../docs/dash/dash-toml.md).
+- **Stopwatch sources on the ESC, recorded 2026-09-15** (`dash/14` §6, `dash/13`, `dash/17`
+  §4): wheel speeds `1800`–`1803` and longitudinal acceleration `1822` on `713`, declared by
+  the ODIS project and never asked — the parked survey skipped `18xx`.
+- **Bench hardware, 2026-09-15.** The SuperMini's `3V3` pad is dead; the owner moved the
+  SN65HVD230 to `5V` and the pair carries frames again. Out of spec: the transceiver's `RXD`
+  now drives the C3's `GPIO1` at 5 V, and the pin takes 3.6 V (§9.12). The board and the
+  CANable then dropped off USB together twice; both at once points at the cable or the hub,
+  not checked.
+- **The owner's `dash.toml`** pairs boost `202A` with its specified value `2029`
+  (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
+
+**Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
+info, watch, measure through the board; the moving-car guard; alarms; the cable on car
+traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
+On the bench: unplugging USB in adapter mode, a USB flood of large requests (`dash/17` §2
+items 8 and 13), the stored-config check at boot, whether opening the board's port twice
+resets it (§3).
 
 ---
 

@@ -235,6 +235,19 @@ mixed in.
   with it (a rendered variant the owner had already seen, so nothing of value). Read the
   status, then decide; save a patch when anything is modified.
 
+### Rules established on the 2026-09-22 pass
+
+- **A dated status section takes no later news.** On 2026-09-22 a "New board" bullet was
+  appended to the "Where things stand (2026-09-15)" section, and within hours it said an
+  item failed that had since passed, under a heading dated a week earlier. News goes into a
+  section with its own date; the old section then moves to the history file verbatim, without
+  the later bullets. Phase 1 reads every bullet's date against its heading's.
+- **A scratchpad tool that found a bug is a one-shot tool, and scratchpads do not survive.**
+  The USB flood that found three firmware faults lived in the session's scratch directory;
+  it was committed as `research/dash/usbflood.py` with what it is for, what it takes and what
+  it writes. Before a pass ends, look for tools the record cites that the checkout does not
+  hold.
+
 ## What a cleanup pass produces
 
 Five things, and no more:

@@ -84,7 +84,8 @@ stopped host. `measure` over BLE ran at ~20/s; packing queued frames into one no
 ## 3. Older items carried here
 
 - The busy-port message. (The board's `V`/Hello probe and `F` through `dev sniff` ran: §9.8, §9.9.)
-- The stored-config check at boot; whether opening the board's port twice resets it.
+- ~~The stored-config check at boot; whether opening the board's port twice resets it.~~ Both
+  pass, 2026-09-22 (`research/dash/can-bring-up.md` §9.14).
 
 ## 4. The car, once
 

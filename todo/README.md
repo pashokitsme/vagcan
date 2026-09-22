@@ -3,50 +3,44 @@
 The short roadmap is in [`README.md`](../README.md#roadmap) and is kept current there.
 This file is the detail behind it: state, decisions, open items, and what is dead. Older
 dated status sections moved verbatim to
-[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14 and
-2026-09-15.
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
+2026-09-15 and 2026-09-22.
 
-## Where things stand (2026-09-15)
+## Where things stand (2026-09-22)
 
-**Milestone: the scheduler, the board's links and a channel's specified value are on
-`master`.** The evening-of-2026-09-14 status moved to the history file on
-2026-09-15.
+**Milestone: the bench over USB and BLE passes on `master`, alarms are in the owner's
+`dash.toml`, and the board survives a hostile cable host.** The 2026-09-15 status moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-22.
+Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
 
-- **PR #2, `ble-uds`, merged 2026-09-14** (`77c01c5`): one scheduler on the board and the
-  laptop, UDS over BLE, the board over its USB cable and `--slcan`, alarms on the board.
-- **PR #3, `link-icons`, merged 2026-09-14** (`0dd1c90`): link icons in a column at the
-  panel's right edge, the adapter screen's kb/s (bench: `benchecu` at 20 frames/s → 111 bits a
-  frame, 2,280 bit/s each way; `research/dash/can-bring-up.md` §9.12), `dashsim --snap`.
-- **PR #4, `setpoint-drift`, merged 2026-09-15** (`7d8e0a5`): `setpoint` pairs a channel with the value its
-  unit asked for; the panel shows the difference; `[[alarm]] kind = "drift"` watches it
-  (`dash/18`). Four review rounds, the last with no findings. Workspace tests: 1,655 at
-  `38dfdef`. CI's bench host job failed on a stale preview count, fixed in `97487d3`; CI
-  green on it 2026-09-15.
-  The file format is [`docs/dash/dash-toml.md`](../docs/dash/dash-toml.md).
-- **Stopwatch sources on the ESC, recorded 2026-09-15** (`dash/14` §6, `dash/13`, `dash/17`
-  §4): wheel speeds `1800`–`1803` and longitudinal acceleration `1822` on `713`, declared by
-  the ODIS project and never asked — the parked survey skipped `18xx`.
-- **Bench hardware, 2026-09-15.** The SuperMini's `3V3` pad is dead; the owner moved the
-  SN65HVD230 to `5V` and the pair carries frames again. Out of spec: the transceiver's `RXD`
-  now drives the C3's `GPIO1` at 5 V, and the pin takes 3.6 V (§9.12). The board and the
-  CANable then dropped off USB together twice; both at once points at the cable or the hub,
-  not checked.
-- **The owner's `dash.toml`** pairs boost `202A` with its specified value `2029`
-  (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
-
-- **New board, 2026-09-22.** The old SuperMini's pins broke; on the new one (C3 rev v0.4) the
-  BLE controller never starts while Wi-Fi scans; the old board (rev v1.1) runs BLE with the
-  same image, so the chip revision is the lead (`research/dash/ble-controller-hang.md`). The
-  old board stays on the bench, the new one is a spare. The firmware got a `ble` feature (default on); this
-  board runs `dash --no-default-features`. The USB bench passed on it except `dash/17` §2 item
-  11: a stopped host keeps the board in adapter mode (`research/dash/can-bring-up.md` §9.13).
+- **Boards, 2026-09-22.** The old SuperMini (rev v1.1, broken pins, `3V3` pad dead, the
+  SN65HVD230 on `5V`) stays on the bench — the owner keeps it on 5 V and accepts losing it. The
+  new one (rev v0.4) is a spare: its BLE controller never starts while its Wi-Fi scans, with our
+  firmware, the probes and the August recon image alike; cause not found
+  (`research/dash/ble-controller-hang.md`). The firmware's `ble` feature (default on) lets it run
+  as `dash --no-default-features`; CI lints both builds.
+- **The bench, 2026-09-22** (`dash/17`): USB items 1, 2, 3, 9, 11, 13, 16 and §3 pass; BLE
+  `info`, a board subscription, `watch` and `measure` pass on the old board. Item 11 passes in
+  5–15 s, not ~1 s — macOS buffers the board's output for a stopped host. Left: item 8 (pull USB
+  in adapter mode, the board on 12 V).
+- **A 4 KB USB request flood, three faults fixed** (§9.14): a heap panic (the guard refuses a
+  request over `MAX_REQUEST_BYTES` = 64, the laptop refuses it before sending), a USB read that
+  never woke again (esp-hal rc.0 races `int_ena`; the reader re-checks the FIFO), and a panic
+  while the frame was gathered (the board passes over a frame longer than
+  `console::MAX_HOST_BODY` = 69).
+- **`measure` over BLE** (§9.15): ~20 speed reads a second with the owner's plan; packing queued
+  frames into one notification brought it to 34–38 (the cable: 45–48).
+- **Alarms in the owner's `dash.toml`, 2026-09-22**: misfires 5/3, knock retard −2.0/−1.5,
+  coolant 115/110 and boost drift 10 %/5 %, 2000 ms, floor 1.3 bar — recommended values from
+  the regulation, VW workshop specs of other engine units and inference, none VW's own number
+  for this ECU (`dash/04`). 13 channels, 4 pages; the file before is `dash.toml.before-alarms`.
+- **BLE discovery says "adapter"**, not "dash board" (owner, 2026-09-22); the board still
+  advertises as `vagcan-dash`.
 
 **Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
 info, watch, measure through the board; the moving-car guard; alarms; the cable on car
 traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
-On the bench: unplugging USB in adapter mode, a USB flood of large requests (`dash/17` §2
-items 8 and 13), the stored-config check at boot, whether opening the board's port twice
-resets it (§3).
+On the bench: `dash/17` §2 item 8.
 
 ## Decisions (owner)
 
@@ -71,14 +65,15 @@ resets it (§3).
 **Without the car**
 
 1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 item 8: unplug USB in
-   adapter mode. Items 11 and 13 pass since 2026-09-22 (13 after three fixes); `measure` over
-   BLE: ~20/s → 34–38/s after packing notifications, the cable 45–48/s (`research/dash/can-bring-up.md` §9.15).
+   adapter mode (the owner's hands, the board on 12 V). `measure` over BLE at 34–38/s against
+   the cable's 45–48/s with the panel loaded (`research/dash/can-bring-up.md` §9.15).
 2. **OLED and enclosure** — `dash/15`; waits for the panel.
 3. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
-   `vag_dash_render::screen`; the drift rule came with PR #4. Next: the owner writes the rules into
-   `dash.toml`; the misfire rule's numbers and a run on the car. The demo from a recorded drive
+   `vag_dash_render::screen`; the drift rule came with PR #4. The four recommended rules are in
+   the owner's `dash.toml` since 2026-09-22 (on the bench: their channels polled on every page).
+   Next: a run on the car, where the misfire window and the thresholds are checked. The demo from a recorded drive
    waits for a recording with the retard channels and a way to replay it (none is
    hardware-free today).
 
@@ -106,7 +101,7 @@ resets it (§3).
 
 | file | state |
 |---|---|
-| [`dash/04-alarms.md`](dash/04-alarms.md) | on `master` (PR #2), hardware-free; rules, misfire numbers and a car run open |
+| [`dash/04-alarms.md`](dash/04-alarms.md) | on `master`; four rules in the owner's `dash.toml` (2026-09-22); a car run open |
 | [`dash/06-car-and-bench.md`](dash/06-car-and-bench.md) | open questions for the car |
 | [`dash/13-screens.md`](dash/13-screens.md) | channel menu for pages |
 | [`dash/14-one-bus-three-clients.md`](dash/14-one-bus-three-clients.md) | design; §7 is the dash work order |
