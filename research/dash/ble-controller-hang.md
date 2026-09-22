@@ -1,4 +1,5 @@
 > Research note, 2026-09-22 (a subagent's report, kept verbatim). Result of its first experiment: §9.13 of `can-bring-up.md` — the two IDF steps did not help, cold or warm. Then the old board, rev **v1.1**, ran BLE with the same image — the chip revision (v0.4 here) is the lead.
+> **Not pursued (owner, 2026-09-22):** the rev v0.4 board is a spare and runs `dash` without BLE. Kept as the record of what was tried.
 # BLE controller hangs on the new ESP32-C3 (v0.4), Wi-Fi works
 
 Research date 2026-09-22. Nothing was flashed. No serial port was opened. The repo was not edited.

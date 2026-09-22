@@ -18,7 +18,8 @@ Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
   new one (rev v0.4) is a spare: its BLE controller never starts while its Wi-Fi scans, with our
   firmware, the probes and the August recon image alike; cause not found
   (`research/dash/ble-controller-hang.md`). The firmware's `ble` feature (default on) lets it run
-  as `dash --no-default-features`; CI lints both builds.
+  as `dash --no-default-features`; CI lints both builds. Not pursued further (owner,
+  2026-09-22): the new board is a spare.
 - **The bench, 2026-09-22** (`dash/17`): USB items 1, 2, 3, 9, 11, 13, 16 and §3 pass; BLE
   `info`, a board subscription, `watch` and `measure` pass on the old board. Item 11 passes in
   5–15 s, not ~1 s — macOS buffers the board's output for a stopped host. Left: item 8 (pull USB
@@ -29,7 +30,8 @@ Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
   while the frame was gathered (the board passes over a frame longer than
   `console::MAX_HOST_BODY` = 69).
 - **`measure` over BLE** (§9.15): ~20 speed reads a second with the owner's plan; packing queued
-  frames into one notification brought it to 34–38 (the cable: 45–48).
+  frames into one notification brought it to 34–38 (the cable: 45–48). Left there (owner,
+  2026-09-22).
 - **Alarms in the owner's `dash.toml`, 2026-09-22**: misfires 5/3, knock retard −2.0/−1.5,
   coolant 115/110 and boost drift 10 %/5 %, 2000 ms, floor 1.3 bar — recommended values from
   the regulation, VW workshop specs of other engine units and inference, none VW's own number
@@ -40,7 +42,7 @@ Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
 **Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
 info, watch, measure through the board; the moving-car guard; alarms; the cable on car
 traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
-On the bench: `dash/17` §2 item 8.
+`dash/17` §2 item 8 (USB pulled in adapter mode) goes with the car too.
 
 ## Decisions (owner)
 
@@ -57,6 +59,8 @@ On the bench: `dash/17` §2 item 8.
 | The scheduler is subscriptions with drop semantics, one layer on the board and the laptop; rates only from `hz` in `dash.toml` (2026-09-14) | `dash/14` §2 |
 | BLE with no pairing and no button, and only when asked (`--device ble`, no automatic scan); `watch` and `measure` over BLE (2026-09-14) | `dash/16` |
 | Link icons in a column at the right edge; the chart ends before it, connected or not; no icons on the adapter screen so far (2026-09-14) | `PR #3` |
+| BLE on the rev v0.4 board is not pursued; the board is a spare, run without BLE (2026-09-22) | `research/dash/ble-controller-hang.md` |
+| `measure` over BLE at 34–38 speed reads a second, under the cable's 45–48, is accepted (2026-09-22) | `research/dash/can-bring-up.md` §9.15 |
 | The bench board's transceiver stays on 5 V: its 3V3 trace is broken, and the board is expendable (2026-09-22). The risk is `RXD` at 5 V into `GPIO1`, not the car's bus; if the board acts up in the car, unplug it | `research/dash/can-bring-up.md` §9.12 |
 | A channel's specified value written by hand as `setpoint`, never guessed from names; the panel shows the difference, not the value; a drift alarm is a percentage, a hold and a floor (2026-09-14/15) | `dash/18` |
 
@@ -64,11 +68,8 @@ On the bench: `dash/17` §2 item 8.
 
 **Without the car**
 
-1. **Bench leftovers** — [`dash/17`](dash/17-bench-ble-usb.md) §2 item 8: unplug USB in
-   adapter mode (the owner's hands, the board on 12 V). `measure` over BLE at 34–38/s against
-   the cable's 45–48/s with the panel loaded (`research/dash/can-bring-up.md` §9.15).
-2. **OLED and enclosure** — `dash/15`; waits for the panel.
-3. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
+1. **OLED and enclosure** — `dash/15`; waits for the panel.
+2. **Alarms on the board** — `dash/04`. On `master` since PR #2 (2026-09-14),
    hardware-free tests only: `[[alarm]]` in `dash.toml`, checked at plan build, watched
    channels foreground at their own rate, takeover and silence through
    `vag_dash_render::screen`; the drift rule came with PR #4. The four recommended rules are in
@@ -79,22 +80,23 @@ On the bench: `dash/17` §2 item 8.
 
 **With the car**
 
-4. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
-   watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic.
-5. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+3. **The car, through the board** — [`dash/17`](dash/17-bench-ble-usb.md) §4: faults, info,
+   watch and measure over BLE and USB, the moving-car guard, alarms, the cable on car traffic;
+   and §2 item 8, USB pulled in adapter mode — the owner checks it in the car (2026-09-22).
+4. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-6. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
-7. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
+5. **Cruise-lever probe** — `dash/14` §7 item 10: `1105` on `70C`, and the engine's GRA status.
+6. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup`; then
     freeze-frame layouts (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-8. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
+7. **Stopwatch** — `dash/14` §6: fit `380B` → km/h on a steady stretch, then a run. Read the
     ESC's wheel speeds and longitudinal acceleration beside it (`713` `1800`–`1803`, `1822`;
     `dash/17` §4).
-9. **Questions only the car answers** — `dash/06`.
-10. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+8. **Questions only the car answers** — `dash/06`.
+9. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-11. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+10. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-12. **`watch` and `measure` across all fifteen units** — measured against the file, not
+11. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files

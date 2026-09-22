@@ -79,7 +79,7 @@ reader re-checks the FIFO every 50 ms), then a third (fixed: the board passes ov
 longer than `console::MAX_HOST_BODY` instead of gathering it); three runs after that pass.
 Item 11 passes, but in 5–15 s rather than ~1 s — macOS buffers the board's output for a
 stopped host. `measure` over BLE ran at ~20/s; packing queued frames into one notification brought it to
-34–38/s (§9.15).
+34–38/s (§9.15). Item 8 is checked in the car (owner, 2026-09-22).
 
 ## 3. Older items carried here
 
