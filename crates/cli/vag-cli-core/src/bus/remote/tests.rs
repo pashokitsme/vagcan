@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
-use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS};
+use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MIN_PERIOD_MS, Refusal};
 use vag_uds_client::{AsyncUdsClient, UdsError};
 use vag_uds_transport::link::{
 	self, Answer, HelloReply, MemoryPipe, Message, Outcome, Piece, Pipe, Priority, Reading, Reassembler, Request, Subscribe, pipe_pair,
@@ -287,6 +287,20 @@ async fn an_exchange_comes_back_as_the_board_answered_it() {
 		matches!(&failed, Err(ExchangeError::Link(TransportError::Io(why))) if why.contains("bus off")),
 		"{failed:?}"
 	);
+}
+
+/// The board passes over a frame longer than it takes without answering it, so a request
+/// past its cap is refused here, in the board's words, rather than waited out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_longer_than_the_board_takes_is_refused_before_it_is_sent() {
+	let (bus, mut board) = start();
+	let long: Vec<u8> = [0x22].into_iter().chain([0xF4, 0x0D].repeat(40)).collect();
+	let refused = bus.exchange(Class::Foreground, ENGINE, long).await;
+	assert!(
+		matches!(&refused, Err(ExchangeError::Refused(why)) if *why == Refusal::TooLong.to_string()),
+		"{refused:?}"
+	);
+	board.quiet().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -77,7 +77,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::time::Instant;
-use vag_uds_client::guard::{MAX_SUBSCRIPTIONS, MAX_TIMING_SUBSCRIPTIONS, MIN_PERIOD_MS, Refusal};
+use vag_uds_client::guard::{MAX_REQUEST_BYTES, MAX_SUBSCRIPTIONS, MAX_TIMING_SUBSCRIPTIONS, MIN_PERIOD_MS, Refusal};
 use vag_uds_transport::TransportError;
 use vag_uds_transport::link::{self, LinkError, Message, Outcome, Piece, Pipe, Priority, Reassembler};
 
@@ -435,6 +435,16 @@ impl Remote {
 	fn launch(&mut self) {
 		while self.flying.is_none() {
 			let Some(ask) = self.asks.pop_front() else { return };
+			// The board passes over a frame longer than it takes and answers nothing, so a
+			// request past its cap is refused here, as the board's guard would word it.
+			if let Ask::Raw { pdu, .. } = &ask
+				&& pdu.len() > MAX_REQUEST_BYTES
+			{
+				if let Ask::Raw { to, .. } = ask {
+					let _ = to.send(Err(ExchangeError::Refused(Refusal::TooLong.to_string())));
+				}
+				continue;
+			}
 			let seq = self.next_seq;
 			self.next_seq = seq.wrapping_add(1);
 			let (unit, pdu, wait) = match &ask {
