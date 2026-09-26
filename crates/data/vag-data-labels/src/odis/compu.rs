@@ -348,7 +348,17 @@ impl Method {
 			};
 			// No usable upper bound is a level one value wide: the lower bound
 			// alone is what every level was keyed on before the upper was kept.
-			let upper = scale.upper_coded.as_ref().and_then(upper_bound).unwrap_or(lower);
+			// The limit's own value, not the adjusted bound — after an OPEN lower
+			// limit that value is excluded, and the check below then drops the
+			// level instead of naming the value above it. An INFINITE lower limit
+			// has no value, and with no upper there is nothing to bound it by.
+			let upper = match scale.upper_coded.as_ref().and_then(upper_bound) {
+				Some(upper) => upper,
+				None => match scale.lower_coded.as_ref().and_then(|l| l.value.as_ref()).and_then(as_i32) {
+					Some(value) => value,
+					None => continue,
+				},
+			};
 			// An interval whose open ends leave no integer in it names nothing.
 			// Only a reversed *closed* pair is the malformed row `Level::range`
 			// reads as its lower bound; an emptied open one read that way would
@@ -392,12 +402,23 @@ fn lower_bound(limit: &Limit) -> Option<i32> {
 }
 
 /// The highest raw value a coded upper limit admits; see [`lower_bound`].
+///
+/// A 32-bit unsigned bound past `i32::MAX` is capped there, not dropped: it still
+/// says the band runs to the top of every value a reading can be — and dropped,
+/// the band would collapse onto its lower end.
 fn upper_bound(limit: &Limit) -> Option<i32> {
-	match limit.kind {
-		LimitKind::Infinite => Some(i32::MAX),
-		LimitKind::Closed => limit.value.as_ref().and_then(as_i32),
-		LimitKind::Open => limit.value.as_ref().and_then(as_i32)?.checked_sub(1),
-	}
+	let value = match limit.value.as_ref() {
+		Some(Value::I32(v)) => i64::from(*v),
+		Some(Value::U32(v)) => i64::from(*v),
+		_ if limit.kind == LimitKind::Infinite => return Some(i32::MAX),
+		_ => return None,
+	};
+	let top = match limit.kind {
+		LimitKind::Infinite => return Some(i32::MAX),
+		LimitKind::Closed => value,
+		LimitKind::Open => value - 1,
+	};
+	Some(i32::try_from(top).unwrap_or(if top > 0 { i32::MAX } else { i32::MIN }))
 }
 
 /// A value as an `i32`, when it is one.
@@ -590,6 +611,37 @@ mod tests {
 				]
 			}
 		);
+	}
+
+	#[test]
+	fn an_open_lower_bound_with_no_upper_names_nothing() {
+		use LimitKind::{Closed, Open};
+		// (5, …) with no upper bound is not "6 alone": the lower bound alone is
+		// 5, which its own limit excludes — so the level is empty, and 6 keeps the
+		// name of the level that really is 6.
+		let scaling = text_table(vec![band(limit(5, Open), None, "x"), band(limit(6, Closed), limit(6, Closed), "six")]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![Level::point(6, "six")]
+			}
+		);
+	}
+
+	#[test]
+	fn an_upper_bound_past_the_signed_range_reaches_its_top() {
+		use LimitKind::Closed;
+		// A 32-bit unsigned bound above `i32::MAX` is still an upper bound: the
+		// band runs to the top of what a reading can be, not to its lower end.
+		let scaling = text_table(vec![band(limit(1, Closed), limit(u32::MAX, Closed), "valid")]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![Level::range(1, i32::MAX, "valid")]
+			}
+		);
+		let Scaling::Enum { levels } = scaling else { unreachable!() };
+		assert!(levels[0].contains(5));
 	}
 
 	#[test]

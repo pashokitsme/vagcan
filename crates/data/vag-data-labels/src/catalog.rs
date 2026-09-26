@@ -100,6 +100,8 @@ pub enum Scaling {
 /// whole channel its every name over one bad row, and because it is what a
 /// lookup of point levels always did. Order is not sorted: 3,965 of those
 /// tables list their intervals out of order, and they mean the same unsorted.
+/// One exception to table order: a level with an unbounded end is tried after
+/// every bounded one — see [`level_for`], which is the whole rule.
 ///
 /// The bounds are private so that `lower <= upper` always holds; see
 /// [`Level::range`] for what a reversed pair becomes.
@@ -156,10 +158,33 @@ impl Level {
 		&self.name
 	}
 
+	/// Whether an end of this level is unbounded: `i32::MIN` below or `i32::MAX`
+	/// above, which is how an ODX limit of kind `INFINITE` is kept. See
+	/// [`level_for`] for what that changes.
+	pub fn is_unbounded(&self) -> bool {
+		self.lower == i32::MIN || self.upper == i32::MAX
+	}
+
 	/// Whether a raw reading falls inside this level, both ends included.
 	pub fn contains(&self, raw: i32) -> bool {
 		(self.lower..=self.upper).contains(&raw)
 	}
+}
+
+/// Which level names a raw reading: its index in `levels`, or `None`.
+///
+/// **The one matching rule** — [`MeasurementDef::describe`] and the replay that
+/// turns a name back into bytes both go through it, so the two cannot disagree
+/// about which level a value belongs to. Bounded levels are tried first, in table
+/// order; a level with an unbounded end ([`Level::is_unbounded`] — an ODX limit of
+/// kind `INFINITE`) only after all of them, in table order. An unbounded level is
+/// a catch-all, and listed first it would otherwise hide every level after it.
+pub fn level_for(levels: &[Level], raw: i32) -> Option<usize> {
+	let bounded = |unbounded: bool| levels.iter().enumerate().filter(move |(_, level)| level.is_unbounded() == unbounded);
+	bounded(false)
+		.chain(bounded(true))
+		.find(|(_, level)| level.contains(raw))
+		.map(|(at, _)| at)
 }
 
 /// How a [`Level`] is written in a catalog file: `[raw, "name"]` for a point,
@@ -234,7 +259,7 @@ impl MeasurementDef {
 	pub fn describe(&self, data: &[u8]) -> Option<String> {
 		let raw = self.raw_form.read(data)?;
 		match &self.scaling {
-			Scaling::Enum { levels } => levels.iter().find(|level| level.contains(raw)).map(|level| level.name.clone()),
+			Scaling::Enum { levels } => level_for(levels, raw).map(|at| levels[at].name.clone()),
 			_ => {
 				let value = self.interpret(data)?;
 				Some(if self.unit.is_empty() {
@@ -596,6 +621,37 @@ mod tests {
 		assert_eq!(def.describe(&[5]).as_deref(), Some("first"));
 		assert_eq!(def.describe(&[10]).as_deref(), Some("first"));
 		assert_eq!(def.describe(&[11]).as_deref(), Some("second"));
+	}
+
+	#[test]
+	fn a_level_with_an_unbounded_end_is_matched_after_every_bounded_one() {
+		// An ODX limit of kind INFINITE is a catch-all; listed first, first-match
+		// would let it hide every level after it. Bounded levels are tried first,
+		// in table order, then the unbounded ones, in table order.
+		let def = MeasurementDef {
+			scaling: Scaling::Enum {
+				levels: vec![
+					Level::range(i32::MIN, 100, "at most 100"),
+					Level::point(5, "five"),
+					Level::range(200, i32::MAX, "at least 200"),
+					Level::range(150, 300, "mid"),
+				],
+			},
+			..banded()
+		};
+		assert_eq!(def.describe(&[5]).as_deref(), Some("five"));
+		assert_eq!(def.describe(&[50]).as_deref(), Some("at most 100"));
+		assert_eq!(def.describe(&[250]).as_deref(), Some("mid"));
+		assert_eq!(def.describe(&[255]).as_deref(), Some("mid"));
+		assert_eq!(def.describe(&[120]), None);
+		let def = MeasurementDef {
+			raw_form: RawForm::U16Be,
+			..def
+		};
+		assert_eq!(def.describe(&[0x01, 0x90]).as_deref(), Some("at least 200"));
+		let Scaling::Enum { levels } = &def.scaling else { unreachable!() };
+		assert_eq!(level_for(levels, 250), Some(3));
+		assert_eq!(level_for(levels, 400), Some(2));
 	}
 
 	#[test]
