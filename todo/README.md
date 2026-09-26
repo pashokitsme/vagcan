@@ -74,9 +74,9 @@ traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a
    channels foreground at their own rate, takeover and silence through
    `vag_dash_render::screen`; the drift rule came with PR #4. The four recommended rules are in
    the owner's `dash.toml` since 2026-09-22 (on the bench: their channels polled on every page).
-   Next: a run on the car, where the misfire window and the thresholds are checked. The demo from a recorded drive
-   waits for a recording with the retard channels and a way to replay it (none is
-   hardware-free today).
+   Next: a run on the car, where the misfire window and the thresholds are checked. The
+   hardware-free replay exists since 2026-09-26 (`vagcan dev recording dash`); the demo from a
+   recorded drive waits for a recording with the retard channels, made on the car.
 
 **With the car**
 

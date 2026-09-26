@@ -33,6 +33,11 @@ pub struct Recording {
 	pub columns: Vec<Column>,
 	/// `(seconds from the start, one cell per column)`.
 	pub samples: Vec<(f64, Vec<Option<String>>)>,
+	/// Per sample, per column: when that column's value was read, where the file says
+	/// (`name_t_s`). `None` for a column the file gives no time of its own, and for an
+	/// empty cell. This screen ignores it — a replay here runs on one clock — but the dash
+	/// replay reads a value's age off it, as the board's store does.
+	pub read_at: Vec<Vec<Option<f64>>>,
 }
 
 /// A column of a recording.
@@ -83,34 +88,37 @@ impl Recording {
 		// marker on the heading is this reader's own business.
 		let mut columns = Vec::new();
 		let mut cells: Vec<usize> = Vec::new();
-		for (at, _, heading) in crate::discover::value_columns(&headings) {
+		let mut times: Vec<Option<usize>> = Vec::new();
+		for (at, time, heading) in crate::discover::value_columns(&headings) {
 			let (name, raw) = match heading.trim().strip_suffix("_raw") {
 				Some(base) => (base.to_string(), true),
 				None => (heading.trim().to_string(), false),
 			};
 			columns.push(Column { name, raw });
 			cells.push(at);
+			times.push(time);
 		}
 		if columns.is_empty() {
 			return Err("the recording has no value columns".into());
 		}
 
 		let mut samples = Vec::new();
+		let mut read_at = Vec::new();
 		for line in lines {
 			let row: Vec<&str> = line.split(',').collect();
 			let Some(Ok(t)) = row.first().map(|c| c.trim().parse::<f64>()) else {
 				continue;
 			};
-			let values = cells
-				.iter()
-				.map(|at| row.get(*at).map(|c| c.trim()).filter(|c| !c.is_empty()).map(str::to_string))
-				.collect();
+			let cell = |at: usize| row.get(at).map(|c| c.trim()).filter(|c| !c.is_empty());
+			let values = cells.iter().map(|at| cell(*at).map(str::to_string)).collect();
+			let at = times.iter().map(|time| time.and_then(cell).and_then(|c| c.parse::<f64>().ok())).collect();
 			samples.push((t, values));
+			read_at.push(at);
 		}
 		if samples.is_empty() {
 			return Err("the recording has no samples".into());
 		}
-		Ok(Recording { columns, samples })
+		Ok(Recording { columns, samples, read_at })
 	}
 }
 
@@ -351,6 +359,15 @@ mod tests {
 		assert_eq!(recording.columns.len(), 1);
 		assert_eq!(recording.columns[0].name, "Boost");
 		assert_eq!(recording.samples[1].1, vec![Some("1.02".to_string())]);
+		// Kept beside the cells for a reader that wants the moment the value is of.
+		assert_eq!(recording.read_at, vec![vec![Some(0.0)], vec![Some(0.09)]]);
+	}
+
+	#[test]
+	fn a_column_without_a_time_of_its_own_has_none_and_an_empty_cell_has_none() {
+		let csv = "t_s,Boost,Temp_t_s,Temp\n0.000,1.01,,\n0.100,1.02,0.080,90\n";
+		let recording = Recording::parse(csv).unwrap();
+		assert_eq!(recording.read_at, vec![vec![None, None], vec![None, Some(0.08)]]);
 	}
 
 	#[test]

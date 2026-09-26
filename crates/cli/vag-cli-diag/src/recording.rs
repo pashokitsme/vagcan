@@ -1,20 +1,20 @@
 //! Everything whose input is a recording this tool made.
 //!
-//! `vagcan watch --out` writes a CSV of whatever was on screen. These two
-//! commands read it back afterwards, at a desk, and are the reason a drive is
-//! worth recording at all — but neither has anything to say while the car is in
-//! front of you, so neither belongs at the top level.
+//! `vagcan watch --out` writes a CSV of whatever was on screen. These commands
+//! read it back afterwards, at a desk, and are the reason a drive is worth
+//! recording at all — but none has anything to say while the car is in front of
+//! you, so none belongs at the top level.
 //!
 //! The distinction from `vagcan dev vcds` is what the input *is*, not whether it is
 //! offline: those read VCDS's files, these read ours.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::ui::picker;
-use crate::{analyse, calibrate, discover};
+use crate::{analyse, calibrate, dashreplay, discover};
 
 // Clone for the reason `vcds::Tool` is: the dispatcher keeps a copy of the
 // command so it can be run again after the label data has been made.
@@ -71,6 +71,48 @@ pub enum Tool {
 		#[arg(long)]
 		pairs: bool,
 	},
+
+	/// Play a recorded drive on the dash panel, with its alarms — no board, no car.
+	///
+	/// FOR: seeing what the dash would have shown on that drive: which page, when an
+	/// alarm took the screen, which cell it inverted, when it handed back, and what a
+	/// press would have done. The pages, the alarms and the drawing are the board's own
+	/// code; the values are the recording's, read at the rates the board reads them. A
+	/// plan channel the recording does not hold has no value and never trips an alarm.
+	///
+	/// IN: a `vagcan watch --out` recording, and the car's `dash.toml` as `vagcan dev
+	/// dash build` reads it — with the car's survey and this project's catalogs. A column
+	/// counts for a plan channel only when it is the same unit, identifier and field.
+	///
+	/// OUT: in a terminal, the panel drawn at the recording's pace with the alarm log
+	/// under it (`q` leaves); piped, only the alarm log, at once. Nothing is written.
+	Dash {
+		/// The car whose plan to use, as `vagcan info` reports it.
+		#[arg(value_name = "VIN")]
+		vin: String,
+		/// Recording written by `vagcan watch --out`. Left out, the recordings
+		/// in the current directory are offered as a list.
+		#[arg(long, value_name = "FILE")]
+		log: Option<String>,
+		/// Build input to read instead of `~/.vagcan/dash/<VIN>/dash.toml`.
+		#[arg(long, value_name = "FILE")]
+		input: Option<PathBuf>,
+		/// A short press of the board's button at this time of the recording, in
+		/// seconds of its `t_s`. Repeat for more presses.
+		#[arg(long = "press", value_name = "SECONDS", value_parser = seconds)]
+		presses: Vec<f64>,
+		/// Playback speed in a terminal. 2 is twice as fast as it happened.
+		#[arg(long, default_value_t = 1.0, value_name = "N")]
+		speed: f64,
+	},
+}
+
+/// A time of the recording: a number of seconds, not negative.
+fn seconds(text: &str) -> Result<f64, String> {
+	match text.trim().parse::<f64>() {
+		Ok(s) if s.is_finite() && s >= 0.0 => Ok(s),
+		_ => Err(format!("{text:?} is not a time in seconds, like 12.5")),
+	}
 }
 
 /// The path as typed, or the one picked off a list. `instead` is the command
@@ -149,6 +191,18 @@ pub fn run(tool: Tool) -> Result<()> {
 				}
 			}
 			Ok(())
+		}
+		Tool::Dash {
+			vin,
+			log,
+			input,
+			presses,
+			speed,
+		} => {
+			let Some(log) = pick_when_absent(log, &format!("vagcan dev recording dash {vin} --log FILE.csv"))? else {
+				return Ok(());
+			};
+			dashreplay::run(&vin, &log, input.as_deref(), &presses, speed)
 		}
 	}
 }

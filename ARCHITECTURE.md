@@ -481,6 +481,13 @@ the board that is a 1-bit framebuffer; until the OLED is fitted, the board sends
 USB and `dashsim` (`research/dash/host`) draws it in a terminal. The layout is decided
 only on the board.
 
+**A recorded drive on the panel, without the board.** `vagcan dev recording dash` runs a
+`watch --out` recording through the board's own `Screen`, alarms, `Plan::rates` and
+renderer, in the recording's time, and draws the panel in the terminal. The frame loop,
+the value store's staleness rule and the cell composition are the firmware's
+(`vag-dash-fw/src/bin/dash.rs`, not buildable on the host), mirrored in
+`vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both.
+
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,
 `set brightness N`, `set page N`, `save`, `load`, `defaults`). Settings are stored in a
