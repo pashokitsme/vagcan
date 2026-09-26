@@ -40,8 +40,8 @@ that into a queue of *requests* with three sources and a rate each:
 |---|---|---|---|
 | **panel** | the visible page's channels | as fast as the page wants (≈50 Hz for four cells) | normal |
 | **panel, background** | channels of pages not shown | slow (1 Hz) or none | low |
-| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; while armed or running every page cell drops to background (`19`) |
-| **lever** | the rocker's identifier, the cruise status | fixed in code (`plan.rs`): 2 / 20 Hz by the gate, 10 Hz while the stopwatch is up; cruise status 5 Hz (`19`) | foreground |
+| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
+| **lever** | the rocker's identifier, the cruise status | fixed in code (`plan.rs`): 2 / 20 Hz by the gate, 10 Hz while the stopwatch is up with a factor; cruise status 5 Hz (`19`) | foreground |
 | **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
 
 **Budget and degradation (owner, 2026-09-13: a small delay is fine, the bus is shared
@@ -49,10 +49,11 @@ with the whole car, a run needs speed fast).** The scheduler runs under a **ceil
 ≈100 exchanges a second** — half of what the one conversation could do — so the gateway
 and the units see a sparse, even trickle from us. Default rates: temperatures 2 Hz,
 boost and revs 10 Hz, the lever 2/20 Hz by the cruise gate (§6a); a four-cell page is ≈25
-exchanges a second, a quarter of the budget. **Stopwatch armed or running** (as built,
-`19`): speed at its own `hz` (50 gives 20 ms between points, and the crossing is
-interpolated between them), every page cell at the background rate, an alarm's channels at
-theirs, the lever at 10 Hz so LIMIT can still end the run. When the sum asks for more than
+exchanges a second, a quarter of the budget. **Stopwatch page up** (as built, `19`): speed
+at its own `hz` (50 gives 20 ms between points, and the crossing is interpolated between
+them), every page cell at the background rate in every phase, an alarm's channels at theirs,
+the lever at 10 Hz so LIMIT can still end the run. An alarm's page shown over the stopwatch
+keeps its cells foreground except while the stopwatch is armed or running. When the sum asks for more than
 the ceiling, nothing is dropped: sources are
 **thinned in priority order** — background pages first, then the laptop's queue (it has
 back-pressure anyway), then the visible cells down to their minimum rate, and never the
@@ -237,14 +238,17 @@ the page it is on and nobody else.
   origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`): the midpoint of
   a constant-jerk fit through `√v` and a line through the first two moving samples. There is
   no "half-sample correction" in `vag-cli-measure`; this text said so before `19` checked.
-- **Rate**: the speed at its own `hz` in the foreground while the page is up; the page cells
-  drop to background rate while it is armed or running. The fit needs three moving samples in
-  its first 0.4 s, so the speed must be read faster than ≈5 Hz (`19`).
-- **Display**: the two times large; the chart page of the run shows speed on time, the
-  same chart widget as `kind = "chart"`, with the x axis being seconds since launch.
+- **Rate**: the speed at its own `hz` in the foreground while the page is up (with a factor);
+  every page cell is background whenever the stopwatch page is on the glass, in every phase.
+  An alarm's page shown over it keeps its cells foreground except while armed or running. The
+  fit needs three moving samples in its first 0.4 s, so the speed must be read faster than
+  5 Hz; the plan build refuses a slower one (`19`).
+- **Display** (as built, `19`): one values row — the phase over the speed, then a time per
+  mark. **Not built:** a chart page of the run (speed on time, seconds since launch).
 - **Record**: the run's samples go up the link as `pdu` answers anyway, so a laptop that
   is connected gets the full trace for `vagcan measure`'s report; the board keeps the last
-  finished run's times in settings (`12`, `19`).
+  finished run's times in settings, written to flash at the next standstill, never at speed
+  (owner, 2026-09-26; `12`, `19`).
 
 ## 6a. Controls: the button stays, the stalks are an event source
 
@@ -293,8 +297,8 @@ measured yet). 20 Hz is ≈3 % of the diagnostic CAN (which carries nothing else
 and of the comfort bus behind the gateway, and ≈10 % of the board's exchanges. The bus is not the limit; the
 board's one conversation is (≈4 ms per exchange with the gateway in the path, so
 ≈200–250 a second for everything). The stalk poll adapts to the gate: cruise ON → 2 Hz,
-enough to notice the switch going off; OFF → 20 Hz, a 50 ms button; stopwatch up → 10 Hz,
-so LIMIT can still end a run (`19`, as built). On average that is a few exchanges a second (owner's
+enough to notice the switch going off; OFF → 20 Hz, a 50 ms button; stopwatch up with a
+factor → 10 Hz, so LIMIT can still end a run (`19`, as built). On average that is a few exchanges a second (owner's
 concern, 2026-09-13).
 
 To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
@@ -331,9 +335,8 @@ lever pages with cruise OFF, and the engine ignores it.**
 - A deliberate press lasts 0.25–0.5 s at the rocker, but a tap can be one 10 Hz read: with
   the switch OFF, + at ~59.0 s and ~89.2 s and − at ~90.4 s were each one answer (counted by
   answer time; a `watch` row repeats the last answer). The board's debounce needs the same
-  state on two consecutive reads, so a press is sure to register when held ≥ 0.1 s at 20 Hz
-  (gate open) and ≥ 0.2 s at 10 Hz (stopwatch up); shorter ones can be missed — hold to
-  register (`19`).
+  state on two consecutive reads: ≈0.1 s at 20 Hz (gate open), ≈0.2 s at 10 Hz (stopwatch up).
+  Hold longer to be sure; a shorter tap can be missed (`19`).
 - Not settled: widening the gate to CANCEL. Parked, nothing was ever set (`2018` stayed 0,
   `203C` never left 2), so "does plus resume after CANCEL" was not tested. The default stays
   OFF.

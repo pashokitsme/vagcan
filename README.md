@@ -89,7 +89,7 @@ Updated 2026-09-26.
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with the cruise-control buttons while cruise is off, LIMIT for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
-- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built with the buttons above; the speed factor and a run need the car)
+- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; the speed factor and a test run need the car)
 
 Details: [`todo/README.md`](todo/README.md).
 
