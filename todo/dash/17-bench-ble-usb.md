@@ -95,6 +95,15 @@ Recorded 2026-09-14, after PR #2's review. Each item is something the bench coul
 the bench units answer at once or with a fixed delay, carry no traffic of their own, and
 never move.
 
+**Results on the car, 2026-09-26** (the old board, rev v1.1, `dash` with the owner's plan; at
+boot it identified `7E0` `8V0906264H` and `7E1` `0CW300041G` as planned, and all 13 channels
+answered, `200A`–`200D` among them):
+
+- `vagcan info --device ble`: **passes** — VIN and both units' identities. Time not measured.
+- `vagcan faults --device ble`: **passes** — all 18 units read, 9 stored codes (`70A`, `70C`,
+  `712`, `713`), none failing now, texts from the ODIS project with the `.rod` fallback. About
+  50 s (1 min 15 s including a 24 s build). Whether the panel kept updating was not recorded.
+
 **Through the board, parked, ignition on**
 
 | check | expect |
