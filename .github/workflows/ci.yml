@@ -144,14 +144,10 @@ jobs:
       # The board's RAM (CLAUDE.md, "Firmware RAM"). Builds `dash` with and without BLE
       # and fails when statics (.data + .bss + .noinit) pass a ceiling or the stack the
       # linker leaves (.stack, the rest of the one data-RAM region) falls under a floor.
-      # Measured 2026-09-26 on this job's empty-plan image; ~11–12 % headroom each:
-      #
-      #   build   static   ceiling   stack    floor
-      #   ble     138,848  156,000   157,116  140,000
-      #   no-ble  129,388  145,000   188,464  168,000
-      #
-      # The limits live in ram-budget.sh. Raising one is a decision: in the same commit,
-      # with the reason.
+      # The limits, what they were measured at and why, are in ram-budget.sh alone.
+      # With `CI` set it builds into the default `target`, sharing the host build-deps
+      # the clippy steps built; the empty-plan image it leaves there is never flashed —
+      # this job flashes nothing.
       - name: RAM budget (dash, with and without BLE)
         run: ./ram-budget.sh
 

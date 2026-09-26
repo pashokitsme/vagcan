@@ -22,29 +22,43 @@
 #
 # The image is built with `VAGCAN_DASH_NO_CAR=1` — an empty plan, as CI builds it, so
 # the numbers are the code's and not one car's (the reference car's plan adds ~1.7 KB
-# of statics) — and into its own target directory, so the empty-plan `dash` it leaves
-# never sits where `cargo run` or `bench.sh` would flash it from.
+# of statics). Where it is built: see `CARGO_TARGET_DIR` below.
 set -euo pipefail
 
 FW="$(cd "$(dirname "$0")" && pwd)"
 cd "$FW"
 
-# Budgets, bytes. Measured 2026-09-26 on the empty-plan image; each limit leaves
-# ~11–12 % headroom over what it was then:
+# The budget, in bytes — the one place its numbers live. Measured 2026-09-26 on the
+# empty-plan image; each limit leaves ~11–12 % headroom over what it was then:
 #
 #   build   static   ceiling   stack    floor
 #   ble     138,848  156,000   157,116  140,000
 #   no-ble  129,388  145,000   188,464  168,000
 #
 # Crossing one is not forbidden, it is a decision: raise the number here, in the same
-# commit, with the reason beside it — as ci.yml's comment and CLAUDE.md say.
+# commit, with the reason beside it (CLAUDE.md, "Firmware RAM").
 BUILDS=(
 	"ble||156000|140000"
 	"no-ble|--no-default-features|145000|168000"
 )
 
 export VAGCAN_DASH_NO_CAR=1
-export CARGO_TARGET_DIR="$FW/target/ram-budget"
+
+# Where the images are built.
+# - Locally: a directory of its own, `target/ram-budget`, so the empty-plan `dash` this
+#   leaves never replaces a flashable one where `cargo run` or `bench.sh` flash from.
+# - In CI (`CI` set): the default `target`, beside the clippy steps' host build-deps,
+#   so a cold run builds them once and the cache holds one tree. The job never flashes,
+#   so an empty-plan image there is never mistaken for one to put on a board.
+# - A `CARGO_TARGET_DIR` the caller set is used as it is.
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+	if [[ -n "${CI:-}" ]]; then
+		CARGO_TARGET_DIR="$FW/target"
+	else
+		CARGO_TARGET_DIR="$FW/target/ram-budget"
+	fi
+fi
+export CARGO_TARGET_DIR
 ELF="$CARGO_TARGET_DIR/riscv32imc-unknown-none-elf/release/dash"
 
 # llvm-size and llvm-nm from rustup's `llvm-tools` component, for this directory's
