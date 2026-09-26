@@ -221,10 +221,15 @@ piped output being the log alone, and the panel being the board's frame with the
 cell inverted.
 
 Since 2026-09-26 `watch --out` quotes a heading with a comma ("Ignition retard, cylinder 1"
-split in two before), writes a read that missed as an empty cell, and marks an answer it could
-not convert `0x…` in a converted column. A recording made before cannot show a miss (the
-replay keeps its last value `fresh_for` from when it was heard) and writes an all-digit
-unconverted answer as a number (the replay says so when it sees bare hex). Columns are matched
+split in two before), writes a read that missed as its time in `_t_s` with the value empty, and
+marks an answer it could not convert `0x…` in a converted column. The replay reads a miss only
+there: an empty cell with no time of its own is no evidence (recordings without `_t_s` columns
+leave whole rows empty between sweeps — `research/dumps/drive-gear.csv`). A recording made
+before cannot show a miss (the replay keeps its last value `fresh_for` from when it was heard)
+and wrote an unconverted answer as bare hex: the replay reads it as no answer where no `{v}`
+number looks like it (a letter, or a leading zero before a digit) and says so, reads digits
+alone with no leading zero as the number, and drops a column holding any other number off the
+plan's scaling — `watch` writes numbers exactly, so that is another scaling. Columns are matched
 by name against the plan's survey; a unit `watch` identified live that the survey lacks could
 share a name, and the replay says it matched by name.
 

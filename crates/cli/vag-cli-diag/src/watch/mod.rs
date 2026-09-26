@@ -226,8 +226,9 @@ pub struct App {
 	/// Reads whose last attempt brought no body — no answer, a refusal, a bad
 	/// answer. The screen keeps showing `latest` for them; a recording writes no
 	/// value, because a row repeating the last answer after the unit went quiet
-	/// reads as the unit still saying it.
-	missed: std::collections::BTreeSet<(u16, u16)>,
+	/// reads as the unit still saying it. With when the attempt was, which the
+	/// recording writes as the miss's own time.
+	missed: std::collections::BTreeMap<(u16, u16), f64>,
 	/// The last [`history::WINDOW_SECONDS`] of every channel that answered with
 	/// a number, which is what the chart is drawn from. `latest` cannot serve:
 	/// it is one body per identifier and a chart is a shape over time.
@@ -354,7 +355,7 @@ impl App {
 		App {
 			channels,
 			latest: std::collections::BTreeMap::new(),
-			missed: std::collections::BTreeSet::new(),
+			missed: std::collections::BTreeMap::new(),
 			history: history::History::new(history::WINDOW_SECONDS),
 			charted: std::collections::BTreeSet::new(),
 			favourites: std::collections::BTreeSet::new(),
@@ -919,7 +920,7 @@ impl App {
 		let answered = !matches!(sample.value, Err(vag_cli_core::bus::Miss::NoAnswer | vag_cli_core::bus::Miss::BusError));
 		match &sample.value {
 			Ok(_) => self.missed.remove(&key),
-			Err(_) => self.missed.insert(key),
+			Err(_) => self.missed.insert(key, at),
 		};
 		if let Ok(data) = sample.value {
 			self.observe(key.0, key.1, at, data);
@@ -2149,7 +2150,8 @@ fn effective_hz(flag: Option<f64>, saved: f64) -> f64 {
 ///
 /// Two rules for a cell, since 2026-09-26: an answer a converted column could not
 /// convert is written as [`UNCONVERTED`] and its bytes, and a read whose last
-/// attempt missed is written empty.
+/// attempt missed is written with that attempt's time and no value. A cell never
+/// heard has neither.
 fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool) -> Result<()> {
 	let shown = app.shown();
 	if !*header_written {
@@ -2166,10 +2168,10 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 	}
 	let cells: Vec<String> = shown
 		.iter()
-		.map(|c| match app.latest.get(&(c.request, c.did)) {
-			// The last read missed: no value, not the one before it again.
-			_ if app.missed.contains(&(c.request, c.did)) => ",".to_string(),
-			Some((t, data)) => {
+		.map(|c| match (app.missed.get(&(c.request, c.did)), app.latest.get(&(c.request, c.did))) {
+			// The last read missed: when, and no value — not the one before it again.
+			(Some(missed), _) => format!("{missed:.3},"),
+			(None, Some((t, data))) => {
 				let v = match c.def.as_ref().and_then(|d| d.interpret(data)) {
 					Some(v) => format!("{v}"),
 					// In a `_raw` column every cell is bytes. In a converted one an answer
@@ -2180,7 +2182,7 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 				};
 				format!("{t:.3},{v}")
 			}
-			None => ",".to_string(),
+			(None, None) => ",".to_string(),
 		})
 		.collect();
 	writeln!(w, "{:.3},{}", app.clock, cells.join(","))?;
@@ -3403,7 +3405,7 @@ mod tests {
 		assert_eq!(recorded_row(&a), "0.200,0.100,1\n");
 		a.take(sample(0.3, Err(Miss::NoAnswer)));
 		a.clock = 0.4;
-		assert_eq!(recorded_row(&a), "0.400,,\n", "the unit stopped answering: the row says so");
+		assert_eq!(recorded_row(&a), "0.400,0.300,\n", "the unit stopped answering at 0.3 s: the row says so");
 		a.take(sample(0.5, Ok(vec![0x07, 0xD0])));
 		a.clock = 0.6;
 		assert_eq!(recorded_row(&a), "0.600,0.500,2\n");
@@ -3411,7 +3413,7 @@ mod tests {
 		a.take(sample(0.7, Err(Miss::Refused(0x31))));
 		assert!(a.latest.contains_key(&(0x7E0, 0x202A)));
 		a.clock = 0.8;
-		assert_eq!(recorded_row(&a), "0.800,,\n");
+		assert_eq!(recorded_row(&a), "0.800,0.700,\n");
 	}
 
 	#[test]

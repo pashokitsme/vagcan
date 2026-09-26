@@ -154,9 +154,15 @@ fn name_of(channel: &PlanChannel) -> String {
 /// them on the plan's scaling, which is said in `notes`.
 ///
 /// A reading is what the board's store would hold after it: a value, or `None` where the
-/// unit answered with nothing the board decodes. An empty cell after a value is a read
-/// that missed (`watch --out` writes one since 2026-09-26), and the board stores `None`
-/// for a miss too.
+/// unit answered with nothing the board decodes. A read that missed is `None` too, as on
+/// the board — and a recording says one only by an empty cell whose own `_t_s` holds a
+/// time (`watch --out` since 2026-09-26). An empty cell with no time of its own says
+/// nothing: not heard yet, or a row between sweeps in a recording older than per-column
+/// times, which leaves whole rows empty.
+///
+/// A converted column's cells are read as `watch` writes them — see [`Cell`] — and one
+/// number the plan's scaling cannot have produced means the column was recorded with
+/// another scaling, so none of it is used.
 pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, device: &DevicePlan, notes: &mut Vec<String>) -> Vec<Option<Series>> {
 	sources
 		.iter()
@@ -167,51 +173,53 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 			let column = match source {
 				Source::Converted(i) | Source::Raw(i) => i,
 			};
-			let (mut numbers, mut off_scale, mut bare_hex) = (0usize, 0usize, 0usize);
+			let name = name_of(owned);
+			let mut bare_hex = 0usize;
 			let mut out: Series = Vec::new();
 			for (row, (t, cells)) in recording.samples.iter().enumerate() {
+				let own_time = recording.read_at.get(row).and_then(|r| r.get(column).copied().flatten());
 				let Some(cell) = cells.get(column).and_then(|c| c.as_deref()) else {
-					// Nothing heard yet, or — once there was a value — a read that missed.
-					if out.last().is_some_and(|(_, value)| value.is_some()) {
-						out.push((to_ms(*t), None));
+					// A time and no value: the read at that time missed.
+					if let Some(missed) = own_time {
+						out.push((to_ms(missed), None));
 					}
 					continue;
 				};
-				let at = recording.read_at.get(row).and_then(|r| r.get(column).copied().flatten()).unwrap_or(*t);
+				let at = own_time.unwrap_or(*t);
 				let value = match source {
 					Source::Raw(_) => hex_bytes(cell).and_then(|bytes| board.decode(&bytes)),
-					// An answer `watch` could not convert, marked: its bytes, through the
-					// board's own decoder, which makes of them what the board would.
-					Source::Converted(_) => match (unconverted(cell), cell.parse::<f64>()) {
-						(Some(bytes), _) => board.decode(&bytes),
-						(None, Ok(v)) => {
-							numbers += 1;
-							let on_scale = on_the_boards_scale(v, owned, board);
-							off_scale += usize::from(on_scale.is_none());
-							on_scale
-						}
-						// Bare hex with a letter in it: an older recording's unconverted answer.
-						(None, Err(_)) => {
+					Source::Converted(_) => match Cell::of(cell) {
+						// Its bytes, through the board's own decoder, which makes of them what the
+						// board would — nothing, for no bytes.
+						Cell::Unconverted(bytes) => board.decode(&bytes),
+						Cell::OldHex => {
 							bare_hex += 1;
 							None
+						}
+						Cell::Number(v) => match on_the_boards_scale(v, owned, board) {
+							Some(value) => Some(value),
+							// Two hex digits a byte, all of them digits: in an older recording, an
+							// answer `watch` could not convert, which proves nothing about scaling.
+							None if could_be_hex(cell) => {
+								bare_hex += 1;
+								None
+							}
+							None => {
+								notes.push(format!(
+									"{name}: the recording's {cell} is not a value of the plan's scaling (×{} {:+}) — recorded with \
+									 another; not used",
+									owned.factor, owned.offset
+								));
+								return None;
+							}
+						},
+						Cell::Other => {
+							notes.push(format!("{name}: the recording's {cell:?} is not a cell `watch` writes — not used"));
+							return None;
 						}
 					},
 				};
 				out.push((to_ms(at), value));
-			}
-			let name = name_of(owned);
-			if numbers > 0 && off_scale == numbers {
-				notes.push(format!(
-					"{name}: no recorded number is a value of the plan's scaling (×{} {:+}) — recorded with another; not used",
-					owned.factor, owned.offset
-				));
-				return None;
-			}
-			if off_scale > 0 {
-				notes.push(format!(
-					"{name}: {off_scale} of {numbers} numbers are not values of the plan's scaling (×{} {:+}) — read as no answer",
-					owned.factor, owned.offset
-				));
 			}
 			if bare_hex > 0 {
 				let cells = match bare_hex {
@@ -220,8 +228,8 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 				};
 				notes.push(format!(
 					"{name}: {cells} bare hex — an answer `watch` could not convert, in a recording made before 2026-09-26; \
-					 read as no answer. Such a recording writes an all-digit one the same way, which cannot be told from a \
-					 number and is read as one"
+					 read as no answer. Such a recording writes one of digits alone and no leading zero the same way as a \
+					 number, and that is read as the number"
 				));
 			}
 			// A value repeats on every row until it is read again; one reading is one entry.
@@ -230,6 +238,44 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 			Some(out)
 		})
 		.collect()
+}
+
+/// One cell of a converted column, as `watch --out` writes it.
+#[derive(Debug, Clone, PartialEq)]
+enum Cell {
+	/// `0x…`: an answer it could not convert, and its bytes (since 2026-09-26).
+	Unconverted(Vec<u8>),
+	/// A number, as `format!("{v}")` of an `f64` prints one.
+	Number(f64),
+	/// Bare hex that no `{v}` prints: an older recording's unconverted answer.
+	OldHex,
+	/// Anything else: not a cell `watch` writes.
+	Other,
+}
+
+impl Cell {
+	fn of(cell: &str) -> Cell {
+		if let Some(bytes) = unconverted(cell) {
+			return Cell::Unconverted(bytes);
+		}
+		// `Display` for `f64` prints the shortest decimal that reads back to the value and
+		// never an exponent, so below one it starts `0.` and never with `0` then a digit
+		// (`a_number_as_watch_writes_it_…` pins this). `0100` is therefore hex, and `1000`
+		// may be either.
+		let leading_zero = cell.len() > 1 && cell.starts_with('0') && cell.as_bytes()[1].is_ascii_digit();
+		match cell.parse::<f64>() {
+			Ok(_) if leading_zero && could_be_hex(cell) => Cell::OldHex,
+			Ok(v) if !leading_zero => Cell::Number(v),
+			Ok(_) => Cell::Other,
+			Err(_) if could_be_hex(cell) => Cell::OldHex,
+			Err(_) => Cell::Other,
+		}
+	}
+}
+
+/// Whether a cell could be bytes in hex: two hex digits a byte.
+fn could_be_hex(cell: &str) -> bool {
+	!cell.is_empty() && cell.len() % 2 == 0 && cell.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A converted value as the board would have computed it: back to the raw integer through
@@ -428,51 +474,127 @@ mod tests {
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one"), plan_channel(ENGINE, 0x1004, 0, "raw")]);
 		let device = owned.to_device();
-		// Per-column times; a value repeated on the next row; a read that missed (an empty
-		// cell after a value); an answer `watch` could not convert, marked, decoded by the
-		// board's own decoder; and a raw answer by the plan's layout (0xFF38 = -200 → -2.00).
-		let recording =
-			columns("t_s,One_t_s,One,01/1004_raw\n0.100,0.050,-2.3,FF38\n0.200,0.050,-2.3,\n0.300,0.250,0x0064,0064\n0.400,,,0064\n0.500,0.450,0x05,\n");
+		// Per-column times; a value repeated on the next row; a read that missed (a time and
+		// no value); a column not heard yet (neither); an answer `watch` could not convert,
+		// marked, decoded by the board's own decoder, and a marked empty answer; and a raw
+		// answer by the plan's layout (0xFF38 = -200 → -2.00). The raw column has no time of
+		// its own, so its empty cells say nothing.
+		let recording = columns(
+			"t_s,One_t_s,One,01/1004_raw\n0.100,0.050,-2.3,FF38\n0.200,0.050,-2.3,\n0.300,0.250,0x0064,0064\n0.400,0.350,,0064\n\
+			 0.500,0.450,0x05,\n0.600,,,\n0.700,0.650,0x,\n",
+		);
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		assert!(notes.is_empty(), "{notes:?}");
 		assert_eq!(
 			series[0],
-			Some(vec![(50, Some(-230.0f32 * 0.01)), (250, Some(1.0)), (400, None), (450, None)]),
-			"0x05 is one byte where the field is two: what the board makes of it is nothing"
+			Some(vec![
+				(50, Some(-230.0f32 * 0.01)),
+				(250, Some(1.0)),
+				(350, None),
+				(450, None),
+				(650, None)
+			]),
+			"0x05 is one byte where the field is two, 0x no byte: the board makes nothing of either"
 		);
+		assert_eq!(series[1], Some(vec![(100, Some(-2.0)), (300, Some(1.0)), (400, Some(1.0))]));
+	}
+
+	#[test]
+	fn an_empty_cell_with_no_time_of_its_own_is_not_a_miss() {
+		// Recordings older than per-column times leave whole rows empty between sweeps —
+		// `research/dumps/drive-gear.csv` has hundreds, interleaved. Reading those as misses
+		// put a dash on the panel every other row.
+		let offered = [offered(ENGINE, 0x1001, "A", RawForm::I16Be)];
+		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "a")]);
+		let device = owned.to_device();
+		let read = |csv: &str| {
+			let recording = columns(csv);
+			let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+			series(&recording, &matched.sources, &owned, &device, &mut Vec::new())
+		};
+		assert_eq!(read("t_s,A\n0.0,5\n0.1,\n0.2,5\n"), [Some(vec![(0, Some(5.0)), (200, Some(5.0))])]);
+		// That file's shape: a named column and a bare identifier, then empty rows.
 		assert_eq!(
-			series[1],
-			Some(vec![(100, Some(-2.0)), (200, None), (300, Some(1.0)), (400, Some(1.0)), (500, None)])
+			read("t_s,A,0102\n0.000,806,00\n0.776,1029,00\n341.004,,\n354.027,,\n367.056,1100,00\n"),
+			[Some(vec![(0, Some(806.0)), (776, Some(1029.0)), (367_056, Some(1100.0))])]
 		);
 	}
 
 	#[test]
-	fn an_old_recordings_bare_hex_is_no_answer_and_said_and_one_stray_value_does_not_drop_the_column() {
+	fn a_number_off_the_plans_scaling_drops_the_column_unless_it_could_be_old_hex() {
+		// `watch` writes a number with `{v}`, which reads back exactly: a number the plan's
+		// scaling cannot have produced was produced by another. On ×0.75, 4 is such a
+		// number, and keeping 3 and 6 beside it would put 3 and 6 where the board shows
+		// 2.25 and 4.5.
+		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let mut three_quarters = plan_channel(ENGINE, 0x1001, 0, "one");
+		three_quarters.factor = 0.75;
+		let owned = plan(vec![three_quarters]);
+		let device = owned.to_device();
+		let read = |csv: &str, notes: &mut Vec<String>| {
+			let recording = columns(csv);
+			let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+			series(&recording, &matched.sources, &owned, &device, notes)
+		};
+		let mut notes = Vec::new();
+		assert_eq!(read("t_s,One\n0.0,3\n0.1,4\n0.2,6\n", &mut notes), [None]);
+		assert!(notes[0].contains("recorded with another"), "{notes:?}");
+		// But `10` is also two hex digits: in an older recording, an answer `watch` could
+		// not convert. That misfit proves nothing about the scaling.
+		let mut notes = Vec::new();
+		assert_eq!(
+			read("t_s,One\n0.0,3\n0.1,10\n0.2,6\n", &mut notes),
+			[Some(vec![(0, Some(3.0)), (100, None), (200, Some(6.0))])]
+		);
+		assert!(notes[0].contains("1 cell is bare hex"), "{notes:?}");
+	}
+
+	#[test]
+	fn an_old_recordings_bare_hex_is_no_answer_and_said() {
 		// Before 2026-09-26 `watch --out` wrote an answer it could not convert as bare hex
-		// in the converted column. With a letter in it, it is not a number; all digits,
-		// it cannot be told from one.
+		// in the converted column. With a letter in it, it is not a number; with a leading
+		// zero before a digit, it is not one `{v}` prints; `1000` could be either, and is
+		// read as the number it would be.
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one")]);
 		let device = owned.to_device();
-		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B34\n0.2,-2.305\n0.3,1\n");
+		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B34\n0.2,0100\n0.3,1000\n0.4,0\n0.5,0.5\n");
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		assert_eq!(
 			series[0],
-			Some(vec![(0, Some(-230.0f32 * 0.01)), (100, None), (200, None), (300, Some(1.0))])
+			Some(vec![
+				(0, Some(-230.0f32 * 0.01)),
+				(100, None),
+				(200, None),
+				(300, Some(100_000.0f32 * 0.01)),
+				(400, Some(0.0)),
+				(500, Some(50.0f32 * 0.01))
+			])
 		);
-		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert_eq!(notes.len(), 1, "{notes:?}");
 		assert!(
-			notes.iter().any(|n| n.contains("1 of 3 numbers") && n.contains("read as no answer")),
+			notes[0].contains("2 cells are bare hex") && notes[0].contains("before 2026-09-26"),
 			"{notes:?}"
 		);
-		assert!(
-			notes.iter().any(|n| n.contains("1 cell is bare hex") && n.contains("before 2026-09-26")),
-			"{notes:?}"
-		);
+	}
+
+	#[test]
+	fn a_number_as_watch_writes_it_never_has_an_exponent_or_a_leading_zero_before_a_digit() {
+		// `watch --out` writes `format!("{v}")` of an `f64`. `Display` for a float prints
+		// the shortest decimal that reads back to it and never an exponent (unlike `{:e}`
+		// or `Debug` for very large and very small values), so a number starts `0.` below
+		// one and never `0` followed by another digit. This pins what the old-hex rule
+		// rests on.
+		assert_eq!(format!("{}", 1e21f64), "1000000000000000000000");
+		assert_eq!(format!("{}", 1e-7f64), "0.0000001");
+		assert_eq!(format!("{}", 0.5f64), "0.5");
+		assert_eq!(format!("{}", -0.0f64), "-0");
+		assert_eq!(format!("{}", 0.0f64), "0");
+		assert_eq!(format!("{}", 100.0f64), "100");
 	}
 
 	#[test]
@@ -484,6 +606,9 @@ mod tests {
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		assert_eq!(series(&recording, &matched.sources, &owned, &device, &mut notes), [None]);
-		assert!(notes[0].contains("no recorded number is a value of the plan's scaling"), "{notes:?}");
+		assert!(
+			notes[0].contains("is not a value of the plan's scaling") && notes[0].contains("recorded with"),
+			"{notes:?}"
+		);
 	}
 }

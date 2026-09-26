@@ -66,6 +66,12 @@ vagcan watch --did "01:2029,202A 02:3816" --for 30 --hz 10 --out drive.csv
 - A column suffixed `_raw` is **unconverted bytes in hex**, not a number. It means no
   proven scaling exists for that identifier on this unit. Do not do arithmetic on it
   and do not report it as a value.
+- A cell starting `0x` in a converted column is **the bytes of an answer that did not
+  convert**, not a number (`0x` alone: an answer with no bytes). Recordings before
+  2026-09-26 wrote these as bare hex.
+- A **time in `name_t_s` with the value empty** means the read at that time missed. An
+  empty value with an empty time means nothing was heard yet, or (a recording without
+  `_t_s` columns) nothing at all. Only recordings with `_t_s` columns show misses.
 - `--hz` is a target, not a guarantee: a unit that is slow to answer sets the pace.
 
 Without `--out` the rows go to stdout, flushed per cycle, so they can be read as they

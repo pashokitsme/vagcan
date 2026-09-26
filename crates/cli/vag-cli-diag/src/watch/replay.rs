@@ -34,8 +34,9 @@ pub struct Recording {
 	/// `(seconds from the start, one cell per column)`.
 	pub samples: Vec<(f64, Vec<Option<String>>)>,
 	/// Per sample, per column: when that column's value was read, where the file says
-	/// (`name_t_s`). `None` for a column the file gives no time of its own, and for an
-	/// empty cell. This screen ignores it — a replay here runs on one clock — but the dash
+	/// (`name_t_s`). `None` for a column the file gives no time of its own, and where that
+	/// time cell is empty. A time beside an empty value is a read that missed then
+	/// (written since 2026-09-26). This screen ignores it — a replay here runs on one clock — but the dash
 	/// replay reads a value's age off it, as the board's store does.
 	pub read_at: Vec<Vec<Option<f64>>>,
 }
@@ -214,9 +215,10 @@ pub fn columns_that_moved(recording: &Recording) -> Vec<usize> {
 /// or a non-linear scaling cannot be inverted, and returns `None` rather than
 /// a number that looks like a reading and is not one.
 pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>> {
-	// An answer the writer could not convert, marked as such: its bytes, exactly.
+	// An answer the writer could not convert, marked as such: its bytes, exactly — and
+	// none at all is no reading, as an empty raw cell is not one below.
 	if let Some(bytes) = unconverted(cell) {
-		return Some(bytes);
+		return Some(bytes).filter(|bytes| !bytes.is_empty());
 	}
 	// The `_raw` marker settles it when present. When it is absent the channel
 	// does: a column for an identifier with no proven scaling cannot have had
@@ -249,11 +251,12 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 }
 
 /// The bytes of a cell marked [`UNCONVERTED`](super::UNCONVERTED) — an answer the writer
-/// could not convert — or `None` for any other cell. A recording from before the mark
-/// (2026-09-26) wrote such an answer as bare hex, which nothing tells from a number.
+/// could not convert — or `None` for any other cell. Bare `0x` is a positive answer that
+/// carried no bytes, and is empty. A recording from before the mark (2026-09-26) wrote such
+/// an answer as bare hex, which nothing tells from a number.
 pub fn unconverted(cell: &str) -> Option<Vec<u8>> {
 	let hex = cell.strip_prefix(super::UNCONVERTED)?;
-	vag_cli_core::plan::hex_bytes(hex).filter(|bytes| !bytes.is_empty())
+	vag_cli_core::plan::hex_bytes(hex)
 }
 
 /// Lay an integer out the way a control unit would have sent it.
