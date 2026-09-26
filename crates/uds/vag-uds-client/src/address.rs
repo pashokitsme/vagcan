@@ -40,18 +40,23 @@ const ISO_OFFSET: u16 = 8;
 const VW_FIRST: u16 = 0x700;
 const VW_LAST: u16 = 0x7BF;
 const VW_OFFSET: u16 = 0x6A;
+/// The highest id an ISO 11898 standard frame carries: eleven bits.
+const STANDARD_ID_LAST: u16 = 0x7FF;
 
 impl UnitAddress {
 	/// The address to use for a request id, by whichever rule covers it.
 	///
-	/// `None` for an id in neither block: there is no third rule to guess with.
+	/// `None` for an id in neither block: there is no third rule to guess with. `None` too
+	/// for a request past `0x795` in VW's block, whose `+ 0x6A` would be past `0x7FF`: an
+	/// id no standard (11-bit) frame can carry, so a unit there cannot answer by this rule,
+	/// and asking it only costs a timeout.
 	pub fn from_request(request: u16) -> Option<UnitAddress> {
 		let response = match request {
 			ISO_FIRST..=ISO_LAST => request + ISO_OFFSET,
 			VW_FIRST..=VW_LAST => request + VW_OFFSET,
 			_ => return None,
 		};
-		Some(UnitAddress { request, response })
+		(response <= STANDARD_ID_LAST).then_some(UnitAddress { request, response })
 	}
 
 	/// Whether this unit is one of the **emissions-related** control units that
@@ -300,7 +305,7 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	}
 	if text.len() >= 3 {
 		let id = u16::from_str_radix(text, 16).map_err(|_| format!("{text:?} is not a hex request id like 714"))?;
-		return UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} is in neither diagnostic block (700-7BF or 7E0-7E7)"));
+		return UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} has no diagnostic address (700-795 or 7E0-7E7)"));
 	}
 	// A short number is a hex byte, the way the label files write it: `4B` is a
 	// unit, not a typo.
@@ -318,8 +323,8 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	// into traffic no rule predicts.
 	UnitAddress::from_request(request).ok_or_else(|| {
 		format!(
-			"control unit {number:02X} is paired with {request:03X}, which is in neither \
-             diagnostic block (700-7BF or 7E0-7E7)"
+			"control unit {number:02X} is paired with {request:03X}, which has no \
+             diagnostic address (700-795 or 7E0-7E7)"
 		)
 	})
 }
@@ -375,6 +380,15 @@ mod tests {
 		// No third rule exists, so guessing one would invent traffic.
 		assert!(UnitAddress::from_request(0x123).is_none());
 		assert!(UnitAddress::from_request(0x7F0).is_none());
+	}
+
+	#[test]
+	fn a_request_whose_response_would_not_fit_eleven_bits_has_no_address() {
+		// 0x795 + 0x6A is 0x7FF, the last standard id; 0x796 would answer on 0x800.
+		assert_eq!(UnitAddress::from_request(0x795).unwrap().response, 0x7FF);
+		for request in [0x796, 0x7A0, 0x7BF] {
+			assert!(UnitAddress::from_request(request).is_none(), "{request:03X}");
+		}
 	}
 
 	#[test]
@@ -474,7 +488,7 @@ mod tests {
 		assert_eq!(name_for_short(0x44).as_deref(), Some("J500 - Power Steering"));
 
 		let err = parse("55").unwrap_err();
-		assert!(err.contains("neither diagnostic block"), "{err}");
+		assert!(err.contains("has no diagnostic address"), "{err}");
 
 		// Installing does not disturb the fallback.
 		assert_eq!(parse("01").unwrap().request, 0x7E0);
