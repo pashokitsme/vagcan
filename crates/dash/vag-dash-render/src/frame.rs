@@ -35,6 +35,9 @@ pub struct Cell<'a> {
 	/// This is how an alarm shows *which* cylinder. Filling the whole panel
 	/// would lose exactly the thing the alarm view exists to say; inverting one
 	/// cell keeps the label and the number, they simply swap with the ground.
+	/// The alarm blinks it by setting this on alternate halves of a blink
+	/// ([`Glass::inverted`](crate::screen::Glass::inverted)): each frame draws the half
+	/// its clock is in.
 	pub alarm: bool,
 }
 

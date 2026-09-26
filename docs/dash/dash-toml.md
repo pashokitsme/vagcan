@@ -110,8 +110,9 @@ alarm can watch it.
 ## Alarms
 
 An alarm watches its channels whatever page is up and, when one goes wrong, shows its page with
-the offending cell inverted. A short press silences that episode; the view is held 2.5 s after
-the value comes back. At most four rules, in the file's order, which is their priority.
+the offending cell inverted. The cell blinks (0.4 s on, 0.4 s off) while the value is out. The
+view is held 2.5 s after the value comes back, with the cell steadily inverted. A short press
+silences that episode. At most four rules, in the file's order, which is their priority.
 
 | key | threshold rule | drift rule |
 |---|---|---|

@@ -20,18 +20,21 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
   board already powered the Mac sees nothing — likely `VBUS` back-fed from the car's 5 V
   (`research/dash/can-bring-up.md` §9.16). Order: USB first.
 - **Alarms on the car, 2026-09-26:** knock retard went beyond −2.6° on most full-throttle pulls
-  on 95 RON, so −2.0/−1.5 fires on every pull. The owner picked −4.0/−3.0 pending a researched
-  answer (in progress); not yet in `dash.toml`, and the board is flashed only when the owner
-  says. The highlight is to **blink** (owner): in progress on `feat/alarm-blink`.
+  on 95 RON, so −2.0/−1.5 fires on every pull. The owner picked −4.0/−3.0 pending research; the research
+  (forum and tuner logs of stock EA888, this engine among them; no OEM number) puts 3–4° at WOT
+  in the normal band and suggests −6.0/−4.5 — the owner's call, not yet in `dash.toml`; the board
+  is flashed only when the owner says. **The cell blinks** since 2026-09-26 (`feat/alarm-blink`
+  merged): 400/400 ms from the takeover while out, steady through the hold.
 - **The cruise lever, probed 2026-09-26** (`dash/14` §6a): with cruise off the rocker moves
   `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
   as buttons (+ next, − previous, LIMIT the stopwatch) and the stopwatch page: spec in
-  [`dash/19`](dash/19-stalk-and-stopwatch.md), waiting for approval.
+  [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26, in progress.
 - **PR #6 merged 2026-09-26** (`2855b5c`): `vagcan dev recording dash` replays a `watch --out`
   recording on the panel in the terminal. It changed `watch --out`: a heading with a comma is
   quoted, an unconverted answer is `0x…`, a missed read is its time with no value.
-- **In flight, 2026-09-26:** `feat/ble-flag` (`--ble` for `--device ble`, reviewed, fixing),
-  `feat/alarm-blink`, `feat/enum-ranges` (ODIS text tables keep their intervals, so `watch`
+- **`--ble`** is short for `--device ble` on every command that takes `--device` (merged
+  2026-09-26).
+- **In flight, 2026-09-26:** `feat/stalk-stopwatch` (`dash/19`), `feat/enum-ranges` (ODIS text tables keep their intervals, so `watch`
   names a lever state instead of printing hex — `1105`'s readings never equal a table value).
 - **Boards:** unchanged since 2026-09-22 — the old board on 5 V is the working one, the rev v0.4
   board a spare without BLE. An agent's BLE tools still start from Terminal.app: macOS gives
@@ -63,16 +66,17 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | A recording's cell off the plan's scaling drops the column in the replay; no guessing at old bare hex (2026-09-26) | `dash/04` |
 | The alarm highlight blinks while the value is out, steady in the hold, the cell only (2026-09-26) | `dash/04` |
 | Cruise lever with cruise off: RES/+ next page, SET/− previous, LIMIT the stopwatch; lever and stopwatch page as one feature (2026-09-26) | `dash/19` |
-| Knock retard alarm to −4.0/−3.0, pending research (2026-09-26) | `dash/04` |
+| Knock retard alarm to −4.0/−3.0, pending research — the research suggests −6.0/−4.5 (2026-09-26) | `dash/04` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **In flight** (2026-09-26): `feat/ble-flag`, `feat/alarm-blink`, `feat/enum-ranges` — each
-   reviewed before it merges; the knock-retard research, then the owner's `dash.toml`.
+1. **In flight** (2026-09-26): `feat/enum-ranges`, reviewed before it merges; the owner's
+   choice of the knock-retard threshold (the research says −6.0/−4.5), then `dash.toml`.
 2. **The lever as buttons and the stopwatch page** — [`dash/19`](dash/19-stalk-and-stopwatch.md),
-   after the owner approves the spec and blink and enum-ranges merge. Built and tested without
+   approved 2026-09-26; phase 1 (pure logic) on `feat/stalk-stopwatch`, phase 2 after
+   enum-ranges merges. Built and tested without
    the car; the speed factor and a run need it.
 3. **OLED and enclosure** — `dash/15`; waits for the panel.
 
