@@ -51,7 +51,7 @@ number for this ECU, and the car confirms each:
 | rule | channels | values | resting on |
 |---|---|---|---|
 | misfires, `above` | `291D`–`2920` (a count per 1000 revolutions, ×1) | trip 5, release 3 | VW's 0…2 per cylinder in the `06J-906-026-CCT` label (another engine unit); CARB 13 CCR 1968.2's 1 % = 20 per 1000 revolutions; if too eager, 20 / 10 |
-| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −2.0, release −1.5 | about one knock step (1.5–2.25° on the sibling `8V0906264L`, community data); if too eager, −3.0 / −2.0 |
+| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −6.0, release −4.5 (2026-09-26; was −2.0/−1.5) | −2.0 fired on every full-throttle pull on 95 RON (−2.6° and past). Owner and tuner logs of stock EA888 (this engine among them) put 3–4° at WOT in the normal band and start to worry past −6 ([octavia-club A7](https://www.octavia-club.ru/f/A7/50139-pro-propuski-zazhiganiya-i-detonaciyu-na/p3), [drive2 CJSA](https://www.drive2.ru/l/539781320352466409/), [drive2 Tiguan](https://www.drive2.ru/l/582226042597582973/)); release two 0.75° steps above (logged values sit on a 0.375° grid — inference). No OEM number; medium-low confidence. Better: from 10–20 recorded pulls |
 | coolant, `above` | `F405` | trip 115, release 110 | the top of VW's 80…115 °C warm spec (EA888 gen1/2 labels); release inferred |
 | boost drift | `202A` against `2029` | 10 %, release 5 %, 2000 ms, floor 1.3 bar | inference only; the floor matters because the pressures are absolute (~0.99 bar at rest) |
 

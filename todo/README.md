@@ -22,8 +22,10 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
 - **Alarms on the car, 2026-09-26:** knock retard went beyond −2.6° on most full-throttle pulls
   on 95 RON, so −2.0/−1.5 fires on every pull. The owner picked −4.0/−3.0 pending research; the research
   (forum and tuner logs of stock EA888, this engine among them; no OEM number) puts 3–4° at WOT
-  in the normal band and suggests −6.0/−4.5 — the owner's call, not yet in `dash.toml`; the board
-  is flashed only when the owner says. **The cell blinks** since 2026-09-26 (`feat/alarm-blink`
+  in the normal band; **−6.0/−4.5 in the owner's `dash.toml` and plan since 2026-09-26** (the
+  file before: `dash.toml.before-retard-6`). Not on the board yet: flashed only when the owner
+  says. A sustained-retard rule and a part-load gate would fit the sources better than a
+  threshold — not built. **The cell blinks** since 2026-09-26 (`feat/alarm-blink`
   merged): 400/400 ms from the takeover while out, steady through the hold.
 - **The cruise lever, probed 2026-09-26** (`dash/14` §6a): with cruise off the rocker moves
   `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
@@ -66,14 +68,14 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | A recording's cell off the plan's scaling drops the column in the replay; no guessing at old bare hex (2026-09-26) | `dash/04` |
 | The alarm highlight blinks while the value is out, steady in the hold, the cell only (2026-09-26) | `dash/04` |
 | Cruise lever with cruise off: RES/+ next page, SET/− previous, LIMIT the stopwatch; lever and stopwatch page as one feature (2026-09-26) | `dash/19` |
-| Knock retard alarm to −4.0/−3.0, pending research — the research suggests −6.0/−4.5 (2026-09-26) | `dash/04` |
+| Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **In flight** (2026-09-26): `feat/enum-ranges`, reviewed before it merges; the owner's
-   choice of the knock-retard threshold (the research says −6.0/−4.5), then `dash.toml`.
+1. **In flight** (2026-09-26): `feat/enum-ranges`, reviewed before it merges. Flash the board
+   with the new retard threshold and the blink when the owner says.
 2. **The lever as buttons and the stopwatch page** — [`dash/19`](dash/19-stalk-and-stopwatch.md),
    approved 2026-09-26; phase 1 (pure logic) on `feat/stalk-stopwatch`, phase 2 after
    enum-ranges merges. Built and tested without
