@@ -1,0 +1,638 @@
+//! The stopwatch page's machine: arm at a standstill, start at the launch, stamp
+//! the marks (`todo/dash/19`, `todo/dash/14` §6).
+//!
+//! The board's small brother of `vag-cli-measure`'s `Session`
+//! (`crates/cli/vag-cli-measure/src/session.rs`), and ported from it rather
+//! than re-derived, because the laptop's rules were each reached by discarding
+//! something simpler:
+//!
+//! - **Standstill is the channel's zero, held.** The laptop decides it on the
+//!   raw integer the unit answered; here it is the channel's value being exactly
+//!   `0.0`, which is the same thing for a linear scaling with no offset — a
+//!   speed channel with one is for the plan generator to refuse. Zero must hold for
+//!   [`ARMING_HOLD_MS`] (`session::ARMING_HOLD_S`), so a crawling queue does not
+//!   arm in every gap. A sample the unit did not answer moves no state.
+//! - **The clock's origin is the launch, and the launch is reconstructed.** The
+//!   first moving sample starts the run but is not `t = 0`: the car was already
+//!   under way before its speed channel woke. [`Launch`] is
+//!   `vag-cli-measure`'s `derive::start`, ported: a constant-jerk fit through
+//!   `√v` over the first [`START_FIT_MS`] of movement reaches back too far, a
+//!   straight line through the first two moving samples falls short, and the
+//!   launch is the midpoint of the bracket they form. When the movement gives
+//!   neither (fewer than three moving samples in the window — a poll too slow for
+//!   the page), there is no launch and no time: a launch invented from two
+//!   samples is not a measurement, as the laptop says.
+//! - **A mark is a crossing, interpolated.** Each mark is timed where the speed
+//!   first rises past it, linearly between the samples either side
+//!   (`types::Track::crossing`), not at the nearer sample — at 20 Hz a whole
+//!   sample is 50 ms.
+//!
+//! Speed is the channel's value times `km_h_per_unit`, a per-car factor measured
+//! on the car and never written in; `0` means it has not been measured, and the
+//! machine stays in [`Phase::NotMeasured`] and does nothing.
+//!
+//! Nothing here reads a clock: `now_ms` is a parameter, as everywhere in this
+//! crate. `no_std`, allocation-free: the marks are the plan's slice, the launch
+//! fit a fixed buffer.
+
+/// How long the channel's zero has to hold before the stopwatch arms.
+/// `vag-cli-measure`'s `session::ARMING_HOLD_S`: a property of traffic, not of a car.
+pub const ARMING_HOLD_MS: u64 = 1_000;
+
+/// How much of the start of the movement the launch fit looks at.
+/// `vag-cli-measure`'s `derive::START_FIT_S`.
+pub const START_FIT_MS: u64 = 400;
+
+/// The fewest moving samples the constant-jerk fit is made on.
+/// `vag-cli-measure`'s `derive::MIN_FIT_SAMPLES`.
+const MIN_FIT_SAMPLES: usize = 3;
+
+/// The most moving samples the launch fit keeps: [`START_FIT_MS`] at 160 Hz,
+/// past anything the board's one conversation reaches. Samples past it inside the
+/// window are not fitted.
+pub const FIT_CAPACITY: usize = 64;
+
+/// The most marks one plan may carry.
+pub const MAX_MARKS: usize = 4;
+
+/// Where the stopwatch stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+	/// `km_h_per_unit` is zero: the factor has not been measured, and nothing is timed.
+	NotMeasured,
+	/// Moving, or standing but not yet for [`ARMING_HOLD_MS`].
+	Idle,
+	/// Standing long enough: the next moving sample starts a run.
+	Armed,
+	Running,
+	/// A run ended — at its highest mark, or back at a standstill before it. Its
+	/// times are on show until the next run is armed and launched.
+	Done,
+}
+
+/// When the car set off, in seconds relative to the first moving sample — so
+/// never after `0.0`. `vag-cli-measure`'s `derive::Start`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Launch {
+	/// The estimate: the midpoint of the bracket.
+	pub t: f32,
+	/// The constant-jerk fit, which reaches back too far.
+	pub earliest: f32,
+	/// The two-point line, which falls short.
+	pub latest: f32,
+}
+
+/// One run: where each mark was crossed, and when the car set off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Run {
+	/// Seconds after the first moving sample at which each mark was crossed, by
+	/// the mark's place in the plan.
+	crossed: [Option<f32>; MAX_MARKS],
+	pub launch: Option<Launch>,
+	/// The car came back to a standstill (or the page was left) before the highest mark.
+	pub aborted: bool,
+}
+
+impl Run {
+	const fn new() -> Self {
+		Run {
+			crossed: [None; MAX_MARKS],
+			launch: None,
+			aborted: false,
+		}
+	}
+
+	/// Seconds after the first moving sample at which mark `index` was crossed.
+	pub fn crossed_at(&self, index: usize) -> Option<f32> {
+		self.crossed.get(index).copied().flatten()
+	}
+
+	/// The mark's time: from the launch to its crossing. `None` when it was not
+	/// crossed, or when there is no launch to time it from.
+	pub fn time(&self, index: usize) -> Option<f32> {
+		Some(self.crossed_at(index)? - self.launch?.t)
+	}
+}
+
+/// What one sample did worth saying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+	/// The standstill held: the next moving sample starts a run.
+	Armed,
+	/// The first moving sample after arming.
+	Started,
+	/// These marks — bit `i` for mark `i` — were crossed by this sample, and the
+	/// run goes on.
+	Crossed { marks: u8 },
+	/// The highest mark was crossed (with any others crossed by the same sample).
+	Finished,
+	/// Back at a standstill before the highest mark; the marks that closed are kept.
+	Aborted,
+}
+
+/// The stopwatch.
+pub struct Stopwatch<'a> {
+	marks: &'a [u16],
+	km_h_per_unit: f32,
+	phase: Phase,
+	/// When the current standstill began.
+	standing_since: Option<u64>,
+	/// The last answered sample: when, and the speed in km/h.
+	previous: Option<(u64, f32)>,
+	/// The first moving sample of the run in progress.
+	started_ms: u64,
+	/// The moving samples of the first [`START_FIT_MS`]: seconds after the first
+	/// moving sample, and km/h.
+	fit: [(f32, f32); FIT_CAPACITY],
+	fitted: usize,
+	/// The run in progress, while [`Phase::Running`].
+	current: Run,
+	/// The last run that ended.
+	last: Option<Run>,
+}
+
+impl<'a> Stopwatch<'a> {
+	/// `marks` in km/h, as the plan carries them; `km_h_per_unit` the measured
+	/// factor, `0` where it has not been measured.
+	///
+	/// # Panics
+	///
+	/// With more than [`MAX_MARKS`] marks: the plan generator refuses such a
+	/// plan, so this is an image built wrong.
+	pub fn new(marks: &'a [u16], km_h_per_unit: f32) -> Self {
+		assert!(marks.len() <= MAX_MARKS, "the plan carries at most MAX_MARKS marks");
+		let measured = km_h_per_unit.is_finite() && km_h_per_unit > 0.0;
+		Stopwatch {
+			marks,
+			km_h_per_unit,
+			phase: if measured { Phase::Idle } else { Phase::NotMeasured },
+			standing_since: None,
+			previous: None,
+			started_ms: 0,
+			fit: [(0.0, 0.0); FIT_CAPACITY],
+			fitted: 0,
+			current: Run::new(),
+			last: None,
+		}
+	}
+
+	pub fn phase(&self) -> Phase {
+		self.phase
+	}
+
+	/// The marks, in km/h, in the plan's order.
+	pub fn marks(&self) -> &'a [u16] {
+		self.marks
+	}
+
+	/// The run on show: the one in progress, else the last one that ended.
+	pub fn run(&self) -> Option<Run> {
+		match self.phase {
+			Phase::Running => Some(self.current),
+			_ => self.last,
+		}
+	}
+
+	/// One reading of the speed channel: its value in the channel's own unit,
+	/// `None` where it did not answer or is stale.
+	///
+	/// At most one event comes out, the last thing the sample did: one that closes
+	/// marks and the run says [`Event::Finished`], a launch sample that already
+	/// crosses a mark says [`Event::Crossed`]. [`Stopwatch::run`] and
+	/// [`Stopwatch::phase`] hold the whole of it.
+	pub fn sample(&mut self, value: Option<f32>, now_ms: u64) -> Option<Event> {
+		if self.phase == Phase::NotMeasured {
+			return None;
+		}
+		// A cycle the unit did not answer moves no state (`session::on_sample`).
+		let value = value.filter(|v| v.is_finite())?;
+		let standing = value == 0.0;
+		let kmh = value * self.km_h_per_unit;
+
+		let mut event = None;
+		match self.phase {
+			Phase::NotMeasured => {}
+			Phase::Idle | Phase::Done => match standing {
+				true => {
+					let since = *self.standing_since.get_or_insert(now_ms);
+					if now_ms.saturating_sub(since) >= ARMING_HOLD_MS {
+						self.phase = Phase::Armed;
+						event = Some(Event::Armed);
+					}
+				}
+				false => self.standing_since = None,
+			},
+			Phase::Armed if value > 0.0 => {
+				self.launch(now_ms);
+				event = Some(Event::Started);
+			}
+			// Going backwards is not a launch; the next standstill arms again.
+			Phase::Armed if !standing => {
+				self.phase = Phase::Idle;
+				self.standing_since = None;
+			}
+			Phase::Armed => {}
+			Phase::Running if standing => {
+				// Back at a standstill short of the highest mark: what closed is
+				// kept, and since the car is already stopped the hold starts here.
+				self.end(true);
+				self.standing_since = Some(now_ms);
+				event = Some(Event::Aborted);
+			}
+			Phase::Running => {}
+		}
+
+		if self.phase == Phase::Running {
+			event = self.advance(now_ms, kmh).or(event);
+		}
+		self.previous = Some((now_ms, kmh));
+		event
+	}
+
+	/// The page was left: whatever was under way stops. A run in progress ends as
+	/// aborted and is kept, as the laptop keeps a cancelled one with the marks it
+	/// closed; the next run needs a fresh standstill.
+	pub fn reset(&mut self) {
+		if self.phase == Phase::NotMeasured {
+			return;
+		}
+		if self.phase == Phase::Running {
+			self.end(true);
+		}
+		self.phase = Phase::Idle;
+		self.standing_since = None;
+		self.previous = None;
+	}
+
+	/// The first moving sample after an armed standstill.
+	fn launch(&mut self, now_ms: u64) {
+		self.phase = Phase::Running;
+		self.started_ms = now_ms;
+		self.fitted = 0;
+		self.current = Run::new();
+	}
+
+	/// Seconds from the first moving sample to `at_ms`, which may be before it.
+	fn since_start(&self, at_ms: u64) -> f32 {
+		match at_ms.checked_sub(self.started_ms) {
+			Some(after) => after as f32 / 1000.0,
+			None => -((self.started_ms - at_ms) as f32 / 1000.0),
+		}
+	}
+
+	/// One running sample: the launch fit while its window is open, then every
+	/// mark this sample crossed, and the end of the run at the highest.
+	fn advance(&mut self, now_ms: u64, kmh: f32) -> Option<Event> {
+		let t = self.since_start(now_ms);
+		if kmh > 0.0 && now_ms.saturating_sub(self.started_ms) <= START_FIT_MS && self.fitted < FIT_CAPACITY {
+			self.fit[self.fitted] = (t, kmh);
+			self.fitted += 1;
+			// Refitted with every sample in the window, as the laptop refits each
+			// cycle; past the window the answer no longer changes.
+			self.current.launch = launch(&self.fit[..self.fitted]);
+		}
+
+		// `Track::crossing`: the first rise past the mark, between the samples
+		// either side. The one before the first moving sample is the standstill's.
+		let mut crossed = 0u8;
+		if let Some((before_ms, before)) = self.previous {
+			let t0 = self.since_start(before_ms);
+			for (i, mark) in self.marks.iter().enumerate() {
+				let target = f32::from(*mark);
+				if self.current.crossed[i].is_none() && before < target && kmh >= target {
+					self.current.crossed[i] = Some(t0 + (t - t0) * (target - before) / (kmh - before));
+					crossed |= 1 << i;
+				}
+			}
+		}
+
+		let highest = (0..self.marks.len()).max_by_key(|&i| self.marks[i]);
+		match highest {
+			Some(i) if self.current.crossed[i].is_some() => {
+				self.end(false);
+				self.standing_since = None;
+				Some(Event::Finished)
+			}
+			_ if crossed != 0 => Some(Event::Crossed { marks: crossed }),
+			_ => None,
+		}
+	}
+
+	/// The run ends; it becomes the one on show.
+	fn end(&mut self, aborted: bool) {
+		self.current.aborted = aborted;
+		self.last = Some(self.current);
+		self.phase = Phase::Done;
+	}
+}
+
+/// `vag-cli-measure`'s `derive::start`, on the moving samples of the fit window:
+/// `(seconds after the first of them, km/h)`, every speed above zero.
+///
+/// `latest` is the line through the first two samples, clamped at the first:
+/// a launch is convex, so the line runs under it and reaches zero late.
+/// `earliest` is the constant-jerk root, `v = ½j(t − t₀)²` fitted as a straight
+/// line through `√v`, also clamped at the first sample: it reaches back too far.
+/// The two are ordered, never collapsed. `None` without a second sample or
+/// without a fit, as there.
+fn launch(window: &[(f32, f32)]) -> Option<Launch> {
+	let (&(t_first, v_first), &(t_second, v_second)) = (window.first()?, window.get(1)?);
+	let (rise, step) = (v_second - v_first, t_second - t_first);
+	let line = match rise > 0.0 && step > 0.0 {
+		true => (t_first - v_first * step / rise).min(t_first),
+		false => t_first,
+	};
+	let quadratic = constant_jerk_launch(window)?.min(t_first);
+	let (earliest, latest) = (quadratic.min(line), quadratic.max(line));
+	Some(Launch {
+		t: 0.5 * (earliest + latest),
+		earliest,
+		latest,
+	})
+}
+
+/// `derive::constant_jerk_launch`: least squares of `√v` on `t`, extrapolated to
+/// `√v = 0`. `None` under [`MIN_FIT_SAMPLES`] or with no gain across the window.
+fn constant_jerk_launch(window: &[(f32, f32)]) -> Option<f32> {
+	if window.len() < MIN_FIT_SAMPLES {
+		return None;
+	}
+	let count = window.len() as f32;
+	let x_bar = window.iter().map(|(t, _)| t).sum::<f32>() / count;
+	let y_bar = window.iter().map(|(_, v)| sqrt(*v)).sum::<f32>() / count;
+	let (mut sxx, mut sxy) = (0.0, 0.0);
+	for (t, v) in window {
+		sxx += (t - x_bar) * (t - x_bar);
+		sxy += (t - x_bar) * (sqrt(*v) - y_bar);
+	}
+	if sxx <= 0.0 {
+		return None;
+	}
+	let gradient = sxy / sxx;
+	if gradient <= 0.0 {
+		return None;
+	}
+	Some(x_bar - y_bar / gradient)
+}
+
+/// `f32::sqrt` is in `std`, and this crate is `no_std`: Newton's method from the
+/// exponent-halving first guess, four steps to full `f32` precision. Zero and
+/// below are zero — the fit only ever takes a speed above zero.
+fn sqrt(x: f32) -> f32 {
+	if x <= 0.0 || !x.is_finite() {
+		return 0.0;
+	}
+	let mut y = f32::from_bits((x.to_bits() >> 1) + 0x1FBD_1DF5);
+	for _ in 0..4 {
+		y = 0.5 * (y + x / y);
+	}
+	y
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::vec::Vec;
+
+	/// A neutral factor: the channel counts in units of half a km/h.
+	const FACTOR: f32 = 0.5;
+	static MARKS: [u16; 2] = [60, 100];
+
+	/// Feed a speed profile in km/h, sampled every `step_ms` from `from_ms` to
+	/// `to_ms` inclusive, as the channel's value. What came out, with when.
+	fn drive(watch: &mut Stopwatch<'_>, kmh: impl Fn(f64) -> f64, from_ms: u64, to_ms: u64, step_ms: u64) -> Vec<(u64, Event)> {
+		let mut out = Vec::new();
+		let mut t = from_ms;
+		while t <= to_ms {
+			let value = (kmh(t as f64 / 1000.0) / f64::from(FACTOR)) as f32;
+			if let Some(event) = watch.sample(Some(value), t) {
+				out.push((t, event));
+			}
+			t += step_ms;
+		}
+		out
+	}
+
+	/// Standing until `t0` s, then a constant acceleration of `a` km/h a second.
+	fn ramp(t0: f64, a: f64) -> impl Fn(f64) -> f64 {
+		move |t| if t <= t0 { 0.0 } else { a * (t - t0) }
+	}
+
+	/// Standing until `t0` s, then `v = ½·j·(t − t0)²` — the constant-jerk
+	/// model the launch fit assumes, so its root is exact.
+	fn jerk(t0: f64, j: f64) -> impl Fn(f64) -> f64 {
+		move |t| if t <= t0 { 0.0 } else { 0.5 * j * (t - t0) * (t - t0) }
+	}
+
+	fn close(a: f32, b: f64, what: &str) {
+		assert!((f64::from(a) - b).abs() < 1e-4, "{what}: {a} is not {b}");
+	}
+
+	#[test]
+	fn an_unmeasured_factor_times_nothing() {
+		for factor in [0.0, -1.0, f32::NAN] {
+			let mut watch = Stopwatch::new(&MARKS, factor);
+			assert_eq!(watch.phase(), Phase::NotMeasured);
+			assert!(drive(&mut watch, ramp(2.0, 10.0), 0, 20_000, 50).is_empty());
+			assert_eq!((watch.phase(), watch.run()), (Phase::NotMeasured, None));
+		}
+	}
+
+	#[test]
+	fn a_standstill_arms_once_it_has_held_a_second() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		assert_eq!(watch.phase(), Phase::Idle);
+		assert_eq!(watch.sample(Some(0.0), 0), None);
+		assert_eq!(watch.sample(Some(0.0), ARMING_HOLD_MS - 1), None, "not yet");
+		assert_eq!(watch.phase(), Phase::Idle);
+		assert_eq!(watch.sample(Some(0.0), ARMING_HOLD_MS), Some(Event::Armed));
+		assert_eq!(watch.phase(), Phase::Armed);
+	}
+
+	#[test]
+	fn creeping_starts_the_hold_again_and_a_missing_answer_does_not() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.sample(Some(0.0), 0);
+		watch.sample(Some(4.0), 600);
+		assert_eq!(watch.sample(Some(0.0), 700), None);
+		assert_eq!(watch.sample(Some(0.0), 1_600), None, "the hold began at 700");
+		assert_eq!(watch.sample(None, 1_650), None);
+		assert_eq!(watch.phase(), Phase::Idle, "no answer is no evidence either way");
+		assert_eq!(watch.sample(Some(0.0), 1_700), Some(Event::Armed));
+		// Armed, a missing answer is not a launch.
+		assert_eq!(watch.sample(None, 1_800), None);
+		assert_eq!(watch.phase(), Phase::Armed);
+	}
+
+	#[test]
+	fn moving_without_arming_starts_nothing() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		let events = drive(&mut watch, ramp(0.5, 10.0), 0, 12_000, 50);
+		assert!(events.is_empty(), "never stood still for a second: {events:?}");
+		assert_eq!(watch.run(), None);
+	}
+
+	#[test]
+	fn the_first_moving_sample_after_arming_starts_the_run() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		let events = drive(&mut watch, ramp(1.47, 10.0), 0, 1_550, 50);
+		assert_eq!(events, [(1_000, Event::Armed), (1_500, Event::Started)]);
+		assert_eq!(watch.phase(), Phase::Running);
+	}
+
+	#[test]
+	fn the_launch_is_the_midpoint_of_the_two_estimators() {
+		// On the constant-jerk model the fit through √v is exact: 1.05 s. The line
+		// through the first two moving samples (1.1 s: 0.025, 1.2 s: 0.225 km/h)
+		// reaches zero at 1.1 − 0.025 · 0.1 / 0.2 = 1.0875 s. The launch is between.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, jerk(1.05, 20.0), 0, 2_000, 100);
+		let launch = watch.run().and_then(|run| run.launch).expect("five samples in the window");
+		// Seconds relative to the first moving sample, at 1.1 s.
+		close(launch.earliest, 1.05 - 1.1, "the constant-jerk root");
+		close(launch.latest, 1.0875 - 1.1, "the two-point line");
+		close(launch.t, (1.05 + 1.0875) / 2.0 - 1.1, "the midpoint");
+	}
+
+	#[test]
+	fn a_mark_is_stamped_between_the_samples_either_side() {
+		// 10 km/h a second from 1.07 s: 60 km/h at 7.07 s, between the samples at
+		// 7.0 and 7.1; 100 at 11.07. A ramp puts the line's root on the launch.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		let events = drive(&mut watch, ramp(1.07, 10.0), 0, 12_000, 100);
+		assert_eq!(
+			events,
+			[
+				(1_000, Event::Armed),
+				(1_100, Event::Started),
+				(7_100, Event::Crossed { marks: 0b01 }),
+				(11_100, Event::Finished)
+			]
+		);
+		let run = watch.run().expect("kept");
+		// Crossings relative to the first moving sample, at 1.1 s.
+		close(run.crossed_at(0).unwrap(), 5.97, "60 km/h");
+		close(run.crossed_at(1).unwrap(), 9.97, "100 km/h");
+		let launch = run.launch.unwrap();
+		close(launch.latest, -0.03, "on a ramp the line is exact");
+		assert!(launch.earliest < launch.latest);
+		close(run.time(0).unwrap(), 5.97 - f64::from(launch.t), "0-60 from the launch");
+		close(run.time(1).unwrap(), 9.97 - f64::from(launch.t), "0-100 from the launch");
+		assert!(!run.aborted);
+	}
+
+	#[test]
+	fn a_standstill_shorter_than_a_second_never_arms() {
+		// The hold counts from the first zero: samples of zero from 0 to 0.9 s are
+		// 0.9 s of standing, and the car moved before the second was up.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		assert!(drive(&mut watch, ramp(0.9, 10.0), 0, 2_000, 100).is_empty());
+	}
+
+	#[test]
+	fn the_highest_mark_ends_the_run_and_the_next_standstill_arms_the_next() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
+		assert_eq!(watch.phase(), Phase::Done);
+		let first = watch.run().unwrap();
+		assert!(first.time(1).is_some());
+		// Still moving: done, and the times stay up.
+		assert_eq!(watch.sample(Some(300.0), 7_100), None);
+		assert_eq!(watch.phase(), Phase::Done);
+		// Stopped for a second: armed, with the last run still on show.
+		assert_eq!(watch.sample(Some(0.0), 20_000), None);
+		assert_eq!(watch.sample(Some(0.0), 21_000), Some(Event::Armed));
+		assert_eq!(watch.run(), Some(first));
+		// The next launch is a run of its own.
+		assert_eq!(watch.sample(Some(2.0), 21_100), Some(Event::Started));
+		assert_eq!(watch.run().unwrap().crossed_at(0), None);
+	}
+
+	#[test]
+	fn a_standstill_before_the_highest_mark_aborts_and_keeps_what_closed() {
+		// Up to 80 km/h and back down to a stop.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		let up_and_down = |t: f64| match t {
+			t if t <= 1.0 => 0.0,
+			t if t <= 5.0 => 20.0 * (t - 1.0),
+			t if t <= 9.0 => 80.0 - 20.0 * (t - 5.0),
+			_ => 0.0,
+		};
+		let events = drive(&mut watch, up_and_down, 0, 9_500, 100);
+		assert_eq!(events.last(), Some(&(9_000, Event::Aborted)));
+		assert_eq!(watch.phase(), Phase::Done);
+		let run = watch.run().unwrap();
+		assert!(run.aborted);
+		assert!(run.time(0).is_some(), "0-60 closed on the way up and is kept");
+		assert_eq!(run.time(1), None);
+		// The standstill that aborted it is the start of the next hold.
+		assert_eq!(watch.sample(Some(0.0), 10_000), Some(Event::Armed));
+	}
+
+	#[test]
+	fn two_marks_crossed_by_one_sample_are_said_together() {
+		static CLOSE: [u16; 3] = [40, 30, 100];
+		let mut watch = Stopwatch::new(&CLOSE, FACTOR);
+		// 1.0 s standing, then a jump from 25 to 45 km/h between two samples.
+		watch.sample(Some(0.0), 0);
+		watch.sample(Some(0.0), 1_000);
+		watch.sample(Some(10.0 / FACTOR), 1_100);
+		watch.sample(Some(25.0 / FACTOR), 1_200);
+		assert_eq!(watch.sample(Some(25.0 / FACTOR), 1_300), None);
+		assert_eq!(watch.sample(Some(45.0 / FACTOR), 1_400), Some(Event::Crossed { marks: 0b011 }));
+		let run = watch.run().unwrap();
+		// Relative to 1.1 s: 30 at 0.2 + 0.1·5/20, 40 at 0.2 + 0.1·15/20.
+		close(run.crossed_at(1).unwrap(), 0.225, "30 km/h");
+		close(run.crossed_at(0).unwrap(), 0.275, "40 km/h");
+	}
+
+	#[test]
+	fn a_poll_too_slow_to_fit_the_launch_times_nothing() {
+		// At 4 Hz the first 0.4 s of movement holds two samples: no launch, and a
+		// time with no launch is not a time. The crossings are still where they were.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		let events = drive(&mut watch, ramp(1.1, 20.0), 0, 8_000, 250);
+		assert_eq!(events.last().map(|e| e.1), Some(Event::Finished));
+		let run = watch.run().unwrap();
+		assert_eq!(run.launch, None);
+		assert!(run.crossed_at(0).is_some() && run.crossed_at(1).is_some());
+		assert_eq!((run.time(0), run.time(1)), (None, None));
+	}
+
+	#[test]
+	fn leaving_the_page_mid_run_keeps_it_as_aborted_and_needs_a_fresh_standstill() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 4_500, 100);
+		assert_eq!(watch.phase(), Phase::Running);
+		watch.reset();
+		assert_eq!(watch.phase(), Phase::Idle);
+		let run = watch.run().expect("kept");
+		assert!(run.aborted && run.time(0).is_some());
+		// Standing at the moment of the reset is not a standstill already held.
+		assert_eq!(watch.sample(Some(0.0), 5_000), None);
+		assert_eq!(watch.sample(Some(0.0), 6_000), Some(Event::Armed));
+		// And an unmeasured stopwatch stays unmeasured.
+		let mut unmeasured = Stopwatch::new(&MARKS, 0.0);
+		unmeasured.reset();
+		assert_eq!(unmeasured.phase(), Phase::NotMeasured);
+	}
+
+	#[test]
+	fn reversing_while_armed_is_not_a_launch() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.sample(Some(0.0), 0);
+		watch.sample(Some(0.0), 1_000);
+		assert_eq!(watch.sample(Some(-3.0), 1_100), None);
+		assert_eq!(watch.phase(), Phase::Idle);
+	}
+
+	#[test]
+	fn the_square_root_the_fit_needs_is_close_enough() {
+		for x in [1e-6f32, 0.025, 0.5, 1.0, 2.0, 60.0, 250.0, 1e6] {
+			let got = f64::from(sqrt(x));
+			let want = f64::from(x).sqrt();
+			assert!((got - want).abs() <= want * 1e-6, "√{x}: {got} vs {want}");
+		}
+		assert_eq!(sqrt(0.0), 0.0);
+	}
+}

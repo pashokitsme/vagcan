@@ -30,6 +30,21 @@ pub fn next(active: u8, count: u8) -> u8 {
 	(active + 1) % count
 }
 
+/// The page before `active`, of `count` pages, wrapping at the start — what the
+/// lever's `previous` turns to (`todo/dash/19`).
+///
+/// With one page the answer is that page, with none `0`. An `active` past the
+/// end goes to the first page, as in [`next`].
+pub fn previous(active: u8, count: u8) -> u8 {
+	if active >= count {
+		return 0;
+	}
+	match active {
+		0 => count - 1,
+		_ => active - 1,
+	}
+}
+
 /// One page as a stored configuration holds it: a chart or a values page, and
 /// the plan indices it shows. The firmware's `config::Page` in borrowed form —
 /// that type cannot be built for the host, and this comparison has to be.
@@ -225,6 +240,26 @@ mod tests {
 	fn an_active_page_past_the_end_goes_to_the_first() {
 		assert_eq!(next(7, 3), 0);
 		assert_eq!(next(u8::MAX, 8), 0);
+	}
+
+	#[test]
+	fn previous_steps_back_by_one_and_wraps_from_the_first_to_the_last() {
+		assert_eq!(previous(2, 3), 1);
+		assert_eq!(previous(1, 3), 0);
+		assert_eq!(previous(0, 3), 2);
+		assert_eq!(previous(0, 1), 0, "one page stays on it");
+		assert_eq!(previous(0, 0), 0, "no pages stays at zero");
+		assert_eq!(previous(7, 3), 0, "past the end goes to the first, as `next` does");
+	}
+
+	#[test]
+	fn previous_undoes_next() {
+		for count in 1..=8u8 {
+			for active in 0..count {
+				assert_eq!(previous(next(active, count), count), active, "{active} of {count}");
+				assert!(previous(active, count) < count);
+			}
+		}
 	}
 
 	#[test]
