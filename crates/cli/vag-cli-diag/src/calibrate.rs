@@ -25,10 +25,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use vag_data_labels::catalog::Scaling;
 use vag_data_labels::measure::{LinearScale, RawForm};
 
 use crate::analyse::{Thresholds, fit_linear};
 use crate::discover::{Behaviour, Column, classify};
+use crate::plan::Channel;
 
 /// A scaling proven against a reference channel in the same recording.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +69,7 @@ fn looks_like_hex(values: &[String]) -> bool {
 /// A recording written by `watch` names every unconverted column `…_raw`, and
 /// then the split is by name and cannot be wrong. Older recordings have no
 /// marker, so the values are inspected instead — with the caveat above.
-fn split_columns(columns: &[Column]) -> (Vec<&Column>, Vec<&Column>) {
+fn split_columns<'a>(columns: &'a [Column], offered: Option<&[Channel]>) -> (Vec<&'a Column>, Vec<&'a Column>) {
 	let marked = columns.iter().any(|c| c.name.ends_with(RAW_SUFFIX));
 	let mut references = Vec::new();
 	let mut unknowns = Vec::new();
@@ -85,7 +87,24 @@ fn split_columns(columns: &[Column]) -> (Vec<&Column>, Vec<&Column>) {
 		};
 		if unknown {
 			unknowns.push(c);
-		} else if is_quantity(&c.values) {
+			continue;
+		}
+		// What the heading is on the car, when the car's channel list is to hand:
+		// the channels `watch` would have headed this column with. A state among
+		// them makes it no reference whatever its cells say; channels that are all
+		// quantities make it one. Only a heading the list does not hold is judged
+		// by its cells.
+		let heading: Vec<&Channel> = offered
+			.unwrap_or_default()
+			.iter()
+			.filter(|ch| ch.def.is_some() && ch.label() == c.name)
+			.collect();
+		let state = |ch: &&Channel| matches!(ch.def.as_ref().map(|d| &d.scaling), Some(Scaling::Enum { .. }));
+		let reference = match heading.is_empty() {
+			true => is_quantity(&c.values),
+			false => !heading.iter().any(state),
+		};
+		if reference {
 			references.push(c);
 		}
 	}
@@ -151,7 +170,7 @@ fn pair(form: RawForm, samples_u: &[(f64, String)], samples_r: &[(f64, String)],
 }
 
 /// Calibrate every unknown column against every reference column.
-pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, String> {
+pub fn calibrate(csv: &str, limits: Thresholds, offered: Option<&[Channel]>) -> Result<Vec<Calibrated>, String> {
 	let columns = classify(csv)?;
 	// One reader for this format, in `discover`: two walks over a header this
 	// tool writes itself is two chances to disagree about what a column is.
@@ -171,7 +190,7 @@ pub fn calibrate(csv: &str, limits: Thresholds) -> Result<Vec<Calibrated>, Strin
 		}
 	}
 	samples.retain(|name, _| !ambiguous.contains(name));
-	let (references, unknowns) = split_columns(&columns);
+	let (references, unknowns) = split_columns(&columns, offered);
 	if references.is_empty() {
 		return Err(
 			"no reference column: record at least one measurement the catalog \
@@ -261,11 +280,20 @@ fn to_catalog(fits: &[Calibrated]) -> (vag_data_labels::catalog::MeasurementCata
 	(MeasurementCatalog::new(rows), unaddressed)
 }
 
-pub fn run(log: &str, out: Option<&str>, limits: Thresholds) -> anyhow::Result<()> {
+pub fn run(log: &str, out: Option<&str>, limits: Thresholds, vin: Option<&str>) -> anyhow::Result<()> {
 	use anyhow::Context as _;
 
 	let csv = std::fs::read_to_string(log).with_context(|| format!("reading the recording {log:?}"))?;
-	let fits = calibrate(&csv, limits).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
+	// The car's channel list, when the car is named: it is what says a heading is
+	// a state, where the values alone can only guess.
+	let offered = vin.map(crate::plan::offered_for_car).transpose()?;
+	let fits = calibrate(&csv, limits, offered.as_deref()).map_err(|e| anyhow::anyhow!("{log}: {e}"))?;
+	if offered.is_none() && !fits.is_empty() {
+		println!(
+			"(Headings judged by their values. `--vin <VIN>` checks them against the car's own\n \
+			 channels, so a state whose levels are all numbers is never taken for a quantity.)\n"
+		);
+	}
 
 	if fits.is_empty() {
 		println!(
@@ -350,7 +378,7 @@ mod tests {
 	fn an_answer_the_reference_could_not_convert_is_not_a_reference_value() {
 		// Since 2026-09-26 `watch --out` marks such an answer `0x…`; bare, `0B34` was
 		// skipped but `1000` would have been taken as a reading of 1000 rpm.
-		let clean = calibrate(&recording(), Thresholds::default()).unwrap();
+		let clean = calibrate(&recording(), Thresholds::default(), None).unwrap();
 		let marked: String = recording()
 			.lines()
 			.enumerate()
@@ -362,7 +390,7 @@ mod tests {
 				_ => format!("{line}\n"),
 			})
 			.collect();
-		let fits = calibrate(&marked, Thresholds::default()).unwrap();
+		let fits = calibrate(&marked, Thresholds::default(), None).unwrap();
 		assert_eq!(fits.len(), 1, "{fits:?}");
 		assert_eq!((fits[0].form, fits[0].scale), (clean[0].form, clean[0].scale));
 		assert!(fits[0].points < clean[0].points, "the marked cells were not used");
@@ -383,7 +411,7 @@ mod tests {
 			// The second column of that name reads something else entirely.
 			csv.push_str(&format!("{t:.3},{t:.3},{rpm},{t:.3},{},{t:.3},{raw:04X}\n", 7000.0 - rpm));
 		}
-		let fits = calibrate(&csv, Thresholds::default()).unwrap();
+		let fits = calibrate(&csv, Thresholds::default(), None).unwrap();
 		assert!(
 			fits.is_empty(),
 			"an ambiguous reference was used anyway: {:?}",
@@ -391,12 +419,12 @@ mod tests {
 		);
 		// And the same recording with one of the two removed still calibrates,
 		// so what was refused is the ambiguity and not the channel.
-		assert!(!calibrate(&recording(), Thresholds::default()).unwrap().is_empty());
+		assert!(!calibrate(&recording(), Thresholds::default(), None).unwrap().is_empty());
 	}
 
 	#[test]
 	fn an_unknown_that_tracks_a_reference_is_calibrated_against_it() {
-		let fits = calibrate(&recording(), Thresholds::default()).unwrap();
+		let fits = calibrate(&recording(), Thresholds::default(), None).unwrap();
 		assert_eq!(fits.len(), 1, "{fits:?}");
 		let f = &fits[0];
 		assert_eq!(f.unknown, "206F_raw");
@@ -414,7 +442,7 @@ mod tests {
 		// calibrated against itself as if it were two raw bytes.
 		let csv = "t_s,Engine speed,206F_raw\n0.0,640,0640\n0.1,700,0658\n";
 		let columns = classify(csv).unwrap();
-		let (references, unknowns) = split_columns(&columns);
+		let (references, unknowns) = split_columns(&columns, None);
 		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"]);
 		assert_eq!(unknowns.iter().map(|c| &c.name).collect::<Vec<_>>(), ["206F_raw"]);
 	}
@@ -435,16 +463,67 @@ mod tests {
 			csv.push_str(&format!("{t:.3},{t:.3},{gear},{t:.3},{code:02X}\n"));
 		}
 		let columns = classify(&csv).unwrap();
-		let (references, _) = split_columns(&columns);
+		let (references, _) = split_columns(&columns, None);
 		assert!(references.is_empty(), "{:?}", references.iter().map(|c| &c.name).collect::<Vec<_>>());
 		// A value column with a marked, unconverted answer in it is still one — and
 		// so is one from before the mark, where that answer was written as bare hex.
 		for unconverted in ["0x07", "0B34"] {
 			let csv = format!("t_s,Engine speed,206F_raw\n0.0,640,0640\n0.1,{unconverted},0658\n0.2,700,0700\n");
 			let columns = classify(&csv).unwrap();
-			let (references, _) = split_columns(&columns);
+			let (references, _) = split_columns(&columns, None);
 			assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"], "{unconverted}");
 		}
+	}
+
+	/// One converted channel `watch` would offer, headed `name` — synthetic.
+	fn offered(name: &'static str, scaling: vag_data_labels::catalog::Scaling) -> Channel {
+		use vag_data_labels::catalog::{MeasurementDef, ReadId};
+		Channel {
+			request: 0x7E1,
+			did: 0x1000,
+			def: Some(MeasurementDef {
+				name: std::borrow::Cow::Borrowed(name),
+				unit: std::borrow::Cow::Borrowed(""),
+				address: ReadId::Uds(0x1000),
+				raw_form: RawForm::U8First,
+				scaling,
+			}),
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: false,
+		}
+	}
+
+	#[test]
+	fn a_heading_that_is_a_state_on_the_car_is_never_a_reference_whatever_its_cells() {
+		use vag_data_labels::Level;
+		use vag_data_labels::catalog::Scaling;
+		// Every gear seen in the drive is a numeral, so the cells alone read as a
+		// quantity. The car's own channel list says the heading is a state.
+		let mut csv = String::from("t_s,Gear_t_s,Gear,Speed_t_s,Speed,3816_raw_t_s,3816_raw\n");
+		for i in 0..60 {
+			let t = i as f64 * 0.1;
+			let gear = i % 6 + 1;
+			csv.push_str(&format!("{t:.3},{t:.3},{gear},{t:.3},{},{t:.3},{:02X}\n", i * 3, gear + 1));
+		}
+		let columns = classify(&csv).unwrap();
+		let gear = offered(
+			"Gear",
+			Scaling::Enum {
+				levels: (1..=6).map(|g| Level::point(g + 1, g.to_string())).collect(),
+			},
+		);
+		let speed = offered("Speed", Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }));
+		let channels = [gear, speed];
+		let (references, _) = split_columns(&columns, Some(&channels));
+		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Speed"]);
+		// Nothing proven against it, either.
+		let fits = calibrate(&csv, Thresholds::default(), Some(&channels)).unwrap();
+		assert!(fits.iter().all(|f| f.reference != "Gear"), "{fits:?}");
+		// A heading the list does not hold is judged by its cells, as before.
+		let (references, _) = split_columns(&columns, Some(&channels[1..]));
+		assert!(references.iter().any(|c| c.name == "Gear"));
 	}
 
 	#[test]
@@ -453,7 +532,7 @@ mod tests {
 		// readable; there the hex shape is all there is to go on.
 		let csv = "t_s,Engine speed,206F\n0.0,717.5,0B34\n0.1,800.5,0C40\n";
 		let columns = classify(csv).unwrap();
-		let (references, unknowns) = split_columns(&columns);
+		let (references, unknowns) = split_columns(&columns, None);
 		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"]);
 		assert_eq!(unknowns.iter().map(|c| &c.name).collect::<Vec<_>>(), ["206F"]);
 	}
@@ -461,7 +540,7 @@ mod tests {
 	#[test]
 	fn a_recording_with_no_reference_says_what_is_missing() {
 		let csv = "t_s,1234_t_s,1234\n0.0,0.0,0B34\n0.1,0.1,0C40\n";
-		let err = calibrate(csv, Thresholds::default()).unwrap_err();
+		let err = calibrate(csv, Thresholds::default(), None).unwrap_err();
 		assert!(err.contains("no reference column"), "{err}");
 	}
 
@@ -476,6 +555,6 @@ mod tests {
 			let noise = ((i * 7919) % 4096) as u16;
 			csv.push_str(&format!("{t:.3},{t:.3},{rpm},{t:.3},{noise:04X}\n"));
 		}
-		assert!(calibrate(&csv, Thresholds::default()).unwrap().is_empty());
+		assert!(calibrate(&csv, Thresholds::default(), None).unwrap().is_empty());
 	}
 }

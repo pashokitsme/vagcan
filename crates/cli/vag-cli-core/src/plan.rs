@@ -286,6 +286,21 @@ pub fn survey_units(survey: &str) -> impl Iterator<Item = (u16, serde_json::Valu
 	})
 }
 
+/// Every channel `watch` offers one car, from what this machine holds about it:
+/// its cached survey (which units it has, and what each said it is) and the
+/// current project. What a recording's headings were written from, for a command
+/// that reads a recording offline and has to know what a heading is.
+pub fn offered_for_car(vin: &str) -> anyhow::Result<Vec<Channel>> {
+	use anyhow::Context as _;
+	let path = crate::datadir::survey_cache(vin)?;
+	let survey =
+		std::fs::read_to_string(&path).with_context(|| format!("no survey of {vin} at {} — run `vagcan dev survey` on the car", path.display()))?;
+	let project = crate::project::current()?;
+	let store = CatalogStore::open(project.measurements_dir());
+	let extracted = crate::extracted::open(&project);
+	Ok(with_survey(available(&store, &extracted, &identities_from_survey(&survey)), &survey))
+}
+
 /// What each unit in a survey said about itself.
 ///
 /// A survey already asked every unit for its identification block, so a
