@@ -107,8 +107,8 @@ answered, `200A`–`200D` among them):
   110 ms, max 115 ms). `research/captures/ble-10hz.csv`; its comma headings split (PR #6).
 - `vagcan units --device ble`: **finishes**, 15 units, no refusal
   (`research/captures/ble-units.out`).
-- `vagcan measure --device ble`: one run, aborted and degraded, cycle median 44 ms
-  (`research/captures/ble-measure.csv`); not a verdict yet.
+- `vagcan measure --device ble`: **works** — one run, aborted only because there was no room
+  to accelerate (owner); degraded, cycle median 44 ms (`research/captures/ble-measure.csv`).
 
 **Through the board, parked, ignition on**
 
