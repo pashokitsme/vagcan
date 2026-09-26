@@ -80,9 +80,9 @@ Updated 2026-09-26.
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
 - [x] ODIS project as the main data source, with fault text from ODIS
 - [x] `setup` in about 4 s on an ODIS project
-- [x] Dash reads the car: 4 channels from 2 units, values and chart pages
+- [x] Dash reads the car: 13 channels from 2 units, values and chart pages; an alarm takes the screen and blinks the cell
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
-- [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch, units and measure on the car)
+- [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch and units on the car; measure started, a full run waits for the road)
 - [x] Replay a recorded drive on the dash panel, without the car
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)

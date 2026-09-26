@@ -3,7 +3,7 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-22):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
+**State (2026-09-26):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
 (`18`) since PR #4 (2026-09-15); the four recommended rules below are in the owner's `dash.toml`
 since 2026-09-22, and on the bench the board polls their channels on every page. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
@@ -40,7 +40,8 @@ release = -1.5                       # clears only past this, back the other way
 Order in the file is priority. At most **4** rules (`alarm::MAX_ALARMS`): each rule's
 channels are read at full rate on every page, and one press ends one episode.
 
-Two rules to start: **ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
+Two rules to start (2026-09-22; the retard moved to −6.0/−4.5 on 2026-09-26, table below):
+**ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
 `below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
 per 1000 revolutions is not a quantity anyone should guess a threshold for).
 
