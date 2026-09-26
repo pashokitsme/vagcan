@@ -286,6 +286,21 @@ pub fn survey_units(survey: &str) -> impl Iterator<Item = (u16, serde_json::Valu
 	})
 }
 
+/// Every channel `watch` offers one car, from what this machine holds about it:
+/// its cached survey (which units it has, and what each said it is) and the
+/// current project. What a recording's headings were written from, for a command
+/// that reads a recording offline and has to know what a heading is.
+pub fn offered_for_car(vin: &str) -> anyhow::Result<Vec<Channel>> {
+	use anyhow::Context as _;
+	let path = crate::datadir::survey_cache(vin)?;
+	let survey =
+		std::fs::read_to_string(&path).with_context(|| format!("no survey of {vin} at {} — run `vagcan dev survey` on the car", path.display()))?;
+	let project = crate::project::current()?;
+	let store = CatalogStore::open(project.measurements_dir());
+	let extracted = crate::extracted::open(&project);
+	Ok(with_survey(available(&store, &extracted, &identities_from_survey(&survey)), &survey))
+}
+
 /// What each unit in a survey said about itself.
 ///
 /// A survey already asked every unit for its identification block, so a
@@ -776,6 +791,37 @@ mod tests {
 		assert_eq!(c.render(&[0x05]), "4");
 		assert_eq!(c.render(&[0x0C]), "R");
 		assert_eq!(c.render(&[0x09]), "09 (raw)");
+	}
+
+	#[test]
+	fn a_state_read_inside_its_band_shows_the_bands_name_on_the_live_screen() {
+		// A lever read as a voltage answers anywhere in its band, a count or two
+		// either side of any listed value. Synthetic bands, second field of two.
+		let form = RawForm::for_field(8, 8, false, true).unwrap();
+		let c = Channel {
+			request: 0x70C,
+			did: 0x1000,
+			def: Some(vag_data_labels::catalog::MeasurementDef {
+				name: Cow::Borrowed("Lever"),
+				unit: Cow::Borrowed(""),
+				address: ReadId::Uds(0x1000),
+				raw_form: form,
+				scaling: Scaling::Enum {
+					levels: vec![
+						vag_data_labels::Level::range(10, 49, "pulled"),
+						vag_data_labels::Level::range(50, 99, "rest"),
+					],
+				},
+			}),
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: true,
+		};
+		assert_eq!(c.render(&[0xFF, 12]), "pulled");
+		assert_eq!(c.render(&[0xFF, 77]), "rest");
+		// Between bands, or past them, it is still bytes: nothing is guessed.
+		assert_eq!(c.render(&[0xFF, 5]), "FF05 (raw)");
 	}
 
 	#[test]

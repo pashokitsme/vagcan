@@ -26,7 +26,8 @@
 //!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
 //! * **Alarms** (`todo/dash/04`): the plan's `[[alarm]]` rules are read at full rate on
 //!   every page; past a threshold the rule's page takes the glass with the offending
-//!   cell inverted, and a short press silences the episode
+//!   cell blinking inverted (steady through the hold after the release), and a short
+//!   press silences the episode
 //!   ([`vag_dash_render::screen`]). The adapter screen runs none.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
@@ -2116,6 +2117,9 @@ async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 /// over a terminal, slow enough that the encoding never becomes the
 /// bottleneck.
 const FRAME_MS: u64 = 200;
+// An alarm's cell blinks in halves of `alarm::BLINK_MS` from its takeover: two frames a half, so
+// a frame that takes as long to draw as the wait before it still lands in every half.
+const _: () = assert!(FRAME_MS * 2 <= alarm::BLINK_MS, "the panel must frame at least twice per half blink");
 
 /// The window the adapter screen's kb/s is measured over: a figure a person can read
 /// before it changes, five frames long.
@@ -2149,8 +2153,9 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 ///
 /// Which page is drawn is [`Screen::frame`]'s answer: the page cursor, unless an alarm
 /// has taken the glass, in which case its page is drawn with the offending channel's cell
-/// inverted. The alarms see the same values the cells do, `None` once stale. On the
-/// adapter screen they are not polled.
+/// inverted on the frames `Glass::inverted` names: every other `alarm::BLINK_MS` from the
+/// takeover while the rule fires, every frame through the hold. The alarms see the same
+/// values the cells do, `None` once stale. On the adapter screen they are not polled.
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	use vag_dash_render::history::History;
@@ -2257,7 +2262,8 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 		}
 		// A cell the plan cannot name draws as a question mark rather than
 		// vanishing: a missing column hides the fault, a wrong one shows it. The
-		// alarm's offending channel is drawn inverted, so the page says which one.
+		// alarm's offending channel is drawn inverted — blinking while it is out, steady
+		// in the hold — so the page says which one.
 		let cell_of = |index: u16| {
 			let cell = match PLAN.channel(index) {
 				Some(channel) => {
@@ -2276,7 +2282,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				}
 				None => Cell::new("?", None, "", 0),
 			};
-			if glass.offending == Some(ChannelId(index)) {
+			if glass.inverted == Some(ChannelId(index)) {
 				cell.alarmed()
 			} else {
 				cell

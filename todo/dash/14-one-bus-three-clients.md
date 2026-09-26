@@ -305,6 +305,13 @@ lever pages with cruise OFF, and the engine ignores it.**
   nearest level. Byte 8: 205 rest, 91 RES/+ (the engine's `4383` bit 3, accelerate), 128
   SET/− (bit 2, decelerate), 167 a third position seen twice with the switch OFF, not
   identified yet. Byte 9: 167 OFF, 91 ON, 128 CANCEL.
+- **Decoded by the project's own bands (2026-09-26, `feat/enum-ranges`).** Each ODIS
+  text-table level has a coded lower *and* upper bound, and these levels are bands
+  (byte 8: 75–110, 111–145, 146–181, 182–221); keyed on the lower bound alone, none of the
+  noisy readings matched. `watch` now names them on screen and in `--out`: byte 8 91
+  "beschleunigen", 128 "verzögern", 167 "neutral ohne Limiterverbau", 205 "neutral mit
+  Limiterverbau"; byte 9 91 "Ein", 128 "Cancel", 167 "Aus". A cache from before needs
+  `vagcan setup <ODIS project>` once; `watch` says so.
 - **OFF is latched, CANCEL springs back:** 167 holds for tens of seconds; 128 lasts 0.1–0.8 s
   and returns to 91 (ON), or passes on to OFF when the switch is pushed through.
 - **With OFF the engine ignores the rocker:** 55 samples of byte 8 at 91/128/167 while `203C`

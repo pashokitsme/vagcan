@@ -2119,7 +2119,7 @@ mod tests {
 		let mut flag = reading(0xF400, "Engine Coolant Temperature", "IDE00025", 3, 1, false, true, 1.0, 0.0);
 		flag.unit = None;
 		flag.scaling = Scaling::Enum {
-			levels: vec![(0, "no".to_string()), (1, "yes".to_string())],
+			levels: vec![vag_data_labels::Level::point(0, "no"), vag_data_labels::Level::point(1, "yes")],
 		};
 		let value = reading(0xF405, "Engine Coolant Temperature", "IDE00025", 0, 8, false, true, 1.0, -40.0);
 		let extracted = extracted_with(here.path(), &[("EV_Test_001", vec![flag, value])], &[]);
@@ -2182,7 +2182,7 @@ mod tests {
 		let here = tempfile::tempdir().unwrap();
 		let mut gear = reading(0x3816, "Gear", "IDE00010", 0, 8, false, true, 1.0, 0.0);
 		gear.scaling = Scaling::Enum {
-			levels: vec![(1, "N".to_string()), (2, "1".to_string())],
+			levels: vec![vag_data_labels::Level::point(1, "N"), vag_data_labels::Level::point(2, "1")],
 		};
 		let extracted = extracted_with(here.path(), &[("EV_Test_001", vec![gear])], &[]);
 		let store = CatalogStore::open(here.path().join("proven"));
