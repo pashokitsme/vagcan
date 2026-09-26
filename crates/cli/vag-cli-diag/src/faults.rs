@@ -497,7 +497,11 @@ pub async fn run<L: UnitLink>(
 	let mut progress = crate::progress::Line::new();
 	for (at, request) in order.into_iter().enumerate() {
 		progress.update(&format!("reading faults — {request:03X}, unit {} of {count}", at + 1));
-		let Some(address) = UnitAddress::from_request(request) else { continue };
+		let Some(address) = UnitAddress::from_request(request) else {
+			progress.finish();
+			println!("  {request:03X} has no diagnostic address (700-795 or 7E0-7E7) — skipped");
+			continue;
+		};
 		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 		// See `crate::safety`: an extended session is workshop mode, and this
 		// command reads faults perfectly well without one.

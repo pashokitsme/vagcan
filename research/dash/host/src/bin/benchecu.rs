@@ -150,7 +150,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 				let text = value()?;
 				let id = request_id(text)?;
 				// The response id by the same rule the client addresses units with.
-				let unit = UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} is in neither diagnostic block (700-7BF or 7E0-7E7)"))?;
+				let unit = UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} has no diagnostic address (700-795 or 7E0-7E7)"))?;
 				if !units.contains(&unit) {
 					units.push(unit);
 				}

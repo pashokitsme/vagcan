@@ -248,6 +248,23 @@ mixed in.
   it writes. Before a pass ends, look for tools the record cites that the checkout does not
   hold.
 
+### Rules established on the 2026-09-26 pass
+
+- **Fixing a protocol rule means finding every copy of it, not every caller of it.** VW's
+  `+0x6A` response rule lived in `UnitAddress::from_request`, in the sniff analysis
+  (`analyse.rs`) and in `units --identify` (`main.rs`). A fix that stopped `0x796..` from
+  answering on an id past `0x7FF` closed the first and left the other two, and it took a
+  second review round to find the third. Before calling such a fix done, grep for the
+  constant (`0x6A`, `+ 8`, the range's ends) across `crates/` and `research/dash/host`; a copy
+  gets replaced by a call, never fixed in place.
+- **Remove a merged worktree's `target/` in the same pass.** Each is 1–12 GB (the firmware's
+  adds 3–6 GB). On 2026-09-26 the disk filled twice and killed a working agent mid-build, and
+  once the shell itself could not start. `du -sh .worktrees/*/target
+  .worktrees/*/crates/dash/vag-dash-fw/target` in Phase 1; the source and the branch stay.
+- **A status line that says "in flight" is checked against `gh pr list --state merged`**, not
+  against the branch list: three PRs merged on 2026-09-26 while `todo/README.md` still called
+  them in flight.
+
 ## What a cleanup pass produces
 
 Five things, and no more:

@@ -471,6 +471,13 @@ impl<'a, const N: usize> Alarms<'a, N> {
 		self.showing
 	}
 
+	/// The glass showed something else meanwhile (the adapter screen): the next poll
+	/// counts whichever alarm is up as taking it anew, so its blink starts inverted
+	/// rather than wherever the clock has reached since it last showed.
+	pub fn glass_lost(&mut self) {
+		self.showing = None;
+	}
+
 	/// Every channel any rule watches, silenced ones included.
 	///
 	/// A silenced rule is still polled, and that is the whole reason silence is
