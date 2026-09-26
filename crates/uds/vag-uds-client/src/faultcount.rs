@@ -27,6 +27,18 @@
 //! out of the count and named in [`Tally::failed`]; the count is of the units that
 //! answered. When the gateway gives no list there is nothing to walk: the outcome is
 //! [`Outcome::NoList`], and the board shows no badge.
+//!
+//! Three guards the laptop's `faults` does not have, because the board runs this at every
+//! boot with nobody watching:
+//!
+//! * **Only VW's block is decoded** ([`gateway::VW_BLOCK_BYTES`]): an answer's length
+//!   never decides how much is allocated. Bits past it are counted in
+//!   [`Tally::outside_block`].
+//! * **A walk of more than [`MAX_UNITS`] is refused** ([`Outcome::TooMany`]): past that it
+//!   is a sweep of the block, not a car.
+//! * **A listed id that shares an id with a unit already walked is skipped**
+//!   ([`Why::SharedId`]): the reference car lists `776` and `777`, which are `70C`'s and
+//!   `70D`'s answer ids and would answer on the engine's and the gearbox's request ids.
 
 use alloc::vec::Vec;
 
@@ -50,6 +62,14 @@ const RESPONSE_PENDING: u8 = 0x78;
 /// The status mask the units are asked with: the stored codes, and only those.
 pub const STORED_MASK: u8 = dtc::CONFIRMED;
 
+/// The most units one count asks. A car lists fifteen to twenty (the reference car:
+/// fifteen, eighteen with the three the list never holds). A list that makes the walk
+/// longer than this is not a car's but the block's — a gateway answering garbage, or a
+/// bitmap with every bit set — and asking every id of it is a sweep of the block with
+/// nobody watching, which `CLAUDE.md` guards as it guards `survey`. Refused whole:
+/// [`Outcome::TooMany`], no badge.
+pub const MAX_UNITS: usize = 40;
+
 /// What to do next.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Step<'a> {
@@ -64,6 +84,8 @@ pub enum Step<'a> {
 pub enum Outcome {
 	/// The gateway gave no installation list, so no unit was asked.
 	NoList(Why),
+	/// The list named more than [`MAX_UNITS`] units to walk, so none was asked.
+	TooMany { units: usize },
 	/// Every unit of the walk was asked.
 	Counted(Tally),
 }
@@ -79,9 +101,10 @@ pub enum Why {
 	Refused(u8),
 	/// An answer that is not a response to what was asked.
 	Malformed,
-	/// A listed id in neither diagnostic block: no rule gives it a response id
-	/// ([`UnitAddress::from_request`]), so it is not asked.
-	NoAddress,
+	/// A listed id that is another walked unit's answer id, or whose own answer id is
+	/// another walked unit's request id: asking it would put one conversation on another's
+	/// ids. Not asked.
+	SharedId,
 }
 
 /// One unit that answered.
@@ -110,6 +133,9 @@ pub struct Tally {
 	pub read: Vec<UnitTally>,
 	/// The units left out, in the order they were met.
 	pub failed: Vec<Failed>,
+	/// Bits the list set past VW's block ([`gateway::VW_BLOCK_BYTES`]): counted, never
+	/// decoded, never asked.
+	pub outside_block: u32,
 }
 
 impl Tally {
@@ -185,7 +211,7 @@ impl FaultCount {
 		let state = core::mem::replace(&mut self.state, State::Gateway);
 		self.state = match state {
 			State::Gateway => match installation_list(answer) {
-				Ok(listed) => Self::walk(&listed),
+				Ok((listed, outside_block)) => Self::walk(&listed, outside_block),
 				Err(why) => State::Done(Outcome::NoList(why)),
 			},
 			State::Units { walk, at, mut tally } => {
@@ -200,19 +226,37 @@ impl FaultCount {
 		};
 	}
 
-	/// The walk over what the gateway listed; an id no rule can address is named, not
-	/// asked.
-	fn walk(listed: &[u16]) -> State {
-		let mut tally = Tally::default();
-		let mut walk = Vec::new();
+	/// The walk over what the gateway listed, in [`gateway::walk_order`]: a listed id that
+	/// would share an id with a unit already in the walk is named and not asked, and a walk
+	/// longer than [`MAX_UNITS`] is refused whole.
+	///
+	/// The walk order puts the three units the list cannot hold first and the listed ids
+	/// after them in ascending order, and an answer id is always above its request id
+	/// (`+8`, `+0x6A`), so a unit is met before the id it answers on: the first of a
+	/// clashing pair is the one kept. The laptop's `faults` asks every listed id as it
+	/// stands (`todo/dash/20`).
+	fn walk(listed: &[u16], outside_block: u32) -> State {
+		let mut tally = Tally {
+			outside_block,
+			..Tally::default()
+		};
+		let mut walk: Vec<Unit> = Vec::new();
 		for request in gateway::walk_order(listed) {
-			match address(request) {
-				Some(unit) => walk.push(unit),
-				None => tally.failed.push(Failed {
-					request,
-					why: Why::NoAddress,
-				}),
+			// Every id here is in a block — the three, and the bytes of VW's block — so the
+			// rule always answers; were it not to, the id is outside and counted so.
+			let Some(unit) = address(request) else {
+				tally.outside_block = tally.outside_block.saturating_add(1);
+				continue;
+			};
+			let clashes = walk.iter().any(|kept| kept.response == unit.request || kept.request == unit.response);
+			if clashes {
+				tally.failed.push(Failed { request, why: Why::SharedId });
+			} else {
+				walk.push(unit);
 			}
+		}
+		if walk.len() > MAX_UNITS {
+			return State::Done(Outcome::TooMany { units: walk.len() });
 		}
 		Self::advance(walk, 0, tally)
 	}
@@ -252,11 +296,19 @@ fn positive(sid: u8, answer: Answer) -> Result<Vec<u8>, Why> {
 	}
 }
 
-/// The request ids the gateway's answer lists.
-fn installation_list(answer: Answer) -> Result<Vec<u16>, Why> {
+/// The ids of VW's block the gateway's answer lists, and how many bits it set past that
+/// block.
+///
+/// **Only the block's bytes are decoded**, whatever the answer's length: ISO-TP carries
+/// up to 4095 bytes, and a whole answer decoded is up to 32,736 ids — over 130 KB of heap
+/// on a board with 72 KB, at every boot. The block's 24 bytes are 192 ids at most; the
+/// rest is counted, not allocated.
+fn installation_list(answer: Answer) -> Result<(Vec<u16>, u32), Why> {
 	let data = positive(READ_DATA, answer)?;
-	let bitmap = pdu::parse_rdbi_response(gateway::INSTALLATION_LIST, &data).map_err(|_| Why::Malformed)?;
-	Ok(gateway::decode_installation_list(&bitmap))
+	let bitmap = data.strip_prefix(&pdu::did_bytes(gateway::INSTALLATION_LIST)).ok_or(Why::Malformed)?;
+	let (block, past) = bitmap.split_at(bitmap.len().min(gateway::VW_BLOCK_BYTES));
+	let outside = past.iter().map(|byte| byte.count_ones()).fold(0, u32::saturating_add);
+	Ok((gateway::decode_installation_list(block), outside))
 }
 
 /// The codes a unit's `19 02` answer holds.
@@ -540,22 +592,84 @@ mod tests {
 	}
 
 	#[test]
-	fn a_listed_id_outside_both_blocks_is_named_and_not_asked() {
-		// A bit past VW's block: 0x7C0 is in neither, and no rule gives it a response id.
+	fn bits_past_vws_block_are_counted_and_never_decoded() {
+		// 0x7C0 is in neither block, and 0x7E0's bit would name the engine by a
+		// second road: past byte 24 nothing is an id this walk addresses by VW's rule.
 		let mut gateway = list_answer(&[0x714]);
 		gateway[3 + (0x7C0 - 0x700) / 8] |= 1;
+		gateway[3 + (0x7E0 - 0x700) / 8] |= 1;
 		let car = Car {
 			gateway: Answer::Pdu(gateway),
 			units: BTreeMap::new(),
 		};
 		let (outcome, asked) = run(&car);
-		assert!(asked.iter().all(|(u, _)| u.request != 0x7C0));
-		assert_eq!(asked.len(), 5);
+		let units: Vec<u16> = asked.iter().skip(1).map(|(u, _)| u.request).collect();
+		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x714], "each once, nothing past the block");
 		let tally = counted(outcome);
-		assert!(tally.failed.contains(&Failed {
-			request: 0x7C0,
-			why: Why::NoAddress
-		}));
+		assert_eq!(tally.outside_block, 2);
+		assert_eq!(tally.failed.len(), 4, "the four silent units, and nothing else named");
+	}
+
+	#[test]
+	fn an_answer_as_long_as_iso_tp_allows_decodes_no_more_than_the_block() {
+		// 4095 bytes is the longest PDU ISO-TP carries: decoded whole, 32,736 ids — over
+		// 130 KB of heap on a board that has 72 KB, every boot. Only VW's block is read:
+		// 192 ids at most, and a list that long is refused as a sweep (below).
+		let mut pdu = vec![0x62, 0x2A, 0x26];
+		pdu.resize(4095, 0xFF);
+		let car = Car {
+			gateway: Answer::Pdu(pdu),
+			units: BTreeMap::new(),
+		};
+		let (outcome, asked) = run(&car);
+		assert_eq!(asked.len(), 1, "no unit asked");
+		match outcome {
+			Outcome::TooMany { units } => assert!(units > MAX_UNITS && units <= 192 + 3, "{units}"),
+			other => panic!("not refused: {other:?}"),
+		}
+		assert_eq!(gateway::VW_BLOCK_BYTES, 24, "0x700..=0x7BF, a bit a unit");
+	}
+
+	/// `n` listed ids of VW's block with no id another's response, and not the gateway.
+	fn plain_ids(n: usize) -> Vec<u16> {
+		(0x700u16..0x76A).filter(|id| *id != gateway::GATEWAY).take(n).collect()
+	}
+
+	#[test]
+	fn a_walk_of_more_than_forty_units_is_refused_as_a_sweep() {
+		// Forty: three the list cannot hold and thirty-seven listed.
+		let (outcome, asked) = run(&Car::listing(&plain_ids(MAX_UNITS - 3)));
+		assert_eq!(counted(outcome).failed.len(), MAX_UNITS, "forty asked, all silent here");
+		assert_eq!(asked.len(), 1 + MAX_UNITS);
+
+		// One more, and nothing is asked past the list.
+		let (outcome, asked) = run(&Car::listing(&plain_ids(MAX_UNITS - 2)));
+		assert_eq!(outcome, Outcome::TooMany { units: MAX_UNITS + 1 });
+		assert_eq!(asked.len(), 1);
+	}
+
+	#[test]
+	fn a_listed_id_that_is_another_units_response_id_is_skipped_and_named() {
+		// 0x776 is 0x70C's answer id: asked, it would be sent on an id 0x70C answers on.
+		// 0x777, with 0x70D not listed, is nobody's answer id here — but its own would be
+		// 0x7E1, the gearbox's request: it would be listened for on an id the gearbox is
+		// asked on. Both are the pairs the reference car lists (`gateway` module docs).
+		let car = Car::listing(&[0x70C, 0x776, 0x777]);
+		let (outcome, asked) = run(&car);
+		let units: Vec<u16> = asked.iter().skip(1).map(|(u, _)| u.request).collect();
+		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x70C]);
+		let tally = counted(outcome);
+		for request in [0x776, 0x777] {
+			assert!(tally.failed.contains(&Failed { request, why: Why::SharedId }), "{request:03X}");
+		}
+		// And no request goes out on, or listens on, an id another unit of the walk uses.
+		for (unit, _) in &asked {
+			for (other, _) in &asked {
+				if unit != other {
+					assert!(unit.request != other.response && unit.response != other.request, "{unit:?} / {other:?}");
+				}
+			}
+		}
 	}
 
 	#[test]

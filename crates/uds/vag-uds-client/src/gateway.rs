@@ -68,6 +68,12 @@ pub fn walk_order(listed: &[u16]) -> Vec<u16> {
 	out
 }
 
+/// How many bytes of the bitmap name ids of VW's block (`0x700..=0x7BF`), a bit a unit:
+/// the only ids the installation list can name for a unit addressed by VW's rule
+/// ([`crate::address`]). A reader that decodes past it decodes ids nothing addresses —
+/// and one that decodes a whole answer lets its length decide how much it allocates.
+pub const VW_BLOCK_BYTES: usize = ((crate::address::VW_LAST - crate::address::VW_FIRST + 1) / 8) as usize;
+
 /// The lowest diagnostic request id a bit can denote.
 const BASE_ID: u16 = 0x700;
 

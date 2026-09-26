@@ -736,7 +736,11 @@ mod preview {
 	const BOTH: Links = LINKS[3].1;
 
 	fn linked(links: Links) -> Board {
-		Board { links, rates: None }
+		Board {
+			links,
+			rates: None,
+			faults: None,
+		}
 	}
 
 	/// Every preview scenario, drawn. Placeholder values throughout — see the module.
@@ -823,7 +827,15 @@ mod preview {
 			("adapter-closed", adapter(None, false, 0, 0, 0), rates(0, 0)),
 		];
 		for (name, state, rates) in screens {
-			shots.push(shot(name, &Frame::Adapter(state), Board { links: Links::NONE, rates }));
+			shots.push(shot(
+				name,
+				&Frame::Adapter(state),
+				Board {
+					links: Links::NONE,
+					rates,
+					faults: None,
+				},
+			));
 		}
 		shots
 	}

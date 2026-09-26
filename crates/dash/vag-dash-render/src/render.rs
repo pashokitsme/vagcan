@@ -267,6 +267,10 @@ pub const TRIANGLE: [&str; 7] = ["...#...", "..###..", "..#.#..", ".##.##.", ".#
 /// over it right-aligned to the column, [`ICON_GAP`] rows apart — with a [`BADGE_MARGIN`]
 /// of ground round both. `None` when there is nothing to show: no count, or a count of
 /// zero. Laid out for the board's 64-row panel, as the icons are.
+///
+/// Up to 99 the box stays inside the column and its clearance, clear of a chart's trace. A
+/// longer count grows left: three digits cover the trace's last column at most, and each
+/// digit past that four more. Not clipped — a count with a digit cut off is another number.
 pub fn badge_box(faults: Option<Faults>, theme: &Theme, size: Size) -> Option<Rectangle> {
 	badge_layout(faults, theme, size, &mut Report::default()).map(|badge| badge.ground)
 }
@@ -2257,6 +2261,31 @@ mod tests {
 			lit_in(&display, Rectangle::new(long.top_left, Size::new(4, long.size.height))),
 			"the thousands are drawn"
 		);
+	}
+
+	#[test]
+	fn up_to_ninety_nine_the_badge_stays_clear_of_the_trace_and_three_digits_take_its_last_column() {
+		// The trace's last column is the one before the clearance; the badge's ground is the
+		// ink and a pixel round it, and the count grows left.
+		let last_trace_column = icon_column(TALL.width) - ICON_CLEARANCE - 1;
+		let left = |stored: u32| the_badge(Some(Faults { stored, failing_now: false })).top_left.x;
+		for stored in 1..=99 {
+			assert!(left(stored) > last_trace_column, "{stored}: the badge reaches the trace");
+		}
+		// Three digits are 11 columns of ink where the column is 7: the widest reach one
+		// column into the trace (`todo/dash/20` says so), and no three-digit count reaches
+		// further. A hundred stored codes is not a car anyone has seen; the reference car
+		// has nine.
+		let widest = (100..=999).map(left).min().unwrap();
+		assert_eq!(widest, last_trace_column, "three digits cover the trace's last column and no more");
+		let samples = [0.0f32; 240];
+		let hundred = Some(Faults {
+			stored: 188,
+			failing_now: false,
+		});
+		let (display, _) = with_badge(&pinned_chart(&samples), Links::NONE, hundred);
+		let (plain, _) = with_badge(&pinned_chart(&samples), Links::NONE, None);
+		assert!(same_outside(&display, &plain, the_badge(hundred)), "the rest of the chart is untouched");
 	}
 
 	#[test]
