@@ -349,6 +349,16 @@ impl Method {
 			// No usable upper bound is a level one value wide: the lower bound
 			// alone is what every level was keyed on before the upper was kept.
 			let upper = scale.upper_coded.as_ref().and_then(upper_bound).unwrap_or(lower);
+			// An interval whose open ends leave no integer in it names nothing.
+			// Only a reversed *closed* pair is the malformed row `Level::range`
+			// reads as its lower bound; an emptied open one read that way would
+			// name a value its own limits exclude.
+			let open = [&scale.lower_coded, &scale.upper_coded]
+				.into_iter()
+				.any(|limit| limit.as_ref().is_some_and(|l| l.kind == LimitKind::Open));
+			if upper < lower && open {
+				continue;
+			}
 			levels.push(Level::range(lower, upper, name));
 		}
 		if levels.is_empty() {
@@ -367,6 +377,12 @@ impl Method {
 /// no bound. Every limit of the reference project's 548,887 text-table scales is
 /// `CLOSED`; the other two are read as the standard defines them rather than as
 /// if they were.
+///
+/// That the kind byte [`limit`] reads as `CLOSED` really is closed is what the
+/// data says, not only the byte's name: 546,325 of those scales are one value
+/// wide, which as `OPEN` would be empty, and the ranged ones tile end to end
+/// (`0–74`, `75–110`, `111–145`, …), which as `OPEN` would leave a gap at every
+/// boundary.
 fn lower_bound(limit: &Limit) -> Option<i32> {
 	match limit.kind {
 		LimitKind::Infinite => Some(i32::MIN),
@@ -572,6 +588,24 @@ mod tests {
 					Level::range(30, i32::MAX, "high"),
 					Level::range(i32::MIN, 5, "low"),
 				]
+			}
+		);
+	}
+
+	#[test]
+	fn an_interval_its_open_ends_leave_empty_names_nothing() {
+		use LimitKind::{Closed, Open};
+		// (5, 6) holds no integer, and (5, 5] none either: such a level is not a
+		// point at 6, which would take the name of the level that really is 6.
+		let scaling = text_table(vec![
+			band(limit(5, Open), limit(6, Open), "empty"),
+			band(limit(5, Open), limit(5, Closed), "also empty"),
+			band(limit(6, Closed), limit(6, Closed), "six"),
+		]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![Level::point(6, "six")]
 			}
 		);
 	}

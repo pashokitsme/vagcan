@@ -237,14 +237,14 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		}
 		// A discrete state inverts by looking its name up in the same table that
 		// produced it — `D` came from one code and no other. A level that is a
-		// band of codes inverts to its lowest, which is not necessarily the code
-		// the car sent but is one that names the same band, so the replay shows
-		// the name the recording holds. The name is compared trimmed, because
-		// every reader of a recording trims its cells.
-		Scaling::Enum { levels } => levels
-			.iter()
-			.find(|level| level.name().trim() == cell)
-			.map(|level| level.lower() as f64)?,
+		// band of codes inverts to one code in it — not necessarily the one the
+		// car sent, but one that names the same band — so the replay shows the
+		// name the recording holds. The name is compared trimmed, because every
+		// reader of a recording trims its cells.
+		Scaling::Enum { levels } => {
+			let at = levels.iter().position(|level| level.name().trim() == cell)?;
+			f64::from(standing_for(levels, at)?)
+		}
 		// An anchor fixes one point and leaves the slope unproven; there is no
 		// line to invert, and inventing one would put a number on screen that
 		// was never measured.
@@ -254,6 +254,24 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		return None;
 	}
 	encode(count as u64, def.raw_form)
+}
+
+/// The raw value to replay for `levels[at]`: the lowest the field can send (not
+/// below zero — [`encode`] lays out counts) that the table names the same way,
+/// i.e. that no earlier level holds, since the first level holding a value names
+/// it. `None` when the band has no such value.
+fn standing_for(levels: &[vag_data_labels::Level], at: usize) -> Option<i32> {
+	let level = levels.get(at)?;
+	let mut value = level.lower().max(0);
+	// Each step moves past one earlier level for good, so this ends within
+	// `at + 1` rounds.
+	for _ in 0..=at {
+		match levels[..at].iter().find(|earlier| earlier.contains(value)) {
+			Some(earlier) => value = earlier.upper().checked_add(1)?,
+			None => break,
+		}
+	}
+	(value <= level.upper() && !levels[..at].iter().any(|earlier| earlier.contains(value))).then_some(value)
 }
 
 /// The whole answer a recorded cell stands for, given the answer to the same
@@ -567,6 +585,33 @@ mod tests {
 		assert_eq!(cell_to_bytes("4", &gear, false), Some(vec![0x05]));
 		// A state the table does not list is not invented.
 		assert_eq!(cell_to_bytes("N", &gear, false), None);
+	}
+
+	#[test]
+	fn a_recorded_band_replays_as_a_value_that_names_the_same_band() {
+		use vag_data_labels::Level;
+		let with = |levels: Vec<Level>| Channel {
+			def: Some(MeasurementDef {
+				raw_form: RawForm::U8First,
+				scaling: Scaling::Enum { levels },
+				..rpm_channel().def.unwrap()
+			}),
+			..rpm_channel()
+		};
+		// A band from below zero — an unbounded lower limit — replays from the
+		// lowest value the field can send, not from a value it cannot.
+		let low = with(vec![Level::range(i32::MIN, 5, "low"), Level::range(6, 9, "high")]);
+		assert_eq!(cell_to_bytes("low", &low, false), Some(vec![0]));
+		assert_eq!(cell_to_bytes("high", &low, false), Some(vec![6]));
+		// Where an earlier level overlaps the band's bottom, the replay starts past
+		// it: the value sent back must be one the table names the same way.
+		let overlapping = with(vec![Level::range(0, 10, "A"), Level::range(5, 15, "B")]);
+		let bytes = cell_to_bytes("B", &overlapping, false).unwrap();
+		assert_eq!(bytes, vec![11]);
+		assert_eq!(overlapping.def.as_ref().unwrap().describe(&bytes).as_deref(), Some("B"));
+		// A band wholly inside earlier ones has no such value, and is not replayed.
+		let hidden = with(vec![Level::range(0, 10, "A"), Level::range(2, 8, "B")]);
+		assert_eq!(cell_to_bytes("B", &hidden, false), None);
 	}
 
 	#[test]

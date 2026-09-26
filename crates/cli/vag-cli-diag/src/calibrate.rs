@@ -101,13 +101,18 @@ fn split_columns(columns: &[Column]) -> (Vec<&Column>, Vec<&Column>) {
 /// is the "reverse is gear 11" a state exists to prevent. One cell that is
 /// neither a number nor marked bytes says the column is names.
 ///
+/// A recording from before the mark wrote such an answer as bare hex, so a cell
+/// of hex digits is taken as bytes too — [`pair`] skips it either way. A state
+/// name made only of hex digits (`AB`) would pass for bytes; the column is then
+/// still named by its other levels.
+///
 /// What this cannot see is a state whose every level seen in the drive happens to
 /// be a numeral. Such a column still passes, and the fit against it has to clear
 /// the same thresholds any other does.
 fn is_quantity(values: &[String]) -> bool {
 	values
 		.iter()
-		.all(|v| v.parse::<f64>().is_ok() || v.starts_with(crate::watch::UNCONVERTED))
+		.all(|v| v.parse::<f64>().is_ok() || v.starts_with(crate::watch::UNCONVERTED) || looks_like_hex(std::slice::from_ref(v)))
 }
 
 /// Parse a hex cell under one interpretation.
@@ -432,11 +437,14 @@ mod tests {
 		let columns = classify(&csv).unwrap();
 		let (references, _) = split_columns(&columns);
 		assert!(references.is_empty(), "{:?}", references.iter().map(|c| &c.name).collect::<Vec<_>>());
-		// A value column with a marked, unconverted answer in it is still one.
-		let csv = "t_s,Engine speed,206F_raw\n0.0,640,0640\n0.1,0x07,0658\n0.2,700,0700\n";
-		let columns = classify(csv).unwrap();
-		let (references, _) = split_columns(&columns);
-		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"]);
+		// A value column with a marked, unconverted answer in it is still one — and
+		// so is one from before the mark, where that answer was written as bare hex.
+		for unconverted in ["0x07", "0B34"] {
+			let csv = format!("t_s,Engine speed,206F_raw\n0.0,640,0640\n0.1,{unconverted},0658\n0.2,700,0700\n");
+			let columns = classify(&csv).unwrap();
+			let (references, _) = split_columns(&columns);
+			assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"], "{unconverted}");
+		}
 	}
 
 	#[test]
