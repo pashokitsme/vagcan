@@ -54,6 +54,22 @@
 //! release_percent = 6              # clears under this share
 //! hold_ms = 1000                   # and only once the drift has held that long
 //! min_setpoint = 0.5               # under this specified value the rule says nothing
+//!
+//! [stalk]                          # optional: the cruise lever as buttons (`todo/dash/19`)
+//! read = "70C:1105"                # the one identifier carrying the rocker and the switch
+//! rocker = "…"                     # field names as the ODIS project spells them
+//! switch = "…"
+//! next = "…"                       # states of the rocker, as the project spells them
+//! previous = "…"
+//! measure = "…"                    # switches the stopwatch on and off
+//! switch_off = "…"                 # the switch's off state
+//! cruise = "01:203C"               # the engine's cruise status, an enumerated field
+//! cruise_off = "…"                 # its off state
+//!
+//! [stopwatch]                      # optional: the stopwatch page
+//! speed = "02:380B"                # a [[channel]], with no offset in its scaling
+//! km_h_per_unit = 0.0              # measured on the car; 0 = not measured, the page says so
+//! marks = [60, 100]                # km/h, at most 3, each once, none zero
 //! ```
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
@@ -86,7 +102,8 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::pages::MAX_PAGES;
-use vag_data_labels::catalog::{CatalogStore, ReadId, Scaling};
+use vag_dash_render::stopwatch::MAX_MARKS;
+use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
 
@@ -232,6 +249,39 @@ pub struct AlarmInput {
 	pub rule: AlarmRuleInput,
 }
 
+/// `[stalk]`: the cruise lever as buttons (`todo/dash/19`). Every name is the ODIS
+/// project's own spelling; the build resolves them against the car's variant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StalkInput {
+	/// The unit and the identifier whose answer carries the rocker and the switch.
+	pub request: u16,
+	pub did: u16,
+	/// Field names within that identifier.
+	pub rocker: String,
+	pub switch: String,
+	/// States of the rocker.
+	pub next: String,
+	pub previous: String,
+	pub measure: String,
+	/// The switch's off state.
+	pub switch_off: String,
+	/// The cruise status: an enumerated field, named as a channel is.
+	pub cruise: Reference,
+	/// Its off state.
+	pub cruise_off: String,
+}
+
+/// `[stopwatch]`: the stopwatch page (`todo/dash/19`, `todo/dash/14` §6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StopwatchInput {
+	/// A `[[channel]]`.
+	pub speed: Reference,
+	/// km/h per unit of the channel's value, measured on the car; `0.0` is "not measured".
+	pub km_h_per_unit: f64,
+	/// In km/h, in the owner's order.
+	pub marks: Vec<u16>,
+}
+
 /// The whole input, parsed and nothing more.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Input {
@@ -242,6 +292,8 @@ pub struct Input {
 	pub pages: Vec<PageInput>,
 	/// In the file's order, which is priority.
 	pub alarms: Vec<AlarmInput>,
+	pub stalk: Option<StalkInput>,
+	pub stopwatch: Option<StopwatchInput>,
 }
 
 /// Parse a build input. Only the shape is checked here; whether the car has
@@ -431,6 +483,14 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			alarms.push(AlarmInput { channels, page, rule });
 		}
 	}
+	let stalk = match doc.get("stalk") {
+		None => None,
+		Some(item) => Some(parse_stalk(item, &string)?),
+	};
+	let stopwatch = match doc.get("stopwatch") {
+		None => None,
+		Some(item) => Some(parse_stopwatch(item, &string, &number)?),
+	};
 	Ok(Input {
 		vin,
 		language,
@@ -438,7 +498,85 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		channels,
 		pages,
 		alarms,
+		stalk,
+		stopwatch,
 	})
+}
+
+/// `[stalk]`, shape only: every key present, `read` one identifier.
+fn parse_stalk(item: &Item, string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>) -> Result<StalkInput, Error> {
+	let table = item
+		.as_table()
+		.ok_or_else(|| Error::Parse("dash.toml: stalk must be one [stalk] table".to_string()))?;
+	let text = |key: &str| string(table.get(key), &format!("[stalk] {key}"));
+	let (request, did) = match Reference::parse(&text("read")?)? {
+		Reference::Field { request, did, bit_offset: 0 } => (request, did),
+		other => {
+			return Err(Error::Parse(format!(
+				"dash.toml: [stalk] read {other} is not <unit>:<DID> — one identifier, whose fields the rocker and the switch are"
+			)));
+		}
+	};
+	Ok(StalkInput {
+		request,
+		did,
+		rocker: text("rocker")?,
+		switch: text("switch")?,
+		next: text("next")?,
+		previous: text("previous")?,
+		measure: text("measure")?,
+		switch_off: text("switch_off")?,
+		cruise: Reference::parse(&text("cruise")?)?,
+		cruise_off: text("cruise_off")?,
+	})
+}
+
+/// `[stopwatch]`, shape only: a speed reference, a factor that is a number at or above
+/// zero, and marks that are each a speed, once.
+fn parse_stopwatch(
+	item: &Item,
+	string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>,
+	number: &impl Fn(Option<&Item>) -> Option<f64>,
+) -> Result<StopwatchInput, Error> {
+	let table = item
+		.as_table()
+		.ok_or_else(|| Error::Parse("dash.toml: stopwatch must be one [stopwatch] table".to_string()))?;
+	let speed = Reference::parse(&string(table.get("speed"), "[stopwatch] speed")?)?;
+	// Compared as the board holds it, in `f32`.
+	let km_h_per_unit = match number(table.get("km_h_per_unit")) {
+		Some(v) if v.is_finite() && v >= 0.0 && (v as f32).is_finite() => v,
+		_ => {
+			return Err(Error::Parse(
+				"dash.toml: [stopwatch] km_h_per_unit must be a number at or above 0 — 0 until it is measured on the car".to_string(),
+			));
+		}
+	};
+	let list = table
+		.get("marks")
+		.and_then(Item::as_array)
+		.ok_or_else(|| Error::Parse("dash.toml: [stopwatch] marks must be a list of speeds in km/h".to_string()))?;
+	let mut marks: Vec<u16> = Vec::new();
+	for value in list.iter() {
+		let mark = match value.as_integer() {
+			Some(v) if (1..=i64::from(u16::MAX)).contains(&v) => v as u16,
+			_ => {
+				return Err(Error::Parse(format!(
+					"dash.toml: [stopwatch] mark {value} is not a whole speed in km/h above 0 — a run starts at 0, so 0 is no mark"
+				)));
+			}
+		};
+		if marks.contains(&mark) {
+			return Err(Error::Parse(format!("dash.toml: [stopwatch] mark {mark} is listed twice")));
+		}
+		marks.push(mark);
+	}
+	if marks.is_empty() || marks.len() > MAX_MARKS {
+		return Err(Error::Parse(format!(
+			"dash.toml: [stopwatch] has {} marks, and the page holds 1 to {MAX_MARKS}",
+			marks.len()
+		)));
+	}
+	Ok(StopwatchInput { speed, km_h_per_unit, marks })
 }
 
 /// What can go wrong between an input and a plan. Every variant names the
@@ -490,6 +628,10 @@ pub enum Error {
 		setpoint: Reference,
 		why: String,
 	},
+	/// A `[stalk]` the project or the car cannot honour.
+	Stalk(String),
+	/// A `[stopwatch]` the plan cannot honour.
+	Stopwatch(String),
 }
 
 impl fmt::Display for Error {
@@ -528,6 +670,8 @@ impl fmt::Display for Error {
 			Error::Setpoint { channel, setpoint, why } => {
 				write!(f, "{channel}: its setpoint {setpoint} {why}")
 			}
+			Error::Stalk(why) => write!(f, "[stalk] {why}"),
+			Error::Stopwatch(why) => write!(f, "[stopwatch] {why}"),
 			Error::TooManyAlarms(n) => write!(
 				f,
 				"{n} [[alarm]] rules, and the board holds at most {MAX_ALARMS} — each rule's channels are read at full rate on every page"
@@ -615,6 +759,54 @@ pub struct Alarm {
 	pub rule: AlarmRule,
 }
 
+/// One state of an enumerated field: its interval of raw values, both ends included, and
+/// its name — the name for a person reading `plan.json`, the interval for the board.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct State {
+	pub lower: i32,
+	pub upper: i32,
+	pub name: String,
+}
+
+impl State {
+	fn of(levels: &[Level]) -> Vec<State> {
+		levels
+			.iter()
+			.map(|l| State {
+				lower: l.lower(),
+				upper: l.upper(),
+				name: l.name().to_string(),
+			})
+			.collect()
+	}
+}
+
+/// `[stalk]`, resolved: the three fields as plan channels, each with its states in the
+/// project's order, and the states that mean something by their place in those lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stalk {
+	pub rocker: u16,
+	pub switch: u16,
+	pub cruise: u16,
+	pub rocker_states: Vec<State>,
+	pub switch_states: Vec<State>,
+	pub cruise_states: Vec<State>,
+	pub next: u16,
+	pub previous: u16,
+	pub measure: u16,
+	pub switch_off: u16,
+	pub cruise_off: u16,
+}
+
+/// `[stopwatch]`, resolved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stopwatch {
+	/// The speed channel, by plan index.
+	pub speed: u16,
+	pub km_h_per_unit: f64,
+	pub marks: Vec<u16>,
+}
+
 /// The plan, as `plan.json` holds it. [`to_rust`] writes the same content as
 /// the `static` the firmware links.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -627,6 +819,11 @@ pub struct Plan {
 	/// In priority order. A `plan.json` written before alarms existed has none.
 	#[serde(default)]
 	pub alarms: Vec<Alarm>,
+	/// A `plan.json` written before the lever existed has none.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stalk: Option<Stalk>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stopwatch: Option<Stopwatch>,
 }
 
 impl Plan {
@@ -729,6 +926,38 @@ impl Plan {
 				},
 			})
 			.collect();
+		fn bands(states: &[State]) -> &'static [device::Band] {
+			Vec::leak(
+				states
+					.iter()
+					.map(|s| device::Band {
+						lower: s.lower,
+						upper: s.upper,
+					})
+					.collect(),
+			)
+		}
+		use vag_dash_render::stalk::{StateIndex, States};
+		let stalk = self.stalk.as_ref().map(|s| device::StalkPlan {
+			rocker: s.rocker,
+			switch: s.switch,
+			cruise: s.cruise,
+			rocker_states: bands(&s.rocker_states),
+			switch_states: bands(&s.switch_states),
+			cruise_states: bands(&s.cruise_states),
+			states: States {
+				next: StateIndex(s.next),
+				previous: StateIndex(s.previous),
+				measure: StateIndex(s.measure),
+				switch_off: StateIndex(s.switch_off),
+				cruise_off: StateIndex(s.cruise_off),
+			},
+		});
+		let stopwatch = self.stopwatch.as_ref().map(|s| device::StopwatchPlan {
+			speed: s.speed,
+			km_h_per_unit: s.km_h_per_unit as f32,
+			marks: Vec::leak(s.marks.clone()),
+		});
 		device::Plan {
 			vin: text(&self.vin),
 			language: text(&self.language),
@@ -736,6 +965,8 @@ impl Plan {
 			channels: Vec::leak(channels),
 			pages: Vec::leak(pages),
 			alarms: Vec::leak(alarms),
+			stalk,
+			stopwatch,
 		}
 	}
 }
@@ -1020,6 +1251,21 @@ pub fn build(
 		notes.push(format!("{}: its specified value is {reference}", wanted.reference));
 	}
 
+	// The stopwatch's speed is one of the owner's `[[channel]]`s, resolved above.
+	let stopwatch = match &input.stopwatch {
+		None => None,
+		Some(wanted) => Some(resolve_stopwatch(wanted, &channels, &index_of, &offered, answered, units, &mut notes)?),
+	};
+	// The lever's fields are enumerations, which no `[[channel]]` can be: they join the plan
+	// as channels of their own, on no page, read only for the lever.
+	let stalk = match &input.stalk {
+		None => None,
+		Some(wanted) => Some(resolve_stalk(wanted, &mut channels, &offered, answered, units, extracted, &mut notes)?),
+	};
+	if stopwatch.is_some() && stalk.is_none() {
+		notes.push("stopwatch: there is no [stalk], and its `measure` is the only way onto the page".to_string());
+	}
+
 	let mut plan_units: Vec<Unit> = Vec::new();
 	for c in &channels {
 		if plan_units.iter().any(|u| u.request == c.unit) {
@@ -1209,8 +1455,216 @@ pub fn build(
 			channels,
 			pages,
 			alarms,
+			stalk,
+			stopwatch,
 		},
 		notes,
+	})
+}
+
+/// `[stopwatch]` against the resolved channels: the speed is a `[[channel]]` whose scaling
+/// has no offset — the stopwatch takes the channel's zero for a standstill, and with an
+/// offset the zero is somewhere else — and whose factor is above zero, or moving forward
+/// would read as going nowhere.
+fn resolve_stopwatch(
+	wanted: &StopwatchInput,
+	channels: &[Channel],
+	index_of: &BTreeMap<Reference, u16>,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+	notes: &mut Vec<String>,
+) -> Result<Stopwatch, Error> {
+	let speed = index_by_row(&wanted.speed, channels, index_of, offered, answered, units)
+		.ok_or_else(|| Error::Stopwatch(format!("speed {} is not in the [[channel]] list", wanted.speed)))?;
+	let channel = &channels[usize::from(speed)];
+	if channel.offset != 0.0 {
+		return Err(Error::Stopwatch(format!(
+			"speed {}: its scaling has an offset ({:+}) — a standstill is the channel's zero, and with an offset there is none",
+			wanted.speed, channel.offset
+		)));
+	}
+	if channel.factor <= 0.0 {
+		return Err(Error::Stopwatch(format!(
+			"speed {}: its scaling's factor {} is not above zero — moving forward would never read as moving",
+			wanted.speed, channel.factor
+		)));
+	}
+	let marks: Vec<String> = wanted.marks.iter().map(|m| format!("0-{m}")).collect();
+	notes.push(match wanted.km_h_per_unit {
+		0.0 => format!(
+			"stopwatch: {} {}, km_h_per_unit not measured — the page says so and times nothing",
+			wanted.speed,
+			marks.join(", ")
+		),
+		factor => format!("stopwatch: {} × {factor} km/h, {}", wanted.speed, marks.join(", ")),
+	});
+	Ok(Stopwatch {
+		speed,
+		km_h_per_unit: wanted.km_h_per_unit,
+		marks: wanted.marks.clone(),
+	})
+}
+
+/// One enumerated field the car's variant declares, found by `pick`, as a plan channel on
+/// no page: raw value, no scaling, its states beside it.
+fn state_field(offered: &[poll::Channel], request: u16, pick: impl Fn(&poll::Channel) -> bool) -> Vec<&poll::Channel> {
+	offered.iter().filter(|c| c.request == request && c.def.is_some() && pick(c)).collect()
+}
+
+fn levels_of(found: &poll::Channel) -> Option<&[Level]> {
+	match &found.def.as_ref()?.scaling {
+		Scaling::Enum { levels } => Some(levels),
+		_ => None,
+	}
+}
+
+fn state_channel(found: &poll::Channel, label: String) -> Channel {
+	let def = found.def.as_ref().expect("picked on def");
+	let ReadId::Uds(did) = def.address;
+	let (bit_offset, bit_length, signed, big_endian) = bits_of(def.raw_form);
+	Channel {
+		unit: found.request,
+		did,
+		bit_offset,
+		bit_length,
+		signed,
+		big_endian,
+		// The raw value: a state is looked up by it, never scaled.
+		factor: 1.0,
+		offset: 0.0,
+		decimals: 0,
+		unit_text: String::new(),
+		label,
+		proven: found.proven,
+		hz: DEFAULT_HZ,
+		source: found.text_id.clone().unwrap_or_else(|| def.name.to_string()),
+		setpoint: None,
+	}
+}
+
+/// A state by the name the project gives it, as its place in the field's list.
+fn state_index(levels: &[Level], name: &str, key: &str, field: &str) -> Result<u16, Error> {
+	levels.iter().position(|l| l.name() == name).map(|at| at as u16).ok_or_else(|| {
+		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name())).collect();
+		Error::Stalk(format!(
+			"{key}: {name:?} is not a state of {field:?} — its states are {}",
+			names.join(", ")
+		))
+	})
+}
+
+/// `[stalk]` against the project and the car: every name the owner wrote is the project's
+/// own, for the variant the car reported, and the states come with the intervals the
+/// project gives them. The three fields are appended to `channels`.
+fn resolve_stalk(
+	wanted: &StalkInput,
+	channels: &mut Vec<Channel>,
+	offered: &[poll::Channel],
+	answered: Option<&poll::Answered>,
+	units: &[UnitIdentity],
+	extracted: &Extracted,
+	notes: &mut Vec<String>,
+) -> Result<Stalk, Error> {
+	let read = Reference::Field {
+		request: wanted.request,
+		did: wanted.did,
+		bit_offset: 0,
+	};
+	for request in [wanted.request, wanted.cruise.request()] {
+		let identity = units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request))?;
+		// A cache from before each level kept its upper end has every state as its lower end
+		// alone: a switch read as a voltage answers inside its band and would match nothing.
+		if extracted.levels_predate_bounds(identity.odx_name.as_deref(), identity.odx_version.as_deref()) {
+			return Err(Error::Stalk(format!(
+				"unit {request:03X}: the project's cache keeps only the lower end of each state — run `vagcan setup` again, so a reading anywhere in a state's band is that state"
+			)));
+		}
+	}
+	if answered.and_then(|a| a.saw(wanted.request, wanted.did)) == Some(false) {
+		return Err(Error::NotAnswered(read));
+	}
+	let in_read = state_field(offered, wanted.request, |c| c.did == wanted.did);
+	if in_read.is_empty() {
+		return Err(Error::Stalk(format!("read {read}: the car's variant declares no such identifier")));
+	}
+	let field = |key: &str, name: &str| -> Result<(&poll::Channel, &[Level]), Error> {
+		let named: Vec<&&poll::Channel> = in_read.iter().filter(|c| c.def.as_ref().is_some_and(|d| d.name == name)).collect();
+		let found = match named.as_slice() {
+			[one] => **one,
+			[] => {
+				let names: Vec<String> = in_read.iter().filter_map(|c| c.def.as_ref()).map(|d| format!("{:?}", d.name)).collect();
+				return Err(Error::Stalk(format!(
+					"{key}: {read} has no field named {name:?} — its fields are {}",
+					names.join(", ")
+				)));
+			}
+			many => return Err(Error::Stalk(format!("{key}: {read} has {} fields named {name:?}", many.len()))),
+		};
+		let levels = levels_of(found).ok_or_else(|| Error::Stalk(format!("{key}: {name:?} is a quantity, not a list of states")))?;
+		Ok((found, levels))
+	};
+	let (rocker, rocker_levels) = field("rocker", &wanted.rocker)?;
+	let (switch, switch_levels) = field("switch", &wanted.switch)?;
+	if wanted.rocker == wanted.switch {
+		return Err(Error::Stalk(format!("rocker and switch are both {:?}", wanted.rocker)));
+	}
+	let next = state_index(rocker_levels, &wanted.next, "next", &wanted.rocker)?;
+	let previous = state_index(rocker_levels, &wanted.previous, "previous", &wanted.rocker)?;
+	let measure = state_index(rocker_levels, &wanted.measure, "measure", &wanted.rocker)?;
+	if next == previous || next == measure || previous == measure {
+		return Err(Error::Stalk(
+			"next, previous and measure name the same state — each is a button of its own".to_string(),
+		));
+	}
+	let switch_off = state_index(switch_levels, &wanted.switch_off, "switch_off", &wanted.switch)?;
+
+	let cruise_request = wanted.cruise.request();
+	let candidates = state_field(offered, cruise_request, |c| match &wanted.cruise {
+		Reference::TextId { text_id, .. } => c.text_id.as_deref() == Some(text_id.as_str()),
+		Reference::Field { did, bit_offset, .. } => c.did == *did && c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()) == *bit_offset,
+	});
+	let states: Vec<&poll::Channel> = candidates.iter().copied().filter(|c| levels_of(c).is_some()).collect();
+	let cruise = match (states.as_slice(), candidates.as_slice()) {
+		([one], _) => *one,
+		([], []) => {
+			return Err(Error::Stalk(format!(
+				"cruise {}: the car's variant declares no such field",
+				wanted.cruise
+			)));
+		}
+		([], _) => return Err(Error::Stalk(format!("cruise {}: a quantity, not a list of states", wanted.cruise))),
+		(many, _) => return Err(Error::Ambiguous(wanted.cruise.clone(), many.iter().map(|c| c.label()).collect())),
+	};
+	if let Some(ReadId::Uds(did)) = cruise.def.as_ref().map(|d| d.address)
+		&& answered.and_then(|a| a.saw(cruise_request, did)) == Some(false)
+	{
+		return Err(Error::NotAnswered(wanted.cruise.clone()));
+	}
+	let cruise_levels = levels_of(cruise).expect("picked on levels");
+	let cruise_name = cruise.label();
+	let cruise_off = state_index(cruise_levels, &wanted.cruise_off, "cruise_off", &cruise_name)?;
+
+	let index = channels.len() as u16;
+	channels.push(state_channel(rocker, wanted.rocker.clone()));
+	channels.push(state_channel(switch, wanted.switch.clone()));
+	channels.push(state_channel(cruise, cruise_name));
+	notes.push(format!(
+		"stalk: {read} rocker {:?} (next {:?}, previous {:?}, measure {:?}), switch {:?} off at {:?}; cruise {} off at {:?}",
+		wanted.rocker, wanted.next, wanted.previous, wanted.measure, wanted.switch, wanted.switch_off, wanted.cruise, wanted.cruise_off
+	));
+	Ok(Stalk {
+		rocker: index,
+		switch: index + 1,
+		cruise: index + 2,
+		rocker_states: State::of(rocker_levels),
+		switch_states: State::of(switch_levels),
+		cruise_states: State::of(cruise_levels),
+		next,
+		previous,
+		measure,
+		switch_off,
+		cruise_off,
 	})
 }
 
@@ -1274,7 +1728,18 @@ pub fn to_rust(plan: &Plan) -> String {
 	let mut out = String::new();
 	let _ = writeln!(out, "// Generated by `vagcan dev dash build` for VIN {}.", plan.vin);
 	let _ = writeln!(out, "// Derived from VW's data and one owner's car: do not edit, do not commit.");
-	let _ = writeln!(out, "use vag_dash_render::plan::{{Channel, Page, Plan, Unit}};");
+	let mut plan_types = vec!["Channel", "Page", "Plan", "Unit"];
+	if plan.stalk.is_some() {
+		plan_types.extend(["Band", "StalkPlan"]);
+	}
+	if plan.stopwatch.is_some() {
+		plan_types.push("StopwatchPlan");
+	}
+	plan_types.sort_unstable();
+	let _ = writeln!(out, "use vag_dash_render::plan::{{{}}};", plan_types.join(", "));
+	if plan.stalk.is_some() {
+		let _ = writeln!(out, "use vag_dash_render::stalk::{{StateIndex, States}};");
+	}
 	// Only what the rules actually name: the firmware lints the generated file with
 	// `-D warnings`, so an unused import is a build that fails (review, 2026-09-15). A plan
 	// whose rules are all drift never names `Direction`; one with no rules names nothing but
@@ -1286,9 +1751,24 @@ pub fn to_rust(plan: &Plan) -> String {
 		many => writeln!(out, "use vag_dash_render::alarm::{{{}}};", many.join(", ")),
 	};
 	let _ = writeln!(out);
+	let stalk = match &plan.stalk {
+		None => "None".to_string(),
+		Some(s) => format!(
+			"Some(StalkPlan {{ rocker: {}, switch: {}, cruise: {}, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States {{ next: StateIndex({}), previous: StateIndex({}), measure: StateIndex({}), switch_off: StateIndex({}), cruise_off: StateIndex({}) }} }})",
+			s.rocker, s.switch, s.cruise, s.next, s.previous, s.measure, s.switch_off, s.cruise_off
+		),
+	};
+	let stopwatch = match &plan.stopwatch {
+		None => "None".to_string(),
+		Some(s) => format!(
+			"Some(StopwatchPlan {{ speed: {}, km_h_per_unit: {}, marks: &MARKS }})",
+			s.speed,
+			float(s.km_h_per_unit)
+		),
+	};
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch} }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);
@@ -1394,6 +1874,37 @@ pub fn to_rust(plan: &Plan) -> String {
 		);
 	}
 	let _ = writeln!(out, "];");
+	if let Some(s) = &plan.stalk {
+		// `i32::MIN` / `i32::MAX` by name: an unbounded end is a limit, not a number anyone wrote.
+		let bound = |v: i32| match v {
+			i32::MIN => "i32::MIN".to_string(),
+			i32::MAX => "i32::MAX".to_string(),
+			v => v.to_string(),
+		};
+		for (name, states) in [
+			("STALK_ROCKER", &s.rocker_states),
+			("STALK_SWITCH", &s.switch_states),
+			("STALK_CRUISE", &s.cruise_states),
+		] {
+			let _ = writeln!(out);
+			let _ = writeln!(out, "static {name}: [Band; {}] = [", states.len());
+			for state in states {
+				let _ = writeln!(
+					out,
+					"\tBand {{ lower: {}, upper: {} }}, // {:?}",
+					bound(state.lower),
+					bound(state.upper),
+					state.name
+				);
+			}
+			let _ = writeln!(out, "];");
+		}
+	}
+	if let Some(s) = &plan.stopwatch {
+		let list: Vec<String> = s.marks.iter().map(u16::to_string).collect();
+		let _ = writeln!(out);
+		let _ = writeln!(out, "static MARKS: [u16; {}] = [{}];", s.marks.len(), list.join(", "));
+	}
 	out
 }
 
@@ -2532,7 +3043,7 @@ mod tests {
 			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
 			"{rust}"
 		);
-		assert!(rust.contains("alarms: &ALARMS }"), "{rust}");
+		assert!(rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None }"), "{rust}");
 		assert!(
 			rust.contains("static ALARM_CHANNELS_1: [ChannelId; 2] = [ChannelId(1), ChannelId(0)];"),
 			"{rust}"
@@ -2687,5 +3198,279 @@ mod tests {
 			!tests.contains(concat!("build_for_", "car(")),
 			"a test calls the writer, which writes into the owner's real ~/.vagcan"
 		);
+	}
+
+	/// The steering column's unit in the fixture: nothing about any car, only the shape the
+	/// lever's identifier has — several enumerated fields in one answer, a byte each.
+	const STALK_UNIT: u16 = 0x70C;
+
+	fn state_reading(did: u16, name: &str, text_id: &str, bit_offset: u32, bit_length: u32, levels: Vec<Level>) -> Reading {
+		Reading {
+			scaling: Scaling::Enum { levels },
+			unit: None,
+			..reading(did, name, text_id, bit_offset, bit_length, false, true, 1.0, 0.0)
+		}
+	}
+
+	/// A neutral ladder: states tiling a byte, as a switch read as a voltage has them.
+	fn ladder(names: [&str; 6]) -> Vec<Level> {
+		let bounds = [(0, 74), (75, 110), (111, 145), (146, 181), (182, 221), (222, 255)];
+		bounds
+			.iter()
+			.zip(names)
+			.map(|((lower, upper), name)| Level::range(*lower, *upper, name))
+			.collect()
+	}
+
+	const LEVER: &str = "[stalk]\nread = \"70C:1105\"\nrocker = \"Rocker\"\nswitch = \"Switch\"\nnext = \"plus\"\nprevious = \"minus\"\nmeasure = \"limit\"\nswitch_off = \"off\"\ncruise = \"01:2001\"\ncruise_off = \"off\"\n";
+	const WATCH: &str = "[stopwatch]\nspeed = \"01:IDE00010\"\nkm_h_per_unit = 0.0\nmarks = [60, 100]\n";
+
+	/// An engine with a speed, a speed with an offset, a cruise status and a quantity; a
+	/// steering column with a rocker, a switch and a voltage in one identifier. `input` is
+	/// the whole `[stalk]` / `[stopwatch]` part.
+	fn build_with_lever_in(dir: &Path, input: &str, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+		let extracted = extracted_with(
+			dir,
+			&[
+				(
+					"EV_Test_001",
+					vec![
+						reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
+						reading(0x3001, "Speed", "IDE00010", 0, 16, false, true, 1.0, 0.0),
+						reading(0x3002, "Offset speed", "IDE00011", 0, 16, false, true, 1.0, -40.0),
+						state_reading(
+							0x2001,
+							"Cruise status",
+							"IDE00020",
+							0,
+							16,
+							vec![Level::point(0, "off"), Level::point(1, "standby"), Level::point(2, "passive")],
+						),
+						reading(0x2002, "Quantity", "IDE00021", 0, 16, false, true, 1.0, 0.0),
+					],
+				),
+				(
+					"EV_Stalk_001",
+					vec![
+						reading(0x1105, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
+						state_reading(0x1105, "Rocker", "", 64, 8, ladder(["shorted", "plus", "minus", "limit", "rest", "open"])),
+						state_reading(0x1105, "Switch", "", 72, 8, ladder(["shorted", "on", "cancel", "off", "lifted", "open"])),
+					],
+				),
+			],
+			&[],
+		);
+		cache_written(&dir.join("cache.sqlite"));
+		let store = CatalogStore::open(dir.join("proven"));
+		let text = format!(
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00010\"\nhz = 50\n[[channel]]\nref = \"01:IDE00011\"\n{}{input}",
+			values_page(&["01:IDE00001"])
+		);
+		build(
+			&parse_input(&text)?,
+			&store,
+			&extracted,
+			&[identity(ENGINE, "PART1", "EV_Test"), identity(STALK_UNIT, "PART2", "EV_Stalk")],
+			None,
+			Language::En,
+		)
+	}
+
+	fn build_with_lever(input: &str) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		build_with_lever_in(here.path(), input, |_| {})
+	}
+
+	#[test]
+	fn the_lever_resolves_its_texts_to_the_projects_intervals_and_joins_the_plan_on_no_page() {
+		let built = build_with_lever(&format!("{LEVER}{WATCH}")).unwrap();
+		let plan = &built.plan;
+		let stalk = plan.stalk.as_ref().expect("a stalk");
+		assert_eq!((stalk.rocker, stalk.switch, stalk.cruise), (3, 4, 5), "after the owner's three channels");
+		let rocker = &plan.channels[3];
+		assert_eq!(
+			(rocker.unit, rocker.did, rocker.bit_offset, rocker.bit_length),
+			(STALK_UNIT, 0x1105, 64, 8)
+		);
+		assert_eq!((rocker.factor, rocker.offset), (1.0, 0.0), "a state is looked up by its raw value");
+		assert_eq!(plan.channels[4].bit_offset, 72, "the switch, from the same answer");
+		assert_eq!((plan.channels[5].did, plan.channels[5].bit_length), (0x2001, 16));
+		assert_eq!(
+			(stalk.next, stalk.previous, stalk.measure, stalk.switch_off, stalk.cruise_off),
+			(1, 2, 3, 3, 0)
+		);
+		assert_eq!(
+			stalk.rocker_states[1],
+			State {
+				lower: 75,
+				upper: 110,
+				name: "plus".to_string()
+			},
+			"the interval, not its lower end"
+		);
+		assert!(plan.pages.iter().all(|p| match p {
+			Page::Values { cells, .. } => cells.iter().all(|c| *c < 3),
+			Page::Chart { channel, .. } => *channel < 3,
+		}));
+		assert!(
+			plan.units.iter().any(|u| u.request == STALK_UNIT && u.part_number == "PART2"),
+			"the column is checked like any unit"
+		);
+		let stopwatch = plan.stopwatch.as_ref().expect("a stopwatch");
+		assert_eq!(
+			(stopwatch.speed, stopwatch.km_h_per_unit, stopwatch.marks.as_slice()),
+			(1, 0.0, &[60, 100][..])
+		);
+		assert!(built.notes.iter().any(|n| n.contains("not measured")), "{:?}", built.notes);
+	}
+
+	#[test]
+	fn the_boards_rule_for_a_state_is_the_laptops() {
+		let built = build_with_lever(&format!("{LEVER}{WATCH}")).unwrap();
+		let device = built.plan.to_device();
+		let stalk = device.stalk.expect("carried to the board");
+		let laptop = &built.plan.stalk.as_ref().unwrap().rocker_states;
+		let levels: Vec<Level> = laptop.iter().map(|s| Level::range(s.lower, s.upper, s.name.clone())).collect();
+		for raw in -5..=300 {
+			let board = vag_dash_render::plan::state_of(stalk.rocker_states, i64::from(raw)).map(|s| usize::from(s.0));
+			assert_eq!(board, vag_data_labels::catalog::level_for(&levels, raw), "raw {raw}");
+		}
+		assert_eq!(stalk.states.measure, vag_dash_render::stalk::StateIndex(3));
+		assert_eq!(device.stopwatch.map(|s| (s.speed, s.marks)), Some((1, &[60u16, 100][..])));
+	}
+
+	#[test]
+	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
+		let built = build_with_lever(&format!("{LEVER}{WATCH}")).unwrap();
+		let json = built.plan.to_json();
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		assert!(json.contains("\"name\": \"limit\""), "a person reads the states by name: {json}");
+		let rust = to_rust(&built.plan);
+		for wanted in [
+			"use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};",
+			"use vag_dash_render::stalk::{StateIndex, States};",
+			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(3), cruise_off: StateIndex(0) } })",
+			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS })",
+			"static STALK_ROCKER: [Band; 6] = [",
+			"\tBand { lower: 75, upper: 110 }, // \"plus\"",
+			"static MARKS: [u16; 2] = [60, 100];",
+		] {
+			assert!(rust.contains(wanted), "{wanted}\n{rust}");
+		}
+		// A plan without either says so, and names nothing it does not use.
+		let bare = build_with_lever("").unwrap();
+		let rust = to_rust(&bare.plan);
+		assert!(rust.contains("stalk: None, stopwatch: None };"), "{rust}");
+		assert!(
+			rust.contains("use vag_dash_render::plan::{Channel, Page, Plan, Unit};") && !rust.contains("States"),
+			"{rust}"
+		);
+		assert!(!bare.plan.to_json().contains("stalk"), "an old reader sees the plan it knew");
+	}
+
+	#[test]
+	fn an_unbounded_state_is_written_by_its_limit() {
+		let mut built = build_with_lever(&format!("{LEVER}{WATCH}")).unwrap();
+		let stalk = built.plan.stalk.as_mut().unwrap();
+		stalk.cruise_states.push(State {
+			lower: 3,
+			upper: i32::MAX,
+			name: "anything above".to_string(),
+		});
+		assert!(to_rust(&built.plan).contains("Band { lower: 3, upper: i32::MAX }"));
+	}
+
+	#[test]
+	fn a_plan_json_from_before_the_lever_reads_without_one() {
+		let built = build_with_lever("").unwrap();
+		let back = Plan::from_json(&built.plan.to_json()).unwrap();
+		assert_eq!((back.stalk, back.stopwatch), (None, None));
+	}
+
+	#[test]
+	fn every_text_the_project_does_not_have_is_refused_by_name() {
+		let refused = |from: &str, to: &str| -> String {
+			let input = format!("{LEVER}{WATCH}").replacen(from, to, 1);
+			build_with_lever(&input).unwrap_err().to_string()
+		};
+		let why = refused("rocker = \"Rocker\"", "rocker = \"Rocket\"");
+		assert!(why.contains("has no field named \"Rocket\"") && why.contains("\"Rocker\""), "{why}");
+		let why = refused("rocker = \"Rocker\"", "rocker = \"Voltage\"");
+		assert!(why.contains("a quantity, not a list of states"), "{why}");
+		let why = refused("next = \"plus\"", "next = \"plu\"");
+		assert!(
+			why.contains("next: \"plu\" is not a state of \"Rocker\"") && why.contains("\"plus\""),
+			"{why}"
+		);
+		let why = refused("measure = \"limit\"", "measure = \"plus\"");
+		assert!(why.contains("same state"), "{why}");
+		let why = refused("switch_off = \"off\"", "switch_off = \"Off\"");
+		assert!(why.contains("switch_off: \"Off\" is not a state of \"Switch\""), "{why}");
+		let why = refused("switch = \"Switch\"", "switch = \"Rocker\"");
+		assert!(why.contains("rocker and switch are both"), "{why}");
+		let why = refused("read = \"70C:1105\"", "read = \"70C:1106\"");
+		assert!(why.contains("declares no such identifier"), "{why}");
+		let why = refused("cruise = \"01:2001\"", "cruise = \"01:2002\"");
+		assert!(why.contains("cruise 01:2002: a quantity, not a list of states"), "{why}");
+		let why = refused("cruise = \"01:2001\"", "cruise = \"01:2009\"");
+		assert!(why.contains("declares no such field"), "{why}");
+		let why = refused("cruise_off = \"off\"", "cruise_off = \"main switch off\"");
+		assert!(why.contains("cruise_off: \"main switch off\" is not a state of"), "{why}");
+		assert!(why.starts_with("[stalk] "), "{why}");
+	}
+
+	#[test]
+	fn a_stopwatch_the_plan_cannot_honour_is_refused() {
+		let refused = |from: &str, to: &str| -> String { build_with_lever(&WATCH.replacen(from, to, 1)).unwrap_err().to_string() };
+		let why = refused("01:IDE00010", "01:IDE00001x");
+		assert!(why.contains("is not in the [[channel]] list"), "{why}");
+		let why = refused("01:IDE00010", "01:IDE00011");
+		assert!(why.contains("offset"), "{why}");
+		for (marks, says) in [
+			("[0, 100]", "above 0"),
+			("[60, 60]", "listed twice"),
+			("[20, 40, 60, 80]", "1 to 3"),
+			("[]", "1 to 3"),
+			("[60.5]", "whole speed"),
+		] {
+			let why = refused("[60, 100]", marks);
+			assert!(why.contains(says), "{marks}: {why}");
+		}
+		for factor in ["-0.1", "\"fast\"", "1e40"] {
+			let why = refused("0.0", factor);
+			assert!(why.contains("km_h_per_unit must be a number at or above 0"), "{factor}: {why}");
+		}
+		let measured = build_with_lever(&WATCH.replacen("0.0", "0.0271", 1)).unwrap();
+		assert_eq!(measured.plan.stopwatch.unwrap().km_h_per_unit, 0.0271);
+	}
+
+	#[test]
+	fn a_stalk_read_that_names_a_field_rather_than_an_identifier_is_refused_when_parsed() {
+		let why = build_with_lever(&LEVER.replacen("70C:1105", "70C:1105@8", 1)).unwrap_err().to_string();
+		assert!(why.contains("is not <unit>:<DID>"), "{why}");
+		let why = build_with_lever("[[stalk]]\nread = \"70C:1105\"\n").unwrap_err().to_string();
+		assert!(why.contains("one [stalk] table"), "{why}");
+	}
+
+	/// A cache written before the levels kept their upper ends has every state as its lower
+	/// end alone: the rocker would never read as pressed. Refused, with what to do.
+	#[test]
+	fn a_cache_whose_states_predate_their_bands_is_refused_with_what_to_run() {
+		let here = tempfile::tempdir().unwrap();
+		build_with_lever_in(here.path(), LEVER, |_| {}).expect("builds on a cache that has the bands");
+		let here = tempfile::tempdir().unwrap();
+		let old_shape = |cache: &Path| {
+			let conn = rusqlite::Connection::open(cache).unwrap();
+			conn
+				.execute_batch(
+					"ALTER TABLE reading_level RENAME TO reading_level_new;\
+					 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
+					 INSERT INTO reading_level (reading_id, raw, meaning) SELECT reading_id, raw, meaning FROM reading_level_new ORDER BY rowid;\
+					 DROP TABLE reading_level_new;",
+				)
+				.unwrap();
+		};
+		let why = build_with_lever_in(here.path(), LEVER, old_shape).unwrap_err().to_string();
+		assert!(why.contains("run `vagcan setup` again"), "{why}");
 	}
 }

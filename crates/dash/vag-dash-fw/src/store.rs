@@ -194,9 +194,9 @@ impl Store {
 		if u32::from_le_bytes(header[0..4].try_into().unwrap()) != MAGIC {
 			return Ok(None);
 		}
-		if u16::from_le_bytes(header[4..6].try_into().unwrap()) != SCHEMA_VERSION {
-			return Ok(None);
-		}
+		// Any version `schema::decode` knows is read and carried forward; the next save writes
+		// the current one. One it does not know was written by a newer image.
+		let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
 		let len = usize::from(u16::from_le_bytes(header[6..8].try_into().unwrap()));
 		if len == 0 || len > SLOT_SIZE as usize - HEADER_LEN {
 			return Ok(None);
@@ -209,7 +209,7 @@ impl Store {
 		if CRC.checksum(&payload) != expected {
 			return Err(Error::Corrupt);
 		}
-		let config: Config = postcard::from_bytes(&payload).map_err(|_| Error::Corrupt)?;
-		Ok(Some((generation, config)))
+		let config = crate::schema::decode(version, &payload).map_err(|_| Error::Corrupt)?;
+		Ok(config.map(|config| (generation, config)))
 	}
 }

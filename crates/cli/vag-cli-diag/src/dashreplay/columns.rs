@@ -318,6 +318,8 @@ mod tests {
 			channels,
 			pages: vec![],
 			alarms: vec![],
+			stalk: None,
+			stopwatch: None,
 		}
 	}
 

@@ -235,6 +235,11 @@ impl<'a, const N: usize> Screen<'a, N> {
 		}
 	}
 
+	/// Whether an alarm holds the glass — where a press, the button's or the lever's, silences.
+	pub fn alarm_showing(&self) -> bool {
+		self.alarms.showing().is_some()
+	}
+
 	/// Whether the stopwatch mode is on.
 	pub fn stopwatch(&self) -> bool {
 		self.stopwatch
@@ -359,6 +364,8 @@ mod tests {
 			channels: &CHANNELS,
 			pages: &PLAN_PAGES,
 			alarms: &RULES,
+			stalk: None,
+			stopwatch: None,
 		};
 		let cells = |page: u8| match plan.pages[usize::from(page)] {
 			Page::Values { cells, .. } => cells,
@@ -705,9 +712,10 @@ mod tests {
 		let took = screen.frame(cursor, PAGES, 200, out.value_of());
 		assert_eq!((took.page, took.change), (3, Some(Change::Took { rule: 1 })));
 		assert!(screen.stopwatch() && !screen.stopwatch_on_glass(), "the alarm's page is drawn");
+		assert!(screen.alarm_showing());
 		// A press silences the alarm, and the stopwatch is on the glass again.
 		assert_eq!(screen.lever(Lever::Measure, &mut cursor, PAGES), Action::Silenced);
-		assert!(screen.stopwatch_on_glass());
+		assert!(screen.stopwatch_on_glass() && !screen.alarm_showing());
 		// Silenced, a measure press is a measure press again.
 		screen.frame(cursor, PAGES, 400, out.value_of());
 		assert_eq!(screen.lever(Lever::Measure, &mut cursor, PAGES), Action::StopwatchOff);
@@ -765,8 +773,7 @@ mod tests {
 		screen.frame(cursor, PAGES, 302_000, Car::calm().value_of());
 		assert_eq!(step(&mut screen, &mut watch, 120.0, 302_000), None);
 		assert_eq!(step(&mut screen, &mut watch, 121.0, 302_100), None);
-		let run = watch.run().expect("the run the adapter interrupted");
-		assert!(run.aborted && run.time(1).is_none(), "{run:?}");
+		assert_eq!(watch.run(), None, "the run the adapter interrupted is dropped, not finished");
 		assert!(!screen.stopwatch(), "the mode stays off until measure is pressed again");
 	}
 

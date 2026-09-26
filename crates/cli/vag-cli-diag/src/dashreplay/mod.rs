@@ -40,7 +40,8 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 	);
 	let answered = crate::plan::answered_from_survey(&resolved.survey);
 	let matched = columns::match_columns(&recording.columns, &offered, &answered, plan);
-	let mut notes = matched.notes;
+	let mut notes = unreplayed(plan);
+	notes.extend(matched.notes);
 	// The board's plan is `'static`; this one lives until the process ends anyway.
 	let device: &'static vag_dash_render::plan::Plan = Box::leak(Box::new(plan.to_device()));
 	let series = columns::series(&recording, &matched.sources, plan, device, &mut notes);
@@ -88,6 +89,21 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 		println!("{line}");
 	}
 	Ok(())
+}
+
+/// What the plan has that the replay does not run, said before anything else
+/// (`todo/dash/19`). The lever is pressed on the board by reading the car, and a recording
+/// holds none of those reads as presses; without it the stopwatch page is never entered.
+/// `--press` is the one button the replay has.
+pub fn unreplayed(plan: &vag_cli_core::dash::Plan) -> Vec<String> {
+	let mut notes = Vec::new();
+	if plan.stalk.is_some() {
+		notes.push("the plan's [stalk] lever is not replayed — the only press here is --press, the button's short press".to_string());
+	}
+	if plan.stopwatch.is_some() {
+		notes.push("the plan's stopwatch page is not replayed — the lever enters it, and the lever is not replayed".to_string());
+	}
+	notes
 }
 
 /// The whole run as its log: one line per event, as fast as it computes, no panel.
@@ -145,6 +161,8 @@ mod tests {
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &RULES,
+		stalk: None,
+		stopwatch: None,
 	};
 
 	#[test]
@@ -166,5 +184,45 @@ mod tests {
 		);
 		// No panel, no terminal control: a script reads it as it is.
 		assert!(!text.contains(['▀', '▄', '█', '\x1b']), "{text}");
+	}
+
+	#[test]
+	fn the_lever_and_the_stopwatch_are_said_to_be_left_out() {
+		use vag_cli_core::dash::{Plan as Input, Stalk, Stopwatch};
+		let mut plan = Input {
+			vin: "TESTVIN0000000001".into(),
+			language: "en".into(),
+			units: vec![],
+			channels: vec![],
+			pages: vec![],
+			alarms: vec![],
+			stalk: None,
+			stopwatch: None,
+		};
+		assert!(unreplayed(&plan).is_empty(), "a plan without them replays whole");
+		plan.stalk = Some(Stalk {
+			rocker: 0,
+			switch: 1,
+			cruise: 2,
+			rocker_states: vec![],
+			switch_states: vec![],
+			cruise_states: vec![],
+			next: 0,
+			previous: 0,
+			measure: 0,
+			switch_off: 0,
+			cruise_off: 0,
+		});
+		plan.stopwatch = Some(Stopwatch {
+			speed: 0,
+			km_h_per_unit: 0.0,
+			marks: vec![60],
+		});
+		let notes = unreplayed(&plan);
+		assert_eq!(notes.len(), 2);
+		assert!(
+			notes[0].contains("[stalk] lever is not replayed") && notes[1].contains("stopwatch page is not replayed"),
+			"{notes:?}"
+		);
 	}
 }

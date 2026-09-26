@@ -35,6 +35,8 @@
 //! crate. `no_std`, allocation-free: the marks are the plan's slice, and the
 //! launch fit is running sums, so it takes every sample of its window at any rate.
 
+use crate::frame::Cell;
+
 /// How long the channel's zero has to hold before the stopwatch arms.
 /// `vag-cli-measure`'s `session::ARMING_HOLD_S`: a property of traffic, not of a car.
 pub const ARMING_HOLD_MS: u64 = 1_000;
@@ -47,8 +49,9 @@ pub const START_FIT_MS: u64 = 400;
 /// `vag-cli-measure`'s `derive::MIN_FIT_SAMPLES`.
 const MIN_FIT_SAMPLES: usize = 3;
 
-/// The most marks one plan may carry.
-pub const MAX_MARKS: usize = 4;
+/// The most marks one plan may carry: the page is one row of four cells, the phase and
+/// the speed in the first, a mark's time in each of the others.
+pub const MAX_MARKS: usize = 3;
 
 /// Where the stopwatch stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +128,9 @@ pub enum Event {
 	Aborted,
 }
 
-/// The stopwatch.
+/// The stopwatch. `Copy`, so a caller holding it behind a lock can take a copy out to draw
+/// from and let the lock go.
+#[derive(Debug, Clone, Copy)]
 pub struct Stopwatch<'a> {
 	marks: &'a [u16],
 	km_h_per_unit: f32,
@@ -140,8 +145,10 @@ pub struct Stopwatch<'a> {
 	fit: Fit,
 	/// The run in progress, while [`Phase::Running`].
 	current: Run,
-	/// The last run that ended.
+	/// The last run that ended, finished or aborted: the one on show.
 	last: Option<Run>,
+	/// The last run that finished — what an aborted one gives way to when the page is left.
+	finished: Option<Run>,
 }
 
 impl<'a> Stopwatch<'a> {
@@ -165,6 +172,7 @@ impl<'a> Stopwatch<'a> {
 			fit: Fit::new(),
 			current: Run::new(),
 			last: None,
+			finished: None,
 		}
 	}
 
@@ -175,6 +183,11 @@ impl<'a> Stopwatch<'a> {
 	/// The marks, in km/h, in the plan's order.
 	pub fn marks(&self) -> &'a [u16] {
 		self.marks
+	}
+
+	/// The last run that reached its highest mark — the one the settings keep.
+	pub fn finished(&self) -> Option<Run> {
+		self.finished
 	}
 
 	/// The run on show: the one in progress, else the last one that ended.
@@ -241,15 +254,16 @@ impl<'a> Stopwatch<'a> {
 		event
 	}
 
-	/// The page was left: whatever was under way stops. A run in progress ends as
-	/// aborted and is kept, as the laptop keeps a cancelled one with the marks it
-	/// closed; the next run needs a fresh standstill.
+	/// The page was left: whatever was under way stops, and the next run needs a fresh
+	/// standstill. A run in progress is dropped, and so is an aborted one on show: an
+	/// aborted run is shown until the page is left and never after (owner's call,
+	/// 2026-09-26). The last finished run stays — it is what the settings keep.
 	pub fn reset(&mut self) {
 		if self.phase == Phase::NotMeasured {
 			return;
 		}
-		if self.phase == Phase::Running {
-			self.end(true);
+		if self.last.is_some_and(|run| run.aborted) {
+			self.last = self.finished;
 		}
 		self.phase = Phase::Idle;
 		self.standing_since = None;
@@ -315,6 +329,9 @@ impl<'a> Stopwatch<'a> {
 	fn end(&mut self, aborted: bool) {
 		self.current.aborted = aborted;
 		self.last = Some(self.current);
+		if !aborted {
+			self.finished = Some(self.current);
+		}
 		self.phase = Phase::Done;
 	}
 }
@@ -421,6 +438,147 @@ fn sqrt64(x: f64) -> f64 {
 	}
 	y
 }
+/// What the page says, in the plan's language: `"ru"` or anything else, which is English.
+/// The panel's own words, not the car's — nothing here names a unit or a state of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Words {
+	/// [`Phase::NotMeasured`]: the factor has not been measured.
+	pub not_measured: &'static str,
+	/// [`Phase::Idle`]: stand still to arm it.
+	pub idle: &'static str,
+	pub armed: &'static str,
+	pub running: &'static str,
+	pub done: &'static str,
+	pub seconds: &'static str,
+	pub km_h: &'static str,
+}
+
+impl Words {
+	pub fn of(language: &str) -> Words {
+		match language {
+			"ru" => RUSSIAN,
+			_ => ENGLISH,
+		}
+	}
+}
+
+const ENGLISH: Words = Words {
+	not_measured: "NO FACTOR",
+	idle: "STOP",
+	armed: "GO",
+	running: "RUN",
+	done: "DONE",
+	seconds: "s",
+	km_h: "km/h",
+};
+
+const RUSSIAN: Words = Words {
+	not_measured: "НЕТ КОЭФ",
+	idle: "СТОП",
+	armed: "ПУСК",
+	running: "ЗАМЕР",
+	done: "ГОТОВО",
+	// The units' face has no Cyrillic, and a plan's units are the catalog's SI spellings in
+	// either language: the labels are Russian, the units are not.
+	seconds: "s",
+	km_h: "km/h",
+};
+
+/// A mark's label, `0-100`: made once from the plan's marks and borrowed by every frame's
+/// cells, since a cell holds a `&str` and this crate has no allocator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Labels {
+	text: [[u8; 8]; MAX_MARKS],
+	len: [u8; MAX_MARKS],
+	count: usize,
+}
+
+impl Labels {
+	pub fn new(marks: &[u16]) -> Labels {
+		let mut labels = Labels {
+			text: [[0; 8]; MAX_MARKS],
+			len: [0; MAX_MARKS],
+			count: marks.len().min(MAX_MARKS),
+		};
+		for (i, mark) in marks.iter().take(MAX_MARKS).enumerate() {
+			// `0-` and at most five digits: seven bytes of eight.
+			let text = &mut labels.text[i];
+			text[..2].copy_from_slice(b"0-");
+			let mut digits = [0u8; 5];
+			let mut n = *mark;
+			let mut count = 0;
+			loop {
+				digits[count] = b'0' + (n % 10) as u8;
+				count += 1;
+				n /= 10;
+				if n == 0 {
+					break;
+				}
+			}
+			for (at, digit) in digits[..count].iter().rev().enumerate() {
+				text[2 + at] = *digit;
+			}
+			labels.len[i] = (2 + count) as u8;
+		}
+		labels
+	}
+
+	/// The label of mark `index`; empty past the marks.
+	pub fn get(&self, index: usize) -> &str {
+		if index >= self.count {
+			return "";
+		}
+		// ASCII by construction.
+		core::str::from_utf8(&self.text[index][..usize::from(self.len[index])]).unwrap_or("")
+	}
+}
+
+/// The stopwatch page as a values row: the phase's word over the speed, then each mark's
+/// time — the run on show, or where there is none, the last finished run `saved` holds as
+/// `(mark in km/h, seconds)`. A mark with no time draws a dash. With the factor not
+/// measured the row is that word and nothing else.
+pub fn cells<'a>(
+	watch: &Stopwatch<'_>,
+	speed_km_h: Option<f32>,
+	saved: &[(u16, f32)],
+	words: &'a Words,
+	labels: &'a Labels,
+) -> ([Cell<'a>; 1 + MAX_MARKS], usize) {
+	let mut row: [Cell<'a>; 1 + MAX_MARKS] = core::array::from_fn(|_| Cell::new("", None, "", 0));
+	let word = match watch.phase() {
+		Phase::NotMeasured => {
+			row[0] = Cell::new(words.not_measured, None, "", 0);
+			return (row, 1);
+		}
+		Phase::Idle => words.idle,
+		Phase::Armed => words.armed,
+		Phase::Running => words.running,
+		Phase::Done => words.done,
+	};
+	row[0] = Cell::new(word, speed_km_h, words.km_h, 0);
+	let run = watch.run();
+	let marks = &watch.marks()[..watch.marks().len().min(MAX_MARKS)];
+	for (i, mark) in marks.iter().enumerate() {
+		let time = match run {
+			Some(run) => run.time(i),
+			None => saved.iter().find(|(saved, _)| saved == mark).map(|(_, seconds)| *seconds),
+		};
+		row[1 + i] = Cell::new(labels.get(i), time, words.seconds, time.map_or(2, decimals_for));
+	}
+	(row, 1 + marks.len())
+}
+
+/// Places after the point a time is drawn with: two under 10 s, one under 100, none past
+/// it — what a quarter of the panel holds in the large face (measured with the renderer,
+/// `the_page_fits_the_panel_in_both_languages_with_its_widest_numbers`).
+fn decimals_for(seconds: f32) -> u8 {
+	match seconds {
+		s if s < 10.0 => 2,
+		s if s < 100.0 => 1,
+		_ => 0,
+	}
+}
+
 /// `f32::sqrt` is in `std`, and this crate is `no_std`: Newton's method from the
 /// exponent-halving first guess, four steps to full `f32` precision. Zero and
 /// below are zero — the fit only ever takes a speed above zero.
@@ -646,14 +804,23 @@ mod tests {
 	}
 
 	#[test]
-	fn leaving_the_page_mid_run_keeps_it_as_aborted_and_needs_a_fresh_standstill() {
+	fn leaving_the_page_drops_a_run_that_did_not_finish_keeps_one_that_did_and_needs_a_fresh_standstill() {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
-		drive(&mut watch, ramp(1.0, 20.0), 0, 4_500, 100);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
+		let finished = watch.run().expect("a finished run");
+		assert!(!finished.aborted);
+		drive(&mut watch, |t| if t < 12.0 { 0.0 } else { 20.0 * (t - 12.0) }, 10_000, 14_500, 100);
 		assert_eq!(watch.phase(), Phase::Running);
 		watch.reset();
 		assert_eq!(watch.phase(), Phase::Idle);
-		let run = watch.run().expect("kept");
-		assert!(run.aborted && run.time(0).is_some());
+		assert_eq!(watch.run(), Some(finished), "the run in progress is dropped, the finished one stays");
+		assert_eq!(watch.finished(), Some(finished));
+		// An aborted run on show is dropped the same way.
+		drive(&mut watch, |t| if t < 20.0 { 0.0 } else { 20.0 * (t - 20.0) }, 18_000, 22_000, 100);
+		watch.sample(Some(0.0), 22_100);
+		assert!(watch.run().is_some_and(|run| run.aborted));
+		watch.reset();
+		assert_eq!(watch.run(), Some(finished));
 		// Standing at the moment of the reset is not a standstill already held.
 		assert_eq!(watch.sample(Some(0.0), 5_000), None);
 		assert_eq!(watch.sample(Some(0.0), 6_000), Some(Event::Armed));
@@ -733,6 +900,106 @@ mod tests {
 					assert!((f64::from(got) - want).abs() < 1e-6, "{what}: {got} is not {want}");
 				}
 			}
+		}
+	}
+
+	#[test]
+	fn a_marks_label_is_its_speeds() {
+		static WIDE: [u16; 3] = [60, 100, 65535];
+		let labels = Labels::new(&WIDE);
+		assert_eq!((labels.get(0), labels.get(1), labels.get(2)), ("0-60", "0-100", "0-65535"));
+		assert_eq!(labels.get(3), "", "past the marks");
+	}
+
+	type Row = Vec<(std::string::String, Option<f32>, std::string::String, u8)>;
+
+	fn row(watch: &Stopwatch<'_>, speed: Option<f32>, saved: &[(u16, f32)]) -> Row {
+		let words = Words::of("en");
+		let labels = Labels::new(&MARKS);
+		let (cells, count) = cells(watch, speed, saved, &words, &labels);
+		cells[..count]
+			.iter()
+			.map(|c| (c.label.into(), c.value, c.unit.into(), c.decimals))
+			.collect()
+	}
+
+	#[test]
+	fn the_page_says_the_phase_over_the_speed_and_each_marks_time() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		// Nothing run yet, a finished run in the settings: its times, under the phase.
+		let saved = [(100, 9.87), (60, 5.43)];
+		assert_eq!(
+			row(&watch, Some(12.0), &saved),
+			[
+				("STOP".into(), Some(12.0), "km/h".into(), 0),
+				("0-60".into(), Some(5.43), "s".into(), 2),
+				("0-100".into(), Some(9.87), "s".into(), 2)
+			]
+		);
+		watch.sample(Some(0.0), 0);
+		watch.sample(Some(0.0), 1_000);
+		assert_eq!(row(&watch, Some(0.0), &saved)[0].0, "GO");
+		// Running: this run's times, a dash where a mark has not closed; the saved ones are gone.
+		drive(&mut watch, ramp(1.05, 20.0), 1_100, 4_500, 100);
+		let running = row(&watch, None, &saved);
+		assert_eq!(running[0], ("RUN".into(), None, "km/h".into(), 0), "a stale speed is a dash");
+		assert!(running[1].1.is_some() && running[2].1.is_none(), "{running:?}");
+		// Done: the run's own.
+		drive(&mut watch, ramp(1.05, 20.0), 4_600, 7_000, 100);
+		assert_eq!(row(&watch, Some(120.0), &saved)[0].0, "DONE");
+		assert_eq!(row(&watch, Some(120.0), &saved)[2].1, watch.run().unwrap().time(1));
+	}
+
+	#[test]
+	fn an_aborted_run_is_shown_until_the_next_and_an_unmeasured_factor_says_only_so() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.05, 20.0), 0, 4_500, 100);
+		watch.sample(Some(0.0), 4_600);
+		let shown = row(&watch, Some(0.0), &[(60, 1.0), (100, 2.0)]);
+		assert_eq!(shown.len(), 3);
+		assert_eq!(shown[1].1, watch.run().unwrap().time(0), "the aborted run's 0-60, not the saved one");
+		assert_eq!(shown[2].1, None, "and its 0-100 never closed");
+
+		let unmeasured = Stopwatch::new(&MARKS, 0.0);
+		assert_eq!(row(&unmeasured, Some(50.0), &[(60, 1.0)]), [("NO FACTOR".into(), None, "".into(), 0)]);
+	}
+
+	#[test]
+	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
+		use crate::{Frame, PANEL, Theme, draw};
+		use embedded_graphics::pixelcolor::BinaryColor;
+		use embedded_graphics_simulator::SimulatorDisplay;
+		static WIDEST: [u16; 3] = [100, 200, 300];
+		let labels = Labels::new(&WIDEST);
+		let watch = Stopwatch::new(&WIDEST, FACTOR);
+		for language in ["en", "ru"] {
+			let words = Words::of(language);
+			for word in [words.idle, words.armed, words.running, words.done] {
+				let saved = [(100, 9.99), (200, 88.88), (300, 188.8)];
+				let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
+				row[0].label = word;
+				let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
+				let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
+				assert!(
+					!report.label_overrun && !report.value_overrun && !report.glyph_missing,
+					"{language} {word}: {report:?}"
+				);
+			}
+			let unmeasured = Stopwatch::new(&WIDEST, 0.0);
+			let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
+			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
+			let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
+			assert!(!report.label_overrun && !report.glyph_missing, "{language}: {report:?}");
+		}
+	}
+
+	#[test]
+	fn the_words_follow_the_plans_language() {
+		assert_eq!(Words::of("ru").idle, "СТОП");
+		assert_eq!(Words::of("en").idle, "STOP");
+		assert_eq!(Words::of("de"), Words::of("en"), "a language it has no words for is English");
+		for words in [Words::of("ru"), Words::of("en")] {
+			assert!(words.not_measured.chars().count() <= 10, "a label is ten characters at most");
 		}
 	}
 

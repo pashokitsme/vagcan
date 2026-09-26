@@ -7,46 +7,16 @@
 //! is not a restriction bolted on for safety; it is the only thing the type can
 //! express. A forty-first identifier is not refused, it is unsayable.
 
-use serde::{Deserialize, Serialize};
 use vag_dash_render::pages::{self, Layout, Mismatch};
 
 use crate::plan::PLAN;
 
-// How many pages the panel can hold, and how many cells fit on one. Both are
-// bounded because the storage is: a configuration has to fit in a flash
-// sector with room for its header. The page count is defined beside the plan
-// type, because the generator refuses a plan with more pages than this.
+// The record itself — its fields, its versions, how flash bytes become one — is
+// `schema`'s, where a host test can reach it. What the plan decides about it is here.
+pub use crate::schema::{Config, MAX_CELLS, Page, PageKind, SCHEMA_VERSION};
+// How many pages the panel can hold: defined beside the plan type, because the
+// generator refuses a plan with more pages than this.
 pub use vag_dash_render::pages::MAX_PAGES;
-pub const MAX_CELLS: usize = 8;
-
-/// Bumped whenever the meaning of a field changes. A stored blob whose version
-/// is not this one is ignored rather than reinterpreted — a configuration read
-/// under the wrong schema is worse than no configuration.
-pub const SCHEMA_VERSION: u16 = 1;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PageKind {
-	/// One channel, large, with a sparkline.
-	Chart,
-	/// Up to four columns: small label over a large number.
-	Values,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Page {
-	pub kind: PageKind,
-	/// Indices into the flashed plan. Not identifiers — indices.
-	pub cells: heapless::Vec<u16, MAX_CELLS>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Config {
-	/// 0..=255, straight to the panel's contrast register.
-	pub brightness: u8,
-	/// Which page is showing when the device wakes up.
-	pub active_page: u8,
-	pub pages: heapless::Vec<Page, MAX_PAGES>,
-}
 
 impl Default for Config {
 	/// What a device with nothing stored shows: **the plan's own pages**, in
@@ -83,6 +53,7 @@ impl Default for Config {
 			brightness: 128,
 			active_page: 0,
 			pages,
+			last_run: heapless::Vec::new(),
 		}
 	}
 }

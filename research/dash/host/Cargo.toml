@@ -60,3 +60,10 @@ crossterm = "0.28"
 # `dashsim --preview`: the renderer's `DrawTarget` trait, and the PNG the frames are written to.
 embedded-graphics = "0.8"
 png = "0.17"
+
+[dev-dependencies]
+# `tests/settings_schema.rs`: the firmware's settings record, compiled here as it is, at the
+# firmware's own versions of what it is built from — the board cannot be built for the host.
+heapless = { version = "0.8.0", features = ["serde"] }
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
