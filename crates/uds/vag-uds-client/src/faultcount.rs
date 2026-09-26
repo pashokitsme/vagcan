@@ -43,9 +43,9 @@
 use alloc::vec::Vec;
 
 use crate::address::UnitAddress;
-use crate::dtc::{self, RawDtc};
+use crate::dtc;
 use crate::gateway;
-use crate::pdu::{self, Classified};
+use crate::pdu::{self, ClassifiedRef};
 use crate::schedule::{Answer, Unit};
 use crate::uds::UdsError;
 
@@ -101,9 +101,9 @@ pub enum Why {
 	Refused(u8),
 	/// An answer that is not a response to what was asked.
 	Malformed,
-	/// A listed id that is another walked unit's answer id, or whose own answer id is
-	/// another walked unit's request id: asking it would put one conversation on another's
-	/// ids. Not asked.
+	/// A listed id that is another walked unit's answer id, whose own answer id is another
+	/// walked unit's request id, or which answers on the id another walked unit answers on:
+	/// asking it would put two conversations on one id. Not asked.
 	SharedId,
 }
 
@@ -210,14 +210,14 @@ impl FaultCount {
 	pub fn answered(&mut self, answer: Answer) {
 		let state = core::mem::replace(&mut self.state, State::Gateway);
 		self.state = match state {
-			State::Gateway => match installation_list(answer) {
+			State::Gateway => match installation_list(&answer) {
 				Ok((listed, outside_block)) => Self::walk(&listed, outside_block),
 				Err(why) => State::Done(Outcome::NoList(why)),
 			},
 			State::Units { walk, at, mut tally } => {
 				let request = walk[at].request;
-				match stored_codes(answer) {
-					Ok(codes) => tally.read.push(tally_of(request, &codes)),
+				match tally_of(request, &answer) {
+					Ok(unit) => tally.read.push(unit),
 					Err(why) => tally.failed.push(Failed { request, why }),
 				}
 				Self::advance(walk, at + 1, tally)
@@ -248,7 +248,12 @@ impl FaultCount {
 				tally.outside_block = tally.outside_block.saturating_add(1);
 				continue;
 			};
-			let clashes = walk.iter().any(|kept| kept.response == unit.request || kept.request == unit.response);
+			// Sent on an id a kept unit answers on, answering on one a kept unit is asked on,
+			// or answering on the id a kept unit answers on: any of them puts two
+			// conversations on one id.
+			let clashes = walk
+				.iter()
+				.any(|kept| kept.response == unit.request || kept.request == unit.response || kept.response == unit.response);
 			if clashes {
 				tally.failed.push(Failed { request, why: Why::SharedId });
 			} else {
@@ -279,17 +284,18 @@ fn address(request: u16) -> Option<Unit> {
 	})
 }
 
-/// The bytes after the echoed service of a positive answer to `sid`, or why there are
+/// The bytes after the echoed service of a positive answer to `sid`, where they lie in the
+/// answer — never copied: the answer may be 4095 bytes on a 72 KB heap — or why there are
 /// none.
-fn positive(sid: u8, answer: Answer) -> Result<Vec<u8>, Why> {
+fn positive(sid: u8, answer: &Answer) -> Result<&[u8], Why> {
 	match answer {
-		Answer::Pdu(pdu) => match pdu::classify_response(sid, &pdu) {
-			Ok(Classified::Data(data)) => Ok(data),
-			Ok(Classified::Pending) => Err(Why::Refused(RESPONSE_PENDING)),
+		Answer::Pdu(pdu) => match pdu::classify_response_ref(sid, pdu) {
+			Ok(ClassifiedRef::Data(data)) => Ok(data),
+			Ok(ClassifiedRef::Pending) => Err(Why::Refused(RESPONSE_PENDING)),
 			Err(UdsError::NegativeResponse { nrc, .. }) => Err(Why::Refused(nrc)),
 			Err(_) => Err(Why::Malformed),
 		},
-		Answer::Refused(nrc) => Err(Why::Refused(nrc)),
+		Answer::Refused(nrc) => Err(Why::Refused(*nrc)),
 		// A read always expects an answer; nothing coming back is silence.
 		Answer::NoAnswer | Answer::NotExpected => Err(Why::NoAnswer),
 		Answer::BusError => Err(Why::BusError),
@@ -303,7 +309,7 @@ fn positive(sid: u8, answer: Answer) -> Result<Vec<u8>, Why> {
 /// up to 4095 bytes, and a whole answer decoded is up to 32,736 ids — over 130 KB of heap
 /// on a board with 72 KB, at every boot. The block's 24 bytes are 192 ids at most; the
 /// rest is counted, not allocated.
-fn installation_list(answer: Answer) -> Result<(Vec<u16>, u32), Why> {
+fn installation_list(answer: &Answer) -> Result<(Vec<u16>, u32), Why> {
 	let data = positive(READ_DATA, answer)?;
 	let bitmap = data.strip_prefix(&pdu::did_bytes(gateway::INSTALLATION_LIST)).ok_or(Why::Malformed)?;
 	let (block, past) = bitmap.split_at(bitmap.len().min(gateway::VW_BLOCK_BYTES));
@@ -311,21 +317,24 @@ fn installation_list(answer: Answer) -> Result<(Vec<u16>, u32), Why> {
 	Ok((gateway::decode_installation_list(block), outside))
 }
 
-/// The codes a unit's `19 02` answer holds.
-fn stored_codes(answer: Answer) -> Result<Vec<RawDtc>, Why> {
+/// One unit's stored codes and, of those, the ones failing now, counted as the answer is
+/// read — the codes are never collected — and the bits checked on every code, whatever mask
+/// the unit honoured.
+fn tally_of(request: u16, answer: &Answer) -> Result<UnitTally, Why> {
 	let data = positive(READ_DTC, answer)?;
-	pdu::parse_dtc_list(&data, BY_STATUS_MASK).map_err(|_| Why::Malformed)
-}
-
-/// One unit's stored codes and, of those, the ones failing now — the bits checked on
-/// every code, whatever mask the unit honoured.
-fn tally_of(request: u16, codes: &[RawDtc]) -> UnitTally {
-	let stored = codes.iter().filter(|c| c.status & dtc::CONFIRMED != 0);
-	UnitTally {
+	let records = pdu::dtc_records(data, BY_STATUS_MASK).map_err(|_| Why::Malformed)?;
+	let mut tally = UnitTally {
 		request,
-		stored: stored.clone().count() as u32,
-		failing_now: stored.filter(|c| c.status & dtc::FAILED_NOW != 0).count() as u32,
+		stored: 0,
+		failing_now: 0,
+	};
+	for code in records.filter(|c| c.status & dtc::CONFIRMED != 0) {
+		tally.stored += 1;
+		if code.status & dtc::FAILED_NOW != 0 {
+			tally.failing_now += 1;
+		}
 	}
+	Ok(tally)
 }
 
 #[cfg(test)]
@@ -662,14 +671,101 @@ mod tests {
 		for request in [0x776, 0x777] {
 			assert!(tally.failed.contains(&Failed { request, why: Why::SharedId }), "{request:03X}");
 		}
-		// And no request goes out on, or listens on, an id another unit of the walk uses.
+		// 0x77E and 0x77F answer on 0x7E8 and 0x7E9 — the engine's and the gearbox's own
+		// answer ids: two units listened for on one id, and whichever speaks is taken for
+		// the other.
+		for (listed, clashes_with) in [(0x77E, 0x7E0), (0x77F, 0x7E1)] {
+			let (outcome, asked) = run(&Car::listing(&[listed]));
+			assert!(
+				asked.iter().all(|(u, _)| u.request != listed),
+				"{listed:03X} asked beside {clashes_with:03X}"
+			);
+			assert!(counted(outcome).failed.contains(&Failed {
+				request: listed,
+				why: Why::SharedId
+			}));
+		}
+		// And no two units of a walk share an id, in either role.
+		let car = Car::listing(&[0x70C, 0x776, 0x777, 0x77E, 0x77F, 0x714]);
+		let (_, asked) = run(&car);
 		for (unit, _) in &asked {
 			for (other, _) in &asked {
 				if unit != other {
-					assert!(unit.request != other.response && unit.response != other.request, "{unit:?} / {other:?}");
+					let ids = [unit.request, unit.response];
+					assert!(!ids.contains(&other.request) && !ids.contains(&other.response), "{unit:?} / {other:?}");
 				}
 			}
 		}
+	}
+
+	/// The test binary's allocator: the system's, counting what each thread asks it for, so
+	/// a test can see what one call allocates while the others run beside it.
+	mod meter {
+		extern crate std;
+		use std::alloc::{GlobalAlloc, Layout, System};
+		use std::cell::Cell;
+
+		std::thread_local! {
+			static ALLOCATED: Cell<usize> = const { Cell::new(0) };
+		}
+
+		struct Meter;
+
+		// SAFETY: every call is passed to `System` unchanged; the counter is a const-initialised
+		// thread-local `Cell` with no destructor, which never allocates.
+		unsafe impl GlobalAlloc for Meter {
+			unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+				let _ = ALLOCATED.try_with(|n| n.set(n.get() + layout.size()));
+				// SAFETY: the caller's contract, passed on.
+				unsafe { System.alloc(layout) }
+			}
+
+			unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+				// SAFETY: the caller's contract, passed on.
+				unsafe { System.dealloc(ptr, layout) }
+			}
+		}
+
+		#[global_allocator]
+		static METER: Meter = Meter;
+
+		/// Bytes this thread has asked for so far.
+		pub fn allocated() -> usize {
+			ALLOCATED.try_with(Cell::get).unwrap_or(0)
+		}
+	}
+
+	/// Bytes the allocator was asked for on this thread while `f` ran.
+	fn allocated_by(f: impl FnOnce()) -> usize {
+		let before = meter::allocated();
+		f();
+		meter::allocated() - before
+	}
+
+	#[test]
+	fn an_answer_is_read_where_it_lies_and_its_codes_are_counted_not_kept() {
+		// The board's heap is 72 KB, shared with BLE. The longest answer ISO-TP carries is
+		// 4095 bytes; the answer itself is the caller's, and reading it must not cost a copy
+		// of it — nor a list of the codes in it, which are only counted.
+		let mut codes = vec![0x59, 0x02, 0xFF];
+		while codes.len() + 4 <= 4095 {
+			codes.extend_from_slice(&[0x00, 0x01, 0x02, 0x09]);
+		}
+		let mut count = FaultCount::new();
+		count.answered(Answer::Pdu(list_answer(&[])));
+		let answer = Answer::Pdu(codes);
+		let spent = allocated_by(|| count.answered(answer));
+		assert!(spent < 256, "{spent} bytes allocated to count one answer");
+		let Step::Ask { .. } = count.next() else { panic!("done early") };
+
+		// The gateway's list likewise: the block's ids, and nothing else.
+		let mut list = vec![0x62, 0x2A, 0x26];
+		list.resize(4095, 0x00);
+		list[3] = 0x01;
+		let mut count = FaultCount::new();
+		let answer = Answer::Pdu(list);
+		let spent = allocated_by(|| count.answered(answer));
+		assert!(spent < 256, "{spent} bytes allocated to read the list");
 	}
 
 	#[test]

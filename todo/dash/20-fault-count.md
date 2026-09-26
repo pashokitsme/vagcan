@@ -68,16 +68,19 @@ this at every boot with nobody watching:
   it is a sweep of the block with nobody watching, which `CLAUDE.md` guards as it guards
   `survey`.
 - **A listed id that shares an id with a unit already walked is skipped and named**
-  (`Why::SharedId`): an id that is another walked unit's answer id, or whose own answer id is
-  another walked unit's request id. The reference car lists `776` (= `70C`'s answer id; its
-  own answer id would be `7E0`, the engine's request) and `777` (answer id `7E1`, the
-  gearbox's). Walked in order, a unit comes before the id it answers on, so the first of a
-  pair is kept. **The laptop's `faults` asks both today**, sending `19 02 FF` on `776` and
+  (`Why::SharedId`): an id that is another walked unit's answer id, whose own answer id is
+  another walked unit's request id, or which answers on the id another walked unit answers
+  on. The reference car lists `776` (= `70C`'s answer id; its own answer id would be `7E0`,
+  the engine's request) and `777` (answer id `7E1`, the gearbox's); a listed `77E` or `77F`
+  would answer on `7E8`/`7E9`, the engine's and the gearbox's own answer ids (review round 2).
+  Walked in order, a unit comes before the id it answers on, so the first of a pair is kept. **The laptop's `faults` asks both today**, sending `19 02 FF` on `776` and
   listening on `7E0` — a separate question for later, not this branch.
 
 ## The count: `vag_uds_client::faultcount` (phase 1, done)
 
-Sans-IO, as `schedule` is — no clock, no bus, no allocation beyond the walk:
+Sans-IO, as `schedule` is — no clock, no bus, no allocation beyond the walk and the tally.
+Answers are read where they lie (`pdu::classify_response_ref`, `pdu::dtc_records`): nothing
+copies an answer, and a unit's codes are counted as they are read, never collected.
 
 ```rust
 let mut count = FaultCount::new();
@@ -103,9 +106,11 @@ board. Nothing on the host changed.
 future (the embassy task arena), not static; `Tally` and `Outcome` 28 B. On the heap during a
 count: the walk 4 B a unit, 12 B an answering unit, 4 B a failing one — under 1 KB for 18 units,
 and bounded whatever the car answers: the list decodes to 192 ids at most (384 B) and a walk
-past 40 units is refused. Transient: one answer at a time, held twice (the PDU and its payload
-past the service byte) — up to 2 × 4 KB for the longest answer ISO-TP carries. Freed at the end
-but for the `Tally` if the shell keeps it. `Faults` 8 B; `Board` grew from 16 to 24 B (a stack
+past 40 units is refused. **Peak:** one answer, held once by its caller — up to 4095 B, the
+longest ISO-TP carries — plus what reading it allocates, measured in the tests with a counting
+allocator: 48 B to count a 4095-byte `19 02` answer (the tally's first entry), 42 B to read a
+4095-byte list (review round 2: it was 8,234 B, a copy of the answer and a list of its codes).
+Freed at the end but for the `Tally` if the shell keeps it. `Faults` 8 B; `Board` grew from 16 to 24 B (a stack
 local per frame).
 
 ## The badge: `vag_dash_render` (phase 1, done)
@@ -179,15 +184,18 @@ each a BLE round trip.
 
 ## Tests
 
-- `faultcount` (13): the gateway first and idempotent; every unit of the walk asked `19 02 08`
+- `faultcount` (14): the gateway first and idempotent; every unit of the walk asked `19 02 08`
   in order, by its block's rule; only `22` once and `19` — no `10`; stored = confirmed, failing
   now = confirmed and failing, a unit that ignored the mask counted right; a unit that is
   silent, refuses, errors, leaks a `78` or answers the wrong subfunction is skipped and named;
   a gateway with no list (silence, bus error, NRC, another identifier, too short) asks no unit;
   an empty list still reads the three; bits past VW's block (`7C0`, `7E0`) counted, not
   decoded; a 4095-byte all-ones answer decodes no more than the block and is refused; 40 units
-  walked, 41 refused with nothing asked; `776`/`777` beside `70C` skipped as shared ids, and no
-  two units of a walk share an id; an answer after the end changes nothing.
+  walked, 41 refused with nothing asked; `776`/`777` beside `70C`, and `77E`/`77F` (answering
+  on the engine's and the gearbox's answer ids), skipped as shared ids, and no two units of a
+  walk share a request id or an answer id, in either role; counting a 4095-byte answer
+  allocates under 256 B, and so does reading a 4095-byte list (a counting allocator in the
+  test binary); an answer after the end changes nothing.
 - `gateway` (2, moved from `survey`): the walk covers the three the list cannot hold; a unit
   listed twice is walked once.
 - `render` (9): the triangle pixel for pixel at the foot of the icon column, the count over it
