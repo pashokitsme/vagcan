@@ -223,10 +223,11 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 ///
 /// It writes `format!("{v}")` of an `f64`: `Display` prints the shortest decimal that reads
 /// back to the value and never an exponent, so below one it starts `0.` and never `0` then
-/// another digit (`a_number_as_watch_writes_it_…` pins this). `0100` parses, and is not one.
+/// another digit (`a_number_as_watch_writes_it_…` pins this). `0100` parses, and is not one;
+/// nor is `1E05`, old bare hex that `f64`'s parser reads as 100000, nor `inf` or `NaN`.
 fn written_number(cell: &str) -> Option<f64> {
 	let leading_zero = cell.len() > 1 && cell.starts_with('0') && cell.as_bytes()[1].is_ascii_digit();
-	if leading_zero {
+	if leading_zero || cell.bytes().any(|b| b.is_ascii_alphabetic()) {
 		return None;
 	}
 	cell.parse().ok()
@@ -238,7 +239,8 @@ const RAW_SLACK: f64 = 1e-3;
 
 /// A converted value as the board would have computed it: back to the raw integer through
 /// the plan's own scaling, then `raw × factor + offset` in `f32`. `None` when the value is
-/// not a whole raw value on that scaling.
+/// not a whole raw value on that scaling, or the raw value does not fit the field: the
+/// board never reads more bits than `bit_length`, so it cannot have shown one outside them.
 ///
 /// Whole within [`RAW_SLACK`], a fixed amount in raw counts: `watch` writes the value with
 /// `{v}`, which reads back exactly, so a value on this scaling inverts to within a few ulps
@@ -250,10 +252,20 @@ fn on_the_boards_scale(value: f64, owned: &PlanChannel, board: &DeviceChannel) -
 	}
 	let raw = (value - owned.offset) / owned.factor;
 	let whole = raw.round();
-	if (raw - whole).abs() > RAW_SLACK {
+	if (raw - whole).abs() > RAW_SLACK || !fits(whole, owned.bit_length, owned.signed) {
 		return None;
 	}
 	Some(whole as f32 * board.factor + board.offset)
+}
+
+/// Whether a whole raw value is one a field `bits` wide can hold.
+fn fits(raw: f64, bits: u32, signed: bool) -> bool {
+	let bits = bits.min(64) as i32;
+	let (least, most) = match signed {
+		true if bits > 0 => (-(2f64.powi(bits - 1)), 2f64.powi(bits - 1) - 1.0),
+		_ => (0.0, 2f64.powi(bits) - 1.0),
+	};
+	(least..=most).contains(&raw)
 }
 
 /// Seconds of the recording's clock as milliseconds.
@@ -470,7 +482,10 @@ mod tests {
 		// `research/dumps/drive-gear.csv` has hundreds, interleaved. Reading those as misses
 		// put a dash on the panel every other row.
 		let offered = [offered(ENGINE, 0x1001, "A", RawForm::I16Be)];
-		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "a")]);
+		// ×1: at the fixture's ×0.01, 806 is raw 80600, past a 16-bit field.
+		let mut channel = plan_channel(ENGINE, 0x1001, 0, "a");
+		channel.factor = 1.0;
+		let owned = plan(vec![channel]);
 		let device = owned.to_device();
 		let read = |csv: &str| {
 			let recording = columns(csv);
@@ -492,6 +507,20 @@ mod tests {
 		let mut channel = plan_channel(ENGINE, 0x1001, 0, "one");
 		channel.factor = factor;
 		channel.bit_length = bits;
+		let owned = plan(vec![channel]);
+		let device = owned.to_device();
+		let recording = columns(csv);
+		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let mut notes = Vec::new();
+		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
+		(series, notes)
+	}
+
+	/// [`read_on`] over an unsigned field.
+	fn read_on_unsigned(factor: f64, bits: u32, csv: &str) -> (Vec<Option<Series>>, Vec<String>) {
+		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let mut channel = plan_channel(ENGINE, 0x1001, 0, "one");
+		(channel.factor, channel.bit_length, channel.signed) = (factor, bits, false);
 		let owned = plan(vec![channel]);
 		let device = owned.to_device();
 		let recording = columns(csv);
@@ -532,17 +561,38 @@ mod tests {
 			assert!(notes[0].contains("bare hex") && notes[0].contains("before 2026-09-26"), "{notes:?}");
 		}
 		// Numbers that fit are the values the board computes.
-		let (series, notes) = read_on(0.01, 16, "t_s,One\n0.0,-2.3\n0.3,1000\n0.4,0\n0.5,0.5\n");
+		let (series, notes) = read_on(0.01, 16, "t_s,One\n0.0,-2.3\n0.3,100\n0.4,0\n0.5,0.5\n");
 		assert!(notes.is_empty(), "{notes:?}");
 		assert_eq!(
 			series[0],
 			Some(vec![
 				(0, Some(-230.0f32 * 0.01)),
-				(300, Some(100_000.0f32 * 0.01)),
+				(300, Some(10_000.0f32 * 0.01)),
 				(400, Some(0.0)),
 				(500, Some(50.0f32 * 0.01))
 			])
 		);
+	}
+
+	#[test]
+	fn old_bare_hex_that_parses_as_an_exponent_or_overflows_the_field_drops_the_column() {
+		// `1E05` is the bytes 1E 05 as old `watch --out` wrote them, and `f64` reads it as
+		// 100000; `9999` is only digits, and an 8-bit field holds at most 255.
+		for (bits, cell) in [(16, "1E05"), (16, "1e3"), (8, "9999"), (8, "-1")] {
+			let csv = format!("t_s,One\n0.0,3\n0.1,{cell}\n0.2,6\n");
+			let (series, notes) = read_on_unsigned(1.0, bits, &csv);
+			assert_eq!(series, [None], "{bits}-bit: {cell}");
+			assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");
+		}
+		// The ends of the field are values the board can show.
+		let (series, notes) = read_on_unsigned(1.0, 8, "t_s,One\n0.0,0\n0.1,255\n");
+		assert!(notes.is_empty(), "{notes:?}");
+		assert_eq!(series[0], Some(vec![(0, Some(0.0)), (100, Some(255.0))]));
+		let (series, notes) = read_on(1.0, 8, "t_s,One\n0.0,-128\n0.1,127\n");
+		assert!(notes.is_empty(), "{notes:?}");
+		assert_eq!(series[0], Some(vec![(0, Some(-128.0)), (100, Some(127.0))]));
+		let (series, _) = read_on(1.0, 8, "t_s,One\n0.0,128\n");
+		assert_eq!(series, [None]);
 	}
 
 	#[test]
