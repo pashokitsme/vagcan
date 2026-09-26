@@ -60,6 +60,25 @@ then the same with `--no-default-features` (no BLE, for a board whose BLE does n
 touches: `1424c71` formatted the firmware only and left `guard.rs` red on `master`. Missed twice: an unformatted `dashsim` failed PR #3's CI
 (2026-09-14), and a preview count its tests pin failed PR #4's (2026-09-15).
 
+**Firmware RAM.** The ESP32-C3 has one data-RAM region: statics and IRAM code fill it from
+the bottom, the stack gets the rest. [`crates/dash/vag-dash-fw/ram-budget.sh`](crates/dash/vag-dash-fw/ram-budget.sh)
+builds `dash` with and without BLE (empty plan, as CI does), prints the sections and the 15
+biggest statics, and fails when statics (`.data`+`.bss`+`.noinit`) pass a ceiling or `.stack`
+falls under a floor. CI's `firmware` job runs it. Limits, measured 2026-09-26 with ~11–12 %
+headroom:
+
+| build  | static  | ceiling | stack   | floor   |
+|--------|---------|---------|---------|---------|
+| ble    | 138,848 | 156,000 | 157,116 | 140,000 |
+| no-ble | 129,388 | 145,000 | 188,464 | 168,000 |
+
+- A change to `vag-dash-fw`, or to a `no_std` crate it links (`vag-uds-*`, `vag-dash-render`),
+  reports its static-RAM delta: run the script before and after.
+- Growth over 1 KB is flagged in the PR and justified.
+- Raising a limit changes `ram-budget.sh`, `ci.yml`'s comment and this table in one commit,
+  with the reason.
+- A pixel is a bit, not a `bool` — on the board and in host tools that hold a panel.
+
 ## Safety (MANDATORY)
 
 This tool only reads, and reading is not the same as harmless: an identifier sweep is a
