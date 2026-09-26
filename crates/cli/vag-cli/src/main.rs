@@ -978,11 +978,9 @@ async fn odx_name_from_car<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, e
 
 /// List the car's control units (see the `Units` subcommand docs).
 async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: bool) -> Result<()> {
+	use vag_uds_client::address::UnitAddress;
 	use vag_uds_client::gateway;
 	use vag_uds_transport::CanId;
-
-	const GATEWAY_REQUEST: u16 = 0x710;
-	const VW_RESPONSE_OFFSET: u16 = 0x6A;
 
 	// The label files turn a part number the car reports into the unit's diagnostic
 	// address and name, for any VAG car rather than for a list written here.
@@ -1007,9 +1005,8 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 		None => None,
 	};
 
-	let channel = open()
-		.await?
-		.to_unit(CanId::Standard(GATEWAY_REQUEST), CanId::Standard(GATEWAY_REQUEST + VW_RESPONSE_OFFSET));
+	let gw = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
+	let channel = open().await?.to_unit(CanId::Standard(gw.request), CanId::Standard(gw.response));
 	let mut uds = AsyncUdsClient::new(channel);
 
 	let bitmap = uds
@@ -1037,7 +1034,12 @@ async fn units<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, identify: boo
 			continue;
 		}
 		// Address the same link to each unit in turn rather than reopening it.
-		let channel = backend.to_unit(CanId::Standard(id), CanId::Standard(id + VW_RESPONSE_OFFSET));
+		let Some(address) = UnitAddress::from_request(id) else {
+			spinner.finish();
+			println!("  {id:03X}  has no diagnostic address (700-795 or 7E0-7E7) — skipped");
+			continue;
+		};
+		let channel = backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response));
 		let mut unit = AsyncUdsClient::new(channel);
 		let part = unit.read_data_by_identifier(0xF187).await.ok();
 		let component = unit.read_data_by_identifier(0xF197).await.ok();

@@ -145,6 +145,7 @@ impl<'a, const N: usize> Screen<'a, N> {
 	pub fn adapter(&mut self) {
 		self.adapter = true;
 		self.drawn = None;
+		self.alarms.glass_lost();
 	}
 
 	/// A short press, with `pages` the number of pages the cursor runs over.
@@ -404,6 +405,20 @@ mod tests {
 		assert_eq!((back.page, back.change), (2, None), "the same episode, not a new takeover");
 		assert!(back.page_changed, "the glass showed the adapter a frame ago");
 		assert!(!screen.frame(cursor, PAGES, 60_200, out.value_of()).page_changed);
+	}
+
+	#[test]
+	fn back_from_the_adapter_screen_the_alarm_cell_blinks_from_its_inverted_half() {
+		// Fired at 0; the adapter screen until 10.7 s; back at 10.8 s, where the clock alone
+		// is in a plain half ((10800 / 400) % 2 = 1). The first frame back is inverted.
+		let mut screen = screen();
+		let out = Car::calm().with(5, Some(12.0));
+		screen.frame(0, PAGES, 0, out.value_of());
+		screen.adapter();
+		let back = screen.frame(0, PAGES, 10_800, out.value_of());
+		assert_eq!(back.change, None, "the same episode, not a new takeover");
+		assert_eq!(back.inverted, Some(ChannelId(5)));
+		assert_eq!(blinks(&mut screen, out, [11_000, 11_200, 11_400], 5), [true, false, false]);
 	}
 
 	/// Which frames of `times` draw `channel`'s cell inverted, with `car` as the store.
