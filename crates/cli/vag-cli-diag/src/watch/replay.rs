@@ -76,7 +76,8 @@ impl Recording {
 	pub fn parse(csv: &str) -> Result<Recording, String> {
 		let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
 		let header = lines.next().ok_or("the recording is empty")?;
-		let headings: Vec<&str> = header.split(',').collect();
+		let headings = crate::discover::fields(header);
+		let headings: Vec<&str> = headings.iter().map(String::as_str).collect();
 		if headings.first().map(|h| h.trim()) != Some("t_s") {
 			return Err("not a `watch --out` recording: the first column is not t_s".into());
 		}
@@ -105,7 +106,7 @@ impl Recording {
 		let mut samples = Vec::new();
 		let mut read_at = Vec::new();
 		for line in lines {
-			let row: Vec<&str> = line.split(',').collect();
+			let row = crate::discover::fields(line);
 			let Some(Ok(t)) = row.first().map(|c| c.trim().parse::<f64>()) else {
 				continue;
 			};

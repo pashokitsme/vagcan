@@ -2134,7 +2134,8 @@ fn effective_hz(flag: Option<f64>, saved: f64) -> f64 {
 /// A raw column is marked, because a four-digit hex value and a four-digit
 /// decimal are the same string — the reader cannot tell them apart from the
 /// value alone. Every value carries its own time, because every read arrives on
-/// its own and columns are up to a period apart.
+/// its own and columns are up to a period apart. A heading holding a comma is
+/// quoted (`discover::quoted`): the label files name channels "…, cylinder 1".
 fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool) -> Result<()> {
 	let shown = app.shown();
 	if !*header_written {
@@ -2142,7 +2143,8 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 			.iter()
 			.map(|c| {
 				let name = if c.def.is_some() { c.label() } else { format!("{}_raw", c.label()) };
-				format!("{name}_t_s,{name}")
+				let quoted = crate::discover::quoted;
+				format!("{},{}", quoted(&format!("{name}_t_s")), quoted(&name))
 			})
 			.collect();
 		writeln!(w, "t_s,{}", cols.join(","))?;
@@ -3305,6 +3307,25 @@ mod tests {
 		reads.insert((0x7E1, 0x380A), heard(9.0, true));
 		assert_eq!(waited_on(&reads, 10.0, 0.1), Some(0x7E1), "a second without a reading at 10 Hz");
 		assert_eq!(waited_on(&reads, 10.0, 1.0), None, "at 1 Hz a second is one period, not a silence");
+	}
+
+	#[test]
+	fn a_recorded_name_with_a_comma_is_one_column_when_read_back() {
+		// Label files name channels "…, cylinder 1": written bare, the heading split in two
+		// and every reader of the recording lost the column.
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Pressure, left", "bar")]);
+		a.observe(0x7E0, 0x202A, 0.05, vec![0x05, 0xDC]);
+		a.clock = 0.1;
+		let mut out = Vec::new();
+		let mut header_written = false;
+		write_row(&mut out, &a, &mut header_written).unwrap();
+		let csv = String::from_utf8(out).unwrap();
+		assert!(csv.starts_with("t_s,\"Pressure, left_t_s\",\"Pressure, left\"\n"), "{csv}");
+		let recording = replay::Recording::parse(&csv).unwrap();
+		assert_eq!(recording.columns.len(), 1);
+		assert_eq!(recording.columns[0].name, "Pressure, left");
+		assert_eq!(recording.samples[0].1, [Some("1.5".to_string())]);
+		assert_eq!(recording.read_at[0], [Some(0.05)]);
 	}
 
 	#[test]
