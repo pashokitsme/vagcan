@@ -215,6 +215,24 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
 	out
 }
 
+/// States on screen as bytes because the project cache predates state ranges.
+///
+/// A note, not a stop: everything else on the screen is right, and a state read
+/// on the lower end of its range is still named. `sources` is the ODIS projects
+/// the cache was read from; with exactly one, the command names it.
+pub fn state_ranges_note(sources: &[String]) -> String {
+	let command = match sources {
+		[one] if one.contains(char::is_whitespace) => format!("vagcan setup \"{one}\""),
+		[one] => format!("vagcan setup {one}"),
+		_ => "vagcan setup <path to the ODIS project folder>".to_string(),
+	};
+	format!(
+		"Some switch and lever positions may show as raw bytes: this project was read\n\
+         before vagcan kept each state's full range. To name them, read it again:\n    \
+         {command}"
+	)
+}
+
 /// Values are on screen, but as bytes, and the reader has no way to know why.
 ///
 /// One line plus the path, printed once per run. A screen read at an open
@@ -300,6 +318,18 @@ mod tests {
 		assert!(one.contains("recording calibrate"), "{one}");
 		// It shares a screen with the values it is about. Three lines, no more.
 		assert_eq!(one.lines().count(), 3, "{one}");
+	}
+
+	#[test]
+	fn the_state_ranges_note_names_the_project_to_read_again() {
+		let one = state_ranges_note(&["/data/ODIS Projects/AB12X".to_string()]);
+		assert!(one.contains("vagcan setup \"/data/ODIS Projects/AB12X\""), "{one}");
+		let plain = state_ranges_note(&["/data/AB12X".to_string()]);
+		assert!(plain.contains("vagcan setup /data/AB12X"), "{plain}");
+		// Two sources, or none recorded: the command cannot pick for the reader.
+		for sources in [vec![], vec!["/a".to_string(), "/b".to_string()]] {
+			assert!(state_ranges_note(&sources).contains("vagcan setup <path to the ODIS project folder>"));
+		}
 	}
 
 	#[test]

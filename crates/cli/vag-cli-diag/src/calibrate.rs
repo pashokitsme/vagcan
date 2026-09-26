@@ -85,11 +85,29 @@ fn split_columns(columns: &[Column]) -> (Vec<&Column>, Vec<&Column>) {
 		};
 		if unknown {
 			unknowns.push(c);
-		} else {
+		} else if is_quantity(&c.values) {
 			references.push(c);
 		}
 	}
 	(references, unknowns)
+}
+
+/// Whether a converted column holds a quantity — a number in every cell but the
+/// answers `watch` could not convert, which it marks `0x…` — rather than a state.
+///
+/// Since 2026-09-26 `watch --out` records a state by the name of its level. Some
+/// of those names are numerals — a gear is `1` to `7` and `R` — and a reference
+/// built from the numerals alone would fit a line through a state's codes, which
+/// is the "reverse is gear 11" a state exists to prevent. One cell that is
+/// neither a number nor marked bytes says the column is names.
+///
+/// What this cannot see is a state whose every level seen in the drive happens to
+/// be a numeral. Such a column still passes, and the fit against it has to clear
+/// the same thresholds any other does.
+fn is_quantity(values: &[String]) -> bool {
+	values
+		.iter()
+		.all(|v| v.parse::<f64>().is_ok() || v.starts_with(crate::watch::UNCONVERTED))
 }
 
 /// Parse a hex cell under one interpretation.
@@ -394,6 +412,31 @@ mod tests {
 		let (references, unknowns) = split_columns(&columns);
 		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"]);
 		assert_eq!(unknowns.iter().map(|c| &c.name).collect::<Vec<_>>(), ["206F_raw"]);
+	}
+
+	#[test]
+	fn a_state_recorded_by_name_is_never_a_reference() {
+		// A gear recorded by name holds numbers for some levels and words for
+		// others. Its numbers are names, not a quantity: a line fitted through
+		// them is the "gear 11" for reverse that a state exists to prevent.
+		let mut csv = String::from("t_s,Gear_t_s,Gear,3816_raw_t_s,3816_raw\n");
+		for (i, (gear, code)) in [("1", 2), ("2", 3), ("3", 4), ("4", 5), ("R", 12), ("5", 6), ("6", 7)]
+			.iter()
+			.cycle()
+			.take(60)
+			.enumerate()
+		{
+			let t = i as f64 * 0.1;
+			csv.push_str(&format!("{t:.3},{t:.3},{gear},{t:.3},{code:02X}\n"));
+		}
+		let columns = classify(&csv).unwrap();
+		let (references, _) = split_columns(&columns);
+		assert!(references.is_empty(), "{:?}", references.iter().map(|c| &c.name).collect::<Vec<_>>());
+		// A value column with a marked, unconverted answer in it is still one.
+		let csv = "t_s,Engine speed,206F_raw\n0.0,640,0640\n0.1,0x07,0658\n0.2,700,0700\n";
+		let columns = classify(csv).unwrap();
+		let (references, _) = split_columns(&columns);
+		assert_eq!(references.iter().map(|c| &c.name).collect::<Vec<_>>(), ["Engine speed"]);
 	}
 
 	#[test]

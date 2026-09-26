@@ -2151,7 +2151,7 @@ mod tests {
 				address: ReadId::Uds(did),
 				raw_form: RawForm::U8First,
 				scaling: Scaling::Enum {
-					levels: levels.into_iter().map(|(c, s)| (c, s.to_string())).collect(),
+					levels: levels.into_iter().map(|(c, s)| vag_data_labels::Level::point(c, s)).collect(),
 				},
 			};
 			let write = |part: &str, defs: Vec<MeasurementDef>| {

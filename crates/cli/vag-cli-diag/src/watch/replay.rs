@@ -235,10 +235,16 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 			let value: f64 = cell.parse().ok()?;
 			((value - scale.offset) / scale.factor).round()
 		}
-		// A discrete state inverts exactly by looking its name up in the same
-		// table that produced it — `D` came from one code and no other. This is
-		// a lookup, not an estimate, so gear and selector replay faithfully.
-		Scaling::Enum { levels } => levels.iter().find(|(_, name)| name == cell).map(|(code, _)| *code as f64)?,
+		// A discrete state inverts by looking its name up in the same table that
+		// produced it — `D` came from one code and no other. A level that is a
+		// band of codes inverts to its lowest, which is not necessarily the code
+		// the car sent but is one that names the same band, so the replay shows
+		// the name the recording holds. The name is compared trimmed, because
+		// every reader of a recording trims its cells.
+		Scaling::Enum { levels } => levels
+			.iter()
+			.find(|level| level.name().trim() == cell)
+			.map(|level| level.lower() as f64)?,
 		// An anchor fixes one point and leaves the slope unproven; there is no
 		// line to invert, and inventing one would put a number on screen that
 		// was never measured.
@@ -248,6 +254,60 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		return None;
 	}
 	encode(count as u64, def.raw_form)
+}
+
+/// The whole answer a recorded cell stands for, given the answer to the same
+/// identifier held so far (`held`).
+///
+/// A cell of bytes — a raw column, or a converted one's marked `0x…` — *is* the
+/// whole answer, and replaces what is held. A converted value is one field of it:
+/// it is inverted by [`cell_to_bytes`] and laid over `held` in that field's own
+/// bytes (its own bits, for a flag), leaving every other field of the answer as it
+/// was. Replacing the answer with the one field instead, as the replay once did,
+/// zeroed every other field — and a state whose band starts at zero was then shown
+/// by a name nobody recorded. Several fields of one identifier each have a column,
+/// and it takes all of them to rebuild the answer.
+pub fn answer_from_cell(cell: &str, channel: &Channel, raw: bool, held: Option<&[u8]>) -> Option<Vec<u8>> {
+	let bytes = cell_to_bytes(cell, channel, raw)?;
+	let whole = unconverted(cell).is_some() || raw || channel.def.is_none();
+	let Some(def) = channel.def.as_ref().filter(|_| !whole) else {
+		return Some(bytes);
+	};
+	let mut answer = held.unwrap_or_default().to_vec();
+	if answer.len() < bytes.len() {
+		answer.resize(bytes.len(), 0);
+	}
+	for (at, mask) in field_mask(def.raw_form) {
+		if let (Some(slot), Some(new)) = (answer.get_mut(at), bytes.get(at)) {
+			*slot = (*slot & !mask) | (new & mask);
+		}
+	}
+	Some(answer)
+}
+
+/// The bytes a field occupies in an answer, each with the bits of it that are the
+/// field's: `(byte index, mask)`. The same layout [`encode`] writes a field in.
+fn field_mask(form: RawForm) -> Vec<(usize, u8)> {
+	let whole = |from: usize, width: usize| (from..from + width).map(|at| (at, 0xFF)).collect();
+	match form {
+		RawForm::U8First => whole(0, 1),
+		RawForm::U8Second => whole(1, 1),
+		RawForm::U16Be | RawForm::U16Le | RawForm::I16Be => whole(0, 2),
+		RawForm::U24Be => whole(0, 3),
+		RawForm::U32Be => whole(0, 4),
+		RawForm::Bits { bit_offset, bit_length, .. } => {
+			let shift = bit_offset % 8;
+			let mask = if bit_length >= 8 {
+				0xFF
+			} else {
+				(((1u16 << bit_length) - 1) << shift) as u8
+			};
+			vec![((bit_offset / 8) as usize, mask)]
+		}
+		RawForm::Int {
+			byte_offset, byte_length, ..
+		} => whole(byte_offset as usize, byte_length as usize),
+	}
 }
 
 /// The bytes of a cell marked [`UNCONVERTED`](super::UNCONVERTED) — an answer the writer
@@ -464,7 +524,7 @@ mod tests {
 				name: Cow::Borrowed("Selector lever"),
 				raw_form: RawForm::U8First,
 				scaling: Scaling::Enum {
-					levels: vec![(5, "D".into())],
+					levels: vec![vag_data_labels::Level::point(5, "D")],
 				},
 				..rpm_channel().def.unwrap()
 			}),
@@ -497,7 +557,7 @@ mod tests {
 			def: Some(MeasurementDef {
 				raw_form: RawForm::U8First,
 				scaling: Scaling::Enum {
-					levels: vec![(5, "4".into()), (0x0C, "R".into())],
+					levels: vec![vag_data_labels::Level::point(5, "4"), vag_data_labels::Level::point(0x0C, "R")],
 				},
 				..rpm_channel().def.unwrap()
 			}),

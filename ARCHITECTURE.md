@@ -130,7 +130,10 @@ One file per control unit, named for the part number that unit reports for itsel
   confident nonsense: on the reference car the gear code is `gear + 1`, so factor 1
   offset −1 reports the reverse code `0C` as "gear 11" and neutral as "gear −1",
   across a third of a recording. Anything not listed reads as unknown rather than
-  being extrapolated.
+  being extrapolated. A level can also be a range, `[lower, upper, "what it means"]`,
+  both ends included: a switch read as a voltage answers anywhere in its band. The
+  first level that holds a value names it. An ODIS text table gives every level
+  both ends; the cache keeps them (`reading_level.upper`).
 - **`Anchor`** — one proven `(raw, value)` point and no slope. The honest state for a
   measurement where the zero is known and the scale is not; any other raw value is
   reported as unknown rather than guessed.

@@ -27,7 +27,7 @@
 //! `.archive/research/labels/scaling-audit.md` §4 is the record of what happens when a
 //! plausible-looking scaling is trusted without proof.
 
-use crate::catalog::Scaling;
+use crate::catalog::{Level, Scaling};
 use crate::measure::LinearScale;
 
 use super::Error;
@@ -319,12 +319,17 @@ impl Method {
 		}))
 	}
 
-	/// `TEXTTAB`: one level per scale, keyed by the scale's **coded** lower
-	/// bound and named by its `COMPU-CONST`.
+	/// `TEXTTAB`: one level per scale, covering the scale's **coded** lower to
+	/// coded upper bound and named by its `COMPU-CONST`.
 	///
 	/// The physical bounds of a text table hold the same text as the constant,
 	/// not a number — reading the level's key off them instead of off the coded
 	/// bound is the mistake this comment exists to stop.
+	///
+	/// Both coded bounds, not the lower alone. Most levels are one value wide,
+	/// but a switch read as a voltage has a band per position (2,562 of the
+	/// reference project's 548,887 scales), and its readings land anywhere in
+	/// the band — keyed on the lower bound, none of them named anything.
 	fn text_table(&self) -> Result<Scaling, Error> {
 		let base = self
 			.internal_to_phys
@@ -332,7 +337,7 @@ impl Method {
 			.ok_or_else(|| Error::Format("a TEXTTABLE compu method has no coded-to-physical direction".into()))?;
 		let mut levels = Vec::with_capacity(base.scales.len());
 		for scale in &base.scales {
-			let Some(raw) = scale.lower_coded.as_ref().and_then(|l| l.value.as_ref()).and_then(as_i32) else {
+			let Some(lower) = scale.lower_coded.as_ref().and_then(lower_bound) else {
 				// A level whose key is not an integer is not a state this
 				// crate can match a raw reading against, so it is dropped
 				// rather than guessed at.
@@ -341,7 +346,10 @@ impl Method {
 			let Some(name) = scale.constant.as_ref().and_then(as_text) else {
 				continue;
 			};
-			levels.push((raw, name));
+			// No usable upper bound is a level one value wide: the lower bound
+			// alone is what every level was keyed on before the upper was kept.
+			let upper = scale.upper_coded.as_ref().and_then(upper_bound).unwrap_or(lower);
+			levels.push(Level::range(lower, upper, name));
 		}
 		if levels.is_empty() {
 			return Err(Error::Format(
@@ -349,6 +357,30 @@ impl Method {
 			));
 		}
 		Ok(Scaling::Enum { levels })
+	}
+}
+
+/// The lowest raw value a coded lower limit admits.
+///
+/// The limit's kind is ODX's `INTERVAL-TYPE`: `CLOSED` includes the value, `OPEN`
+/// excludes it — on integers, the next one up — and `INFINITE` has no value and
+/// no bound. Every limit of the reference project's 548,887 text-table scales is
+/// `CLOSED`; the other two are read as the standard defines them rather than as
+/// if they were.
+fn lower_bound(limit: &Limit) -> Option<i32> {
+	match limit.kind {
+		LimitKind::Infinite => Some(i32::MIN),
+		LimitKind::Closed => limit.value.as_ref().and_then(as_i32),
+		LimitKind::Open => limit.value.as_ref().and_then(as_i32)?.checked_add(1),
+	}
+}
+
+/// The highest raw value a coded upper limit admits; see [`lower_bound`].
+fn upper_bound(limit: &Limit) -> Option<i32> {
+	match limit.kind {
+		LimitKind::Infinite => Some(i32::MAX),
+		LimitKind::Closed => limit.value.as_ref().and_then(as_i32),
+		LimitKind::Open => limit.value.as_ref().and_then(as_i32)?.checked_sub(1),
 	}
 }
 
@@ -472,7 +504,99 @@ mod tests {
 		assert_eq!(
 			method.scaling().expect("TEXTTABLE translates"),
 			Scaling::Enum {
-				levels: vec![(0, "nicht aktiv".into()), (1, "aktiv".into())]
+				levels: vec![Level::point(0, "nicht aktiv"), Level::point(1, "aktiv")]
+			}
+		);
+	}
+
+	/// One `TEXTTAB` scale over `lower..upper`, each end of the given kind.
+	fn band(lower: Option<Limit>, upper: Option<Limit>, text: &str) -> Scale {
+		Scale {
+			lower_coded: lower,
+			upper_coded: upper,
+			constant: Some(Value::Unicode(Some(text.into()))),
+			..Scale::default()
+		}
+	}
+
+	fn limit(value: u32, kind: LimitKind) -> Option<Limit> {
+		Some(Limit {
+			value: Some(Value::U32(value)),
+			kind,
+		})
+	}
+
+	fn text_table(scales: Vec<Scale>) -> Scaling {
+		Method {
+			category: Category::TextTable,
+			internal_to_phys: Some(Base { scales, default: None }),
+		}
+		.scaling()
+		.expect("TEXTTABLE translates")
+	}
+
+	#[test]
+	fn a_text_table_keeps_each_levels_upper_bound() {
+		use LimitKind::Closed;
+		// Two bands and a point, synthetic: the shape of a switch read as a voltage.
+		let scaling = text_table(vec![
+			band(limit(0, Closed), limit(9, Closed), "short"),
+			band(limit(10, Closed), limit(49, Closed), "pressed"),
+			band(limit(50, Closed), limit(50, Closed), "released"),
+		]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![Level::range(0, 9, "short"), Level::range(10, 49, "pressed"), Level::point(50, "released")]
+			}
+		);
+	}
+
+	#[test]
+	fn an_open_bound_excludes_its_own_value_and_an_infinite_one_reaches_the_end() {
+		use LimitKind::{Closed, Infinite, Open};
+		let unbounded = Some(Limit { value: None, kind: Infinite });
+		let scaling = text_table(vec![
+			// (10, 20): 11..=19.
+			band(limit(10, Open), limit(20, Open), "inside"),
+			// [30, ∞).
+			band(limit(30, Closed), unbounded.clone(), "high"),
+			// (-∞, 5]: nothing to key it on below, so from the bottom.
+			band(unbounded, limit(5, Closed), "low"),
+		]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![
+					Level::range(11, 19, "inside"),
+					Level::range(30, i32::MAX, "high"),
+					Level::range(i32::MIN, 5, "low"),
+				]
+			}
+		);
+	}
+
+	#[test]
+	fn a_level_with_no_usable_upper_bound_is_its_lower_bound_alone() {
+		use LimitKind::Closed;
+		let fractional = Some(Limit {
+			value: Some(Value::F64(7.5)),
+			kind: Closed,
+		});
+		let scaling = text_table(vec![
+			band(limit(3, Closed), None, "no upper"),
+			band(limit(7, Closed), fractional, "not an integer"),
+			// Reversed: what the lower bound alone always meant.
+			band(limit(9, Closed), limit(8, Closed), "backwards"),
+		]);
+		assert_eq!(
+			scaling,
+			Scaling::Enum {
+				levels: vec![
+					Level::point(3, "no upper"),
+					Level::point(7, "not an integer"),
+					Level::point(9, "backwards")
+				]
 			}
 		);
 	}
