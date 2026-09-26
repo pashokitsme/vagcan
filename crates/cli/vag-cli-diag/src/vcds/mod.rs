@@ -34,7 +34,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Subcommand;
 
+use crate::device::DeviceArg;
 use crate::{analyse, datadir, labels, names};
+
+/// `labels`' `--device`: only `--from-car` opens one.
+const LABELS_DEVICE_HELP: &str = "Adapter to use with --from-car: a serial path (a USB-CAN adapter, or the dash board on its USB cable), \
+                                  `ble` for the board over Bluetooth, or `ble:<name>`. Omit it to use the one adapter or board on USB; \
+                                  Bluetooth is looked for only when asked";
 
 // Clone so `vagcan`'s dispatcher can keep a copy of the command it is running:
 // one that stops for want of label data is run again once the data exists.
@@ -51,6 +57,7 @@ pub enum Tool {
 	///
 	/// OUT: the resolved label file and its measurements, on stdout. The cache
 	/// is written under `~/.vagcan/label-cache/`.
+	#[command(mut_arg("device", |a| a.help(LABELS_DEVICE_HELP)))]
 	Labels {
 		/// VCDS install root, or any directory below it.
 		#[arg(value_name = "DIR")]
@@ -89,11 +96,8 @@ pub enum Tool {
 		/// Default: this project's `rod-keys.json`, written by `vagcan setup`.
 		#[arg(long, value_name = "FILE")]
 		iv_cache: Option<String>,
-		/// Adapter to use with --from-car: a serial path (a USB-CAN adapter, or the dash
-		/// board on its USB cable), `ble` for the board over Bluetooth, or `ble:<name>`. Omit
-		/// it to use the one adapter or board on USB; Bluetooth is looked for only when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 	},
 
 	/// Search the measurement names recovered from the label files.
@@ -314,6 +318,7 @@ pub fn run(tool: Tool) -> Result<Outcome> {
 				anyhow::bail!("{dir:?} is not a directory — point it at the VCDS install root");
 			}
 			let iv_cache = datadir::or_default(iv_cache.as_deref(), || Ok(crate::project::current()?.rod_keys()))?;
+			let device = device.requested().map(str::to_owned);
 			Ok(Outcome::FromCar { dir, ecu, iv_cache, device })
 		}
 		Tool::Labels {

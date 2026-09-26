@@ -16,7 +16,7 @@
 // crate's module instead of a local file.
 mod overview;
 
-use vag_cli_core::device::{ADAPTER_BAUD, NotThroughTheBoard, Target};
+use vag_cli_core::device::{ADAPTER_BAUD, DeviceArg, NotThroughTheBoard, Target};
 use vag_cli_core::{config, datadir, device, glossary, plan, progress, project};
 use vag_cli_diag::{anomaly, dash, faults, labels, props, recording, render, rescue, safety, scan, setup, sniff, survey, vcds, watch};
 #[cfg(feature = "measure")]
@@ -149,17 +149,13 @@ enum Command {
 	/// Lists USB-CAN adapters and dash boards on USB.
 	///
 	/// Start here if a command says it cannot find an adapter. A dash board over
-	/// Bluetooth is not looked for here: give a command `--device ble`.
+	/// Bluetooth is not looked for here: give a command `--ble`.
 	Devices,
 
 	/// Identify the car: VIN, engine and gearbox passports.
 	Info {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 	},
 
 	/// Ask the gateway which control units this car has.
@@ -168,15 +164,10 @@ enum Command {
 	/// diagnostic address and waiting out a timeout for each one the car does
 	/// not have. `--identify` has every unit name itself; `--identify <unit>`
 	/// has one of them say everything it knows.
+	#[command(mut_arg("device", |a| a.help(UNITS_DEVICE_HELP)))]
 	Units {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked. `--identify <unit>`
-		/// needs a cable adapter: it is a sweep, and a sweep does not run through the dash
-		/// board (`--slcan` makes its cable one).
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 		/// Have the units name themselves: part number and component name, for
 		/// every unit the gateway lists. Slower, and a unit that does not
 		/// answer is reported as such.
@@ -210,12 +201,8 @@ enum Command {
 	/// the memory was cleared. Read-only — clearing faults is a write, which
 	/// this tool cannot do.
 	Faults {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 		/// Read only these units, e.g. `01,713,70E`. Default: every unit the
 		/// gateway lists.
 		#[arg(long, value_name = "LIST")]
@@ -246,7 +233,7 @@ enum Command {
 		/// reading the car. Offline; names them from what `vagcan setup`
 		/// extracted into ~/.vagcan.
 		#[arg(long, value_name = "FILE",
-              conflicts_with_all = ["device", "ecu", "supported", "extended", "details"])]
+              conflicts_with_all = ["device", "ble", "ecu", "supported", "extended", "details"])]
 		from: Option<String>,
 	},
 
@@ -261,12 +248,8 @@ enum Command {
 	/// J1979 defines. Other units answer `F4xx` identifiers too and mean
 	/// something else by them, so those are shown as bytes with the reason.
 	Sensors {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 		/// Control unit: a short number (01 engine, 02 gearbox, 09, 16, 17) or
 		/// a request id (713, 70E). `vagcan units` lists this car's.
 		#[arg(long, default_value = "01", value_name = "ID")]
@@ -288,12 +271,8 @@ enum Command {
 	/// nothing can name — and `u` shows both. Without a survey nothing is hidden
 	/// on those grounds: silence is only evidence where somebody asked.
 	Watch {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: DeviceArg,
 		/// Start with these selected, e.g. `01:2029,202A 713:1001`. The part
 		/// before the colon is a unit — short number or request id — and a
 		/// bare list means the engine.
@@ -317,7 +296,7 @@ enum Command {
 		/// interface, or showing it, away from a vehicle. Pass `--survey`
 		/// alongside it to get one tab per control unit; a recording alone
 		/// does not say which unit each column came from.
-		#[arg(long, value_name = "FILE", conflicts_with = "device")]
+		#[arg(long, value_name = "FILE", conflicts_with_all = ["device", "ble"])]
 		replay: Option<String>,
 		/// Playback speed for --replay. 2 is twice as fast as it happened.
 		#[arg(long, default_value_t = 1.0, value_name = "N")]
@@ -628,14 +607,14 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			// download as one of the answers. Only `rescue` skips that menu.
 			download: false,
 		}),
-		// Serial devices only: Bluetooth is scanned by a command given `--device ble`.
+		// Serial devices only: Bluetooth is scanned by a command given `--ble`.
 		Command::Devices => {
 			println!("{}", device::render_list(&device::list()?));
 			Ok(())
 		}
 		// Every car command resolves its device inside `open`, once what it can check
 		// without the car has been checked: a typo must not cost a Bluetooth scan or a menu.
-		Command::Info { device } => info(async || device::connect(device.as_deref(), slcan).await).await,
+		Command::Info { device } => info(async || device::connect(device.requested(), slcan).await).await,
 		// The two depths of the same question. `--identify <unit>` names one
 		// unit and reads its whole identification block; `--identify` alone
 		// asks every unit the gateway lists for the two fields that name it.
@@ -646,7 +625,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		} => {
 			// Resolved inside `open`: the unit is parsed first.
 			let open = async || {
-				let path = device::resolve_cable_for(device.as_deref(), slcan, &IDENTIFY)?;
+				let path = device::resolve_cable_for(device.requested(), slcan, &IDENTIFY)?;
 				device::open_bus(&Target::Serial(path)).await
 			};
 			identification(open, &ecu, while_driving).await
@@ -663,10 +642,10 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 		),
 		// Resolved inside `open`, not here: `units` reads the label files first.
 		Command::Units { device, identify, .. } => {
-			let open = async || device::connect(device.as_deref(), slcan).await;
+			let open = async || device::connect(device.requested(), slcan).await;
 			units(open, identify.is_some()).await
 		}
-		Command::Sensors { device, ecu } => sensors(async || device::connect(device.as_deref(), slcan).await, &ecu).await,
+		Command::Sensors { device, ecu } => sensors(async || device::connect(device.requested(), slcan).await, &ecu).await,
 		Command::Watch {
 			replay: Some(path),
 			data,
@@ -698,7 +677,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 				(None, true) => watch::View::FullScreen,
 			};
 			watch::run(
-				async || device::connect(device.as_deref(), slcan).await,
+				async || device::connect(device.requested(), slcan).await,
 				watch::Options {
 					preselect: &preselect,
 					hz,
@@ -734,7 +713,7 @@ async fn dispatch(command: Command, slcan: bool) -> Result<()> {
 			..
 		} => {
 			faults::run(
-				async || device::connect(device.as_deref(), slcan).await,
+				async || device::connect(device.requested(), slcan).await,
 				ecu.as_deref(),
 				details,
 				all,
@@ -865,6 +844,12 @@ fn duration_arg(text: &str) -> Result<Duration, String> {
 fn parse_ecu(flag: &str, text: &str) -> Result<UnitAddress> {
 	vag_uds_client::address::parse(text).map_err(|e| anyhow::anyhow!("{flag}: {e}"))
 }
+
+/// `units`' `--device`: the shared help, and which of its depths needs a cable.
+const UNITS_DEVICE_HELP: &str = "Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB cable), `ble` for an adapter \
+                                 over Bluetooth, or `ble:<name>` for one adapter by name. Omit it to use the one adapter or board on USB; \
+                                 Bluetooth is looked for only when asked. `--identify <unit>` needs a cable adapter: it is a sweep, and a \
+                                 sweep does not run through the dash board (`--slcan` makes its cable one)";
 
 /// Why `dev survey` does not run through the dash board. Over BLE the board refuses a
 /// sweep itself (`vag_uds_client::guard`); over its cable the safe default is the same
@@ -1293,6 +1278,7 @@ mod tests {
 		assert!(parse(&["--from", "s.jsonl"]).is_ok());
 		for (flag, value) in [
 			("--device", Some("/dev/x")),
+			("--ble", None),
 			("--extended", None),
 			("--supported", None),
 			("--ecu", Some("713")),
@@ -1304,6 +1290,109 @@ mod tests {
 		// There is no label directory to name: the names come from what
 		// `vagcan setup` extracted, and nowhere else.
 		assert!(parse(&["--from", "s.jsonl", "--labels", "d"]).is_err(), "--labels is gone");
+	}
+
+	/// The adapter a parsed command names, for the commands that take `--device`.
+	fn device_of(args: &[&str]) -> Result<DeviceArg, clap::Error> {
+		let command = Cli::try_parse_from(args)?.command.expect("a command");
+		Ok(match command {
+			Command::Info { device }
+			| Command::Units { device, .. }
+			| Command::Faults { device, .. }
+			| Command::Sensors { device, .. }
+			| Command::Watch { device, .. } => device,
+			#[cfg(feature = "measure")]
+			Command::Measure(args) => match args.tool {
+				Some(measure::Tool::Setup { device, .. }) => device,
+				_ => args.device,
+			},
+			Command::Dev {
+				tool: Dev::Vcds {
+					tool: vcds::Tool::Labels { device, .. },
+				},
+			} => device,
+			_ => panic!("{args:?} takes no --device"),
+		})
+	}
+
+	/// Every command that takes `--device` and can read through the board.
+	fn commands_with_device() -> Vec<Vec<&'static str>> {
+		let mut commands = vec![
+			vec!["vagcan", "info"],
+			vec!["vagcan", "units"],
+			vec!["vagcan", "units", "--identify", "01"],
+			vec!["vagcan", "faults"],
+			vec!["vagcan", "sensors"],
+			vec!["vagcan", "watch"],
+			vec!["vagcan", "dev", "vcds", "labels", "dir", "--from-car"],
+		];
+		if cfg!(feature = "measure") {
+			commands.extend([vec!["vagcan", "measure"], vec!["vagcan", "measure", "setup"]]);
+		}
+		commands
+	}
+
+	#[test]
+	fn ble_is_device_ble_and_nothing_else() {
+		for command in commands_with_device() {
+			let spelled = |extra: &[&'static str]| {
+				let args: Vec<&str> = command.iter().chain(extra).copied().collect();
+				device_of(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"))
+			};
+			assert_eq!(spelled(&["--ble"]).requested(), Some("ble"), "{command:?}");
+			assert_eq!(spelled(&["--device", "ble"]).requested(), Some("ble"), "{command:?}");
+			assert_eq!(spelled(&["--device", "/dev/x"]).requested(), Some("/dev/x"), "{command:?}");
+			assert_eq!(spelled(&[]).requested(), None, "{command:?}");
+		}
+	}
+
+	#[test]
+	fn ble_and_device_together_are_refused() {
+		for command in commands_with_device() {
+			for device in ["/dev/x", "ble", "ble:vagcan-dash"] {
+				let args: Vec<&str> = command.iter().copied().chain(["--ble", "--device", device]).collect();
+				let refused = device_of(&args).expect_err("two adapters named");
+				assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+			}
+		}
+	}
+
+	#[test]
+	fn a_replay_reads_no_adapter_on_either_spelling() {
+		for adapter in [&["--ble"][..], &["--device", "ble"], &["--device", "/dev/x"]] {
+			let args: Vec<&str> = ["vagcan", "watch", "--replay", "drive.csv"]
+				.into_iter()
+				.chain(adapter.iter().copied())
+				.collect();
+			let refused = Cli::try_parse_from(&args).err().expect("a replay opens no adapter");
+			assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+		}
+	}
+
+	/// `dev survey` and `dev sniff` never run over BLE, so they do not offer the flag that
+	/// asks for it; `--device ble` there is still refused with the reason (below).
+	#[test]
+	fn a_command_that_never_runs_over_ble_does_not_offer_ble() {
+		for path in [["dev", "survey"], ["dev", "sniff"]] {
+			let mut cli = Cli::command();
+			let sub = path.iter().fold(&mut cli, |c, name| c.find_subcommand_mut(name).expect("exists"));
+			assert!(sub.get_arguments().any(|a| a.get_id() == "device"), "{path:?}");
+			assert!(!sub.get_arguments().any(|a| a.get_id() == "ble"), "{path:?}");
+		}
+	}
+
+	#[test]
+	fn the_ble_help_says_what_it_is_short_for() {
+		for path in [&["info"][..], &["faults"], &["watch"], &["units"], &["dev", "vcds", "labels"]] {
+			assert_eq!(
+				flag_help(path, "ble"),
+				"Same as `--device ble`: the dash board over Bluetooth",
+				"{path:?}"
+			);
+		}
+		// Where a command says more about its adapter, that is kept.
+		assert!(flag_help(&["units"], "device").contains("`--identify <unit>` needs a cable adapter"));
+		assert!(flag_help(&["dev", "vcds", "labels"], "device").starts_with("Adapter to use with --from-car"));
 	}
 
 	#[test]
@@ -1416,6 +1505,21 @@ mod tests {
 					assert_eq!(refused.to_string(), why, "{args:?}");
 				}
 			}
+		}
+	}
+
+	/// `--ble` is refused exactly where `--device ble` is, with the same words.
+	#[tokio::test]
+	async fn ble_is_refused_where_device_ble_is() {
+		let cases = [
+			(vec!["vagcan", "units", "--identify", "01", "--ble"], IDENTIFY_OVER_BLE),
+			(vec!["vagcan", "units", "--identify", "01", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
+			(vec!["vagcan", "info", "--ble", "--slcan"], device::SLCAN_OVER_BLE),
+		];
+		for (args, why) in cases {
+			let cli = Cli::try_parse_from(args.clone()).unwrap();
+			let refused = dispatch(cli.command.expect("a command"), cli.slcan).await.expect_err("refused");
+			assert_eq!(refused.to_string(), why, "{args:?}");
 		}
 	}
 

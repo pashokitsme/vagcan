@@ -570,14 +570,14 @@ mod tests {
 				adapters,
 				cars: Cars::One(car()),
 			});
-			let hints: Vec<&str> = text.lines().filter(|line| line.contains("vagcan info --device ble")).collect();
-			assert_eq!(hints, ["            An adapter over Bluetooth: vagcan info --device ble"], "{text}");
+			let hints: Vec<&str> = text.lines().filter(|line| line.contains("vagcan info --ble")).collect();
+			assert_eq!(hints, ["            An adapter over Bluetooth: vagcan info --ble"], "{text}");
 		}
 		let ready = render(&Facts {
 			adapters: Adapters::Ready(vec![adapter("/dev/cu.usbmodem1", "CANable")]),
 			cars: Cars::One(car()),
 		});
-		assert!(!ready.contains("--device ble"), "{ready}");
+		assert!(!ready.contains("--ble"), "{ready}");
 	}
 
 	#[test]

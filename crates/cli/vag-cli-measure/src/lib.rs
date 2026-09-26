@@ -169,12 +169,8 @@ pub enum Tool {
 	/// two coastdown passes — one in each direction — whose fit is what makes
 	/// `--full` available. It keeps whatever was already answered.
 	Setup {
-		/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-		/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-		/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-		/// when asked.
-		#[arg(long, value_name = "PATH|ble|ble:NAME")]
-		device: Option<String>,
+		#[command(flatten)]
+		device: device::DeviceArg,
 		/// The speed a coastdown pass opens at. Narrowing the range separates
 		/// drag from rolling resistance less well, and the fit says by how much.
 		#[arg(long, default_value_t = setup::COAST_FROM_KMH, value_name = "KMH")]
@@ -2009,7 +2005,7 @@ fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> V
 /// measurements live is `core`'s question, and answering it twice is how two
 /// binaries end up reading different directories.
 ///
-/// `open` opens the bus to the car on the adapter `--device` names (`None`: the one
+/// `open` opens the bus to the car on the adapter `--device` or `--ble` names (`None`: the one
 /// connected); it is called only by the commands that need a car, once their own
 /// arguments have been checked.
 pub async fn dispatch(
@@ -2029,6 +2025,7 @@ pub async fn dispatch(
 			data: _,
 			car,
 		}) => {
+			let device = device.requested().map(str::to_owned);
 			setup::run(
 				async || open(device).await,
 				setup::Options {
@@ -2041,7 +2038,7 @@ pub async fn dispatch(
 			.await
 		}
 		None => {
-			let device = a.device.clone();
+			let device = a.device.requested().map(str::to_owned);
 			run(
 				async || open(device).await,
 				Options {
