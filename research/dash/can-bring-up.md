@@ -1084,3 +1084,19 @@ nothing waits for more. `dashcfg`, `info`, `watch` (10.0/s, gaps 98–102 ms) an
 BLE pass on it. Still under the cable's 45–48/s with the panel loaded; §9.10's 49–51/s was a
 plan of five channels.
 
+
+### 9.16 On the car: the USB cable after OBD power, 2026-09-26 ~18:10–18:30
+
+The old board (rev v1.1) powered from the car's OBD socket kept running — BLE answered
+(`dashcfg vagcan-dash` read its state) — while the Mac saw **no USB device at all**:
+`ls /dev/cu.usbmodem*` empty, `ioreg -p IOUSB` and `system_profiler SPUSBDataType` showed
+both buses empty, and no attach event was logged, across replugs and cables. It had
+enumerated as `/dev/cu.usbmodem101` at 17:47 the same day. The owner found that the cable
+connects when plugged in **before** the board takes power from the car; with OBD power
+already on, the port stays dark.
+
+Likely cause, not measured: the board's 5 V rail, fed from OBD, back-feeds `VBUS` of the
+cable, and the Mac's port shuts down on a device that drives `VBUS`. Order on the car: USB
+first, then OBD power. A fix, if it matters later, is a diode (or the SuperMini's own, if
+present and bypassed by our wiring) between the car's 5 V and the board's `5V` pin —
+check the wiring before assuming.
