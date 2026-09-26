@@ -15,7 +15,7 @@
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use vag_dash_render::alarm::{Alarm, ChannelId, Direction, MAX_ALARMS, Press, Rule};
+use vag_dash_render::alarm::{Alarm, BLINK_MS, ChannelId, Direction, MAX_ALARMS, Press, Rule};
 use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::history::History;
 use vag_dash_render::pages::{self, Layout, MAX_PAGES};
@@ -25,6 +25,8 @@ use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_with};
 
 /// Milliseconds between two panel frames — `FRAME_MS` in `vag-dash-fw`'s `bin/dash.rs`.
 pub const FRAME_MS: u64 = 200;
+// The offending cell blinks in BLINK_MS halves: frames at most BLINK_MS / 2 apart, so every half gets a frame.
+const _: () = assert!(FRAME_MS * 2 <= BLINK_MS, "the panel must frame at least twice per half blink");
 /// How old a value may be and still be shown — `STALE` in `vag-dash-fw`'s `bin/dash.rs`.
 /// Counted from when the recording heard it.
 pub const STALE_MS: u64 = 5_000;
@@ -47,7 +49,7 @@ pub enum Event {
 	Paged { page: u8 },
 	/// A press ended this rule's episode.
 	Hushed { rule: Option<usize> },
-	/// A rule took the glass: its page, the channel inverted and its value then.
+	/// A rule took the glass: its page, the channel it points at and its value then.
 	Took {
 		rule: usize,
 		page: u8,
@@ -395,7 +397,8 @@ impl Replay {
 				}
 				None => Cell::new("?", None, "", 0),
 			};
-			if glass.offending == Some(ChannelId(index)) {
+			// Blinking while out, steady in the hold: `Glass::inverted` is this frame's half.
+			if glass.inverted == Some(ChannelId(index)) {
 				cell.alarmed()
 			} else {
 				cell
@@ -690,7 +693,7 @@ mod tests {
 		assert_eq!(back, 5_600);
 		let over: Vec<_> = events.iter().filter(|(_, e)| matches!(e, Event::Over { .. })).collect();
 		assert_eq!(over, [&(back, Event::Over { rule: Some(0), page: 0 })]);
-		assert!(pages.contains(&(2_800, 1, Some(ChannelId(2)))), "the cell is inverted while out");
+		assert!(pages.contains(&(2_800, 1, Some(ChannelId(2)))), "the cell is pointed at while out");
 		assert!(pages.contains(&(back - FRAME_MS, 1, Some(ChannelId(2)))), "and through the hold");
 		assert!(pages.contains(&(back, 0, None)), "then the driver's page, nothing inverted");
 	}
@@ -827,29 +830,59 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn the_panel_is_the_boards_frame_with_the_offending_cell_inverted() {
-		let excursion = every_100ms(2_000, |t| if t >= 1_000 { -3.0 } else { 0.0 });
-		let mut replay = replay(excursion, &[], 2_000);
+	/// The panel the replay draws on its last frame, at `end_ms`, with channel 2 out from 1 s.
+	fn panel_at(end_ms: u64) -> Canvas {
+		let excursion = every_100ms(end_ms, |t| if t >= 1_000 { -3.0 } else { 0.0 });
+		let mut replay = replay(excursion, &[], end_ms);
 		while replay.step().is_some() {}
 		let mut drawn = Canvas::new(WIDTH, HEIGHT);
 		replay.draw(&mut drawn);
-		// What the board's panel task composes for that frame, drawn by the renderer itself.
+		drawn
+	}
+
+	/// What the board's panel task composes for the alarm page, drawn by the renderer itself.
+	fn composed(inverted: bool) -> Canvas {
 		let mut expected = Canvas::new(WIDTH, HEIGHT);
-		let cells = [Cell::new("C", Some(-3.0), "", 1).alarmed(), Cell::new("D", Some(0.0), "", 1)];
+		let offending = Cell::new("C", Some(-3.0), "", 1);
+		let offending = if inverted { offending.alarmed() } else { offending };
+		let cells = [offending, Cell::new("D", Some(0.0), "", 1)];
 		let board = Board {
 			links: Links::NONE,
 			rates: None,
 			faults: None,
 		};
 		draw_with(&Frame::Values { cells: &cells }, &board, &Theme::bold_mono(), &mut expected);
+		expected
+	}
+
+	#[test]
+	fn the_panel_is_the_boards_frame_with_the_offending_cell_blinking() {
 		let text = crate::dashreplay::glass::half_blocks;
-		assert_eq!(text(&drawn), text(&expected));
-		// And the inversion is really there: the plain cell is not the same picture.
-		let mut plain = Canvas::new(WIDTH, HEIGHT);
-		let cells = [Cell::new("C", Some(-3.0), "", 1), Cell::new("D", Some(0.0), "", 1)];
-		draw_with(&Frame::Values { cells: &cells }, &board, &Theme::bold_mono(), &mut plain);
-		assert_ne!(text(&drawn), text(&plain));
+		// Out from 1.0 s, where the blink starts: 1.8 s is in an inverted half, 1.4 s in a plain one.
+		assert_eq!(text(&panel_at(1_800)), text(&composed(true)), "the inverted half");
+		assert_eq!(text(&panel_at(1_400)), text(&composed(false)), "the plain half is the plain page");
+		// And the inversion is really there: the two halves are not the same picture.
+		assert_ne!(text(&composed(true)), text(&composed(false)));
+	}
+
+	#[test]
+	fn the_cell_blinks_while_out_and_holds_steady_through_the_hold() {
+		// Out from 1 s, back inside from 3 s; the hold hands back at 5.6 s.
+		let excursion = every_100ms(7_000, |t| if (1_000..3_000).contains(&t) { -3.0 } else { 0.0 });
+		let mut replay = replay(excursion, &[], 7_000);
+		let mut inverted = Vec::new();
+		while let Some(tick) = replay.step() {
+			inverted.push((tick.t_ms, tick.glass.inverted == Some(ChannelId(2))));
+		}
+		let out: Vec<bool> = inverted.iter().filter(|(t, _)| (1_000..3_000).contains(t)).map(|&(_, i)| i).collect();
+		// Frames at 1.0, 1.2 … 2.8 s, 400 ms halves counted from the takeover: two frames a half.
+		assert_eq!(out, [true, true, false, false, true, true, false, false, true, true]);
+		let back = first_frame_from(3_000 + HOLD_MS);
+		assert!(
+			inverted.iter().filter(|(t, _)| (3_000..back).contains(t)).all(|&(_, i)| i),
+			"steady through the hold: {inverted:?}"
+		);
+		assert!(inverted.iter().filter(|(t, _)| *t >= back).all(|&(_, i)| !i), "{inverted:?}");
 	}
 
 	#[test]

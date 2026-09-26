@@ -28,7 +28,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
 | `vagcan sensors` | Standard OBD-II readings |
-| `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. `--out` records to CSV |
+| `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
 
 ### Development commands – `vagcan dev`
@@ -57,7 +57,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
 - **Pages** are set per car in `dash.toml` and switched with the board's button.
-- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted. A short press silences it until the value comes back.
+- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A short press silences it until the value comes back.
 - **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
@@ -80,9 +80,9 @@ Updated 2026-09-26.
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
 - [x] ODIS project as the main data source, with fault text from ODIS
 - [x] `setup` in about 4 s on an ODIS project
-- [x] Dash reads the car: 4 channels from 2 units, values and chart pages
+- [x] Dash reads the car: 13 channels from 2 units, values and chart pages; an alarm takes the screen and blinks the cell
 - [x] ESP32 board as a CAN adapter (`slcan`), tested on the bench
-- [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch, units and measure on the car)
+- [x] UDS over BLE: read the car from a laptop without a cable (info, faults, watch and units on the car; measure started, a full run waits for the road)
 - [x] Replay a recorded drive on the dash panel, without the car
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)

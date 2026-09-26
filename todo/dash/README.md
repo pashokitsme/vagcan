@@ -51,13 +51,14 @@ drama and a real collapse into a flat line.
 
 | file | state |
 |---|---|
-| [`04-alarms.md`](04-alarms.md) | on the board: threshold rules (PR #2), the drift rule (PR #4); the owner's rules and a car run open |
+| [`04-alarms.md`](04-alarms.md) | on the board: threshold rules (PR #2), the drift rule (PR #4); on `master`: the replay (PR #6), the blink (PR #7); the owner's retard at −6.0/−4.5 and a car run open |
 | [`06-car-and-bench.md`](06-car-and-bench.md) | questions only the car answers |
 | [`13-screens.md`](13-screens.md) | channel menu for pages |
 | [`14-one-bus-three-clients.md`](14-one-bus-three-clients.md) | design and work order (§7) |
 | [`15-enclosure.md`](15-enclosure.md) | enclosure hand-off |
-| [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 items 8 and 13 open, §4 is the car |
+| [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 item 8 open (13 passes since 2026-09-22), §4 is the car |
 | [`18-setpoints-and-drift.md`](18-setpoints-and-drift.md) | a channel's specified value and the drift alarm — merged (PR #4); car pending |
+| [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the cruise lever as buttons, the stopwatch page — approved 2026-09-26, phase 2 on `feat/stalk-stopwatch` |
 | [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner; phase 1 built |
 
 Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.

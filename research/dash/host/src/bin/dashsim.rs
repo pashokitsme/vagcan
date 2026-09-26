@@ -36,7 +36,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use vag_dash_host::frame::{self, Bitmap};
+use vag_dash_host::frame::{self, Bitmap, Pixels};
 use vag_dash_render::button::PRESS_GAP_MS;
 
 const BAUD: u32 = 115_200;
@@ -572,10 +572,10 @@ fn strip_ansi(text: &str) -> String {
 /// board's fault or this program's.
 fn demo() -> Result<()> {
 	let (width, height) = (256u32, 64u32);
-	let mut pixels = vec![false; (width * height) as usize];
+	let mut pixels = Pixels::dark((width * height) as usize);
 	let mut set = |x: u32, y: u32| {
 		if x < width && y < height {
-			pixels[(y * width + x) as usize] = true;
+			pixels.set((y * width + x) as usize, true);
 		}
 	};
 	for x in 0..width {
@@ -628,6 +628,7 @@ mod preview {
 	use embedded_graphics::prelude::*;
 	use std::io::Write;
 	use std::path::Path;
+	use vag_dash_host::frame::Pixels;
 	use vag_dash_render::frame::Adapter;
 	use vag_dash_render::render::Report;
 	use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Rates, Theme, draw_with};
@@ -641,22 +642,22 @@ mod preview {
 	/// One panel pixel of it around the glass, so where the panel ends is visible.
 	pub const FRAME: [u8; 3] = [0x60, 0x60, 0x60];
 
-	/// A panel in memory.
+	/// A panel in memory, one bit a pixel as the board keeps it.
 	pub struct Canvas {
 		pub size: Size,
-		pub lit: Vec<bool>,
+		pub lit: Pixels,
 	}
 
 	impl Canvas {
 		pub fn new(size: Size) -> Self {
 			Canvas {
 				size,
-				lit: vec![false; (size.width * size.height) as usize],
+				lit: Pixels::dark((size.width * size.height) as usize),
 			}
 		}
 
 		fn get(&self, x: u32, y: u32) -> bool {
-			self.lit[(y * self.size.width + x) as usize]
+			self.lit.get((y * self.size.width + x) as usize)
 		}
 	}
 
@@ -677,7 +678,7 @@ mod preview {
 			for Pixel(p, colour) in pixels {
 				if p.x >= 0 && p.y >= 0 && (p.x as u32) < self.size.width && (p.y as u32) < self.size.height {
 					let i = (p.y as u32 * self.size.width + p.x as u32) as usize;
-					self.lit[i] = colour.is_on();
+					self.lit.set(i, colour.is_on());
 				}
 			}
 			Ok(())
@@ -913,7 +914,7 @@ mod tests {
 		let bitmap = Bitmap {
 			width: 4,
 			height: 2,
-			pixels: vec![true; 8],
+			pixels: std::iter::repeat_n(true, 8).collect(),
 		};
 		let mut stream = Vec::new();
 		// The filler the board's writer closes a stalled frame with (`link::BROKEN_FRAME`),
@@ -990,7 +991,7 @@ mod tests {
 		names.dedup();
 		assert_eq!(names.len(), shots.len(), "a name is used twice");
 		assert!(
-			shots.iter().all(|s| s.canvas.lit.iter().any(|&on| on)),
+			shots.iter().all(|s| s.canvas.lit.iter().any(|on| on)),
 			"every scenario put something on the glass"
 		);
 	}
@@ -998,7 +999,7 @@ mod tests {
 	#[test]
 	fn a_preview_png_is_the_panel_times_four_inside_a_one_pixel_frame() {
 		let mut canvas = preview::Canvas::new(preview::PANEL);
-		canvas.lit[0] = true;
+		canvas.lit.set(0, true);
 		let mut bytes = Vec::new();
 		preview::encode_png(&canvas, &mut bytes).unwrap();
 

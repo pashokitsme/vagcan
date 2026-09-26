@@ -490,7 +490,7 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 			// `finish` first: this line would otherwise be written onto the
 			// progress line, which rewrites itself.
 			progress.finish();
-			println!("  {request:03X} is in neither diagnostic block — skipped");
+			println!("  {request:03X} has no diagnostic address (700-795 or 7E0-7E7) — skipped");
 			continue;
 		};
 		let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));

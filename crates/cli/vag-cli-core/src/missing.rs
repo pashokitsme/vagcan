@@ -215,6 +215,33 @@ pub fn no_catalog(subject: &str, dir: &Path) -> String {
 	out
 }
 
+/// States on screen as bytes because the project cache predates state ranges.
+///
+/// A note, not a stop: everything else on the screen is right, and a state read
+/// on the lower end of its range is still named. `sources` is the ODIS projects
+/// the cache was read from; with exactly one, the command names it.
+pub fn state_ranges_note(sources: &[String]) -> String {
+	let command = match sources {
+		[one] => format!("vagcan setup {}", shell_word(one)),
+		_ => "vagcan setup <path to the ODIS project folder>".to_string(),
+	};
+	format!(
+		"Some switch and lever positions may show as raw bytes: this project was read\n\
+         before vagcan kept each state's full range. To name them, read it again:\n    \
+         {command}"
+	)
+}
+
+/// A path as one word a POSIX shell reads back unchanged: bare when every
+/// character is one no shell treats specially, in single quotes otherwise.
+fn shell_word(path: &str) -> String {
+	let plain = !path.is_empty() && path.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%=~".contains(c));
+	match plain {
+		true => path.to_string(),
+		false => format!("'{}'", path.replace('\'', r"'\''")),
+	}
+}
+
 /// Values are on screen, but as bytes, and the reader has no way to know why.
 ///
 /// One line plus the path, printed once per run. A screen read at an open
@@ -300,6 +327,25 @@ mod tests {
 		assert!(one.contains("recording calibrate"), "{one}");
 		// It shares a screen with the values it is about. Three lines, no more.
 		assert_eq!(one.lines().count(), 3, "{one}");
+	}
+
+	#[test]
+	fn the_state_ranges_note_names_the_project_to_read_again() {
+		let plain = state_ranges_note(&["/data/AB12X".to_string()]);
+		assert!(plain.contains("vagcan setup /data/AB12X"), "{plain}");
+		// Anything a shell would act on is quoted, a quote inside included.
+		for (path, word) in [
+			("/data/ODIS Projects/AB12X", "'/data/ODIS Projects/AB12X'"),
+			("/data/a&b", "'/data/a&b'"),
+			("/data/owner's", r"'/data/owner'\''s'"),
+		] {
+			let note = state_ranges_note(&[path.to_string()]);
+			assert!(note.contains(&format!("vagcan setup {word}")), "{note}");
+		}
+		// Two sources, or none recorded: the command cannot pick for the reader.
+		for sources in [vec![], vec!["/a".to_string(), "/b".to_string()]] {
+			assert!(state_ranges_note(&sources).contains("vagcan setup <path to the ODIS project folder>"));
+		}
 	}
 
 	#[test]

@@ -606,7 +606,7 @@ mod tests {
 			address: ReadId::Uds(did),
 			raw_form: RawForm::U8First,
 			scaling: Scaling::Enum {
-				levels: levels.iter().map(|(v, n)| (*v, n.to_string())).collect(),
+				levels: levels.iter().map(|(v, n)| vag_data_labels::Level::point(*v, *n)).collect(),
 			},
 		}
 	}

@@ -119,7 +119,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: riscv32imc-unknown-none-elf
-          components: rust-src, clippy, rustfmt
+          # llvm-tools: `llvm-size` and `llvm-nm` for the RAM budget below.
+          components: rust-src, clippy, rustfmt, llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/dash/vag-dash-fw
@@ -140,6 +141,15 @@ jobs:
       # (Normal mode).
       - name: cargo clippy --bins --all-features -D warnings
         run: cargo clippy --release --bins --all-features -- -D warnings
+      # The board's RAM (CLAUDE.md, "Firmware RAM"). Builds `dash` with and without BLE
+      # and fails when statics (.data + .bss + .noinit) pass a ceiling or the stack the
+      # linker leaves (.stack, the rest of the one data-RAM region) falls under a floor.
+      # The limits, what they were measured at and why, are in ram-budget.sh alone.
+      # With `CI` set it builds into the default `target`, sharing the host build-deps
+      # the clippy steps built; the empty-plan image it leaves there is never flashed —
+      # this job flashes nothing.
+      - name: RAM budget (dash, with and without BLE)
+        run: ./ram-budget.sh
 
   bench-host:
     name: bench host (dashsim, bleecho, bleuds, benchecu)

@@ -15,10 +15,14 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 
 /// A panel in memory, `width × height`, every pixel dark until drawn.
+///
+/// One bit per pixel, row-major, the first pixel in a byte's top bit — the layout of
+/// the board's `Framebuffer`, so the two agree bit for bit. 256×64 is 2 KB here, where
+/// a `bool` a pixel would be 16.
 pub struct Canvas {
 	width: usize,
 	height: usize,
-	lit: Vec<bool>,
+	bits: Vec<u8>,
 }
 
 impl Canvas {
@@ -26,8 +30,14 @@ impl Canvas {
 		Canvas {
 			width,
 			height,
-			lit: vec![false; width * height],
+			bits: vec![0; (width * height).div_ceil(8)],
 		}
+	}
+
+	/// The byte pixel `(x, y)` is in, and its bit there. The caller keeps `(x, y)` on the panel.
+	fn at(&self, x: usize, y: usize) -> (usize, u8) {
+		let index = y * self.width + x;
+		(index / 8, 0x80 >> (index % 8))
 	}
 
 	pub fn width(&self) -> usize {
@@ -40,12 +50,16 @@ impl Canvas {
 
 	/// Every pixel dark again, as the board clears its framebuffer before each frame.
 	pub fn clear(&mut self) {
-		self.lit.fill(false);
+		self.bits.fill(0);
 	}
 
 	/// Whether the pixel is lit; a pixel off the panel is dark.
 	pub fn lit(&self, x: usize, y: usize) -> bool {
-		x < self.width && y < self.height && self.lit[y * self.width + x]
+		if x >= self.width || y >= self.height {
+			return false;
+		}
+		let (byte, bit) = self.at(x, y);
+		self.bits[byte] & bit != 0
 	}
 }
 
@@ -68,7 +82,12 @@ impl DrawTarget for Canvas {
 				continue;
 			};
 			if x < self.width && y < self.height {
-				self.lit[y * self.width + x] = colour.is_on();
+				let (byte, bit) = self.at(x, y);
+				if colour.is_on() {
+					self.bits[byte] |= bit;
+				} else {
+					self.bits[byte] &= !bit;
+				}
 			}
 		}
 		Ok(())
@@ -140,6 +159,19 @@ mod tests {
 	fn braille_keeps_every_pixel_as_its_own_dot() {
 		// (0,0) is dot 1, (1,1) dot 5; (2,2) is dot 3 of the next character.
 		assert_eq!(braille(&diagonal()), ["\u{2811}\u{2804}"]);
+	}
+
+	#[test]
+	fn a_pixel_is_one_bit_laid_out_as_the_boards_framebuffer() {
+		let mut canvas = Canvas::new(256, 64);
+		assert_eq!(canvas.bits.len(), 256 * 64 / 8);
+		// Row-major, the first pixel of a byte in its top bit.
+		let pixels = [(0, 0), (9, 0), (7, 1)].map(|(x, y)| Pixel(Point::new(x, y), BinaryColor::On));
+		canvas.draw_iter(pixels).unwrap();
+		assert_eq!((canvas.bits[0], canvas.bits[1], canvas.bits[32]), (0x80, 0x40, 0x01));
+		// Drawing dark over a lit pixel darkens it and nothing beside it.
+		canvas.draw_iter([Pixel(Point::new(9, 0), BinaryColor::Off)]).unwrap();
+		assert!(!canvas.lit(9, 0) && canvas.lit(0, 0) && canvas.lit(7, 1));
 	}
 
 	#[test]

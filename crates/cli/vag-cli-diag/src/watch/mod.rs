@@ -1902,7 +1902,9 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
 	// request is ever sent in this mode.
-	let resolved = replay::resolve(&recording.columns, &mut channels, crate::plan::ENGINE);
+	let mut resolved = replay::resolve(&recording.columns, &mut channels, crate::plan::ENGINE);
+	// A state column from before 2026-09-26 holds the whole answer as bare hex.
+	replay::settle_formats(&recording, &mut resolved, &channels);
 	if resolved.is_empty() {
 		anyhow::bail!(
 			"none of the {} columns in {recording_path} matched a channel this build knows. \n\
@@ -1973,7 +1975,10 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 				};
 				let channel = &app.channels[hit.channel];
 				let (request, did) = (channel.request, channel.did);
-				if let Some(bytes) = replay::cell_to_bytes(cell, channel, hit.raw) {
+				// Laid over what the identifier's other fields already put there: one
+				// column is one field, and it takes all of them to rebuild the answer.
+				let held = app.latest.get(&(request, did)).map(|(_, data)| data.as_slice());
+				if let Some(bytes) = replay::answer_from_cell(cell, channel, hit.raw, held) {
 					app.observe(request, did, playhead, bytes);
 				}
 			}
@@ -2172,8 +2177,8 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 			// The last read missed: when, and no value — not the one before it again.
 			(Some(missed), _) => format!("{missed:.3},"),
 			(None, Some((t, data))) => {
-				let v = match c.def.as_ref().and_then(|d| d.interpret(data)) {
-					Some(v) => format!("{v}"),
+				let v = match c.def.as_ref().and_then(|d| converted(d, data)) {
+					Some(v) => v,
 					// In a `_raw` column every cell is bytes. In a converted one an answer
 					// that did not convert is marked `0x`, so no reader takes `0100` for
 					// the number 100.
@@ -2187,6 +2192,38 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 		.collect();
 	writeln!(w, "{:.3},{}", app.clock, cells.join(","))?;
 	Ok(())
+}
+
+/// What a converted column records for one answer: the value, or — for a state —
+/// the name of the level this field's bytes fall in, quoted the way a heading is.
+/// `None` when neither exists, and the caller writes the answer's bytes instead.
+///
+/// **A state is recorded by name** (since 2026-09-26). It used to go through
+/// `interpret`, which a state has no number for, so every state column was the
+/// whole answer's bytes — the same cell under every field of a multi-field
+/// identifier, and nothing a person could read the lever off. The name is what
+/// the live screen shows, and `watch --replay` turns it back into its level.
+///
+/// A name that would not come back as itself is not written: empty or all space
+/// (read back, that is a read that missed), across lines (a recording is read a
+/// line at a time), or starting `0x` (read back, that is bytes). Those fall back
+/// to the answer's bytes, which are exact.
+///
+/// So does a reading between two levels. That is the right cell for a replay, but
+/// `dev recording discover` counts every distinct cell as a level, and the whole
+/// answer's bytes change with every other field of it: a noisy state with gaps
+/// between its levels can be called Continuous there. The reference project's
+/// stalk bands tile their byte from 0 to 255 with no gap, so on those it does not
+/// arise.
+fn converted(def: &vag_data_labels::catalog::MeasurementDef, data: &[u8]) -> Option<String> {
+	match def.scaling {
+		vag_data_labels::catalog::Scaling::Enum { .. } => {
+			let name = def.describe(data)?;
+			let readable = !name.trim().is_empty() && !name.contains(['\n', '\r']) && !name.trim_start().starts_with(UNCONVERTED);
+			readable.then(|| crate::discover::quoted(&name).into_owned())
+		}
+		_ => def.interpret(data).map(|v| format!("{v}")),
+	}
 }
 
 /// Bytes as a recording writes them: two hex digits each.
@@ -2557,6 +2594,15 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 		"{}",
 		coverage_report(&identities, &channels, catalogs, &source, &answered, extracted.project())
 	);
+	// A cache from before each state kept its whole range still names a state
+	// read on the range's lower end, and shows the rest as bytes. Said once, for
+	// the units on this car only, because only `setup` can fix it.
+	if identities
+		.iter()
+		.any(|u| extracted.levels_predate_bounds(u.odx_name.as_deref(), u.odx_version.as_deref()))
+	{
+		eprintln!("{}", crate::missing::state_ranges_note(&extracted.odis_sources()));
+	}
 	for (request, did) in preselect {
 		// **Every** field of that identifier, not the first one. `--did
 		// 01:2029` names an identifier, one request reads all of it, and
@@ -3360,6 +3406,99 @@ mod tests {
 		assert_eq!(recording.read_at[0], [Some(0.05)]);
 	}
 
+	/// One field of a multi-field answer whose value is a state in bands — the
+	/// shape of a lever read as a voltage. Synthetic bands, no car's table.
+	fn banded(bit_offset: u32, name: &'static str, levels: Vec<vag_data_labels::Level>) -> Channel {
+		use std::borrow::Cow;
+		use vag_data_labels::catalog::{ReadId, Scaling};
+		use vag_data_labels::measure::RawForm;
+		Channel {
+			request: 0x70C,
+			did: 0x1000,
+			def: Some(vag_data_labels::catalog::MeasurementDef {
+				name: Cow::Borrowed(name),
+				unit: Cow::Borrowed(""),
+				address: ReadId::Uds(0x1000),
+				raw_form: RawForm::for_field(bit_offset, 8, false, true).unwrap(),
+				scaling: Scaling::Enum { levels },
+			}),
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: true,
+		}
+	}
+
+	/// Two fields of one answer, each a state in bands; the first's names carry a
+	/// comma and a quote, which a recording has to survive.
+	fn two_levers() -> Vec<Channel> {
+		use vag_data_labels::Level;
+		vec![
+			banded(0, "Lever A", vec![Level::range(10, 49, "pulled, \"hard\""), Level::range(50, 99, "rest")]),
+			banded(8, "Lever B", vec![Level::range(0, 99, "off"), Level::range(100, 199, "on")]),
+		]
+	}
+
+	#[test]
+	fn each_field_of_a_state_answer_is_recorded_by_its_own_name() {
+		let mut a = App::new(two_levers());
+		a.observe(0x70C, 0x1000, 0.05, vec![20, 150]);
+		a.clock = 0.1;
+		// One answer, two cells, each the name of its own field's band — not the
+		// whole answer's bytes twice. The comma and the quote are quoted.
+		assert_eq!(recorded_row(&a), "0.100,0.050,\"pulled, \"\"hard\"\"\",0.050,on\n");
+		// A field between its bands names nothing, and is written as the answer it
+		// came in, marked — as any answer a converted column could not convert.
+		a.observe(0x70C, 0x1000, 0.15, vec![5, 150]);
+		a.clock = 0.2;
+		assert_eq!(recorded_row(&a), "0.200,0.150,0x0596,0.150,on\n");
+	}
+
+	#[test]
+	fn a_name_a_reader_could_not_take_back_is_recorded_as_bytes() {
+		use vag_data_labels::Level;
+		for name in ["", "  ", "two\nlines", "0x05"] {
+			let mut a = App::new(vec![banded(0, "Lever", vec![Level::point(5, name)])]);
+			a.observe(0x70C, 0x1000, 0.05, vec![5]);
+			a.clock = 0.1;
+			assert_eq!(recorded_row(&a), "0.100,0.050,0x05\n", "{name:?}");
+		}
+	}
+
+	#[test]
+	fn a_recorded_state_replays_as_the_same_name_in_every_field() {
+		let mut a = App::new(two_levers());
+		a.observe(0x70C, 0x1000, 0.05, vec![20, 150]);
+		a.clock = 0.1;
+		let mut out = Vec::new();
+		let mut header_written = false;
+		write_row(&mut out, &a, &mut header_written).unwrap();
+		a.observe(0x70C, 0x1000, 0.15, vec![77, 3]);
+		a.clock = 0.2;
+		write_row(&mut out, &a, &mut header_written).unwrap();
+		let csv = String::from_utf8(out).unwrap();
+
+		let recording = replay::Recording::parse(&csv).unwrap();
+		let mut channels = two_levers();
+		let resolved = replay::resolve(&recording.columns, &mut channels, 0x70C);
+		let mut b = App::new(channels);
+		let mut shown = Vec::new();
+		for (t, cells) in &recording.samples {
+			for (column, hit) in &resolved {
+				let cell = cells[*column].as_deref().unwrap();
+				let channel = &b.channels[hit.channel];
+				let held = b.latest.get(&(channel.request, channel.did)).map(|(_, d)| d.as_slice());
+				let bytes = replay::answer_from_cell(cell, channel, hit.raw, held).expect("a recorded name inverts");
+				b.observe(0x70C, 0x1000, *t, bytes);
+			}
+			let data = &b.latest[&(0x70C, 0x1000)].1;
+			shown.push(b.channels.iter().map(|c| c.render(data)).collect::<Vec<_>>());
+		}
+		// Every field shows the name it was recorded with: filling one field must
+		// not zero the other, which would name a band nobody saw.
+		assert_eq!(shown, [["pulled, \"hard\"", "on"], ["rest", "off"]]);
+	}
+
 	/// One recorded row of `a`, header dropped.
 	fn recorded_row(a: &App) -> String {
 		let mut out = Vec::new();
@@ -3747,7 +3886,7 @@ mod tests {
 				address: ReadId::Uds(did),
 				raw_form: RawForm::U8First,
 				scaling: Scaling::Enum {
-					levels: vec![(5, "4".to_string()), (12, "R".to_string())],
+					levels: vec![vag_data_labels::Level::point(5, "4"), vag_data_labels::Level::point(12, "R")],
 				},
 			}),
 			named: None,

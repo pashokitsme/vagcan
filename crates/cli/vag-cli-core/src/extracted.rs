@@ -229,6 +229,30 @@ impl Extracted {
 		self.project.as_deref()
 	}
 
+	/// Whether this unit's states were cached before each level kept its whole
+	/// band — so a state read inside a band, rather than on its lower end, shows
+	/// as bytes until the project is read again.
+	///
+	/// Asked of the same variants [`Self::for_unit`] reads, and nothing else: a
+	/// stale level on a unit that is not in the car is not worth a sentence.
+	pub fn levels_predate_bounds(&self, odx_name: Option<&str>, version: Option<&str>) -> bool {
+		!self.is_empty()
+			&& best_variants(&self.variants, odx_name, version)
+				.into_iter()
+				.any(|name| vag_data_db::levels_predate_bounds(&self.cache, name).unwrap_or(false))
+	}
+
+	/// The ODIS projects this cache was read from, as `setup` recorded them —
+	/// what to point `setup` at to read them again.
+	pub fn odis_sources(&self) -> Vec<String> {
+		vag_data_db::sources_of(&self.cache)
+			.unwrap_or_default()
+			.into_iter()
+			.filter(|(kind, _)| kind == vag_data_db::ODIS)
+			.map(|(_, dir)| dir)
+			.collect()
+	}
+
 	/// The channels this project knows for a unit, given what the unit said.
 	///
 	/// `odx_name` is `F19E` and `version` is `F1A2`, **passed through exactly as
@@ -512,6 +536,22 @@ mod tests {
 		let offsets: Vec<u32> = defs.iter().map(|d| d.raw_form.bit_offset()).collect();
 		assert_eq!(offsets, vec![0, 16, 32], "and each reads from its own place in the response");
 		assert!(defs.iter().all(|d| d.address == ReadId::Uds(0x2029)), "one identifier, one request");
+	}
+
+	#[test]
+	fn a_state_band_comes_through_the_cache_to_the_unit_and_is_not_stale() {
+		let here = tempfile::tempdir().unwrap();
+		let mut lever = reading(0x1000, "Lever", 8, 8, true);
+		lever.scaling = Scaling::Enum {
+			levels: vec![vag_data_labels::Level::range(10, 49, "pulled"), vag_data_labels::Level::point(50, "rest")],
+		};
+		let extracted = cache_with(here.path(), &[("EV_Test_001", vec![lever])]);
+		let defs = extracted.for_unit(Some("EV_Test"), Some("001007"));
+		assert_eq!(defs[0].describe(&[0, 33]).as_deref(), Some("pulled"));
+		// Written today, so every level has both ends — and there is no note.
+		assert!(!extracted.levels_predate_bounds(Some("EV_Test"), Some("001007")));
+		assert!(!extracted.levels_predate_bounds(Some("EV_Nothing"), None));
+		assert_eq!(extracted.odis_sources(), ["/nowhere/SK37X"]);
 	}
 
 	#[test]

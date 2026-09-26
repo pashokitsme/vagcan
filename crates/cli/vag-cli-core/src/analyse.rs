@@ -154,12 +154,10 @@ fn response_id_for(request: u32) -> Option<u32> {
 		}
 		return Some((0x18DA << 16 | source << 8 | target) | CAN_EFF_FLAG);
 	}
-	match request {
-		0x7E0..=0x7E7 => Some(request + 8),
-		// The VW block. 0x7DF (functional) is deliberately excluded.
-		0x700..=0x7BF if request != 0x7DF => Some(request + 0x6A),
-		_ => None,
-	}
+	// The two blocks' rules are `UnitAddress`'s, which also refuses a response past 11 bits;
+	// 0x7DF (functional) is in neither block.
+	let request = u16::try_from(request).ok()?;
+	vag_uds_client::address::UnitAddress::from_request(request).map(|address| u32::from(address.response))
 }
 
 /// Pull per-identifier raw series out of a capture.

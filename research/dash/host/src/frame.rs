@@ -23,8 +23,8 @@ pub const MARKER: &str = "FRAME ";
 pub struct Bitmap {
 	pub width: u32,
 	pub height: u32,
-	/// One `bool` per pixel, row-major. `true` is lit.
-	pub pixels: Vec<bool>,
+	/// Row-major, lit or not.
+	pub pixels: Pixels,
 }
 
 impl Bitmap {
@@ -32,7 +32,70 @@ impl Bitmap {
 		if x >= self.width || y >= self.height {
 			return false;
 		}
-		self.pixels[(y * self.width + x) as usize]
+		self.pixels.get((y * self.width + x) as usize)
+	}
+}
+
+/// Pixels one bit each, the first of a byte in its top bit — the layout of the board's
+/// `Framebuffer` (`vag-dash-fw`'s `panel.rs`), so the two agree bit for bit. A 256×64
+/// panel is 2 KB this way, where a `bool` a pixel would be 16.
+///
+/// The bits past `len` in the last byte stay clear, which is what lets `==` compare bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pixels {
+	len: usize,
+	bits: Vec<u8>,
+}
+
+impl Pixels {
+	/// `len` pixels, all dark.
+	pub fn dark(len: usize) -> Self {
+		Pixels {
+			len,
+			bits: vec![0; len.div_ceil(8)],
+		}
+	}
+
+	pub fn len(&self) -> usize {
+		self.len
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.len == 0
+	}
+
+	/// Pixel `index`; one past the end is dark.
+	pub fn get(&self, index: usize) -> bool {
+		index < self.len && self.bits[index / 8] & (0x80 >> (index % 8)) != 0
+	}
+
+	/// Sets pixel `index`. One past the end is a bug in the caller, and panics as a slice would.
+	pub fn set(&mut self, index: usize, lit: bool) {
+		assert!(index < self.len, "pixel {index} of {}", self.len);
+		let mask = 0x80 >> (index % 8);
+		if lit {
+			self.bits[index / 8] |= mask;
+		} else {
+			self.bits[index / 8] &= !mask;
+		}
+	}
+
+	pub fn iter(&self) -> impl Iterator<Item = bool> + '_ {
+		(0..self.len).map(|index| self.get(index))
+	}
+}
+
+impl FromIterator<bool> for Pixels {
+	fn from_iter<I: IntoIterator<Item = bool>>(pixels: I) -> Self {
+		let mut out = Pixels::default();
+		for lit in pixels {
+			if out.len.is_multiple_of(8) {
+				out.bits.push(0);
+			}
+			out.len += 1;
+			out.set(out.len - 1, lit);
+		}
+		out
 	}
 }
 
@@ -68,19 +131,26 @@ pub fn decode(line: &str) -> Result<Bitmap, DecodeError> {
 	}
 
 	let want = (width * height) as usize;
-	let mut pixels = Vec::with_capacity(want);
+	let mut pixels = Pixels::dark(want);
+	// How many pixels the runs so far have described.
+	let mut got = 0;
 	let mut lit = false;
 	for pair in runs.as_bytes().chunks(2) {
 		let text = std::str::from_utf8(pair).map_err(|_| DecodeError::BadRuns)?;
 		let run = u8::from_str_radix(text, 16).map_err(|_| DecodeError::BadRuns)?;
-		pixels.resize(pixels.len() + usize::from(run), lit);
-		if pixels.len() > want {
-			return Err(DecodeError::WrongLength { got: pixels.len(), want });
+		let end = got + usize::from(run);
+		if end > want {
+			return Err(DecodeError::WrongLength { got: end, want });
 		}
+		// The pixels start dark, so only a lit run has anything to write.
+		if lit {
+			(got..end).for_each(|index| pixels.set(index, true));
+		}
+		got = end;
 		lit = !lit;
 	}
-	if pixels.len() != want {
-		return Err(DecodeError::WrongLength { got: pixels.len(), want });
+	if got != want {
+		return Err(DecodeError::WrongLength { got, want });
 	}
 	Ok(Bitmap { width, height, pixels })
 }
@@ -93,7 +163,7 @@ pub fn encode(bitmap: &Bitmap) -> String {
 	let mut out = format!("{MARKER}{} {} ", bitmap.width, bitmap.height);
 	let mut lit = false;
 	let mut run = 0u32;
-	for &pixel in &bitmap.pixels {
+	for pixel in bitmap.pixels.iter() {
 		if pixel == lit && run < 255 {
 			run += 1;
 		} else {
@@ -117,21 +187,21 @@ pub fn encode(bitmap: &Bitmap) -> String {
 mod tests {
 	use super::*;
 
-	fn roundtrip(width: u32, height: u32, pixels: Vec<bool>) {
+	fn roundtrip(width: u32, height: u32, pixels: Pixels) {
 		let bitmap = Bitmap { width, height, pixels };
 		assert_eq!(decode(&encode(&bitmap)).unwrap(), bitmap);
 	}
 
 	#[test]
 	fn empty_panel_roundtrips() {
-		roundtrip(256, 64, vec![false; 256 * 64]);
+		roundtrip(256, 64, Pixels::dark(256 * 64));
 	}
 
 	#[test]
 	fn full_panel_roundtrips() {
 		// Every pixel lit is the case that forces run splitting: 16384 lit
 		// pixels cannot be one run of 255.
-		roundtrip(256, 64, vec![true; 256 * 64]);
+		roundtrip(256, 64, std::iter::repeat_n(true, 256 * 64).collect());
 	}
 
 	#[test]
@@ -140,14 +210,38 @@ mod tests {
 	}
 
 	#[test]
+	fn a_panel_that_does_not_fill_its_last_byte_roundtrips() {
+		// 5×3 is 15 pixels: the last byte holds seven, and its spare bit stays clear.
+		roundtrip(5, 3, (0..15).map(|i| i % 3 != 1).collect());
+		roundtrip(5, 3, std::iter::repeat_n(true, 15).collect());
+	}
+
+	#[test]
 	fn a_shape_roundtrips() {
-		let mut pixels = vec![false; 256 * 64];
+		let mut pixels = Pixels::dark(256 * 64);
 		for y in 10..20 {
 			for x in 30..200 {
-				pixels[y * 256 + x] = true;
+				pixels.set(y * 256 + x, true);
 			}
 		}
 		roundtrip(256, 64, pixels);
+	}
+
+	#[test]
+	fn pixels_are_bits_laid_out_as_the_boards_framebuffer() {
+		// Row-major, the first pixel of a byte in its top bit: pixel 0 is 0x80 of byte 0,
+		// pixel 9 is 0x40 of byte 1, as `vag-dash-fw`'s `Framebuffer` has them.
+		let mut pixels = Pixels::dark(256 * 64);
+		assert_eq!(pixels.bits.len(), 256 * 64 / 8);
+		pixels.set(0, true);
+		pixels.set(9, true);
+		assert_eq!(pixels.bits[..2], [0x80, 0x40]);
+		pixels.set(9, false);
+		assert_eq!(pixels.bits[..2], [0x80, 0x00]);
+		// Built one pixel at a time: the same bits, the same length.
+		let collected: Pixels = pixels.iter().collect();
+		assert_eq!(collected, pixels);
+		assert!(!pixels.get(256 * 64), "one past the end is dark");
 	}
 
 	#[test]
@@ -173,7 +267,7 @@ mod tests {
 		let bitmap = Bitmap {
 			width: 256,
 			height: 64,
-			pixels: vec![false; 256 * 64],
+			pixels: Pixels::dark(256 * 64),
 		};
 		assert!(encode(&bitmap).len() < 300, "{}", encode(&bitmap).len());
 	}

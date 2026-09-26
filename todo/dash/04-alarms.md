@@ -3,7 +3,7 @@
 **Subsystem:** dash · **Crates:** `vag-dash-render`, `vag-cli-core` (plan), `vag-dash-fw` ·
 **Needs the car:** partly (thresholds)
 
-**State (2026-09-22):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
+**State (2026-09-26):** on `master` — threshold rules since PR #2 (2026-09-14), the drift rule
 (`18`) since PR #4 (2026-09-15); the four recommended rules below are in the owner's `dash.toml`
 since 2026-09-22, and on the bench the board polls their channels on every page. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
@@ -11,7 +11,8 @@ since 2026-09-22, and on the bench the board polls their channels on every page.
 inverts the offending cell and silences on a short press. **2026-09-26:** the hardware-free
 replay exists — `vagcan dev recording dash <VIN> --log FILE.csv [--press S]…` runs a
 `watch --out` recording through the board's `Screen`, alarms, `Plan::rates` and renderer and
-logs every takeover, hand-back and silence. Open: a run on the car, where the misfire window
+logs every takeover, hand-back and silence. Since the same day the offending cell blinks
+while the value is out and holds still through the hold (owner). Open: a run on the car, where the misfire window
 and every threshold are checked, and a recording with the retard channels to replay (see
 "Done when").
 
@@ -39,7 +40,8 @@ release = -1.5                       # clears only past this, back the other way
 Order in the file is priority. At most **4** rules (`alarm::MAX_ALARMS`): each rule's
 channels are read at full rate on every page, and one press ends one episode.
 
-Two rules to start: **ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
+Two rules to start (2026-09-22; the retard moved to −6.0/−4.5 on 2026-09-26, table below):
+**ignition retard** (`200A`–`200D`, trip −2.0°, release −1.5°,
 `below`) and **misfires** (`291D`–`2920`, trip and release to be set on the car — a count
 per 1000 revolutions is not a quantity anyone should guess a threshold for).
 
@@ -50,7 +52,7 @@ number for this ECU, and the car confirms each:
 | rule | channels | values | resting on |
 |---|---|---|---|
 | misfires, `above` | `291D`–`2920` (a count per 1000 revolutions, ×1) | trip 5, release 3 | VW's 0…2 per cylinder in the `06J-906-026-CCT` label (another engine unit); CARB 13 CCR 1968.2's 1 % = 20 per 1000 revolutions; if too eager, 20 / 10 |
-| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −2.0, release −1.5 | about one knock step (1.5–2.25° on the sibling `8V0906264L`, community data); if too eager, −3.0 / −2.0 |
+| knock retard, `below` | `200A`–`200D` (s16 ×0.01 °, retard negative) | trip −6.0, release −4.5 (2026-09-26; was −2.0/−1.5) | −2.0 fired on every full-throttle pull on 95 RON (−2.6° and past). Owner and tuner logs of stock EA888 (this engine among them) put 3–4° at WOT in the normal band and start to worry past −6 ([octavia-club A7](https://www.octavia-club.ru/f/A7/50139-pro-propuski-zazhiganiya-i-detonaciyu-na/p3), [drive2 CJSA](https://www.drive2.ru/l/539781320352466409/), [drive2 Tiguan](https://www.drive2.ru/l/582226042597582973/)); release two 0.75° steps above (logged values sit on a 0.375° grid — inference). No OEM number; medium-low confidence. Better: from 10–20 recorded pulls |
 | coolant, `above` | `F405` | trip 115, release 110 | the top of VW's 80…115 °C warm spec (EA888 gen1/2 labels); release inferred |
 | boost drift | `202A` against `2029` | 10 %, release 5 %, 2000 ms, floor 1.3 bar | inference only; the floor matters because the pressures are absolute (~0.99 bar at rest) |
 
@@ -113,7 +115,34 @@ on the next poll and asks for its own press.
 **Highlight by inverting the offending cell, not the screen.** Filling the whole panel loses
 the one thing the view exists to say — *which cylinder*. Inverted, the cell reads black
 on white and the label survives along with the number. It is brief by construction, so
-it costs nothing in burn-in.
+it costs nothing in burn-in. Blinking the whole screen is refused for the same reason: on
+the plain half the label is gone too.
+
+**The inversion blinks while the value is out, and holds still in the hold** (owner,
+2026-09-26: a steadily inverted cell did not draw the eye enough, "not very intuitive"):
+
+| episode | the offending cell |
+|---|---|
+| firing (`Firing`) | inverted 400 ms, plain 400 ms, by turns (`alarm::BLINK_MS`), inverted first |
+| back inside, the 2.5 s hold (`Holding`) | inverted on every frame — the driver sees it came back |
+| handed back, silenced, or a drift rule still counting | nothing inverted |
+
+**Firing includes two cases that are not "past the trip", and both blink on purpose**
+(controller, 2026-09-26): a value back inside the hysteresis band but not past the release,
+and channels that stop answering mid-episode. Neither is a release, so the alarm has not
+released and the cell keeps blinking. Not a bug.
+
+**The phase counts from the takeover** (review, 2026-09-26): inverted when
+`((now_ms − from) / BLINK_MS) % 2 == 0`, so the first frame of every episode is inverted. A
+phase from the boot clock left the glass unchanged for up to ~600 ms when the driver was
+already on the rule's page and the takeover landed on a plain half. `from` lives in the
+`Firing` episode, not in a timer: the moment it fired, fired again out of the hold, or took
+the glass from a rule that was silenced or handed back. The board and the replay use the same
+rule. The frames must be at most `BLINK_MS / 2` apart so every half holds one even when a
+frame is slow to draw; the board's 200 ms gives two on, two off, and both `bin/dash.rs` and the
+replay's `engine.rs` assert it at compile time. At a frame period of an even multiple of
+400 ms the frames would alias onto one half and the blink would be lost. `dashsim` only shows
+the frames the board sends, so it blinks as they do.
 
 ## The polling consequence — the non-obvious cost
 
@@ -133,12 +162,16 @@ accepts per request is still a bench measurement — see `06`.
 
 ## Where it lives
 
-- **`vag-dash-render/src/alarm.rs`** — the state machine (15 tests). `no_std`,
-  allocation-free, reads no clock. `Alarm` is plain data the plan carries as a `static`.
+- **`vag-dash-render/src/alarm.rs`** — the state machine (33 tests, 12 of them the drift
+  rule's). `no_std`, allocation-free, reads no clock. `Alarm` is plain data the plan carries
+  as a `static`. `BLINK_MS` and the blink decision live here: an episode that is up says its
+  `Highlight` — `Blinking { from_ms }` while `Firing`, `Steady` while `Holding`, read off the
+  episode state rather than kept beside it — and `Shown::inverted(now_ms)` answers the frame.
 - **`vag-dash-render/src/screen.rs`** — `Screen`: the page cursor, the alarms and the short
-  press, which the firmware only feeds (9 tests). `frame` answers a `Glass`: the page to
-  draw, the cell to invert, whether the page changed, a page the board does not hold, and
-  what to say (`Took { rule }`, `Over`, `Silenced`). The cursor stays the board's
+  press, which the firmware only feeds (15 tests). `frame` answers a `Glass`: the page to
+  draw, the channel the alarm points at (`offending`, what the log names), its `highlight`,
+  the cell inverted **on this frame** (`inverted`), whether the page changed, a page the
+  board does not hold, and what to say (`Took { rule }`, `Over`, `Silenced`). The cursor stays the board's
   (`Config::active_page`: saved, set over BLE, reported by `state`); `Screen` reads and
   moves it and never keeps a copy.
 - **`vag-dash-render/src/plan.rs`** — `Plan::alarms`; `ChannelId` is the plan's channel
@@ -148,7 +181,7 @@ accepts per request is still a bench measurement — see `06`.
   `plan.rs`.
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws
-  `glass.page`, and inverts the cell whose channel is `glass.offending`; it publishes the
+  `glass.page`, and inverts the cell whose channel is `glass.inverted`; it publishes the
   drawn page for the bus task's subscriptions. The button task routes a short press
   through `Screen::press`. On USB: each takeover (per rule), `over`, `silenced`, and once
   an alarm page the board does not hold — the cursor's page is drawn instead of freezing.
@@ -176,19 +209,32 @@ Four decisions worth writing down:
 
 ## Tests
 
-`alarm.rs` (15, neutral channels and thresholds): one takeover for a value oscillating across the trip; release at the
+`alarm.rs` (33, neutral channels and thresholds; 12 are the drift rule's): one takeover for a
+value oscillating across the trip; release at the
 release value; the 2.5 s hold and the hand-back by page identity; silence, re-arm after a
 release, silence while still out; priority; the worst cell and its freeze through the
-hold; a channel that stops answering neither trips nor releases.
+hold; a channel that stops answering neither trips nor releases. The highlight (2026-09-26):
+while firing the cell blinks in `BLINK_MS` halves from the takeover, to the millisecond, and
+the first frame is inverted at any takeover time; it keeps blinking in the hysteresis band and
+with its channels quiet; through the hold it is inverted on every frame, and the release is
+not a `changed` picture; nothing after the hand-back, while silenced, or while a drift rule
+is still counting, whose blink starts when it fires; out again inside the hold blinks again
+from that moment.
 
-`screen.rs` (9, neutral channels and thresholds): a hidden page's channel takes the screen
+`screen.rs` (15, neutral channels and thresholds): a hidden page's channel takes the screen
 with its page and cell, and the takeover and hand-back change the page; during a takeover
 the foreground channels are the alarm page's (through `Plan::rates`); an alarm page past
 the board's pages draws the cursor page; silence then re-arm after a release, said as
 `Silenced`; the cursor moves only on `NextPage`, and the hold hands back to where the
 cursor is *now*; two rules by priority, each a `Took` of its own; a stale channel neither
 trips nor releases; the adapter screen runs no alarms and a press there pages; a plan with
-no alarms only pages.
+no alarms only pages. The blink through `Glass::inverted`: two frames on, two off at 200 ms,
+steady through the hold, none after; a silenced alarm inverts nothing; a second rule taking
+over blinks its own cell, inverted on its first frame though it fired earlier, behind the first
+rule; a takeover of the page already on the glass is inverted on its first frame; frames at
+any period up to `BLINK_MS` and any start, or jittered, see both halves and never draw one
+picture longer than a half and a frame; and the plain half of a blink draws the page pixel
+for pixel as with nothing inverted.
 
 `plan.rs`: a watched channel is foreground at its own rate on every page. `dash.rs`: every
 refusal above, the `plan.json` round trip, an old `plan.json` without alarms, and the
@@ -218,7 +264,8 @@ hold is `None`: it neither trips nor releases. Its tests (neutral channels): one
 a value hovering on the trip, the hand-back 2.5 s after the release by recording time,
 silence and re-arm, a missing channel never tripping, columns matched in another order, the
 piped output being the log alone, and the panel being the board's frame with the offending
-cell inverted.
+cell blinking — inverted on one half, the plain page on the other — and steady through the
+hold (2026-09-26).
 
 Since 2026-09-26 `watch --out` quotes a heading with a comma ("Ignition retard, cylinder 1"
 split in two before), writes a read that missed as its time in `_t_s` with the value empty, and
