@@ -131,6 +131,22 @@ pub struct Board {
 	/// The bus traffic the adapter screen's main line shows. `None` until the board
 	/// measures it, and drawn as `--`, never as a zero.
 	pub rates: Option<Rates>,
+	/// The car's stored fault codes, counted once after boot. Drawn as a warning triangle
+	/// and the count in the bottom-right corner of the values and chart pages — alarm pages
+	/// included — and not at all while there is no count or it is zero. The adapter screen
+	/// draws none, as it draws no link icons.
+	pub faults: Option<Faults>,
+}
+
+/// What the board's one fault read found (`todo/dash/20`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Faults {
+	/// Stored codes — confirmed, as `vagcan faults` counts them — across every unit that
+	/// answered.
+	pub stored: u32,
+	/// At least one of them is failing now: the badge is drawn inverted. Steady, never
+	/// blinking — blinking is an alarm's.
+	pub failing_now: bool,
 }
 
 /// Which hosts the board is serving.

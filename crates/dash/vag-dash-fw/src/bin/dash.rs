@@ -2197,7 +2197,11 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				_ => None,
 			};
 			framebuffer.clear_all();
-			let board = Board { links: links(), rates };
+			let board = Board {
+				links: links(),
+				rates,
+				faults: None,
+			};
 			let report = draw_with(&Frame::Adapter(SLCAN_PORT.status()), &board, &theme, framebuffer);
 			let compromised = report != vag_dash_render::render::Report::default();
 			if compromised != last_compromised {
@@ -2207,7 +2211,12 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 			continue;
 		}
 		meters = None;
-		let board = Board { links: links(), rates: None };
+		// No fault count until the board reads one (`todo/dash/20`, not wired yet).
+		let board = Board {
+			links: links(),
+			rates: None,
+			faults: None,
+		};
 
 		// A copy, so the lock is held for a memcpy and not for a frame.
 		let values = *VALUES.lock().await;
