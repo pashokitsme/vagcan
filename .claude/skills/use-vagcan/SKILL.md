@@ -68,7 +68,9 @@ vagcan watch --did "01:2029,202A 02:3816" --for 30 --hz 10 --out drive.csv
   and do not report it as a value.
 - A cell starting `0x` in a converted column is **the bytes of an answer that did not
   convert**, not a number (`0x` alone: an answer with no bytes). Recordings before
-  2026-09-26 wrote these as bare hex.
+  2026-09-26 wrote these as bare hex, which cannot be told from a number: in such a
+  recording a converted column is only trustworthy if every cell is a number on its scaling
+  (`vagcan dev recording dash` drops any column that is not).
 - A **time in `name_t_s` with the value empty** means the read at that time brought no
   value: it missed, or — in a `_raw` column, and in any column of a recording before
   2026-09-26 — the unit answered with no bytes. Either way there is no reading. An empty

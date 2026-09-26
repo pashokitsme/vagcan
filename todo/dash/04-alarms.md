@@ -226,12 +226,10 @@ marks an answer it could not convert `0x…` in a converted column. The replay r
 there: an empty cell with no time of its own is no evidence (recordings without `_t_s` columns
 leave whole rows empty between sweeps — `research/dumps/drive-gear.csv`). A recording made
 before cannot show a miss (the replay keeps its last value `fresh_for` from when it was heard)
-and wrote an unconverted answer as bare hex — for a linear row, bytes too short for the field.
-The replay reads a hex cell whose bytes the plan's layout cannot decode as such an answer (no
-value, said); a hex cell that decodes was never written bare, so it drops the column. It reads
-digits alone with no leading zero as the number, and drops a column holding any number off the
-plan's scaling that is not such an answer — `watch` writes numbers exactly, so that is another
-scaling. Columns are matched
+and wrote an unconverted answer as bare hex, which cannot be told from a number. Owner's call
+(2026-09-26, after four review rounds on salvaging it): no salvage. A converted column holding
+any cell that is not a number on the plan's scaling, a `0x…` cell or empty is dropped whole,
+with a note saying it is another scaling or an old recording's bare hex. Columns are matched
 by name against the plan's survey; a unit `watch` identified live that the survey lacks could
 share a name, and the replay says it matched by name.
 
