@@ -32,8 +32,8 @@
 //! machine stays in [`Phase::NotMeasured`] and does nothing.
 //!
 //! Nothing here reads a clock: `now_ms` is a parameter, as everywhere in this
-//! crate. `no_std`, allocation-free: the marks are the plan's slice, the launch
-//! fit a fixed buffer.
+//! crate. `no_std`, allocation-free: the marks are the plan's slice, and the
+//! launch fit is running sums, so it takes every sample of its window at any rate.
 
 /// How long the channel's zero has to hold before the stopwatch arms.
 /// `vag-cli-measure`'s `session::ARMING_HOLD_S`: a property of traffic, not of a car.
@@ -46,11 +46,6 @@ pub const START_FIT_MS: u64 = 400;
 /// The fewest moving samples the constant-jerk fit is made on.
 /// `vag-cli-measure`'s `derive::MIN_FIT_SAMPLES`.
 const MIN_FIT_SAMPLES: usize = 3;
-
-/// The most moving samples the launch fit keeps: [`START_FIT_MS`] at 160 Hz,
-/// past anything the board's one conversation reaches. Samples past it inside the
-/// window are not fitted.
-pub const FIT_CAPACITY: usize = 64;
 
 /// The most marks one plan may carry.
 pub const MAX_MARKS: usize = 4;
@@ -141,10 +136,8 @@ pub struct Stopwatch<'a> {
 	previous: Option<(u64, f32)>,
 	/// The first moving sample of the run in progress.
 	started_ms: u64,
-	/// The moving samples of the first [`START_FIT_MS`]: seconds after the first
-	/// moving sample, and km/h.
-	fit: [(f32, f32); FIT_CAPACITY],
-	fitted: usize,
+	/// The moving samples of the first [`START_FIT_MS`], as the launch fit needs them.
+	fit: Fit,
 	/// The run in progress, while [`Phase::Running`].
 	current: Run,
 	/// The last run that ended.
@@ -169,8 +162,7 @@ impl<'a> Stopwatch<'a> {
 			standing_since: None,
 			previous: None,
 			started_ms: 0,
-			fit: [(0.0, 0.0); FIT_CAPACITY],
-			fitted: 0,
+			fit: Fit::new(),
 			current: Run::new(),
 			last: None,
 		}
@@ -268,7 +260,7 @@ impl<'a> Stopwatch<'a> {
 	fn launch(&mut self, now_ms: u64) {
 		self.phase = Phase::Running;
 		self.started_ms = now_ms;
-		self.fitted = 0;
+		self.fit = Fit::new();
 		self.current = Run::new();
 	}
 
@@ -284,12 +276,13 @@ impl<'a> Stopwatch<'a> {
 	/// mark this sample crossed, and the end of the run at the highest.
 	fn advance(&mut self, now_ms: u64, kmh: f32) -> Option<Event> {
 		let t = self.since_start(now_ms);
-		if kmh > 0.0 && now_ms.saturating_sub(self.started_ms) <= START_FIT_MS && self.fitted < FIT_CAPACITY {
-			self.fit[self.fitted] = (t, kmh);
-			self.fitted += 1;
+		let after_ms = now_ms.saturating_sub(self.started_ms);
+		if kmh > 0.0 && after_ms <= START_FIT_MS {
+			// In `f64` from the integer milliseconds, as the sums are kept.
+			self.fit.push(after_ms as f64 / 1000.0, f64::from(kmh));
 			// Refitted with every sample in the window, as the laptop refits each
 			// cycle; past the window the answer no longer changes.
-			self.current.launch = launch(&self.fit[..self.fitted]);
+			self.current.launch = self.fit.launch();
 		}
 
 		// `Track::crossing`: the first rise past the mark, between the samples
@@ -326,55 +319,108 @@ impl<'a> Stopwatch<'a> {
 	}
 }
 
-/// `vag-cli-measure`'s `derive::start`, on the moving samples of the fit window:
-/// `(seconds after the first of them, km/h)`, every speed above zero.
-///
-/// `latest` is the line through the first two samples, clamped at the first:
-/// a launch is convex, so the line runs under it and reaches zero late.
-/// `earliest` is the constant-jerk root, `v = ½j(t − t₀)²` fitted as a straight
-/// line through `√v`, also clamped at the first sample: it reaches back too far.
-/// The two are ordered, never collapsed. `None` without a second sample or
-/// without a fit, as there.
-fn launch(window: &[(f32, f32)]) -> Option<Launch> {
-	let (&(t_first, v_first), &(t_second, v_second)) = (window.first()?, window.get(1)?);
-	let (rise, step) = (v_second - v_first, t_second - t_first);
-	let line = match rise > 0.0 && step > 0.0 {
-		true => (t_first - v_first * step / rise).min(t_first),
-		false => t_first,
-	};
-	let quadratic = constant_jerk_launch(window)?.min(t_first);
-	let (earliest, latest) = (quadratic.min(line), quadratic.max(line));
-	Some(Launch {
-		t: 0.5 * (earliest + latest),
-		earliest,
-		latest,
-	})
+/// The launch fit's window as running sums: every moving sample of the first
+/// [`START_FIT_MS`], whatever the rate, in constant space. Times are seconds after
+/// the first moving sample; sums are `f64`, so a long window loses nothing to the
+/// subtraction that turns them into deviations.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+	/// Samples taken, and Σt, Σ√v, Σt², Σt·√v over them.
+	n: u32,
+	st: f64,
+	sy: f64,
+	stt: f64,
+	sty: f64,
+	/// The first two samples, for the two-point line: `(t, km/h)`.
+	first: Option<(f64, f64)>,
+	second: Option<(f64, f64)>,
 }
 
-/// `derive::constant_jerk_launch`: least squares of `√v` on `t`, extrapolated to
-/// `√v = 0`. `None` under [`MIN_FIT_SAMPLES`] or with no gain across the window.
-fn constant_jerk_launch(window: &[(f32, f32)]) -> Option<f32> {
-	if window.len() < MIN_FIT_SAMPLES {
-		return None;
+impl Fit {
+	const fn new() -> Self {
+		Fit {
+			n: 0,
+			st: 0.0,
+			sy: 0.0,
+			stt: 0.0,
+			sty: 0.0,
+			first: None,
+			second: None,
+		}
 	}
-	let count = window.len() as f32;
-	let x_bar = window.iter().map(|(t, _)| t).sum::<f32>() / count;
-	let y_bar = window.iter().map(|(_, v)| sqrt(*v)).sum::<f32>() / count;
-	let (mut sxx, mut sxy) = (0.0, 0.0);
-	for (t, v) in window {
-		sxx += (t - x_bar) * (t - x_bar);
-		sxy += (t - x_bar) * (sqrt(*v) - y_bar);
+
+	/// One moving sample, `kmh > 0`.
+	fn push(&mut self, t: f64, kmh: f64) {
+		let y = sqrt64(kmh);
+		self.n += 1;
+		self.st += t;
+		self.sy += y;
+		self.stt += t * t;
+		self.sty += t * y;
+		match (self.first, self.second) {
+			(None, _) => self.first = Some((t, kmh)),
+			(Some(_), None) => self.second = Some((t, kmh)),
+			_ => {}
+		}
 	}
-	if sxx <= 0.0 {
-		return None;
+
+	/// `vag-cli-measure`'s `derive::start` over the window.
+	///
+	/// `latest` is the line through the first two samples, clamped at the first:
+	/// a launch is convex, so the line runs under it and reaches zero late.
+	/// `earliest` is the constant-jerk root, `v = ½j(t − t₀)²` fitted as a straight
+	/// line through `√v`, also clamped at the first sample: it reaches back too far.
+	/// The two are ordered, never collapsed. `None` without a second sample or
+	/// without a fit, as there.
+	fn launch(&self) -> Option<Launch> {
+		let ((t_first, v_first), (t_second, v_second)) = (self.first?, self.second?);
+		let (rise, step) = (v_second - v_first, t_second - t_first);
+		let line = match rise > 0.0 && step > 0.0 {
+			true => (t_first - v_first * step / rise).min(t_first),
+			false => t_first,
+		};
+		let quadratic = self.constant_jerk_launch()?.min(t_first);
+		let (earliest, latest) = (quadratic.min(line), quadratic.max(line));
+		Some(Launch {
+			t: (0.5 * (earliest + latest)) as f32,
+			earliest: earliest as f32,
+			latest: latest as f32,
+		})
 	}
-	let gradient = sxy / sxx;
-	if gradient <= 0.0 {
-		return None;
+
+	/// `derive::constant_jerk_launch`: least squares of `√v` on `t`, extrapolated to
+	/// `√v = 0`, from the sums — `Sxx = Σt² − n·t̄²`, `Sxy = Σt√v − n·t̄·ȳ`. `None`
+	/// under [`MIN_FIT_SAMPLES`] or with no gain across the window.
+	fn constant_jerk_launch(&self) -> Option<f64> {
+		if (self.n as usize) < MIN_FIT_SAMPLES {
+			return None;
+		}
+		let count = f64::from(self.n);
+		let (x_bar, y_bar) = (self.st / count, self.sy / count);
+		let sxx = self.stt - count * x_bar * x_bar;
+		let sxy = self.sty - count * x_bar * y_bar;
+		if sxx <= 0.0 {
+			return None;
+		}
+		let gradient = sxy / sxx;
+		if gradient <= 0.0 {
+			return None;
+		}
+		Some(x_bar - y_bar / gradient)
 	}
-	Some(x_bar - y_bar / gradient)
 }
 
+/// [`sqrt`] carried to `f64` by two more Newton steps.
+fn sqrt64(x: f64) -> f64 {
+	let mut y = f64::from(sqrt(x as f32));
+	if y <= 0.0 {
+		return 0.0;
+	}
+	for _ in 0..2 {
+		y = 0.5 * (y + x / y);
+	}
+	y
+}
 /// `f32::sqrt` is in `std`, and this crate is `no_std`: Newton's method from the
 /// exponent-halving first guess, four steps to full `f32` precision. Zero and
 /// below are zero — the fit only ever takes a speed above zero.
@@ -626,6 +672,70 @@ mod tests {
 		assert_eq!(watch.phase(), Phase::Idle);
 	}
 
+	/// `vag-cli-measure`'s `derive::start` and `constant_jerk_launch`, transcribed
+	/// in `f64` over a whole track, as the reference the board's online fit must
+	/// agree with. `track` is `(seconds, km/h)`, standstill included. The answer is
+	/// relative to the first moving sample, as the board keeps it.
+	fn reference_start(track: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
+		let first = track.iter().position(|s| s.1 > 0.0)?;
+		let second = (first + 1..track.len()).find(|&i| track[i].1 > 0.0)?;
+		let (t_first, v_first) = track[first];
+		let (rise, step) = (track[second].1 - v_first, track[second].0 - t_first);
+		let latest = if rise > 0.0 && step > 0.0 {
+			(t_first - v_first * step / rise).min(t_first)
+		} else {
+			t_first
+		};
+		let window: Vec<(f64, f64)> = track[first..]
+			.iter()
+			.filter(|s| s.0 <= t_first + 0.4 && s.1 > 0.0)
+			.map(|s| (s.0, s.1.sqrt()))
+			.collect();
+		if window.len() < 3 {
+			return None;
+		}
+		let n = window.len() as f64;
+		let x_bar = window.iter().map(|s| s.0).sum::<f64>() / n;
+		let y_bar = window.iter().map(|s| s.1).sum::<f64>() / n;
+		let sxx: f64 = window.iter().map(|s| (s.0 - x_bar) * (s.0 - x_bar)).sum();
+		let sxy: f64 = window.iter().map(|s| (s.0 - x_bar) * (s.1 - y_bar)).sum();
+		if sxx <= 0.0 || sxy / sxx <= 0.0 {
+			return None;
+		}
+		let quadratic = (x_bar - y_bar / (sxy / sxx)).min(t_first);
+		let (earliest, latest) = (quadratic.min(latest), quadratic.max(latest));
+		Some((0.5 * (earliest + latest) - t_first, earliest - t_first, latest - t_first))
+	}
+
+	#[test]
+	fn the_launch_fit_takes_the_whole_window_at_any_rate_and_agrees_with_the_laptop() {
+		// 20, 100 and 250 Hz: at 250 the first 0.4 s of movement is 101 samples.
+		// A ramp is not the fit's model, so every sample in the window moves the
+		// answer: a fit that stopped short of the window would disagree.
+		let ramp = ramp(1.013, 12.0);
+		let jerk = jerk(1.013, 20.0);
+		let profiles: [(&str, &dyn Fn(f64) -> f64); 2] = [("ramp", &ramp), ("jerk", &jerk)];
+		for step_ms in [50u64, 10, 4] {
+			for (name, kmh) in profiles {
+				let mut watch = Stopwatch::new(&MARKS, FACTOR);
+				drive(&mut watch, kmh, 0, 2_500, step_ms);
+				let got = watch.run().and_then(|run| run.launch).expect("a launch");
+				let track: Vec<(f64, f64)> = (0..=2_500 / step_ms)
+					.map(|i| {
+						let t = (i * step_ms) as f64 / 1000.0;
+						(t, kmh(t))
+					})
+					.collect();
+				let (t, earliest, latest) = reference_start(&track).expect("the reference fits too");
+				let what = std::format!("{name} at {} Hz", 1000 / step_ms);
+				// To a microsecond: the board keeps its answer in `f32`, nothing more.
+				for (got, want) in [(got.t, t), (got.earliest, earliest), (got.latest, latest)] {
+					assert!((f64::from(got) - want).abs() < 1e-6, "{what}: {got} is not {want}");
+				}
+			}
+		}
+	}
+
 	#[test]
 	fn the_square_root_the_fit_needs_is_close_enough() {
 		for x in [1e-6f32, 0.025, 0.5, 1.0, 2.0, 60.0, 250.0, 1e6] {
@@ -634,5 +744,10 @@ mod tests {
 			assert!((got - want).abs() <= want * 1e-6, "√{x}: {got} vs {want}");
 		}
 		assert_eq!(sqrt(0.0), 0.0);
+		for x in [1e-6f64, 0.025, 0.5, 2.0, 60.0, 250.0] {
+			let (got, want) = (sqrt64(x), x.sqrt());
+			assert!((got - want).abs() <= want * 1e-14, "√{x} in f64: {got} vs {want}");
+		}
+		assert_eq!(sqrt64(0.0), 0.0);
 	}
 }

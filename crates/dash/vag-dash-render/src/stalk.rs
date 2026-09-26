@@ -133,6 +133,14 @@ impl Stalk {
 
 	/// One read. A press, if this read confirmed one.
 	///
+	/// **Call it exactly once per new answer** of the identifier that carries the
+	/// rocker and the switch — never once per frame, and never again with a stored
+	/// answer. The debounce is "two consecutive reads", so the same answer fed
+	/// twice is a state confirmed by one read: a transitional ladder level caught
+	/// once in passing (between rest and `previous`, say) would then fire `measure`.
+	/// A lost or stale answer is fed as a `None` rocker, which is what it is.
+	/// The cruise status in [`Read::cruise`] is the latest one read, whenever that was.
+	///
 	/// The rocker's state is tracked whether or not the gate is open, so a press
 	/// that began while the lever was cruise's is already held when the gate
 	/// opens, and does not fire then.

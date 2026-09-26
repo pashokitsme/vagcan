@@ -153,9 +153,15 @@ impl<'a, const N: usize> Screen<'a, N> {
 	/// One frame of the adapter screen, in place of [`Screen::frame`]. The alarms
 	/// are not polled: their state waits, and the first page frame after resumes
 	/// it — as a changed page, since the glass showed no page meanwhile.
+	///
+	/// The stopwatch mode ends here. The adapter's screen is not the stopwatch,
+	/// nothing is read meanwhile, and a run left open across it would be timed from
+	/// a launch minutes old; a caller watching [`Screen::stopwatch`] sees the mode
+	/// end and resets it.
 	pub fn adapter(&mut self) {
 		self.adapter = true;
 		self.drawn = None;
+		self.stopwatch = false;
 	}
 
 	/// A short press, with `pages` the number of pages the cursor runs over.
@@ -557,6 +563,45 @@ mod tests {
 		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
 		assert!(screen.stopwatch_on_glass());
 		assert_eq!(cursor, 3);
+	}
+
+	#[test]
+	fn the_adapter_screen_ends_the_stopwatch_so_a_run_does_not_survive_it() {
+		use crate::stopwatch::{Event, Stopwatch};
+		static MARKS: [u16; 2] = [60, 100];
+		let mut screen = screen();
+		let mut watch = Stopwatch::new(&MARKS, 1.0);
+		let mut cursor = 0;
+		// The panel loop as phase 2 runs it: the stopwatch is reset whenever the
+		// mode turns off, however it turned off; the speed is fed regardless.
+		let mut on = false;
+		let mut step = |screen: &mut Screen<'static, 2>, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
+			if on && !screen.stopwatch() {
+				watch.reset();
+			}
+			on = screen.stopwatch();
+			watch.sample(Some(kmh), now_ms)
+		};
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert_eq!(screen.lever(Lever::Measure, &mut cursor, PAGES), Action::StopwatchOn);
+		step(&mut screen, &mut watch, 0.0, 0);
+		assert_eq!(step(&mut screen, &mut watch, 0.0, 1_000), Some(Event::Armed));
+		assert_eq!(step(&mut screen, &mut watch, 10.0, 1_100), Some(Event::Started));
+		step(&mut screen, &mut watch, 40.0, 2_000);
+		// Five minutes as a plain adapter: no page, no stopwatch on the glass.
+		screen.adapter();
+		assert!(
+			!screen.stopwatch() && !screen.stopwatch_on_glass(),
+			"the adapter's screen, not the stopwatch"
+		);
+		step(&mut screen, &mut watch, 40.0, 2_100);
+		// Back, at 120 km/h: that is not a 0-100 from a launch five minutes ago.
+		screen.frame(cursor, PAGES, 302_000, Car::calm().value_of());
+		assert_eq!(step(&mut screen, &mut watch, 120.0, 302_000), None);
+		assert_eq!(step(&mut screen, &mut watch, 121.0, 302_100), None);
+		let run = watch.run().expect("the run the adapter interrupted");
+		assert!(run.aborted && run.time(1).is_none(), "{run:?}");
+		assert!(!screen.stopwatch(), "the mode stays off until measure is pressed again");
 	}
 
 	#[test]
