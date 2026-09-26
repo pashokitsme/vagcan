@@ -76,7 +76,8 @@ traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a
    the owner's `dash.toml` since 2026-09-22 (on the bench: their channels polled on every page).
    Next: a run on the car, where the misfire window and the thresholds are checked. The
    hardware-free replay exists since 2026-09-26 (`vagcan dev recording dash`); the demo from a
-   recorded drive waits for a recording with the retard channels, made on the car.
+   recorded drive waits for a recording with the retard channels, made on the car. Since
+   2026-09-26 the offending cell blinks while the value is out and holds still through the hold.
 
 **With the car**
 

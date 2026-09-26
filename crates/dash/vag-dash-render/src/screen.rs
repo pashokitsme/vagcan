@@ -22,7 +22,7 @@
 //! glass shows the adapter's counters, so a press there has no alarm to silence
 //! and turns the page as it always has.
 
-use crate::alarm::{Alarm, Alarms, ChannelId, PageId, Press};
+use crate::alarm::{Alarm, Alarms, ChannelId, Highlight, PageId, Press, Shown};
 use crate::pages;
 
 /// What one frame did to the glass that is worth one line in the log.
@@ -43,8 +43,16 @@ pub enum Change {
 pub struct Glass {
 	/// The page to draw: an index into the plan's pages, which are the board's.
 	pub page: u8,
-	/// The channel whose cell is drawn inverted.
+	/// The channel the alarm on the glass points at — what the log names. Whether its
+	/// cell is inverted on this frame is [`Glass::inverted`].
 	pub offending: Option<ChannelId>,
+	/// How the offending cell is drawn: blinking while the value is past the trip,
+	/// steady through the hold after the release. `Some` exactly when `offending` is.
+	pub highlight: Option<Highlight>,
+	/// The channel whose cell is drawn inverted **on this frame**: the offending one
+	/// on the inverted half of a blink ([`BLINK_MS`](crate::alarm::BLINK_MS)) and all
+	/// through the hold, otherwise none.
+	pub inverted: Option<ChannelId>,
 	/// The page differs from the one the last frame drew — the first frame, a
 	/// page turn, a takeover, a hand-back, the first frame after the adapter
 	/// screen. The channels read in the foreground follow the page on the glass,
@@ -104,9 +112,9 @@ impl<'a, const N: usize> Screen<'a, N> {
 
 		// With no alarm up the shown page is the cursor, which is the caller's to
 		// keep in range; an alarm's page is the plan's, and is checked here.
-		let (page, offending, missed) = match u8::try_from(shown.page.0) {
-			Ok(page) if rule.is_none() || page < pages => (page, shown.offending, None),
-			_ => (cursor, None, Some(shown.page)),
+		let (page, shown, missed) = match u8::try_from(shown.page.0) {
+			Ok(page) if rule.is_none() || page < pages => (page, shown, None),
+			_ => (cursor, Shown::page(PageId(u16::from(cursor))), Some(shown.page)),
 		};
 
 		let change = match (self.rule, rule) {
@@ -122,7 +130,9 @@ impl<'a, const N: usize> Screen<'a, N> {
 		self.drawn = Some(page);
 		Glass {
 			page,
-			offending,
+			offending: shown.offending,
+			highlight: shown.highlight,
+			inverted: shown.inverted(now_ms),
 			page_changed,
 			missed,
 			change,
@@ -155,7 +165,7 @@ impl<'a, const N: usize> Screen<'a, N> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::alarm::{Direction, HOLD_MS, Rule};
+	use crate::alarm::{BLINK_MS, Direction, HOLD_MS, Rule};
 	use crate::plan::{Channel, Page, Plan};
 
 	/// Pages: 0 and 1 are the driver's, 2 explains `HIGH`, 3 explains `LOW`.
@@ -394,6 +404,151 @@ mod tests {
 		assert_eq!((back.page, back.change), (2, None), "the same episode, not a new takeover");
 		assert!(back.page_changed, "the glass showed the adapter a frame ago");
 		assert!(!screen.frame(cursor, PAGES, 60_200, out.value_of()).page_changed);
+	}
+
+	/// Which frames of `times` draw `channel`'s cell inverted, with `car` as the store.
+	fn blinks(screen: &mut Screen<'static, 2>, car: Car, times: impl IntoIterator<Item = u64>, channel: u16) -> std::vec::Vec<bool> {
+		times
+			.into_iter()
+			.map(|t| screen.frame(0, PAGES, t, car.value_of()).inverted == Some(ChannelId(channel)))
+			.collect()
+	}
+
+	#[test]
+	fn the_offending_cell_blinks_while_out_holds_steady_after_the_release_and_then_is_gone() {
+		let mut screen = screen();
+		let out = Car::calm().with(5, Some(12.0));
+		// The board's frames, 200 ms apart: two inverted, two plain, while the value is out.
+		for t in [0, 200, 400, 600] {
+			let glass = screen.frame(0, PAGES, t, out.value_of());
+			assert_eq!(
+				(glass.page, glass.offending),
+				(2, Some(ChannelId(5))),
+				"the page and what it points at stay"
+			);
+			assert_eq!(glass.highlight, Some(Highlight::Blinking));
+		}
+		assert_eq!(
+			blinks(&mut screen, out, (800..2_400).step_by(200), 5),
+			[true, true, false, false, true, true, false, false]
+		);
+		// Back inside: inverted on every frame of the hold, whatever the clock's half.
+		let glass = screen.frame(0, PAGES, 2_400, Car::calm().value_of());
+		assert_eq!(glass.highlight, Some(Highlight::Steady));
+		let hold = blinks(&mut screen, Car::calm(), (2_400..2_400 + HOLD_MS).step_by(200), 5);
+		assert!(hold.iter().all(|&inverted| inverted), "{hold:?}");
+		// And handed back: nothing inverted, nothing pointed at.
+		let back = screen.frame(0, PAGES, 2_400 + HOLD_MS, Car::calm().value_of());
+		assert_eq!((back.page, back.offending, back.highlight, back.inverted), (0, None, None, None));
+	}
+
+	#[test]
+	fn a_silenced_alarm_inverts_nothing() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		let out = Car::calm().with(4, Some(11.0));
+		screen.frame(cursor, PAGES, 0, out.value_of());
+		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		for t in (200..=2_000).step_by(200) {
+			let glass = screen.frame(cursor, PAGES, t, out.value_of());
+			assert_eq!((glass.offending, glass.highlight, glass.inverted), (None, None, None), "t={t}");
+		}
+	}
+
+	#[test]
+	fn a_second_rule_taking_over_blinks_its_own_cell() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		let both = Car::calm().with(4, Some(20.0)).with(6, Some(-5.0));
+		assert_eq!(screen.frame(cursor, PAGES, 0, both.value_of()).inverted, Some(ChannelId(4)));
+		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		// The second rule's own cell, on the same clock: frames at 200 … 1 400.
+		let glass = screen.frame(cursor, PAGES, 200, both.value_of());
+		assert_eq!(
+			(glass.page, glass.offending, glass.highlight),
+			(3, Some(ChannelId(6)), Some(Highlight::Blinking))
+		);
+		assert_eq!(
+			blinks(&mut screen, both, (400..=1_400).step_by(200), 6),
+			[false, false, true, true, false, false]
+		);
+		assert!(
+			(0..=1_400)
+				.step_by(200)
+				.all(|t| screen.frame(cursor, PAGES, t + 1_600, both.value_of()).inverted != Some(ChannelId(4))),
+			"the silenced rule's cell is not inverted meanwhile"
+		);
+	}
+
+	#[test]
+	fn frames_off_the_beat_still_show_both_halves_and_hold_neither_past_a_half_and_a_frame() {
+		// The board frames every 200 ms plus however long a frame takes to draw, so its
+		// frames drift across the clock's halves. Whatever the period up to half a blink
+		// and whatever the start, each half is seen, and no picture lasts longer than one
+		// half and the frame after it.
+		let jittered = [190, 230, 260, 210, 200, 240];
+		let mut schedules: std::vec::Vec<std::vec::Vec<u64>> = std::vec::Vec::new();
+		for period in [150, 200, 201, 213, 230, 250, 300, 399, 400] {
+			for start in [0, 1, 199, 200, 399] {
+				schedules.push((0..60).map(|k| start + k * period).collect());
+			}
+		}
+		schedules.push(
+			jittered
+				.iter()
+				.cycle()
+				.take(60)
+				.scan(0, |t, gap| Some(core::mem::replace(t, *t + gap)))
+				.collect(),
+		);
+		for times in schedules {
+			let mut screen = screen();
+			let out = Car::calm().with(5, Some(12.0));
+			let seen = blinks(&mut screen, out, times.iter().copied(), 5);
+			assert!(seen.contains(&true) && seen.contains(&false), "{times:?}");
+			let longest_gap = times.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
+			let mut run_from = times[0];
+			for i in 1..times.len() {
+				if seen[i] != seen[i - 1] {
+					let shown_for = times[i] - run_from;
+					assert!(shown_for < BLINK_MS + longest_gap, "{shown_for} ms the same at {times:?}");
+					run_from = times[i];
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn the_plain_half_of_a_blink_draws_exactly_the_page_with_nothing_inverted() {
+		use crate::{Board, Cell, Frame, Links, PANEL, Theme, draw_with};
+		use embedded_graphics::pixelcolor::BinaryColor;
+		use embedded_graphics_simulator::SimulatorDisplay;
+
+		// The alarm page's two cells, composed as the board's panel task composes them.
+		let draw = |car: Car, inverted: Option<ChannelId>| {
+			let cells = [4u16, 5].map(|i| {
+				let cell = Cell::new(if i == 4 { "A" } else { "B" }, car.value_of()(i), "", 1);
+				if inverted == Some(ChannelId(i)) { cell.alarmed() } else { cell }
+			});
+			let mut display = SimulatorDisplay::<BinaryColor>::new(PANEL);
+			let board = Board {
+				links: Links::NONE,
+				rates: None,
+			};
+			draw_with(&Frame::Values { cells: &cells }, &board, &Theme::bold_mono(), &mut display);
+			display
+		};
+		let mut screen = screen();
+		let out = Car::calm().with(5, Some(12.0));
+		let plain = draw(out, None);
+		let alarmed = draw(out, Some(ChannelId(5)));
+		assert!(plain != alarmed, "the inverted half is a different picture");
+
+		let on = screen.frame(0, PAGES, 0, out.value_of());
+		assert!(draw(out, on.inverted) == alarmed, "the inverted half");
+		let off = screen.frame(0, PAGES, BLINK_MS, out.value_of());
+		assert_eq!(off.page, 2, "still the alarm's page");
+		assert!(draw(out, off.inverted) == plain, "the plain half is the plain page, pixel for pixel");
 	}
 
 	#[test]

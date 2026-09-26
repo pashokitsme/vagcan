@@ -31,14 +31,30 @@
 //! which is the only way the 2.5 second hold is ever exercised.
 //!
 //! What comes out is a [`Shown`]: a page, and at most one channel to draw
-//! inverted. Inverting *the offending cell* rather than the panel is the point
-//! of the view — see [`Cell::alarm`](crate::Cell::alarm).
+//! inverted — blinking ([`BLINK_MS`]) while the value is out, steady through the
+//! hold. Inverting *the offending cell* rather than the panel is the point of the
+//! view — see [`Cell::alarm`](crate::Cell::alarm).
 
 /// How long the alarm view stays up after the value comes back inside.
 ///
 /// The owner's number, 2026-08-20. Long enough to read a four-cylinder page,
 /// short enough that a clean engine never keeps the screen.
 pub const HOLD_MS: u64 = 2_500;
+
+/// Half a blink of the offending cell: inverted this long, plain this long, while the
+/// value is past the trip.
+///
+/// The owner's number, 2026-09-26: a cell that is merely inverted did not say "look here"
+/// clearly enough. The phase is the clock's, `(now_ms / BLINK_MS) % 2`, and not counted
+/// from the takeover, so nothing here keeps a timer; a takeover that lands in a plain half
+/// shows the page first and the inversion within `BLINK_MS`.
+///
+/// **The caller's frames must be at most `BLINK_MS / 2` apart.** Every half then holds at
+/// least one frame even when drawing a frame takes as long again as the wait between two,
+/// so the cell is never drawn the same for longer than one half and a frame. At a period of
+/// `BLINK_MS` or a multiple the frames alias onto one half and the blink is lost — the
+/// board's panel (`FRAME_MS`, 200 ms: two frames on, two off) and the host replay assert it.
+pub const BLINK_MS: u64 = 400;
 
 /// A page of the plan: its index into [`Plan::pages`](crate::plan::Plan::pages).
 ///
@@ -329,10 +345,33 @@ enum Episode {
 }
 
 impl Episode {
-	fn showing(self) -> Option<ChannelId> {
+	/// The cell the episode points at, and how — `None` while nothing is on the glass.
+	fn showing(self) -> Option<(ChannelId, Highlight)> {
 		match self {
-			Episode::Firing { offender } | Episode::Holding { offender, .. } => Some(offender),
+			Episode::Firing { offender } => Some((offender, Highlight::Blinking)),
+			Episode::Holding { offender, .. } => Some((offender, Highlight::Steady)),
 			Episode::Clear | Episode::Rising { .. } | Episode::Silenced => None,
+		}
+	}
+}
+
+/// How the offending cell is drawn, which says where its value is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Highlight {
+	/// Past the trip now: inverted and plain by turns, [`BLINK_MS`] each.
+	Blinking,
+	/// Back inside, in the [`HOLD_MS`] before the hand-back: inverted and still, so the
+	/// driver sees the value has come back before the page goes.
+	Steady,
+}
+
+impl Highlight {
+	/// Whether the cell is drawn inverted on a frame at `now_ms`.
+	pub fn inverted(self, now_ms: u64) -> bool {
+		match self {
+			// The first half of every blink inverted: a clock at zero shows the inversion.
+			Highlight::Blinking => (now_ms / BLINK_MS) % 2 == 0,
+			Highlight::Steady => true,
 		}
 	}
 }
@@ -341,17 +380,30 @@ impl Episode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shown {
 	pub page: PageId,
-	/// The channel to draw inverted, and by construction `Some` exactly when the
-	/// page is up because of an alarm. The caller maps it to a cell and calls
-	/// [`Cell::alarmed`](crate::Cell::alarmed); if the page does not contain it,
-	/// nothing is inverted and that is a plan bug, not a render one.
+	/// The channel the alarm points at, and by construction `Some` exactly when
+	/// the page is up because of an alarm. Which frames draw it inverted is
+	/// [`Shown::inverted`]; if the page does not contain it, nothing is inverted
+	/// and that is a plan bug, not a render one.
 	pub offending: Option<ChannelId>,
+	/// How that cell is drawn: `Some` exactly when `offending` is.
+	pub highlight: Option<Highlight>,
 }
 
 impl Shown {
 	/// An ordinary screen, nothing wrong.
 	pub const fn page(page: PageId) -> Self {
-		Shown { page, offending: None }
+		Shown {
+			page,
+			offending: None,
+			highlight: None,
+		}
+	}
+
+	/// The channel whose cell is drawn inverted on a frame at `now_ms`: the offending one
+	/// on the inverted half of a blink and all through the hold, otherwise none. The caller
+	/// maps it to a cell and calls [`Cell::alarmed`](crate::Cell::alarmed).
+	pub fn inverted(&self, now_ms: u64) -> Option<ChannelId> {
+		self.offending.filter(|_| self.highlight.is_some_and(|h| h.inverted(now_ms)))
 	}
 }
 
@@ -364,8 +416,10 @@ pub struct Update {
 	/// costs power for nothing.
 	///
 	/// It is about *which* picture, not what is in it — the values move on their
-	/// own and the caller redraws for those. The first poll always reports
-	/// `true`, because before it there was nothing on the glass.
+	/// own and the caller redraws for those. A release, where the offending cell
+	/// stops blinking and holds, is a different picture; the blink is not — it is
+	/// the clock's, and [`Shown::inverted`] answers it on every frame. The first
+	/// poll always reports `true`, because before it there was nothing on the glass.
 	pub changed: bool,
 }
 
@@ -471,11 +525,13 @@ impl<'a, const N: usize> Alarms<'a, N> {
 			self.episodes[i] = step(&self.rules[i], self.episodes[i], &value_of, now_ms);
 		}
 
-		self.showing = (0..N).find(|&i| self.episodes[i].showing().is_some());
-		let shown = match self.showing {
-			Some(i) => Shown {
+		let up = (0..N).find_map(|i| Some((i, self.episodes[i].showing()?)));
+		self.showing = up.map(|(i, _)| i);
+		let shown = match up {
+			Some((i, (offender, highlight))) => Shown {
 				page: self.rules[i].page,
-				offending: self.episodes[i].showing(),
+				offending: Some(offender),
+				highlight: Some(highlight),
 			},
 			None => Shown::page(page),
 		};
@@ -938,6 +994,77 @@ mod tests {
 		// the hold does not end on a page with nothing highlighted.
 		let update = alarms.poll(WAS_SHOWING, &cells([CLEAR; 4]), 200);
 		assert_eq!(update.shown.offending, Some(GROUP[0]));
+	}
+
+	// --- the highlight: blinking while out, steady in the hold -------------------------
+
+	#[test]
+	fn while_out_the_offending_cell_blinks_on_the_clocks_phase() {
+		let mut alarms = Alarms::new([group()]);
+		// Frames 200 ms apart, the board's period: two inverted, two plain.
+		let mut seen = std::vec::Vec::new();
+		for t in (0..=1_400).step_by(200) {
+			let shown = alarms.poll(WAS_SHOWING, &only(-10.0), t).shown;
+			assert_eq!(shown.highlight, Some(Highlight::Blinking), "out at t={t}");
+			assert_eq!(shown.offending, Some(GROUP[1]), "what is pointed at does not blink");
+			seen.push(shown.inverted(t) == Some(GROUP[1]));
+		}
+		assert_eq!(seen, [true, true, false, false, true, true, false, false]);
+		// The halves are BLINK_MS of the clock, to the millisecond.
+		let shown = alarms.poll(WAS_SHOWING, &only(-10.0), 1_600).shown;
+		assert_eq!(shown.inverted(BLINK_MS * 4 - 1), None);
+		assert_eq!(shown.inverted(BLINK_MS * 4), Some(GROUP[1]));
+		assert_eq!(shown.inverted(BLINK_MS * 5 - 1), Some(GROUP[1]));
+		assert_eq!(shown.inverted(BLINK_MS * 5), None);
+	}
+
+	#[test]
+	fn through_the_hold_the_cell_is_steady_and_after_the_hand_back_nothing_is() {
+		let mut alarms = Alarms::new([group()]);
+		alarms.poll(WAS_SHOWING, &only(-10.0), 0);
+		let released_at = 500;
+		let release = alarms.poll(WAS_SHOWING, &only(CLEAR), released_at);
+		assert_eq!(release.shown.highlight, Some(Highlight::Steady));
+		assert!(release.changed, "a cell that stops blinking is a different picture");
+		// Every frame of the hold, whichever half of a blink the clock is in.
+		for t in (released_at..released_at + HOLD_MS).step_by(100) {
+			let shown = alarms.poll(WAS_SHOWING, &only(CLEAR), t).shown;
+			assert_eq!(shown.highlight, Some(Highlight::Steady), "holding at t={t}");
+			assert_eq!(shown.inverted(t), Some(GROUP[1]), "inverted at t={t}");
+		}
+		let back = alarms.poll(WAS_SHOWING, &only(CLEAR), released_at + HOLD_MS).shown;
+		assert_eq!(back, Shown::page(WAS_SHOWING));
+		assert_eq!(back.inverted(released_at + HOLD_MS), None);
+	}
+
+	#[test]
+	fn out_again_inside_the_hold_blinks_again() {
+		let mut alarms = Alarms::new([group()]);
+		alarms.poll(WAS_SHOWING, &only(-10.0), 0);
+		assert_eq!(alarms.poll(WAS_SHOWING, &only(CLEAR), 100).shown.highlight, Some(Highlight::Steady));
+		let again = alarms.poll(WAS_SHOWING, &only(-10.0), 900).shown;
+		assert_eq!(again.highlight, Some(Highlight::Blinking));
+		assert_eq!(again.inverted(BLINK_MS * 3), None, "the plain half, back again");
+	}
+
+	#[test]
+	fn a_silenced_episode_highlights_nothing() {
+		let mut alarms = Alarms::new([group()]);
+		alarms.poll(WAS_SHOWING, &only(-10.0), 0);
+		alarms.press();
+		for t in (100..=2_000).step_by(100) {
+			let shown = alarms.poll(WAS_SHOWING, &only(-10.0), t).shown;
+			assert_eq!((shown.offending, shown.highlight, shown.inverted(t)), (None, None, None), "t={t}");
+		}
+	}
+
+	#[test]
+	fn a_drift_rule_counting_its_hold_highlights_nothing_and_blinks_once_it_fires() {
+		let mut alarms = Alarms::new([drift()]);
+		let counting = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0).shown;
+		assert_eq!((counting.highlight, counting.inverted(0)), (None, None));
+		let fired = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000).shown;
+		assert_eq!(fired.highlight, Some(Highlight::Blinking));
 	}
 
 	#[test]

@@ -134,7 +134,8 @@ answered, `200A`–`200D` among them):
 **Alarms** (`dash/04`)
 
 - The owner's `[[alarm]]` rules in `dash.toml`; the misfire rule's trip and release numbers set from the car.
-- A takeover inverts the offending cell; a short press silences the episode.
+- A takeover inverts the offending cell, blinking 400 ms on / 400 ms off while the value is out and
+  steady through the 2.5 s hold (since 2026-09-26); a short press silences the episode.
 
 **Cable adapter on the car**
 
