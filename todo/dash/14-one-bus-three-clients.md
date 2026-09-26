@@ -329,7 +329,7 @@ lever pages with cruise OFF, and the engine ignores it.**
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
 | 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](../../.archive/tasks/done/dash/16-uds-over-ble.md)**: UDS over BLE as a slow transport, merged in PR #2 (2026-09-14) |
 | 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
-| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **probed 2026-09-26**: `1105` byte 8 moves with the rocker while `203C` = 0 and the engine's `4383` stays `2000` — the lever can page the dash with cruise OFF (§6a). Next: the firmware stalk source, decoding by nearest level |
+| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **probed 2026-09-26**: `1105` byte 8 moves with the rocker while `203C` = 0 and the engine's `4383` stays `2000` — the lever can page the dash with cruise OFF (§6a). Next: [`19`](19-stalk-and-stopwatch.md) — the lever as buttons (+ next, − previous, LIMIT the stopwatch), decoded by the ODIS intervals; while the stopwatch is armed the lever is read at 5 Hz, not paused, so LIMIT can end it |
 
 [`09-bt-adapter.md`](../../.archive/specs/dash/09-bt-adapter.md) (archived) is superseded by this file (the wish is met by §3-B over USB and §8 over
 BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.

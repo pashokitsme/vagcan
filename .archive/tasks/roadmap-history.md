@@ -1,11 +1,49 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-15
+# vagcan roadmap — history, 2026-08-02 to 2026-09-22
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
-on 2026-09-22.
+on 2026-09-22, the 2026-09-22 one on 2026-09-26.
 
 ---
+
+## Where things stood on 2026-09-22 — the bench over USB and BLE, alarms in the owner's file
+
+**Milestone: the bench over USB and BLE passes on `master`, alarms are in the owner's
+`dash.toml`, and the board survives a hostile cable host.** The 2026-09-15 status moved to
+[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-22.
+Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
+
+- **Boards, 2026-09-22.** The old SuperMini (rev v1.1, broken pins, `3V3` pad dead, the
+  SN65HVD230 on `5V`) stays on the bench — the owner keeps it on 5 V and accepts losing it. The
+  new one (rev v0.4) is a spare: its BLE controller never starts while its Wi-Fi scans, with our
+  firmware, the probes and the August recon image alike; cause not found
+  (`research/dash/ble-controller-hang.md`). The firmware's `ble` feature (default on) lets it run
+  as `dash --no-default-features`; CI lints both builds. Not pursued further (owner,
+  2026-09-22): the new board is a spare.
+- **The bench, 2026-09-22** (`dash/17`): USB items 1, 2, 3, 9, 11, 13, 16 and §3 pass; BLE
+  `info`, a board subscription, `watch` and `measure` pass on the old board. Item 11 passes in
+  5–15 s, not ~1 s — macOS buffers the board's output for a stopped host. Left: item 8 (pull USB
+  in adapter mode, the board on 12 V).
+- **A 4 KB USB request flood, three faults fixed** (§9.14): a heap panic (the guard refuses a
+  request over `MAX_REQUEST_BYTES` = 64, the laptop refuses it before sending), a USB read that
+  never woke again (esp-hal rc.0 races `int_ena`; the reader re-checks the FIFO), and a panic
+  while the frame was gathered (the board passes over a frame longer than
+  `console::MAX_HOST_BODY` = 69).
+- **`measure` over BLE** (§9.15): ~20 speed reads a second with the owner's plan; packing queued
+  frames into one notification brought it to 34–38 (the cable: 45–48). Left there (owner,
+  2026-09-22).
+- **Alarms in the owner's `dash.toml`, 2026-09-22**: misfires 5/3, knock retard −2.0/−1.5,
+  coolant 115/110 and boost drift 10 %/5 %, 2000 ms, floor 1.3 bar — recommended values from
+  the regulation, VW workshop specs of other engine units and inference, none VW's own number
+  for this ECU (`dash/04`). 13 channels, 4 pages; the file before is `dash.toml.before-alarms`.
+- **BLE discovery says "adapter"**, not "dash board" (owner, 2026-09-22); the board still
+  advertises as `vagcan-dash`.
+
+**Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
+info, watch, measure through the board; the moving-car guard; alarms; the cable on car
+traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
+`dash/17` §2 item 8 (USB pulled in adapter mode) goes with the car too.
 
 ## Where things stood on 2026-09-15 — PR #2, #3 and #4 merged
 
