@@ -122,18 +122,26 @@ the plain half the label is gone too.
 
 | episode | the offending cell |
 |---|---|
-| past the trip (`Firing`) | inverted 400 ms, plain 400 ms, by turns (`alarm::BLINK_MS`) |
+| firing (`Firing`) | inverted 400 ms, plain 400 ms, by turns (`alarm::BLINK_MS`), inverted first |
 | back inside, the 2.5 s hold (`Holding`) | inverted on every frame — the driver sees it came back |
 | handed back, silenced, or a drift rule still counting | nothing inverted |
 
-The phase is the clock's, `(now_ms / BLINK_MS) % 2`, not counted from the takeover: no timer
-state, and the board and the replay agree frame for frame. A takeover landing on the plain
-half shows the page first and the inversion within 400 ms. The frames must be at most
-`BLINK_MS / 2` apart so every half holds one even when a frame is slow to draw; the board's
-200 ms gives two on, two off, and both `bin/dash.rs` and the replay's `engine.rs` assert it
-at compile time. At a frame period of 400 ms or a multiple the frames would alias onto one
-half and the blink would be lost. `dashsim` only shows the frames the board sends, so it
-blinks as they do.
+**Firing includes two cases that are not "past the trip", and both blink on purpose**
+(controller, 2026-09-26): a value back inside the hysteresis band but not past the release,
+and channels that stop answering mid-episode. Neither is a release, so the alarm has not
+released and the cell keeps blinking. Not a bug.
+
+**The phase counts from the takeover** (review, 2026-09-26): inverted when
+`((now_ms − from) / BLINK_MS) % 2 == 0`, so the first frame of every episode is inverted. A
+phase from the boot clock left the glass unchanged for up to ~600 ms when the driver was
+already on the rule's page and the takeover landed on a plain half. `from` lives in the
+`Firing` episode, not in a timer: the moment it fired, fired again out of the hold, or took
+the glass from a rule that was silenced or handed back. The board and the replay use the same
+rule. The frames must be at most `BLINK_MS / 2` apart so every half holds one even when a
+frame is slow to draw; the board's 200 ms gives two on, two off, and both `bin/dash.rs` and the
+replay's `engine.rs` assert it at compile time. At a frame period of an even multiple of
+400 ms the frames would alias onto one half and the blink would be lost. `dashsim` only shows
+the frames the board sends, so it blinks as they do.
 
 ## The polling consequence — the non-obvious cost
 
@@ -153,13 +161,13 @@ accepts per request is still a bench measurement — see `06`.
 
 ## Where it lives
 
-- **`vag-dash-render/src/alarm.rs`** — the state machine (31 tests, 11 of them the drift
+- **`vag-dash-render/src/alarm.rs`** — the state machine (33 tests, 12 of them the drift
   rule's). `no_std`, allocation-free, reads no clock. `Alarm` is plain data the plan carries
   as a `static`. `BLINK_MS` and the blink decision live here: an episode that is up says its
-  `Highlight` — `Blinking` while `Firing`, `Steady` while `Holding`, read off the episode
-  state rather than kept beside it — and `Shown::inverted(now_ms)` answers the frame.
+  `Highlight` — `Blinking { from_ms }` while `Firing`, `Steady` while `Holding`, read off the
+  episode state rather than kept beside it — and `Shown::inverted(now_ms)` answers the frame.
 - **`vag-dash-render/src/screen.rs`** — `Screen`: the page cursor, the alarms and the short
-  press, which the firmware only feeds (14 tests). `frame` answers a `Glass`: the page to
+  press, which the firmware only feeds (15 tests). `frame` answers a `Glass`: the page to
   draw, the channel the alarm points at (`offending`, what the log names), its `highlight`,
   the cell inverted **on this frame** (`inverted`), whether the page changed, a page the
   board does not hold, and what to say (`Took { rule }`, `Over`, `Silenced`). The cursor stays the board's
@@ -200,17 +208,19 @@ Four decisions worth writing down:
 
 ## Tests
 
-`alarm.rs` (31, neutral channels and thresholds; 11 are the drift rule's): one takeover for a
+`alarm.rs` (33, neutral channels and thresholds; 12 are the drift rule's): one takeover for a
 value oscillating across the trip; release at the
 release value; the 2.5 s hold and the hand-back by page identity; silence, re-arm after a
 release, silence while still out; priority; the worst cell and its freeze through the
 hold; a channel that stops answering neither trips nor releases. The highlight (2026-09-26):
-while out the cell blinks on the clock's `BLINK_MS` halves, to the millisecond; through the
-hold it is inverted on every frame and the release is a `changed` picture; nothing after the
-hand-back, while silenced, or while a drift rule is still counting; out again inside the hold
-blinks again.
+while firing the cell blinks in `BLINK_MS` halves from the takeover, to the millisecond, and
+the first frame is inverted at any takeover time; it keeps blinking in the hysteresis band and
+with its channels quiet; through the hold it is inverted on every frame, and the release is
+not a `changed` picture; nothing after the hand-back, while silenced, or while a drift rule
+is still counting, whose blink starts when it fires; out again inside the hold blinks again
+from that moment.
 
-`screen.rs` (14, neutral channels and thresholds): a hidden page's channel takes the screen
+`screen.rs` (15, neutral channels and thresholds): a hidden page's channel takes the screen
 with its page and cell, and the takeover and hand-back change the page; during a takeover
 the foreground channels are the alarm page's (through `Plan::rates`); an alarm page past
 the board's pages draws the cursor page; silence then re-arm after a release, said as
@@ -219,9 +229,11 @@ cursor is *now*; two rules by priority, each a `Took` of its own; a stale channe
 trips nor releases; the adapter screen runs no alarms and a press there pages; a plan with
 no alarms only pages. The blink through `Glass::inverted`: two frames on, two off at 200 ms,
 steady through the hold, none after; a silenced alarm inverts nothing; a second rule taking
-over blinks its own cell; frames at any period up to `BLINK_MS` and any start, or jittered,
-see both halves and never draw one picture longer than a half and a frame; and the plain half
-of a blink draws the page pixel for pixel as with nothing inverted.
+over blinks its own cell, inverted on its first frame though it fired earlier, behind the first
+rule; a takeover of the page already on the glass is inverted on its first frame; frames at
+any period up to `BLINK_MS` and any start, or jittered, see both halves and never draw one
+picture longer than a half and a frame; and the plain half of a blink draws the page pixel
+for pixel as with nothing inverted.
 
 `plan.rs`: a watched channel is foreground at its own rate on every page. `dash.rs`: every
 refusal above, the `plan.json` round trip, an old `plan.json` without alarms, and the

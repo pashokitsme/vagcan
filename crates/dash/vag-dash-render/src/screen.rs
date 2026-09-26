@@ -46,7 +46,7 @@ pub struct Glass {
 	/// The channel the alarm on the glass points at — what the log names. Whether its
 	/// cell is inverted on this frame is [`Glass::inverted`].
 	pub offending: Option<ChannelId>,
-	/// How the offending cell is drawn: blinking while the value is past the trip,
+	/// How the offending cell is drawn: blinking from the takeover while the rule fires,
 	/// steady through the hold after the release. `Some` exactly when `offending` is.
 	pub highlight: Option<Highlight>,
 	/// The channel whose cell is drawn inverted **on this frame**: the offending one
@@ -426,7 +426,7 @@ mod tests {
 				(2, Some(ChannelId(5))),
 				"the page and what it points at stay"
 			);
-			assert_eq!(glass.highlight, Some(Highlight::Blinking));
+			assert!(matches!(glass.highlight, Some(Highlight::Blinking { .. })));
 		}
 		assert_eq!(
 			blinks(&mut screen, out, (800..2_400).step_by(200), 5),
@@ -462,22 +462,33 @@ mod tests {
 		let both = Car::calm().with(4, Some(20.0)).with(6, Some(-5.0));
 		assert_eq!(screen.frame(cursor, PAGES, 0, both.value_of()).inverted, Some(ChannelId(4)));
 		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
-		// The second rule's own cell, on the same clock: frames at 200 … 1 400.
-		let glass = screen.frame(cursor, PAGES, 200, both.value_of());
-		assert_eq!(
-			(glass.page, glass.offending, glass.highlight),
-			(3, Some(ChannelId(6)), Some(Highlight::Blinking))
-		);
-		assert_eq!(
-			blinks(&mut screen, both, (400..=1_400).step_by(200), 6),
-			[false, false, true, true, false, false]
-		);
+		// The second rule has been out since 0, behind the first. It takes the glass at
+		// 600 ms — the plain half of a blink counted from when it fired — and its own cell is
+		// inverted on that first frame: the phase starts when it takes the glass.
+		let glass = screen.frame(cursor, PAGES, 600, both.value_of());
+		assert_eq!((glass.page, glass.offending, glass.inverted), (3, Some(ChannelId(6)), Some(ChannelId(6))));
+		assert!(matches!(glass.highlight, Some(Highlight::Blinking { .. })));
+		assert_eq!(blinks(&mut screen, both, (800..=1_600).step_by(200), 6), [true, false, false, true, true]);
 		assert!(
 			(0..=1_400)
 				.step_by(200)
-				.all(|t| screen.frame(cursor, PAGES, t + 1_600, both.value_of()).inverted != Some(ChannelId(4))),
+				.all(|t| screen.frame(cursor, PAGES, t + 1_800, both.value_of()).inverted != Some(ChannelId(4))),
 			"the silenced rule's cell is not inverted meanwhile"
 		);
+	}
+
+	#[test]
+	fn a_takeover_of_the_page_already_up_is_seen_on_its_first_frame() {
+		// The driver is on the rule's own page, so the page does not change: the cell is
+		// the only news, and it is inverted at once whatever the clock.
+		let mut screen = screen();
+		for t in [0, 200, 400] {
+			assert_eq!(screen.frame(2, PAGES, t, Car::calm().value_of()).inverted, None);
+		}
+		let took = screen.frame(2, PAGES, 500, Car::calm().with(5, Some(12.0)).value_of());
+		assert_eq!((took.page, took.page_changed), (2, false));
+		assert_eq!(took.change, Some(Change::Took { rule: 0 }));
+		assert_eq!(took.inverted, Some(ChannelId(5)));
 	}
 
 	#[test]

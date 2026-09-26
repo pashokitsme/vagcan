@@ -2117,7 +2117,7 @@ async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 /// over a terminal, slow enough that the encoding never becomes the
 /// bottleneck.
 const FRAME_MS: u64 = 200;
-// An alarm's cell blinks on the clock's halves (`alarm::BLINK_MS`): two frames a half, so
+// An alarm's cell blinks in halves of `alarm::BLINK_MS` from its takeover: two frames a half, so
 // a frame that takes as long to draw as the wait before it still lands in every half.
 const _: () = assert!(FRAME_MS * 2 <= alarm::BLINK_MS, "the panel must frame at least twice per half blink");
 
@@ -2153,9 +2153,9 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 ///
 /// Which page is drawn is [`Screen::frame`]'s answer: the page cursor, unless an alarm
 /// has taken the glass, in which case its page is drawn with the offending channel's cell
-/// inverted on the frames `Glass::inverted` names: every other `alarm::BLINK_MS` while it is
-/// out, every frame through the hold. The alarms see the same values the cells do, `None`
-/// once stale. On the adapter screen they are not polled.
+/// inverted on the frames `Glass::inverted` names: every other `alarm::BLINK_MS` from the
+/// takeover while the rule fires, every frame through the hold. The alarms see the same
+/// values the cells do, `None` once stale. On the adapter screen they are not polled.
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
 	use vag_dash_render::history::History;

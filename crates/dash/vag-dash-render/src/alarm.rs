@@ -45,14 +45,16 @@ pub const HOLD_MS: u64 = 2_500;
 /// value is past the trip.
 ///
 /// The owner's number, 2026-09-26: a cell that is merely inverted did not say "look here"
-/// clearly enough. The phase is the clock's, `(now_ms / BLINK_MS) % 2`, and not counted
-/// from the takeover, so nothing here keeps a timer; a takeover that lands in a plain half
-/// shows the page first and the inversion within `BLINK_MS`.
+/// clearly enough. The phase counts from the takeover — `((now_ms − from) / BLINK_MS) % 2`,
+/// inverted when it is 0 — so the first frame of an episode is always inverted, even when the
+/// driver is already on the rule's page and the cell is the only thing that changes. `from`
+/// is the episode's own state, not a timer: the moment it fired, fired again out of the
+/// hold, or took the glass from another rule.
 ///
 /// **The caller's frames must be at most `BLINK_MS / 2` apart.** Every half then holds at
 /// least one frame even when drawing a frame takes as long again as the wait between two,
 /// so the cell is never drawn the same for longer than one half and a frame. At a period of
-/// `BLINK_MS` or a multiple the frames alias onto one half and the blink is lost — the
+/// an even multiple of `BLINK_MS` the frames alias onto one half and the blink is lost — the
 /// board's panel (`FRAME_MS`, 200 ms: two frames on, two off) and the host replay assert it.
 pub const BLINK_MS: u64 = 400;
 
@@ -335,8 +337,13 @@ enum Episode {
 	/// (`todo/dash/18` §4: a turbo lags its setpoint on every throttle stab).
 	Rising { offender: ChannelId, since_ms: u64 },
 	/// Out of bounds now. `offender` is the cell to invert and follows the worst
-	/// channel while it lasts.
-	Firing { offender: ChannelId },
+	/// channel while it lasts. The episode's blink counts from `blink_from_ms`: when it
+	/// fired, fired again out of the hold, or took the glass from another rule.
+	///
+	/// Still `Firing`, and so still blinking, when the value is back inside the
+	/// hysteresis band but not past the release, and when its channels stop answering:
+	/// neither is a release. Deliberate (controller, 2026-09-26), not a missed case.
+	Firing { offender: ChannelId, blink_from_ms: u64 },
 	/// Back inside, still on the screen until `until_ms`. The offender is frozen
 	/// at whoever it last was, so the view does not end with nothing highlighted.
 	Holding { offender: ChannelId, until_ms: u64 },
@@ -348,7 +355,7 @@ impl Episode {
 	/// The cell the episode points at, and how — `None` while nothing is on the glass.
 	fn showing(self) -> Option<(ChannelId, Highlight)> {
 		match self {
-			Episode::Firing { offender } => Some((offender, Highlight::Blinking)),
+			Episode::Firing { offender, blink_from_ms } => Some((offender, Highlight::Blinking { from_ms: blink_from_ms })),
 			Episode::Holding { offender, .. } => Some((offender, Highlight::Steady)),
 			Episode::Clear | Episode::Rising { .. } | Episode::Silenced => None,
 		}
@@ -358,8 +365,10 @@ impl Episode {
 /// How the offending cell is drawn, which says where its value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Highlight {
-	/// Past the trip now: inverted and plain by turns, [`BLINK_MS`] each.
-	Blinking,
+	/// The episode is firing: inverted and plain by turns, [`BLINK_MS`] each, counted
+	/// from `from_ms` so its first frame is inverted. That includes a value sitting in
+	/// the hysteresis band and channels gone quiet — the alarm has not released.
+	Blinking { from_ms: u64 },
 	/// Back inside, in the [`HOLD_MS`] before the hand-back: inverted and still, so the
 	/// driver sees the value has come back before the page goes.
 	Steady,
@@ -369,8 +378,8 @@ impl Highlight {
 	/// Whether the cell is drawn inverted on a frame at `now_ms`.
 	pub fn inverted(self, now_ms: u64) -> bool {
 		match self {
-			// The first half of every blink inverted: a clock at zero shows the inversion.
-			Highlight::Blinking => (now_ms / BLINK_MS) % 2 == 0,
+			// The first half of every blink inverted, from the moment the blink started.
+			Highlight::Blinking { from_ms } => (now_ms.saturating_sub(from_ms) / BLINK_MS) % 2 == 0,
 			Highlight::Steady => true,
 		}
 	}
@@ -411,15 +420,14 @@ impl Shown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Update {
 	pub shown: Shown,
-	/// Did the screen just change? The board redraws on this rather than every
-	/// poll: pushing 2 KB over SPI ten times a second to show the same picture
-	/// costs power for nothing.
+	/// Did the page, or the cell it points at, just change? Not how that cell is
+	/// drawn — the blink and the steady hold are [`Shown::inverted`]'s, per frame —
+	/// and not the values, which move on their own. The first poll always reports
+	/// `true`, because before it there was nothing on the glass.
 	///
-	/// It is about *which* picture, not what is in it — the values move on their
-	/// own and the caller redraws for those. A release, where the offending cell
-	/// stops blinking and holds, is a different picture; the blink is not — it is
-	/// the clock's, and [`Shown::inverted`] answers it on every frame. The first
-	/// poll always reports `true`, because before it there was nothing on the glass.
+	/// Nothing outside the tests reads it: the board redraws every frame
+	/// unconditionally, and [`Screen`](crate::screen::Screen) keeps its own
+	/// `page_changed` for when the foreground channels move.
 	pub changed: bool,
 }
 
@@ -525,8 +533,16 @@ impl<'a, const N: usize> Alarms<'a, N> {
 			self.episodes[i] = step(&self.rules[i], self.episodes[i], &value_of, now_ms);
 		}
 
-		let up = (0..N).find_map(|i| Some((i, self.episodes[i].showing()?)));
-		self.showing = up.map(|(i, _)| i);
+		let first = (0..N).find(|&i| self.episodes[i].showing().is_some());
+		// A rule taking the glass from another has been firing behind it for however long:
+		// its blink starts now, inverted first, like any takeover's.
+		if let Some(i) = first.filter(|_| first != self.showing) {
+			if let Episode::Firing { blink_from_ms, .. } = &mut self.episodes[i] {
+				*blink_from_ms = now_ms;
+			}
+		}
+		self.showing = first;
+		let up = first.and_then(|i| Some((i, self.episodes[i].showing()?)));
 		let shown = match up {
 			Some((i, (offender, highlight))) => Shown {
 				page: self.rules[i].page,
@@ -536,7 +552,8 @@ impl<'a, const N: usize> Alarms<'a, N> {
 			None => Shown::page(page),
 		};
 
-		let changed = self.last != Some(shown);
+		// Which page, and which cell on it — not how the cell is drawn this moment.
+		let changed = self.last.is_none_or(|last| (last.page, last.offending) != (shown.page, shown.offending));
 		self.last = Some(shown);
 		Update { shown, changed }
 	}
@@ -548,7 +565,10 @@ fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Opt
 	let worst = rule.worst(value_of);
 	// A rule with no hold fires the moment it trips; one with a hold starts counting.
 	let start_at = |c: ChannelId, at: u64| match rule.hold_ms() {
-		0 => Episode::Firing { offender: c },
+		0 => Episode::Firing {
+			offender: c,
+			blink_from_ms: at,
+		},
 		_ => Episode::Rising { offender: c, since_ms: at },
 	};
 	let start = |c: ChannelId| start_at(c, now_ms);
@@ -570,6 +590,7 @@ fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Opt
 				(true, _) if now_ms.saturating_sub(since_ms) >= rule.hold_ms() => Episode::Firing {
 					// Once it fires, the cell to invert is the worst one, as everywhere else.
 					offender: worst.map_or(offender, |(c, _)| c),
+					blink_from_ms: now_ms,
 				},
 				(true, _) => Episode::Rising { offender, since_ms },
 				// It came back, or stopped answering, and somebody else is out: that channel's
@@ -582,23 +603,27 @@ fn step(rule: &Alarm<'_>, episode: Episode, value_of: &impl Fn(ChannelId) -> Opt
 				_ => Episode::Clear,
 			}
 		}
-		Episode::Firing { offender } => match worst {
+		Episode::Firing { offender, blink_from_ms } => match worst {
 			// The offender follows the engine: a worse cylinder is the one worth
 			// pointing at, even mid-episode.
-			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c },
+			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c, blink_from_ms },
 			Some((_, v)) if rule.releases(v) => Episode::Holding {
 				offender,
 				until_ms: now_ms.saturating_add(HOLD_MS),
 			},
 			// Inside the hysteresis band, or nothing answered. Neither of those is
 			// news, so the screen does not move.
-			_ => Episode::Firing { offender },
+			_ => Episode::Firing { offender, blink_from_ms },
 		},
 		Episode::Holding { offender, until_ms } => match worst {
 			// Out again before the hold expired: the same episode continues, so it
 			// does not re-announce itself and the driver's silence still applies. A rule with
-			// a hold does not have to earn it a second time inside one episode.
-			Some((c, v)) if rule.trips(v) => Episode::Firing { offender: c },
+			// a hold does not have to earn it a second time inside one episode. The blink
+			// starts over here, inverted first, as it does at a takeover.
+			Some((c, v)) if rule.trips(v) => Episode::Firing {
+				offender: c,
+				blink_from_ms: now_ms,
+			},
 			_ if now_ms >= until_ms => Episode::Clear,
 			_ => Episode::Holding { offender, until_ms },
 		},
@@ -998,24 +1023,58 @@ mod tests {
 
 	// --- the highlight: blinking while out, steady in the hold -------------------------
 
+	fn blinking(highlight: Option<Highlight>) -> bool {
+		matches!(highlight, Some(Highlight::Blinking { .. }))
+	}
+
 	#[test]
-	fn while_out_the_offending_cell_blinks_on_the_clocks_phase() {
+	fn while_out_the_offending_cell_blinks_from_the_takeover() {
 		let mut alarms = Alarms::new([group()]);
+		alarms.poll(WAS_SHOWING, &only(CLEAR), 0);
+		// Out from 700 ms, which is no boundary of the clock's: the blink starts there.
 		// Frames 200 ms apart, the board's period: two inverted, two plain.
+		let took = 700;
 		let mut seen = std::vec::Vec::new();
-		for t in (0..=1_400).step_by(200) {
+		for t in (took..=took + 1_400).step_by(200) {
 			let shown = alarms.poll(WAS_SHOWING, &only(-10.0), t).shown;
-			assert_eq!(shown.highlight, Some(Highlight::Blinking), "out at t={t}");
+			assert!(blinking(shown.highlight), "out at t={t}");
 			assert_eq!(shown.offending, Some(GROUP[1]), "what is pointed at does not blink");
 			seen.push(shown.inverted(t) == Some(GROUP[1]));
 		}
 		assert_eq!(seen, [true, true, false, false, true, true, false, false]);
-		// The halves are BLINK_MS of the clock, to the millisecond.
-		let shown = alarms.poll(WAS_SHOWING, &only(-10.0), 1_600).shown;
-		assert_eq!(shown.inverted(BLINK_MS * 4 - 1), None);
-		assert_eq!(shown.inverted(BLINK_MS * 4), Some(GROUP[1]));
-		assert_eq!(shown.inverted(BLINK_MS * 5 - 1), Some(GROUP[1]));
-		assert_eq!(shown.inverted(BLINK_MS * 5), None);
+		// The halves are BLINK_MS from the takeover, to the millisecond.
+		let shown = alarms.poll(WAS_SHOWING, &only(-10.0), took + 1_600).shown;
+		assert_eq!(shown.inverted(took + BLINK_MS - 1), Some(GROUP[1]));
+		assert_eq!(shown.inverted(took + BLINK_MS), None);
+		assert_eq!(shown.inverted(took + BLINK_MS * 2 - 1), None);
+		assert_eq!(shown.inverted(took + BLINK_MS * 2), Some(GROUP[1]));
+	}
+
+	#[test]
+	fn the_first_frame_of_a_takeover_is_inverted_whenever_it_comes() {
+		// Nothing else on the glass says "this one" when the driver is already on the rule's
+		// page: the first frame has to.
+		for took in [1, 250, 399, 400, 401, 777, 1_234, 10_001] {
+			let mut alarms = Alarms::new([group()]);
+			alarms.poll(WAS_SHOWING, &only(CLEAR), 0);
+			let shown = alarms.poll(WAS_SHOWING, &only(-10.0), took).shown;
+			assert_eq!(shown.inverted(took), Some(GROUP[1]), "took at {took}");
+		}
+	}
+
+	#[test]
+	fn the_cell_keeps_blinking_in_the_band_and_while_its_channel_is_quiet() {
+		// Neither is a release, so the episode is still `Firing`, and its phase runs on.
+		let mut alarms = Alarms::new([group()]);
+		alarms.poll(WAS_SHOWING, &only(-10.0), 0);
+		// Back above the trip, not past the release.
+		let band = alarms.poll(WAS_SHOWING, &only(1.0), BLINK_MS).shown;
+		assert!(blinking(band.highlight));
+		assert_eq!(band.inverted(BLINK_MS), None, "the phase from the takeover, not restarted");
+		// Nothing answering at all.
+		let quiet = alarms.poll(WAS_SHOWING, &[], BLINK_MS * 2).shown;
+		assert!(blinking(quiet.highlight));
+		assert_eq!(quiet.inverted(BLINK_MS * 2), Some(GROUP[1]));
 	}
 
 	#[test]
@@ -1025,7 +1084,7 @@ mod tests {
 		let released_at = 500;
 		let release = alarms.poll(WAS_SHOWING, &only(CLEAR), released_at);
 		assert_eq!(release.shown.highlight, Some(Highlight::Steady));
-		assert!(release.changed, "a cell that stops blinking is a different picture");
+		assert!(!release.changed, "the same page and the same cell");
 		// Every frame of the hold, whichever half of a blink the clock is in.
 		for t in (released_at..released_at + HOLD_MS).step_by(100) {
 			let shown = alarms.poll(WAS_SHOWING, &only(CLEAR), t).shown;
@@ -1038,13 +1097,15 @@ mod tests {
 	}
 
 	#[test]
-	fn out_again_inside_the_hold_blinks_again() {
+	fn out_again_inside_the_hold_blinks_again_from_that_moment() {
 		let mut alarms = Alarms::new([group()]);
 		alarms.poll(WAS_SHOWING, &only(-10.0), 0);
 		assert_eq!(alarms.poll(WAS_SHOWING, &only(CLEAR), 100).shown.highlight, Some(Highlight::Steady));
-		let again = alarms.poll(WAS_SHOWING, &only(-10.0), 900).shown;
-		assert_eq!(again.highlight, Some(Highlight::Blinking));
-		assert_eq!(again.inverted(BLINK_MS * 3), None, "the plain half, back again");
+		let again_at = 1_300;
+		let again = alarms.poll(WAS_SHOWING, &only(-10.0), again_at).shown;
+		assert!(blinking(again.highlight));
+		assert_eq!(again.inverted(again_at), Some(GROUP[1]), "inverted first, as at any takeover");
+		assert_eq!(again.inverted(again_at + BLINK_MS), None);
 	}
 
 	#[test]
@@ -1061,10 +1122,12 @@ mod tests {
 	#[test]
 	fn a_drift_rule_counting_its_hold_highlights_nothing_and_blinks_once_it_fires() {
 		let mut alarms = Alarms::new([drift()]);
-		let counting = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 0).shown;
-		assert_eq!((counting.highlight, counting.inverted(0)), (None, None));
-		let fired = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_000).shown;
-		assert_eq!(fired.highlight, Some(Highlight::Blinking));
+		let counting = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 200).shown;
+		assert_eq!((counting.highlight, counting.inverted(200)), (None, None));
+		// A second after it started counting: the blink starts when it fires, not before.
+		let fired = alarms.poll(WAS_SHOWING, &pair(Some(2.2), Some(2.0)), 1_200).shown;
+		assert!(blinking(fired.highlight));
+		assert_eq!(fired.inverted(1_200), Some(DRIFTING[0]));
 	}
 
 	#[test]

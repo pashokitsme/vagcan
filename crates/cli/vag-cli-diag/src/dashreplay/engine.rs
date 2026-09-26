@@ -25,7 +25,7 @@ use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_with};
 
 /// Milliseconds between two panel frames — `FRAME_MS` in `vag-dash-fw`'s `bin/dash.rs`.
 pub const FRAME_MS: u64 = 200;
-// The offending cell blinks on the clock's halves; frames further apart alias onto one.
+// The offending cell blinks in BLINK_MS halves: frames at most BLINK_MS / 2 apart, so every half gets a frame.
 const _: () = assert!(FRAME_MS * 2 <= BLINK_MS, "the panel must frame at least twice per half blink");
 /// How old a value may be and still be shown — `STALE` in `vag-dash-fw`'s `bin/dash.rs`.
 /// Counted from when the recording heard it.
@@ -856,9 +856,9 @@ mod tests {
 	#[test]
 	fn the_panel_is_the_boards_frame_with_the_offending_cell_blinking() {
 		let text = crate::dashreplay::glass::half_blocks;
-		// 1.8 s is in an inverted half of the blink, 2.0 s in a plain one.
+		// Out from 1.0 s, where the blink starts: 1.8 s is in an inverted half, 1.4 s in a plain one.
 		assert_eq!(text(&panel_at(1_800)), text(&composed(true)), "the inverted half");
-		assert_eq!(text(&panel_at(2_000)), text(&composed(false)), "the plain half is the plain page");
+		assert_eq!(text(&panel_at(1_400)), text(&composed(false)), "the plain half is the plain page");
 		// And the inversion is really there: the two halves are not the same picture.
 		assert_ne!(text(&composed(true)), text(&composed(false)));
 	}
@@ -873,8 +873,8 @@ mod tests {
 			inverted.push((tick.t_ms, tick.glass.inverted == Some(ChannelId(2))));
 		}
 		let out: Vec<bool> = inverted.iter().filter(|(t, _)| (1_000..3_000).contains(t)).map(|&(_, i)| i).collect();
-		// Frames at 1.0, 1.2 … 2.8 s against the clock's 400 ms halves: two frames a half.
-		assert_eq!(out, [true, false, false, true, true, false, false, true, true, false]);
+		// Frames at 1.0, 1.2 … 2.8 s, 400 ms halves counted from the takeover: two frames a half.
+		assert_eq!(out, [true, true, false, false, true, true, false, false, true, true]);
 		let back = first_frame_from(3_000 + HOLD_MS);
 		assert!(
 			inverted.iter().filter(|(t, _)| (3_000..back).contains(t)).all(|&(_, i)| i),
