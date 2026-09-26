@@ -21,7 +21,7 @@ pub mod rod;
 mod tea;
 pub mod tttext;
 
-pub use catalog::{MeasurementCatalog, MeasurementDef, ReadId, Scaling, ignition_angle};
+pub use catalog::{Level, MeasurementCatalog, MeasurementDef, ReadId, Scaling, ignition_angle};
 pub use clb::decrypt_clb;
 pub use codes::{CodesDb, ISO_BAND_START};
 pub use db::LabelDb;

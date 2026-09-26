@@ -28,7 +28,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `vagcan units` | Control units the gateway lists. `--identify` makes each one name itself |
 | `vagcan faults` | Stored fault codes with VW's own text. `[faults] language` in the config picks the language |
 | `vagcan sensors` | Standard OBD-II readings |
-| `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. `--out` records to CSV |
+| `vagcan watch` | Live values from several units at once, with a chart of up to 6 channels. States show by name. `--out` records to CSV |
 | `vagcan measure` | Acceleration run timing from the car's own speed signal. `measure view` opens a saved run as a chart |
 
 ### Development commands – `vagcan dev`

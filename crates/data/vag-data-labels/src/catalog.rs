@@ -66,8 +66,9 @@ pub enum Scaling {
 	/// third of a recording. Anything not listed is reported as unknown rather
 	/// than extrapolated.
 	Enum {
-		/// `(raw value, what it means)`, in whatever order reads best.
-		levels: Vec<(i32, String)>,
+		/// Each interval of raw values and what it means. A reading takes the
+		/// **first** level that holds it, in this order — see [`Level`].
+		levels: Vec<Level>,
 	},
 	/// Only a single `(raw, value)` point is proven; the slope is **not** yet
 	/// reversed. Interpreting any other raw value would be a guess, so it is
@@ -79,6 +80,144 @@ pub enum Scaling {
 		/// The engineering value VCDS displays for that raw.
 		value: f64,
 	},
+}
+
+/// One state of a [`Scaling::Enum`]: an interval of raw values, both ends
+/// included, and what any value in it means.
+///
+/// **An interval, not a point**, because that is what an ODX `TEXTTAB` says: each
+/// `COMPU-SCALE` carries a coded lower *and* upper limit. Most are one value wide
+/// (`lower == upper`), and the rest tile a range — a switch read as an analogue
+/// voltage answers anywhere inside its band, with a count or two of noise, and
+/// matching the lower bound alone matched none of those readings. A level that
+/// is one value wide is a [`Level::point`], and behaves exactly as the
+/// `(raw, name)` pairs this type replaced.
+///
+/// **First match wins, in table order.** ODX expects a text table's intervals not
+/// to overlap, and the reference project (548,887 scales in 172,240 tables) has no
+/// overlap at all — so on real data the order decides nothing. It is the rule
+/// anyway, rather than a refusal at parse time, because refusing would cost a
+/// whole channel its every name over one bad row, and because it is what a
+/// lookup of point levels always did. Order is not sorted: 3,965 of those
+/// tables list their intervals out of order, and they mean the same unsorted.
+/// One exception to table order: a level with an unbounded end is tried after
+/// every bounded one — see [`level_for`], which is the whole rule.
+///
+/// The bounds are private so that `lower <= upper` always holds; see
+/// [`Level::range`] for what a reversed pair becomes.
+///
+/// On disk a point is `[raw, "name"]` — the shape every catalog file had before
+/// intervals were kept, so old files read unchanged and a catalog with no
+/// interval in it is still readable by an older build — and an interval is
+/// `[lower, upper, "name"]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "LevelForm", into = "LevelForm")]
+pub struct Level {
+	lower: i32,
+	upper: i32,
+	name: String,
+}
+
+impl Level {
+	/// A level exactly one raw value wide.
+	pub fn point(raw: i32, name: impl Into<String>) -> Level {
+		Level {
+			lower: raw,
+			upper: raw,
+			name: name.into(),
+		}
+	}
+
+	/// A level covering `lower..=upper`.
+	///
+	/// A reversed pair (`upper < lower`) is taken as the point at `lower`: that
+	/// is the key this project read off every text table before it kept the
+	/// upper bound, so a malformed row means what it always meant rather than
+	/// matching nothing — or, swapped, a range nobody wrote.
+	pub fn range(lower: i32, upper: i32, name: impl Into<String>) -> Level {
+		Level {
+			lower,
+			upper: upper.max(lower),
+			name: name.into(),
+		}
+	}
+
+	/// The lowest raw value this level answers to — the one to send when the
+	/// level has to be turned back into bytes.
+	pub fn lower(&self) -> i32 {
+		self.lower
+	}
+
+	/// The highest raw value this level answers to.
+	pub fn upper(&self) -> i32 {
+		self.upper
+	}
+
+	/// What the state is called.
+	pub fn name(&self) -> &str {
+		&self.name
+	}
+
+	/// Whether an end of this level is unbounded: `i32::MIN` below or `i32::MAX`
+	/// above, which is how an ODX limit of kind `INFINITE` is kept. See
+	/// [`level_for`] for what that changes.
+	///
+	/// Decided by the value, so any bound equal to `i32::MIN` or `i32::MAX` counts —
+	/// a closed limit written as that value, and an unsigned upper limit past
+	/// `i32::MAX` capped to it, included — and such a level is tried after every
+	/// bounded one. On valid ODX data, whose levels do not overlap, the order in
+	/// which levels are tried changes no answer, so this is harmless there.
+	pub fn is_unbounded(&self) -> bool {
+		self.lower == i32::MIN || self.upper == i32::MAX
+	}
+
+	/// Whether a raw reading falls inside this level, both ends included.
+	pub fn contains(&self, raw: i32) -> bool {
+		(self.lower..=self.upper).contains(&raw)
+	}
+}
+
+/// Which level names a raw reading: its index in `levels`, or `None`.
+///
+/// **The one matching rule** — [`MeasurementDef::describe`] and the replay that
+/// turns a name back into bytes both go through it, so the two cannot disagree
+/// about which level a value belongs to. Bounded levels are tried first, in table
+/// order; a level with an unbounded end ([`Level::is_unbounded`] — an ODX limit of
+/// kind `INFINITE`) only after all of them, in table order. An unbounded level is
+/// a catch-all, and listed first it would otherwise hide every level after it.
+pub fn level_for(levels: &[Level], raw: i32) -> Option<usize> {
+	let bounded = |unbounded: bool| levels.iter().enumerate().filter(move |(_, level)| level.is_unbounded() == unbounded);
+	bounded(false)
+		.chain(bounded(true))
+		.find(|(_, level)| level.contains(raw))
+		.map(|(at, _)| at)
+}
+
+/// How a [`Level`] is written in a catalog file: `[raw, "name"]` for a point,
+/// `[lower, upper, "name"]` for an interval.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LevelForm {
+	Point(i32, String),
+	Range(i32, i32, String),
+}
+
+impl From<LevelForm> for Level {
+	fn from(form: LevelForm) -> Level {
+		match form {
+			LevelForm::Point(raw, name) => Level::point(raw, name),
+			LevelForm::Range(lower, upper, name) => Level::range(lower, upper, name),
+		}
+	}
+}
+
+impl From<Level> for LevelForm {
+	fn from(level: Level) -> LevelForm {
+		match level.lower == level.upper {
+			true => LevelForm::Point(level.lower, level.name),
+			false => LevelForm::Range(level.lower, level.upper, level.name),
+		}
+	}
 }
 
 /// One catalog row: a fully-described (or honestly partially-described)
@@ -126,7 +265,7 @@ impl MeasurementDef {
 	pub fn describe(&self, data: &[u8]) -> Option<String> {
 		let raw = self.raw_form.read(data)?;
 		match &self.scaling {
-			Scaling::Enum { levels } => levels.iter().find(|(value, _)| *value == raw).map(|(_, name)| name.clone()),
+			Scaling::Enum { levels } => level_for(levels, raw).map(|at| levels[at].name.clone()),
 			_ => {
 				let value = self.interpret(data)?;
 				Some(if self.unit.is_empty() {
@@ -411,7 +550,7 @@ mod tests {
 			address: ReadId::Uds(0x3816),
 			raw_form: RawForm::U8First,
 			scaling: Scaling::Enum {
-				levels: vec![(0x00, "not engaged".to_string()), (0x03, "2".to_string()), (0x0C, "R".to_string())],
+				levels: vec![Level::point(0x00, "not engaged"), Level::point(0x03, "2"), Level::point(0x0C, "R")],
 			},
 		};
 		assert_eq!(def.describe(&[0x03]).as_deref(), Some("2"));
@@ -421,6 +560,140 @@ mod tests {
 		assert_eq!(def.describe(&[0x09]), None);
 		// And a state is never a number.
 		assert_eq!(def.interpret(&[0x03]), None);
+	}
+
+	/// A state read as an analogue voltage: every level is a band, with gaps a
+	/// reading can fall into. Synthetic numbers, no car's table.
+	fn banded() -> MeasurementDef {
+		MeasurementDef {
+			name: Cow::Borrowed("Switch"),
+			unit: Cow::Borrowed(""),
+			address: ReadId::Uds(0x1000),
+			raw_form: RawForm::U8First,
+			scaling: Scaling::Enum {
+				levels: vec![
+					Level::range(10, 19, "low"),
+					// Listed out of order, as real tables are: order is not a key.
+					Level::range(40, 49, "high"),
+					Level::range(20, 29, "middle"),
+					Level::point(60, "exactly sixty"),
+				],
+			},
+		}
+	}
+
+	#[test]
+	fn a_reading_inside_an_interval_takes_that_levels_name() {
+		let def = banded();
+		for (raw, name) in [
+			(10, "low"),
+			(14, "low"),
+			(19, "low"),
+			(20, "middle"),
+			(27, "middle"),
+			(40, "high"),
+			(49, "high"),
+		] {
+			assert_eq!(def.describe(&[raw]).as_deref(), Some(name), "raw {raw}");
+		}
+		// A band is a name, never a number.
+		assert_eq!(def.interpret(&[14]), None);
+	}
+
+	#[test]
+	fn a_point_level_still_matches_exactly_and_only_itself() {
+		let def = banded();
+		assert_eq!(def.describe(&[60]).as_deref(), Some("exactly sixty"));
+		assert_eq!(def.describe(&[59]), None);
+		assert_eq!(def.describe(&[61]), None);
+	}
+
+	#[test]
+	fn a_reading_between_intervals_is_unknown() {
+		let def = banded();
+		for raw in [0, 9, 30, 39, 50, 255] {
+			assert_eq!(def.describe(&[raw]), None, "raw {raw} is in no interval");
+		}
+	}
+
+	#[test]
+	fn overlapping_intervals_answer_with_the_first_in_table_order() {
+		let def = MeasurementDef {
+			scaling: Scaling::Enum {
+				levels: vec![Level::range(0, 10, "first"), Level::range(5, 15, "second")],
+			},
+			..banded()
+		};
+		assert_eq!(def.describe(&[5]).as_deref(), Some("first"));
+		assert_eq!(def.describe(&[10]).as_deref(), Some("first"));
+		assert_eq!(def.describe(&[11]).as_deref(), Some("second"));
+	}
+
+	#[test]
+	fn a_level_with_an_unbounded_end_is_matched_after_every_bounded_one() {
+		// An ODX limit of kind INFINITE is a catch-all; listed first, first-match
+		// would let it hide every level after it. Bounded levels are tried first,
+		// in table order, then the unbounded ones, in table order.
+		let def = MeasurementDef {
+			scaling: Scaling::Enum {
+				levels: vec![
+					Level::range(i32::MIN, 100, "at most 100"),
+					Level::point(5, "five"),
+					Level::range(200, i32::MAX, "at least 200"),
+					Level::range(150, 300, "mid"),
+				],
+			},
+			..banded()
+		};
+		assert_eq!(def.describe(&[5]).as_deref(), Some("five"));
+		assert_eq!(def.describe(&[50]).as_deref(), Some("at most 100"));
+		assert_eq!(def.describe(&[250]).as_deref(), Some("mid"));
+		assert_eq!(def.describe(&[255]).as_deref(), Some("mid"));
+		assert_eq!(def.describe(&[120]), None);
+		let def = MeasurementDef {
+			raw_form: RawForm::U16Be,
+			..def
+		};
+		assert_eq!(def.describe(&[0x01, 0x90]).as_deref(), Some("at least 200"));
+		let Scaling::Enum { levels } = &def.scaling else { unreachable!() };
+		assert_eq!(level_for(levels, 250), Some(3));
+		assert_eq!(level_for(levels, 400), Some(2));
+	}
+
+	#[test]
+	fn a_reversed_interval_is_its_lower_bound_alone() {
+		let level = Level::range(30, 20, "backwards");
+		assert_eq!((level.lower(), level.upper()), (30, 30));
+		assert!(level.contains(30));
+		assert!(!level.contains(25));
+	}
+
+	#[test]
+	fn a_catalog_written_before_intervals_reads_every_level_as_a_point() {
+		// The shape every `measurements/` file had: `[raw, "name"]` pairs.
+		let old = r#"{ "defs": [ { "name": "Gear", "unit": "", "address": { "Uds": 4096 }, "raw_form": "U8First",
+			"scaling": { "Enum": { "levels": [[0, "none"], [3, "two"]] } } } ] }"#;
+		let catalog = MeasurementCatalog::from_json(old).expect("an old catalog still reads");
+		assert_eq!(
+			catalog.defs[0].scaling,
+			Scaling::Enum {
+				levels: vec![Level::point(0, "none"), Level::point(3, "two")]
+			}
+		);
+		assert_eq!(catalog.defs[0].describe(&[3]).as_deref(), Some("two"));
+		assert_eq!(catalog.defs[0].describe(&[2]), None);
+	}
+
+	#[test]
+	fn an_interval_round_trips_and_a_point_is_written_the_old_way() {
+		let catalog = MeasurementCatalog::new(vec![banded()]);
+		let json = catalog.to_json().expect("serialises");
+		assert_eq!(MeasurementCatalog::from_json(&json).expect("reads back"), catalog);
+		// A point is still `[raw, "name"]`, so a file with no interval in it is
+		// one an older build reads too.
+		let compact: String = json.chars().filter(|c| !c.is_whitespace()).collect();
+		assert!(compact.contains(r#"[60,"exactlysixty"]"#), "{compact}");
+		assert!(compact.contains(r#"[10,19,"low"]"#), "{compact}");
 	}
 
 	#[test]

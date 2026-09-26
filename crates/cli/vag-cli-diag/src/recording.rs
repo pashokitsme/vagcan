@@ -49,6 +49,13 @@ pub enum Tool {
 		/// read it from then on.
 		#[arg(long, value_name = "FILE")]
 		out: Option<String>,
+		/// The car the recording is of. Its channel list (from its cached survey
+		/// and the project) says which headings are states, which are then never
+		/// used as a reference. Left out, a heading is judged by its values.
+		/// The list is today's survey and project, not the ones the recording was
+		/// made with.
+		#[arg(long, value_name = "VIN")]
+		vin: Option<String>,
 	},
 
 	/// Find which identifiers carry discrete state — a gear, a mode, a switch.
@@ -171,6 +178,7 @@ pub fn run(tool: Tool) -> Result<()> {
 			min_r2,
 			min_points,
 			out,
+			vin,
 		} => {
 			let Some(log) = pick_when_absent(log, "vagcan dev recording calibrate --log FILE.csv")? else {
 				return Ok(());
@@ -183,6 +191,7 @@ pub fn run(tool: Tool) -> Result<()> {
 					min_points,
 					..Default::default()
 				},
+				vin.as_deref(),
 			)
 		}
 		Tool::Discover { log, pairs } => {

@@ -688,6 +688,8 @@ pub fn key_levels(dop: &Dop) -> Result<Vec<(u16, String, Option<String>)>, Error
 		.ok_or_else(|| Error::Format("a table key's text table has no coded-to-physical direction".into()))?;
 	let mut out = Vec::with_capacity(base.scales.len());
 	for scale in &base.scales {
+		// The lower bound alone, unlike a state's level (`compu::Method::text_table`):
+		// a key is the one identifier a row is read at, and a request names one.
 		let Some(raw) = scale.lower_coded.as_ref().and_then(|l| l.value.as_ref()).and_then(as_u16) else {
 			continue;
 		};
@@ -937,6 +939,47 @@ mod tests {
 				(0x380A, "Getriebe-Eingangsdrehzahl".to_owned(), Some("000116".to_owned())),
 				(0x2000, "Motordrehzahl".to_owned(), Some("000116".to_owned())),
 			]
+		);
+	}
+
+	#[test]
+	fn a_text_table_read_from_bytes_keeps_each_levels_coded_upper_bound() {
+		// A state channel's property whose text table has one band and one point —
+		// synthetic values, the layout a switch read as a voltage is written in.
+		let mut b = Bytes::default();
+		b.a(Some("DOP_Switch"));
+		b.some(code::DB_COMPU_METHOD).u8(3).none(); // eTEXTTAB, no inverse direction
+		b.some(code::DB_COMPU_BASE);
+		b.some(code::DB_COMPU_SCALES).u32(2);
+		for (lower, upper, text) in [(10u32, 49u32, "gedrückt"), (50, 50, "losgelassen")] {
+			b.some(code::DB_COMPU_SCALE).a(Some("000200"));
+			b.none().none(); // no coefficients either way
+			b.none().none(); // no physical limits
+			b.text_value(text).no_value().no_value();
+			closed_uint(&mut b, lower);
+			closed_uint(&mut b, upper);
+		}
+		b.no_value().no_value().none().no_value(); // the base's tail
+		standard_uint(&mut b, 8);
+		physical_float(&mut b);
+		empty_index_maps(&mut b);
+		b.none().none().none();
+		let (body, strings) = b.done(code::DB_DOP_SIMPLE_BASE);
+
+		let (type_code, mut stream) = crate::odis::object::Stream::open(&body, &strings).expect("a well-formed object opens");
+		let Outcome::Object(Object::Dop(dop)) = load(type_code, &mut stream).expect("the property parses") else {
+			panic!("expected a data object property")
+		};
+		assert_eq!(stream.remaining(), 0);
+		let scaling = dop.compu.expect("a compu method").scaling().expect("a TEXTTABLE translates");
+		assert_eq!(
+			scaling,
+			crate::catalog::Scaling::Enum {
+				levels: vec![
+					crate::catalog::Level::range(10, 49, "gedrückt"),
+					crate::catalog::Level::point(50, "losgelassen")
+				]
+			}
 		);
 	}
 

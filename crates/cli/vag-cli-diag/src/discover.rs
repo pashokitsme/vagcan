@@ -309,6 +309,23 @@ mod tests {
 	}
 
 	#[test]
+	fn a_state_written_by_name_counts_each_name_as_a_level() {
+		// Since 2026-09-26 a state is recorded by the name of its level — quoted
+		// when it holds a comma. Each name is one level, however many raw values
+		// its band spans, and an unmatched answer written as bytes is one more.
+		let csv = "t_s,Lever_t_s,Lever\n\
+             0.0,0.0,rest\n\
+             0.1,0.1,\"pulled, hard\"\n\
+             0.2,0.2,rest\n\
+             0.3,0.3,0x05\n\
+             0.4,0.4,rest\n";
+		let columns = classify(csv).unwrap();
+		assert_eq!(columns[0].behaviour, Behaviour::Stepped { levels: 3, changes: 4 });
+		assert_eq!(columns[0].values, ["rest", "pulled, hard", "0x05"]);
+		assert!(columns[0].is_candidate());
+	}
+
+	#[test]
 	fn a_heading_with_a_comma_is_quoted_and_read_back_whole() {
 		// Channel names carry commas ("Pressure, left"); unquoted, one heading was two.
 		assert_eq!(quoted("Pressure"), "Pressure");

@@ -207,13 +207,19 @@ CREATE TABLE IF NOT EXISTS reading (
     anchor_raw   INTEGER,
     anchor_value REAL
 );
--- The levels of a `TEXTTABLE` scaling: each raw value means one thing, and
--- there is no scale between them. A child table because a gear selector has as
--- many rows as it has positions and a linear channel has none.
+-- The levels of a `TEXTTABLE` scaling: each interval of raw values means one
+-- thing, and there is no scale between them. A child table because a gear
+-- selector has as many rows as it has positions and a linear channel has none.
 CREATE TABLE IF NOT EXISTS reading_level (
     reading_id INTEGER NOT NULL REFERENCES reading(id),
+    -- The interval's lower end, both ends included.
     raw        INTEGER NOT NULL,
-    meaning    TEXT NOT NULL
+    meaning    TEXT NOT NULL,
+    -- Its upper end: `raw` again for a level one value wide. NULL only in a row
+    -- written before the column existed, which kept the lower end alone — see
+    -- `levels_predate_bounds`. Last, because that is where `ALTER TABLE` puts it
+    -- in a cache that predates it.
+    upper      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_reading_lookup ON reading(variant, did);
 CREATE INDEX IF NOT EXISTS idx_reading_level  ON reading_level(reading_id);
@@ -285,6 +291,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 	// migration — `CREATE TABLE IF NOT EXISTS` in the batch makes it.
 	if !has_column(conn, "source", "language")? {
 		conn.execute("ALTER TABLE source ADD COLUMN language TEXT", [])?;
+	}
+	// `reading_level` gained `upper` when a text table's levels became intervals.
+	// Existing rows keep `NULL`, which reads as the lower end alone — exactly what
+	// they meant when written — and only `setup` re-run against the project can
+	// fill it in, because the upper end was never stored. `levels_predate_bounds`
+	// is how a reader finds that out.
+	let levels = columns(conn, "reading_level")?;
+	if !levels.is_empty() && !levels.iter().any(|name| name == "upper") {
+		conn.execute("ALTER TABLE reading_level ADD COLUMN upper INTEGER", [])?;
 	}
 	Ok(())
 }
@@ -728,7 +743,7 @@ fn write_readings<'a>(
                  scaling, factor, offset, anchor_raw, anchor_value) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
 		)?;
-		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, meaning) VALUES (?1, ?2, ?3)")?;
+		let mut insert_level = tx.prepare("INSERT INTO reading_level (reading_id, raw, upper, meaning) VALUES (?1, ?2, ?3, ?4)")?;
 		for (variant, readings) in variants {
 			if let Replace::EachVariant = replace {
 				delete_levels.execute(params![source, variant])?;
@@ -759,8 +774,8 @@ fn write_readings<'a>(
 				])?;
 				let id = tx.last_insert_rowid();
 				if let Scaling::Enum { levels } = &r.scaling {
-					for (raw, meaning) in levels {
-						insert_level.execute(params![id, raw, meaning])?;
+					for level in levels {
+						insert_level.execute(params![id, level.lower(), level.upper(), level.name()])?;
 					}
 				}
 				written += 1;
@@ -981,7 +996,18 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 		})?
 		.collect::<rusqlite::Result<_>>()?;
 
-	let mut levels = conn.prepare("SELECT raw, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid")?;
+	// A cache written before `upper` existed is read as it was written — lower
+	// ends alone — rather than migrated: this is a read, and a read writes
+	// nothing. Selecting a column it does not have would fail the variant, and
+	// every caller skips a variant that fails, so a stale cache would lose every
+	// channel instead of the few bands it cannot name.
+	let upper = match has_column(&conn, "reading_level", "upper")? {
+		true => "upper",
+		false => "NULL",
+	};
+	let mut levels = conn.prepare(&format!(
+		"SELECT raw, {upper}, meaning FROM reading_level WHERE reading_id = ?1 ORDER BY rowid"
+	))?;
 	let mut out = Vec::with_capacity(rows.len());
 	for (id, did, name, unit, bit_offset, bit_length, signed, big_endian, text_id, kind, factor, offset, anchor_raw, anchor_value) in rows {
 		// A row whose scaling columns disagree with its kind is skipped rather
@@ -992,7 +1018,11 @@ pub fn readings_of(db_path: &Path, variant: &str) -> Result<Vec<vag_data_labels:
 			("anchor", _, _, Some(raw), Some(value)) => Scaling::Anchor { raw, value },
 			("enum", ..) => Scaling::Enum {
 				levels: levels
-					.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?
+					.query_map(params![id], |row| {
+						let lower: i32 = row.get(0)?;
+						let upper: Option<i32> = row.get(1)?;
+						Ok(vag_data_labels::Level::range(lower, upper.unwrap_or(lower), row.get::<_, String>(2)?))
+					})?
 					.collect::<rusqlite::Result<_>>()?,
 			},
 			_ => continue,
@@ -1049,6 +1079,31 @@ pub fn channel_counts(db_path: &Path) -> Result<(u64, u64), Error> {
 	Ok((variants.max(0) as u64, channels.max(0) as u64))
 }
 
+/// Whether any state level of one ECU variant was written before this cache kept
+/// the upper end of each level's interval.
+///
+/// Such a level reads as its lower end alone, which is what it meant when it was
+/// written — so nothing reads wrongly, but a switch that answers inside a band
+/// rather than on its lower end is shown as bytes. Only `setup` re-run against
+/// the project can fix that, and this is how a command knows to say so.
+///
+/// Per variant rather than per cache, because a cache is a whole platform's
+/// half a million levels and a question asked before a screen opens must not
+/// scan them; this rides the two indexes a channel lookup already uses. A cache
+/// written by `setup` today has `upper` on every row, so there it is `false`.
+pub fn levels_predate_bounds(db_path: &Path, variant: &str) -> Result<bool, Error> {
+	let conn = open_existing(db_path)?;
+	if columns(&conn, "reading_level")?.is_empty() {
+		return Ok(false);
+	}
+	let missing = match has_column(&conn, "reading_level", "upper")? {
+		true => "l.upper IS NULL",
+		false => "1",
+	};
+	let sql = format!("SELECT EXISTS (SELECT 1 FROM reading r JOIN reading_level l ON l.reading_id = r.id WHERE r.variant = ?1 AND {missing})");
+	Ok(conn.query_row(&sql, params![variant], |row| row.get(0))?)
+}
+
 /// Every ECU variant this cache holds readings for, in name order.
 pub fn reading_variants(db_path: &Path) -> Result<Vec<String>, Error> {
 	let conn = open_existing(db_path)?;
@@ -1090,6 +1145,7 @@ pub fn load_db(db_path: &Path) -> Result<LabelDb, Error> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use vag_data_labels::Level;
 	use vag_data_labels::load_label_files;
 
 	/// Same synthetic 80-byte `.clb` fixture used in `vag_data_labels::clb`'s tests
@@ -1337,7 +1393,7 @@ mod tests {
 		// changes: same rows, same order, same ids, same levels — and a second
 		// run of either still *replaces* rather than doubling.
 		let levels = Scaling::Enum {
-			levels: vec![(0, "P".to_string()), (1, "R".to_string())],
+			levels: vec![Level::point(0, "P"), Level::point(1, "R")],
 		};
 		let identity = Scaling::Linear(vag_data_labels::measure::LinearScale { factor: 1.0, offset: 0.0 });
 		let ecm = vec![reading(0x380A, "speed", identity.clone()), reading(0x2000, "rpm", levels.clone())];
@@ -1396,7 +1452,7 @@ mod tests {
 				0x2000,
 				"Ganganzeige",
 				Scaling::Enum {
-					levels: vec![(1, "R".to_string()), (2, "N".to_string())],
+					levels: vec![Level::point(1, "R"), Level::point(2, "N")],
 				},
 			),
 			reading(0x2001, "Kalibrierpunkt", Scaling::Anchor { raw: 4096, value: 12.5 }),
@@ -1410,7 +1466,7 @@ mod tests {
 		assert_eq!(
 			back[0].scaling,
 			Scaling::Enum {
-				levels: vec![(1, "R".to_string()), (2, "N".to_string())]
+				levels: vec![Level::point(1, "R"), Level::point(2, "N")]
 			}
 		);
 		assert_eq!(back[1].scaling, Scaling::Anchor { raw: 4096, value: 12.5 });
@@ -1683,7 +1739,7 @@ mod tests {
 		// can reach and something still stores.
 		let ws = TempWorkspace::new("stale-readings");
 		let levels = Scaling::Enum {
-			levels: vec![(0, "P".to_string())],
+			levels: vec![Level::point(0, "P")],
 		};
 		let a = [reading(0x2000, "a", levels.clone())];
 		let b = [reading(0x2001, "b", levels)];
@@ -1727,6 +1783,108 @@ mod tests {
 		// — two runs of `faults` either side of a `setup` disagreeing about which
 		// text a code gets, and the note naming a source that no longer won.
 		assert_eq!(texts, [(Some("a2"), None), (Some("steering angle"), Some("eng"))]);
+	}
+
+	/// A state channel whose levels are a band and a point — synthetic values.
+	fn banded(did: u16) -> vag_data_labels::odis::Reading {
+		reading(
+			did,
+			"Schalter",
+			Scaling::Enum {
+				levels: vec![Level::range(10, 49, "gedrückt"), Level::point(50, "losgelassen")],
+			},
+		)
+	}
+
+	#[test]
+	fn a_levels_interval_survives_the_cache() {
+		let ws = TempWorkspace::new("level-bounds");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
+		let back = readings_of(&ws.db_path, "EV_Switch").unwrap();
+		assert_eq!(back[0].scaling, banded(0x1000).scaling);
+		assert!(
+			!levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap(),
+			"written today, so every level has both ends"
+		);
+	}
+
+	/// Take the `upper` column back off, which is the shape of every cache written
+	/// before level intervals were kept.
+	fn drop_upper(db_path: &Path) {
+		let conn = Connection::open(db_path).unwrap();
+		// Rebuilt rather than `DROP COLUMN`, and in the old table's own words: the
+		// rows it holds come across with their lower ends only.
+		conn
+			.execute_batch(
+				"ALTER TABLE reading_level RENAME TO reading_level_new;\
+                 CREATE TABLE reading_level (reading_id INTEGER NOT NULL REFERENCES reading(id), raw INTEGER NOT NULL, meaning TEXT NOT NULL);\
+                 INSERT INTO reading_level (reading_id, raw, meaning) SELECT reading_id, raw, meaning FROM reading_level_new ORDER BY rowid;\
+                 DROP TABLE reading_level_new;\
+                 CREATE INDEX idx_reading_level ON reading_level(reading_id);",
+			)
+			.unwrap();
+		assert!(!has_column(&conn, "reading_level", "upper").unwrap());
+	}
+
+	#[test]
+	fn a_cache_written_before_level_intervals_reads_its_levels_as_points_and_says_so() {
+		let ws = TempWorkspace::new("level-old");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
+		put_readings(
+			&ws.db_path,
+			"/x/SK37X",
+			"EV_Other",
+			&[reading(
+				0x2000,
+				"a",
+				Scaling::Linear(vag_data_labels::LinearScale { factor: 1.0, offset: 0.0 }),
+			)],
+		)
+		.unwrap();
+		drop_upper(&ws.db_path);
+
+		// Not an error: every reader of this cache skips a variant it cannot read,
+		// and a missing column would have taken every channel with it.
+		let back = readings_of(&ws.db_path, "EV_Switch").expect("an old cache still reads");
+		assert_eq!(
+			back[0].scaling,
+			Scaling::Enum {
+				levels: vec![Level::point(10, "gedrückt"), Level::point(50, "losgelassen")]
+			}
+		);
+		assert!(
+			levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap(),
+			"its levels are lower bounds only"
+		);
+		assert!(
+			!levels_predate_bounds(&ws.db_path, "EV_Other").unwrap(),
+			"a variant with no levels is not short of any"
+		);
+		// Reading did not migrate it: a read is not a write.
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert!(!has_column(&conn, "reading_level", "upper").unwrap());
+	}
+
+	#[test]
+	fn a_write_migrates_the_column_and_only_a_reread_of_the_project_fills_it() {
+		let ws = TempWorkspace::new("level-migrate");
+		put_readings(&ws.db_path, "/x/SK37X", "EV_Switch", &[banded(0x1000)]).unwrap();
+		drop_upper(&ws.db_path);
+		// A write about something else — a VCDS source's language — brings the
+		// schema up to date and leaves the old rows as they were: lower bounds.
+		record_language(&ws.db_path, VCDS, "/x/VCDS", "eng").unwrap();
+		let conn = Connection::open(&ws.db_path).unwrap();
+		assert!(has_column(&conn, "reading_level", "upper").unwrap());
+		assert!(levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap());
+		assert_eq!(readings_of(&ws.db_path, "EV_Switch").unwrap()[0].scaling, {
+			Scaling::Enum {
+				levels: vec![Level::point(10, "gedrückt"), Level::point(50, "losgelassen")],
+			}
+		});
+		// Reading the project again is what brings the intervals back.
+		put_all_readings(&ws.db_path, "/x/SK37X", [("EV_Switch", &[banded(0x1000)][..])]).unwrap();
+		assert!(!levels_predate_bounds(&ws.db_path, "EV_Switch").unwrap());
+		assert_eq!(readings_of(&ws.db_path, "EV_Switch").unwrap()[0].scaling, banded(0x1000).scaling);
 	}
 
 	#[test]
