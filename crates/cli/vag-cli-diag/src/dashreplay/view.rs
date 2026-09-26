@@ -85,14 +85,20 @@ fn leaves(key: KeyEvent) -> bool {
 /// One screen: the status line, the panel in a frame, and as much of the log's end as fits.
 /// Half blocks when the terminal is wide enough for one character per pixel, braille when not.
 fn paint(out: &mut impl Write, canvas: &Canvas, log: &[String], status: &str) -> Result<()> {
-	let (columns, rows) = terminal::size().unwrap_or((80, 24));
+	// A terminal that does not say its size — or says it is 0 × 0, as a bare pty does — is
+	// drawn as the smallest a person works in.
+	let (columns, rows) = terminal::size().ok().filter(|&(c, r)| c > 0 && r > 0).unwrap_or((80, 24));
 	let (columns, rows) = (usize::from(columns), usize::from(rows));
 	let panel = match columns >= canvas.width() + 2 {
 		true => half_blocks(canvas),
 		false => braille(canvas),
 	};
 	let inner = panel.first().map_or(0, |line| line.chars().count());
-	let mut lines = vec![status.to_string(), format!("┌{}┐", "─".repeat(inner))];
+	let status = match inner + 2 > columns {
+		true => format!("{status} · panel cut, needs {} columns", inner + 2),
+		false => status.to_string(),
+	};
+	let mut lines = vec![status, format!("┌{}┐", "─".repeat(inner))];
 	lines.extend(panel.iter().map(|line| format!("│{line}│")));
 	lines.push(format!("└{}┘", "─".repeat(inner)));
 	let room = rows.saturating_sub(lines.len());
