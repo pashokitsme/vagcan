@@ -103,6 +103,12 @@ answered, `200A`–`200D` among them):
 - `vagcan faults --device ble`: **passes** — all 18 units read, 9 stored codes (`70A`, `70C`,
   `712`, `713`), none failing now, texts from the ODIS project with the `.rod` fallback. About
   50 s (1 min 15 s including a 24 s build). Whether the panel kept updating was not recorded.
+- `vagcan watch --device ble --hz 10`: **passes** — 140 s, rows 100 ms apart (median; p90
+  110 ms, max 115 ms). `research/captures/ble-10hz.csv`; its comma headings split (PR #6).
+- `vagcan units --device ble`: **finishes**, 15 units, no refusal
+  (`research/captures/ble-units.out`).
+- `vagcan measure --device ble`: one run, aborted and degraded, cycle median 44 ms
+  (`research/captures/ble-measure.csv`); not a verdict yet.
 
 **Through the board, parked, ignition on**
 
