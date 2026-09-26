@@ -31,8 +31,9 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
   `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
   as buttons (+ next, − previous, LIMIT the stopwatch) and the stopwatch page: spec in
   [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phase 1 (pure logic)
-  reviewed, phase 2 (plan, firmware) in progress on `feat/stalk-stopwatch`. LIMIT being the
-  "neutral ohne Limiterverbau" state is still a guess from the capture.
+  reviewed, phase 2 (plan, firmware) in progress on `feat/stalk-stopwatch`. LIMIT is the
+  "neutral ohne Limiterverbau" state despite its ODIS name: the owner pressed LIMIT in the
+  capture, and the state appears only on those presses (0.4 and 0.6 s), never at rest.
 - **PR #6 merged 2026-09-26** (`2855b5c`): `vagcan dev recording dash` replays a `watch --out`
   recording on the panel in the terminal. It changed `watch --out`: a heading with a comma is
   quoted, an unconverted answer is `0x…`, a missed read is its time with no value.
@@ -119,8 +120,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
 10. **`dash/19` on the car** — LIMIT's state, paging with cruise off, the `380B` factor on a
    steady stretch, a 0–100 run beside `vagcan measure --ble` on `380B` — through the board,
-   never with a second adapter on the port while the board polls. LIMIT alone with the
-   `4383` "Speed limiter button" bit as the witness.
+   never with a second adapter on the port while the board polls.
 11. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
    ran with the `.rod` fallback beside the project); then freeze-frame layouts
    (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
