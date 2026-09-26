@@ -52,6 +52,8 @@ pub enum Tool {
 		/// The car the recording is of. Its channel list (from its cached survey
 		/// and the project) says which headings are states, which are then never
 		/// used as a reference. Left out, a heading is judged by its values.
+		/// The list is today's survey and project, not the ones the recording was
+		/// made with.
 		#[arg(long, value_name = "VIN")]
 		vin: Option<String>,
 	},

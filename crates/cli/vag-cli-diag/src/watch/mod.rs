@@ -1902,7 +1902,9 @@ pub async fn run_recording(recording_path: &str, catalogs: &str, survey: Option<
 	// match a known measurement keep its unit; the rest are attributed to the
 	// engine's id, which is a label on a screen and addresses nothing — no
 	// request is ever sent in this mode.
-	let resolved = replay::resolve(&recording.columns, &mut channels, crate::plan::ENGINE);
+	let mut resolved = replay::resolve(&recording.columns, &mut channels, crate::plan::ENGINE);
+	// A state column from before 2026-09-26 holds the whole answer as bare hex.
+	replay::settle_formats(&recording, &mut resolved, &channels);
 	if resolved.is_empty() {
 		anyhow::bail!(
 			"none of the {} columns in {recording_path} matched a channel this build knows. \n\

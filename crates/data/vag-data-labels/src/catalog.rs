@@ -161,6 +161,12 @@ impl Level {
 	/// Whether an end of this level is unbounded: `i32::MIN` below or `i32::MAX`
 	/// above, which is how an ODX limit of kind `INFINITE` is kept. See
 	/// [`level_for`] for what that changes.
+	///
+	/// Decided by the value, so any bound equal to `i32::MIN` or `i32::MAX` counts —
+	/// a closed limit written as that value, and an unsigned upper limit past
+	/// `i32::MAX` capped to it, included — and such a level is tried after every
+	/// bounded one. On valid ODX data, whose levels do not overlap, the order in
+	/// which levels are tried changes no answer, so this is harmless there.
 	pub fn is_unbounded(&self) -> bool {
 		self.lower == i32::MIN || self.upper == i32::MAX
 	}

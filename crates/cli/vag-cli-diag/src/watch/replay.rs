@@ -187,6 +187,36 @@ pub fn resolve(columns: &[Column], channels: &mut Vec<Channel>, request: u16) ->
 	out
 }
 
+/// Which state columns are in the format before 2026-09-26, decided **per
+/// column**, and marked as bytes.
+///
+/// Before then a state's cell was the whole answer in bare hex, with no `0x`. A
+/// state column holding any cell that names none of its levels and is whole hex
+/// bytes is such a column, and then every cell of it is bytes — `AB` or `10` that
+/// happens to spell a level's name included, because in that column no name was
+/// ever written. Decided cell by cell instead, those cells would replay as the
+/// level they spell. A quantity column is never touched: there a bare `0100` is
+/// the number 100.
+pub fn settle_formats(recording: &Recording, resolved: &mut BTreeMap<usize, Resolved>, channels: &[Channel]) {
+	for (column, hit) in resolved.iter_mut() {
+		let Some(Scaling::Enum { levels }) = channels.get(hit.channel).and_then(|c| c.def.as_ref()).map(|d| &d.scaling) else {
+			continue;
+		};
+		let old = recording
+			.samples
+			.iter()
+			.filter_map(|(_, cells)| cells.get(*column)?.as_deref())
+			.any(|cell| {
+				let names_a_level = levels.iter().any(|level| level.name().trim() == cell);
+				let bytes = !cell.is_empty() && cell.len() % 2 == 0 && cell.chars().all(|c| c.is_ascii_hexdigit());
+				!names_a_level && bytes
+			});
+		if old {
+			hit.raw = true;
+		}
+	}
+}
+
 /// A column matched to a channel, and how its cells are written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resolved {
@@ -266,21 +296,12 @@ fn read_cell(cell: &str, channel: &Channel, raw: bool) -> Option<(Vec<u8>, bool)
 		// car sent, but one that names the same band — so the replay shows the
 		// name the recording holds. The name is compared trimmed, because every
 		// reader of a recording trims its cells.
-		Scaling::Enum { levels } => match levels.iter().position(|level| level.name().trim() == cell) {
-			Some(at) => standing_for(levels, at, def.raw_form)?,
-			// A recording from before 2026-09-26 wrote a state as the whole answer
-			// in bare hex, with no `0x`. In a state column a cell that names no
-			// level and is whole hex bytes can only be that — no level name made it.
-			// Not in a quantity column, where a bare `0100` is the number 100.
-			None => {
-				let bare = cell.len() % 2 == 0 && cell.chars().all(|c| c.is_ascii_hexdigit());
-				return bare
-					.then(|| vag_cli_core::plan::hex_bytes(cell))
-					.flatten()
-					.filter(|bytes| !bytes.is_empty())
-					.map(|bytes| (bytes, true));
-			}
-		},
+		// A state column in the format before 2026-09-26 — bare hex of the whole
+		// answer — never gets here: [`settle_formats`] marks it `raw`, per column.
+		Scaling::Enum { levels } => {
+			let at = levels.iter().position(|level| level.name().trim() == cell)?;
+			standing_for(levels, at, def.raw_form)?
+		}
 		// An anchor fixes one point and leaves the slope unproven; there is no
 		// line to invert, and inventing one would put a number on screen that
 		// was never measured.
@@ -771,25 +792,45 @@ mod tests {
 	}
 
 	#[test]
-	fn an_old_recordings_bare_hex_in_a_state_column_is_the_whole_answer() {
+	fn an_old_recordings_state_column_is_whole_answer_hex_in_every_cell() {
 		use vag_data_labels::Level;
 		// Before 2026-09-26 a state's cell was the whole answer as bare hex, with no
-		// `0x`. In a state column a cell that names no level and is hex is that.
-		let second = field(
-			"Lever",
-			RawForm::for_field(8, 8, false, true).unwrap(),
-			bands(vec![Level::range(80, 99, "on")]),
-		);
-		assert_eq!(cell_to_bytes("1B5B", &second, false), Some(vec![0x1B, 0x5B]));
-		assert_eq!(answer_from_cell("1B5B", &second, false, Some(&[0, 0, 7])), Some(vec![0x1B, 0x5B]));
-		assert_eq!(second.render(&[0x1B, 0x5B]), "on");
-		// A name still wins over hex that looks like one, and odd-length hex is not bytes.
-		let hexy = field("Lever", RawForm::U8First, bands(vec![Level::point(1, "AB")]));
-		assert_eq!(cell_to_bytes("AB", &hexy, false), Some(vec![1]));
-		assert_eq!(cell_to_bytes("ABC", &hexy, false), None);
-		// Not in a quantity column: there a bare `0100` is the number it looks like.
+		// `0x`. Which format a column is in is one fact about the column: here `05`
+		// names no level and is hex, so the column is old — and its `AB`, although
+		// it spells a level's name, is the byte 0xAB, which is the level "far".
+		let lever = || field("Lever", RawForm::U8First, bands(vec![Level::point(1, "AB"), Level::point(0xAB, "far")]));
+		let read = |csv: &str| {
+			let recording = Recording::parse(csv).unwrap();
+			let mut channels = vec![lever()];
+			let mut resolved = resolve(&recording.columns, &mut channels, 0x70C);
+			settle_formats(&recording, &mut resolved, &channels);
+			let raw = resolved[&0].raw;
+			let cells: Vec<Option<Vec<u8>>> = recording
+				.samples
+				.iter()
+				.map(|(_, cells)| answer_from_cell(cells[0].as_deref().unwrap(), &channels[0], raw, None))
+				.collect();
+			(raw, cells, channels)
+		};
+		let (raw, cells, channels) = read("t_s,Lever\n0.0,AB\n0.1,05\n");
+		assert!(raw, "a cell that names nothing and is hex makes the column bytes");
+		assert_eq!(cells, [Some(vec![0xAB]), Some(vec![0x05])]);
+		assert_eq!(channels[0].render(&[0xAB]), "far");
+		// A column of names alone is today's format, and `AB` is the level named so.
+		let (raw, cells, _) = read("t_s,Lever\n0.0,AB\n0.1,far\n");
+		assert!(!raw);
+		assert_eq!(cells, [Some(vec![1]), Some(vec![0xAB])]);
+		// An odd-length cell is no bytes, and does not make the column old.
+		let (raw, _, _) = read("t_s,Lever\n0.0,AB\n0.1,ABC\n");
+		assert!(!raw);
+		// Not a quantity column: there a bare `0100` is the number it looks like.
 		let voltage = field("Voltage", RawForm::U16Be, Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }));
 		assert_eq!(cell_to_bytes("0100", &voltage, false), Some(vec![0, 100]));
+		let recording = Recording::parse("t_s,Voltage\n0.0,0100\n").unwrap();
+		let mut channels = vec![voltage];
+		let mut resolved = resolve(&recording.columns, &mut channels, 0x70C);
+		settle_formats(&recording, &mut resolved, &channels);
+		assert!(!resolved[&0].raw);
 	}
 
 	#[test]
