@@ -40,18 +40,23 @@ const ISO_OFFSET: u16 = 8;
 const VW_FIRST: u16 = 0x700;
 const VW_LAST: u16 = 0x7BF;
 const VW_OFFSET: u16 = 0x6A;
+/// The highest id an ISO 11898 standard frame carries: eleven bits.
+const STANDARD_ID_LAST: u16 = 0x7FF;
 
 impl UnitAddress {
 	/// The address to use for a request id, by whichever rule covers it.
 	///
-	/// `None` for an id in neither block: there is no third rule to guess with.
+	/// `None` for an id in neither block: there is no third rule to guess with. `None` too
+	/// for a request past `0x795` in VW's block, whose `+ 0x6A` would be past `0x7FF`: an
+	/// id no standard (11-bit) frame can carry, so a unit there cannot answer by this rule,
+	/// and asking it only costs a timeout.
 	pub fn from_request(request: u16) -> Option<UnitAddress> {
 		let response = match request {
 			ISO_FIRST..=ISO_LAST => request + ISO_OFFSET,
 			VW_FIRST..=VW_LAST => request + VW_OFFSET,
 			_ => return None,
 		};
-		Some(UnitAddress { request, response })
+		(response <= STANDARD_ID_LAST).then_some(UnitAddress { request, response })
 	}
 
 	/// Whether this unit is one of the **emissions-related** control units that
@@ -375,6 +380,15 @@ mod tests {
 		// No third rule exists, so guessing one would invent traffic.
 		assert!(UnitAddress::from_request(0x123).is_none());
 		assert!(UnitAddress::from_request(0x7F0).is_none());
+	}
+
+	#[test]
+	fn a_request_whose_response_would_not_fit_eleven_bits_has_no_address() {
+		// 0x795 + 0x6A is 0x7FF, the last standard id; 0x796 would answer on 0x800.
+		assert_eq!(UnitAddress::from_request(0x795).unwrap().response, 0x7FF);
+		for request in [0x796, 0x7A0, 0x7BF] {
+			assert!(UnitAddress::from_request(request).is_none(), "{request:03X}");
+		}
 	}
 
 	#[test]
