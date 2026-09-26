@@ -34,6 +34,10 @@ impl Canvas {
 		self.width
 	}
 
+	pub fn height(&self) -> usize {
+		self.height
+	}
+
 	/// Every pixel dark again, as the board clears its framebuffer before each frame.
 	pub fn clear(&mut self) {
 		self.lit.fill(false);

@@ -1304,6 +1304,10 @@ mod tests {
 		);
 		assert!(parse(&["TESTVIN0000000001", "--press", "-1"]).is_err(), "a time before the recording");
 		assert!(parse(&["TESTVIN0000000001", "--press", "soon"]).is_err());
+		for speed in ["0", "-1", "nan", "inf", "fast"] {
+			assert!(parse(&["TESTVIN0000000001", "--speed", speed]).is_err(), "--speed {speed}");
+		}
+		assert!(parse(&["TESTVIN0000000001", "--speed", "0.5"]).is_ok());
 		// Offline: nothing to connect to.
 		assert!(parse(&["TESTVIN0000000001", "--device", "/dev/x"]).is_err());
 	}

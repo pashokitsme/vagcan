@@ -101,11 +101,24 @@ pub enum Tool {
 		/// seconds of its `t_s`. Repeat for more presses.
 		#[arg(long = "press", value_name = "SECONDS", value_parser = seconds)]
 		presses: Vec<f64>,
-		/// Playback speed in a terminal. 2 is twice as fast as it happened.
-		#[arg(long, default_value_t = 1.0, value_name = "N")]
+		/// Playback speed in a terminal, from 0.01 to 100. 2 is twice as fast as it
+		/// happened.
+		#[arg(long, default_value_t = 1.0, value_name = "N", value_parser = speed)]
 		speed: f64,
 	},
 }
+
+/// A playback speed: a factor from [`SLOWEST`] to [`FASTEST`]. Refused outside it rather
+/// than quietly changed; the floor also keeps a frame's moment a time the clock can hold.
+fn speed(text: &str) -> Result<f64, String> {
+	match text.trim().parse::<f64>() {
+		Ok(n) if (SLOWEST..=FASTEST).contains(&n) => Ok(n),
+		_ => Err(format!("{text:?} is not a speed from {SLOWEST} to {FASTEST}, like 2")),
+	}
+}
+
+const SLOWEST: f64 = 0.01;
+const FASTEST: f64 = 100.0;
 
 /// A time of the recording: a number of seconds, not negative.
 fn seconds(text: &str) -> Result<f64, String> {

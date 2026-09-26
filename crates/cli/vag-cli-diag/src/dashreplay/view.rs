@@ -22,6 +22,7 @@ use crate::ui::term;
 /// `notes` first — for the caller to print once the screen is gone.
 pub fn show(mut replay: Replay, notes: &[String], title: &str, speed: f64) -> Result<Vec<String>> {
 	let screen = term::full_screen()
+		.hiding_cursor()
 		.enter()
 		.map_err(|e| anyhow!("the panel needs an interactive terminal ({e}); piped, only the log is printed"))?;
 	let mut out = std::io::stdout();
@@ -82,16 +83,33 @@ fn leaves(key: KeyEvent) -> bool {
 	matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
+/// How the panel is drawn as text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Glyphs {
+	/// One character per pixel column, two pixel rows per line.
+	HalfBlocks,
+	/// Two pixel columns and four pixel rows per character.
+	Braille,
+}
+
+/// Half blocks where the whole panel fits them — its width plus the frame, its height in
+/// half-block lines plus the status line and the frame — braille where it does not.
+fn glyphs(columns: usize, rows: usize, width: usize, height: usize) -> Glyphs {
+	match columns >= width + 2 && rows >= height.div_ceil(2) + 3 {
+		true => Glyphs::HalfBlocks,
+		false => Glyphs::Braille,
+	}
+}
+
 /// One screen: the status line, the panel in a frame, and as much of the log's end as fits.
-/// Half blocks when the terminal is wide enough for one character per pixel, braille when not.
 fn paint(out: &mut impl Write, canvas: &Canvas, log: &[String], status: &str) -> Result<()> {
 	// A terminal that does not say its size — or says it is 0 × 0, as a bare pty does — is
 	// drawn as the smallest a person works in.
 	let (columns, rows) = terminal::size().ok().filter(|&(c, r)| c > 0 && r > 0).unwrap_or((80, 24));
 	let (columns, rows) = (usize::from(columns), usize::from(rows));
-	let panel = match columns >= canvas.width() + 2 {
-		true => half_blocks(canvas),
-		false => braille(canvas),
+	let panel = match glyphs(columns, rows, canvas.width(), canvas.height()) {
+		Glyphs::HalfBlocks => half_blocks(canvas),
+		Glyphs::Braille => braille(canvas),
 	};
 	let inner = panel.first().map_or(0, |line| line.chars().count());
 	let status = match inner + 2 > columns {
@@ -110,4 +128,17 @@ fn paint(out: &mut impl Write, canvas: &Canvas, log: &[String], status: &str) ->
 	queue!(out, Clear(ClearType::FromCursorDown))?;
 	out.flush()?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn half_blocks_only_where_the_whole_panel_fits_in_both_directions() {
+		// 256 × 64 pixels: half blocks are 258 columns by 32 + 3 rows (status, frame).
+		assert_eq!(glyphs(258, 35, WIDTH, HEIGHT), Glyphs::HalfBlocks);
+		assert_eq!(glyphs(257, 35, WIDTH, HEIGHT), Glyphs::Braille, "too narrow");
+		assert_eq!(glyphs(300, 34, WIDTH, HEIGHT), Glyphs::Braille, "too short: the panel's bottom was cut");
+	}
 }

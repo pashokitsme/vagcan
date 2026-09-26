@@ -21,7 +21,8 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::watch::replay::Recording;
-use engine::Replay;
+use engine::{Refusal, Replay};
+use vag_dash_render::button::PRESS_GAP_MS;
 
 /// The command: `log` is a `watch --out` recording, `vin` and `input` name the dash plan as
 /// `vagcan dev dash build` resolves it, `presses` are short presses in seconds of the
@@ -53,19 +54,23 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 
 	let times = recording.samples.iter().map(|(t, _)| columns::to_ms(*t));
 	let (start, end) = (times.clone().min().unwrap_or(0), times.max().unwrap_or(0));
-	let mut at = Vec::new();
-	for &press in presses {
-		let ms = columns::to_ms(press);
-		match (start..=end).contains(&ms) {
-			true => at.push(ms),
-			false => notes.push(format!(
-				"the press at {press} s is outside the recording ({:.2}–{:.2} s) — not made",
-				start as f64 / 1000.0,
-				end as f64 / 1000.0
-			)),
-		}
-	}
+	let at = presses.iter().map(|&press| columns::to_ms(press)).collect();
 	let replay = Replay::new(device, series, at, start, end).map_err(|e| anyhow!("{e}"))?;
+	let seconds = |ms: u64| ms as f64 / 1000.0;
+	for &(ms, why) in replay.refused() {
+		notes.push(match why {
+			Refusal::Outside => format!(
+				"the press at {:.2} s is outside the recording's frames ({:.2}–{:.2} s) — not made",
+				seconds(ms),
+				seconds(start),
+				seconds(replay.last_frame_ms())
+			),
+			Refusal::TooSoon => format!(
+				"the press at {:.2} s is under {PRESS_GAP_MS} ms after the one before, and the board takes the two as one — not made",
+				seconds(ms)
+			),
+		});
+	}
 
 	let stdout = std::io::stdout();
 	if !stdout.is_terminal() {
@@ -77,7 +82,7 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 	let title = Path::new(log)
 		.file_name()
 		.map_or_else(|| log.to_string(), |n| n.to_string_lossy().into_owned());
-	let lines = view::show(replay, &notes, &title, speed.clamp(0.05, 50.0))?;
+	let lines = view::show(replay, &notes, &title, speed)?;
 	// The screen is gone; what happened stays in the shell.
 	for line in lines {
 		println!("{line}");

@@ -220,6 +220,14 @@ silence and re-arm, a missing channel never tripping, columns matched in another
 piped output being the log alone, and the panel being the board's frame with the offending
 cell inverted.
 
+Since 2026-09-26 `watch --out` quotes a heading with a comma ("Ignition retard, cylinder 1"
+split in two before), writes a read that missed as an empty cell, and marks an answer it could
+not convert `0x…` in a converted column. A recording made before cannot show a miss (the
+replay keeps its last value `fresh_for` from when it was heard) and writes an all-digit
+unconverted answer as a number (the replay says so when it sees bare hex). Columns are matched
+by name against the plan's survey; a unit `watch` identified live that the survey lacks could
+share a name, and the replay says it matched by name.
+
 Left: record a drive with the retard channels (`watch --out` with `200A`–`200D` selected, on
-the car) and replay it; the misfire rule's two numbers, from the car. The recorded drives in
+the car, with this build) and replay it; the misfire rule's two numbers, from the car. The recorded drives in
 `research/dumps/` are gearbox channels; none holds `200A`–`200D`.
