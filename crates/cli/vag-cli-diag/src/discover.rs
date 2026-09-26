@@ -96,8 +96,11 @@ pub fn series(csv: &str) -> Vec<(String, Vec<(f64, String)>)> {
 ///
 /// A field in double quotes may hold commas, and `""` inside it is one quote — the part
 /// of RFC 4180 `watch --out` writes, because channel names carry commas ("…, cylinder
-/// 1") and a bare one made one heading two. A recording written before the quoting has
-/// no quotes, and cuts at every comma as it always did.
+/// 1") and a bare one made one heading two. A recording written before the quoting cuts
+/// at every comma as it always did — except where a field there begins with `"`: that is
+/// read as quoted now, so its commas no longer cut and its quotes are dropped. The old
+/// writer quoted nothing, so such a field could only come from a heading that itself
+/// began with a quote.
 pub fn fields(line: &str) -> Vec<String> {
 	let mut out = Vec::new();
 	let mut field = String::new();
@@ -290,6 +293,20 @@ pub fn co_changing(columns: &[Column], window: f64) -> Vec<(String, String, f64)
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_state_written_as_marked_bytes_is_still_a_state_and_a_missed_read_no_change() {
+		// A gear has a definition and no number, so `watch --out` writes its bytes
+		// marked `0x`; a read that missed writes an empty cell, which is not a level.
+		let csv = "t_s,Gear_t_s,Gear\n0.0,0.0,0x05\n0.1,,\n0.2,0.2,0x06\n0.3,0.3,0x05\n";
+		let columns = classify(csv).unwrap();
+		assert_eq!(columns[0].samples, 3);
+		assert!(
+			matches!(columns[0].behaviour, Behaviour::Stepped { levels: 2, changes: 2 }),
+			"{:?}",
+			columns[0].behaviour
+		);
+	}
 
 	#[test]
 	fn a_heading_with_a_comma_is_quoted_and_read_back_whole() {

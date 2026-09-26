@@ -214,6 +214,10 @@ pub fn columns_that_moved(recording: &Recording) -> Vec<usize> {
 /// or a non-linear scaling cannot be inverted, and returns `None` rather than
 /// a number that looks like a reading and is not one.
 pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>> {
+	// An answer the writer could not convert, marked as such: its bytes, exactly.
+	if let Some(bytes) = unconverted(cell) {
+		return Some(bytes);
+	}
 	// The `_raw` marker settles it when present. When it is absent the channel
 	// does: a column for an identifier with no proven scaling cannot have had
 	// a converted value written for it, so its cells are bytes. Recordings
@@ -242,6 +246,14 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		return None;
 	}
 	encode(count as u64, def.raw_form)
+}
+
+/// The bytes of a cell marked [`UNCONVERTED`](super::UNCONVERTED) — an answer the writer
+/// could not convert — or `None` for any other cell. A recording from before the mark
+/// (2026-09-26) wrote such an answer as bare hex, which nothing tells from a number.
+pub fn unconverted(cell: &str) -> Option<Vec<u8>> {
+	let hex = cell.strip_prefix(super::UNCONVERTED)?;
+	vag_cli_core::plan::hex_bytes(hex).filter(|bytes| !bytes.is_empty())
 }
 
 /// Lay an integer out the way a control unit would have sent it.

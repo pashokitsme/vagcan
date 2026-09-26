@@ -24,7 +24,7 @@ use vag_dash_render::plan::{Channel as DeviceChannel, Plan as DevicePlan};
 
 use super::engine::{Series, address_name, channel_name};
 use crate::plan::{Answered, Channel as Offered, hex_bytes};
-use crate::watch::replay::{Column, Recording};
+use crate::watch::replay::{Column, Recording, unconverted};
 
 /// Where a plan channel's values are in the recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,7 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 	let mut sources = Vec::with_capacity(plan.channels.len());
 	let mut notes = Vec::new();
 	let mut missing = Vec::new();
+	let mut by_name = Vec::new();
 	for channel in &plan.channels {
 		let exact = (channel.unit, channel.did, Some(channel.bit_offset));
 		let whole = (channel.unit, channel.did, None);
@@ -96,7 +97,9 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 			false => Source::Converted(i),
 		}));
 		match (sure, hits.first()) {
-			(Some(_), _) => {}
+			// An address heading says its unit; a name says nothing of one.
+			(Some(i), _) if columns[i].raw && address(&columns[i].name).is_some() => {}
+			(Some(_), _) => by_name.push(name),
 			(None, Some(&i)) => {
 				// `watch` heads a column with a name and no unit, so a name two channels share is
 				// every one of them. The owner's own name for one of them, written before the
@@ -119,6 +122,18 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 	if !missing.is_empty() {
 		notes.insert(0, format!("not in the recording, so no value and never an alarm: {}", missing.join(", ")));
 	}
+	// `watch` names a column from the units it knew on the day: its own survey (`--survey`,
+	// or the car's cached one) and the units it identified live — the engine, and every
+	// `--did` unit that survey lacks. The plan's survey is `dash.toml`'s `survey =` or the
+	// cached one. Where the two differ, a unit only `watch` knew could have a channel of the
+	// same name, and nothing in the recording says which unit a column is from.
+	if !by_name.is_empty() {
+		notes.push(format!(
+			"matched by name: {}. Checked against the units of the plan's survey; a unit `watch` knew on the day \
+			 and that survey does not hold could share a name, and the recording does not say which unit a column is from",
+			by_name.join(", ")
+		));
+	}
 	Matched { sources, notes }
 }
 
@@ -135,8 +150,13 @@ fn name_of(channel: &PlanChannel) -> String {
 }
 
 /// Every plan channel's readings out of the recording, in its own time where the file
-/// gives one: `None` for a channel with no column, and for one whose column turns out not
-/// to be on the plan's scaling, which is said in `notes`.
+/// gives one: `None` for a channel with no column, and for one whose numbers are none of
+/// them on the plan's scaling, which is said in `notes`.
+///
+/// A reading is what the board's store would hold after it: a value, or `None` where the
+/// unit answered with nothing the board decodes. An empty cell after a value is a read
+/// that missed (`watch --out` writes one since 2026-09-26), and the board stores `None`
+/// for a miss too.
 pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, device: &DevicePlan, notes: &mut Vec<String>) -> Vec<Option<Series>> {
 	sources
 		.iter()
@@ -147,34 +167,62 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 			let column = match source {
 				Source::Converted(i) | Source::Raw(i) => i,
 			};
+			let (mut numbers, mut off_scale, mut bare_hex) = (0usize, 0usize, 0usize);
 			let mut out: Series = Vec::new();
 			for (row, (t, cells)) in recording.samples.iter().enumerate() {
-				// An empty cell: `watch` had heard nothing for this channel yet.
 				let Some(cell) = cells.get(column).and_then(|c| c.as_deref()) else {
+					// Nothing heard yet, or — once there was a value — a read that missed.
+					if out.last().is_some_and(|(_, value)| value.is_some()) {
+						out.push((to_ms(*t), None));
+					}
 					continue;
 				};
 				let at = recording.read_at.get(row).and_then(|r| r.get(column).copied().flatten()).unwrap_or(*t);
 				let value = match source {
 					Source::Raw(_) => hex_bytes(cell).and_then(|bytes| board.decode(&bytes)),
-					// Not a number is an answer `watch` could not convert, which it writes as
-					// its bytes: the unit answered, and nothing decodes out of it.
-					Source::Converted(_) => match cell.parse::<f64>() {
-						Err(_) => None,
-						Ok(v) => match on_the_boards_scale(v, owned, board) {
-							Some(v) => Some(v),
-							None => {
-								notes.push(format!(
-									"{}: the recording's {cell} is not a value of the plan's scaling (×{} {:+}) — recorded with another; not used",
-									name_of(owned),
-									owned.factor,
-									owned.offset
-								));
-								return None;
-							}
-						},
+					// An answer `watch` could not convert, marked: its bytes, through the
+					// board's own decoder, which makes of them what the board would.
+					Source::Converted(_) => match (unconverted(cell), cell.parse::<f64>()) {
+						(Some(bytes), _) => board.decode(&bytes),
+						(None, Ok(v)) => {
+							numbers += 1;
+							let on_scale = on_the_boards_scale(v, owned, board);
+							off_scale += usize::from(on_scale.is_none());
+							on_scale
+						}
+						// Bare hex with a letter in it: an older recording's unconverted answer.
+						(None, Err(_)) => {
+							bare_hex += 1;
+							None
+						}
 					},
 				};
 				out.push((to_ms(at), value));
+			}
+			let name = name_of(owned);
+			if numbers > 0 && off_scale == numbers {
+				notes.push(format!(
+					"{name}: no recorded number is a value of the plan's scaling (×{} {:+}) — recorded with another; not used",
+					owned.factor, owned.offset
+				));
+				return None;
+			}
+			if off_scale > 0 {
+				notes.push(format!(
+					"{name}: {off_scale} of {numbers} numbers are not values of the plan's scaling (×{} {:+}) — read as no answer",
+					owned.factor, owned.offset
+				));
+			}
+			if bare_hex > 0 {
+				let cells = match bare_hex {
+					1 => "1 cell is".to_string(),
+					n => format!("{n} cells are"),
+				};
+				notes.push(format!(
+					"{name}: {cells} bare hex — an answer `watch` could not convert, in a recording made before 2026-09-26; \
+					 read as no answer. Such a recording writes an all-digit one the same way, which cannot be told from a \
+					 number and is read as one"
+				));
 			}
 			// A value repeats on every row until it is read again; one reading is one entry.
 			out.sort_by_key(|(t, _)| *t);
@@ -287,7 +335,29 @@ mod tests {
 			matched.sources,
 			[Some(Source::Converted(2)), Some(Source::Converted(3)), Some(Source::Converted(0))]
 		);
-		assert!(matched.notes.is_empty(), "{:?}", matched.notes);
+		assert_eq!(matched.notes.len(), 1, "only the caveat on names: {:?}", matched.notes);
+	}
+
+	#[test]
+	fn a_match_by_name_says_what_it_was_checked_against() {
+		// `watch` heads a column from the units it knew on the day — its survey, and the
+		// units it identified live (the engine, every `--did` unit) — which need not be
+		// the plan's survey. A unit only it knew could share the name, and nothing here
+		// can see that; an address heading names its unit and needs no caveat.
+		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let plan = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one"), plan_channel(ENGINE, 0x1004, 0, "raw")]);
+		let by_name = match_columns(&columns("t_s,One\n0.0,1\n").columns, &offered, &Answered::default(), &plan);
+		assert!(
+			by_name
+				.notes
+				.iter()
+				.any(|n| n.starts_with("matched by name: one (01:1001).") && n.contains("the plan's survey")),
+			"{:?}",
+			by_name.notes
+		);
+		let by_address = match_columns(&columns("t_s,01/1004_raw\n0.0,0001\n").columns, &offered, &Answered::default(), &plan);
+		assert_eq!(by_address.sources, [None, Some(Source::Raw(0))]);
+		assert!(!by_address.notes.iter().any(|n| n.contains("matched by name")), "{:?}", by_address.notes);
 	}
 
 	#[test]
@@ -358,15 +428,51 @@ mod tests {
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one"), plan_channel(ENGINE, 0x1004, 0, "raw")]);
 		let device = owned.to_device();
-		// Per-column times, a repeated value on the next row, a value `watch` could not
-		// convert, and a raw answer decoded by the plan's layout (0xFF38 = -200 → -2.00).
-		let recording = columns("t_s,One_t_s,One,01/1004_raw\n0.100,0.050,-2.3,FF38\n0.200,0.050,-2.3,\n0.300,0.250,0B,0064\n");
+		// Per-column times; a value repeated on the next row; a read that missed (an empty
+		// cell after a value); an answer `watch` could not convert, marked, decoded by the
+		// board's own decoder; and a raw answer by the plan's layout (0xFF38 = -200 → -2.00).
+		let recording =
+			columns("t_s,One_t_s,One,01/1004_raw\n0.100,0.050,-2.3,FF38\n0.200,0.050,-2.3,\n0.300,0.250,0x0064,0064\n0.400,,,0064\n0.500,0.450,0x05,\n");
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
 		assert!(notes.is_empty(), "{notes:?}");
-		assert_eq!(series[0], Some(vec![(50, Some(-230.0f32 * 0.01)), (250, None)]));
-		assert_eq!(series[1], Some(vec![(100, Some(-2.0)), (300, Some(1.0))]));
+		assert_eq!(
+			series[0],
+			Some(vec![(50, Some(-230.0f32 * 0.01)), (250, Some(1.0)), (400, None), (450, None)]),
+			"0x05 is one byte where the field is two: what the board makes of it is nothing"
+		);
+		assert_eq!(
+			series[1],
+			Some(vec![(100, Some(-2.0)), (200, None), (300, Some(1.0)), (400, Some(1.0)), (500, None)])
+		);
+	}
+
+	#[test]
+	fn an_old_recordings_bare_hex_is_no_answer_and_said_and_one_stray_value_does_not_drop_the_column() {
+		// Before 2026-09-26 `watch --out` wrote an answer it could not convert as bare hex
+		// in the converted column. With a letter in it, it is not a number; all digits,
+		// it cannot be told from one.
+		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one")]);
+		let device = owned.to_device();
+		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B34\n0.2,-2.305\n0.3,1\n");
+		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let mut notes = Vec::new();
+		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
+		assert_eq!(
+			series[0],
+			Some(vec![(0, Some(-230.0f32 * 0.01)), (100, None), (200, None), (300, Some(1.0))])
+		);
+		assert_eq!(notes.len(), 2, "{notes:?}");
+		assert!(
+			notes.iter().any(|n| n.contains("1 of 3 numbers") && n.contains("read as no answer")),
+			"{notes:?}"
+		);
+		assert!(
+			notes.iter().any(|n| n.contains("1 cell is bare hex") && n.contains("before 2026-09-26")),
+			"{notes:?}"
+		);
 	}
 
 	#[test]
@@ -378,6 +484,6 @@ mod tests {
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		assert_eq!(series(&recording, &matched.sources, &owned, &device, &mut notes), [None]);
-		assert!(notes[0].contains("not a value of the plan's scaling"), "{notes:?}");
+		assert!(notes[0].contains("no recorded number is a value of the plan's scaling"), "{notes:?}");
 	}
 }

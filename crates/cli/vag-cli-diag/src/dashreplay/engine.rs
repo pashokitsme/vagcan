@@ -16,6 +16,7 @@
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
 use vag_dash_render::alarm::{Alarm, ChannelId, Direction, MAX_ALARMS, Press, Rule};
+use vag_dash_render::button::{Button, Press as ButtonPress};
 use vag_dash_render::history::History;
 use vag_dash_render::pages::{self, Layout, MAX_PAGES};
 use vag_dash_render::plan::{Page, Plan};
@@ -25,7 +26,7 @@ use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_with};
 /// Milliseconds between two panel frames — `FRAME_MS` in `vag-dash-fw`'s `bin/dash.rs`.
 pub const FRAME_MS: u64 = 200;
 /// How old a value may be and still be shown — `STALE` in `vag-dash-fw`'s `bin/dash.rs`.
-/// Also how old the recording's last reading may be for a read to count as answered.
+/// Counted from when the recording heard it.
 pub const STALE_MS: u64 = 5_000;
 /// Cells a stored page may hold — `MAX_CELLS` in `vag-dash-fw`'s `config.rs`.
 const MAX_CELLS: usize = 8;
@@ -61,6 +62,16 @@ pub enum Event {
 	Silenced { rule: Option<usize>, page: u8 },
 	/// The rule's page is not one the board holds, so `shown` is drawn instead.
 	Missed { rule: Option<usize>, page: u16, shown: u8 },
+}
+
+/// Why a press asked for was not made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+	/// Before the first frame or after the last.
+	Outside,
+	/// Closer than the board's `PRESS_GAP_MS` to the last press made: the board's button
+	/// gate takes the two as one.
+	TooSoon,
 }
 
 /// One frame: its time, what the glass showed, and what happened.
@@ -144,6 +155,8 @@ pub struct Replay {
 	series: Vec<Option<Series>>,
 	/// Short presses, in recording milliseconds, sorted.
 	presses: Vec<u64>,
+	refused: Vec<(u64, Refusal)>,
+	last_frame: u64,
 	pressed: usize,
 	screen: Screens,
 	cursor: u8,
@@ -171,11 +184,28 @@ impl Replay {
 			return Err(format!("{} series for {} plan channels", series.len(), plan.channels.len()));
 		}
 		presses.sort_unstable();
+		// The frames run on FRAME_MS from the first row, so the last is not the last row.
+		let last_frame = start_ms + end_ms.saturating_sub(start_ms) / FRAME_MS * FRAME_MS;
+		// A press is made where the board would take one: inside the frames, and through the
+		// button's own gate, which lets none through closer than PRESS_GAP_MS to the last.
+		let mut button = Button::new();
+		let mut refused = Vec::new();
+		presses.retain(|&p| {
+			let why = match (start_ms..=last_frame).contains(&p) {
+				false => Some(Refusal::Outside),
+				true if button.remote(ButtonPress::Short, p).is_none() => Some(Refusal::TooSoon),
+				true => None,
+			};
+			refused.extend(why.map(|why| (p, why)));
+			why.is_none()
+		});
 		Ok(Replay {
 			plan,
 			layouts: pages::from_plan(plan.pages, MAX_PAGES, MAX_CELLS).collect(),
 			series,
 			presses,
+			refused,
+			last_frame,
 			pressed: 0,
 			screen,
 			cursor: 0,
@@ -198,6 +228,16 @@ impl Replay {
 
 	pub fn end_ms(&self) -> u64 {
 		self.end
+	}
+
+	/// The time of the last frame: the last row, down to the frame period.
+	pub fn last_frame_ms(&self) -> u64 {
+		self.last_frame
+	}
+
+	/// The presses not made, in time order, and why.
+	pub fn refused(&self) -> &[(u64, Refusal)] {
+		&self.refused
 	}
 
 	/// The next frame, or `None` past the end of the recording.
@@ -323,9 +363,12 @@ impl Replay {
 			sub.next_ms = at + period;
 			// `fresh_for` in the board's bus task: three periods of a slow channel, else STALE.
 			let fresh_for = (period * 3).max(STALE_MS);
+			// Stamped with when the recording heard it, not when this read happened: a value
+			// heard long ago does not start a fresh `fresh_for` by being read again.
+			let (heard, value) = self.series[i].as_ref().and_then(|series| answer(series, at)).unwrap_or((at, None));
 			self.slots[i] = Slot {
-				value: self.series[i].as_ref().and_then(|series| answer(series, at)),
-				at: Some(at),
+				value,
+				at: Some(heard),
 				fresh_for,
 			};
 		}
@@ -477,15 +520,17 @@ fn current(slots: &[Slot], index: u16, t: u64) -> Option<f32> {
 	slot.value
 }
 
-/// What a read at `at` gets: the recording's last reading by then, if it is recent enough
-/// to have been an answer; no answer otherwise.
-fn answer(series: &Series, at: u64) -> Option<f32> {
+/// What a read at `at` gets: the recording's last reading by then and when it was heard —
+/// a value, or `None` for a miss or an answer that did not decode. `None` when nothing
+/// has been heard yet. How long the value is then shown is the store's rule, counted
+/// from when it was heard.
+///
+/// A recording made before 2026-09-26 writes no miss: after a unit went quiet it repeats
+/// the last value with its old time. Such a value is shown until `fresh_for` after it was
+/// heard, where the board would store `None` at its first read that missed.
+fn answer(series: &Series, at: u64) -> Option<(u64, Option<f32>)> {
 	let by_then = series.partition_point(|(t, _)| *t <= at);
-	let (t, value) = *series.get(by_then.checked_sub(1)?)?;
-	if at - t > STALE_MS {
-		return None;
-	}
-	value
+	series.get(by_then.checked_sub(1)?).copied()
 }
 
 fn rule_name(rule: Option<usize>) -> String {
@@ -681,6 +726,59 @@ mod tests {
 			!events.iter().any(|(_, e)| matches!(e, Event::Over { .. })),
 			"a channel that went quiet is not one that came back: {events:?}"
 		);
+	}
+
+	#[test]
+	fn a_press_closer_than_the_boards_gap_to_the_last_one_is_not_a_press() {
+		// The board's button gate: 250 ms from the last press it let through.
+		let replay = replay(every_100ms(2_000, |_| 0.0), &[1_000, 500, 600, 800], 2_000);
+		assert_eq!(replay.refused(), [(600, Refusal::TooSoon), (1_000, Refusal::TooSoon)]);
+		let events = run(replay);
+		let pages: Vec<_> = events.iter().filter(|(_, e)| matches!(e, Event::Paged { .. })).collect();
+		assert_eq!(pages, [&(600, Event::Paged { page: 1 }), &(800, Event::Paged { page: 0 })]);
+	}
+
+	#[test]
+	fn a_press_is_inside_the_recording_only_up_to_its_last_frame() {
+		// Rows from 0.05 s to 1.03 s: frames at 50, 250, … 850 — none at 1.03 s.
+		let calm = |_| Some(vec![(50, Some(0.0))]);
+		let series = (0..4).map(calm).collect();
+		let replay = Replay::new(&PLAN, series, vec![40, 50, 850, 900], 50, 1_030).unwrap();
+		assert_eq!(replay.refused(), [(40, Refusal::Outside), (900, Refusal::Outside)]);
+		assert_eq!(replay.last_frame_ms(), 850);
+		let events = run(replay);
+		assert_eq!(events.iter().filter(|(_, e)| matches!(e, Event::Paged { .. })).count(), 2);
+	}
+
+	#[test]
+	fn a_reading_goes_stale_from_when_it_was_heard_not_from_when_it_was_read() {
+		// Channel 0 is heard at 0 and 300 ms and never again, and sits behind a takeover,
+		// read once a second. The read at 5.2 s still finds the 300 ms reading; it is
+		// 4.9 s old then and must not start a fresh five seconds of its own.
+		let heard: Series = vec![(0, Some(5.0)), (300, Some(5.0))];
+		let out = every_100ms(10_000, |_| -3.0);
+		let calm = every_100ms(10_000, |_| 0.0);
+		let mut replay = Replay::new(&PLAN, vec![Some(heard), calm.clone(), out, calm], vec![], 0, 10_000).unwrap();
+		let mut seen = Vec::new();
+		while let Some(tick) = replay.step() {
+			seen.push((tick.t_ms, current(&replay.slots, 0, tick.t_ms)));
+		}
+		assert!(seen.contains(&(5_200, Some(5.0))), "{seen:?}");
+		assert!(seen.contains(&(5_400, None)), "300 ms + STALE_MS has passed: {seen:?}");
+		assert!(seen.iter().filter(|(t, _)| *t >= 5_400).all(|(_, v)| v.is_none()), "{seen:?}");
+	}
+
+	#[test]
+	fn a_read_that_missed_is_no_value_at_once() {
+		// The board stores `None` for a miss; so does the replay, not the last value.
+		let series: Series = vec![(0, Some(-3.0)), (1_000, None)];
+		let mut replay = replay(Some(series), &[], 2_000);
+		let mut seen = Vec::new();
+		while let Some(tick) = replay.step() {
+			seen.push((tick.t_ms, current(&replay.slots, 2, tick.t_ms)));
+		}
+		assert_eq!(seen[4], (800, Some(-3.0)));
+		assert_eq!(seen[5], (1_000, None));
 	}
 
 	#[test]

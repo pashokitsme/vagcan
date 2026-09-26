@@ -223,6 +223,11 @@ pub struct App {
 	pub channels: Vec<Channel>,
 	/// Latest response body per `(request id, did)`, with when it arrived.
 	pub latest: std::collections::BTreeMap<(u16, u16), (f64, Vec<u8>)>,
+	/// Reads whose last attempt brought no body — no answer, a refusal, a bad
+	/// answer. The screen keeps showing `latest` for them; a recording writes no
+	/// value, because a row repeating the last answer after the unit went quiet
+	/// reads as the unit still saying it.
+	missed: std::collections::BTreeSet<(u16, u16)>,
 	/// The last [`history::WINDOW_SECONDS`] of every channel that answered with
 	/// a number, which is what the chart is drawn from. `latest` cannot serve:
 	/// it is one body per identifier and a chart is a shape over time.
@@ -349,6 +354,7 @@ impl App {
 		App {
 			channels,
 			latest: std::collections::BTreeMap::new(),
+			missed: std::collections::BTreeSet::new(),
 			history: history::History::new(history::WINDOW_SECONDS),
 			charted: std::collections::BTreeSet::new(),
 			favourites: std::collections::BTreeSet::new(),
@@ -911,6 +917,10 @@ impl App {
 		// Only silence and a failed bus are waiting: a refusal, an identifier left out
 		// or an answer that does not parse all came from a unit that is there.
 		let answered = !matches!(sample.value, Err(vag_cli_core::bus::Miss::NoAnswer | vag_cli_core::bus::Miss::BusError));
+		match &sample.value {
+			Ok(_) => self.missed.remove(&key),
+			Err(_) => self.missed.insert(key),
+		};
 		if let Ok(data) = sample.value {
 			self.observe(key.0, key.1, at, data);
 			// Sweeping every channel and not only the one just answered: a channel
@@ -2136,6 +2146,10 @@ fn effective_hz(flag: Option<f64>, saved: f64) -> f64 {
 /// value alone. Every value carries its own time, because every read arrives on
 /// its own and columns are up to a period apart. A heading holding a comma is
 /// quoted (`discover::quoted`): the label files name channels "…, cylinder 1".
+///
+/// Two rules for a cell, since 2026-09-26: an answer a converted column could not
+/// convert is written as [`UNCONVERTED`] and its bytes, and a read whose last
+/// attempt missed is written empty.
 fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool) -> Result<()> {
 	let shown = app.shown();
 	if !*header_written {
@@ -2153,10 +2167,16 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 	let cells: Vec<String> = shown
 		.iter()
 		.map(|c| match app.latest.get(&(c.request, c.did)) {
+			// The last read missed: no value, not the one before it again.
+			_ if app.missed.contains(&(c.request, c.did)) => ",".to_string(),
 			Some((t, data)) => {
 				let v = match c.def.as_ref().and_then(|d| d.interpret(data)) {
 					Some(v) => format!("{v}"),
-					None => data.iter().map(|b| format!("{b:02X}")).collect(),
+					// In a `_raw` column every cell is bytes. In a converted one an answer
+					// that did not convert is marked `0x`, so no reader takes `0100` for
+					// the number 100.
+					None if c.def.is_none() => hex(data),
+					None => format!("{UNCONVERTED}{}", hex(data)),
 				};
 				format!("{t:.3},{v}")
 			}
@@ -2166,6 +2186,16 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 	writeln!(w, "{:.3},{}", app.clock, cells.join(","))?;
 	Ok(())
 }
+
+/// Bytes as a recording writes them: two hex digits each.
+fn hex(data: &[u8]) -> String {
+	data.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+/// What marks, in a converted column, an answer `watch` could not convert: its bytes
+/// follow. Not a number to any reader — `f64` parsing refuses it — where bare hex like
+/// `0100` or `1E05` is one.
+pub const UNCONVERTED: &str = "0x";
 
 /// Where the identifiers beyond the proven catalogs are coming from.
 ///
@@ -3326,6 +3356,62 @@ mod tests {
 		assert_eq!(recording.columns[0].name, "Pressure, left");
 		assert_eq!(recording.samples[0].1, [Some("1.5".to_string())]);
 		assert_eq!(recording.read_at[0], [Some(0.05)]);
+	}
+
+	/// One recorded row of `a`, header dropped.
+	fn recorded_row(a: &App) -> String {
+		let mut out = Vec::new();
+		let mut header_written = true;
+		write_row(&mut out, a, &mut header_written).unwrap();
+		String::from_utf8(out).unwrap()
+	}
+
+	#[test]
+	fn an_answer_that_did_not_convert_is_recorded_marked_as_bytes() {
+		// Bare, `0100` read back as the number 100 and `1E05` as 100000: a converted
+		// column must never hold a cell a reader can take for a value it is not.
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+		a.observe(0x7E0, 0x202A, 0.05, vec![0x01]);
+		a.clock = 0.1;
+		assert_eq!(recorded_row(&a), "0.100,0.050,0x01\n");
+		// Read back, the marked cell is those bytes, exactly.
+		let channel = &a.channels[0];
+		assert_eq!(replay::cell_to_bytes("0x01", channel, false), Some(vec![0x01]));
+		assert_eq!(replay::cell_to_bytes("0x0100", channel, false), Some(vec![0x01, 0x00]));
+	}
+
+	#[test]
+	fn a_read_that_missed_records_no_value_rather_than_the_last_one_again() {
+		use vag_cli_core::bus::{At, Miss, Sample};
+		let mut a = App::new(vec![proven(0x7E0, 0x202A, "Boost pressure", "bar")]);
+		let unit = Unit {
+			request: 0x7E0,
+			response: 0x7E8,
+		};
+		let sample = |secs: f64, value| Sample {
+			unit,
+			did: 0x202A,
+			at: At {
+				ms: (secs * 1000.0) as u64,
+				secs,
+			},
+			value,
+			ended: None,
+		};
+		a.take(sample(0.1, Ok(vec![0x03, 0xE8])));
+		a.clock = 0.2;
+		assert_eq!(recorded_row(&a), "0.200,0.100,1\n");
+		a.take(sample(0.3, Err(Miss::NoAnswer)));
+		a.clock = 0.4;
+		assert_eq!(recorded_row(&a), "0.400,,\n", "the unit stopped answering: the row says so");
+		a.take(sample(0.5, Ok(vec![0x07, 0xD0])));
+		a.clock = 0.6;
+		assert_eq!(recorded_row(&a), "0.600,0.500,2\n");
+		// The screen keeps its last value: only the recording is about each read.
+		a.take(sample(0.7, Err(Miss::Refused(0x31))));
+		assert!(a.latest.contains_key(&(0x7E0, 0x202A)));
+		a.clock = 0.8;
+		assert_eq!(recorded_row(&a), "0.800,,\n");
 	}
 
 	#[test]
