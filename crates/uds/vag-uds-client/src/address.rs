@@ -305,7 +305,7 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	}
 	if text.len() >= 3 {
 		let id = u16::from_str_radix(text, 16).map_err(|_| format!("{text:?} is not a hex request id like 714"))?;
-		return UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} is in neither diagnostic block (700-7BF or 7E0-7E7)"));
+		return UnitAddress::from_request(id).ok_or_else(|| format!("{id:03X} has no diagnostic address (700-795 or 7E0-7E7)"));
 	}
 	// A short number is a hex byte, the way the label files write it: `4B` is a
 	// unit, not a typo.
@@ -323,8 +323,8 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	// into traffic no rule predicts.
 	UnitAddress::from_request(request).ok_or_else(|| {
 		format!(
-			"control unit {number:02X} is paired with {request:03X}, which is in neither \
-             diagnostic block (700-7BF or 7E0-7E7)"
+			"control unit {number:02X} is paired with {request:03X}, which has no \
+             diagnostic address (700-795 or 7E0-7E7)"
 		)
 	})
 }
@@ -488,7 +488,7 @@ mod tests {
 		assert_eq!(name_for_short(0x44).as_deref(), Some("J500 - Power Steering"));
 
 		let err = parse("55").unwrap_err();
-		assert!(err.contains("neither diagnostic block"), "{err}");
+		assert!(err.contains("has no diagnostic address"), "{err}");
 
 		// Installing does not disturb the fallback.
 		assert_eq!(parse("01").unwrap().request, 0x7E0);
