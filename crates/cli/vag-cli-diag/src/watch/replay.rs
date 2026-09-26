@@ -136,10 +136,23 @@ impl Recording {
 /// live view does with an identifier nobody has proven. A recording is mostly
 /// such columns, and hiding them would make the replay a demo of a different,
 /// tidier tool than the one that exists.
+///
+/// **The nth column of a name is the nth channel of that name**, in the order
+/// the writer puts them (`App::shown`: by unit and identifier, then as listed).
+/// Labels are not unique — two fields of one answer can both be called "Switch"
+/// — and sending every such column to the first channel of the name made one
+/// field take the other's values. That this holds needs the writer to have
+/// recorded every channel of the name, or a leading run of them; a recording of
+/// a later one alone is read as the first.
 pub fn resolve(columns: &[Column], channels: &mut Vec<Channel>, request: u16) -> BTreeMap<usize, Resolved> {
 	let mut out = BTreeMap::new();
+	let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
 	for (index, column) in columns.iter().enumerate() {
-		let by_label = channels.iter().position(|c| c.label() == column.name);
+		let nth = seen.entry(column.name.as_str()).or_default();
+		let mut named: Vec<usize> = (0..channels.len()).filter(|&i| channels[i].label() == column.name).collect();
+		named.sort_by_key(|&i| (channels[i].request, channels[i].did));
+		let by_label = named.get(*nth).copied();
+		*nth += 1;
 		let did = u16::from_str_radix(&column.name, 16).ok();
 		if let Some(channel) = by_label {
 			out.insert(index, Resolved { channel, raw: column.raw });
@@ -215,10 +228,16 @@ pub fn columns_that_moved(recording: &Recording) -> Vec<usize> {
 /// or a non-linear scaling cannot be inverted, and returns `None` rather than
 /// a number that looks like a reading and is not one.
 pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>> {
+	read_cell(cell, channel, raw).map(|(bytes, _)| bytes)
+}
+
+/// A cell as bytes, and whether they are the **whole answer** (`true`) or one
+/// field laid out at its own place with zeros before it (`false`).
+fn read_cell(cell: &str, channel: &Channel, raw: bool) -> Option<(Vec<u8>, bool)> {
 	// An answer the writer could not convert, marked as such: its bytes, exactly — and
 	// none at all is no reading, as an empty raw cell is not one below.
 	if let Some(bytes) = unconverted(cell) {
-		return Some(bytes).filter(|bytes| !bytes.is_empty());
+		return Some(bytes).filter(|bytes| !bytes.is_empty()).map(|bytes| (bytes, true));
 	}
 	// The `_raw` marker settles it when present. When it is absent the channel
 	// does: a column for an identifier with no proven scaling cannot have had
@@ -227,13 +246,19 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 	if raw || channel.def.is_none() {
 		// Filtered, not merely parsed: an empty cell is a row where this
 		// channel had nothing, and no bytes at all is not a reading of zero.
-		return vag_cli_core::plan::hex_bytes(cell).filter(|bytes| !bytes.is_empty());
+		return vag_cli_core::plan::hex_bytes(cell)
+			.filter(|bytes| !bytes.is_empty())
+			.map(|bytes| (bytes, true));
 	}
 	let def = channel.def.as_ref()?;
-	let count = match &def.scaling {
+	let count: i64 = match &def.scaling {
 		Scaling::Linear(scale) if scale.factor != 0.0 => {
 			let value: f64 = cell.parse().ok()?;
-			((value - scale.offset) / scale.factor).round()
+			let count = ((value - scale.offset) / scale.factor).round();
+			if !count.is_finite() || count.abs() > 1e12 {
+				return None;
+			}
+			count as i64
 		}
 		// A discrete state inverts by looking its name up in the same table that
 		// produced it — `D` came from one code and no other. A level that is a
@@ -241,37 +266,94 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		// car sent, but one that names the same band — so the replay shows the
 		// name the recording holds. The name is compared trimmed, because every
 		// reader of a recording trims its cells.
-		Scaling::Enum { levels } => {
-			let at = levels.iter().position(|level| level.name().trim() == cell)?;
-			f64::from(standing_for(levels, at)?)
-		}
+		Scaling::Enum { levels } => match levels.iter().position(|level| level.name().trim() == cell) {
+			Some(at) => standing_for(levels, at, def.raw_form)?,
+			// A recording from before 2026-09-26 wrote a state as the whole answer
+			// in bare hex, with no `0x`. In a state column a cell that names no
+			// level and is whole hex bytes can only be that — no level name made it.
+			// Not in a quantity column, where a bare `0100` is the number 100.
+			None => {
+				let bare = cell.len() % 2 == 0 && cell.chars().all(|c| c.is_ascii_hexdigit());
+				return bare
+					.then(|| vag_cli_core::plan::hex_bytes(cell))
+					.flatten()
+					.filter(|bytes| !bytes.is_empty())
+					.map(|bytes| (bytes, true));
+			}
+		},
 		// An anchor fixes one point and leaves the slope unproven; there is no
 		// line to invert, and inventing one would put a number on screen that
 		// was never measured.
 		_ => return None,
 	};
-	if !count.is_finite() || count < 0.0 {
-		return None;
-	}
-	encode(count as u64, def.raw_form)
+	encode_signed(count, def.raw_form).map(|bytes| (bytes, false))
 }
 
-/// The raw value to replay for `levels[at]`: the lowest the field can send (not
-/// below zero — [`encode`] lays out counts) that the table names the same way,
-/// i.e. that no earlier level holds, since the first level holding a value names
-/// it. `None` when the band has no such value.
-fn standing_for(levels: &[vag_data_labels::Level], at: usize) -> Option<i32> {
+/// The raw values a form can carry, and its width in bits: `(least, most, bits)`.
+/// The same limits [`RawForm::read`] reads within — a signed form is two's
+/// complement over its own width, and `U32Be` stops at `i32::MAX` because a read
+/// above it refuses.
+fn span(form: RawForm) -> Option<(i64, i64, u32)> {
+	let unsigned = |bits: u32| (0, (1i64 << bits) - 1, bits);
+	let signed = |bits: u32| (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1, bits);
+	Some(match form {
+		RawForm::U8First | RawForm::U8Second => unsigned(8),
+		RawForm::U16Be | RawForm::U16Le => unsigned(16),
+		RawForm::I16Be => signed(16),
+		RawForm::U24Be => unsigned(24),
+		RawForm::U32Be => (0, i64::from(i32::MAX), 32),
+		RawForm::Bits { bit_length, signed: s, .. } => match bit_length {
+			0 | 9.. => return None,
+			// `read` sign-extends only a field wider than one bit.
+			len if s && len > 1 => signed(u32::from(len)),
+			len => unsigned(u32::from(len)),
+		},
+		RawForm::Int { byte_length, signed: s, .. } => match (byte_length, s) {
+			(0 | 5.., _) => return None,
+			(len, true) => signed(8 * u32::from(len)),
+			(len, false) => {
+				let (least, most, bits) = unsigned(8 * u32::from(len));
+				(least, most.min(i64::from(i32::MAX)), bits)
+			}
+		},
+	})
+}
+
+/// [`encode`], for any raw value the form can carry: a negative one in two's
+/// complement over the form's own width, which is what [`RawForm::read`]
+/// sign-extends back. A value outside the form is `None`, never wrapped.
+fn encode_signed(count: i64, form: RawForm) -> Option<Vec<u8>> {
+	let (least, most, bits) = span(form)?;
+	if !(least..=most).contains(&count) {
+		return None;
+	}
+	let unsigned = if count < 0 { count + (1i64 << bits) } else { count };
+	encode(unsigned as u64, form)
+}
+
+/// The raw value to replay for `levels[at]`: the lowest the field can send
+/// ([`span`]) that the table names by this level — asked of
+/// [`level_for`](vag_data_labels::catalog::level_for), the rule `describe` uses,
+/// so a level another one shadows at its bottom starts past it. `None` when the
+/// band has no such value.
+fn standing_for(levels: &[vag_data_labels::Level], at: usize, form: RawForm) -> Option<i64> {
 	let level = levels.get(at)?;
-	let mut value = level.lower().max(0);
-	// Each step moves past one earlier level for good, so this ends within
-	// `at + 1` rounds.
-	for _ in 0..=at {
-		match levels[..at].iter().find(|earlier| earlier.contains(value)) {
-			Some(earlier) => value = earlier.upper().checked_add(1)?,
-			None => break,
+	let (least, most, _) = span(form)?;
+	let top = i64::from(level.upper()).min(most);
+	let mut value = i64::from(level.lower()).max(least);
+	// Each step moves past one shadowing level for good, so this ends within
+	// one round per level.
+	for _ in 0..=levels.len() {
+		if value > top {
+			return None;
+		}
+		match vag_data_labels::catalog::level_for(levels, i32::try_from(value).ok()?) {
+			Some(found) if found == at => return Some(value),
+			Some(other) => value = i64::from(levels[other].upper()) + 1,
+			None => return None,
 		}
 	}
-	(value <= level.upper() && !levels[..at].iter().any(|earlier| earlier.contains(value))).then_some(value)
+	None
 }
 
 /// The whole answer a recorded cell stands for, given the answer to the same
@@ -285,12 +367,22 @@ fn standing_for(levels: &[vag_data_labels::Level], at: usize) -> Option<i32> {
 /// zeroed every other field — and a state whose band starts at zero was then shown
 /// by a name nobody recorded. Several fields of one identifier each have a column,
 /// and it takes all of them to rebuild the answer.
+///
+/// A state the held answer already shows is left as it is. A band stands for many
+/// values and is inverted to one of them, so laid over bytes another field of the
+/// same bits has just set — a voltage read off the lever's own byte — it would
+/// replace the recorded value with the band's, and the other field would show a
+/// number nobody saw.
 pub fn answer_from_cell(cell: &str, channel: &Channel, raw: bool, held: Option<&[u8]>) -> Option<Vec<u8>> {
-	let bytes = cell_to_bytes(cell, channel, raw)?;
-	let whole = unconverted(cell).is_some() || raw || channel.def.is_none();
+	let (bytes, whole) = read_cell(cell, channel, raw)?;
 	let Some(def) = channel.def.as_ref().filter(|_| !whole) else {
 		return Some(bytes);
 	};
+	if let (Scaling::Enum { .. }, Some(held)) = (&def.scaling, held)
+		&& def.describe(held).is_some_and(|name| name.trim() == cell)
+	{
+		return Some(held.to_vec());
+	}
 	let mut answer = held.unwrap_or_default().to_vec();
 	if answer.len() < bytes.len() {
 		answer.resize(bytes.len(), 0);
@@ -585,6 +677,119 @@ mod tests {
 		assert_eq!(cell_to_bytes("4", &gear, false), Some(vec![0x05]));
 		// A state the table does not list is not invented.
 		assert_eq!(cell_to_bytes("N", &gear, false), None);
+	}
+
+	/// A field of `0x1000` with the given form and scaling — synthetic.
+	fn field(name: &'static str, raw_form: RawForm, scaling: Scaling) -> Channel {
+		Channel {
+			request: 0x70C,
+			did: 0x1000,
+			def: Some(MeasurementDef {
+				name: Cow::Borrowed(name),
+				unit: Cow::Borrowed(""),
+				address: ReadId::Uds(0x1000),
+				raw_form,
+				scaling,
+			}),
+			named: None,
+			proven: false,
+			text_id: None,
+			selected: true,
+		}
+	}
+
+	fn bands(levels: Vec<vag_data_labels::Level>) -> Scaling {
+		Scaling::Enum { levels }
+	}
+
+	#[test]
+	fn two_fields_of_one_name_each_get_their_own_column() {
+		use vag_data_labels::Level;
+		// Two fields both called "Switch": the writer heads each with the name, in
+		// its own order, so the nth column of a name is the nth channel of it — not
+		// every one of them the first.
+		let mut channels = vec![
+			field(
+				"Switch",
+				RawForm::for_field(0, 8, false, true).unwrap(),
+				bands(vec![Level::range(0, 99, "off")]),
+			),
+			field(
+				"Switch",
+				RawForm::for_field(8, 8, false, true).unwrap(),
+				bands(vec![Level::range(0, 99, "off")]),
+			),
+		];
+		let columns = vec![
+			Column {
+				name: "Switch".into(),
+				raw: false,
+			},
+			Column {
+				name: "Switch".into(),
+				raw: false,
+			},
+		];
+		let resolved = resolve(&columns, &mut channels, 0x70C);
+		assert_eq!((resolved[&0].channel, resolved[&1].channel), (0, 1));
+	}
+
+	#[test]
+	fn a_negative_band_of_a_signed_field_replays_in_twos_complement() {
+		use vag_data_labels::Level;
+		let signed = RawForm::Int {
+			byte_offset: 0,
+			byte_length: 1,
+			signed: true,
+			big_endian: true,
+		};
+		let lever = field("Lever", signed, bands(vec![Level::range(-10, -1, "back"), Level::range(0, 9, "ahead")]));
+		let bytes = cell_to_bytes("back", &lever, false).expect("a negative band is sayable");
+		assert_eq!(bytes, vec![0xF6]);
+		assert_eq!(lever.def.as_ref().unwrap().describe(&bytes).as_deref(), Some("back"));
+		// A signed quantity below zero, on the same terms.
+		let temperature = field("Temperature", RawForm::I16Be, Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }));
+		assert_eq!(cell_to_bytes("-5", &temperature, false), Some(vec![0xFF, 0xFB]));
+		assert_eq!(cell_to_bytes("-40000", &temperature, false), None, "past what 16 signed bits hold");
+	}
+
+	#[test]
+	fn a_state_already_shown_by_the_held_answer_leaves_it_alone() {
+		use vag_data_labels::Level;
+		// A voltage and a lever read off the same byte. The voltage's `33` is inside
+		// the lever's `pulled` band; laying the band's own lowest value over it would
+		// turn the recorded 33 into a 10 nobody saw.
+		let voltage = field("Voltage", RawForm::U8First, Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }));
+		let lever = field("Lever", RawForm::U8First, bands(vec![Level::range(10, 49, "pulled")]));
+		let held = answer_from_cell("33", &voltage, false, None).unwrap();
+		let after = answer_from_cell("pulled", &lever, false, Some(&held)).unwrap();
+		assert_eq!(after, vec![33]);
+		assert_eq!(voltage.render(&after), "33");
+		// Where the held answer names something else, the band is laid over it.
+		let after = answer_from_cell("pulled", &lever, false, Some(&[70])).unwrap();
+		assert_eq!(lever.render(&after), "pulled");
+	}
+
+	#[test]
+	fn an_old_recordings_bare_hex_in_a_state_column_is_the_whole_answer() {
+		use vag_data_labels::Level;
+		// Before 2026-09-26 a state's cell was the whole answer as bare hex, with no
+		// `0x`. In a state column a cell that names no level and is hex is that.
+		let second = field(
+			"Lever",
+			RawForm::for_field(8, 8, false, true).unwrap(),
+			bands(vec![Level::range(80, 99, "on")]),
+		);
+		assert_eq!(cell_to_bytes("1B5B", &second, false), Some(vec![0x1B, 0x5B]));
+		assert_eq!(answer_from_cell("1B5B", &second, false, Some(&[0, 0, 7])), Some(vec![0x1B, 0x5B]));
+		assert_eq!(second.render(&[0x1B, 0x5B]), "on");
+		// A name still wins over hex that looks like one, and odd-length hex is not bytes.
+		let hexy = field("Lever", RawForm::U8First, bands(vec![Level::point(1, "AB")]));
+		assert_eq!(cell_to_bytes("AB", &hexy, false), Some(vec![1]));
+		assert_eq!(cell_to_bytes("ABC", &hexy, false), None);
+		// Not in a quantity column: there a bare `0100` is the number it looks like.
+		let voltage = field("Voltage", RawForm::U16Be, Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }));
+		assert_eq!(cell_to_bytes("0100", &voltage, false), Some(vec![0, 100]));
 	}
 
 	#[test]

@@ -2206,6 +2206,13 @@ fn write_row<W: std::io::Write>(w: &mut W, app: &App, header_written: &mut bool)
 /// (read back, that is a read that missed), across lines (a recording is read a
 /// line at a time), or starting `0x` (read back, that is bytes). Those fall back
 /// to the answer's bytes, which are exact.
+///
+/// So does a reading between two levels. That is the right cell for a replay, but
+/// `dev recording discover` counts every distinct cell as a level, and the whole
+/// answer's bytes change with every other field of it: a noisy state with gaps
+/// between its levels can be called Continuous there. The reference project's
+/// stalk bands tile their byte from 0 to 255 with no gap, so on those it does not
+/// arise.
 fn converted(def: &vag_data_labels::catalog::MeasurementDef, data: &[u8]) -> Option<String> {
 	match def.scaling {
 		vag_data_labels::catalog::Scaling::Enum { .. } => {
