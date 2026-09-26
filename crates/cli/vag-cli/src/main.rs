@@ -481,7 +481,7 @@ enum Dev {
 	/// Read back a drive this tool recorded. Offline — no car.
 	///
 	/// `vagcan watch --out` writes the CSV; these read it afterwards, at a
-	/// desk. Neither has anything to say with the car in front of you.
+	/// desk. None has anything to say with the car in front of you.
 	Recording {
 		#[command(subcommand)]
 		tool: recording::Tool,
