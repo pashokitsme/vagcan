@@ -28,6 +28,9 @@ vag-dash-ble = { path = "../../dash/vag-dash-ble" }
 # more alarms than `vag_dash_render::alarm::MAX_ALARMS`; its tests assert on the board's own
 # decoder. One definition of the cap, not a copy here.
 vag-dash-render = { path = "../../dash/vag-dash-render" }
+# `device::DeviceArg`: `--device` and `--ble`, declared once for every command that
+# takes them, in `vagcan` and in `vagcan-measure` alike.
+clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde.workspace = true

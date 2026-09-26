@@ -7,9 +7,9 @@
 //! omitted we pick the obvious candidate and say which one we picked.
 //!
 //! **The dash board over BLE is the other way in** (`.archive/tasks/done/dash/16-uds-over-ble.md`,
-//! "Choosing the device" and "Zero friction"). `--device ble` scans for it, takes the
-//! one board heard and says so, and offers a menu when there are several; `--device
-//! ble:<name>` picks one by name without asking. **Nothing else ever scans** (owner,
+//! "Choosing the device" and "Zero friction"). `--device ble` (`--ble` for short, [`DeviceArg`])
+//! scans for it, takes the one board heard and says so, and offers a menu when there are
+//! several; `--device ble:<name>` picks one by name without asking. **Nothing else ever scans** (owner,
 //! 2026-09-14): with no `--device` the choice is USB only, and "no USB-CAN adapter found"
 //! ends with [`BLE_HINT`]. A scan started from an app macOS does not allow Bluetooth gets
 //! the process killed, and it prompts somebody who has no board at all. A command the BLE
@@ -53,11 +53,40 @@ pub const SLCAN_OVER_BLE: &str =
 
 /// How to reach an adapter over Bluetooth, said wherever no USB device was found:
 /// nothing looks for it unasked.
-pub const BLE_HINT: &str = "An adapter over Bluetooth: --device ble";
+pub const BLE_HINT: &str = "An adapter over Bluetooth: --ble";
 
 /// [`BLE_HINT`] where no car command is running — `vagcan devices` and the bare `vagcan`,
 /// which take no `--device` — so it names a command that does.
-pub const BLE_COMMAND_HINT: &str = "An adapter over Bluetooth: vagcan info --device ble";
+pub const BLE_COMMAND_HINT: &str = "An adapter over Bluetooth: vagcan info --ble";
+
+// `--device` and its shorthand `--ble`, flattened into every command that reads through
+// whatever [`resolve`] picks. `--ble` is `--device ble` and nothing else, so the rule is
+// here once: [`DeviceArg::requested`] is the only way a command reads the pair. A command
+// that says more about the adapter overrides the help with `mut_arg("device", …)`.
+// (Not a doc comment: clap would take one on a flattened struct as the command's `about`.)
+// No `display_order` here: the two are declared together, so clap lists `--ble` right
+// under `--device` by itself; a fixed number would tie with the first flags of a command
+// that declares the pair last (`dev vcds labels`) and sort in between them. The globals
+// are what used to come between, and they are ordered last where they are declared.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct DeviceArg {
+	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
+	/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
+	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
+	/// when asked.
+	#[arg(long, value_name = "PATH|ble|ble:NAME")]
+	pub device: Option<String>,
+	/// Same as `--device ble`: the dash board over Bluetooth.
+	#[arg(long, conflicts_with = "device")]
+	pub ble: bool,
+}
+
+impl DeviceArg {
+	/// What was asked for, as [`resolve`] takes it: `--ble` is `ble`.
+	pub fn requested(&self) -> Option<&str> {
+		if self.ble { Some("ble") } else { self.device.as_deref() }
+	}
+}
 
 /// Why no board was heard, as far as this side can tell.
 const NO_BOARD: &str = "an adapter on the OBD port is powered by it, so the ignition must be on, and it must be in range of this computer.";
@@ -455,6 +484,8 @@ fn same_node(listed: &str, given: &str) -> bool {
 }
 
 /// Why an explicitly named board will not be opened.
+// Says `--device ble`, not `--ble`: this also reaches `dev survey` and `dev sniff`, which
+// take no `--ble`.
 fn not_an_adapter(path: &str, answer: &BoardAnswer) -> String {
 	match answer {
 		BoardAnswer::Unopened(why) => format!(
@@ -598,6 +629,35 @@ mod tests {
 
 	const BOARD: &str = "/dev/cu.usbmodem1101";
 	const CANABLE: &str = "/dev/cu.usbmodem206E37A148451";
+
+	/// A command line that takes the pair and nothing else.
+	#[derive(clap::Parser)]
+	struct TakesADevice {
+		#[command(flatten)]
+		device: DeviceArg,
+	}
+
+	fn requested(args: &[&str]) -> Result<Option<String>, clap::Error> {
+		use clap::Parser as _;
+		let parsed = TakesADevice::try_parse_from(std::iter::once("cmd").chain(args.iter().copied()))?;
+		Ok(parsed.device.requested().map(str::to_owned))
+	}
+
+	#[test]
+	fn ble_is_device_ble_and_refused_beside_it() {
+		assert_eq!(requested(&["--ble"]).unwrap().as_deref(), Some("ble"));
+		assert_eq!(requested(&["--device", "ble"]).unwrap().as_deref(), Some("ble"));
+		assert_eq!(requested(&["--device", "ble:vagcan-dash"]).unwrap().as_deref(), Some("ble:vagcan-dash"));
+		assert_eq!(requested(&["--device", CANABLE]).unwrap().as_deref(), Some(CANABLE));
+		assert_eq!(requested(&[]).unwrap(), None);
+		for device in [CANABLE, "ble", "ble:vagcan-dash"] {
+			let refused = requested(&["--ble", "--device", device]).expect_err("two adapters named");
+			assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict, "{device}");
+		}
+		// It means the same thing to the resolver as the long spelling does.
+		let short = requested(&["--ble"]).unwrap();
+		assert_eq!(short.as_deref().and_then(ble_request), Some(None));
+	}
 
 	/// What the listing makes of each device — the real classification, so
 	/// these tests see the ids the way `vagcan` does.
@@ -972,7 +1032,7 @@ mod tests {
 		for (listing, answer) in cases {
 			let err = refused(resolve_as(None, Ok(listing), answering(answer), no_scan(), true, &mut Scripted::new(vec![])).await);
 			assert!(err.contains("no USB-CAN adapter found"), "{err}");
-			assert!(err.ends_with("An adapter over Bluetooth: --device ble"), "{err}");
+			assert!(err.ends_with("An adapter over Bluetooth: --ble"), "{err}");
 		}
 	}
 
@@ -981,7 +1041,7 @@ mod tests {
 	fn the_device_listing_ends_by_saying_how_to_reach_a_board_over_bluetooth() {
 		for found in [vec![], vec![canable()]] {
 			let text = render_list(&found);
-			assert!(text.ends_with("An adapter over Bluetooth: vagcan info --device ble"), "{text}");
+			assert!(text.ends_with("An adapter over Bluetooth: vagcan info --ble"), "{text}");
 		}
 	}
 

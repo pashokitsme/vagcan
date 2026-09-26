@@ -177,7 +177,7 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. Add `--device ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, the app you run it from needs Bluetooth access (System Settings → Privacy & Security → Bluetooth); Terminal.app asks on first use.
+**Through the dash board over BLE:** no cable needed. Add `--ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, the app you run it from needs Bluetooth access (System Settings → Privacy & Security → Bluetooth); Terminal.app asks on first use.
 
 | `--device` | What it uses |
 |---|---|
@@ -186,10 +186,12 @@ vagcan watch              # live values from several units at once
 | `ble` | the board over BLE; asks which when there are several |
 | `ble:<name>` | the board with that name, without asking |
 
+`--ble` is short for `--device ble`.
+
 Add `--slcan` to use a dash board on USB as a plain adapter (`vagcan --slcan dev sniff`).
 
 ```sh
-vagcan faults --device ble
+vagcan faults --ble
 ```
 
 **No car or adapter yet?** These work offline: `vagcan setup`, `vagcan dev vcds names <text>` to search VW's measurement names, and `vagcan dev recording …` to read a recorded drive.

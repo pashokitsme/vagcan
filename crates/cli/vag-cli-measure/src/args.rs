@@ -15,12 +15,8 @@ pub struct Args {
 	/// `setup` describes this car once; `view` opens a saved session.
 	#[command(subcommand)]
 	pub tool: Option<crate::Tool>,
-	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
-	/// cable), `ble` for an adapter over Bluetooth, or `ble:<name>` for one adapter by
-	/// name. Omit it to use the one adapter or board on USB; Bluetooth is looked for only
-	/// when asked.
-	#[arg(long, value_name = "PATH|ble|ble:NAME")]
-	pub device: Option<String>,
+	#[command(flatten)]
+	pub device: vag_cli_core::device::DeviceArg,
 	/// Use this car file instead of the one kept for this car's VIN.
 	#[arg(long, value_name = "FILE")]
 	pub car: Option<String>,
@@ -98,12 +94,15 @@ pub struct Cli {
 	/// The diagnostics binary carries this as a global flag, so the two
 	/// spellings would otherwise read different directories from the same
 	/// command line and say nothing about it.
-	#[arg(long, value_name = "ID", global = true)]
+	//
+	// Listed after the command's own flags, as on `vagcan`: left at 0 it sorts in between
+	// `--device` and `--ble`.
+	#[arg(long, value_name = "ID", global = true, display_order = 900)]
 	pub project: Option<String>,
 
 	/// Use the dash board's USB cable as a plain slcan adapter rather than reading through
 	/// its `dash` image. `vagcan` carries the same global flag.
-	#[arg(long, global = true)]
+	#[arg(long, global = true, display_order = 901)]
 	pub slcan: bool,
 
 	#[command(flatten)]
@@ -121,5 +120,27 @@ mod tests {
 		assert!(Cli::try_parse_from(["vagcan-measure", "--slcan"]).unwrap().slcan);
 		assert!(Cli::try_parse_from(["vagcan-measure", "setup", "--slcan"]).unwrap().slcan);
 		assert!(!Cli::try_parse_from(["vagcan-measure"]).unwrap().slcan);
+	}
+
+	/// `vagcan-measure --ble` is `--device ble`, on the run and on `setup`, as on `vagcan`.
+	#[test]
+	fn ble_is_device_ble_on_the_standalone_binary_too() {
+		let requested = |args: &[&str]| {
+			let cli = Cli::try_parse_from(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+			let device = match cli.args.tool {
+				Some(crate::Tool::Setup { device, .. }) => device,
+				_ => cli.args.device,
+			};
+			device.requested().map(str::to_owned)
+		};
+		for prefix in [&["vagcan-measure"][..], &["vagcan-measure", "setup"]] {
+			let with = |extra: &[&'static str]| prefix.iter().chain(extra).copied().collect::<Vec<_>>();
+			assert_eq!(requested(&with(&["--ble"])).as_deref(), Some("ble"), "{prefix:?}");
+			assert_eq!(requested(&with(&["--device", "ble"])).as_deref(), Some("ble"), "{prefix:?}");
+			let refused = Cli::try_parse_from(with(&["--ble", "--device", "/dev/x"]))
+				.err()
+				.expect("two adapters named");
+			assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict, "{prefix:?}");
+		}
 	}
 }
