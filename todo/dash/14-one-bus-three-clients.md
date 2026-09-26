@@ -293,6 +293,29 @@ fields move within a poll; that OFF reads as its own value and not as absent. If
 ON/OFF on this stalk turns out momentary rather than latched, the cruise state comes from
 the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is that.
 
+**Probed on the car, 2026-09-26** (`research/captures/cruise-lever.csv`: `watch --device ble
+--hz 10`, `70C:1105` with `7E0:203C,4383,2018`, 73 s parked, ignition on). Answer: **yes, the
+lever pages with cruise OFF, and the engine ignores it.**
+
+- `1105` answers over BLE at 10 Hz. On this car the cruise lever is the left stalk: byte 8
+  ("Linker Hebel axial 2 (GRA Set/Rest)") is the rocker, byte 9 ("… axial 3
+  (ON/CANCEL/OFF)") the switch. Bytes 15–17 ("GRA Hebel …") never move (247–250): not this
+  stalk.
+- The bytes are analog ladder readings with ±2 of noise, not exact enum values — decode by
+  nearest level. Byte 8: 205 rest, 91 RES/+ (the engine's `4383` bit 3, accelerate), 128
+  SET/− (bit 2, decelerate), 167 a third position seen twice with the switch OFF, not
+  identified yet. Byte 9: 167 OFF, 91 ON, 128 CANCEL.
+- **OFF is latched, CANCEL springs back:** 167 holds for tens of seconds; 128 lasts 0.1–0.8 s
+  and returns to 91 (ON), or passes on to OFF when the switch is pushed through.
+- **With OFF the engine ignores the rocker:** 55 samples of byte 8 at 91/128/167 while `203C`
+  read 0 (main switch off) and `4383` read `2000` (only "control device verified"). With ON,
+  `4383` is `3101` (+ bit 3 or bit 2 with the rocker, bit 1 at CANCEL) and `203C` is 2
+  (passive). The two witnesses the gate needs both read "off", from different units.
+- A press lasts 0.3–0.6 s at the rocker: 10 Hz catches it; the planned 20 Hz is margin.
+- Not settled: widening the gate to CANCEL. Parked, nothing was ever set (`2018` stayed 0,
+  `203C` never left 2), so "does plus resume after CANCEL" was not tested. The default stays
+  OFF.
+
 ## 7. Order, and what each needs
 
 | # | item | needs | state, dated per row |
@@ -306,7 +329,7 @@ the engine instead (`7E0` carries the GRA status beside `2018`), and the gate is
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
 | 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](../../.archive/tasks/done/dash/16-uds-over-ble.md)**: UDS over BLE as a slow transport, merged in PR #2 (2026-09-14) |
 | 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
-| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **a probe first** (owner): read `1105` on `70C` and the engine's GRA status, to see that they answer and move |
+| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **probed 2026-09-26**: `1105` byte 8 moves with the rocker while `203C` = 0 and the engine's `4383` stays `2000` — the lever can page the dash with cruise OFF (§6a). Next: the firmware stalk source, decoding by nearest level |
 
 [`09-bt-adapter.md`](../../.archive/specs/dash/09-bt-adapter.md) (archived) is superseded by this file (the wish is met by §3-B over USB and §8 over
 BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.
