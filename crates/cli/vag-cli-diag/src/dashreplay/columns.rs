@@ -192,15 +192,24 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 						// Its bytes, through the board's own decoder, which makes of them what the
 						// board would — nothing, for no bytes.
 						Cell::Unconverted(bytes) => board.decode(&bytes),
-						Cell::OldHex => {
+						Cell::OldHex if too_short_for(cell, board) => {
 							bare_hex += 1;
 							None
 						}
+						// Hex the field's layout decodes is hex `watch` would have converted:
+						// never written bare, so not an old recording's answer.
+						Cell::OldHex => {
+							notes.push(format!(
+								"{name}: the recording's {cell:?} is not a cell `watch` writes — hex that fills the field would \
+								 have been converted; not used"
+							));
+							return None;
+						}
 						Cell::Number(v) => match on_the_boards_scale(v, owned, board) {
 							Some(value) => Some(value),
-							// Two hex digits a byte, all of them digits: in an older recording, an
-							// answer `watch` could not convert, which proves nothing about scaling.
-							None if could_be_hex(cell) => {
+							// Hex digits, too few for the field: in an older recording, an answer
+							// `watch` could not convert, which proves nothing about scaling.
+							None if could_be_hex(cell) && too_short_for(cell, board) => {
 								bare_hex += 1;
 								None
 							}
@@ -227,7 +236,8 @@ pub fn series(recording: &Recording, sources: &[Option<Source>], plan: &Plan, de
 					n => format!("{n} cells are"),
 				};
 				notes.push(format!(
-					"{name}: {cells} bare hex — an answer `watch` could not convert, in a recording made before 2026-09-26; \
+					"{name}: {cells} bare hex too short for the field — an answer `watch` could not convert, in a recording \
+					 made before 2026-09-26; \
 					 read as no answer. Such a recording writes one of digits alone and no leading zero the same way as a \
 					 number, and that is read as the number"
 				));
@@ -247,7 +257,8 @@ enum Cell {
 	Unconverted(Vec<u8>),
 	/// A number, as `format!("{v}")` of an `f64` prints one.
 	Number(f64),
-	/// Bare hex that no `{v}` prints: an older recording's unconverted answer.
+	/// Bare hex that no `{v}` prints: an older recording's unconverted answer, if the
+	/// field's layout cannot decode it (see [`too_short_for`]).
 	OldHex,
 	/// Anything else: not a cell `watch` writes.
 	Other,
@@ -271,6 +282,15 @@ impl Cell {
 			Err(_) => Cell::Other,
 		}
 	}
+}
+
+/// Whether a cell, read as hex, is bytes the plan's layout cannot decode.
+///
+/// An older recording wrote an answer bare only where `watch` could not convert it, and for
+/// a linear row — every plan channel is one — that is bytes too short for the field. So bare
+/// hex that decodes was never such an answer, whatever it looks like.
+fn too_short_for(cell: &str, board: &DeviceChannel) -> bool {
+	hex_bytes(cell).is_some_and(|bytes| board.decode(&bytes).is_none())
 }
 
 /// Whether a cell could be bytes in hex: two hex digits a byte.
@@ -549,18 +569,40 @@ mod tests {
 			[Some(vec![(0, Some(3.0)), (100, None), (200, Some(6.0))])]
 		);
 		assert!(notes[0].contains("1 cell is bare hex"), "{notes:?}");
+		// On a 16-bit field `1000` is two bytes the plan's layout decodes — and old bare hex
+		// was only ever bytes `watch` could not decode, too short for the field. So `1000`
+		// is a number on another scaling, however many hex digits it has: recorded ×1 and
+		// planned ×0.75, keeping `1002` (which fits) would show 1002 where the board shows
+		// 751.5.
+		let mut notes = Vec::new();
+		assert_eq!(read("t_s,One\n0.0,1000\n0.1,1001\n0.2,1002\n", &mut notes), [None]);
+		assert!(notes[0].contains("recorded with another"), "{notes:?}");
+	}
+
+	#[test]
+	fn hex_the_plans_layout_decodes_is_not_old_hex() {
+		// The same for hex with a letter in it: four hex digits fill a 16-bit field, so
+		// `watch` would have converted them and never written them bare.
+		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one")]);
+		let device = owned.to_device();
+		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B34\n");
+		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
+		let mut notes = Vec::new();
+		assert_eq!(series(&recording, &matched.sources, &owned, &device, &mut notes), [None]);
+		assert!(notes[0].contains("not a cell `watch` writes"), "{notes:?}");
 	}
 
 	#[test]
 	fn an_old_recordings_bare_hex_is_no_answer_and_said() {
 		// Before 2026-09-26 `watch --out` wrote an answer it could not convert as bare hex
-		// in the converted column. With a letter in it, it is not a number; with a leading
-		// zero before a digit, it is not one `{v}` prints; `1000` could be either, and is
-		// read as the number it would be.
+		// in the converted column — bytes too short for the field. With a letter in it, it
+		// is not a number; with a leading zero before a digit, it is not one `{v}` prints;
+		// `1000` could be either, and is read as the number it would be.
 		let offered = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
 		let owned = plan(vec![plan_channel(ENGINE, 0x1001, 0, "one")]);
 		let device = owned.to_device();
-		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B34\n0.2,0100\n0.3,1000\n0.4,0\n0.5,0.5\n");
+		let recording = columns("t_s,One\n0.0,-2.3\n0.1,0B\n0.2,01\n0.3,1000\n0.4,0\n0.5,0.5\n");
 		let matched = match_columns(&recording.columns, &offered, &Answered::default(), &owned);
 		let mut notes = Vec::new();
 		let series = series(&recording, &matched.sources, &owned, &device, &mut notes);
