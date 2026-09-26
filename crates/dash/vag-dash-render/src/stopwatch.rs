@@ -46,8 +46,16 @@ pub const ARMING_HOLD_MS: u64 = 1_000;
 pub const START_FIT_MS: u64 = 400;
 
 /// The fewest moving samples the constant-jerk fit is made on.
-/// `vag-cli-measure`'s `derive::MIN_FIT_SAMPLES`.
-const MIN_FIT_SAMPLES: usize = 3;
+/// `vag-cli-measure`'s `derive::MIN_FIT_SAMPLES`. With [`START_FIT_MS`] it sets how
+/// fast the speed has to be read for a run to be timed at all.
+pub const MIN_FIT_SAMPLES: usize = 3;
+
+/// The longest silence of the speed a run or an armed standstill survives. The laptop
+/// cancels a run after `vag-cli-measure`'s `SILENT_CYCLES` unanswered cycles; the board
+/// has no cycles, so a time: long past any period the speed is read at while the
+/// stopwatch is up, short enough that nothing is interpolated across a gap in which the
+/// car did whatever it did. A property of the one conversation, not of a car.
+pub const SILENCE_MS: u64 = 500;
 
 /// The most marks one plan may carry: the page is one row of four cells, the phase and
 /// the speed in the first, a mark's time in each of the others.
@@ -106,9 +114,13 @@ impl Run {
 	}
 
 	/// The mark's time: from the launch to its crossing. `None` when it was not
-	/// crossed, or when there is no launch to time it from.
+	/// crossed, when there is no launch to time it from, or when the crossing lies
+	/// before the launch — the first moving sample already past a low mark, read too
+	/// late to say when it was crossed (the laptop looks for a crossing only after
+	/// the launch, `Track::crossing`).
 	pub fn time(&self, index: usize) -> Option<f32> {
-		Some(self.crossed_at(index)? - self.launch?.t)
+		let time = self.crossed_at(index)? - self.launch?.t;
+		(time >= 0.0).then_some(time)
 	}
 }
 
@@ -149,6 +161,8 @@ pub struct Stopwatch<'a> {
 	last: Option<Run>,
 	/// The last run that finished — what an aborted one gives way to when the page is left.
 	finished: Option<Run>,
+	/// The mode's turn count this stopwatch last followed (`Screen::stopwatch_turns`).
+	turns: u16,
 }
 
 impl<'a> Stopwatch<'a> {
@@ -173,6 +187,7 @@ impl<'a> Stopwatch<'a> {
 			current: Run::new(),
 			last: None,
 			finished: None,
+			turns: 0,
 		}
 	}
 
@@ -209,8 +224,11 @@ impl<'a> Stopwatch<'a> {
 		if self.phase == Phase::NotMeasured {
 			return None;
 		}
+		let silent = self.silence(now_ms);
 		// A cycle the unit did not answer moves no state (`session::on_sample`).
-		let value = value.filter(|v| v.is_finite())?;
+		let Some(value) = value.filter(|v| v.is_finite()) else {
+			return silent;
+		};
 		let standing = value == 0.0;
 		let kmh = value * self.km_h_per_unit;
 
@@ -251,7 +269,47 @@ impl<'a> Stopwatch<'a> {
 			event = self.advance(now_ms, kmh).or(event);
 		}
 		self.previous = Some((now_ms, kmh));
-		event
+		event.or(silent)
+	}
+
+	/// The speed has not answered for over [`SILENCE_MS`] at `now_ms`: a run in
+	/// progress is aborted — what closed before the silence is kept, as at a
+	/// standstill — and an armed standstill has to be seen again, so nothing is
+	/// interpolated across the gap and nothing launches from a standstill the car may
+	/// have left meanwhile. A hold not yet armed is left alone: it arms only on a
+	/// standstill answer, and a launch needs the armed one after it. Called by
+	/// [`Stopwatch::sample`], and by whoever holds the stopwatch while no answer comes
+	/// at all, so the mode does not stay timing a unit that went quiet.
+	pub fn silence(&mut self, now_ms: u64) -> Option<Event> {
+		let (at_ms, _) = self.previous?;
+		if now_ms.saturating_sub(at_ms) <= SILENCE_MS {
+			return None;
+		}
+		match self.phase {
+			Phase::Running => {
+				self.previous = None;
+				self.standing_since = None;
+				self.end(true);
+				Some(Event::Aborted)
+			}
+			Phase::Armed => {
+				self.previous = None;
+				self.standing_since = None;
+				self.phase = Phase::Idle;
+				None
+			}
+			Phase::NotMeasured | Phase::Idle | Phase::Done => None,
+		}
+	}
+
+	/// Follows the mode's turn count (`Screen::stopwatch_turns`): a count this stopwatch
+	/// has not seen means the mode turned on or off since, and it is [reset](Self::reset)
+	/// — before the sample that comes next, however quickly the mode turned back.
+	pub fn follow(&mut self, turns: u16) {
+		if turns != self.turns {
+			self.turns = turns;
+			self.reset();
+		}
 	}
 
 	/// The page was left: whatever was under way stops, and the next run needs a fresh
@@ -1001,6 +1059,83 @@ mod tests {
 		for words in [Words::of("ru"), Words::of("en")] {
 			assert!(words.not_measured.chars().count() <= 10, "a label is ten characters at most");
 		}
+	}
+
+	#[test]
+	fn a_silence_mid_run_aborts_it_and_nothing_is_interpolated_across_the_gap() {
+		// Running at 30 km/h, then ten seconds of nothing, then an answer at 105: that
+		// is not a 60 and a 100 crossed somewhere in the gap.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
+		assert_eq!(watch.phase(), Phase::Running);
+		assert_eq!(watch.sample(Some(105.0 / FACTOR), 12_500), Some(Event::Aborted));
+		let run = watch.run().expect("the aborted run is on show");
+		assert!(run.aborted);
+		assert_eq!((run.crossed_at(0), run.crossed_at(1)), (None, None));
+		assert_eq!(watch.finished(), None, "nothing finished");
+	}
+
+	#[test]
+	fn a_silence_ends_the_run_without_an_answer_coming_at_all() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
+		assert_eq!(watch.silence(2_500 + SILENCE_MS), None, "not yet");
+		assert_eq!(watch.phase(), Phase::Running);
+		assert_eq!(watch.silence(2_501 + SILENCE_MS), Some(Event::Aborted));
+		assert_eq!(watch.phase(), Phase::Done);
+		assert_eq!(watch.silence(60_000), None, "said once");
+		// A missing answer past the silence says the same.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
+		assert_eq!(watch.sample(None, 3_100), Some(Event::Aborted));
+	}
+
+	#[test]
+	fn a_silence_while_armed_needs_the_standstill_seen_again() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.sample(Some(0.0), 0);
+		assert_eq!(watch.sample(Some(0.0), ARMING_HOLD_MS), Some(Event::Armed));
+		// Quiet for two seconds, then moving: the car may have been anywhere meanwhile.
+		assert_eq!(watch.sample(Some(10.0), 3_000), None, "no launch from a standstill not seen");
+		assert_eq!(watch.phase(), Phase::Idle);
+		// Standing again after the silence: armed again only after a whole hold.
+		assert_eq!(watch.sample(Some(0.0), 3_100), None);
+		assert_eq!(watch.sample(Some(0.0), 4_100), Some(Event::Armed));
+	}
+
+	#[test]
+	fn a_mark_crossed_before_the_launch_has_no_time() {
+		// The first moving sample is already at 100 km/h, 0.45 s after the last
+		// standstill one: 20 km/h lies between the two, before the launch the fit
+		// puts just short of that first sample. A crossing before the start is no time.
+		static LOW: [u16; 2] = [20, 1000];
+		let mut watch = Stopwatch::new(&LOW, FACTOR);
+		watch.sample(Some(0.0), 0);
+		assert_eq!(watch.sample(Some(0.0), 1_000), Some(Event::Armed));
+		watch.sample(Some(100.0 / FACTOR), 1_450);
+		watch.sample(Some(400.0 / FACTOR), 1_500);
+		watch.sample(Some(900.0 / FACTOR), 1_550);
+		let run = watch.run().unwrap();
+		let launch = run.launch.expect("three samples in the window");
+		let crossed = run.crossed_at(0).expect("crossed between the two samples");
+		assert!(crossed < launch.t, "{crossed} before {}", launch.t);
+		assert_eq!(run.time(0), None);
+	}
+
+	#[test]
+	fn a_turn_of_the_mode_resets_the_stopwatch_once() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.follow(0);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
+		assert_eq!(watch.phase(), Phase::Running);
+		watch.follow(0);
+		assert_eq!(watch.phase(), Phase::Running, "the same stretch of the mode");
+		// Off and on again between two samples: two turns, one reset.
+		watch.follow(2);
+		assert_eq!((watch.phase(), watch.run()), (Phase::Idle, None));
+		watch.sample(Some(0.0), 3_000);
+		watch.follow(2);
+		assert_eq!(watch.sample(Some(0.0), 4_000), Some(Event::Armed), "the hold was not reset again");
 	}
 
 	#[test]

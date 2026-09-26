@@ -131,6 +131,14 @@ impl Stalk {
 		read.switch == Some(self.states.switch_off) && read.cruise == Some(self.states.cruise_off)
 	}
 
+	/// Reading stopped — the board was an adapter, and nothing of the lever was read
+	/// meanwhile. The next read pairs with nothing, as after a missing one, and the gate
+	/// is closed until a read opens it: a read from before the gap is not half of a press.
+	pub fn lost(&mut self) {
+		self.last = None;
+		self.open = false;
+	}
+
 	/// One read. A press, if this read confirmed one.
 	///
 	/// **Call it exactly once per new answer** of the identifier that carries the
@@ -399,5 +407,17 @@ mod tests {
 		let mut stalk = Stalk::new(STATES);
 		let out = run(&mut stalk, &[read(20), read(20), read(128), read(131)]);
 		assert_eq!(out, [None, None, None, Some(Lever::Previous)]);
+	}
+
+	#[test]
+	fn a_read_from_before_the_adapter_screen_is_not_half_of_a_press() {
+		let mut stalk = Stalk::new(STATES);
+		// At rest, then NEXT caught once in passing as the board became an adapter.
+		assert_eq!(run(&mut stalk, &[free(REST), free(REST), free(NEXT)]), [None, None, None]);
+		stalk.lost();
+		assert!(!stalk.gate_open());
+		// Minutes later, one read of NEXT is still one read.
+		assert_eq!(stalk.read(free(NEXT)), None);
+		assert_eq!(stalk.read(free(NEXT)), Some(Lever::Next), "the second read pairs");
 	}
 }

@@ -131,7 +131,8 @@ pub struct StopwatchPlan {
 pub const LEVER_OPEN_PERIOD_MS: u32 = 50;
 /// With the gate closed: often enough to see it open.
 pub const LEVER_CLOSED_PERIOD_MS: u32 = 500;
-/// While the stopwatch is up: a 0.3 s press still spans two reads, so `measure` can end it.
+/// While the stopwatch is up: a press of about 0.2 s spans two reads (hold longer to be sure),
+/// so `measure` can end it.
 pub const LEVER_STOPWATCH_PERIOD_MS: u32 = 100;
 /// The cruise status, the gate's second witness.
 pub const CRUISE_PERIOD_MS: u32 = 200;

@@ -99,6 +99,8 @@ pub struct Screen<'a, const N: usize> {
 	silenced: bool,
 	/// The stopwatch mode is on. Not a page: the cursor stays where it was.
 	stopwatch: bool,
+	/// How many times the stopwatch mode has turned on or off, wrapping.
+	turns: u16,
 }
 
 impl<'a, const N: usize> Screen<'a, N> {
@@ -117,6 +119,7 @@ impl<'a, const N: usize> Screen<'a, N> {
 			rule: None,
 			silenced: false,
 			stopwatch: false,
+			turns: 0,
 		}
 	}
 
@@ -166,12 +169,11 @@ impl<'a, const N: usize> Screen<'a, N> {
 	///
 	/// The stopwatch mode ends here. The adapter's screen is not the stopwatch,
 	/// nothing is read meanwhile, and a run left open across it would be timed from
-	/// a launch minutes old; a caller watching [`Screen::stopwatch`] sees the mode
-	/// end and resets it.
+	/// a launch minutes old; [`Screen::stopwatch_turns`] counts the mode ending.
 	pub fn adapter(&mut self) {
 		self.adapter = true;
 		self.drawn = None;
-		self.stopwatch = false;
+		self.set_stopwatch(false);
 		self.alarms.glass_lost();
 	}
 
@@ -184,14 +186,13 @@ impl<'a, const N: usize> Screen<'a, N> {
 	/// The button keeps its job while the stopwatch is up (`todo/dash/19`): the
 	/// press turns the page, and with a page on the glass the stopwatch is off.
 	/// That makes it the bench's way out, where no lever is read, and the way out
-	/// on a car whose `measure` state was named wrong. A caller that runs the
-	/// stopwatch watches [`Screen::stopwatch`] for the mode ending, whichever way
-	/// it ended.
+	/// on a car whose `measure` state was named wrong. [`Screen::stopwatch_turns`]
+	/// counts the mode ending, whichever way it ended.
 	pub fn press(&mut self, cursor: &mut u8, pages: u8) -> Press {
 		let press = if self.adapter { Press::NextPage } else { self.alarms.press() };
 		match press {
 			Press::NextPage => {
-				self.stopwatch = false;
+				self.set_stopwatch(false);
 				*cursor = pages::next(*cursor, pages);
 			}
 			Press::Silenced => self.silenced = true,
@@ -217,11 +218,11 @@ impl<'a, const N: usize> Screen<'a, N> {
 		}
 		match (lever, self.stopwatch) {
 			(Lever::Measure, false) => {
-				self.stopwatch = true;
+				self.set_stopwatch(true);
 				Action::StopwatchOn
 			}
 			(Lever::Measure, true) => {
-				self.stopwatch = false;
+				self.set_stopwatch(false);
 				Action::StopwatchOff
 			}
 			(Lever::Next | Lever::Previous, true) => Action::Ignored,
@@ -244,6 +245,21 @@ impl<'a, const N: usize> Screen<'a, N> {
 	/// Whether the stopwatch mode is on.
 	pub fn stopwatch(&self) -> bool {
 		self.stopwatch
+	}
+
+	/// How many times the stopwatch mode has turned on or off, wrapping. A run belongs
+	/// to one stretch of the mode: whoever holds the stopwatch hands it this count
+	/// (`Stopwatch::follow`), and a count it has not seen resets it — at the turn, not
+	/// on the next frame, so an off and an on between two frames still start over.
+	pub fn stopwatch_turns(&self) -> u16 {
+		self.turns
+	}
+
+	fn set_stopwatch(&mut self, on: bool) {
+		if self.stopwatch != on {
+			self.stopwatch = on;
+			self.turns = self.turns.wrapping_add(1);
+		}
 	}
 
 	/// Whether the stopwatch is what the glass shows: the mode is on and no alarm
@@ -761,14 +777,10 @@ mod tests {
 		let mut screen = screen();
 		let mut watch = Stopwatch::new(&MARKS, 1.0);
 		let mut cursor = 0;
-		// The panel loop as phase 2 runs it: the stopwatch is reset whenever the
-		// mode turns off, however it turned off; the speed is fed regardless.
-		let mut on = false;
-		let mut step = |screen: &mut Screen<'static, 2>, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
-			if on && !screen.stopwatch() {
-				watch.reset();
-			}
-			on = screen.stopwatch();
+		// As the firmware runs it: the stopwatch follows the mode's turns before every
+		// sample; the speed is fed regardless.
+		let step = |screen: &mut Screen<'static, 2>, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
+			watch.follow(screen.stopwatch_turns());
 			watch.sample(Some(kmh), now_ms)
 		};
 		screen.frame(cursor, PAGES, 0, Car::calm().value_of());

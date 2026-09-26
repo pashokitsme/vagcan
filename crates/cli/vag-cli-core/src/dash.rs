@@ -102,7 +102,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::pages::MAX_PAGES;
-use vag_dash_render::stopwatch::MAX_MARKS;
+use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, START_FIT_MS};
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
@@ -542,9 +542,10 @@ fn parse_stopwatch(
 		.as_table()
 		.ok_or_else(|| Error::Parse("dash.toml: stopwatch must be one [stopwatch] table".to_string()))?;
 	let speed = Reference::parse(&string(table.get("speed"), "[stopwatch] speed")?)?;
-	// Compared as the board holds it, in `f32`.
+	// Compared as the board holds it, in `f32`: a factor too small for one would reach the
+	// board as the zero that means "not measured".
 	let km_h_per_unit = match number(table.get("km_h_per_unit")) {
-		Some(v) if v.is_finite() && v >= 0.0 && (v as f32).is_finite() => v,
+		Some(v) if v.is_finite() && (v == 0.0 || (v > 0.0 && (v as f32).is_finite() && (v as f32) > 0.0)) => v,
 		_ => {
 			return Err(Error::Parse(
 				"dash.toml: [stopwatch] km_h_per_unit must be a number at or above 0 — 0 until it is measured on the car".to_string(),
@@ -1490,6 +1491,16 @@ fn resolve_stopwatch(
 			wanted.speed, channel.factor
 		)));
 	}
+	// The launch fit wants `MIN_FIT_SAMPLES` moving samples inside `START_FIT_MS`; read slower
+	// than that, every run crosses its marks and has no time, and only the car would say so.
+	let period_ms = 1000.0 / channel.hz;
+	if period_ms * (MIN_FIT_SAMPLES - 1) as f64 >= START_FIT_MS as f64 {
+		let fastest = 1000.0 * (MIN_FIT_SAMPLES - 1) as f64 / START_FIT_MS as f64;
+		return Err(Error::Stopwatch(format!(
+			"speed {} is read at {} Hz — the launch fit needs {MIN_FIT_SAMPLES} samples in its first {START_FIT_MS} ms, so faster than {fastest} Hz; give its [[channel]] an hz, 50 or more",
+			wanted.speed, channel.hz
+		)));
+	}
 	let marks: Vec<String> = wanted.marks.iter().map(|m| format!("0-{m}")).collect();
 	notes.push(match wanted.km_h_per_unit {
 		0.0 => format!(
@@ -1543,15 +1554,24 @@ fn state_channel(found: &poll::Channel, label: String) -> Channel {
 	}
 }
 
-/// A state by the name the project gives it, as its place in the field's list.
+/// A state by the name the project gives it, as its place in the field's list. A name the
+/// field gives two states is refused: the board would press on one of them and never on
+/// the other.
 fn state_index(levels: &[Level], name: &str, key: &str, field: &str) -> Result<u16, Error> {
-	levels.iter().position(|l| l.name() == name).map(|at| at as u16).ok_or_else(|| {
+	let at = levels.iter().position(|l| l.name() == name).ok_or_else(|| {
 		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name())).collect();
 		Error::Stalk(format!(
 			"{key}: {name:?} is not a state of {field:?} — its states are {}",
 			names.join(", ")
 		))
-	})
+	})?;
+	let count = levels.iter().filter(|l| l.name() == name).count();
+	if count > 1 {
+		return Err(Error::Stalk(format!(
+			"{key}: {field:?} has {count} states named {name:?} — which one is the button cannot be told"
+		)));
+	}
+	Ok(at as u16)
 }
 
 /// `[stalk]` against the project and the car: every name the owner wrote is the project's
@@ -3200,8 +3220,11 @@ mod tests {
 		);
 	}
 
-	/// The steering column's unit in the fixture: nothing about any car, only the shape the
-	/// lever's identifier has — several enumerated fields in one answer, a byte each.
+	/// The steering column's unit in the fixture. Its shape is the reference car's: `70C` is
+	/// the column's address across VAG, and the identifier, the two bytes at 64 and 72 and
+	/// the six-state ladder are the reference car's `1105` — several enumerated fields in
+	/// one answer, a byte each. Fixture values only: the code path takes none of them, every
+	/// one comes from `[stalk]` and the project.
 	const STALK_UNIT: u16 = 0x70C;
 
 	fn state_reading(did: u16, name: &str, text_id: &str, bit_offset: u32, bit_length: u32, levels: Vec<Level>) -> Reading {
@@ -3238,6 +3261,8 @@ mod tests {
 						reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
 						reading(0x3001, "Speed", "IDE00010", 0, 16, false, true, 1.0, 0.0),
 						reading(0x3002, "Offset speed", "IDE00011", 0, 16, false, true, 1.0, -40.0),
+						reading(0x3003, "Reverse speed", "IDE00012", 0, 16, false, true, -1.0, 0.0),
+						reading(0x3004, "Still speed", "IDE00013", 0, 16, false, true, 0.0, 0.0),
 						state_reading(
 							0x2001,
 							"Cruise status",
@@ -3255,6 +3280,25 @@ mod tests {
 						reading(0x1105, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
 						state_reading(0x1105, "Rocker", "", 64, 8, ladder(["shorted", "plus", "minus", "limit", "rest", "open"])),
 						state_reading(0x1105, "Switch", "", 72, 8, ladder(["shorted", "on", "cancel", "off", "lifted", "open"])),
+						// What the matching rule is for: a catch-all listed first, bands out of
+						// order, two that overlap, a second unbounded one.
+						state_reading(
+							0x1105,
+							"Messy",
+							"",
+							80,
+							8,
+							vec![
+								Level::range(i32::MIN, i32::MAX, "any"),
+								Level::range(200, 255, "plus"),
+								Level::range(0, 50, "minus"),
+								Level::range(40, 60, "limit"),
+								Level::point(100, "rest"),
+								Level::range(i32::MIN, -10, "below"),
+								Level::range(120, 130, "twice"),
+								Level::range(140, 150, "twice"),
+							],
+						),
 					],
 				),
 			],
@@ -3337,7 +3381,79 @@ mod tests {
 		}
 		assert_eq!(stalk.states.measure, vag_dash_render::stalk::StateIndex(3));
 		assert_eq!(device.stopwatch.map(|s| (s.speed, s.marks)), Some((1, &[60u16, 100][..])));
+
+		// A ladder where the order of trying matters: any rule but the shared one fails here.
+		let built = build_with_lever(&format!("{}{WATCH}", LEVER.replacen("\"Rocker\"", "\"Messy\"", 1))).unwrap();
+		let device = built.plan.to_device();
+		let bands = device.stalk.expect("carried to the board").rocker_states;
+		let laptop = &built.plan.stalk.as_ref().unwrap().rocker_states;
+		let levels: Vec<Level> = laptop.iter().map(|s| Level::range(s.lower, s.upper, s.name.clone())).collect();
+		for raw in [
+			i32::MIN,
+			i32::MIN + 1,
+			-11,
+			-10,
+			-9,
+			-1,
+			0,
+			39,
+			40,
+			45,
+			50,
+			51,
+			60,
+			61,
+			99,
+			100,
+			101,
+			199,
+			200,
+			255,
+			256,
+			i32::MAX,
+		] {
+			let board = vag_dash_render::plan::state_of(bands, i64::from(raw)).map(|s| usize::from(s.0));
+			assert_eq!(board, vag_data_labels::catalog::level_for(&levels, raw), "raw {raw}");
+		}
+		let name = |raw: i64| vag_dash_render::plan::state_of(bands, raw).map(|s| laptop[usize::from(s.0)].name.as_str());
+		assert_eq!(
+			(name(45), name(1_000), name(-20), name(100)),
+			(Some("minus"), Some("any"), Some("any"), Some("rest")),
+			"bounded first in table order, then the unbounded ones in theirs — `any` before `below`"
+		);
 	}
+
+	#[test]
+	fn a_button_named_by_a_state_the_field_gives_twice_is_refused() {
+		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1).replacen("\"plus\"", "\"twice\"", 1);
+		let why = build_with_lever(&lever).unwrap_err().to_string();
+		assert!(why.contains("has 2 states named \"twice\""), "{why}");
+	}
+
+	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
+	/// `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on an empty
+	/// plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` half of `to_rust`.
+	/// Built from this module's protocol-shaped fixture. `BLESS=1` rewrites it.
+	#[test]
+	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
+		let built = build_with_lever(&format!("{LEVER}{}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
+		let rust = to_rust(&built.plan);
+		// The generator's header names a VIN and says not to commit; the fixture says what it is.
+		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
+		let text = format!("{GENERATED_HEADER}{body}");
+		let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lever_plan.rs");
+		if std::env::var_os("BLESS").is_some() {
+			std::fs::write(&path, &text).unwrap();
+		}
+		let checked_in = std::fs::read_to_string(&path).unwrap_or_default();
+		assert!(
+			checked_in == text,
+			"{} is not what `to_rust` writes now — run `BLESS=1 cargo test -p vag-cli-core generated_source` and review the diff",
+			path.display()
+		);
+	}
+
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`; rewritten by `BLESS=1 cargo test -p vag-cli-core generated_source`.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
@@ -3436,10 +3552,21 @@ mod tests {
 			let why = refused("[60, 100]", marks);
 			assert!(why.contains(says), "{marks}: {why}");
 		}
-		for factor in ["-0.1", "\"fast\"", "1e40"] {
+		for factor in ["-0.1", "\"fast\"", "1e40", "1e-50"] {
 			let why = refused("0.0", factor);
 			assert!(why.contains("km_h_per_unit must be a number at or above 0"), "{factor}: {why}");
 		}
+		// A scaling that reads forward as zero or backwards; appended `[[channel]]`s, read fast.
+		for (text_id, factor) in [("IDE00012", "-1"), ("IDE00013", "0")] {
+			let watch = WATCH.replacen("IDE00010", text_id, 1);
+			let why = build_with_lever(&format!("{watch}[[channel]]\nref = \"01:{text_id}\"\nhz = 50\n"))
+				.unwrap_err()
+				.to_string();
+			assert!(why.contains(&format!("factor {factor} is not above zero")), "{text_id}: {why}");
+		}
+		// A speed read at the default rate: every run would cross its marks with no time.
+		let why = refused("01:IDE00010", "01:IDE00001");
+		assert!(why.contains("is read at 2 Hz") && why.contains("faster than 5 Hz"), "{why}");
 		let measured = build_with_lever(&WATCH.replacen("0.0", "0.0271", 1)).unwrap();
 		assert_eq!(measured.plan.stopwatch.unwrap().km_h_per_unit, 0.0271);
 	}

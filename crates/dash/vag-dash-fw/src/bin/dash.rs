@@ -198,6 +198,9 @@ struct Settings {
 	/// Set by every change, cleared by a save. Without it, "did that survive?"
 	/// is answered by a reboot instead of by looking.
 	unsaved: bool,
+	/// A finished run is in `config.last_run` and not yet in flash: written at the next
+	/// standstill the stopwatch sees, or by a `save` ([`store_run`]).
+	run_pending: bool,
 }
 
 /// Shared because two tasks touch it: the button cycles pages, the GATT
@@ -684,6 +687,7 @@ fn open_settings() -> Settings {
 							store: Some(store),
 							config,
 							unsaved: false,
+							run_pending: false,
 						}
 					}
 					Err(reason) => {
@@ -725,6 +729,7 @@ fn open_settings() -> Settings {
 							store: Some(store),
 							config: defaults,
 							unsaved: true,
+							run_pending: false,
 						}
 					}
 				},
@@ -734,6 +739,7 @@ fn open_settings() -> Settings {
 						store: Some(store),
 						config: Config::default(),
 						unsaved: false,
+						run_pending: false,
 					}
 				}
 				Err(e) => {
@@ -742,6 +748,7 @@ fn open_settings() -> Settings {
 						store: Some(store),
 						config: Config::default(),
 						unsaved: false,
+						run_pending: false,
 					}
 				}
 			}
@@ -752,6 +759,7 @@ fn open_settings() -> Settings {
 				store: None,
 				config: Config::default(),
 				unsaved: false,
+				run_pending: false,
 			}
 		}
 	}
@@ -1591,6 +1599,8 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 			continue;
 		}
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
+		// Nothing of the lever is read while the board is an adapter.
+		panel.stalk.lost();
 	}
 }
 
@@ -2158,11 +2168,19 @@ impl PanelReads {
 	/// One answer of the stopwatch's speed while the page is up, at the time it came.
 	fn time(&mut self, index: usize, value: Option<f32>, at_ms: u64) {
 		let Some(plan) = PLAN.stopwatch else { return };
-		if index != usize::from(plan.speed) || !self.shared.screen.lock(|cell| cell.borrow().stopwatch()) {
+		if index != usize::from(plan.speed) {
 			return;
 		}
+		let Some(turns) = self.shared.screen.lock(|cell| {
+			let screen = cell.borrow();
+			screen.stopwatch().then(|| screen.stopwatch_turns())
+		}) else {
+			return;
+		};
 		let (before, lap, after, run) = self.shared.stopwatch.lock(|w| {
 			let mut watch = w.borrow_mut();
+			// A turn of the mode since the last answer starts over, before this one counts.
+			watch.follow(turns);
 			let before = watch.phase();
 			let lap = watch.sample(value, at_ms);
 			(before, lap, watch.phase(), watch.run())
@@ -2355,8 +2373,10 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 ///
 /// While the stopwatch mode is on and no alarm holds the glass the stopwatch page is drawn
 /// instead (`todo/dash/19`): the phase over the speed, each mark's time. The machine is reset
-/// whenever the mode turns on or off, however it did; a run that finishes is kept in the
-/// settings — saved at once when nothing else is waiting to be saved.
+/// whenever the mode turns on or off, however it did ([`Screen::stopwatch_turns`]), and a run
+/// whose speed goes quiet is aborted here, where a frame comes whether or not an answer does.
+/// A run that finishes is kept in the settings and written to flash at the next standstill
+/// the stopwatch sees — never at speed (owner, 2026-09-26) — or by a `save`.
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stopwatch: &'static StopwatchCell) -> ! {
 	use vag_dash_render::history::History;
@@ -2389,8 +2409,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
 	// first window starts there and nothing from an earlier session is in it.
 	let mut meters: Option<(BitRate, BitRate)> = None;
-	// The stopwatch mode as the last frame saw it, and the finished run already kept.
-	let mut stopwatch_up = false;
+	// The finished run already kept.
 	let mut kept = None;
 	let words = stopwatch::Words::of(PLAN.language);
 	let labels = stopwatch::Labels::new(PLAN.stopwatch.map_or(&[][..], |plan| plan.marks));
@@ -2398,17 +2417,33 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
 
-		let up = screen.lock(|cell| cell.borrow().stopwatch());
-		if up != stopwatch_up {
-			stopwatch_up = up;
-			stopwatch.lock(|w| w.borrow_mut().reset());
+		let turns = screen.lock(|cell| cell.borrow().stopwatch_turns());
+		let (finished, silent, timing_changed, standing) = stopwatch.lock(|w| {
+			let mut watch = w.borrow_mut();
+			let timing = |phase| matches!(phase, Phase::Armed | Phase::Running);
+			let before = watch.phase();
+			watch.follow(turns);
+			let silent = watch.silence(ms());
+			let after = watch.phase();
+			(watch.finished(), silent, timing(before) != timing(after), after == Phase::Armed)
+		});
+		if silent == Some(Lap::Aborted) {
+			note!("stopwatch: the speed went quiet — the run is aborted");
 		}
-		let finished = stopwatch.lock(|w| w.borrow().finished());
+		// Out of armed or running the page cells come back to the foreground.
+		if timing_changed {
+			PAGES_CHANGED.signal(());
+		}
 		if finished != kept {
 			kept = finished;
 			if let Some(run) = finished {
 				keep_run(settings, run).await;
 			}
+		}
+		// Armed is a standstill held for a second: the car is not moving, so a flash write
+		// that stalls the executor costs a frame of the glass and nothing on the road.
+		if standing {
+			store_run(settings).await;
 		}
 
 		if adapter_mode() {
@@ -2590,9 +2625,9 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 }
 
 /// A finished run into the settings: its marks and times, the rest of the configuration as
-/// it is. Saved at once when what flash holds is what runs — the run is then all that
-/// differs; with changes already waiting for a `save`, it waits with them rather than
-/// saving what the person has not asked to keep.
+/// it is. Not written here: the run finishes at its highest mark, at speed, and a flash
+/// write erases a sector with the executor stalled — the glass frozen, answers and BLE
+/// events missed. [`store_run`] writes it once the car stands (owner, 2026-09-26).
 async fn keep_run(settings: &Shared, run: stopwatch::Run) {
 	let Some(plan) = PLAN.stopwatch else { return };
 	let mut times: heapless::Vec<(u16, u32), { stopwatch::MAX_MARKS }> = heapless::Vec::new();
@@ -2610,18 +2645,45 @@ async fn keep_run(settings: &Shared, run: stopwatch::Run) {
 	}
 	let mut s = settings.lock().await;
 	s.config.last_run = times;
-	if s.unsaved {
-		note!("stopwatch: the run is kept in memory — `save` stores it with the other changes");
+	s.run_pending = true;
+	note!("stopwatch: the run is kept — written to flash at the next standstill, or by `save`");
+}
+
+/// The run [`keep_run`] left waiting, written to flash — called at a standstill. What flash
+/// holds gets the run and nothing else: with other changes waiting for a `save`, the run
+/// goes into the configuration flash already holds, and those changes stay the person's
+/// to keep or not. Tried once; a run it could not write waits for the next `save`.
+async fn store_run(settings: &Shared) {
+	let mut guard = settings.lock().await;
+	let s = &mut *guard;
+	if !s.run_pending {
 		return;
 	}
-	let config = s.config.clone();
-	match s.store.as_mut().map(|store| store.save(&config)) {
-		Some(Ok(_)) => note!("stopwatch: the run is saved"),
-		Some(Err(e)) => {
+	s.run_pending = false;
+	let Some(store) = s.store.as_mut() else {
+		s.unsaved = true;
+		return;
+	};
+	let stored = if s.unsaved {
+		match store.load() {
+			Ok(mut stored) => {
+				stored.last_run = s.config.last_run.clone();
+				stored
+			}
+			Err(e) => {
+				note!("stopwatch: the run waits for `save` — flash holds no configuration to add it to ({e:?})");
+				return;
+			}
+		}
+	} else {
+		s.config.clone()
+	};
+	match store.save(&stored) {
+		Ok(_) => note!("stopwatch: the run is saved"),
+		Err(e) => {
 			s.unsaved = true;
 			note!("stopwatch: the run could not be saved ({e:?}) — `save` to retry");
 		}
-		None => s.unsaved = true,
 	}
 }
 
@@ -3174,6 +3236,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				Some(store) => match store.save(&config) {
 					Ok(generation) => {
 						s.unsaved = false;
+						s.run_pending = false;
 						let _ = write!(out, "ok: saved, generation {generation}");
 					}
 					Err(e) => {
@@ -3193,6 +3256,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 						Ok(()) => {
 							s.config = config;
 							s.unsaved = false;
+							s.run_pending = false;
 							PAGES_CHANGED.signal(());
 							let _ = write!(out, "ok: reloaded from flash");
 						}
@@ -3210,6 +3274,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 			let mut s = settings.lock().await;
 			s.config = Config::default();
 			s.unsaved = true;
+			s.run_pending = false;
 			PAGES_CHANGED.signal(());
 			let _ = write!(out, "ok: defaults in memory — 'save' to keep them");
 		}
@@ -3221,6 +3286,8 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				}
 				Some(store) => match store.erase() {
 					Ok(()) => {
+						// A run waiting for a standstill would write the configuration back.
+						s.run_pending = false;
 						let _ = write!(out, "ok: erased — next boot uses defaults");
 					}
 					Err(e) => {
