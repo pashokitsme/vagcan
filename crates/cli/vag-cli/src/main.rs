@@ -88,7 +88,11 @@ struct Cli {
 	/// Only needed with more than one car set up. `vagcan setup` writes down
 	/// the one it just built, `VAGCAN_PROJECT` overrides that for a shell, and
 	/// this overrides both for one command.
-	#[arg(long, global = true, value_name = "ID")]
+	//
+	// The globals are listed after each command's own flags. Left to clap they take their
+	// place here (0 and 1) in every subcommand too, and sort in between that command's
+	// first flags — `--project` between `--device` and `--ble`.
+	#[arg(long, global = true, value_name = "ID", display_order = 900)]
 	project: Option<String>,
 
 	/// Use the dash board's USB cable as a plain slcan adapter.
@@ -97,7 +101,7 @@ struct Cli {
 	/// requests and its panel keeps running. With it, the board stops the panel and relays
 	/// CAN frames the way a CANable does — what `dev sniff` needs, and what lets a sweep run
 	/// on the bench. It changes nothing for any other adapter, and means nothing over BLE.
-	#[arg(long, global = true)]
+	#[arg(long, global = true, display_order = 901)]
 	slcan: bool,
 
 	/// Nothing at all is a question — "what is this and what do I type" — and
@@ -1357,6 +1361,31 @@ mod tests {
 		}
 	}
 
+	/// `vagcan measure --ble setup` names setup's adapter, as `vagcan measure setup --ble`
+	/// does: the flag is not dropped for having been written before the subcommand.
+	#[cfg(feature = "measure")]
+	#[tokio::test]
+	async fn measure_setup_takes_the_adapter_named_before_it() {
+		for (args, adapter) in [
+			(&["vagcan", "measure", "--ble", "setup"][..], "ble"),
+			(&["vagcan", "measure", "--device", "ble", "setup"], "ble"),
+			(&["vagcan", "measure", "setup", "--ble"], "ble"),
+			(&["vagcan", "measure", "--device", "/dev/x", "setup"], "/dev/x"),
+		] {
+			let Some(Command::Measure(parsed)) = Cli::try_parse_from(args).unwrap().command else {
+				panic!("{args:?} is not measure")
+			};
+			let mut seen = None;
+			let stopped = measure::dispatch(parsed, "/definitely/not/here", async |device| -> Result<vag_cli_core::bus::Bus> {
+				seen = Some(device);
+				bail!("no adapter here")
+			})
+			.await;
+			assert!(stopped.is_err(), "{args:?}");
+			assert_eq!(seen, Some(Some(adapter.to_owned())), "{args:?}");
+		}
+	}
+
 	#[test]
 	fn a_replay_reads_no_adapter_on_either_spelling() {
 		for adapter in [&["--ble"][..], &["--device", "ble"], &["--device", "/dev/x"]] {
@@ -1378,6 +1407,36 @@ mod tests {
 			let sub = path.iter().fold(&mut cli, |c, name| c.find_subcommand_mut(name).expect("exists"));
 			assert!(sub.get_arguments().any(|a| a.get_id() == "device"), "{path:?}");
 			assert!(!sub.get_arguments().any(|a| a.get_id() == "ble"), "{path:?}");
+		}
+	}
+
+	/// `--ble` is read as the short spelling of the flag above it, so it is listed right
+	/// under `--device`, with no global flag between them.
+	#[test]
+	fn ble_is_listed_right_under_device() {
+		let mut cli = Cli::command();
+		cli.build();
+		let mut paths = vec![
+			vec!["info"],
+			vec!["units"],
+			vec!["faults"],
+			vec!["sensors"],
+			vec!["watch"],
+			vec!["dev", "vcds", "labels"],
+		];
+		if cfg!(feature = "measure") {
+			paths.extend([vec!["measure"], vec!["measure", "setup"]]);
+		}
+		for path in paths {
+			let sub = path.iter().fold(&mut cli, |c, name| c.find_subcommand_mut(name).expect("exists"));
+			let help = sub.render_help().to_string();
+			let flags: Vec<&str> = help
+				.lines()
+				.filter_map(|line| line.trim_start().strip_prefix("--"))
+				.map(|rest| rest.split([' ', '<']).next().unwrap_or(rest))
+				.collect();
+			let device = flags.iter().position(|f| *f == "device").unwrap_or_else(|| panic!("{path:?}: {help}"));
+			assert_eq!(flags.get(device + 1), Some(&"ble"), "{path:?}: {flags:?}");
 		}
 	}
 

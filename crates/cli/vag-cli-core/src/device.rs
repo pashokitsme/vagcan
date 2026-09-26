@@ -64,6 +64,10 @@ pub const BLE_COMMAND_HINT: &str = "An adapter over Bluetooth: vagcan info --ble
 // here once: [`DeviceArg::requested`] is the only way a command reads the pair. A command
 // that says more about the adapter overrides the help with `mut_arg("device", …)`.
 // (Not a doc comment: clap would take one on a flattened struct as the command's `about`.)
+// No `display_order` here: the two are declared together, so clap lists `--ble` right
+// under `--device` by itself; a fixed number would tie with the first flags of a command
+// that declares the pair last (`dev vcds labels`) and sort in between them. The globals
+// are what used to come between, and they are ordered last where they are declared.
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct DeviceArg {
 	/// Adapter to use: a serial path (a USB-CAN adapter, or the dash board on its USB
@@ -480,6 +484,8 @@ fn same_node(listed: &str, given: &str) -> bool {
 }
 
 /// Why an explicitly named board will not be opened.
+// Says `--device ble`, not `--ble`: this also reaches `dev survey` and `dev sniff`, which
+// take no `--ble`.
 fn not_an_adapter(path: &str, answer: &BoardAnswer) -> String {
 	match answer {
 		BoardAnswer::Unopened(why) => format!(

@@ -94,12 +94,15 @@ pub struct Cli {
 	/// The diagnostics binary carries this as a global flag, so the two
 	/// spellings would otherwise read different directories from the same
 	/// command line and say nothing about it.
-	#[arg(long, value_name = "ID", global = true)]
+	//
+	// Listed after the command's own flags, as on `vagcan`: left at 0 it sorts in between
+	// `--device` and `--ble`.
+	#[arg(long, value_name = "ID", global = true, display_order = 900)]
 	pub project: Option<String>,
 
 	/// Use the dash board's USB cable as a plain slcan adapter rather than reading through
 	/// its `dash` image. `vagcan` carries the same global flag.
-	#[arg(long, global = true)]
+	#[arg(long, global = true, display_order = 901)]
 	pub slcan: bool,
 
 	#[command(flatten)]

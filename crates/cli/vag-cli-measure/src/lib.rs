@@ -1997,6 +1997,18 @@ fn mark_rows(wanted: &[(u32, u32)], closed: &BTreeMap<(u32, u32), Seconds>) -> V
 		.collect()
 }
 
+/// The adapter `setup` opens. `--device`/`--ble` can be written before `setup` as well as
+/// after it, and either place names this one; two different ones are refused rather than
+/// one of them dropped.
+fn setup_adapter(before: &device::DeviceArg, after: &device::DeviceArg) -> anyhow::Result<Option<String>> {
+	match (before.requested(), after.requested()) {
+		(Some(before), Some(after)) if before != after => {
+			anyhow::bail!("the adapter is named twice, `{before}` before `setup` and `{after}` after it — name it once")
+		}
+		(before, after) => Ok(after.or(before).map(str::to_owned)),
+	}
+}
+
 /// Run whatever the command line asked for.
 ///
 /// The one entry point both binaries use, so `vagcan measure` and
@@ -2025,7 +2037,7 @@ pub async fn dispatch(
 			data: _,
 			car,
 		}) => {
-			let device = device.requested().map(str::to_owned);
+			let device = setup_adapter(&a.device, &device)?;
 			setup::run(
 				async || open(device).await,
 				setup::Options {
@@ -3218,6 +3230,46 @@ mod tests {
 		std::fs::write(&path, r#"{"runs": []}"#).unwrap();
 		assert!(open_view(path.to_str().unwrap()).unwrap_err().to_string().contains("no `schema`"));
 		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	/// The adapter `dispatch` hands `open` for this command line, or why it refused first.
+	pub(crate) async fn adapter_opened(parsed: args::Args) -> Result<Option<String>> {
+		let mut seen = None;
+		let refused = dispatch(parsed, "/definitely/not/here", async |device| -> Result<vag_cli_core::bus::Bus> {
+			seen = Some(device);
+			anyhow::bail!("no adapter here")
+		})
+		.await
+		.expect_err("nothing to open");
+		seen.ok_or(refused)
+	}
+
+	/// `setup` is a subcommand, so `--device`/`--ble` can be written before it as well as
+	/// after it. Either place names setup's adapter; two different ones are refused rather
+	/// than one of them dropped.
+	#[tokio::test]
+	async fn setup_takes_the_adapter_named_before_it_or_after_it() {
+		use clap::Parser as _;
+		let opened = async |args: &[&str]| adapter_opened(args::Cli::try_parse_from(args).unwrap().args).await;
+		for (args, adapter) in [
+			(&["vagcan-measure", "--ble", "setup"][..], Some("ble")),
+			(&["vagcan-measure", "--device", "ble", "setup"], Some("ble")),
+			(&["vagcan-measure", "--device", "/dev/x", "setup"], Some("/dev/x")),
+			(&["vagcan-measure", "setup", "--ble"], Some("ble")),
+			(&["vagcan-measure", "setup", "--device", "/dev/x"], Some("/dev/x")),
+			(&["vagcan-measure", "--ble", "setup", "--device", "ble"], Some("ble")),
+			(&["vagcan-measure", "setup"], None),
+		] {
+			let opened = opened(args).await.unwrap_or_else(|e| panic!("{args:?}: {e}"));
+			assert_eq!(opened.as_deref(), adapter, "{args:?}");
+		}
+		for args in [
+			&["vagcan-measure", "--ble", "setup", "--device", "/dev/x"][..],
+			&["vagcan-measure", "--device", "/dev/x", "setup", "--device", "/dev/y"],
+		] {
+			let refused = opened(args).await.expect_err("two adapters named");
+			assert!(refused.to_string().contains("named twice"), "{args:?}: {refused}");
+		}
 	}
 
 	/// No adapter, several, a dash board refused: `open` resolves the device, and a run that
