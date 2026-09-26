@@ -1,5 +1,6 @@
 // `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's
-// data. Compiled by `tests/generated_plan.rs`; rewritten by `BLESS=1 cargo test -p vag-cli-core generated_source`.
+// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
+// `BLESS=1 cargo test -p vag-cli-core generated_source`.
 use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};
 use vag_dash_render::stalk::{StateIndex, States};
 use vag_dash_render::alarm::Alarm;
@@ -15,7 +16,7 @@ static CHANNELS: [Channel; 6] = [
 	Channel { unit: 0x7E0, did: 0x1001, bit_offset: 0, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "One", proven: false, hz: 2.0, setpoint: None },
 	Channel { unit: 0x7E0, did: 0x3001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "°C", label: "Speed", proven: false, hz: 50.0, setpoint: None },
 	Channel { unit: 0x7E0, did: 0x3002, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: -40.0, decimals: 0, unit_text: "°C", label: "Offset speed", proven: false, hz: 2.0, setpoint: None },
-	Channel { unit: 0x70C, did: 0x1105, bit_offset: 64, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Rocker", proven: false, hz: 2.0, setpoint: None },
+	Channel { unit: 0x70C, did: 0x1105, bit_offset: 80, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Messy", proven: false, hz: 2.0, setpoint: None },
 	Channel { unit: 0x70C, did: 0x1105, bit_offset: 72, bit_length: 8, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Switch", proven: false, hz: 2.0, setpoint: None },
 	Channel { unit: 0x7E0, did: 0x2001, bit_offset: 0, bit_length: 16, signed: false, big_endian: true, factor: 1.0, offset: 0.0, decimals: 0, unit_text: "", label: "Cruise status", proven: false, hz: 2.0, setpoint: None },
 ];
@@ -28,13 +29,15 @@ static PAGES: [Page; 1] = [
 static ALARMS: [Alarm<'static>; 0] = [
 ];
 
-static STALK_ROCKER: [Band; 6] = [
-	Band { lower: 0, upper: 74 }, // "shorted"
-	Band { lower: 75, upper: 110 }, // "plus"
-	Band { lower: 111, upper: 145 }, // "minus"
-	Band { lower: 146, upper: 181 }, // "limit"
-	Band { lower: 182, upper: 221 }, // "rest"
-	Band { lower: 222, upper: 255 }, // "open"
+static STALK_ROCKER: [Band; 8] = [
+	Band { lower: i32::MIN, upper: i32::MAX }, // "any"
+	Band { lower: 200, upper: 255 }, // "plus"
+	Band { lower: 0, upper: 50 }, // "minus"
+	Band { lower: 40, upper: 60 }, // "limit"
+	Band { lower: 100, upper: 100 }, // "rest"
+	Band { lower: i32::MIN, upper: -10 }, // "below"
+	Band { lower: 120, upper: 130 }, // "twice"
+	Band { lower: 140, upper: 150 }, // "twice"
 ];
 
 static STALK_SWITCH: [Band; 6] = [

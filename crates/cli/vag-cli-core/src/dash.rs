@@ -546,6 +546,11 @@ fn parse_stopwatch(
 	// board as the zero that means "not measured".
 	let km_h_per_unit = match number(table.get("km_h_per_unit")) {
 		Some(v) if v.is_finite() && (v == 0.0 || (v > 0.0 && (v as f32).is_finite() && (v as f32) > 0.0)) => v,
+		Some(v) if v > 0.0 && (v as f32) == 0.0 => {
+			return Err(Error::Parse(format!(
+				"dash.toml: [stopwatch] km_h_per_unit {v} is too small for the board, which would hold it as 0 — not measured"
+			)));
+		}
 		_ => {
 			return Err(Error::Parse(
 				"dash.toml: [stopwatch] km_h_per_unit must be a number at or above 0 — 0 until it is measured on the car".to_string(),
@@ -3436,7 +3441,9 @@ mod tests {
 	/// Built from this module's protocol-shaped fixture. `BLESS=1` rewrites it.
 	#[test]
 	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
-		let built = build_with_lever(&format!("{LEVER}{}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
+		// The rocker on the ladder with unbounded states, so their literals are compiled too.
+		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1);
+		let built = build_with_lever(&format!("{lever}{}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
 		let rust = to_rust(&built.plan);
 		// The generator's header names a VIN and says not to commit; the fixture says what it is.
 		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
@@ -3453,7 +3460,7 @@ mod tests {
 		);
 	}
 
-	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`; rewritten by `BLESS=1 cargo test -p vag-cli-core generated_source`.\n";
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
@@ -3552,10 +3559,12 @@ mod tests {
 			let why = refused("[60, 100]", marks);
 			assert!(why.contains(says), "{marks}: {why}");
 		}
-		for factor in ["-0.1", "\"fast\"", "1e40", "1e-50"] {
+		for factor in ["-0.1", "\"fast\"", "1e40"] {
 			let why = refused("0.0", factor);
 			assert!(why.contains("km_h_per_unit must be a number at or above 0"), "{factor}: {why}");
 		}
+		let why = refused("0.0", "1e-50");
+		assert!(why.contains("too small for the board"), "{why}");
 		// A scaling that reads forward as zero or backwards; appended `[[channel]]`s, read fast.
 		for (text_id, factor) in [("IDE00012", "-1"), ("IDE00013", "0")] {
 			let watch = WATCH.replacen("IDE00010", text_id, 1);

@@ -19,8 +19,11 @@ fn the_generated_lever_plan_compiles_and_carries_the_lever_and_the_stopwatch() {
 	let stalk = PLAN.stalk.expect("a lever");
 	assert_eq!((stalk.rocker, stalk.switch, stalk.cruise), (3, 4, 5));
 	assert_eq!(stalk.states.measure, StateIndex(3));
-	// The fixture's ladder: 75..=110 is its second state.
-	assert_eq!(state_of(stalk.rocker_states, 80), Some(StateIndex(1)));
+	// The fixture's ladder with a catch-all listed first: bounded states win, in table order,
+	// and the catch-all takes the rest.
+	assert_eq!(state_of(stalk.rocker_states, 45), Some(StateIndex(2)));
+	assert_eq!(state_of(stalk.rocker_states, 80), Some(StateIndex(0)));
+	assert_eq!(state_of(stalk.rocker_states, i64::from(i32::MIN)), Some(StateIndex(0)));
 	assert_eq!(state_of(stalk.switch_states, 150), Some(StateIndex(3)));
 	let stopwatch = PLAN.stopwatch.expect("a stopwatch");
 	assert_eq!((stopwatch.speed, stopwatch.marks), (1, &[60u16, 100][..]));
