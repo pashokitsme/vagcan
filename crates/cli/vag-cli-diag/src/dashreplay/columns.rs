@@ -262,7 +262,8 @@ fn on_the_boards_scale(value: f64, owned: &PlanChannel, board: &DeviceChannel) -
 fn fits(raw: f64, bits: u32, signed: bool) -> bool {
 	let bits = bits.min(64) as i32;
 	let (least, most) = match signed {
-		true if bits > 0 => (-(2f64.powi(bits - 1)), 2f64.powi(bits - 1) - 1.0),
+		// A 1-bit field is never sign-extended, on the board or here: 0 or 1.
+		true if bits > 1 => (-(2f64.powi(bits - 1)), 2f64.powi(bits - 1) - 1.0),
 		_ => (0.0, 2f64.powi(bits) - 1.0),
 	};
 	(least..=most).contains(&raw)
@@ -593,6 +594,9 @@ mod tests {
 		assert_eq!(series[0], Some(vec![(0, Some(-128.0)), (100, Some(127.0))]));
 		let (series, _) = read_on(1.0, 8, "t_s,One\n0.0,128\n");
 		assert_eq!(series, [None]);
+		let (series, notes) = read_on(1.0, 1, "t_s,One\n0.0,0\n0.1,1\n");
+		assert!(notes.is_empty(), "a 1-bit field reads 0 or 1, signed or not: {notes:?}");
+		assert_eq!(series[0], Some(vec![(0, Some(0.0)), (100, Some(1.0))]));
 	}
 
 	#[test]
