@@ -1,5 +1,13 @@
 use alloc::vec::Vec;
 
+/// Status bit 3, `confirmedDTC` (ISO 14229-1 table D.1): the unit confirmed this
+/// failure, as opposed to merely listing the code. A **stored** code is one with it set.
+pub const CONFIRMED: u8 = 0x08;
+
+/// Status bit 0, `testFailed` (ISO 14229-1 table D.1): the test is failing at this
+/// moment, not historically.
+pub const FAILED_NOW: u8 = 0x01;
+
 /// One DTC entry as returned by ReadDTCInformation subfunction 0x02:
 /// 3 raw code bytes + 1 status byte. Semantic decoding happens in vag-data-labels (P2).
 #[derive(Debug, Clone, PartialEq, Eq)]

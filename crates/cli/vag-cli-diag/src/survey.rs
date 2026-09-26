@@ -155,26 +155,6 @@ impl UnitReport {
 	}
 }
 
-/// Which units to walk: the gateway's list, plus the three that are never in it.
-///
-/// The list covers VW's block only — the engine and the gearbox live on the ISO
-/// block and the gateway does not list itself (§3). Leaving those out would
-/// survey the car minus its three most-read units.
-fn walk_order(listed: &[u16]) -> Vec<u16> {
-	const ALWAYS: [u16; 3] = [0x7E0, 0x7E1, 0x710];
-	let mut out: Vec<u16> = ALWAYS.to_vec();
-	for id in listed {
-		// `0x776`/`0x777` are in the bitmap but are also response ids of units
-		// already in it, and `0x776 + 0x6A` collides with the engine's request
-		// id. §3 says to try rather than trust them; a timeout is cheap and a
-		// wrong assumption is not.
-		if !out.contains(id) {
-			out.push(*id);
-		}
-	}
-	out
-}
-
 /// One unit's identifiers as a survey recorded them.
 fn dids_of(line: &serde_json::Value) -> std::collections::BTreeMap<u16, String> {
 	let mut out = std::collections::BTreeMap::new();
@@ -460,7 +440,7 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 	let order = match requested {
 		Some(ids) => ids,
 		None => {
-			let address = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
+			let address = UnitAddress::from_request(gateway::GATEWAY).expect("the gateway is in VW's block");
 			let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(address.request), CanId::Standard(address.response)));
 			let listed = match uds.read_data_by_identifier(gateway::INSTALLATION_LIST).await {
 				Ok(bitmap) => gateway::decode_installation_list(&bitmap),
@@ -475,7 +455,8 @@ pub async fn run<L: UnitLink>(open: impl AsyncFnOnce() -> Result<L>, options: Op
 				}
 			};
 			backend = L::release(uds.into_transport());
-			walk_order(&listed)
+			// The three units the list never holds come first (`gateway::walk_order`).
+			gateway::walk_order(&listed)
 		}
 	};
 	let (store, extracted) = crate::declared::sources();
@@ -812,30 +793,6 @@ mod tests {
 		// And a unit absent from the second file entirely is skipped, not
 		// reported as every identifier changing.
 		assert!(diff(a, "").is_empty());
-	}
-
-	#[test]
-	fn the_walk_covers_the_units_the_gateway_cannot_list() {
-		// The installation list is VW's block only: it has no bit for the
-		// engine or the gearbox, and the gateway omits itself. A survey driven
-		// by the list alone would miss the three most-read units on the car.
-		let listed = vec![0x70C, 0x70E, 0x714];
-		let order = walk_order(&listed);
-		for must in [0x7E0, 0x7E1, 0x710] {
-			assert!(order.contains(&must), "{must:03X} missing from {order:03X?}");
-		}
-		for id in listed {
-			assert!(order.contains(&id));
-		}
-	}
-
-	#[test]
-	fn a_unit_listed_twice_is_walked_once() {
-		// 0x710 is in ALWAYS; a gateway that also listed itself must not make
-		// the survey read it twice.
-		let order = walk_order(&[0x710, 0x714, 0x714]);
-		assert_eq!(order.iter().filter(|id| **id == 0x710).count(), 1);
-		assert_eq!(order.iter().filter(|id| **id == 0x714).count(), 1);
 	}
 
 	#[test]

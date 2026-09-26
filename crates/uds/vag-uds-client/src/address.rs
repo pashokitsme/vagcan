@@ -20,7 +20,14 @@
 //! property of the protocol, so this module does not decide it: it accepts a
 //! table from whoever can establish it ([`install`]) and keeps a small built-in
 //! list as a fallback for a run that has no other source.
+//!
+//! **Two halves, one of them on the board.** The rule ([`UnitAddress::from_request`])
+//! is pure and builds `no_std`: the board addresses the units the gateway lists by it
+//! (`todo/dash/20`). The short-number table — [`install`], the override file, the
+//! built-in fallback, [`parse`] — reads the filesystem and a process-wide lock, and
+//! is the host's alone (`std`).
 
+#[cfg(feature = "std")]
 use std::sync::PoisonError;
 
 /// A unit to address: the id we send on and the id it answers on.
@@ -79,6 +86,7 @@ impl UnitAddress {
 
 	/// How this unit is written on screen and on the command line: the short
 	/// number when one is established, otherwise the request id.
+	#[cfg(feature = "std")]
 	pub fn label(&self) -> String {
 		match short_number(self.request) {
 			Some(n) => format!("{n:02X}"),
@@ -96,6 +104,7 @@ impl UnitAddress {
 /// merged field by field, so a run gets the id from whoever knows the id and
 /// the name from whoever knows the name.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "std")]
 pub struct UnitNumber {
 	/// The number as the diagnostic world writes it — a **hex** byte: `01`
 	/// engine, `17` instruments, `4B` a multi-function module.
@@ -119,6 +128,7 @@ pub struct UnitNumber {
 ///
 /// Nothing about label files reache this module: the caller does the
 /// label files work and hands in plain numbers and strings.
+#[cfg(feature = "std")]
 static INSTALLED: std::sync::RwLock<Vec<UnitNumber>> = std::sync::RwLock::new(Vec::new());
 
 /// Install pairings learned at run time — from the label files, and from what
@@ -129,6 +139,7 @@ static INSTALLED: std::sync::RwLock<Vec<UnitNumber>> = std::sync::RwLock::new(Ve
 /// it learns from the car as it goes. **First writer of a field wins**: a name
 /// or an id already established is not silently overwritten by a later,
 /// vaguer source.
+#[cfg(feature = "std")]
 pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 	let mut installed = INSTALLED.write().unwrap_or_else(PoisonError::into_inner);
 	for entry in pairings {
@@ -167,6 +178,7 @@ pub fn install(pairings: impl IntoIterator<Item = UnitNumber>) {
 /// reading the car through the label files (`vagcan units --identify`, which
 /// asks each id for its part number and asks the label files whose part number that
 /// is) or by a user writing it down in [`OVERRIDE_PATH`].
+#[cfg(feature = "std")]
 const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x09, 0x70E), (0x16, 0x70C), (0x17, 0x714)];
 
 /// Where a car's own number-to-id pairings are read from, when it has them:
@@ -177,6 +189,7 @@ const BUILT_IN_SHORT_NUMBERS: &[(u8, u16)] = &[(0x01, 0x7E0), (0x02, 0x7E1), (0x
 /// for in the checkout and every parent of it, which meant the same command
 /// behaved differently depending on where the shell was standing, and put a
 /// file describing somebody's car inside a repository.
+#[cfg(feature = "std")]
 pub const OVERRIDE_PATH: &str = ".vagcan/data/measured/unit-numbers.json";
 
 /// Read the override file, when the user has written one.
@@ -184,12 +197,14 @@ pub const OVERRIDE_PATH: &str = ".vagcan/data/measured/unit-numbers.json";
 /// The home directory is resolved from the environment rather than through a
 /// crate: this layer has no business growing a dependency to find one path, and
 /// a machine with no `HOME` simply has no override.
+#[cfg(feature = "std")]
 fn read_override() -> std::io::Result<String> {
 	let home = std::env::var_os("HOME").ok_or_else(|| std::io::Error::other("no HOME, so no override file"))?;
 	std::fs::read_to_string(std::path::Path::new(&home).join(OVERRIDE_PATH))
 }
 
 /// The pairings [`OVERRIDE_PATH`] states, or nothing when there is no such file.
+#[cfg(feature = "std")]
 fn override_pairings() -> Vec<UnitNumber> {
 	let Ok(text) = read_override() else {
 		return Vec::new();
@@ -219,6 +234,7 @@ fn override_pairings() -> Vec<UnitNumber> {
 }
 
 /// The built-in fallback as pairings.
+#[cfg(feature = "std")]
 fn built_in_pairings() -> Vec<UnitNumber> {
 	BUILT_IN_SHORT_NUMBERS
 		.iter()
@@ -235,6 +251,7 @@ fn built_in_pairings() -> Vec<UnitNumber> {
 ///
 /// Field by field rather than whole entries, so label files that names `17`
 /// without knowing its CAN id adds the name without hiding the built-in id.
+#[cfg(feature = "std")]
 fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 	let mut out: Vec<UnitNumber> = Vec::new();
 	for tier in tiers {
@@ -261,6 +278,7 @@ fn pairings_in_force(tiers: &[&[UnitNumber]]) -> Vec<UnitNumber> {
 /// 2. **the label files and the car** — whatever [`install`] was handed at startup;
 /// 3. **the built-in fallback** — the five pairings proven on the reference
 ///    car, so a run with neither of the above still works as it always did.
+#[cfg(feature = "std")]
 fn short_numbers() -> Vec<UnitNumber> {
 	// Borrow the installed list under the read guard rather than cloning it:
 	// `pairings_in_force` only reads its inputs, and neither `override_pairings`
@@ -272,17 +290,20 @@ fn short_numbers() -> Vec<UnitNumber> {
 
 /// The request id a short unit number denotes, when there is an established
 /// pairing for it.
+#[cfg(feature = "std")]
 pub fn request_for_short(number: u8) -> Option<u16> {
 	short_numbers().into_iter().find(|e| e.number == number).and_then(|e| e.request)
 }
 
 /// The short number for a request id, when there is one.
+#[cfg(feature = "std")]
 pub fn short_number(request: u16) -> Option<u8> {
 	short_numbers().into_iter().find(|e| e.request == Some(request)).map(|e| e.number)
 }
 
 /// What the label files call a unit number, when label files said. Used to make a
 /// refusal name the unit it is refusing.
+#[cfg(feature = "std")]
 pub fn name_for_short(number: u8) -> Option<String> {
 	short_numbers().into_iter().find(|e| e.number == number).and_then(|e| e.name)
 }
@@ -293,6 +314,7 @@ pub fn name_for_short(number: u8) -> Option<String> {
 /// Two-digit input is read as a short number and three-digit as a hex id, which
 /// is unambiguous — every diagnostic request id on this car is three hex
 /// digits, and no short number reaches three.
+#[cfg(feature = "std")]
 pub fn parse(text: &str) -> Result<UnitAddress, String> {
 	let text = text.trim();
 	if text.is_empty() {
@@ -330,6 +352,7 @@ pub fn parse(text: &str) -> Result<UnitAddress, String> {
 /// (`faults --ecu`, `survey --only`) use this to validate before they open the
 /// adapter, which is a single-user resource — opening it and then failing on a
 /// typo leaves the port held while the user retypes.
+#[cfg(feature = "std")]
 pub fn parse_list(spec: &str) -> Result<Vec<UnitAddress>, String> {
 	let units: Vec<UnitAddress> = spec
 		.split(',')

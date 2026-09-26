@@ -35,6 +35,39 @@ pub const INSTALLATION_LIST_ALT: u16 = 0x04A3;
 /// for a guess.
 pub const INSTALLATION_LIST_SUBSET: u16 = 0x2A28;
 
+/// The gateway's request id: the unit the installation list is read from.
+///
+/// A property of VW's platform, not of one car: the gateway is diagnostic address
+/// `0x19` and answers on VW's block by its rule ([`crate::address`], `0x710` →
+/// `0x77A`), identified on the reference car as `3Q0 907 530 B`
+/// (`.archive/research/car/other-ecus.md` §1, §3). Every command that walks the car
+/// starts here.
+pub const GATEWAY: u16 = 0x710;
+
+/// The units the installation list never holds, read first: the engine and the
+/// gearbox, which live on ISO 15765-4's block (`0x7E0`, `0x7E1` — its first two
+/// physically addressed emissions servers) and have no bit in a bitmap of VW's block,
+/// and the gateway, which does not list itself.
+pub const NOT_LISTED: [u16; 3] = [0x7E0, 0x7E1, GATEWAY];
+
+/// Which units to walk: [`NOT_LISTED`], then the gateway's list, each once.
+///
+/// One order for every command that reads the whole car — `faults`, `dev survey` and the
+/// board's fault count (`todo/dash/20`) — so they read the same units.
+pub fn walk_order(listed: &[u16]) -> Vec<u16> {
+	let mut out: Vec<u16> = NOT_LISTED.to_vec();
+	for id in listed {
+		// `0x776`/`0x777` are in the bitmap but are also response ids of units
+		// already in it, and `0x776 + 0x6A` collides with the engine's request
+		// id. The list is to be tried rather than trusted ([`decode_installation_list`]);
+		// a timeout is cheap and a wrong assumption is not.
+		if !out.contains(id) {
+			out.push(*id);
+		}
+	}
+	out
+}
+
 /// The lowest diagnostic request id a bit can denote.
 const BASE_ID: u16 = 0x700;
 
@@ -109,6 +142,22 @@ mod tests {
 		assert_eq!(decode_installation_list(&[0x01]), vec![0x700]);
 		assert_eq!(decode_installation_list(&[0x80]), vec![0x707]);
 		assert_eq!(decode_installation_list(&[0x00, 0x01]), vec![0x708]);
+	}
+
+	#[test]
+	fn the_walk_covers_the_units_the_gateway_cannot_list() {
+		// The installation list is VW's block only: it has no bit for the
+		// engine or the gearbox, and the gateway omits itself. A walk driven
+		// by the list alone would miss the three most-read units on the car.
+		let order = walk_order(&[0x70C, 0x70E, 0x714]);
+		assert_eq!(order, vec![0x7E0, 0x7E1, 0x710, 0x70C, 0x70E, 0x714]);
+	}
+
+	#[test]
+	fn a_unit_listed_twice_is_walked_once() {
+		// 0x710 is always walked; a gateway that also listed itself must not make
+		// the walk read it twice.
+		assert_eq!(walk_order(&[0x710, 0x714, 0x714]), vec![0x7E0, 0x7E1, 0x710, 0x714]);
 	}
 
 	#[test]

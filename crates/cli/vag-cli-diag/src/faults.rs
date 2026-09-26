@@ -25,16 +25,9 @@
 use anyhow::{Context, Result};
 use vag_uds_can::UnitLink;
 use vag_uds_client::address::UnitAddress;
-use vag_uds_client::dtc::{CarTime, FaultContext, UnitStamp};
+use vag_uds_client::dtc::{CONFIRMED, CarTime, FAILED_NOW, FaultContext, UnitStamp};
 use vag_uds_client::{AsyncUdsClient, RawDtc, gateway};
 use vag_uds_transport::CanId;
-
-/// Status bit 3 — the unit confirmed this failure, as opposed to merely
-/// listing the code.
-pub const CONFIRMED: u8 = 0x08;
-
-/// Status bit 0 — the test is failing at this moment, not historically.
-pub const FAILED_NOW: u8 = 0x01;
 
 /// What one unit reported.
 #[derive(Debug, Clone, Default)]
@@ -444,7 +437,7 @@ pub async fn run<L: UnitLink>(
 	let order = match requested {
 		Some(ids) => ids,
 		None => {
-			let gw = UnitAddress::from_request(0x710).expect("the gateway is in VW's block");
+			let gw = UnitAddress::from_request(gateway::GATEWAY).expect("the gateway is in VW's block");
 			let mut uds = AsyncUdsClient::new(backend.to_unit(CanId::Standard(gw.request), CanId::Standard(gw.response)));
 			let listed = match uds.read_data_by_identifier(gateway::INSTALLATION_LIST).await {
 				Ok(bitmap) => gateway::decode_installation_list(&bitmap),
@@ -455,15 +448,8 @@ pub async fn run<L: UnitLink>(
 			};
 			backend = L::release(uds.into_transport());
 			// The engine, the gearbox and the gateway itself are never in the
-			// list — the first two live on the other id block, and the
-			// gateway does not list itself.
-			let mut ids = vec![0x7E0, 0x7E1, 0x710];
-			for id in listed {
-				if !ids.contains(&id) {
-					ids.push(id);
-				}
-			}
-			ids
+			// list; the order is the one the board's fault count walks too.
+			gateway::walk_order(&listed)
 		}
 	};
 
