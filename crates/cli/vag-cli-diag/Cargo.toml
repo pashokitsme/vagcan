@@ -23,6 +23,10 @@ rayon = { workspace = true }
 serde_json.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
+# `dev recording dash`: the board's own screen, alarm and drawing code, run over a
+# recording, and the `DrawTarget` its panel is drawn into on the laptop.
+vag-dash-render = { path = "../../dash/vag-dash-render" }
+embedded-graphics = "0.8"
 dirs = "6"
 # The system folder chooser behind `setup`'s "Choose the folder in a dialog"
 # row. It lives here rather than in `vag-cli-core` because the question it

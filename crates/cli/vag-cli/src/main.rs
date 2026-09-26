@@ -481,7 +481,7 @@ enum Dev {
 	/// Read back a drive this tool recorded. Offline — no car.
 	///
 	/// `vagcan watch --out` writes the CSV; these read it afterwards, at a
-	/// desk. Neither has anything to say with the car in front of you.
+	/// desk. None has anything to say with the car in front of you.
 	Recording {
 		#[command(subcommand)]
 		tool: recording::Tool,
@@ -1282,6 +1282,34 @@ mod tests {
 		let help = flag_help(&["dev", "vcds", "labels"], "iv_cache");
 		assert!(!help.contains("cargo"), "{help}");
 		assert!(help.contains(".rod"), "{help}");
+	}
+
+	#[test]
+	fn the_dash_replay_takes_a_recording_a_car_and_presses_and_no_adapter() {
+		let parse = |args: &[&str]| Cli::try_parse_from(["vagcan", "dev", "recording", "dash"].iter().chain(args).collect::<Vec<_>>());
+		let parsed = parse(&["TESTVIN0000000001", "--log", "d.csv", "--press", "12.5", "--press", "20", "--speed", "2"]).unwrap();
+		let Some(Command::Dev {
+			tool: Dev::Recording {
+				tool: recording::Tool::Dash {
+					vin, log, presses, speed, ..
+				},
+			},
+		}) = parsed.command
+		else {
+			panic!("not the dash replay");
+		};
+		assert_eq!(
+			(vin.as_str(), log.as_deref(), presses, speed),
+			("TESTVIN0000000001", Some("d.csv"), vec![12.5, 20.0], 2.0)
+		);
+		assert!(parse(&["TESTVIN0000000001", "--press", "-1"]).is_err(), "a time before the recording");
+		assert!(parse(&["TESTVIN0000000001", "--press", "soon"]).is_err());
+		for speed in ["0", "-1", "nan", "inf", "fast"] {
+			assert!(parse(&["TESTVIN0000000001", "--speed", speed]).is_err(), "--speed {speed}");
+		}
+		assert!(parse(&["TESTVIN0000000001", "--speed", "0.5"]).is_ok());
+		// Offline: nothing to connect to.
+		assert!(parse(&["TESTVIN0000000001", "--device", "/dev/x"]).is_err());
 	}
 
 	#[test]

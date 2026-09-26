@@ -324,6 +324,29 @@ mod tests {
 	}
 
 	#[test]
+	fn an_answer_the_reference_could_not_convert_is_not_a_reference_value() {
+		// Since 2026-09-26 `watch --out` marks such an answer `0x…`; bare, `0B34` was
+		// skipped but `1000` would have been taken as a reading of 1000 rpm.
+		let clean = calibrate(&recording(), Thresholds::default()).unwrap();
+		let marked: String = recording()
+			.lines()
+			.enumerate()
+			.map(|(i, line)| match i % 7 {
+				3 => {
+					let cells: Vec<&str> = line.split(',').collect();
+					format!("{},{},0x1000,{},{}\n", cells[0], cells[1], cells[3], cells[4])
+				}
+				_ => format!("{line}\n"),
+			})
+			.collect();
+		let fits = calibrate(&marked, Thresholds::default()).unwrap();
+		assert_eq!(fits.len(), 1, "{fits:?}");
+		assert_eq!((fits[0].form, fits[0].scale), (clean[0].form, clean[0].scale));
+		assert!(fits[0].points < clean[0].points, "the marked cells were not used");
+		assert!(fits[0].r2 >= clean[0].r2 - 1e-9);
+	}
+
+	#[test]
 	fn a_name_two_columns_share_calibrates_nothing_rather_than_guessing() {
 		// Channel labels are not unique: two units can both call a channel
 		// "Engine speed". Merging their samples fits a line through interleaved

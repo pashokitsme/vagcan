@@ -33,6 +33,12 @@ pub struct Recording {
 	pub columns: Vec<Column>,
 	/// `(seconds from the start, one cell per column)`.
 	pub samples: Vec<(f64, Vec<Option<String>>)>,
+	/// Per sample, per column: when that column's value was read, where the file says
+	/// (`name_t_s`). `None` for a column the file gives no time of its own, and where that
+	/// time cell is empty. A time beside an empty value is a read that missed then
+	/// (written since 2026-09-26). This screen ignores it — a replay here runs on one clock — but the dash
+	/// replay reads a value's age off it, as the board's store does.
+	pub read_at: Vec<Vec<Option<f64>>>,
 }
 
 /// A column of a recording.
@@ -71,7 +77,8 @@ impl Recording {
 	pub fn parse(csv: &str) -> Result<Recording, String> {
 		let mut lines = csv.lines().filter(|l| !l.trim().is_empty());
 		let header = lines.next().ok_or("the recording is empty")?;
-		let headings: Vec<&str> = header.split(',').collect();
+		let headings = crate::discover::fields(header);
+		let headings: Vec<&str> = headings.iter().map(String::as_str).collect();
 		if headings.first().map(|h| h.trim()) != Some("t_s") {
 			return Err("not a `watch --out` recording: the first column is not t_s".into());
 		}
@@ -83,34 +90,37 @@ impl Recording {
 		// marker on the heading is this reader's own business.
 		let mut columns = Vec::new();
 		let mut cells: Vec<usize> = Vec::new();
-		for (at, _, heading) in crate::discover::value_columns(&headings) {
+		let mut times: Vec<Option<usize>> = Vec::new();
+		for (at, time, heading) in crate::discover::value_columns(&headings) {
 			let (name, raw) = match heading.trim().strip_suffix("_raw") {
 				Some(base) => (base.to_string(), true),
 				None => (heading.trim().to_string(), false),
 			};
 			columns.push(Column { name, raw });
 			cells.push(at);
+			times.push(time);
 		}
 		if columns.is_empty() {
 			return Err("the recording has no value columns".into());
 		}
 
 		let mut samples = Vec::new();
+		let mut read_at = Vec::new();
 		for line in lines {
-			let row: Vec<&str> = line.split(',').collect();
+			let row = crate::discover::fields(line);
 			let Some(Ok(t)) = row.first().map(|c| c.trim().parse::<f64>()) else {
 				continue;
 			};
-			let values = cells
-				.iter()
-				.map(|at| row.get(*at).map(|c| c.trim()).filter(|c| !c.is_empty()).map(str::to_string))
-				.collect();
+			let cell = |at: usize| row.get(at).map(|c| c.trim()).filter(|c| !c.is_empty());
+			let values = cells.iter().map(|at| cell(*at).map(str::to_string)).collect();
+			let at = times.iter().map(|time| time.and_then(cell).and_then(|c| c.parse::<f64>().ok())).collect();
 			samples.push((t, values));
+			read_at.push(at);
 		}
 		if samples.is_empty() {
 			return Err("the recording has no samples".into());
 		}
-		Ok(Recording { columns, samples })
+		Ok(Recording { columns, samples, read_at })
 	}
 }
 
@@ -205,6 +215,11 @@ pub fn columns_that_moved(recording: &Recording) -> Vec<usize> {
 /// or a non-linear scaling cannot be inverted, and returns `None` rather than
 /// a number that looks like a reading and is not one.
 pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>> {
+	// An answer the writer could not convert, marked as such: its bytes, exactly — and
+	// none at all is no reading, as an empty raw cell is not one below.
+	if let Some(bytes) = unconverted(cell) {
+		return Some(bytes).filter(|bytes| !bytes.is_empty());
+	}
 	// The `_raw` marker settles it when present. When it is absent the channel
 	// does: a column for an identifier with no proven scaling cannot have had
 	// a converted value written for it, so its cells are bytes. Recordings
@@ -233,6 +248,15 @@ pub fn cell_to_bytes(cell: &str, channel: &Channel, raw: bool) -> Option<Vec<u8>
 		return None;
 	}
 	encode(count as u64, def.raw_form)
+}
+
+/// The bytes of a cell marked [`UNCONVERTED`](super::UNCONVERTED) — an answer the writer
+/// could not convert — or `None` for any other cell. Bare `0x` is a positive answer that
+/// carried no bytes, and is empty. A recording from before the mark (2026-09-26) wrote such
+/// an answer as bare hex, which nothing tells from a number.
+pub fn unconverted(cell: &str) -> Option<Vec<u8>> {
+	let hex = cell.strip_prefix(super::UNCONVERTED)?;
+	vag_cli_core::plan::hex_bytes(hex)
 }
 
 /// Lay an integer out the way a control unit would have sent it.
@@ -351,6 +375,15 @@ mod tests {
 		assert_eq!(recording.columns.len(), 1);
 		assert_eq!(recording.columns[0].name, "Boost");
 		assert_eq!(recording.samples[1].1, vec![Some("1.02".to_string())]);
+		// Kept beside the cells for a reader that wants the moment the value is of.
+		assert_eq!(recording.read_at, vec![vec![Some(0.0)], vec![Some(0.09)]]);
+	}
+
+	#[test]
+	fn a_column_without_a_time_of_its_own_has_none_and_an_empty_cell_has_none() {
+		let csv = "t_s,Boost,Temp_t_s,Temp\n0.000,1.01,,\n0.100,1.02,0.080,90\n";
+		let recording = Recording::parse(csv).unwrap();
+		assert_eq!(recording.read_at, vec![vec![None, None], vec![None, Some(0.08)]]);
 	}
 
 	#[test]

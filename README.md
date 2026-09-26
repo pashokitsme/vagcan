@@ -38,7 +38,7 @@ The tool is not designed for write operations: coding, adaptations, clearing fau
 | `dev survey` | Reads every control unit: identity, faults, the identifiers its data declares. Refused while driving unless `--while-driving` is given |
 | `dev sniff` | Records the bus. Listen-only by default. Reports dropped frames if the adapter can tell |
 | `dev glossary` | Your own names for channels, in `~/.vagcan/names.csv` |
-| `dev recording` | Works on recorded drives: `calibrate` proves scalings, `discover` finds gear and mode channels |
+| `dev recording` | Works on recorded drives: `calibrate` proves scalings, `discover` finds gear and mode channels, `dash` plays one on the dash panel |
 | `dev vcds` | Works on VCDS files: label lookup, name search, `.rod` decryption, log analysis |
 | `dev dash build` | Builds the dash plan for one car |
 
@@ -70,6 +70,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
 - **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
+- **Replay without the board**: `vagcan dev recording dash <VIN> --log drive.csv` plays a `watch --out` recording on the panel in the terminal, alarms included, and prints each alarm event. `--press 12.5` presses the button at 12.5 s. Piped, it prints the events only.
 
 ## Roadmap
 

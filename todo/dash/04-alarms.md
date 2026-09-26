@@ -8,9 +8,12 @@
 since 2026-09-22, and on the bench the board polls their channels on every page. Rules are
 `[[alarm]]` tables in `dash.toml`, checked at plan build and carried into `plan.json` /
 `plan.rs`; the board reads their channels at full rate on every page, takes the screen,
-inverts the offending cell and silences on a short press. Open: a run on the car, where
-the misfire window and every threshold are checked, and the demo from a recorded drive (no
-hardware-free replay exists — see "Done when").
+inverts the offending cell and silences on a short press. **2026-09-26:** the hardware-free
+replay exists — `vagcan dev recording dash <VIN> --log FILE.csv [--press S]…` runs a
+`watch --out` recording through the board's `Screen`, alarms, `Plan::rates` and renderer and
+logs every takeover, hand-back and silence. Open: a run on the car, where the misfire window
+and every threshold are checked, and a recording with the retard channels to replay (see
+"Done when").
 
 ## Goal
 
@@ -199,15 +202,37 @@ Inversion covers exactly the offending cell's rectangle — `render.rs`,
 The retard alarm can be demonstrated in the simulator (`03`) from a recorded drive, and
 the flicker test passes on a series built to sit exactly on the threshold.
 
-The flicker test passes, and the wiring is done. The demo cannot be run without hardware
-today (checked 2026-09-14):
+The flicker test passes, and the wiring is done. The host replay exists (2026-09-26):
 
-- `dashsim` shows the board's own frames — it needs the board on the bench, and nothing on the
-  bench answers `200A`–`200D`.
-- `vagcan watch` replays a `watch --out` recording through the *terminal* view, not the
-  dash renderer; `vag-dash-render/examples/panel.rs` renders fixed stand-in frames.
-- The recorded drives (`research/dumps/drive-gear.csv`, `drive-gearbox.csv`) are gearbox
-  channels; none holds `200A`–`200D`.
+```
+vagcan dev recording dash <VIN> --log drive.csv            # the panel in the terminal
+vagcan dev recording dash <VIN> --log drive.csv --press 12.5 | cat   # the event log only
+```
 
-Left: record a drive with the retard channels, then either feed it to a host renderer or
-show it on the board through `dashsim`; the misfire rule's two numbers, from the car.
+It resolves the plan as `dev dash build` does (nothing written), matches recording columns to
+plan channels by unit, identifier and field (a heading two channels of the car share is
+refused, not guessed), and runs `Screen`, the alarms and `Plan::rates` on the recording's own
+clock, with the firmware's frame period (200 ms) and staleness rule (5 s, or three periods)
+mirrored in `vag-cli-diag/src/dashreplay/engine.rs`. A plan channel the recording does not
+hold is `None`: it neither trips nor releases. Its tests (neutral channels): one takeover for
+a value hovering on the trip, the hand-back 2.5 s after the release by recording time,
+silence and re-arm, a missing channel never tripping, columns matched in another order, the
+piped output being the log alone, and the panel being the board's frame with the offending
+cell inverted.
+
+Since 2026-09-26 `watch --out` quotes a heading with a comma ("Ignition retard, cylinder 1"
+split in two before), writes a read that missed as its time in `_t_s` with the value empty, and
+marks an answer it could not convert `0x…` in a converted column. The replay reads a miss only
+there: an empty cell with no time of its own is no evidence (recordings without `_t_s` columns
+leave whole rows empty between sweeps — `research/dumps/drive-gear.csv`). A recording made
+before cannot show a miss (the replay keeps its last value `fresh_for` from when it was heard)
+and wrote an unconverted answer as bare hex, which cannot be told from a number. Owner's call
+(2026-09-26, after four review rounds on salvaging it): no salvage. A converted column holding
+any cell that is not a number on the plan's scaling, a `0x…` cell or empty is dropped whole,
+with a note saying it is another scaling or an old recording's bare hex. Columns are matched
+by name against the plan's survey; a unit `watch` identified live that the survey lacks could
+share a name, and the replay says it matched by name.
+
+Left: record a drive with the retard channels (`watch --out` with `200A`–`200D` selected, on
+the car, with this build) and replay it; the misfire rule's two numbers, from the car. The recorded drives in
+`research/dumps/` are gearbox channels; none holds `200A`–`200D`.

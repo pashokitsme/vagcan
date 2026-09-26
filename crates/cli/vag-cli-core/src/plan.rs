@@ -324,7 +324,9 @@ pub fn identities_from_survey(survey: &str) -> Vec<UnitIdentity> {
 /// zero" means. A caller for whom an empty *cell* is not a reading says so
 /// itself; see `watch::replay::cell_to_bytes`.
 pub fn hex_bytes(text: &str) -> Option<Vec<u8>> {
-	if text.len() % 2 != 0 {
+	// Hex is ASCII; anything else is not hex, and slicing it by byte could cut a
+	// character in half.
+	if text.len() % 2 != 0 || !text.is_ascii() {
 		return None;
 	}
 	(0..text.len() / 2)
@@ -544,6 +546,15 @@ pub fn parse_spec(spec: &str) -> Result<Vec<(u16, u16)>, String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn hex_that_is_not_ascii_is_not_hex_rather_than_a_panic() {
+		// `aéb` is four bytes, so the length check passed and the slice cut `é` in half.
+		assert_eq!(hex_bytes("aéb"), None);
+		assert_eq!(hex_bytes("éé"), None);
+		assert_eq!(hex_bytes("0B34"), Some(vec![0x0B, 0x34]));
+		assert_eq!(hex_bytes(""), Some(vec![]));
+	}
 	use std::borrow::Cow;
 	use vag_data_labels::catalog::{ReadId, Scaling};
 	use vag_data_labels::measure::{LinearScale, RawForm};

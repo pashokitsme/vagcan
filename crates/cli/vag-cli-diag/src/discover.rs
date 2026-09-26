@@ -66,14 +66,15 @@ const STEPPED_MAX_LEVELS: usize = 12;
 pub fn series(csv: &str) -> Vec<(String, Vec<(f64, String)>)> {
 	let mut lines = csv.lines();
 	let Some(header) = lines.next() else { return Vec::new() };
-	let names: Vec<&str> = header.split(',').collect();
+	let names = fields(header);
+	let names: Vec<&str> = names.iter().map(String::as_str).collect();
 	let columns = value_columns(&names);
 	let mut out: Vec<(String, Vec<(f64, String)>)> = columns.iter().map(|(_, _, name)| ((*name).to_string(), Vec::new())).collect();
 	for line in lines {
 		if line.trim().is_empty() {
 			continue;
 		}
-		let cells: Vec<&str> = line.split(',').collect();
+		let cells = fields(line);
 		let Some(Ok(row_t)) = cells.first().map(|c| c.trim().parse::<f64>()) else {
 			continue;
 		};
@@ -89,6 +90,45 @@ pub fn series(csv: &str) -> Vec<(String, Vec<(f64, String)>)> {
 		}
 	}
 	out
+}
+
+/// One line of a recording, cut into its fields.
+///
+/// A field in double quotes may hold commas, and `""` inside it is one quote — the part
+/// of RFC 4180 `watch --out` writes, because channel names carry commas ("…, cylinder
+/// 1") and a bare one made one heading two. A recording written before the quoting cuts
+/// at every comma as it always did — except where a field there begins with `"`: that is
+/// read as quoted now, so its commas no longer cut and its quotes are dropped. The old
+/// writer quoted nothing, so such a field could only come from a heading that itself
+/// began with a quote.
+pub fn fields(line: &str) -> Vec<String> {
+	let mut out = Vec::new();
+	let mut field = String::new();
+	let mut quoted = false;
+	let mut chars = line.chars().peekable();
+	while let Some(c) = chars.next() {
+		match (c, quoted) {
+			('"', true) if chars.peek() == Some(&'"') => {
+				chars.next();
+				field.push('"');
+			}
+			('"', true) => quoted = false,
+			('"', false) if field.is_empty() => quoted = true,
+			(',', false) => out.push(std::mem::take(&mut field)),
+			_ => field.push(c),
+		}
+	}
+	out.push(field);
+	out
+}
+
+/// A heading as `watch --out` writes it: in quotes when it holds a comma or a quote, as
+/// is otherwise. The reverse of [`fields`].
+pub fn quoted(field: &str) -> std::borrow::Cow<'_, str> {
+	match field.contains([',', '"']) {
+		true => format!("\"{}\"", field.replace('"', "\"\"")).into(),
+		false => field.into(),
+	}
 }
 
 /// Where each value column sits in a row, and where its own timestamp sits when
@@ -126,7 +166,7 @@ pub fn value_columns<'a>(headings: &[&'a str]) -> Vec<(usize, Option<usize>, &'a
 pub fn classify(csv: &str) -> Result<Vec<Column>, String> {
 	let mut lines = csv.lines();
 	let header = lines.next().ok_or("the recording is empty")?;
-	let names: Vec<&str> = header.split(',').collect();
+	let names = fields(header);
 	if names.len() < 2 || names[0] != "t_s" {
 		return Err("not a `vagcan watch --out` recording (expected a t_s column)".to_string());
 	}
@@ -253,6 +293,42 @@ pub fn co_changing(columns: &[Column], window: f64) -> Vec<(String, String, f64)
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_state_written_as_marked_bytes_is_still_a_state_and_a_missed_read_no_change() {
+		// A gear has a definition and no number, so `watch --out` writes its bytes
+		// marked `0x`; a read that missed writes an empty cell, which is not a level.
+		let csv = "t_s,Gear_t_s,Gear\n0.0,0.0,0x05\n0.1,,\n0.2,0.2,0x06\n0.3,0.3,0x05\n";
+		let columns = classify(csv).unwrap();
+		assert_eq!(columns[0].samples, 3);
+		assert!(
+			matches!(columns[0].behaviour, Behaviour::Stepped { levels: 2, changes: 2 }),
+			"{:?}",
+			columns[0].behaviour
+		);
+	}
+
+	#[test]
+	fn a_heading_with_a_comma_is_quoted_and_read_back_whole() {
+		// Channel names carry commas ("Pressure, left"); unquoted, one heading was two.
+		assert_eq!(quoted("Pressure"), "Pressure");
+		assert_eq!(quoted("Pressure, left"), "\"Pressure, left\"");
+		assert_eq!(quoted("say \"hi\""), "\"say \"\"hi\"\"\"");
+		assert_eq!(
+			fields("t_s,\"Pressure, left_t_s\",\"Pressure, left\",\"say \"\"hi\"\"\",,1"),
+			["t_s", "Pressure, left_t_s", "Pressure, left", "say \"hi\"", "", "1"]
+		);
+		// And every reader of the layout sees one column, paired with its own time.
+		let csv = "t_s,\"Pressure, left_t_s\",\"Pressure, left\",Plain\n0.100,0.050,1.5,7\n";
+		assert_eq!(
+			series(csv),
+			[
+				("Pressure, left".to_string(), vec![(0.05, "1.5".to_string())]),
+				("Plain".to_string(), vec![(0.1, "7".to_string())])
+			]
+		);
+		assert_eq!(classify(csv).unwrap().len(), 2);
+	}
 
 	/// A recording shaped like `vagcan watch --out` writes them.
 	const RECORDING: &str = "t_s,3805,3806,3807,3808\n\

@@ -129,6 +129,14 @@ impl Wanted {
 		self
 	}
 
+	/// The cursor hidden too, for a screen not drawn through ratatui — which hides and
+	/// shows it itself, and is why [`full_screen`] leaves it alone.
+	#[must_use]
+	pub fn hiding_cursor(mut self) -> Wanted {
+		self.switches.push(Switch::Cursor);
+		self
+	}
+
 	/// Switch it all on, and hand back the promise to switch it back off.
 	///
 	/// The error is crossterm's, unwrapped: what to tell somebody with no
@@ -234,6 +242,25 @@ mod tests {
 
 	fn log(steps: &Arc<Mutex<Vec<Step>>>) -> Vec<Step> {
 		steps.lock().unwrap().clone()
+	}
+
+	#[test]
+	fn a_screen_drawn_without_ratatui_hides_the_cursor_and_gives_it_back() {
+		// Ratatui hides and shows the cursor itself; a screen drawn by hand has nobody
+		// else to do it, and a cursor blinking in the middle of the panel is the result.
+		let (term, steps) = Recording::new();
+		drop(full_screen().hiding_cursor().enter_on(term).unwrap());
+		assert_eq!(
+			log(&steps),
+			[
+				Step::On(Switch::Raw),
+				Step::On(Switch::Alternate),
+				Step::On(Switch::Cursor),
+				Step::Off(Switch::Cursor),
+				Step::Off(Switch::Alternate),
+				Step::Off(Switch::Raw),
+			]
+		);
 	}
 
 	#[test]

@@ -637,6 +637,107 @@ impl Plan {
 	pub fn from_json(text: &str) -> Result<Plan, serde_json::Error> {
 		serde_json::from_str(text)
 	}
+
+	/// The plan as the board holds it — what [`to_rust`] writes as source, built in memory
+	/// for a host program that runs the board's own code over it (`vagcan dev recording
+	/// dash`). Numbers are narrowed to `f32` exactly as the source spells them.
+	///
+	/// **It leaks.** The board's plan is `&'static` throughout because on the board it is a
+	/// `static`; a host process builds one per run and keeps it to the end, so the few
+	/// kilobytes are the process's for its lifetime either way.
+	pub fn to_device(&self) -> vag_dash_render::plan::Plan {
+		use vag_dash_render::alarm::{self as device_alarm, ChannelId, PageId};
+		use vag_dash_render::plan as device;
+		fn text(s: &str) -> &'static str {
+			String::leak(s.to_string())
+		}
+		fn ids(channels: &[u16]) -> &'static [ChannelId] {
+			Vec::leak(channels.iter().map(|&c| ChannelId(c)).collect())
+		}
+		let units = self
+			.units
+			.iter()
+			.map(|u| device::Unit {
+				request: u.request,
+				response: u.response,
+				part_number: text(&u.part_number),
+			})
+			.collect();
+		let channels = self
+			.channels
+			.iter()
+			.map(|c| device::Channel {
+				unit: c.unit,
+				did: c.did,
+				bit_offset: c.bit_offset,
+				bit_length: c.bit_length,
+				signed: c.signed,
+				big_endian: c.big_endian,
+				factor: c.factor as f32,
+				offset: c.offset as f32,
+				decimals: c.decimals,
+				unit_text: text(&c.unit_text),
+				label: text(&c.label),
+				proven: c.proven,
+				hz: c.hz as f32,
+				setpoint: c.setpoint,
+			})
+			.collect();
+		let pages = self
+			.pages
+			.iter()
+			.map(|p| match p {
+				Page::Chart { channel, min, max } => device::Page::Chart {
+					channel: *channel,
+					min: *min as f32,
+					max: *max as f32,
+				},
+				Page::Values { title, cells } => device::Page::Values {
+					title: text(title),
+					cells: Vec::leak(cells.clone()),
+				},
+			})
+			.collect();
+		let alarms = self
+			.alarms
+			.iter()
+			.map(|a| device_alarm::Alarm {
+				channels: ids(&a.channels),
+				page: PageId(a.page),
+				rule: match &a.rule {
+					AlarmRule::Threshold { direction, trip, release } => device_alarm::Rule::Threshold {
+						trip: *trip as f32,
+						release: *release as f32,
+						direction: match direction {
+							Direction::Below => device_alarm::Direction::Below,
+							Direction::Above => device_alarm::Direction::Above,
+						},
+					},
+					AlarmRule::Drift {
+						specified,
+						percent,
+						release_percent,
+						hold_ms,
+						min_setpoint,
+					} => device_alarm::Rule::Drift {
+						specified: ids(specified),
+						percent: *percent as f32,
+						release_percent: *release_percent as f32,
+						hold_ms: *hold_ms,
+						min_setpoint: *min_setpoint as f32,
+					},
+				},
+			})
+			.collect();
+		device::Plan {
+			vin: text(&self.vin),
+			language: text(&self.language),
+			units: Vec::leak(units),
+			channels: Vec::leak(channels),
+			pages: Vec::leak(pages),
+			alarms: Vec::leak(alarms),
+		}
+	}
 }
 
 /// The plan and the build log that explains every row of it.
@@ -1309,12 +1410,29 @@ pub struct Written {
 	pub inputs: Vec<PathBuf>,
 }
 
-/// The whole command: read the input, the survey and the project, build,
-/// write `plan.json` and `plan.rs` under `~/.vagcan/dash/<VIN>/`.
+/// A car's build input resolved into a plan, and what the resolution read — for a caller
+/// that needs more of it than the plan. Nothing is written.
+#[derive(Debug)]
+pub struct Resolved {
+	pub built: Built,
+	/// `~/.vagcan/dash/<VIN>/`, where the outputs go.
+	pub dir: PathBuf,
+	/// Everything the build read — see [`Written::inputs`].
+	pub inputs: Vec<PathBuf>,
+	/// The survey the build read, as text.
+	pub survey: String,
+	/// What each unit said about itself in that survey: what the catalogs were looked up by.
+	pub units: Vec<UnitIdentity>,
+	pub store: CatalogStore,
+	pub extracted: Extracted,
+}
+
+/// [`build_for_car`] short of writing anything: read the input, the survey and the
+/// project, and build. For a command that reads the plan and keeps nothing
+/// (`vagcan dev recording dash`).
 ///
-/// `input` defaults to `dash.toml` in that directory. The firmware's build
-/// script calls this too, so `cargo build` of the firmware *is* the plan build.
-pub fn build_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Written> {
+/// `input` defaults to `dash.toml` under `~/.vagcan/dash/<VIN>/`.
+pub fn resolve_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Resolved> {
 	use anyhow::Context as _;
 	let dir = crate::datadir::dash_dir(vin)?;
 	let input_path = input.map(Path::to_path_buf).unwrap_or_else(|| dir.join("dash.toml"));
@@ -1341,15 +1459,33 @@ pub fn build_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Written>
 	let language = crate::config::language(&crate::config::load());
 	let built = build(&parsed, &store, &extracted, &units, Some(&answered), language)?;
 	let inputs = vec![
-		input_path.clone(),
-		survey_path.clone(),
+		input_path,
+		survey_path,
 		project.cache(),
 		project.measurements_dir(),
 		project.names(),
 		crate::config::path()?,
 		crate::glossary::path()?,
 	];
+	Ok(Resolved {
+		built,
+		dir,
+		inputs,
+		survey,
+		units,
+		store,
+		extracted,
+	})
+}
 
+/// The whole command: read the input, the survey and the project, build,
+/// write `plan.json` and `plan.rs` under `~/.vagcan/dash/<VIN>/`.
+///
+/// `input` defaults to `dash.toml` in that directory. The firmware's build
+/// script calls this too, so `cargo build` of the firmware *is* the plan build.
+pub fn build_for_car(vin: &str, input: Option<&Path>) -> anyhow::Result<Written> {
+	use anyhow::Context as _;
+	let Resolved { built, dir, inputs, .. } = resolve_for_car(vin, input)?;
 	std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 	let json = dir.join("plan.json");
 	let rust = dir.join("plan.rs");
@@ -1745,6 +1881,76 @@ mod tests {
 		assert_eq!(Reference::parse("02:3816@3").unwrap().to_string(), "02:3816@3");
 		assert!(Reference::parse("IDE00025").is_err(), "no unit");
 		assert!(Reference::parse("01:IDE00025@3").is_err(), "a bit offset on a text id");
+	}
+
+	#[test]
+	fn the_plan_in_memory_is_the_one_the_generated_static_describes() {
+		use vag_dash_render::alarm::{ChannelId, Direction as DeviceDirection, PageId, Rule};
+		use vag_dash_render::plan::Page as DevicePage;
+		let built = build_with_alarms(&alarm(&["01:IDE00002"], "A", "below", -2.0, -1.5)).unwrap();
+		let device = built.plan.to_device();
+		let rust = to_rust(&built.plan);
+
+		assert_eq!((device.vin, device.language), ("TESTVIN0000000001", "en"));
+		assert_eq!(device.units.len(), 1);
+		assert_eq!((device.units[0].request, device.units[0].part_number), (ENGINE, "PART1"));
+		assert_eq!(device.channels.len(), 3);
+		for (c, d) in built.plan.channels.iter().zip(device.channels) {
+			assert_eq!((d.unit, d.did, d.bit_offset, d.bit_length), (c.unit, c.did, c.bit_offset, c.bit_length));
+			assert_eq!((d.factor, d.offset, d.hz), (c.factor as f32, c.offset as f32, c.hz as f32));
+			assert_eq!((d.label, d.unit_text, d.decimals), (c.label.as_str(), c.unit_text.as_str(), c.decimals));
+			// The source says the same numbers the memory holds.
+			assert!(rust.contains(&format!("did: 0x{:04X}, bit_offset: {}", d.did, d.bit_offset)), "{rust}");
+		}
+		assert_eq!(
+			device.pages,
+			[
+				DevicePage::Values { title: "A", cells: &[0, 1] },
+				DevicePage::Values { title: "B", cells: &[2] },
+				DevicePage::Chart {
+					channel: 0,
+					min: 0.0,
+					max: 10.0
+				},
+			]
+		);
+		assert_eq!(device.alarms.len(), 1);
+		assert_eq!(device.alarms[0].channels, [ChannelId(1)]);
+		assert_eq!(device.alarms[0].page, PageId(0));
+		assert_eq!(
+			device.alarms[0].rule,
+			Rule::Threshold {
+				trip: -2.0,
+				release: -1.5,
+				direction: DeviceDirection::Below
+			}
+		);
+		assert!(device.watched(1) && !device.watched(0), "the board's own question answers from it");
+	}
+
+	#[test]
+	fn a_drift_rule_in_memory_pairs_the_same_specified_values_as_the_source() {
+		use vag_dash_render::alarm::{ChannelId, Rule};
+		let built = build_with_setpoint(&format!(
+			"[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\n{}",
+			drift_alarm(10.0, 6.0)
+		))
+		.unwrap();
+		let device = built.plan.to_device();
+		let specified = built.plan.channels.iter().position(|c| c.did == 0x2029).unwrap() as u16;
+		let actual = built.plan.channels.iter().position(|c| c.did == 0x202A).unwrap() as u16;
+		assert_eq!(device.channels[usize::from(actual)].setpoint, Some(specified));
+		assert_eq!(device.alarms[0].channels, [ChannelId(actual)]);
+		assert_eq!(
+			device.alarms[0].rule,
+			Rule::Drift {
+				specified: &[ChannelId(specified)],
+				percent: 10.0,
+				release_percent: 6.0,
+				hold_ms: 1000,
+				min_setpoint: 0.5
+			}
+		);
 	}
 
 	#[test]
