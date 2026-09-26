@@ -621,6 +621,8 @@ mod tests {
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &RULES,
+		stalk: None,
+		stopwatch: None,
 	};
 
 	/// A reading every 100 ms from 0 to `end_ms`, of what `value` says at that moment.

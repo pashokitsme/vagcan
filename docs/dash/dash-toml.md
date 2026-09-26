@@ -129,6 +129,64 @@ silences that episode. At most four rules, in the file's order, which is their p
 every throttle stab, and without the hold the rule would fire on every gear change.
 `min_setpoint` is the other half — a percentage of a specified value near zero is noise.
 
+## The cruise lever: `[stalk]`
+
+With cruise off, the cruise lever pages the panel: one state next page, one previous, one turns
+the stopwatch on and off. With cruise on, the lever is the car's and the dash ignores it.
+
+```toml
+[stalk]
+read = "70C:1105"
+rocker = "Linker Hebel axial 2 (GRA Set/Rest)"
+switch = "Linker Hebel axial 3 (ON/CANCEL/OFF)"
+next = "Blinker GRA beschleunigen"
+previous = "Blinker GRA verzögern"
+measure = "Blinker GRA neutral ohne Limiterverbau (weder beschleunigen noch verzoegern)"
+switch_off = "Blinker GRA Aus"
+cruise = "01:203C"
+cruise_off = "main switch off"
+```
+
+The names above are one car's (Škoda Octavia III). Take yours from your car's project. Every
+key is required. Field and state names are the project's, **exactly and in full** — parenthesis
+and all.
+
+| key | what |
+|---|---|
+| `read` | `<unit>:<DID>` — the one identifier that carries the rocker and the switch |
+| `rocker` | the field of `read` that the lever moves |
+| `switch` | the field of `read` with the cruise main switch |
+| `next` / `previous` | rocker states: next page, previous page |
+| `measure` | rocker state: the stopwatch on or off |
+| `switch_off` | the switch's state that means off |
+| `cruise` | the engine's cruise status, an enumerated field, spelled as a channel |
+| `cruise_off` | its state that means off |
+
+The lever is used only when `switch` reads `switch_off` **and** `cruise` reads `cruise_off`. A
+press is two reads of the same state: about 0.1 s, or 0.2 s with the stopwatch on. Hold longer
+to be sure. The lever's read rates are fixed, not taken from `hz`.
+
+## The stopwatch: `[stopwatch]`
+
+Times 0 to each mark in km/h, on the board. Needs `[stalk]`: its `measure` state opens the page.
+
+```toml
+[stopwatch]
+speed = "02:380B"
+km_h_per_unit = 0.0
+marks = [60, 100]
+```
+
+| key | what |
+|---|---|
+| `speed` | a channel under `[[channel]]`, with `hz` above 5 — 50 recommended. Its scaling has no offset and a factor above 0 |
+| `km_h_per_unit` | km/h per unit of `speed`, measured on the car. `0` until measured: the page shows `NO FACTOR` and times nothing |
+| `marks` | 1 to 3 whole speeds in km/h, above 0, each once |
+
+A finished run's times are kept in the board's settings. They are written to flash when the car
+next stands still for 1 s with the stopwatch on, or when you type `save` in `dashcfg`. Leave the
+stopwatch before the car stops and the run is lost at power-off unless you `save`.
+
 ## Limits
 
 | | |
@@ -137,6 +195,7 @@ every throttle stab, and without the hold the rule would fire on every gear chan
 | cells on a values page | 1 to 4 |
 | alarms | 4 |
 | `hz` | above 0, at most 100; 2 when absent |
+| stopwatch `marks` | 1 to 3 |
 | `decimals` | 0 to 3 |
 | `label` | ten characters on a four-column page; longer is drawn and reported |
 
@@ -157,7 +216,14 @@ Every refusal names the thing that failed:
   over a channel with no `setpoint`, or an unknown `kind`;
 - a `setpoint` on another unit, in another unit of measure, pointing at its own channel, at a
   channel that has a `setpoint` of its own, or read at a different `hz` from the channel it
-  explains — including when two channels share one specified value and ask for it at two rates.
+  explains — including when two channels share one specified value and ask for it at two rates;
+- a `[stalk]` name that is not the project's field or state, a quantity where a list of states
+  is wanted, a field or state name the project gives twice, a `read` or `cruise` the car did not
+  answer in the survey, a `cruise` that matches several rows, two buttons on one state, or a
+  cache from before the project's state bands (run `vagcan setup` again);
+- a `[stopwatch]` speed not under `[[channel]]`, with an offset, with a factor at or below 0, or
+  read at 5 Hz or slower; a `km_h_per_unit` below 0, or above 0 but too small for the board; a
+  mark of 0, a mark twice, or more than 3.
 
 A channel is compared by what it resolves to, never by how it is spelled:
 

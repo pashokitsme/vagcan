@@ -96,8 +96,10 @@ use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId};
 use vag_dash_render::pages::Mismatch;
-use vag_dash_render::plan::{PartAnswer, PartCheck};
-use vag_dash_render::screen::{Change, Screen};
+use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
+use vag_dash_render::screen::{Action, Change, Screen};
+use vag_dash_render::stalk::{Lever, Stalk, States};
+use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
 use vag_uds_client::guard::{Guard, MAX_SUBSCRIPTIONS};
@@ -191,12 +193,14 @@ struct NordicUartService {
 struct Settings {
 	/// `None` when the board was flashed against the default partition table
 	/// and has nowhere to keep anything. The panel still works; it just forgets.
-	#[cfg_attr(not(feature = "ble"), allow(dead_code))]
 	store: Option<Store>,
 	config: Config,
 	/// Set by every change, cleared by a save. Without it, "did that survive?"
 	/// is answered by a reboot instead of by looking.
 	unsaved: bool,
+	/// A finished run is in `config.last_run` and not yet in flash: written at the next
+	/// standstill the stopwatch sees, or by a `save` ([`store_run`]).
+	run_pending: bool,
 }
 
 /// Shared because two tasks touch it: the button cycles pages, the GATT
@@ -516,6 +520,14 @@ type ScreenCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Screen<'static,
 
 static SCREEN: StaticCell<ScreenCell> = StaticCell::new();
 
+/// The stopwatch page's machine (`todo/dash/19`): fed by the bus task one speed answer at a
+/// time, drawn and reset by the panel task. In `.bss` rather than in either task's future,
+/// where its few hundred bytes would come out of the shared arena. A **blocking** mutex,
+/// held for one call.
+type StopwatchCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Stopwatch<'static>>>;
+
+static STOPWATCH: StaticCell<StopwatchCell> = StaticCell::new();
+
 fn visibility() -> Visibility {
 	match VISIBILITY.load(Ordering::Relaxed) {
 		1 => Visibility::Advertising,
@@ -592,6 +604,11 @@ async fn main(spawner: Spawner) {
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
 	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms))));
+	// With no `[stopwatch]` in the plan the machine is never fed: no press reaches the page.
+	let stopwatch: &'static StopwatchCell = STOPWATCH.init(BlockingMutex::new(RefCell::new(match PLAN.stopwatch {
+		Some(plan) => Stopwatch::new(plan.marks, plan.km_h_per_unit),
+		None => Stopwatch::new(&[], 0.0),
+	})));
 
 	#[cfg(feature = "ble")]
 	let rng = esp_hal::rng::Rng::new(peripherals.RNG);
@@ -626,7 +643,7 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(usb_session_task(bus)) {
 		warn!("SPAWN usb session FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(panel_task(settings, screen)) {
+	if let Err(e) = spawner.spawn(panel_task(settings, screen, stopwatch)) {
 		warn!("SPAWN panel FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(led_task(led)) {
@@ -642,7 +659,8 @@ async fn main(spawner: Spawner) {
 	// wiring is `todo/dash/15-enclosure.md` §3. The task builds the controller
 	// itself, once per mode: filtered and in normal mode for the planner, as the
 	// adapter's host asks for in adapter mode.
-	if let Err(e) = spawner.spawn(can_task(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, bus, settings)) {
+	let shared = Panel { settings, screen, stopwatch };
+	if let Err(e) = spawner.spawn(can_task(peripherals.TWAI0, peripherals.GPIO1, peripherals.GPIO6, bus, shared)) {
 		warn!("SPAWN can FAILED: {e:?}");
 	}
 
@@ -669,6 +687,7 @@ fn open_settings() -> Settings {
 							store: Some(store),
 							config,
 							unsaved: false,
+							run_pending: false,
 						}
 					}
 					Err(reason) => {
@@ -698,12 +717,19 @@ fn open_settings() -> Settings {
 							None => note!("settings: stored config does not fit this plan ({reason}) — discarded"),
 						}
 						note!("settings: brightness and active page are back to defaults; `save` stores them and this note goes away");
+						// The stopwatch's last run is not the plan's to judge: a run kept on a
+						// board whose pages were never set would otherwise go with the pages.
+						let defaults = Config {
+							last_run: config.last_run.clone(),
+							..Config::default()
+						};
 						// `unsaved`: what runs and what flash holds now disagree,
 						// and `state` should say so rather than claim they match.
 						Settings {
 							store: Some(store),
-							config: Config::default(),
+							config: defaults,
 							unsaved: true,
+							run_pending: false,
 						}
 					}
 				},
@@ -713,6 +739,7 @@ fn open_settings() -> Settings {
 						store: Some(store),
 						config: Config::default(),
 						unsaved: false,
+						run_pending: false,
 					}
 				}
 				Err(e) => {
@@ -721,6 +748,7 @@ fn open_settings() -> Settings {
 						store: Some(store),
 						config: Config::default(),
 						unsaved: false,
+						run_pending: false,
 					}
 				}
 			}
@@ -731,6 +759,7 @@ fn open_settings() -> Settings {
 				store: None,
 				config: Config::default(),
 				unsaved: false,
+				run_pending: false,
 			}
 		}
 	}
@@ -1541,8 +1570,9 @@ async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Transpor
 /// session ends, and builds the planner's controller again. The panel's subscriptions
 /// and part checks outlive both: the planner keeps them, and they resume.
 #[embassy_executor::task]
-async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'static>, bus: &'static Bus, settings: &'static Shared) -> ! {
-	let mut panel = PanelReads::new();
+async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'static>, bus: &'static Bus, shared: Panel) -> ! {
+	let settings = shared.settings;
+	let mut panel = PanelReads::new(shared);
 	panel.start(bus);
 	loop {
 		// SAFETY: `clone_unchecked` asks that a clone and its original never both drive
@@ -1569,6 +1599,8 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 			continue;
 		}
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
+		// Nothing of the lever is read while the board is an adapter.
+		panel.stalk.lost();
 	}
 }
 
@@ -1766,6 +1798,23 @@ fn remote(delivery: Delivery) {
 	}
 }
 
+/// What the bus task shares with the panel: the settings a lever press pages, the screen it
+/// acts on, the stopwatch it feeds.
+#[derive(Clone, Copy)]
+struct Panel {
+	settings: &'static Shared,
+	screen: &'static ScreenCell,
+	stopwatch: &'static StopwatchCell,
+}
+
+/// The stopwatch drawn instead of a page: what [`GLASS_PAGE`] holds while it is up — no
+/// page's cells are in the foreground, the speed is (`Plan::rates_in`).
+const STOPWATCH_PAGE: u8 = u8::MAX - 1;
+
+/// How old the cruise status may be and still open the gate: three of its periods. Older is
+/// no answer, and no answer keeps the lever cruise's.
+const CRUISE_FRESH: Duration = Duration::from_millis(3 * vag_dash_render::plan::CRUISE_PERIOD_MS as u64);
+
 /// One panel subscription.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct PanelSub {
@@ -1802,10 +1851,26 @@ struct PanelReads {
 	/// A unit whose part-number answer did not parse is asked again no sooner than
 	/// this: the answer reset the planner's backoff, so the pace is kept here.
 	part_retry_at: [Option<Instant>; UNIT_COUNT],
+	shared: Panel,
+	/// The lever's gate and press detector, fed once per answer of the rocker's identifier.
+	stalk: Stalk,
+	/// The lever's gate and the stopwatch as the subscriptions last followed them.
+	mode: ReadMode,
 }
 
 impl PanelReads {
-	fn new() -> Self {
+	fn new(shared: Panel) -> Self {
+		// A plan without a lever never feeds this; its states are the plan's where there is one.
+		let states = PLAN.stalk.map_or(
+			States {
+				next: vag_dash_render::stalk::StateIndex(0),
+				previous: vag_dash_render::stalk::StateIndex(0),
+				measure: vag_dash_render::stalk::StateIndex(0),
+				switch_off: vag_dash_render::stalk::StateIndex(0),
+				cruise_off: vag_dash_render::stalk::StateIndex(0),
+			},
+			|plan| plan.states,
+		);
 		PanelReads {
 			checks: [Check::Pending; UNIT_COUNT],
 			part_reads: [None; UNIT_COUNT],
@@ -1815,6 +1880,24 @@ impl PanelReads {
 			listed: Vec::new(),
 			dead_bus: false,
 			part_retry_at: [None; UNIT_COUNT],
+			shared,
+			stalk: Stalk::new(states),
+			mode: ReadMode::default(),
+		}
+	}
+
+	/// The lever's gate and the stopwatch, as the rates are to follow them now.
+	fn read_mode(&self) -> ReadMode {
+		let up = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
+		let stopwatch = match (up, self.shared.stopwatch.lock(|w| w.borrow().phase())) {
+			// With the factor not measured nothing is timed: the speed is not worth a read.
+			(false, _) | (true, Phase::NotMeasured) => Timing::Off,
+			(true, Phase::Armed | Phase::Running) => Timing::Timing,
+			(true, Phase::Idle | Phase::Done) => Timing::Up,
+		};
+		ReadMode {
+			gate_open: self.stalk.gate_open(),
+			stopwatch,
 		}
 	}
 
@@ -1856,6 +1939,7 @@ impl PanelReads {
 				NO_PAGE => s.config.active_page,
 				page => page,
 			};
+			// `STOPWATCH_PAGE` is past every page: no cells, and the mode brings the speed.
 			let shown: Vec<u16> = match s.config.pages.get(usize::from(glass)) {
 				Some(page) if page.kind == PageKind::Chart => page.cells.first().copied().into_iter().collect(),
 				Some(page) => page.cells.iter().copied().collect(),
@@ -1866,11 +1950,13 @@ impl PanelReads {
 			let listed: Vec<u16> = s.config.pages.iter().flat_map(|page| page.cells.iter().copied()).collect();
 			(shown, listed)
 		};
-		if shown == self.shown && listed == self.listed {
+		let mode = self.read_mode();
+		if shown == self.shown && listed == self.listed && mode == self.mode {
 			return;
 		}
 		self.shown = shown;
 		self.listed = listed;
+		self.mode = mode;
 		for u in 0..PLAN.units.len() {
 			if self.checks[u] == Check::Matched {
 				self.subscribe_unit(u, bus);
@@ -1884,7 +1970,7 @@ impl PanelReads {
 		let unit = unit_of(u);
 		let request = PLAN.units[u].request;
 		let mut wanted: [Option<(bool, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
-		for rate in PLAN.rates(&self.shown, &self.listed) {
+		for rate in PLAN.rates_in(&self.shown, &self.listed, self.mode) {
 			wanted[usize::from(rate.channel)] = Some((rate.foreground, rate.period_ms));
 		}
 		let now = ms();
@@ -1924,6 +2010,9 @@ impl PanelReads {
 					bus.lock(|p| p.borrow_mut().unsubscribe(sub.id));
 				}
 				store(index, None, STALE).await;
+				// The rocker's own miss may never arrive once its subscription is gone: a read
+				// that did not come breaks a press's pair, so the lever hears of it here.
+				self.lever_read(index, None).await;
 			}
 		}
 	}
@@ -1956,13 +2045,15 @@ impl PanelReads {
 				self.say_dead_bus();
 				None
 			}
-			Delivery::Reading { sub, data, .. } => {
+			Delivery::Reading { sub, data, at_ms, .. } => {
 				let Some(index) = self.channel_of(*sub) else {
 					return Some(delivery);
 				};
 				let channel = &PLAN.channels[index];
 				let value = channel.decode(data);
 				store(index, value, self.fresh_for(index)).await;
+				self.lever_read(index, Some(data)).await;
+				self.time(index, value, *at_ms);
 				if self.answering[index] != Some(value.is_some()) {
 					self.answering[index] = Some(value.is_some());
 					match value {
@@ -1985,6 +2076,8 @@ impl PanelReads {
 				};
 				let channel = &PLAN.channels[index];
 				store(index, None, STALE).await;
+				// A read that did not come breaks a press's pair of reads.
+				self.lever_read(index, None).await;
 				if self.answering[index] != Some(false) {
 					self.answering[index] = Some(false);
 					note!("can: {:03X} {:04X} {}: {}", channel.unit, channel.did, channel.label, miss_text(*why));
@@ -2005,6 +2098,119 @@ impl PanelReads {
 				None
 			}
 			Delivery::Raw { .. } => Some(delivery),
+		}
+	}
+
+	/// One answer of the rocker's identifier, or its absence: one read of the lever
+	/// (`Stalk::read` is fed exactly once per answer). The switch is in the same bytes; the
+	/// cruise status is the latest one read, if it is fresh.
+	async fn lever_read(&mut self, index: usize, data: Option<&[u8]>) {
+		let Some(plan) = PLAN.stalk else { return };
+		if index != usize::from(plan.rocker) {
+			return;
+		}
+		let cruise = fresh(usize::from(plan.cruise), CRUISE_FRESH).await.map(|value| value as i64);
+		let read = plan.read(
+			data.and_then(|data| PLAN.channels[index].raw(data)),
+			data.and_then(|data| PLAN.channels[usize::from(plan.switch)].raw(data)),
+			cruise,
+		);
+		let was_open = self.stalk.gate_open();
+		let press = self.stalk.read(read);
+		if self.stalk.gate_open() != was_open {
+			note!("lever: {}", if was_open { "cruise's again" } else { "ours — cruise is off" });
+			// The lever's rate follows the gate.
+			PAGES_CHANGED.signal(());
+		}
+		if let Some(lever) = press {
+			self.press(lever).await;
+		}
+	}
+
+	/// A lever press, through the screen: silences an alarm, turns the page, or switches the
+	/// stopwatch — which a plan without one has no page for.
+	async fn press(&mut self, lever: Lever) {
+		// With no stopwatch LIMIT has no page to open — but with an alarm up it silences, as
+		// every lever press does there.
+		if lever == Lever::Measure && PLAN.stopwatch.is_none() && !self.shared.screen.lock(|cell| cell.borrow().alarm_showing()) {
+			note!("lever: measure — the plan has no [stopwatch]");
+			return;
+		}
+		let mut s = self.shared.settings.lock().await;
+		let before = s.config.active_page;
+		// `pages` is bounded by `MAX_PAGES`, so the count fits.
+		let pages = s.config.pages.len() as u8;
+		let action = self
+			.shared
+			.screen
+			.lock(|cell| cell.borrow_mut().lever(lever, &mut s.config.active_page, pages));
+		match action {
+			Action::Paged => {
+				s.unsaved |= s.config.active_page != before;
+				note!("lever: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
+				drop(s);
+				STATE_CHANGED.signal(());
+				PAGES_CHANGED.signal(());
+			}
+			Action::Silenced => note!("lever: alarm silenced until its value comes back"),
+			Action::StopwatchOn => {
+				note!("lever: the stopwatch");
+				PAGES_CHANGED.signal(());
+			}
+			Action::StopwatchOff => {
+				note!("lever: back to page {}", usize::from(s.config.active_page) + 1);
+				PAGES_CHANGED.signal(());
+			}
+			Action::Ignored => {}
+		}
+	}
+
+	/// One answer of the stopwatch's speed while the page is up, at the time it came.
+	fn time(&mut self, index: usize, value: Option<f32>, at_ms: u64) {
+		let Some(plan) = PLAN.stopwatch else { return };
+		if index != usize::from(plan.speed) {
+			return;
+		}
+		let Some(turns) = self.shared.screen.lock(|cell| {
+			let screen = cell.borrow();
+			screen.stopwatch().then(|| screen.stopwatch_turns())
+		}) else {
+			return;
+		};
+		let (before, lap, after, run) = self.shared.stopwatch.lock(|w| {
+			let mut watch = w.borrow_mut();
+			// A turn of the mode since the last answer starts over, before this one counts.
+			watch.follow(turns);
+			let before = watch.phase();
+			let lap = watch.sample(value, at_ms);
+			(before, lap, watch.phase(), watch.run())
+		});
+		// Armed and running read the speed alone in the foreground; the rest do not. Followed by
+		// the phase, since a move out of `Armed` (going backwards) says no event.
+		let timing = |phase| matches!(phase, Phase::Armed | Phase::Running);
+		if timing(before) != timing(after) {
+			PAGES_CHANGED.signal(());
+		}
+		let Some(lap) = lap else { return };
+		match lap {
+			Lap::Armed => note!("stopwatch: armed"),
+			Lap::Started => note!("stopwatch: started"),
+			Lap::Crossed { .. } => {}
+			Lap::Finished | Lap::Aborted => {
+				let mut line: heapless::String<96> = heapless::String::new();
+				let _ = write!(line, "stopwatch: {}", if lap == Lap::Finished { "finished" } else { "aborted" });
+				for (i, mark) in plan.marks.iter().enumerate() {
+					match run.and_then(|run| run.time(i)) {
+						Some(seconds) => {
+							let _ = write!(line, " 0-{mark} {seconds:.2} s");
+						}
+						None => {
+							let _ = write!(line, " 0-{mark} --");
+						}
+					}
+				}
+				note!("{line}");
+			}
 		}
 	}
 
@@ -2100,6 +2306,14 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 	check
 }
 
+/// A channel's value from the store, if it is younger than `within`.
+async fn fresh(index: usize, within: Duration) -> Option<f32> {
+	let values = VALUES.lock().await;
+	let slot = values.get(index)?;
+	let at = slot.at?;
+	(Instant::now().saturating_duration_since(at) <= within).then_some(slot.value).flatten()
+}
+
 /// Puts one reading in the store. `None` clears the slot, timestamp and all.
 async fn store(index: usize, value: Option<f32>, fresh_for: Duration) {
 	let mut values = VALUES.lock().await;
@@ -2156,8 +2370,15 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// inverted on the frames `Glass::inverted` names: every other `alarm::BLINK_MS` from the
 /// takeover while the rule fires, every frame through the hold. The alarms see the same
 /// values the cells do, `None` once stale. On the adapter screen they are not polled.
+///
+/// While the stopwatch mode is on and no alarm holds the glass the stopwatch page is drawn
+/// instead (`todo/dash/19`): the phase over the speed, each mark's time. The machine is reset
+/// whenever the mode turns on or off, however it did ([`Screen::stopwatch_turns`]), and a run
+/// whose speed goes quiet is aborted here, where a frame comes whether or not an answer does.
+/// A run that finishes is kept in the settings and written to flash at the next standstill
+/// the stopwatch sees — never at speed (owner, 2026-09-26) — or by a `save`.
 #[embassy_executor::task]
-async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
+async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stopwatch: &'static StopwatchCell) -> ! {
 	use vag_dash_render::history::History;
 	use vag_dash_render::{Board, Cell, Deviation, Frame, Rates, Theme, draw_with};
 	use vag_uds_can::wire::BitRate;
@@ -2188,9 +2409,42 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
 	// first window starts there and nothing from an earlier session is in it.
 	let mut meters: Option<(BitRate, BitRate)> = None;
+	// The finished run already kept.
+	let mut kept = None;
+	let words = stopwatch::Words::of(PLAN.language);
+	let labels = stopwatch::Labels::new(PLAN.stopwatch.map_or(&[][..], |plan| plan.marks));
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
+
+		let turns = screen.lock(|cell| cell.borrow().stopwatch_turns());
+		let (finished, silent, timing_changed, standing) = stopwatch.lock(|w| {
+			let mut watch = w.borrow_mut();
+			let timing = |phase| matches!(phase, Phase::Armed | Phase::Running);
+			let before = watch.phase();
+			watch.follow(turns);
+			let silent = watch.silence(ms());
+			let after = watch.phase();
+			(watch.finished(), silent, timing(before) != timing(after), after == Phase::Armed)
+		});
+		if silent == Some(Lap::Aborted) {
+			note!("stopwatch: the speed went quiet — the run is aborted");
+		}
+		// Out of armed or running the page cells come back to the foreground.
+		if timing_changed {
+			PAGES_CHANGED.signal(());
+		}
+		if finished != kept {
+			kept = finished;
+			if let Some(run) = finished {
+				keep_run(settings, run).await;
+			}
+		}
+		// Armed is a standstill held for a second: the car is not moving, so a flash write
+		// that stalls the executor costs a frame of the glass and nothing on the road.
+		if standing {
+			store_run(settings).await;
+		}
 
 		if adapter_mode() {
 			screen.lock(|cell| cell.borrow_mut().adapter());
@@ -2220,20 +2474,30 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 		let value_of = |index: u16| values.get(usize::from(index)).and_then(|slot| slot.current(now));
 		// The cursor is read here and passed in, never copied into the screen: it is what
 		// `set page` and `save` act on, and what an alarm hands back to.
-		let (kind, indices, glass) = {
+		let (kind, indices, glass, saved) = {
 			let s = settings.lock().await;
 			// `pages` is bounded by `MAX_PAGES`, so the count fits.
 			let pages = s.config.pages.len() as u8;
 			let glass = screen.lock(|cell| cell.borrow_mut().frame(s.config.active_page, pages, now.as_millis(), value_of));
+			let mut saved: heapless::Vec<(u16, f32), { stopwatch::MAX_MARKS }> = heapless::Vec::new();
+			for (mark, ms) in &s.config.last_run {
+				let _ = saved.push((*mark, *ms as f32 / 1000.0));
+			}
 			match s.config.pages.get(usize::from(glass.page)) {
-				Some(page) => (page.kind, page.cells.clone(), glass),
+				Some(page) => (page.kind, page.cells.clone(), glass, saved),
 				None => continue,
 			}
 		};
+		// Asked after the frame: the frame is what decides whether an alarm holds the glass.
+		let on_stopwatch = screen.lock(|cell| cell.borrow().stopwatch_on_glass());
 		// The bus reads the page on the glass in the foreground, so a takeover and a
-		// hand-back move its subscriptions as much as a page turn does.
-		GLASS_PAGE.store(glass.page, Ordering::Relaxed);
-		if glass.page_changed {
+		// hand-back move its subscriptions as much as a page turn does — and the stopwatch is
+		// on the glass through an alarm's hand-back too, not the cursor's page under it.
+		let drawn = if on_stopwatch { STOPWATCH_PAGE } else { glass.page };
+		// `load` then `store`: riscv32imc has no atomic swap, and this task is the one writer.
+		let before = GLASS_PAGE.load(Ordering::Relaxed);
+		GLASS_PAGE.store(drawn, Ordering::Relaxed);
+		if before != drawn || glass.page_changed {
 			PAGES_CHANGED.signal(());
 		}
 		let page_no = usize::from(glass.page) + 1;
@@ -2243,6 +2507,8 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 				rule + 1,
 				glass.offending.and_then(|c| PLAN.channel(c.0)).map_or("?", |c| c.label)
 			),
+			Some(Change::Over) if on_stopwatch => note!("alarm: over — back to the stopwatch"),
+			Some(Change::Silenced) if on_stopwatch => note!("alarm: silenced — back to the stopwatch"),
 			Some(Change::Over) => note!("alarm: over — back to page {page_no}"),
 			Some(Change::Silenced) => note!("alarm: silenced — back to page {page_no}"),
 			_ => {}
@@ -2291,6 +2557,14 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 
 		framebuffer.clear_all();
 		let report = match kind {
+			_ if on_stopwatch => {
+				let watch = stopwatch.lock(|w| *w.borrow());
+				let speed = PLAN
+					.stopwatch
+					.and_then(|plan| value_of(plan.speed).map(|value| value * plan.km_h_per_unit));
+				let (cells, count) = stopwatch::cells(&watch, speed, &saved, &words, &labels);
+				draw_with(&Frame::Values { cells: &cells[..count] }, &board, &theme, framebuffer)
+			}
 			PageKind::Values => {
 				let mut cells: heapless::Vec<Cell<'_>, 4> = heapless::Vec::new();
 				for index in indices.iter().take(4) {
@@ -2346,6 +2620,69 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell) -> !
 		line.clear();
 		if framebuffer.write_frame(&mut *line).is_ok() {
 			PANEL_READY.signal(());
+		}
+	}
+}
+
+/// A finished run into the settings: its marks and times, the rest of the configuration as
+/// it is. Not written here: the run finishes at its highest mark, at speed, and a flash
+/// write erases a sector with the executor stalled — the glass frozen, answers and BLE
+/// events missed. [`store_run`] writes it once the car stands (owner, 2026-09-26).
+async fn keep_run(settings: &Shared, run: stopwatch::Run) {
+	let Some(plan) = PLAN.stopwatch else { return };
+	let mut times: heapless::Vec<(u16, u32), { stopwatch::MAX_MARKS }> = heapless::Vec::new();
+	for (i, mark) in plan.marks.iter().enumerate() {
+		if let Some(seconds) = run.time(i) {
+			// Positive and under an hour on any run a panel shows: the cast cannot wrap.
+			let _ = times.push((*mark, (seconds * 1000.0 + 0.5) as u32));
+		}
+	}
+	// A run the launch fit could not time (the speed read too slowly) has crossings and no
+	// times: it replaces no run that has them.
+	if times.is_empty() {
+		note!("stopwatch: the run has no times (no launch fit — is the speed read fast enough?); not kept");
+		return;
+	}
+	let mut s = settings.lock().await;
+	s.config.last_run = times;
+	s.run_pending = true;
+	note!("stopwatch: the run is kept — written to flash at the next standstill, or by `save`");
+}
+
+/// The run [`keep_run`] left waiting, written to flash — called at a standstill. What flash
+/// holds gets the run and nothing else: with other changes waiting for a `save`, the run
+/// goes into the configuration flash already holds, and those changes stay the person's
+/// to keep or not. Tried once; a run it could not write waits for the next `save`.
+async fn store_run(settings: &Shared) {
+	let mut guard = settings.lock().await;
+	let s = &mut *guard;
+	if !s.run_pending {
+		return;
+	}
+	s.run_pending = false;
+	let Some(store) = s.store.as_mut() else {
+		s.unsaved = true;
+		return;
+	};
+	let stored = if s.unsaved {
+		match store.load() {
+			Ok(mut stored) => {
+				stored.last_run = s.config.last_run.clone();
+				stored
+			}
+			Err(e) => {
+				note!("stopwatch: the run waits for `save` — flash holds no configuration to add it to ({e:?})");
+				return;
+			}
+		}
+	} else {
+		s.config.clone()
+	};
+	match store.save(&stored) {
+		Ok(_) => note!("stopwatch: the run is saved"),
+		Err(e) => {
+			s.unsaved = true;
+			note!("stopwatch: the run could not be saved ({e:?}) — `save` to retry");
 		}
 	}
 }
@@ -2899,6 +3236,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				Some(store) => match store.save(&config) {
 					Ok(generation) => {
 						s.unsaved = false;
+						s.run_pending = false;
 						let _ = write!(out, "ok: saved, generation {generation}");
 					}
 					Err(e) => {
@@ -2918,6 +3256,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 						Ok(()) => {
 							s.config = config;
 							s.unsaved = false;
+							s.run_pending = false;
 							PAGES_CHANGED.signal(());
 							let _ = write!(out, "ok: reloaded from flash");
 						}
@@ -2935,6 +3274,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 			let mut s = settings.lock().await;
 			s.config = Config::default();
 			s.unsaved = true;
+			s.run_pending = false;
 			PAGES_CHANGED.signal(());
 			let _ = write!(out, "ok: defaults in memory — 'save' to keep them");
 		}
@@ -2946,6 +3286,8 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				}
 				Some(store) => match store.erase() {
 					Ok(()) => {
+						// A run waiting for a standstill would write the configuration back.
+						s.run_pending = false;
 						let _ = write!(out, "ok: erased — next boot uses defaults");
 					}
 					Err(e) => {

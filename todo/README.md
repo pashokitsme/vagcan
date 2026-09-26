@@ -30,8 +30,9 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
 - **The cruise lever, probed 2026-09-26** (`dash/14` §6a): with cruise off the rocker moves
   `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
   as buttons (+ next, − previous, LIMIT the stopwatch) and the stopwatch page: spec in
-  [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phase 1 (pure logic)
-  reviewed, phase 2 (plan, firmware) in progress on `feat/stalk-stopwatch`. LIMIT is the
+  [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phases 1 and 2 built on
+  `feat/stalk-stopwatch`, in review for a PR, not merged; needs the car. A finished run is
+  written to flash at the next standstill, never at speed (owner, 2026-09-26). LIMIT is the
   "neutral ohne Limiterverbau" state despite its ODIS name: the owner pressed LIMIT in the
   capture, and the state appears only on those presses (0.4 and 0.6 s), never at rest.
 - **PR #6 merged 2026-09-26** (`2855b5c`): `vagcan dev recording dash` replays a `watch --out`
@@ -99,8 +100,8 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
    the blink; the board in the car still has the threshold that fires on every pull. Flashing
    in stages keeps a fault on the car attributable to one feature.
 4. **The lever as buttons and the stopwatch page** — [`dash/19`](dash/19-stalk-and-stopwatch.md),
-   approved 2026-09-26; phase 2 in progress. Built and tested without the car; the speed
-   factor and a run need it.
+   approved 2026-09-26; built on `feat/stalk-stopwatch`, in review for a PR. Tested without
+   the car; the speed factor and a run need it.
 5. **The fault count, phase 2** — `dash/20` on `feat/fault-count`, after `dash/19`. Open, for the
    owner: the board decodes the gateway's list at run time and addresses units no plan holds,
    against "the board resolves nothing" (`dash/README.md`) — keep it and amend the rule, or put
@@ -143,7 +144,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
-| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, phase 1 reviewed, phase 2 in progress on `feat/stalk-stopwatch` |
+| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, built on `feat/stalk-stopwatch`, in review for a PR; needs the car |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.

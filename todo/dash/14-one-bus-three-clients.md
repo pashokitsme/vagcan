@@ -40,17 +40,21 @@ that into a queue of *requests* with three sources and a rate each:
 |---|---|---|---|
 | **panel** | the visible page's channels | as fast as the page wants (≈50 Hz for four cells) | normal |
 | **panel, background** | channels of pages not shown | slow (1 Hz) or none | low |
-| **stopwatch** | the speed channel while armed | maximum, single DID, ≈100 Hz | high |
+| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
+| **lever** | the rocker's identifier, the cruise status | fixed in code (`plan.rs`): 2 / 20 Hz by the gate, 10 Hz while the stopwatch is up with a factor; cruise status 5 Hz (`19`) | foreground |
 | **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
 
 **Budget and degradation (owner, 2026-09-13: a small delay is fine, the bus is shared
 with the whole car, a run needs speed fast).** The scheduler runs under a **ceiling of
 ≈100 exchanges a second** — half of what the one conversation could do — so the gateway
 and the units see a sparse, even trickle from us. Default rates: temperatures 2 Hz,
-boost and revs 10 Hz, stalks 2/20 Hz by the cruise gate (§6a); a four-cell page is ≈25
-exchanges a second, a quarter of the budget. **Stopwatch armed**: speed at 50 Hz (20 ms
-between points, interpolation gives hundredths), every other source at 1 Hz, stalks
-paused. When the sum asks for more than the ceiling, nothing is dropped: sources are
+boost and revs 10 Hz, the lever 2/20 Hz by the cruise gate (§6a); a four-cell page is ≈25
+exchanges a second, a quarter of the budget. **Stopwatch page up** (as built, `19`): speed
+at its own `hz` (50 gives 20 ms between points, and the crossing is interpolated between
+them), every page cell at the background rate in every phase, an alarm's channels at theirs,
+the lever at 10 Hz so LIMIT can still end the run. An alarm's page shown over the stopwatch
+keeps its cells foreground except while the stopwatch is armed or running. When the sum asks for more than
+the ceiling, nothing is dropped: sources are
 **thinned in priority order** — background pages first, then the laptop's queue (it has
 back-pressure anyway), then the visible cells down to their minimum rate, and never the
 speed channel during a run. A cell older than its own deadline shows its age instead of
@@ -229,16 +233,22 @@ the page it is on and nobody else.
   - These come from the ODIS project for this car; another car resolves its own ESC's channels
     the same way. Nothing here goes into code.
   Car check: [`17-bench-ble-usb.md`](17-bench-ble-usb.md) §4, "Stopwatch sources on the ESC".
-- **Arming**: speed at 0 for a second arms it; the first sample above 0 starts the clock
-  (with the half-sample correction `vag-cli-measure` uses — check `session.rs`); crossing
-  60 and 100 km/h stamps the two times, interpolated between the samples either side.
-- **Rate**: the scheduler gives the speed DID its high-priority slot (≈100 Hz single-DID);
-  the other cells drop to background rate for the run.
-- **Display**: the two times large; the chart page of the run shows speed on time, the
-  same chart widget as `kind = "chart"`, with the x axis being seconds since launch.
+- **Arming**: speed at 0 for a second arms it; the first sample above 0 starts the run;
+  crossing each mark stamps a time, interpolated between the samples either side. The clock's
+  origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`): the midpoint of
+  a constant-jerk fit through `√v` and a line through the first two moving samples. There is
+  no "half-sample correction" in `vag-cli-measure`; this text said so before `19` checked.
+- **Rate**: the speed at its own `hz` in the foreground while the page is up (with a factor);
+  every page cell is background whenever the stopwatch page is on the glass, in every phase.
+  An alarm's page shown over it keeps its cells foreground except while armed or running. The
+  fit needs three moving samples in its first 0.4 s, so the speed must be read faster than
+  5 Hz; the plan build refuses a slower one (`19`).
+- **Display** (as built, `19`): one values row — the phase over the speed, then a time per
+  mark. **Not built:** a chart page of the run (speed on time, seconds since launch).
 - **Record**: the run's samples go up the link as `pdu` answers anyway, so a laptop that
   is connected gets the full trace for `vagcan measure`'s report; the board keeps the last
-  run's two numbers in settings (`12`).
+  finished run's times in settings, written to flash at the next standstill, never at speed
+  (owner, 2026-09-26; `12`, `19`).
 
 ## 6a. Controls: the button stays, the stalks are an event source
 
@@ -279,13 +289,16 @@ the gate to CANCEL waits for a test on a parked car: switch on, set, cancel, pre
 standing still, read the status — if nothing resumes, the config may allow it; the default
 stays OFF.
 
-**What it costs, and the adaptive rate.** One `22 1105` exchange is two frames, ≈0.5 ms
-of a 500 kbit/s bus: 20 Hz is 1 % of the diagnostic CAN (which carries nothing else of
-the car's) and 1 % of the comfort bus behind the gateway. The bus is not the limit; the
+**What it costs, and the adaptive rate.** One `22 1105` exchange is six frames: the
+request, then a 27-byte answer as ISO-TP multi-frame — first frame, our flow control, three
+consecutive frames. That is ≈1.5 ms of wire time at 500 kbit/s; with the unit's reply delay
+and the gateway in the path, an estimated 4–5 ms of the board's one conversation (not
+measured yet). 20 Hz is ≈3 % of the diagnostic CAN (which carries nothing else of the car's)
+and of the comfort bus behind the gateway, and ≈10 % of the board's exchanges. The bus is not the limit; the
 board's one conversation is (≈4 ms per exchange with the gateway in the path, so
 ≈200–250 a second for everything). The stalk poll adapts to the gate: cruise ON → 2 Hz,
-enough to notice the switch going off; OFF → 20 Hz, a 50 ms button; stopwatch armed →
-paused, the slot goes to speed. On average that is a few exchanges a second (owner's
+enough to notice the switch going off; OFF → 20 Hz, a 50 ms button; stopwatch up with a
+factor → 10 Hz, so LIMIT can still end a run (`19`, as built). On average that is a few exchanges a second (owner's
 concern, 2026-09-13).
 
 To verify on the car first, one `watch` on `70C`: that `1105` answers; that the lever
@@ -303,8 +316,9 @@ lever pages with cruise OFF, and the engine ignores it.**
   stalk.
 - The bytes are analog ladder readings with ±2 of noise, not exact enum values — decode by
   nearest level. Byte 8: 205 rest, 91 RES/+ (the engine's `4383` bit 3, accelerate), 128
-  SET/− (bit 2, decelerate), 167 a third position seen twice with the switch OFF, not
-  identified yet. Byte 9: 167 OFF, 91 ON, 128 CANCEL.
+  SET/− (bit 2, decelerate), 167 LIMIT — the owner pressed LIMIT twice during the capture and
+  167 appears on exactly those presses (≈0.6 s and ≈0.4 s, switch OFF), never at rest, whatever
+  its ODIS name ("neutral ohne Limiterverbau"). Byte 9: 167 OFF, 91 ON, 128 CANCEL.
 - **Decoded by the project's own bands (2026-09-26, `feat/enum-ranges`).** Each ODIS
   text-table level has a coded lower *and* upper bound, and these levels are bands
   (byte 8: 75–110, 111–145, 146–181, 182–221); keyed on the lower bound alone, none of the
@@ -318,7 +332,11 @@ lever pages with cruise OFF, and the engine ignores it.**
   read 0 (main switch off) and `4383` read `2000` (only "control device verified"). With ON,
   `4383` is `3101` (+ bit 3 or bit 2 with the rocker, bit 1 at CANCEL) and `203C` is 2
   (passive). The two witnesses the gate needs both read "off", from different units.
-- A press lasts 0.3–0.6 s at the rocker: 10 Hz catches it; the planned 20 Hz is margin.
+- A deliberate press lasts 0.25–0.5 s at the rocker, but a tap can be one 10 Hz read: with
+  the switch OFF, + at ~59.0 s and ~89.2 s and − at ~90.4 s were each one answer (counted by
+  answer time; a `watch` row repeats the last answer). The board's debounce needs the same
+  state on two consecutive reads: ≈0.1 s at 20 Hz (gate open), ≈0.2 s at 10 Hz (stopwatch up).
+  Hold longer to be sure; a shorter tap can be missed (`19`).
 - Not settled: widening the gate to CANCEL. Parked, nothing was ever set (`2018` stayed 0,
   `203C` never left 2), so "does plus resume after CANCEL" was not tested. The default stays
   OFF.
@@ -332,11 +350,11 @@ lever pages with cruise OFF, and the engine ignores it.**
 | 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, merged in PR #2** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `can_task` runs it under embassy in place of its old round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
 | 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented; bench passed** (2026-09-14, merged in PR #2; `research/dash/can-bring-up.md` §9.9–9.10): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); unplugging USB in adapter mode is not run yet. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
 | 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
-| 6 | stopwatch page | car, one straight road | on `380B` (§6), after 3 |
+| 6 | stopwatch page | car, one straight road | **built** on `380B` (§6) — [`19`](19-stalk-and-stopwatch.md); the factor and a run on the car open |
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
 | 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](../../.archive/tasks/done/dash/16-uds-over-ble.md)**: UDS over BLE as a slow transport, merged in PR #2 (2026-09-14) |
 | 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
-| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **probed 2026-09-26**: `1105` byte 8 moves with the rocker while `203C` = 0 and the engine's `4383` stays `2000` — the lever can page the dash with cruise OFF (§6a). Next: [`19`](19-stalk-and-stopwatch.md) — the lever as buttons (+ next, − previous, LIMIT the stopwatch), decoded by the ODIS intervals; while the stopwatch is armed the lever is read at 5 Hz, not paused, so LIMIT can end it |
+| 10 | the cruise lever as an event source, gate OFF (§6a) | car | **probed 2026-09-26**: `1105` byte 8 moves with the rocker while `203C` = 0 and the engine's `4383` stays `2000` — the lever can page the dash with cruise OFF (§6a). Next: [`19`](19-stalk-and-stopwatch.md) — the lever as buttons (+ next, − previous, LIMIT the stopwatch), decoded by the ODIS intervals, **built** (2026-09-26); while the stopwatch is up the lever is read at 10 Hz, not paused, so LIMIT can end it |
 
 [`09-bt-adapter.md`](../../.archive/specs/dash/09-bt-adapter.md) (archived) is superseded by this file (the wish is met by §3-B over USB and §8 over
 BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5 draws from.
