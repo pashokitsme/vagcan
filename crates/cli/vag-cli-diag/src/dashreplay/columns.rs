@@ -232,16 +232,25 @@ fn written_number(cell: &str) -> Option<f64> {
 	cell.parse().ok()
 }
 
+/// How far from a whole raw count a recorded value may invert and still be on the plan's
+/// scaling. Floating-point error, not a judgement: see [`on_the_boards_scale`].
+const RAW_SLACK: f64 = 1e-3;
+
 /// A converted value as the board would have computed it: back to the raw integer through
 /// the plan's own scaling, then `raw × factor + offset` in `f32`. `None` when the value is
 /// not a whole raw value on that scaling.
+///
+/// Whole within [`RAW_SLACK`], a fixed amount in raw counts: `watch` writes the value with
+/// `{v}`, which reads back exactly, so a value on this scaling inverts to within a few ulps
+/// of an integer — at a raw value near 2³² that is around 1e-6. A bound that grew with the
+/// value passed every number past half a million on any scaling.
 fn on_the_boards_scale(value: f64, owned: &PlanChannel, board: &DeviceChannel) -> Option<f32> {
 	if owned.factor == 0.0 || !value.is_finite() {
 		return None;
 	}
 	let raw = (value - owned.offset) / owned.factor;
 	let whole = raw.round();
-	if (raw - whole).abs() > 1e-6 * whole.abs().max(1.0) {
+	if (raw - whole).abs() > RAW_SLACK {
 		return None;
 	}
 	Some(whole as f32 * board.factor + board.offset)
@@ -549,6 +558,42 @@ mod tests {
 		assert_eq!(format!("{}", -0.0f64), "-0");
 		assert_eq!(format!("{}", 0.0f64), "0");
 		assert_eq!(format!("{}", 100.0f64), "100");
+	}
+
+	#[test]
+	fn a_large_raw_value_fits_only_its_own_scaling() {
+		// A tolerance that grew with the raw value passed everything past half a million:
+		// 32-bit, planned ×0.75, recorded ×1, `1000000` is raw 1333333.33 and was kept as
+		// 999999.75 where the board shows 750000.
+		let (series, notes) = read_on(0.75, 32, "t_s,One\n0.0,1000000\n");
+		assert_eq!(series, [None]);
+		assert!(notes[0].contains("not a number on the plan's scaling"), "{notes:?}");
+	}
+
+	#[test]
+	fn a_correct_column_with_raw_values_near_the_top_of_32_bits_is_kept() {
+		// What `watch` writes is `{v}` of `raw × factor + offset` in f64, which reads back
+		// exactly; inverting it is off by a few ulps at most, far under the bound — with a
+		// factor no power of two divides and an offset.
+		for (factor, offset) in [(0.1, -40.0), (0.75, -40.0), (0.001, 273.15)] {
+			let mut owned = plan_channel(ENGINE, 0x1001, 0, "one");
+			(owned.factor, owned.offset, owned.bit_length, owned.signed) = (factor, offset, 32, false);
+			let board = plan(vec![owned.clone()]).to_device().channels[0];
+			for raw in [u64::from(u32::MAX), u64::from(u32::MAX) - 1, 4_000_000_001, 2_147_483_647, 1, 0] {
+				let written = format!("{}", raw as f64 * factor + offset);
+				let read: f64 = written.parse().unwrap();
+				let off = ((read - offset) / factor - raw as f64).abs();
+				assert!(
+					off < RAW_SLACK / 100.0,
+					"×{factor} {offset:+}: raw {raw} inverts {off} off — the bound is too tight"
+				);
+				assert_eq!(
+					on_the_boards_scale(read, &owned, &board),
+					Some(raw as f32 * board.factor + board.offset),
+					"×{factor} {offset:+}: raw {raw} written as {written}"
+				);
+			}
+		}
 	}
 
 	#[test]
