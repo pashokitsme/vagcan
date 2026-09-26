@@ -32,7 +32,8 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
   quoted, an unconverted answer is `0x…`, a missed read is its time with no value.
 - **In flight, 2026-09-26:** `feat/ble-flag` (`--ble` for `--device ble`, reviewed, fixing),
   `feat/alarm-blink`, `feat/enum-ranges` (ODIS text tables keep their intervals, so `watch`
-  names a lever state instead of printing hex — `1105`'s readings never equal a table value).
+  names a lever state instead of printing hex — `1105`'s readings never equal a table value),
+  `feat/fault-count` (the stored-code count on the panel, [`dash/20`](dash/20-fault-count.md)).
 - **Boards:** unchanged since 2026-09-22 — the old board on 5 V is the working one, the rev v0.4
   board a spare without BLE. An agent's BLE tools still start from Terminal.app: macOS gives
   the owner's Bluetooth grant to the Claude app, not to the agent's processes (`dash/17`).
@@ -74,27 +75,32 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 2. **The lever as buttons and the stopwatch page** — [`dash/19`](dash/19-stalk-and-stopwatch.md),
    after the owner approves the spec and blink and enum-ranges merge. Built and tested without
    the car; the speed factor and a run need it.
-3. **OLED and enclosure** — `dash/15`; waits for the panel.
+3. **The fault count on the panel** — [`dash/20`](dash/20-fault-count.md), approved
+   2026-09-26: the count and the badge are on `feat/fault-count` (phase 1); the firmware
+   wiring follows on the controller's word. Its car check is a `vagcan faults` beside it.
+4. **OLED and enclosure** — `dash/15`; waits for the panel.
 
 **With the car**
 
-4. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
+5. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
    moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels; §2 item 8.
-5. **Alarms on a drive** — `dash/04`: the retard threshold from the research, the misfire
+6. **Alarms on a drive** — `dash/04`: the retard threshold from the research, the misfire
    window; a `watch --out` recording with `200A`–`200D` for the replay.
-6. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+7. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-7. **`dash/19` on the car** — LIMIT's state, paging with cruise off, the `380B` factor on a
+8. **`dash/19` on the car** — LIMIT's state, paging with cruise off, the `380B` factor on a
    steady stretch, a 0–100 run beside `vagcan measure`.
-8. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
-   ran with the `.rod` fallback beside the project); then freeze-frame layouts
-   (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-9. **Questions only the car answers** — `dash/06`.
-10. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+9. **`dash/20` on the car** — the board's count against `vagcan faults` in one ignition
+   cycle, the count's time on USB, the units it names as not counted.
+10. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
+    ran with the `.rod` fallback beside the project); then freeze-frame layouts
+    (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
+11. **Questions only the car answers** — `dash/06`.
+12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-11. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-12. **`watch` and `measure` across all fifteen units** — measured against the file, not
+14. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -109,6 +115,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | spec (2026-09-26): the cruise lever as buttons and the stopwatch page; waiting for approval |
+| [`dash/20-fault-count.md`](dash/20-fault-count.md) | approved 2026-09-26: the stored-code count and its badge on the panel; phase 1 (count, badge) on `feat/fault-count`, firmware next |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.

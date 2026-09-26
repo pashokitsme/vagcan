@@ -90,6 +90,7 @@ Updated 2026-09-26.
 - [ ] Page the dash panel with the cruise-control buttons while cruise is off, LIMIT for the stopwatch (probed on the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash (with the buttons above)
+- [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (count and icon built, firmware next)
 
 Details: [`todo/README.md`](todo/README.md).
 
