@@ -175,7 +175,7 @@ vagcan faults             # stored fault codes with their text (after setup)
 vagcan watch              # live values from several units at once
 ```
 
-**Through the dash board over BLE:** no cable needed. Add `--device ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, run it from Terminal.app, which asks for Bluetooth access.
+**Through the dash board over BLE:** no cable needed. Add `--device ble`: `vagcan` finds the board and says which one it uses, or asks when there are several. The ignition must be on. On macOS, the app you run it from needs Bluetooth access (System Settings → Privacy & Security → Bluetooth); Terminal.app asks on first use.
 
 | `--device` | What it uses |
 |---|---|

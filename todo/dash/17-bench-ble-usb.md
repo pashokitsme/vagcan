@@ -7,9 +7,11 @@ none of it has run end to end: the first run found the CAN pair dead in both dir
 (`research/dash/can-bring-up.md` §9.7). This is the plan, from the agents' reports.
 
 `B` = the board's port (`/dev/cu.usbmodem1101`), `C` = the CANable's
-(`/dev/cu.usbmodem206E37A148451`). BLE tools must be started from Terminal.app: a process
-started by the Claude app is killed by macOS on its first Bluetooth call, and `osascript`
-to Terminal waits for an automation permission; `open -a Terminal <script>.command` works.
+(`/dev/cu.usbmodem206E37A148451`). An agent starts BLE tools from Terminal.app
+(`open -a Terminal <script>.command`). The owner allowed the Claude desktop app Bluetooth on
+2026-09-26, so the owner's own runs from it work; a process the agent starts is attributed by
+macOS to the embedded `com.anthropic.claude-code` bundle, which carries no Bluetooth usage
+description, and TCC kills it (SIGABRT) on its first Bluetooth call without asking.
 
 **2026-09-14 16:01 — the pair is still dead**; what runs without it passed
 (`research/dash/can-bring-up.md` §9.8): the Hello probe (also right after a reset), the

@@ -81,36 +81,10 @@ impl Found {
 }
 
 pub async fn adapter() -> Result<Adapter> {
-	// Said before CoreBluetooth is touched, because after is too late (see the function).
-	if let Some(warning) = bluetooth_warning(std::env::var("__CFBundleIdentifier").ok().as_deref()) {
-		eprintln!("{warning}");
-	}
 	Manager::new().await?.adapters().await?.into_iter().next().context(
-		"no Bluetooth adapter (on macOS this also means Bluetooth access was denied: allow the terminal in \
-             System Settings → Privacy & Security → Bluetooth, and run from Terminal.app)",
+		"no Bluetooth adapter (on macOS this also means Bluetooth access was denied: allow the app that runs \
+             this in System Settings → Privacy & Security → Bluetooth)",
 	)
-}
-
-/// Apps macOS is known to *ask* about Bluetooth for, on the first use, rather than kill.
-const ASKS_FOR_BLUETOOTH: &[&str] = &["com.apple.Terminal"];
-
-/// What to say before touching Bluetooth, when the process may be killed for it.
-///
-/// macOS does not refuse Bluetooth to a process whose app carries no Bluetooth usage
-/// description: it kills the process (TCC) the moment CoreBluetooth starts, and nothing
-/// in the process can catch that or say why afterwards. So it is said before, and only
-/// when the app that started the process — `__CFBundleIdentifier`, which launchd sets —
-/// is one not known to ask. Seen on the bench (2026-09-14): a run started from the Claude
-/// app died; the same run from Terminal.app asked for access. Unset (not macOS, or not
-/// started from an app) says nothing.
-fn bluetooth_warning(app: Option<&str>) -> Option<String> {
-	let app = app?;
-	(!ASKS_FOR_BLUETOOTH.contains(&app)).then(|| {
-		format!(
-			"note: this process was started from {app}, and macOS kills a process whose app is not allowed \
-             Bluetooth. If it stops here with no error, run the command from Terminal.app."
-		)
-	})
 }
 
 /// One scan pass. Devices that speak NUS come first, then named ones, then by
@@ -444,19 +418,6 @@ pub fn flush() {
 mod tests {
 	use super::*;
 	use futures::stream;
-
-	#[test]
-	fn a_process_started_from_an_app_that_may_be_killed_is_warned_first() {
-		let warning = bluetooth_warning(Some("com.anthropic.claudefordesktop")).expect("a warning");
-		assert!(warning.contains("com.anthropic.claudefordesktop"), "{warning}");
-		assert!(warning.contains("Terminal.app"), "say where to run it instead: {warning}");
-	}
-
-	#[test]
-	fn terminal_and_no_app_at_all_are_not_warned() {
-		assert_eq!(bluetooth_warning(Some("com.apple.Terminal")), None);
-		assert_eq!(bluetooth_warning(None), None);
-	}
 
 	#[test]
 	fn a_scan_stops_a_moment_after_the_first_board_and_at_the_cap_when_none_comes() {
