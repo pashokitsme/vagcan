@@ -3,7 +3,8 @@
 //! Pure on purpose: serde, `heapless`, `postcard` and two of the renderer's bounds, nothing of
 //! the plan and nothing of the chip. The firmware cannot be built for the host, so this is the
 //! one part of the settings a host test can reach — `research/dash/host/tests/settings_schema.rs`
-//! compiles this file as it is and loads byte images of every version through [`decode`].
+//! compiles this file as it is, loads byte images of every version through [`decode`], and
+//! picks the newest of two slots through [`held`], a newer image's record among them.
 //! What the plan decides about a configuration (its defaults, whether it fits) is
 //! [`crate::config`]'s.
 //!
@@ -81,4 +82,59 @@ pub fn decode(version: u16, payload: &[u8]) -> Result<Option<Config>, postcard::
 		}
 		_ => Ok(None),
 	}
+}
+
+/// One slot of flash whose magic, length and CRC check out: a record some image wrote whole,
+/// whether or not this one can read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slot {
+	pub generation: u32,
+	/// The version its header names.
+	pub version: u16,
+	/// The record, where this image knows its version and its bytes decode under it.
+	pub config: Option<Config>,
+}
+
+/// What the slots hold, taken together ([`held`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+	/// The newest record's slot and generation, whatever its version and whether or not this
+	/// image reads it. A save goes to another slot under the next generation, so it never goes
+	/// out under a lower generation than one in flash and never overwrites the newest record.
+	pub newest: Option<(u32, u32)>,
+	/// The newest record this image reads: the newest record, or where that is one it cannot
+	/// read, the one before it.
+	pub config: Option<Config>,
+	/// The newest record's version, where this image cannot read it — a newer image wrote it
+	/// (or the bytes do not decode under their own version). Only an explicit `save`
+	/// overwrites it; a write nobody asked for, like a stopwatch run's, does not.
+	pub unreadable: Option<u16>,
+}
+
+/// The slots, taken together, in slot order: which is the newest record, and what of flash
+/// this image can use.
+///
+/// Every slot whose header and CRC check out counts for the newest, whatever its version. A
+/// record this image did not know used to be dropped with its generation: with a newer
+/// image's generations 4 and 5 in the two slots this image started from generation 0, and
+/// its first save went into slot 1 as generation 1 — over the newest record, under a lower
+/// generation (PR #12 review).
+pub fn held(slots: impl IntoIterator<Item = Option<Slot>>) -> Held {
+	let mut held = Held::default();
+	let mut readable: Option<u32> = None;
+	for (index, slot) in slots.into_iter().enumerate() {
+		let Some(slot) = slot else { continue };
+		if held.newest.is_none_or(|(_, newest)| slot.generation > newest) {
+			held.newest = Some((index as u32, slot.generation));
+			held.unreadable = slot.config.is_none().then_some(slot.version);
+		}
+		match slot.config {
+			Some(config) if readable.is_none_or(|newest| slot.generation > newest) => {
+				readable = Some(slot.generation);
+				held.config = Some(config);
+			}
+			_ => {}
+		}
+	}
+	held
 }

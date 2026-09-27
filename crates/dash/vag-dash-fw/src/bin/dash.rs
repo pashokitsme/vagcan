@@ -675,17 +675,24 @@ fn open_settings() -> Settings {
 		Ok(mut store) => {
 			let (offset, len, used) = store.partition();
 			info!("config partition at 0x{offset:06x}, {len} bytes ({used} in use: 2 slots)");
+			// Flash's newest record may be a newer image's: this one runs on the record before
+			// it, or on the defaults, and what it runs is then not what flash holds.
+			let saving = Saving {
+				unsaved: store.unreadable().is_some(),
+				run_pending: false,
+			};
+			say_unreadable(&store);
 			match store.load() {
 				// A stored configuration is checked against *this* plan before
 				// it is trusted: it may have been saved by an image with more
 				// channels, and a cell past the end of the plan is nothing.
 				Ok(config) => match config.validate() {
 					Ok(()) => {
-						info!("config loaded, generation {}: {config:?}", store.generation());
+						info!("config loaded, newest generation {}: {config:?}", store.generation());
 						Settings {
 							store: Some(store),
 							config,
-							saving: Saving::default(),
+							saving,
 						}
 					}
 					Err(reason) => {
@@ -734,11 +741,11 @@ fn open_settings() -> Settings {
 					}
 				},
 				Err(StoreError::Empty) => {
-					info!("nothing stored yet, running on defaults");
+					info!("nothing this image reads is stored, running on defaults");
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						saving: Saving::default(),
+						saving,
 					}
 				}
 				Err(e) => {
@@ -746,7 +753,7 @@ fn open_settings() -> Settings {
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						saving: Saving::default(),
+						saving,
 					}
 				}
 			}
@@ -759,6 +766,18 @@ fn open_settings() -> Settings {
 				saving: Saving::default(),
 			}
 		}
+	}
+}
+
+/// Says so when flash's newest record is one this image cannot read (`Store::unreadable`): a
+/// newer image wrote it. Said at boot and on `load`; a stopwatch run is not written over it,
+/// and only `save` is.
+fn say_unreadable(store: &Store) {
+	if let Some(version) = store.unreadable() {
+		note!(
+			"settings: flash's newest record, generation {}, is version {version} — a newer image's, which this one cannot read; running on the one before it or the defaults, and only `save` writes over it",
+			store.generation()
+		);
 	}
 }
 
@@ -2766,8 +2785,15 @@ fn write_run(s: &mut Settings) {
 		}
 		return;
 	};
-	let stored = match s.saving.at_standstill(false) {
-		RunWrite::Nothing => return,
+	let unreadable = store.unreadable();
+	let pending = s.saving.run_pending;
+	let stored = match s.saving.at_standstill(unreadable.is_some()) {
+		RunWrite::Nothing => {
+			if let (true, Some(version)) = (pending, unreadable) {
+				note!("stopwatch: the run waits for `save` — flash's newest record is version {version}, a newer image's, and only `save` writes over it");
+			}
+			return;
+		}
 		RunWrite::Whole => s.config.clone(),
 		RunWrite::AddToStored => match store.load() {
 			Ok(mut stored) => {
@@ -3359,10 +3385,20 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				Some(store) => match store.load() {
 					Ok(config) => match config.validate() {
 						Ok(()) => {
+							// The record before flash's newest, where this image cannot read that
+							// one: what runs is then not what flash holds.
+							let unreadable = store.unreadable();
 							s.config = config;
 							s.saving.agreed();
 							PAGES_CHANGED.signal(());
 							let _ = write!(out, "ok: reloaded from flash");
+							if let Some(version) = unreadable {
+								s.saving.changed();
+								let _ = write!(
+									out,
+									" — the one before its newest record, version {version}, which this image cannot read"
+								);
+							}
 						}
 						Err(reason) => {
 							let _ = write!(out, "err: stored config does not fit this plan — {reason}");
