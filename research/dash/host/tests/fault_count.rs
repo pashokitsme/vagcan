@@ -518,6 +518,39 @@ fn an_exchange_given_up_for_adapter_mode_is_asked_again_when_the_panel_is_back()
 }
 
 #[test]
+fn a_hosts_exchange_given_up_leaves_the_counts_own_request_alone() {
+	// Review round 2: `given_up` has to be about the count's own exchange. Adapter mode gives up
+	// whatever is on the bus — here a host's — while the count's request waits in the planner;
+	// taken for the count's, a second request of the count's would join the first.
+	let car = Car::listing(&[]).codes(0x7E0, &[]);
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.step(true, false);
+	bench
+		.planner
+		.exchange(
+			bench.clock,
+			Class::Remote,
+			Unit {
+				request: 0x7E0,
+				response: 0x7E8,
+			},
+			vec![0x19, 0x02, 0xFF],
+		)
+		.expect("allowed");
+	let host = bench.due().expect("the host's request goes first");
+	assert_eq!(host.pdu, [0x19, 0x02, 0xFF]);
+	bench.give_up(&host);
+	bench.step(true, false);
+	let gateway = bench.exchange(&car, 5).expect("the count's request");
+	assert_eq!(gateway.pdu, [0x22, 0x2A, 0x26]);
+	bench.step(true, false);
+	let next = bench.exchange(&car, 5).expect("the walk");
+	assert_eq!(next.pdu, [0x19, 0x02, 0x08], "the gateway was asked once, not twice");
+	assert!(!bench.said.iter().any(|l| l.contains("turned adapter")), "{:?}", bench.said);
+}
+
+#[test]
 fn nobody_answering_is_a_question_mark_not_no_faults() {
 	// Review, 2026-09-27: a list from the gateway and not one unit of the walk answering was
 	// counted as 0 stored — no badge, the picture of a car with no faults.
