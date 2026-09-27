@@ -42,13 +42,12 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
   147–182; the engine's cruise status off at 0.
 - **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
   the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
-- **Fault count on the panel** (`dash/20`; its task file is on `feat/fault-count` only):
-  phase 1 reviewed; `master` through PR #13 merged into the branch (`a90a539`). The owner
-  answered the four design questions on 2026-09-27: the unit list from the gateway at start
-  (`dash/README.md`'s rule amended), `MAX_UNITS` 64 as the BLE guard's, the count's own 2 s
-  deadline and a pause while the stopwatch is up, `?` when the count failed. Phase 2, the
-  firmware, built on the branch the same day, in review: `vag_dash_fw::faults`, host-tested
-  through the board's planner; RAM +244 B static in both builds. Not on the bench or the car.
+- **Fault count on the panel** ([`dash/20`](dash/20-fault-count.md)), built 2026-09-27 with the
+  owner's four answers of that day: the unit list from the gateway at start (`dash/README.md`'s
+  rule amended), `MAX_UNITS` 64 as the BLE guard's, the count's own 2 s deadline and a pause
+  while a stopwatch runs, `?` when there is no count; the badge in the colours of the cell under
+  it. Every exchange on the board now drops a late answer to another request. Needs the car:
+  its "Car checks".
 - **[`dash/21`](dash/21-runs-in-flash.md) filed 2026-09-27:** runs kept in flash, saved on LIMIT,
   read over BLE; it also covers a finished run the lever's close leaves in RAM.
 - **USB on the car (2026-09-26):** the cable enumerates only when plugged in **before** OBD
@@ -93,22 +92,22 @@ item 8, `dash/18` on a real pull.
 1. **Flash `master`** — the owner. Everything on it is reviewed and merged; the owner's plan
    builds (above). In `crates/dash/vag-dash-fw`: `VAGCAN_DASH_VIN=XW8AD4NE9JH008917 cargo run
    --release --bin dash` builds and flashes through the `espflash` runner in `.cargo/config.toml`
-   (it passes the partition table). The image carries the lever and the stopwatch; BOOT no
-   longer pages.
-2. **The fault count** — `dash/20` on `feat/fault-count`: phase 2 built with the owner's
-   answers (2026-09-27); review it, then the PR. On the car: its "Car checks".
-3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
+   (it passes the partition table). The image carries the lever, the stopwatch and the fault count;
+   BOOT no longer pages.
+2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
-4. **OLED and enclosure** — `dash/15`; waits for the panel.
+3. **OLED and enclosure** — `dash/15`; waits for the panel.
 
 **With the car**
 
-5. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
+4. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
    of all: pressing and releasing + and − never opens the stopwatch or turns the page back (a
    release from 91 or 128 to 205 crosses the other bands; at 20 Hz two reads are 100 ms). Then
    paging with cruise off, cruise on closing the stopwatch, the `380B` factor on a steady
    stretch, a 0–100 beside `vagcan measure --ble` started first, and the run saved before `GO`
    surviving a power cycle. Pin buttons on the bench first.
+5. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
+   total against `vagcan faults`, the log's time, the units skipped, a BLE `info` during it.
 6. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
    `watch --out` recording with `200A`–`200D` for the replay.
 7. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
@@ -138,6 +137,7 @@ item 8, `dash/18` on a real pull.
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
+| [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on

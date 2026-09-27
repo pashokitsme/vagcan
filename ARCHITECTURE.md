@@ -488,16 +488,24 @@ is asked only for its part number until it answers.
 
 **The fault count: one protocol read beside the plan.** Once per boot, 10 s in and once a
 plan unit has answered, the board reads the gateway's installation list (`22 2A26`) and asks
-the engine, the gearbox, the gateway and every listed unit for its stored codes (`19 02 08`),
-as `vagcan faults` counts them. Only VW's block of the list is decoded, a walk of more than 64
-units is refused, and a listed id that shares a CAN id with a unit already walked is skipped.
+the engine, the gearbox, the gateway and every listed unit for its stored codes (`19 02 08`).
+Stored and failing now are counted as `vagcan faults` counts them; the units differ in one
+way: a listed id that shares a CAN id with a unit already asked is skipped, where the laptop
+asks it. Only VW's block of the list is decoded, and a walk of more than 64 units is refused.
 Each request is one background exchange through the planner, so the panel and a host keep
 their turns; each ends 2 s after its send, `78`s included, where every other exchange keeps
-the board's 500 ms and 10 s. None starts while the stopwatch is up; the walk goes on where it
-stopped when it closes. The count is `vag_uds_client::faultcount`, the board's shell round it
-`vag_dash_fw::faults`; both are pure and tested on the host. The panel draws the number over a
-warning triangle in the bottom-right corner, inverted while a code is failing now, `?` when the
-count failed; `state` says `faults=`.
+the board's 500 ms and 10 s. A unit still asking for time at 2 s is not counted and is not
+taken for silent. None starts while the board's stopwatch is up or a host holds its timing
+channel; the walk goes on where it stopped. The count is `vag_uds_client::faultcount`, the
+board's shell round it `vag_dash_fw::faults`, an exchange's waits `vag_dash_fw::exchange`; all
+three are pure and tested on the host. The panel draws the number over a warning triangle in
+the bottom-right corner, in the colours of the cell under it, inverted while a code is failing
+now. `?` means no count: the gateway gave no list, it listed more than 64 units, or no unit
+answered — the USB log says which. `state` says `faults=9 failing=1` or `faults=?`.
+
+**Every exchange drops a late answer to another request.** A positive response to another
+service, or a refusal naming another, that arrives while an exchange waits is dropped and the
+wait goes on; the sweep before each send removes only what came before it.
 
 **Input is commands, from any mix of backends.** Buttons on GPIO 3, 4 and 5 (`[[button]]`),
 the cruise lever (`[stalk]`) and `dashsim` each turn a press into a `Command` — next, previous,
