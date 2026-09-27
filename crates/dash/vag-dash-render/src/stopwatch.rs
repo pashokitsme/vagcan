@@ -133,8 +133,10 @@ impl Run {
 	/// The mark's time: from the launch to its crossing. `None` when it was not
 	/// crossed, when there is no launch to time it from, or when the crossing lies
 	/// before the launch — the first moving sample already past a low mark, read too
-	/// late to say when it was crossed (the laptop looks for a crossing only after
-	/// the launch, `Track::crossing`).
+	/// late to say when it was crossed. Here the board and the laptop part: the board
+	/// refuses such a crossing, while `vag-cli-measure`'s `Track::crossing` skips only a
+	/// pair of samples that ends before the launch, interpolates the pair that straddles
+	/// it the same way, and reports the time as negative.
 	pub fn time(&self, index: usize) -> Option<f32> {
 		let time = self.crossed_at(index)? - self.launch?.t;
 		(time >= 0.0).then_some(time)
