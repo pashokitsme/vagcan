@@ -87,8 +87,9 @@ pub enum Phase {
 	/// Standing long enough: the next moving sample starts a run.
 	Armed,
 	Running,
-	/// A run ended — at its highest mark, or back at a standstill before it. Its
-	/// times are on show until the next run is armed and launched.
+	/// A run ended — at its highest mark, or aborted: back at a standstill before it, or
+	/// its speed silent. Its times are on show until the next run is armed and launched;
+	/// the page's word says which way it ended ([`Words::aborted`]).
 	Done,
 }
 
@@ -522,7 +523,11 @@ pub struct Words {
 	pub idle: &'static str,
 	pub armed: &'static str,
 	pub running: &'static str,
+	/// [`Phase::Done`] with a run that reached its highest mark.
 	pub done: &'static str,
+	/// [`Phase::Done`] with a run that did not: back at a standstill short of it, or its speed
+	/// went silent. Its times are on show all the same, and must not read as a finished run's.
+	pub aborted: &'static str,
 	pub seconds: &'static str,
 	pub km_h: &'static str,
 }
@@ -542,6 +547,7 @@ const ENGLISH: Words = Words {
 	armed: "GO",
 	running: "RUN",
 	done: "DONE",
+	aborted: "ABORT",
 	seconds: "s",
 	km_h: "km/h",
 };
@@ -552,6 +558,7 @@ const RUSSIAN: Words = Words {
 	armed: "ПУСК",
 	running: "ЗАМЕР",
 	done: "ГОТОВО",
+	aborted: "СБРОС",
 	// The units' face has no Cyrillic, and a plan's units are the catalog's SI spellings in
 	// either language: the labels are Russian, the units are not.
 	seconds: "s",
@@ -609,8 +616,9 @@ impl Labels {
 
 /// The stopwatch page as a values row: the phase's word over the speed, then each mark's
 /// time — the run on show, or where there is none, the last finished run `saved` holds as
-/// `(mark in km/h, seconds)`. A mark with no time draws a dash. With the factor not
-/// measured the row is that word and nothing else.
+/// `(mark in km/h, seconds)`. A mark with no time draws a dash. A run that ended short of
+/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. With
+/// the factor not measured the row is that word and nothing else.
 pub fn cells<'a>(
 	watch: &Stopwatch<'_>,
 	speed_km_h: Option<f32>,
@@ -627,6 +635,7 @@ pub fn cells<'a>(
 		Phase::Idle => words.idle,
 		Phase::Armed => words.armed,
 		Phase::Running => words.running,
+		Phase::Done if watch.run().is_some_and(|run| run.aborted) => words.aborted,
 		Phase::Done => words.done,
 	};
 	row[0] = Cell::new(word, speed_km_h, words.km_h, 0);
@@ -1037,8 +1046,21 @@ mod tests {
 		watch.sample(Some(0.0), 4_600);
 		let shown = row(&watch, Some(0.0), &[(60, 1.0), (100, 2.0)]);
 		assert_eq!(shown.len(), 3);
+		assert_eq!(shown[0].0, "ABORT", "an aborted run does not read as a finished one");
 		assert_eq!(shown[1].1, watch.run().unwrap().time(0), "the aborted run's 0-60, not the saved one");
 		assert_eq!(shown[2].1, None, "and its 0-100 never closed");
+		// Armed again, the aborted run's times stay up under the word that says so.
+		watch.sample(Some(0.0), 5_600);
+		assert_eq!(row(&watch, Some(0.0), &[])[0].0, "GO");
+		// A run the speed's silence ended says the same as one a standstill ended.
+		let mut quiet = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut quiet, ramp(1.05, 20.0), 0, 4_500, 100);
+		assert_eq!(quiet.silence(4_501 + SILENCE_MS), Some(Event::Aborted));
+		assert_eq!(row(&quiet, None, &[])[0].0, "ABORT");
+		// A finished run says it finished.
+		let mut done = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut done, ramp(1.05, 20.0), 0, 7_000, 100);
+		assert_eq!(row(&done, Some(120.0), &[])[0].0, "DONE");
 
 		let unmeasured = Stopwatch::new(&MARKS, 0.0);
 		assert_eq!(row(&unmeasured, Some(50.0), &[(60, 1.0)]), [("NO FACTOR".into(), None, "".into(), 0)]);
@@ -1066,7 +1088,7 @@ mod tests {
 			for (size, links) in panels {
 				for language in ["en", "ru"] {
 					let words = Words::of(language);
-					for word in [words.idle, words.armed, words.running, words.done] {
+					for word in [words.idle, words.armed, words.running, words.done, words.aborted] {
 						let draw = |times: &[f32]| {
 							let saved: Vec<(u16, f32)> = marks.iter().copied().zip(times.iter().copied()).collect();
 							let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
@@ -1135,7 +1157,9 @@ mod tests {
 		assert_eq!(Words::of("en").idle, "STOP");
 		assert_eq!(Words::of("de"), Words::of("en"), "a language it has no words for is English");
 		for words in [Words::of("ru"), Words::of("en")] {
-			assert!(words.not_measured.chars().count() <= 10, "a label is ten characters at most");
+			for word in [words.not_measured, words.idle, words.armed, words.running, words.done, words.aborted] {
+				assert!(word.chars().count() <= 10, "a label is ten characters at most: {word}");
+			}
 		}
 	}
 
