@@ -365,8 +365,11 @@ fn every_record(pdu: &[u8]) -> Answer {
 	Answer::Pdu(answer)
 }
 
+/// How `A` answers its `n`-th exchange, `pdu`: the answer, and after how many ms.
+type Reply<'a> = &'a mut dyn FnMut(usize, &[u8]) -> (Answer, u64);
+
 /// [`beside`], `A` answering its `n`-th exchange as `a(n, pdu)` says, and after that many ms.
-fn beside_with(a: &mut dyn FnMut(usize, &[u8]) -> (Answer, u64), until: u64) -> usize {
+fn beside_with(a: Reply<'_>, until: u64) -> usize {
 	const B: Unit = Unit {
 		request: 0x714,
 		response: 0x77E,
