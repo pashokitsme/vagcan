@@ -1,7 +1,7 @@
 //! The board's panel loop, run over a recording instead of a bus.
 //!
 //! What decides the glass is the board's own code: [`Screen`] (the page cursor, the alarms
-//! and the one button), [`Plan::rates`] (what the bus reads, and how often, for the page on
+//! and the commands the board's inputs give), [`Plan::rates`] (what the bus reads, and how often, for the page on
 //! the glass) and [`pages::from_plan`] (the pages the board holds). What this module adds is
 //! the part of `vag-dash-fw`'s `bin/dash.rs` that is not a library — the frame loop, the value
 //! store with its staleness rule, and the cell composition in `panel_task` — mirrored here
@@ -15,13 +15,18 @@
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::DrawTarget;
-use vag_dash_render::alarm::{Alarm, BLINK_MS, ChannelId, Direction, MAX_ALARMS, Press, Rule};
+use vag_dash_render::alarm::{Alarm, BLINK_MS, ChannelId, Direction, MAX_ALARMS, Rule};
 use vag_dash_render::button::{Button, Press as ButtonPress};
+use vag_dash_render::control::{self, Command};
 use vag_dash_render::history::History;
 use vag_dash_render::pages::{self, Layout, MAX_PAGES};
 use vag_dash_render::plan::{Page, Plan};
-use vag_dash_render::screen::{Change, Glass, Screen};
+use vag_dash_render::screen::{Change, Glass, Outcome, Screen};
 use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Theme, draw_with};
+
+/// What a `--press` asks for: `dashsim`'s short press, as the board's input task turns it into
+/// a command.
+const PRESS: Option<Command> = control::remote(ButtonPress::Short);
 
 /// Milliseconds between two panel frames — `FRAME_MS` in `vag-dash-fw`'s `bin/dash.rs`.
 pub const FRAME_MS: u64 = 200;
@@ -71,8 +76,8 @@ pub enum Event {
 pub enum Refusal {
 	/// Before the first frame or after the last.
 	Outside,
-	/// Closer than the board's `PRESS_GAP_MS` to the last press made: the board's button
-	/// gate takes the two as one.
+	/// Closer than the board's `PRESS_GAP_MS` to the last press made: the gate the board puts
+	/// `dashsim`'s presses through takes the two as one.
 	TooSoon,
 }
 
@@ -128,13 +133,13 @@ macro_rules! each_screen {
 }
 
 impl Screens {
-	fn new(rules: &'static [Alarm<'static>]) -> Option<Screens> {
+	fn new(rules: &'static [Alarm<'static>], stopwatch: bool) -> Option<Screens> {
 		Some(match rules.len() {
-			0 => Screens::R0(Screen::new(rules)),
-			1 => Screens::R1(Screen::new(rules)),
-			2 => Screens::R2(Screen::new(rules)),
-			3 => Screens::R3(Screen::new(rules)),
-			4 => Screens::R4(Screen::new(rules)),
+			0 => Screens::R0(Screen::new(rules, stopwatch)),
+			1 => Screens::R1(Screen::new(rules, stopwatch)),
+			2 => Screens::R2(Screen::new(rules, stopwatch)),
+			3 => Screens::R3(Screen::new(rules, stopwatch)),
+			4 => Screens::R4(Screen::new(rules, stopwatch)),
 			_ => return None,
 		})
 	}
@@ -143,8 +148,8 @@ impl Screens {
 		each_screen!(self, screen => screen.frame(cursor, pages, now_ms, value_of))
 	}
 
-	fn press(&mut self, cursor: &mut u8, pages: u8) -> Press {
-		each_screen!(self, screen => screen.press(cursor, pages))
+	fn command(&mut self, command: Command, cursor: &mut u8, pages: u8) -> Outcome {
+		each_screen!(self, screen => screen.command(command, cursor, pages))
 	}
 }
 
@@ -181,7 +186,8 @@ impl Replay {
 	/// the recording. `Err` for a plan with more rules than the board holds — the generator
 	/// refuses one.
 	pub fn new(plan: &'static Plan, series: Vec<Option<Series>>, mut presses: Vec<u64>, start_ms: u64, end_ms: u64) -> Result<Replay, String> {
-		let screen = Screens::new(plan.alarms).ok_or_else(|| format!("{} alarm rules, and the board holds at most {MAX_ALARMS}", plan.alarms.len()))?;
+		let screen = Screens::new(plan.alarms, plan.stopwatch.is_some())
+			.ok_or_else(|| format!("{} alarm rules, and the board holds at most {MAX_ALARMS}", plan.alarms.len()))?;
 		if series.len() != plan.channels.len() {
 			return Err(format!("{} series for {} plan channels", series.len(), plan.channels.len()));
 		}
@@ -189,7 +195,8 @@ impl Replay {
 		// The frames run on FRAME_MS from the first row, so the last is not the last row.
 		let last_frame = start_ms + end_ms.saturating_sub(start_ms) / FRAME_MS * FRAME_MS;
 		// A press is made where the board would take one: inside the frames, and through the
-		// button's own gate, which lets none through closer than PRESS_GAP_MS to the last.
+		// gate the board puts `dashsim`'s presses through, which lets none through closer than
+		// PRESS_GAP_MS to the last.
 		let mut button = Button::new();
 		let mut refused = Vec::new();
 		presses.retain(|&p| {
@@ -256,13 +263,17 @@ impl Replay {
 			events.push(Event::Start { page: self.cursor });
 		}
 
-		// The button task routes a press through the screen between two frames.
+		// The board's control task routes a press through the screen between two frames.
 		while self.presses.get(self.pressed).is_some_and(|&p| p <= t) {
 			self.pressed += 1;
 			let showing = self.rule;
-			match self.screen.press(&mut self.cursor, pages) {
-				Press::NextPage => events.push(Event::Paged { page: self.cursor }),
-				Press::Silenced => events.push(Event::Hushed { rule: showing }),
+			let Some(command) = PRESS else { continue };
+			match self.screen.command(command, &mut self.cursor, pages) {
+				Outcome::Paged => events.push(Event::Paged { page: self.cursor }),
+				Outcome::Silenced => events.push(Event::Hushed { rule: showing }),
+				// Nothing here gives a `Stopwatch` command, so the stopwatch is never up and a
+				// page turn is never held by it.
+				Outcome::StopwatchOn | Outcome::StopwatchOff | Outcome::NoStopwatch | Outcome::StopwatchHeld | Outcome::Ignored => {}
 			}
 		}
 
@@ -621,6 +632,9 @@ mod tests {
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &RULES,
+		stalk: None,
+		stopwatch: None,
+		buttons: &[],
 	};
 
 	/// A reading every 100 ms from 0 to `end_ms`, of what `value` says at that moment.
@@ -733,7 +747,7 @@ mod tests {
 
 	#[test]
 	fn a_press_closer_than_the_boards_gap_to_the_last_one_is_not_a_press() {
-		// The board's button gate: 250 ms from the last press it let through.
+		// The board's gate on `dashsim`'s presses: 250 ms from the last press it let through.
 		let replay = replay(every_100ms(2_000, |_| 0.0), &[1_000, 500, 600, 800], 2_000);
 		assert_eq!(replay.refused(), [(600, Refusal::TooSoon), (1_000, Refusal::TooSoon)]);
 		let events = run(replay);

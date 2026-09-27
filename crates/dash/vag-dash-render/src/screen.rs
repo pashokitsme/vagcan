@@ -1,15 +1,20 @@
 //! What is on the glass: the page the driver chose, unless an alarm took it.
 //!
-//! Three things meet here — the page cursor, the plan's alarms, and the one
-//! button — and the firmware only feeds them: the time, the latest value of a
-//! channel, a press. It lives in this crate for the reason [`alarm`](crate::alarm)
-//! and [`button`](crate::button) do: the firmware cannot be built for the host,
-//! and the rules between the three are exactly what a person on the car would
-//! otherwise report as "the button did nothing".
+//! Three things meet here — the page cursor, the plan's alarms, and what the driver asks
+//! for — and the firmware only feeds them: the time, the latest value of a channel, a
+//! [`Command`]. It lives in this crate for the reason [`alarm`](crate::alarm) and
+//! [`button`](crate::button) do: the firmware cannot be built for the host, and the rules
+//! between the three are exactly what a person on the car would otherwise report as "the
+//! button did nothing".
+//!
+//! **One entry point for every input.** A `[[button]]` on a pin, the cruise lever and
+//! `dashsim` each turn what they read into a [`Command`] ([`control`](crate::control)), and
+//! [`Screen::command`] takes it without learning which input it was: a press means the same
+//! thing whatever was pressed.
 //!
 //! **The cursor is not stored here.** It is the board's configuration — saved to
 //! flash, set over BLE, reported in `state` — and a second copy would drift from
-//! it. [`Screen::frame`] reads it and [`Screen::press`] moves it, both through
+//! it. [`Screen::frame`] reads it and [`Screen::command`] moves it, both through
 //! the caller's own value.
 //!
 //! **The page on the glass is what the bus reads in the foreground.** During a
@@ -23,6 +28,7 @@
 //! and turns the page as it always has.
 
 use crate::alarm::{Alarm, Alarms, ChannelId, Highlight, PageId, Press, Shown};
+use crate::control::Command;
 use crate::pages;
 
 /// What one frame did to the glass that is worth one line in the log.
@@ -65,6 +71,29 @@ pub struct Glass {
 	pub change: Option<Change>,
 }
 
+/// What a [`Command`] did — enough for the board to say so in its log, and to know whether
+/// the cursor or the foreground moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+	/// The cursor moved to the next or the previous page — on the adapter screen too, where
+	/// no page is drawn.
+	Paged,
+	/// An alarm held the glass, and the command silenced it — whichever command it was.
+	Silenced,
+	/// The stopwatch took the glass, from whatever page the cursor is on.
+	StopwatchOn,
+	/// The stopwatch left the glass, back to the page the cursor is on — the one it
+	/// came from, since nothing moves the cursor while it is up.
+	StopwatchOff,
+	/// [`Command::Stopwatch`], in a plan with no `[stopwatch]`: there is no page to open.
+	NoStopwatch,
+	/// [`Command::Next`] or [`Command::Previous`] while the stopwatch is up: ignored, so an
+	/// accidental page turn does not end a run. Only [`Command::Stopwatch`] leaves it.
+	StopwatchHeld,
+	/// [`Command::Stopwatch`] on the adapter screen, which has no stopwatch.
+	Ignored,
+}
+
 /// The plan's alarms and what the glass showed last.
 ///
 /// `N` is the plan's number of rules, fixed when the image is built.
@@ -77,18 +106,25 @@ pub struct Screen<'a, const N: usize> {
 	drawn: Option<u8>,
 	/// The rule whose alarm the last frame showed.
 	rule: Option<usize>,
-	/// A press silenced an alarm since the last frame.
+	/// A command silenced an alarm since the last frame.
 	silenced: bool,
+	/// The plan has a `[stopwatch]`: [`Command::Stopwatch`] has a page to open.
+	planned_stopwatch: bool,
+	/// The stopwatch mode is on. Not a page: the cursor stays where it was.
+	stopwatch: bool,
+	/// How many times the stopwatch mode has turned on or off, wrapping.
+	turns: u16,
 }
 
 impl<'a, const N: usize> Screen<'a, N> {
-	/// The plan's rules, all `N` of them, in priority order.
+	/// The plan's rules, all `N` of them, in priority order, and whether the plan has a
+	/// `[stopwatch]`.
 	///
 	/// # Panics
 	///
 	/// When `rules` is not `N` long: `N` is sized from the same plan, so a
 	/// mismatch is an image built wrong, not a car behaving oddly.
-	pub fn new(rules: &'a [Alarm<'a>]) -> Self {
+	pub fn new(rules: &'a [Alarm<'a>], stopwatch: bool) -> Self {
 		assert_eq!(rules.len(), N, "the screen is sized for the plan's alarms");
 		Screen {
 			alarms: Alarms::new(core::array::from_fn(|i| rules[i])),
@@ -96,6 +132,9 @@ impl<'a, const N: usize> Screen<'a, N> {
 			drawn: None,
 			rule: None,
 			silenced: false,
+			planned_stopwatch: stopwatch,
+			stopwatch: false,
+			turns: 0,
 		}
 	}
 
@@ -142,25 +181,111 @@ impl<'a, const N: usize> Screen<'a, N> {
 	/// One frame of the adapter screen, in place of [`Screen::frame`]. The alarms
 	/// are not polled: their state waits, and the first page frame after resumes
 	/// it — as a changed page, since the glass showed no page meanwhile.
+	///
+	/// The stopwatch mode ends here. The adapter's screen is not the stopwatch,
+	/// nothing is read meanwhile, and a run left open across it would be timed from
+	/// a launch minutes old; [`Screen::stopwatch_turns`] counts the mode ending.
 	pub fn adapter(&mut self) {
 		self.adapter = true;
 		self.drawn = None;
+		self.set_stopwatch(false);
 		self.alarms.glass_lost();
 	}
 
-	/// A short press, with `pages` the number of pages the cursor runs over.
+	/// What the driver asked for, from whichever input, with `pages` the number of pages the
+	/// cursor runs over. The rules, in order — the first that applies decides:
 	///
-	/// While an alarm owns the glass the press silences it and the cursor stays;
-	/// otherwise the cursor moves on, wrapping. What it did is returned, so the
-	/// caller can say so.
-	pub fn press(&mut self, cursor: &mut u8, pages: u8) -> Press {
-		let press = if self.adapter { Press::NextPage } else { self.alarms.press() };
-		match press {
-			Press::NextPage => *cursor = pages::next(*cursor, pages),
-			Press::Silenced => self.silenced = true,
+	/// 1. **The adapter screen:** [`Command::Next`] and [`Command::Previous`] move the cursor,
+	///    wrapping; nothing is polled there, so there is no alarm to silence.
+	///    [`Command::Stopwatch`] is ignored: the adapter screen has no stopwatch.
+	/// 2. **An alarm owns the glass:** any command silences it, and does nothing else.
+	/// 3. **The stopwatch is up:** [`Command::Next`] and [`Command::Previous`] are ignored, so an
+	///    accidental page turn does not end a run; [`Command::Stopwatch`] leaves it, back to the
+	///    page it came from.
+	/// 4. **Otherwise:** [`Command::Next`] and [`Command::Previous`] turn the page, wrapping;
+	///    [`Command::Stopwatch`] opens the stopwatch — or, in a plan with no `[stopwatch]`,
+	///    nothing ([`Outcome::NoStopwatch`]).
+	///
+	/// So only [`Command::Stopwatch`] enters or leaves the stopwatch, and only an input that
+	/// has it can (`todo/dash/19`, "Input backends"): a page turn never ends a run.
+	/// [`Screen::stopwatch_turns`] counts the mode turning, whichever way.
+	pub fn command(&mut self, command: Command, cursor: &mut u8, pages: u8) -> Outcome {
+		if self.adapter {
+			return match command {
+				Command::Next => page(cursor, pages::next(*cursor, pages)),
+				Command::Previous => page(cursor, pages::previous(*cursor, pages)),
+				Command::Stopwatch => Outcome::Ignored,
+			};
 		}
-		press
+		if self.alarms.press() == Press::Silenced {
+			self.silenced = true;
+			return Outcome::Silenced;
+		}
+		match (command, self.stopwatch) {
+			(Command::Next | Command::Previous, true) => Outcome::StopwatchHeld,
+			(Command::Stopwatch, true) => {
+				self.set_stopwatch(false);
+				Outcome::StopwatchOff
+			}
+			(Command::Stopwatch, false) if !self.planned_stopwatch => Outcome::NoStopwatch,
+			(Command::Stopwatch, false) => {
+				self.set_stopwatch(true);
+				Outcome::StopwatchOn
+			}
+			(Command::Next, false) => page(cursor, pages::next(*cursor, pages)),
+			(Command::Previous, false) => page(cursor, pages::previous(*cursor, pages)),
+		}
 	}
+
+	/// Whether an alarm holds the glass — where any command silences it.
+	pub fn alarm_showing(&self) -> bool {
+		self.alarms.showing().is_some()
+	}
+
+	/// Whether the stopwatch mode is on.
+	pub fn stopwatch(&self) -> bool {
+		self.stopwatch
+	}
+
+	/// How many times the stopwatch mode has turned on or off, wrapping. A run belongs
+	/// to one stretch of the mode: whoever holds the stopwatch hands it this count
+	/// (`Stopwatch::follow`), and a count it has not seen resets it — at the turn, not
+	/// on the next frame, so an off and an on between two frames still start over.
+	pub fn stopwatch_turns(&self) -> u16 {
+		self.turns
+	}
+
+	/// The lever's witnesses took the stopwatch away ([`Closer`](crate::stalk::Closer)): cruise
+	/// was switched on, or the lever's data has been missing too long. The mode ends as
+	/// [`Command::Stopwatch`] ends it — a turn of the mode, so a run in progress is dropped as
+	/// when the page is left, and the glass goes back to the page it came from — but on no
+	/// input's behalf: an alarm on the glass is not silenced, no page turns, and nothing opens.
+	/// Like [`Screen::adapter`], it only ever ends the mode. `true` when the stopwatch was up.
+	pub fn close_stopwatch(&mut self) -> bool {
+		let up = self.stopwatch;
+		self.set_stopwatch(false);
+		up
+	}
+
+	fn set_stopwatch(&mut self, on: bool) {
+		if self.stopwatch != on {
+			self.stopwatch = on;
+			self.turns = self.turns.wrapping_add(1);
+		}
+	}
+
+	/// Whether the stopwatch is what the glass shows: the mode is on and no alarm
+	/// holds the glass. The caller draws the stopwatch page in place of
+	/// [`Glass::page`] exactly then; alarms take the glass during the stopwatch too.
+	pub fn stopwatch_on_glass(&self) -> bool {
+		self.stopwatch && self.alarms.showing().is_none()
+	}
+}
+
+/// The cursor to `to`: a page turn.
+fn page(cursor: &mut u8, to: u8) -> Outcome {
+	*cursor = to;
+	Outcome::Paged
 }
 
 #[cfg(test)]
@@ -213,7 +338,7 @@ mod tests {
 	}
 
 	fn screen() -> Screen<'static, 2> {
-		Screen::new(&RULES)
+		Screen::new(&RULES, true)
 	}
 
 	#[test]
@@ -274,6 +399,9 @@ mod tests {
 			channels: &CHANNELS,
 			pages: &PLAN_PAGES,
 			alarms: &RULES,
+			stalk: None,
+			stopwatch: None,
+			buttons: &[],
 		};
 		let cells = |page: u8| match plan.pages[usize::from(page)] {
 			Page::Values { cells, .. } => cells,
@@ -303,7 +431,7 @@ mod tests {
 		assert_eq!((glass.page, glass.offending, glass.missed), (1, None, Some(PageId(2))));
 		assert_eq!(screen.frame(1, 2, 200, out.value_of()).page, 1);
 		// It is still an episode: the button silences it.
-		assert_eq!(screen.press(&mut 1, 2), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut 1, 2), Outcome::Silenced);
 		assert_eq!(screen.frame(1, 2, 400, out.value_of()).missed, None);
 	}
 
@@ -313,7 +441,7 @@ mod tests {
 		let mut cursor = 1;
 		let out = Car::calm().with(4, Some(11.0));
 		assert_eq!(screen.frame(cursor, PAGES, 0, out.value_of()).page, 2);
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		assert_eq!(cursor, 1, "silencing is not a page turn");
 		// Still out, and silent: the driver's page, said as silenced and not as over.
 		let silenced = screen.frame(cursor, PAGES, 200, out.value_of());
@@ -331,10 +459,10 @@ mod tests {
 		let mut screen = screen();
 		let mut cursor = 0;
 		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::NextPage);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
 		assert_eq!(cursor, 1);
 		cursor = 3;
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::NextPage);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
 		assert_eq!(cursor, 0, "it wraps");
 
 		let out = Car::calm().with(6, Some(-1.0));
@@ -343,7 +471,7 @@ mod tests {
 		cursor = 1;
 		assert_eq!(screen.frame(cursor, PAGES, 400, Car::calm().value_of()).page, 3, "holding");
 		assert_eq!(screen.frame(cursor, PAGES, 400 + HOLD_MS, Car::calm().value_of()).page, 1);
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::NextPage);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
 		assert_eq!(cursor, 2);
 	}
 
@@ -358,7 +486,7 @@ mod tests {
 			(2, Some(Change::Took { rule: 0 })),
 			"the first rule in the plan"
 		);
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		let second = screen.frame(cursor, PAGES, 200, both.value_of());
 		assert_eq!(
 			(second.page, second.change),
@@ -366,7 +494,7 @@ mod tests {
 			"the one behind it is a takeover of its own"
 		);
 		assert!(second.page_changed);
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		let back = screen.frame(cursor, PAGES, 400, both.value_of());
 		assert_eq!(
 			(back.page, back.change),
@@ -385,7 +513,11 @@ mod tests {
 		assert_eq!(screen.frame(cursor, PAGES, 200, Car::calm().with(6, Some(-1.0)).value_of()).page, 3);
 		// Gone quiet mid-episode: long past the hold, still up.
 		assert_eq!(screen.frame(cursor, PAGES, 200 + HOLD_MS * 4, stale.value_of()).page, 3);
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced, "the button is the way out");
+		assert_eq!(
+			screen.command(Command::Next, &mut cursor, PAGES),
+			Outcome::Silenced,
+			"the button is the way out"
+		);
 		assert_eq!(screen.frame(cursor, PAGES, 200 + HOLD_MS * 5, stale.value_of()).page, 0);
 	}
 
@@ -397,7 +529,11 @@ mod tests {
 		assert_eq!(screen.frame(cursor, PAGES, 0, out.value_of()).page, 2);
 		// The board becomes an adapter: its screen, not the alarm's.
 		screen.adapter();
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::NextPage, "nothing on the glass to silence");
+		assert_eq!(
+			screen.command(Command::Next, &mut cursor, PAGES),
+			Outcome::Paged,
+			"nothing on the glass to silence"
+		);
 		assert_eq!(cursor, 1);
 		screen.adapter();
 		// Back to the panel with the value still out: the episode was never silenced.
@@ -463,7 +599,7 @@ mod tests {
 		let mut cursor = 0;
 		let out = Car::calm().with(4, Some(11.0));
 		screen.frame(cursor, PAGES, 0, out.value_of());
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		for t in (200..=2_000).step_by(200) {
 			let glass = screen.frame(cursor, PAGES, t, out.value_of());
 			assert_eq!((glass.offending, glass.highlight, glass.inverted), (None, None, None), "t={t}");
@@ -476,7 +612,7 @@ mod tests {
 		let mut cursor = 0;
 		let both = Car::calm().with(4, Some(20.0)).with(6, Some(-5.0));
 		assert_eq!(screen.frame(cursor, PAGES, 0, both.value_of()).inverted, Some(ChannelId(4)));
-		assert_eq!(screen.press(&mut cursor, PAGES), Press::Silenced);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
 		// The second rule has been out since 0, behind the first. It takes the glass at
 		// 600 ms — the plain half of a blink counted from when it fired — and its own cell is
 		// inverted on that first frame: the phase starts when it takes the glass.
@@ -578,12 +714,507 @@ mod tests {
 	}
 
 	#[test]
+	fn next_and_previous_turn_the_page_both_ways_and_wrap() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert_eq!(screen.command(Command::Previous, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(cursor, PAGES - 1, "back from the first is the last");
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(cursor, 0, "on from the last is the first");
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(screen.frame(cursor, PAGES, 200, Car::calm().value_of()).page, 1);
+	}
+
+	#[test]
+	fn stopwatch_takes_the_glass_from_any_page_and_leaves_it_back_where_it_was() {
+		let mut screen = screen();
+		let mut cursor = 1;
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert!(!screen.stopwatch() && !screen.stopwatch_on_glass());
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOn);
+		assert!(screen.stopwatch() && screen.stopwatch_on_glass());
+		// Page turns do nothing while it is up, whoever asked; the cursor stays.
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::StopwatchHeld);
+		assert_eq!(screen.command(Command::Previous, &mut cursor, PAGES), Outcome::StopwatchHeld);
+		assert_eq!(cursor, 1);
+		let glass = screen.frame(cursor, PAGES, 200, Car::calm().value_of());
+		assert_eq!((glass.page, glass.change), (1, None), "the cursor's page, under the stopwatch");
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOff);
+		assert!(!screen.stopwatch() && !screen.stopwatch_on_glass());
+		assert_eq!(cursor, 1, "back to the page it came from");
+	}
+
+	#[test]
+	fn any_command_while_an_alarm_holds_the_glass_silences_it_and_does_nothing_else() {
+		for command in Command::ALL {
+			let mut screen = screen();
+			let mut cursor = 1;
+			let out = Car::calm().with(4, Some(11.0));
+			assert_eq!(screen.frame(cursor, PAGES, 0, out.value_of()).page, 2);
+			assert_eq!(screen.command(command, &mut cursor, PAGES), Outcome::Silenced, "{command:?}");
+			assert_eq!(cursor, 1, "{command:?} did not page");
+			assert!(!screen.stopwatch(), "{command:?} did not switch the stopwatch on");
+			let silenced = screen.frame(cursor, PAGES, 200, out.value_of());
+			assert_eq!((silenced.page, silenced.change), (1, Some(Change::Silenced)), "{command:?}");
+		}
+	}
+
+	#[test]
+	fn an_alarm_takes_the_glass_from_the_stopwatch_and_hands_it_back() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		screen.command(Command::Stopwatch, &mut cursor, PAGES);
+		let out = Car::calm().with(6, Some(-1.0));
+		let took = screen.frame(cursor, PAGES, 200, out.value_of());
+		assert_eq!((took.page, took.change), (3, Some(Change::Took { rule: 1 })));
+		assert!(screen.stopwatch() && !screen.stopwatch_on_glass(), "the alarm's page is drawn");
+		assert!(screen.alarm_showing());
+		// A press silences the alarm, and the stopwatch is on the glass again.
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::Silenced);
+		assert!(screen.stopwatch_on_glass() && !screen.alarm_showing());
+		// Silenced, a stopwatch press is a stopwatch press again.
+		screen.frame(cursor, PAGES, 400, out.value_of());
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOff);
+		assert_eq!(cursor, 0);
+	}
+
+	#[test]
+	fn next_does_not_end_the_stopwatch_and_only_stopwatch_does() {
+		// `todo/dash/19`, "Input backends": a page turn leaves a run alone, whoever asked —
+		// `dashsim`'s press included, which used to turn the page and so end the stopwatch.
+		let mut screen = screen();
+		let mut cursor = 2;
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOn);
+		let turns = screen.stopwatch_turns();
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::StopwatchHeld);
+		assert_eq!(cursor, 2, "the cursor stays under the stopwatch");
+		assert!(screen.stopwatch_on_glass(), "the stopwatch is still up");
+		assert_eq!(screen.stopwatch_turns(), turns, "a run is not reset by a page turn that did nothing");
+		// With an alarm up during the stopwatch any press silences, and the stopwatch stays.
+		screen.frame(cursor, PAGES, 200, Car::calm().with(4, Some(11.0)).value_of());
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Silenced);
+		assert!(screen.stopwatch_on_glass());
+		assert_eq!(cursor, 2);
+		// `Stopwatch` is the way out, back to where it came from.
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOff);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(cursor, 3, "the next page, as always, once the stopwatch is down");
+	}
+
+	#[test]
+	fn the_adapter_screen_ends_the_stopwatch_so_a_run_does_not_survive_it() {
+		use crate::stopwatch::{Event, Stopwatch};
+		static MARKS: [u16; 2] = [60, 100];
+		let mut screen = screen();
+		let mut watch = Stopwatch::new(&MARKS, 1.0);
+		let mut cursor = 0;
+		// As the firmware runs it: the stopwatch follows the mode's turns before every
+		// sample; the speed is fed regardless.
+		let step = |screen: &mut Screen<'static, 2>, watch: &mut Stopwatch<'_>, kmh: f32, now_ms: u64| {
+			watch.follow(screen.stopwatch_turns());
+			watch.sample(Some(kmh), now_ms)
+		};
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOn);
+		step(&mut screen, &mut watch, 0.0, 0);
+		assert_eq!(step(&mut screen, &mut watch, 0.0, 1_000), Some(Event::Armed));
+		assert_eq!(step(&mut screen, &mut watch, 10.0, 1_100), Some(Event::Started));
+		step(&mut screen, &mut watch, 40.0, 2_000);
+		// Five minutes as a plain adapter: no page, no stopwatch on the glass.
+		screen.adapter();
+		assert!(
+			!screen.stopwatch() && !screen.stopwatch_on_glass(),
+			"the adapter's screen, not the stopwatch"
+		);
+		step(&mut screen, &mut watch, 40.0, 2_100);
+		// Back, at 120 km/h: that is not a 0-100 from a launch five minutes ago.
+		screen.frame(cursor, PAGES, 302_000, Car::calm().value_of());
+		assert_eq!(step(&mut screen, &mut watch, 120.0, 302_000), None);
+		assert_eq!(step(&mut screen, &mut watch, 121.0, 302_100), None);
+		assert_eq!(watch.run(), None, "the run the adapter interrupted is dropped, not finished");
+		assert!(!screen.stopwatch(), "the mode stays off until measure is pressed again");
+	}
+
+	#[test]
+	fn the_adapter_screen_turns_pages_both_ways_and_has_no_stopwatch() {
+		let mut screen = screen();
+		let mut cursor = 0;
+		screen.adapter();
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::Ignored);
+		assert!(!screen.stopwatch(), "the adapter screen is not the stopwatch");
+		assert_eq!(screen.command(Command::Previous, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(cursor, PAGES - 1);
+		assert_eq!(screen.command(Command::Next, &mut cursor, PAGES), Outcome::Paged);
+		assert_eq!(cursor, 0);
+	}
+
+	/// Where the screen is when a command arrives.
+	#[derive(Debug, Clone, Copy)]
+	enum Where {
+		Adapter,
+		Alarm,
+		StopwatchUp,
+		NoStopwatchInPlan,
+		Page,
+	}
+
+	#[test]
+	fn every_command_on_every_screen() {
+		use Command::{Next, Previous, Stopwatch};
+		use Outcome::*;
+		// (where, command) → (what it did, the cursor after, from 1 of 4; the stopwatch after)
+		let cases = [
+			(Where::Adapter, Next, Paged, 2, false),
+			(Where::Adapter, Previous, Paged, 0, false),
+			(Where::Adapter, Stopwatch, Ignored, 1, false),
+			(Where::Alarm, Next, Silenced, 1, false),
+			(Where::Alarm, Previous, Silenced, 1, false),
+			(Where::Alarm, Stopwatch, Silenced, 1, false),
+			(Where::StopwatchUp, Next, StopwatchHeld, 1, true),
+			(Where::StopwatchUp, Previous, StopwatchHeld, 1, true),
+			(Where::StopwatchUp, Stopwatch, StopwatchOff, 1, false),
+			(Where::NoStopwatchInPlan, Next, Paged, 2, false),
+			(Where::NoStopwatchInPlan, Previous, Paged, 0, false),
+			(Where::NoStopwatchInPlan, Stopwatch, NoStopwatch, 1, false),
+			(Where::Page, Next, Paged, 2, false),
+			(Where::Page, Previous, Paged, 0, false),
+			(Where::Page, Stopwatch, StopwatchOn, 1, true),
+		];
+		for (at, command, outcome, cursor_after, stopwatch_after) in cases {
+			let mut screen = Screen::<'static, 2>::new(&RULES, !matches!(at, Where::NoStopwatchInPlan));
+			let mut cursor = 1;
+			let car = match at {
+				Where::Alarm => Car::calm().with(4, Some(11.0)),
+				_ => Car::calm(),
+			};
+			screen.frame(cursor, PAGES, 0, car.value_of());
+			match at {
+				Where::Adapter => screen.adapter(),
+				Where::StopwatchUp => assert_eq!(screen.command(Stopwatch, &mut cursor, PAGES), StopwatchOn),
+				Where::Alarm => assert!(screen.alarm_showing()),
+				Where::NoStopwatchInPlan | Where::Page => {}
+			}
+			let turns = screen.stopwatch_turns();
+			assert_eq!(screen.command(command, &mut cursor, PAGES), outcome, "{command:?} at {at:?}");
+			assert_eq!(cursor, cursor_after, "{command:?} at {at:?}: the cursor");
+			assert_eq!(screen.stopwatch(), stopwatch_after, "{command:?} at {at:?}: the stopwatch");
+			let turned = matches!(outcome, StopwatchOn | StopwatchOff);
+			assert_eq!(screen.stopwatch_turns() != turns, turned, "{command:?} at {at:?}: a turn of the mode");
+			assert!(!screen.alarm_showing(), "{command:?} at {at:?}: no alarm is left holding the glass");
+		}
+	}
+
+	/// The lever closing the stopwatch (owner, 2026-09-27), as the board runs it: every answer
+	/// of the lever's identifier goes to the press detector and to the closer — a press through
+	/// [`Screen::command`], a close through [`Screen::close_stopwatch`] — the bus task's clock
+	/// ticks the closer between answers, and the stopwatch follows the mode's turns before each
+	/// speed sample and each frame.
+	mod lever {
+		use super::*;
+		use crate::stalk::{Close, Closer, Read, STALE_CLOSE_MS, Stalk, StateIndex, States};
+		use crate::stopwatch::{Event, Phase, Stopwatch};
+
+		/// The rocker rests at 0 and has 1, 2, 3 for next, previous and measure; the switch and
+		/// the cruise status are off at 0.
+		const STATES: States = States {
+			next: StateIndex(1),
+			previous: StateIndex(2),
+			measure: StateIndex(3),
+			switch_off: StateIndex(0),
+			cruise_off: StateIndex(0),
+		};
+		static MARKS: [u16; 2] = [60, 100];
+
+		/// The rocker at `rocker`, both witnesses off: the gate open.
+		fn free(rocker: u16) -> Read {
+			Read {
+				rocker: Some(StateIndex(rocker)),
+				switch: Some(StateIndex(0)),
+				cruise: Some(StateIndex(0)),
+			}
+		}
+		const REST: u16 = 0;
+		const MEASURE: u16 = 3;
+		/// Cruise switched on: the switch at ON, and the engine saying so.
+		fn cruise_on() -> Read {
+			Read {
+				rocker: Some(StateIndex(REST)),
+				switch: Some(StateIndex(1)),
+				cruise: Some(StateIndex(2)),
+			}
+		}
+		/// The lever's identifier did not answer; the cruise status gone stale with it.
+		fn unanswered() -> Read {
+			Read {
+				rocker: None,
+				switch: None,
+				cruise: None,
+			}
+		}
+
+		struct Board {
+			screen: Screen<'static, 0>,
+			stalk: Stalk,
+			closer: Closer,
+			watch: Stopwatch<'static>,
+			cursor: u8,
+			closed: std::vec::Vec<Close>,
+		}
+
+		impl Board {
+			/// A board whose plan has a `[stopwatch]`, and a `[stalk]` when `stalk`.
+			fn new(stalk: bool) -> Self {
+				Board {
+					screen: Screen::new(&[], true),
+					stalk: Stalk::new(STATES),
+					closer: Closer::new(stalk.then_some(STATES)),
+					watch: Stopwatch::new(&MARKS, 1.0),
+					cursor: 1,
+					closed: std::vec::Vec::new(),
+				}
+			}
+
+			/// One answer of the lever's identifier.
+			fn lever(&mut self, read: Read, now_ms: u64) {
+				if let Some(command) = self.stalk.read(read) {
+					self.screen.command(command, &mut self.cursor, PAGES);
+				}
+				let close = self.closer.read(&read, now_ms);
+				self.close(close);
+			}
+
+			/// The bus task's clock, with no answer of the lever.
+			fn tick(&mut self, now_ms: u64) {
+				let close = self.closer.tick(now_ms);
+				self.close(close);
+			}
+
+			fn close(&mut self, close: Option<Close>) {
+				if let Some(close) = close {
+					if self.screen.close_stopwatch() {
+						self.closed.push(close);
+					}
+				}
+			}
+
+			/// One answer of the speed, fed only while the mode is on.
+			fn speed(&mut self, kmh: f32, now_ms: u64) -> Option<Event> {
+				if !self.screen.stopwatch() {
+					return None;
+				}
+				self.watch.follow(self.screen.stopwatch_turns());
+				self.watch.sample(Some(kmh), now_ms)
+			}
+
+			/// A panel frame: the stopwatch follows the mode's turns.
+			fn frame(&mut self) {
+				self.watch.follow(self.screen.stopwatch_turns());
+			}
+
+			/// At rest with the gate open, then LIMIT held for two reads: the stopwatch is up.
+			/// Returns the time after it.
+			fn open_by_the_lever(&mut self) -> u64 {
+				for (t, rocker) in [(0, REST), (100, REST), (200, MEASURE), (300, MEASURE), (400, REST), (500, REST)] {
+					self.lever(free(rocker), t);
+				}
+				assert!(self.screen.stopwatch(), "LIMIT opened it");
+				600
+			}
+
+			/// Speed samples every 100 ms from `from_ms`, and the lever at rest with the gate open
+			/// beside each, as the board reads both. Returns the time after the last.
+			fn drive(&mut self, from_ms: u64, speeds: &[f32]) -> u64 {
+				let mut t = from_ms;
+				for kmh in speeds {
+					self.speed(*kmh, t);
+					self.lever(free(REST), t + 50);
+					t += 100;
+				}
+				t
+			}
+		}
+
+		/// A stopwatch opened by the lever, brought to `phase` with the gate open throughout.
+		fn at(phase: Phase) -> (Board, u64) {
+			let mut board = Board::new(true);
+			let t = board.open_by_the_lever();
+			let t = match phase {
+				Phase::Idle => board.drive(t, &[5.0]),
+				Phase::Armed => board.drive(t, &[0.0; 12]),
+				Phase::Running => board.drive(t, &[[0.0; 12].as_slice(), &[5.0, 15.0, 30.0]].concat()),
+				Phase::Done => board.drive(t, &[[0.0; 12].as_slice(), &[5.0, 15.0, 30.0, 50.0, 70.0, 90.0, 110.0]].concat()),
+				Phase::NotMeasured => unreachable!("the factor is measured here"),
+			};
+			assert_eq!(board.watch.phase(), phase);
+			(board, t)
+		}
+
+		#[test]
+		fn cruise_switched_on_closes_the_stopwatch_in_every_phase_on_the_second_read() {
+			for phase in [Phase::Idle, Phase::Armed, Phase::Running, Phase::Done] {
+				let (mut board, t) = at(phase);
+				let turns = board.screen.stopwatch_turns();
+				board.lever(cruise_on(), t);
+				assert!(board.screen.stopwatch(), "{phase:?}: one read of cruise is not two");
+				board.lever(cruise_on(), t + 100);
+				assert!(!board.screen.stopwatch(), "{phase:?}: closed on the second");
+				assert_eq!(board.closed, [Close::Engaged], "{phase:?}");
+				assert_ne!(board.screen.stopwatch_turns(), turns, "{phase:?}: a turn of the mode");
+				assert_eq!(board.cursor, 1, "{phase:?}: back to the page it came from");
+				board.frame();
+				assert_eq!(board.watch.phase(), Phase::Idle, "{phase:?}: reset at the turn");
+				match phase {
+					// The run in progress aborts, like leaving the page: dropped, never kept.
+					Phase::Running => {
+						assert_eq!(board.watch.run(), None, "the run is dropped");
+						assert_eq!(board.watch.take_finished(), None, "and never kept");
+					}
+					// A finished run stays: it is what the settings keep.
+					Phase::Done => assert!(board.watch.finished().is_some()),
+					_ => {}
+				}
+				// Cruise stays on: the speed is no longer fed, and nothing closes twice.
+				assert_eq!(board.speed(0.0, t + 200), None);
+				board.lever(cruise_on(), t + 300);
+				assert_eq!(board.closed, [Close::Engaged], "{phase:?}: one close, said once");
+			}
+		}
+
+		#[test]
+		fn one_noisy_read_of_cruise_does_not_end_a_run() {
+			let (mut board, t) = at(Phase::Running);
+			board.lever(cruise_on(), t);
+			let t = board.drive(t + 100, &[50.0, 70.0, 90.0, 110.0]);
+			assert!(board.screen.stopwatch() && board.closed.is_empty(), "{:?}", board.closed);
+			assert_eq!(board.watch.phase(), Phase::Done);
+			assert!(board.watch.take_finished().is_some(), "the run finished and is kept");
+			assert!(t > 0);
+		}
+
+		#[test]
+		fn the_lever_silent_for_2_9_s_then_seen_open_leaves_a_run_alone() {
+			let (mut board, t) = at(Phase::Running);
+			// The lever unanswered from `t` to `t + 2.9 s`: its last open read was at `t - 50`.
+			// The speed keeps answering and the car keeps accelerating.
+			let mut speed = 30.0;
+			let mut now = t;
+			while now < t - 50 + 2_900 {
+				board.speed(speed, now);
+				board.lever(unanswered(), now + 50);
+				speed += 2.0;
+				now += 100;
+			}
+			assert_eq!(now, t - 50 + 2_900 + 50);
+			board.lever(free(REST), t - 50 + 2_900);
+			assert!(board.screen.stopwatch() && board.closed.is_empty(), "{:?}", board.closed);
+			assert_eq!(board.watch.phase(), Phase::Running, "lack of data never aborts a run short of 3 s");
+			board.drive(now, &[100.0, 110.0]);
+			assert_eq!(board.watch.phase(), Phase::Done, "and the run finishes");
+		}
+
+		#[test]
+		fn the_lever_silent_for_3_1_s_closes_the_stopwatch_and_the_run_with_it() {
+			let (mut board, t) = at(Phase::Running);
+			let last_open = t - 50;
+			let mut now = t;
+			while now <= last_open + 3_100 {
+				board.speed(30.0 + (now - t) as f32 / 100.0, now);
+				board.lever(unanswered(), now + 50);
+				now += 100;
+			}
+			assert!(!board.screen.stopwatch());
+			assert_eq!(board.closed, [Close::Stale]);
+			board.frame();
+			assert_eq!((board.watch.phase(), board.watch.run()), (Phase::Idle, None), "the run is dropped");
+		}
+
+		#[test]
+		fn the_rocker_unit_gone_silent_closes_the_stopwatch_after_3_s_on_the_clock_alone() {
+			let (mut board, t) = at(Phase::Armed);
+			let last_open = t - 50;
+			// The unit's subscription is dropped: one read without an answer, then only the clock.
+			board.lever(unanswered(), t + 500);
+			for now in (t + 600..=last_open + STALE_CLOSE_MS).step_by(200) {
+				board.tick(now);
+			}
+			board.tick(last_open + STALE_CLOSE_MS);
+			assert!(board.screen.stopwatch(), "3 s exactly is not over 3 s");
+			board.tick(last_open + STALE_CLOSE_MS + 1);
+			assert!(!board.screen.stopwatch());
+			assert_eq!(board.closed, [Close::Stale]);
+		}
+
+		#[test]
+		fn a_stopwatch_opened_by_a_button_closes_when_cruise_is_taken() {
+			// Opened by a `[[button]]` with the gate open, then cruise switched on.
+			let mut board = Board::new(true);
+			board.lever(free(REST), 0);
+			board.lever(free(REST), 100);
+			assert_eq!(board.screen.command(Command::Stopwatch, &mut board.cursor, PAGES), Outcome::StopwatchOn);
+			board.lever(cruise_on(), 200);
+			assert!(board.screen.stopwatch());
+			board.lever(cruise_on(), 300);
+			assert!(!board.screen.stopwatch());
+			assert_eq!(board.closed, [Close::Engaged]);
+			// Opened by the button again with cruise still on: the next read closes it.
+			assert_eq!(board.screen.command(Command::Stopwatch, &mut board.cursor, PAGES), Outcome::StopwatchOn);
+			board.lever(cruise_on(), 400);
+			assert!(!board.screen.stopwatch(), "cruise was already taken on the read before");
+			assert_eq!(board.closed, [Close::Engaged, Close::Engaged]);
+		}
+
+		#[test]
+		fn with_no_stalk_in_the_plan_the_stopwatch_is_never_closed_for_the_lever() {
+			let mut board = Board::new(false);
+			assert_eq!(board.screen.command(Command::Stopwatch, &mut board.cursor, PAGES), Outcome::StopwatchOn);
+			// Whatever reaches the closer, and however long: nothing.
+			for t in (0..10_000).step_by(100) {
+				board.lever(if t % 200 == 0 { cruise_on() } else { unanswered() }, t);
+			}
+			for t in (10_000..120_000).step_by(1_000) {
+				board.tick(t);
+			}
+			assert!(board.screen.stopwatch() && board.closed.is_empty());
+		}
+	}
+
+	#[test]
+	fn closing_the_stopwatch_ends_the_mode_and_does_nothing_else() {
+		let mut screen = screen();
+		let mut cursor = 1;
+		screen.frame(cursor, PAGES, 0, Car::calm().value_of());
+		assert!(!screen.close_stopwatch(), "nothing to close");
+		assert_eq!(screen.stopwatch_turns(), 0, "and no turn of the mode");
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOn);
+		// An alarm takes the glass during the stopwatch; the close leaves it there, unsilenced.
+		let out = Car::calm().with(4, Some(11.0));
+		assert_eq!(screen.frame(cursor, PAGES, 200, out.value_of()).page, 2);
+		let turns = screen.stopwatch_turns();
+		assert!(screen.close_stopwatch(), "it was up");
+		assert!(!screen.stopwatch() && !screen.stopwatch_on_glass());
+		assert_eq!(screen.stopwatch_turns(), turns.wrapping_add(1));
+		assert!(screen.alarm_showing(), "the alarm still holds the glass");
+		assert_eq!(cursor, 1, "no page turned");
+		let glass = screen.frame(cursor, PAGES, 400, out.value_of());
+		assert_eq!((glass.page, glass.change), (2, None), "the same episode, not silenced");
+		// Closed, a `Stopwatch` command opens it again as ever — once the alarm is silenced.
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::Silenced);
+		assert_eq!(screen.command(Command::Stopwatch, &mut cursor, PAGES), Outcome::StopwatchOn);
+		// On the adapter screen there is nothing to close.
+		screen.adapter();
+		assert!(!screen.close_stopwatch());
+	}
+
+	#[test]
 	fn a_plan_without_alarms_only_turns_pages() {
-		let mut screen: Screen<'static, 0> = Screen::new(&[]);
+		let mut screen: Screen<'static, 0> = Screen::new(&[], false);
 		let mut cursor = 0;
 		let glass = screen.frame(cursor, 2, 0, |_| Some(1e9));
 		assert_eq!((glass.page, glass.offending, glass.missed, glass.change), (0, None, None, None));
-		assert_eq!(screen.press(&mut cursor, 2), Press::NextPage);
+		assert_eq!(screen.command(Command::Next, &mut cursor, 2), Outcome::Paged);
 		assert_eq!(cursor, 1);
 	}
 }

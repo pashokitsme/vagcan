@@ -1,7 +1,8 @@
-//! The button and the LED's vocabulary.
+//! The buttons' and the LED's vocabulary.
 //!
-//! The button itself — debounce, long press, and the gate that makes one
-//! press one press — is [`vag_dash_render::button`], re-exported here. It
+//! A button — debounce, long press, and the gate that makes one press one
+//! press — is [`vag_dash_render::button`], re-exported here: the machine behind
+//! each `[[button]]` on a pin, and the gate on `dashsim`'s presses. It
 //! lives there and not here for the reason the alarm machine does: this crate
 //! cannot be built for the host, so nothing in it is tested by CI, and a state
 //! machine over a clock is exactly the thing that wants a synthetic clock. What

@@ -56,8 +56,9 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 - **Values page**: up to 4 cells, each with a label, a value and a unit.
 - **Chart page**: one channel shown large, with its recent history on a fixed scale.
-- **Pages** are set per car in `dash.toml` and switched with the board's button.
-- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A short press silences it until the value comes back.
+- **Pages** are set per car in `dash.toml` and switched with buttons on the board's pins (`[[button]]`) or with the cruise lever while cruise is off (`[stalk]`).
+- **No input**: with no `[stalk]` and no `next`/`previous` `[[button]]`, only `dashsim` or `dashcfg`'s `set page` turns the page. With no `[stalk]` and no `[[button]]` at all, only `dashsim` silences an alarm; otherwise it stays up until its channel answers in range again. The build says so.
+- **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A press silences it until the value comes back.
 - **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
@@ -70,11 +71,11 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **`slcan` image**: flashed instead of `dash`, the board is only an adapter.
 - **Power**: OBD pin 1, so the board is on only with the ignition.
 - **`dashsim`**: shows the board's screen in a terminal over USB, until the OLED is fitted.
-- **Replay without the board**: `vagcan dev recording dash <VIN> --log drive.csv` plays a `watch --out` recording on the panel in the terminal, alarms included, and prints each alarm event. `--press 12.5` presses the button at 12.5 s. Piped, it prints the events only.
+- **Replay without the board**: `vagcan dev recording dash <VIN> --log drive.csv` plays a `watch --out` recording on the panel in the terminal, alarms included, and prints each alarm event. `--press 12.5` turns the page at 12.5 s, as `dashsim`'s press does. Piped, it prints the events only.
 
 ## Roadmap
 
-Updated 2026-09-26.
+Updated 2026-09-27.
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -87,9 +88,9 @@ Updated 2026-09-26.
 - [ ] Laptop reads the car through the dash while its screen keeps working (BLE passed on the car; the cable waits)
 - [ ] Dash shows how far a channel is from what its control unit asked for, with a drift alarm (built, waiting for the car)
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
-- [ ] Page the dash panel with the cruise-control buttons while cruise is off, LIMIT for the stopwatch (probed on the car)
+- [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
-- [ ] 0–60 and 0–100 km/h stopwatch on the dash (with the buttons above)
+- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; the speed factor and a test run need the car)
 
 Details: [`todo/README.md`](todo/README.md).
 

@@ -467,16 +467,36 @@ the project's cache, and writes a Rust `static` with every channel resolved — 
 identifier, bit layout, scaling, unit, label. The image links it. A project cache is
 ~88 MB and the C3 has 400 KB of RAM, so nothing else could work; and a board holding a
 fixed list of identifiers cannot sweep. What may be written in that file — channels, pages,
-alarms, a channel's specified value — is [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
+alarms, a channel's specified value, the cruise lever (`[stalk]`), the stopwatch
+(`[stopwatch]`), buttons on the board's pins (`[[button]]`) — is
+[`docs/dash/dash-toml.md`](docs/dash/dash-toml.md).
 
 **One bus, one conversation, on the board too.** `can_task` owns the TWAI controller and
 runs every exchange through one scheduler, `vag_uds_client::schedule::Planner`, one at a
 time. It reads each unit's part number (`F187`) first and subscribes to the unit's channels
 only when it matches the plan: the visible page and every alarm's channels at each channel's `hz` from `dash.toml`
-(2 Hz by default), other pages at 1 Hz. A BLE host's requests go through the same planner.
+(2 Hz by default), other pages at 1 Hz. `Plan::rates_in` sets the exceptions: the lever at
+20 Hz while cruise and its switch both read off, 2 Hz otherwise, 10 Hz while the stopwatch is up with a factor; the
+cruise status at 5 Hz while the lever's unit answers as the plan's; the stopwatch's speed at its `hz`, foreground on any
+page, while the stopwatch is up with a factor, and as the board's timing channel (`Class::Timing`, ahead of a host's
+reads) while the stopwatch is armed or running — unless a host already holds that channel. With the stopwatch page up, page
+cells drop to at most 1 Hz; an alarm's page over it keeps its cells unless the stopwatch is armed or running.
+A BLE host's requests go through the same planner.
 The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
 when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent
 is asked only for its part number until it answers.
+
+**Input is commands, from any mix of backends.** Buttons on GPIO 3, 4 and 5 (`[[button]]`),
+the cruise lever (`[stalk]`) and `dashsim` each turn a press into a `Command` — next, previous,
+stopwatch — in a small machine of `vag-dash-render` (`control`, `stalk`), so each is tested on
+the host. Every command goes through one bounded queue to one task, which applies it through
+`Screen::command`: the screen does not know which input it was, so a press means one thing
+whatever was pressed. A full queue drops the newest and says so; no input waits on the settings,
+and the bus task only offers the lever's command. The lever closing the stopwatch — cruise
+taken, or its data missing over 3 s (`stalk::Closer`) — is not a command: the bus task applies it
+through `Screen::close_stopwatch`, as the adapter screen ends the mode, so it never silences an
+alarm, is never dropped by a full queue and never waits for the settings. The board's BOOT and
+RESET buttons are not inputs; `GPIO9` is left to the ROM.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On
@@ -489,7 +509,8 @@ only on the board.
 renderer, in the recording's time, and draws the panel in the terminal. The frame loop,
 the value store's staleness rule and the cell composition are the firmware's
 (`vag-dash-fw/src/bin/dash.rs`, not buildable on the host), mirrored in
-`vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both.
+`vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both. The lever, the
+`[[button]]`s and the stopwatch are the exception: the replay does not replay them, and says so.
 
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,

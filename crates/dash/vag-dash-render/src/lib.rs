@@ -21,8 +21,11 @@
 //! there is untested by CI. The alarm machine is `no_std`, allocation-free, has
 //! no dependency on this crate's drawing code, and is the only thing that ever
 //! sets [`Cell::alarm`]; it costs a laptop nothing and it earns a synthetic
-//! clock. [`screen`] puts it together with the page cursor and the button, so
-//! the firmware only feeds it a clock, the store's values and a press.
+//! clock. [`screen`] puts it together with the page cursor and what the driver asks for, so
+//! the firmware only feeds it a clock, the store's values and a [`control::Command`]. More
+//! machines are here for the same reason: [`button`] and [`control`], buttons on the
+//! board's pins and `dashsim`'s presses as commands; [`stalk`], the cruise lever as buttons while cruise is off; and
+//! [`stopwatch`], the stopwatch page's arming, launch and marks (`todo/dash/19`).
 //!
 //! Sizes are in pixels and the panel is 32 of them tall, which is the single
 //! fact that shapes every decision here. Four tiers of text — the label over two
@@ -35,12 +38,15 @@ extern crate std;
 
 pub mod alarm;
 pub mod button;
+pub mod control;
 pub mod frame;
 pub mod history;
 pub mod pages;
 pub mod plan;
 pub mod render;
 pub mod screen;
+pub mod stalk;
+pub mod stopwatch;
 pub mod theme;
 
 pub use frame::{Board, Cell, Deviation, Frame, Links, Rates};

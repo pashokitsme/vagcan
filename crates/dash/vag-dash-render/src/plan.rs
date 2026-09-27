@@ -23,6 +23,8 @@
 //! big-endian) is exactly the bug a host test catches for free.
 
 use crate::alarm::{Alarm, ChannelId, Rule};
+use crate::control::{Command, MAX_BUTTONS, is_button_pin};
+use crate::stalk::{Read, StateIndex, States};
 
 /// The whole interface between the laptop and the device.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,7 +33,8 @@ pub struct Plan {
 	/// asked of another answers plausibly and wrongly; `05` refuses to poll on a
 	/// mismatch.
 	pub vin: &'static str,
-	/// `"en"` or `"ru"` — the language every [`Channel::label`] is already in.
+	/// `"en"` or `"ru"` — the board's own words, and the language every [`Channel::label`] was
+	/// looked up in: `dash.toml`'s `language`, else `config.toml`'s.
 	pub language: &'static str,
 	/// The control units the plan reads, in the order they are polled.
 	pub units: &'static [Unit],
@@ -46,6 +49,130 @@ pub struct Plan {
 	/// page holding every channel it watches, and its release is on the far side of
 	/// its trip — and carries at most [`MAX_ALARMS`](crate::alarm::MAX_ALARMS).
 	pub alarms: &'static [Alarm<'static>],
+	/// The cruise lever as buttons (`todo/dash/19`), where the owner's `[stalk]` names one.
+	pub stalk: Option<StalkPlan>,
+	/// The stopwatch page, where the owner's `[stopwatch]` names a speed channel.
+	pub stopwatch: Option<StopwatchPlan>,
+	/// The owner's `[[button]]`s, in the file's order: at most
+	/// [`MAX_BUTTONS`](crate::control::MAX_BUTTONS), each on a pin of its own.
+	pub buttons: &'static [ButtonPlan],
+}
+
+/// A `[[button]]`: a button on one of the board's free pins, wired to GND, and the one
+/// command a press of it gives ([`PinButton`](crate::control::PinButton)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonPlan {
+	/// The GPIO, one of [`BUTTON_PINS`](crate::control::BUTTON_PINS).
+	pub pin: u8,
+	pub action: Command,
+}
+
+/// One state of an enumerated field: an interval of raw values, both ends included —
+/// an ODIS `TEXTTAB` level as `vag_data_labels::catalog::Level` keeps it, without its
+/// name. A field's states are carried in the project's own order, and a state's place in
+/// that list is its [`StateIndex`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Band {
+	pub lower: i32,
+	pub upper: i32,
+}
+
+impl Band {
+	/// An end at `i32::MIN` or `i32::MAX` — an ODX limit of kind `INFINITE`.
+	pub const fn is_unbounded(&self) -> bool {
+		self.lower == i32::MIN || self.upper == i32::MAX
+	}
+
+	pub fn contains(&self, raw: i64) -> bool {
+		i64::from(self.lower) <= raw && raw <= i64::from(self.upper)
+	}
+}
+
+/// Which state a raw reading is: `vag_data_labels::catalog::level_for`, the one matching
+/// rule, on the board — bounded states first in table order, then unbounded ones, first
+/// match wins. `None` where no state holds it.
+pub fn state_of(bands: &[Band], raw: i64) -> Option<StateIndex> {
+	let tried = |unbounded: bool| bands.iter().enumerate().filter(move |(_, band)| band.is_unbounded() == unbounded);
+	tried(false)
+		.chain(tried(true))
+		.find(|(_, band)| band.contains(raw))
+		.map(|(at, _)| StateIndex(at as u16))
+}
+
+/// The cruise lever, resolved: three fields as plan channels, each with its states, and
+/// which of those states mean something here. Nothing in it names a car: the generator
+/// wrote the indices from the owner's `[stalk]` texts and the project's levels.
+///
+/// The rocker and the switch are fields of **one identifier**, so one answer carries both:
+/// the board subscribes the rocker's channel alone, and reads the switch out of the same
+/// bytes. The cruise status is on another unit and read on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StalkPlan {
+	/// Plan channel indices.
+	pub rocker: u16,
+	pub switch: u16,
+	pub cruise: u16,
+	pub rocker_states: &'static [Band],
+	pub switch_states: &'static [Band],
+	pub cruise_states: &'static [Band],
+	pub states: States,
+}
+
+impl StalkPlan {
+	/// One read of the lever from raw field values: the rocker and the switch from one
+	/// answer, the cruise status as last read.
+	pub fn read(&self, rocker: Option<i64>, switch: Option<i64>, cruise: Option<i64>) -> Read {
+		Read {
+			rocker: rocker.and_then(|raw| state_of(self.rocker_states, raw)),
+			switch: switch.and_then(|raw| state_of(self.switch_states, raw)),
+			cruise: cruise.and_then(|raw| state_of(self.cruise_states, raw)),
+		}
+	}
+}
+
+/// The stopwatch page, resolved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StopwatchPlan {
+	/// The speed channel, a plan channel index.
+	pub speed: u16,
+	/// km/h per unit of the channel's value, measured on the car; `0.0` where it has not been.
+	pub km_h_per_unit: f32,
+	/// In km/h, in the owner's order; at most [`MAX_MARKS`](crate::stopwatch::MAX_MARKS).
+	pub marks: &'static [u16],
+}
+
+/// How often the lever is read with the gate open: a 50 ms button (`todo/dash/19`).
+pub const LEVER_OPEN_PERIOD_MS: u32 = 50;
+/// With the gate closed: often enough to see it open.
+pub const LEVER_CLOSED_PERIOD_MS: u32 = 500;
+/// While the stopwatch is up: a press of about 0.2 s spans two reads (hold longer to be sure),
+/// so `measure` can end it.
+pub const LEVER_STOPWATCH_PERIOD_MS: u32 = 100;
+/// The cruise status, the gate's second witness.
+pub const CRUISE_PERIOD_MS: u32 = 200;
+
+/// What the panel is doing, for [`Plan::rates_in`]: the lever's gate and the stopwatch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mode {
+	/// The lever is ours ([`Stalk::gate_open`](crate::stalk::Stalk::gate_open)).
+	pub gate_open: bool,
+	pub stopwatch: Timing,
+	/// The rocker's unit answers as the plan's — its part number matched — so the lever can be
+	/// read. The cruise status serves nothing but a lever read, so without it it is not read.
+	pub lever: bool,
+}
+
+/// Where the stopwatch is, as the bus sees it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Timing {
+	/// The mode is off.
+	#[default]
+	Off,
+	/// The mode is on: the speed is read at its own rate, for the standstill that arms it.
+	Up,
+	/// Armed or running: the speed keeps its rate and everything a page shows drops to the
+	/// background — only an alarm's channels keep theirs.
+	Timing,
 }
 
 /// One control unit and how to address it.
@@ -120,7 +247,9 @@ pub struct Channel {
 	pub decimals: u8,
 	/// `"°C"`, `"bar"` — or empty for a count.
 	pub unit_text: &'static str,
-	/// In [`Plan::language`], ten characters at most for a four-column page.
+	/// Ten characters at most for a four-column page. The owner's wording — `dash.toml`'s
+	/// `label`, or the glossary's [`Plan::language`] column — else the project's, in whatever
+	/// language the project wrote it.
 	pub label: &'static str,
 	/// Whether a drive on a car established this scaling, as opposed to a
 	/// catalog declaring it. Carried so the device can say which is which;
@@ -152,6 +281,10 @@ pub struct Rate {
 	/// channels are never demoted. Otherwise only on pages not shown: read at
 	/// [`HIDDEN_PERIOD_MS`] at most, last.
 	pub foreground: bool,
+	/// Read as a stopwatch's clock — the scheduler's `Class::Timing` — ahead of a host's reads
+	/// and of the foreground past its floor, so a host's load cannot thin it. Only the
+	/// stopwatch's speed while a run is up ([`Timing::Timing`]), which is foreground as well.
+	pub timing: bool,
 	pub period_ms: u32,
 }
 
@@ -201,6 +334,32 @@ impl Plan {
 		count
 	}
 
+	/// Whether the plan's `[[button]]`s are ones the board can wire: at most
+	/// [`MAX_BUTTONS`], each on one of [`BUTTON_PINS`](crate::control::BUTTON_PINS), no pin
+	/// twice. The generator refuses anything else; `const`, so the firmware refuses it again
+	/// when the image is built, where a button that silently did nothing would be the failure.
+	pub const fn buttons_fit(&self) -> bool {
+		if self.buttons.len() > MAX_BUTTONS {
+			return false;
+		}
+		// `while` and indices, because iterators are not `const`.
+		let mut i = 0;
+		while i < self.buttons.len() {
+			if !is_button_pin(self.buttons[i].pin) {
+				return false;
+			}
+			let mut j = 0;
+			while j < i {
+				if self.buttons[j].pin == self.buttons[i].pin {
+					return false;
+				}
+				j += 1;
+			}
+			i += 1;
+		}
+		true
+	}
+
 	/// Every chart page, in plan order, numbered — what the panel feeds a
 	/// sample to each frame.
 	pub fn charts(&self) -> impl Iterator<Item = Chart> + '_ {
@@ -236,19 +395,71 @@ impl Plan {
 	/// business, not the caller's: they are foreground on every page, so no page
 	/// switch can drop the reading that would trip the rule.
 	pub fn rates<'a>(&'a self, shown: &'a [u16], listed: &'a [u16]) -> impl Iterator<Item = Rate> + 'a {
+		self.rates_in(shown, listed, Mode::default())
+	}
+
+	/// [`Plan::rates`] with the lever and the stopwatch in it (`todo/dash/19`).
+	///
+	/// - The rocker's channel is read at [`LEVER_OPEN_PERIOD_MS`] with the gate open,
+	///   [`LEVER_CLOSED_PERIOD_MS`] with it closed, [`LEVER_STOPWATCH_PERIOD_MS`] while the
+	///   stopwatch is up; the switch's is never subscribed — it is in the rocker's answer.
+	/// - The cruise status at [`CRUISE_PERIOD_MS`], while the rocker's unit answers as the
+	///   plan's ([`Mode::lever`]) — it only ever opens the lever's gate, and a lever that cannot
+	///   be read has none to open.
+	/// - The stopwatch's speed at its own rate while the mode is on; while it is armed or
+	///   running it is read as the stopwatch's clock ([`Rate::timing`]), and every other
+	///   channel a page shows drops to the background. As foreground a host's reads took its
+	///   slots once the lever had spent the panel's floor, and every run aborted (PR #12
+	///   review); the scheduler keeps the panel's floor ahead of a clock on the board, so the
+	///   lever and an alarm's channels keep theirs.
+	///
+	/// The rocker and the cruise status are foreground whatever the page: a press is a press
+	/// on any. An alarm's channels keep their rate through all of it.
+	pub fn rates_in<'a>(&'a self, shown: &'a [u16], listed: &'a [u16], mode: Mode) -> impl Iterator<Item = Rate> + 'a {
 		self.channels.iter().enumerate().filter_map(move |(i, channel)| {
 			let index = i as u16;
 			let own = channel.period_ms();
-			if shown.contains(&index) || self.watched(index) || self.explains(index, shown) {
+			let foreground = |period_ms| {
 				Some(Rate {
 					channel: index,
 					foreground: true,
+					timing: false,
+					period_ms,
+				})
+			};
+			if let Some(stalk) = &self.stalk {
+				if index == stalk.switch {
+					return None;
+				}
+				if index == stalk.rocker {
+					return foreground(match (mode.stopwatch, mode.gate_open) {
+						(Timing::Off, true) => LEVER_OPEN_PERIOD_MS,
+						(Timing::Off, false) => LEVER_CLOSED_PERIOD_MS,
+						(Timing::Up | Timing::Timing, _) => LEVER_STOPWATCH_PERIOD_MS,
+					});
+				}
+				if index == stalk.cruise {
+					return if mode.lever { foreground(CRUISE_PERIOD_MS) } else { None };
+				}
+			}
+			let speed = mode.stopwatch != Timing::Off && self.stopwatch.is_some_and(|s| s.speed == index);
+			// Timing, what a page shows is not what matters: the run is.
+			let on_glass = shown.contains(&index) || self.explains(index, shown);
+			let timing = mode.stopwatch == Timing::Timing;
+			if speed && timing {
+				Some(Rate {
+					channel: index,
+					foreground: true,
+					timing: true,
 					period_ms: own,
 				})
-			} else if listed.contains(&index) || self.explains(index, listed) {
+			} else if speed || self.watched(index) || (on_glass && !timing) {
+				foreground(own)
+			} else if listed.contains(&index) || self.explains(index, listed) || on_glass {
 				Some(Rate {
 					channel: index,
 					foreground: false,
+					timing: false,
 					period_ms: own.max(HIDDEN_PERIOD_MS),
 				})
 			} else {
@@ -475,7 +686,33 @@ mod tests {
 		channels: &CHANNELS,
 		pages: &PAGES,
 		alarms: &[],
+		stalk: None,
+		stopwatch: None,
+		buttons: &[],
 	};
+
+	#[test]
+	fn buttons_fit_the_board_on_its_free_pins_each_once_at_most_three() {
+		const fn button(pin: u8) -> ButtonPlan {
+			ButtonPlan { pin, action: Command::Next }
+		}
+		// A plan's slices are `'static`; a test's are leaked to be.
+		let fits = |buttons: &[ButtonPlan]| {
+			Plan {
+				buttons: std::vec::Vec::leak(buttons.to_vec()),
+				..PLAN
+			}
+			.buttons_fit()
+		};
+		// Known when the image is built, which is where the firmware asks.
+		const { assert!(PLAN.buttons_fit(), "no buttons fit") };
+		assert!(fits(&[button(3), button(4), button(5)]));
+		assert!(fits(&[button(5)]));
+		assert!(!fits(&[button(9)]), "BOOT is not a button's");
+		assert!(!fits(&[button(2)]));
+		assert!(!fits(&[button(3), button(4), button(3)]), "a pin twice");
+		assert!(!fits(&[button(3), button(4), button(5), button(3)]), "four");
+	}
 
 	#[test]
 	fn chart_count_is_a_constant_the_panel_can_size_an_array_by() {
@@ -742,11 +979,226 @@ mod tests {
 			channels: &CHANNELS,
 			pages: &PAGES,
 			alarms: &[],
+			stalk: None,
+			stopwatch: None,
+			buttons: &[],
 		};
 		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);
 		assert_eq!(PLAN.channel(1).map(|c| c.unit), Some(0x7E1));
 		assert_eq!(PLAN.channel(9), None);
 		assert_eq!(PLAN.unit_of(&CHANNELS[1]).map(|u| u.response), Some(0x7E9));
+	}
+
+	/// A neutral ladder in the shape an ODIS text table has: bounded bands in table order,
+	/// one listed out of order, and a catch-all with an unbounded end listed first.
+	const LADDER: [Band; 5] = [
+		Band {
+			lower: i32::MIN,
+			upper: i32::MAX,
+		},
+		Band { lower: 0, upper: 49 },
+		Band { lower: 100, upper: 149 },
+		Band { lower: 50, upper: 99 },
+		Band { lower: 150, upper: 150 },
+	];
+
+	#[test]
+	fn a_raw_reading_takes_the_first_bounded_state_that_holds_it_and_the_catch_all_last() {
+		assert_eq!(state_of(&LADDER, 0), Some(StateIndex(1)));
+		assert_eq!(state_of(&LADDER, 49), Some(StateIndex(1)), "both ends are in");
+		assert_eq!(state_of(&LADDER, 72), Some(StateIndex(3)), "table order, not sorted order");
+		assert_eq!(state_of(&LADDER, 150), Some(StateIndex(4)), "a point");
+		assert_eq!(
+			state_of(&LADDER, 151),
+			Some(StateIndex(0)),
+			"the unbounded one only when nothing else holds it"
+		);
+		assert_eq!(state_of(&LADDER[1..], 151), None, "and without it, nothing does");
+		assert_eq!(state_of(&LADDER[1..], i64::from(i32::MAX) + 1), None, "past what a band can hold");
+	}
+
+	/// Channels 0 and 1 are the driver's; 2 the rocker, 3 the switch (both of one identifier),
+	/// 4 the cruise status, 5 the stopwatch's speed at 50 Hz, 6 a channel an alarm watches.
+	fn lever_plan() -> Plan {
+		use crate::alarm::{Direction, PageId};
+		const FAST: Channel = Channel {
+			hz: 10.0,
+			..channel(0, 8, false, true, 1.0, 0.0)
+		};
+		static CHANNELS: [Channel; 7] = [FAST, FAST, FAST, FAST, FAST, Channel { hz: 50.0, ..FAST }, FAST];
+		static WATCHED: [ChannelId; 1] = [ChannelId(6)];
+		static ALARMS: [Alarm<'static>; 1] = [Alarm {
+			channels: &WATCHED,
+			page: PageId(0),
+			rule: Rule::Threshold {
+				trip: 10.0,
+				release: 8.0,
+				direction: Direction::Above,
+			},
+		}];
+		static MARKS: [u16; 2] = [60, 100];
+		Plan {
+			channels: &CHANNELS,
+			alarms: &ALARMS,
+			stalk: Some(StalkPlan {
+				rocker: 2,
+				switch: 3,
+				cruise: 4,
+				rocker_states: &LADDER,
+				switch_states: &LADDER,
+				cruise_states: &LADDER,
+				states: States {
+					next: StateIndex(1),
+					previous: StateIndex(2),
+					measure: StateIndex(3),
+					switch_off: StateIndex(1),
+					cruise_off: StateIndex(1),
+				},
+			}),
+			stopwatch: Some(StopwatchPlan {
+				speed: 5,
+				km_h_per_unit: 0.1,
+				marks: &MARKS,
+			}),
+			..PLAN
+		}
+	}
+
+	#[test]
+	fn the_lever_is_read_at_the_gates_rate_its_switch_never_and_the_cruise_status_at_five_hertz() {
+		let plan = lever_plan();
+		let rates = |mode: Mode| -> std::vec::Vec<(u16, bool, u32)> {
+			plan
+				.rates_in(&[0, 1], &[0, 1], mode)
+				.map(|r| (r.channel, r.foreground, r.period_ms))
+				.collect()
+		};
+		let closed = Mode {
+			lever: true,
+			..Mode::default()
+		};
+		let open = Mode { gate_open: true, ..closed };
+		assert_eq!(
+			rates(closed),
+			[(0, true, 100), (1, true, 100), (2, true, 500), (4, true, 200), (6, true, 100)],
+			"gate closed: 2 Hz, enough to see it open; the switch is in the rocker's answer"
+		);
+		// The rocker's unit not the plan's, or not answering: no lever read can use the cruise
+		// status, so it is not read (PR #12 review).
+		let unmatched = Mode { lever: false, ..closed };
+		assert!(!rates(unmatched).iter().any(|r| r.0 == 4), "{:?}", rates(unmatched));
+		assert_eq!(rates(open)[2], (2, true, 50), "gate open: a 50 ms button");
+		for timing in [Timing::Up, Timing::Timing] {
+			let up = Mode {
+				gate_open: true,
+				stopwatch: timing,
+				lever: true,
+			};
+			assert!(
+				rates(up).contains(&(2, true, 100)),
+				"{timing:?}: 10 Hz while the stopwatch is up, gate or not"
+			);
+		}
+		// On no page at all the lever is still read: a press is a press on any.
+		let bare: std::vec::Vec<u16> = plan.rates_in(&[], &[], closed).map(|r| r.channel).collect();
+		assert_eq!(bare, [2, 4, 6]);
+	}
+
+	#[test]
+	fn the_stopwatchs_speed_is_read_at_its_own_rate_and_while_timing_nothing_a_page_shows_is() {
+		let plan = lever_plan();
+		let rates = |shown: &[u16], mode: Mode| -> std::vec::Vec<(u16, bool, u32)> {
+			plan
+				.rates_in(shown, &[0, 1], mode)
+				.map(|r| (r.channel, r.foreground, r.period_ms))
+				.collect()
+		};
+		let off = rates(&[0, 1], Mode::default());
+		assert!(
+			!off.iter().any(|r| r.0 == 5),
+			"the mode off, the speed is on no page and not read: {off:?}"
+		);
+		// The stopwatch on the glass: no page is shown, the speed is.
+		let up = rates(
+			&[],
+			Mode {
+				stopwatch: Timing::Up,
+				lever: true,
+				..Mode::default()
+			},
+		);
+		assert_eq!(
+			up,
+			[
+				(0, false, 1000),
+				(1, false, 1000),
+				(2, true, 100),
+				(4, true, 200),
+				(5, true, 20),
+				(6, true, 100)
+			]
+		);
+		// An alarm took the glass during a run: its page's cells drop to the background, its
+		// watched channel does not, and the speed keeps its rate.
+		let timing = rates(
+			&[0, 6],
+			Mode {
+				stopwatch: Timing::Timing,
+				lever: true,
+				..Mode::default()
+			},
+		);
+		assert_eq!(
+			timing,
+			[
+				(0, false, 1000),
+				(1, false, 1000),
+				(2, true, 100),
+				(4, true, 200),
+				(5, true, 20),
+				(6, true, 100)
+			]
+		);
+		// The same page with the stopwatch merely up keeps its cells.
+		assert!(
+			rates(
+				&[0, 6],
+				Mode {
+					stopwatch: Timing::Up,
+					lever: true,
+					..Mode::default()
+				}
+			)
+			.contains(&(0, true, 100))
+		);
+		// A run up, the speed is read as the stopwatch's clock, and nothing else is: a host's
+		// reads must not thin it (PR #12 review). Merely up, it waits for a standstill at the
+		// panel's own rank.
+		let clock = |stopwatch: Timing| -> std::vec::Vec<u16> {
+			let mode = Mode {
+				stopwatch,
+				lever: true,
+				..Mode::default()
+			};
+			plan.rates_in(&[0, 6], &[0, 1], mode).filter(|r| r.timing).map(|r| r.channel).collect()
+		};
+		assert_eq!(clock(Timing::Timing), [5]);
+		assert_eq!(clock(Timing::Up), [] as [u16; 0]);
+		assert_eq!(clock(Timing::Off), [] as [u16; 0]);
+	}
+
+	#[test]
+	fn a_lever_read_is_its_three_fields_through_their_own_states() {
+		let stalk = lever_plan().stalk.unwrap();
+		let read = stalk.read(Some(72), Some(10), None);
+		assert_eq!(
+			read,
+			Read {
+				rocker: Some(StateIndex(3)),
+				switch: Some(StateIndex(1)),
+				cruise: None
+			}
+		);
 	}
 }

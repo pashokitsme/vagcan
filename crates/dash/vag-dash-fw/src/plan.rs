@@ -35,3 +35,14 @@ pub const CHART_COUNT: usize = PLAN.chart_count();
 /// How many `[[alarm]]` rules the plan carries — the size of the panel's alarm
 /// machine. The generator caps it at `vag_dash_render::alarm::MAX_ALARMS`.
 pub const ALARM_COUNT: usize = PLAN.alarms.len();
+
+/// How many `[[button]]`s the plan carries — the size of the input task's button table.
+pub const BUTTON_COUNT: usize = PLAN.buttons.len();
+
+// What the generator refuses, refused again where it would bite: a pin the board has no
+// input for, one given twice, or more buttons than free pins is an image that does not
+// build rather than a button that silently does nothing.
+const _: () = assert!(
+	PLAN.buttons_fit(),
+	"the plan's [[button]]s do not fit this board: at most 3, on GPIO 3, 4 or 5, each once"
+);
