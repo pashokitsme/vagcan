@@ -50,12 +50,28 @@ pub const START_FIT_MS: u64 = 400;
 /// fast the speed has to be read for a run to be timed at all.
 pub const MIN_FIT_SAMPLES: usize = 3;
 
+/// The slowest the speed may be read and still time a run: the launch fit wants
+/// [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], so a period under
+/// `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`. The plan build refuses one at or above it; the
+/// board rounds a period to whole milliseconds, so it may read at this one exactly.
+pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 - 1);
+
 /// The longest silence of the speed a run or an armed standstill survives. The laptop
 /// cancels a run after `vag-cli-measure`'s `SILENT_CYCLES` unanswered cycles; the board
-/// has no cycles, so a time: long past any period the speed is read at while the
-/// stopwatch is up, short enough that nothing is interpolated across a gap in which the
-/// car did whatever it did. A property of the one conversation, not of a car.
-pub const SILENCE_MS: u64 = 500;
+/// has no cycles, so a time. A property of the one conversation, not of a car.
+///
+/// Why 1.3 s. The speed shares the bus with the lever, the cruise status, an alarm's
+/// channels and a host's reads, one exchange at a time, and one the unit does not answer
+/// holds the bus for the board's whole answer timeout (`RESPONSE_TIMEOUT` in the firmware,
+/// 500 ms). Two of them can fall between two speed answers — a run's speed goes ahead of
+/// everything but the panel's floor (`Class::Timing`), and the lever and the cruise status
+/// are that floor, on two units. So the threshold is past two timeouts, plus the slowest
+/// period the speed may be read at ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the
+/// speed's own answer and the send slot before it. At 500 ms one unanswered read of
+/// anything aborted a run whose speed never missed (PR #12 review). The firmware asserts
+/// the relation at compile time, so the two cannot drift apart. Past it the speed is
+/// silent in earnest: the run is aborted, and nothing is interpolated across the gap.
+pub const SILENCE_MS: u64 = 1_300;
 
 /// The most marks one plan may carry: the page is one row of four cells, the phase and
 /// the speed in the first, a mark's time in each of the others.
@@ -1087,7 +1103,26 @@ mod tests {
 		// A missing answer past the silence says the same.
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
-		assert_eq!(watch.sample(None, 3_100), Some(Event::Aborted));
+		assert_eq!(watch.sample(None, 2_501 + SILENCE_MS), Some(Event::Aborted));
+	}
+
+	#[test]
+	fn a_run_outlasts_two_other_reads_timing_out_between_two_answers_of_its_speed() {
+		// The board reads the lever, the cruise status, an alarm's channels and a host's
+		// identifiers on the same bus, one exchange at a time, and one that is not answered
+		// holds the bus for the firmware's whole answer timeout, 500 ms. Two of them between
+		// two answers of a speed read at the slowest rate the plan allows, and the speed's
+		// own answer, are a speed that never missed.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		// The last answer at 2.4 s.
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_400, SLOWEST_SPEED_PERIOD_MS);
+		assert_eq!(watch.phase(), Phase::Running);
+		let late = 2_400 + SLOWEST_SPEED_PERIOD_MS + 2 * 500 + 30;
+		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - 2_400);
+		let kmh = ramp(1.0, 20.0)(late as f64 / 1000.0);
+		assert!(kmh < 60.0, "no mark in the gap, so nothing is said");
+		assert_eq!(watch.sample(Some((kmh / f64::from(FACTOR)) as f32), late), None);
+		assert_eq!(watch.phase(), Phase::Running, "the run goes on");
 	}
 
 	#[test]

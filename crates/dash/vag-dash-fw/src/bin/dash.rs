@@ -1366,6 +1366,15 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 /// 300 the round-robin used: a host's request may be a fault list of many
 /// frames from a unit behind the gateway.
 const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
+// The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
+// speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
+// lever and the cruise status go ahead of a run's speed, on two units), and the speed may be
+// read as slowly as `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run
+// whose speed never missed (PR #12 review): lengthening this timeout means lengthening that.
+const _: () = assert!(
+	stopwatch::SILENCE_MS as u128 > 2 * RESPONSE_TIMEOUT.as_millis() + stopwatch::SLOWEST_SPEED_PERIOD_MS as u128,
+	"the stopwatch's silence must outlast two answer timeouts and a period of the speed"
+);
 /// How long a request that suppressed its positive response (`3E 80`, `10 81`) waits
 /// for the refusal that is its only possible answer. ISO 14229-2's default
 /// P2server_max is 50 ms; three times that leaves room for a unit behind the gateway.
