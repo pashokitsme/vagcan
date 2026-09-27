@@ -1545,6 +1545,22 @@ pub fn build(
 	if stopwatch.is_some() && !opens {
 		notes.push("stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"".to_string());
 	}
+	if stalk.is_some() && stopwatch.is_none() {
+		notes.push("stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string());
+	}
+	// BOOT and RESET are no input (owner, 2026-09-27), so a board with none of its own turns its
+	// page from a bench tool alone, and an alarm stays until its channel ends it — a channel gone
+	// silent mid-episode holds it on the glass (`screen.rs`,
+	// `a_stale_channel_neither_trips_nor_releases`).
+	let paged = stalk.is_some() || input.buttons.iter().any(|b| b.action != Command::Stopwatch);
+	if input.pages.len() > 1 && !paged {
+		let why = "only dashsim or dashcfg's set page turns the page";
+		notes.push(format!("input: no [stalk] and no [[button]] with next or previous — {why}"));
+	}
+	if !input.alarms.is_empty() && stalk.is_none() && input.buttons.is_empty() {
+		let why = "an alarm stays up until its channel answers in range again; only dashsim silences it";
+		notes.push(format!("input: no [stalk] and no [[button]] — {why}"));
+	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
 	for c in &channels {
@@ -4606,6 +4622,42 @@ mod tests {
 		assert!(!says(&format!("{LEVER}{WATCH}")), "the lever's measure opens it");
 		assert!(!says(&format!("{WATCH}{}", button("4", "\"stopwatch\""))), "so does a stopwatch button");
 		assert!(!says(""), "no stopwatch, nothing to open");
+	}
+
+	/// BOOT and RESET page nothing (owner, 2026-09-27): a board flashed with pages and alarms and
+	/// no input is one whose page only a bench tool turns, and whose alarm only its channel ends.
+	#[test]
+	fn a_board_with_nothing_to_turn_its_pages_or_silence_its_alarms_is_said() {
+		let turns = "input: no [stalk] and no [[button]] with next or previous — only dashsim or dashcfg's set page turns the page";
+		let silences = "input: no [stalk] and no [[button]] — an alarm stays up until its channel answers in range again; only dashsim silences it";
+		let said = |input: &str| {
+			let notes = build_with_lever(input).unwrap().notes;
+			(notes.iter().any(|n| n == turns), notes.iter().any(|n| n == silences))
+		};
+		let second = values_page_titled("U", &["01:IDE00001"]);
+		let rule = alarm(&["01:IDE00001"], "T", "above", 10.0, 5.0);
+		assert_eq!(said(""), (false, false), "one page and no alarm: nothing to turn or silence");
+		assert_eq!(said(&second), (true, false), "two pages");
+		assert_eq!(said(&rule), (false, true), "an alarm");
+		assert_eq!(said(&format!("{second}{rule}")), (true, true), "both");
+		assert_eq!(said(&format!("{second}{rule}{LEVER}")), (false, false), "the lever pages and silences");
+		for action in ["\"next\"", "\"previous\""] {
+			assert_eq!(said(&format!("{second}{rule}{}", button("3", action))), (false, false), "{action}");
+		}
+		assert_eq!(
+			said(&format!("{second}{rule}{WATCH}{}", button("3", "\"stopwatch\""))),
+			(true, false),
+			"a stopwatch button silences an alarm and turns no page"
+		);
+	}
+
+	#[test]
+	fn a_lever_with_no_stopwatch_to_open_is_said() {
+		let note = "stalk: there is no [stopwatch] — a press of measure only silences an alarm";
+		let says = |input: &str| build_with_lever(input).unwrap().notes.iter().any(|n| n == note);
+		assert!(says(LEVER));
+		assert!(!says(&format!("{LEVER}{WATCH}")), "measure opens the stopwatch");
+		assert!(!says(""), "no lever");
 	}
 
 	#[test]

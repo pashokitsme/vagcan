@@ -294,7 +294,13 @@ cruise off.
   press only logged since BLE became always on (2026-09-13/14); holding BOOT for download mode
   is the ROM's and never involved the firmware. No other image configures `GPIO9`.
 - **With no `[stalk]` and no `[[button]]`**, the board shows its active page and changes it
-  only from `dashsim` or `dashcfg set page`. An alarm cannot be silenced; it clears on its own.
+  only from `dashsim` or `dashcfg set page`. Only `dashsim` silences an alarm; otherwise it
+  clears when its channel answers in range again — **not on its own**: a channel gone silent
+  mid-episode holds it on the glass (`screen.rs`, `a_stale_channel_neither_trips_nor_releases`).
+  The plan build notes both (PR #12 review): more than one page and no `[stalk]` or `next` /
+  `previous` button; any alarm and no `[stalk]` or `[[button]]`. The owner's own `dash.toml` had
+  alarms and no `[stalk]` then, so this image as it stood would have taken his paging away.
+  A `[stalk]` with no `[stopwatch]` is noted too: `measure` then only silences an alarm.
 
 **Firmware.** Every producer offers `(Source, Command)` to one `embassy_sync` channel
 (`vag_dash_fw::input::CommandQueue`, 4 deep). Nothing waits: a command that finds it full is

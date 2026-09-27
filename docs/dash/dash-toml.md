@@ -260,6 +260,7 @@ one for the previous, one to turn the stopwatch on and off.
   despite the name. That state appeared only while LIMIT was pressed. Pick the state the
   position you press actually produces, as `vagcan watch` shows it, not the one whose name fits.
 - The lever's read rates are fixed. `hz` does not apply.
+- Without a `[stopwatch]`, `measure` only silences an alarm. The build says so.
 
 ### `[stopwatch]`
 
@@ -544,8 +545,10 @@ build prints it after `dash plan for VIN <VIN>:`.
 
 - Pages turn from `[[button]]`s, the lever (`[stalk]`) and `dashsim`. The board's BOOT and RESET
   buttons do nothing.
-- With no `[stalk]` and no `[[button]]`, the board shows its active page. Only `dashsim` or
-  `dashcfg`'s `set page` changes it.
+- With no `[stalk]` and no `next` or `previous` `[[button]]`, the board shows its active page.
+  Only `dashsim` or `dashcfg`'s `set page` changes it. The build says so.
+- With no `[stalk]` and no `[[button]]`, only `dashsim` silences an alarm (**Alarms**, below).
+  The build says so.
 - With the stopwatch on, `next` and `previous` do nothing, from any of them. `stopwatch` leaves
   it; so does the board turning adapter (`vagcan --slcan`), and the lever (**The stopwatch**,
   below).
@@ -591,4 +594,6 @@ build prints it after `dash plan for VIN <VIN>:`.
 - After the value clears, the page stays 2.5 s with the cell steadily inverted. Then the screen
   goes back to where it was.
 - A press — a `[[button]]`, the lever or `dashsim` — silences that episode until the value
-  clears. With none of them, only the value clearing ends it.
+  clears.
+- Unsilenced, it lasts until its channel answers in range again. A channel that stops
+  answering keeps it on the glass.
