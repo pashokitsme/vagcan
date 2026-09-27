@@ -42,7 +42,7 @@ Octavia III). Take yours from your car: see [How to find names for your car](#ho
 
 ```toml
 vin = "XW8AD4NE9JH008917"
-language = "ru"                    # the board's own words; labels come from `label` or names.csv
+language = "ru"                    # labels (names.csv's ru column) and the board's own words
 # survey = "/Users/me/surveys/octavia.jsonl"   # only to use a survey other than the car's own
 
 [[channel]]
@@ -124,13 +124,12 @@ alarm, for the lever and for the stopwatch.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `vin` | string | yes | — | The car. Must be the VIN the build is for (case does not matter), or the build stops. |
-| `language` | `"en"` or `"ru"`, any case | no | `language` in `~/.vagcan/config.toml`, else `"en"` | The words the board writes itself: the stopwatch page. It does not change labels. |
+| `language` | `"en"` or `"ru"`, any case | no | `language` in `~/.vagcan/config.toml`, else `"en"` | The labels' language, and the words the board writes itself (the stopwatch page). |
 | `survey` | string, a file path | no | `~/.vagcan/cars/<VIN>/survey.jsonl` | The survey to resolve against. Give an absolute path: `~` is not expanded. |
 
 - At least one `[[channel]]` and one `[[page]]` are required.
-- A label comes from the channel's `label`. Without one, from `~/.vagcan/names.csv` in the
-  language `~/.vagcan/config.toml` sets, then from the project's wording. `language` here has no
-  part in it.
+- A label comes from the channel's `label`. Without one, from `~/.vagcan/names.csv` in
+  `language`, then from the project's wording.
 
 ### `[[channel]]`
 
@@ -139,7 +138,7 @@ One per value the board reads.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `ref` | string: a channel | yes | — | Which unit, which row. See [Naming a channel](#naming-a-channel). |
-| `label` | string | no | `names.csv`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
+| `label` | string | no | `names.csv` in `language`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
 | `setpoint` | string: a channel on the same unit | no | none | What the unit asked for. The panel draws the difference under the number; a `drift` alarm watches it. |

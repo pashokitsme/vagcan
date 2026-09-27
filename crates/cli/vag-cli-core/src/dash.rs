@@ -15,7 +15,7 @@
 //!
 //! ```toml
 //! vin = "XW8AD4NE9JH008917"
-//! language = "ru"                 # optional; the settings' language otherwise
+//! language = "ru"                 # optional: the labels' and the board's; the settings' otherwise
 //! survey = "…/survey.jsonl"        # optional; ~/.vagcan/cars/<VIN>/survey.jsonl otherwise
 //!
 //! [[channel]]
@@ -1204,6 +1204,10 @@ fn row_name(c: &poll::Channel) -> String {
 /// `units` are the car's own words about itself (from its survey); `store` and
 /// `extracted` are the project — the same two `watch` opens. Pure: reads
 /// nothing but its arguments, writes nothing.
+///
+/// **One language for the plan** (owner, 2026-09-27): the input's `language`, or
+/// `default_language` — `config.toml`'s — without one. It is the board's own words and the
+/// glossary column every label is taken from, whichever language `extracted` was opened in.
 pub fn build(
 	input: &Input,
 	store: &CatalogStore,
@@ -1213,6 +1217,16 @@ pub fn build(
 	default_language: Language,
 ) -> Result<Built, Error> {
 	let language = input.language.unwrap_or(default_language);
+	// A copy speaking the plan's language, only when the caller's does not: the caller's own
+	// stays as it was, for what it names in `config.toml`'s (`vagcan dev recording dash`
+	// matches a recording's headings, written by `watch`, against it).
+	let respoken;
+	let extracted = if extracted.language() == language {
+		extracted
+	} else {
+		respoken = extracted.clone().in_language(language);
+		&respoken
+	};
 	let offered = poll::available(store, extracted, units);
 	let mut notes = Vec::new();
 	let mut channels: Vec<Channel> = Vec::new();
@@ -2170,6 +2184,8 @@ pub struct Resolved {
 	/// What each unit said about itself in that survey: what the catalogs were looked up by.
 	pub units: Vec<UnitIdentity>,
 	pub store: CatalogStore,
+	/// The project, naming channels in `config.toml`'s language, as `watch` does — not
+	/// necessarily the plan's, which [`build`] labels in its own.
 	pub extracted: Extracted,
 }
 
@@ -3370,6 +3386,70 @@ mod tests {
 			format!("{} [[page]] tables, and the board holds at most 8", MAX_PAGES + 1)
 		);
 		assert_eq!(build_with_alarms(&extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
+	}
+
+	/// One language for the plan (owner, 2026-09-27): `dash.toml`'s `language` picks the board's
+	/// own words **and** the glossary column every label is taken from; without it both follow
+	/// `config.toml`. Before, labels followed `config.toml` whatever the plan said.
+	#[test]
+	fn the_labels_are_in_the_plans_language_whatever_the_settings_say() {
+		let here = tempfile::tempdir().unwrap();
+		// Synthetic wording: `IDE00002` is written in Russian only, `IDE00003` in neither.
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1002, "Two", "IDE00002", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1003, "Three", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+				],
+			)],
+			&[("IDE00003", "Three, as the label files say")],
+		)
+		.with_glossary("text_id,en,ru\nIDE00001,Coolant,ОЖ\nIDE00002,,Масло\n")
+		// Opened as `config.toml` says, the way `resolve_for_car` opens it: in Russian.
+		.in_language(Language::Ru);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let built = |language: &str| {
+			let text = format!(
+				"vin = \"TESTVIN0000000001\"\n{language}[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00002\"\n[[channel]]\nref = \"01:IDE00003\"\n{}",
+				values_page(&["01:IDE00001", "01:IDE00002", "01:IDE00003"])
+			);
+			let plan = build(
+				&parse_input(&text).unwrap(),
+				&store,
+				&extracted,
+				&[identity(ENGINE, "PART1", "EV_Test")],
+				None,
+				Language::Ru,
+			)
+			.unwrap()
+			.plan;
+			(plan.language.clone(), plan.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>())
+		};
+		assert_eq!(
+			built("language = \"en\"\n"),
+			(
+				"en".to_string(),
+				vec![
+					"Coolant".to_string(),
+					// Not the Russian cell: a column the glossary leaves blank falls through to the
+					// project's wording, never to another language's.
+					"Two".to_string(),
+					"Three, as the label files say".to_string()
+				]
+			)
+		);
+		assert_eq!(
+			built(""),
+			(
+				"ru".to_string(),
+				vec!["ОЖ".to_string(), "Масло".to_string(), "Three, as the label files say".to_string()]
+			),
+			"no `language`: the settings' language, for the labels and the board alike"
+		);
+		assert_eq!(extracted.language(), Language::Ru, "the caller's project is left as it was");
 	}
 
 	/// The board draws a chart in `f32`: a scale apart in the file and one value there draws no
