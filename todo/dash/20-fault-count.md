@@ -234,7 +234,12 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   forgets with its count between a host's requests, never wait at all (150 → 40). Now: the speed
   gap 1050 ms; beside a unit busy every other time 94 vs 94, beside a host's raw loop 150 vs 150
   with the backoff climbing 250 → 2000 ms, beside one busy for ever 144 vs 144 in 10 s and 118
-  vs 118 in 60 s — each the same as for silence.
+  vs 118 in 60 s — each the same as for silence. **The one price, accepted (controller,
+  2026-09-27):** while a run is timing a unit that is busy every other exchange (a second tester
+  polling the engine during a run), a neighbour gets about 40 readings in 10 s where silence
+  every other time would leave it 80. Such a run cannot be timed anyway — its speed answers every
+  ~0.5 s and the launch fit needs three within 400 ms — and it lasts only while the timing
+  channel is held, when the count is paused.
 - **Late answers are dropped, on every exchange** (review round 1, `Waits::heard`): a PDU that
   answers another request — another service's, another identifier's (a `22` answer starts with
   an identifier asked — any of them, round 3: a unit may leave out the first, and the planner
