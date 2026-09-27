@@ -689,8 +689,9 @@ impl Labels {
 /// The stopwatch page as a values row: the phase's word over the speed, then each mark's
 /// time — the run on show, or where there is none, the last finished run `saved` holds as
 /// `(mark in km/h, seconds)`. A mark with no time draws a dash. A run that ended short of
-/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. With
-/// the factor not measured the row is that word and nothing else.
+/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. Armed,
+/// the phase's cell is inverted. With the factor not measured the row is that word and
+/// nothing else.
 pub fn cells<'a>(
 	watch: &Stopwatch<'_>,
 	speed_km_h: Option<f32>,
@@ -710,7 +711,10 @@ pub fn cells<'a>(
 		Phase::Done if watch.run().is_some_and(|run| run.aborted) => words.aborted,
 		Phase::Done => words.done,
 	};
-	row[0] = Cell::new(word, speed_km_h, words.km_h, 0);
+	let phase = Cell::new(word, speed_km_h, words.km_h, 0);
+	// Armed, the cell is drawn inverted: `STOP 0` and `GO 0` differ by a small word otherwise
+	// (PR #12 review). An alarm, the other inverted cell, takes the whole glass.
+	row[0] = if watch.phase() == Phase::Armed { phase.alarmed() } else { phase };
 	let run = watch.run();
 	let marks = &watch.marks()[..watch.marks().len().min(MAX_MARKS)];
 	for (i, mark) in marks.iter().enumerate() {
@@ -1148,6 +1152,66 @@ mod tests {
 		assert_eq!(row(&unmeasured, Some(50.0), &[(60, 1.0)]), [("NO FACTOR".into(), None, "".into(), 0)]);
 	}
 
+	/// At the start line `STOP 0` turned into `GO 0` and only a small word changed (PR #12
+	/// review): armed, the phase's cell is drawn inverted, as an alarm's is — an alarm takes the
+	/// whole glass, so the two never share it.
+	#[test]
+	fn the_phase_cell_is_drawn_inverted_while_armed_and_in_no_other_phase() {
+		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+		use embedded_graphics_simulator::SimulatorDisplay;
+		let unmeasured = Stopwatch::new(&MARKS, 0.0);
+		let idle = Stopwatch::new(&MARKS, FACTOR);
+		let mut armed = Stopwatch::new(&MARKS, FACTOR);
+		armed.sample(Some(0.0), 0);
+		armed.sample(Some(0.0), ARMING_HOLD_MS);
+		let mut running = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut running, ramp(1.05, 20.0), 0, 4_500, 100);
+		let mut done = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut done, ramp(1.05, 20.0), 0, 7_000, 100);
+		let mut aborted = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut aborted, ramp(1.05, 20.0), 0, 4_500, 100);
+		aborted.sample(Some(0.0), 4_600);
+		// Armed again with the aborted run's times still up.
+		let mut again = aborted;
+		again.sample(Some(0.0), 5_600);
+		let watches = [
+			(unmeasured, Phase::NotMeasured, "NO FACTOR"),
+			(idle, Phase::Idle, "STOP"),
+			(armed, Phase::Armed, "GO"),
+			(running, Phase::Running, "RUN"),
+			(done, Phase::Done, "DONE"),
+			(aborted, Phase::Done, "ABORT"),
+			(again, Phase::Armed, "GO"),
+		];
+		let words = Words::of("en");
+		let labels = Labels::new(&MARKS);
+		for (watch, phase, word) in watches {
+			assert_eq!((watch.phase(), cells(&watch, Some(0.0), &[], &words, &labels).0[0].label), (phase, word));
+			let (row, count) = cells(&watch, Some(0.0), &[(60, 5.43), (100, 9.87)], &words, &labels);
+			let inverted: Vec<bool> = row[..count].iter().map(|cell| cell.alarm).collect();
+			let mut wanted = std::vec![false; count];
+			wanted[0] = phase == Phase::Armed;
+			assert_eq!(inverted, wanted, "{word}: the phase's cell alone, and only armed");
+			// On the glass: the phase column's ground is lit, the next one's is not.
+			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
+			draw_with(
+				&Frame::Values { cells: &row[..count] },
+				&Board {
+					links: Links::NONE,
+					rates: None,
+				},
+				&Theme::bold_mono(),
+				&mut panel,
+			);
+			let lit = |x: i32| panel.get_pixel(Point::new(x, 0)) == BinaryColor::On;
+			assert_eq!(lit(0), phase == Phase::Armed, "{word}: the phase column's ground");
+			if count > 1 {
+				assert!(!lit(PANEL.width as i32 / count as i32), "{word}: the first mark's is not lit");
+			}
+		}
+	}
+
 	#[test]
 	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
 		use crate::render::Report;
@@ -1175,6 +1239,8 @@ mod tests {
 							let saved: Vec<(u16, f32)> = marks.iter().copied().zip(times.iter().copied()).collect();
 							let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
 							row[0].label = word;
+							// As the page draws it: armed, inverted.
+							row[0].alarm = word == words.armed;
 							let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
 							draw_with(
 								&Frame::Values { cells: &row[..count] },
