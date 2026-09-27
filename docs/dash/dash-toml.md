@@ -18,13 +18,15 @@ writes the plan the firmware links. The board resolves nothing itself.
 | build the firmware for that car | `VAGCAN_DASH_VIN=<VIN> cargo build --release --bin dash` in `crates/dash/vag-dash-fw` |
 | check the firmware compiles, no car | `VAGCAN_DASH_NO_CAR=1 cargo build --release --bin dash` (an empty plan — do not flash it) |
 
-Both paths run the same build, so `vagcan dev dash build` is for reading the result, not a step
+Both run the same build. `vagcan dev dash build` is for reading the result; it is not a step
 before the firmware build.
 
-- `VAGCAN_DASH_VIN` picks the car. With exactly one car under `~/.vagcan/dash/`, it can be left
-  unset.
-- `VAGCAN_PROJECT` (or `--project`) picks which project's label data to resolve against.
-- `--input <FILE>` builds from another file; the outputs still land under the car.
+| setting | for | what it does |
+|---|---|---|
+| `VAGCAN_DASH_VIN=<VIN>` | the firmware build | Picks the car. With exactly one car under `~/.vagcan/dash/`, it can be left unset. `vagcan dev dash build` takes the VIN as its argument instead. |
+| `VAGCAN_PROJECT=<id>` | both | Picks the project whose label data the names resolve against. |
+| `vagcan --project <id> dev dash build <VIN>` | `vagcan dev dash build` | The same as `VAGCAN_PROJECT`, for one run. |
+| `--input <FILE>` | `vagcan dev dash build` | Builds from another file. The outputs still land under the car. |
 
 Outputs, both under `~/.vagcan/dash/<VIN>/`:
 
@@ -32,8 +34,6 @@ Outputs, both under `~/.vagcan/dash/<VIN>/`:
 |---|---|
 | `plan.json` | reading, and the simulator |
 | `plan.rs` | the firmware, which `include!`s it |
-
-Neither is committed anywhere: they are derived from VW's data and describe one car.
 
 ## A full example
 
@@ -101,7 +101,7 @@ cruise_off = "main switch off"
 
 [stopwatch]
 speed = "02:380B"                  # the [[channel]] above, with its hz
-km_h_per_unit = 0.0                # 0 until measured: the page shows NO FACTOR
+km_h_per_unit = 0.0                # 0 until measured: the page shows НЕТ КОЭФ (en: NO FACTOR)
 marks = [60, 100]
 
 [[button]]                         # a button from GPIO3 to GND
@@ -124,8 +124,9 @@ type: `decimals = "2"` is refused, never read as absent.
 - Strings are trimmed at both ends, except `survey`.
 - Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
 
-Check the build's output after every edit. It prints one line per channel (with its rate), per
-alarm, for the lever and for the stopwatch.
+Check the build's output after every edit. It prints one line per channel (with its rate) and per
+specified value, then one for the stopwatch, the lever and each button, then one per alarm. Notes
+come in between, such as nothing turning the page.
 
 ### Top level
 
@@ -158,8 +159,7 @@ One per value the board reads.
 
 **`setpoint`**
 
-- Same unit as the channel: both are read in one request, so the two numbers are from the same
-  moment.
+- On the same control unit as the channel.
 - It needs no `[[channel]]` of its own. The build adds it, read at the channel's `hz`.
 - Without a `[[channel]]` of its own it is never shown: no page, alarm or stopwatch may name it.
   Declare it under `[[channel]]` to show it.
@@ -236,7 +236,7 @@ one for the previous, one to turn the stopwatch on and off.
 
 | key | type | required | default | what it does |
 |---|---|---|---|---|
-| `read` | string: `<unit>:<DID>` | yes | — | The one identifier whose answer carries both the rocker and the switch. No text id, no `@`. |
+| `read` | string: `<unit>:<DID>` | yes | — | The one identifier whose answer carries both the rocker and the switch. No text id. No `@` but `@0`. |
 | `rocker` | string: a field name | yes | — | The field of `read` that the lever moves. |
 | `switch` | string: a field name | yes | — | The field of `read` with the cruise main switch. Not the rocker. |
 | `next` | string: a state of `rocker` | yes | — | Next page. |
@@ -250,7 +250,7 @@ one for the previous, one to turn the stopwatch on and off.
   do not count, on your side or the project's.
 - `next`, `previous` and `measure` are three different states.
 - Each state must be one band of raw values. A state name the project gives to several bands is
-  refused for now.
+  refused.
 - `cruise` cannot be in `read`'s identifier. The lever is the dash's only when two separate
   answers say cruise is off: `switch` reads `switch_off`, and `cruise` reads `cruise_off`.
 - **A name that is valid but wrong builds and misbehaves.** `next` and `previous` swapped turn
@@ -267,7 +267,7 @@ one for the previous, one to turn the stopwatch on and off.
 Times 0 to each mark, in km/h, on the board. Every key is required.
 
 The `speed` channel must be under `[[channel]]` with an `hz`: without one it is read at 2 Hz and
-refused. A snippet that builds:
+refused. What the stopwatch adds to a file that already has `vin` and a `[[page]]`:
 
 ```toml
 [[channel]]
@@ -283,11 +283,10 @@ marks = [60, 100]
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `speed` | string: a channel | yes | — | A `[[channel]]` with `hz` 7.5 or more (50 recommended). Its scaling has no offset and a factor above 0. |
-| `km_h_per_unit` | number, 0 or more | yes | — | km/h per unit of `speed`. `0`: not measured — the page shows `NO FACTOR` and times nothing. |
+| `km_h_per_unit` | number, 0 or more | yes | — | km/h per unit of `speed`. `0`: not measured — the page shows `NO FACTOR` (`НЕТ КОЭФ` with `language = "ru"`) and times nothing. |
 | `marks` | list of integers | yes | — | 1 to 3 speeds in km/h, each above 0, each once. Shown in the order written; the run ends at the highest. |
 
-- **The rate.** `speed` must be read every 133 ms or sooner: `hz` 7.5 or more. The launch fit
-  needs 3 readings in its first 400 ms even when one answer is late.
+- **The rate.** `speed` must be read every 133 ms or sooner: `hz` 7.5 or more.
 - **`km_h_per_unit` multiplies the scaled value** of `speed` — the number `vagcan watch` shows
   for it — not its raw value.
 - **Measure it.** Drive at a steady speed. Divide the speed in km/h shown by a GPS by the value
@@ -354,11 +353,11 @@ Two spellings, both `<unit>:<row>`:
 | the units the car has, and their numbers | `vagcan units` |
 | a channel's unit, identifier and text id | `vagcan watch`, press `,` for settings, set "Key at the end of each row" to shown. The ECU, DID and Key columns are the unit, the identifier and the text id. |
 | a text id by the channel's name | `vagcan dev glossary` writes `~/.vagcan/names.csv`: every text id the project knows, with its name in the `current` column. Search it. It does not say which unit. |
-| a bit offset | Write the text id or identifier. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. |
+| a bit offset | Write the text id. When several rows answer to it, the build refuses and lists each as `DID@bit name`. Copy one as `<unit>:<DID>@<bit>`. An identifier with no `@` is bit 0: a row that starts at another bit is refused as not declared, with no list. |
 | the lever's identifier | Record `vagcan watch --out lever.csv` with the identifiers of the lever's unit selected, working the lever. Then `vagcan dev recording discover --log lever.csv` sorts the identifiers into never moved, stepped and continuous. |
 | `[stalk]` field names | Put any name in `rocker`. The build refuses and lists every field of `read`. |
 | state names | A wrong state name makes the build list the field's states. `vagcan watch --did <unit>:<DID>` shows a field's current state by name: work the lever and watch which state appears. |
-| what the build made of each name | `vagcan dev dash build <VIN>`: one line per channel with its identifier, bits, scaling, rate and source, then the alarms, the lever and the stopwatch. |
+| what the build made of each name | `vagcan dev dash build <VIN>`: one line per channel with its identifier, bits, scaling, rate and source, and per specified value; then the stopwatch, the lever and each button; then the alarms. |
 
 ## Limits
 
@@ -376,7 +375,6 @@ Two spellings, both `<unit>:<row>`:
 | stopwatch `marks` | 1 to 3, whole km/h from 1 to 65535 |
 | `[[button]]` | 0 to 3, on GPIO 3, 4 and 5, one per pin |
 | chart `min`/`max`, alarm numbers, `km_h_per_unit` | within a 32-bit float |
-| reads, all channels together | 100 requests a second |
 
 ## What the build refuses
 
@@ -393,7 +391,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `line N: [[page]] 1: "min" is a key of a chart page (kind = "chart"), and this is a values page` | Remove the key, or change `kind`. The same for an `[[alarm]]`'s two kinds. |
 | `line N: [stopwatch]: "survey" is a top-level key: write it above the first section` | Move it above the first section. |
 | `line N: [[page]] 1: "hz" is a key of [[channel]]` | Move it under that section. |
-| `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. Any optional key, any type. |
+| `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. The same for every optional key but `hz` and `setpoint`, whose refusals are under **Channels**. |
 | `no build input at <path>` | Write `~/.vagcan/dash/<VIN>/dash.toml`, or pass `--input`. |
 | `vin is missing or not a string` | Add `vin = "<VIN>"`. |
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
@@ -409,6 +407,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | refusal | what to do |
 |---|---|
 | `a channel is <unit>:<text id> or <unit>:<DID>[@<bit>]` / `nothing after the unit` | Spell it as in [Naming a channel](#naming-a-channel). |
+| `no control unit given` | Write the unit before the colon. |
 | `"X" is not a control-unit number like 01 or 17` / `is not a hex request id like 714` | Fix the unit. |
 | `control unit NN … has no known request id` | Write the unit's request id instead: `vagcan units` lists them. |
 | `… has no diagnostic address (700-795 or 7E0-7E7)` | Not a diagnostic unit. Fix the unit. |
@@ -449,7 +448,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `page #n needs min` / `needs max` | Add both, as numbers. |
 | `line N: [[page]] n: min must be a number, not a string` (or `max`) | Write it unquoted. |
 | `line N: [[page]] n: min must be a finite number the board's 32-bit float holds, within ±3.4028235e38` (or `max`) | A finite number within that range. |
-| `page #n: min A is not below max B` | Put `min` below `max`. They are compared as 32-bit floats, so two ends a hair apart are one value. |
+| `page #n: min A is not below max B` | Put `min` below `max`, far enough apart to differ as 32-bit floats. |
 | `page #n: min A and max B are further apart than the board's 32-bit float holds` | Narrow the scale. |
 | `page #n: X already has a chart page; one range per channel` | Keep one chart of it. |
 | `page #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
@@ -460,7 +459,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | refusal | what to do |
 |---|---|
 | `N [[alarm]] rules, and the board holds at most 4` | Remove rules. |
-| `alarm #n has no channels list` / `watches no channels` | Add `channels`. |
+| `alarm #n has no channels list` / `watches no channels` / `a channel is not a string` | Add `channels`, a list of quoted channels. |
 | `alarm #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
 | `alarm #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 | `alarm #n: kind "x" is not "threshold" or "drift"` | Lowercase `threshold` or `drift`. |
@@ -490,7 +489,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `[stalk] rocker: "N" is a quantity, not a list of states` | Name an enumerated field. Same for `switch`. |
 | `[stalk] rocker and switch are both "N"` | Two different fields. |
 | `[stalk] next: "S" is not a state of "F" — its states are …` | Copy a state from the list. Same for every state key. |
-| `[stalk] next: "S" names 2 bands of "F" (51–101, 204–255) — the board takes a button as one band, so this state cannot be used yet` | That state cannot be a button yet. Pick another. For `switch_off` and `cruise_off` it says "an off state". |
+| `[stalk] next: "S" names 2 bands of "F" (51–101, 204–255) — the board takes a button as one band, so this state cannot be used yet` | That state cannot be a button. Pick another. For `switch_off` and `cruise_off` it says "an off state". |
 | `[stalk] next, previous and measure name the same state` | Three different states. |
 | `[stalk] cruise X: the car's variant declares no such field` | Fix `cruise`. |
 | `[stalk] cruise X: a quantity, not a list of states` | Name the enumerated cruise status. |
@@ -538,6 +537,8 @@ build prints it after `dash plan for VIN <VIN>:`.
 - A specified value: with its channel.
 - Any other channel on no page: not read, except the stopwatch's `speed` while the stopwatch is
   on.
+- All channels together: at most 100 requests a second. Asked for more, the board reads them
+  more slowly than their `hz`. The build does not check it.
 - At start-up the board checks each unit's part number (`F187`) against the plan. A unit that
   answers another number is not read: after replacing a unit, survey the car again and rebuild.
 
@@ -558,28 +559,36 @@ build prints it after `dash plan for VIN <VIN>:`.
 - The lever is the dash's only while `switch` reads `switch_off` and `cruise` reads
   `cruise_off`. A missing reading counts as not off.
 - It is read every 50 ms while it is the dash's, every 500 ms otherwise, every 100 ms with the
-  stopwatch on. The cruise status is read every 200 ms.
-- A press is two readings in a row in the same state: hold about 0.1 s, 0.2 s with the
-  stopwatch on. Hold longer to be sure. Holding does not repeat.
+  stopwatch on and `km_h_per_unit` above 0. The cruise status is read every 200 ms, while the
+  lever's unit answers with the plan's part number.
+- A press is two readings in a row in the same state: hold it at least 0.1 s, 0.2 s with the
+  stopwatch on. A shorter press can be missed. Holding does not repeat.
 - `next` and `previous` wrap round the pages. With the stopwatch on they do nothing.
 - While an alarm holds the screen, any press silences it instead.
 
 **The stopwatch**
 
-- Standing still for 1 s arms it. The first moving reading starts the run.
+- Standing still for 1 s arms it: the page shows `GO` (`ПУСК` in Russian), inverted. The first
+  moving reading starts the run.
 - Times run from the launch, fitted to the first 400 ms of movement.
-- The run ends at the highest mark. Stopping before it aborts the run: its times show until you
-  leave the page and are never stored.
-- While armed or running, the other channels on the page drop to once a second. Alarm channels
-  keep their rate.
+- The run ends at the highest mark.
+- Stopping before the highest mark aborts the run. So does the speed not answering for over
+  1.3 s. The page shows `ABORT` (`ПРЕРВАН`) over the times the run had, until the next run starts
+  or you leave the page. An aborted run is never stored.
 - A run with no times (the speed read too slowly for the launch fit) is not kept.
-- A finished run is kept in the board's settings. It is written to flash when the car next
+- With the stopwatch on, the pages' channels are read once a second at most. An alarm's page
+  shown over it reads its cells at their `hz`, except while the stopwatch is armed or running.
+  Alarm channels keep their rate.
+- A finished run is kept in the board's settings. It is written to flash the next time the car
   stands still for 1 s with the stopwatch on, before `GO`: the stopwatch arms right after the
-  write. Or on `save` in `dashcfg`. Until then `get` says a run is in RAM only.
+  write.
+- With BLE, `save` in `dashcfg` writes it too. Until it is in flash, `dashcfg`'s storage line and
+  `get` say a run is in RAM only.
 - On a board whose flash holds no settings (never saved, or erased), the run is written with the
   default settings. Changes you have not saved stay unsaved.
-- Leave the stopwatch before the car stops and the run is lost at power-off, unless you `save`.
-- A run that ends short of its highest mark shows `ABORT` and is not kept.
+- Leave the stopwatch before the car stops, and the run is not written until the stopwatch is on
+  again and the car stands still 1 s. Power-off before that loses it. With BLE, `save` keeps it.
+  An image built without BLE has no `save`.
 - With a `[stalk]`, cruise switched on closes the stopwatch: two readings in a row with `switch`
   not at `switch_off` or `cruise` not at `cruise_off`. A run under way is dropped. However the
   stopwatch was opened.
