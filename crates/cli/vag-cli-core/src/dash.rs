@@ -3225,12 +3225,12 @@ mod tests {
 		);
 	}
 
-	/// The steering column's unit in the fixture. Its shape is the reference car's: `70C` is
-	/// the column's address across VAG, and the identifier, the two bytes at 64 and 72 and
-	/// the six-state ladder are the reference car's `1105` — several enumerated fields in
-	/// one answer, a byte each. Fixture values only: the code path takes none of them, every
+	/// The lever's unit and identifier in the fixture, made up for it: no car's column, no
+	/// car's identifier. What the fixture keeps is only the shape a lever has — several
+	/// enumerated fields in one answer, a byte each. The code path takes none of these: every
 	/// one comes from `[stalk]` and the project.
-	const STALK_UNIT: u16 = 0x70C;
+	const STALK_UNIT: u16 = 0x75A;
+	const STALK_DID: u16 = 0x4C21;
 
 	fn state_reading(did: u16, name: &str, text_id: &str, bit_offset: u32, bit_length: u32, levels: Vec<Level>) -> Reading {
 		Reading {
@@ -3240,23 +3240,37 @@ mod tests {
 		}
 	}
 
-	/// A neutral ladder: states tiling a byte, as a switch read as a voltage has them.
-	fn ladder(names: [&str; 6]) -> Vec<Level> {
-		let bounds = [(0, 74), (75, 110), (111, 145), (146, 181), (182, 221), (222, 255)];
-		bounds
+	/// A neutral ladder: states tiling a byte in equal bands, as a switch read as a voltage has
+	/// states tiling its range. The bands are arithmetic, not any car's.
+	fn ladder(names: &[&str]) -> Vec<Level> {
+		let n = names.len() as i32;
+		names
 			.iter()
-			.zip(names)
-			.map(|((lower, upper), name)| Level::range(*lower, *upper, name))
+			.enumerate()
+			.map(|(i, name)| {
+				let i = i as i32;
+				Level::range(i * 256 / n, (i + 1) * 256 / n - 1, *name)
+			})
 			.collect()
 	}
 
-	const LEVER: &str = "[stalk]\nread = \"70C:1105\"\nrocker = \"Rocker\"\nswitch = \"Switch\"\nnext = \"plus\"\nprevious = \"minus\"\nmeasure = \"limit\"\nswitch_off = \"off\"\ncruise = \"01:2001\"\ncruise_off = \"off\"\n";
+	const LEVER: &str = "[stalk]\nread = \"75A:4C21\"\nrocker = \"Rocker\"\nswitch = \"Switch\"\nnext = \"plus\"\nprevious = \"minus\"\nmeasure = \"limit\"\nswitch_off = \"off\"\ncruise = \"01:2001\"\ncruise_off = \"off\"\n";
 	const WATCH: &str = "[stopwatch]\nspeed = \"01:IDE00010\"\nkm_h_per_unit = 0.0\nmarks = [60, 100]\n";
+
+	/// What a lever test adds to the fixture of [`build_with_lever_in`].
+	#[derive(Default)]
+	struct Extra<'a> {
+		/// What the car's survey saw; `None` is a survey that claims nothing.
+		answered: Option<&'a poll::Answered>,
+		/// More rows, each on [`ENGINE`] or on [`STALK_UNIT`].
+		rows: Vec<(u16, Reading)>,
+	}
 
 	/// An engine with a speed, a speed with an offset, a cruise status and a quantity; a
 	/// steering column with a rocker, a switch and a voltage in one identifier. `input` is
 	/// the whole `[stalk]` / `[stopwatch]` part.
-	fn build_with_lever_in(dir: &Path, input: &str, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+	fn build_with_lever_in(dir: &Path, input: &str, extra: Extra<'_>, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+		let more = |unit: u16| extra.rows.iter().filter(move |(u, _)| *u == unit).map(|(_, r)| r.clone());
 		let extracted = extracted_with(
 			dir,
 			&[
@@ -3277,21 +3291,24 @@ mod tests {
 							vec![Level::point(0, "off"), Level::point(1, "standby"), Level::point(2, "passive")],
 						),
 						reading(0x2002, "Quantity", "IDE00021", 0, 16, false, true, 1.0, 0.0),
-					],
+					]
+					.into_iter()
+					.chain(more(ENGINE))
+					.collect(),
 				),
 				(
 					"EV_Stalk_001",
 					vec![
-						reading(0x1105, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
-						state_reading(0x1105, "Rocker", "", 64, 8, ladder(["shorted", "plus", "minus", "limit", "rest", "open"])),
-						state_reading(0x1105, "Switch", "", 72, 8, ladder(["shorted", "on", "cancel", "off", "lifted", "open"])),
+						reading(STALK_DID, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
+						state_reading(STALK_DID, "Rocker", "", 16, 8, ladder(&["rest", "plus", "minus", "limit", "open"])),
+						state_reading(STALK_DID, "Switch", "", 24, 8, ladder(&["open", "off", "on", "shorted"])),
 						// What the matching rule is for: a catch-all listed first, bands out of
 						// order, two that overlap, a second unbounded one.
 						state_reading(
-							0x1105,
+							STALK_DID,
 							"Messy",
 							"",
-							80,
+							32,
 							8,
 							vec![
 								Level::range(i32::MIN, i32::MAX, "any"),
@@ -3320,14 +3337,18 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test"), identity(STALK_UNIT, "PART2", "EV_Stalk")],
-			None,
+			extra.answered,
 			Language::En,
 		)
 	}
 
 	fn build_with_lever(input: &str) -> Result<Built, Error> {
+		build_with_lever_and(input, Extra::default())
+	}
+
+	fn build_with_lever_and(input: &str, extra: Extra<'_>) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
-		build_with_lever_in(here.path(), input, |_| {})
+		build_with_lever_in(here.path(), input, extra, |_| {})
 	}
 
 	#[test]
@@ -3339,20 +3360,20 @@ mod tests {
 		let rocker = &plan.channels[3];
 		assert_eq!(
 			(rocker.unit, rocker.did, rocker.bit_offset, rocker.bit_length),
-			(STALK_UNIT, 0x1105, 64, 8)
+			(STALK_UNIT, STALK_DID, 16, 8)
 		);
 		assert_eq!((rocker.factor, rocker.offset), (1.0, 0.0), "a state is looked up by its raw value");
-		assert_eq!(plan.channels[4].bit_offset, 72, "the switch, from the same answer");
+		assert_eq!(plan.channels[4].bit_offset, 24, "the switch, from the same answer");
 		assert_eq!((plan.channels[5].did, plan.channels[5].bit_length), (0x2001, 16));
 		assert_eq!(
 			(stalk.next, stalk.previous, stalk.measure, stalk.switch_off, stalk.cruise_off),
-			(1, 2, 3, 3, 0)
+			(1, 2, 3, 1, 0)
 		);
 		assert_eq!(
 			stalk.rocker_states[1],
 			State {
-				lower: 75,
-				upper: 110,
+				lower: 51,
+				upper: 101,
 				name: "plus".to_string()
 			},
 			"the interval, not its lower end"
@@ -3472,10 +3493,10 @@ mod tests {
 		for wanted in [
 			"use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};",
 			"use vag_dash_render::stalk::{StateIndex, States};",
-			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(3), cruise_off: StateIndex(0) } })",
+			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } })",
 			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS })",
-			"static STALK_ROCKER: [Band; 6] = [",
-			"\tBand { lower: 75, upper: 110 }, // \"plus\"",
+			"static STALK_ROCKER: [Band; 5] = [",
+			"\tBand { lower: 51, upper: 101 }, // \"plus\"",
 			"static MARKS: [u16; 2] = [60, 100];",
 		] {
 			assert!(rust.contains(wanted), "{wanted}\n{rust}");
@@ -3531,7 +3552,7 @@ mod tests {
 		assert!(why.contains("switch_off: \"Off\" is not a state of \"Switch\""), "{why}");
 		let why = refused("switch = \"Switch\"", "switch = \"Rocker\"");
 		assert!(why.contains("rocker and switch are both"), "{why}");
-		let why = refused("read = \"70C:1105\"", "read = \"70C:1106\"");
+		let why = refused("read = \"75A:4C21\"", "read = \"75A:4C22\"");
 		assert!(why.contains("declares no such identifier"), "{why}");
 		let why = refused("cruise = \"01:2001\"", "cruise = \"01:2002\"");
 		assert!(why.contains("cruise 01:2002: a quantity, not a list of states"), "{why}");
@@ -3582,9 +3603,9 @@ mod tests {
 
 	#[test]
 	fn a_stalk_read_that_names_a_field_rather_than_an_identifier_is_refused_when_parsed() {
-		let why = build_with_lever(&LEVER.replacen("70C:1105", "70C:1105@8", 1)).unwrap_err().to_string();
+		let why = build_with_lever(&LEVER.replacen("75A:4C21", "75A:4C21@8", 1)).unwrap_err().to_string();
 		assert!(why.contains("is not <unit>:<DID>"), "{why}");
-		let why = build_with_lever("[[stalk]]\nread = \"70C:1105\"\n").unwrap_err().to_string();
+		let why = build_with_lever("[[stalk]]\nread = \"75A:4C21\"\n").unwrap_err().to_string();
 		assert!(why.contains("one [stalk] table"), "{why}");
 	}
 
@@ -3593,7 +3614,7 @@ mod tests {
 	#[test]
 	fn a_cache_whose_states_predate_their_bands_is_refused_with_what_to_run() {
 		let here = tempfile::tempdir().unwrap();
-		build_with_lever_in(here.path(), LEVER, |_| {}).expect("builds on a cache that has the bands");
+		build_with_lever_in(here.path(), LEVER, Extra::default(), |_| {}).expect("builds on a cache that has the bands");
 		let here = tempfile::tempdir().unwrap();
 		let old_shape = |cache: &Path| {
 			let conn = rusqlite::Connection::open(cache).unwrap();
@@ -3606,7 +3627,9 @@ mod tests {
 				)
 				.unwrap();
 		};
-		let why = build_with_lever_in(here.path(), LEVER, old_shape).unwrap_err().to_string();
+		let why = build_with_lever_in(here.path(), LEVER, Extra::default(), old_shape)
+			.unwrap_err()
+			.to_string();
 		assert!(why.contains("run `vagcan setup` again"), "{why}");
 	}
 }
