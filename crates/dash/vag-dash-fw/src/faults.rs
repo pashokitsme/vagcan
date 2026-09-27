@@ -19,8 +19,9 @@
 //!   included (owner, 2026-09-27;
 //!   the waits are [`crate::exchange`]'s): a unit that has not answered by then is not
 //!   counted. One that asked for time (`78`) is still there, and the planner is told so
-//!   (`Answer::Busy`): its readers miss nothing, and it is not backed off. The board's
-//!   other exchanges keep their deadlines (`PENDING_DEADLINE`, 10 s, in the firmware).
+//!   (`Answer::Busy`): its readers miss one sample (`Miss::Busy`) and it is not declared
+//!   absent; it is backed off as a non-answer is. The board's other exchanges keep their
+//!   deadlines (`PENDING_DEADLINE`, 10 s, in the firmware).
 //! * **Not while a stopwatch runs** ([`Hold`]): the board's own is up (owner, 2026-09-27), or a
 //!   host holds the board's timing channel — a laptop's `vagcan measure` through the board
 //!   (review, 2026-09-27, flagged to the owner). No request of the count's starts, one waiting
@@ -37,10 +38,12 @@
 //!   made a walk longer than [`MAX_UNITS`], or no unit of the walk could be counted. Before the count
 //!   ends: nothing, a count half done being no count.
 //! * **Published** once it ends ([`Count::found`]): the badge ([`Found::badge`]) and `state`'s
-//!   `faults=` ([`Found`]'s `Display`). The count's walk and tally are dropped then.
+//!   `faults=` ([`State`]'s `Display`, ` faults=-` before). The count's walk and tally are
+//!   dropped then.
 
 use core::fmt;
 
+use crate::exchange::RESPONSE_TIMEOUT_MS;
 use vag_dash_render::Faults;
 use vag_uds_client::address;
 use vag_uds_client::faultcount::{Failed, FaultCount, MAX_UNITS, Outcome, Step, UnitTally, Why};
@@ -188,7 +191,14 @@ impl fmt::Display for Because {
 			Why::NoAnswer => f.write_str("no answer"),
 			// The count's own deadline cut the exchange after the unit's `78`.
 			Why::Busy { asked_for_time: true } => write!(f, "asked for time (78), no answer in {} s", DEADLINE_MS / 1000),
-			Why::Busy { asked_for_time: false } => f.write_str("still answering an earlier request, none to this one in time"),
+			// A late answer does not lengthen the first answer's wait: the window is the board's
+			// answer timeout.
+			Why::Busy { asked_for_time: false } => write!(
+				f,
+				"sent only a late answer to an earlier request, none to this one in {}.{} s",
+				RESPONSE_TIMEOUT_MS / 1000,
+				RESPONSE_TIMEOUT_MS % 1000 / 100
+			),
 			Why::BusError => f.write_str("bus error"),
 			Why::Refused(nrc) => write!(f, "refused, NRC {nrc:02X}"),
 			Why::Malformed => f.write_str("answer did not parse"),

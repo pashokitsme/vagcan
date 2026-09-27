@@ -40,9 +40,10 @@
 //!   ([`Screen::close_stopwatch`]).
 //! * **The fault count** (`todo/dash/20`): once per boot, ten seconds in and once a plan unit
 //!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
-//!   through the planner, in the background, never while the stopwatch is up, each exchange
-//!   ending 2 s from its start, the send included ([`vag_dash_fw::faults`]). The panel draws the count as a
-//!   triangle in the bottom-right corner, `?` when it failed; `state` says `faults=`.
+//!   through the planner, in the background, never while the board's stopwatch is up or a host
+//!   holds its timing channel, each exchange ending 2 s from its start, the send included
+//!   ([`vag_dash_fw::faults`]). The panel draws the count as a triangle in the bottom-right
+//!   corner, `?` when there is no count; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -1541,7 +1542,7 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 /// unit costs the bus per attempt, so it stays short. 500 ms rather than the
 /// 300 the round-robin used: a host's request may be a fault list of many
 /// frames from a unit behind the gateway.
-const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
+const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(vag_dash_fw::exchange::RESPONSE_TIMEOUT_MS);
 // The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
 // speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
 // exchange on the bus when the speed came due, and a silent unit's read of the panel's floor,

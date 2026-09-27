@@ -7,6 +7,10 @@
 
 #[path = "../../../../crates/dash/vag-dash-fw/src/faults.rs"]
 mod faults;
+// `faults` reads the answer timeout from its sibling, as in the firmware's library.
+#[path = "../../../../crates/dash/vag-dash-fw/src/exchange.rs"]
+#[allow(dead_code)]
+mod exchange;
 
 use std::collections::BTreeMap;
 
@@ -804,7 +808,7 @@ fn what_the_board_says_word_for_word() {
 				request: 0x7E1,
 				why: Why::Busy { asked_for_time: false },
 			},
-			"faults: 7E1 not counted — still answering an earlier request, none to this one in time",
+			"faults: 7E1 not counted — sent only a late answer to an earlier request, none to this one in 0.5 s",
 		),
 		(
 			Line::NotCounted {

@@ -28,6 +28,11 @@
 
 use vag_uds_client::schedule::{answers, expects_no_answer};
 
+/// The board's answer timeout, in milliseconds: how long the first answer PDU may take, all its
+/// frames together. `RESPONSE_TIMEOUT` in `dash.rs`, where its reasons are, is this; it is here
+/// so the fault count's log can say the window it had ([`crate::faults`]).
+pub const RESPONSE_TIMEOUT_MS: u64 = 500;
+
 /// ISO 14229-1: a negative response, and the NRC that asks for more time.
 const NEGATIVE: u8 = 0x7F;
 const RESPONSE_PENDING: u8 = 0x78;

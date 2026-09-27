@@ -11,7 +11,7 @@ use exchange::{Ended, Heard, Timeouts, Waits};
 
 /// The board's: `RESPONSE_TIMEOUT`, `SUPPRESSED_WAIT`, `PENDING_WAIT` (P2*), `PENDING_DEADLINE`.
 const BOARD: Timeouts = Timeouts {
-	answer_ms: 500,
+	answer_ms: exchange::RESPONSE_TIMEOUT_MS,
 	suppressed_ms: 150,
 	pending_wait_ms: 5_000,
 	pending_deadline_ms: 10_000,
@@ -27,6 +27,7 @@ fn its_own_answer_ends_the_wait() {
 	let mut waits = Waits::new(READ, BOARD, None);
 	waits.sent(3);
 	assert_eq!(waits.next_wait(3), Some(500));
+	assert_eq!(exchange::RESPONSE_TIMEOUT_MS, 500, "the board's answer timeout");
 	assert_eq!(waits.heard(&[0x62, 0xF1, 0x87, b'P'], 40), Heard::Answer);
 	assert_eq!(waits.heard(&[0x7F, 0x22, 0x31], 40), Heard::Answer, "a refusal is its answer too");
 	assert_eq!(waits.strays(), 0);
