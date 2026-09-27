@@ -20,7 +20,10 @@ and 5, one command path for every input, and BOOT no longer an input. Built on
 
 **2026-09-27, in PR #12:** the lever closes the stopwatch — cruise taken, or its data missing
 over 3 s (owner's decision on the review's open question). Built on `fix/pr12-gate-close`; see
-"The lever closes the stopwatch". Not on the board yet.
+"The lever closes the stopwatch". Not on the board yet. Same branch, review fixes to the run's
+write: it happens at the standstill **before** `GO` (the stopwatch does not arm while it waits);
+a board whose flash holds nothing writes the defaults and the run; `run_pending` stays set
+until the run is in flash; the no-BLE image's boot note no longer offers a `save` it has not.
 
 ## What the owner asked (2026-09-26)
 
@@ -155,10 +158,14 @@ two samples still start over.
 
 - Speed 0 (the channel's zero) for 1 s arms it; the first sample above 0 starts the run;
   back at 0 before the highest mark aborts it.
-- **A silent speed ends it** (`SILENCE_MS` = 500): no answer for over 500 ms aborts a run in
+- **A silent speed ends it** (`SILENCE_MS` = 1300): no answer for over 1.3 s aborts a run in
   progress and disarms an armed standstill, which then has to be seen again for a whole second.
   Nothing is interpolated across the gap. Checked on every answer and on every panel frame, so
   a unit that stops answering altogether still ends the run. A hold not yet armed is left alone.
+  1.3 s outlasts two answer timeouts between two speed answers (the firmware asserts it), not a
+  run of `7F xx 78` (response pending), which may hold the bus for up to 10 s
+  (`PENDING_DEADLINE`). Accepted (PR #12 review): a unit that holds the bus that long during a
+  run is a bus in trouble, and the run aborts.
 - The clock's origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`,
   ported): the midpoint of a constant-jerk fit through `√v` over the first 0.4 s of movement and
   a line through the first two moving samples. It needs three moving samples in that 0.4 s: the
@@ -175,15 +182,22 @@ two samples still start over.
 - **Only a finished run is kept, and never written at speed** (owner's decision, 2026-09-26: no
   flash write at speed — a write erases a sector with the executor stalled, the glass frozen,
   answers and BLE events missed). The run finishes at its highest mark and is kept in RAM
-  (`run_pending`). It is written at the next standstill the stopwatch sees — phase armed, a
-  standstill held 1 s (`store_run`) — or by an explicit `save`. With no other unsaved change
-  the whole configuration is written; with other unsaved changes only the run is added to the
-  configuration flash already holds, and those changes stay unsaved for the owner to keep or
-  not. One try: a run that could not be written waits for `save`. `load`, `defaults` and
-  `erase` drop a pending run. **The write happens only when the stopwatch reaches armed, and
-  the stopwatch is fed only while its mode is on.** A driver who leaves the stopwatch (LIMIT or
-  a stopwatch button) before stopping keeps the run in RAM only: it is lost at ignition off unless
-  `save` is sent, or the stopwatch is turned on again and arms first.
+  (`run_pending`). It is written at the next standstill the stopwatch sees, **before `GO`**: while
+  a run waits for its write the stopwatch does not arm (the page stays `STOP` or `DONE`); once
+  the car has stood the arming hold (1 s) and the zero answer is fresh, the board writes
+  (`store_run`), and the next zero answer arms at once. Before (PR #12 review) the write came
+  0.5 s past `GO`, just as a driver who saw it set off, while the speed still read 0 — and the
+  erase stalled the launch fit's first answers. Or by an explicit `save`. With no other unsaved
+  change the whole configuration is written; with other unsaved changes only the run is added to
+  the configuration flash already holds — or, **flash holding none** (a board never saved, or
+  erased), to the defaults the next boot would run on — and those changes stay unsaved for the
+  owner to keep or not. One try: a run that could not be written stays `run_pending` until
+  `save`, and the stopwatch arms after the try either way. `load` and `defaults` drop a pending
+  run; `erase` keeps it pending, for the defaults. **The write happens only at a standstill the
+  stopwatch sees, and the stopwatch is fed only while its mode is on.** A driver who leaves the
+  stopwatch (LIMIT, a stopwatch button, or the lever's close) before stopping keeps the run in RAM
+  only: it is lost at ignition off unless `save` is sent, or the stopwatch is turned on again and
+  the car stands.
 - An aborted run is shown until the page is left, never stored; a finished run with no times
   (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
   pages no longer fit the plan.
@@ -394,8 +408,15 @@ plan the pin table adds ~300 B of statics.
   once; the page fits the panel in both languages.
 - Rates: the three lever rates, the cruise status, the speed while up, page cells while timing.
 - Settings: a schema-1 byte image loads with every field intact.
-- Not host-tested: the firmware's `keep_run` / `store_run` (the run written at a standstill) —
-  the firmware does not build for the host. Checked on the board.
+- The run's write (`saving.rs`, host test `settings_saving.rs`): the whole configuration, or
+  the run added to flash's, or to the defaults when flash holds none; a newer image's record
+  never written over; pending until in flash, one try, a new run a new try; `save`, `load`,
+  `defaults` and `erase`. The stopwatch (`stopwatch.rs`, mutation-checked): a finished run holds
+  the arming until its write, and arms at once after it; a run not yet taken holds it whatever
+  the board says; a kept run waiting holds it when the page comes back; with none waiting it
+  arms at 1 s as ever; the write's standstill: fresh zero, the hold, never armed, never moving.
+- Not host-tested: the firmware's `keep_run` / `store_run` / `write_run` themselves (the run
+  written at a standstill) — the firmware does not build for the host. Checked on the board.
 
 ## On the car
 
@@ -411,7 +432,8 @@ plan the pin table adds ~300 B of statics.
    stopwatch or another client`). **Never with a second adapter (CANable) on the port while the
    board polls** — two testers on one bus breaks the one-owner rule.
 5. After the run, stop with the stopwatch up: once the car has stood 1 s the board notes
-   `stopwatch: the run is saved`, and the run's times survive a power cycle.
+   `stopwatch: the run is saved`, then `stopwatch: armed` (`GO`) — never `GO` first — and the
+   run's times survive a power cycle.
 6. **Pin buttons, on the bench first.** A button from GPIO3 (4, 5) to GND, `[[button]]` with
    its `action`, build, flash: each press notes `GPIO3: page N of M`; a hold is one press; with
    the stopwatch up `next` notes that it does nothing; BOOT does nothing at all.

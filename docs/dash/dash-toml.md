@@ -571,8 +571,10 @@ build prints it after `dash plan for VIN <VIN>:`.
   keep their rate.
 - A run with no times (the speed read too slowly for the launch fit) is not kept.
 - A finished run is kept in the board's settings. It is written to flash when the car next
-  stands still for 1.5 s with the stopwatch on, or on `save` in `dashcfg`. Until then `get`
-  says a run is in RAM only.
+  stands still for 1 s with the stopwatch on, before `GO`: the stopwatch arms right after the
+  write. Or on `save` in `dashcfg`. Until then `get` says a run is in RAM only.
+- On a board whose flash holds no settings (never saved, or erased), the run is written with the
+  default settings. Changes you have not saved stay unsaved.
 - Leave the stopwatch before the car stops and the run is lost at power-off, unless you `save`.
 - A run that ends short of its highest mark shows `ABORT` and is not kept.
 - With a `[stalk]`, cruise switched on closes the stopwatch: two readings in a row with `switch`
