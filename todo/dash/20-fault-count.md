@@ -198,7 +198,9 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   (`RESPONSE_TIMEOUT`, 500 ms) and each after a `78`, to what is left (`faults::within`), with
   no backstop past it. Every other exchange passes `None` and keeps 500 ms and
   `PENDING_DEADLINE` (10 s). A unit past it is not counted: `no answer in 2 s` when its exchange
-  held the bus the whole 2 s, `no answer` when it was silent from the start.
+  held the bus the whole 2 s, `no answer` when it was silent from the start. Either way the
+  planner backs the unit off, as it does any unit past its deadline: were it one of the plan's
+  units, its cells show dashes and its part number is read again before they come back.
 - **Paused while the stopwatch is up** (answer 3; `Screen::stopwatch()`, the mode, whatever holds
   the glass): no request of the count's is queued, one waiting in the planner is taken back
   (`Planner::cancel`), and the walk goes on where it stopped when the stopwatch closes. One
