@@ -87,6 +87,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | A recording's cell off the plan's scaling drops the column in the replay; no guessing at old bare hex (2026-09-26) | `dash/04` |
 | The alarm highlight blinks while the value is out, steady in the hold, the cell only (2026-09-26) | `dash/04` |
 | Cruise lever with cruise off: RES/+ next page, SET/− previous, LIMIT the stopwatch; lever and stopwatch page as one feature (2026-09-26) | `dash/19` |
+| Input backends: `[[button]]`s on GPIO 3–5 (one action each, no long press), the lever and `dashsim` in any mix, one command path; BOOT and RESET are technical, not inputs (owner, 2026-09-27) | `dash/19` |
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 
 ## Next, in order
@@ -144,7 +145,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
-| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, built on `feat/stalk-stopwatch`, in review for a PR; needs the car |
+| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, built on `feat/stalk-stopwatch`, in review for a PR; input backends and `[[button]]` pins added 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on

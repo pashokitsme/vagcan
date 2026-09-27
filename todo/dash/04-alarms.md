@@ -102,6 +102,9 @@ the long press no longer has a job:
 | short press (BOOT, `dashsim` `BTN S`) | next page | silence this episode |
 | held 3 s | nothing | nothing |
 
+Superseded 2026-09-27 (`dash/19`, "Input backends"): BOOT is not an input. Any command — a
+`[[button]]` on a pin, the cruise lever, `dashsim`'s `BTN S` — silences an alarm on the glass.
+
 `dashcfg`'s `set page` is **not a press**: it moves the page cursor and leaves the alarm
 up; when the alarm hands back, it hands back to the page that was set. On the adapter
 screen (`--slcan`) no alarm runs and a short press turns the page as always.

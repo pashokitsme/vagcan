@@ -1,7 +1,7 @@
 # `dash.toml` — reference
 
-`dash.toml` says what the dash board reads and shows: channels, pages, alarms, the cruise lever
-and the stopwatch. One file per car, written by hand:
+`dash.toml` says what the dash board reads and shows: channels, pages, alarms, the cruise lever,
+the stopwatch and buttons on the board's pins. One file per car, written by hand:
 
 ```
 ~/.vagcan/dash/<VIN>/dash.toml
@@ -103,6 +103,14 @@ cruise_off = "main switch off"
 speed = "02:380B"                  # the [[channel]] above, with its hz
 km_h_per_unit = 0.0                # 0 until measured: the page shows NO FACTOR
 marks = [60, 100]
+
+[[button]]                         # a button from GPIO3 to GND
+pin = 3
+action = "next"
+
+[[button]]
+pin = 5
+action = "stopwatch"
 ```
 
 ## Reference
@@ -116,7 +124,8 @@ marks = [60, 100]
 is a threshold rule.
 
 Check the build's output after every edit. It prints one line per channel (with its rate), per
-alarm, for the lever and for the stopwatch. Anything missing from it was not taken from the file.
+alarm, for the lever, for the stopwatch and per button. Anything missing from it was not taken
+from the file.
 
 - Strings are trimmed at both ends, except `survey`.
 - Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
@@ -283,12 +292,40 @@ marks = [60, 100]
   of `speed` at the same moment. It is 1 when `speed` already reads true km/h.
 - **A wrong factor makes every time wrong, silently.**
 - `marks` are whole numbers: `60.0` is refused.
-- The page opens only with `[stalk]`'s `measure`. Without `[stalk]` the build succeeds, and its
-  output says nothing can open the page.
+- The page opens with `[stalk]`'s `measure` or a `[[button]]` with `action = "stopwatch"`. With
+  neither, the build succeeds and its output says nothing opens the page.
 
 ### `[[button]]`
 
-`[[button]]` — buttons on GPIO pins: coming in this PR.
+A button on one of the board's free pins. 0 to 3 of them, one per pin. Each does one thing.
+
+| key | type | required | default | what it does |
+|---|---|---|---|---|
+| `pin` | integer: 3, 4 or 5 | yes | — | The GPIO the button is on. |
+| `action` | `"next"`, `"previous"` or `"stopwatch"` | yes | — | `next` / `previous`: the next or previous page, wrapping. `stopwatch`: the stopwatch page on and off. The lever's + / − / LIMIT. |
+
+- **Wiring:** a push button from the pin to GND. No resistor: the board turns on the pin's
+  pull-up.
+- A press counts when the button is let go. Held 3 s, it counts then. Holding does not repeat.
+- Two buttons may have the same `action`.
+- A `stopwatch` button with no `[stopwatch]` builds; the output says a press of it does nothing.
+- The board's own BOOT and RESET buttons do nothing in the `dash` image. They are for flashing
+  and resetting.
+- A pin no `[[button]]` names is left alone.
+
+The pins, with this board's wiring:
+
+| GPIO | used by | a button? |
+|---|---|---|
+| 3, 4, 5 | nothing | yes |
+| 0, 7, 10, 20, 21 | the OLED | no |
+| 1, 6 | the CAN transceiver | no |
+| 8 | the LED; a strapping pin | no |
+| 9 | the BOOT button; a strapping pin | no |
+| 2 | a strapping pin | no |
+| 11 | not on the board's pads | no |
+| 12–17 | the flash | no |
+| 18, 19 | USB | no |
 
 ## Naming a channel
 
@@ -334,6 +371,7 @@ Two spellings, both `<unit>:<row>`:
 | `decimals` | 0 to 3 |
 | `label` | ten characters on a page of four cells |
 | stopwatch `marks` | 1 to 3, whole km/h from 1 to 65535 |
+| `[[button]]` | 0 to 3, on GPIO 3, 4 and 5, one per pin |
 | alarm numbers, `km_h_per_unit` | within a 32-bit float |
 | reads, all channels together | 100 requests a second |
 
@@ -461,6 +499,18 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `[stopwatch] speed X: its scaling's factor F is not above zero` | Pick another speed row. |
 | `[stopwatch] speed X is read every P ms (hz = H)` | Give its `[[channel]]` `hz = 50`. |
 
+**`[[button]]`**
+
+| refusal | what to do |
+|---|---|
+| `button must be written as [[button]] tables, one per button` | Two pairs of brackets. |
+| `N [[button]] tables, and the board has 3 pins free for one: 3, 4 and 5` | 3 buttons at most. |
+| `button #n needs pin, a whole number: 3, 4 or 5` | Add `pin`, unquoted: `pin = 3`, not `"3"` or `3.0`. |
+| `button #n: pin P is the OLED's CS — a button goes on pin 3, 4 or 5` | Move it to 3, 4 or 5. The message says what holds the pin, or that the chip has no such GPIO. |
+| `button #n: pin P is button #m's already — one button per pin` | One button per pin. |
+| `button #n needs action: "next", "previous" or "stopwatch"` | Add `action`, quoted. |
+| `button #n: action "X" is not "next", "previous" or "stopwatch"` | One of the three, lowercase. |
+
 ## What the board does with it
 
 **Rates**
@@ -473,6 +523,15 @@ build prints it after `dash plan for VIN <VIN>:`.
   on.
 - At start-up the board checks each unit's part number (`F187`) against the plan. A unit that
   answers another number is not read: after replacing a unit, survey the car again and rebuild.
+
+**Paging**
+
+- Pages turn from `[[button]]`s, the lever (`[stalk]`) and `dashsim`. The board's BOOT and RESET
+  buttons do nothing.
+- With no `[stalk]` and no `[[button]]`, the board shows its active page. Only `dashsim` or
+  `dashcfg`'s `set page` changes it.
+- With the stopwatch on, `next` and `previous` do nothing, from any of them. Only `stopwatch`
+  leaves it.
 
 **The lever**
 
@@ -507,4 +566,5 @@ build prints it after `dash plan for VIN <VIN>:`.
   while the value is out.
 - After the value clears, the page stays 2.5 s with the cell steadily inverted. Then the screen
   goes back to where it was.
-- A press (the board's button or the lever) silences that episode until the value clears.
+- A press — a `[[button]]`, the lever or `dashsim` — silences that episode until the value
+  clears. With none of them, only the value clearing ends it.
