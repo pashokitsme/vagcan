@@ -256,21 +256,43 @@ const SUPPRESS_POSITIVE_RESPONSE: u8 = 0x80;
 /// request's.
 const NEGATIVE_RESPONSE: u8 = 0x7F;
 const POSITIVE_OFFSET: u8 = 0x40;
+/// The services of the read-only allowlist whose answers echo something of the request.
+const READ_DATA_BY_IDENTIFIER: u8 = 0x22;
+const SESSION_CONTROL: u8 = 0x10;
+const READ_DTC_INFORMATION: u8 = 0x19;
+const TESTER_PRESENT: u8 = 0x3E;
 
-/// Whether `response` answers `request` at all: a positive response to its service
-/// (service id + `0x40`), or a negative one naming its service (`7F sid …`). Anything else on
-/// the unit's answer id is a late answer to an earlier request — one its consumer stopped
-/// waiting for — and the shell drops it and waits on rather than hand it to this request's
-/// consumer (review of `todo/dash/20`, 2026-09-27). Whether it answers well is the consumer's
-/// to judge.
+/// Whether `response` answers `request` — the one rule for every shell, the board's and the
+/// laptop's (review of `todo/dash/20`, 2026-09-27: they had one each).
+///
+/// A link can hand over an answer that arrived after its own request stopped waiting for it;
+/// taken for the next request it would put one identifier's bytes under another's name, or a
+/// fault count's codes under a host's question. So, by ISO 14229-1:
+///
+/// - a negative response is `7F <the request's service> <NRC>` — the NRC is not optional;
+/// - a positive one's service id is the request's plus `0x40`, and
+///   - a `22` answer starts with the first identifier asked — or carries no record at all,
+///     which answers no other identifier and is the planner's to judge (an empty positive
+///     answer teaches it a unit is single-only);
+///   - `10`, `19` and `3E` echo their sub-function, without the suppress-positive-response bit.
+///
+/// Anything else is a late answer to an earlier request: the shell drops it and waits on. Only
+/// an identical request can still take one — nothing in the answer tells the two apart.
 pub fn answers(request: &[u8], response: &[u8]) -> bool {
 	let Some(&sid) = request.first() else {
 		return false;
 	};
 	match response {
-		[NEGATIVE_RESPONSE, service, ..] => *service == sid,
-		[first, ..] => *first == sid.wrapping_add(POSITIVE_OFFSET),
-		[] => false,
+		[NEGATIVE_RESPONSE, echoed, _, ..] => *echoed == sid,
+		[NEGATIVE_RESPONSE, ..] => false,
+		[positive, rest @ ..] if *positive == sid.wrapping_add(POSITIVE_OFFSET) => match sid {
+			READ_DATA_BY_IDENTIFIER => rest.is_empty() || request.get(1..3).is_some_and(|did| rest.get(..2) == Some(did)),
+			SESSION_CONTROL | READ_DTC_INFORMATION | TESTER_PRESENT => request
+				.get(1)
+				.is_none_or(|sub| rest.first() == Some(&(sub & !SUPPRESS_POSITIVE_RESPONSE))),
+			_ => true,
+		},
+		_ => false,
 	}
 }
 

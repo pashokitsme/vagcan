@@ -210,19 +210,34 @@ fn a_read_cut_while_its_unit_asked_for_time_is_refused_with_78() {
 fn a_response_answers_its_own_request_and_no_other() {
 	let read: &[u8] = &[0x22, 0xF1, 0x87];
 	assert!(answers(read, &[0x62, 0xF1, 0x87, b'P']));
+	assert!(answers(&[0x22, 0xF1, 0x90, 0xF1, 0x87], &[0x62, 0xF1, 0x90, b'V', 0xF1, 0x87, b'P']));
+	assert!(!answers(read, &[0x62, 0xF1, 0x90, b'V']), "another identifier's late answer");
+	// Review, 2026-09-27: the gateway's late list is not the part number asked of it next.
+	assert!(!answers(read, &[0x62, 0x2A, 0x26, 0xFF, 0x13]), "the gateway's late list");
+	// A positive answer that carries no record at all can be no late answer to another
+	// identifier; the planner judges it (an empty positive teaches it single-only).
+	assert!(answers(read, &[0x62]));
+	// Negative: `7F <this service> <nrc>`, pending included; the NRC is not optional.
 	assert!(answers(read, &[0x7F, 0x22, 0x31]));
 	assert!(answers(read, &[0x7F, 0x22, 0x78]), "its own pending");
-	assert!(answers(read, &[0x62]), "empty positive: the planner's to judge");
+	assert!(!answers(read, &[0x7F, 0x22]), "a refusal carries its NRC");
+	assert!(!answers(read, &[0x7F]), "a refusal of nothing");
 	assert!(!answers(read, &[0x59, 0x02, 0xFF, 0, 1, 2, 0x08]), "the count's late answer");
 	assert!(!answers(read, &[0x7F, 0x19, 0x78]), "the count's late pending");
 	assert!(!answers(read, &[0x7F, 0x19, 0x21]));
-	assert!(!answers(read, &[0x7F]), "a refusal of nothing");
 	assert!(!answers(read, &[]));
-	// Every service of the allowlist, and a suppressed one's refusal.
+	// Sub-functions are echoed, without the suppress-positive-response bit: the count's late
+	// `59 02 …` is no answer to a host's `19 04` or `19 06` (review, 2026-09-27).
 	assert!(answers(&[0x19, 0x02, 0x08], &[0x59, 0x02, 0xFF]));
+	assert!(!answers(&[0x19, 0x04, 0x01, 0x02, 0x03, 0xFF], &[0x59, 0x02, 0xFF, 0, 1, 2, 0x08]));
+	assert!(!answers(&[0x19, 0x06, 0x01, 0x02, 0x03, 0xFF], &[0x59, 0x02, 0xFF, 0, 1, 2, 0x08]));
+	assert!(!answers(&[0x19, 0x02, 0xFF], &[0x59, 0x0A]));
 	assert!(answers(&[0x10, 0x03], &[0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]));
+	assert!(!answers(&[0x10, 0x03], &[0x50, 0x01]));
+	assert!(answers(&[0x3E, 0x00], &[0x7E, 0x00]));
+	assert!(answers(&[0x3E, 0x80], &[0x7E, 0x00]), "a positive a unit sent anyway is still its own");
+	assert!(!answers(&[0x3E, 0x00], &[0x7E]));
 	assert!(answers(&[0x3E, 0x80], &[0x7F, 0x3E, 0x12]));
-	assert!(answers(&[0x3E, 0x80], &[0x7E, 0x80]), "a positive a unit sent anyway is still its own");
 	assert!(!answers(&[], &[0x40]), "no request, nothing answers it");
 }
 

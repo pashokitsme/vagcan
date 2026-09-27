@@ -56,6 +56,20 @@ fn a_late_answer_to_an_earlier_request_is_dropped_and_the_wait_goes_on_within_it
 }
 
 #[test]
+fn an_answer_for_another_identifier_or_sub_function_is_a_stray_too() {
+	// One rule with the laptop (`schedule::answers`): a `22` answer echoes the identifier asked,
+	// a `19` answer its sub-function.
+	let mut waits = Waits::new(&[0x22, 0xF1, 0x87], BOARD, None);
+	waits.sent(0);
+	assert_eq!(waits.heard(&[0x62, 0x2A, 0x26, 0xFF, 0x13], 10), Heard::Stray, "the gateway's late list");
+	assert_eq!(waits.heard(&[0x62, 0xF1, 0x87, b'P'], 20), Heard::Answer);
+	let mut waits = Waits::new(&[0x19, 0x04, 0x01, 0x02, 0x03, 0xFF], BOARD, None);
+	waits.sent(0);
+	assert_eq!(waits.heard(&[0x59, 0x02, 0xFF, 0, 1, 2, 0x08], 10), Heard::Stray, "the count's late answer");
+	assert_eq!(waits.heard(&[0x59, 0x04, 0x01, 0x02, 0x03, 0x08], 20), Heard::Answer);
+}
+
+#[test]
 fn a_request_that_suppressed_its_answer_waits_for_its_own_refusal_only() {
 	let mut waits = Waits::new(&[0x3E, 0x80], BOARD, None);
 	waits.sent(0);

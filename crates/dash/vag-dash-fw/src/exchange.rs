@@ -11,12 +11,13 @@
 //! * **`7F sid 78`** (response pending) asks for more time: each one waits
 //!   [`Timeouts::pending_wait_ms`] more, all of them together no longer than
 //!   [`Timeouts::pending_deadline_ms`] from the first.
-//! * **A PDU that answers another request** — a positive response to another service, or a
-//!   refusal naming another ([`vag_uds_client::schedule::answers`]) — is a late answer to an
+//! * **A PDU that answers another request** — another service's, another identifier's,
+//!   another sub-function's, or a refusal naming another service
+//!   ([`vag_uds_client::schedule::answers`], the laptop's rule too) — is a late answer to an
 //!   earlier exchange its consumer stopped waiting for, arriving inside this one: dropped, and
 //!   the wait goes on within the time it had (review of `todo/dash/20`, 2026-09-27). Taken as
 //!   this exchange's answer, the fault count's late `59 02 …` became the next part-number read's
-//!   answer, a part number that did not parse. Every exchange, every consumer.
+//!   answer, a part number that did not parse. Only an identical request can still take one.
 //! * **An exchange with a deadline of its own** — the fault count's, 2 s from the start, `78`s
 //!   included — has every wait cut to it. If the unit had asked for time and the deadline cut
 //!   the wait, it ends as [`Ended::StillPending`]: the unit is there and busy, which the planner
@@ -64,9 +65,9 @@ pub enum Ended {
 /// One exchange's waits.
 #[derive(Debug, Clone)]
 pub struct Waits {
-	/// The request's service and sub-function: what [`answers`] and [`expects_no_answer`] read
-	/// of it.
-	request: [u8; 2],
+	/// The request's first bytes — its service, and its sub-function or first identifier: what
+	/// [`answers`] and [`expects_no_answer`] read of it.
+	request: [u8; 3],
 	request_len: usize,
 	timeouts: Timeouts,
 	limit_ms: Option<u64>,
@@ -82,8 +83,8 @@ pub struct Waits {
 impl Waits {
 	/// The waits of `request`, with the exchange's own deadline if it has one.
 	pub fn new(request: &[u8], timeouts: Timeouts, limit_ms: Option<u64>) -> Self {
-		let mut head = [0u8; 2];
-		let request_len = request.len().min(2);
+		let mut head = [0u8; 3];
+		let request_len = request.len().min(3);
 		head[..request_len].copy_from_slice(&request[..request_len]);
 		let mut waits = Waits {
 			request: head,
