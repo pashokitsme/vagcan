@@ -107,19 +107,17 @@ marks = [60, 100]
 
 ## Reference
 
-**Unknown keys are ignored without a word.** The build never checks key names. A typo in a key
-(`hzz = 50`) or a section (`[[alarms]]`, `[stopwach]`) is dropped silently: a misspelled
-`[[alarm]]` builds a plan with no alarms.
+**Every key is checked.** A key or section the build does not know is refused, with its line,
+a near key when there is one, and the keys that table takes. So is an optional key of the wrong
+type: `decimals = "2"` is refused, never read as absent.
 
-**So is an optional key of the wrong type.** `label = 5`, `decimals = 1.5`, `decimals = "2"`,
-`language = 1` and `survey = 5` act as if absent. An `[[alarm]]` whose `kind` is not a string
-is a threshold rule.
-
-Check the build's output after every edit. It prints one line per channel (with its rate), per
-alarm, for the lever and for the stopwatch. Anything missing from it was not taken from the file.
-
+- Top-level keys go above the first section. TOML gives a key to the section header above it.
+- A key of the other `kind` is refused: `min` on a values page, `trip` on a drift rule.
 - Strings are trimmed at both ends, except `survey`.
 - Keywords are lowercase: `kind = "Values"` and `direction = "Above"` are refused.
+
+Check the build's output after every edit. It prints one line per channel (with its rate), per
+alarm, for the lever and for the stopwatch.
 
 ### Top level
 
@@ -182,8 +180,11 @@ Pages come in the file's order. 1 to 8 of them. `kind` picks the page.
 | `max` | number | yes | — | Top of the scale. Above `min`. |
 
 - The scale is fixed, never autoscaled.
+- The board holds `min` and `max` as 32-bit floats: each must fit one, and `min` must stay below
+  `max` in it.
 - One chart per channel.
 - A chart has no title, so no alarm can raise it.
+- A key of the other kind (`min` on a values page, `title` on a chart) is refused.
 
 ### `[[alarm]]`
 
@@ -216,7 +217,7 @@ priority, first highest. Two kinds.
 - Any watched channel past `trip` (or `percent`) fires the rule. All of them must be back past
   `release` (or under `release_percent`) to clear it.
 - Every number must fit a 32-bit float. They are compared as the board holds them.
-- A key the rule's kind does not use (`trip` on a drift rule) is ignored.
+- A key of the other kind (`trip` on a drift rule, `percent` on a threshold rule) is refused.
 - Each rule's channels are read at their `hz` on every page, not only on theirs.
 
 ### `[stalk]`
@@ -334,7 +335,7 @@ Two spellings, both `<unit>:<row>`:
 | `decimals` | 0 to 3 |
 | `label` | ten characters on a page of four cells |
 | stopwatch `marks` | 1 to 3, whole km/h from 1 to 65535 |
-| alarm numbers, `km_h_per_unit` | within a 32-bit float |
+| chart `min`/`max`, alarm numbers, `km_h_per_unit` | within a 32-bit float |
 | reads, all channels together | 100 requests a second |
 
 ## What the build refuses
@@ -347,6 +348,12 @@ build prints it after `dash plan for VIN <VIN>:`.
 | refusal | what to do |
 |---|---|
 | `dash.toml: …` with a line and column | A TOML syntax error. Fix it there. |
+| `line N: [[channel]] 2: unknown key "hzz" — did you mean "hz"? [[channel]] takes …` | Fix the spelling. The message lists the keys that table takes. |
+| `line N: unknown section [[alarms]] — did you mean [[alarm]]? The top level takes …` | Fix the section's name. |
+| `line N: [[page]] 1: "min" is a key of a chart page (kind = "chart"), and this is a values page` | Remove the key, or change `kind`. The same for an `[[alarm]]`'s two kinds. |
+| `line N: [stopwatch]: "survey" is a top-level key: write it above the first section` | Move it above the first section. |
+| `line N: [[page]] 1: "hz" is a key of [[channel]]` | Move it under that section. |
+| `line N: [[channel]] 1: label must be a string, not an integer` | Write the type this reference gives. Any optional key, any type. |
 | `no build input at <path>` | Write `~/.vagcan/dash/<VIN>/dash.toml`, or pass `--input`. |
 | `vin is missing or not a string` | Add `vin = "<VIN>"`. |
 | `<path> is for VIN X but the build asked for Y` | Build for X, or correct `vin`. |
@@ -374,13 +381,14 @@ build prints it after `dash plan for VIN <VIN>:`.
 |---|---|
 | `decimals N is not 0..=3` | 0 to 3. |
 | `hz must be a number above 0 and at most 100` | Fix `hz`. |
+| `hz V is too small for the board, which would hold it as 0` | A larger `hz`. |
 | `setpoint is not a string` | Quote it. |
 | `unit XXX is not in the survey` | Survey the car with that unit answering, or fix the unit. |
 | `unit XXX: the survey has no part number (F187) for it` | Survey again. The board checks the unit by that number. |
 | `X: the car's variant does not declare this channel and nothing has proven it` | This car's unit has no such row. Pick another from `vagcan watch`. |
 | `X: N rows answer to it — name one by identifier and bit offset: DID@bit name, …` | Write one of the listed rows as `<unit>:<DID>@<bit>`. |
 | `X: scaling is an enumeration, not linear` (or `a single proven point with no slope`) | The board shows numbers only. Pick a numeric row. |
-| `X: its scaling is not a finite number` | Pick another row. |
+| `X: its scaling is not a finite number the board's 32-bit float holds` | Pick another row. Also for a factor the board would hold as 0. |
 | `X: the survey asked the unit for this identifier and it did not answer` | This car does not answer it. Pick another row. |
 | `X is listed twice under [[channel]]` | Delete one. |
 | `X and Y are the same row …; keep one [[channel]]` | Delete one. |
@@ -399,7 +407,10 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `page #n has no cells` / `a cell is not a string` | Add `cells`, quoted. |
 | `page #n: a values page holds 1 to 4 cells, not N` | 1 to 4 cells. |
 | `page #n needs min` / `needs max` | Add both, as numbers. |
-| `page #n: min A is not below max B` | Put `min` below `max`. |
+| `line N: [[page]] n: min must be a number, not a string` (or `max`) | Write it unquoted. |
+| `line N: [[page]] n: min must be a finite number the board's 32-bit float holds, within ±3.4028235e38` (or `max`) | A finite number within that range. |
+| `page #n: min A is not below max B` | Put `min` below `max`. They are compared as 32-bit floats, so two ends a hair apart are one value. |
+| `page #n: min A and max B are further apart than the board's 32-bit float holds` | Narrow the scale. |
 | `page #n: X already has a chart page; one range per channel` | Keep one chart of it. |
 | `page #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
 
@@ -418,6 +429,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `alarm #n: page "T" does not show X` | Put X on that page. |
 | `alarm #n: release A is not above trip B` / `not below trip B` | Move `release` to the far side of `trip`. |
 | `alarm #n: percent 0 is not above zero` (or `release_percent`) | Above 0. |
+| `alarm #n: release_percent V is too small for the board, which would hold it as 0` (or `percent`) | A larger share. |
 | `alarm #n: release_percent A is not under percent B` | Lower `release_percent`. |
 | `alarm #n needs hold_ms, whole milliseconds the drift has to hold` | An integer, `1000` not `1000.0`. |
 | `alarm #n: min_setpoint V is below zero` | 0 or more. |
