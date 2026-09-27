@@ -2612,6 +2612,9 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 			unit.request,
 			miss_text(*why)
 		),
+		(PartCheck::RetryLater, Err(Miss::Refused(nrc))) if previous != Check::Absent => {
+			note!("can: {:03X} is busy (NRC {nrc:02X}) — will ask its part number again", unit.request);
+		}
 		(PartCheck::Absent | PartCheck::RetryLater, Err(why)) if previous != Check::Absent => {
 			note!("can: {:03X} did not answer F187 ({}) — will keep asking", unit.request, miss_text(*why));
 		}
