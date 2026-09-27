@@ -50,11 +50,14 @@ pub const START_FIT_MS: u64 = 400;
 /// fast the speed has to be read for a run to be timed at all.
 pub const MIN_FIT_SAMPLES: usize = 3;
 
-/// The slowest the speed may be read and still time a run: the launch fit wants
-/// [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], so a period under
-/// `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`. The plan build refuses one at or above it; the
-/// board rounds a period to whole milliseconds, so it may read at this one exactly.
-pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 - 1);
+/// The slowest the speed may be read and still time a run with one answer late: the launch fit
+/// wants [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], and an answer late or lost
+/// costs a period, so `MIN_FIT_SAMPLES` periods have to fit in the window — 133 ms, 7.5 Hz. The
+/// plan build refuses a speed the board reads less often (`vag-cli-core`'s `resolve_stopwatch`,
+/// on the board's whole-millisecond period), and the firmware's silence assert counts this one
+/// ([`SILENCE_MS`]). It was `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`, 200 ms, the bound with no
+/// answer late, while the build refused anything over 133 (PR #12 review).
+pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / MIN_FIT_SAMPLES as u64;
 
 /// The longest silence of the speed a run or an armed standstill survives. The laptop
 /// cancels a run after `vag-cli-measure`'s `SILENT_CYCLES` unanswered cycles; the board
@@ -69,7 +72,7 @@ pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 
 /// is backed off). So the threshold is past two timeouts — two silent units in one gap, of
 /// the plan's or one of them a host's — plus the slowest period the speed may be read at
 /// ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the speed's own answer and the send slot
-/// before it. At 500 ms one unanswered read of anything aborted a run whose speed never
+/// before it: 1233 ms, and 1.3 s is past it. At 500 ms one unanswered read of anything aborted a run whose speed never
 /// missed (PR #12 review). The firmware asserts the relation at compile time, so the two
 /// cannot drift apart.
 ///
@@ -1351,12 +1354,15 @@ mod tests {
 		// two answers of a speed read at the slowest rate the plan allows, and the speed's
 		// own answer, are a speed that never missed.
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
-		// The last answer at 2.4 s.
-		drive(&mut watch, ramp(1.0, 20.0), 0, 2_400, SLOWEST_SPEED_PERIOD_MS);
+		let period = SLOWEST_SPEED_PERIOD_MS;
+		// Standing past the arming hold, moving from 1.2 s; the last answer at 18 periods, 2.4 s.
+		let speed = ramp(1.2, 20.0);
+		let last = 18 * period;
+		drive(&mut watch, &speed, 0, last, period);
 		assert_eq!(watch.phase(), Phase::Running);
-		let late = 2_400 + SLOWEST_SPEED_PERIOD_MS + 2 * 500 + 30;
-		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - 2_400);
-		let kmh = ramp(1.0, 20.0)(late as f64 / 1000.0);
+		let late = last + period + 2 * 500 + 30;
+		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - last);
+		let kmh = speed(late as f64 / 1000.0);
 		assert!(kmh < 60.0, "no mark in the gap, so nothing is said");
 		assert_eq!(watch.sample(Some((kmh / f64::from(FACTOR)) as f32), late), None);
 		assert_eq!(watch.phase(), Phase::Running, "the run goes on");

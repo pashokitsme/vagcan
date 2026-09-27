@@ -112,7 +112,7 @@ use toml_edit::{Document, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::control::{BUTTON_PINS, Command, MAX_BUTTONS, is_button_pin};
 use vag_dash_render::pages::MAX_PAGES;
-use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, START_FIT_MS};
+use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, SLOWEST_SPEED_PERIOD_MS, START_FIT_MS};
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
@@ -1804,7 +1804,8 @@ fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel]
 	// answer late or lost costs a period, so `MIN_FIT_SAMPLES` of them have to fit. Read slower,
 	// one late answer loses the launch, and the run has crossings and no time — which only the
 	// car would show. Checked on the period the board polls at, not on `1000 / hz`: it rounds.
-	let longest_ms = START_FIT_MS / MIN_FIT_SAMPLES as u64;
+	// The bound is the stopwatch's own, which the firmware's silence assert counts too.
+	let longest_ms = SLOWEST_SPEED_PERIOD_MS;
 	let period_ms = board_period_ms(channel.hz);
 	if u64::from(period_ms) > longest_ms {
 		// The slowest rate the board polls every `longest_ms` or sooner, in tenths of a hertz,
@@ -4767,6 +4768,28 @@ mod tests {
 		// The rate the message names is one the board polls fast enough.
 		for hz in ["7.5", "8", "50", "100"] {
 			at(hz).unwrap_or_else(|e| panic!("{hz} Hz: {e}"));
+		}
+	}
+
+	/// The firmware asserts that the stopwatch's silence outlasts two answer timeouts and the
+	/// slowest period the speed may be read at, `SLOWEST_SPEED_PERIOD_MS`: that period is the one
+	/// this build lets through, not a slower one it refuses (PR #12 review: it was 200 ms against
+	/// the build's 133).
+	#[test]
+	fn the_slowest_speed_the_build_takes_is_the_stopwatchs_slowest_period() {
+		use vag_dash_render::stopwatch::SLOWEST_SPEED_PERIOD_MS;
+		let builds = |hz: f64| {
+			let another = Extra {
+				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
+			};
+			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
+			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz:?}\n"), another).is_ok()
+		};
+		// Around the edge, and at the rates a period of 200 ms is.
+		for hz in [7.55, 7.5, 7.49, 7.45, 6.0, 5.01, 5.0, 4.99] {
+			let period = u64::from(board_period_ms(hz));
+			assert_eq!(builds(hz), period <= SLOWEST_SPEED_PERIOD_MS, "{hz} Hz, read every {period} ms");
 		}
 	}
 
