@@ -60,3 +60,48 @@ fn a_version_this_image_does_not_know_is_nothing_and_garbage_is_an_error() {
 	assert!(decode(1, &[200, 1, 9]).is_err(), "nine pages where the board holds eight");
 	assert!(decode(SCHEMA_VERSION, &V1).is_err(), "a version-1 record read as version 2 is short");
 }
+
+fn slot(generation: u32, version: u16) -> Option<schema::Slot> {
+	let config = decode(1, &V1).unwrap().unwrap();
+	Some(schema::Slot {
+		generation,
+		version,
+		config: (version <= SCHEMA_VERSION).then_some(config),
+	})
+}
+
+/// PR #12 review: a record of a version this image does not know was dropped with its
+/// generation. Slot 0 holding a newer image's generation 4 and slot 1 its generation 5, this
+/// image booted on generation 0, and its first save — the automatic one of a stopwatch run —
+/// went into slot 1 as generation 1, over the newest record there was.
+#[test]
+fn a_record_this_image_cannot_read_still_counts_for_where_and_under_what_a_save_goes() {
+	let newer = SCHEMA_VERSION + 1;
+	let held = schema::held([slot(4, newer), slot(5, newer)]);
+	assert_eq!(held.newest, Some((1, 5)), "the next save goes to slot 0, as generation 6");
+	assert_eq!(held.config, None, "nothing this image reads");
+	assert_eq!(held.unreadable, Some(newer), "and only `save` may write over it");
+}
+
+#[test]
+fn an_older_record_this_image_reads_is_loaded_behind_a_newer_one_it_cannot() {
+	let newer = SCHEMA_VERSION + 1;
+	let held = schema::held([slot(4, SCHEMA_VERSION), slot(5, newer)]);
+	assert_eq!(held.newest, Some((1, 5)));
+	assert!(held.config.is_some(), "generation 4, the last this image could read");
+	assert_eq!(held.unreadable, Some(newer));
+	// Written after the newer image's record, the readable one is simply the newest.
+	let held = schema::held([slot(4, newer), slot(5, SCHEMA_VERSION)]);
+	assert_eq!((held.newest, held.unreadable), (Some((1, 5)), None));
+	assert!(held.config.is_some());
+}
+
+#[test]
+fn the_newest_record_is_the_one_with_the_higher_generation_in_either_slot() {
+	assert_eq!(schema::held([None, None]), schema::Held::default(), "a new board: nothing");
+	let held = schema::held([slot(7, 1), None]);
+	assert_eq!((held.newest, held.unreadable), (Some((0, 7)), None));
+	assert!(held.config.is_some(), "a version-1 record, carried forward");
+	let held = schema::held([slot(9, SCHEMA_VERSION), slot(8, SCHEMA_VERSION)]);
+	assert_eq!(held.newest, Some((0, 9)));
+}

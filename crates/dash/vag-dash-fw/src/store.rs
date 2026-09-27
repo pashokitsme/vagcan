@@ -21,6 +21,7 @@
 //! nothing checks it.
 
 use crate::config::{Config, SCHEMA_VERSION};
+use crate::schema::{self, Held, Slot};
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions;
 use esp_storage::FlashStorage;
@@ -55,8 +56,6 @@ pub enum Error {
 	Empty,
 	/// The configuration does not fit in a slot.
 	TooBig,
-	/// Stored bytes did not decode under the current schema.
-	Corrupt,
 }
 
 pub struct Store {
@@ -66,10 +65,13 @@ pub struct Store {
 	/// Its full length, also from the table. Larger than what the two slots
 	/// use — room to grow without moving anything.
 	len: u32,
-	/// The generation of what is currently stored, 0 if nothing is.
+	/// The generation of what is currently stored, 0 if nothing is — the newest record
+	/// whatever its version, so a save never goes out under a lower one.
 	generation: u32,
-	/// Which slot holds it.
+	/// Which slot holds it: a save goes to the other.
 	current: u32,
+	/// The newest record's version, where this image cannot read it ([`Held::unreadable`]).
+	unreadable: Option<u16>,
 }
 
 impl Store {
@@ -102,13 +104,11 @@ impl Store {
 			len,
 			generation: 0,
 			current: 0,
+			unreadable: None,
 		};
 		// Learn which slot is live now, so the first save goes to the other one
 		// even if nothing has been read yet.
-		if let Some((slot, generation, _)) = store.newest()? {
-			store.current = slot;
-			store.generation = generation;
-		}
+		store.scan()?;
 		Ok(store)
 	}
 
@@ -121,13 +121,22 @@ impl Store {
 		self.generation
 	}
 
+	/// The version of the newest record in flash where this image cannot read it: a newer
+	/// image wrote it. [`Store::load`] then gives the record before it, if there is one; a
+	/// write nobody asked for must not go over it — only an explicit `save` does.
+	pub fn unreadable(&self) -> Option<u16> {
+		self.unreadable
+	}
+
 	/// The stored configuration, or `Error::Empty` on a board that has never
 	/// been configured. The caller decides what to do about that; this does
 	/// not quietly substitute defaults, because "never saved" and "saved these
 	/// defaults" are different facts and only one of them is a bug.
+	///
+	/// The newest record this image can read: behind one it cannot
+	/// ([`Store::unreadable`]), the one before it — or `Error::Empty` with none.
 	pub fn load(&mut self) -> Result<Config, Error> {
-		let (_, _, config) = self.newest()?.ok_or(Error::Empty)?;
-		Ok(config)
+		self.scan()?.config.ok_or(Error::Empty)
 	}
 
 	/// Writes to the slot that is not current, then that slot is current.
@@ -151,6 +160,7 @@ impl Store {
 
 		self.current = target;
 		self.generation = generation;
+		self.unreadable = None;
 		Ok(generation)
 	}
 
@@ -163,30 +173,31 @@ impl Store {
 		}
 		self.current = 0;
 		self.generation = 0;
+		self.unreadable = None;
 		Ok(())
 	}
 
-	/// Reads both slots and returns the valid one with the higher generation.
-	fn newest(&mut self) -> Result<Option<(u32, u32, Config)>, Error> {
-		let mut best: Option<(u32, u32, Config)> = None;
-		for slot in 0..SLOTS {
-			match self.read_slot(slot) {
-				Ok(Some((generation, config))) => {
-					// A half-written slot is expected, not exceptional: it is
-					// what a power cut during a save leaves behind.
-					if best.as_ref().is_none_or(|(_, best_gen, _)| generation > *best_gen) {
-						best = Some((slot, generation, config));
-					}
-				}
-				Ok(None) => {}
-				Err(Error::Corrupt) => {}
-				Err(e) => return Err(e),
-			}
+	/// Reads both slots, learns where the newest record is — whatever its version — and says
+	/// what of flash this image can use ([`schema::held`]).
+	fn scan(&mut self) -> Result<Held, Error> {
+		let mut slots: [Option<Slot>; SLOTS as usize] = [const { None }; SLOTS as usize];
+		for (slot, read) in (0..SLOTS).zip(slots.iter_mut()) {
+			// A half-written slot is expected, not exceptional: it is what a power cut during
+			// a save leaves behind, and it is no record.
+			*read = self.read_slot(slot)?;
 		}
-		Ok(best)
+		let held = schema::held(slots);
+		if let Some((slot, generation)) = held.newest {
+			self.current = slot;
+			self.generation = generation;
+		}
+		self.unreadable = held.unreadable;
+		Ok(held)
 	}
 
-	fn read_slot(&mut self, slot: u32) -> Result<Option<(u32, Config)>, Error> {
+	/// One slot's record, if its magic, its length and its CRC check out: `None` for an erased
+	/// slot, a foreign one, or one a power cut left half written.
+	fn read_slot(&mut self, slot: u32) -> Result<Option<Slot>, Error> {
 		let base = self.offset + slot * SLOT_SIZE;
 		let mut header = [0u8; HEADER_LEN];
 		self.flash.read(base, &mut header).map_err(|_| Error::Flash)?;
@@ -195,7 +206,8 @@ impl Store {
 			return Ok(None);
 		}
 		// Any version `schema::decode` knows is read and carried forward; the next save writes
-		// the current one. One it does not know was written by a newer image.
+		// the current one. One it does not know was written by a newer image: its generation
+		// still counts ([`schema::held`]), its record is not guessed at.
 		let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
 		let len = usize::from(u16::from_le_bytes(header[6..8].try_into().unwrap()));
 		if len == 0 || len > SLOT_SIZE as usize - HEADER_LEN {
@@ -207,9 +219,12 @@ impl Store {
 		let mut payload = alloc::vec![0u8; len];
 		self.flash.read(base + HEADER_LEN as u32, &mut payload).map_err(|_| Error::Flash)?;
 		if CRC.checksum(&payload) != expected {
-			return Err(Error::Corrupt);
+			return Ok(None);
 		}
-		let config = crate::schema::decode(version, &payload).map_err(|_| Error::Corrupt)?;
-		Ok(config.map(|config| (generation, config)))
+		Ok(Some(Slot {
+			generation,
+			version,
+			config: schema::decode(version, &payload).ok().flatten(),
+		}))
 	}
 }

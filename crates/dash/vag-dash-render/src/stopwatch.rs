@@ -14,7 +14,7 @@
 //!   arm in every gap. A sample the unit did not answer moves no state.
 //! - **The clock's origin is the launch, and the launch is reconstructed.** The
 //!   first moving sample starts the run but is not `t = 0`: the car was already
-//!   under way before its speed channel woke. [`Launch`] is
+//!   under way before its speed channel woke. The launch ([`Run::launch`]) is
 //!   `vag-cli-measure`'s `derive::start`, ported: a constant-jerk fit through
 //!   `√v` over the first [`START_FIT_MS`] of movement reaches back too far, a
 //!   straight line through the first two moving samples falls short, and the
@@ -50,12 +50,44 @@ pub const START_FIT_MS: u64 = 400;
 /// fast the speed has to be read for a run to be timed at all.
 pub const MIN_FIT_SAMPLES: usize = 3;
 
+/// The slowest the speed may be read and still time a run: the launch fit wants
+/// [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], so a period under
+/// `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`. The plan build refuses one at or above it; the
+/// board rounds a period to whole milliseconds, so it may read at this one exactly.
+pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 - 1);
+
 /// The longest silence of the speed a run or an armed standstill survives. The laptop
 /// cancels a run after `vag-cli-measure`'s `SILENT_CYCLES` unanswered cycles; the board
-/// has no cycles, so a time: long past any period the speed is read at while the
-/// stopwatch is up, short enough that nothing is interpolated across a gap in which the
-/// car did whatever it did. A property of the one conversation, not of a car.
-pub const SILENCE_MS: u64 = 500;
+/// has no cycles, so a time. A property of the one conversation, not of a car.
+///
+/// Why 1.3 s. The speed shares the bus with the lever, the cruise status, an alarm's
+/// channels and a host's reads, one exchange at a time, and one the unit does not answer
+/// holds the bus for the board's whole answer timeout (`RESPONSE_TIMEOUT` in the firmware,
+/// 500 ms). A run's speed goes ahead of everything but the panel's floor (`Class::Timing`):
+/// between two of its answers fall the exchange already on the bus when it came due — a
+/// host's read, say — and the floor's reads that are due, each unit's once (a silent unit
+/// is backed off). So the threshold is past two timeouts — two silent units in one gap, of
+/// the plan's or one of them a host's — plus the slowest period the speed may be read at
+/// ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the speed's own answer and the send slot
+/// before it. At 500 ms one unanswered read of anything aborted a run whose speed never
+/// missed (PR #12 review). The firmware asserts the relation at compile time, so the two
+/// cannot drift apart.
+///
+/// Three of the plan's units silent at once is past it, and runs abort: on a moving car the
+/// plan's units answer, and three that do not are a bus in trouble. The scheduler's test
+/// `a_runs_speed_waits_out_two_silent_units_in_a_gap_and_not_three` measures both. Past the
+/// threshold the speed counts as silent: the run is aborted, and nothing is interpolated
+/// across the gap.
+pub const SILENCE_MS: u64 = 1_300;
+
+/// How long past [`ARMING_HOLD_MS`] a standstill holds before the board writes a run to
+/// flash ([`Stopwatch::still_for_a_write`]).
+pub const WRITE_HOLD_MARGIN_MS: u64 = 500;
+
+/// The oldest a zero answer may be, at any rate the speed is read, and still say the car is
+/// standing for a flash write ([`Stopwatch::still_for_a_write`]): the panel looks once a
+/// frame, and a fast speed's two periods are shorter than the jitter of a frame.
+pub const WRITE_FRESH_FLOOR_MS: u64 = 100;
 
 /// The most marks one plan may carry: the page is one row of four cells, the phase and
 /// the speed in the first, a mark's time in each of the others.
@@ -71,21 +103,10 @@ pub enum Phase {
 	/// Standing long enough: the next moving sample starts a run.
 	Armed,
 	Running,
-	/// A run ended — at its highest mark, or back at a standstill before it. Its
-	/// times are on show until the next run is armed and launched.
+	/// A run ended — at its highest mark, or aborted: back at a standstill before it, or
+	/// its speed silent. Its times are on show until the next run is armed and launched;
+	/// the page's word says which way it ended ([`Words::aborted`]).
 	Done,
-}
-
-/// When the car set off, in seconds relative to the first moving sample — so
-/// never after `0.0`. `vag-cli-measure`'s `derive::Start`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Launch {
-	/// The estimate: the midpoint of the bracket.
-	pub t: f32,
-	/// The constant-jerk fit, which reaches back too far.
-	pub earliest: f32,
-	/// The two-point line, which falls short.
-	pub latest: f32,
 }
 
 /// One run: where each mark was crossed, and when the car set off.
@@ -94,7 +115,11 @@ pub struct Run {
 	/// Seconds after the first moving sample at which each mark was crossed, by
 	/// the mark's place in the plan.
 	crossed: [Option<f32>; MAX_MARKS],
-	pub launch: Option<Launch>,
+	/// When the car set off, in seconds relative to the first moving sample — so never
+	/// after `0.0`: the midpoint of `vag-cli-measure`'s `derive::Start` bracket. The board
+	/// keeps the estimate alone; the bracket's ends are the laptop's to report, and three
+	/// copies of a run are held here (`Fit::bracket` has them for the tests).
+	pub launch: Option<f32>,
 	/// The car came back to a standstill (or the page was left) before the highest mark.
 	pub aborted: bool,
 }
@@ -116,10 +141,12 @@ impl Run {
 	/// The mark's time: from the launch to its crossing. `None` when it was not
 	/// crossed, when there is no launch to time it from, or when the crossing lies
 	/// before the launch — the first moving sample already past a low mark, read too
-	/// late to say when it was crossed (the laptop looks for a crossing only after
-	/// the launch, `Track::crossing`).
+	/// late to say when it was crossed. Here the board and the laptop part: the board
+	/// refuses such a crossing, while `vag-cli-measure`'s `Track::crossing` skips only a
+	/// pair of samples that ends before the launch, interpolates the pair that straddles
+	/// it the same way, and reports the time as negative.
 	pub fn time(&self, index: usize) -> Option<f32> {
-		let time = self.crossed_at(index)? - self.launch?.t;
+		let time = self.crossed_at(index)? - self.launch?;
 		(time >= 0.0).then_some(time)
 	}
 }
@@ -161,6 +188,8 @@ pub struct Stopwatch<'a> {
 	last: Option<Run>,
 	/// The last run that finished — what an aborted one gives way to when the page is left.
 	finished: Option<Run>,
+	/// `finished` has not been handed out yet ([`Stopwatch::take_finished`]).
+	unkept: bool,
 	/// The mode's turn count this stopwatch last followed (`Screen::stopwatch_turns`).
 	turns: u16,
 }
@@ -187,6 +216,7 @@ impl<'a> Stopwatch<'a> {
 			current: Run::new(),
 			last: None,
 			finished: None,
+			unkept: false,
 			turns: 0,
 		}
 	}
@@ -203,6 +233,13 @@ impl<'a> Stopwatch<'a> {
 	/// The last run that reached its highest mark — the one the settings keep.
 	pub fn finished(&self) -> Option<Run> {
 		self.finished
+	}
+
+	/// The run that finished since the last call, once: whoever keeps runs takes it here and
+	/// holds no copy to compare against (the board's RAM, PR #12 review). A reset does not
+	/// withhold it — a run that finished as the page was left is still a run.
+	pub fn take_finished(&mut self) -> Option<Run> {
+		core::mem::take(&mut self.unkept).then_some(self.finished).flatten()
 	}
 
 	/// The run on show: the one in progress, else the last one that ended.
@@ -302,6 +339,35 @@ impl<'a> Stopwatch<'a> {
 		}
 	}
 
+	/// Whether the car stands still well enough at `now_ms` for the board to write a run to
+	/// flash, with the speed read every `period_ms`. A write erases a sector with the
+	/// executor stalled — the glass frozen, answers late-stamped, a launch fit's first
+	/// samples among them — so it is never done at speed (owner, 2026-09-26), and
+	/// [`Phase::Armed`] alone does not say the car is not moving *now*: its last zero answer
+	/// may be up to [`SILENCE_MS`] old (PR #12 review). So, all three:
+	///
+	/// - armed: a standstill held for [`ARMING_HOLD_MS`];
+	/// - the last answer is a zero no older than two periods of the speed, or
+	///   [`WRITE_FRESH_FLOOR_MS`] where that is less — a car that set off has had no time to
+	///   say so;
+	/// - the standstill has held [`WRITE_HOLD_MARGIN_MS`] past the arming hold, so a driver
+	///   who launches on `GO` is away before the write rather than during it.
+	///
+	/// What it cannot see: the speed channel's dead band. A car creeping slower than the
+	/// channel's smallest step reads as zero, and the write can happen while it rolls at
+	/// walking pace — and a launch in the tens of milliseconds the write takes is stamped
+	/// late by them.
+	pub fn still_for_a_write(&self, now_ms: u64, period_ms: u64) -> bool {
+		let fresh = (2 * period_ms).max(WRITE_FRESH_FLOOR_MS);
+		self.phase == Phase::Armed
+			&& self
+				.previous
+				.is_some_and(|(at_ms, kmh)| kmh == 0.0 && now_ms.saturating_sub(at_ms) <= fresh)
+			&& self
+				.standing_since
+				.is_some_and(|since| now_ms.saturating_sub(since) >= ARMING_HOLD_MS + WRITE_HOLD_MARGIN_MS)
+	}
+
 	/// Follows the mode's turn count (`Screen::stopwatch_turns`): a count this stopwatch
 	/// has not seen means the mode turned on or off since, and it is [reset](Self::reset)
 	/// — before the sample that comes next, however quickly the mode turned back.
@@ -389,6 +455,7 @@ impl<'a> Stopwatch<'a> {
 		self.last = Some(self.current);
 		if !aborted {
 			self.finished = Some(self.current);
+			self.unkept = true;
 		}
 		self.phase = Phase::Done;
 	}
@@ -439,7 +506,13 @@ impl Fit {
 		}
 	}
 
-	/// `vag-cli-measure`'s `derive::start` over the window.
+	/// The launch: the midpoint of [`Fit::bracket`], `vag-cli-measure`'s `derive::Start::t`.
+	fn launch(&self) -> Option<f32> {
+		let (earliest, latest) = self.bracket()?;
+		Some((0.5 * (earliest + latest)) as f32)
+	}
+
+	/// `vag-cli-measure`'s `derive::start` over the window: `(earliest, latest)`.
 	///
 	/// `latest` is the line through the first two samples, clamped at the first:
 	/// a launch is convex, so the line runs under it and reaches zero late.
@@ -447,7 +520,7 @@ impl Fit {
 	/// line through `√v`, also clamped at the first sample: it reaches back too far.
 	/// The two are ordered, never collapsed. `None` without a second sample or
 	/// without a fit, as there.
-	fn launch(&self) -> Option<Launch> {
+	fn bracket(&self) -> Option<(f64, f64)> {
 		let ((t_first, v_first), (t_second, v_second)) = (self.first?, self.second?);
 		let (rise, step) = (v_second - v_first, t_second - t_first);
 		let line = match rise > 0.0 && step > 0.0 {
@@ -455,12 +528,7 @@ impl Fit {
 			false => t_first,
 		};
 		let quadratic = self.constant_jerk_launch()?.min(t_first);
-		let (earliest, latest) = (quadratic.min(line), quadratic.max(line));
-		Some(Launch {
-			t: (0.5 * (earliest + latest)) as f32,
-			earliest: earliest as f32,
-			latest: latest as f32,
-		})
+		Some((quadratic.min(line), quadratic.max(line)))
 	}
 
 	/// `derive::constant_jerk_launch`: least squares of `√v` on `t`, extrapolated to
@@ -506,7 +574,11 @@ pub struct Words {
 	pub idle: &'static str,
 	pub armed: &'static str,
 	pub running: &'static str,
+	/// [`Phase::Done`] with a run that reached its highest mark.
 	pub done: &'static str,
+	/// [`Phase::Done`] with a run that did not: back at a standstill short of it, or its speed
+	/// went silent. Its times are on show all the same, and must not read as a finished run's.
+	pub aborted: &'static str,
 	pub seconds: &'static str,
 	pub km_h: &'static str,
 }
@@ -526,6 +598,7 @@ const ENGLISH: Words = Words {
 	armed: "GO",
 	running: "RUN",
 	done: "DONE",
+	aborted: "ABORT",
 	seconds: "s",
 	km_h: "km/h",
 };
@@ -536,6 +609,7 @@ const RUSSIAN: Words = Words {
 	armed: "ПУСК",
 	running: "ЗАМЕР",
 	done: "ГОТОВО",
+	aborted: "СБРОС",
 	// The units' face has no Cyrillic, and a plan's units are the catalog's SI spellings in
 	// either language: the labels are Russian, the units are not.
 	seconds: "s",
@@ -593,8 +667,9 @@ impl Labels {
 
 /// The stopwatch page as a values row: the phase's word over the speed, then each mark's
 /// time — the run on show, or where there is none, the last finished run `saved` holds as
-/// `(mark in km/h, seconds)`. A mark with no time draws a dash. With the factor not
-/// measured the row is that word and nothing else.
+/// `(mark in km/h, seconds)`. A mark with no time draws a dash. A run that ended short of
+/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. With
+/// the factor not measured the row is that word and nothing else.
 pub fn cells<'a>(
 	watch: &Stopwatch<'_>,
 	speed_km_h: Option<f32>,
@@ -611,6 +686,7 @@ pub fn cells<'a>(
 		Phase::Idle => words.idle,
 		Phase::Armed => words.armed,
 		Phase::Running => words.running,
+		Phase::Done if watch.run().is_some_and(|run| run.aborted) => words.aborted,
 		Phase::Done => words.done,
 	};
 	row[0] = Cell::new(word, speed_km_h, words.km_h, 0);
@@ -626,13 +702,19 @@ pub fn cells<'a>(
 	(row, 1 + marks.len())
 }
 
-/// Places after the point a time is drawn with: two under 10 s, one under 100, none past
-/// it — what a quarter of the panel holds in the large face (measured with the renderer,
-/// `the_page_fits_the_panel_in_both_languages_with_its_widest_numbers`).
+/// Places after the point a time is drawn with: two while it prints under 10 s, one while it
+/// prints under 100, none past it — four characters, what a quarter of the panel holds
+/// (measured with the renderer, `the_page_fits_the_panel_in_both_languages_with_its_widest_numbers`).
+///
+/// Decided on the value as it will be printed, not as it is: 9.996 s to two places is
+/// `10.00`, a character wider than the cell was laid out for, so from 9.995 s it takes one
+/// place and prints `10.0`; likewise from 99.95 s it prints `100`, not `100.0` (PR #12
+/// review). At the edge itself the thresholds are the same `f32` values the time is, so an
+/// edge takes the fewer places: 9.995 prints `10.0` and 99.95 prints `100`, four characters.
 fn decimals_for(seconds: f32) -> u8 {
 	match seconds {
-		s if s < 10.0 => 2,
-		s if s < 100.0 => 1,
+		s if s < 9.995 => 2,
+		s if s < 99.95 => 1,
 		_ => 0,
 	}
 }
@@ -750,10 +832,11 @@ mod tests {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		drive(&mut watch, jerk(1.05, 20.0), 0, 2_000, 100);
 		let launch = watch.run().and_then(|run| run.launch).expect("five samples in the window");
+		let (earliest, latest) = watch.fit.bracket().expect("and its bracket");
 		// Seconds relative to the first moving sample, at 1.1 s.
-		close(launch.earliest, 1.05 - 1.1, "the constant-jerk root");
-		close(launch.latest, 1.0875 - 1.1, "the two-point line");
-		close(launch.t, (1.05 + 1.0875) / 2.0 - 1.1, "the midpoint");
+		close(earliest as f32, 1.05 - 1.1, "the constant-jerk root");
+		close(latest as f32, 1.0875 - 1.1, "the two-point line");
+		close(launch, (1.05 + 1.0875) / 2.0 - 1.1, "the midpoint");
 	}
 
 	#[test]
@@ -776,10 +859,11 @@ mod tests {
 		close(run.crossed_at(0).unwrap(), 5.97, "60 km/h");
 		close(run.crossed_at(1).unwrap(), 9.97, "100 km/h");
 		let launch = run.launch.unwrap();
-		close(launch.latest, -0.03, "on a ramp the line is exact");
-		assert!(launch.earliest < launch.latest);
-		close(run.time(0).unwrap(), 5.97 - f64::from(launch.t), "0-60 from the launch");
-		close(run.time(1).unwrap(), 9.97 - f64::from(launch.t), "0-100 from the launch");
+		let (earliest, latest) = watch.fit.bracket().unwrap();
+		close(latest as f32, -0.03, "on a ramp the line is exact");
+		assert!(earliest < latest);
+		close(run.time(0).unwrap(), 5.97 - f64::from(launch), "0-60 from the launch");
+		close(run.time(1).unwrap(), 9.97 - f64::from(launch), "0-100 from the launch");
 		assert!(!run.aborted);
 	}
 
@@ -945,6 +1029,7 @@ mod tests {
 				let mut watch = Stopwatch::new(&MARKS, FACTOR);
 				drive(&mut watch, kmh, 0, 2_500, step_ms);
 				let got = watch.run().and_then(|run| run.launch).expect("a launch");
+				let (got_earliest, got_latest) = watch.fit.bracket().expect("its bracket");
 				let track: Vec<(f64, f64)> = (0..=2_500 / step_ms)
 					.map(|i| {
 						let t = (i * step_ms) as f64 / 1000.0;
@@ -953,9 +1038,10 @@ mod tests {
 					.collect();
 				let (t, earliest, latest) = reference_start(&track).expect("the reference fits too");
 				let what = std::format!("{name} at {} Hz", 1000 / step_ms);
-				// To a microsecond: the board keeps its answer in `f32`, nothing more.
-				for (got, want) in [(got.t, t), (got.earliest, earliest), (got.latest, latest)] {
-					assert!((f64::from(got) - want).abs() < 1e-6, "{what}: {got} is not {want}");
+				// To a microsecond: the board keeps its answer in `f32`, nothing more; the bracket
+				// it fits the answer from, in `f64`.
+				for (got, want) in [(f64::from(got), t), (got_earliest, earliest), (got_latest, latest)] {
+					assert!((got - want).abs() < 1e-6, "{what}: {got} is not {want}");
 				}
 			}
 		}
@@ -1015,8 +1101,21 @@ mod tests {
 		watch.sample(Some(0.0), 4_600);
 		let shown = row(&watch, Some(0.0), &[(60, 1.0), (100, 2.0)]);
 		assert_eq!(shown.len(), 3);
+		assert_eq!(shown[0].0, "ABORT", "an aborted run does not read as a finished one");
 		assert_eq!(shown[1].1, watch.run().unwrap().time(0), "the aborted run's 0-60, not the saved one");
 		assert_eq!(shown[2].1, None, "and its 0-100 never closed");
+		// Armed again, the aborted run's times stay up under the word that says so.
+		watch.sample(Some(0.0), 5_600);
+		assert_eq!(row(&watch, Some(0.0), &[])[0].0, "GO");
+		// A run the speed's silence ended says the same as one a standstill ended.
+		let mut quiet = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut quiet, ramp(1.05, 20.0), 0, 4_500, 100);
+		assert_eq!(quiet.silence(4_501 + SILENCE_MS), Some(Event::Aborted));
+		assert_eq!(row(&quiet, None, &[])[0].0, "ABORT");
+		// A finished run says it finished.
+		let mut done = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut done, ramp(1.05, 20.0), 0, 7_000, 100);
+		assert_eq!(row(&done, Some(120.0), &[])[0].0, "DONE");
 
 		let unmeasured = Stopwatch::new(&MARKS, 0.0);
 		assert_eq!(row(&unmeasured, Some(50.0), &[(60, 1.0)]), [("NO FACTOR".into(), None, "".into(), 0)]);
@@ -1024,30 +1123,86 @@ mod tests {
 
 	#[test]
 	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
-		use crate::{Frame, PANEL, Theme, draw};
-		use embedded_graphics::pixelcolor::BinaryColor;
+		use crate::render::Report;
+		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use embedded_graphics::{geometry::Size, pixelcolor::BinaryColor};
 		use embedded_graphics_simulator::SimulatorDisplay;
-		static WIDEST: [u16; 3] = [100, 200, 300];
-		let labels = Labels::new(&WIDEST);
-		let watch = Stopwatch::new(&WIDEST, FACTOR);
-		for language in ["en", "ru"] {
-			let words = Words::of(language);
-			for word in [words.idle, words.armed, words.running, words.done] {
-				let saved = [(100, 9.99), (200, 88.88), (300, 188.8)];
-				let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
-				row[0].label = word;
-				let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
-				let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
-				assert!(
-					!report.label_overrun && !report.value_overrun && !report.glyph_missing,
-					"{language} {word}: {report:?}"
+		static THREE: [u16; 3] = [100, 200, 300];
+		static TWO: [u16; 2] = [100, 200];
+		// The glass the layout was drawn against, and the board's own: twice as tall, with the
+		// USB and BLE icons in its corner beside the last cell.
+		let panels = [(PANEL, Links::NONE), (Size::new(256, 64), Links { usb: true, ble: true })];
+		// The widest time each number of places shows; then times at a rounding edge, which print
+		// a digit wider (`10.00`, `100.0`) unless the places are chosen on the rounded value.
+		let widest = [9.99, 88.88, 188.8];
+		let edges = [9.995, 9.999, 99.95, 99.99];
+		let overran = |report: &Report| report.label_overrun || report.value_overrun || report.glyph_missing;
+		for marks in [&THREE[..], &TWO[..]] {
+			let labels = Labels::new(marks);
+			let watch = Stopwatch::new(marks, FACTOR);
+			for (size, links) in panels {
+				for language in ["en", "ru"] {
+					let words = Words::of(language);
+					for word in [words.idle, words.armed, words.running, words.done, words.aborted] {
+						let draw = |times: &[f32]| {
+							let saved: Vec<(u16, f32)> = marks.iter().copied().zip(times.iter().copied()).collect();
+							let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
+							row[0].label = word;
+							let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+							draw_with(
+								&Frame::Values { cells: &row[..count] },
+								&Board { links, rates: None },
+								&Theme::bold_mono(),
+								&mut panel,
+							)
+						};
+						let what = std::format!("{} marks, {size:?}, {language} {word}", marks.len());
+						let widest = draw(&widest);
+						assert!(!overran(&widest), "{what}: {widest:?}");
+						for edge in edges {
+							let report = draw(&[edge; 3]);
+							assert!(!overran(&report), "{what}, {edge} s: {report:?}");
+							// No smaller face than the widest time needs.
+							assert!(
+								!report.value_shrunk || widest.value_shrunk,
+								"{what}, {edge} s shrinks the row: {report:?}"
+							);
+						}
+					}
+				}
+				let words = Words::of("en");
+				let unmeasured = Stopwatch::new(marks, 0.0);
+				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
+				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+				let report = draw_with(
+					&Frame::Values { cells: &row[..count] },
+					&Board { links, rates: None },
+					&Theme::bold_mono(),
+					&mut panel,
 				);
+				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
+				let words = Words::of("ru");
+				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
+				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+				let report = draw_with(
+					&Frame::Values { cells: &row[..count] },
+					&Board { links, rates: None },
+					&Theme::bold_mono(),
+					&mut panel,
+				);
+				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
 			}
-			let unmeasured = Stopwatch::new(&WIDEST, 0.0);
-			let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
-			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
-			let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
-			assert!(!report.label_overrun && !report.glyph_missing, "{language}: {report:?}");
+		}
+	}
+
+	#[test]
+	fn a_time_takes_its_places_from_the_value_it_prints() {
+		// Every time from 0 to 1000 s by the millisecond, and around each edge by less: what is
+		// drawn is at most four characters, the width the page was laid out for.
+		let edges = (0..2_000).flat_map(|i| [9.99 + i as f32 * 1e-5, 99.9 + i as f32 * 1e-4]);
+		for seconds in (0..1_000_000).map(|ms| ms as f32 / 1000.0).chain(edges) {
+			let printed = std::format!("{:.*}", usize::from(decimals_for(seconds)), seconds);
+			assert!(printed.len() <= 4, "{seconds} s prints as {printed}");
 		}
 	}
 
@@ -1057,7 +1212,9 @@ mod tests {
 		assert_eq!(Words::of("en").idle, "STOP");
 		assert_eq!(Words::of("de"), Words::of("en"), "a language it has no words for is English");
 		for words in [Words::of("ru"), Words::of("en")] {
-			assert!(words.not_measured.chars().count() <= 10, "a label is ten characters at most");
+			for word in [words.not_measured, words.idle, words.armed, words.running, words.done, words.aborted] {
+				assert!(word.chars().count() <= 10, "a label is ten characters at most: {word}");
+			}
 		}
 	}
 
@@ -1087,7 +1244,26 @@ mod tests {
 		// A missing answer past the silence says the same.
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		drive(&mut watch, ramp(1.0, 20.0), 0, 2_500, 50);
-		assert_eq!(watch.sample(None, 3_100), Some(Event::Aborted));
+		assert_eq!(watch.sample(None, 2_501 + SILENCE_MS), Some(Event::Aborted));
+	}
+
+	#[test]
+	fn a_run_outlasts_two_other_reads_timing_out_between_two_answers_of_its_speed() {
+		// The board reads the lever, the cruise status, an alarm's channels and a host's
+		// identifiers on the same bus, one exchange at a time, and one that is not answered
+		// holds the bus for the firmware's whole answer timeout, 500 ms. Two of them between
+		// two answers of a speed read at the slowest rate the plan allows, and the speed's
+		// own answer, are a speed that never missed.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		// The last answer at 2.4 s.
+		drive(&mut watch, ramp(1.0, 20.0), 0, 2_400, SLOWEST_SPEED_PERIOD_MS);
+		assert_eq!(watch.phase(), Phase::Running);
+		let late = 2_400 + SLOWEST_SPEED_PERIOD_MS + 2 * 500 + 30;
+		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - 2_400);
+		let kmh = ramp(1.0, 20.0)(late as f64 / 1000.0);
+		assert!(kmh < 60.0, "no mark in the gap, so nothing is said");
+		assert_eq!(watch.sample(Some((kmh / f64::from(FACTOR)) as f32), late), None);
+		assert_eq!(watch.phase(), Phase::Running, "the run goes on");
 	}
 
 	#[test]
@@ -1118,8 +1294,61 @@ mod tests {
 		let run = watch.run().unwrap();
 		let launch = run.launch.expect("three samples in the window");
 		let crossed = run.crossed_at(0).expect("crossed between the two samples");
-		assert!(crossed < launch.t, "{crossed} before {}", launch.t);
+		assert!(crossed < launch, "{crossed} before {launch}");
 		assert_eq!(run.time(0), None);
+	}
+
+	#[test]
+	fn a_run_is_written_only_on_a_fresh_standstill_held_past_the_arming_hold() {
+		// Armed is a standstill held for a second, by answers that may be up to the silence
+		// old: not enough to erase a sector with the executor stalled as the car sets off
+		// (PR #12 review). At 50 Hz, standing from 0.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, |_| 0.0, 0, ARMING_HOLD_MS, 20);
+		assert_eq!(watch.phase(), Phase::Armed);
+		assert!(
+			!watch.still_for_a_write(ARMING_HOLD_MS, 20),
+			"armed this moment: held no longer than the hold"
+		);
+		drive(&mut watch, |_| 0.0, ARMING_HOLD_MS + 20, 1_600, 20);
+		assert!(watch.still_for_a_write(1_600, 20), "held 1.6 s, the last answer this moment");
+		assert!(watch.still_for_a_write(1_600 + 100, 20), "an answer 100 ms old is fresh at any rate");
+		assert!(
+			!watch.still_for_a_write(1_600 + 101, 20),
+			"older, the car may be moving and not yet said so"
+		);
+		assert_eq!(watch.phase(), Phase::Armed, "though the stopwatch is still armed");
+		// Read slowly, an answer is fresh for two periods.
+		assert!(watch.still_for_a_write(1_600 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		assert!(!watch.still_for_a_write(1_601 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		// Moving, never.
+		watch.sample(Some(4.0), 1_620);
+		assert_eq!(watch.phase(), Phase::Running);
+		assert!(!watch.still_for_a_write(1_620, 20));
+		// Standing but not armed, never.
+		let mut idle = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut idle, |_| 0.0, 0, 900, 20);
+		assert!(!idle.still_for_a_write(900, 20));
+		// Nor with the factor not measured.
+		let unmeasured = Stopwatch::new(&MARKS, 0.0);
+		assert!(!unmeasured.still_for_a_write(0, 20));
+	}
+
+	#[test]
+	fn a_finished_run_is_handed_out_once_and_an_aborted_one_never() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		assert_eq!(watch.take_finished(), None);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
+		let finished = watch.finished().expect("a finished run");
+		// The page left in the same frame: still handed out.
+		watch.reset();
+		assert_eq!(watch.take_finished(), Some(finished));
+		assert_eq!(watch.take_finished(), None, "once");
+		// An aborted run is never kept.
+		drive(&mut watch, |t| if t < 10.0 { 0.0 } else { 20.0 * (t - 10.0) }, 8_000, 12_000, 100);
+		watch.sample(Some(0.0), 12_100);
+		assert!(watch.run().is_some_and(|run| run.aborted));
+		assert_eq!(watch.take_finished(), None);
 	}
 
 	#[test]

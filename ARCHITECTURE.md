@@ -476,9 +476,10 @@ time. It reads each unit's part number (`F187`) first and subscribes to the unit
 only when it matches the plan: the visible page and every alarm's channels at each channel's `hz` from `dash.toml`
 (2 Hz by default), other pages at 1 Hz. `Plan::rates_in` sets the exceptions: the lever at
 20 Hz while cruise and its switch both read off, 2 Hz otherwise, 10 Hz while the stopwatch is up with a factor; the
-cruise status at 5 Hz; the stopwatch's speed at its `hz`, foreground on any page, while the
-stopwatch is up with a factor. With the stopwatch page up, page cells drop to at most 1 Hz; an alarm's page over it keeps
-its cells unless a run is armed or timing.
+cruise status at 5 Hz while the lever's unit answers as the plan's; the stopwatch's speed at its `hz`, foreground on any
+page, while the stopwatch is up with a factor, and as the board's timing channel (`Class::Timing`, ahead of a host's
+reads) while a run is armed or timing — unless a host already holds that channel. With the stopwatch page up, page
+cells drop to at most 1 Hz; an alarm's page over it keeps its cells unless a run is armed or timing.
 A BLE host's requests go through the same planner.
 The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
 when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent

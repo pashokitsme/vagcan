@@ -143,6 +143,9 @@ pub struct Mode {
 	/// The lever is ours ([`Stalk::gate_open`](crate::stalk::Stalk::gate_open)).
 	pub gate_open: bool,
 	pub stopwatch: Timing,
+	/// The rocker's unit answers as the plan's — its part number matched — so the lever can be
+	/// read. The cruise status serves nothing but a lever read, so without it it is not read.
+	pub lever: bool,
 }
 
 /// Where the stopwatch is, as the bus sees it.
@@ -262,6 +265,10 @@ pub struct Rate {
 	/// channels are never demoted. Otherwise only on pages not shown: read at
 	/// [`HIDDEN_PERIOD_MS`] at most, last.
 	pub foreground: bool,
+	/// Read as a stopwatch's clock — the scheduler's `Class::Timing` — ahead of a host's reads
+	/// and of the foreground past its floor, so a host's load cannot thin it. Only the
+	/// stopwatch's speed while a run is up ([`Timing::Timing`]), which is foreground as well.
+	pub timing: bool,
 	pub period_ms: u32,
 }
 
@@ -354,9 +361,15 @@ impl Plan {
 	/// - The rocker's channel is read at [`LEVER_OPEN_PERIOD_MS`] with the gate open,
 	///   [`LEVER_CLOSED_PERIOD_MS`] with it closed, [`LEVER_STOPWATCH_PERIOD_MS`] while the
 	///   stopwatch is up; the switch's is never subscribed — it is in the rocker's answer.
-	/// - The cruise status at [`CRUISE_PERIOD_MS`].
+	/// - The cruise status at [`CRUISE_PERIOD_MS`], while the rocker's unit answers as the
+	///   plan's ([`Mode::lever`]) — it only ever opens the lever's gate, and a lever that cannot
+	///   be read has none to open.
 	/// - The stopwatch's speed at its own rate while the mode is on; while it is armed or
-	///   running every other channel a page shows drops to the background.
+	///   running it is read as the stopwatch's clock ([`Rate::timing`]), and every other
+	///   channel a page shows drops to the background. As foreground a host's reads took its
+	///   slots once the lever had spent the panel's floor, and every run aborted (PR #12
+	///   review); the scheduler keeps the panel's floor ahead of a clock on the board, so the
+	///   lever and an alarm's channels keep theirs.
 	///
 	/// The rocker and the cruise status are foreground whatever the page: a press is a press
 	/// on any. An alarm's channels keep their rate through all of it.
@@ -368,6 +381,7 @@ impl Plan {
 				Some(Rate {
 					channel: index,
 					foreground: true,
+					timing: false,
 					period_ms,
 				})
 			};
@@ -383,19 +397,27 @@ impl Plan {
 					});
 				}
 				if index == stalk.cruise {
-					return foreground(CRUISE_PERIOD_MS);
+					return if mode.lever { foreground(CRUISE_PERIOD_MS) } else { None };
 				}
 			}
 			let speed = mode.stopwatch != Timing::Off && self.stopwatch.is_some_and(|s| s.speed == index);
 			// Timing, what a page shows is not what matters: the run is.
 			let on_glass = shown.contains(&index) || self.explains(index, shown);
 			let timing = mode.stopwatch == Timing::Timing;
-			if speed || self.watched(index) || (on_glass && !timing) {
+			if speed && timing {
+				Some(Rate {
+					channel: index,
+					foreground: true,
+					timing: true,
+					period_ms: own,
+				})
+			} else if speed || self.watched(index) || (on_glass && !timing) {
 				foreground(own)
 			} else if listed.contains(&index) || self.explains(index, listed) || on_glass {
 				Some(Rate {
 					channel: index,
 					foreground: false,
+					timing: false,
 					period_ms: own.max(HIDDEN_PERIOD_MS),
 				})
 			} else {
@@ -985,18 +1007,26 @@ mod tests {
 				.map(|r| (r.channel, r.foreground, r.period_ms))
 				.collect()
 		};
-		let closed = Mode::default();
+		let closed = Mode {
+			lever: true,
+			..Mode::default()
+		};
 		let open = Mode { gate_open: true, ..closed };
 		assert_eq!(
 			rates(closed),
 			[(0, true, 100), (1, true, 100), (2, true, 500), (4, true, 200), (6, true, 100)],
 			"gate closed: 2 Hz, enough to see it open; the switch is in the rocker's answer"
 		);
+		// The rocker's unit not the plan's, or not answering: no lever read can use the cruise
+		// status, so it is not read (PR #12 review).
+		let unmatched = Mode { lever: false, ..closed };
+		assert!(!rates(unmatched).iter().any(|r| r.0 == 4), "{:?}", rates(unmatched));
 		assert_eq!(rates(open)[2], (2, true, 50), "gate open: a 50 ms button");
 		for timing in [Timing::Up, Timing::Timing] {
 			let up = Mode {
 				gate_open: true,
 				stopwatch: timing,
+				lever: true,
 			};
 			assert!(
 				rates(up).contains(&(2, true, 100)),
@@ -1027,6 +1057,7 @@ mod tests {
 			&[],
 			Mode {
 				stopwatch: Timing::Up,
+				lever: true,
 				..Mode::default()
 			},
 		);
@@ -1047,6 +1078,7 @@ mod tests {
 			&[0, 6],
 			Mode {
 				stopwatch: Timing::Timing,
+				lever: true,
 				..Mode::default()
 			},
 		);
@@ -1067,11 +1099,26 @@ mod tests {
 				&[0, 6],
 				Mode {
 					stopwatch: Timing::Up,
+					lever: true,
 					..Mode::default()
 				}
 			)
 			.contains(&(0, true, 100))
 		);
+		// A run up, the speed is read as the stopwatch's clock, and nothing else is: a host's
+		// reads must not thin it (PR #12 review). Merely up, it waits for a standstill at the
+		// panel's own rank.
+		let clock = |stopwatch: Timing| -> std::vec::Vec<u16> {
+			let mode = Mode {
+				stopwatch,
+				lever: true,
+				..Mode::default()
+			};
+			plan.rates_in(&[0, 6], &[0, 1], mode).filter(|r| r.timing).map(|r| r.channel).collect()
+		};
+		assert_eq!(clock(Timing::Timing), [5]);
+		assert_eq!(clock(Timing::Up), [] as [u16; 0]);
+		assert_eq!(clock(Timing::Off), [] as [u16; 0]);
 	}
 
 	#[test]
