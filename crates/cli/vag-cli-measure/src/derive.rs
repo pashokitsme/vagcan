@@ -35,7 +35,7 @@
 //! threshold-found window makes the cost positive by construction and reports
 //! one where no shift happened.
 
-use super::types::{Seconds, States, Track};
+use super::types::{Seconds, States, Track, at_least, at_most};
 
 /// Where the fitting window sits relative to the sample it is reported for.
 ///
@@ -98,8 +98,9 @@ pub fn slope(track: &Track, index: usize, window: Seconds, scheme: Scheme) -> Op
 	// The track is pushed in time order, so the window is a contiguous range
 	// and can be found by bisection rather than by scanning the whole run once
 	// per sample.
-	let from = track.t.partition_point(|probe| *probe < lo);
-	let to = track.t.partition_point(|probe| *probe <= hi);
+	// Both ends are the window's, however `f64` rounded `centre ± window`.
+	let from = track.t.partition_point(|probe| !at_least(*probe, lo));
+	let to = track.t.partition_point(|probe| at_most(*probe, hi));
 	if to < from || to - from < MIN_FIT_SAMPLES {
 		return None;
 	}
@@ -245,7 +246,9 @@ pub fn start(track: &Track) -> Option<Start> {
 /// car gained no speed across it and there is nothing for the model to reach
 /// back through.
 fn constant_jerk_launch(track: &Track, first: usize, t_first: Seconds) -> Option<Seconds> {
-	let last = track.t.partition_point(|probe| *probe <= t_first + START_FIT_S);
+	// A sample exactly `START_FIT_S` after the first is in, as the board has it in whole
+	// milliseconds (`vag-dash-render`'s `after_ms <= START_FIT_MS`), however `f64` rounds the sum.
+	let last = track.t.partition_point(|probe| at_most(*probe, t_first + START_FIT_S));
 
 	let mut xs = Vec::new();
 	let mut ys = Vec::new();
@@ -318,7 +321,7 @@ pub fn peak(series: &[Slope], tau: Seconds, window: Seconds) -> Option<Peak> {
 	let eligible: Vec<&Slope> = series.iter().filter(|s| s.span >= floor).collect();
 	let top = eligible.iter().copied().max_by(|x, y| x.a.total_cmp(&y.a))?;
 
-	let near: Vec<&Slope> = eligible.iter().copied().filter(|s| (s.t - top.t).abs() <= tau).collect();
+	let near: Vec<&Slope> = eligible.iter().copied().filter(|s| at_most((s.t - top.t).abs(), tau)).collect();
 	let count = near.len() as f64;
 	let value = near.iter().map(|s| s.a).sum::<f64>() / count;
 	let variance = near.iter().map(|s| s.sigma * s.sigma).sum::<f64>();
@@ -585,7 +588,10 @@ fn deficit_sigma(noise_floor: f64, window: Seconds) -> f64 {
 /// several looks at one number, so under a steady stretch they must agree more
 /// closely than any one of them is known.
 fn steady_mean(t: &[Seconds], v: &[f64], from: Seconds, to: Seconds, floor: f64) -> Option<f64> {
-	let inside: Vec<f64> = (0..t.len()).filter(|&i| t[i] >= from && t[i] <= to).map(|i| v[i]).collect();
+	let inside: Vec<f64> = (0..t.len())
+		.filter(|&i| at_least(t[i], from) && at_most(t[i], to))
+		.map(|i| v[i])
+		.collect();
 	if inside.len() < 2 {
 		return None;
 	}
@@ -947,6 +953,49 @@ mod tests {
 			assert!(launch.latest > 0.0, "{name}: the straight line falls short: {launch:?}");
 			assert!(launch.t > launch.earliest && launch.t < launch.latest, "{name}");
 		}
+	}
+
+	#[test]
+	fn a_sample_exactly_at_the_end_of_the_fit_window_is_in_it_whatever_f64_makes_of_the_sum() {
+		// The board counts integer milliseconds and keeps a sample 400 ms after the first
+		// moving one (`after_ms <= START_FIT_MS`), and so must this: in seconds, 2.3 + 0.4 is
+		// 2.6999999999999997, and the sample at 2.7 fell out of the window — three moving
+		// samples became two, and the launch was lost (review, 2026-09-27).
+		let track_from = |samples: [(Seconds, f64); 4]| {
+			let mut track = Track::default();
+			for (t, v) in samples {
+				track.push(t, v);
+			}
+			track
+		};
+		let late = track_from([(2.0, 0.0), (2.3, 1.0), (2.5, 4.0), (2.7, 9.0)]);
+		let early = track_from([(-0.3, 0.0), (0.0, 1.0), (0.2, 4.0), (0.4, 9.0)]);
+		let (late, early) = (start(&late).expect("2.7 is in the window"), start(&early).expect("0.4 is in the window"));
+		// Where the clock started does not move the launch against the first moving sample.
+		assert!(((late.t - 2.3) - early.t).abs() < 1e-9, "{late:?} against {early:?}");
+		assert!(((late.earliest - 2.3) - early.earliest).abs() < 1e-9, "{late:?} against {early:?}");
+	}
+
+	#[test]
+	fn a_sample_exactly_a_window_back_is_in_the_least_squares_window() {
+		// `[t − W, t]`, both ends: at 2.7 with W = 0.4 the window starts at 2.3, which
+		// `2.7 - 0.4` puts a hair after 2.3.
+		let mut track = Track::default();
+		for (t, v) in [(2.3, 1.0), (2.5, 2.0), (2.7, 3.0)] {
+			track.push(t, v);
+		}
+		let fit = slope(&track, 2, 0.4, Scheme::Causal).expect("three samples in [2.3, 2.7]");
+		assert!((fit.a - 5.0).abs() < 1e-9, "{fit:?}");
+	}
+
+	#[test]
+	fn a_neighbour_exactly_tau_away_and_a_fit_exactly_at_a_baseline_end_are_counted() {
+		// |2.3 - 2.7| is 0.40000000000000036 and 2.3 + 0.4 is 2.6999999999999997: each is at
+		// the end, and each end is the window's.
+		let fit = |t: Seconds, a: f64| Slope { a, t, span: 0.3, sigma: 0.0 };
+		let top = peak(&[fit(2.3, 2.0), fit(2.7, 4.0)], 0.4, 0.3).unwrap();
+		assert!((top.value - 3.0).abs() < 1e-12, "{top:?}");
+		assert_eq!(steady_mean(&[2.5, 2.7], &[1.0, 1.0], 2.3, 2.3 + 0.4, 1.0), Some(1.0));
 	}
 
 	#[test]
