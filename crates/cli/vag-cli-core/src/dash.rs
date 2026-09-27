@@ -543,12 +543,18 @@ fn parse_stopwatch(
 		.ok_or_else(|| Error::Parse("dash.toml: stopwatch must be one [stopwatch] table".to_string()))?;
 	let speed = Reference::parse(&string(table.get("speed"), "[stopwatch] speed")?)?;
 	// Compared as the board holds it, in `f32`: a factor too small for one would reach the
-	// board as the zero that means "not measured".
+	// board as the zero that means "not measured", and one too large as an infinity.
 	let km_h_per_unit = match number(table.get("km_h_per_unit")) {
 		Some(v) if v.is_finite() && (v == 0.0 || (v > 0.0 && (v as f32).is_finite() && (v as f32) > 0.0)) => v,
 		Some(v) if v > 0.0 && (v as f32) == 0.0 => {
 			return Err(Error::Parse(format!(
 				"dash.toml: [stopwatch] km_h_per_unit {v} is too small for the board, which would hold it as 0 — not measured"
+			)));
+		}
+		Some(v) if v > 0.0 && (v as f32).is_infinite() => {
+			return Err(Error::Parse(format!(
+				"dash.toml: [stopwatch] km_h_per_unit {v:e} is too large for the board, which holds it as a 32-bit float (at most {:e})",
+				f32::MAX
 			)));
 		}
 		_ => {
@@ -1059,13 +1065,7 @@ fn resolve_channel(
 			};
 			return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
 		}
-		(many, _) => {
-			let names = many
-				.iter()
-				.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
-				.collect();
-			return Err(Error::Ambiguous(wanted.reference.clone(), names));
-		}
+		(many, _) => return Err(Error::Ambiguous(wanted.reference.clone(), many.iter().map(|c| row_name(c)).collect())),
 	};
 	let def = found.def.as_ref().expect("filtered on def");
 	let ReadId::Uds(did) = def.address;
@@ -1129,6 +1129,12 @@ fn resolve_channel(
 		source,
 		setpoint: None,
 	})
+}
+
+/// One row as an [`Error::Ambiguous`] lists it: what to write instead — its identifier and bit
+/// offset — and its name.
+fn row_name(c: &poll::Channel) -> String {
+	format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label())
 }
 
 /// Resolve an input against what the car reported and what the project knows.
@@ -1266,7 +1272,15 @@ pub fn build(
 	// as channels of their own, on no page, read only for the lever.
 	let stalk = match &input.stalk {
 		None => None,
-		Some(wanted) => Some(resolve_stalk(wanted, &mut channels, &offered, answered, units, extracted, &mut notes)?),
+		Some(wanted) => Some(resolve_stalk(
+			wanted,
+			&mut channels,
+			&offered,
+			answered,
+			units,
+			Sources { store, extracted },
+			&mut notes,
+		)?),
 	};
 	if stopwatch.is_some() && stalk.is_none() {
 		notes.push("stopwatch: there is no [stalk], and its `measure` is the only way onto the page".to_string());
@@ -1496,13 +1510,22 @@ fn resolve_stopwatch(
 			wanted.speed, channel.factor
 		)));
 	}
-	// The launch fit wants `MIN_FIT_SAMPLES` moving samples inside `START_FIT_MS`; read slower
-	// than that, every run crosses its marks and has no time, and only the car would say so.
-	let period_ms = 1000.0 / channel.hz;
-	if period_ms * (MIN_FIT_SAMPLES - 1) as f64 >= START_FIT_MS as f64 {
-		let fastest = 1000.0 * (MIN_FIT_SAMPLES - 1) as f64 / START_FIT_MS as f64;
+	// The launch fit wants `MIN_FIT_SAMPLES` moving samples in its first `START_FIT_MS`, both
+	// ends included, counted from the first moving one: read every `p` ms, that is the samples
+	// at 0, p, 2p, …. The fit alone needs `MIN_FIT_SAMPLES - 1` periods in the window; one
+	// answer late or lost costs a period, so `MIN_FIT_SAMPLES` of them have to fit. Read slower,
+	// one late answer loses the launch, and the run has crossings and no time — which only the
+	// car would show. Checked on the period the board polls at, not on `1000 / hz`: it rounds.
+	let longest_ms = START_FIT_MS / MIN_FIT_SAMPLES as u64;
+	let period_ms = board_period_ms(channel.hz);
+	if u64::from(period_ms) > longest_ms {
+		// The slowest rate the board polls every `longest_ms` or sooner, in tenths of a hertz,
+		// rounded up: its rounding takes `1000 / hz` below `longest_ms + 0.5` to `longest_ms`.
+		let slowest_hz = (10_000.0 / (longest_ms as f64 + 0.5)).ceil() / 10.0;
 		return Err(Error::Stopwatch(format!(
-			"speed {} is read at {} Hz — the launch fit needs {MIN_FIT_SAMPLES} samples in its first {START_FIT_MS} ms, so faster than {fastest} Hz; give its [[channel]] an hz, 50 or more",
+			"speed {} is read every {period_ms} ms (hz = {}) — the launch fit needs {MIN_FIT_SAMPLES} samples in its first \
+			 {START_FIT_MS} ms even when one answer is late, so a reading every {longest_ms} ms or sooner: give its [[channel]] \
+			 an hz of {slowest_hz} or more; 50 is recommended",
 			wanted.speed, channel.hz
 		)));
 	}
@@ -1520,6 +1543,29 @@ fn resolve_stopwatch(
 		km_h_per_unit: wanted.km_h_per_unit,
 		marks: wanted.marks.clone(),
 	})
+}
+
+/// Every how many milliseconds the board reads a channel asked for at `hz`: the board's own
+/// rule (`vag_dash_render::plan::Channel::period_ms`), on the `f32` the plan narrows `hz` to,
+/// so a check on it is a check on what the board does.
+fn board_period_ms(hz: f64) -> u32 {
+	let channel = vag_dash_render::plan::Channel {
+		unit: 0,
+		did: 0,
+		bit_offset: 0,
+		bit_length: 0,
+		signed: false,
+		big_endian: false,
+		factor: 0.0,
+		offset: 0.0,
+		decimals: 0,
+		unit_text: "",
+		label: "",
+		proven: false,
+		hz: hz as f32,
+		setpoint: None,
+	};
+	channel.period_ms()
 }
 
 /// One enumerated field the car's variant declares, found by `pick`, as a plan channel on
@@ -1560,35 +1606,116 @@ fn state_channel(found: &poll::Channel, label: String) -> Channel {
 }
 
 /// A state by the name the project gives it, as its place in the field's list. A name the
-/// field gives two states is refused: the board would press on one of them and never on
-/// the other.
+/// field gives two bands is refused: the board takes a state as one band, its place in the
+/// list, and would react to one of them and never to the other. The message names the bands,
+/// so the owner sees that it is the project's layout and not a typo.
+///
+/// Names are compared trimmed on both sides ([`same_name`]), and listed trimmed, as the
+/// owner can type them.
 fn state_index(levels: &[Level], name: &str, key: &str, field: &str) -> Result<u16, Error> {
-	let at = levels.iter().position(|l| l.name() == name).ok_or_else(|| {
-		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name())).collect();
+	let at = levels.iter().position(|l| same_name(l.name(), name)).ok_or_else(|| {
+		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name().trim())).collect();
 		Error::Stalk(format!(
 			"{key}: {name:?} is not a state of {field:?} — its states are {}",
 			names.join(", ")
 		))
 	})?;
-	let count = levels.iter().filter(|l| l.name() == name).count();
-	if count > 1 {
+	let bands: Vec<String> = levels.iter().filter(|l| same_name(l.name(), name)).map(band_text).collect();
+	if bands.len() > 1 {
+		let what = if key.ends_with("_off") { "an off state" } else { "a button" };
 		return Err(Error::Stalk(format!(
-			"{key}: {field:?} has {count} states named {name:?} — which one is the button cannot be told"
+			"{key}: {:?} names {} bands of {field:?} ({}) — the board takes {what} as one band, so this state cannot be used yet",
+			name.trim(),
+			bands.len(),
+			bands.join(", ")
 		)));
 	}
 	Ok(at as u16)
 }
 
+/// A level's raw values as a person reads them: `51–101`, `7` for a point, and an unbounded
+/// end as the way it runs.
+fn band_text(level: &Level) -> String {
+	match (level.lower(), level.upper()) {
+		(lower, upper) if lower == upper => lower.to_string(),
+		(i32::MIN, i32::MAX) => "any value".to_string(),
+		(i32::MIN, upper) => format!("up to {upper}"),
+		(lower, i32::MAX) => format!("{lower} and up"),
+		(lower, upper) => format!("{lower}–{upper}"),
+	}
+}
+
+/// Whether a name in `dash.toml` is the project's name. Trimmed on both sides: `dash.toml` is
+/// trimmed when it is read, and an ODIS project spells some names with a space at an end
+/// (`"Fahrbereitschaft "`) that nobody can see, so compared as written such a field or state
+/// could never be named. Two names the project tells apart by that space alone are then
+/// one name, which the callers refuse as a name given twice.
+fn same_name(project: &str, owner: &str) -> bool {
+	project.trim() == owner.trim()
+}
+
+/// The project a `[stalk]` is resolved against: the proven rows and what the project declares.
+#[derive(Clone, Copy)]
+struct Sources<'a> {
+	store: &'a CatalogStore,
+	extracted: &'a Extracted,
+}
+
+/// **A state is a band, and the lever needs the band.** A switch read as a voltage answers
+/// inside its band, rarely on its lower end, so a state kept as one value matches nearly
+/// nothing and the lever never presses. Two places can have lost the bands, and both are
+/// refused with what to do:
+///
+/// - the project's cache, written before each level kept its upper end — for the whole unit;
+/// - a proven row in `measurements/`, which wins at its field ([`crate::extracted::tagged`])
+///   and was written before state ranges: every state a single value where the project's
+///   own row for the field gives bands. A field the project itself gives as single values —
+///   a digital status — is one, proven or not.
+fn states_keep_their_bands(key: &str, found: &poll::Channel, identity: &UnitIdentity, sources: Sources<'_>) -> Result<(), Error> {
+	let (odx_name, version) = (identity.odx_name.as_deref(), identity.odx_version.as_deref());
+	if sources.extracted.levels_predate_bounds(odx_name, version) {
+		return Err(Error::Stalk(format!(
+			"unit {:03X}: the project's cache keeps only the lower end of each state — run `vagcan setup` again, so a reading anywhere in a state's band is that state",
+			identity.request
+		)));
+	}
+	let Some(def) = found.def.as_ref().filter(|_| found.proven) else {
+		return Ok(());
+	};
+	let declared = sources.extracted.declared_at(odx_name, version, def);
+	let enum_levels = |def: &vag_data_labels::catalog::MeasurementDef| match &def.scaling {
+		Scaling::Enum { levels } => Some(levels.clone()),
+		_ => None,
+	};
+	let single = |levels: &[Level]| levels.iter().all(|l| l.lower() == l.upper());
+	match (enum_levels(def), declared.as_ref().and_then(enum_levels)) {
+		(Some(proven), Some(declared)) if single(&proven) && !single(&declared) => {
+			let file = sources
+				.store
+				.file_for_unit(identity.part_number.as_deref(), odx_name)
+				.map_or_else(|| "the unit's proven catalog".to_string(), |path| path.display().to_string());
+			let name = def.name.trim();
+			Err(Error::Stalk(format!(
+				"{key}: the proven row for {name:?} in {file} holds each state as a single value — it predates state ranges, and \
+				 the project gives {name:?} bands, so a reading inside one would be no state; write its states as \
+				 [lower, upper, \"name\"] or remove the row"
+			)))
+		}
+		_ => Ok(()),
+	}
+}
+
 /// `[stalk]` against the project and the car: every name the owner wrote is the project's
 /// own, for the variant the car reported, and the states come with the intervals the
-/// project gives them. The three fields are appended to `channels`.
+/// project gives them ([`states_keep_their_bands`]). The three fields are appended to
+/// `channels`.
 fn resolve_stalk(
 	wanted: &StalkInput,
 	channels: &mut Vec<Channel>,
 	offered: &[poll::Channel],
 	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
-	extracted: &Extracted,
+	sources: Sources<'_>,
 	notes: &mut Vec<String>,
 ) -> Result<Stalk, Error> {
 	let read = Reference::Field {
@@ -1596,16 +1723,8 @@ fn resolve_stalk(
 		did: wanted.did,
 		bit_offset: 0,
 	};
-	for request in [wanted.request, wanted.cruise.request()] {
-		let identity = units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request))?;
-		// A cache from before each level kept its upper end has every state as its lower end
-		// alone: a switch read as a voltage answers inside its band and would match nothing.
-		if extracted.levels_predate_bounds(identity.odx_name.as_deref(), identity.odx_version.as_deref()) {
-			return Err(Error::Stalk(format!(
-				"unit {request:03X}: the project's cache keeps only the lower end of each state — run `vagcan setup` again, so a reading anywhere in a state's band is that state"
-			)));
-		}
-	}
+	let identity_of = |request: u16| units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request));
+	let (lever_unit, cruise_unit) = (identity_of(wanted.request)?, identity_of(wanted.cruise.request())?);
 	if answered.and_then(|a| a.saw(wanted.request, wanted.did)) == Some(false) {
 		return Err(Error::NotAnswered(read));
 	}
@@ -1614,11 +1733,18 @@ fn resolve_stalk(
 		return Err(Error::Stalk(format!("read {read}: the car's variant declares no such identifier")));
 	}
 	let field = |key: &str, name: &str| -> Result<(&poll::Channel, &[Level]), Error> {
-		let named: Vec<&&poll::Channel> = in_read.iter().filter(|c| c.def.as_ref().is_some_and(|d| d.name == name)).collect();
+		let named: Vec<&&poll::Channel> = in_read
+			.iter()
+			.filter(|c| c.def.as_ref().is_some_and(|d| same_name(&d.name, name)))
+			.collect();
 		let found = match named.as_slice() {
 			[one] => **one,
 			[] => {
-				let names: Vec<String> = in_read.iter().filter_map(|c| c.def.as_ref()).map(|d| format!("{:?}", d.name)).collect();
+				let names: Vec<String> = in_read
+					.iter()
+					.filter_map(|c| c.def.as_ref())
+					.map(|d| format!("{:?}", d.name.trim()))
+					.collect();
 				return Err(Error::Stalk(format!(
 					"{key}: {read} has no field named {name:?} — its fields are {}",
 					names.join(", ")
@@ -1627,6 +1753,7 @@ fn resolve_stalk(
 			many => return Err(Error::Stalk(format!("{key}: {read} has {} fields named {name:?}", many.len()))),
 		};
 		let levels = levels_of(found).ok_or_else(|| Error::Stalk(format!("{key}: {name:?} is a quantity, not a list of states")))?;
+		states_keep_their_bands(key, found, lever_unit, sources)?;
 		Ok((found, levels))
 	};
 	let (rocker, rocker_levels) = field("rocker", &wanted.rocker)?;
@@ -1659,13 +1786,24 @@ fn resolve_stalk(
 			)));
 		}
 		([], _) => return Err(Error::Stalk(format!("cruise {}: a quantity, not a list of states", wanted.cruise))),
-		(many, _) => return Err(Error::Ambiguous(wanted.cruise.clone(), many.iter().map(|c| c.label()).collect())),
+		(many, _) => return Err(Error::Ambiguous(wanted.cruise.clone(), many.iter().map(|c| row_name(c)).collect())),
 	};
+	// The gate opens only when two answers say off: the switch's, and the cruise status's. A
+	// cruise status read out of the lever's own identifier is that one answer again, however
+	// it is spelled — compared as resolved.
+	if cruise.request == wanted.request && cruise.did == wanted.did {
+		return Err(Error::Stalk(format!(
+			"cruise {} is in read's own identifier {read} — the lever is used only when two answers say cruise is off, and one \
+			 identifier is one answer; name the cruise status the unit that runs cruise control reports",
+			wanted.cruise
+		)));
+	}
 	if let Some(ReadId::Uds(did)) = cruise.def.as_ref().map(|d| d.address)
 		&& answered.and_then(|a| a.saw(cruise_request, did)) == Some(false)
 	{
 		return Err(Error::NotAnswered(wanted.cruise.clone()));
 	}
+	states_keep_their_bands("cruise", cruise, cruise_unit, sources)?;
 	let cruise_levels = levels_of(cruise).expect("picked on levels");
 	let cruise_name = cruise.label();
 	let cruise_off = state_index(cruise_levels, &wanted.cruise_off, "cruise_off", &cruise_name)?;
@@ -3225,12 +3363,12 @@ mod tests {
 		);
 	}
 
-	/// The steering column's unit in the fixture. Its shape is the reference car's: `70C` is
-	/// the column's address across VAG, and the identifier, the two bytes at 64 and 72 and
-	/// the six-state ladder are the reference car's `1105` — several enumerated fields in
-	/// one answer, a byte each. Fixture values only: the code path takes none of them, every
+	/// The lever's unit and identifier in the fixture, made up for it: no car's column, no
+	/// car's identifier. What the fixture keeps is only the shape a lever has — several
+	/// enumerated fields in one answer, a byte each. The code path takes none of these: every
 	/// one comes from `[stalk]` and the project.
-	const STALK_UNIT: u16 = 0x70C;
+	const STALK_UNIT: u16 = 0x75A;
+	const STALK_DID: u16 = 0x4C21;
 
 	fn state_reading(did: u16, name: &str, text_id: &str, bit_offset: u32, bit_length: u32, levels: Vec<Level>) -> Reading {
 		Reading {
@@ -3240,23 +3378,37 @@ mod tests {
 		}
 	}
 
-	/// A neutral ladder: states tiling a byte, as a switch read as a voltage has them.
-	fn ladder(names: [&str; 6]) -> Vec<Level> {
-		let bounds = [(0, 74), (75, 110), (111, 145), (146, 181), (182, 221), (222, 255)];
-		bounds
+	/// A neutral ladder: states tiling a byte in equal bands, as a switch read as a voltage has
+	/// states tiling its range. The bands are arithmetic, not any car's.
+	fn ladder(names: &[&str]) -> Vec<Level> {
+		let n = names.len() as i32;
+		names
 			.iter()
-			.zip(names)
-			.map(|((lower, upper), name)| Level::range(*lower, *upper, name))
+			.enumerate()
+			.map(|(i, name)| {
+				let i = i as i32;
+				Level::range(i * 256 / n, (i + 1) * 256 / n - 1, *name)
+			})
 			.collect()
 	}
 
-	const LEVER: &str = "[stalk]\nread = \"70C:1105\"\nrocker = \"Rocker\"\nswitch = \"Switch\"\nnext = \"plus\"\nprevious = \"minus\"\nmeasure = \"limit\"\nswitch_off = \"off\"\ncruise = \"01:2001\"\ncruise_off = \"off\"\n";
+	const LEVER: &str = "[stalk]\nread = \"75A:4C21\"\nrocker = \"Rocker\"\nswitch = \"Switch\"\nnext = \"plus\"\nprevious = \"minus\"\nmeasure = \"limit\"\nswitch_off = \"off\"\ncruise = \"01:2001\"\ncruise_off = \"off\"\n";
 	const WATCH: &str = "[stopwatch]\nspeed = \"01:IDE00010\"\nkm_h_per_unit = 0.0\nmarks = [60, 100]\n";
+
+	/// What a lever test adds to the fixture of [`build_with_lever_in`].
+	#[derive(Default)]
+	struct Extra<'a> {
+		/// What the car's survey saw; `None` is a survey that claims nothing.
+		answered: Option<&'a poll::Answered>,
+		/// More rows, each on [`ENGINE`] or on [`STALK_UNIT`].
+		rows: Vec<(u16, Reading)>,
+	}
 
 	/// An engine with a speed, a speed with an offset, a cruise status and a quantity; a
 	/// steering column with a rocker, a switch and a voltage in one identifier. `input` is
 	/// the whole `[stalk]` / `[stopwatch]` part.
-	fn build_with_lever_in(dir: &Path, input: &str, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+	fn build_with_lever_in(dir: &Path, input: &str, extra: Extra<'_>, cache_written: impl FnOnce(&Path)) -> Result<Built, Error> {
+		let more = |unit: u16| extra.rows.iter().filter(move |(u, _)| *u == unit).map(|(_, r)| r.clone());
 		let extracted = extracted_with(
 			dir,
 			&[
@@ -3277,21 +3429,24 @@ mod tests {
 							vec![Level::point(0, "off"), Level::point(1, "standby"), Level::point(2, "passive")],
 						),
 						reading(0x2002, "Quantity", "IDE00021", 0, 16, false, true, 1.0, 0.0),
-					],
+					]
+					.into_iter()
+					.chain(more(ENGINE))
+					.collect(),
 				),
 				(
 					"EV_Stalk_001",
 					vec![
-						reading(0x1105, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
-						state_reading(0x1105, "Rocker", "", 64, 8, ladder(["shorted", "plus", "minus", "limit", "rest", "open"])),
-						state_reading(0x1105, "Switch", "", 72, 8, ladder(["shorted", "on", "cancel", "off", "lifted", "open"])),
+						reading(STALK_DID, "Voltage", "", 0, 8, false, true, 0.1, 0.0),
+						state_reading(STALK_DID, "Rocker", "", 16, 8, ladder(&["rest", "plus", "minus", "limit", "open"])),
+						state_reading(STALK_DID, "Switch", "", 24, 8, ladder(&["open", "off", "on", "shorted"])),
 						// What the matching rule is for: a catch-all listed first, bands out of
 						// order, two that overlap, a second unbounded one.
 						state_reading(
-							0x1105,
+							STALK_DID,
 							"Messy",
 							"",
-							80,
+							32,
 							8,
 							vec![
 								Level::range(i32::MIN, i32::MAX, "any"),
@@ -3304,7 +3459,10 @@ mod tests {
 								Level::range(140, 150, "twice"),
 							],
 						),
-					],
+					]
+					.into_iter()
+					.chain(more(STALK_UNIT))
+					.collect(),
 				),
 			],
 			&[],
@@ -3320,14 +3478,18 @@ mod tests {
 			&store,
 			&extracted,
 			&[identity(ENGINE, "PART1", "EV_Test"), identity(STALK_UNIT, "PART2", "EV_Stalk")],
-			None,
+			extra.answered,
 			Language::En,
 		)
 	}
 
 	fn build_with_lever(input: &str) -> Result<Built, Error> {
+		build_with_lever_and(input, Extra::default())
+	}
+
+	fn build_with_lever_and(input: &str, extra: Extra<'_>) -> Result<Built, Error> {
 		let here = tempfile::tempdir().unwrap();
-		build_with_lever_in(here.path(), input, |_| {})
+		build_with_lever_in(here.path(), input, extra, |_| {})
 	}
 
 	#[test]
@@ -3339,20 +3501,20 @@ mod tests {
 		let rocker = &plan.channels[3];
 		assert_eq!(
 			(rocker.unit, rocker.did, rocker.bit_offset, rocker.bit_length),
-			(STALK_UNIT, 0x1105, 64, 8)
+			(STALK_UNIT, STALK_DID, 16, 8)
 		);
 		assert_eq!((rocker.factor, rocker.offset), (1.0, 0.0), "a state is looked up by its raw value");
-		assert_eq!(plan.channels[4].bit_offset, 72, "the switch, from the same answer");
+		assert_eq!(plan.channels[4].bit_offset, 24, "the switch, from the same answer");
 		assert_eq!((plan.channels[5].did, plan.channels[5].bit_length), (0x2001, 16));
 		assert_eq!(
 			(stalk.next, stalk.previous, stalk.measure, stalk.switch_off, stalk.cruise_off),
-			(1, 2, 3, 3, 0)
+			(1, 2, 3, 1, 0)
 		);
 		assert_eq!(
 			stalk.rocker_states[1],
 			State {
-				lower: 75,
-				upper: 110,
+				lower: 51,
+				upper: 101,
 				name: "plus".to_string()
 			},
 			"the interval, not its lower end"
@@ -3432,13 +3594,254 @@ mod tests {
 	fn a_button_named_by_a_state_the_field_gives_twice_is_refused() {
 		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1).replacen("\"plus\"", "\"twice\"", 1);
 		let why = build_with_lever(&lever).unwrap_err().to_string();
-		assert!(why.contains("has 2 states named \"twice\""), "{why}");
+		assert_eq!(
+			why,
+			"[stalk] next: \"twice\" names 2 bands of \"Messy\" (120–130, 140–150) — the board takes a button as one band, so \
+			 this state cannot be used yet"
+		);
+		// An off state is not a button, and the message does not call it one; a point is its
+		// value alone, an unbounded end says which way it runs.
+		let split = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(
+					STALK_DID,
+					"Split",
+					"",
+					40,
+					8,
+					vec![
+						Level::range(i32::MIN, -1, "off"),
+						Level::point(7, "off"),
+						Level::range(200, i32::MAX, "off"),
+						Level::point(8, "on"),
+					],
+				),
+			)],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(&LEVER.replacen("\"Switch\"", "\"Split\"", 1), split)
+			.unwrap_err()
+			.to_string();
+		assert_eq!(
+			why,
+			"[stalk] switch_off: \"off\" names 3 bands of \"Split\" (up to -1, 7, 200 and up) — the board takes an off state \
+			 as one band, so this state cannot be used yet"
+		);
+		assert_eq!(band_text(&Level::range(i32::MIN, i32::MAX, "any")), "any value");
+	}
+
+	/// Rows whose ODIS names carry a space at one end, as nine enumerated fields of one real
+	/// project do: a rocker with a trailing one, a switch with a leading one, states with both,
+	/// and a cruise status whose off state ends in one.
+	fn spaced() -> Extra<'static> {
+		Extra {
+			rows: vec![
+				(
+					STALK_UNIT,
+					state_reading(STALK_DID, "Spaced ", "", 40, 8, ladder(&[" up", "down ", " idle ", "rest"])),
+				),
+				(STALK_UNIT, state_reading(STALK_DID, " Lead", "", 48, 8, ladder(&["off ", " on"]))),
+				(
+					ENGINE,
+					state_reading(
+						0x2003,
+						"Cruise spaced",
+						"IDE00022",
+						0,
+						8,
+						vec![Level::point(0, " off "), Level::point(1, "on")],
+					),
+				),
+			],
+			..Extra::default()
+		}
+	}
+
+	const SPACED: &str = "[stalk]\nread = \"75A:4C21\"\nrocker = \"Spaced \"\nswitch = \"Lead\"\nnext = \"up\"\nprevious = \"down\"\nmeasure = \"idle\"\nswitch_off = \"off\"\ncruise = \"01:2003\"\ncruise_off = \"off\"\n";
+
+	/// `dash.toml` is trimmed when it is read, so a name is compared trimmed on the project's
+	/// side too — or a field the project spells `"Rocker "` could never be named at all.
+	#[test]
+	fn a_name_the_project_spells_with_a_space_at_an_end_is_matched_trimmed() {
+		let built = build_with_lever_and(SPACED, spaced()).unwrap();
+		let stalk = built.plan.stalk.as_ref().expect("a stalk");
+		let (rocker, switch) = (
+			&built.plan.channels[usize::from(stalk.rocker)],
+			&built.plan.channels[usize::from(stalk.switch)],
+		);
+		assert_eq!((rocker.bit_offset, switch.bit_offset), (40, 48));
+		assert_eq!(
+			(stalk.next, stalk.previous, stalk.measure, stalk.switch_off, stalk.cruise_off),
+			(0, 1, 2, 0, 0)
+		);
+		// What the owner is shown to choose from is what they can type: trimmed.
+		let why = build_with_lever_and(&SPACED.replacen("\"Spaced \"", "\"Spice\"", 1), spaced())
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.contains("\"Spaced\"") && why.contains("\"Lead\"") && !why.contains("\"Spaced \""),
+			"{why}"
+		);
+		let why = build_with_lever_and(&SPACED.replacen("\"up\"", "\"upp\"", 1), spaced())
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains("its states are \"up\", \"down\", \"idle\", \"rest\""), "{why}");
+	}
+
+	/// Two names the project tells apart only by a space are one name once trimmed.
+	#[test]
+	fn two_fields_or_two_states_equal_once_trimmed_are_refused() {
+		let twin = Extra {
+			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Rocker ", "", 40, 8, ladder(&["a", "b"])))],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(LEVER, twin).unwrap_err().to_string();
+		assert!(why.contains("rocker: 75A:4C21 has 2 fields named \"Rocker\""), "{why}");
+		let twin = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(STALK_DID, "Twin", "", 40, 8, ladder(&["plus", "plus ", "minus", "limit"])),
+			)],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(&LEVER.replacen("\"Rocker\"", "\"Twin\"", 1), twin)
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains("next: \"plus\" names 2 bands of \"Twin\" (0–63, 64–127)"), "{why}");
+	}
+
+	/// A survey that asked `unit` for everything in `asked` and heard back only `heard`.
+	fn survey_of(unit: u16, asked: std::ops::RangeInclusive<u16>, heard: &[u16]) -> poll::Answered {
+		let mut answered = poll::Answered::default();
+		answered.units.insert(unit);
+		answered.asked.insert(unit, vec![asked]);
+		answered.dids.extend(heard.iter().map(|did| (unit, *did)));
+		answered
+	}
+
+	/// The refusals only a survey or a second row reaches, each one: the helper's survey claims
+	/// nothing, so none of them was ever exercised (review, 2026-09-27).
+	#[test]
+	fn the_lever_refusals_a_survey_or_a_second_row_decides_are_each_reached() {
+		// A unit the survey has nothing about: the column's, then the cruise status's.
+		let why = build_with_lever(&LEVER.replacen("75A:4C21", "75B:4C21", 1)).unwrap_err();
+		assert_eq!(why, Error::UnknownUnit(0x75B));
+		let why = build_with_lever(&LEVER.replacen("01:2001", "02:2001", 1)).unwrap_err();
+		assert_eq!(why, Error::UnknownUnit(GEARBOX));
+
+		// Asked and silent: the lever's identifier, then the cruise status's. Asked and heard
+		// is no refusal.
+		let heard = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[STALK_DID]);
+		let with = |answered| Extra {
+			answered: Some(answered),
+			..Extra::default()
+		};
+		build_with_lever_and(LEVER, with(&heard)).expect("the column answered");
+		let silent = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[]);
+		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
+		assert_eq!(why, Error::NotAnswered(Reference::parse("75A:4C21").unwrap()));
+		let heard = survey_of(ENGINE, 0x2000..=0x20FF, &[0x2001]);
+		build_with_lever_and(LEVER, with(&heard)).expect("the engine answered");
+		let silent = survey_of(ENGINE, 0x2000..=0x20FF, &[]);
+		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
+		assert_eq!(why, Error::NotAnswered(Reference::parse("01:2001").unwrap()));
+
+		// A field name the identifier gives twice, exactly.
+		let twice = Extra {
+			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Switch", "", 40, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(LEVER, twice).unwrap_err().to_string();
+		assert!(why.contains("switch: 75A:4C21 has 2 fields named \"Switch\""), "{why}");
+
+		// Two enumerated rows under one text id: which one is the cruise status is not told.
+		let why = build_with_lever_and(&LEVER.replacen("01:2001", "01:IDE00020", 1), second_cruise_status()).unwrap_err();
+		assert!(
+			matches!(&why, Error::Ambiguous(r, rows) if *r == Reference::parse("01:IDE00020").unwrap() && rows.len() == 2),
+			"{why:?}"
+		);
+	}
+
+	/// A second enumerated row under the cruise status's text id, on another identifier.
+	fn second_cruise_status() -> Extra<'static> {
+		Extra {
+			rows: vec![(
+				ENGINE,
+				state_reading(
+					0x2005,
+					"Cruise status",
+					"IDE00020",
+					0,
+					8,
+					vec![Level::point(0, "off"), Level::point(1, "on")],
+				),
+			)],
+			..Extra::default()
+		}
+	}
+
+	/// The message of an ambiguous cruise status says what to write instead, the way a
+	/// channel's does: each row's identifier and bit offset.
+	#[test]
+	fn an_ambiguous_cruise_status_lists_what_to_write_instead() {
+		let why = build_with_lever_and(&LEVER.replacen("01:2001", "01:IDE00020", 1), second_cruise_status())
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.ends_with("name one by identifier and bit offset: 2001@0 Cruise status, 2005@0 Cruise status"),
+			"{why}"
+		);
+		// What it says to write builds.
+		let lever = LEVER.replacen("01:2001", "01:2005@0", 1);
+		let built = build_with_lever_and(&lever, second_cruise_status()).unwrap();
+		let cruise = &built.plan.channels[usize::from(built.plan.stalk.unwrap().cruise)];
+		assert_eq!(cruise.did, 0x2005);
+	}
+
+	/// The gate wants two witnesses that cruise is off: the switch, and the engine's own
+	/// status. A `cruise` read out of the lever's own answer is one unit saying it twice.
+	#[test]
+	fn a_cruise_status_inside_the_levers_own_identifier_is_refused() {
+		let inside = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(STALK_DID, "Also cruise", "IDE00030", 56, 8, ladder(&["off", "on"])),
+			)],
+			..Extra::default()
+		};
+		for cruise in ["75A:4C21@24", "75A:IDE00030"] {
+			let lever = LEVER.replacen("\"01:2001\"", &format!("{cruise:?}"), 1);
+			let why = build_with_lever_and(
+				&lever,
+				Extra {
+					rows: inside.rows.clone(),
+					..Extra::default()
+				},
+			)
+			.unwrap_err()
+			.to_string();
+			assert!(
+				why.starts_with(&format!("[stalk] cruise {cruise} is in read's own identifier 75A:4C21")),
+				"{cruise}: {why}"
+			);
+		}
+		// Another identifier on the same unit is another answer.
+		let beside = Extra {
+			rows: vec![(STALK_UNIT, state_reading(0x4C22, "Beside", "", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
 
 	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
 	/// `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on an empty
 	/// plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` half of `to_rust`.
-	/// Built from this module's protocol-shaped fixture. `BLESS=1` rewrites it.
+	/// Built from this module's made-up fixture.
+	///
+	/// `BLESS=1 cargo test -p vag-cli-core generated_source` rewrites it; review the diff, then
+	/// **run the tests again**: `tests/generated_plan.rs` is compiled in the same run as the
+	/// rewrite, before it, and still sees the old file.
 	#[test]
 	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
 		// The rocker on the ladder with unbounded states, so their literals are compiled too.
@@ -3449,18 +3852,40 @@ mod tests {
 		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
 		let text = format!("{GENERATED_HEADER}{body}");
 		let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lever_plan.rs");
-		if std::env::var_os("BLESS").is_some() {
+		if blesses(std::env::var_os("BLESS").as_deref()) {
 			std::fs::write(&path, &text).unwrap();
 		}
 		let checked_in = std::fs::read_to_string(&path).unwrap_or_default();
 		assert!(
 			checked_in == text,
-			"{} is not what `to_rust` writes now — run `BLESS=1 cargo test -p vag-cli-core generated_source` and review the diff",
+			"{} is not what `to_rust` writes now — run `BLESS=1 cargo test -p vag-cli-core generated_source`, review the diff, \
+			 and run the tests again: tests/generated_plan.rs compiled the old file",
 			path.display()
 		);
 	}
 
-	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`.\n";
+	/// Whether `BLESS` asks for the golden file to be rewritten: `1` and nothing else, so a
+	/// `BLESS=0` left in a shell never rewrites it.
+	fn blesses(value: Option<&std::ffi::OsStr>) -> bool {
+		value == Some(std::ffi::OsStr::new("1"))
+	}
+
+	#[test]
+	fn only_bless_1_rewrites_the_golden_file() {
+		use std::ffi::OsStr;
+		assert!(blesses(Some(OsStr::new("1"))));
+		for no in [
+			None,
+			Some(OsStr::new("0")),
+			Some(OsStr::new("")),
+			Some(OsStr::new("true")),
+			Some(OsStr::new("1 ")),
+		] {
+			assert!(!blesses(no), "BLESS={no:?} rewrote the golden file");
+		}
+	}
+
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
@@ -3472,10 +3897,10 @@ mod tests {
 		for wanted in [
 			"use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};",
 			"use vag_dash_render::stalk::{StateIndex, States};",
-			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(3), cruise_off: StateIndex(0) } })",
+			"stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } })",
 			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS })",
-			"static STALK_ROCKER: [Band; 6] = [",
-			"\tBand { lower: 75, upper: 110 }, // \"plus\"",
+			"static STALK_ROCKER: [Band; 5] = [",
+			"\tBand { lower: 51, upper: 101 }, // \"plus\"",
 			"static MARKS: [u16; 2] = [60, 100];",
 		] {
 			assert!(rust.contains(wanted), "{wanted}\n{rust}");
@@ -3531,7 +3956,7 @@ mod tests {
 		assert!(why.contains("switch_off: \"Off\" is not a state of \"Switch\""), "{why}");
 		let why = refused("switch = \"Switch\"", "switch = \"Rocker\"");
 		assert!(why.contains("rocker and switch are both"), "{why}");
-		let why = refused("read = \"70C:1105\"", "read = \"70C:1106\"");
+		let why = refused("read = \"75A:4C21\"", "read = \"75A:4C22\"");
 		assert!(why.contains("declares no such identifier"), "{why}");
 		let why = refused("cruise = \"01:2001\"", "cruise = \"01:2002\"");
 		assert!(why.contains("cruise 01:2002: a quantity, not a list of states"), "{why}");
@@ -3559,12 +3984,20 @@ mod tests {
 			let why = refused("[60, 100]", marks);
 			assert!(why.contains(says), "{marks}: {why}");
 		}
-		for factor in ["-0.1", "\"fast\"", "1e40"] {
+		for factor in ["-0.1", "\"fast\"", "nan", "-inf"] {
 			let why = refused("0.0", factor);
 			assert!(why.contains("km_h_per_unit must be a number at or above 0"), "{factor}: {why}");
 		}
 		let why = refused("0.0", "1e-50");
 		assert!(why.contains("too small for the board"), "{why}");
+		// A number, and above 0: what is wrong is that the board's `f32` cannot hold it.
+		for factor in ["1e40", "inf"] {
+			let why = refused("0.0", factor);
+			assert!(
+				why.contains(&format!("km_h_per_unit {factor} is too large for the board")),
+				"{factor}: {why}"
+			);
+		}
 		// A scaling that reads forward as zero or backwards; appended `[[channel]]`s, read fast.
 		for (text_id, factor) in [("IDE00012", "-1"), ("IDE00013", "0")] {
 			let watch = WATCH.replacen("IDE00010", text_id, 1);
@@ -3575,17 +4008,143 @@ mod tests {
 		}
 		// A speed read at the default rate: every run would cross its marks with no time.
 		let why = refused("01:IDE00010", "01:IDE00001");
-		assert!(why.contains("is read at 2 Hz") && why.contains("faster than 5 Hz"), "{why}");
+		assert!(
+			why.contains("is read every 500 ms") && why.contains("hz of 7.5 or more; 50 is recommended"),
+			"{why}"
+		);
 		let measured = build_with_lever(&WATCH.replacen("0.0", "0.0271", 1)).unwrap();
 		assert_eq!(measured.plan.stopwatch.unwrap().km_h_per_unit, 0.0271);
 	}
 
+	/// The board reads a channel every `1000 / hz` ms rounded (`Channel::period_ms`), and the
+	/// launch fit wants `MIN_FIT_SAMPLES` moving samples in its first `START_FIT_MS` — with one
+	/// answer late, three periods in 400 ms: every 133 ms or sooner.
+	#[test]
+	fn a_speed_the_board_reads_too_seldom_for_a_launch_fit_with_one_answer_late_is_refused() {
+		let at = |hz: &str| {
+			let another = Extra {
+				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
+			};
+			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
+			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz}\n"), another)
+		};
+		// 5.01 Hz is 199.6 ms, which the board polls as 200: 5 Hz, and two periods fill the
+		// window. 7.49 Hz is 133.5 ms, polled as 134: three periods are 402 ms.
+		for (hz, every) in [("5.01", 200), ("6", 167), ("7.49", 134)] {
+			let why = at(hz).unwrap_err().to_string();
+			assert!(
+				why.starts_with(&format!("[stopwatch] speed 01:IDE00014 is read every {every} ms (hz = {hz})"))
+					&& why.contains("3 samples in its first 400 ms even when one answer is late, so a reading every 133 ms or sooner"),
+				"{hz}: {why}"
+			);
+		}
+		// The rate the message names is one the board polls fast enough.
+		for hz in ["7.5", "8", "50", "100"] {
+			at(hz).unwrap_or_else(|e| panic!("{hz} Hz: {e}"));
+		}
+	}
+
 	#[test]
 	fn a_stalk_read_that_names_a_field_rather_than_an_identifier_is_refused_when_parsed() {
-		let why = build_with_lever(&LEVER.replacen("70C:1105", "70C:1105@8", 1)).unwrap_err().to_string();
+		let why = build_with_lever(&LEVER.replacen("75A:4C21", "75A:4C21@8", 1)).unwrap_err().to_string();
 		assert!(why.contains("is not <unit>:<DID>"), "{why}");
-		let why = build_with_lever("[[stalk]]\nread = \"70C:1105\"\n").unwrap_err().to_string();
+		let why = build_with_lever("[[stalk]]\nread = \"75A:4C21\"\n").unwrap_err().to_string();
 		assert!(why.contains("one [stalk] table"), "{why}");
+	}
+
+	/// A proven row in `measurements/<key>.json`, enumerated, at one field: `raw_form` places
+	/// it, and `levels` are its states as the file holds them.
+	fn proven_states(did: u16, name: &str, raw_form: RawForm, levels: Vec<Level>) -> MeasurementDef {
+		MeasurementDef {
+			name: name.to_string().into(),
+			unit: "".into(),
+			address: ReadId::Uds(did),
+			raw_form,
+			scaling: Scaling::Enum { levels },
+		}
+	}
+
+	/// [`build_with_lever_in`] with `proven` written as the unit's catalog, `<key>.json`,
+	/// beside the cache.
+	fn build_with_proven(input: &str, extra: Extra<'_>, key: &str, proven: Vec<MeasurementDef>) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		build_with_lever_in(here.path(), input, extra, |cache| {
+			let dir = cache.parent().unwrap().join("proven");
+			std::fs::create_dir_all(&dir).unwrap();
+			std::fs::write(dir.join(format!("{key}.json")), MeasurementCatalog::new(proven).to_json().unwrap()).unwrap();
+		})
+	}
+
+	/// A proven row wins at its field, and one written before state ranges holds every state
+	/// as a single value: where the project gives the field bands, a reading inside one would
+	/// be no state at all, and the lever would never press. The same rule as a cache that
+	/// predates the bands, for the other place a state can come from.
+	#[test]
+	fn a_proven_row_whose_states_predate_their_bands_is_refused_naming_its_file() {
+		// The rocker's byte, as the declared row places it (bit 16, one byte).
+		let byte_2 = RawForm::Int {
+			byte_offset: 2,
+			byte_length: 1,
+			signed: false,
+			big_endian: true,
+		};
+		let points = vec![
+			Level::point(20, "rest"),
+			Level::point(76, "plus"),
+			Level::point(127, "minus"),
+			Level::point(178, "limit"),
+		];
+		let why = build_with_proven(LEVER, Extra::default(), "PART2", vec![proven_states(STALK_DID, "Rocker", byte_2, points)])
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.starts_with("[stalk] rocker: the proven row for \"Rocker\" in ") && why.contains("PART2.json") && why.contains("predates state ranges"),
+			"{why}"
+		);
+
+		// The cruise status, on a declared ladder, proven as points.
+		let ladder_status = Extra {
+			rows: vec![(ENGINE, state_reading(0x2006, "Cruise ladder", "IDE00023", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		let why = build_with_proven(
+			&LEVER.replacen("01:2001", "01:IDE00023", 1),
+			ladder_status,
+			"PART1",
+			vec![proven_states(
+				0x2006,
+				"Cruise ladder",
+				RawForm::U8First,
+				vec![Level::point(10, "off"), Level::point(200, "on")],
+			)],
+		)
+		.unwrap_err()
+		.to_string();
+		assert!(
+			why.starts_with("[stalk] cruise: the proven row for \"Cruise ladder\" in ") && why.contains("PART1.json"),
+			"{why}"
+		);
+
+		// A status the project itself gives as single values is one: proven so, it builds.
+		let status = vec![Level::point(0, "off"), Level::point(1, "standby"), Level::point(2, "passive")];
+		let built = build_with_proven(
+			LEVER,
+			Extra::default(),
+			"PART1",
+			vec![proven_states(0x2001, "Cruise status", RawForm::U16Be, status)],
+		)
+		.expect("points where the project has points");
+		assert!(built.plan.channels[5].proven, "the proven row is the one used");
+		// And a proven rocker written with ranges is the proven row, used.
+		let ranges = vec![
+			Level::range(0, 60, "rest"),
+			Level::range(61, 101, "plus"),
+			Level::range(102, 152, "minus"),
+			Level::range(153, 203, "limit"),
+		];
+		let built = build_with_proven(LEVER, Extra::default(), "PART2", vec![proven_states(STALK_DID, "Rocker", byte_2, ranges)]).unwrap();
+		assert_eq!(built.plan.stalk.unwrap().rocker_states[0].upper, 60);
 	}
 
 	/// A cache written before the levels kept their upper ends has every state as its lower
@@ -3593,7 +4152,7 @@ mod tests {
 	#[test]
 	fn a_cache_whose_states_predate_their_bands_is_refused_with_what_to_run() {
 		let here = tempfile::tempdir().unwrap();
-		build_with_lever_in(here.path(), LEVER, |_| {}).expect("builds on a cache that has the bands");
+		build_with_lever_in(here.path(), LEVER, Extra::default(), |_| {}).expect("builds on a cache that has the bands");
 		let here = tempfile::tempdir().unwrap();
 		let old_shape = |cache: &Path| {
 			let conn = rusqlite::Connection::open(cache).unwrap();
@@ -3606,7 +4165,9 @@ mod tests {
 				)
 				.unwrap();
 		};
-		let why = build_with_lever_in(here.path(), LEVER, old_shape).unwrap_err().to_string();
+		let why = build_with_lever_in(here.path(), LEVER, Extra::default(), old_shape)
+			.unwrap_err()
+			.to_string();
 		assert!(why.contains("run `vagcan setup` again"), "{why}");
 	}
 }

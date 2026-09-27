@@ -15,6 +15,27 @@
 /// buffer keeps what happened before it.
 pub type Seconds = f64;
 
+/// How close two times are to be one instant.
+///
+/// A time is `f64` seconds, and a sum or a difference of two lands a hair off the exact
+/// one: `2.3 + 0.4` is `2.6999999999999997`, `4.1 - 3.1` is `0.9999999999999996`. A window
+/// that includes its end — the launch fit's first [`START_FIT_S`](crate::derive::START_FIT_S),
+/// the arming hold, a least-squares window — would then take a sample exactly at the end or
+/// drop it by how its decimals happen to round, where the board, counting whole
+/// milliseconds, always takes it. A nanosecond: far under any sample spacing (a millisecond at
+/// the fastest poll), far over what `f64` loses on a clock that has run for hours (1e-12 s).
+pub const SAME_INSTANT_S: Seconds = 1e-9;
+
+/// `value <= limit`, where a `value` [`SAME_INSTANT_S`] past `limit` is at it.
+pub fn at_most(value: Seconds, limit: Seconds) -> bool {
+	value <= limit + SAME_INSTANT_S
+}
+
+/// `value >= limit`, where a `value` [`SAME_INSTANT_S`] short of `limit` is at it.
+pub fn at_least(value: Seconds, limit: Seconds) -> bool {
+	value >= limit - SAME_INSTANT_S
+}
+
 /// A measured quantity: values with the times they were read at.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Track {
@@ -100,7 +121,7 @@ impl Track {
 	pub fn window(&self, from: Seconds, to: Seconds) -> Track {
 		let mut out = Track::default();
 		for i in 0..self.len() {
-			if self.t[i] >= from && self.t[i] <= to {
+			if at_least(self.t[i], from) && at_most(self.t[i], to) {
 				out.push(self.t[i], self.v[i]);
 			}
 		}
@@ -225,6 +246,17 @@ mod tests {
 		assert_eq!(changes.len(), 1);
 		assert_eq!(changes[0].0, 0.15);
 		assert_eq!((changes[0].1.as_str(), changes[0].2.as_str()), ("1", "2"));
+	}
+
+	#[test]
+	fn a_window_keeps_an_endpoint_that_f64_puts_a_hair_outside() {
+		// 2.3 + 0.4 is 2.6999999999999997, and the sample at 2.7 is the window's end.
+		let mut track = Track::default();
+		for (at, v) in [(2.3, 1.0), (2.5, 2.0), (2.7, 3.0)] {
+			track.push(at, v);
+		}
+		assert_eq!(track.window(2.3, 2.3 + 0.4).len(), 3);
+		assert_eq!(track.window(2.7 - 0.4, 2.7).len(), 3, "2.7 - 0.4 is 2.3000000000000003");
 	}
 
 	#[test]

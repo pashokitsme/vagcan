@@ -50,7 +50,7 @@
 //! the speed samples all arrive as arguments.
 
 use super::power::{self, G, KMH_PER_MS};
-use super::types::{Seconds, Track};
+use super::types::{Seconds, Track, at_least, at_most};
 
 /// How far the residual may sit from the curve before the pass is not a coast.
 ///
@@ -432,17 +432,7 @@ fn rms(curve: &Curve, times: &[f64], v: &[f64]) -> f64 {
 /// only ever a seed — and why its failure to fit at all is the honest signal
 /// that the pass had no speed range in it.
 fn seed(times: &[f64], v: &[f64], inertial_mass: f64) -> Option<Curve> {
-	let mut pairs = Vec::new();
-	let mut i = 0;
-	for j in 1..times.len() {
-		let dt = times[j] - times[i];
-		if dt < BRAKE_WINDOW_S {
-			continue;
-		}
-		let mid = 0.5 * (v[i] + v[j]);
-		pairs.push((mid * mid, inertial_mass * (v[i] - v[j]) / dt));
-		i = j;
-	}
+	let pairs = seed_pairs(times, v, inertial_mass);
 	let linear = crate::analyse::fit_linear(&pairs);
 
 	let v0 = *v.first()?;
@@ -462,6 +452,23 @@ fn seed(times: &[f64], v: &[f64], inertial_mass: f64) -> Option<Curve> {
 
 	let curve = Curve { v0, vc, tau };
 	curve.valid().then_some(curve)
+}
+
+/// The seed's `(v², m(1+δ₁)·(−dv/dt))` pairs: each sample paired with the next one at least
+/// [`BRAKE_WINDOW_S`] after it.
+fn seed_pairs(times: &[f64], v: &[f64], inertial_mass: f64) -> Vec<(f64, f64)> {
+	let mut pairs = Vec::new();
+	let mut i = 0;
+	for j in 1..times.len() {
+		let dt = times[j] - times[i];
+		if !at_least(dt, BRAKE_WINDOW_S) {
+			continue;
+		}
+		let mid = 0.5 * (v[i] + v[j]);
+		pairs.push((mid * mid, inertial_mass * (v[i] - v[j]) / dt));
+		i = j;
+	}
+	pairs
 }
 
 /// A seed from the endpoints alone, for a pass whose difference quotients do
@@ -726,7 +733,7 @@ impl Open {
 	fn window_decel(&self) -> Option<f64> {
 		let last = self.speed.len().checked_sub(1)?;
 		let now = self.speed.t[last];
-		let start = self.speed.t.iter().position(|t| now - t <= BRAKE_WINDOW_S)?;
+		let start = self.speed.t.iter().position(|t| at_most(now - t, BRAKE_WINDOW_S))?;
 		if start == last {
 			return None;
 		}
@@ -769,6 +776,24 @@ mod tests {
 
 	fn delta1() -> f64 {
 		power::deltas(&INERTIAS, MASS_KG, RADIUS_M).0
+	}
+
+	#[test]
+	fn samples_exactly_a_window_apart_are_a_window_apart_whatever_f64_makes_of_the_difference() {
+		// 4.1 - 3.1 is 0.9999999999999996 and 2.2 - 1.2 is 1.0000000000000002: both a second
+		// apart, and each fell on the wrong side of `BRAKE_WINDOW_S` (review, 2026-09-27).
+		let pairs = seed_pairs(&[3.1, 4.1], &[20.0, 19.5], 1.0);
+		assert_eq!(pairs.len(), 1, "a pair a second apart seeds the fit");
+		let mut open = Open {
+			speed: Track::default(),
+			kmh: Vec::new(),
+			lowest_kmh: f64::INFINITY,
+			opening_decel: None,
+		};
+		open.push(1.2, 72.0);
+		open.push(2.2, 70.2);
+		let decel = open.window_decel().expect("the pass is a second old");
+		assert!((decel - 0.5).abs() < 1e-9, "{decel}");
 	}
 
 	/// The road a synthetic pass is driven on.

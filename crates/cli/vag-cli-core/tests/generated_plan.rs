@@ -24,7 +24,10 @@ fn the_generated_lever_plan_compiles_and_carries_the_lever_and_the_stopwatch() {
 	assert_eq!(state_of(stalk.rocker_states, 45), Some(StateIndex(2)));
 	assert_eq!(state_of(stalk.rocker_states, 80), Some(StateIndex(0)));
 	assert_eq!(state_of(stalk.rocker_states, i64::from(i32::MIN)), Some(StateIndex(0)));
-	assert_eq!(state_of(stalk.switch_states, 150), Some(StateIndex(3)));
+	// The switch on the fixture's even ladder: its off state is the second band.
+	assert_eq!(stalk.states.switch_off, StateIndex(1));
+	assert_eq!(state_of(stalk.switch_states, 100), Some(stalk.states.switch_off));
+	assert_eq!(state_of(stalk.switch_states, 150), Some(StateIndex(2)));
 	let stopwatch = PLAN.stopwatch.expect("a stopwatch");
 	assert_eq!((stopwatch.speed, stopwatch.marks), (1, &[60u16, 100][..]));
 	assert!((stopwatch.km_h_per_unit - 0.0271).abs() < 1e-7);
