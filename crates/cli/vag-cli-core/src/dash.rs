@@ -1059,13 +1059,7 @@ fn resolve_channel(
 			};
 			return Err(Error::NotLinear(wanted.reference.clone(), kind.to_string()));
 		}
-		(many, _) => {
-			let names = many
-				.iter()
-				.map(|c| format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label()))
-				.collect();
-			return Err(Error::Ambiguous(wanted.reference.clone(), names));
-		}
+		(many, _) => return Err(Error::Ambiguous(wanted.reference.clone(), many.iter().map(|c| row_name(c)).collect())),
 	};
 	let def = found.def.as_ref().expect("filtered on def");
 	let ReadId::Uds(did) = def.address;
@@ -1129,6 +1123,12 @@ fn resolve_channel(
 		source,
 		setpoint: None,
 	})
+}
+
+/// One row as an [`Error::Ambiguous`] lists it: what to write instead — its identifier and bit
+/// offset — and its name.
+fn row_name(c: &poll::Channel) -> String {
+	format!("{:04X}@{} {}", c.did, c.def.as_ref().map_or(0, |d| d.raw_form.bit_offset()), c.label())
 }
 
 /// Resolve an input against what the car reported and what the project knows.
@@ -1678,8 +1678,18 @@ fn resolve_stalk(
 			)));
 		}
 		([], _) => return Err(Error::Stalk(format!("cruise {}: a quantity, not a list of states", wanted.cruise))),
-		(many, _) => return Err(Error::Ambiguous(wanted.cruise.clone(), many.iter().map(|c| c.label()).collect())),
+		(many, _) => return Err(Error::Ambiguous(wanted.cruise.clone(), many.iter().map(|c| row_name(c)).collect())),
 	};
+	// The gate opens only when two answers say off: the switch's, and the cruise status's. A
+	// cruise status read out of the lever's own identifier is that one answer again, however
+	// it is spelled — compared as resolved.
+	if cruise.request == wanted.request && cruise.did == wanted.did {
+		return Err(Error::Stalk(format!(
+			"cruise {} is in read's own identifier {read} — the lever is used only when two answers say cruise is off, and one \
+			 identifier is one answer; name the cruise status the unit that runs cruise control reports",
+			wanted.cruise
+		)));
+	}
 	if let Some(ReadId::Uds(did)) = cruise.def.as_ref().map(|d| d.address)
 		&& answered.and_then(|a| a.saw(cruise_request, did)) == Some(false)
 	{
@@ -3556,6 +3566,129 @@ mod tests {
 			.unwrap_err()
 			.to_string();
 		assert!(why.contains("next: \"Twin\" has 2 states named \"plus\""), "{why}");
+	}
+
+	/// A survey that asked `unit` for everything in `asked` and heard back only `heard`.
+	fn survey_of(unit: u16, asked: std::ops::RangeInclusive<u16>, heard: &[u16]) -> poll::Answered {
+		let mut answered = poll::Answered::default();
+		answered.units.insert(unit);
+		answered.asked.insert(unit, vec![asked]);
+		answered.dids.extend(heard.iter().map(|did| (unit, *did)));
+		answered
+	}
+
+	/// The refusals only a survey or a second row reaches, each one: the helper's survey claims
+	/// nothing, so none of them was ever exercised (review, 2026-09-27).
+	#[test]
+	fn the_lever_refusals_a_survey_or_a_second_row_decides_are_each_reached() {
+		// A unit the survey has nothing about: the column's, then the cruise status's.
+		let why = build_with_lever(&LEVER.replacen("75A:4C21", "75B:4C21", 1)).unwrap_err();
+		assert_eq!(why, Error::UnknownUnit(0x75B));
+		let why = build_with_lever(&LEVER.replacen("01:2001", "02:2001", 1)).unwrap_err();
+		assert_eq!(why, Error::UnknownUnit(GEARBOX));
+
+		// Asked and silent: the lever's identifier, then the cruise status's. Asked and heard
+		// is no refusal.
+		let heard = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[STALK_DID]);
+		let with = |answered| Extra {
+			answered: Some(answered),
+			..Extra::default()
+		};
+		build_with_lever_and(LEVER, with(&heard)).expect("the column answered");
+		let silent = survey_of(STALK_UNIT, 0x4C00..=0x4CFF, &[]);
+		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
+		assert_eq!(why, Error::NotAnswered(Reference::parse("75A:4C21").unwrap()));
+		let heard = survey_of(ENGINE, 0x2000..=0x20FF, &[0x2001]);
+		build_with_lever_and(LEVER, with(&heard)).expect("the engine answered");
+		let silent = survey_of(ENGINE, 0x2000..=0x20FF, &[]);
+		let why = build_with_lever_and(LEVER, with(&silent)).unwrap_err();
+		assert_eq!(why, Error::NotAnswered(Reference::parse("01:2001").unwrap()));
+
+		// A field name the identifier gives twice, exactly.
+		let twice = Extra {
+			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Switch", "", 40, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(LEVER, twice).unwrap_err().to_string();
+		assert!(why.contains("switch: 75A:4C21 has 2 fields named \"Switch\""), "{why}");
+
+		// Two enumerated rows under one text id: which one is the cruise status is not told.
+		let why = build_with_lever_and(&LEVER.replacen("01:2001", "01:IDE00020", 1), second_cruise_status()).unwrap_err();
+		assert!(
+			matches!(&why, Error::Ambiguous(r, rows) if *r == Reference::parse("01:IDE00020").unwrap() && rows.len() == 2),
+			"{why:?}"
+		);
+	}
+
+	/// A second enumerated row under the cruise status's text id, on another identifier.
+	fn second_cruise_status() -> Extra<'static> {
+		Extra {
+			rows: vec![(
+				ENGINE,
+				state_reading(
+					0x2005,
+					"Cruise status",
+					"IDE00020",
+					0,
+					8,
+					vec![Level::point(0, "off"), Level::point(1, "on")],
+				),
+			)],
+			..Extra::default()
+		}
+	}
+
+	/// The message of an ambiguous cruise status says what to write instead, the way a
+	/// channel's does: each row's identifier and bit offset.
+	#[test]
+	fn an_ambiguous_cruise_status_lists_what_to_write_instead() {
+		let why = build_with_lever_and(&LEVER.replacen("01:2001", "01:IDE00020", 1), second_cruise_status())
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.ends_with("name one by identifier and bit offset: 2001@0 Cruise status, 2005@0 Cruise status"),
+			"{why}"
+		);
+		// What it says to write builds.
+		let lever = LEVER.replacen("01:2001", "01:2005@0", 1);
+		let built = build_with_lever_and(&lever, second_cruise_status()).unwrap();
+		let cruise = &built.plan.channels[usize::from(built.plan.stalk.unwrap().cruise)];
+		assert_eq!(cruise.did, 0x2005);
+	}
+
+	/// The gate wants two witnesses that cruise is off: the switch, and the engine's own
+	/// status. A `cruise` read out of the lever's own answer is one unit saying it twice.
+	#[test]
+	fn a_cruise_status_inside_the_levers_own_identifier_is_refused() {
+		let inside = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(STALK_DID, "Also cruise", "IDE00030", 56, 8, ladder(&["off", "on"])),
+			)],
+			..Extra::default()
+		};
+		for cruise in ["75A:4C21@24", "75A:IDE00030"] {
+			let lever = LEVER.replacen("\"01:2001\"", &format!("{cruise:?}"), 1);
+			let why = build_with_lever_and(
+				&lever,
+				Extra {
+					rows: inside.rows.clone(),
+					..Extra::default()
+				},
+			)
+			.unwrap_err()
+			.to_string();
+			assert!(
+				why.starts_with(&format!("[stalk] cruise {cruise} is in read's own identifier 75A:4C21")),
+				"{cruise}: {why}"
+			);
+		}
+		// Another identifier on the same unit is another answer.
+		let beside = Extra {
+			rows: vec![(STALK_UNIT, state_reading(0x4C22, "Beside", "", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
 
 	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
