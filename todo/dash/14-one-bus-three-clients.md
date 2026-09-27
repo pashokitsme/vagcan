@@ -250,7 +250,7 @@ the page it is on and nobody else.
   finished run's times in settings, written to flash at the next standstill, never at speed
   (owner, 2026-09-26; `12`, `19`).
 
-## 6a. Controls: the button stays, the stalks are an event source
+## 6a. Controls: the stalks are an event source
 
 The owner asked (2026-09-13) whether the bus can deliver a button press, so the device
 needs no button of its own. It can deliver the *state*, not the press:
@@ -275,8 +275,10 @@ and Set may arm the stopwatch; with it **ON** the dash ignores the lever and cru
 as always. Both the presses and the ON/OFF position are fields of `1105` (`Linker Hebel
 axial 3 (ON/CANCEL/OFF)`, `GRA Hebel vertikal (Plus/Minus)`, `GRA Hebel axial (Set)`), so
 one 20 Hz poll gives the gate and the events together. `1105` joins the scheduler as an
-**event source** with the panel's quota. The device keeps its bench button (`GPIO9`,
-BOOT) because the bench has no stalk; no wake button is needed — the board is fed from
+**event source** with the panel's quota. ~~The device keeps its bench button (`GPIO9`,
+BOOT) because the bench has no stalk;~~ BOOT is not an input since 2026-09-27 — the bench
+pages with `dashsim`, and `[[button]]`s on GPIO 3–5 page the board (`19`). No wake button is
+needed — the board is fed from
 OBD pin 1, +12 V with the ignition only (owner, 2026-09-13; `07` and `08` superseded).
 
 **The gate is OFF, and OFF alone** — not CANCEL. The owner proposed OFF/CANCEL

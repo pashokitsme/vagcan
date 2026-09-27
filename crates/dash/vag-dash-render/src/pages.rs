@@ -1,4 +1,4 @@
-//! Which page a short press goes to.
+//! Which page a page turn goes to.
 //!
 //! Three lines, and they are here rather than in the firmware's `Config` for
 //! the same reason the alarm and button machines are: the firmware cannot be

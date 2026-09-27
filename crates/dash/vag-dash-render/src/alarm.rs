@@ -19,7 +19,9 @@
 //!    a page this module remembers, which would be a second copy of a fact the
 //!    caller already owns.
 //!
-//! And one escape hatch: **the button silences the episode**. A genuinely
+//! And one escape hatch: **a press silences the episode** — any command, from a
+//! `[[button]]`, the lever or `dashsim` ([`Screen::command`](crate::screen::Screen::command)).
+//! A board with none of them cannot silence, and waits for the release. A genuinely
 //! misfiring engine would otherwise freeze the display for the rest of the
 //! drive. Silence lasts until the value releases; a fresh crossing after that
 //! arms the rule again, so the escape is per-episode and not a permanent
@@ -347,7 +349,7 @@ enum Episode {
 	/// Back inside, still on the screen until `until_ms`. The offender is frozen
 	/// at whoever it last was, so the view does not end with nothing highlighted.
 	Holding { offender: ChannelId, until_ms: u64 },
-	/// Dismissed by the button. Still polled — a release is what re-arms it.
+	/// Dismissed by a press. Still polled — a release is what re-arms it.
 	Silenced,
 }
 
@@ -431,7 +433,7 @@ pub struct Update {
 	pub changed: bool,
 }
 
-/// What a short press did.
+/// What a press did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Press {
 	/// No alarm was showing, so the press means what it normally means.
@@ -499,11 +501,11 @@ impl<'a, const N: usize> Alarms<'a, N> {
 		})
 	}
 
-	/// A short press.
+	/// A press — any command, whichever input gave it.
 	///
-	/// The device has one button, so this gesture is modal: while an alarm is
-	/// showing it silences that episode and returns [`Press::Silenced`];
-	/// otherwise it means what it normally means and the caller pages on. The
+	/// Every press is modal: while an alarm is showing it silences that episode
+	/// and returns [`Press::Silenced`]; otherwise it means what it normally means
+	/// and the caller carries it out. The
 	/// caller does not need to ask which case it is first — that is exactly the
 	/// question this answers, and asking separately is how the two get out of
 	/// step.
@@ -1156,7 +1158,7 @@ mod tests {
 		// Nothing on the bus is not a reading of zero, so it cannot fire...
 		assert_eq!(alarms.poll(WAS_SHOWING, &silence, 0).shown, Shown::page(WAS_SHOWING));
 		// ...and it cannot end an episode either: a unit that drops out mid-alarm
-		// has not said the value is fine. The button is the way out.
+		// has not said the value is fine. A press is the way out.
 		alarms.poll(WAS_SHOWING, &only(-10.0), 100);
 		assert_eq!(alarms.poll(WAS_SHOWING, &silence, 100 + HOLD_MS * 4).shown.page, GROUP_PAGE);
 		alarms.press();

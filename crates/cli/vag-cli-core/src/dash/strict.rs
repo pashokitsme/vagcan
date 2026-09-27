@@ -645,13 +645,12 @@ marks = [60, 100]
 		));
 	}
 
-	/// `[[button]]` is parsed by its own change. Until then its keys are known here, so a file
-	/// with buttons builds, and a typo in one is refused like any other.
+	/// A `[[button]]` takes `pin` and `action`, and a typo in one is refused like any other key.
 	#[test]
 	fn a_button_takes_pin_and_action() {
-		let text = format!("{BASE}[[button]]\npin = 9\naction = \"next\"\n");
+		let text = format!("{BASE}[[button]]\npin = 3\naction = \"next\"\n");
 		parse_input(&text).unwrap();
-		let text = format!("{BASE}[[button]]\npinn = 9\n");
+		let text = format!("{BASE}[[button]]\npinn = 3\n");
 		assert!(
 			refused(&text).contains("[[button]] 1: unknown key \"pinn\" — did you mean \"pin\"? [[button]] takes pin, action"),
 			"{text}"

@@ -23,6 +23,7 @@
 //! big-endian) is exactly the bug a host test catches for free.
 
 use crate::alarm::{Alarm, ChannelId, Rule};
+use crate::control::{Command, MAX_BUTTONS, is_button_pin};
 use crate::stalk::{Read, StateIndex, States};
 
 /// The whole interface between the laptop and the device.
@@ -51,6 +52,18 @@ pub struct Plan {
 	pub stalk: Option<StalkPlan>,
 	/// The stopwatch page, where the owner's `[stopwatch]` names a speed channel.
 	pub stopwatch: Option<StopwatchPlan>,
+	/// The owner's `[[button]]`s, in the file's order: at most
+	/// [`MAX_BUTTONS`](crate::control::MAX_BUTTONS), each on a pin of its own.
+	pub buttons: &'static [ButtonPlan],
+}
+
+/// A `[[button]]`: a button on one of the board's free pins, wired to GND, and the one
+/// command a press of it gives ([`PinButton`](crate::control::PinButton)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonPlan {
+	/// The GPIO, one of [`BUTTON_PINS`](crate::control::BUTTON_PINS).
+	pub pin: u8,
+	pub action: Command,
 }
 
 /// One state of an enumerated field: an interval of raw values, both ends included —
@@ -316,6 +329,32 @@ impl Plan {
 			i += 1;
 		}
 		count
+	}
+
+	/// Whether the plan's `[[button]]`s are ones the board can wire: at most
+	/// [`MAX_BUTTONS`], each on one of [`BUTTON_PINS`](crate::control::BUTTON_PINS), no pin
+	/// twice. The generator refuses anything else; `const`, so the firmware refuses it again
+	/// when the image is built, where a button that silently did nothing would be the failure.
+	pub const fn buttons_fit(&self) -> bool {
+		if self.buttons.len() > MAX_BUTTONS {
+			return false;
+		}
+		// `while` and indices, because iterators are not `const`.
+		let mut i = 0;
+		while i < self.buttons.len() {
+			if !is_button_pin(self.buttons[i].pin) {
+				return false;
+			}
+			let mut j = 0;
+			while j < i {
+				if self.buttons[j].pin == self.buttons[i].pin {
+					return false;
+				}
+				j += 1;
+			}
+			i += 1;
+		}
+		true
 	}
 
 	/// Every chart page, in plan order, numbered — what the panel feeds a
@@ -646,7 +685,31 @@ mod tests {
 		alarms: &[],
 		stalk: None,
 		stopwatch: None,
+		buttons: &[],
 	};
+
+	#[test]
+	fn buttons_fit_the_board_on_its_free_pins_each_once_at_most_three() {
+		const fn button(pin: u8) -> ButtonPlan {
+			ButtonPlan { pin, action: Command::Next }
+		}
+		// A plan's slices are `'static`; a test's are leaked to be.
+		let fits = |buttons: &[ButtonPlan]| {
+			Plan {
+				buttons: std::vec::Vec::leak(buttons.to_vec()),
+				..PLAN
+			}
+			.buttons_fit()
+		};
+		// Known when the image is built, which is where the firmware asks.
+		const { assert!(PLAN.buttons_fit(), "no buttons fit") };
+		assert!(fits(&[button(3), button(4), button(5)]));
+		assert!(fits(&[button(5)]));
+		assert!(!fits(&[button(9)]), "BOOT is not a button's");
+		assert!(!fits(&[button(2)]));
+		assert!(!fits(&[button(3), button(4), button(3)]), "a pin twice");
+		assert!(!fits(&[button(3), button(4), button(5), button(3)]), "four");
+	}
 
 	#[test]
 	fn chart_count_is_a_constant_the_panel_can_size_an_array_by() {
@@ -915,6 +978,7 @@ mod tests {
 			alarms: &[],
 			stalk: None,
 			stopwatch: None,
+			buttons: &[],
 		};
 		let engine: std::vec::Vec<u16> = PLAN.channels_of(&UNITS[0]).map(|(i, _)| i).collect();
 		assert_eq!(engine, [0, 2]);

@@ -26,9 +26,15 @@
 //!   ends on `C`, or when the host's start-of-frame packets stop (the cable pulled).
 //! * **Alarms** (`todo/dash/04`): the plan's `[[alarm]]` rules are read at full rate on
 //!   every page; past a threshold the rule's page takes the glass with the offending
-//!   cell blinking inverted (steady through the hold after the release), and a short
-//!   press silences the episode
+//!   cell blinking inverted (steady through the hold after the release), and any press
+//!   silences the episode
 //!   ([`vag_dash_render::screen`]). The adapter screen runs none.
+//! * **Input** (`todo/dash/19`, "Input backends"): the plan's `[[button]]`s on GPIO 3, 4 and
+//!   5, the cruise lever and `dashsim`'s presses each turn a press into a [`Command`]; every
+//!   command goes through one queue
+//!   ([`vag_dash_fw::input`]) to one task, `control_task`, which applies it to the screen
+//!   ([`Screen::command`]) and the settings. No input knows what a press does. The board's
+//!   own BOOT and RESET buttons are not inputs (owner, 2026-09-27): `GPIO9` is left alone.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -73,7 +79,7 @@ use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::peripherals::{GPIO1, GPIO6, TWAI0};
+use esp_hal::peripherals::{GPIO1, GPIO3, GPIO4, GPIO5, GPIO6, TWAI0};
 use esp_hal::timer::systimer::SystemTimer;
 #[cfg(feature = "ble")]
 use esp_hal::timer::timg::TimerGroup;
@@ -88,18 +94,20 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
+use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
-use vag_dash_fw::plan::{ALARM_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::saving::{RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId};
+use vag_dash_render::control::{self, Command, PinButton};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
-use vag_dash_render::screen::{Action, Change, Screen};
-use vag_dash_render::stalk::{Lever, Stalk, States};
+use vag_dash_render::screen::{Change, Outcome, Screen};
+use vag_dash_render::stalk::{Stalk, States};
 use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
@@ -202,7 +210,7 @@ struct Settings {
 	saving: Saving,
 }
 
-/// Shared because two tasks touch it: the button cycles pages, the GATT
+/// Shared because several tasks touch it: `control_task` turns pages, the GATT
 /// handler edits and saves. An **async** mutex, not a blocking one — a save
 /// erases and writes a flash sector, and holding a critical section for that
 /// long would stall the radio.
@@ -506,15 +514,43 @@ enum Outgoing {
 /// reads it constantly and must never wait for a flash write.
 static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 
-/// Presses arriving from the panel simulator over USB. They go through the
-/// **same** handling as the physical button rather than a parallel path — a
-/// test rig that exercises different code from the real thing tests the rig.
+/// Presses arriving from the panel simulator over USB, for `input_task`. What they ask for
+/// goes through the same queue and the same `control_task` as every input's, so the rig
+/// exercises the board's own path; a short press is `Command::Next`.
 static REMOTE_PRESS: Signal<CriticalSectionRawMutex, Press> = Signal::new();
 
+/// Every input's commands, to `control_task` ([`vag_dash_fw::input`]): four wait at most,
+/// and one that finds the queue full is dropped and said.
+static COMMANDS: CommandQueue = CommandQueue::new();
+
+/// Offer a command to `control_task`, never waiting: a full queue drops it, and says so.
+fn send(source: Source, command: Command) {
+	if !COMMANDS.offer(source, command) {
+		note!(
+			"{source}: {} dropped — {} commands are already waiting",
+			command.name(),
+			vag_dash_fw::input::CAPACITY
+		);
+	}
+}
+
+/// A `[[button]]` of the plan on its pin: the input, pulled up, and the machine that
+/// debounces it.
+struct PinInput {
+	pin: u8,
+	input: Input<'static>,
+	button: PinButton,
+}
+
+/// The plan's `[[button]]`s, one per entry of `PLAN.buttons`: in `.bss` rather than in the
+/// input task's future, which the shared arena would hold. `None` for one the board could
+/// not give its pin — which the image's build already refuses.
+static PINS: StaticCell<[Option<PinInput>; BUTTON_COUNT]> = StaticCell::new();
+
 /// The plan's alarms and what the glass showed last: polled by the panel every frame,
-/// pressed by the button. The page cursor is not in it — that stays `Config::active_page`,
-/// passed in each time. A **blocking** mutex, held for one call and never across an
-/// `.await`.
+/// commanded by `control_task`. The page cursor is not in it — that stays
+/// `Config::active_page`, passed in each time. A **blocking** mutex, held for one call and
+/// never across an `.await`.
 type ScreenCell = BlockingMutex<CriticalSectionRawMutex, RefCell<Screen<'static, ALARM_COUNT>>>;
 
 static SCREEN: StaticCell<ScreenCell> = StaticCell::new();
@@ -572,10 +608,9 @@ async fn main(spawner: Spawner) {
 	vag_dash_fw::health::init(spawner);
 
 	let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
-	// GPIO9 is the SuperMini's BOOT button: a real button, already fitted, and
-	// the device's only one — it is powered from OBD pin 1 and never sleeps, and
-	// in the car the cruise lever pages it (`todo/dash/14` §6a).
-	let button = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
+	// GPIO9, the SuperMini's BOOT button, is not configured: it is technical, not an input
+	// (owner, 2026-09-27), and a strapping pin the ROM reads at reset.
+	let pins = PINS.init(pin_buttons(peripherals.GPIO3, peripherals.GPIO4, peripherals.GPIO5));
 
 	// Which car this image is for, said once, before anything is asked of the
 	// bus: a plan and a car that disagree is the first thing to look for.
@@ -591,6 +626,9 @@ async fn main(spawner: Spawner) {
 	for unit in PLAN.units {
 		info!("plan: unit {:03X}/{:03X} part {}", unit.request, unit.response, unit.part_number);
 	}
+	for button in PLAN.buttons {
+		info!("plan: button on GPIO{} → {}", button.pin, button.action.name());
+	}
 	note!(
 		"plan: VIN {} — {} unit(s), {} channel(s)",
 		PLAN.vin,
@@ -602,7 +640,7 @@ async fn main(spawner: Spawner) {
 	// configuration should say so at boot, not when somebody connects.
 	let settings: &'static Shared = SETTINGS.init(Mutex::new(open_settings()));
 	let bus: &'static Bus = BUS.init(BlockingMutex::new(RefCell::new(Planner::new(Budget::board()))));
-	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms))));
+	let screen: &'static ScreenCell = SCREEN.init(BlockingMutex::new(RefCell::new(Screen::new(PLAN.alarms, PLAN.stopwatch.is_some()))));
 	// With no `[stopwatch]` in the plan the machine is never fed: no press reaches the page.
 	let stopwatch: &'static StopwatchCell = STOPWATCH.init(BlockingMutex::new(RefCell::new(match PLAN.stopwatch {
 		Some(plan) => Stopwatch::new(plan.marks, plan.km_h_per_unit),
@@ -648,8 +686,11 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(led_task(led)) {
 		warn!("SPAWN led FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(button_task(button, settings, screen)) {
-		warn!("SPAWN button FAILED: {e:?}");
+	if let Err(e) = spawner.spawn(control_task(settings, screen)) {
+		warn!("SPAWN control FAILED: {e:?}");
+	}
+	if let Err(e) = spawner.spawn(input_task(pins)) {
+		warn!("SPAWN input FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(heap_task()) {
 		warn!("SPAWN heap FAILED: {e:?}");
@@ -781,58 +822,115 @@ fn say_unreadable(store: &Store) {
 	}
 }
 
-/// Polls the button, debounces it, and acts.
-///
-/// A short press goes through the alarms first ([`Screen::press`]): while an
-/// alarm owns the glass it silences that episode and the page stays; otherwise
-/// the page cursor moves on. The button is modal because the screen already
-/// says which mode it is in. `set page` over BLE is not a press and does not
-/// come here.
-///
-/// A long press does nothing any more: it used to open a three-minute BLE
-/// window, and BLE is now always on (owner, 2026-09-13/14).
-///
-/// The simulator's `BTN S` / `BTN L` come in through the same machine as the
-/// GPIO level, and go out through the same gate: one press per
-/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), whoever pressed it.
-/// Taking a remote press at face value is what turned one held space bar
-/// into a dozen page turns.
-#[embassy_executor::task]
-async fn button_task(button: Input<'static>, settings: &'static Shared, screen: &'static ScreenCell) -> ! {
-	let mut machine = Button::new();
-	loop {
-		// Half the debounce interval: fast enough that no edge is missed,
-		// slow enough to be free.
-		let press = match select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
-			Either::First(()) => machine.poll(button.is_low(), Instant::now().as_millis()),
-			Either::Second(press) => machine.remote(press, Instant::now().as_millis()),
+/// The plan's `[[button]]`s on their pins, each an input with the pin's pull-up: a button to
+/// GND reads low while it is pressed. A pin no button names is not touched — no pull-up,
+/// nothing. The typed pins, no stolen peripheral: GPIO 3, 4 and 5 are the free ones
+/// (`vag_dash_render::control::BUTTON_PINS`), and `vag_dash_fw::plan` refuses at build time
+/// a plan naming another or one twice, so the last arm and a pin taken twice never happen.
+fn pin_buttons(gpio3: GPIO3<'static>, gpio4: GPIO4<'static>, gpio5: GPIO5<'static>) -> [Option<PinInput>; BUTTON_COUNT] {
+	let (mut gpio3, mut gpio4, mut gpio5) = (Some(gpio3), Some(gpio4), Some(gpio5));
+	let pulled_up = InputConfig::default().with_pull(Pull::Up);
+	core::array::from_fn(|i| {
+		let plan = PLAN.buttons[i];
+		let input = match plan.pin {
+			3 => gpio3.take().map(|pin| Input::new(pin, pulled_up)),
+			4 => gpio4.take().map(|pin| Input::new(pin, pulled_up)),
+			5 => gpio5.take().map(|pin| Input::new(pin, pulled_up)),
+			_ => None,
 		};
-		match press {
-			Some(Press::Short) => {
-				let mut s = settings.lock().await;
-				let before = s.config.active_page;
-				// `pages` is bounded by `MAX_PAGES`, so the count fits.
-				let pages = s.config.pages.len() as u8;
-				match screen.lock(|cell| cell.borrow_mut().press(&mut s.config.active_page, pages)) {
-					alarm::Press::Silenced => {
-						drop(s);
-						note!("button: alarm silenced until its value comes back");
-					}
-					alarm::Press::NextPage => {
-						if s.config.active_page != before {
-							s.saving.changed();
-						}
-						// One-based: this line is read by a person, and "page 0 of 2" reads as
-						// no page at all. The `state` line stays zero-based — it is a protocol.
-						note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
-						drop(s);
-						STATE_CHANGED.signal(());
-						PAGES_CHANGED.signal(());
+		if input.is_none() {
+			warn!("button on GPIO{}: the board has no input for it — not read", plan.pin);
+		}
+		input.map(|input| PinInput {
+			pin: plan.pin,
+			input,
+			button: PinButton::new(plan.action),
+		})
+	})
+}
+
+/// Polls the plan's `[[button]]`s and takes `dashsim`'s presses, and sends what each press
+/// asks for to `control_task`.
+///
+/// A pin button's press is its `action` ([`PinButton`]): debounced, one press per
+/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), and a hold never repeats. `dashsim`'s
+/// short press is [`Command::Next`] ([`control::remote`]); its long press asks for nothing,
+/// and is only said. Its presses go through a button machine's gate too: taking a remote
+/// press at face value is what turned one held space bar into a dozen page turns.
+#[embassy_executor::task]
+async fn input_task(pins: &'static mut [Option<PinInput>; BUTTON_COUNT]) -> ! {
+	let mut gate = Button::new();
+	loop {
+		// With no pin to poll only `dashsim` wakes the task. With pins, half the debounce
+		// interval: fast enough that no edge is missed, slow enough to be free.
+		let remote = if BUTTON_COUNT == 0 {
+			Some(REMOTE_PRESS.wait().await)
+		} else {
+			match select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
+				Either::First(()) => None,
+				Either::Second(press) => Some(press),
+			}
+		};
+		let now = ms();
+		match remote {
+			Some(press) => {
+				let press = gate.remote(press, now);
+				if press == Some(Press::Long) {
+					note!("dashsim: long press — nothing to do");
+				}
+				if let Some(command) = press.and_then(control::remote) {
+					send(Source::Sim, command);
+				}
+			}
+			None => {
+				for pin in pins.iter_mut().flatten() {
+					if let Some(command) = pin.button.poll(pin.input.is_low(), now) {
+						send(Source::Pin(pin.pin), command);
 					}
 				}
 			}
-			Some(Press::Long) => note!("button: held — nothing to do, BLE is always on"),
-			None => {}
+		}
+	}
+}
+
+/// Applies every input's commands, one at a time, in the order they came: through the
+/// screen ([`Screen::command`]) — which silences an alarm, turns the page, or turns the
+/// stopwatch on or off — then the settings, the log line and the state push. `set page`
+/// over BLE is not a command and does not come here.
+#[embassy_executor::task]
+async fn control_task(settings: &'static Shared, screen: &'static ScreenCell) -> ! {
+	loop {
+		let (source, command) = COMMANDS.next().await;
+		let mut s = settings.lock().await;
+		let before = s.config.active_page;
+		// `pages` is bounded by `MAX_PAGES`, so the count fits.
+		let pages = s.config.pages.len() as u8;
+		let outcome = screen.lock(|cell| cell.borrow_mut().command(command, &mut s.config.active_page, pages));
+		if s.config.active_page != before {
+			s.saving.changed();
+		}
+		// One-based: this line is read by a person, and "page 0 of 2" reads as no page at
+		// all. The `state` line stays zero-based — it is a protocol.
+		let (page, count) = (usize::from(s.config.active_page) + 1, s.config.pages.len());
+		drop(s);
+		match outcome {
+			Outcome::Paged => {
+				note!("{source}: page {page} of {count}");
+				STATE_CHANGED.signal(());
+				PAGES_CHANGED.signal(());
+			}
+			Outcome::Silenced => note!("{source}: alarm silenced until its value comes back"),
+			Outcome::StopwatchOn => {
+				note!("{source}: the stopwatch");
+				PAGES_CHANGED.signal(());
+			}
+			Outcome::StopwatchOff => {
+				note!("{source}: back to page {page}");
+				PAGES_CHANGED.signal(());
+			}
+			Outcome::NoStopwatch => note!("{source}: stopwatch — the plan has no [stopwatch]"),
+			Outcome::StopwatchHeld => note!("{source}: {} does nothing while the stopwatch is up", command.name()),
+			Outcome::Ignored => note!("{source}: {} does nothing on the adapter screen", command.name()),
 		}
 	}
 }
@@ -1829,8 +1927,8 @@ fn remote(delivery: Delivery) {
 	}
 }
 
-/// What the bus task shares with the panel: the settings a lever press pages, the screen it
-/// acts on, the stopwatch it feeds.
+/// What the bus task shares with the panel: the settings the pages are in, the screen whose
+/// stopwatch and alarms the rates follow, the stopwatch it feeds.
 #[derive(Clone, Copy)]
 struct Panel {
 	settings: &'static Shared,
@@ -2194,48 +2292,9 @@ impl PanelReads {
 			// The lever's rate follows the gate.
 			PAGES_CHANGED.signal(());
 		}
-		if let Some(lever) = press {
-			self.press(lever).await;
-		}
-	}
-
-	/// A lever press, through the screen: silences an alarm, turns the page, or switches the
-	/// stopwatch — which a plan without one has no page for.
-	async fn press(&mut self, lever: Lever) {
-		// With no stopwatch LIMIT has no page to open — but with an alarm up it silences, as
-		// every lever press does there.
-		if lever == Lever::Measure && PLAN.stopwatch.is_none() && !self.shared.screen.lock(|cell| cell.borrow().alarm_showing()) {
-			note!("lever: measure — the plan has no [stopwatch]");
-			return;
-		}
-		let mut s = self.shared.settings.lock().await;
-		let before = s.config.active_page;
-		// `pages` is bounded by `MAX_PAGES`, so the count fits.
-		let pages = s.config.pages.len() as u8;
-		let action = self
-			.shared
-			.screen
-			.lock(|cell| cell.borrow_mut().lever(lever, &mut s.config.active_page, pages));
-		match action {
-			Action::Paged => {
-				if s.config.active_page != before {
-					s.saving.changed();
-				}
-				note!("lever: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
-				drop(s);
-				STATE_CHANGED.signal(());
-				PAGES_CHANGED.signal(());
-			}
-			Action::Silenced => note!("lever: alarm silenced until its value comes back"),
-			Action::StopwatchOn => {
-				note!("lever: the stopwatch");
-				PAGES_CHANGED.signal(());
-			}
-			Action::StopwatchOff => {
-				note!("lever: back to page {}", usize::from(s.config.active_page) + 1);
-				PAGES_CHANGED.signal(());
-			}
-			Action::Ignored => {}
+		// Applied by `control_task`, like every input's: the bus task never waits for the settings.
+		if let Some(command) = press {
+			send(Source::Lever, command);
 		}
 	}
 
@@ -3160,7 +3219,7 @@ async fn take_console_input(input: ConsoleInput) {
 			USB_MESSAGES.send(message).await;
 		}
 		ConsoleInput::Malformed(why) => note!("usb: a malformed frame from the host was dropped: {why}"),
-		// The simulator's presses go through the same handling as the physical button.
+		// The simulator's presses become commands in `input_task`, like every input's.
 		ConsoleInput::Press(console::Button::Short) => REMOTE_PRESS.signal(Press::Short),
 		ConsoleInput::Press(console::Button::Long) => REMOTE_PRESS.signal(Press::Long),
 		ConsoleInput::EnterAdapter => {

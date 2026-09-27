@@ -14,10 +14,15 @@ yet — see "On the car". The owner's `dash.toml` has no `[stalk]` or
 `[stopwatch]` yet, and the owner's project cache predates the ODIS bands: `vagcan setup` has
 to run again before a `[stalk]` builds (the build says so).
 
+**2026-09-27, in PR #12:** input backends, approved by the owner — `[[button]]`s on GPIO 3, 4
+and 5, one command path for every input, and BOOT no longer an input. Built on
+`fix/pr12-input`; see "Input backends". Not on the board yet.
+
 ## What the owner asked (2026-09-26)
 
 - The cruise lever pages the panel while cruise is **off**: **RES/+ next page, SET/− previous
-  page**. The BOOT button keeps its job (short press: next page, or silence an alarm).
+  page**. ~~The BOOT button keeps its job (short press: next page, or silence an alarm).~~
+  Superseded 2026-09-27: BOOT is technical, not an input — see "Input backends".
 - **LIMIT switches the stopwatch ("measure") mode on and off.**
 - One feature, the lever and the stopwatch page together (owner chose "all at once" over
   "lever first" and over "stopwatch on `F40D` first").
@@ -97,8 +102,8 @@ build's general messages and carry neither.
 
 The lever's three fields join the plan as channels of their own, raw (×1 +0), on no page.
 `plan.json` keeps each state's name beside its interval for a person; `plan.rs` carries the
-intervals (`Band`), the states' places, and the marks. A `[stopwatch]` with no `[stalk]` builds
-with a note: nothing enters the page.
+intervals (`Band`), the states' places, and the marks. A `[stopwatch]` that nothing opens — no
+`[stalk]`, no `[[button]]` with `action = "stopwatch"` — builds with a note saying so.
 
 ## Behaviour (as built)
 
@@ -129,13 +134,15 @@ owner's `hz`: they are what makes the lever a button and the gate safe, not a vi
 | an alarm's page shown over the stopwatch | its cells foreground, except while the stopwatch is armed or running (`Timing::Timing`): then background |
 | the channels an alarm watches | their own `hz`, always |
 
-**Alarms first.** While an alarm holds the screen, any lever press does what BOOT's short press
-does there: silence the episode — LIMIT too, in a plan with no `[stopwatch]`. Alarms take the screen during the stopwatch too, and hand it
+**Alarms first.** While an alarm holds the screen, any command — the lever, a `[[button]]`,
+`dashsim` — silences the episode and does nothing else: `Stopwatch` too, in a plan with no
+`[stopwatch]`. Alarms take the screen during the stopwatch too, and hand it
 back to the stopwatch, not to the page under it (`GLASS_PAGE` stays the stopwatch's).
 
-**The stopwatch page.** LIMIT enters it from any page and leaves it back to the page it came
-from — the cursor never moves while it is up. While it is up the lever's + and − do nothing;
-BOOT keeps its job: it turns the page, and a page on the screen ends the stopwatch. The adapter
+**The stopwatch page.** A `Stopwatch` command (LIMIT, or a stopwatch `[[button]]`) enters it
+from any page and leaves it back to the page it came from — the cursor never moves while it is
+up. While it is up `Next` and `Previous` do nothing, whoever gives them, `dashsim` included:
+only `Stopwatch` leaves it (2026-09-27, "Input backends"). The adapter
 screen ends it too. Whenever the mode turns on or off, however, the machine is reset — at the
 turn, before the next sample, not on the next frame: `Screen::stopwatch_turns` counts the
 turns and `Stopwatch::follow` resets on a count it has not seen, so an off and an on between
@@ -170,7 +177,7 @@ two samples still start over.
   not. One try: a run that could not be written waits for `save`. `load`, `defaults` and
   `erase` drop a pending run. **The write happens only when the stopwatch reaches armed, and
   the stopwatch is fed only while its mode is on.** A driver who leaves the stopwatch (LIMIT or
-  the button) before stopping keeps the run in RAM only: it is lost at ignition off unless
+  a stopwatch button) before stopping keeps the run in RAM only: it is lost at ignition off unless
   `save` is sent, or the stopwatch is turned on again and arms first.
 - An aborted run is shown until the page is left, never stored; a finished run with no times
   (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
@@ -183,20 +190,136 @@ two samples still start over.
 then `vagcan dev recording calibrate` fits km/h against `380B`; the fit goes into `km_h_per_unit`. Check first that `calibrate` can take a
 recording with those two columns; if not, extend it (a separate commit).
 
+## Input backends (2026-09-27)
+
+**What the owner asked**, translated: "The buttons have to be pulled out into a separate backend
+for controlling the screens. I plan a configuration where the screen is controlled by buttons on
+pins, not by the stalk." His answers: sources combine any way (stalk only, buttons only, both,
+neither); each button has exactly one action — `next`, `previous` or `stopwatch`, the lever's
++ / − / LIMIT — with no long press; pins are configured in `dash.toml`. Later the same day:
+**"the boot/reset buttons must not affect the board. They are technical, nothing more."**
+
+**One command, one entry point.** `vag-dash-render/src/control.rs` has
+`Command { Next, Previous, Stopwatch }`. Every input turns a press into one;
+`Screen::command(cmd, &mut cursor, pages) -> Outcome` applies it and never learns the source.
+It replaced `Screen::press` and `Screen::lever`. The rules, first match wins:
+
+| where | `Next` / `Previous` | `Stopwatch` |
+|---|---|---|
+| 1. the adapter screen | move the cursor, wrapping | ignored (`Ignored`) |
+| 2. an alarm on the glass | silences it (`Silenced`) | silences it (`Silenced`) |
+| 3. the stopwatch up | ignored (`StopwatchHeld`) | leaves it (`StopwatchOff`) |
+| 4. otherwise | turn the page, wrapping (`Paged`) | opens it (`StopwatchOn`); with no `[stopwatch]` in the plan, `NoStopwatch`, logged |
+
+Only `Stopwatch` enters or leaves the stopwatch, and only an input that has it can; the
+adapter screen (`--slcan`) ends it too. **The behaviour change:** a page turn no longer ends the
+stopwatch. Before, BOOT's short press (and `dashsim`'s, which went through it) turned the page
+and so left the stopwatch.
+
+**Open, for the owner (review, 2026-09-27):** with the lever as the only `Stopwatch` input, a
+gate that closes while the stopwatch is up — cruise switched on, or its status gone silent —
+keeps the stopwatch on the glass until the gate opens again. Pin `next`/`previous` buttons do
+nothing meanwhile, `dashsim`'s page turn no longer ends it, and `dashcfg set page` never did.
+Adapter mode and a power cycle end it. Accepted as the rule says, or should `set page` (or a
+closed gate) end it?
+
+**The backends.** Each is a small machine that produces `Option<Command>`:
+
+| backend | where it runs | `Next` | `Previous` | `Stopwatch` |
+|---|---|---|---|---|
+| `[[button]]` on a pin | input task, every 5 ms | `action = "next"` | `action = "previous"` | `action = "stopwatch"` |
+| the lever (`Stalk::read`) | bus task, once per answer | rocker `next` | rocker `previous` | rocker `measure` |
+| `dashsim` (`control::remote`) | input task, on `BTN S` / `BTN L` | `BTN S` | — | — |
+
+- **A pin button** (`control::PinButton`) is `button.rs`'s machine, unchanged: 10 ms debounce,
+  250 ms between presses. It has no long press: a press is its action on release, or at 3 s if
+  still held; a hold never repeats. Two buttons may share an action.
+- **The lever's** gate, debounce and rates are unchanged: `Stalk::read` returns a `Command`
+  where it returned a `Lever` (removed).
+- **`dashsim`**: `BTN S` is `Next`, through one button machine's gate; `BTN L` asks for nothing.
+  `vagcan dev recording dash --press` is the same press.
+- **BOOT and RESET are not inputs** (owner, 2026-09-27). `GPIO9` is not configured at all: it
+  is a strapping pin, and the ROM reads it at reset. Checked before removing it: BOOT's long
+  press only logged since BLE became always on (2026-09-13/14); holding BOOT for download mode
+  is the ROM's and never involved the firmware. No other image configures `GPIO9`.
+- **With no `[stalk]` and no `[[button]]`**, the board shows its active page and changes it
+  only from `dashsim` or `dashcfg set page`. An alarm cannot be silenced; it clears on its own.
+
+**Firmware.** Every producer offers `(Source, Command)` to one `embassy_sync` channel
+(`vag_dash_fw::input::CommandQueue`, 4 deep). Nothing waits: a command that finds it full is
+dropped and logged (`GPIO3: next dropped — 4 commands are already waiting`) — full means the
+consumer is stuck behind a flash write, and a page turn landing seconds late is worse than one
+lost. One `control_task` applies them: the settings lock, `active_page`, the log line, the state
+push. The input task polls the pins and takes `dashsim`'s presses; the lever keeps being fed in
+the bus task, which now only offers its command and never waits on the settings lock. No new
+owner of the link; nothing new transmits. `Source` (`GPIO3`, `lever`, `dashsim`) is for the log
+line only.
+
+**Config**, `[[button]]` in `dash.toml` (`vag-cli-core/src/dash.rs`):
+
+```toml
+[[button]]
+pin = 3
+action = "next"   # next | previous | stopwatch
+```
+
+The pins are the SuperMini's free GPIOs with this board's wiring (`dash/15` §3) — a property of
+the board, so they live in code (`control::BUTTON_PINS`; the refusal texts in `pin_taken`). A
+button goes from the pin to GND; the pin's internal pull-up holds it high, so it is active low.
+
+| GPIO | held by | a button? |
+|---|---|---|
+| 3, 4, 5 | nothing (the RS wire, the rail divider, the wake button — all gone) | **yes** |
+| 0, 7, 10, 20, 21 | OLED: D/C, SDIN, SCLK, RES, CS | no |
+| 1, 6 | CAN transceiver: RX, TX | no |
+| 8 | LED, and a strapping pin | no |
+| 9 | BOOT, and a strapping pin | no |
+| 2 | a strapping pin | no |
+| 11 | not broken out on the SuperMini | no |
+| 12–17 | SPI flash | no |
+| 18, 19 | USB D−, D+ | no |
+| anything else | not a GPIO of the ESP32-C3 | no |
+
+Refused at parse, every one tested and mutation-checked: not `[[button]]` tables; more than 3;
+no whole-number `pin`; a pin not free (the message says what holds it); a pin twice; no
+`action`, or one that is not `next`, `previous` or `stopwatch` (lowercase). A `stopwatch`
+button with no `[stopwatch]` is a note, not a refusal.
+
+**Plan.** `plan.json` carries `buttons` (the action by its word; absent when empty, so an old
+reader sees the plan it knew); `plan.rs` carries `static BUTTONS: [ButtonPlan; N]`, or
+`buttons: &[]` so nothing is imported unused. The golden fixture has one button of each action.
+The firmware matches pins 3/4/5 to the typed `GPIO3/4/5` — no stolen peripheral — and makes an
+`Input` with a pull-up only for a pin the plan names; an unused pin is not touched.
+`Plan::buttons_fit`, a `const fn`, refuses at build time an image whose plan has a pin off the
+list, a pin twice or more than three.
+
+**RAM** (`ram-budget.sh`, empty plan as CI builds it): see the PR; with three buttons in the
+plan the pin table adds ~300 B of statics.
+
+**Not in this task:** runs kept in flash and read back over BLE are
+[`dash/21`](21-runs-in-flash.md), a separate, later task.
+
 ## Where it lives
 
+- `vag-dash-render/src/control.rs` — `Command`, `PinButton`, `BUTTON_PINS`, `remote`.
 - `vag-dash-render/src/stalk.rs` — the gate and the press detector.
 - `vag-dash-render/src/stopwatch.rs` — the machine, the launch fit, the page's cells.
-- `vag-dash-render/src/screen.rs` — `Screen::lever`, `stopwatch()`, `stopwatch_on_glass()`,
+- `vag-dash-render/src/screen.rs` — `Screen::command`, `stopwatch()`, `stopwatch_on_glass()`,
   `stopwatch_turns()`.
-- `vag-dash-render/src/plan.rs` — `StalkPlan`, `StopwatchPlan`, `Band`, `state_of`, `rates_in`.
-- `vag-cli-core/src/dash.rs` — `[stalk]` / `[stopwatch]` parsed, resolved, refused, written.
+- `vag-dash-render/src/plan.rs` — `StalkPlan`, `StopwatchPlan`, `ButtonPlan`, `Band`,
+  `state_of`, `rates_in`, `buttons_fit`.
+- `vag-cli-core/src/dash.rs` — `[stalk]` / `[stopwatch]` / `[[button]]` parsed, resolved,
+  refused, written.
+- `vag-dash-fw/src/input.rs` — the command queue (host test:
+  `research/dash/host/tests/input_queue.rs`); `bin/dash.rs` — `input_task` (pins, `dashsim`),
+  `control_task` (the one consumer).
 - `vag-dash-fw/src/bin/dash.rs` — the lever fed per answer in the bus task, the stopwatch in a
   static, the page drawn, the silence checked and the run kept and stored at a standstill by the
   panel task; `src/schema.rs` — the settings
   record and its versions (host test: `research/dash/host/tests/settings_schema.rs`).
-- `vagcan dev recording dash` says it replays neither the lever nor the stopwatch. `dashsim`
-  shows whatever frame the board sends, the stopwatch's included; it has no lever key.
+- `vagcan dev recording dash` says it replays neither the lever, the `[[button]]`s nor the
+  stopwatch. `dashsim` shows whatever frame the board sends, the stopwatch's included; it has no
+  lever key.
 
 ## Tests (hardware-free)
 
@@ -205,15 +328,21 @@ recording with those two columns; if not, extend it (a separate commit).
   order of trying matters.
 - The generated source, compiled in CI: `vag-cli-core/tests/generated_plan.rs` `include!`s
   `tests/fixtures/lever_plan.rs` (a plan with a lever — on a ladder with unbounded states —
-  and a stopwatch, from the test fixture, not a car) under `deny(warnings)` — CI builds the firmware on an empty plan, so nothing else
+  a stopwatch and a button of each action, from the test fixture, not a car) under `deny(warnings)` — CI builds the firmware on an empty plan, so nothing else
   compiles that half of `to_rust`. A unit test fails when the fixture is not what `to_rust`
   writes; `BLESS=1 cargo test -p vag-cli-core generated_source` rewrites it.
 - Gate and press: open only with both off; stale either → closed; CANCEL → closed; an edge held
   two reads fires once; one noisy read does not; holding does not repeat; held at start is not a
   press; the gate must be open on both reads; a read from before adapter mode is not half of a
   press.
-- Screen: previous page wraps; an alarm up → any lever press silences; measure in and out back to
-  the page; + and − ignored during the stopwatch; BOOT pages and ends it; the adapter ends it.
+- Screen: every command on every screen — the adapter, an alarm up, the stopwatch up, no
+  stopwatch in the plan, a page; previous wraps; `Stopwatch` in and out back to the page;
+  `Next` and `Previous` ignored during the stopwatch, and a turn of the mode only on
+  `Stopwatch`; the adapter ends it.
+- Inputs: a pin button's clean press, a bounce, a bouncing press, a hold (one press, no
+  repeat), two buttons not gating each other; `dashsim`'s presses; the pins a button may take;
+  every `[[button]]` refusal, mutation-checked; the queue keeps order and drops the newest when
+  full (host test).
 - Stopwatch: arming, start, launch midpoint, marks interpolated, abort, finish, reset, factor 0,
   a poll too slow for a fit, and the launch against a transcription of `derive::start` at 20, 100
   and 250 Hz to a microsecond; a silence aborts a run (with and without an answer after it) and
@@ -236,3 +365,6 @@ recording with those two columns; if not, extend it (a separate commit).
    rule.
 5. After the run, stop with the stopwatch up: once the car has stood 1 s the board notes
    `stopwatch: the run is saved`, and the run's times survive a power cycle.
+6. **Pin buttons, on the bench first.** A button from GPIO3 (4, 5) to GND, `[[button]]` with
+   its `action`, build, flash: each press notes `GPIO3: page N of M`; a hold is one press; with
+   the stopwatch up `next` notes that it does nothing; BOOT does nothing at all.

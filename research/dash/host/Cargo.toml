@@ -67,3 +67,7 @@ png = "0.17"
 heapless = { version = "0.8.0", features = ["serde"] }
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["derive"] }
+# `tests/input_queue.rs`: the firmware's command queue, compiled here as it is, on the
+# firmware's own `embassy-sync`; its mutex takes a critical section, which on the host is std's.
+embassy-sync = "0.7.2"
+critical-section = { version = "1", features = ["std"] }
