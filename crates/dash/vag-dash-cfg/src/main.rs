@@ -29,6 +29,10 @@ struct DashState {
 	generation: Option<u32>,
 	kind: Option<String>,
 	cells: Option<String>,
+	/// The board's fault count once it has ended: the stored codes, or `?` for no count.
+	faults: Option<String>,
+	/// Of the stored codes, the ones failing now.
+	failing: Option<u32>,
 }
 
 impl DashState {
@@ -69,6 +73,8 @@ impl DashState {
 				"gen" => s.generation = value.parse().ok(),
 				"kind" => s.kind = Some(value.to_string()),
 				"cells" => s.cells = Some(value.to_string()),
+				"faults" => s.faults = Some(value.to_string()),
+				"failing" => s.failing = value.parse().ok(),
 				_ => {}
 			}
 		}
@@ -91,7 +97,20 @@ impl DashState {
 			println!("│ brightness  {b:>3}  [{}{}]", "█".repeat(filled), "·".repeat(20 - filled));
 		}
 		println!("│ storage     {}", self.storage());
+		println!("│ faults      {}", self.faults());
 		println!("└{}", "─".repeat(WIDTH));
+	}
+
+	/// The board's fault count, for the panel's faults line: stored and failing now, `?` when
+	/// there is no count, or nothing yet — the board counts once, 10 s after it starts, and a
+	/// board from before the count says nothing of it either.
+	fn faults(&self) -> String {
+		match (self.faults.as_deref(), self.failing) {
+			(Some("?"), _) => "? — no count: the board's USB log says why".to_string(),
+			(Some(stored), Some(failing)) => format!("{stored} stored, {failing} failing now"),
+			(Some(stored), None) => format!("{stored} stored"),
+			(None, _) => "not counted yet".to_string(),
+		}
 	}
 
 	/// What flash holds against RAM, for the panel's storage line — and a run the stopwatch kept,
@@ -164,7 +183,9 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 	let mut text = LineBuffer::default();
 
 	println!("\ncommands: state | get | set brightness N | set page N | save | load | defaults | erase | q");
-	println!("the device pushes its state when an input on it turns the page, when it turns adapter or panel, and when a run is kept or written.\n");
+	println!(
+		"the device pushes its state when an input on it turns the page, when it turns adapter or panel, when a run is kept or written, and when its fault count ends.\n"
+	);
 
 	loop {
 		print!("dash> ");
@@ -289,6 +310,20 @@ mod tests {
 		assert_eq!(storage("state page=0/2 unsaved=0 run_pending=0 gen=5"), "saved (generation 5)");
 		// A board from before the key says nothing of a run.
 		assert_eq!(storage("state page=0/2 unsaved=1 gen=5"), "UNSAVED — 'save' to keep it");
+	}
+
+	/// The board's fault count (`todo/dash/20`): pushed once it ends, `faults=9 failing=1` or
+	/// `faults=?`, nothing before.
+	#[test]
+	fn the_fault_count_is_said_as_stored_and_failing_now_or_why_there_is_none() {
+		let faults = |line: &str| super::DashState::parse(line).unwrap().faults();
+		assert_eq!(
+			faults("state page=0/2 brightness=128 unsaved=0 run_pending=0 gen=5 mode=panel faults=9 failing=1 kind=values cells=[0]"),
+			"9 stored, 1 failing now"
+		);
+		assert_eq!(faults("state page=0/2 mode=panel faults=0 failing=0"), "0 stored, 0 failing now");
+		assert_eq!(faults("state page=0/2 mode=panel faults=?"), "? — no count: the board's USB log says why");
+		assert_eq!(faults("state page=0/2 mode=panel"), "not counted yet");
 	}
 
 	#[test]
