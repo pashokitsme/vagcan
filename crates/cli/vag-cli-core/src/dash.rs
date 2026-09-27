@@ -519,6 +519,10 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			// rather than turned into an infinity nothing ever reaches.
 			let threshold = |what: &str| match number(table.get(what)) {
 				Some(v) if fits_f32(v) => Ok(v),
+				Some(v) if v.is_finite() => Err(Error::Parse(format!(
+					"dash.toml: alarm #{n}: {what} {v:e} is too large for the board, which holds it as a 32-bit float (at most {:e})",
+					f32::MAX
+				))),
 				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
 			};
 			let rule = if drift {
@@ -568,8 +572,8 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			alarms.push(AlarmInput { channels, page, rule });
 		}
 	}
-	// `[[button]]` is parsed by its own change, which owns its shape too; until it lands, a typo
-	// in a `[[button]]` table is still refused.
+	// A typo in a `[[button]]` table is refused here, like any other key; its values are read
+	// by `parse_buttons` below.
 	if let Some(tables) = doc.get("button").and_then(Item::as_array_of_tables) {
 		for (i, table) in tables.iter().enumerate() {
 			Reader::new(text, table, format!("[[button]] {}", i + 1)).takes(&strict::BUTTON)?;
@@ -3795,8 +3799,11 @@ mod tests {
 		);
 		assert_eq!(
 			shape(&with("direction = \"above\"\ntrip = 1e40\nrelease = 0")),
-			"dash.toml: alarm #1 needs trip, a finite number",
-			"past what the board's f32 holds"
+			format!(
+				"dash.toml: alarm #1: trip 1e40 is too large for the board, which holds it as a 32-bit float (at most {:e})",
+				f32::MAX
+			),
+			"past what the board's f32 holds: finite, and still refused"
 		);
 		assert_eq!(
 			shape(&with("direction = \"above\"\ntrip = nan\nrelease = 0")),

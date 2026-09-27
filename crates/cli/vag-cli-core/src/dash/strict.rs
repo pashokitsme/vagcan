@@ -67,8 +67,7 @@ pub(super) const DRIFT: Keys = Keys {
 	keys: &["kind", "channels", "page", "percent", "hold_ms", "release_percent", "min_setpoint"],
 };
 
-/// Known here and parsed elsewhere: `[[button]]` arrives in its own change, and until it does
-/// its keys are at least not refused as typos.
+/// The keys of a `[[button]]` table; `parse_buttons` in `dash.rs` reads their values.
 pub(super) const BUTTON: Keys = Keys {
 	section: "[[button]]",
 	name: "[[button]]",
@@ -721,10 +720,6 @@ marks = [60, 100]
 				.filter(|keys| !keys.is_empty())
 				.map(|keys| keys.iter().map(String::as_str).collect())
 				.collect();
-			// `[[button]]` has no table in the reference yet.
-			if documented.is_empty() && heading == "[[button]]" {
-				continue;
-			}
 			let implemented: Vec<Vec<&str>> = kinds.iter().map(|k| k.keys.to_vec()).collect();
 			assert_eq!(documented, implemented, "{heading}");
 		}
