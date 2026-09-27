@@ -56,13 +56,14 @@ fn longest_speed_gap(page_period_ms: u32) -> u64 {
 				};
 				now += cost;
 				for delivery in p.answered(now, out.token, answer) {
-					if let Delivery::Reading { sub, at_ms, .. } = delivery {
-						if sub == speed {
+					match delivery {
+						Delivery::Reading { sub, at_ms, .. } if sub == speed => {
 							if let Some(before) = last {
 								longest = longest.max(at_ms - before);
 							}
 							last = Some(at_ms);
 						}
+						_ => {}
 					}
 				}
 			}
