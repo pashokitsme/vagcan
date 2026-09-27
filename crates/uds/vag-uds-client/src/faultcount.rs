@@ -217,6 +217,15 @@ impl FaultCount {
 		}
 	}
 
+	/// How the count ended, once it has; `None` while there is something to ask. What
+	/// [`next`](Self::next) says as [`Step::Done`], without building the next request to find out.
+	pub fn outcome(&self) -> Option<&Outcome> {
+		match &self.state {
+			State::Done(outcome) => Some(outcome),
+			State::Gateway | State::Units { .. } => None,
+		}
+	}
+
 	/// The answer to the request [`next`](Self::next) gave. Ignored once the count is
 	/// done.
 	pub fn answered(&mut self, answer: Answer) {
@@ -828,6 +837,22 @@ mod tests {
 		let mut listless = FaultCount::new();
 		listless.answered(Answer::NoAnswer);
 		assert_eq!(listless.tally(), None);
+	}
+
+	#[test]
+	fn the_outcome_is_there_once_the_count_is_over_and_not_before() {
+		let car = Car::listing(&[]);
+		let mut count = FaultCount::new();
+		while let Step::Ask { unit, pdu } = count.next() {
+			assert_eq!(count.outcome(), None, "{unit:?} still to ask");
+			count.answered(car.answer(unit, &pdu));
+		}
+		let Step::Done(outcome) = count.next() else { panic!("not done") };
+		assert_eq!(count.outcome(), Some(outcome));
+
+		let mut listless = FaultCount::new();
+		listless.answered(Answer::BusError);
+		assert_eq!(listless.outcome(), Some(&Outcome::NoList(Why::BusError)));
 	}
 
 	#[test]
