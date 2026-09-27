@@ -90,6 +90,7 @@ use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{ALARM_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::saving::{RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
@@ -195,12 +196,10 @@ struct Settings {
 	/// and has nowhere to keep anything. The panel still works; it just forgets.
 	store: Option<Store>,
 	config: Config,
-	/// Set by every change, cleared by a save. Without it, "did that survive?"
-	/// is answered by a reboot instead of by looking.
-	unsaved: bool,
-	/// A finished run is in `config.last_run` and not yet in flash: written at the next
-	/// standstill the stopwatch sees, or by a `save` ([`store_run`]).
-	run_pending: bool,
+	/// What of `config` flash does not hold: a change not saved, and a finished run in
+	/// `config.last_run` waiting for a standstill or a `save` ([`store_run`]). Without it,
+	/// "did that survive?" is answered by a reboot instead of by looking.
+	saving: Saving,
 }
 
 /// Shared because two tasks touch it: the button cycles pages, the GATT
@@ -686,8 +685,7 @@ fn open_settings() -> Settings {
 						Settings {
 							store: Some(store),
 							config,
-							unsaved: false,
-							run_pending: false,
+							saving: Saving::default(),
 						}
 					}
 					Err(reason) => {
@@ -728,8 +726,10 @@ fn open_settings() -> Settings {
 						Settings {
 							store: Some(store),
 							config: defaults,
-							unsaved: true,
-							run_pending: false,
+							saving: Saving {
+								unsaved: true,
+								run_pending: false,
+							},
 						}
 					}
 				},
@@ -738,8 +738,7 @@ fn open_settings() -> Settings {
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						unsaved: false,
-						run_pending: false,
+						saving: Saving::default(),
 					}
 				}
 				Err(e) => {
@@ -747,8 +746,7 @@ fn open_settings() -> Settings {
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						unsaved: false,
-						run_pending: false,
+						saving: Saving::default(),
 					}
 				}
 			}
@@ -758,8 +756,7 @@ fn open_settings() -> Settings {
 			Settings {
 				store: None,
 				config: Config::default(),
-				unsaved: false,
-				run_pending: false,
+				saving: Saving::default(),
 			}
 		}
 	}
@@ -803,7 +800,9 @@ async fn button_task(button: Input<'static>, settings: &'static Shared, screen: 
 						note!("button: alarm silenced until its value comes back");
 					}
 					alarm::Press::NextPage => {
-						s.unsaved |= s.config.active_page != before;
+						if s.config.active_page != before {
+							s.saving.changed();
+						}
 						// One-based: this line is read by a person, and "page 0 of 2" reads as
 						// no page at all. The `state` line stays zero-based — it is a protocol.
 						note!("button: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
@@ -1298,11 +1297,14 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	let s = settings.lock().await;
 	let _ = write!(
 		out,
-		"state page={}/{} brightness={} unsaved={} gen={}",
+		"state page={}/{} brightness={} unsaved={} run_pending={} gen={}",
 		s.config.active_page,
 		s.config.pages.len(),
 		s.config.brightness,
-		u8::from(s.unsaved),
+		u8::from(s.saving.unsaved),
+		// A finished run only RAM holds, lost at power-off: `unsaved=0` alone said "saved"
+		// over it (PR #12 review). `dashcfg` skips a key it does not know.
+		u8::from(s.saving.run_pending),
 		s.store.as_ref().map_or(0, Store::generation)
 	);
 	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
@@ -1978,7 +1980,10 @@ impl PanelReads {
 		let mode = self.read_mode();
 		let (lost, host_clock) = bus.lock(|p| {
 			let planner = p.borrow();
-			(self.subs.iter().flatten().any(|sub| !planner.holds(sub.id)), host_clock(&planner, &self.subs))
+			(
+				self.subs.iter().flatten().any(|sub| !planner.holds(sub.id)),
+				host_clock(&planner, &self.subs),
+			)
 		});
 		if shown == self.shown && listed == self.listed && mode == self.mode && !lost && host_clock == self.host_clock {
 			return;
@@ -2193,7 +2198,9 @@ impl PanelReads {
 			.lock(|cell| cell.borrow_mut().lever(lever, &mut s.config.active_page, pages));
 		match action {
 			Action::Paged => {
-				s.unsaved |= s.config.active_page != before;
+				if s.config.active_page != before {
+					s.saving.changed();
+				}
 				note!("lever: page {} of {}", usize::from(s.config.active_page) + 1, s.config.pages.len());
 				drop(s);
 				STATE_CHANGED.signal(());
@@ -2727,27 +2734,42 @@ async fn keep_run(settings: &Shared, run: stopwatch::Run) {
 	}
 	let mut s = settings.lock().await;
 	s.config.last_run = times;
-	s.run_pending = true;
-	note!("stopwatch: the run is kept — written to flash at the next standstill, or by `save`");
+	s.saving.run_kept();
+	drop(s);
+	STATE_CHANGED.signal(());
+	// Written by the stopwatch, which is fed only while it is up: a run whose stopwatch is left
+	// before the car stands is in RAM alone until `save`, or the stopwatch's next standstill.
+	note!("stopwatch: the run is in RAM — written to flash once the car stands with the stopwatch up, or by `save`; lost at power-off before either");
 }
 
 /// The run [`keep_run`] left waiting, written to flash — called at a standstill. What flash
 /// holds gets the run and nothing else: with other changes waiting for a `save`, the run
 /// goes into the configuration flash already holds, and those changes stay the person's
-/// to keep or not. Tried once; a run it could not write waits for the next `save`.
+/// to keep or not. Tried once; a run it could not write waits for the next `save`
+/// ([`Saving::at_standstill`] decides, and says why in its tests).
 async fn store_run(settings: &Shared) {
 	let mut guard = settings.lock().await;
 	let s = &mut *guard;
-	if !s.run_pending {
-		return;
+	let before = s.saving;
+	write_run(s);
+	if s.saving != before {
+		STATE_CHANGED.signal(());
 	}
-	s.run_pending = false;
+}
+
+/// [`store_run`] with the settings in hand.
+fn write_run(s: &mut Settings) {
 	let Some(store) = s.store.as_mut() else {
-		s.unsaved = true;
+		// Nowhere to write it; `save` says so.
+		if s.saving.at_standstill(false) != RunWrite::Nothing {
+			s.saving.not_written();
+		}
 		return;
 	};
-	let stored = if s.unsaved {
-		match store.load() {
+	let stored = match s.saving.at_standstill(false) {
+		RunWrite::Nothing => return,
+		RunWrite::Whole => s.config.clone(),
+		RunWrite::AddToStored => match store.load() {
 			Ok(mut stored) => {
 				stored.last_run = s.config.last_run.clone();
 				stored
@@ -2756,14 +2778,12 @@ async fn store_run(settings: &Shared) {
 				note!("stopwatch: the run waits for `save` — flash holds no configuration to add it to ({e:?})");
 				return;
 			}
-		}
-	} else {
-		s.config.clone()
+		},
 	};
 	match store.save(&stored) {
 		Ok(_) => note!("stopwatch: the run is saved"),
 		Err(e) => {
-			s.unsaved = true;
+			s.saving.not_written();
 			note!("stopwatch: the run could not be saved ({e:?}) — `save` to retry");
 		}
 	}
@@ -3257,12 +3277,16 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 		Some("state") => return state_line(settings).await,
 		Some("get") => {
 			let s = settings.lock().await;
+			// What is saved comes before the pages: eight pages of eight cells run past the
+			// line, and what flash holds is the part a person must not lose off its end.
 			let _ = write!(
 				out,
-				"brightness {} page {} of {}",
+				"brightness {} page {} of {} | {} gen {}",
 				s.config.brightness,
 				s.config.active_page,
-				s.config.pages.len()
+				s.config.pages.len(),
+				s.saving.said(),
+				s.store.as_ref().map_or(0, Store::generation)
 			);
 			for (i, page) in s.config.pages.iter().enumerate() {
 				let kind = match page.kind {
@@ -3271,19 +3295,13 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				};
 				let _ = write!(out, " | {i}:{kind}{:?}", page.cells);
 			}
-			let _ = write!(
-				out,
-				" | {} gen {}",
-				if s.unsaved { "UNSAVED" } else { "saved" },
-				s.store.as_ref().map_or(0, Store::generation)
-			);
 		}
 		Some("set") => match (words.next(), words.next()) {
 			(Some("brightness"), Some(value)) => match value.parse::<u8>() {
 				Ok(v) => {
 					let mut s = settings.lock().await;
 					s.config.brightness = v;
-					s.unsaved = true;
+					s.saving.changed();
 					let _ = write!(out, "ok: brightness {v}");
 				}
 				Err(_) => {
@@ -3297,7 +3315,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 						let _ = write!(out, "err: only {} pages", s.config.pages.len());
 					} else {
 						s.config.active_page = v;
-						s.unsaved = true;
+						s.saving.changed();
 						PAGES_CHANGED.signal(());
 						let _ = write!(out, "ok: page {v}");
 					}
@@ -3323,8 +3341,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				}
 				Some(store) => match store.save(&config) {
 					Ok(generation) => {
-						s.unsaved = false;
-						s.run_pending = false;
+						s.saving.agreed();
 						let _ = write!(out, "ok: saved, generation {generation}");
 					}
 					Err(e) => {
@@ -3343,8 +3360,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 					Ok(config) => match config.validate() {
 						Ok(()) => {
 							s.config = config;
-							s.unsaved = false;
-							s.run_pending = false;
+							s.saving.agreed();
 							PAGES_CHANGED.signal(());
 							let _ = write!(out, "ok: reloaded from flash");
 						}
@@ -3361,8 +3377,7 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 		Some("defaults") => {
 			let mut s = settings.lock().await;
 			s.config = Config::default();
-			s.unsaved = true;
-			s.run_pending = false;
+			s.saving.defaults();
 			PAGES_CHANGED.signal(());
 			let _ = write!(out, "ok: defaults in memory — 'save' to keep them");
 		}
@@ -3374,8 +3389,9 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				}
 				Some(store) => match store.erase() {
 					Ok(()) => {
-						// A run waiting for a standstill would write the configuration back.
-						s.run_pending = false;
+						// RAM keeps what was on the glass, now unsaved: a run kept later waits for
+						// `save` rather than writing it all back (PR #12 review).
+						s.saving.erased();
 						let _ = write!(out, "ok: erased — next boot uses defaults");
 					}
 					Err(e) => {
