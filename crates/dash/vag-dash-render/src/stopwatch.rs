@@ -63,14 +63,21 @@ pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 
 /// Why 1.3 s. The speed shares the bus with the lever, the cruise status, an alarm's
 /// channels and a host's reads, one exchange at a time, and one the unit does not answer
 /// holds the bus for the board's whole answer timeout (`RESPONSE_TIMEOUT` in the firmware,
-/// 500 ms). Two of them can fall between two speed answers — a run's speed goes ahead of
-/// everything but the panel's floor (`Class::Timing`), and the lever and the cruise status
-/// are that floor, on two units. So the threshold is past two timeouts, plus the slowest
-/// period the speed may be read at ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the
-/// speed's own answer and the send slot before it. At 500 ms one unanswered read of
-/// anything aborted a run whose speed never missed (PR #12 review). The firmware asserts
-/// the relation at compile time, so the two cannot drift apart. Past it the speed is
-/// silent in earnest: the run is aborted, and nothing is interpolated across the gap.
+/// 500 ms). A run's speed goes ahead of everything but the panel's floor (`Class::Timing`):
+/// between two of its answers fall the exchange already on the bus when it came due — a
+/// host's read, say — and the floor's reads that are due, each unit's once (a silent unit
+/// is backed off). So the threshold is past two timeouts — two silent units in one gap, of
+/// the plan's or one of them a host's — plus the slowest period the speed may be read at
+/// ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the speed's own answer and the send slot
+/// before it. At 500 ms one unanswered read of anything aborted a run whose speed never
+/// missed (PR #12 review). The firmware asserts the relation at compile time, so the two
+/// cannot drift apart.
+///
+/// Three of the plan's units silent at once is past it, and runs abort: on a moving car the
+/// plan's units answer, and three that do not are a bus in trouble. The scheduler's test
+/// `a_runs_speed_waits_out_two_silent_units_in_a_gap_and_not_three` measures both. Past the
+/// threshold the speed counts as silent: the run is aborted, and nothing is interpolated
+/// across the gap.
 pub const SILENCE_MS: u64 = 1_300;
 
 /// How long past [`ARMING_HOLD_MS`] a standstill holds before the board writes a run to
@@ -702,8 +709,8 @@ pub fn cells<'a>(
 /// Decided on the value as it will be printed, not as it is: 9.996 s to two places is
 /// `10.00`, a character wider than the cell was laid out for, so from 9.995 s it takes one
 /// place and prints `10.0`; likewise from 99.95 s it prints `100`, not `100.0` (PR #12
-/// review). At the edge itself `f32` holds 9.995 and 99.95 a hair under, which prints the
-/// lower way to either count of places, and four characters both ways.
+/// review). At the edge itself the thresholds are the same `f32` values the time is, so an
+/// edge takes the fewer places: 9.995 prints `10.0` and 99.95 prints `100`, four characters.
 fn decimals_for(seconds: f32) -> u8 {
 	match seconds {
 		s if s < 9.995 => 2,

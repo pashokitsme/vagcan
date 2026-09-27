@@ -838,8 +838,8 @@ fn a_slow_timing_unit_yields_to_the_panels_floor_only_where_the_budget_says() {
 ///
 /// As `Class::Foreground` the speed shares the floor with the lever, and once the floor is
 /// spent the host's `Remote` reads rank ahead of it: the speed gets well under half its rate,
-/// with gaps past what the stopwatch survives (`vag_dash_render::stopwatch::SILENCE_MS`), and
-/// every run aborts — and the lever, sharing that floor, goes short too. As `Class::Timing` it
+/// with gaps of many whole periods — under the 500 ms the stopwatch's silence was then, every
+/// run aborted — and the lever, sharing that floor, goes short too. As `Class::Timing` it
 /// keeps nine reads in ten and never misses two in a row, and the lever keeps its rate: on the
 /// board the floor still goes ahead of Timing (`Budget::timing_yields_to_floor`), so a run
 /// cannot starve the lever or an alarm's channel. The host gets what is left.
@@ -876,7 +876,8 @@ fn the_boards_stopwatch_keeps_its_speed_under_a_host_only_as_timing() {
 			// The speed spends the floor the lever needs too, so both go short.
 			Class::Foreground => {
 				assert!(at.len() * 2 < (RUN_MS / 20) as usize, "{label}: the host's reads take its slots");
-				assert!(longest > 500, "{label}: gaps no run survives");
+				assert!(longest > 10 * 20, "{label}: gaps of ten reads and more");
+				assert!(rocker < (RUN_MS / 100) as usize, "{label}: the lever's floor goes to the speed");
 			}
 			_ => {
 				// When the rocker and the cruise status fall due with it, both go first and the
@@ -1138,5 +1139,70 @@ fn a_remote_client_with_20_subscriptions_disconnects() {
 	for (u, panel) in [(A, panel_a), (B, panel_b)] {
 		assert_eq!(sim.sends_to(u, 3000, 8000), 10, "the panel's 500 ms period, unchanged");
 		assert!(sim.readings_of(panel).iter().filter(|(_, t)| *t >= 3000).count() >= 10);
+	}
+}
+
+/// PR #12 review: how long the board's run can go without its speed while other units do not
+/// answer. A silent unit holds the bus for the board's whole answer timeout, 500 ms, per
+/// attempt. The exchange already on the bus when the speed falls due finishes first, and the
+/// panel's floor (`Foreground` under it, here a silent plan unit's reads — a lever or an
+/// alarm's unit gone quiet, or a part number asked again) goes ahead of `Timing` on the board.
+///
+/// A host's silent reads rank below the speed, so they cost one timeout a gap at most however
+/// many there are. Two silent units in one gap — two of the plan's, or one and a host's — hold
+/// the speed about 1.04 s: inside the stopwatch's silence
+/// (`vag_dash_render::stopwatch::SILENCE_MS`, 1300 ms), whose assert in the firmware counts
+/// two timeouts. Three of the plan's units silent at once is past it, and a run aborts: on a
+/// moving car the plan's units answer, and three that do not are a bus in trouble.
+#[test]
+fn a_runs_speed_waits_out_two_silent_units_in_a_gap_and_not_three() {
+	const RUN_MS: u64 = 60_000;
+	const TIMEOUT_MS: u64 = 500;
+	const SILENCE_MS: u64 = 1_300;
+	for (plan_silent, host_silent) in [(1usize, 0usize), (0, 3), (2, 0), (1, 1), (1, 3), (3, 0)] {
+		let (engine, gearbox, column) = (A, B, unit(0x0C));
+		let mut units = vec![
+			(engine, FakeUnit::with(&[(0x2001, &[0])])),
+			(gearbox, FakeUnit::with(&[(0x3001, &[0])])),
+			(column, FakeUnit::with(&[(0x1001, &[0])])),
+		];
+		let quiet: Vec<Unit> = (0x40..0x40 + (plan_silent + host_silent) as u16).map(unit).collect();
+		units.extend(quiet.iter().map(|u| {
+			(
+				*u,
+				FakeUnit {
+					silent: true,
+					..FakeUnit::default()
+				},
+			)
+		}));
+		let mut sim = Sim::new(Budget::board(), car(&units));
+		sim.latency = 4;
+		for u in &quiet {
+			sim.unit_latency.insert(*u, TIMEOUT_MS);
+		}
+		let speed = sim.p.subscribe(0, Class::Timing, gearbox, 0x3001, 20, None);
+		sim.p.subscribe(0, Class::Foreground, column, 0x1001, 100, None);
+		sim.p.subscribe(0, Class::Foreground, engine, 0x2001, 200, None);
+		for (i, u) in quiet.iter().enumerate() {
+			let class = if i < plan_silent { Class::Foreground } else { Class::Remote };
+			sim.p.subscribe(0, class, *u, 0x5001, 100, None);
+		}
+		sim.run_until(RUN_MS);
+
+		let at: Vec<u64> = sim.readings_of(speed).iter().map(|(_, at)| *at).collect();
+		let longest = at.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(RUN_MS);
+		let label = format!("{plan_silent} silent plan unit(s), {host_silent} silent host unit(s): longest gap {longest} ms");
+		// How many timeouts can fall in one gap: the plan's own, and one of the host's.
+		let timeouts = plan_silent as u64 + u64::from(host_silent > 0);
+		// The speed's period, and its own answer and the send slot, twice over.
+		let within = timeouts * TIMEOUT_MS + 20 + 2 * (4 + 10);
+		match timeouts {
+			0..=2 => {
+				assert!(longest <= within, "{label}: {timeouts} timeout(s) and a period at most");
+				assert!(longest <= SILENCE_MS, "{label}: a run survives it");
+			}
+			_ => assert!(longest > SILENCE_MS, "{label}: three of the plan's units silent at once end a run"),
+		}
 	}
 }
