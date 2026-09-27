@@ -242,12 +242,17 @@ pub enum Answer {
 	/// the unit is not backed off, its backoff is not reset, and nobody else reading it
 	/// is told of a miss. Only a raw exchange gets it; a read always expects an answer.
 	NotExpected,
-	/// The unit asked for more time (`7F xx 78`, response pending) and the exchange's own
-	/// deadline — one its consumer set, shorter than the transport's — ran out before the
-	/// answer came: the board's fault count ends each of its exchanges 2 s after the send
-	/// (`todo/dash/20`). The unit is there and busy, so it is heard from — its backoff is
-	/// reset — and nobody else reading it is told of a miss. Only a raw exchange gets it; a
-	/// read given it is refused with `78`, as a `78` reaching the planner always was.
+	/// The unit was heard on its answer id during the exchange but did not answer this request
+	/// in time: it asked for more time (`7F xx 78`, `asked_for_time`) and the wait's end came
+	/// first — the transport's pending deadline, or an exchange's own, as the board's fault count
+	/// ends its exchanges 2 s from their start (`todo/dash/20`) — or it only sent late answers to
+	/// earlier requests (`asked_for_time` false). The board's shell hands it over for every
+	/// exchange, raw or read, when anything was heard and no answer came (`Ended::Busy` in
+	/// `vag-dash-fw`'s `exchange`); the laptop's never does.
+	///
+	/// The unit is there, not absent: everyone reading it is told [`Miss::Busy`], a missed
+	/// sample, never [`Miss::NoAnswer`]. It is backed off as a non-answer is, so a unit busy for
+	/// ever costs its neighbours no more than a silent one (review round 3).
 	Busy { asked_for_time: bool },
 }
 

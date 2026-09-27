@@ -97,8 +97,9 @@ pub enum Outcome {
 pub enum Why {
 	/// Nothing came back in the transport's deadline.
 	NoAnswer,
-	/// The unit asked for more time (`78`) and the exchange's own deadline ran out before
-	/// its answer ([`Answer::Busy`]): there, and busy.
+	/// The unit was heard but did not answer in time ([`Answer::Busy`]): it asked for more time
+	/// (`78`) and the exchange's deadline cut the wait (`asked_for_time`), or it only sent late
+	/// answers to earlier requests. There, and busy.
 	Busy { asked_for_time: bool },
 	/// The request could not be put on the bus, or the bus failed under it.
 	BusError,

@@ -213,25 +213,30 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
     unit, and were it a plan unit its cells dash and its part number is read again;
   - **asked for time (`78`) and still searching at 2 s:** `asked for time (78), no answer in
     2 s`, told to the planner as `Answer::Busy` (review round 1, as `StillPending`; round 2
-    renamed it and gave it to every exchange, below): the unit is heard from, not backed off,
-    its part is not checked again. Before, it was `NoAnswer`: the plan unit's cells dashed, it
-    was called silent, and its `F187` went out 250 ms later into its late answer.
+    renamed it and gave it to every exchange, below): the unit is not declared absent and its
+    part is not checked again. Before, it was `NoAnswer`: the plan unit's cells dashed, it was
+    called silent, and its `F187` went out 250 ms later into its late answer.
 - **A unit heard from is busy, not silent, on every exchange** (review round 2, `Waits::ended`):
   what was heard on the unit's answer id decides, not what ended the wait. Nothing at all is
   silence (`NoAnswer`, an absent unit). A `78`, or late answers to earlier requests only, then
-  no answer in time, is `Answer::Busy { asked_for_time }`: the unit is heard from; a read's
-  readers and one-shots get `Miss::Busy`, one missed sample, never an absent unit (before, a
-  stray then a late answer marked the unit absent and dropped its subscriptions, a stopwatch
-  run's speed with them); a part check answered so is asked again; a host's exchange gets
-  `Outcome::NoAnswer`, not a `7F xx 78` that promised more.
+  no answer in time, is `Answer::Busy { asked_for_time }`: everyone reading the unit gets
+  `Miss::Busy`, one missed sample, never an absent unit (before, a stray then a late answer
+  marked the unit absent and dropped its subscriptions, a stopwatch run's speed with them); a
+  part check answered so is asked again; a host's exchange gets `Outcome::NoAnswer`, not a
+  `7F xx 78` that promised more. The unit is backed off as a silent one is (round 3: `Busy`
+  reset its backoff, and a healthy unit beside one busy for ever got 40 readings in 10 s where
+  a silent neighbour left it 144; now the same).
 - **Late answers are dropped, on every exchange** (review round 1, `Waits::heard`): a PDU that
-  answers another request — another service's, another identifier's (`22` echoes its first
-  identifier), another sub-function's (`10`, `19`, `3E` echo theirs), or a refusal naming
+  answers another request — another service's, another identifier's (a `22` answer starts with
+  an identifier asked — any of them, round 3: a unit may leave out the first, and the planner
+  takes that as `Absent`), another sub-function's (`10`, `19`, `3E` echo theirs), or a refusal naming
   another service — is dropped and the wait goes on within its time; the board says so once.
   One rule on the board and the laptop since round 2, `schedule::answers` (the laptop's
   stricter copy moved there; a `62` with no record at all still answers a `22`, the planner's
   to judge). The drain before a send removes only what came before it; ISO-TP ignores the
-  consecutive frames of an answer nobody waits for (round 2, `IsoTpCan::recv`). **Left over:**
+  consecutive frames of an answer nobody waits for, before a first frame (round 2,
+  `IsoTpCan::recv`) and while a flow control is awaited (round 3, `wait_flow_control`).
+  **Left over:**
   only an identical request — a host's own `19 02 08` to the same unit within P2* of a cut — can
   still receive the count's late answer; nothing in the answer tells the two apart.
 - **A unit busy on `F187`** (`7F 22 21`) is asked its part number again after the backoff's cap
@@ -271,7 +276,8 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   - `faults: 7E0 2 stored, 1 failing now` (a unit with codes)
   - `faults: 7E1 not counted — no answer` / `— asked for time (78), no answer in 2 s` /
     `— bus error` / `— refused, NRC 22` / `— answer did not parse`
-  - `faults: 7E1 not counted — still answering an earlier request, none to this one in time`
+  - `faults: 7E1 not counted — sent only a late answer to an earlier request, none to this one
+    in 0.5 s` (the window is the board's answer timeout, `exchange::RESPONSE_TIMEOUT_MS`)
   - `faults: waiting while the stopwatch is up` / `faults: waiting while a host holds the board's
     timing channel (vagcan measure)` / `faults: counting on where it stopped`
   - `faults: the board turned adapter — the same request again when the panel is back`
@@ -293,11 +299,12 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   211 B, checked
   at compile time (`STATE_LINE_LONGEST`) against `UART_MTU` (244), the size of the
   `heapless::String` `state_line` writes into.
-- **`dash/README.md`'s rule** (answer 1): amended — the board resolves no label data, and the
-  one identifier it asks outside the plan is the gateway's installation list, once per boot.
-- **RAM** (`ram-budget.sh`, empty plan), from before phase 2 to now: static 139,320 → 139,524 B
-  with BLE (+204), 129,868 → 130,072 B without (+204); stack 156,644 → 156,444 B and 187,984 →
-  187,784 B. Of it `COUNT` 128 B and `FAULTS` 12 B; the rest the compiler's merged globals and
+- **`dash/README.md`'s rule** (answer 1): amended — the board resolves no label data, and
+  besides each plan unit's `F187` the one identifier it asks outside the plan is the gateway's
+  installation list, once per boot.
+- **RAM** (`ram-budget.sh`, empty plan), from before phase 2 to now: static 139,320 → 139,500 B
+  with BLE (+180), 129,868 → 130,048 B without (+180); stack 156,644 → 156,468 B and 187,984 →
+  187,808 B. Of it `COUNT` 128 B and `FAULTS` 12 B; the rest the compiler's merged globals and
   switch tables. The count's heap is phase 1's, and is freed when the count ends.
 
 ## How long it takes
@@ -305,8 +312,8 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
 Per exchange with the gateway in the path the board measured ≈4 ms (`dash/14` §6a); a fault
 read may take longer (units answer `7F 19 78` while they search), say 5–50 ms. The planner
 spaces sends 10 ms apart (100/s ceiling), the panel keeps its 25/s floor, and `Background`
-takes the slots left — a four-cell page with the four alarm rules leaves most of them. So:
-The reference car lists 15 ids; with the three the list cannot hold that is 18, less `776` and
+takes the slots left — a four-cell page with the four alarm rules leaves most of them. The
+reference car lists 15 ids; with the three the list cannot hold that is 18, less `776` and
 `777` skipped: **16 units, 17 exchanges ≈ 0.3–1 s** when every unit answers, **+0.5 s per
 silent unit** (the board's `RESPONSE_TIMEOUT`, during which the panel's next read waits too),
 and at most 2 s for a unit that answers `78` and never the rest (the count's deadline). Time a
@@ -333,15 +340,21 @@ each a BLE round trip.
   or an answer id, in either role; counting a 4095-byte answer allocates under 256 B, and so
   does reading a 4095-byte list (a counting allocator in the test binary); an answer after the
   end changes nothing; the tally so far while the walk goes on, and the outcome once it is over.
-- `schedule` (3): a raw exchange a busy unit did not answer in time keeps the unit and its
-  readers; a read so is a missed sample (`Miss::Busy`) for every reader and one-shot, not backed
-  off; a response answers its own request and no other — service, identifier, sub-function, and
-  a refusal's NRC (`answers`, the laptop's asserts moved here).
-- `remote` (1, round 2): a busy unit is no answer to a host, its subscription reads no answer,
-  and it is not backed off.
-- `isotp` (2) and `isotp_over_slcan` (1, round 2): consecutive and flow-control frames before
-  the first frame are ignored and the wait goes on; leftovers then nothing is a timeout, not a
-  protocol error; the same over the laptop's slcan duplex.
+- `schedule` (5): a raw exchange a busy unit did not answer in time is `Busy` for its readers
+  and backs the unit off; a read so is a missed sample (`Miss::Busy`) for every reader and
+  one-shot, backed off as silence is; a unit busy for ever costs a healthy neighbour no more
+  than a silent one (round 3, the safety probe's two scenarios); a response answers its own
+  request and no other — service, any identifier asked, sub-function, and a refusal's NRC
+  (`answers`, the laptop's asserts moved here); a batch whose first identifier the unit leaves
+  out is read through the shell's rule, the rest at its rate (round 3).
+- `remote` (1): a busy unit is no answer to a host, its subscription reads no answer, and it is
+  asked no more often than a silent one.
+- `isotp` (3) and `isotp_over_slcan` (2): consecutive and flow-control frames before the first
+  frame are ignored and the wait goes on; leftovers then nothing is a timeout, not a protocol
+  error; a consecutive frame or an unknown PCI while a flow control is awaited is ignored too
+  (round 3); receiving and sending over the laptop's slcan duplex.
+- `bus` on the laptop (1, round 3): a batch whose first identifier the unit leaves out still
+  reads the rest.
 - `gateway` (2, moved from `survey`): the walk covers the three the list cannot hold; a unit
   listed twice is walked once.
 - `render` (11): the triangle pixel for pixel at the foot of the icon column, the count over it
@@ -358,7 +371,8 @@ each a BLE round trip.
   run arms while a count exchange is out" rests on.
 - `research/dash/host/tests/exchange_waits.rs` (8): its own answer ends the wait; a late answer
   to another request is dropped and the wait goes on within its time, and then nothing is busy,
-  not silent; another identifier's or sub-function's answer is a stray too; a suppressed request
+  not silent; another identifier's or sub-function's answer is a stray too, and an answer that
+  starts with any identifier the request asked is its own; a suppressed request
   waits for its own refusal only; `78`s waited out as before with no deadline of its own, and
   busy after them; the count's exchange ends 2 s after it began, `78`s included, as busy; a unit
   silent from the start of it is silent; a send that used the whole deadline leaves no wait.

@@ -509,9 +509,10 @@ could be counted — the USB log says which. `state` says `faults=9 failing=1 un
 identifier or sub-function, or a refusal naming another service, that arrives while an
 exchange waits is dropped and the wait goes on — one rule on the board and the laptop,
 `vag_uds_client::schedule::answers`; the sweep before each send removes only what came before
-it, and ISO-TP ignores the consecutive frames of an answer nobody waits for. A unit heard from
-during an exchange — a `78`, or late answers only — that does not answer in time is busy, not
-silent: its readers miss one sample, it is not backed off, and its part is not checked again.
+it, and ISO-TP ignores the consecutive frames of an answer nobody waits for, receiving and
+sending. On the board, a unit heard from during an exchange — a `78`, or late answers only — that
+does not answer in time is busy, not silent: its readers miss one sample, its part is not checked
+again, and it is backed off as a silent unit is.
 
 **Input is commands, from any mix of backends.** Buttons on GPIO 3, 4 and 5 (`[[button]]`),
 the cruise lever (`[stalk]`) and `dashsim` each turn a press into a `Command` — next, previous,
