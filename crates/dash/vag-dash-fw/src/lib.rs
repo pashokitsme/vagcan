@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod can;
 pub mod config;
 pub mod health;
+pub mod input;
 pub mod panel;
 pub mod plan;
 pub mod saving;

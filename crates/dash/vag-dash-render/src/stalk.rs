@@ -22,8 +22,15 @@
 //!   `measure` — once: holding does not repeat, and a one-read excursion never
 //!   fires. The gate has to be open on both reads of the press.
 //!
+//! A press comes out as a [`Command`] — `next` as [`Command::Next`], `previous` as
+//! [`Command::Previous`], `measure` as [`Command::Stopwatch`] — the same command a `[[button]]`
+//! on a pin gives, so the screen treats a press the same whatever was pressed
+//! ([`control`](crate::control)).
+//!
 //! Nothing here reads a clock or a bus. The lever is sampled at whatever rate the
 //! scheduler gives it; "two reads" is the debounce whatever that rate is.
+
+use crate::control::Command;
 
 /// A state of one field: its place in the list of states the plan resolved for
 /// that field. Which list, and what each state is called, is the plan's; this
@@ -89,14 +96,6 @@ impl Read {
 	}
 }
 
-/// A press of the lever, while it is ours.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lever {
-	Next,
-	Previous,
-	Measure,
-}
-
 /// The gate and the press detector.
 pub struct Stalk {
 	states: States,
@@ -139,7 +138,7 @@ impl Stalk {
 		self.open = false;
 	}
 
-	/// One read. A press, if this read confirmed one.
+	/// One read. A press, if this read confirmed one, as the command it asks for.
 	///
 	/// **Call it exactly once per new answer** of the identifier that carries the
 	/// rocker and the switch — never once per frame, and never again with a stored
@@ -152,7 +151,7 @@ impl Stalk {
 	/// The rocker's state is tracked whether or not the gate is open, so a press
 	/// that began while the lever was cruise's is already held when the gate
 	/// opens, and does not fire then.
-	pub fn read(&mut self, read: Read) -> Option<Lever> {
+	pub fn read(&mut self, read: Read) -> Option<Command> {
 		let open = self.gate(&read);
 		let was_open = core::mem::replace(&mut self.open, open);
 		let rocker = core::mem::replace(&mut self.last, read.rocker);
@@ -168,9 +167,9 @@ impl Stalk {
 			return None;
 		}
 		match state {
-			s if s == self.states.next => Some(Lever::Next),
-			s if s == self.states.previous => Some(Lever::Previous),
-			s if s == self.states.measure => Some(Lever::Measure),
+			s if s == self.states.next => Some(Command::Next),
+			s if s == self.states.previous => Some(Command::Previous),
+			s if s == self.states.measure => Some(Command::Stopwatch),
 			_ => None,
 		}
 	}
@@ -209,7 +208,7 @@ mod tests {
 		}
 	}
 
-	fn run(stalk: &mut Stalk, reads: &[Read]) -> std::vec::Vec<Option<Lever>> {
+	fn run(stalk: &mut Stalk, reads: &[Read]) -> std::vec::Vec<Option<Command>> {
 		reads.iter().map(|r| stalk.read(*r)).collect()
 	}
 
@@ -217,7 +216,7 @@ mod tests {
 	fn a_press_held_for_two_reads_fires_once_on_the_second() {
 		let mut stalk = Stalk::new(STATES);
 		let out = run(&mut stalk, &[free(REST), free(REST), free(NEXT), free(NEXT), free(NEXT), free(NEXT)]);
-		assert_eq!(out, [None, None, None, Some(Lever::Next), None, None], "holding does not repeat");
+		assert_eq!(out, [None, None, None, Some(Command::Next), None, None], "holding does not repeat");
 	}
 
 	#[test]
@@ -236,8 +235,8 @@ mod tests {
 			free(NEXT),
 			free(NEXT),
 		];
-		let fired: std::vec::Vec<Lever> = run(&mut stalk, &reads).into_iter().flatten().collect();
-		assert_eq!(fired, [Lever::Previous, Lever::Measure, Lever::Next]);
+		let fired: std::vec::Vec<Command> = run(&mut stalk, &reads).into_iter().flatten().collect();
+		assert_eq!(fired, [Command::Previous, Command::Stopwatch, Command::Next]);
 	}
 
 	#[test]
@@ -258,7 +257,7 @@ mod tests {
 				free(REST),
 			],
 		);
-		assert_eq!(out, [None, None, None, None, Some(Lever::Previous), None, None, None]);
+		assert_eq!(out, [None, None, None, None, Some(Command::Previous), None, None, None]);
 	}
 
 	#[test]
@@ -275,7 +274,7 @@ mod tests {
 		);
 		// A release two reads long is one, and the next press fires again.
 		let out = run(&mut stalk, &[free(REST), free(REST), free(NEXT), free(NEXT)]);
-		assert_eq!(out, [None, None, None, Some(Lever::Next)]);
+		assert_eq!(out, [None, None, None, Some(Command::Next)]);
 	}
 
 	#[test]
@@ -302,7 +301,7 @@ mod tests {
 		// Released and pressed again, it is.
 		assert_eq!(
 			run(&mut stalk, &[free(REST), free(REST), free(NEXT), free(NEXT)]),
-			[None, None, None, Some(Lever::Next)]
+			[None, None, None, Some(Command::Next)]
 		);
 	}
 
@@ -368,7 +367,7 @@ mod tests {
 		// Released and pressed again with the gate open, it is ours.
 		assert_eq!(
 			run(&mut stalk, &[free(REST), free(REST), free(NEXT), free(NEXT)]),
-			[None, None, None, Some(Lever::Next)]
+			[None, None, None, Some(Command::Next)]
 		);
 	}
 
@@ -406,7 +405,7 @@ mod tests {
 		);
 		let mut stalk = Stalk::new(STATES);
 		let out = run(&mut stalk, &[read(20), read(20), read(128), read(131)]);
-		assert_eq!(out, [None, None, None, Some(Lever::Previous)]);
+		assert_eq!(out, [None, None, None, Some(Command::Previous)]);
 	}
 
 	#[test]
@@ -418,6 +417,6 @@ mod tests {
 		assert!(!stalk.gate_open());
 		// Minutes later, one read of NEXT is still one read.
 		assert_eq!(stalk.read(free(NEXT)), None);
-		assert_eq!(stalk.read(free(NEXT)), Some(Lever::Next), "the second read pairs");
+		assert_eq!(stalk.read(free(NEXT)), Some(Command::Next), "the second read pairs");
 	}
 }

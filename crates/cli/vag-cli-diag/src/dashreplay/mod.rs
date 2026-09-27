@@ -25,8 +25,8 @@ use engine::{Refusal, Replay};
 use vag_dash_render::button::PRESS_GAP_MS;
 
 /// The command: `log` is a `watch --out` recording, `vin` and `input` name the dash plan as
-/// `vagcan dev dash build` resolves it, `presses` are short presses in seconds of the
-/// recording's own clock, `speed` how much faster than it happened.
+/// `vagcan dev dash build` resolves it, `presses` are `dashsim`'s short presses in seconds of
+/// the recording's own clock, `speed` how much faster than it happened.
 pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f64) -> Result<()> {
 	let text = std::fs::read_to_string(log).with_context(|| format!("reading the recording {log:?}"))?;
 	let recording = Recording::parse(&text).map_err(|e| anyhow!("{log}: {e}"))?;
@@ -94,11 +94,11 @@ pub fn run(vin: &str, log: &str, input: Option<&Path>, presses: &[f64], speed: f
 /// What the plan has that the replay does not run, said before anything else
 /// (`todo/dash/19`). The lever is pressed on the board by reading the car, and a recording
 /// holds none of those reads as presses; without it the stopwatch page is never entered.
-/// `--press` is the one button the replay has.
+/// `--press` is the one press the replay has: `dashsim`'s, a page turn.
 pub fn unreplayed(plan: &vag_cli_core::dash::Plan) -> Vec<String> {
 	let mut notes = Vec::new();
 	if plan.stalk.is_some() {
-		notes.push("the plan's [stalk] lever is not replayed — the only press here is --press, the button's short press".to_string());
+		notes.push("the plan's [stalk] lever is not replayed — the only press here is --press, a page turn as dashsim gives it".to_string());
 	}
 	if plan.stopwatch.is_some() {
 		notes.push("the plan's stopwatch page is not replayed — the lever enters it, and the lever is not replayed".to_string());
