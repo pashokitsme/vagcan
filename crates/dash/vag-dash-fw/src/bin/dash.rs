@@ -35,6 +35,9 @@
 //!   ([`vag_dash_fw::input`]) to one task, `control_task`, which applies it to the screen
 //!   ([`Screen::command`]) and the settings. No input knows what a press does. The board's
 //!   own BOOT and RESET buttons are not inputs (owner, 2026-09-27): `GPIO9` is left alone.
+//!   The lever also closes the stopwatch — cruise taken, or its data missing over 3 s
+//!   ([`Closer`]) — and that is no command: the bus task ends the mode directly
+//!   ([`Screen::close_stopwatch`]).
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -97,7 +100,7 @@ use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
-use vag_dash_fw::saving::{RunWrite, Saving};
+use vag_dash_fw::saving::{Flash, RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
 use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
@@ -107,7 +110,7 @@ use vag_dash_render::control::{self, Command, PinButton};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
-use vag_dash_render::stalk::{Stalk, States};
+use vag_dash_render::stalk::{Close, Closer, STALE_CLOSE_MS, Stalk, States};
 use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
@@ -720,7 +723,7 @@ fn open_settings() -> Settings {
 			// it, or on the defaults, and what it runs is then not what flash holds.
 			let saving = Saving {
 				unsaved: store.unreadable().is_some(),
-				run_pending: false,
+				..Saving::default()
 			};
 			say_unreadable(&store);
 			match store.load() {
@@ -762,7 +765,14 @@ fn open_settings() -> Settings {
 							),
 							None => note!("settings: stored config does not fit this plan ({reason}) — discarded"),
 						}
+						#[cfg(feature = "ble")]
 						note!("settings: brightness and active page are back to defaults; `save` stores them and this note goes away");
+						// No BLE, no `save` (PR #12 review): what makes the note go away is an image
+						// with BLE saving, or erasing flash.
+						#[cfg(not(feature = "ble"))]
+						note!(
+							"settings: brightness and active page are back to defaults; this image has no `save` (no BLE) — an image with BLE saves them, or erases flash, and this note goes away"
+						);
 						// The stopwatch's last run is not the plan's to judge: a run kept on a
 						// board whose pages were never set would otherwise go with the pages.
 						let defaults = Config {
@@ -776,7 +786,7 @@ fn open_settings() -> Settings {
 							config: defaults,
 							saving: Saving {
 								unsaved: true,
-								run_pending: false,
+								..Saving::default()
 							},
 						}
 					}
@@ -791,10 +801,16 @@ fn open_settings() -> Settings {
 				}
 				Err(e) => {
 					warn!("config unreadable ({e:?}), running on defaults");
+					// `unsaved`: flash may hold the owner's configuration, and RAM runs on the
+					// defaults. Left saved, a run's write took the whole of RAM — the defaults —
+					// over it (PR #12 review); unsaved, the run is added to what flash holds.
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						saving,
+						saving: Saving {
+							unsaved: true,
+							..Saving::default()
+						},
 					}
 				}
 			}
@@ -1730,6 +1746,7 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
 		// Nothing of the lever is read while the board is an adapter.
 		panel.stalk.lost();
+		panel.closer.lost();
 	}
 }
 
@@ -1776,6 +1793,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 			panel.follow_pages(bus, settings).await;
 		}
 		panel.ask_again_when_due(bus);
+		// A lever unit gone silent answers nothing, and its stopwatch still has to close.
+		panel.lever_tick();
 
 		let next = bus.lock(|p| p.borrow_mut().due(ms()));
 		match next {
@@ -1816,6 +1835,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 			Next::Idle { until_ms } => {
 				let recheck = pages_seen + PAGE_RECHECK;
 				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
+				let recheck = panel.next_close().map_or(recheck, |close| close.min(recheck));
 				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
 				let woke = select4(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait(), adapter_requested()).await;
 				if let Either4::Third(()) = woke {
@@ -1985,6 +2005,8 @@ struct PanelReads {
 	shared: Panel,
 	/// The lever's gate and press detector, fed once per answer of the rocker's identifier.
 	stalk: Stalk,
+	/// When the lever's witnesses close the stopwatch: fed the same reads, and the clock.
+	closer: Closer,
 	/// The lever's gate and the stopwatch as the subscriptions last followed them.
 	mode: ReadMode,
 	/// A host holds the board's timing channel ([`host_clock`]): a run's speed yields to it,
@@ -2016,6 +2038,8 @@ impl PanelReads {
 			part_retry_at: [None; UNIT_COUNT],
 			shared,
 			stalk: Stalk::new(states),
+			// With no `[stalk]` it never closes anything.
+			closer: Closer::new(PLAN.stalk.map(|plan| plan.states)),
 			mode: ReadMode::default(),
 			host_clock: false,
 		}
@@ -2296,6 +2320,41 @@ impl PanelReads {
 		if let Some(command) = press {
 			send(Source::Lever, command);
 		}
+		let close = self.closer.read(&read, ms());
+		self.close_stopwatch(close);
+	}
+
+	/// The closer on the clock alone, between the lever's answers.
+	fn lever_tick(&mut self) {
+		let close = self.closer.tick(ms());
+		self.close_stopwatch(close);
+	}
+
+	/// When [`PanelReads::lever_tick`] next has something to do: while the stopwatch is up, the
+	/// moment the lever's data has been missing too long. `None` while it is down, so a lever long
+	/// silent does not wake the bus task for nothing.
+	fn next_close(&self) -> Option<Instant> {
+		let due = self.closer.due()?;
+		let up = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
+		up.then(|| Instant::from_millis(due))
+	}
+
+	/// The lever's witnesses took the stopwatch away (`todo/dash/19`, owner 2026-09-27): cruise
+	/// switched on, or the lever's data missing too long. Applied here, on the screen, the way
+	/// the adapter screen ends it — not through the command queue: it is no driver's command,
+	/// so it must not silence an alarm, and it must not be dropped by a full queue or wait
+	/// behind a flash write holding the settings. Said only when the stopwatch was up.
+	fn close_stopwatch(&self, close: Option<Close>) {
+		let Some(close) = close else { return };
+		if !self.shared.screen.lock(|cell| cell.borrow_mut().close_stopwatch()) {
+			return;
+		}
+		match close {
+			Close::Engaged => note!("lever: cruise engaged — stopwatch closed"),
+			Close::Stale => note!("lever: cruise not seen off for {} s — stopwatch closed", STALE_CLOSE_MS / 1000),
+		}
+		// The speed's subscription goes, and the lever's rate follows the mode.
+		PAGES_CHANGED.signal(());
 	}
 
 	/// One answer of the stopwatch's speed while the page is up, at the time it came.
@@ -2529,9 +2588,10 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// whenever the mode turns on or off, however it did ([`Screen::stopwatch_turns`]), and a run
 /// whose speed goes quiet is aborted here, where a frame comes whether or not an answer does.
 /// A run that finishes is kept in the settings and written to flash at the next standstill
-/// the stopwatch sees, held past its arming and confirmed by a fresh answer
-/// (`Stopwatch::still_for_a_write`) — never at speed (owner, 2026-09-26), never as the board
-/// turns adapter — or by a `save`.
+/// the stopwatch sees, held for the arming hold and confirmed by a fresh answer
+/// (`Stopwatch::still_for_a_write`) — never at speed (owner, 2026-09-26), never once `GO`
+/// shows: the stopwatch does not arm while the write waits, and arms once it is tried (PR #12
+/// review) — never as the board turns adapter — or by a `save`.
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stopwatch: &'static StopwatchCell) -> ! {
 	use vag_dash_render::history::History;
@@ -2601,13 +2661,18 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 		if let Some(run) = finished {
 			keep_run(settings, run).await;
 		}
-		// A standstill held past the arming hold, its zero fresh (`still_for_a_write`): the car
-		// is not moving, so a flash write that stalls the executor costs a frame of the glass
-		// and nothing on the road. Not as the board turns adapter: the write would stall the
-		// adapter's first frames, and the host's.
+		// A standstill held for the arming hold, its zero fresh, the stopwatch not armed while
+		// the write waits (`still_for_a_write`): the car is not moving and no launch can start,
+		// so a flash write that stalls the executor costs a frame of the glass and nothing on
+		// the road. Not as the board turns adapter: the write would stall the adapter's first
+		// frames, and the host's.
 		if still && !adapter_wanted() {
 			store_run(settings).await;
 		}
+		// Whether a kept run still waits for its write — kept, tried, dropped by `load` or
+		// `defaults`, written by `save`: the stopwatch arms by it (`Stopwatch::hold`).
+		let write_waits = settings.lock().await.saving.write_waits();
+		stopwatch.lock(|w| w.borrow_mut().hold(write_waits));
 
 		if adapter_mode() {
 			screen.lock(|cell| cell.borrow_mut().adapter());
@@ -2816,10 +2881,11 @@ async fn keep_run(settings: &Shared, run: stopwatch::Run) {
 	note!("stopwatch: the run is in RAM only — written to flash once the car stands with the stopwatch up");
 }
 
-/// The run [`keep_run`] left waiting, written to flash — called at a standstill. What flash
-/// holds gets the run and nothing else: with other changes waiting for a `save`, the run
-/// goes into the configuration flash already holds, and those changes stay the person's
-/// to keep or not. Tried once; a run it could not write waits for the next `save`
+/// The run [`keep_run`] left waiting, written to flash — called at a standstill, before the
+/// stopwatch arms. What flash holds gets the run and nothing else: with other changes waiting
+/// for a `save`, the run goes into the configuration flash already holds — or, flash holding
+/// none, into the defaults the next boot would run on — and those changes stay the person's
+/// to keep or not. Tried once; a run it could not write stays pending, for the next `save`
 /// ([`Saving::at_standstill`] decides, and says why in its tests).
 async fn store_run(settings: &Shared) {
 	let mut guard = settings.lock().await;
@@ -2833,38 +2899,56 @@ async fn store_run(settings: &Shared) {
 
 /// [`store_run`] with the settings in hand.
 fn write_run(s: &mut Settings) {
+	if !s.saving.write_waits() {
+		return;
+	}
 	let Some(store) = s.store.as_mut() else {
-		// Nowhere to write it; `save` says so.
-		if s.saving.at_standstill(false) != RunWrite::Nothing {
+		// Nowhere to write it; the boot said so, and `save` says so. It waits for nothing more.
+		if s.saving.at_standstill(Flash::Unusable) != RunWrite::Nothing {
 			s.saving.not_written();
 		}
 		return;
 	};
+	// What flash holds, and the configuration a run would be added to.
 	let unreadable = store.unreadable();
-	let pending = s.saving.run_pending;
-	let stored = match s.saving.at_standstill(unreadable.is_some()) {
-		RunWrite::Nothing => {
-			if let (true, Some(version)) = (pending, unreadable) {
-				note!(
-					"stopwatch: the run is not written — flash's newest record is version {version}, a newer image's, and nothing writes over it on its own; the run stays in RAM"
-				);
-			}
-			return;
-		}
-		RunWrite::Whole => s.config.clone(),
-		RunWrite::AddToStored => match store.load() {
-			Ok(mut stored) => {
-				stored.last_run = s.config.last_run.clone();
-				stored
-			}
+	let (flash, stored) = match unreadable {
+		Some(_) => (Flash::Unreadable, None),
+		None => match store.load() {
+			Ok(stored) => (Flash::Holds, Some(stored)),
+			Err(StoreError::Empty) => (Flash::Empty, None),
 			Err(e) => {
-				note!("stopwatch: the run is not written — flash holds no configuration to add it to ({e:?}); it stays in RAM");
-				return;
+				note!("stopwatch: flash could not be read ({e:?})");
+				(Flash::Unusable, None)
 			}
 		},
 	};
-	match store.save(&stored) {
-		Ok(_) => note!("stopwatch: the run is saved"),
+	let config = match (s.saving.at_standstill(flash), stored) {
+		(RunWrite::Whole, _) => s.config.clone(),
+		(RunWrite::AddToStored, Some(mut stored)) => {
+			stored.last_run = s.config.last_run.clone();
+			stored
+		}
+		// A board never saved, or erased: the next boot would run on the defaults, so the run
+		// goes into them (PR #12 review).
+		(RunWrite::AddToDefaults, _) => Config {
+			last_run: s.config.last_run.clone(),
+			..Config::default()
+		},
+		(RunWrite::Nothing | RunWrite::AddToStored, _) => {
+			match unreadable {
+				Some(version) => note!(
+					"stopwatch: the run is not written — flash's newest record is version {version}, a newer image's, and nothing writes over it on its own; the run stays in RAM"
+				),
+				None => note!("stopwatch: the run is not written — no configuration from flash to add it to; it stays in RAM"),
+			}
+			return;
+		}
+	};
+	match store.save(&config) {
+		Ok(_) => {
+			s.saving.run_written();
+			note!("stopwatch: the run is saved");
+		}
 		Err(e) => {
 			s.saving.not_written();
 			note!("stopwatch: the run could not be written ({e:?}); it stays in RAM");
@@ -3482,8 +3566,8 @@ async fn command(settings: &Shared, raw: &[u8]) -> heapless::String<UART_MTU> {
 				}
 				Some(store) => match store.erase() {
 					Ok(()) => {
-						// RAM keeps what was on the glass, now unsaved: a run kept later waits for
-						// `save` rather than writing it all back (PR #12 review).
+						// RAM keeps what was on the glass, now unsaved: a run's write goes into the
+						// defaults rather than writing it all back (PR #12 review).
 						s.saving.erased();
 						let _ = write!(out, "ok: erased — next boot uses defaults");
 					}

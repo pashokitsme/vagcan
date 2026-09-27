@@ -18,6 +18,13 @@ to run again before a `[stalk]` builds (the build says so).
 and 5, one command path for every input, and BOOT no longer an input. Built on
 `fix/pr12-input`; see "Input backends". Not on the board yet.
 
+**2026-09-27, in PR #12:** the lever closes the stopwatch — cruise taken, or its data missing
+over 3 s (owner's decision on the review's open question). Built on `fix/pr12-gate-close`; see
+"The lever closes the stopwatch". Not on the board yet. Same branch, review fixes to the run's
+write: it happens at the standstill **before** `GO` (the stopwatch does not arm while it waits);
+a board whose flash holds nothing writes the defaults and the run; `run_pending` stays set
+until the run is in flash; the no-BLE image's boot note no longer offers a `save` it has not.
+
 ## What the owner asked (2026-09-26)
 
 - The cruise lever pages the panel while cruise is **off**: **RES/+ next page, SET/− previous
@@ -143,17 +150,22 @@ back to the stopwatch, not to the page under it (`GLASS_PAGE` stays the stopwatc
 from any page and leaves it back to the page it came from — the cursor never moves while it is
 up. While it is up `Next` and `Previous` do nothing, whoever gives them, `dashsim` included:
 only `Stopwatch` leaves it (2026-09-27, "Input backends"). The adapter
-screen ends it too. Whenever the mode turns on or off, however, the machine is reset — at the
+screen ends it too, and so do the lever's witnesses (below, "The lever closes the
+stopwatch"). Whenever the mode turns on or off, however, the machine is reset — at the
 turn, before the next sample, not on the next frame: `Screen::stopwatch_turns` counts the
 turns and `Stopwatch::follow` resets on a count it has not seen, so an off and an on between
 two samples still start over.
 
 - Speed 0 (the channel's zero) for 1 s arms it; the first sample above 0 starts the run;
   back at 0 before the highest mark aborts it.
-- **A silent speed ends it** (`SILENCE_MS` = 500): no answer for over 500 ms aborts a run in
+- **A silent speed ends it** (`SILENCE_MS` = 1300): no answer for over 1.3 s aborts a run in
   progress and disarms an armed standstill, which then has to be seen again for a whole second.
   Nothing is interpolated across the gap. Checked on every answer and on every panel frame, so
   a unit that stops answering altogether still ends the run. A hold not yet armed is left alone.
+  1.3 s outlasts two answer timeouts between two speed answers (the firmware asserts it), not a
+  run of `7F xx 78` (response pending), which may hold the bus for up to 10 s
+  (`PENDING_DEADLINE`). Accepted (PR #12 review): a unit that holds the bus that long during a
+  run is a bus in trouble, and the run aborts.
 - The clock's origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`,
   ported): the midpoint of a constant-jerk fit through `√v` over the first 0.4 s of movement and
   a line through the first two moving samples. It needs three moving samples in that 0.4 s: the
@@ -170,15 +182,24 @@ two samples still start over.
 - **Only a finished run is kept, and never written at speed** (owner's decision, 2026-09-26: no
   flash write at speed — a write erases a sector with the executor stalled, the glass frozen,
   answers and BLE events missed). The run finishes at its highest mark and is kept in RAM
-  (`run_pending`). It is written at the next standstill the stopwatch sees — phase armed, a
-  standstill held 1 s (`store_run`) — or by an explicit `save`. With no other unsaved change
-  the whole configuration is written; with other unsaved changes only the run is added to the
-  configuration flash already holds, and those changes stay unsaved for the owner to keep or
-  not. One try: a run that could not be written waits for `save`. `load`, `defaults` and
-  `erase` drop a pending run. **The write happens only when the stopwatch reaches armed, and
-  the stopwatch is fed only while its mode is on.** A driver who leaves the stopwatch (LIMIT or
-  a stopwatch button) before stopping keeps the run in RAM only: it is lost at ignition off unless
-  `save` is sent, or the stopwatch is turned on again and arms first.
+  (`run_pending`). It is written at the next standstill the stopwatch sees, **before `GO`**: while
+  a run waits for its write the stopwatch does not arm (the page stays `STOP` or `DONE`); once
+  the car has stood the arming hold (1 s) and the zero answer is fresh, the board writes
+  (`store_run`), and the next zero answer arms at once. Before (PR #12 review) the write came
+  0.5 s past `GO`, just as a driver who saw it set off, while the speed still read 0 — and the
+  erase stalled the launch fit's first answers. Or by an explicit `save`. With no other unsaved
+  change the whole configuration is written; with other unsaved changes only the run is added to
+  the configuration flash already holds — or, **flash holding none** (a board never saved, or
+  erased), to the defaults the next boot would run on — and those changes stay unsaved for the
+  owner to keep or not. One try: a run that could not be written stays `run_pending` until
+  `save`, and the stopwatch arms after the try either way. `load` and `defaults` drop a pending
+  run; `erase` keeps it pending — into the defaults at the next standstill if it has not had its
+  try, for `save` if it has. A configuration flash could not be read at boot counts as unsaved,
+  so a run is added to it, never the defaults written over it. **The write happens only at a
+  standstill the stopwatch sees, and the stopwatch is fed only while its mode is on.** A driver
+  who leaves the stopwatch (LIMIT, a stopwatch button, or the lever's close) before stopping keeps
+  the run in RAM only: it is lost at ignition off unless `save` is sent, or the stopwatch is
+  turned on again and the car stands.
 - An aborted run is shown until the page is left, never stored; a finished run with no times
   (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
   pages no longer fit the plan.
@@ -212,16 +233,46 @@ It replaced `Screen::press` and `Screen::lever`. The rules, first match wins:
 | 4. otherwise | turn the page, wrapping (`Paged`) | opens it (`StopwatchOn`); with no `[stopwatch]` in the plan, `NoStopwatch`, logged |
 
 Only `Stopwatch` enters or leaves the stopwatch, and only an input that has it can; the
-adapter screen (`--slcan`) ends it too. **The behaviour change:** a page turn no longer ends the
+adapter screen (`--slcan`) ends it too, and so do the lever's close rules (next section).
+**The behaviour change:** a page turn no longer ends the
 stopwatch. Before, BOOT's short press (and `dashsim`'s, which went through it) turned the page
 and so left the stopwatch.
 
-**Open, for the owner (review, 2026-09-27):** with the lever as the only `Stopwatch` input, a
-gate that closes while the stopwatch is up — cruise switched on, or its status gone silent —
-keeps the stopwatch on the glass until the gate opens again. Pin `next`/`previous` buttons do
-nothing meanwhile, `dashsim`'s page turn no longer ends it, and `dashcfg set page` never did.
-Adapter mode and a power cycle end it. Accepted as the rule says, or should `set page` (or a
-closed gate) end it?
+**The lever closes the stopwatch (owner, 2026-09-27).** The review's open question: with the
+lever as the only `Stopwatch` input, a gate that closed while the stopwatch was up — cruise
+switched on, its status stale, the rocker's unit silent — kept the stopwatch on the glass until
+the gate opened again, which a silent unit never does; the gauge pages and, with no `[[button]]`,
+alarm silencing were gone until a power cycle. The owner chose both behaviours:
+
+- **Cruise taken → the stopwatch closes at once.** Two consecutive reads that both say cruise is
+  engaged: the switch in a state other than `switch_off`, or the cruise status in one other than
+  `cruise_off`. Positive evidence, never a missing read; the same two-read confirmation as a
+  press, so one noisy read never ends a run. A run in progress aborts, as when the page is left.
+- **The gate closed for lack of data → the stopwatch stays** — stale, unanswered, NRC, a reading
+  no state claims, the unit silent — a run included, until the gate has not been seen open for
+  over 3 s (`stalk::STALE_CLOSE_MS`): then it closes. A read that shows the gate open starts the
+  3 s over; an engaged read that finds no pair does not.
+- Whatever opened the stopwatch, the lever or a button. Only with a `[stalk]` in the plan;
+  without one nothing changes. These rules only ever close it: never open it, never page. Whether
+  a press pages is still the gate's alone.
+
+How: `stalk::Closer`, pure and clock-free like the stopwatch — fed every read `Stalk::read` gets,
+at the same moment, and ticked by the bus task's clock between them (a silent unit answers
+nothing). Level, not edge: while a rule holds, every read and tick says so, and the bus task
+closes the stopwatch if it is up. **Delivered directly, not through the command queue:**
+`Screen::close_stopwatch`, a sibling of `Screen::adapter`, called from the bus task where the
+lever is read. `Screen::set_stopwatch` stays the one place the mode changes. Not the queue,
+because a close is no driver's command: through `Screen::command` it would silence an alarm
+instead, a full queue would drop it, and it would wait behind a flash write holding the settings.
+The bus task wakes for the stale close (`Closer::due`) only while the stopwatch is up. Logged:
+`lever: cruise engaged — stopwatch closed`, `lever: cruise not seen off for 3 s — stopwatch
+closed`.
+
+**Follows from the rule, for the owner to know:** a stopwatch opened by a `[[button]]` closes
+too while the lever's data is missing — at once if the gate has not been seen open for 3 s (a
+lever unit that never answered, or whose part number did not match), and within two reads while
+cruise is on. With a `[stalk]` in the plan, a button stopwatch needs the lever readable and
+cruise off.
 
 **The backends.** Each is a small machine that produces `Option<Command>`:
 
@@ -302,10 +353,11 @@ plan the pin table adds ~300 B of statics.
 ## Where it lives
 
 - `vag-dash-render/src/control.rs` — `Command`, `PinButton`, `BUTTON_PINS`, `remote`.
-- `vag-dash-render/src/stalk.rs` — the gate and the press detector.
+- `vag-dash-render/src/stalk.rs` — the gate and the press detector; `Closer`, the lever closing
+  the stopwatch.
 - `vag-dash-render/src/stopwatch.rs` — the machine, the launch fit, the page's cells.
 - `vag-dash-render/src/screen.rs` — `Screen::command`, `stopwatch()`, `stopwatch_on_glass()`,
-  `stopwatch_turns()`.
+  `stopwatch_turns()`, `close_stopwatch()`.
 - `vag-dash-render/src/plan.rs` — `StalkPlan`, `StopwatchPlan`, `ButtonPlan`, `Band`,
   `state_of`, `rates_in`, `buttons_fit`.
 - `vag-cli-core/src/dash.rs` — `[stalk]` / `[stopwatch]` / `[[button]]` parsed, resolved,
@@ -335,6 +387,14 @@ plan the pin table adds ~300 B of statics.
   two reads fires once; one noisy read does not; holding does not repeat; held at start is not a
   press; the gate must be open on both reads; a read from before adapter mode is not half of a
   press.
+- The lever closes the stopwatch (`Closer`, mutation-checked): two engaged reads close, either
+  witness, CANCEL too; one does not; a read that says nothing breaks the pair; 2.9 s without the
+  gate seen open then open does not close, 3.1 s does, 3.0 s does not; a silent unit closes on
+  the clock alone; engaged reads that never pair close at 3 s; no `[stalk]` never; after adapter
+  mode it starts over. With the screen and the stopwatch as the board runs them: cruise on while
+  idle, armed, running (the run dropped) and done (the finished run kept); one noisy read leaves
+  a run to finish; 2.9 s of silence leaves it, 3.1 s ends it; a button's stopwatch closes too;
+  `close_stopwatch` silences no alarm and turns no page.
 - Screen: every command on every screen — the adapter, an alarm up, the stopwatch up, no
   stopwatch in the plan, a page; previous wraps; `Stopwatch` in and out back to the page;
   `Next` and `Previous` ignored during the stopwatch, and a turn of the mode only on
@@ -350,21 +410,32 @@ plan the pin table adds ~300 B of statics.
   once; the page fits the panel in both languages.
 - Rates: the three lever rates, the cruise status, the speed while up, page cells while timing.
 - Settings: a schema-1 byte image loads with every field intact.
-- Not host-tested: the firmware's `keep_run` / `store_run` (the run written at a standstill) —
-  the firmware does not build for the host. Checked on the board.
+- The run's write (`saving.rs`, host test `settings_saving.rs`): the whole configuration, or
+  the run added to flash's, or to the defaults when flash holds none; a newer image's record
+  never written over; pending until in flash, one try, a new run a new try; `save`, `load`,
+  `defaults` and `erase`. The stopwatch (`stopwatch.rs`, mutation-checked): a finished run holds
+  the arming until its write, and arms at once after it; a run not yet taken holds it whatever
+  the board says; a kept run waiting holds it when the page comes back; with none waiting it
+  arms at 1 s as ever; the write's standstill: fresh zero, the hold, never armed, never moving.
+- Not host-tested: the firmware's `keep_run` / `store_run` / `write_run` themselves (the run
+  written at a standstill) — the firmware does not build for the host. Checked on the board.
 
 ## On the car
 
 1. `vagcan setup` again, so the cache keeps the bands; then add `[stalk]` / `[stopwatch]` and
    build.
-2. Paging: +, −, LIMIT with cruise off; nothing with cruise on or after CANCEL.
+2. Paging: +, −, LIMIT with cruise off; nothing with cruise on or after CANCEL. With the
+   stopwatch up, switch cruise on: it closes (`lever: cruise engaged — stopwatch closed`).
 3. The factor on a steady stretch.
 4. **A 0–100 run, compared through the board.** The laptop measures the same run with
-   `vagcan measure --ble` on `380B` with the same factor. **Never with a second adapter
-   (CANable) on the port while the board polls** — two testers on one bus breaks the one-owner
-   rule.
+   `vagcan measure --ble` on `380B` with the same factor. **Start `measure --ble` first, then
+   press LIMIT:** once the board's stopwatch arms, its speed holds the board's one timing
+   channel, and `measure` over BLE is refused (`the board's timing channel is held by its own
+   stopwatch or another client`). **Never with a second adapter (CANable) on the port while the
+   board polls** — two testers on one bus breaks the one-owner rule.
 5. After the run, stop with the stopwatch up: once the car has stood 1 s the board notes
-   `stopwatch: the run is saved`, and the run's times survive a power cycle.
+   `stopwatch: the run is saved`, then `stopwatch: armed` (`GO`) — never `GO` first — and the
+   run's times survive a power cycle.
 6. **Pin buttons, on the bench first.** A button from GPIO3 (4, 5) to GND, `[[button]]` with
    its `action`, build, flash: each press notes `GPIO3: page N of M`; a hold is one press; with
    the stopwatch up `next` notes that it does nothing; BOOT does nothing at all.

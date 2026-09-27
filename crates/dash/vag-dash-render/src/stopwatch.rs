@@ -78,11 +78,12 @@ pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 
 /// `a_runs_speed_waits_out_two_silent_units_in_a_gap_and_not_three` measures both. Past the
 /// threshold the speed counts as silent: the run is aborted, and nothing is interpolated
 /// across the gap.
+///
+/// Nor does it outlast a unit that answers `7F xx 78` (response pending): the firmware waits
+/// out a run of them for up to 10 s (`PENDING_DEADLINE`), and the compile-time check counts
+/// the answer timeout alone. Accepted (PR #12 review): a unit that holds the bus that long
+/// during a run is a bus in trouble too, and the run aborts.
 pub const SILENCE_MS: u64 = 1_300;
-
-/// How long past [`ARMING_HOLD_MS`] a standstill holds before the board writes a run to
-/// flash ([`Stopwatch::still_for_a_write`]).
-pub const WRITE_HOLD_MARGIN_MS: u64 = 500;
 
 /// The oldest a zero answer may be, at any rate the speed is read, and still say the car is
 /// standing for a flash write ([`Stopwatch::still_for_a_write`]): the panel looks once a
@@ -98,9 +99,11 @@ pub const MAX_MARKS: usize = 3;
 pub enum Phase {
 	/// `km_h_per_unit` is zero: the factor has not been measured, and nothing is timed.
 	NotMeasured,
-	/// Moving, or standing but not yet for [`ARMING_HOLD_MS`].
+	/// Moving, or standing but not yet for [`ARMING_HOLD_MS`] — or while a finished run waits
+	/// for its write ([`Stopwatch::hold`]), which comes first.
 	Idle,
-	/// Standing long enough: the next moving sample starts a run.
+	/// Standing long enough, and no run waiting for its write: the next moving sample starts
+	/// a run.
 	Armed,
 	Running,
 	/// A run ended — at its highest mark, or aborted: back at a standstill before it, or
@@ -190,6 +193,9 @@ pub struct Stopwatch<'a> {
 	finished: Option<Run>,
 	/// `finished` has not been handed out yet ([`Stopwatch::take_finished`]).
 	unkept: bool,
+	/// A finished run waits for its write to flash, so a standstill does not arm
+	/// ([`Stopwatch::hold`]).
+	write_waits: bool,
 	/// The mode's turn count this stopwatch last followed (`Screen::stopwatch_turns`).
 	turns: u16,
 }
@@ -217,6 +223,7 @@ impl<'a> Stopwatch<'a> {
 			last: None,
 			finished: None,
 			unkept: false,
+			write_waits: false,
 			turns: 0,
 		}
 	}
@@ -275,7 +282,9 @@ impl<'a> Stopwatch<'a> {
 			Phase::Idle | Phase::Done => match standing {
 				true => {
 					let since = *self.standing_since.get_or_insert(now_ms);
-					if now_ms.saturating_sub(since) >= ARMING_HOLD_MS {
+					// A write waits: the standstill is the write's first, and arms once it is
+					// over — at once, the hold being met by then.
+					if now_ms.saturating_sub(since) >= ARMING_HOLD_MS && !self.write_waits {
 						self.phase = Phase::Armed;
 						event = Some(Event::Armed);
 					}
@@ -339,33 +348,43 @@ impl<'a> Stopwatch<'a> {
 		}
 	}
 
-	/// Whether the car stands still well enough at `now_ms` for the board to write a run to
-	/// flash, with the speed read every `period_ms`. A write erases a sector with the
-	/// executor stalled — the glass frozen, answers late-stamped, a launch fit's first
-	/// samples among them — so it is never done at speed (owner, 2026-09-26), and
-	/// [`Phase::Armed`] alone does not say the car is not moving *now*: its last zero answer
-	/// may be up to [`SILENCE_MS`] old (PR #12 review). So, all three:
+	/// Whether the car stands still well enough at `now_ms` for the board to write the run that
+	/// waits ([`Stopwatch::hold`]), with the speed read every `period_ms`. A write erases a
+	/// sector with the executor stalled — the glass frozen, answers late-stamped, a launch fit's
+	/// first samples among them — so it is never done at speed (owner, 2026-09-26), and never
+	/// once `GO` shows: written just past the arming, it landed as a driver who saw `GO` set off
+	/// (PR #12 review). So, all four:
 	///
-	/// - armed: a standstill held for [`ARMING_HOLD_MS`];
+	/// - a finished run waits for its write — and while it does, the stopwatch does not arm;
+	/// - not moving: the phase is [`Phase::Idle`] or [`Phase::Done`];
 	/// - the last answer is a zero no older than two periods of the speed, or
 	///   [`WRITE_FRESH_FLOOR_MS`] where that is less — a car that set off has had no time to
 	///   say so;
-	/// - the standstill has held [`WRITE_HOLD_MARGIN_MS`] past the arming hold, so a driver
-	///   who launches on `GO` is away before the write rather than during it.
+	/// - the standstill has held for [`ARMING_HOLD_MS`], as arming asks.
+	///
+	/// The board writes, then says nothing waits, and the next zero answer arms at once.
 	///
 	/// What it cannot see: the speed channel's dead band. A car creeping slower than the
 	/// channel's smallest step reads as zero, and the write can happen while it rolls at
-	/// walking pace — and a launch in the tens of milliseconds the write takes is stamped
-	/// late by them.
+	/// walking pace. No launch is timed from it: the stopwatch is not armed.
 	pub fn still_for_a_write(&self, now_ms: u64, period_ms: u64) -> bool {
 		let fresh = (2 * period_ms).max(WRITE_FRESH_FLOOR_MS);
-		self.phase == Phase::Armed
+		self.write_waits
+			&& matches!(self.phase, Phase::Idle | Phase::Done)
 			&& self
 				.previous
 				.is_some_and(|(at_ms, kmh)| kmh == 0.0 && now_ms.saturating_sub(at_ms) <= fresh)
-			&& self
-				.standing_since
-				.is_some_and(|since| now_ms.saturating_sub(since) >= ARMING_HOLD_MS + WRITE_HOLD_MARGIN_MS)
+			&& self.standing_since.is_some_and(|since| now_ms.saturating_sub(since) >= ARMING_HOLD_MS)
+	}
+
+	/// Whether a kept run waits for its write, as the board's saving says (`Saving::write_waits`
+	/// in the firmware): set after every frame, once the run the stopwatch finished has been
+	/// taken, kept and — at a standstill — tried. While one waits a standstill does not arm, and
+	/// [`Stopwatch::still_for_a_write`] says when to write it. A run that finished and has not
+	/// been taken yet ([`Stopwatch::take_finished`]) waits whatever this says: it is the one to
+	/// be written, and the board has not seen it.
+	pub fn hold(&mut self, write_waits: bool) {
+		self.write_waits = write_waits || self.unkept;
 	}
 
 	/// Follows the mode's turn count (`Screen::stopwatch_turns`): a count this stopwatch
@@ -456,6 +475,8 @@ impl<'a> Stopwatch<'a> {
 		if !aborted {
 			self.finished = Some(self.current);
 			self.unkept = true;
+			// To be written before the next arming, unless the board says otherwise.
+			self.write_waits = true;
 		}
 		self.phase = Phase::Done;
 	}
@@ -885,6 +906,9 @@ mod tests {
 		// Still moving: done, and the times stay up.
 		assert_eq!(watch.sample(Some(300.0), 7_100), None);
 		assert_eq!(watch.phase(), Phase::Done);
+		// The board takes the run and, its write over, says nothing waits.
+		watch.take_finished();
+		watch.hold(false);
 		// Stopped for a second: armed, with the last run still on show.
 		assert_eq!(watch.sample(Some(0.0), 20_000), None);
 		assert_eq!(watch.sample(Some(0.0), 21_000), Some(Event::Armed));
@@ -951,6 +975,9 @@ mod tests {
 		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
 		let finished = watch.run().expect("a finished run");
 		assert!(!finished.aborted);
+		// The board takes the run and, its write over, says nothing waits.
+		watch.take_finished();
+		watch.hold(false);
 		drive(&mut watch, |t| if t < 12.0 { 0.0 } else { 20.0 * (t - 12.0) }, 10_000, 14_500, 100);
 		assert_eq!(watch.phase(), Phase::Running);
 		watch.reset();
@@ -1298,40 +1325,95 @@ mod tests {
 		assert_eq!(run.time(0), None);
 	}
 
-	#[test]
-	fn a_run_is_written_only_on_a_fresh_standstill_held_past_the_arming_hold() {
-		// Armed is a standstill held for a second, by answers that may be up to the silence
-		// old: not enough to erase a sector with the executor stalled as the car sets off
-		// (PR #12 review). At 50 Hz, standing from 0.
+	/// A run finished from a standstill at 0: 20 km/h a second from 1 s, past 100 km/h by 7 s.
+	fn finished() -> Stopwatch<'static> {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
-		drive(&mut watch, |_| 0.0, 0, ARMING_HOLD_MS, 20);
-		assert_eq!(watch.phase(), Phase::Armed);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
+		assert_eq!(watch.phase(), Phase::Done);
+		assert!(watch.finished().is_some());
+		watch
+	}
+
+	#[test]
+	fn a_run_is_written_on_a_fresh_standstill_held_for_the_arming_hold_and_never_armed() {
+		// A write erases a sector with the executor stalled, so it happens where no launch can
+		// start: at the standstill, before the stopwatch arms (PR #12 review). At 50 Hz, standing
+		// from 20 s.
+		let mut watch = finished();
+		drive(&mut watch, |_| 0.0, 20_000, 20_000 + ARMING_HOLD_MS - 20, 20);
+		assert!(!watch.still_for_a_write(20_000 + ARMING_HOLD_MS - 20, 20), "short of the hold");
+		drive(&mut watch, |_| 0.0, 20_000 + ARMING_HOLD_MS, 21_000, 20);
+		assert!(watch.still_for_a_write(21_000, 20), "held the hold, the last answer this moment");
+		assert!(watch.still_for_a_write(21_000 + 100, 20), "an answer 100 ms old is fresh at any rate");
 		assert!(
-			!watch.still_for_a_write(ARMING_HOLD_MS, 20),
-			"armed this moment: held no longer than the hold"
-		);
-		drive(&mut watch, |_| 0.0, ARMING_HOLD_MS + 20, 1_600, 20);
-		assert!(watch.still_for_a_write(1_600, 20), "held 1.6 s, the last answer this moment");
-		assert!(watch.still_for_a_write(1_600 + 100, 20), "an answer 100 ms old is fresh at any rate");
-		assert!(
-			!watch.still_for_a_write(1_600 + 101, 20),
+			!watch.still_for_a_write(21_000 + 101, 20),
 			"older, the car may be moving and not yet said so"
 		);
-		assert_eq!(watch.phase(), Phase::Armed, "though the stopwatch is still armed");
+		assert_eq!(watch.phase(), Phase::Done, "and never armed while the write waits");
 		// Read slowly, an answer is fresh for two periods.
-		assert!(watch.still_for_a_write(1_600 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
-		assert!(!watch.still_for_a_write(1_601 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		assert!(watch.still_for_a_write(21_000 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		assert!(!watch.still_for_a_write(21_001 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
 		// Moving, never.
-		watch.sample(Some(4.0), 1_620);
-		assert_eq!(watch.phase(), Phase::Running);
-		assert!(!watch.still_for_a_write(1_620, 20));
-		// Standing but not armed, never.
+		watch.sample(Some(4.0), 21_020);
+		assert!(!watch.still_for_a_write(21_020, 20));
+		// Nothing waiting, never: it arms at a second, as ever.
 		let mut idle = Stopwatch::new(&MARKS, FACTOR);
-		drive(&mut idle, |_| 0.0, 0, 900, 20);
-		assert!(!idle.still_for_a_write(900, 20));
+		drive(&mut idle, |_| 0.0, 0, 3_000, 20);
+		assert_eq!(idle.phase(), Phase::Armed);
+		assert!(!idle.still_for_a_write(3_000, 20));
 		// Nor with the factor not measured.
 		let unmeasured = Stopwatch::new(&MARKS, 0.0);
 		assert!(!unmeasured.still_for_a_write(0, 20));
+	}
+
+	#[test]
+	fn a_finished_run_holds_the_arming_until_its_write_and_then_it_arms_at_once() {
+		// PR #12 review: `GO` came at 1.0 s and the write at 1.5 s, as a driver who saw `GO`
+		// set off. Now `GO` never shows while a write waits.
+		let mut watch = finished();
+		assert!(drive(&mut watch, |_| 0.0, 20_000, 23_000, 20).is_empty(), "no Armed");
+		assert_eq!(watch.phase(), Phase::Done);
+		// The board takes the run, writes it — or tries — and says nothing waits: the hold is
+		// met, so the next answer arms.
+		assert!(watch.take_finished().is_some());
+		watch.hold(false);
+		assert!(!watch.still_for_a_write(23_000, 20), "nothing waits");
+		assert_eq!(watch.sample(Some(0.0), 23_020), Some(Event::Armed));
+		// And with no run waiting, a second of standing arms, as it always did.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.hold(false);
+		assert_eq!(watch.sample(Some(0.0), 0), None);
+		assert_eq!(watch.sample(Some(0.0), ARMING_HOLD_MS - 1), None);
+		assert_eq!(watch.sample(Some(0.0), ARMING_HOLD_MS), Some(Event::Armed));
+	}
+
+	#[test]
+	fn a_run_not_yet_taken_holds_the_arming_whatever_the_board_says() {
+		// Finished between two panel frames: the board has not seen it yet, and its saving says
+		// nothing waits. The run itself holds the arming until it is taken.
+		let mut watch = finished();
+		watch.hold(false);
+		drive(&mut watch, |_| 0.0, 20_000, 22_000, 20);
+		assert_eq!(watch.phase(), Phase::Done);
+		assert!(watch.still_for_a_write(22_000, 20));
+		watch.take_finished();
+		watch.hold(false);
+		assert_eq!(watch.sample(Some(0.0), 22_020), Some(Event::Armed));
+	}
+
+	#[test]
+	fn a_kept_run_still_waiting_holds_the_arming_when_the_page_comes_back() {
+		// The page left before the car stood: the run is kept, in RAM only. Back on the page,
+		// the first standstill writes it before `GO`.
+		let mut watch = finished();
+		watch.take_finished();
+		watch.hold(true);
+		watch.reset();
+		drive(&mut watch, |_| 0.0, 60_000, 62_000, 20);
+		assert_eq!(watch.phase(), Phase::Idle, "`STOP`, never `GO`");
+		assert!(watch.still_for_a_write(62_000, 20));
+		watch.hold(false);
+		assert_eq!(watch.sample(Some(0.0), 62_020), Some(Event::Armed));
 	}
 
 	#[test]
@@ -1344,6 +1426,8 @@ mod tests {
 		watch.reset();
 		assert_eq!(watch.take_finished(), Some(finished));
 		assert_eq!(watch.take_finished(), None, "once");
+		// Its write over, nothing waits.
+		watch.hold(false);
 		// An aborted run is never kept.
 		drive(&mut watch, |t| if t < 10.0 { 0.0 } else { 20.0 * (t - 10.0) }, 8_000, 12_000, 100);
 		watch.sample(Some(0.0), 12_100);
