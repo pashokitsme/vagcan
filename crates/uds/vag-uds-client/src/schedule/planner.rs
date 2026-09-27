@@ -20,6 +20,9 @@ const NEGATIVE: u8 = 0x7F;
 /// single-only.
 const INCORRECT_LENGTH_OR_FORMAT: u8 = 0x13;
 const RESPONSE_TOO_LONG: u8 = 0x14;
+/// ISO 14229-1's responsePending: the unit asks for more time. The shell waits it out; one
+/// that reaches the planner is a refusal.
+const RESPONSE_PENDING: u8 = 0x78;
 /// Consecutive multi-identifier answers that would not split, from a unit whose record
 /// lengths are not all known, after which the unit is asked singly for good. Owner,
 /// 2026-09-14.
@@ -545,7 +548,9 @@ impl Planner {
 				match answer {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
-					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
+					// A unit still asking for time when its consumer's deadline came answered: busy,
+					// not absent.
+					Answer::Pdu(_) | Answer::Refused(_) | Answer::StillPending => self.heard_from(unit),
 					// The silence the request asked for says nothing about the unit either way.
 					Answer::NotExpected => {}
 				}
@@ -692,6 +697,8 @@ impl Planner {
 			Answer::Refused(nrc) => return Heard::Refused(nrc),
 			// A read always expects an answer; a shell that says otherwise is not answering it.
 			Answer::NotExpected => return Heard::Malformed,
+			// No shell cuts a read so; were one to, it is the `78` it last heard.
+			Answer::StillPending => return Heard::Refused(RESPONSE_PENDING),
 			Answer::Pdu(pdu) => pdu,
 		};
 		match pdu.as_slice() {

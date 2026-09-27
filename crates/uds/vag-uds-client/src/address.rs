@@ -43,9 +43,10 @@ const ISO_LAST: u16 = 0x7E7;
 /// The ISO block's response offset.
 const ISO_OFFSET: u16 = 8;
 
-/// VW's block and its response offset.
+/// VW's block and its response offset. [`VW_LAST`] is also the last id the gateway's
+/// installation list decodes (`gateway::VW_BLOCK_BYTES`).
 pub(crate) const VW_FIRST: u16 = 0x700;
-pub(crate) const VW_LAST: u16 = 0x7BF;
+pub const VW_LAST: u16 = 0x7BF;
 const VW_OFFSET: u16 = 0x6A;
 /// The highest id an ISO 11898 standard frame carries: eleven bits.
 const STANDARD_ID_LAST: u16 = 0x7FF;

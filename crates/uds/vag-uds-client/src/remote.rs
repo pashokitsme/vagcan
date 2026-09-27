@@ -108,6 +108,8 @@ use crate::schedule::{self, Class, Delivery, Miss, Planner, ReqId, SubId, Unit};
 const RDBI: u8 = 0x22;
 const RDBI_POSITIVE: u8 = 0x62;
 const NEGATIVE: u8 = 0x7F;
+/// ISO 14229-1's responsePending NRC.
+const RESPONSE_PENDING: u8 = 0x78;
 
 /// The largest a subscription reading may be — the board delivers it and its subscription
 /// ends past this (S-F4, `Session::deliver`). A watch cell or `measure`'s speed is a few
@@ -686,6 +688,9 @@ fn outcome_of(sid: u8, answer: &schedule::Answer) -> Outcome {
 		// The request suppressed its positive response and no refusal came: status 1, no
 		// answer — which is what was asked for (`link`'s status table says so).
 		schedule::Answer::NotExpected => Outcome::NoAnswer,
+		// Only the board's fault count cuts its own exchanges, never a host's; were one cut,
+		// the unit's last word was its `78`.
+		schedule::Answer::StillPending => Outcome::Pdu(vec![NEGATIVE, sid, RESPONSE_PENDING]),
 	}
 }
 

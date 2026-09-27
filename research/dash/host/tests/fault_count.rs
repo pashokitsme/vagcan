@@ -164,12 +164,14 @@ impl Bench {
 }
 
 /// The reference car's shape: a list with the two ids that share one, a bit past VW's block,
-/// codes on two units, one silent unit and one past the count's deadline.
+/// codes on two units, one silent unit, and one — at `70C` — that asks for time (`78`) and is
+/// still searching when the count's deadline cuts its exchange: the shell says `StillPending`.
 fn reference_like() -> Car {
 	let mut car = Car::listing(&[0x70C, 0x714, 0x776, 0x777])
 		.codes(0x7E0, &[([0x01, 0x02, 0x03], 0x09), ([0x04, 0x05, 0x06], 0x08)])
 		.codes(0x710, &[])
 		.codes(0x714, &[([0x07, 0x08, 0x09], 0x2C)]);
+	car.units.insert(0x70C, Answer::StillPending);
 	if let Answer::Pdu(list) = &mut car.gateway {
 		list[3 + (0x7C0 - 0x700) / 8] |= 1;
 	}
@@ -229,8 +231,8 @@ fn a_whole_count_through_the_planner_reads_what_vagcan_faults_counts_and_says_ea
 	let car = reference_like();
 	let mut bench = Bench::new();
 	bench.clock = START_MS;
-	// The gearbox is silent for the board's answer timeout; the cluster answers `78` until the
-	// count's deadline; the rest answer in 5 ms.
+	// The gearbox is silent for the board's answer timeout; the unit at 70C holds the bus until
+	// the count's deadline; the rest answer in 5 ms.
 	bench.run_timed(&car, &|request| match request {
 		0x7E1 => 500,
 		0x70C => DEADLINE_MS,
@@ -271,11 +273,11 @@ fn a_whole_count_through_the_planner_reads_what_vagcan_faults_counts_and_says_ea
 		bench.said,
 		[
 			"faults: counting the car's stored codes — the gateway's list first".to_string(),
-			"faults: the list names 1 id past 795, which no unit can answer on — not asked".to_string(),
+			"faults: the list set 1 bit past 7BF — not decoded, not asked".to_string(),
 			"faults: 776, 777 skipped — each shares an id with a unit walked".to_string(),
 			"faults: 7E0 2 stored, 1 failing now".to_string(),
 			"faults: 7E1 not counted — no answer".to_string(),
-			"faults: 70C not counted — no answer in 2 s".to_string(),
+			"faults: 70C not counted — asked for time (78), no answer in 2 s".to_string(),
 			"faults: 714 1 stored, 0 failing now".to_string(),
 			format!(
 				"faults: 3 stored, 1 failing now; 3 of 5 units answered in {}.{} s",
@@ -409,7 +411,7 @@ fn the_deadline_is_two_seconds_from_the_send_78s_included() {
 fn a_gateway_with_no_list_is_a_question_mark_said_once_and_never_asked_again() {
 	for (answer, held, text) in [
 		(Answer::NoAnswer, 500, "no answer"),
-		(Answer::NoAnswer, DEADLINE_MS, "no answer in 2 s"),
+		(Answer::StillPending, DEADLINE_MS, "asked for time (78), no answer in 2 s"),
 		(Answer::BusError, 0, "bus error"),
 		(Answer::Pdu(vec![0x7F, 0x22, 0x31]), 5, "refused, NRC 31"),
 		(Answer::Pdu(vec![0x62, 0x04, 0xA3, 0x01]), 5, "answer did not parse"),
@@ -431,6 +433,25 @@ fn a_gateway_with_no_list_is_a_question_mark_said_once_and_never_asked_again() {
 		bench.step(true, false);
 		assert!(bench.exchange(&car, 5).is_none(), "{answer:?}: no retry");
 	}
+}
+
+#[test]
+fn ids_past_vws_block_and_ids_of_it_no_unit_can_answer_on_are_said_apart() {
+	let mut car = Car::listing(&[0x7A0, 0x7B3]);
+	if let Answer::Pdu(list) = &mut car.gateway {
+		list[3 + (0x7E0 - 0x700) / 8] |= 1;
+	}
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.run(&car, 5);
+	assert_eq!(
+		bench.said[1..3],
+		[
+			"faults: the list set 1 bit past 7BF — not decoded, not asked".to_string(),
+			"faults: the list names 2 ids past 795 — no answer id fits 11 bits, not asked".to_string(),
+		]
+	);
+	assert!(bench.sent.iter().all(|s| ![0x7A0, 0x7B3].contains(&s.unit.request)), "neither asked");
 }
 
 #[test]
@@ -525,22 +546,28 @@ fn what_the_board_says_word_for_word() {
 		(
 			Line::NotCounted {
 				request: 0x7E1,
-				why: Why::NoAnswer,
-				held_ms: DEADLINE_MS,
+				why: Why::StillPending,
 			},
-			"faults: 7E1 not counted — no answer in 2 s",
+			"faults: 7E1 not counted — asked for time (78), no answer in 2 s",
+		),
+		(
+			Line::NotCounted {
+				request: 0x7E1,
+				why: Why::NoAnswer,
+			},
+			"faults: 7E1 not counted — no answer",
 		),
 		(
 			Line::NotCounted {
 				request: 0x746,
 				why: Why::Refused(0x22),
-				held_ms: 8,
 			},
 			"faults: 746 not counted — refused, NRC 22",
 		),
+		(Line::PastBlock(2), "faults: the list set 2 bits past 7BF — not decoded, not asked"),
 		(
-			Line::Unaddressable(2),
-			"faults: the list names 2 ids past 795, which no unit can answer on — not asked",
+			Line::Unaddressable(1),
+			"faults: the list names 1 id past 795 — no answer id fits 11 bits, not asked",
 		),
 		(
 			Line::Counted {

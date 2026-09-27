@@ -164,6 +164,68 @@ fn a_request_that_expects_no_answer_does_not_back_the_unit_off() {
 	assert!(matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub));
 }
 
+/// The board's fault count ends its own exchange 2 s after the send, and a unit that has
+/// asked for more time (`7F 19 78`) is often still searching then (`todo/dash/20`). That is a
+/// unit that answered: nobody reading it misses a reading, it is not backed off, and its
+/// next read goes on time. Backed off, the panel dashed its cells and asked its part number
+/// again 250 ms later — into the unit's late answer (review, 2026-09-27).
+#[test]
+fn a_raw_exchange_cut_while_its_unit_asked_for_time_keeps_the_unit_and_its_readers() {
+	let mut p = Planner::new(Budget::board());
+	let sub = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
+	let out = send(p.due(0));
+	p.answered(5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+
+	let count = p.exchange(10, Class::Background, A, vec![0x19, 0x02, 0x08]).unwrap();
+	let out = send(p.due(10));
+	assert_eq!(out.pdu, [0x19, 0x02, 0x08]);
+	let got = p.answered(2_010, out.token, Answer::StillPending);
+	assert_eq!(got.len(), 1, "{got:?}");
+	assert!(matches!(&got[0], Delivery::Raw { req, answer: Answer::StillPending, .. } if *req == count));
+
+	let out = send(p.due(2_010));
+	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the reader's next read goes at once, not backed off");
+	let got = p.answered(2_015, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+	assert!(matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub));
+}
+
+/// A read the shell cut the same way — none does — is what a `78` reaching the planner
+/// always was: a refusal with that NRC.
+#[test]
+fn a_read_cut_while_its_unit_asked_for_time_is_refused_with_78() {
+	let mut p = Planner::new(Budget::default());
+	let sub = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
+	let out = send(p.due(0));
+	let got = p.answered(5, out.token, Answer::StillPending);
+	assert!(
+		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Refused(0x78), .. }] if *s == sub),
+		"{got:?}"
+	);
+}
+
+/// A late answer to an earlier request on the same ids is no answer to this one: the shell
+/// drops it and waits on (review, 2026-09-27). ISO 14229-1: a positive response is the
+/// request's service id + `0x40`, a negative one `7F` and the request's service id.
+#[test]
+fn a_response_answers_its_own_request_and_no_other() {
+	let read: &[u8] = &[0x22, 0xF1, 0x87];
+	assert!(answers(read, &[0x62, 0xF1, 0x87, b'P']));
+	assert!(answers(read, &[0x7F, 0x22, 0x31]));
+	assert!(answers(read, &[0x7F, 0x22, 0x78]), "its own pending");
+	assert!(answers(read, &[0x62]), "empty positive: the planner's to judge");
+	assert!(!answers(read, &[0x59, 0x02, 0xFF, 0, 1, 2, 0x08]), "the count's late answer");
+	assert!(!answers(read, &[0x7F, 0x19, 0x78]), "the count's late pending");
+	assert!(!answers(read, &[0x7F, 0x19, 0x21]));
+	assert!(!answers(read, &[0x7F]), "a refusal of nothing");
+	assert!(!answers(read, &[]));
+	// Every service of the allowlist, and a suppressed one's refusal.
+	assert!(answers(&[0x19, 0x02, 0x08], &[0x59, 0x02, 0xFF]));
+	assert!(answers(&[0x10, 0x03], &[0x50, 0x03, 0x00, 0x32, 0x01, 0xF4]));
+	assert!(answers(&[0x3E, 0x80], &[0x7F, 0x3E, 0x12]));
+	assert!(answers(&[0x3E, 0x80], &[0x7E, 0x80]), "a positive a unit sent anyway is still its own");
+	assert!(!answers(&[], &[0x40]), "no request, nothing answers it");
+}
+
 #[test]
 fn only_a_suppressed_positive_response_expects_no_answer() {
 	let expects_none: Vec<&[u8]> = vec![&[0x3E, 0x80], &[0x10, 0x81], &[0x10, 0x83]];

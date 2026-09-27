@@ -32,9 +32,9 @@
 //! boot with nobody watching:
 //!
 //! * **Only VW's block is decoded** ([`gateway::VW_BLOCK_BYTES`]): an answer's length
-//!   never decides how much is allocated. Bits past it are counted in
-//!   [`Tally::unaddressable`], with the block's ids past
-//!   [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE), which no unit can answer on.
+//!   never decides how much is allocated. Bits past it are counted in [`Tally::past_block`];
+//!   the block's ids past [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE), which
+//!   no unit can answer on, in [`Tally::unaddressable`].
 //! * **A walk of more than [`MAX_UNITS`] is refused** ([`Outcome::TooMany`]): past that it
 //!   is a sweep of the block, not a car.
 //! * **A listed id that shares an id with a unit already walked is skipped**
@@ -97,6 +97,9 @@ pub enum Outcome {
 pub enum Why {
 	/// Nothing came back in the transport's deadline.
 	NoAnswer,
+	/// The unit asked for more time (`78`) and the exchange's own deadline ran out before
+	/// its answer ([`Answer::StillPending`]): there, and busy.
+	StillPending,
 	/// The request could not be put on the bus, or the bus failed under it.
 	BusError,
 	/// A negative response, by its NRC.
@@ -135,10 +138,12 @@ pub struct Tally {
 	pub read: Vec<UnitTally>,
 	/// The units left out, in the order they were met.
 	pub failed: Vec<Failed>,
-	/// Ids the list named that no unit can be asked on: bits past VW's block
-	/// ([`gateway::VW_BLOCK_BYTES`]), never decoded, and ids of the block past
-	/// [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE) (`0x795`), whose answer id
-	/// would be past `0x7FF`. Every one of them is past `0x795`. Counted, never asked.
+	/// Bits the list set past VW's block ([`gateway::VW_BLOCK_BYTES`], `0x7BF`): counted,
+	/// never decoded, never asked.
+	pub past_block: u32,
+	/// Ids of VW's block the list named past
+	/// [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE) (`0x796..=0x7BF`), whose
+	/// answer id would be past `0x7FF`, what an 11-bit frame carries: counted, never asked.
 	pub unaddressable: u32,
 }
 
@@ -261,14 +266,14 @@ impl FaultCount {
 	/// stands (`todo/dash/20`).
 	fn walk(listed: &[u16], past_block: u32) -> State {
 		let mut tally = Tally {
-			unaddressable: past_block,
+			past_block,
 			..Tally::default()
 		};
 		let mut walk: Vec<Unit> = Vec::new();
 		for request in gateway::walk_order(listed) {
 			// Every id here is in a block — the three, and the bytes of VW's block — but the
 			// block's ids past 0x795 have no answer id an 11-bit frame carries, and the rule
-			// gives none: counted with the bits past the block, not asked.
+			// gives none: counted, not asked.
 			let Some(unit) = address(request) else {
 				tally.unaddressable = tally.unaddressable.saturating_add(1);
 				continue;
@@ -323,6 +328,7 @@ fn positive(sid: u8, answer: &Answer) -> Result<&[u8], Why> {
 		Answer::Refused(nrc) => Err(Why::Refused(*nrc)),
 		// A read always expects an answer; nothing coming back is silence.
 		Answer::NoAnswer | Answer::NotExpected => Err(Why::NoAnswer),
+		Answer::StillPending => Err(Why::StillPending),
 		Answer::BusError => Err(Why::BusError),
 	}
 }
@@ -598,6 +604,22 @@ mod tests {
 	}
 
 	#[test]
+	fn a_unit_still_asking_for_time_when_the_shell_cut_the_exchange_is_named_so() {
+		// The board's own deadline for a count's exchange ran out after a `78`: not silence.
+		let car = Car::listing(&[]).with(0x7E1, Reply::Answer(Answer::StillPending));
+		let tally = counted(run(&car).0);
+		assert!(tally.failed.contains(&Failed {
+			request: 0x7E1,
+			why: Why::StillPending
+		}));
+		let car = Car {
+			gateway: Answer::StillPending,
+			units: BTreeMap::new(),
+		};
+		assert_eq!(run(&car).0, Outcome::NoList(Why::StillPending));
+	}
+
+	#[test]
 	fn a_gateway_with_no_list_ends_the_count_before_any_unit_is_asked() {
 		for (answer, why) in [
 			(Answer::NoAnswer, Why::NoAnswer),
@@ -640,7 +662,8 @@ mod tests {
 		let units: Vec<u16> = asked.iter().skip(1).map(|(u, _)| u.request).collect();
 		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x714], "each once, nothing past the block");
 		let tally = counted(outcome);
-		assert_eq!(tally.unaddressable, 2);
+		assert_eq!(tally.past_block, 2);
+		assert_eq!(tally.unaddressable, 0);
 		assert_eq!(tally.failed.len(), 4, "the four silent units, and nothing else named");
 	}
 
@@ -654,6 +677,7 @@ mod tests {
 		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x714]);
 		let tally = counted(outcome);
 		assert_eq!(tally.unaddressable, 1);
+		assert_eq!(tally.past_block, 0, "0x7A0 is inside the block");
 		assert!(tally.failed.iter().all(|f| f.request != 0x7A0), "not named as a unit left out");
 		assert!(UnitAddress::from_request(crate::address::VW_LAST_ADDRESSABLE).is_some());
 		assert!(UnitAddress::from_request(crate::address::VW_LAST_ADDRESSABLE + 1).is_none());

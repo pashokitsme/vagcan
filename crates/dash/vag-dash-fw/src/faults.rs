@@ -114,13 +114,16 @@ pub enum Line<'a> {
 	Resumed,
 	/// A unit that answered with stored codes.
 	Codes(UnitTally),
-	/// A unit left out, and how long its exchange held the bus.
-	NotCounted { request: u16, why: Why, held_ms: u64 },
+	/// A unit left out, and why.
+	NotCounted { request: u16, why: Why },
 	/// The listed ids not asked because each shares an id with a unit walked: every
 	/// [`Why::SharedId`] among these.
 	Skipped(&'a [Failed]),
-	/// Ids the list named that no unit can answer on — past VW's block, or in it past `0x795` —
-	/// counted and not asked ([`Tally::unaddressable`](vag_uds_client::faultcount::Tally::unaddressable)).
+	/// Bits the list set past VW's block, never decoded, never asked
+	/// ([`Tally::past_block`](vag_uds_client::faultcount::Tally::past_block)).
+	PastBlock(u32),
+	/// Ids of VW's block the list named past `0x795`, whose answer id would not fit 11 bits:
+	/// not asked ([`Tally::unaddressable`](vag_uds_client::faultcount::Tally::unaddressable)).
 	Unaddressable(u32),
 	/// The end of a count.
 	Counted {
@@ -130,26 +133,22 @@ pub enum Line<'a> {
 		asked: usize,
 		took_ms: u64,
 	},
-	/// The gateway gave no list, and how long its exchange held the bus.
-	NoList { why: Why, held_ms: u64 },
+	/// The gateway gave no list, and why.
+	NoList(Why),
 	/// The walk would ask this many units — the list's and the three it cannot hold — more than
 	/// [`MAX_UNITS`].
 	TooMany(usize),
 }
 
-/// Why a unit, or the gateway's list, is not in the count, in words. No answer after the
-/// whole of [`DEADLINE_MS`] is a unit that asked for more time (`78`) and never gave the
-/// answer; before it, a unit that did not answer at all.
-struct Because {
-	why: Why,
-	held_ms: u64,
-}
+/// Why a unit, or the gateway's list, is not in the count, in words.
+struct Because(Why);
 
 impl fmt::Display for Because {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self.why {
-			Why::NoAnswer if self.held_ms >= DEADLINE_MS => write!(f, "no answer in {} s", DEADLINE_MS / 1000),
+		match self.0 {
 			Why::NoAnswer => f.write_str("no answer"),
+			// The count's own deadline cut the exchange after the unit's `78`.
+			Why::StillPending => write!(f, "asked for time (78), no answer in {} s", DEADLINE_MS / 1000),
 			Why::BusError => f.write_str("bus error"),
 			Why::Refused(nrc) => write!(f, "refused, NRC {nrc:02X}"),
 			Why::Malformed => f.write_str("answer did not parse"),
@@ -166,7 +165,7 @@ impl fmt::Display for Line<'_> {
 			Line::Paused => f.write_str("waiting while the stopwatch is up"),
 			Line::Resumed => f.write_str("the stopwatch is closed — counting on"),
 			Line::Codes(unit) => write!(f, "{:03X} {} stored, {} failing now", unit.request, unit.stored, unit.failing_now),
-			Line::NotCounted { request, why, held_ms } => write!(f, "{request:03X} not counted — {}", Because { why, held_ms }),
+			Line::NotCounted { request, why } => write!(f, "{request:03X} not counted — {}", Because(why)),
 			Line::Skipped(failed) => {
 				let skipped = failed.iter().filter(|f| f.why == Why::SharedId);
 				for (i, unit) in skipped.enumerate() {
@@ -177,9 +176,15 @@ impl fmt::Display for Line<'_> {
 				}
 				f.write_str(" skipped — each shares an id with a unit walked")
 			}
+			Line::PastBlock(bits) => write!(
+				f,
+				"the list set {bits} {} past {:03X} — not decoded, not asked",
+				if bits == 1 { "bit" } else { "bits" },
+				address::VW_LAST
+			),
 			Line::Unaddressable(ids) => write!(
 				f,
-				"the list names {ids} {} past {:03X}, which no unit can answer on — not asked",
+				"the list names {ids} {} past {:03X} — no answer id fits 11 bits, not asked",
 				if ids == 1 { "id" } else { "ids" },
 				address::VW_LAST_ADDRESSABLE
 			),
@@ -195,7 +200,7 @@ impl fmt::Display for Line<'_> {
 				took_ms / 1000,
 				took_ms % 1000 / 100
 			),
-			Line::NoList { why, held_ms } => write!(f, "the gateway gave no list ({}) — badge ?", Because { why, held_ms }),
+			Line::NoList(why) => write!(f, "the gateway gave no list ({}) — badge ?", Because(why)),
 			Line::TooMany(units) => write!(f, "the walk would ask {units} units, more than {MAX_UNITS} — not a car's list, badge ?"),
 		}
 	}
@@ -281,7 +286,7 @@ impl Count {
 			Ok(req) => self.asked = Some(req),
 			// Never for the two reads the count sends. Were the planner to refuse one, the unit
 			// is left out as a bus error and the walk goes on.
-			Err(_) => self.heard(Answer::BusError, 0, now.ms, say),
+			Err(_) => self.heard(Answer::BusError, now.ms, say),
 		}
 	}
 
@@ -289,11 +294,9 @@ impl Count {
 	/// other comes back for its owner.
 	pub fn take(&mut self, delivery: Delivery, say: &mut impl FnMut(&Line<'_>)) -> Option<Delivery> {
 		match delivery {
-			Delivery::Raw {
-				req, answer, sent_ms, at_ms, ..
-			} if self.asked == Some(req) => {
+			Delivery::Raw { req, answer, at_ms, .. } if self.asked == Some(req) => {
 				self.asked = None;
-				self.heard(answer, at_ms.saturating_sub(sent_ms), at_ms, say);
+				self.heard(answer, at_ms, say);
 				None
 			}
 			other => Some(other),
@@ -318,13 +321,16 @@ impl Count {
 		self.found
 	}
 
-	/// One answer for the request the count asked, `held_ms` on the bus, arrived at `now_ms`.
-	fn heard(&mut self, answer: Answer, held_ms: u64, now_ms: u64, say: &mut impl FnMut(&Line<'_>)) {
+	/// One answer for the request the count asked, arrived at `now_ms`.
+	fn heard(&mut self, answer: Answer, now_ms: u64, say: &mut impl FnMut(&Line<'_>)) {
 		self.count.answered(answer);
 		if let Some(tally) = self.count.tally() {
 			// The list is in: what the walk left out of it, once.
 			if !self.walk_said {
 				self.walk_said = true;
+				if tally.past_block > 0 {
+					say(&Line::PastBlock(tally.past_block));
+				}
 				if tally.unaddressable > 0 {
 					say(&Line::Unaddressable(tally.unaddressable));
 				}
@@ -343,7 +349,6 @@ impl Count {
 				say(&Line::NotCounted {
 					request: failed.request,
 					why: failed.why,
-					held_ms,
 				});
 			}
 			self.said_read = tally.read.len();
@@ -366,7 +371,7 @@ impl Count {
 				self.found = Some(Found::Counted { stored, failing_now });
 			}
 			Outcome::NoList(why) => {
-				say(&Line::NoList { why: *why, held_ms });
+				say(&Line::NoList(*why));
 				self.found = Some(Found::Failed);
 			}
 			Outcome::TooMany { units } => {

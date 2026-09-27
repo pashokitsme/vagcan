@@ -240,10 +240,39 @@ pub enum Answer {
 	/// the unit is not backed off, its backoff is not reset, and nobody else reading it
 	/// is told of a miss. Only a raw exchange gets it; a read always expects an answer.
 	NotExpected,
+	/// The unit asked for more time (`7F xx 78`, response pending) and the exchange's own
+	/// deadline — one its consumer set, shorter than the transport's — ran out before the
+	/// answer came: the board's fault count ends each of its exchanges 2 s after the send
+	/// (`todo/dash/20`). The unit is there and busy, so it is heard from — its backoff is
+	/// reset — and nobody else reading it is told of a miss. Only a raw exchange gets it; a
+	/// read given it is refused with `78`, as a `78` reaching the planner always was.
+	StillPending,
 }
 
 /// ISO 14229-1: bit 7 of a sub-function asks the server to suppress its positive response.
 const SUPPRESS_POSITIVE_RESPONSE: u8 = 0x80;
+
+/// ISO 14229-1: a negative response's service id, and what a positive one adds to the
+/// request's.
+const NEGATIVE_RESPONSE: u8 = 0x7F;
+const POSITIVE_OFFSET: u8 = 0x40;
+
+/// Whether `response` answers `request` at all: a positive response to its service
+/// (service id + `0x40`), or a negative one naming its service (`7F sid …`). Anything else on
+/// the unit's answer id is a late answer to an earlier request — one its consumer stopped
+/// waiting for — and the shell drops it and waits on rather than hand it to this request's
+/// consumer (review of `todo/dash/20`, 2026-09-27). Whether it answers well is the consumer's
+/// to judge.
+pub fn answers(request: &[u8], response: &[u8]) -> bool {
+	let Some(&sid) = request.first() else {
+		return false;
+	};
+	match response {
+		[NEGATIVE_RESPONSE, service, ..] => *service == sid,
+		[first, ..] => *first == sid.wrapping_add(POSITIVE_OFFSET),
+		[] => false,
+	}
+}
 
 /// Whether `pdu` is a request its unit answers only when it refuses it: a service with
 /// a sub-function whose suppress-positive-response bit is set (ISO 14229-1). Of the
