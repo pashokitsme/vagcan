@@ -95,8 +95,8 @@ impl Saving {
 		match (self.unsaved, self.run_pending) {
 			(false, false) => "saved",
 			(true, false) => "UNSAVED",
-			(false, true) => "saved, and a run waits for a standstill or `save`",
-			(true, true) => "UNSAVED, and a run waits for a standstill or `save`",
+			(false, true) => "saved, and a run is in RAM only",
+			(true, true) => "UNSAVED, and a run is in RAM only",
 		}
 	}
 }

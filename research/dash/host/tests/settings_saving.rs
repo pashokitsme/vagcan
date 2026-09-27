@@ -86,6 +86,6 @@ fn get_says_a_pending_run_and_what_is_unsaved() {
 	let said = |unsaved, run_pending| Saving { unsaved, run_pending }.said();
 	assert_eq!(said(false, false), "saved");
 	assert_eq!(said(true, false), "UNSAVED");
-	assert!(said(false, true).starts_with("saved") && said(false, true).contains("a run waits"));
-	assert!(said(true, true).starts_with("UNSAVED") && said(true, true).contains("a run waits"));
+	assert!(said(false, true).starts_with("saved") && said(false, true).contains("a run is in RAM only"));
+	assert!(said(true, true).starts_with("UNSAVED") && said(true, true).contains("a run is in RAM only"));
 }

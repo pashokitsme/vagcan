@@ -775,7 +775,7 @@ fn open_settings() -> Settings {
 fn say_unreadable(store: &Store) {
 	if let Some(version) = store.unreadable() {
 		note!(
-			"settings: flash's newest record, generation {}, is version {version} — a newer image's, which this one cannot read; running on the one before it or the defaults, and only `save` writes over it",
+			"settings: flash's newest record, generation {}, is version {version} — a newer image's, which this one cannot read; running on the one before it or the defaults, and nothing writes over it on its own",
 			store.generation()
 		);
 	}
@@ -1389,9 +1389,10 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
 // The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
 // speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
-// lever and the cruise status go ahead of a run's speed, on two units), and the speed may be
-// read as slowly as `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run
-// whose speed never missed (PR #12 review): lengthening this timeout means lengthening that.
+// exchange on the bus when the speed came due, and a silent unit's read of the panel's floor,
+// which goes ahead of a run's speed), and the speed may be read as slowly as
+// `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run whose speed never
+// missed (PR #12 review): lengthening this timeout means lengthening that.
 const _: () = assert!(
 	stopwatch::SILENCE_MS as u128 > 2 * RESPONSE_TIMEOUT.as_millis() + stopwatch::SLOWEST_SPEED_PERIOD_MS as u128,
 	"the stopwatch's silence must outlast two answer timeouts and a period of the speed"
@@ -2753,7 +2754,7 @@ async fn keep_run(settings: &Shared, run: stopwatch::Run) {
 	STATE_CHANGED.signal(());
 	// Written by the stopwatch, which is fed only while it is up: a run whose stopwatch is left
 	// before the car stands is in RAM alone until `save`, or the stopwatch's next standstill.
-	note!("stopwatch: the run is in RAM — written to flash once the car stands with the stopwatch up, or by `save`; lost at power-off before either");
+	note!("stopwatch: the run is in RAM only — written to flash once the car stands with the stopwatch up");
 }
 
 /// The run [`keep_run`] left waiting, written to flash — called at a standstill. What flash
@@ -2785,7 +2786,9 @@ fn write_run(s: &mut Settings) {
 	let stored = match s.saving.at_standstill(unreadable.is_some()) {
 		RunWrite::Nothing => {
 			if let (true, Some(version)) = (pending, unreadable) {
-				note!("stopwatch: the run waits for `save` — flash's newest record is version {version}, a newer image's, and only `save` writes over it");
+				note!(
+					"stopwatch: the run is not written — flash's newest record is version {version}, a newer image's, and nothing writes over it on its own; the run stays in RAM"
+				);
 			}
 			return;
 		}
@@ -2796,7 +2799,7 @@ fn write_run(s: &mut Settings) {
 				stored
 			}
 			Err(e) => {
-				note!("stopwatch: the run waits for `save` — flash holds no configuration to add it to ({e:?})");
+				note!("stopwatch: the run is not written — flash holds no configuration to add it to ({e:?}); it stays in RAM");
 				return;
 			}
 		},
@@ -2805,7 +2808,7 @@ fn write_run(s: &mut Settings) {
 		Ok(_) => note!("stopwatch: the run is saved"),
 		Err(e) => {
 			s.saving.not_written();
-			note!("stopwatch: the run could not be saved ({e:?}) — `save` to retry");
+			note!("stopwatch: the run could not be written ({e:?}); it stays in RAM");
 		}
 	}
 }
