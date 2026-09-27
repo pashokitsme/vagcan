@@ -250,9 +250,13 @@ pub enum Answer {
 	/// exchange, raw or read, when anything was heard and no answer came (`Ended::Busy` in
 	/// `vag-dash-fw`'s `exchange`); the laptop's never does.
 	///
-	/// The unit is there, not absent: everyone reading it is told [`Miss::Busy`], a missed
-	/// sample, never [`Miss::NoAnswer`]. It is backed off as a non-answer is, so a unit busy for
-	/// ever costs its neighbours no more than a silent one (review round 3).
+	/// The unit is there, not absent: its readers are told [`Miss::Busy`], a missed sample,
+	/// never [`Miss::NoAnswer`]. The first `Busy` since the unit last answered costs no wait —
+	/// one late answer on a run's speed must not push it past the stopwatch's silence (review
+	/// round 4) — and tells only that exchange's readers. From the second in a row, or after a
+	/// non-answer, the unit is backed off as a non-answer backs it off, every reader told `Busy`:
+	/// a unit busy for ever costs its neighbours one first backoff more than a silent one, once
+	/// (review round 3).
 	Busy { asked_for_time: bool },
 }
 

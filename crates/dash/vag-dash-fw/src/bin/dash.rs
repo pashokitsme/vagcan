@@ -1550,6 +1550,15 @@ const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis
 // `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run whose speed never
 // missed (PR #12 review): lengthening this timeout means lengthening that.
 //
+// A speed read that ends busy (`Answer::Busy`: a late answer to an earlier request on its id,
+// and its own answer later than `RESPONSE_TIMEOUT`) is one of those two timeouts: it holds the
+// bus as a silent read does, in the place of the exchange that was on the bus when the speed
+// came due. It adds no backoff — the planner waits only from a unit's second `Busy` in a row
+// (review round 4: the 250 ms it waited after the first pushed the gap to 1.6–1.8 s beside a
+// silent page unit; `research/dash/host/tests/stopwatch_silence.rs` holds it under the silence).
+// A busy speed read, an exchange already out and a silent unit of the floor in one gap are
+// three, a bus in trouble, as three silent units are: the run aborts.
+//
 // The fault count's exchanges hold the bus for up to `faults::DEADLINE_MS`, longer than the
 // silence, and still never fall between two speed answers of a run: none starts while the
 // stopwatch is up (`Count::step`), and one already out when it opens ends before the stopwatch

@@ -166,12 +166,13 @@ fn a_request_that_expects_no_answer_does_not_back_the_unit_off() {
 
 /// The board's fault count ends its own exchange 2 s from its start, and a unit that has asked
 /// for more time (`7F 19 78`) is often still searching then (`todo/dash/20`). That unit is there:
-/// its readers are told `Busy` — a missed sample, never `NoAnswer`, which the panel takes for an
-/// absent unit and answers by dropping its cells and asking its part number again (review round
-/// 1). It is backed off as a non-answer is, so a unit busy for ever costs no more than a silent
-/// one (review round 3).
+/// it is never `NoAnswer`, which the panel takes for an absent unit and answers by dropping its
+/// cells and asking its part number again (review round 1). One such exchange between answers
+/// costs no wait and no reader a sample (round 4: a backoff there pushed a run's speed past the
+/// stopwatch's silence); from the second in a row the unit is backed off as silence backs it off,
+/// its readers told `Busy` (round 3: a unit busy for ever cost more than a silent one).
 #[test]
-fn a_raw_exchange_cut_while_its_unit_asked_for_time_is_busy_for_its_readers_and_backed_off() {
+fn a_busy_raw_exchange_costs_nothing_once_and_backs_the_unit_off_from_the_second_in_a_row() {
 	let mut p = Planner::new(Budget::board());
 	let sub = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
 	let out = send(p.due(0));
@@ -182,26 +183,32 @@ fn a_raw_exchange_cut_while_its_unit_asked_for_time_is_busy_for_its_readers_and_
 	assert_eq!(out.pdu, [0x19, 0x02, 0x08]);
 	let got = p.answered(2_010, out.token, Answer::Busy { asked_for_time: true });
 	assert!(
-		matches!(got.as_slice(), [
-		Delivery::Missed { sub: s, why: Miss::Busy, .. },
-		Delivery::Raw { req, answer: Answer::Busy { asked_for_time: true }, .. },
-	] if *s == sub && *req == count),
+		matches!(got.as_slice(), [Delivery::Raw { req, answer: Answer::Busy { asked_for_time: true }, .. }] if *req == count),
 		"{got:?}"
 	);
-
-	// Backed off: the first backoff, as for silence.
-	assert!(matches!(p.due(2_010), Next::Idle { .. }), "not at once");
-	let out = send(p.due(2_010 + u64::from(Budget::board().backoff_first_ms)));
-	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the reader kept, and read after the backoff");
-	let got = p.answered(2_300, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
-	assert!(matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub));
+	let out = send(p.due(2_010));
+	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the reader's next read goes at once");
+	let got = p.answered(2_015, out.token, Answer::Busy { asked_for_time: false });
+	assert!(
+		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Busy, .. }] if *s == sub),
+		"the second in a row: {got:?}"
+	);
+	// Backed off at the step two failures reach, as silence would be.
+	let wait = 2 * u64::from(Budget::board().backoff_first_ms);
+	assert!(matches!(p.due(2_015 + wait - 1), Next::Idle { .. }), "backed off");
+	let out = send(p.due(2_015 + wait));
+	let got = p.answered(2_015 + wait + 5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+	assert!(
+		matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub),
+		"the reader kept"
+	);
 }
 
 /// A read a busy unit did not answer in time — it asked for time, or only finished an earlier
 /// answer (review round 2, 2026-09-27) — is a sample missed from a unit that is there: every
 /// reader and one-shot is told `Busy`, never `NoAnswer` — taken for silence, the panel marked the
-/// unit absent and dropped its subscriptions, a run's speed with them. The unit is backed off as
-/// silence is (review round 3).
+/// unit absent and dropped its subscriptions, a run's speed with them. One costs no wait; from the
+/// second in a row the unit is backed off as silence is (review rounds 3 and 4).
 #[test]
 fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that_is_there() {
 	for asked_for_time in [false, true] {
@@ -227,8 +234,11 @@ fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that
 				.any(|d| matches!(d, Delivery::Once { req, result: Err(Miss::Busy), .. } if *req == once)),
 			"{asked_for_time}: {got:?}"
 		);
-		assert!(matches!(p.due(100), Next::Idle { .. }), "{asked_for_time}: backed off as silence is");
-		assert!(matches!(p.due(5 + u64::from(Budget::default().backoff_first_ms)), Next::Send(_)));
+		// One costs no wait; the next in a row backs the unit off.
+		let out = send(p.due(100));
+		let got = p.answered(105, out.token, Answer::Busy { asked_for_time });
+		assert!(got.iter().all(|d| matches!(d, Delivery::Missed { why: Miss::Busy, .. })), "{got:?}");
+		assert!(matches!(p.due(200), Next::Idle { .. }), "{asked_for_time}: backed off from the second");
 	}
 }
 
@@ -363,23 +373,27 @@ fn beside(a_answer: &Answer, a_cost: u64, until: u64) -> usize {
 }
 
 /// A unit heard but never answering this board — another tester's traffic on its id, or `78`
-/// to the end — costs its neighbours no more than a silent one (review round 3, the safety
+/// to the end — costs its neighbours about what a silent one does (review round 3, the safety
 /// probe `r3_busy_forever_vs_silent`): `Busy` backs it off as a non-answer does. It kept the
 /// unit's backoff reset, and a healthy unit beside it got 40 readings in 10 s where a silent
-/// neighbour left it 144 — with `78` to the 10 s limit, 12 in 60 s against 118.
+/// neighbour left it 144 — with `78` to the 10 s limit, 12 in 60 s against 118. Since round 4
+/// the first `Busy` of a streak costs no wait, so the streak costs at most one first backoff more:
+/// the neighbour's readings in `backoff_first_ms` (2 cells at 10 Hz, 250 ms: 5). Measured: 144 vs
+/// 144 in 10 s, 114 vs 118 in 60 s.
 #[test]
-fn a_unit_busy_forever_costs_its_neighbours_no_more_than_a_silent_one() {
+fn a_unit_busy_forever_costs_its_neighbours_about_what_a_silent_one_does() {
+	let first_backoff = (u64::from(Budget::board().backoff_first_ms) * 20 / 1000) as usize;
 	let silent = beside(&Answer::NoAnswer, 500, 10_000);
 	let busy = beside(&Answer::Busy { asked_for_time: false }, 500, 10_000);
 	assert!(silent >= 100, "{silent}");
 	assert!(
-		busy + 2 >= silent,
+		busy + first_backoff >= silent,
 		"B got {busy} readings in 10 s beside a busy unit, {silent} beside a silent one"
 	);
 	let silent = beside(&Answer::NoAnswer, 10_000, 60_000);
 	let busy = beside(&Answer::Busy { asked_for_time: true }, 10_000, 60_000);
 	assert!(
-		busy + 2 >= silent,
+		busy + first_backoff >= silent,
 		"B got {busy} readings in 60 s beside a unit saying 78 to the end, {silent} beside a silent one"
 	);
 }
