@@ -49,7 +49,7 @@ pub mod stalk;
 pub mod stopwatch;
 pub mod theme;
 
-pub use frame::{Board, Cell, Deviation, Frame, Links, Rates};
+pub use frame::{Board, Cell, Deviation, Faults, Frame, Links, Rates};
 pub use render::{draw, draw_with};
 pub use theme::{Numerals, Theme};
 

@@ -203,6 +203,8 @@ pub enum PartAnswer<'a> {
 	BusError,
 	/// An answer that is not a response to what was asked.
 	Malformed,
+	/// The unit was heard from, busy, and did not answer in time.
+	Busy,
 }
 
 /// What a part-number answer makes of a unit.
@@ -217,10 +219,17 @@ pub enum PartCheck {
 	Mismatch,
 	/// Not there (yet): ask again, as often as the scheduler's backoff allows.
 	Absent,
-	/// Something came back that did not parse. It was an answer, so the scheduler does
-	/// not back the unit off; ask again no sooner than the backoff's cap.
+	/// Something came back that did not parse, the unit said it is busy (`21`), or it was heard
+	/// and did not answer in time ([`PartAnswer::Busy`]). An answer, or a unit heard from: the
+	/// scheduler does not back the unit off for it — for a `Busy`, it does as for silence, but for
+	/// a unit a run is timing only from the second in a row;
+	/// ask again no sooner than the backoff's cap.
 	RetryLater,
 }
+
+/// ISO 14229-1's busyRepeatRequest: the unit is busy, and asks to be asked again. It says
+/// nothing of what the unit is.
+const BUSY_REPEAT_REQUEST: u8 = 0x21;
 
 /// One value: where it is on the bus, how to cut it out, how to scale it, and
 /// what to call it. Already rendered — there is nothing left to look up.
@@ -514,9 +523,13 @@ impl Unit {
 				Ok(reported) if reported.trim_end_matches([' ', '\0']) == self.part_number => PartCheck::Matched,
 				_ => PartCheck::Mismatch,
 			},
+			// Busy — searching its fault memory for the board's fault count, say: ask again.
+			PartAnswer::Refused(BUSY_REPEAT_REQUEST) => PartCheck::RetryLater,
 			PartAnswer::Refused(_) => PartCheck::Mismatch,
 			PartAnswer::NoAnswer | PartAnswer::BusError => PartCheck::Absent,
 			PartAnswer::Malformed => PartCheck::RetryLater,
+			// Heard from, no answer in time: there, busy — ask again.
+			PartAnswer::Busy => PartCheck::RetryLater,
 		}
 	}
 }
@@ -763,6 +776,16 @@ mod tests {
 	fn a_refused_part_number_is_a_mismatch_not_a_retry() {
 		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x31)), PartCheck::Mismatch);
 		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x22)), PartCheck::Mismatch);
+	}
+
+	/// `21` (busyRepeatRequest, ISO 14229-1) says nothing of what the unit is, only that it
+	/// is busy — searching its fault memory for the board's own count, say (`todo/dash/20`).
+	/// Asked again after the backoff's cap; a busy unit is never the wrong part for the boot.
+	#[test]
+	fn a_busy_unit_is_asked_its_part_number_again_not_declared_a_mismatch() {
+		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x21)), PartCheck::RetryLater);
+		// Heard from, and no answer in time (`Miss::Busy`): the same.
+		assert_eq!(PARTED.check_part(PartAnswer::Busy), PartCheck::RetryLater);
 	}
 
 	/// Silence is a unit that is not there yet (ignition off): asked again, at the pace

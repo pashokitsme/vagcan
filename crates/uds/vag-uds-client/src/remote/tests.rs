@@ -27,6 +27,9 @@ enum Bus {
 	Silent,
 	/// Every unit answers every read with one byte, and road speed with this.
 	Answering { kmh: u8 },
+	/// Every unit is heard from and answers nothing in time: the board's shell reports
+	/// [`BusAnswer::Busy`] (review round 2, 2026-09-27).
+	Busy,
 }
 
 impl Bus {
@@ -37,6 +40,7 @@ impl Bus {
 		}
 		match self {
 			Bus::Silent => BusAnswer::NoAnswer,
+			Bus::Busy => BusAnswer::Busy { asked_for_time: false },
 			Bus::Answering { kmh } => match out.pdu.as_slice() {
 				[0x22, 0xF4, 0x0D] => BusAnswer::Pdu(vec![0x62, 0xF4, 0x0D, kmh]),
 				[0x22, rest @ ..] => {
@@ -585,6 +589,30 @@ fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() 
 	let panel_reads = board.sent.iter().filter(|(_, o)| o.pdu == [0x22, 0x10, 0x00]).count();
 	assert!(panel_reads >= 9, "the panel kept reading: {panel_reads} in 1 s");
 	board.planner.unsubscribe(panel);
+}
+
+/// A busy unit — heard from, no answer in time — is a host's no answer, as silence is: the
+/// host is not left waiting on a `7F xx 78` that promised more, and its subscription reads
+/// no answer. The unit is asked as often as a silent one: no run times it, so no `Busy` of it
+/// passes free (review rounds 3 and 5).
+#[test]
+fn a_busy_unit_is_no_answer_to_the_host_and_asked_no_more_than_a_silent_one() {
+	let run = |bus| {
+		let mut board = Board::new(bus);
+		board.hear(request(3, ENGINE, &[0x19, 0x02, 0xFF]));
+		board.hear(subscribe(4, ENGINE, 0x1000, 100));
+		board.run_until(3_000);
+		board
+	};
+	let busy = run(Bus::Busy);
+	assert_eq!(busy.answers(), [(3, Outcome::NoAnswer)]);
+	let readings = busy.readings(4);
+	assert!(
+		!readings.is_empty() && readings.iter().all(|(_, o)| *o == Outcome::NoAnswer),
+		"{readings:?}"
+	);
+	let silent = run(Bus::Silent);
+	assert_eq!(busy.sent.len(), silent.sent.len(), "{:?}", busy.pdus_sent());
 }
 
 /// PR #2 review round 1 regression (Sched-F1 + the board's floor). A radio request to a

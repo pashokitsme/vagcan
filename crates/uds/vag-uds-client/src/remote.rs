@@ -686,6 +686,10 @@ fn outcome_of(sid: u8, answer: &schedule::Answer) -> Outcome {
 		// The request suppressed its positive response and no refusal came: status 1, no
 		// answer — which is what was asked for (`link`'s status table says so).
 		schedule::Answer::NotExpected => Outcome::NoAnswer,
+		// Heard from, and no answer in time: to the host, no answer, as a timeout is — never
+		// the unit's `78`, which promises an answer still to come and would keep the host
+		// waiting (review round 2, 2026-09-27).
+		schedule::Answer::Busy { .. } => Outcome::NoAnswer,
 	}
 }
 
@@ -698,7 +702,8 @@ fn outcome_of(sid: u8, answer: &schedule::Answer) -> Outcome {
 /// failure with its reason, not passed on as data.
 fn missed(why: Miss) -> Outcome {
 	match why {
-		Miss::NoAnswer | Miss::Absent => Outcome::NoAnswer,
+		// A busy unit's reading did not come: to the host, no answer, as a timeout is.
+		Miss::NoAnswer | Miss::Absent | Miss::Busy => Outcome::NoAnswer,
 		Miss::Refused(nrc) => Outcome::Pdu(vec![NEGATIVE, RDBI, nrc]),
 		Miss::BusError => Outcome::BusError(String::from("the bus failed under the request")),
 		Miss::Malformed => Outcome::BusError(String::from("the unit's answer did not parse")),

@@ -60,6 +60,11 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **No input**: with no `[stalk]` and no `next`/`previous` `[[button]]`, only `dashsim` or `dashcfg`'s `set page` turns the page. With no `[stalk]` and no `[[button]]` at all, only `dashsim` silences an alarm; otherwise it stays up until its channel answers in range again. The build says so.
 - **Alarms**: `[[alarm]]` rules in `dash.toml` watch channels on any page. Past the threshold — or, for a `kind = "drift"` rule, once a channel has held far enough from what its unit asked for — the board shows the rule's page with the offending cell inverted: blinking while the value is out, steady for the 2.5 s the page stays up after it is back. A press silences it until the value comes back.
 - **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
+- **Fault count**: once per start, 10 s in, the board counts the stored fault codes of the engine, the gearbox, the gateway and every unit the gateway lists. A listed id that shares a CAN id with a unit already asked is skipped, so the total can be lower than `vagcan faults`'.
+- **Fault badge**: the number over a warning triangle, bottom-right on every page. Inverted while a code is failing now. Hidden at 0. In the colours of the cell under it, as the link icons.
+- **`?` on the badge**: no count — the gateway gave no list, the walk would pass 64 units, or no unit could be counted. The board's USB log says which; `dashcfg` shows `?`.
+- **`dashcfg`** shows the count as stored, failing now and how many units it is of: `9 stored, 1 failing now — 17 of 18 units counted`.
+- **The fault count waits** while the stopwatch is up, and while a laptop runs `vagcan measure` through the board. It goes on where it stopped.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.
@@ -91,6 +96,7 @@ Updated 2026-09-27.
 - [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; the speed factor and a test run need the car)
+- [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
 
 Details: [`todo/README.md`](todo/README.md).
 

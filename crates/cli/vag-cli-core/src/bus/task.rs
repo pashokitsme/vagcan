@@ -7,6 +7,8 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::time::Instant;
 use vag_uds_can::UnitLink;
 use vag_uds_client::schedule::{Answer, Budget, Delivery, Miss, Next, Planner, ReqId, SubId, Unit, expects_no_answer};
+// The one rule for whether an answer is this request's, the board's as well (`schedule`).
+pub(super) use vag_uds_client::schedule::answers;
 use vag_uds_transport::{AsyncIsoTpTransport, CanId, TransportError};
 
 use super::{At, Command, ExchangeError, MAX_PENDING, OnceReply, PENDING_WAIT, READ_DEADLINE, RawReply, SUPPRESSED_WAIT, Sample};
@@ -15,18 +17,6 @@ use super::{At, Command, ExchangeError, MAX_PENDING, OnceReply, PENDING_WAIT, RE
 /// (ISO 14229-1).
 const NEGATIVE: u8 = 0x7F;
 const RESPONSE_PENDING: u8 = 0x78;
-/// What a positive response adds to the request's service id (ISO 14229-1).
-const POSITIVE_OFFSET: u8 = 0x40;
-/// The services on the read-only allowlist whose answers echo something of the
-/// request (ISO 14229-1): ReadDataByIdentifier echoes the identifier, and
-/// DiagnosticSessionControl, ReadDTCInformation and TesterPresent their sub-function.
-const RDBI: u8 = 0x22;
-const SESSION: u8 = 0x10;
-const DTC: u8 = 0x19;
-const TESTER_PRESENT: u8 = 0x3E;
-/// The sub-function bit that asks the server to suppress its positive response; the
-/// response echoes the sub-function without it (ISO 14229-1).
-const SUPPRESS_POSITIVE: u8 = 0x80;
 
 /// A raw exchange somebody is waiting on.
 struct Waiting {
@@ -231,7 +221,8 @@ impl State {
 						// what was asked for: a success with nothing in it, as the remote
 						// bus reports it too.
 						Answer::NotExpected => Ok((Vec::new(), at)),
-						Answer::NoAnswer => Err(ExchangeError::NoAnswer),
+						// Only the board's shell reports it; never produced here. No answer came.
+						Answer::NoAnswer | Answer::Busy { .. } => Err(ExchangeError::NoAnswer),
 						Answer::BusError => {
 							Err(ExchangeError::Link(error.take().unwrap_or_else(|| {
 								TransportError::Io(format!("the link failed talking to {:03X}", unit.request))
@@ -260,8 +251,9 @@ impl State {
 /// Address `unit`, put `pdu` on the link, and take the final answer back.
 ///
 /// What the link already holds is thrown away first ([`UnitLink::discard_stale`]): a late
-/// answer to an identical request echoes this one's identifier, and [`answers`] cannot
-/// tell it from the real one.
+/// answer to a request that asked an identifier this one asks — an identical request, or a
+/// single read of one of a batch's identifiers — echoes it, and [`answers`] cannot tell it from
+/// the real one.
 ///
 /// Not cancel-safe: dropped mid-exchange, it leaves the slot empty. The task drops it
 /// only on its way out.
@@ -349,30 +341,6 @@ fn failed(error: TransportError, discarded: usize, none_expected: bool) -> Heard
 		at: Instant::now(),
 		error: Some(error),
 		discarded,
-	}
-}
-
-/// Whether `response` answers `request`.
-///
-/// A link can hand over an answer that arrived after its own request stopped waiting
-/// for it, and taking it for the next request would put one identifier's bytes under
-/// another's name. So, by ISO 14229-1: a positive response's service id is the
-/// request's plus `0x40`, and a negative one is `7F <request's service id> <NRC>`; a
-/// `22` answer starts with the first identifier asked; `10`, `19` and `3E` echo their
-/// sub-function, without the suppress-positive-response bit.
-pub(super) fn answers(request: &[u8], response: &[u8]) -> bool {
-	let Some(&sid) = request.first() else {
-		return false;
-	};
-	match response {
-		[NEGATIVE, echoed, _, ..] => *echoed == sid,
-		[NEGATIVE, ..] => false,
-		[positive, rest @ ..] if *positive == sid.wrapping_add(POSITIVE_OFFSET) => match sid {
-			RDBI => request.get(1..3).is_some_and(|did| rest.get(..2) == Some(did)),
-			SESSION | DTC | TESTER_PRESENT => request.get(1).is_none_or(|sub| rest.first() == Some(&(sub & !SUPPRESS_POSITIVE))),
-			_ => true,
-		},
-		_ => false,
 	}
 }
 

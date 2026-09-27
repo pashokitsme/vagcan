@@ -38,6 +38,12 @@
 //!   The lever also closes the stopwatch — cruise taken, or its data missing over 3 s
 //!   ([`Closer`]) — and that is no command: the bus task ends the mode directly
 //!   ([`Screen::close_stopwatch`]).
+//! * **The fault count** (`todo/dash/20`): once per boot, ten seconds in and once a plan unit
+//!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
+//!   through the planner, in the background, never while the board's stopwatch is up or a host
+//!   holds its timing channel, each exchange ending 2 s from its start, the send included
+//!   ([`vag_dash_fw::faults`]). The panel draws the count as a triangle in the bottom-right
+//!   corner, `?` when there is no count; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -97,6 +103,8 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
+use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
+use vag_dash_fw::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
@@ -246,6 +254,19 @@ const NO_PAGE: u8 = u8::MAX;
 
 /// Raised whenever something a connected client would want to know changes.
 static STATE_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// What the fault count found (`todo/dash/20`), for the panel's badge and `state`'s `faults=`:
+/// `None` until it ends. Written by the bus task once, read by the panel every frame. A
+/// `core::cell::Cell` (the panel's `Cell` is a cell of a page) behind a blocking mutex, held
+/// for a copy of 12 bytes.
+static FAULTS: BlockingMutex<CriticalSectionRawMutex, core::cell::Cell<Option<Found>>> = BlockingMutex::new(core::cell::Cell::new(None));
+
+/// Publish what the fault count found, and tell a connected client once it changes.
+fn publish_faults(found: Option<Found>) {
+	if FAULTS.lock(|faults| faults.replace(found)) != found {
+		STATE_CHANGED.signal(());
+	}
+}
 
 /// Queue a line for the laptop, in [`usb::LINES`] with the log. Drops it if the queue
 /// is full rather than waiting: a note is never worth stalling the thing it is
@@ -1423,6 +1444,23 @@ fn hello_reply() -> Message {
 	})
 }
 
+/// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
+/// a `u32` generation, the adapter's mode, the fault count's two `u32`s and its units, a values page of
+/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 211 bytes.
+#[cfg(feature = "ble")]
+const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
+	+ " mode=adapter".len()
+	+ faults::STATE_LONGEST
+	+ " kind=values cells=[".len()
+	+ vag_dash_fw::config::MAX_CELLS * "65535".len()
+	+ (vag_dash_fw::config::MAX_CELLS - 1) * ", ".len()
+	+ "]".len();
+// `state_line` writes into a `heapless::String<UART_MTU>`, and what does not fit is dropped by
+// its `let _ = write!`: a longer line would lose its end. (The notifier cuts a line into
+// notifications of the negotiated size itself.)
+#[cfg(feature = "ble")]
+const _: () = assert!(STATE_LINE_LONGEST <= UART_MTU, "the state line must fit the UART characteristic");
+
 /// Renders the one line that describes the device completely enough for a
 /// client to draw its own view of it.
 #[cfg(feature = "ble")]
@@ -1444,6 +1482,9 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
 	// BLE this is how a person sees that the cable made the board an adapter.
 	let _ = write!(out, " mode={}", if adapter_mode() { "adapter" } else { "panel" });
+	// The fault count: `faults=9 failing=1 units=17/18`, `faults=?`, or `faults=-` until it ends
+	// (`todo/dash/20`).
+	let _ = write!(out, "{}", faults::State(FAULTS.lock(|faults| faults.get())));
 	if let Some(page) = s.config.pages.get(usize::from(s.config.active_page)) {
 		let kind = match page.kind {
 			PageKind::Chart => "chart",
@@ -1501,13 +1542,32 @@ static VALUES: Mutex<CriticalSectionRawMutex, [Slot; CHANNEL_COUNT]> = Mutex::ne
 /// unit costs the bus per attempt, so it stays short. 500 ms rather than the
 /// 300 the round-robin used: a host's request may be a fault list of many
 /// frames from a unit behind the gateway.
-const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(500);
+const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis(vag_dash_fw::exchange::RESPONSE_TIMEOUT_MS);
 // The stopwatch aborts a run whose speed has not answered for `SILENCE_MS`. Between two
 // speed answers two other reads may each hold the bus for a whole `RESPONSE_TIMEOUT` (the
 // exchange on the bus when the speed came due, and a silent unit's read of the panel's floor,
 // which goes ahead of a run's speed), and the speed may be read as slowly as
 // `SLOWEST_SPEED_PERIOD_MS`. A silence threshold under that aborts a run whose speed never
 // missed (PR #12 review): lengthening this timeout means lengthening that.
+//
+// A speed read that ends busy (`Answer::Busy`: a late answer to an earlier request on its id,
+// and its own answer later than `RESPONSE_TIMEOUT`) is one of those two timeouts: it holds the
+// bus as a silent read does, in the place of the exchange that was on the bus when the speed
+// came due. It adds no backoff — the planner waits for a unit a run is timing only from its
+// second `Busy` in a row (review round 4: the 250 ms it waited after the first pushed the gap
+// to 1.6–1.8 s beside a silent page unit; `research/dash/host/tests/stopwatch_silence.rs` holds
+// it under the silence). A busy speed read, an exchange already out and a silent unit of the
+// floor in one gap are three, a bus in trouble, as three silent units are: the run aborts. One
+// unit that has just gone silent can be two of the three: its first backoff (250 ms) is shorter
+// than a gap, so its first two reads can land in one — a page unit read at 100 ms and again at
+// 1100 ms around a busy speed read leaves a 1550 ms gap, and the run aborts, with or without
+// the free first `Busy` (review round 5).
+//
+// The fault count's exchanges hold the bus for up to `faults::DEADLINE_MS`, longer than the
+// silence, and still never fall between two speed answers of a run: none starts while the
+// stopwatch is up (`Count::step`), and one already out when it opens ends before the stopwatch
+// can arm — the mode's turn resets it, and it arms only after `ARMING_HOLD_MS` of standstill
+// answers, none of which come while the count's exchange holds the bus.
 const _: () = assert!(
 	stopwatch::SILENCE_MS as u128 > 2 * RESPONSE_TIMEOUT.as_millis() + stopwatch::SLOWEST_SPEED_PERIOD_MS as u128,
 	"the stopwatch's silence must outlast two answer timeouts and a period of the speed"
@@ -1532,9 +1592,13 @@ const SEND_DEADLINE: Duration = Duration::from_secs(1);
 const BUS_OFF_GAP: Duration = Duration::from_secs(1);
 /// How often the bus task looks at the pages when nothing has said they changed.
 const PAGE_RECHECK: Duration = Duration::from_secs(1);
-/// ISO 14229-1: a negative response, and the NRC that asks for more time.
-const NEGATIVE: u8 = 0x7F;
-const RESPONSE_PENDING: u8 = 0x78;
+/// The waits above, as every exchange's [`Waits`] reads them.
+const TIMEOUTS: Timeouts = Timeouts {
+	answer_ms: RESPONSE_TIMEOUT.as_millis() as u64,
+	suppressed_ms: SUPPRESSED_WAIT.as_millis() as u64,
+	pending_wait_ms: PENDING_WAIT.as_millis(),
+	pending_deadline_ms: PENDING_DEADLINE.as_millis(),
+};
 
 /// What the part-number check has established about one unit.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1609,6 +1673,23 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 	backend
 }
 
+/// How an exchange ended with no answer to hand the planner.
+enum Stop {
+	/// The transport's own error, or silence ([`TransportError::Timeout`]).
+	Transport(TransportError),
+	/// The unit was heard — a `78`, or late answers to earlier requests — and did not answer in
+	/// time ([`Ended::Busy`]): [`Answer::Busy`], a unit that is there.
+	Busy { asked_for_time: bool },
+}
+
+/// One exchange, done: its answer or why there is none, the stale frames swept before it, and
+/// its waits — the late answers to other requests it dropped among them.
+struct Exchanged<'a> {
+	result: Result<Vec<u8>, Stop>,
+	swept: usize,
+	waits: Waits<'a>,
+}
+
 /// One exchange: sweep, address, send, wait out `7F xx 78`, unwrap.
 ///
 /// The wrappers are stateless, so building them per exchange costs nothing,
@@ -1616,61 +1697,89 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 /// last answer* — a reply that came in past its deadline, a frame from
 /// another tester on the same response id — is thrown away here rather than
 /// taken as this request's answer, which is how every read of a unit ends up
-/// one behind until a request gets nothing back.
+/// one behind until a request gets nothing back. What arrives *during* the exchange and
+/// answers another request is dropped by its waits ([`Waits::heard`]).
 ///
 /// The backend is lent, not given: an exchange given up for adapter mode leaves the
 /// controller with its caller, which quiesces it before dropping it.
-async fn exchange(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &[u8]) -> (Result<Vec<u8>, TransportError>, usize) {
+///
+/// `limit_ms` is the exchange's own deadline, if it has one ([`transact`]).
+async fn exchange<'a>(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &'a [u8], limit_ms: Option<u64>) -> Exchanged<'a> {
 	let swept = backend.drain().await;
 	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
-	let result = transact(&mut link, pdu).await;
-	(result, swept)
+	let mut waits = Waits::new(pdu, TIMEOUTS, limit_ms);
+	let result = transact(&mut link, pdu, limit_ms.is_some(), &mut waits).await;
+	Exchanged { result, swept, waits }
 }
 
 /// One unit's ISO-TP over the lent controller.
 type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
 
-async fn transact(link: &mut Link<'_>, pdu: &[u8]) -> Result<Vec<u8>, TransportError> {
-	match with_timeout(SEND_DEADLINE, link.send(pdu)).await {
-		Ok(sent) => sent?,
-		Err(_elapsed) => return Err(TransportError::Timeout),
+/// Send, and wait as `waits` says ([`vag_dash_fw::exchange`]): for the first answer, out a run
+/// of `7F xx 78`, and on past a late answer to another request, which is dropped.
+///
+/// An exchange with a deadline of its own (`limited`) — the fault count's,
+/// [`faults::DEADLINE_MS`] from the start, `78`s included (owner, 2026-09-27) — has every wait
+/// cut to it, the backstop too. Every other exchange keeps [`RESPONSE_TIMEOUT`] and
+/// [`PENDING_DEADLINE`] as they are.
+async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Waits<'_>) -> Result<Vec<u8>, Stop> {
+	let start = Instant::now();
+	let held = || start.elapsed().as_millis();
+	// An exchange with a deadline of its own gets no backstop past it.
+	let backstop = if limited { Duration::from_ticks(0) } else { SEND_DEADLINE };
+	let Some(send_ms) = waits.send_wait(SEND_DEADLINE.as_millis()) else {
+		return Err(Stop::Transport(TransportError::Timeout));
+	};
+	match with_timeout(Duration::from_millis(send_ms), link.send(pdu)).await {
+		Ok(sent) => sent.map_err(Stop::Transport)?,
+		Err(_elapsed) => return Err(Stop::Transport(TransportError::Timeout)),
 	}
-	let sid = pdu.first().copied().unwrap_or(0);
-	// A request that suppressed its positive response is answered only by a refusal,
-	// and a refusal comes within P2: waiting the full deadline for silence would hold
-	// the bus for nothing. `answer_of` turns the timeout into `NotExpected`.
-	let first = if expects_no_answer(pdu) { SUPPRESSED_WAIT } else { RESPONSE_TIMEOUT };
-	let mut answer = receive(link, first).await?;
-	// The planner takes a `78` that reaches it as a refusal; the shell's job is
-	// that one does not (`schedule` module docs).
-	let pending_since = Instant::now();
-	while matches!(answer.as_slice(), [NEGATIVE, s, RESPONSE_PENDING, ..] if *s == sid) {
-		let left = PENDING_DEADLINE.checked_sub(pending_since.elapsed()).unwrap_or(Duration::MIN);
-		if left == Duration::MIN {
-			return Err(TransportError::Timeout);
+	waits.sent(held());
+	loop {
+		let Some(wait) = waits.next_wait(held()) else {
+			return Err(stopped(waits.ended()));
+		};
+		match receive(link, core::time::Duration::from_millis(wait), backstop).await {
+			Ok(answer) => match waits.heard(&answer, held()) {
+				Heard::Answer => return Ok(answer),
+				// Waited out here: the planner takes a `78` that reaches it as a refusal
+				// (`schedule` module docs).
+				Heard::Pending => {}
+				// A late answer to another request: dropped, and the wait goes on.
+				Heard::Stray => {}
+			},
+			Err(TransportError::Timeout) => return Err(stopped(waits.ended())),
+			Err(e) => return Err(Stop::Transport(e)),
 		}
-		let wait = if left < PENDING_WAIT { left } else { PENDING_WAIT };
-		answer = receive(link, core::time::Duration::from_millis(wait.as_millis())).await?;
 	}
-	Ok(answer)
 }
 
-/// One answer PDU within `timeout`, with a backstop over the transport's own
-/// deadline for the flow-control frame it may transmit.
-async fn receive(link: &mut Link<'_>, timeout: core::time::Duration) -> Result<Vec<u8>, TransportError> {
-	let backstop = Duration::from_millis(timeout.as_millis() as u64) + SEND_DEADLINE;
+/// How an exchange's waits ended, as [`transact`] says it.
+fn stopped(ended: Ended) -> Stop {
+	match ended {
+		Ended::Silent => Stop::Transport(TransportError::Timeout),
+		Ended::Busy { asked_for_time } => Stop::Busy { asked_for_time },
+	}
+}
+
+/// One answer PDU within `timeout`, with a backstop `past` the transport's own deadline for
+/// the flow-control frame it may transmit.
+async fn receive(link: &mut Link<'_>, timeout: core::time::Duration, past: Duration) -> Result<Vec<u8>, TransportError> {
+	let backstop = Duration::from_millis(timeout.as_millis() as u64) + past;
 	with_timeout(backstop, link.recv(timeout)).await.unwrap_or(Err(TransportError::Timeout))
 }
 
 /// What the planner is told about an exchange of `request`. Silence after a request
 /// that asked for it is [`Answer::NotExpected`], not an absent unit: the panel keeps
-/// reading that unit and nothing is backed off.
-fn answer_of(request: &[u8], result: Result<Vec<u8>, TransportError>) -> Answer {
+/// reading that unit and nothing is backed off. A unit heard from during the exchange that did
+/// not answer in time is [`Answer::Busy`], not an absent unit either.
+fn answer_of(request: &[u8], result: Result<Vec<u8>, Stop>) -> Answer {
 	match result {
 		Ok(pdu) => Answer::Pdu(pdu),
-		Err(TransportError::Timeout) if expects_no_answer(request) => Answer::NotExpected,
-		Err(TransportError::Timeout) => Answer::NoAnswer,
-		Err(_) => Answer::BusError,
+		Err(Stop::Busy { asked_for_time }) => Answer::Busy { asked_for_time },
+		Err(Stop::Transport(TransportError::Timeout)) if expects_no_answer(request) => Answer::NotExpected,
+		Err(Stop::Transport(TransportError::Timeout)) => Answer::NoAnswer,
+		Err(Stop::Transport(_)) => Answer::BusError,
 	}
 }
 
@@ -1682,8 +1791,8 @@ fn answer_of(request: &[u8], result: Result<Vec<u8>, TransportError>) -> Answer 
 /// dashes until somebody pulled the plug. `stop()` hands back the
 /// configuration, mode and all; `start()` clears the error counters and
 /// leaves reset; both keep the async driver and the filter's registers.
-async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, TransportError>, bus_off: &mut bool) -> TwaiBackend<'static> {
-	if let Err(TransportError::Disconnected) = result {
+async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Stop>, bus_off: &mut bool) -> TwaiBackend<'static> {
+	if let Err(Stop::Transport(TransportError::Disconnected)) = result {
 		if !*bus_off {
 			*bus_off = true;
 			note!("can: controller went bus-off — restarting it");
@@ -1717,8 +1826,11 @@ async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Transpor
 /// and part checks outlive both: the planner keeps them, and they resume.
 #[embassy_executor::task]
 async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'static>, bus: &'static Bus, shared: Panel) -> ! {
+	// The fault count's machine, in `.bss` rather than in this task's future: the arena every
+	// task shares is finite, and a full one fails a spawn silently.
+	static COUNT: StaticCell<Count> = StaticCell::new();
 	let settings = shared.settings;
-	let mut panel = PanelReads::new(shared);
+	let mut panel = PanelReads::new(shared, COUNT.init(Count::new()));
 	panel.start(bus);
 	loop {
 		// SAFETY: `clone_unchecked` asks that a clone and its original never both drive
@@ -1781,6 +1893,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 	let mut filter = FilterFollower::new(plan_filter());
 	let mut filter_said = false;
 	let mut swept_said = false;
+	let mut strays_said = false;
 	let mut bus_off = false;
 	let mut pages_seen = Instant::MIN;
 
@@ -1796,6 +1909,9 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 		panel.ask_again_when_due(bus);
 		// A lever unit gone silent answers nothing, and its stopwatch still has to close.
 		panel.lever_tick();
+		// Last before `due`, with no await between: whether the stopwatch is up is what it is
+		// when the planner picks the next exchange, and nothing is on the bus.
+		panel.count_step(bus);
 
 		let next = bus.lock(|p| p.borrow_mut().due(ms()));
 		match next {
@@ -1803,11 +1919,14 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				if let Some(moved) = filter.before(out.unit.response) {
 					backend = refilter(backend, moved, &mut filter_said);
 				}
+				// The fault count's exchanges end 2 s from their start, the send included; every
+				// other keeps the board's deadlines.
+				let limit_ms = bus.lock(|p| panel.count.deadline_ms(p.borrow().flying_raw()));
 				// The mode is polled first, every time the two are woken: once the board is an
 				// adapter the exchange is not polled again, so no frame of it — a flow control
 				// half way through an answer — starts after that.
-				let exchanged = select(adapter_requested(), exchange(&mut backend, out.unit, &out.pdu)).await;
-				let (result, swept) = match exchanged {
+				let exchanged = select(adapter_requested(), exchange(&mut backend, out.unit, &out.pdu, limit_ms)).await;
+				let done = match exchanged {
 					Either::Second(done) => done,
 					Either::First(()) => {
 						// The exchange is given up. A frame of it may be on the wire: the
@@ -1815,12 +1934,17 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 						// the middle of one. The planner still has to hear of the exchange,
 						// or it would wait for this answer forever.
 						backend.quiesce().await;
+						// The count's exchange given up is the board's doing, not the car's answer:
+						// the count asks the same again when the panel is back.
+						let flying = bus.lock(|p| p.borrow().flying_raw());
+						panel.count.given_up(flying, &mut |line: &FaultLine<'_>| note!("{line}"));
 						let deliveries = bus.lock(|p| p.borrow_mut().answered(ms(), out.token, Answer::BusError));
 						deliver(deliveries, panel, bus).await;
 						return;
 					}
 				};
 				let at = ms();
+				let Exchanged { result, swept, waits } = done;
 				if swept > 0 && !swept_said {
 					swept_said = true;
 					note!(
@@ -1828,6 +1952,17 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 						out.unit.request,
 						&out.pdu[..out.pdu.len().min(3)]
 					);
+				}
+				if let Some(stray) = waits.first_stray() {
+					if !strays_said {
+						strays_said = true;
+						note!(
+							"can: dropped {} late answer(s) to an earlier request ({stray:02X?} …) on {:03X} while waiting for its answer to {:02X?} (said once)",
+							waits.strays(),
+							out.unit.response,
+							&out.pdu[..out.pdu.len().min(3)]
+						);
+					}
 				}
 				backend = settle(backend, &result, &mut bus_off).await;
 				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(&out.pdu, result)));
@@ -1837,6 +1972,10 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				let recheck = pages_seen + PAGE_RECHECK;
 				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
 				let recheck = panel.next_close().map_or(recheck, |close| close.min(recheck));
+				let recheck = panel
+					.count
+					.wake_ms(ms())
+					.map_or(recheck, |start| Instant::from_millis(start).min(recheck));
 				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
 				let woke = select4(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait(), adapter_requested()).await;
 				if let Either4::Third(()) = woke {
@@ -2013,10 +2152,13 @@ struct PanelReads {
 	/// A host holds the board's timing channel ([`host_clock`]): a run's speed yields to it,
 	/// as the subscriptions last followed it.
 	host_clock: bool,
+	/// The car's stored codes, counted once after boot (`todo/dash/20`): its requests go through
+	/// the planner as the part checks do, and its answers come back through [`PanelReads::take`].
+	count: &'static mut Count,
 }
 
 impl PanelReads {
-	fn new(shared: Panel) -> Self {
+	fn new(shared: Panel, count: &'static mut Count) -> Self {
 		// A plan without a lever never feeds this; its states are the plan's where there is one.
 		let states = PLAN.stalk.map_or(
 			States {
@@ -2043,7 +2185,37 @@ impl PanelReads {
 			closer: Closer::new(PLAN.stalk.map(|plan| plan.states)),
 			mode: ReadMode::default(),
 			host_clock: false,
+			count,
 		}
+	}
+
+	/// The fault count's turn ([`Count::step`]): start it once ten seconds have passed and a plan
+	/// unit has answered, queue its next request, or take back the one waiting while the
+	/// stopwatch is up. Called with nothing on the bus.
+	fn count_step(&mut self, bus: &Bus) {
+		let answered = self.checks.iter().filter(|c| matches!(c, Check::Matched | Check::Mismatch)).count();
+		let stopwatch = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
+		let (count, subs) = (&mut *self.count, &self.subs);
+		bus.lock(|p| {
+			let mut planner = p.borrow_mut();
+			// A host's `measure` through the board times a run too: a 2 s exchange of the count's
+			// would be a gap in it (review, 2026-09-27).
+			let hold = if stopwatch {
+				Some(Hold::Stopwatch)
+			} else if host_clock(&planner, subs) {
+				Some(Hold::HostTiming)
+			} else {
+				None
+			};
+			let now = Now {
+				ms: ms(),
+				bus_on: faults::bus_on(PLAN.units.len(), answered),
+				hold,
+			};
+			count.step(now, &mut planner, &mut |line: &FaultLine<'_>| note!("{line}"));
+		});
+		// A step can end the count too (a request the planner refused).
+		publish_faults(self.count.found());
 	}
 
 	/// The lever's gate and the stopwatch, as the rates are to follow them now.
@@ -2292,7 +2464,14 @@ impl PanelReads {
 				}
 				None
 			}
-			Delivery::Raw { .. } => Some(delivery),
+			// The fault count's answer, or a host's.
+			Delivery::Raw { .. } => {
+				let theirs = self.count.take(delivery, &mut |line: &FaultLine<'_>| note!("{line}"));
+				if theirs.is_none() {
+					publish_faults(self.count.found());
+				}
+				theirs
+			}
 		}
 	}
 
@@ -2472,6 +2651,7 @@ fn miss_text(why: Miss) -> heapless::String<32> {
 		Miss::Refused(nrc) => write!(out, "refused, NRC {nrc:02X}"),
 		Miss::Absent => write!(out, "left out of the answer"),
 		Miss::Malformed => write!(out, "answer did not parse"),
+		Miss::Busy => write!(out, "busy, no answer in time"),
 	};
 	out
 }
@@ -2489,6 +2669,7 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 		Err(Miss::NoAnswer) => PartAnswer::NoAnswer,
 		Err(Miss::BusError) => PartAnswer::BusError,
 		Err(Miss::Malformed | Miss::Absent) => PartAnswer::Malformed,
+		Err(Miss::Busy) => PartAnswer::Busy,
 	};
 	let check = unit.check_part(part);
 	match (check, answer) {
@@ -2511,6 +2692,15 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 			unit.request,
 			miss_text(*why)
 		),
+		(PartCheck::RetryLater, Err(Miss::Busy)) if previous != Check::Absent => {
+			note!(
+				"can: {:03X} is busy, no answer to F187 in time — will ask its part number again",
+				unit.request
+			);
+		}
+		(PartCheck::RetryLater, Err(Miss::Refused(nrc))) if previous != Check::Absent => {
+			note!("can: {:03X} is busy (NRC {nrc:02X}) — will ask its part number again", unit.request);
+		}
 		(PartCheck::Absent | PartCheck::RetryLater, Err(why)) if previous != Check::Absent => {
 			note!("can: {:03X} did not answer F187 ({}) — will keep asking", unit.request, miss_text(*why));
 		}
@@ -2685,7 +2875,11 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 				_ => None,
 			};
 			framebuffer.clear_all();
-			let board = Board { links: links(), rates };
+			let board = Board {
+				links: links(),
+				rates,
+				faults: None,
+			};
 			let report = draw_with(&Frame::Adapter(SLCAN_PORT.status()), &board, &theme, framebuffer);
 			let compromised = report != vag_dash_render::render::Report::default();
 			if compromised != last_compromised {
@@ -2695,7 +2889,12 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 			continue;
 		}
 		meters = None;
-		let board = Board { links: links(), rates: None };
+		// The fault count's badge, on every page and the stopwatch's: nothing until it ends.
+		let board = Board {
+			links: links(),
+			rates: None,
+			faults: FAULTS.lock(|faults| faults.get()).map(Found::badge),
+		};
 
 		// A copy, so the lock is held for a memcpy and not for a frame.
 		let values = *VALUES.lock().await;

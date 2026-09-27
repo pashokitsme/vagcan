@@ -134,6 +134,33 @@ pub struct Board {
 	/// The bus traffic the adapter screen's main line shows. `None` until the board
 	/// measures it, and drawn as `--`, never as a zero.
 	pub rates: Option<Rates>,
+	/// The car's stored fault codes, counted once after boot. Drawn as a warning triangle
+	/// and the count in the bottom-right corner of the values and chart pages — alarm pages
+	/// and the stopwatch included — with `?` for the number when the count failed, and not
+	/// at all while there is no count or it is zero. In the colours of the cell under it, as
+	/// the link icons: dark on an alarmed rightmost cell's lit ground. The adapter screen
+	/// draws none, as it draws no link icons.
+	pub faults: Option<Faults>,
+}
+
+/// What the board's one fault read found (`todo/dash/20`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Faults {
+	/// The count.
+	Counted {
+		/// Stored codes — confirmed, as `vagcan faults` counts them — across every unit that
+		/// answered. None stored draws no badge.
+		stored: u32,
+		/// At least one of them is failing now: the badge is drawn inverted against the cell
+		/// under it. Steady, never blinking of its own — blinking is an alarm's, and over an
+		/// alarmed cell the badge blinks with it.
+		failing_now: bool,
+	},
+	/// No count could be made: on the board, the gateway gave no list of its units, a list the
+	/// board refused to walk, or no unit of the walk could be counted. The triangle with `?` for
+	/// the number, laid out as a
+	/// one-digit count, never inverted — nothing says a code fails now (owner, 2026-09-27).
+	Failed,
 }
 
 /// Which hosts the board is serving.

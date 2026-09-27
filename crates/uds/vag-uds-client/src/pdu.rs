@@ -44,14 +44,30 @@ pub(crate) enum Classified {
 	Data(Vec<u8>),
 }
 
+/// [`Classified`], borrowing the response instead of copying it.
+pub(crate) enum ClassifiedRef<'a> {
+	Pending,
+	Data(&'a [u8]),
+}
+
 /// Classify one response PDU for a request with service `sid`.
 pub(crate) fn classify_response(sid: u8, resp: &[u8]) -> Result<Classified, UdsError> {
+	Ok(match classify_response_ref(sid, resp)? {
+		ClassifiedRef::Pending => Classified::Pending,
+		ClassifiedRef::Data(data) => Classified::Data(data.to_vec()),
+	})
+}
+
+/// [`classify_response`] without the copy: the positive answer's bytes after the echoed SID,
+/// where they lie. The board's fault count reads answers of up to 4095 bytes on a 72 KB
+/// heap, and a copy of each is a second answer's worth of it.
+pub(crate) fn classify_response_ref(sid: u8, resp: &[u8]) -> Result<ClassifiedRef<'_>, UdsError> {
 	let first = *resp.first().ok_or_else(|| UdsError::Malformed("empty response".into()))?;
 	if first == 0x7F {
 		// Negative: [0x7F, sid, nrc]
 		let nrc = *resp.get(2).ok_or_else(|| UdsError::Malformed("short negative response".into()))?;
 		if nrc == 0x78 {
-			return Ok(Classified::Pending);
+			return Ok(ClassifiedRef::Pending);
 		}
 		let echoed = *resp.get(1).unwrap_or(&sid);
 		return Err(UdsError::NegativeResponse { sid: echoed, nrc });
@@ -62,7 +78,7 @@ pub(crate) fn classify_response(sid: u8, resp: &[u8]) -> Result<Classified, UdsE
 			sid + 0x40
 		)));
 	}
-	Ok(Classified::Data(resp[1..].to_vec()))
+	Ok(ClassifiedRef::Data(&resp[1..]))
 }
 
 /// The two big-endian payload bytes of a DID.
@@ -93,6 +109,12 @@ pub(crate) fn parse_dtc_response(resp: &[u8]) -> Result<Vec<RawDtc>, UdsError> {
 /// followed by `[code(3) status(1)]` records — `0x02` by status mask and
 /// `0x0A` for the unit's whole supported list.
 pub(crate) fn parse_dtc_list(resp: &[u8], subfunction: u8) -> Result<Vec<RawDtc>, UdsError> {
+	Ok(dtc_records(resp, subfunction)?.collect())
+}
+
+/// [`parse_dtc_list`]'s records, read where they lie: the framing is checked whole before
+/// the first record is yielded, and nothing is allocated for them.
+pub(crate) fn dtc_records(resp: &[u8], subfunction: u8) -> Result<impl ExactSizeIterator<Item = RawDtc> + '_, UdsError> {
 	if resp.len() < 2 || resp[0] != subfunction {
 		return Err(UdsError::Malformed("bad ReadDTCInformation response".into()));
 	}
@@ -100,14 +122,10 @@ pub(crate) fn parse_dtc_list(resp: &[u8], subfunction: u8) -> Result<Vec<RawDtc>
 	if entries.len() % 4 != 0 {
 		return Err(UdsError::Malformed("DTC entries not a multiple of 4 bytes".into()));
 	}
-	let mut out = Vec::with_capacity(entries.len() / 4);
-	for chunk in entries.chunks_exact(4) {
-		out.push(RawDtc {
-			code: [chunk[0], chunk[1], chunk[2]],
-			status: chunk[3],
-		});
-	}
-	Ok(out)
+	Ok(entries.chunks_exact(4).map(|chunk| RawDtc {
+		code: [chunk[0], chunk[1], chunk[2]],
+		status: chunk[3],
+	}))
 }
 
 /// Parse a ReadDTCInformation 0x04 response body (after SID strip):

@@ -19,7 +19,12 @@ const MAX_FC_WAIT: usize = 8;
 /// Implements [`AsyncIsoTpTransport`], so the async UDS client rides it
 /// unchanged. Classic CAN only (<= 4095-byte PDUs), frames padded to 8 bytes.
 /// Frames from other CAN ids are skipped, not treated as errors — this is a
-/// shared bus.
+/// shared bus. Frames on the ECU's id that belong to nothing under way are
+/// ignored too, as ISO 15765-2 has it for an unexpected N_PDU: a consecutive
+/// frame, a flow control or an unknown PCI while no reception is under way,
+/// and a consecutive frame or an unknown PCI while a flow control is awaited —
+/// the tail of an answer an earlier exchange stopped waiting for. Each wait goes
+/// on within its own deadline.
 pub struct IsoTpCan<B: CanBackend> {
 	backend: B,
 	tx: u32,
@@ -74,8 +79,17 @@ impl<B: CanBackend> IsoTpCan<B> {
 	async fn wait_flow_control(&mut self) -> Result<(u8, u8), TransportError> {
 		for _ in 0..=MAX_FC_WAIT {
 			let deadline = Instant::now() + FC_TIMEOUT;
-			let data = self.recv_own(deadline).await?;
-			let pci = *data.first().ok_or_else(|| TransportError::Protocol("empty flow control frame".into()))?;
+			// ISO 15765-2, unexpected arrival of an N_PDU: a consecutive frame or an unknown PCI
+			// while a flow control is awaited is ignored — the tail of an answer an earlier
+			// exchange stopped waiting for — and the wait goes on within N_Bs.
+			let (data, pci) = loop {
+				let data = self.recv_own(deadline).await?;
+				let pci = *data.first().ok_or_else(|| TransportError::Protocol("empty flow control frame".into()))?;
+				match pci >> 4 {
+					0x2 | 0x4..=0xF => {}
+					_ => break (data, pci),
+				}
+			};
 			if pci >> 4 != 0x3 {
 				return Err(TransportError::Protocol("expected flow control frame".into()));
 			}
@@ -157,57 +171,63 @@ impl<B: CanBackend> AsyncIsoTpTransport for IsoTpCan<B> {
 
 	async fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
 		let deadline = Instant::now() + timeout;
-		let frame = self.recv_own(deadline).await?;
-		let pci = *frame.first().ok_or_else(|| TransportError::Protocol("empty frame".into()))?;
-		match pci >> 4 {
-			// Single Frame.
-			0x0 => {
-				let len = (pci & 0x0F) as usize;
-				let body = frame
-					.get(1..1 + len)
-					.ok_or_else(|| TransportError::Protocol("single frame length exceeds data".into()))?;
-				Ok(body.to_vec())
-			}
-			// First Frame: 12-bit length, 6 data bytes here.
-			0x1 => {
-				let len_low = *frame.get(1).ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?;
-				let len = (((pci & 0x0F) as usize) << 8) | usize::from(len_low);
-				if len <= 7 {
-					return Err(TransportError::Protocol("first frame with length <= 7".into()));
+		// ISO 15765-2, unexpected arrival of an N_PDU: a consecutive frame, a flow control or an
+		// unknown PCI while no reception is under way is ignored. Such frames are the tail of an
+		// answer an earlier exchange stopped waiting for; the wait goes on, within its deadline.
+		loop {
+			let frame = self.recv_own(deadline).await?;
+			let pci = *frame.first().ok_or_else(|| TransportError::Protocol("empty frame".into()))?;
+			match pci >> 4 {
+				// Single Frame.
+				0x0 => {
+					let len = (pci & 0x0F) as usize;
+					let body = frame
+						.get(1..1 + len)
+						.ok_or_else(|| TransportError::Protocol("single frame length exceeds data".into()))?;
+					return Ok(body.to_vec());
 				}
-				let mut out: Vec<u8> = frame
-					.get(2..8)
-					.ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?
-					.to_vec();
-
-				// Flow Control: ContinueToSend, block size 0 (send all), STmin 0.
-				let fc = Self::pad8(vec![0x30, 0x00, 0x00]);
-				self.backend.send_frame(self.tx, &fc).await?;
-
-				let mut expected_seq: u8 = 1;
-				while out.len() < len {
-					let cf = self.recv_own(deadline).await?;
-					let cf_pci = *cf.first().ok_or_else(|| TransportError::Protocol("empty consecutive frame".into()))?;
-					if cf_pci >> 4 != 0x2 {
-						return Err(TransportError::Protocol("expected consecutive frame".into()));
+				// First Frame: 12-bit length, 6 data bytes here.
+				0x1 => {
+					let len_low = *frame.get(1).ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?;
+					let len = (((pci & 0x0F) as usize) << 8) | usize::from(len_low);
+					if len <= 7 {
+						return Err(TransportError::Protocol("first frame with length <= 7".into()));
 					}
-					if cf_pci & 0x0F != expected_seq {
-						return Err(TransportError::Protocol(format!(
-							"CF sequence mismatch: got {}, want {}",
-							cf_pci & 0x0F,
-							expected_seq
-						)));
+					let mut out: Vec<u8> = frame
+						.get(2..8)
+						.ok_or_else(|| TransportError::Protocol("malformed first frame".into()))?
+						.to_vec();
+
+					// Flow Control: ContinueToSend, block size 0 (send all), STmin 0.
+					let fc = Self::pad8(vec![0x30, 0x00, 0x00]);
+					self.backend.send_frame(self.tx, &fc).await?;
+
+					let mut expected_seq: u8 = 1;
+					while out.len() < len {
+						let cf = self.recv_own(deadline).await?;
+						let cf_pci = *cf.first().ok_or_else(|| TransportError::Protocol("empty consecutive frame".into()))?;
+						if cf_pci >> 4 != 0x2 {
+							return Err(TransportError::Protocol("expected consecutive frame".into()));
+						}
+						if cf_pci & 0x0F != expected_seq {
+							return Err(TransportError::Protocol(format!(
+								"CF sequence mismatch: got {}, want {}",
+								cf_pci & 0x0F,
+								expected_seq
+							)));
+						}
+						let take = (len - out.len()).min(7);
+						let payload = cf
+							.get(1..1 + take)
+							.ok_or_else(|| TransportError::Protocol("malformed consecutive frame".into()))?;
+						out.extend_from_slice(payload);
+						expected_seq = (expected_seq + 1) & 0x0F;
 					}
-					let take = (len - out.len()).min(7);
-					let payload = cf
-						.get(1..1 + take)
-						.ok_or_else(|| TransportError::Protocol("malformed consecutive frame".into()))?;
-					out.extend_from_slice(payload);
-					expected_seq = (expected_seq + 1) & 0x0F;
+					return Ok(out);
 				}
-				Ok(out)
+				// Starts no reception: ignored.
+				_ => {}
 			}
-			_ => Err(TransportError::Protocol("unexpected PCI in first frame position".into())),
 		}
 	}
 }
@@ -290,6 +310,27 @@ mod tests {
 		);
 	}
 
+	/// The send side of the same ISO 15765-2 rule (review round 3): a consecutive frame or an
+	/// unknown PCI while a flow control is awaited — the tail of an answer an earlier exchange
+	/// stopped waiting for, before a request of 9 bytes or more — is ignored, within the N_Bs
+	/// wait.
+	#[tokio::test]
+	async fn a_leftover_frame_while_a_flow_control_is_awaited_is_ignored() {
+		let payload: Vec<u8> = (0..10).collect();
+		let mut iso = channel(vec![
+			(RX, vec![0x23, 1, 2, 3, 4, 5, 6, 7]),
+			(RX, vec![0x45, 0, 0, 0, 0, 0, 0, 0]),
+			(RX, vec![0x30, 0x00, 0x00, 0, 0, 0, 0, 0]),
+		]);
+		iso.send(&payload).await.unwrap();
+		let sent = iso.into_backend().sent;
+		assert_eq!(sent.len(), 2, "the first frame and the one consecutive frame: {sent:02X?}");
+		// Leftovers, then nothing: the flow control never came — a timeout, not a protocol error.
+		let mut iso = channel(vec![(RX, vec![0x24, 1, 2, 3, 4, 5, 6, 7])]);
+		let err = iso.send(&payload).await.unwrap_err();
+		assert!(matches!(err, TransportError::Timeout), "got {err:?}");
+	}
+
 	#[tokio::test]
 	async fn multi_frame_send_honors_block_size() {
 		// 27-byte payload -> FF (6) + 3 CFs (7 each). Block size 2 means a
@@ -367,6 +408,30 @@ mod tests {
 		]);
 		let err = iso.recv(Duration::from_millis(50)).await.unwrap_err();
 		assert!(matches!(err, TransportError::Protocol(_)), "got {err:?}");
+	}
+
+	/// ISO 15765-2: a consecutive or flow-control frame that comes while no reception is under
+	/// way is ignored. The tail of an answer the tester stopped waiting for — the board's fault
+	/// count cuts its exchange at 2 s, possibly mid-answer — arrives as the next exchange waits
+	/// for its first frame; taken as an error, it cost that exchange and backed its unit off
+	/// (review of `todo/dash/20`, 2026-09-27).
+	#[tokio::test]
+	async fn frames_that_belong_to_no_reception_are_ignored_and_the_wait_goes_on() {
+		let mut iso = channel(vec![
+			(RX, vec![0x23, 1, 2, 3, 4, 5, 6, 7]),
+			(RX, vec![0x24, 8, 9, 10, 11, 12, 13, 14]),
+			(RX, vec![0x30, 0x00, 0x00, 0, 0, 0, 0, 0]),
+			(RX, vec![0x02, 0x50, 0x03, 0, 0, 0, 0, 0]),
+		]);
+		let got = iso.recv(Duration::from_millis(50)).await.unwrap();
+		assert_eq!(got, vec![0x50, 0x03]);
+	}
+
+	#[tokio::test]
+	async fn leftover_frames_and_then_nothing_is_silence_not_a_protocol_error() {
+		let mut iso = channel(vec![(RX, vec![0x25, 1, 2, 3, 4, 5, 6, 7])]);
+		let err = iso.recv(Duration::from_millis(5)).await.unwrap_err();
+		assert!(matches!(err, TransportError::Timeout), "got {err:?}");
 	}
 
 	#[tokio::test]

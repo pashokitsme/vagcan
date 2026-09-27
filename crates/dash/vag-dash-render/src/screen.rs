@@ -696,6 +696,7 @@ mod tests {
 			let board = Board {
 				links: Links::NONE,
 				rates: None,
+				faults: None,
 			};
 			draw_with(&Frame::Values { cells: &cells }, &board, &Theme::bold_mono(), &mut display);
 			display

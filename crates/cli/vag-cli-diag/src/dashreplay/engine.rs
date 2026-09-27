@@ -415,10 +415,11 @@ impl Replay {
 				cell
 			}
 		};
-		// Links: nothing is connected to a board in a recording.
+		// Links: nothing is connected to a board in a recording, and it holds no fault count.
 		let board = Board {
 			links: Links::NONE,
 			rates: None,
+			faults: None,
 		};
 		let theme = Theme::bold_mono();
 		if !layout.chart {
@@ -862,6 +863,7 @@ mod tests {
 		let board = Board {
 			links: Links::NONE,
 			rates: None,
+			faults: None,
 		};
 		draw_with(&Frame::Values { cells: &cells }, &board, &Theme::bold_mono(), &mut expected);
 		expected

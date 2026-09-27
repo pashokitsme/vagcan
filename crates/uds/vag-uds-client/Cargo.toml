@@ -22,9 +22,10 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 [features]
 default = ["std"]
 # The host build. With `--no-default-features` the crate is `no_std` + `alloc`
-# and loses exactly two modules:
+# and loses exactly one module and a half:
 #
-#   address.rs  reads the filesystem (the per-car unit-number override table),
+#   address.rs  its short-number table, which reads the filesystem (the per-car
+#               unit-number override table); the addressing rule stays,
 #   read.rs     decodes a measurement against a `vag-data-labels` catalog,
 #
 # which is also what drops the `vag-data-labels` edge. Everything the board needs —

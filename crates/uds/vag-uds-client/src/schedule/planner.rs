@@ -69,6 +69,7 @@ struct UnitState {
 	/// Identifiers whose last multi-identifier answer could not be split, or left them
 	/// out while a one-shot waited: they go out alone next time.
 	singly: BTreeSet<u16>,
+	/// Exchanges in a row the unit has not answered: silent, or [`Answer::Busy`] ([`Planner::busy`]).
 	failures: u32,
 	/// Not asked again before this.
 	retry_at: u64,
@@ -158,8 +159,11 @@ enum Heard {
 	/// Positive and empty, to a multi-identifier request.
 	Empty,
 	Refused(u8),
+	/// No answer: silence.
 	Silent(Miss),
 	Malformed,
+	/// The unit was heard from and did not answer in time ([`Answer::Busy`]).
+	Busy,
 }
 
 impl Read {
@@ -546,6 +550,8 @@ impl Planner {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
 					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
+					// Heard from, and no answer in time: backed off, but for a timed unit's first.
+					Answer::Busy { .. } => self.busy(now_ms, unit, &[], &mut out),
 					// The silence the request asked for says nothing about the unit either way.
 					Answer::NotExpected => {}
 				}
@@ -662,6 +668,10 @@ impl Planner {
 				state.singly.extend(dids.iter().copied());
 				retry(state, now, onces);
 			}
+			Heard::Busy => {
+				self.busy(now, unit, &dids, out);
+				fail_onces(onces, unit, Miss::Busy, now, out);
+			}
 			// No answer is an absent unit, never evidence against batching.
 			Heard::Silent(why) => {
 				self.back_off(now, unit, why, out);
@@ -692,6 +702,9 @@ impl Planner {
 			Answer::Refused(nrc) => return Heard::Refused(nrc),
 			// A read always expects an answer; a shell that says otherwise is not answering it.
 			Answer::NotExpected => return Heard::Malformed,
+			// Heard from, no answer in time: its readers told `Busy`, backed off, but for a timed
+			// unit's first.
+			Answer::Busy { .. } => return Heard::Busy,
 			Answer::Pdu(pdu) => pdu,
 		};
 		match pdu.as_slice() {
@@ -723,6 +736,38 @@ impl Planner {
 		if let Some(state) = self.units.get_mut(&unit) {
 			state.failures = 0;
 			state.retry_at = 0;
+		}
+	}
+
+	/// The unit was heard from and did not answer in time ([`Answer::Busy`]); `dids` the
+	/// identifiers this exchange read. It is backed off as silence backs it off, every reader told
+	/// `Busy` (review round 3: a unit busy for ever cost its neighbours more than a silent one) —
+	/// with one exception. A unit a run is timing, one with a [`Class::Timing`] reader, gets its
+	/// first `Busy` since it last answered free of a wait: one late answer on the speed's id must
+	/// not push the run past the stopwatch's silence (review round 4). Only this exchange's
+	/// readers are told, and it counts as a failure, so the second in a row backs the unit off
+	/// at the step silence would have reached. Keyed on the unit, not the read: a busy read of
+	/// another of its identifiers would back the unit off and delay the speed just the same.
+	/// Nobody else gets the pass (review round 5): a unit busy every other exchange never waited,
+	/// and a unit nobody reads was forgotten with its count between a host's requests. A free
+	/// pass leaves the unit read by its Timing reader, so it is never forgotten with the count.
+	/// `Busy` is never `NoAnswer`: nobody takes the unit for absent.
+	fn busy(&mut self, now: u64, unit: Unit, dids: &[u16], out: &mut Vec<Delivery>) {
+		let Some(state) = self.units.get_mut(&unit) else {
+			return;
+		};
+		let timed = state.reads.values().flat_map(|read| &read.subs).any(|sub| sub.class == Class::Timing);
+		if state.failures > 0 || !timed {
+			self.back_off(now, unit, Miss::Busy, out);
+			return;
+		}
+		state.failures = 1;
+		for did in dids {
+			if let Some(read) = state.reads.get(did) {
+				for sub in &read.subs {
+					out.push(missed(sub, unit, *did, Miss::Busy, now));
+				}
+			}
 		}
 	}
 

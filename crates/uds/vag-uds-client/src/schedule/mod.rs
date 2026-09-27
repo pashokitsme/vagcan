@@ -72,7 +72,9 @@
 //!   token it sent is [`answered`](Planner::answered).
 //! - **`7F xx 78` (response pending) is the transport's business.** The shell waits it
 //!   out and hands over the final answer. A `78` that reaches the planner is taken as a
-//!   refusal.
+//!   refusal. The one exception: a unit heard from — a `78`, or late answers to earlier
+//!   requests — whose answer did not come within the exchange's deadline is handed over as
+//!   [`Answer::Busy`] (the board's shell, `todo/dash/20`).
 //! - **`now_ms` is monotonic**, and in `answered` it is the moment the answer arrived:
 //!   every [`Delivery`] is stamped with it, and `measure` times runs from it.
 //! - Rates come from the caller (the plan's `hz`); the planner derives none.
@@ -240,10 +242,75 @@ pub enum Answer {
 	/// the unit is not backed off, its backoff is not reset, and nobody else reading it
 	/// is told of a miss. Only a raw exchange gets it; a read always expects an answer.
 	NotExpected,
+	/// The unit was heard on its answer id during the exchange but did not answer this request
+	/// in time: it asked for more time (`7F xx 78`, `asked_for_time`) and the wait's end came
+	/// first — the transport's pending deadline, or an exchange's own, as the board's fault count
+	/// ends its exchanges 2 s from their start (`todo/dash/20`) — or it only sent late answers to
+	/// earlier requests (`asked_for_time` false). The board's shell hands it over for every
+	/// exchange, raw or read, when anything was heard and no answer came (`Ended::Busy` in
+	/// `vag-dash-fw`'s `exchange`); the laptop's never does.
+	///
+	/// The unit is there, not absent: its readers are told [`Miss::Busy`], a missed sample,
+	/// never [`Miss::NoAnswer`]. It is backed off as a non-answer backs it off, every reader told
+	/// `Busy`, so a unit busy for ever or every other time costs its neighbours what a silent one
+	/// does (review rounds 3 and 5). The one exception is a unit a run is timing — one with a
+	/// [`Class::Timing`] reader: its first `Busy` since it last answered costs no wait and tells
+	/// only that exchange's readers, since one late answer on the speed's id must not push the run
+	/// past the stopwatch's silence (review round 4); the second in a row backs it off.
+	Busy { asked_for_time: bool },
 }
 
 /// ISO 14229-1: bit 7 of a sub-function asks the server to suppress its positive response.
 const SUPPRESS_POSITIVE_RESPONSE: u8 = 0x80;
+
+/// ISO 14229-1: a negative response's service id, and what a positive one adds to the
+/// request's.
+const NEGATIVE_RESPONSE: u8 = 0x7F;
+const POSITIVE_OFFSET: u8 = 0x40;
+/// The services of the read-only allowlist whose answers echo something of the request.
+const READ_DATA_BY_IDENTIFIER: u8 = 0x22;
+const SESSION_CONTROL: u8 = 0x10;
+const READ_DTC_INFORMATION: u8 = 0x19;
+const TESTER_PRESENT: u8 = 0x3E;
+
+/// Whether `response` answers `request` — the one rule for every shell, the board's and the
+/// laptop's (review of `todo/dash/20`, 2026-09-27: they had one each).
+///
+/// A link can hand over an answer that arrived after its own request stopped waiting for it;
+/// taken for the next request it would put one identifier's bytes under another's name, or a
+/// fault count's codes under a host's question. So, by ISO 14229-1:
+///
+/// - a negative response is `7F <the request's service> <NRC>` — the NRC is not optional;
+/// - a positive one's service id is the request's plus `0x40`, and
+///   - a `22` answer starts with an identifier the request asked — any of them: ISO 14229-1
+///     lets a unit leave out one it does not support, the first included, and the planner
+///     takes that as the identifier `Absent` (review round 3) — or carries no record at all,
+///     which answers no other identifier and is the planner's to judge (an empty positive
+///     answer teaches it a unit is single-only);
+///   - `10`, `19` and `3E` echo their sub-function, without the suppress-positive-response bit.
+///
+/// Anything else is a late answer to an earlier request: the shell drops it and waits on. What it
+/// cannot drop is a late answer to a request its own request could have had: any `22` that asks
+/// the identifier takes one — a batch `22 F4 0D F4 0C` takes the late `62 F4 0C …` of an earlier
+/// single read of `F40C`, which then gets the stale record while `F40D` is `Absent` that round —
+/// and any identical request does. Nothing in the answer tells them apart.
+pub fn answers(request: &[u8], response: &[u8]) -> bool {
+	let Some(&sid) = request.first() else {
+		return false;
+	};
+	match response {
+		[NEGATIVE_RESPONSE, echoed, _, ..] => *echoed == sid,
+		[NEGATIVE_RESPONSE, ..] => false,
+		[positive, rest @ ..] if *positive == sid.wrapping_add(POSITIVE_OFFSET) => match sid {
+			READ_DATA_BY_IDENTIFIER => rest.is_empty() || rest.get(..2).is_some_and(|echo| request[1..].chunks_exact(2).any(|did| did == echo)),
+			SESSION_CONTROL | READ_DTC_INFORMATION | TESTER_PRESENT => request
+				.get(1)
+				.is_none_or(|sub| rest.first() == Some(&(sub & !SUPPRESS_POSITIVE_RESPONSE))),
+			_ => true,
+		},
+		_ => false,
+	}
+}
 
 /// Whether `pdu` is a request its unit answers only when it refuses it: a service with
 /// a sub-function whose suppress-positive-response bit is set (ISO 14229-1). Of the
@@ -268,6 +335,10 @@ pub enum Miss {
 	Absent,
 	/// An answer that is not a response to what was asked.
 	Malformed,
+	/// The unit was heard from — it asked for more time, or sent late answers to earlier
+	/// requests — and this request's answer did not come in time ([`Answer::Busy`]): a sample
+	/// missed from a unit that is there, never an absent one.
+	Busy,
 }
 
 /// What [`Planner::answered`] hands to consumers. `at_ms` is the `now_ms` given to

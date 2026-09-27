@@ -461,7 +461,7 @@ identifier sweep is a fuzz test of a control unit's diagnostic server.
 An ESP32-C3 with a CAN transceiver and an OLED, on the OBD port. Firmware in
 `crates/dash/vag-dash-fw`, outside the workspace (`no_std`, `riscv32imc`).
 
-**The board executes a plan; it resolves nothing.** `build.rs` runs the same generator as
+**The board executes a plan; it resolves no label data.** `build.rs` runs the same generator as
 `vagcan dev dash build`: it reads `~/.vagcan/dash/<VIN>/dash.toml`, the car's survey and
 the project's cache, and writes a Rust `static` with every channel resolved — unit,
 identifier, bit layout, scaling, unit, label. The image links it. A project cache is
@@ -485,6 +485,35 @@ A BLE host's requests go through the same planner.
 The acceptance filter starts as the plan's answer ids and moves to an exchange's answer id
 when the plan's does not pass it. Bus-off restarts the controller; a unit that goes silent
 is asked only for its part number until it answers.
+
+**The fault count: one protocol read beside the plan.** Once per boot, 10 s in and once a
+plan unit has answered, the board reads the gateway's installation list (`22 2A26`) and asks
+the engine, the gearbox, the gateway and every listed unit for its stored codes (`19 02 08`).
+Stored and failing now are counted as `vagcan faults` counts them; the units differ in one
+way: a listed id that shares a CAN id with a unit already asked is skipped, where the laptop
+asks it. Only VW's block of the list is decoded, and a walk that would pass 64 units — the
+listed ids and the three never listed, less those skipped or unaddressable — is refused.
+Each request is one background exchange through the planner, so the panel and a host keep
+their turns; each ends 2 s from its start, the send and any `78`s included, where every other
+exchange keeps the board's 500 ms and 10 s. A unit still asking for time at 2 s is not
+counted. None starts while the board's stopwatch is up or a host holds its timing
+channel; the walk goes on where it stopped. The count is `vag_uds_client::faultcount`, the
+board's shell round it `vag_dash_fw::faults`, an exchange's waits `vag_dash_fw::exchange`; all
+three are pure and tested on the host. The panel draws the number over a warning triangle in
+the bottom-right corner, in the colours of the cell under it, inverted while a code is failing
+now. `?` means no count: the gateway gave no list, the walk would pass 64 units, or no unit
+could be counted — the USB log says which. `state` says `faults=9 failing=1 units=17/18`,
+`faults=?`, or `faults=-` before the count ends.
+
+**Every exchange drops a late answer to another request.** An answer to another service,
+identifier or sub-function, or a refusal naming another service, that arrives while an
+exchange waits is dropped and the wait goes on — one rule on the board and the laptop,
+`vag_uds_client::schedule::answers`; the sweep before each send removes only what came before
+it, and ISO-TP ignores the consecutive frames of an answer nobody waits for, receiving and
+sending. On the board, a unit heard from during an exchange — a `78`, or late answers only — that
+does not answer in time is busy, not silent: its readers miss one sample, its part is not checked
+again, and it is backed off as a silent unit is — a unit a run is timing only from its second
+busy exchange in a row.
 
 **Input is commands, from any mix of backends.** Buttons on GPIO 3, 4 and 5 (`[[button]]`),
 the cruise lever (`[stalk]`) and `dashsim` each turn a press into a `Command` — next, previous,
@@ -511,6 +540,7 @@ the value store's staleness rule and the cell composition are the firmware's
 (`vag-dash-fw/src/bin/dash.rs`, not buildable on the host), mirrored in
 `vag-cli-diag/src/dashreplay/engine.rs`; a change to one is a change to both. The lever, the
 `[[button]]`s and the stopwatch are the exception: the replay does not replay them, and says so.
+A recording holds no fault count, so the replay draws no badge.
 
 **BLE, always on.** The board advertises a Nordic UART service from boot and again after
 every disconnect; no button, no pairing. `dashcfg` sends text commands (`state`,
