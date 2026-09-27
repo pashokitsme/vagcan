@@ -15,7 +15,7 @@
 //!
 //! ```toml
 //! vin = "XW8AD4NE9JH008917"
-//! language = "ru"                 # optional; the settings' language otherwise
+//! language = "ru"                 # optional: the labels' and the board's; the settings' otherwise
 //! survey = "…/survey.jsonl"        # optional; ~/.vagcan/cars/<VIN>/survey.jsonl otherwise
 //!
 //! [[channel]]
@@ -1190,19 +1190,46 @@ fn read_of(c: &Channel) -> (u16, u16, u32, u32) {
 	(c.unit, c.did, c.bit_offset, c.bit_length)
 }
 
+/// What a page cell, an alarm channel or the stopwatch's speed names, among the plan's channels.
+enum Named {
+	/// A `[[channel]]`, by plan index.
+	Channel(u16),
+	/// A setpoint with no `[[channel]]` of its own: read with its channel, never offered as a
+	/// cell (`todo/dash/18`, owner 2026-09-27).
+	Setpoint,
+	/// Nothing the input declares.
+	Unknown,
+}
+
+impl Named {
+	/// What a refusal says of a [`Named::Setpoint`].
+	fn setpoint_refusal(reference: &Reference) -> String {
+		format!("{reference} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+	}
+}
+
 /// The plan index of a channel the input names, by what the name resolves to: a page cell or an
-/// alarm channel may spell a row differently from its `[[channel]]` and still mean it. `None`
-/// when no `[[channel]]` resolves to that row.
+/// alarm channel may spell a row differently from its `[[channel]]` and still mean it.
+///
+/// Only the first `declared` channels are the input's `[[channel]]`s; after them come the
+/// setpoints the build added, and a name that lands on one of those is [`Named::Setpoint`], in
+/// either spelling.
 fn index_by_row(
 	reference: &Reference,
 	channels: &[Channel],
+	declared: usize,
 	index_of: &BTreeMap<Reference, u16>,
 	offered: &[poll::Channel],
 	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
-) -> Option<u16> {
+) -> Named {
+	let named = |at: usize| match at {
+		at if at < declared => Named::Channel(at as u16),
+		at if channels[..declared].iter().any(|c| c.setpoint == Some(at as u16)) => Named::Setpoint,
+		_ => Named::Unknown,
+	};
 	if let Some(index) = index_of.get(reference) {
-		return Some(*index);
+		return named(usize::from(*index));
 	}
 	let probe = ChannelInput {
 		reference: reference.clone(),
@@ -1211,8 +1238,13 @@ fn index_by_row(
 		hz: None,
 		setpoint: None,
 	};
-	let resolved = resolve_channel(&probe, offered, answered, units, &mut Vec::new()).ok()?;
-	channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16)
+	let Ok(resolved) = resolve_channel(&probe, offered, answered, units, &mut Vec::new()) else {
+		return Named::Unknown;
+	};
+	match channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
+		Some(at) => named(at),
+		None => Named::Unknown,
+	}
 }
 
 /// One `[[channel]]` against what the car reported and what the project knows: the same rules
@@ -1335,6 +1367,10 @@ fn row_name(c: &poll::Channel) -> String {
 /// `units` are the car's own words about itself (from its survey); `store` and
 /// `extracted` are the project — the same two `watch` opens. Pure: reads
 /// nothing but its arguments, writes nothing.
+///
+/// **One language for the plan** (owner, 2026-09-27): the input's `language`, or
+/// `default_language` — `config.toml`'s — without one. It is the board's own words and the
+/// glossary column every label is taken from, whichever language `extracted` was opened in.
 pub fn build(
 	input: &Input,
 	store: &CatalogStore,
@@ -1344,6 +1380,16 @@ pub fn build(
 	default_language: Language,
 ) -> Result<Built, Error> {
 	let language = input.language.unwrap_or(default_language);
+	// A copy speaking the plan's language, only when the caller's does not: the caller's own
+	// stays as it was, for what it names in `config.toml`'s (`vagcan dev recording dash`
+	// matches a recording's headings, written by `watch`, against it).
+	let respoken;
+	let extracted = if extracted.language() == language {
+		extracted
+	} else {
+		respoken = extracted.clone().in_language(language);
+		&respoken
+	};
 	let offered = poll::available(store, extracted, units);
 	let mut notes = Vec::new();
 	let mut channels: Vec<Channel> = Vec::new();
@@ -1369,6 +1415,9 @@ pub fn build(
 		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
 	}
+	// The owner's `[[channel]]`s, one plan channel each and in order; everything after them the
+	// build adds, and no page, alarm or stopwatch may name.
+	let declared = channels.len();
 
 	// Second pass, so a setpoint may name a channel the input declares later — and so a
 	// setpoint the input does not declare at all is appended once, after everything the
@@ -1459,7 +1508,10 @@ pub fn build(
 	// The stopwatch's speed is one of the owner's `[[channel]]`s, resolved above.
 	let stopwatch = match &input.stopwatch {
 		None => None,
-		Some(wanted) => Some(resolve_stopwatch(wanted, &channels, &index_of, &offered, answered, units, &mut notes)?),
+		Some(wanted) => {
+			let speed = index_by_row(&wanted.speed, &channels, declared, &index_of, &offered, answered, units);
+			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
+		}
 	};
 	// The lever's fields are enumerations, which no `[[channel]]` can be: they join the plan
 	// as channels of their own, on no page, read only for the lever.
@@ -1518,11 +1570,13 @@ pub fn build(
 	let mut pages = Vec::new();
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
-		let index = |r: &Reference| {
-			index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| Error::PageRefersToUnknown {
+		let index = |r: &Reference| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+			Named::Channel(index) => Ok(index),
+			Named::Setpoint => Err(Error::Page(n, Named::setpoint_refusal(r))),
+			Named::Unknown => Err(Error::PageRefersToUnknown {
 				page: n,
 				reference: r.clone(),
-			})
+			}),
 		};
 		match page {
 			PageInput::Values { title, cells } => {
@@ -1575,7 +1629,11 @@ pub fn build(
 		let watched = wanted
 			.channels
 			.iter()
-			.map(|r| index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list"))))
+			.map(|r| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+				Named::Channel(index) => Ok(index),
+				Named::Setpoint => Err(refuse(Named::setpoint_refusal(r))),
+				Named::Unknown => Err(refuse(format!("{r} is not in the [[channel]] list"))),
+			})
 			.collect::<Result<Vec<u16>, _>>()?;
 		// The page is named by title, and only a values page has one: a takeover shows
 		// cells, and a chart has one cell and no room to invert it.
@@ -1700,18 +1758,13 @@ pub fn build(
 /// `[stopwatch]` against the resolved channels: the speed is a `[[channel]]` whose scaling
 /// has no offset — the stopwatch takes the channel's zero for a standstill, and with an
 /// offset the zero is somewhere else — and whose factor is above zero, or moving forward
-/// would read as going nowhere.
-fn resolve_stopwatch(
-	wanted: &StopwatchInput,
-	channels: &[Channel],
-	index_of: &BTreeMap<Reference, u16>,
-	offered: &[poll::Channel],
-	answered: Option<&poll::Answered>,
-	units: &[UnitIdentity],
-	notes: &mut Vec<String>,
-) -> Result<Stopwatch, Error> {
-	let speed = index_by_row(&wanted.speed, channels, index_of, offered, answered, units)
-		.ok_or_else(|| Error::Stopwatch(format!("speed {} is not in the [[channel]] list", wanted.speed)))?;
+/// would read as going nowhere. `speed` is what [`index_by_row`] made of `wanted.speed`.
+fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel], notes: &mut Vec<String>) -> Result<Stopwatch, Error> {
+	let speed = match speed {
+		Named::Channel(index) => index,
+		Named::Setpoint => return Err(Error::Stopwatch(format!("speed {}", Named::setpoint_refusal(&wanted.speed)))),
+		Named::Unknown => return Err(Error::Stopwatch(format!("speed {} is not in the [[channel]] list", wanted.speed))),
+	};
 	let channel = &channels[usize::from(speed)];
 	if channel.offset != 0.0 {
 		return Err(Error::Stopwatch(format!(
@@ -2329,6 +2382,8 @@ pub struct Resolved {
 	/// What each unit said about itself in that survey: what the catalogs were looked up by.
 	pub units: Vec<UnitIdentity>,
 	pub store: CatalogStore,
+	/// The project, naming channels in `config.toml`'s language, as `watch` does — not
+	/// necessarily the plan's, which [`build`] labels in its own.
 	pub extracted: Extracted,
 }
 
@@ -3529,6 +3584,114 @@ mod tests {
 			format!("{} [[page]] tables, and the board holds at most 8", MAX_PAGES + 1)
 		);
 		assert_eq!(build_with_alarms(&extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
+	}
+
+	/// One language for the plan (owner, 2026-09-27): `dash.toml`'s `language` picks the board's
+	/// own words **and** the glossary column every label is taken from; without it both follow
+	/// `config.toml`. Before, labels followed `config.toml` whatever the plan said.
+	#[test]
+	fn the_labels_are_in_the_plans_language_whatever_the_settings_say() {
+		let here = tempfile::tempdir().unwrap();
+		// Synthetic wording: `IDE00002` is written in Russian only, `IDE00003` in neither.
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x1001, "One", "IDE00001", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1002, "Two", "IDE00002", 0, 8, false, true, 1.0, 0.0),
+					reading(0x1003, "Three", "IDE00003", 0, 8, false, true, 1.0, 0.0),
+				],
+			)],
+			&[("IDE00003", "Three, as the label files say")],
+		)
+		.with_glossary("text_id,en,ru\nIDE00001,Coolant,ОЖ\nIDE00002,,Масло\n")
+		// Opened as `config.toml` says, the way `resolve_for_car` opens it: in Russian.
+		.in_language(Language::Ru);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let built = |language: &str| {
+			let text = format!(
+				"vin = \"TESTVIN0000000001\"\n{language}[[channel]]\nref = \"01:IDE00001\"\n[[channel]]\nref = \"01:IDE00002\"\n[[channel]]\nref = \"01:IDE00003\"\n{}",
+				values_page(&["01:IDE00001", "01:IDE00002", "01:IDE00003"])
+			);
+			let plan = build(
+				&parse_input(&text).unwrap(),
+				&store,
+				&extracted,
+				&[identity(ENGINE, "PART1", "EV_Test")],
+				None,
+				Language::Ru,
+			)
+			.unwrap()
+			.plan;
+			(plan.language.clone(), plan.channels.iter().map(|c| c.label.clone()).collect::<Vec<_>>())
+		};
+		assert_eq!(
+			built("language = \"en\"\n"),
+			(
+				"en".to_string(),
+				vec![
+					"Coolant".to_string(),
+					// Not the Russian cell: a column the glossary leaves blank falls through to the
+					// project's wording, never to another language's.
+					"Two".to_string(),
+					"Three, as the label files say".to_string()
+				]
+			)
+		);
+		assert_eq!(
+			built(""),
+			(
+				"ru".to_string(),
+				vec!["ОЖ".to_string(), "Масло".to_string(), "Three, as the label files say".to_string()]
+			),
+			"no `language`: the settings' language, for the labels and the board alike"
+		);
+		assert_eq!(extracted.language(), Language::Ru, "the caller's project is left as it was");
+	}
+
+	/// A setpoint with no `[[channel]]` of its own is read with its channel and never offered as
+	/// a cell (`todo/dash/18`, owner 2026-09-27): no page, alarm or stopwatch may name it, in
+	/// either spelling.
+	#[test]
+	fn a_setpoint_without_a_channel_of_its_own_is_never_a_cell() {
+		let paired = "[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 50\n";
+		for spelled in ["01:IDE00190", "01:2029"] {
+			let why = build_with_setpoint(&format!("{paired}{}", values_page_titled("B", &[spelled])))
+				.unwrap_err()
+				.to_string();
+			assert_eq!(
+				why,
+				format!("page #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+			let why = build_with_setpoint(&format!(
+				"{paired}[[alarm]]\nchannels = [\"{spelled}\"]\npage = \"A\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n"
+			))
+			.unwrap_err()
+			.to_string();
+			assert_eq!(
+				why,
+				format!("alarm #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+			let why = build_with_setpoint(&format!(
+				"{paired}[stopwatch]\nspeed = \"{spelled}\"\nkm_h_per_unit = 0.0\nmarks = [60]\n"
+			))
+			.unwrap_err()
+			.to_string();
+			assert_eq!(
+				why,
+				format!("[stopwatch] speed {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+		}
+		// Declared as a `[[channel]]` too, it is a channel like any other.
+		let declared = format!("{paired}[[channel]]\nref = \"01:IDE00190\"\nhz = 50\n");
+		let built = build_with_setpoint(&format!(
+			"{declared}{}[[alarm]]\nchannels = [\"01:IDE00190\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n[stopwatch]\nspeed = \"01:IDE00190\"\nkm_h_per_unit = 0.0\nmarks = [60]\n",
+			values_page_titled("B", &["01:IDE00190"])
+		))
+		.unwrap();
+		assert_eq!(built.plan.alarms[0].channels, vec![1]);
+		assert_eq!(built.plan.stopwatch.map(|s| s.speed), Some(1));
 	}
 
 	/// The board draws a chart in `f32`: a scale apart in the file and one value there draws no

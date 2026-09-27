@@ -33,7 +33,8 @@ pub struct Plan {
 	/// asked of another answers plausibly and wrongly; `05` refuses to poll on a
 	/// mismatch.
 	pub vin: &'static str,
-	/// `"en"` or `"ru"` — the language every [`Channel::label`] is already in.
+	/// `"en"` or `"ru"` — the board's own words, and the language every [`Channel::label`] was
+	/// looked up in: `dash.toml`'s `language`, else `config.toml`'s.
 	pub language: &'static str,
 	/// The control units the plan reads, in the order they are polled.
 	pub units: &'static [Unit],
@@ -246,7 +247,9 @@ pub struct Channel {
 	pub decimals: u8,
 	/// `"°C"`, `"bar"` — or empty for a count.
 	pub unit_text: &'static str,
-	/// In [`Plan::language`], ten characters at most for a four-column page.
+	/// Ten characters at most for a four-column page. The owner's wording — `dash.toml`'s
+	/// `label`, or the glossary's [`Plan::language`] column — else the project's, in whatever
+	/// language the project wrote it.
 	pub label: &'static str,
 	/// Whether a drive on a car established this scaling, as opposed to a
 	/// catalog declaring it. Carried so the device can say which is which;

@@ -42,7 +42,7 @@ Octavia III). Take yours from your car: see [How to find names for your car](#ho
 
 ```toml
 vin = "XW8AD4NE9JH008917"
-language = "ru"                    # the board's own words; labels come from `label` or names.csv
+language = "ru"                    # labels (names.csv's ru column) and the board's own words
 # survey = "/Users/me/surveys/octavia.jsonl"   # only to use a survey other than the car's own
 
 [[channel]]
@@ -132,13 +132,12 @@ alarm, for the lever and for the stopwatch.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `vin` | string | yes | — | The car. Must be the VIN the build is for (case does not matter), or the build stops. |
-| `language` | `"en"` or `"ru"`, any case | no | `language` in `~/.vagcan/config.toml`, else `"en"` | The words the board writes itself: the stopwatch page. It does not change labels. |
+| `language` | `"en"` or `"ru"`, any case | no | `language` in `~/.vagcan/config.toml`, else `"en"` | The labels' language, and the words the board writes itself (the stopwatch page). |
 | `survey` | string, a file path | no | `~/.vagcan/cars/<VIN>/survey.jsonl` | The survey to resolve against. Give an absolute path: `~` is not expanded. |
 
 - At least one `[[channel]]` and one `[[page]]` are required.
-- A label comes from the channel's `label`. Without one, from `~/.vagcan/names.csv` in the
-  language `~/.vagcan/config.toml` sets, then from the project's wording. `language` here has no
-  part in it.
+- A label comes from the channel's `label`. Without one, from `~/.vagcan/names.csv` in
+  `language`, then from the project's wording.
 
 ### `[[channel]]`
 
@@ -147,7 +146,7 @@ One per value the board reads.
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `ref` | string: a channel | yes | — | Which unit, which row. See [Naming a channel](#naming-a-channel). |
-| `label` | string | no | `names.csv`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
+| `label` | string | no | `names.csv` in `language`, then the project's wording | The name on the panel. Ten characters fit a page of four cells; longer collides with the next cell. |
 | `decimals` | integer, 0 to 3 | no | from the scaling: 0 for a step of 1 or more, one place per decade under 1, at most 3 | Places after the point. |
 | `hz` | number, above 0, at most 100 | no | 2 | Readings a second while a page showing it is up. |
 | `setpoint` | string: a channel on the same unit | no | none | What the unit asked for. The panel draws the difference under the number; a `drift` alarm watches it. |
@@ -162,6 +161,8 @@ One per value the board reads.
 - Same unit as the channel: both are read in one request, so the two numbers are from the same
   moment.
 - It needs no `[[channel]]` of its own. The build adds it, read at the channel's `hz`.
+- Without a `[[channel]]` of its own it is never shown: no page, alarm or stopwatch may name it.
+  Declare it under `[[channel]]` to show it.
 - If it has a `[[channel]]` of its own, that one's `hz` must equal the channel's.
 - Same unit of measure as the channel.
 - It cannot be the channel itself, and cannot have a `setpoint` of its own.
@@ -451,6 +452,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `page #n: min A and max B are further apart than the board's 32-bit float holds` | Narrow the scale. |
 | `page #n: X already has a chart page; one range per channel` | Keep one chart of it. |
 | `page #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `page #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 
 **Alarms**
 
@@ -459,6 +461,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `N [[alarm]] rules, and the board holds at most 4` | Remove rules. |
 | `alarm #n has no channels list` / `watches no channels` | Add `channels`. |
 | `alarm #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `alarm #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 | `alarm #n: kind "x" is not "threshold" or "drift"` | Lowercase `threshold` or `drift`. |
 | `alarm #n: direction "x" is not "below" or "above"` | Lowercase `below` or `above`. |
 | `alarm #n needs <key>, a finite number` | Add it, a number that fits a 32-bit float. |
@@ -507,6 +510,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `[stopwatch] mark N is listed twice` | Each once. |
 | `[stopwatch] has N marks, and the page holds 1 to 3` | 1 to 3 marks. |
 | `[stopwatch] speed X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `[stopwatch] speed X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`, with its `hz`. |
 | `[stopwatch] speed X: its scaling has an offset` | Pick a speed row whose zero is a standstill. |
 | `[stopwatch] speed X: its scaling's factor F is not above zero` | Pick another speed row. |
 | `[stopwatch] speed X is read every P ms (hz = H)` | Give its `[[channel]]` `hz = 50`. |

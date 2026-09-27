@@ -38,17 +38,25 @@ pub fn path() -> anyhow::Result<PathBuf> {
 	Ok(crate::datadir::vagcan_dir()?.join("names.csv"))
 }
 
-/// The owner's names in one language, or nothing at all.
+/// The owner's names in every language this build has a column for, or nothing at all.
+///
+/// Every column rather than the one `config.toml` names, because one reader asks for
+/// another: a dash plan is labelled in its own `language` (`crate::dash::build`).
 ///
 /// A missing file is the ordinary state — most people never write one — and a
 /// file that will not parse costs the lines that will not parse and nothing
 /// else. Neither is an error: this is wording, and no run should end over it.
-pub fn load(language: Language) -> BTreeMap<String, String> {
+pub fn load() -> BTreeMap<Language, BTreeMap<String, String>> {
 	let Ok(path) = path() else { return BTreeMap::new() };
 	let Ok(text) = std::fs::read_to_string(&path) else {
 		return BTreeMap::new();
 	};
-	parse(&text, language)
+	parse_all(&text)
+}
+
+/// [`parse`], for every language this build has a column for.
+pub fn parse_all(text: &str) -> BTreeMap<Language, BTreeMap<String, String>> {
+	HEADINGS.iter().map(|&(_, language)| (language, parse(text, language))).collect()
 }
 
 /// Read a glossary's text, taking one language's column.

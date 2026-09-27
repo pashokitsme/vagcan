@@ -31,6 +31,8 @@ use vag_data_labels::catalog::{MeasurementDef, ReadId};
 use vag_data_labels::label_files::{OdxMatch, odx_match};
 use vag_data_labels::measure::RawForm;
 
+use crate::config::Language;
+
 /// One project's extracted channels, ready to be asked about a control unit.
 ///
 /// Holds the variant names rather than the channels: a project has hundreds of
@@ -43,7 +45,7 @@ use vag_data_labels::measure::RawForm;
 /// `.archive/research/labels/odis-crib.md` §3 rests on — so a channel's wording is a
 /// lookup through an id the row itself carries, never a table of names in this
 /// source.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Extracted {
 	cache: PathBuf,
 	/// Which project this came out of, for a sentence that has to name it.
@@ -59,15 +61,18 @@ pub struct Extracted {
 	/// none, which is not an error: `watch --catalogs <dir>` has no project at
 	/// all, and a project set up before names were recovered has no file.
 	names: BTreeMap<String, String>,
-	/// text id → what **this machine's owner** calls it, in the language
-	/// `config.toml` names — see [`crate::glossary`].
+	/// text id → what **this machine's owner** calls it, one map per language
+	/// the glossary has a column for — see [`crate::glossary`].
 	///
 	/// It outranks everything, because it is the only wording written by
 	/// somebody who has to read it at an open driver's door. It is also global
 	/// rather than per project: a text id is VW's key for a piece of text, not
 	/// a fact about a platform, so a translation written once holds for every
 	/// car afterwards.
-	mine: BTreeMap<String, String>,
+	mine: BTreeMap<Language, BTreeMap<String, String>>,
+	/// Which of `mine`'s columns [`Self::name_of`] reads: the one `config.toml`
+	/// names, unless a reader asks for another ([`Self::in_language`]).
+	language: Language,
 }
 
 /// One channel a unit offers, with everything known about how to name it.
@@ -138,7 +143,8 @@ pub fn open(project: &crate::project::Project) -> Extracted {
 		// Read for every project, whatever its sources: this file is the
 		// owner's, not a vendor's, and the id it is keyed by is VW's rather than
 		// this platform's.
-		mine: crate::glossary::load(crate::config::language(&crate::config::load())),
+		mine: crate::glossary::load(),
+		language: crate::config::language(&crate::config::load()),
 	}
 }
 
@@ -168,6 +174,7 @@ impl Extracted {
 			variants: Vec::new(),
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),
+			language: Language::default(),
 		}
 	}
 
@@ -184,7 +191,27 @@ impl Extracted {
 			project: Some("TEST".to_string()),
 			names,
 			mine: BTreeMap::new(),
+			language: Language::default(),
 		}
+	}
+
+	/// The same, with an owner's glossary: `csv` is a `names.csv`'s text.
+	#[cfg(any(test, feature = "test-util"))]
+	pub fn with_glossary(mut self, csv: &str) -> Extracted {
+		self.mine = crate::glossary::parse_all(csv);
+		self
+	}
+
+	/// The language the owner's glossary is read in.
+	pub fn language(&self) -> Language {
+		self.language
+	}
+
+	/// The same project, reading the owner's glossary in `language` — for a reader whose
+	/// wording is not `config.toml`'s: a dash plan's labels are in the plan's language.
+	pub fn in_language(mut self, language: Language) -> Extracted {
+		self.language = language;
+		self
 	}
 
 	/// What the label files call a text id, when this project has recovered it.
@@ -200,7 +227,8 @@ impl Extracted {
 		// time instead of all at once.
 		self
 			.mine
-			.get(id)
+			.get(&self.language)
+			.and_then(|mine| mine.get(id))
 			.or_else(|| self.names.get(id))
 			.map(String::as_str)
 			.filter(|name| !name.trim().is_empty())
@@ -490,6 +518,7 @@ mod tests {
 			names: names.iter().map(|(id, text)| (id.to_string(), text.to_string())).collect(),
 			// Never the owner's real one: a test must not read `~/.vagcan`.
 			mine: BTreeMap::new(),
+			language: Language::default(),
 		}
 	}
 
@@ -602,12 +631,14 @@ mod tests {
 		// falls straight through — which is what makes the file worth writing
 		// one line at a time.
 		let here = tempfile::tempdir().unwrap();
-		let mut x = named_cache_with(
+		let x = named_cache_with(
 			here.path(),
 			&[("EV_Test_001", vec![reading(0x2029, "Ladedruck", 0, 16, true)])],
 			&[("IDE00022", "Ladedruck-Ist"), ("MAS18568", "Oil temp")],
 		);
-		x.mine = crate::glossary::parse("text_id,en,ru\nIDE00022,Boost pressure,Давление наддува\n", crate::config::Language::Ru);
+		let x = x
+			.with_glossary("text_id,en,ru\nIDE00022,Boost pressure,Давление наддува\n")
+			.in_language(Language::Ru);
 
 		assert_eq!(x.name_of(Some("IDE00022")), Some("Давление наддува"), "the owner's line wins");
 		assert_eq!(
@@ -942,6 +973,7 @@ mod tests {
 			variants: Vec::new(),
 			names: BTreeMap::new(),
 			mine: BTreeMap::new(),
+			language: Language::default(),
 		};
 		assert!(x.is_empty());
 		assert!(x.for_unit(Some("EV_TCMDQ200021"), Some("001")).is_empty());
