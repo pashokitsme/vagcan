@@ -102,6 +102,7 @@ use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
+use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
 use vag_dash_fw::faults::{self, Count, Found, Line as FaultLine, Now};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
@@ -1576,9 +1577,13 @@ const SEND_DEADLINE: Duration = Duration::from_secs(1);
 const BUS_OFF_GAP: Duration = Duration::from_secs(1);
 /// How often the bus task looks at the pages when nothing has said they changed.
 const PAGE_RECHECK: Duration = Duration::from_secs(1);
-/// ISO 14229-1: a negative response, and the NRC that asks for more time.
-const NEGATIVE: u8 = 0x7F;
-const RESPONSE_PENDING: u8 = 0x78;
+/// The waits above, as every exchange's [`Waits`] reads them.
+const TIMEOUTS: Timeouts = Timeouts {
+	answer_ms: RESPONSE_TIMEOUT.as_millis() as u64,
+	suppressed_ms: SUPPRESSED_WAIT.as_millis() as u64,
+	pending_wait_ms: PENDING_WAIT.as_millis(),
+	pending_deadline_ms: PENDING_DEADLINE.as_millis(),
+};
 
 /// What the part-number check has established about one unit.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1653,6 +1658,23 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 	backend
 }
 
+/// How an exchange ended with no answer to hand the planner.
+enum Stop {
+	/// The transport's own error, or silence ([`TransportError::Timeout`]).
+	Transport(TransportError),
+	/// The unit asked for time (`78`) and the exchange's own deadline cut the wait for the rest
+	/// ([`Ended::StillPending`]): [`Answer::StillPending`], a unit that is there.
+	StillPending,
+}
+
+/// One exchange, done: its answer or why there is none, the stale frames swept before it, and
+/// its waits — the late answers to other requests it dropped among them.
+struct Exchanged {
+	result: Result<Vec<u8>, Stop>,
+	swept: usize,
+	waits: Waits,
+}
+
 /// One exchange: sweep, address, send, wait out `7F xx 78`, unwrap.
 ///
 /// The wrappers are stateless, so building them per exchange costs nothing,
@@ -1660,62 +1682,69 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 /// last answer* — a reply that came in past its deadline, a frame from
 /// another tester on the same response id — is thrown away here rather than
 /// taken as this request's answer, which is how every read of a unit ends up
-/// one behind until a request gets nothing back.
+/// one behind until a request gets nothing back. What arrives *during* the exchange and
+/// answers another request is dropped by its waits ([`Waits::heard`]).
 ///
 /// The backend is lent, not given: an exchange given up for adapter mode leaves the
 /// controller with its caller, which quiesces it before dropping it.
 ///
 /// `limit_ms` is the exchange's own deadline, if it has one ([`transact`]).
-async fn exchange(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &[u8], limit_ms: Option<u64>) -> (Result<Vec<u8>, TransportError>, usize) {
+async fn exchange(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &[u8], limit_ms: Option<u64>) -> Exchanged {
 	let swept = backend.drain().await;
 	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
-	let result = transact(&mut link, pdu, limit_ms).await;
-	(result, swept)
+	let mut waits = Waits::new(pdu, TIMEOUTS, limit_ms);
+	let result = transact(&mut link, pdu, limit_ms.is_some(), &mut waits).await;
+	Exchanged { result, swept, waits }
 }
 
 /// One unit's ISO-TP over the lent controller.
 type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
 
-/// Send, wait for the answer, wait out `7F xx 78`.
+/// Send, and wait as `waits` says ([`vag_dash_fw::exchange`]): for the first answer, out a run
+/// of `7F xx 78`, and on past a late answer to another request, which is dropped.
 ///
-/// `limit_ms`, where the exchange has one, ends it that long after the send, the `78`s
-/// included: the fault count's ([`faults::DEADLINE_MS`], owner 2026-09-27), whose units are
-/// not the plan's and whose walk must not hold the panel up for a unit's slow search. Every
-/// wait is cut to what is left of it ([`faults::within`]), the backstop too, and past it the
-/// exchange is no answer. Every other exchange passes `None` and keeps [`RESPONSE_TIMEOUT`]
-/// and [`PENDING_DEADLINE`] as they are.
-async fn transact(link: &mut Link<'_>, pdu: &[u8], limit_ms: Option<u64>) -> Result<Vec<u8>, TransportError> {
+/// An exchange with a deadline of its own (`limited`) — the fault count's,
+/// [`faults::DEADLINE_MS`] from the start, `78`s included (owner, 2026-09-27) — has every wait
+/// cut to it, the backstop too. Every other exchange keeps [`RESPONSE_TIMEOUT`] and
+/// [`PENDING_DEADLINE`] as they are.
+async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Waits) -> Result<Vec<u8>, Stop> {
 	let start = Instant::now();
-	let within = |wait_ms: u64| match limit_ms {
-		None => Ok(wait_ms),
-		Some(limit) => faults::within(limit, start.elapsed().as_millis(), wait_ms).ok_or(TransportError::Timeout),
-	};
+	let held = || start.elapsed().as_millis();
 	// An exchange with a deadline of its own gets no backstop past it.
-	let backstop = if limit_ms.is_some() { Duration::from_ticks(0) } else { SEND_DEADLINE };
-	match with_timeout(Duration::from_millis(within(SEND_DEADLINE.as_millis())?), link.send(pdu)).await {
-		Ok(sent) => sent?,
-		Err(_elapsed) => return Err(TransportError::Timeout),
+	let backstop = if limited { Duration::from_ticks(0) } else { SEND_DEADLINE };
+	let Some(send_ms) = waits.send_wait(SEND_DEADLINE.as_millis()) else {
+		return Err(Stop::Transport(TransportError::Timeout));
+	};
+	match with_timeout(Duration::from_millis(send_ms), link.send(pdu)).await {
+		Ok(sent) => sent.map_err(Stop::Transport)?,
+		Err(_elapsed) => return Err(Stop::Transport(TransportError::Timeout)),
 	}
-	let sid = pdu.first().copied().unwrap_or(0);
-	// A request that suppressed its positive response is answered only by a refusal,
-	// and a refusal comes within P2: waiting the full deadline for silence would hold
-	// the bus for nothing. `answer_of` turns the timeout into `NotExpected`.
-	let first = if expects_no_answer(pdu) { SUPPRESSED_WAIT } else { RESPONSE_TIMEOUT };
-	let first = within(first.as_millis() as u64)?;
-	let mut answer = receive(link, core::time::Duration::from_millis(first), backstop).await?;
-	// The planner takes a `78` that reaches it as a refusal; the shell's job is
-	// that one does not (`schedule` module docs).
-	let pending_since = Instant::now();
-	while matches!(answer.as_slice(), [NEGATIVE, s, RESPONSE_PENDING, ..] if *s == sid) {
-		let left = PENDING_DEADLINE.checked_sub(pending_since.elapsed()).unwrap_or(Duration::MIN);
-		if left == Duration::MIN {
-			return Err(TransportError::Timeout);
+	waits.sent(held());
+	loop {
+		let Some(wait) = waits.next_wait(held()) else {
+			return Err(stopped(waits.ended()));
+		};
+		match receive(link, core::time::Duration::from_millis(wait), backstop).await {
+			Ok(answer) => match waits.heard(&answer, held()) {
+				Heard::Answer => return Ok(answer),
+				// Waited out here: the planner takes a `78` that reaches it as a refusal
+				// (`schedule` module docs).
+				Heard::Pending => {}
+				// A late answer to another request: dropped, and the wait goes on.
+				Heard::Stray => {}
+			},
+			Err(TransportError::Timeout) => return Err(stopped(waits.ended())),
+			Err(e) => return Err(Stop::Transport(e)),
 		}
-		let wait = if left < PENDING_WAIT { left } else { PENDING_WAIT };
-		let wait = within(wait.as_millis())?;
-		answer = receive(link, core::time::Duration::from_millis(wait), backstop).await?;
 	}
-	Ok(answer)
+}
+
+/// How an exchange's waits ended, as [`transact`] says it.
+fn stopped(ended: Ended) -> Stop {
+	match ended {
+		Ended::Silent => Stop::Transport(TransportError::Timeout),
+		Ended::StillPending => Stop::StillPending,
+	}
 }
 
 /// One answer PDU within `timeout`, with a backstop `past` the transport's own deadline for
@@ -1727,13 +1756,15 @@ async fn receive(link: &mut Link<'_>, timeout: core::time::Duration, past: Durat
 
 /// What the planner is told about an exchange of `request`. Silence after a request
 /// that asked for it is [`Answer::NotExpected`], not an absent unit: the panel keeps
-/// reading that unit and nothing is backed off.
-fn answer_of(request: &[u8], result: Result<Vec<u8>, TransportError>) -> Answer {
+/// reading that unit and nothing is backed off. A unit that asked for time when the
+/// exchange's own deadline cut it is [`Answer::StillPending`], not an absent unit either.
+fn answer_of(request: &[u8], result: Result<Vec<u8>, Stop>) -> Answer {
 	match result {
 		Ok(pdu) => Answer::Pdu(pdu),
-		Err(TransportError::Timeout) if expects_no_answer(request) => Answer::NotExpected,
-		Err(TransportError::Timeout) => Answer::NoAnswer,
-		Err(_) => Answer::BusError,
+		Err(Stop::StillPending) => Answer::StillPending,
+		Err(Stop::Transport(TransportError::Timeout)) if expects_no_answer(request) => Answer::NotExpected,
+		Err(Stop::Transport(TransportError::Timeout)) => Answer::NoAnswer,
+		Err(Stop::Transport(_)) => Answer::BusError,
 	}
 }
 
@@ -1745,8 +1776,8 @@ fn answer_of(request: &[u8], result: Result<Vec<u8>, TransportError>) -> Answer 
 /// dashes until somebody pulled the plug. `stop()` hands back the
 /// configuration, mode and all; `start()` clears the error counters and
 /// leaves reset; both keep the async driver and the filter's registers.
-async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, TransportError>, bus_off: &mut bool) -> TwaiBackend<'static> {
-	if let Err(TransportError::Disconnected) = result {
+async fn settle(backend: TwaiBackend<'static>, result: &Result<Vec<u8>, Stop>, bus_off: &mut bool) -> TwaiBackend<'static> {
+	if let Err(Stop::Transport(TransportError::Disconnected)) = result {
 		if !*bus_off {
 			*bus_off = true;
 			note!("can: controller went bus-off — restarting it");
@@ -1847,6 +1878,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 	let mut filter = FilterFollower::new(plan_filter());
 	let mut filter_said = false;
 	let mut swept_said = false;
+	let mut strays_said = false;
 	let mut bus_off = false;
 	let mut pages_seen = Instant::MIN;
 
@@ -1879,7 +1911,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				// adapter the exchange is not polled again, so no frame of it — a flow control
 				// half way through an answer — starts after that.
 				let exchanged = select(adapter_requested(), exchange(&mut backend, out.unit, &out.pdu, limit_ms)).await;
-				let (result, swept) = match exchanged {
+				let done = match exchanged {
 					Either::Second(done) => done,
 					Either::First(()) => {
 						// The exchange is given up. A frame of it may be on the wire: the
@@ -1893,6 +1925,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 					}
 				};
 				let at = ms();
+				let Exchanged { result, swept, waits } = done;
 				if swept > 0 && !swept_said {
 					swept_said = true;
 					note!(
@@ -1900,6 +1933,17 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 						out.unit.request,
 						&out.pdu[..out.pdu.len().min(3)]
 					);
+				}
+				if let Some(stray) = waits.first_stray() {
+					if !strays_said {
+						strays_said = true;
+						note!(
+							"can: dropped {} late answer(s) to an earlier request ({stray:02X?} …) on {:03X} while it answered {:02X?} (said once)",
+							waits.strays(),
+							out.unit.response,
+							&out.pdu[..out.pdu.len().min(3)]
+						);
+					}
 				}
 				backend = settle(backend, &result, &mut bus_off).await;
 				let deliveries = bus.lock(|p| p.borrow_mut().answered(at, out.token, answer_of(&out.pdu, result)));

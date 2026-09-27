@@ -10,7 +10,7 @@ mod faults;
 
 use std::collections::BTreeMap;
 
-use faults::{Count, DEADLINE_MS, Found, Line, Now, START_MS, bus_on, within};
+use faults::{Count, DEADLINE_MS, Found, Line, Now, START_MS, bus_on};
 use vag_dash_render::Faults;
 use vag_uds_client::faultcount::{Failed, MAX_UNITS, UnitTally, Why};
 use vag_uds_client::schedule::{Answer, Budget, Class, Next, Outgoing, Planner, Unit};
@@ -393,18 +393,6 @@ fn a_count_exchange_has_its_own_deadline_and_no_other_exchange_does() {
 	bench.step(true, false);
 	assert_eq!(bench.count.deadline_ms(Some(host)), None);
 	assert_eq!(DEADLINE_MS, 2_000);
-}
-
-#[test]
-fn the_deadline_is_two_seconds_from_the_send_78s_included() {
-	// The first wait is the board's answer timeout, well inside it.
-	assert_eq!(within(DEADLINE_MS, 0, 500), Some(500));
-	// A run of `78`s: P2* is 5 s, cut to what is left.
-	assert_eq!(within(DEADLINE_MS, 600, 5_000), Some(1_400));
-	assert_eq!(within(DEADLINE_MS, 1_999, 5_000), Some(1));
-	// Spent: no answer in 2 s.
-	assert_eq!(within(DEADLINE_MS, 2_000, 5_000), None);
-	assert_eq!(within(DEADLINE_MS, 2_700, 5_000), None);
 }
 
 #[test]

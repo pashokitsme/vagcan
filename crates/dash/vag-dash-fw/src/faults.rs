@@ -15,9 +15,11 @@
 //! * **Through the planner, as the part checks are:** each request is one [`Class::Background`]
 //!   exchange, and one at a time. The panel and a host keep their turns; nothing here owns the
 //!   bus. Two reads only — `22 2A26` once, `19 02 08` a unit — and no session, ever.
-//! * **Its own deadline**, [`DEADLINE_MS`] from the send, `78`s included (owner, 2026-09-27):
-//!   a unit that has not answered by then is not counted. The board's other exchanges keep
-//!   theirs (`PENDING_DEADLINE`, 10 s, in the firmware).
+//! * **Its own deadline**, [`DEADLINE_MS`] from the send, `78`s included (owner, 2026-09-27;
+//!   the waits are [`crate::exchange`]'s): a unit that has not answered by then is not
+//!   counted. One that asked for time (`78`) is still there, and the planner is told so
+//!   (`Answer::StillPending`): its readers miss nothing, and it is not backed off. The board's
+//!   other exchanges keep their deadlines (`PENDING_DEADLINE`, 10 s, in the firmware).
 //! * **Not while the stopwatch is up** (owner, 2026-09-27): no request of the count's starts,
 //!   one waiting in the planner is taken back, and the walk goes on where it stopped once the
 //!   stopwatch closes. One already on the bus runs to its end — at most [`DEADLINE_MS`], longer
@@ -49,14 +51,6 @@ pub const STATE_LONGEST: usize = " faults=".len() + 2 * "4294967295".len() + "/"
 /// least one of them has answered its part check.
 pub fn bus_on(plan_units: usize, answered: usize) -> bool {
 	plan_units == 0 || answered > 0
-}
-
-/// How long the next wait of an exchange may be under a deadline of `limit_ms` from its send,
-/// `held_ms` after it: `wait_ms`, or what is left of the deadline where that is less. `None`
-/// once nothing is left — the exchange is over, with no answer.
-pub fn within(limit_ms: u64, held_ms: u64, wait_ms: u64) -> Option<u64> {
-	let left = limit_ms.checked_sub(held_ms).filter(|left| *left > 0)?;
-	Some(wait_ms.min(left))
 }
 
 /// What the bus task knows at one turn of the count.
