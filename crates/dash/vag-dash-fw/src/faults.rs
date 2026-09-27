@@ -15,7 +15,8 @@
 //! * **Through the planner, as the part checks are:** each request is one [`Class::Background`]
 //!   exchange, and one at a time. The panel and a host keep their turns; nothing here owns the
 //!   bus. Two reads only — `22 2A26` once, `19 02 08` a unit — and no session, ever.
-//! * **Its own deadline**, [`DEADLINE_MS`] from the send, `78`s included (owner, 2026-09-27;
+//! * **Its own deadline**, [`DEADLINE_MS`] from the exchange's start, the send and `78`s
+//!   included (owner, 2026-09-27;
 //!   the waits are [`crate::exchange`]'s): a unit that has not answered by then is not
 //!   counted. One that asked for time (`78`) is still there, and the planner is told so
 //!   (`Answer::Busy`): its readers miss nothing, and it is not backed off. The board's
@@ -33,7 +34,7 @@
 //!   car's answer, and the same request goes out again when the panel is back
 //!   ([`Count::given_up`]).
 //! * **`?` when there is no count** ([`Found::Failed`]): the gateway gave no list, the list
-//!   made a walk longer than [`MAX_UNITS`], or no unit of the walk answered. Before the count
+//!   made a walk longer than [`MAX_UNITS`], or no unit of the walk could be counted. Before the count
 //!   ends: nothing, a count half done being no count.
 //! * **Published** once it ends ([`Count::found`]): the badge ([`Found::badge`]) and `state`'s
 //!   `faults=` ([`Found`]'s `Display`). The count's walk and tally are dropped then.
@@ -48,13 +49,15 @@ use vag_uds_client::schedule::{Answer, Class, Delivery, Planner, ReqId};
 /// The board's clock at which the count may start: ten seconds after boot (owner, 2026-09-26).
 pub const START_MS: u64 = 10_000;
 
-/// How long one exchange of the count's may hold the bus, from its send, `78`s (response
-/// pending) included (owner, 2026-09-27). Past it the unit is not counted.
+/// How long one exchange of the count's may hold the bus, from the exchange's start, the send
+/// included, `78`s (response pending) included (owner, 2026-09-27). Past it the unit is not
+/// counted.
 pub const DEADLINE_MS: u64 = 2_000;
 
-/// The longest of what `state` carries of the count, its leading space included: both counts at
-/// `u32::MAX`. For the firmware's check of the whole line against its buffer.
-pub const STATE_LONGEST: usize = " faults= failing=".len() + 2 * "4294967295".len();
+/// The longest of what `state` carries of the count ([`State`]), its leading space included:
+/// both counts at `u32::MAX`, the units at `u8::MAX`. For the firmware's check of the whole line
+/// against its buffer.
+pub const STATE_LONGEST: usize = " faults=4294967295 failing=4294967295 units=255/255".len();
 
 /// Whether the bus is on as far as the count cares: the plan has no units to wait for, or at
 /// least one of them has answered its part check.
@@ -85,10 +88,17 @@ pub enum Hold {
 /// What the count found, for the panel and `state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Found {
-	/// Stored codes across every unit that answered, and of those the ones failing now.
-	Counted { stored: u32, failing_now: u32 },
+	/// Stored codes across every unit counted, and of those the ones failing now; how many units
+	/// were counted of how many asked — the count is of the units that answered (owner's rule), and
+	/// a partial walk shows on the bench (review round 2). Units at most [`MAX_UNITS`], so a byte.
+	Counted {
+		stored: u32,
+		failing_now: u32,
+		units_counted: u8,
+		units_asked: u8,
+	},
 	/// No count: the gateway gave no list, a list longer than the board may walk, or no unit
-	/// of the walk answered.
+	/// of the walk could be counted.
 	Failed,
 }
 
@@ -97,7 +107,7 @@ impl Found {
 	/// failed.
 	pub fn badge(self) -> Faults {
 		match self {
-			Found::Counted { stored, failing_now } => Faults::Counted {
+			Found::Counted { stored, failing_now, .. } => Faults::Counted {
 				stored,
 				failing_now: failing_now > 0,
 			},
@@ -106,13 +116,23 @@ impl Found {
 	}
 }
 
-/// What `state` says of it: `faults=9 failing=1`, stored and failing now, or `faults=?`. Not
-/// `9/1`, which beside `page=0/3` reads as nine of one (review, 2026-09-27).
-impl fmt::Display for Found {
+/// What `state` says of the count, its leading space included: ` faults=9 failing=1
+/// units=17/18` once counted — not `9/1`, which beside `page=0/3` read as nine of one — ` faults=?`
+/// when there is no count, and ` faults=-` until it ends, so that no key at all means an image
+/// without the count (review rounds 1 and 2, 2026-09-27).
+pub struct State(pub Option<Found>);
+
+impl fmt::Display for State {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		match self {
-			Found::Counted { stored, failing_now } => write!(f, "faults={stored} failing={failing_now}"),
-			Found::Failed => f.write_str("faults=?"),
+		match self.0 {
+			Some(Found::Counted {
+				stored,
+				failing_now,
+				units_counted,
+				units_asked,
+			}) => write!(f, " faults={stored} failing={failing_now} units={units_counted}/{units_asked}"),
+			Some(Found::Failed) => f.write_str(" faults=?"),
+			None => f.write_str(" faults=-"),
 		}
 	}
 }
@@ -128,8 +148,8 @@ pub enum Line<'a> {
 	Resumed,
 	/// The exchange on the bus was given up for adapter mode.
 	GivenUp,
-	/// No unit of the walk answered, of this many asked.
-	NoneAnswered(usize),
+	/// No unit of the walk could be counted, of this many asked.
+	NoneCounted(usize),
 	/// A unit that answered with stored codes.
 	Codes(UnitTally),
 	/// A unit left out, and why.
@@ -147,7 +167,7 @@ pub enum Line<'a> {
 	Counted {
 		stored: u32,
 		failing_now: u32,
-		answered: usize,
+		counted: usize,
 		asked: usize,
 		took_ms: u64,
 		paused_ms: u64,
@@ -183,9 +203,9 @@ impl fmt::Display for Line<'_> {
 		match *self {
 			Line::Started => f.write_str("counting the car's stored codes — the gateway's list first"),
 			Line::Waiting(Hold::Stopwatch) => f.write_str("waiting while the stopwatch is up"),
-			Line::Waiting(Hold::HostTiming) => f.write_str("waiting while a host times a run on the board's timing channel"),
+			Line::Waiting(Hold::HostTiming) => f.write_str("waiting while a host holds the board's timing channel (vagcan measure)"),
 			Line::GivenUp => f.write_str("the board turned adapter — the same request again when the panel is back"),
-			Line::NoneAnswered(asked) => write!(f, "none of {asked} units answered — badge ?"),
+			Line::NoneCounted(asked) => write!(f, "none of {asked} units could be counted — badge ?"),
 			Line::Resumed => f.write_str("counting on where it stopped"),
 			Line::Codes(unit) => write!(f, "{:03X} {} stored, {} failing now", unit.request, unit.stored, unit.failing_now),
 			Line::NotCounted { request, why } => write!(f, "{request:03X} not counted — {}", Because(why)),
@@ -217,14 +237,14 @@ impl fmt::Display for Line<'_> {
 			Line::Counted {
 				stored,
 				failing_now,
-				answered,
+				counted,
 				asked,
 				took_ms,
 				paused_ms,
 			} => {
 				write!(
 					f,
-					"{stored} stored, {failing_now} failing now; {answered} of {asked} units answered in {}.{} s",
+					"{stored} stored, {failing_now} failing now; {counted} of {asked} units counted in {}.{} s",
 					took_ms / 1000,
 					took_ms % 1000 / 100
 				)?;
@@ -295,9 +315,20 @@ impl Count {
 			return;
 		}
 		if self.started_ms.is_none() {
-			if now.ms < START_MS || !now.bus_on || now.hold.is_some() {
+			if now.ms < START_MS || !now.bus_on {
 				return;
 			}
+			// Past 10 s with the bus on, only a stopwatch keeps the start back: said once (review
+			// round 2 — a silent wait read as a count that never began).
+			if let Some(hold) = now.hold {
+				if self.held != Some(hold) {
+					self.held = Some(hold);
+					say(&Line::Waiting(hold));
+				}
+				return;
+			}
+			// A wait before the start is no pause of the count's.
+			self.held = None;
 			self.started_ms = Some(now.ms);
 			say(&Line::Started);
 		}
@@ -428,19 +459,24 @@ impl Count {
 				// Not one unit of the walk answered: no count, not a car with none (review,
 				// 2026-09-27 — owner's answer 4 is there so that nothing looks like "no faults").
 				if tally.units_read() == 0 {
-					say(&Line::NoneAnswered(asked));
+					say(&Line::NoneCounted(asked));
 					Found::Failed
 				} else {
 					let (stored, failing_now) = (tally.stored(), tally.failing_now());
 					say(&Line::Counted {
 						stored,
 						failing_now,
-						answered: tally.units_read(),
+						counted: tally.units_read(),
 						asked,
 						took_ms,
 						paused_ms,
 					});
-					Found::Counted { stored, failing_now }
+					Found::Counted {
+						stored,
+						failing_now,
+						units_counted: tally.units_read().min(usize::from(u8::MAX)) as u8,
+						units_asked: asked.min(usize::from(u8::MAX)) as u8,
+					}
 				}
 			}
 			Outcome::NoList(why) => {

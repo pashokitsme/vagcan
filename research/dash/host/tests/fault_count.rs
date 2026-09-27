@@ -10,7 +10,7 @@ mod faults;
 
 use std::collections::BTreeMap;
 
-use faults::{Count, DEADLINE_MS, Found, Hold, Line, Now, START_MS, bus_on};
+use faults::{Count, DEADLINE_MS, Found, Hold, Line, Now, START_MS, State, bus_on};
 use vag_dash_render::Faults;
 use vag_uds_client::faultcount::{Failed, MAX_UNITS, UnitTally, Why};
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Next, Outgoing, Planner, Unit};
@@ -233,13 +233,28 @@ fn a_plan_with_no_units_starts_at_ten_seconds_and_one_with_units_once_one_answer
 fn the_start_waits_for_the_stopwatch_to_close() {
 	let car = reference_like();
 	let mut bench = Bench::new();
+	// Before 10 s a stopwatch holds nothing back, and says nothing.
+	bench.clock = START_MS - 1;
+	bench.step(true, true);
+	assert!(bench.said.is_empty(), "{:?}", bench.said);
+	// Past it, the hold is what keeps the start back: said once (review round 2).
 	bench.clock = START_MS;
 	bench.step(true, true);
 	assert!(bench.exchange(&car, 5).is_none());
-	assert!(bench.said.is_empty(), "nothing starts under the stopwatch: {:?}", bench.said);
+	bench.clock += 1_000;
+	bench.step(true, true);
+	assert_eq!(bench.said, ["faults: waiting while the stopwatch is up"], "said once, nothing started");
 	bench.clock += 30_000;
 	bench.step(true, false);
 	assert!(bench.exchange(&car, 5).is_some());
+	assert_eq!(
+		bench.said[..2],
+		[
+			"faults: waiting while the stopwatch is up",
+			"faults: counting the car's stored codes — the gateway's list first"
+		],
+		"started, with no \"counting on\" for a count that had not begun"
+	);
 }
 
 #[test]
@@ -276,7 +291,15 @@ fn a_whole_count_through_the_planner_reads_what_vagcan_faults_counts_and_says_ea
 	// Stored = confirmed (bit 3), failing now = confirmed and failing (bit 0): 7E0 two stored, one
 	// of them failing now; 714 one stored (0x2C: bits 2, 3, 5).
 	let found = bench.count.found().expect("counted");
-	assert_eq!(found, Found::Counted { stored: 3, failing_now: 1 });
+	assert_eq!(
+		found,
+		Found::Counted {
+			stored: 3,
+			failing_now: 1,
+			units_counted: 3,
+			units_asked: 5
+		}
+	);
 	assert_eq!(
 		found.badge(),
 		Faults::Counted {
@@ -296,7 +319,7 @@ fn a_whole_count_through_the_planner_reads_what_vagcan_faults_counts_and_says_ea
 			"faults: 70C not counted — asked for time (78), no answer in 2 s".to_string(),
 			"faults: 714 1 stored, 0 failing now".to_string(),
 			format!(
-				"faults: 3 stored, 1 failing now; 3 of 5 units answered in {}.{} s",
+				"faults: 3 stored, 1 failing now; 3 of 5 units counted in {}.{} s",
 				took / 1000,
 				took % 1000 / 100
 			),
@@ -353,7 +376,15 @@ fn the_count_waits_while_the_stopwatch_is_up_and_goes_on_where_it_stopped() {
 		"said once each way"
 	);
 	bench.run(&car, 5);
-	assert_eq!(bench.count.found(), Some(Found::Counted { stored: 1, failing_now: 0 }));
+	assert_eq!(
+		bench.count.found(),
+		Some(Found::Counted {
+			stored: 1,
+			failing_now: 0,
+			units_counted: 1,
+			units_asked: 4
+		})
+	);
 	// The count's time leaves the 4 s it waited out: it is what car check 2 reads.
 	let last = bench.said.last().unwrap();
 	assert!(last.ends_with(", not counting 4.0 s paused"), "{last}");
@@ -505,7 +536,15 @@ fn an_exchange_given_up_for_adapter_mode_is_asked_again_when_the_panel_is_back()
 	let again = bench.exchange(&car, 5).expect("asked again");
 	assert_eq!(again.unit.request, 0x7E0, "the same unit, not the next");
 	bench.run(&car, 5);
-	assert_eq!(bench.count.found(), Some(Found::Counted { stored: 1, failing_now: 0 }));
+	assert_eq!(
+		bench.count.found(),
+		Some(Found::Counted {
+			stored: 1,
+			failing_now: 0,
+			units_counted: 3,
+			units_asked: 3
+		})
+	);
 	assert_eq!(
 		bench
 			.said
@@ -560,7 +599,10 @@ fn nobody_answering_is_a_question_mark_not_no_faults() {
 	bench.run(&car, 5);
 	assert_eq!(bench.count.found(), Some(Found::Failed));
 	assert_eq!(Found::Failed.badge(), Faults::Failed);
-	assert_eq!(bench.said.last().map(String::as_str), Some("faults: none of 4 units answered — badge ?"));
+	assert_eq!(
+		bench.said.last().map(String::as_str),
+		Some("faults: none of 4 units could be counted — badge ?")
+	);
 }
 
 #[test]
@@ -572,7 +614,10 @@ fn the_count_waits_while_a_host_holds_the_boards_timing_channel() {
 	bench.clock = START_MS;
 	bench.step_held(true, Some(Hold::HostTiming));
 	assert!(bench.exchange(&car, 5).is_none(), "no start while a host times a run");
-	assert!(bench.said.is_empty(), "{:?}", bench.said);
+	assert_eq!(
+		bench.said,
+		["faults: waiting while a host holds the board's timing channel (vagcan measure)"]
+	);
 	bench.step_held(true, None);
 	bench.exchange(&car, 5).expect("the gateway");
 	bench.step_held(true, None);
@@ -585,9 +630,9 @@ fn the_count_waits_while_a_host_holds_the_boards_timing_channel() {
 	let next = bench.exchange(&car, 5).expect("going on");
 	assert_eq!(next.unit.request, 0x7E0);
 	assert_eq!(
-		bench.said[1..4],
+		bench.said[2..5],
 		[
-			"faults: waiting while a host times a run on the board's timing channel".to_string(),
+			"faults: waiting while a host holds the board's timing channel (vagcan measure)".to_string(),
 			"faults: waiting while the stopwatch is up".to_string(),
 			"faults: counting on where it stopped".to_string(),
 		]
@@ -710,7 +755,7 @@ fn a_count_of_zero_is_counted_and_draws_nothing() {
 			.said
 			.last()
 			.unwrap()
-			.starts_with("faults: 0 stored, 0 failing now; 4 of 4 units answered in ")
+			.starts_with("faults: 0 stored, 0 failing now; 4 of 4 units counted in ")
 	);
 }
 
@@ -777,33 +822,33 @@ fn what_the_board_says_word_for_word() {
 			Line::Counted {
 				stored: 9,
 				failing_now: 1,
-				answered: 17,
+				counted: 17,
 				asked: 18,
 				took_ms: 1_450,
 				paused_ms: 0,
 			},
-			"faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s",
+			"faults: 9 stored, 1 failing now; 17 of 18 units counted in 1.4 s",
 		),
 		(
 			Line::TooMany(65),
 			"faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?",
 		),
-		(Line::NoneAnswered(18), "faults: none of 18 units answered — badge ?"),
+		(Line::NoneCounted(18), "faults: none of 18 units could be counted — badge ?"),
 		(
 			Line::Counted {
 				stored: 9,
 				failing_now: 1,
-				answered: 17,
+				counted: 17,
 				asked: 18,
 				took_ms: 1_450,
 				paused_ms: 12_340,
 			},
-			"faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s, not counting 12.3 s paused",
+			"faults: 9 stored, 1 failing now; 17 of 18 units counted in 1.4 s, not counting 12.3 s paused",
 		),
 		(Line::Waiting(Hold::Stopwatch), "faults: waiting while the stopwatch is up"),
 		(
 			Line::Waiting(Hold::HostTiming),
-			"faults: waiting while a host times a run on the board's timing channel",
+			"faults: waiting while a host holds the board's timing channel (vagcan measure)",
 		),
 		(Line::Resumed, "faults: counting on where it stopped"),
 		(
@@ -840,16 +885,26 @@ fn what_the_board_says_word_for_word() {
 }
 
 #[test]
-fn state_says_stored_and_failing_now_or_a_question_mark_and_fits_the_line() {
-	// `9/1` beside `page=0/3` read as nine of one (review, 2026-09-27).
-	let counted = Found::Counted { stored: 9, failing_now: 1 };
-	assert_eq!(format!(" {counted}"), " faults=9 failing=1");
-	assert_eq!(format!(" {}", Found::Failed), " faults=?");
+fn state_says_stored_failing_now_and_the_units_counted_or_why_not_and_fits_the_line() {
+	// `9/1` beside `page=0/3` read as nine of one (review, 2026-09-27); the units show how
+	// much of the walk the count is of (review round 2).
+	let counted = Found::Counted {
+		stored: 9,
+		failing_now: 1,
+		units_counted: 17,
+		units_asked: 18,
+	};
+	assert_eq!(State(Some(counted)).to_string(), " faults=9 failing=1 units=17/18");
+	assert_eq!(State(Some(Found::Failed)).to_string(), " faults=?");
+	// Before the count ends: a key present, so its absence means an image without the count.
+	assert_eq!(State(None).to_string(), " faults=-");
 	let widest = Found::Counted {
 		stored: u32::MAX,
 		failing_now: u32::MAX,
+		units_counted: u8::MAX,
+		units_asked: u8::MAX,
 	};
-	assert_eq!(format!(" {widest}").len(), faults::STATE_LONGEST);
+	assert_eq!(State(Some(widest)).to_string().len(), faults::STATE_LONGEST);
 }
 
 #[test]

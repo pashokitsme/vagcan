@@ -33,6 +33,8 @@ struct DashState {
 	faults: Option<String>,
 	/// Of the stored codes, the ones failing now.
 	failing: Option<u32>,
+	/// The units counted of the units asked, as the board says them: `17/18`.
+	units: Option<String>,
 }
 
 impl DashState {
@@ -75,6 +77,7 @@ impl DashState {
 				"cells" => s.cells = Some(value.to_string()),
 				"faults" => s.faults = Some(value.to_string()),
 				"failing" => s.failing = value.parse().ok(),
+				"units" => s.units = Some(value.to_string()),
 				_ => {}
 			}
 		}
@@ -101,15 +104,26 @@ impl DashState {
 		println!("└{}", "─".repeat(WIDTH));
 	}
 
-	/// The board's fault count, for the panel's faults line: stored and failing now, `?` when
-	/// there is no count, or nothing yet — the board counts once, 10 s after it starts, and a
-	/// board from before the count says nothing of it either.
+	/// The board's fault count, for the panel's faults line: stored and failing now and how many
+	/// units they are of, `?` when there is no count, `-` until the board has counted — once, 10 s
+	/// after it starts — and no key at all from an image from before the count.
 	fn faults(&self) -> String {
-		match (self.faults.as_deref(), self.failing) {
-			(Some("?"), _) => "? — no count: the board's USB log says why".to_string(),
-			(Some(stored), Some(failing)) => format!("{stored} stored, {failing} failing now"),
-			(Some(stored), None) => format!("{stored} stored"),
-			(None, _) => "not counted yet".to_string(),
+		let Some(stored) = self.faults.as_deref() else {
+			return "this board's image does not count faults".to_string();
+		};
+		match stored {
+			"?" => "? — no count: the board's USB log says why".to_string(),
+			"-" => "not counted yet".to_string(),
+			stored => {
+				let mut line = format!("{stored} stored");
+				if let Some(failing) = self.failing {
+					line.push_str(&format!(", {failing} failing now"));
+				}
+				if let Some((counted, asked)) = self.units.as_deref().and_then(|u| u.split_once('/')) {
+					line.push_str(&format!(" — {counted} of {asked} units counted"));
+				}
+				line
+			}
 		}
 	}
 
@@ -318,12 +332,18 @@ mod tests {
 	fn the_fault_count_is_said_as_stored_and_failing_now_or_why_there_is_none() {
 		let faults = |line: &str| super::DashState::parse(line).unwrap().faults();
 		assert_eq!(
-			faults("state page=0/2 brightness=128 unsaved=0 run_pending=0 gen=5 mode=panel faults=9 failing=1 kind=values cells=[0]"),
-			"9 stored, 1 failing now"
+			faults("state page=0/2 brightness=128 unsaved=0 run_pending=0 gen=5 mode=panel faults=9 failing=1 units=17/18 kind=values cells=[0]"),
+			"9 stored, 1 failing now — 17 of 18 units counted"
 		);
-		assert_eq!(faults("state page=0/2 mode=panel faults=0 failing=0"), "0 stored, 0 failing now");
+		assert_eq!(
+			faults("state page=0/2 mode=panel faults=0 failing=0 units=4/4"),
+			"0 stored, 0 failing now — 4 of 4 units counted"
+		);
 		assert_eq!(faults("state page=0/2 mode=panel faults=?"), "? — no count: the board's USB log says why");
-		assert_eq!(faults("state page=0/2 mode=panel"), "not counted yet");
+		// The board counts once, 10 s after it starts: until then `-`.
+		assert_eq!(faults("state page=0/2 mode=panel faults=-"), "not counted yet");
+		// No key at all: an image from before the count (review round 2).
+		assert_eq!(faults("state page=0/2 mode=panel"), "this board's image does not count faults");
 	}
 
 	#[test]

@@ -41,7 +41,7 @@
 //! * **The fault count** (`todo/dash/20`): once per boot, ten seconds in and once a plan unit
 //!   has answered, the bus task reads the gateway's list of units and each unit's stored codes
 //!   through the planner, in the background, never while the stopwatch is up, each exchange
-//!   ending 2 s after its send ([`vag_dash_fw::faults`]). The panel draws the count as a
+//!   ending 2 s from its start, the send included ([`vag_dash_fw::faults`]). The panel draws the count as a
 //!   triangle in the bottom-right corner, `?` when it failed; `state` says `faults=`.
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
@@ -1444,8 +1444,8 @@ fn hello_reply() -> Message {
 }
 
 /// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
-/// a `u32` generation, the adapter's mode, the fault count's two `u32`s, a values page of
-/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 197 bytes.
+/// a `u32` generation, the adapter's mode, the fault count's two `u32`s and its units, a values page of
+/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 211 bytes.
 #[cfg(feature = "ble")]
 const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
 	+ " mode=adapter".len()
@@ -1481,10 +1481,9 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
 	// BLE this is how a person sees that the cable made the board an adapter.
 	let _ = write!(out, " mode={}", if adapter_mode() { "adapter" } else { "panel" });
-	// The fault count, once it has ended: `faults=9 failing=1`, or `faults=?` (`todo/dash/20`).
-	if let Some(found) = FAULTS.lock(|faults| faults.get()) {
-		let _ = write!(out, " {found}");
-	}
+	// The fault count: `faults=9 failing=1 units=17/18`, `faults=?`, or `faults=-` until it ends
+	// (`todo/dash/20`).
+	let _ = write!(out, "{}", faults::State(FAULTS.lock(|faults| faults.get())));
 	if let Some(page) = s.config.pages.get(usize::from(s.config.active_page)) {
 		let kind = match page.kind {
 			PageKind::Chart => "chart",
@@ -1906,8 +1905,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 				if let Some(moved) = filter.before(out.unit.response) {
 					backend = refilter(backend, moved, &mut filter_said);
 				}
-				// The fault count's exchanges end 2 s after the send; every other keeps the
-				// board's deadlines.
+				// The fault count's exchanges end 2 s from their start, the send included; every
+				// other keeps the board's deadlines.
 				let limit_ms = bus.lock(|p| panel.count.deadline_ms(p.borrow().flying_raw()));
 				// The mode is polled first, every time the two are woken: once the board is an
 				// adapter the exchange is not polled again, so no frame of it — a flow control
@@ -1944,7 +1943,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 					if !strays_said {
 						strays_said = true;
 						note!(
-							"can: dropped {} late answer(s) to an earlier request ({stray:02X?} …) on {:03X} while it answered {:02X?} (said once)",
+							"can: dropped {} late answer(s) to an earlier request ({stray:02X?} …) on {:03X} while waiting for its answer to {:02X?} (said once)",
 							waits.strays(),
 							out.unit.response,
 							&out.pdu[..out.pdu.len().min(3)]
