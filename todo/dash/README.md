@@ -10,7 +10,7 @@ graphics-stack survey, the first catalog, the dated statuses — is archived ver
 
 ## Rules that stay
 
-**The board resolves nothing; it executes a plan.** `vagcan dev dash build` (or the
+**The board resolves no label data; it executes a plan.** `vagcan dev dash build` (or the
 firmware's `build.rs`) resolves every channel on the laptop — unit address, identifier,
 bit layout, scaling, unit, label in the chosen language — and the firmware links that plan
 in. At run time it sends `0x22`, takes the bits, scales, draws. Why:
@@ -19,6 +19,12 @@ in. At run time it sends `0x22`, takes the bits, scales, draws. Why:
 2. **Nothing to search.** The board needs a few dozen rows, all known before flashing.
 3. **A plan cannot sweep.** The board has no way to ask for an identifier the plan does
    not hold.
+
+One read is protocol, not label data (owner, 2026-09-27, [`20`](20-fault-count.md)): the fault
+count reads the gateway's installation list (`22 2A26`) and asks each unit it names for its
+stored codes (`19 02 08`), once per boot. It is bounded by `MAX_UNITS` (64, the BLE guard's)
+and by VW's block (`0x700..=0x7BF`); a longer list is refused, not walked. It asks no
+identifier of any unit.
 
 **Built for one car, and that is allowed** (owner, 2026-08-20). The plan and the image
 are generated under `~/.vagcan/` and `target/`, never committed. Because the image is for
@@ -59,7 +65,7 @@ drama and a real collapse into a flat line.
 | [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 item 8 open (13 passes since 2026-09-22), §4 is the car |
 | [`18-setpoints-and-drift.md`](18-setpoints-and-drift.md) | a channel's specified value and the drift alarm — merged (PR #4); car pending |
 | [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); needs the car |
-| [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner; phase 1 built |
+| [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when it failed; phases 1 and 2 built on `feat/fault-count`, phase 2 in review; needs the car |
 | [`21-runs-in-flash.md`](21-runs-in-flash.md) | stopwatch runs kept in flash and read back over BLE; saved on LIMIT — recorded 2026-09-27, after dash/19 |
 
 Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.

@@ -43,9 +43,12 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
 - **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
   the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
 - **Fault count on the panel** (`dash/20`; its task file is on `feat/fault-count` only):
-  phase 1 reviewed; `origin/feat/fault-count` has `master` merged through PR #11 (`4ffed87`,
-  2026-09-26, with the E0063 fix), not PR #12. Phase 2 waits for the owner's answers to four
-  design questions (Next, item 2).
+  phase 1 reviewed; `master` through PR #13 merged into the branch (`a90a539`). The owner
+  answered the four design questions on 2026-09-27: the unit list from the gateway at start
+  (`dash/README.md`'s rule amended), `MAX_UNITS` 64 as the BLE guard's, the count's own 2 s
+  deadline and a pause while the stopwatch is up, `?` when the count failed. Phase 2, the
+  firmware, built on the branch the same day, in review: `vag_dash_fw::faults`, host-tested
+  through the board's planner; RAM +244 B static in both builds. Not on the bench or the car.
 - **[`dash/21`](dash/21-runs-in-flash.md) filed 2026-09-27:** runs kept in flash, saved on LIMIT,
   read over BLE; it also covers a finished run the lever's close leaves in RAM.
 - **USB on the car (2026-09-26):** the cable enumerates only when plugged in **before** OBD
@@ -92,14 +95,8 @@ item 8, `dash/18` on a real pull.
    --release --bin dash` builds and flashes through the `espflash` runner in `.cargo/config.toml`
    (it passes the partition table). The image carries the lever and the stopwatch; BOOT no
    longer pages.
-2. **The fault count, phase 2** — `dash/20` on `feat/fault-count`. First the owner's answers:
-   the board decodes the gateway's list at run time and addresses units no plan holds, against
-   "the board resolves nothing" (`dash/README.md`) — keep it and amend the rule, or put the unit
-   list in the plan at build time; `MAX_UNITS = 40` comes from this car alone, the BLE guard
-   allows 64; a unit answering `78` holds the one link up to 10 s, so the count needs its own
-   short deadline and must wait while the stopwatch is up; a badge counted once shows no age,
-   and hidden-at-0 looks like not counted. Then merge `master` (PR #12: the input path and the
-   stopwatch touch the same panel and bus code) into the branch, wire it, review, PR.
+2. **The fault count** — `dash/20` on `feat/fault-count`: phase 2 built with the owner's
+   answers (2026-09-27); review it, then the PR. On the car: its "Car checks".
 3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
