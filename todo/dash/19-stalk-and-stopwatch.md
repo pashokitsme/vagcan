@@ -262,8 +262,12 @@ alarm silencing were gone until a power cycle. The owner chose both behaviours:
 
 - **Cruise taken → the stopwatch closes at once.** Two consecutive reads that both say cruise is
   engaged: the switch in a state other than `switch_off`, or the cruise status in one other than
-  `cruise_off`. Positive evidence, never a missing read; the same two-read confirmation as a
-  press, so one noisy read never ends a run. A run in progress aborts, as when the page is left.
+  `cruise_off`. Positive evidence, never a missing read; the pair is of lever reads, as for a
+  press, so one noisy switch read never ends a run. The cruise status is read at 5 Hz and the
+  lever at 10–20 Hz, so one cruise-status answer that is not off fills both reads of the pair
+  and closes it (`stalk.rs`, `Closer`). Taken as intended: the capture's `203C` has no
+  single-answer excursion (725 answers, shortest run 7). A run in progress aborts, as when the
+  page is left.
 - **The gate closed for lack of data → the stopwatch stays** — stale, unanswered, NRC, a reading
   no state claims, the unit silent — a run included, until the gate has not been seen open for
   over 3 s (`stalk::STALE_CLOSE_MS`): then it closes. A read that shows the gate open starts the
