@@ -543,12 +543,18 @@ fn parse_stopwatch(
 		.ok_or_else(|| Error::Parse("dash.toml: stopwatch must be one [stopwatch] table".to_string()))?;
 	let speed = Reference::parse(&string(table.get("speed"), "[stopwatch] speed")?)?;
 	// Compared as the board holds it, in `f32`: a factor too small for one would reach the
-	// board as the zero that means "not measured".
+	// board as the zero that means "not measured", and one too large as an infinity.
 	let km_h_per_unit = match number(table.get("km_h_per_unit")) {
 		Some(v) if v.is_finite() && (v == 0.0 || (v > 0.0 && (v as f32).is_finite() && (v as f32) > 0.0)) => v,
 		Some(v) if v > 0.0 && (v as f32) == 0.0 => {
 			return Err(Error::Parse(format!(
 				"dash.toml: [stopwatch] km_h_per_unit {v} is too small for the board, which would hold it as 0 — not measured"
+			)));
+		}
+		Some(v) if v > 0.0 && (v as f32).is_infinite() => {
+			return Err(Error::Parse(format!(
+				"dash.toml: [stopwatch] km_h_per_unit {v:e} is too large for the board, which holds it as a 32-bit float (at most {:e})",
+				f32::MAX
 			)));
 		}
 		_ => {
@@ -1496,13 +1502,22 @@ fn resolve_stopwatch(
 			wanted.speed, channel.factor
 		)));
 	}
-	// The launch fit wants `MIN_FIT_SAMPLES` moving samples inside `START_FIT_MS`; read slower
-	// than that, every run crosses its marks and has no time, and only the car would say so.
-	let period_ms = 1000.0 / channel.hz;
-	if period_ms * (MIN_FIT_SAMPLES - 1) as f64 >= START_FIT_MS as f64 {
-		let fastest = 1000.0 * (MIN_FIT_SAMPLES - 1) as f64 / START_FIT_MS as f64;
+	// The launch fit wants `MIN_FIT_SAMPLES` moving samples in its first `START_FIT_MS`, both
+	// ends included, counted from the first moving one: read every `p` ms, that is the samples
+	// at 0, p, 2p, …. The fit alone needs `MIN_FIT_SAMPLES - 1` periods in the window; one
+	// answer late or lost costs a period, so `MIN_FIT_SAMPLES` of them have to fit. Read slower,
+	// one late answer loses the launch, and the run has crossings and no time — which only the
+	// car would show. Checked on the period the board polls at, not on `1000 / hz`: it rounds.
+	let longest_ms = START_FIT_MS / MIN_FIT_SAMPLES as u64;
+	let period_ms = board_period_ms(channel.hz);
+	if u64::from(period_ms) > longest_ms {
+		// The slowest rate the board polls every `longest_ms` or sooner, in tenths of a hertz,
+		// rounded up: its rounding takes `1000 / hz` below `longest_ms + 0.5` to `longest_ms`.
+		let slowest_hz = (10_000.0 / (longest_ms as f64 + 0.5)).ceil() / 10.0;
 		return Err(Error::Stopwatch(format!(
-			"speed {} is read at {} Hz — the launch fit needs {MIN_FIT_SAMPLES} samples in its first {START_FIT_MS} ms, so faster than {fastest} Hz; give its [[channel]] an hz, 50 or more",
+			"speed {} is read every {period_ms} ms (hz = {}) — the launch fit needs {MIN_FIT_SAMPLES} samples in its first \
+			 {START_FIT_MS} ms even when one answer is late, so a reading every {longest_ms} ms or sooner: give its [[channel]] \
+			 an hz of {slowest_hz} or more; 50 is recommended",
 			wanted.speed, channel.hz
 		)));
 	}
@@ -1520,6 +1535,29 @@ fn resolve_stopwatch(
 		km_h_per_unit: wanted.km_h_per_unit,
 		marks: wanted.marks.clone(),
 	})
+}
+
+/// Every how many milliseconds the board reads a channel asked for at `hz`: the board's own
+/// rule (`vag_dash_render::plan::Channel::period_ms`), on the `f32` the plan narrows `hz` to,
+/// so a check on it is a check on what the board does.
+fn board_period_ms(hz: f64) -> u32 {
+	let channel = vag_dash_render::plan::Channel {
+		unit: 0,
+		did: 0,
+		bit_offset: 0,
+		bit_length: 0,
+		signed: false,
+		big_endian: false,
+		factor: 0.0,
+		offset: 0.0,
+		decimals: 0,
+		unit_text: "",
+		label: "",
+		proven: false,
+		hz: hz as f32,
+		setpoint: None,
+	};
+	channel.period_ms()
 }
 
 /// One enumerated field the car's variant declares, found by `pick`, as a plan channel on
@@ -3841,12 +3879,20 @@ mod tests {
 			let why = refused("[60, 100]", marks);
 			assert!(why.contains(says), "{marks}: {why}");
 		}
-		for factor in ["-0.1", "\"fast\"", "1e40"] {
+		for factor in ["-0.1", "\"fast\"", "nan", "-inf"] {
 			let why = refused("0.0", factor);
 			assert!(why.contains("km_h_per_unit must be a number at or above 0"), "{factor}: {why}");
 		}
 		let why = refused("0.0", "1e-50");
 		assert!(why.contains("too small for the board"), "{why}");
+		// A number, and above 0: what is wrong is that the board's `f32` cannot hold it.
+		for factor in ["1e40", "inf"] {
+			let why = refused("0.0", factor);
+			assert!(
+				why.contains(&format!("km_h_per_unit {factor} is too large for the board")),
+				"{factor}: {why}"
+			);
+		}
 		// A scaling that reads forward as zero or backwards; appended `[[channel]]`s, read fast.
 		for (text_id, factor) in [("IDE00012", "-1"), ("IDE00013", "0")] {
 			let watch = WATCH.replacen("IDE00010", text_id, 1);
@@ -3857,9 +3903,41 @@ mod tests {
 		}
 		// A speed read at the default rate: every run would cross its marks with no time.
 		let why = refused("01:IDE00010", "01:IDE00001");
-		assert!(why.contains("is read at 2 Hz") && why.contains("faster than 5 Hz"), "{why}");
+		assert!(
+			why.contains("is read every 500 ms") && why.contains("hz of 7.5 or more; 50 is recommended"),
+			"{why}"
+		);
 		let measured = build_with_lever(&WATCH.replacen("0.0", "0.0271", 1)).unwrap();
 		assert_eq!(measured.plan.stopwatch.unwrap().km_h_per_unit, 0.0271);
+	}
+
+	/// The board reads a channel every `1000 / hz` ms rounded (`Channel::period_ms`), and the
+	/// launch fit wants `MIN_FIT_SAMPLES` moving samples in its first `START_FIT_MS` — with one
+	/// answer late, three periods in 400 ms: every 133 ms or sooner.
+	#[test]
+	fn a_speed_the_board_reads_too_seldom_for_a_launch_fit_with_one_answer_late_is_refused() {
+		let at = |hz: &str| {
+			let another = Extra {
+				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
+			};
+			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
+			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz}\n"), another)
+		};
+		// 5.01 Hz is 199.6 ms, which the board polls as 200: 5 Hz, and two periods fill the
+		// window. 7.49 Hz is 133.5 ms, polled as 134: three periods are 402 ms.
+		for (hz, every) in [("5.01", 200), ("6", 167), ("7.49", 134)] {
+			let why = at(hz).unwrap_err().to_string();
+			assert!(
+				why.starts_with(&format!("[stopwatch] speed 01:IDE00014 is read every {every} ms (hz = {hz})"))
+					&& why.contains("3 samples in its first 400 ms even when one answer is late, so a reading every 133 ms or sooner"),
+				"{hz}: {why}"
+			);
+		}
+		// The rate the message names is one the board polls fast enough.
+		for hz in ["7.5", "8", "50", "100"] {
+			at(hz).unwrap_or_else(|e| panic!("{hz} Hz: {e}"));
+		}
 	}
 
 	#[test]
