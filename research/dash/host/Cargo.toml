@@ -60,3 +60,17 @@ crossterm = "0.28"
 # `dashsim --preview`: the renderer's `DrawTarget` trait, and the PNG the frames are written to.
 embedded-graphics = "0.8"
 png = "0.17"
+
+[dev-dependencies]
+# `tests/settings_schema.rs`: the firmware's settings record, compiled here as it is, at the
+# firmware's own versions of what it is built from — the board cannot be built for the host.
+heapless = { version = "0.8.0", features = ["serde"] }
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+# `tests/input_queue.rs`: the firmware's command queue, compiled here as it is, on the
+# firmware's own `embassy-sync`; its mutex takes a critical section, which on the host is std's.
+embassy-sync = "0.7.2"
+critical-section = { version = "1", features = ["std"] }
+# `examples/stopwatch_parity.rs`: the laptop's stopwatch, run beside the board's on the same
+# samples. Here and not in `vag-cli-measure`, which depends on `vag-cli-core` alone.
+vag-cli-measure = { path = "../../../crates/cli/vag-cli-measure" }

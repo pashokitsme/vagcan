@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 use super::derive::{self, Start, median};
 use super::power::KMH_PER_MS;
-use super::types::{Seconds, States, Track};
+use super::types::{Seconds, States, Track, at_least};
 
 /// How long the raw zero has to hold before the trigger arms.
 ///
@@ -466,7 +466,9 @@ impl Session {
 				if !standing {
 					self.state = State::Idle;
 					self.stopped_since = None;
-				} else if t - since >= ARMING_HOLD_S {
+				} else if at_least(t - since, ARMING_HOLD_S) {
+					// Held for the hold, however `f64` rounded the difference: the board arms at
+					// `now_ms - since_ms >= ARMING_HOLD_MS` in whole milliseconds.
 					self.state = State::Armed;
 					events.push(Event::Armed);
 				}
@@ -782,6 +784,17 @@ mod tests {
 	}
 
 	// ---- arming -------------------------------------------------------
+
+	#[test]
+	fn a_standstill_held_exactly_the_hold_arms_whatever_f64_makes_of_the_difference() {
+		// The board arms at `now_ms - since_ms >= ARMING_HOLD_MS` in integer milliseconds. In
+		// seconds 4.1 - 3.1 is 0.9999999999999996: the same hold, and it did not arm.
+		let mut session = Session::new(vec![(0, 100)], 3.0, 1.0);
+		session.on_sample(3.1, sample(3.1, 0.0));
+		assert_eq!(session.state(), State::Arming { since: 3.1 });
+		let events = session.on_sample(4.1, sample(4.1, 0.0));
+		assert_eq!(session.state(), State::Armed, "{events:?}");
+	}
 
 	#[test]
 	fn arming_is_decided_on_the_raw_integer_and_never_on_the_scaled_float() {

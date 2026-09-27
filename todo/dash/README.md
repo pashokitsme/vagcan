@@ -58,8 +58,9 @@ drama and a real collapse into a flat line.
 | [`15-enclosure.md`](15-enclosure.md) | enclosure hand-off |
 | [`17-bench-ble-usb.md`](17-bench-ble-usb.md) | bench plan for the board over BLE and USB; §2 item 8 open (13 passes since 2026-09-22), §4 is the car |
 | [`18-setpoints-and-drift.md`](18-setpoints-and-drift.md) | a channel's specified value and the drift alarm — merged (PR #4); car pending |
-| [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the cruise lever as buttons, the stopwatch page — approved 2026-09-26, phase 2 on `feat/stalk-stopwatch` |
+| [`19-stalk-and-stopwatch.md`](19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); needs the car |
 | [`20-fault-count.md`](20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner; phase 1 built |
+| [`21-runs-in-flash.md`](21-runs-in-flash.md) | stopwatch runs kept in flash and read back over BLE; saved on LIMIT — recorded 2026-09-27, after dash/19 |
 
 Done: `01`, `02`, `03`, `05`, `10`, `11`, `12`, `16` in `.archive/tasks/done/dash/`.
 Superseded: `07`, `08`, `09` in `.archive/specs/dash/`.

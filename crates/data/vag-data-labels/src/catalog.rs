@@ -359,6 +359,21 @@ impl CatalogStore {
 			.unwrap_or_default()
 	}
 
+	/// The file [`Self::for_unit`] reads its rows from, for a message that has to say which
+	/// file a row came from. `None` when it reads none.
+	pub fn file_for_unit(&self, part_number: Option<&str>, odx_name: Option<&str>) -> Option<std::path::PathBuf> {
+		[part_number, odx_name]
+			.into_iter()
+			.flatten()
+			.find(|key| self.load(key).is_some())
+			.map(|key| self.file(key))
+	}
+
+	/// Where the catalog for `key` lives.
+	fn file(&self, key: &str) -> std::path::PathBuf {
+		self.dir.join(format!("{}.json", Self::normalise(key)))
+	}
+
 	/// Load one catalog by key. `None` when there is no such file or it does
 	/// not parse — a broken catalog must not be silently half-applied.
 	pub fn load(&self, key: &str) -> Option<Vec<MeasurementDef>> {
@@ -366,7 +381,7 @@ impl CatalogStore {
 		if key.is_empty() {
 			return None;
 		}
-		let text = std::fs::read_to_string(self.dir.join(format!("{key}.json"))).ok()?;
+		let text = std::fs::read_to_string(self.file(&key)).ok()?;
 		match MeasurementCatalog::from_json(&text) {
 			Ok(catalog) => Some(catalog.defs),
 			Err(e) => {
@@ -468,6 +483,18 @@ mod tests {
 		assert_eq!(store.for_unit(Some("AAA 111 "), None).len(), 1);
 		// A part this store has never seen gets nothing, not another unit's rows.
 		assert!(store.for_unit(Some("NOSUCHPART"), None).is_empty());
+	}
+
+	#[test]
+	fn the_file_a_units_rows_come_from_is_the_one_for_unit_reads() {
+		let (dir, store) = synthetic_store();
+		assert_eq!(store.file_for_unit(Some("AAA 111 "), None), Some(dir.path().join("AAA111.json")));
+		// The part number first, then the ODX name, as `for_unit` tries them.
+		assert_eq!(
+			store.file_for_unit(Some("NOSUCHPART"), Some("BBB222")),
+			Some(dir.path().join("BBB222.json"))
+		);
+		assert_eq!(store.file_for_unit(Some("NOSUCHPART"), None), None);
 	}
 
 	#[test]

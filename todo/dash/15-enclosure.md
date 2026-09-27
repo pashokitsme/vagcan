@@ -89,7 +89,9 @@ ask; a housing that takes a separate clip later is a fine answer.
   pin 16. The chain in the 12 V lead stays: fuse 0.5 A → SS34 → SMBJ20A to GND → buck IN+.
   Ground from pin 4/5.
 - **The wake button on `GPIO5` is gone**, and so are the rail divider on `GPIO4` and the
-  RS wire to `GPIO3` — the device is simply off when the car is. No button hole for them.
+  RS wire to `GPIO3` — the device is simply off when the car is. No button hole for them. Since
+  2026-09-27 the three pins take `[[button]]`s (`19`, "Input backends"): a button from the pin
+  to GND pages the panel. Whether the owner wants any on the housing, and where — ask.
 - **Unchanged:** CAN module TX input ← `GPIO6`, RX output → `GPIO1`, 3V3 and GND from the
   buck's rail; CAN-H → OBD 6, CAN-L → OBD 14 as a twisted pair. OLED: CS `GPIO21`,
   RES `GPIO20`, SCLK `GPIO10`, SDIN `GPIO7`, D/C `GPIO0`, VDD 3V3, VSS GND.
@@ -98,8 +100,9 @@ ask; a housing that takes a separate clip later is a fine answer.
 - **USB-C must stay reachable** with the housing closed. It is how the board is flashed,
   and it is now a product feature: plugged into a laptop, the board becomes a CAN adapter
   (`slcan` image, mode 2 of `14`). A plug body is ~12 × 7 mm.
-- **BOOT (`GPIO9`)** is the bench's only button; the car pages the display with the cruise
-  lever (`14` §5). A pin-hole to reach BOOT is nice to have, not required.
+- **BOOT (`GPIO9`) and RESET are technical** (owner, 2026-09-27): flashing and reset, never
+  paging. The panel is paged by the cruise lever or by `[[button]]`s on GPIO 3–5 (`19`). A
+  pin-hole to reach BOOT is nice to have for a wedged board, not required.
 
 ## 4. The brief
 

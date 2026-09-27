@@ -1,12 +1,17 @@
-//! One button, and what a press of it is.
+//! A button, and what a press of it is: debounce, the long press, and the gate that makes
+//! one press one press.
 //!
-//! The device has a single button because configuration moved to BLE, so the
-//! button carries exactly two gestures and one of them is modal:
+//! One machine per button: each `[[button]]` on a pin has its own
+//! ([`PinButton`](crate::control::PinButton), which takes either gesture as its one
+//! action), and the board keeps one more, level-less, as the gate for `dashsim`'s presses.
+//! What a press then asks for is [`control`](crate::control)'s business, not this one's:
 //!
-//! | gesture | normally | while an alarm is showing |
+//! | gesture | a `[[button]]` | `dashsim` |
 //! |---|---|---|
-//! | short press | next page | silence this episode |
-//! | held 3 s | nothing (it opened BLE until BLE became always on, 2026-09-14) | same |
+//! | short press | its action | next page |
+//! | held 3 s | its action, once | nothing |
+//!
+//! The board's own BOOT button is not one (owner, 2026-09-27): it pages nothing.
 //!
 //! Nothing here touches hardware. It is a state machine over a clock and a
 //! level, and it lives in this crate for the same reason [`alarm`](crate::alarm)

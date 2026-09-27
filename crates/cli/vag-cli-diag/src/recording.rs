@@ -104,8 +104,9 @@ pub enum Tool {
 		/// Build input to read instead of `~/.vagcan/dash/<VIN>/dash.toml`.
 		#[arg(long, value_name = "FILE")]
 		input: Option<PathBuf>,
-		/// A short press of the board's button at this time of the recording, in
-		/// seconds of its `t_s`. Repeat for more presses.
+		/// A press at this time of the recording, in seconds of its `t_s`, as
+		/// `dashsim`'s press on the board: it silences an alarm on the screen, or
+		/// turns to the next page. Repeat for more presses.
 		#[arg(long = "press", value_name = "SECONDS", value_parser = seconds)]
 		presses: Vec<f64>,
 		/// Playback speed in a terminal, from 0.01 to 100. 2 is twice as fast as it

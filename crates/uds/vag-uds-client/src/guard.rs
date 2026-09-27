@@ -212,9 +212,12 @@ pub enum Refusal {
 	TooManySubscriptions,
 	/// [`MAX_TIMING_SUBSCRIPTIONS`] timing subscriptions are already live.
 	TooManyTimingSubscriptions,
-	/// Another connection holds the board's one timing channel. Decided by the board's
-	/// session over the planner every connection shares (`remote::Session`), not by a
-	/// guard, which sees one connection.
+	/// The board's one timing channel is held: by the board's own stopwatch while a run is
+	/// armed or running (its speed is a timing subscription), or by another connection.
+	/// Decided by the board's session over the planner every connection shares
+	/// (`remote::Session`), not by a guard, which sees one connection. The planner does not say
+	/// whose a subscription is, so the text names both: "another client" alone sent a person
+	/// looking for a second host when the board's own run held it (`todo/dash/19`).
 	TimingChannelHeld,
 	/// This connection's timing channel was preempted by the cable host — the owner comes
 	/// first (`remote::Session`, S-F3). Only a radio host is ever told this.
@@ -247,7 +250,7 @@ impl Refusal {
 			Refusal::PeriodTooShort => "subscription period too short",
 			Refusal::TooManySubscriptions => "too many subscriptions",
 			Refusal::TooManyTimingSubscriptions => "too many timing subscriptions",
-			Refusal::TimingChannelHeld => "another client holds the board's timing channel",
+			Refusal::TimingChannelHeld => "the board's timing channel is held by its own stopwatch or another client",
 			Refusal::TimingChannelTaken => "the board's timing channel was taken by the cable host",
 			Refusal::ReadingTooLarge => "reading too large for a subscription: use a one-shot read",
 		}

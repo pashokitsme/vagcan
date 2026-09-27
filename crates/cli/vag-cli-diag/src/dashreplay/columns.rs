@@ -19,7 +19,7 @@
 
 use std::collections::BTreeSet;
 
-use vag_cli_core::dash::{Channel as PlanChannel, Plan};
+use vag_cli_core::dash::{AlarmRule, Channel as PlanChannel, Page, Plan};
 use vag_dash_render::plan::{Channel as DeviceChannel, Plan as DevicePlan};
 
 use super::engine::{Series, address_name, channel_name};
@@ -84,7 +84,8 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 	let mut notes = Vec::new();
 	let mut missing = Vec::new();
 	let mut by_name = Vec::new();
-	for channel in &plan.channels {
+	let unused = unused(plan);
+	for (index, channel) in plan.channels.iter().enumerate() {
 		let exact = (channel.unit, channel.did, Some(channel.bit_offset));
 		let whole = (channel.unit, channel.did, None);
 		let hits: Vec<usize> = (0..columns.len())
@@ -96,6 +97,10 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 			true => Source::Raw(i),
 			false => Source::Converted(i),
 		}));
+		// Nothing the replay runs reads it, so whether the recording has it says nothing.
+		if unused.contains(&index) {
+			continue;
+		}
 		match (sure, hits.first()) {
 			// An address heading says its unit; a name says nothing of one.
 			(Some(i), _) if columns[i].raw && address(&columns[i].name).is_some() => {}
@@ -135,6 +140,48 @@ pub fn match_columns(columns: &[Column], offered: &[Offered], answered: &Answere
 		));
 	}
 	Matched { sources, notes }
+}
+
+/// The plan channels the replay has no use for, by index: the lever's three, which only the
+/// lever reads, and the stopwatch's speed when nothing the replay runs shows it — no page, no
+/// alarm, and no page channel it is the specified value of. Neither the lever nor the stopwatch
+/// is replayed (`super::unreplayed`, said first), so a recording without these channels misses
+/// nothing, and they are named in no note about columns (`todo/dash/19`).
+fn unused(plan: &Plan) -> BTreeSet<usize> {
+	let mut out = BTreeSet::new();
+	if let Some(stalk) = &plan.stalk {
+		out.extend([stalk.rocker, stalk.switch, stalk.cruise].map(usize::from));
+	}
+	if let Some(stopwatch) = &plan.stopwatch
+		&& !replayed(plan, stopwatch.speed)
+	{
+		out.insert(usize::from(stopwatch.speed));
+	}
+	out
+}
+
+/// Whether the replay shows or watches the channel at `index`: a page's cell or chart, an
+/// alarm's channel or specified value, or the specified value of a channel a page shows.
+fn replayed(plan: &Plan, index: u16) -> bool {
+	let on_a_page = |index: u16| {
+		plan.pages.iter().any(|page| match page {
+			Page::Values { cells, .. } => cells.contains(&index),
+			Page::Chart { channel, .. } => *channel == index,
+		})
+	};
+	let watched = plan.alarms.iter().any(|alarm| {
+		alarm.channels.contains(&index)
+			|| match &alarm.rule {
+				AlarmRule::Threshold { .. } => false,
+				AlarmRule::Drift { specified, .. } => specified.contains(&index),
+			}
+	});
+	let explains = plan
+		.channels
+		.iter()
+		.enumerate()
+		.any(|(i, c)| c.setpoint == Some(index) && on_a_page(i as u16));
+	on_a_page(index) || watched || explains
 }
 
 /// `01/200A` — how `watch` heads a channel nothing names — as a unit and an identifier.
@@ -331,6 +378,9 @@ mod tests {
 			channels,
 			pages: vec![],
 			alarms: vec![],
+			stalk: None,
+			stopwatch: None,
+			buttons: vec![],
 		}
 	}
 
@@ -443,6 +493,74 @@ mod tests {
 		let answered = crate::plan::answered_from_survey(survey);
 		let matched = match_columns(&recording.columns, &offered, &answered, &plan);
 		assert_eq!(matched.sources, [Some(Source::Converted(0)), None]);
+	}
+
+	/// The replay runs neither the lever nor the stopwatch (`super::unreplayed` says so first),
+	/// so a recording without their channels misses nothing it could have shown: they are not
+	/// listed as missing. A stopwatch speed a page shows is a channel like any other.
+	#[test]
+	fn the_lever_and_a_stopwatch_speed_on_no_page_are_not_said_to_be_missing() {
+		use vag_cli_core::dash::{Page, Stalk, Stopwatch};
+		const COLUMN: u16 = 0x75A;
+		let one = [offered(ENGINE, 0x1001, "One", RawForm::I16Be)];
+		let mut owned = plan(vec![
+			plan_channel(ENGINE, 0x1001, 0, "one"),
+			plan_channel(ENGINE, 0x1002, 0, "speed"),
+			plan_channel(COLUMN, 0x4C21, 16, "rocker"),
+			plan_channel(COLUMN, 0x4C21, 24, "switch"),
+			plan_channel(ENGINE, 0x2001, 0, "cruise"),
+			plan_channel(ENGINE, 0x1009, 0, "absent"),
+		]);
+		owned.pages = vec![Page::Values {
+			title: "T".into(),
+			cells: vec![0, 5],
+		}];
+		owned.stalk = Some(Stalk {
+			rocker: 2,
+			switch: 3,
+			cruise: 4,
+			rocker_states: vec![],
+			switch_states: vec![],
+			cruise_states: vec![],
+			next: 0,
+			previous: 1,
+			measure: 2,
+			switch_off: 0,
+			cruise_off: 0,
+		});
+		owned.stopwatch = Some(Stopwatch {
+			speed: 1,
+			km_h_per_unit: 0.0,
+			marks: vec![60],
+		});
+		let recording = columns("t_s,One\n0.0,1\n");
+		let missing = |owned: &Plan| {
+			let matched = match_columns(&recording.columns, &one, &Answered::default(), owned);
+			matched
+				.notes
+				.iter()
+				.find(|n| n.starts_with("not in the recording"))
+				.cloned()
+				.unwrap_or_default()
+		};
+		assert_eq!(missing(&owned), "not in the recording, so no value and never an alarm: absent (01:1009)");
+		owned.pages = vec![Page::Values {
+			title: "T".into(),
+			cells: vec![0, 1, 5],
+		}];
+		assert_eq!(
+			missing(&owned),
+			"not in the recording, so no value and never an alarm: speed (01:1002), absent (01:1009)"
+		);
+		// Nor is any other note about columns written for them: a heading the cruise status
+		// shares with a gearbox channel is not worth a word when nothing reads either.
+		let shared = [
+			offered(ENGINE, 0x1001, "One", RawForm::I16Be),
+			offered(ENGINE, 0x2001, "Cruise", RawForm::I16Be),
+			offered(GEARBOX, 0x2001, "Cruise", RawForm::I16Be),
+		];
+		let matched = match_columns(&columns("t_s,One,Cruise\n0.0,1,0\n").columns, &shared, &Answered::default(), &owned);
+		assert!(!matched.notes.iter().any(|n| n.contains("cruise")), "{:?}", matched.notes);
 	}
 
 	#[test]

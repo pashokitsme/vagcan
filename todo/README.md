@@ -4,65 +4,59 @@ The short roadmap is in [`README.md`](../README.md#roadmap) and is kept current 
 This file is the detail behind it: state, decisions, open items, and what is dead. Older
 dated status sections moved verbatim to
 [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-14,
-2026-09-15 and 2026-09-22.
+2026-09-15, 2026-09-22, 2026-09-26 and 2026-09-27.
 
-## Where things stand (2026-09-26)
+## Where things stand (2026-09-27)
 
-**Milestone: the board reads the car over BLE, parked, and the panel runs on it.** The
-2026-09-22 status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md)
-on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/captures/`.
+**Milestone: the panel takes input — the cruise lever and buttons on the board's pins page it,
+LIMIT opens a stopwatch on the board — merged, not yet flashed or driven.** The 2026-09-26
+status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on
+2026-09-27. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/captures/`.
 
-- **The car through the board over BLE, 2026-09-26** (old board, rev v1.1, the owner's plan; all
-  13 channels answer at boot): `info`, `faults` (18 units, 9 stored codes, ~50 s), `watch --hz
-  10` (rows 100 ms apart, p90 110 ms) and `units` (15 units) pass; `measure` works, its run
-  stopped for want of road. The panel on the car through `dashsim`: works (owner).
-- **USB on the car:** the cable enumerates only when plugged in **before** OBD power; with the
-  board already powered the Mac sees nothing — likely `VBUS` back-fed from the car's 5 V
-  (`research/dash/can-bring-up.md` §9.16). Order: USB first.
-- **Alarms on the car, 2026-09-26:** knock retard went beyond −2.6° on most full-throttle pulls
-  on 95 RON, so −2.0/−1.5 fires on every pull. The owner picked −4.0/−3.0 pending research; the research
-  (forum and tuner logs of stock EA888, this engine among them; no OEM number) puts 3–4° at WOT
-  in the normal band; **−6.0/−4.5 in the owner's `dash.toml` and plan since 2026-09-26** (the
-  file before: `dash.toml.before-retard-6`). Not on the board yet: flashed only when the owner
-  says. A sustained-retard rule and a part-load gate would fit the sources better than a
-  threshold — not built. **The cell blinks** since 2026-09-26 (PR #7, `cad671b`): 400/400 ms
-  from the takeover while out, steady through the hold.
-- **The cruise lever, probed 2026-09-26** (`dash/14` §6a): with cruise off the rocker moves
-  `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
-  as buttons (+ next, − previous, LIMIT the stopwatch) and the stopwatch page: spec in
-  [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phase 1 (pure logic)
-  reviewed, phase 2 (plan, firmware) in progress on `feat/stalk-stopwatch`. LIMIT is the
-  "neutral ohne Limiterverbau" state despite its ODIS name: the owner pressed LIMIT in the
-  capture, and the state appears only on those presses (0.4 and 0.6 s), never at rest.
-- **PR #6 merged 2026-09-26** (`2855b5c`): `vagcan dev recording dash` replays a `watch --out`
-  recording on the panel in the terminal. It changed `watch --out`: a heading with a comma is
-  quoted, an unconverted answer is `0x…`, a missed read is its time with no value.
-- **`--ble`** is short for `--device ble` on every command that takes `--device` (merged
-  2026-09-26).
-- **PR #9 merged 2026-09-26** (`4486567`): ODIS text tables keep their intervals, so `watch`
-  names a lever state instead of printing hex — `1105`'s readings never equal a table value.
-  **A project cache made before it holds only each state's lower end**: `watch` says to re-run
-  `vagcan setup`; `dash/19`'s plan build refuses such a cache. The owner's `SK37X` cache is one
-  (checked 2026-09-26).
-- **PR #8 merged 2026-09-26** (`c186a44`): `crates/dash/vag-dash-fw/ram-budget.sh`, run by CI,
-  fails when the firmware's statics pass a ceiling or its stack falls under a floor; the
-  host's canvases hold a pixel in a bit.
-- **Fault count on the panel** (`dash/20`, a number and a triangle in a corner, read once
-  ≥10 s after start): phase 1 (`vag_uds_client::faultcount`) reviewed on `feat/fault-count`,
-  not merged; phase 2 wires it into the firmware after `dash/19`.
-- **Fresh-eyes pass, 2026-09-26:** three reviewers over the day's merged work, the two open
-  branches and the plans. Fixed on `fix/sanity-2026-09-26`: the replay took old hex `1E05` as
-  100000 and kept digit-only hex past its field's width; a VW-block request past `0x795` got a
-  response id past `0x7FF`, which no 11-bit frame carries (now no address, and `faults` says
-  so); the blink after the adapter screen started from a plain half. Open questions for the
-  owner are in "Next".
+- **PR #12 merged 2026-09-27** (`6fa2bc8`), [`dash/19`](dash/19-stalk-and-stopwatch.md):
+  - **Inputs:** `[[button]]`s on GPIO 3, 4 and 5, the cruise lever while cruise and its switch
+    both read off, and `dashsim` — one command path (`control::Command`, `Screen::command`, one
+    queue). BOOT and RESET are not inputs (owner).
+  - **The stopwatch on the board:** 0–60/0–100 from `380B` times a per-car factor (`0` until
+    measured: the page says so). LIMIT or a `stopwatch` button opens and closes it; the lever
+    closes it when two reads say cruise is engaged, or after 3 s without the gate seen open. A
+    finished run is written at the next 1 s standstill, before `GO`; empty flash gets the
+    defaults with it.
+  - **`dash.toml`** is read strictly (an unknown or wrong-typed key stops the build, with its
+    line); `language` sets the labels too; a setpoint is never a cell;
+    [`docs/dash/dash-toml.md`](../docs/dash/dash-toml.md) is a key-by-key reference, and says
+    that `[stalk]`'s values are the ODIS project's field names and state texts (the owner asked).
+  - **Review:** four lenses, three rounds, every finding closed or decided by the owner. RAM,
+    empty plan: static 139,320 B with BLE, 129,868 B without — +456/+464 B against 0c69cd7.
+  - **Board and laptop time a run alike:** `vag-cli-measure` now counts a sample exactly at a
+    window's end, as the board does; over 7,200 synthetic runs they agree to about 1.6 µs
+    (`research/dash/host` example `stopwatch_parity`).
+- **PRs #10 and #11 merged 2026-09-26:** the fresh-eyes fixes (the replay's old-hex guards, no
+  address for a VW-block request whose response is past `0x7FF`, one copy of that rule) and the
+  2026-09-26 cleanup.
+- **The owner's configuration, 2026-09-27:** `vagcan setup` re-run on SK37X — the cache now keeps
+  each state's band. `dash.toml` gains `02:380B` at 50 Hz, `[stalk]` and `[stopwatch]`
+  (`km_h_per_unit = 0`); the file before is `dash.toml.before-stalk-2026-09-27`. The plan builds:
+  17 channels on 3 units, 4 pages, 4 alarms. The lever's bands hold the capture's readings:
+  + 91 in 75–110, − 128 in 111–145, LIMIT 167 in 146–181, rest 205 in 182–221; switch OFF 167 in
+  147–182; the engine's cruise status off at 0.
+- **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
+  the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
+- **Fault count on the panel** (`dash/20`; its task file is on `feat/fault-count` only):
+  phase 1 reviewed; `origin/feat/fault-count` has `master` merged through PR #11 (`4ffed87`,
+  2026-09-26, with the E0063 fix), not PR #12. Phase 2 waits for the owner's answers to four
+  design questions (Next, item 2).
+- **[`dash/21`](dash/21-runs-in-flash.md) filed 2026-09-27:** runs kept in flash, saved on LIMIT,
+  read over BLE; it also covers a finished run the lever's close leaves in RAM.
+- **USB on the car (2026-09-26):** the cable enumerates only when plugged in **before** OBD
+  power (`research/dash/can-bring-up.md` §9.16).
 - **Boards:** unchanged since 2026-09-22 — the old board on 5 V is the working one, the rev v0.4
-  board a spare without BLE. An agent's BLE tools still start from Terminal.app: macOS gives
-  the owner's Bluetooth grant to the Claude app, not to the agent's processes (`dash/17`).
+  board a spare without BLE. An agent's BLE tools start from Terminal.app (`dash/17`).
 
-**Not verified on hardware:** over the cable through the board on the car (`info`, `watch`),
-the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` §2 item 8,
-`dash/18` on a real pull, and all of `dash/19`.
+**Not verified on hardware:** everything in PR #12 (the lever, the pin buttons, the stopwatch,
+the run's flash write), the retard alarm at −6.0 and the blink, over the cable through the board
+on the car, the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` §2
+item 8, `dash/18` on a real pull.
 
 ## Decisions (owner)
 
@@ -86,50 +80,53 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | A recording's cell off the plan's scaling drops the column in the replay; no guessing at old bare hex (2026-09-26) | `dash/04` |
 | The alarm highlight blinks while the value is out, steady in the hold, the cell only (2026-09-26) | `dash/04` |
 | Cruise lever with cruise off: RES/+ next page, SET/− previous, LIMIT the stopwatch; lever and stopwatch page as one feature (2026-09-26) | `dash/19` |
+| Input backends: `[[button]]`s on GPIO 3–5 (one action each, no long press), the lever and `dashsim` in any mix, one command path; BOOT and RESET are technical, not inputs (owner, 2026-09-27) | `dash/19` |
 | Knock retard alarm −6.0/−4.5, from the research (owner, 2026-09-26) | `dash/04` |
 
 ## Next, in order
 
 **Without the car**
 
-1. **`fix/sanity-2026-09-26`** — the fresh-eyes fixes above; a PR for the owner.
-2. **The owner re-runs `vagcan setup <ODIS project>`** — the cache predates PR #9; without it
-   `watch` prints the lever as hex and `dash/19`'s plan build refuses.
-3. **Flash `master` now or with `dash/19`** — the owner's call. `master` carries −6.0/−4.5 and
-   the blink; the board in the car still has the threshold that fires on every pull. Flashing
-   in stages keeps a fault on the car attributable to one feature.
-4. **The lever as buttons and the stopwatch page** — [`dash/19`](dash/19-stalk-and-stopwatch.md),
-   approved 2026-09-26; phase 2 in progress. Built and tested without the car; the speed
-   factor and a run need it.
-5. **The fault count, phase 2** — `dash/20` on `feat/fault-count`, after `dash/19`. Open, for the
-   owner: the board decodes the gateway's list at run time and addresses units no plan holds,
-   against "the board resolves nothing" (`dash/README.md`) — keep it and amend the rule, or put
-   the unit list in the plan at build time; `MAX_UNITS = 40` comes from this car alone, the
-   BLE guard allows 64; a unit answering `78` holds the one link up to 10 s, freezing the
-   panel and the alarms, so the count needs its own short deadline and must wait while the
-   stopwatch is up; a badge counted once shows no age, and hidden-at-0 looks like not counted.
-6. **OLED and enclosure** — `dash/15`; waits for the panel.
+1. **Flash `master`** — the owner. Everything on it is reviewed and merged; the owner's plan
+   builds (above). In `crates/dash/vag-dash-fw`: `VAGCAN_DASH_VIN=XW8AD4NE9JH008917 cargo run
+   --release --bin dash` builds and flashes through the `espflash` runner in `.cargo/config.toml`
+   (it passes the partition table). The image carries the lever and the stopwatch; BOOT no
+   longer pages.
+2. **The fault count, phase 2** — `dash/20` on `feat/fault-count`. First the owner's answers:
+   the board decodes the gateway's list at run time and addresses units no plan holds, against
+   "the board resolves nothing" (`dash/README.md`) — keep it and amend the rule, or put the unit
+   list in the plan at build time; `MAX_UNITS = 40` comes from this car alone, the BLE guard
+   allows 64; a unit answering `78` holds the one link up to 10 s, so the count needs its own
+   short deadline and must wait while the stopwatch is up; a badge counted once shows no age,
+   and hidden-at-0 looks like not counted. Then merge `master` (PR #12: the input path and the
+   stopwatch touch the same panel and bus code) into the branch, wire it, review, PR.
+3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
+   writes; the owner set both aside on 2026-09-27.
+4. **OLED and enclosure** — `dash/15`; waits for the panel.
 
 **With the car**
 
+5. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
+   of all: pressing and releasing + and − never opens the stopwatch or turns the page back (a
+   release from 91 or 128 to 205 crosses the other bands; at 20 Hz two reads are 100 ms). Then
+   paging with cruise off, cruise on closing the stopwatch, the `380B` factor on a steady
+   stretch, a 0–100 beside `vagcan measure --ble` started first, and the run saved before `GO`
+   surviving a power cycle. Pin buttons on the bench first.
+6. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
+   `watch --out` recording with `200A`–`200D` for the replay.
 7. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
    moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels; §2 item 8.
-8. **Alarms on a drive** — `dash/04`: the retard threshold from the research, the misfire
-   window; a `watch --out` recording with `200A`–`200D` for the replay.
-9. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+8. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-10. **`dash/19` on the car** — LIMIT's state, paging with cruise off, the `380B` factor on a
-   steady stretch, a 0–100 run beside `vagcan measure --ble` on `380B` — through the board,
-   never with a second adapter on the port while the board polls.
-11. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
+9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
    ran with the `.rod` fallback beside the project); then freeze-frame layouts
    (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-12. **Questions only the car answers** — `dash/06`.
-13. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+10. **Questions only the car answers** — `dash/06`.
+11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-14. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-15. **`watch` and `measure` across all fifteen units** — measured against the file, not
+13. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -143,7 +140,8 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | [`dash/15-enclosure.md`](dash/15-enclosure.md) | enclosure hand-off |
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
-| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, phase 1 reviewed, phase 2 in progress on `feat/stalk-stopwatch` |
+| [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
+| [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
@@ -168,7 +166,7 @@ dev: survey sniff glossary recording dash vcds
 | `vagcan properties` | gone — it is `units --identify <unit>`, and now carries the moving-car guard |
 
 Every command the skills under `.claude/skills/` name was run against `--help` on
-2026-09-15 and resolves.
+2026-09-27 and resolves.
 
 ## Dead and archived (kept as negative results — do not retry)
 
