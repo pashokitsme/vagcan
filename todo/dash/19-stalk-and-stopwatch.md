@@ -182,12 +182,13 @@ two samples still start over.
   ported): the midpoint of a constant-jerk fit through `√v` over the first 0.4 s of movement and
   a line through the first two moving samples. It needs three moving samples in that 0.4 s, even
   with one answer late: the speed must be read every 133 ms or sooner (7.5 Hz), and the plan
-  build refuses a slower one (at 50 Hz it has 20). Without a fit there is no time,
+  build refuses a slower one (at 50 Hz it has 21, both ends counted). Without a fit there is no time,
   only the crossings — a launch invented from two samples is not a measurement.
 - Each mark is stamped where the speed first rises past it, interpolated between the samples
   either side, at the answer's own time. **A mark crossed before the launch has no time**
   (`Run::time` is `None`): the first moving sample already past a low mark says it was crossed,
-  not when. `vag-cli-measure` likewise looks for a crossing only after the launch.
+  not when. `vag-cli-measure` differs here: it interpolates the pair that straddles the launch and
+  reports a zero or negative time (`stopwatch.rs`, `Run::time`).
 - The page is one values row: the phase — `STOP` / `GO` / `RUN` / `DONE` / `ABORT`, with a
   Russian plan `СТОП` / `ПУСК` / `ЗАМЕР` / `ГОТОВО` / `ПРЕРВАН` — over the speed in km/h, then each
   mark's time — two decimals under 10 s, one under 100. Armed (`GO`), the phase's cell is drawn

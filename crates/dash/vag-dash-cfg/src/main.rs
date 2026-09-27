@@ -103,7 +103,7 @@ impl DashState {
 			None => "?".to_string(),
 		};
 		match self.run_pending {
-			Some(true) => format!("{saved}, and a run is in RAM only — written at a standstill with the stopwatch up, or by 'save'"),
+			Some(true) => format!("{saved}, and a run is in RAM only — 'save' keeps it now"),
 			_ => saved,
 		}
 	}
@@ -277,7 +277,7 @@ mod tests {
 	#[test]
 	fn a_run_only_ram_holds_is_said_beside_what_flash_holds() {
 		let storage = |line: &str| super::DashState::parse(line).unwrap().storage();
-		let pending = "a run is in RAM only — written at a standstill with the stopwatch up, or by 'save'";
+		let pending = "a run is in RAM only — 'save' keeps it now";
 		assert_eq!(
 			storage("state page=0/2 brightness=128 unsaved=0 run_pending=1 gen=5 mode=panel"),
 			format!("saved (generation 5), and {pending}")

@@ -309,6 +309,8 @@ A button on one of the board's free pins. 0 to 3 of them, one per pin. Each does
   pull-up.
 - A press counts when the button is let go. Held 3 s, it counts then. Holding does not repeat.
 - Two buttons may have the same `action`.
+- With a `[stalk]`, the stopwatch stays open only while cruise is off: a `stopwatch` button
+  opens it, and cruise engaged closes it again.
 - A `stopwatch` button with no `[stopwatch]` builds; the output says a press of it only silences
   an alarm.
 - The board's own BOOT and RESET buttons do nothing in the `dash` image. They are for flashing
@@ -371,7 +373,7 @@ Two spellings, both `<unit>:<row>`:
 | `hz` | above 0, at most 100; 2 when absent |
 | `hz` of the stopwatch's `speed` | 7.5 or more; 50 recommended |
 | `decimals` | 0 to 3 |
-| `label` | ten characters on a page of four cells |
+| `label` | ten characters on a page of four cells; nine in the last cell while a host is connected |
 | stopwatch `marks` | 1 to 3, whole km/h from 1 to 65535 |
 | `[[button]]` | 0 to 3, on GPIO 3, 4 and 5, one per pin |
 | chart `min`/`max`, alarm numbers, `km_h_per_unit` | within a 32-bit float |
