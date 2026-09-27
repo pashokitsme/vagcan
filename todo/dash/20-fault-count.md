@@ -3,9 +3,9 @@
 **Subsystem:** dash · **Crates:** `vag-uds-client` (`faultcount`, `gateway`, `address`),
 `vag-dash-render` (the badge), `vag-dash-fw` (wiring) · **Needs the car:** for the checks at the end
 
-**State (2026-09-26):** approved by the owner. Phase 1 on `feat/fault-count`: the count and
-the badge, pure and tested on the laptop. Phase 2, the firmware wiring, starts when the
-controller says.
+**State (2026-09-27):** phase 1 on `feat/fault-count`, reviewed; `master` through PR #13
+merged in (`a90a539`). The owner answered the four design questions (below). Phase 2, the
+firmware wiring, is next.
 
 ## What the owner asked (2026-09-26)
 
@@ -23,6 +23,27 @@ warning icon." Answers to the questions that followed:
   unit has answered**; while none has, the count waits — a board on permanent +12 V with the
   ignition off still shows the badge once the ignition comes on.
 - **Hidden at 0.**
+
+## The owner's answers (2026-09-27)
+
+Asked after the 2026-09-26 review, with the badge's previews (`dashsim --preview`) and a
+mock-up of the states:
+
+1. **The unit list is read from the gateway at start**, as asked on 2026-09-26. `dash/README.md`'s
+   "the board resolves nothing" is amended: the board resolves no *label data*; the gateway's
+   installation list is a protocol read, bounded by `MAX_UNITS` and by VW's block.
+2. **`MAX_UNITS` is 64**, the BLE guard's `guard::MAX_UNITS`: one number on the board for how
+   many units it may touch. A list with every bit set is 150 addressable ids and still refused.
+3. **A count's exchange has its own deadline, 2 s, `78`s included**; past it the unit is not
+   counted (`no answer in 2 s`). The board's other exchanges keep `PENDING_DEADLINE` (10 s).
+   **While the stopwatch is up no count exchange starts**; the count resumes when it closes.
+4. **`?` when the count failed** — the gateway gave no list, or the walk is over `MAX_UNITS`:
+   the triangle with `?` for the number. Before the count and at zero, nothing, as before.
+   The count is not repeated (once per boot, and the board is powered with the ignition).
+
+The badge sits under the rightmost cell's value on every page, the stopwatch's included: in
+the previews it hides no pixel of any page (the values' ink ends at row 46, the badge's ground
+starts at 47), and a two-digit count inverted stands close to a wide time (`18.4`) but clear of it.
 
 ## What is read — the same as `vagcan faults`
 
@@ -143,15 +164,25 @@ local per frame).
 - Laid out for the board's 64 rows, like the icons; on 32 rows with two hosts it would meet the
   second icon (no caller draws either there).
 
-## Phase 2 — the firmware (after the controller's word)
+## Phase 2 — the firmware, with the owner's answers of 2026-09-27
 
 - **Start:** once `ms() ≥ 10 000` **and** at least one plan unit has answered its part check
   (matched or mismatch — a unit that answers is a bus that is on). While none has, the count is
   deferred until one does, however long that takes: a board on permanent +12 V with the ignition
   off shows the badge once the ignition comes on. A plan with no units starts at 10 s. Not in
   adapter mode: the count waits for the panel to come back. Once per boot, no retry.
-- **Refused or listless:** `Outcome::TooMany` and `Outcome::NoList` show no badge and say why
-  on USB, once.
+- **Refused or listless:** `Outcome::TooMany` and `Outcome::NoList` draw the triangle with `?`
+  (answer 4) and say why on USB, once. The render crate's `Faults` gains that state; the badge
+  is laid out as for a one-digit count.
+- **`MAX_UNITS` = 64** (answer 2), `guard::MAX_UNITS` itself if the two can share the constant;
+  the tests' 40/41 become 64/65.
+- **Own deadline** (answer 3): a count's exchange ends 2 s after it was sent, `78`s included
+  (`transact` takes the pending deadline as an argument; everything else keeps 10 s). A unit
+  past it is not counted: `faults: 7E1 not counted — no answer in 2 s`.
+- **Paused while the stopwatch is up** (answer 3): no count exchange starts while the page is on;
+  the walk resumes where it stopped when it closes. An exchange already out when the page opens
+  runs to its end (≤ 2 s), and no run arms while one is out — `Stopwatch::hold` or the same
+  effect — since a 2 s hold is longer than `SILENCE_MS`.
 - **Through the planner, as the part checks are:** each `Step::Ask` is
   `planner.exchange(now, Class::Background, unit, pdu)`; `PanelReads::take` (or a sibling
   beside it) recognises the `Delivery::Raw` by its `ReqId`, feeds `answered`, queues the next.
@@ -165,10 +196,12 @@ local per frame).
   failing now; 17 of 18 units answered in 1.4 s`) or `faults: the gateway gave no list (no
   answer) — no badge`; units skipped for a shared id (`faults: 776 skipped — shares an id with
   a unit walked`); bits past VW's block (`faults: the list set 2 bits past 7BF — not asked`);
-  a refusal (`faults: the list names 41 units, more than 40 — not a car's list, no badge`).
-- **`dashcfg`'s state line:** ` faults=9/1` (stored/failing now) once counted — `dashcfg`
-  ignores keys it does not know, so this is cheap; to check against `UART_MTU` then.
-- Docs: `README.md` (Features, the dash), `ARCHITECTURE.md` (the dash), this file's state.
+  a refusal (`faults: the list names 65 units, more than 64 — not a car's list, badge ?`).
+- **`dashcfg`'s state line:** ` faults=9/1` (stored/failing now) once counted, ` faults=?` when
+  the count failed, nothing before — `dashcfg` ignores keys it does not know, so this is cheap;
+  to check against `UART_MTU` then.
+- Docs: `README.md` (Features, the dash), `ARCHITECTURE.md` (the dash), `dash/README.md`'s
+  rule (answer 1), this file's state.
 
 ## How long it takes
 
