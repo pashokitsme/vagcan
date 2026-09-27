@@ -1562,21 +1562,33 @@ fn state_channel(found: &poll::Channel, label: String) -> Channel {
 /// A state by the name the project gives it, as its place in the field's list. A name the
 /// field gives two states is refused: the board would press on one of them and never on
 /// the other.
+///
+/// Names are compared trimmed on both sides ([`same_name`]), and listed trimmed, as the
+/// owner can type them.
 fn state_index(levels: &[Level], name: &str, key: &str, field: &str) -> Result<u16, Error> {
-	let at = levels.iter().position(|l| l.name() == name).ok_or_else(|| {
-		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name())).collect();
+	let at = levels.iter().position(|l| same_name(l.name(), name)).ok_or_else(|| {
+		let names: Vec<String> = levels.iter().map(|l| format!("{:?}", l.name().trim())).collect();
 		Error::Stalk(format!(
 			"{key}: {name:?} is not a state of {field:?} — its states are {}",
 			names.join(", ")
 		))
 	})?;
-	let count = levels.iter().filter(|l| l.name() == name).count();
+	let count = levels.iter().filter(|l| same_name(l.name(), name)).count();
 	if count > 1 {
 		return Err(Error::Stalk(format!(
 			"{key}: {field:?} has {count} states named {name:?} — which one is the button cannot be told"
 		)));
 	}
 	Ok(at as u16)
+}
+
+/// Whether a name in `dash.toml` is the project's name. Trimmed on both sides: `dash.toml` is
+/// trimmed when it is read, and an ODIS project spells some names with a space at an end
+/// (`"Fahrbereitschaft "`) that nobody can see, so compared as written such a field or state
+/// could never be named. Two names the project tells apart by that space alone are then
+/// one name, which the callers refuse as a name given twice.
+fn same_name(project: &str, owner: &str) -> bool {
+	project.trim() == owner.trim()
 }
 
 /// `[stalk]` against the project and the car: every name the owner wrote is the project's
@@ -1614,11 +1626,18 @@ fn resolve_stalk(
 		return Err(Error::Stalk(format!("read {read}: the car's variant declares no such identifier")));
 	}
 	let field = |key: &str, name: &str| -> Result<(&poll::Channel, &[Level]), Error> {
-		let named: Vec<&&poll::Channel> = in_read.iter().filter(|c| c.def.as_ref().is_some_and(|d| d.name == name)).collect();
+		let named: Vec<&&poll::Channel> = in_read
+			.iter()
+			.filter(|c| c.def.as_ref().is_some_and(|d| same_name(&d.name, name)))
+			.collect();
 		let found = match named.as_slice() {
 			[one] => **one,
 			[] => {
-				let names: Vec<String> = in_read.iter().filter_map(|c| c.def.as_ref()).map(|d| format!("{:?}", d.name)).collect();
+				let names: Vec<String> = in_read
+					.iter()
+					.filter_map(|c| c.def.as_ref())
+					.map(|d| format!("{:?}", d.name.trim()))
+					.collect();
 				return Err(Error::Stalk(format!(
 					"{key}: {read} has no field named {name:?} — its fields are {}",
 					names.join(", ")
@@ -3321,7 +3340,10 @@ mod tests {
 								Level::range(140, 150, "twice"),
 							],
 						),
-					],
+					]
+					.into_iter()
+					.chain(more(STALK_UNIT))
+					.collect(),
 				),
 			],
 			&[],
@@ -3454,6 +3476,86 @@ mod tests {
 		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1).replacen("\"plus\"", "\"twice\"", 1);
 		let why = build_with_lever(&lever).unwrap_err().to_string();
 		assert!(why.contains("has 2 states named \"twice\""), "{why}");
+	}
+
+	/// Rows whose ODIS names carry a space at one end, as nine enumerated fields of one real
+	/// project do: a rocker with a trailing one, a switch with a leading one, states with both,
+	/// and a cruise status whose off state ends in one.
+	fn spaced() -> Extra<'static> {
+		Extra {
+			rows: vec![
+				(
+					STALK_UNIT,
+					state_reading(STALK_DID, "Spaced ", "", 40, 8, ladder(&[" up", "down ", " idle ", "rest"])),
+				),
+				(STALK_UNIT, state_reading(STALK_DID, " Lead", "", 48, 8, ladder(&["off ", " on"]))),
+				(
+					ENGINE,
+					state_reading(
+						0x2003,
+						"Cruise spaced",
+						"IDE00022",
+						0,
+						8,
+						vec![Level::point(0, " off "), Level::point(1, "on")],
+					),
+				),
+			],
+			..Extra::default()
+		}
+	}
+
+	const SPACED: &str = "[stalk]\nread = \"75A:4C21\"\nrocker = \"Spaced \"\nswitch = \"Lead\"\nnext = \"up\"\nprevious = \"down\"\nmeasure = \"idle\"\nswitch_off = \"off\"\ncruise = \"01:2003\"\ncruise_off = \"off\"\n";
+
+	/// `dash.toml` is trimmed when it is read, so a name is compared trimmed on the project's
+	/// side too — or a field the project spells `"Rocker "` could never be named at all.
+	#[test]
+	fn a_name_the_project_spells_with_a_space_at_an_end_is_matched_trimmed() {
+		let built = build_with_lever_and(SPACED, spaced()).unwrap();
+		let stalk = built.plan.stalk.as_ref().expect("a stalk");
+		let (rocker, switch) = (
+			&built.plan.channels[usize::from(stalk.rocker)],
+			&built.plan.channels[usize::from(stalk.switch)],
+		);
+		assert_eq!((rocker.bit_offset, switch.bit_offset), (40, 48));
+		assert_eq!(
+			(stalk.next, stalk.previous, stalk.measure, stalk.switch_off, stalk.cruise_off),
+			(0, 1, 2, 0, 0)
+		);
+		// What the owner is shown to choose from is what they can type: trimmed.
+		let why = build_with_lever_and(&SPACED.replacen("\"Spaced \"", "\"Spice\"", 1), spaced())
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.contains("\"Spaced\"") && why.contains("\"Lead\"") && !why.contains("\"Spaced \""),
+			"{why}"
+		);
+		let why = build_with_lever_and(&SPACED.replacen("\"up\"", "\"upp\"", 1), spaced())
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains("its states are \"up\", \"down\", \"idle\", \"rest\""), "{why}");
+	}
+
+	/// Two names the project tells apart only by a space are one name once trimmed.
+	#[test]
+	fn two_fields_or_two_states_equal_once_trimmed_are_refused() {
+		let twin = Extra {
+			rows: vec![(STALK_UNIT, state_reading(STALK_DID, "Rocker ", "", 40, 8, ladder(&["a", "b"])))],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(LEVER, twin).unwrap_err().to_string();
+		assert!(why.contains("rocker: 75A:4C21 has 2 fields named \"Rocker\""), "{why}");
+		let twin = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(STALK_DID, "Twin", "", 40, 8, ladder(&["plus", "plus ", "minus", "limit"])),
+			)],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(&LEVER.replacen("\"Rocker\"", "\"Twin\"", 1), twin)
+			.unwrap_err()
+			.to_string();
+		assert!(why.contains("next: \"Twin\" has 2 states named \"plus\""), "{why}");
 	}
 
 	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
