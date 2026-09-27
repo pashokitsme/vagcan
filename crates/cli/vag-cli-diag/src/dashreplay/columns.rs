@@ -380,6 +380,7 @@ mod tests {
 			alarms: vec![],
 			stalk: None,
 			stopwatch: None,
+			buttons: vec![],
 		}
 	}
 

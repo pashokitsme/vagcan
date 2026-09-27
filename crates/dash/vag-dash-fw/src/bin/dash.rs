@@ -29,8 +29,9 @@
 //!   cell blinking inverted (steady through the hold after the release), and any press
 //!   silences the episode
 //!   ([`vag_dash_render::screen`]). The adapter screen runs none.
-//! * **Input** (`todo/dash/19`, "Input backends"): the cruise lever and `dashsim`'s presses
-//!   each turn a press into a [`Command`]; every command goes through one queue
+//! * **Input** (`todo/dash/19`, "Input backends"): the plan's `[[button]]`s on GPIO 3, 4 and
+//!   5, the cruise lever and `dashsim`'s presses each turn a press into a [`Command`]; every
+//!   command goes through one queue
 //!   ([`vag_dash_fw::input`]) to one task, `control_task`, which applies it to the screen
 //!   ([`Screen::command`]) and the settings. No input knows what a press does. The board's
 //!   own BOOT and RESET buttons are not inputs (owner, 2026-09-27): `GPIO9` is left alone.
@@ -76,8 +77,9 @@ use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::gpio::{Level, Output, OutputConfig};
-use esp_hal::peripherals::{GPIO1, GPIO6, TWAI0};
+use esp_hal::peripherals::{GPIO1, GPIO3, GPIO4, GPIO5, GPIO6, TWAI0};
 use esp_hal::timer::systimer::SystemTimer;
 #[cfg(feature = "ble")]
 use esp_hal::timer::timg::TimerGroup;
@@ -94,14 +96,14 @@ use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
-use vag_dash_fw::plan::{ALARM_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
+use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
 use vag_dash_fw::saving::{RunWrite, Saving};
 use vag_dash_fw::slcan::{self, Adapter, CommandLine, Commands, Line, Packet, Port};
 use vag_dash_fw::store::{Error as StoreError, Store};
-use vag_dash_fw::ui::{Button, Press, Visibility};
+use vag_dash_fw::ui::{Button, DEBOUNCE_MS, Press, Visibility};
 use vag_dash_fw::usb;
 use vag_dash_render::alarm::{self, ChannelId};
-use vag_dash_render::control::{self, Command};
+use vag_dash_render::control::{self, Command, PinButton};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
@@ -532,6 +534,19 @@ fn send(source: Source, command: Command) {
 	}
 }
 
+/// A `[[button]]` of the plan on its pin: the input, pulled up, and the machine that
+/// debounces it.
+struct PinInput {
+	pin: u8,
+	input: Input<'static>,
+	button: PinButton,
+}
+
+/// The plan's `[[button]]`s, one per entry of `PLAN.buttons`: in `.bss` rather than in the
+/// input task's future, which the shared arena would hold. `None` for one the board could
+/// not give its pin — which the image's build already refuses.
+static PINS: StaticCell<[Option<PinInput>; BUTTON_COUNT]> = StaticCell::new();
+
 /// The plan's alarms and what the glass showed last: polled by the panel every frame,
 /// commanded by `control_task`. The page cursor is not in it — that stays
 /// `Config::active_page`, passed in each time. A **blocking** mutex, held for one call and
@@ -595,6 +610,7 @@ async fn main(spawner: Spawner) {
 	let led = Output::new(peripherals.GPIO8, Level::High, OutputConfig::default());
 	// GPIO9, the SuperMini's BOOT button, is not configured: it is technical, not an input
 	// (owner, 2026-09-27), and a strapping pin the ROM reads at reset.
+	let pins = PINS.init(pin_buttons(peripherals.GPIO3, peripherals.GPIO4, peripherals.GPIO5));
 
 	// Which car this image is for, said once, before anything is asked of the
 	// bus: a plan and a car that disagree is the first thing to look for.
@@ -609,6 +625,9 @@ async fn main(spawner: Spawner) {
 	);
 	for unit in PLAN.units {
 		info!("plan: unit {:03X}/{:03X} part {}", unit.request, unit.response, unit.part_number);
+	}
+	for button in PLAN.buttons {
+		info!("plan: button on GPIO{} → {}", button.pin, button.action.name());
 	}
 	note!(
 		"plan: VIN {} — {} unit(s), {} channel(s)",
@@ -670,7 +689,7 @@ async fn main(spawner: Spawner) {
 	if let Err(e) = spawner.spawn(control_task(settings, screen)) {
 		warn!("SPAWN control FAILED: {e:?}");
 	}
-	if let Err(e) = spawner.spawn(input_task()) {
+	if let Err(e) = spawner.spawn(input_task(pins)) {
 		warn!("SPAWN input FAILED: {e:?}");
 	}
 	if let Err(e) = spawner.spawn(heap_task()) {
@@ -803,23 +822,73 @@ fn say_unreadable(store: &Store) {
 	}
 }
 
-/// Takes `dashsim`'s presses and sends what each asks for to `control_task`.
+/// The plan's `[[button]]`s on their pins, each an input with the pin's pull-up: a button to
+/// GND reads low while it is pressed. A pin no button names is not touched — no pull-up,
+/// nothing. The typed pins, no stolen peripheral: GPIO 3, 4 and 5 are the free ones
+/// (`vag_dash_render::control::BUTTON_PINS`), and `vag_dash_fw::plan` refuses at build time
+/// a plan naming another or one twice, so the last arm and a pin taken twice never happen.
+fn pin_buttons(gpio3: GPIO3<'static>, gpio4: GPIO4<'static>, gpio5: GPIO5<'static>) -> [Option<PinInput>; BUTTON_COUNT] {
+	let (mut gpio3, mut gpio4, mut gpio5) = (Some(gpio3), Some(gpio4), Some(gpio5));
+	let pulled_up = InputConfig::default().with_pull(Pull::Up);
+	core::array::from_fn(|i| {
+		let plan = PLAN.buttons[i];
+		let input = match plan.pin {
+			3 => gpio3.take().map(|pin| Input::new(pin, pulled_up)),
+			4 => gpio4.take().map(|pin| Input::new(pin, pulled_up)),
+			5 => gpio5.take().map(|pin| Input::new(pin, pulled_up)),
+			_ => None,
+		};
+		if input.is_none() {
+			warn!("button on GPIO{}: the board has no input for it — not read", plan.pin);
+		}
+		input.map(|input| PinInput {
+			pin: plan.pin,
+			input,
+			button: PinButton::new(plan.action),
+		})
+	})
+}
+
+/// Polls the plan's `[[button]]`s and takes `dashsim`'s presses, and sends what each press
+/// asks for to `control_task`.
 ///
-/// A short press is [`Command::Next`] ([`control::remote`]); a long press asks for nothing,
-/// and is only said. Both go through a button machine's gate: one press per
-/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS). Taking a remote press at face value is
-/// what turned one held space bar into a dozen page turns.
+/// A pin button's press is its `action` ([`PinButton`]): debounced, one press per
+/// [`PRESS_GAP_MS`](vag_dash_fw::ui::PRESS_GAP_MS), and a hold never repeats. `dashsim`'s
+/// short press is [`Command::Next`] ([`control::remote`]); its long press asks for nothing,
+/// and is only said. Its presses go through a button machine's gate too: taking a remote
+/// press at face value is what turned one held space bar into a dozen page turns.
 #[embassy_executor::task]
-async fn input_task() -> ! {
+async fn input_task(pins: &'static mut [Option<PinInput>; BUTTON_COUNT]) -> ! {
 	let mut gate = Button::new();
 	loop {
-		let press = REMOTE_PRESS.wait().await;
-		let press = gate.remote(press, ms());
-		if press == Some(Press::Long) {
-			note!("dashsim: long press — nothing to do");
-		}
-		if let Some(command) = press.and_then(control::remote) {
-			send(Source::Sim, command);
+		// With no pin to poll only `dashsim` wakes the task. With pins, half the debounce
+		// interval: fast enough that no edge is missed, slow enough to be free.
+		let remote = if BUTTON_COUNT == 0 {
+			Some(REMOTE_PRESS.wait().await)
+		} else {
+			match select(Timer::after(Duration::from_millis(DEBOUNCE_MS / 2)), REMOTE_PRESS.wait()).await {
+				Either::First(()) => None,
+				Either::Second(press) => Some(press),
+			}
+		};
+		let now = ms();
+		match remote {
+			Some(press) => {
+				let press = gate.remote(press, now);
+				if press == Some(Press::Long) {
+					note!("dashsim: long press — nothing to do");
+				}
+				if let Some(command) = press.and_then(control::remote) {
+					send(Source::Sim, command);
+				}
+			}
+			None => {
+				for pin in pins.iter_mut().flatten() {
+					if let Some(command) = pin.button.poll(pin.input.is_low(), now) {
+						send(Source::Pin(pin.pin), command);
+					}
+				}
+			}
 		}
 	}
 }

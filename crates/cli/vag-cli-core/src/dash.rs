@@ -70,6 +70,10 @@
 //! speed = "02:380B"                # a [[channel]], with no offset in its scaling
 //! km_h_per_unit = 0.0              # measured on the car; 0 = not measured, the page says so
 //! marks = [60, 100]                # km/h, at most 3, each once, none zero
+//!
+//! [[button]]                       # optional: a button on a pin, to GND; at most 3
+//! pin = 3                          # 3, 4 or 5 — the board's free pins
+//! action = "next"                  # next | previous | stopwatch
 //! ```
 //!
 //! A unit is spelled the way every other command spells it — `01`, `02`, or a
@@ -101,6 +105,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
+use vag_dash_render::control::{BUTTON_PINS, Command, MAX_BUTTONS, is_button_pin};
 use vag_dash_render::pages::MAX_PAGES;
 use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, START_FIT_MS};
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
@@ -282,6 +287,35 @@ pub struct StopwatchInput {
 	pub marks: Vec<u16>,
 }
 
+/// A `[[button]]`: a button on one of the board's free pins, wired to GND, and the one command
+/// a press of it gives (`todo/dash/19`, "Input backends"). Nothing about it is resolved
+/// against the car, so the input's and the plan's are one type. In `plan.json` its action is
+/// the word `dash.toml` gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Button {
+	/// The GPIO, one of [`BUTTON_PINS`].
+	pub pin: u8,
+	#[serde(with = "action_name")]
+	pub action: Command,
+}
+
+/// A [`Command`] in `plan.json` by its `dash.toml` name ([`Command::name`]) — one vocabulary,
+/// the board's.
+mod action_name {
+	use serde::de::Error as _;
+	use serde::{Deserialize, Deserializer, Serializer};
+	use vag_dash_render::control::Command;
+
+	pub fn serialize<S: Serializer>(command: &Command, to: S) -> Result<S::Ok, S::Error> {
+		to.serialize_str(command.name())
+	}
+
+	pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Command, D::Error> {
+		let name = String::deserialize(from)?;
+		Command::from_name(&name).ok_or_else(|| D::Error::custom(format!("action {name:?} is not next, previous or stopwatch")))
+	}
+}
+
 /// The whole input, parsed and nothing more.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Input {
@@ -294,6 +328,8 @@ pub struct Input {
 	pub alarms: Vec<AlarmInput>,
 	pub stalk: Option<StalkInput>,
 	pub stopwatch: Option<StopwatchInput>,
+	/// In the file's order.
+	pub buttons: Vec<Button>,
 }
 
 /// Parse a build input. Only the shape is checked here; whether the car has
@@ -491,6 +527,10 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		None => None,
 		Some(item) => Some(parse_stopwatch(item, &string, &number)?),
 	};
+	let buttons = match doc.get("button") {
+		None => Vec::new(),
+		Some(item) => parse_buttons(item)?,
+	};
 	Ok(Input {
 		vin,
 		language,
@@ -500,6 +540,84 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 		alarms,
 		stalk,
 		stopwatch,
+		buttons,
+	})
+}
+
+/// `[[button]]`, whole — nothing in it is the car's: each a pin the board has free and an
+/// action, one button per pin, at most [`MAX_BUTTONS`].
+fn parse_buttons(item: &Item) -> Result<Vec<Button>, Error> {
+	let refuse = |why: String| Err(Error::Parse(format!("dash.toml: {why}")));
+	// A single `[button]` table would otherwise be skipped without a word.
+	let Some(tables) = item.as_array_of_tables() else {
+		return refuse("button must be written as [[button]] tables, one per button".to_string());
+	};
+	let names = || {
+		let names: Vec<String> = Command::ALL.iter().map(|c| format!("{:?}", c.name())).collect();
+		format!("{} or {}", names[..names.len() - 1].join(", "), names[names.len() - 1])
+	};
+	if tables.len() > MAX_BUTTONS {
+		return refuse(format!(
+			"{} [[button]] tables, and the board has {MAX_BUTTONS} pins free for one: {}",
+			tables.len(),
+			pins("and")
+		));
+	}
+	let mut buttons: Vec<Button> = Vec::new();
+	for (i, table) in tables.iter().enumerate() {
+		let n = i + 1;
+		let Some(pin) = table.get("pin").and_then(Item::as_integer) else {
+			return refuse(format!("button #{n} needs pin, a whole number: {}", pins("or")));
+		};
+		let pin = match u8::try_from(pin) {
+			Ok(free) if is_button_pin(free) => free,
+			_ => {
+				let why = pin_taken(pin).unwrap_or("is not free");
+				return refuse(format!("button #{n}: pin {pin} {why} — a button goes on pin {}", pins("or")));
+			}
+		};
+		if let Some(at) = buttons.iter().position(|b| b.pin == pin) {
+			return refuse(format!("button #{n}: pin {pin} is button #{}'s already — one button per pin", at + 1));
+		}
+		let Some(name) = table.get("action").and_then(Item::as_str).map(str::trim) else {
+			return refuse(format!("button #{n} needs action: {}", names()));
+		};
+		let Some(action) = Command::from_name(name) else {
+			return refuse(format!("button #{n}: action {name:?} is not {}", names()));
+		};
+		buttons.push(Button { pin, action });
+	}
+	Ok(buttons)
+}
+
+/// The pins a `[[button]]` may take, for a person: `3, 4 or 5` (`and` in place of `or` for a
+/// list of all of them).
+fn pins(last: &str) -> String {
+	let pins: Vec<String> = BUTTON_PINS.iter().map(u8::to_string).collect();
+	format!("{} {last} {}", pins[..pins.len() - 1].join(", "), pins[pins.len() - 1])
+}
+
+/// What holds GPIO `pin` on this board, worded to follow "pin N" — `None` for a pin a
+/// `[[button]]` may take. The board's wiring, not any car's (`todo/dash/15-enclosure.md` §3;
+/// [`BUTTON_PINS`] is the other half of the same table).
+fn pin_taken(pin: i64) -> Option<&'static str> {
+	Some(match pin {
+		0 => "is the OLED's D/C",
+		1 => "is the CAN transceiver's RX",
+		2 => "is a strapping pin, read at reset",
+		3..=5 => return None,
+		6 => "is the CAN transceiver's TX",
+		7 => "is the OLED's SDIN",
+		8 => "is the LED's, and a strapping pin",
+		9 => "is the BOOT button's, and a strapping pin",
+		10 => "is the OLED's SCLK",
+		11 => "is not broken out on the SuperMini",
+		12..=17 => "is the SPI flash's",
+		18 => "is USB's D−",
+		19 => "is USB's D+",
+		20 => "is the OLED's RES",
+		21 => "is the OLED's CS",
+		_ => "is not a GPIO of the ESP32-C3",
 	})
 }
 
@@ -836,6 +954,9 @@ pub struct Plan {
 	pub stalk: Option<Stalk>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stopwatch: Option<Stopwatch>,
+	/// In the file's order. A `plan.json` written before buttons existed has none.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub buttons: Vec<Button>,
 }
 
 impl Plan {
@@ -979,6 +1100,16 @@ impl Plan {
 			alarms: Vec::leak(alarms),
 			stalk,
 			stopwatch,
+			buttons: Vec::leak(
+				self
+					.buttons
+					.iter()
+					.map(|b| device::ButtonPlan {
+						pin: b.pin,
+						action: b.action,
+					})
+					.collect(),
+			),
 		}
 	}
 }
@@ -1282,8 +1413,19 @@ pub fn build(
 			&mut notes,
 		)?),
 	};
-	if stopwatch.is_some() && stalk.is_none() {
-		notes.push("stopwatch: there is no [stalk], and its `measure` is the only way onto the page".to_string());
+	// Nothing about a button is the car's: it reaches the plan as written.
+	for b in &input.buttons {
+		notes.push(format!("button: pin {} → {}", b.pin, b.action.name()));
+		if b.action == Command::Stopwatch && stopwatch.is_none() {
+			notes.push(format!(
+				"button: pin {} is a stopwatch button, and there is no [stopwatch] — a press of it does nothing",
+				b.pin
+			));
+		}
+	}
+	let opens = stalk.is_some() || input.buttons.iter().any(|b| b.action == Command::Stopwatch);
+	if stopwatch.is_some() && !opens {
+		notes.push("stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"".to_string());
 	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
@@ -1477,6 +1619,7 @@ pub fn build(
 			alarms,
 			stalk,
 			stopwatch,
+			buttons: input.buttons.clone(),
 		},
 		notes,
 	})
@@ -1898,10 +2041,16 @@ pub fn to_rust(plan: &Plan) -> String {
 	if plan.stopwatch.is_some() {
 		plan_types.push("StopwatchPlan");
 	}
+	if !plan.buttons.is_empty() {
+		plan_types.push("ButtonPlan");
+	}
 	plan_types.sort_unstable();
 	let _ = writeln!(out, "use vag_dash_render::plan::{{{}}};", plan_types.join(", "));
 	if plan.stalk.is_some() {
 		let _ = writeln!(out, "use vag_dash_render::stalk::{{StateIndex, States}};");
+	}
+	if !plan.buttons.is_empty() {
+		let _ = writeln!(out, "use vag_dash_render::control::Command;");
 	}
 	// Only what the rules actually name: the firmware lints the generated file with
 	// `-D warnings`, so an unused import is a build that fails (review, 2026-09-15). A plan
@@ -1929,9 +2078,11 @@ pub fn to_rust(plan: &Plan) -> String {
 			float(s.km_h_per_unit)
 		),
 	};
+	// No buttons is `&[]`, so the source names neither `ButtonPlan` nor `Command`.
+	let buttons = if plan.buttons.is_empty() { "&[]" } else { "&BUTTONS" };
 	let _ = writeln!(
 		out,
-		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch} }};",
+		"pub static PLAN: Plan = Plan {{ vin: {:?}, language: {:?}, units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: {stalk}, stopwatch: {stopwatch}, buttons: {buttons} }};",
 		plan.vin, plan.language
 	);
 	let _ = writeln!(out);
@@ -2067,6 +2218,14 @@ pub fn to_rust(plan: &Plan) -> String {
 		let list: Vec<String> = s.marks.iter().map(u16::to_string).collect();
 		let _ = writeln!(out);
 		let _ = writeln!(out, "static MARKS: [u16; {}] = [{}];", s.marks.len(), list.join(", "));
+	}
+	if !plan.buttons.is_empty() {
+		let _ = writeln!(out);
+		let _ = writeln!(out, "static BUTTONS: [ButtonPlan; {}] = [", plan.buttons.len());
+		for b in &plan.buttons {
+			let _ = writeln!(out, "\tButtonPlan {{ pin: {}, action: Command::{:?} }},", b.pin, b.action);
+		}
+		let _ = writeln!(out, "];");
 	}
 	out
 }
@@ -3206,7 +3365,7 @@ mod tests {
 			rust.contains("use vag_dash_render::alarm::{Alarm, ChannelId, Direction, PageId, Rule};"),
 			"{rust}"
 		);
-		assert!(rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None }"), "{rust}");
+		assert!(rust.contains("alarms: &ALARMS, stalk: None, stopwatch: None, buttons: &[] }"), "{rust}");
 		assert!(
 			rust.contains("static ALARM_CHANNELS_1: [ChannelId; 2] = [ChannelId(1), ChannelId(0)];"),
 			"{rust}"
@@ -3834,10 +3993,10 @@ mod tests {
 		build_with_lever_and(&LEVER.replacen("01:2001", "75A:4C22", 1), beside).expect("another answer");
 	}
 
-	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
-	/// `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on an empty
-	/// plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` half of `to_rust`.
-	/// Built from this module's made-up fixture.
+	/// The generated source of a plan with a lever, a stopwatch and buttons, checked in and
+	/// compiled by `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on
+	/// an empty plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` /
+	/// `[[button]]` half of `to_rust`. Built from this module's made-up fixture.
 	///
 	/// `BLESS=1 cargo test -p vag-cli-core generated_source` rewrites it; review the diff, then
 	/// **run the tests again**: `tests/generated_plan.rs` is compiled in the same run as the
@@ -3846,7 +4005,7 @@ mod tests {
 	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
 		// The rocker on the ladder with unbounded states, so their literals are compiled too.
 		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1);
-		let built = build_with_lever(&format!("{lever}{}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
+		let built = build_with_lever(&format!("{lever}{}{EVERY_ACTION}", WATCH.replacen("0.0", "0.0271", 1))).unwrap();
 		let rust = to_rust(&built.plan);
 		// The generator's header names a VIN and says not to commit; the fixture says what it is.
 		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
@@ -3885,7 +4044,7 @@ mod tests {
 		}
 	}
 
-	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch and buttons), not on\n// any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {
@@ -3908,7 +4067,7 @@ mod tests {
 		// A plan without either says so, and names nothing it does not use.
 		let bare = build_with_lever("").unwrap();
 		let rust = to_rust(&bare.plan);
-		assert!(rust.contains("stalk: None, stopwatch: None };"), "{rust}");
+		assert!(rust.contains("stalk: None, stopwatch: None, buttons: &[] };"), "{rust}");
 		assert!(
 			rust.contains("use vag_dash_render::plan::{Channel, Page, Plan, Unit};") && !rust.contains("States"),
 			"{rust}"
@@ -3933,6 +4092,205 @@ mod tests {
 		let built = build_with_lever("").unwrap();
 		let back = Plan::from_json(&built.plan.to_json()).unwrap();
 		assert_eq!((back.stalk, back.stopwatch), (None, None));
+	}
+
+	/// A button on each free pin, one of each action.
+	const EVERY_ACTION: &str =
+		"[[button]]\npin = 3\naction = \"next\"\n[[button]]\npin = 4\naction = \"previous\"\n[[button]]\npin = 5\naction = \"stopwatch\"\n";
+
+	/// A minimal input — one channel, one page — and whatever the test appends.
+	fn input_with(extra: &str) -> Result<Input, Error> {
+		parse_input(&format!(
+			"vin = \"TESTVIN0000000001\"\n[[channel]]\nref = \"01:IDE00001\"\n{}{extra}",
+			values_page(&["01:IDE00001"])
+		))
+	}
+
+	fn button(pin: &str, action: &str) -> String {
+		format!("[[button]]\npin = {pin}\naction = {action}\n")
+	}
+
+	#[test]
+	fn buttons_parse_in_the_files_order_and_two_may_share_an_action() {
+		let input = input_with(&[button("5", "\"previous\""), button("3", "\" stopwatch \""), button("4", "\"previous\"")].concat()).unwrap();
+		assert_eq!(
+			input.buttons,
+			[
+				Button {
+					pin: 5,
+					action: Command::Previous
+				},
+				Button {
+					pin: 3,
+					action: Command::Stopwatch
+				},
+				Button {
+					pin: 4,
+					action: Command::Previous
+				},
+			],
+			"an action is trimmed, like every string"
+		);
+		assert!(input_with("").unwrap().buttons.is_empty(), "no [[button]] is no buttons");
+	}
+
+	#[test]
+	fn every_button_refusal_says_what_is_wrong() {
+		let refused = |extra: &str| input_with(extra).unwrap_err().to_string();
+		assert_eq!(
+			refused("[button]\npin = 3\naction = \"next\"\n"),
+			"dash.toml: button must be written as [[button]] tables, one per button"
+		);
+		assert_eq!(
+			refused(&["3", "4", "5", "3"].map(|pin| button(pin, "\"next\"")).concat()),
+			"dash.toml: 4 [[button]] tables, and the board has 3 pins free for one: 3, 4 and 5"
+		);
+		let no_pin = "dash.toml: button #1 needs pin, a whole number: 3, 4 or 5";
+		assert_eq!(refused("[[button]]\naction = \"next\"\n"), no_pin);
+		assert_eq!(refused(&button("\"3\"", "\"next\"")), no_pin, "a string is not a pin");
+		assert_eq!(refused(&button("3.0", "\"next\"")), no_pin, "nor a float");
+		// Each taken pin says what holds it.
+		for (pin, why) in [
+			("0", "is the OLED's D/C"),
+			("1", "is the CAN transceiver's RX"),
+			("2", "is a strapping pin, read at reset"),
+			("6", "is the CAN transceiver's TX"),
+			("7", "is the OLED's SDIN"),
+			("8", "is the LED's, and a strapping pin"),
+			("9", "is the BOOT button's, and a strapping pin"),
+			("10", "is the OLED's SCLK"),
+			("11", "is not broken out on the SuperMini"),
+			("12", "is the SPI flash's"),
+			("17", "is the SPI flash's"),
+			("18", "is USB's D−"),
+			("19", "is USB's D+"),
+			("20", "is the OLED's RES"),
+			("21", "is the OLED's CS"),
+			("22", "is not a GPIO of the ESP32-C3"),
+			("-1", "is not a GPIO of the ESP32-C3"),
+			("259", "is not a GPIO of the ESP32-C3"),
+		] {
+			assert_eq!(
+				refused(&button(pin, "\"next\"")),
+				format!("dash.toml: button #1: pin {pin} {why} — a button goes on pin 3, 4 or 5"),
+				"pin {pin}"
+			);
+		}
+		assert_eq!(
+			refused(&[button("4", "\"next\""), button("4", "\"previous\"")].concat()),
+			"dash.toml: button #2: pin 4 is button #1's already — one button per pin"
+		);
+		for action in ["\"Next\"", "\"measure\"", "\"\""] {
+			let name = action.trim_matches('"');
+			assert_eq!(
+				refused(&button("3", action)),
+				format!("dash.toml: button #1: action \"{name}\" is not \"next\", \"previous\" or \"stopwatch\""),
+				"{action}"
+			);
+		}
+		let no_action = "dash.toml: button #1 needs action: \"next\", \"previous\" or \"stopwatch\"";
+		assert_eq!(refused("[[button]]\npin = 3\n"), no_action);
+		assert_eq!(refused(&button("3", "1")), no_action, "an action is a string");
+	}
+
+	#[test]
+	fn a_button_may_take_exactly_the_pins_nothing_else_holds() {
+		for pin in -2..=40_i64 {
+			let free = u8::try_from(pin).is_ok_and(is_button_pin);
+			assert_eq!(pin_taken(pin).is_none(), free, "pin {pin}");
+		}
+		assert_eq!(BUTTON_PINS.len(), MAX_BUTTONS);
+	}
+
+	#[test]
+	fn buttons_reach_the_plan_its_log_plan_json_the_rust_source_and_the_device() {
+		let built = build_with_lever(&format!("{WATCH}{EVERY_ACTION}")).unwrap();
+		let wanted = [(3, Command::Next), (4, Command::Previous), (5, Command::Stopwatch)].map(|(pin, action)| Button { pin, action });
+		assert_eq!(built.plan.buttons, wanted);
+		for line in ["button: pin 3 → next", "button: pin 4 → previous", "button: pin 5 → stopwatch"] {
+			assert!(built.notes.iter().any(|n| n == line), "{line}: {:?}", built.notes);
+		}
+		assert!(
+			!built.notes.iter().any(|n| n.starts_with("stopwatch: nothing opens")),
+			"a stopwatch button opens the page: {:?}",
+			built.notes
+		);
+		let json = built.plan.to_json();
+		assert!(
+			json.contains("\"action\": \"stopwatch\""),
+			"a person reads an action by its dash.toml word: {json}"
+		);
+		assert_eq!(Plan::from_json(&json).unwrap(), built.plan);
+		let rust = to_rust(&built.plan);
+		for wanted in [
+			"use vag_dash_render::control::Command;",
+			"use vag_dash_render::plan::{ButtonPlan, Channel, Page, Plan, StopwatchPlan, Unit};",
+			"stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0, marks: &MARKS }), buttons: &BUTTONS };",
+			"static BUTTONS: [ButtonPlan; 3] = [\n\tButtonPlan { pin: 3, action: Command::Next },\n\tButtonPlan { pin: 4, action: Command::Previous },\n\tButtonPlan { pin: 5, action: Command::Stopwatch },\n];",
+		] {
+			assert!(rust.contains(wanted), "{wanted}\n{rust}");
+		}
+		let device = built.plan.to_device();
+		assert_eq!(
+			device.buttons,
+			wanted.map(|b| vag_dash_render::plan::ButtonPlan {
+				pin: b.pin,
+				action: b.action
+			})
+		);
+	}
+
+	#[test]
+	fn a_plan_without_buttons_names_none() {
+		let bare = build_with_lever("").unwrap();
+		let json = bare.plan.to_json();
+		assert!(!json.contains("buttons"), "an old reader sees the plan it knew: {json}");
+		assert!(Plan::from_json(&json).unwrap().buttons.is_empty());
+		let rust = to_rust(&bare.plan);
+		assert!(rust.contains("buttons: &[] };"), "{rust}");
+		assert!(
+			!rust.contains("Command") && !rust.contains("ButtonPlan"),
+			"nothing imported unused: {rust}"
+		);
+		assert!(bare.plan.to_device().buttons.is_empty());
+	}
+
+	#[test]
+	fn a_plan_json_with_an_action_the_board_has_not_is_refused() {
+		let mut json = build_with_lever(EVERY_ACTION).unwrap().plan.to_json();
+		json = json.replacen("\"previous\"", "\"measure\"", 1);
+		let why = Plan::from_json(&json).unwrap_err().to_string();
+		assert!(why.contains("action \"measure\" is not next, previous or stopwatch"), "{why}");
+	}
+
+	#[test]
+	fn a_stopwatch_button_without_a_stopwatch_is_a_note_not_a_refusal() {
+		let built = build_with_lever(EVERY_ACTION).unwrap();
+		assert!(
+			built
+				.notes
+				.iter()
+				.any(|n| n == "button: pin 5 is a stopwatch button, and there is no [stopwatch] — a press of it does nothing"),
+			"{:?}",
+			built.notes
+		);
+		let without = build_with_lever(&format!("{WATCH}{EVERY_ACTION}")).unwrap();
+		assert!(
+			!without.notes.iter().any(|n| n.contains("there is no [stopwatch]")),
+			"{:?}",
+			without.notes
+		);
+	}
+
+	#[test]
+	fn a_stopwatch_nothing_opens_is_said() {
+		let nothing = "stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"";
+		let says = |input: &str| build_with_lever(input).unwrap().notes.iter().any(|n| n == nothing);
+		assert!(says(WATCH), "no lever, no button");
+		assert!(says(&format!("{WATCH}{}", button("3", "\"next\""))), "a button that only pages");
+		assert!(!says(&format!("{LEVER}{WATCH}")), "the lever's measure opens it");
+		assert!(!says(&format!("{WATCH}{}", button("4", "\"stopwatch\""))), "so does a stopwatch button");
+		assert!(!says(""), "no stopwatch, nothing to open");
 	}
 
 	#[test]

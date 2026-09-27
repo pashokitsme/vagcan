@@ -1,11 +1,12 @@
-// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's
-// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
+// `to_rust` on the test fixture of `src/dash.rs` (a lever, a stopwatch and buttons), not on
+// any car's data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
 // `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.
-use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};
+use vag_dash_render::plan::{Band, ButtonPlan, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};
 use vag_dash_render::stalk::{StateIndex, States};
+use vag_dash_render::control::Command;
 use vag_dash_render::alarm::Alarm;
 
-pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }) };
+pub static PLAN: Plan = Plan { vin: "TESTVIN0000000001", language: "en", units: &UNITS, channels: &CHANNELS, pages: &PAGES, alarms: &ALARMS, stalk: Some(StalkPlan { rocker: 3, switch: 4, cruise: 5, rocker_states: &STALK_ROCKER, switch_states: &STALK_SWITCH, cruise_states: &STALK_CRUISE, states: States { next: StateIndex(1), previous: StateIndex(2), measure: StateIndex(3), switch_off: StateIndex(1), cruise_off: StateIndex(0) } }), stopwatch: Some(StopwatchPlan { speed: 1, km_h_per_unit: 0.0271, marks: &MARKS }), buttons: &BUTTONS };
 
 static UNITS: [Unit; 2] = [
 	Unit { request: 0x7E0, response: 0x7E8, part_number: "PART1" },
@@ -54,3 +55,9 @@ static STALK_CRUISE: [Band; 3] = [
 ];
 
 static MARKS: [u16; 2] = [60, 100];
+
+static BUTTONS: [ButtonPlan; 3] = [
+	ButtonPlan { pin: 3, action: Command::Next },
+	ButtonPlan { pin: 4, action: Command::Previous },
+	ButtonPlan { pin: 5, action: Command::Stopwatch },
+];

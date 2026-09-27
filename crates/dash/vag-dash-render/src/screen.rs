@@ -389,6 +389,7 @@ mod tests {
 			alarms: &RULES,
 			stalk: None,
 			stopwatch: None,
+			buttons: &[],
 		};
 		let cells = |page: u8| match plan.pages[usize::from(page)] {
 			Page::Values { cells, .. } => cells,
