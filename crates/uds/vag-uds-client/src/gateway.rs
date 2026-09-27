@@ -74,6 +74,10 @@ pub fn walk_order(listed: &[u16]) -> Vec<u16> {
 /// and one that decodes a whole answer lets its length decide how much it allocates.
 pub const VW_BLOCK_BYTES: usize = ((crate::address::VW_LAST - crate::address::VW_FIRST + 1) / 8) as usize;
 
+/// The last id [`VW_BLOCK_BYTES`] of the bitmap name, `0x7BF`: the board's fault count says
+/// how many bits a list set past it, and asks none of them (`todo/dash/20`).
+pub const VW_BLOCK_LAST: u16 = crate::address::VW_LAST;
+
 /// The lowest diagnostic request id a bit can denote.
 const BASE_ID: u16 = 0x700;
 
@@ -164,6 +168,14 @@ mod tests {
 		// 0x710 is always walked; a gateway that also listed itself must not make
 		// the walk read it twice.
 		assert_eq!(walk_order(&[0x710, 0x714, 0x714]), vec![0x7E0, 0x7E1, 0x710, 0x714]);
+	}
+
+	#[test]
+	fn vws_block_ends_on_the_last_id_its_bytes_name() {
+		let mut block = vec![0u8; VW_BLOCK_BYTES];
+		block[VW_BLOCK_BYTES - 1] = 0x80;
+		assert_eq!(decode_installation_list(&block), vec![VW_BLOCK_LAST]);
+		assert_eq!(VW_BLOCK_LAST, 0x7BF);
 	}
 
 	#[test]

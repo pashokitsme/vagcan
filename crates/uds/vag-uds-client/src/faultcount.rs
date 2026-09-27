@@ -26,7 +26,7 @@
 //! A unit that does not answer, refuses or answers something that does not parse is left
 //! out of the count and named in [`Tally::failed`]; the count is of the units that
 //! answered. When the gateway gives no list there is nothing to walk: the outcome is
-//! [`Outcome::NoList`], and the board shows no badge.
+//! [`Outcome::NoList`], and the board's badge is a `?` (owner, 2026-09-27).
 //!
 //! Three guards the laptop's `faults` does not have, because the board runs this at every
 //! boot with nobody watching:
@@ -62,13 +62,14 @@ const RESPONSE_PENDING: u8 = 0x78;
 /// The status mask the units are asked with: the stored codes, and only those.
 pub const STORED_MASK: u8 = dtc::CONFIRMED;
 
-/// The most units one count asks. A car lists fifteen to twenty (the reference car:
-/// fifteen, eighteen with the three the list never holds). A list that makes the walk
-/// longer than this is not a car's but the block's — a gateway answering garbage, or a
-/// bitmap with every bit set — and asking every id of it is a sweep of the block with
-/// nobody watching, which `CLAUDE.md` guards as it guards `survey`. Refused whole:
-/// [`Outcome::TooMany`], no badge.
-pub const MAX_UNITS: usize = 40;
+/// The most units one count asks: the BLE guard's [`guard::MAX_UNITS`](crate::guard::MAX_UNITS)
+/// itself — one number on the board for how many units it may touch (owner, 2026-09-27). A car
+/// lists fifteen to twenty (the reference car: fifteen, eighteen with the three the list never
+/// holds). A list that makes the walk longer than this is not a car's but the block's — a
+/// gateway answering garbage, or a bitmap with every bit set, which is 150 addressable ids —
+/// and asking every id of it is a sweep of the block with nobody watching, which `CLAUDE.md`
+/// guards as it guards `survey`. Refused whole: [`Outcome::TooMany`], the board's badge a `?`.
+pub const MAX_UNITS: usize = crate::guard::MAX_UNITS;
 
 /// What to do next.
 #[derive(Debug, PartialEq, Eq)]
@@ -202,6 +203,17 @@ impl FaultCount {
 				pdu: Vec::from([READ_DTC, BY_STATUS_MASK, STORED_MASK]),
 			},
 			State::Done(outcome) => Step::Done(outcome),
+		}
+	}
+
+	/// The count so far: every unit heard from and every one left out, while the walk goes
+	/// on, and the whole of it once it is [`Outcome::Counted`]. `None` before the gateway's
+	/// list, and when the count ended without a walk. A shell that names each unit as it is
+	/// heard from reads what is new here after each [`answered`](Self::answered).
+	pub fn tally(&self) -> Option<&Tally> {
+		match &self.state {
+			State::Units { tally, .. } | State::Done(Outcome::Counted(tally)) => Some(tally),
+			State::Gateway | State::Done(_) => None,
 		}
 	}
 
@@ -645,10 +657,17 @@ mod tests {
 	}
 
 	#[test]
-	fn a_walk_of_more_than_forty_units_is_refused_as_a_sweep() {
-		// Forty: three the list cannot hold and thirty-seven listed.
+	fn the_board_touches_as_many_units_as_its_ble_guard_remembers() {
+		// Owner, 2026-09-27: one number on the board for how many units it may touch.
+		assert_eq!(MAX_UNITS, crate::guard::MAX_UNITS);
+		assert_eq!(MAX_UNITS, 64);
+	}
+
+	#[test]
+	fn a_walk_of_more_than_sixty_four_units_is_refused_as_a_sweep() {
+		// Sixty-four: three the list cannot hold and sixty-one listed.
 		let (outcome, asked) = run(&Car::listing(&plain_ids(MAX_UNITS - 3)));
-		assert_eq!(counted(outcome).failed.len(), MAX_UNITS, "forty asked, all silent here");
+		assert_eq!(counted(outcome).failed.len(), MAX_UNITS, "sixty-four asked, all silent here");
 		assert_eq!(asked.len(), 1 + MAX_UNITS);
 
 		// One more, and nothing is asked past the list.
@@ -766,6 +785,49 @@ mod tests {
 		let answer = Answer::Pdu(list);
 		let spent = allocated_by(|| count.answered(answer));
 		assert!(spent < 256, "{spent} bytes allocated to read the list");
+	}
+
+	#[test]
+	fn the_tally_so_far_is_there_while_the_walk_goes_on_and_once_it_is_counted() {
+		// The board says each unit as it is heard from, not all of them at the end: a count the
+		// stopwatch holds up may take minutes.
+		let car = Car::listing(&[0x70C, 0x776]).with(0x7E0, Reply::Codes(vec![([0, 1, 0], 0x09)]));
+		let mut count = FaultCount::new();
+		assert_eq!(count.tally(), None, "nothing before the list");
+		let Step::Ask { unit, pdu } = count.next() else { panic!("done early") };
+		count.answered(car.answer(unit, &pdu));
+		let tally = count.tally().expect("walking");
+		assert!(tally.read.is_empty(), "no unit asked yet");
+		assert_eq!(
+			tally.failed,
+			vec![Failed {
+				request: 0x776,
+				why: Why::SharedId
+			}],
+			"a skip is known as soon as the walk is"
+		);
+		let Step::Ask { unit, pdu } = count.next() else { panic!("done early") };
+		count.answered(car.answer(unit, &pdu));
+		assert_eq!(
+			count.tally().expect("walking").read,
+			vec![UnitTally {
+				request: 0x7E0,
+				stored: 1,
+				failing_now: 1
+			}]
+		);
+		while let Step::Ask { unit, pdu } = count.next() {
+			count.answered(car.answer(unit, &pdu));
+		}
+		let Step::Done(Outcome::Counted(done)) = count.next() else {
+			panic!("not counted")
+		};
+		assert_eq!(count.tally(), Some(done), "the outcome's own tally");
+
+		// No list, nothing walked: no tally.
+		let mut listless = FaultCount::new();
+		listless.answered(Answer::NoAnswer);
+		assert_eq!(listless.tally(), None);
 	}
 
 	#[test]
