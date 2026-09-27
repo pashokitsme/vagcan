@@ -631,7 +631,8 @@ mod preview {
 	use vag_dash_host::frame::Pixels;
 	use vag_dash_render::frame::Adapter;
 	use vag_dash_render::render::Report;
-	use vag_dash_render::{Board, Cell, Deviation, Frame, Links, Rates, Theme, draw_with};
+	use vag_dash_render::stopwatch::{self, Labels, Stopwatch, Words};
+	use vag_dash_render::{Board, Cell, Deviation, Faults, Frame, Links, Rates, Theme, draw_with};
 
 	/// The panel the board has.
 	pub const PANEL: Size = Size::new(256, 64);
@@ -809,6 +810,76 @@ mod preview {
 		};
 		shots.push(shot("chart-boost-deviation-links-usb-ble", &chart_deviation, linked(BOTH)));
 
+		// The fault badge (`dash/20`) in the corner of every kind of page: counts of one, two
+		// and three digits, and inverted for a code failing now.
+		let faulted = |links, stored, failing_now| Board {
+			links,
+			rates: None,
+			faults: Some(Faults { stored, failing_now }),
+		};
+		shots.push(shot(
+			"values4-faults-3-links-usb-ble",
+			&Frame::Values { cells: &four },
+			faulted(BOTH, 3, false),
+		));
+		shots.push(shot(
+			"values4-faults-3-failing-links-usb-ble",
+			&Frame::Values { cells: &four },
+			faulted(BOTH, 3, true),
+		));
+		shots.push(shot(
+			"values4-faults-12-links-none",
+			&Frame::Values { cells: &four },
+			faulted(Links::NONE, 12, false),
+		));
+		shots.push(shot(
+			"values2-faults-3-links-usb-ble",
+			&Frame::Values { cells: &two },
+			faulted(BOTH, 3, false),
+		));
+		let alarmed = [
+			Cell::new("ОЖ", Some(93.0), "°C", 0),
+			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
+			Cell::new("МАСЛО", Some(104.0), "°C", 0),
+			Cell::new("КОРОБКА", Some(128.0), "°C", 0).alarmed(),
+		];
+		shots.push(shot(
+			"values4-alarm-faults-3-links-usb-ble",
+			&Frame::Values { cells: &alarmed },
+			faulted(BOTH, 3, false),
+		));
+		shots.push(shot("chart-boost-faults-99-links-usb-ble", &chart, faulted(BOTH, 99, false)));
+		shots.push(shot("chart-boost-faults-100-links-usb-ble", &chart, faulted(BOTH, 100, false)));
+		shots.push(shot("chart-boost-faults-3-failing-links-none", &chart, faulted(Links::NONE, 3, true)));
+
+		// The stopwatch page (`dash/19`) under the badge: two marks, and three, the last
+		// finished run's times on show.
+		let words = Words::of("ru");
+		let two_marks: [u16; 2] = [60, 100];
+		let three_marks: [u16; 3] = [60, 100, 150];
+		let saved = [(60, 5.43), (100, 9.87), (150, 18.4)];
+		for (tag, marks) in [("2marks", &two_marks[..]), ("3marks", &three_marks[..])] {
+			let labels = Labels::new(marks);
+			let idle = Stopwatch::new(marks, 0.01);
+			let (row, count) = stopwatch::cells(&idle, Some(0.0), &saved, &words, &labels);
+			let page = Frame::Values { cells: &row[..count] };
+			shots.push(shot(&format!("stopwatch-{tag}-stop-links-none"), &page, linked(Links::NONE)));
+			shots.push(shot(
+				&format!("stopwatch-{tag}-stop-faults-3-links-none"),
+				&page,
+				faulted(Links::NONE, 3, false),
+			));
+			let mut armed = Stopwatch::new(marks, 0.01);
+			armed.sample(Some(0.0), 0);
+			armed.sample(Some(0.0), stopwatch::ARMING_HOLD_MS);
+			let (row, count) = stopwatch::cells(&armed, Some(0.0), &saved, &words, &labels);
+			shots.push(shot(
+				&format!("stopwatch-{tag}-go-faults-12-failing-links-usb-ble"),
+				&Frame::Values { cells: &row[..count] },
+				faulted(BOTH, 12, true),
+			));
+		}
+
 		// The adapter screen.
 		let adapter = |kbit, listen_only, rx, tx, errors| Adapter {
 			kbit,
@@ -983,8 +1054,9 @@ mod tests {
 	fn every_preview_is_named_as_one_and_names_are_unique() {
 		let shots = preview::render_all();
 		// Values ×4 links, two cells, a long label, a drifting page, the chart ×2, a drifting
-		// chart, the adapter ×3.
-		assert_eq!(shots.len(), 13);
+		// chart; the fault badge on values ×5 and the chart ×3; the stopwatch ×3 for two marks
+		// and ×3 for three; the adapter ×3.
+		assert_eq!(shots.len(), 27);
 		let mut names: Vec<&str> = shots.iter().map(|s| s.name.as_str()).collect();
 		assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
 		names.sort_unstable();
