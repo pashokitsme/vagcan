@@ -81,7 +81,7 @@ this at every boot with nobody watching:
 - **Only VW's block is decoded:** the first 24 bytes of the bitmap (`gateway::VW_BLOCK_BYTES`,
   `0x700..=0x7BF`), whatever the answer's length. A whole 4095-byte answer decoded would be
   32,736 ids, over 130 KB of heap on a 72 KB board — a panic, and a reset loop since it reruns
-  every boot. Bits past the block are counted (`Tally::outside_block`, logged), never
+  every boot. Bits past the block are counted (`Tally::unaddressable`, logged), never
   decoded. `vagcan units`, `faults` and `dev survey` decode the whole answer; the reference
   car's is 32 bytes with nothing past byte 24.
 - **A walk of more than 64 units is refused** (`faultcount::MAX_UNITS`, the BLE guard's
@@ -110,7 +110,7 @@ while let Step::Ask { unit, pdu } = count.next() {
 }
 let Step::Done(outcome) = count.next() else { unreachable!() };
 // Outcome::NoList(Why) | Outcome::TooMany { units } | Outcome::Counted(Tally)
-// Tally { read: Vec<UnitTally>, failed: Vec<Failed>, outside_block: u32 }
+// Tally { read: Vec<UnitTally>, failed: Vec<Failed>, unaddressable: u32 }
 // Tally::stored(), ::failing_now(), ::units_read(); Failed { request, why: Why }
 ```
 
@@ -218,7 +218,9 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   frame (`Found::badge`), on every page and the stopwatch's. A change signals `STATE_CHANGED`.
 - **USB log** (`faults::Line`, every text pinned in the host test):
   - `faults: counting the car's stored codes — the gateway's list first`
-  - `faults: the list set 2 bits past 7BF — not asked`
+  - `faults: the list names 2 ids past 795, which no unit can answer on — not asked` (bits past
+    VW's block, and the block's ids past `0x795`, whose answer id would be past `0x7FF`:
+    `Tally::unaddressable`, renamed from `outside_block`, which counted both and said one)
   - `faults: 776, 777 skipped — each shares an id with a unit walked` (one line for all)
   - `faults: 7E0 2 stored, 1 failing now` (a unit with codes)
   - `faults: 7E1 not counted — no answer` / `— no answer in 2 s` / `— bus error` /
@@ -226,7 +228,7 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   - `faults: waiting while the stopwatch is up` / `faults: the stopwatch is closed — counting on`
   - `faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s` (the end)
   - `faults: the gateway gave no list (no answer) — badge ?`
-  - `faults: the list names 65 units to ask, more than 64 — not a car's list, badge ?`
+  - `faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?`
 - **`state`:** ` faults=9/1` (stored/failing now) once counted, ` faults=?` when the count
   failed, nothing before, after `mode=`. `dashcfg` skips keys it does not know. The longest
   line is 189 B, checked against `UART_MTU` (244) at compile time (`STATE_LINE_LONGEST`).
@@ -252,21 +254,22 @@ each a BLE round trip.
 
 ## Tests
 
-- `faultcount` (17): the gateway first and idempotent; every unit of the walk asked `19 02 08`
+- `faultcount` (18): the gateway first and idempotent; every unit of the walk asked `19 02 08`
   in order, by its block's rule; only `22` once and `19` — no `10`; stored = confirmed, failing
   now = confirmed and failing, a unit that ignored the mask counted right; a unit that is
   silent, refuses, errors, leaks a `78` or answers the wrong subfunction is skipped and named;
   a gateway with no list (silence, bus error, NRC, another identifier, too short) asks no unit;
   an empty list still reads the three; bits past VW's block (`7C0`, `7E0`) counted, not
-  decoded; a 4095-byte all-ones answer decodes no more than the block and is refused; 64 units
+  decoded; an id of the block past `0x795` counted with them, not asked (phase 2); a 4095-byte
+  all-ones answer decodes no more than the block and is refused; 64 units
   walked, 65 refused with nothing asked, and `MAX_UNITS` is the BLE guard's; `776`/`777` beside `70C`, and `77E`/`77F` (answering
   on the engine's and the gearbox's answer ids), skipped as shared ids, and no two units of a
   walk share a request id or an answer id, in either role; counting a 4095-byte answer
   allocates under 256 B, and so does reading a 4095-byte list (a counting allocator in the
   test binary); an answer after the end changes nothing; the tally so far while the walk goes
   on, and the outcome once it is over (phase 2).
-- `gateway` (3, two moved from `survey`): the walk covers the three the list cannot hold; a unit
-  listed twice is walked once; VW's block ends on `VW_BLOCK_LAST`, `7BF`.
+- `gateway` (2, moved from `survey`): the walk covers the three the list cannot hold; a unit
+  listed twice is walked once.
 - `render` (10): the triangle pixel for pixel at the foot of the icon column, the count over it
   right-aligned, nothing outside the box moved; hidden at 0 and with no count; failing now
   swaps every pixel of the box and nothing else; the corner is the same over a blank panel,
@@ -299,6 +302,6 @@ each a BLE round trip.
    unit honours mask `08` differently — then ask `FF` and filter, as the laptop does.
 2. The USB log's time for the count; the panel keeps changing through it.
 3. The units named as not counted or skipped, against `vagcan units`' list: `776` and `777`
-   skipped as shared ids, and no bits past `7BF`.
+   skipped as shared ids, and no id past `795`.
 4. A BLE `vagcan info` started during the count completes.
 5. The inverted badge only if the car has a code failing now — nothing is provoked to see it.

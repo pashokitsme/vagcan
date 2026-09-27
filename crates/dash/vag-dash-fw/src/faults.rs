@@ -30,8 +30,8 @@
 use core::fmt;
 
 use vag_dash_render::Faults;
+use vag_uds_client::address;
 use vag_uds_client::faultcount::{Failed, FaultCount, MAX_UNITS, Outcome, Step, UnitTally, Why};
-use vag_uds_client::gateway;
 use vag_uds_client::schedule::{Answer, Class, Delivery, Planner, ReqId};
 
 /// The board's clock at which the count may start: ten seconds after boot (owner, 2026-09-26).
@@ -119,8 +119,9 @@ pub enum Line<'a> {
 	/// The listed ids not asked because each shares an id with a unit walked: every
 	/// [`Why::SharedId`] among these.
 	Skipped(&'a [Failed]),
-	/// Bits the list set past VW's block, counted and not asked.
-	PastBlock(u32),
+	/// Ids the list named that no unit can answer on — past VW's block, or in it past `0x795` —
+	/// counted and not asked ([`Tally::unaddressable`](vag_uds_client::faultcount::Tally::unaddressable)).
+	Unaddressable(u32),
 	/// The end of a count.
 	Counted {
 		stored: u32,
@@ -131,7 +132,8 @@ pub enum Line<'a> {
 	},
 	/// The gateway gave no list, and how long its exchange held the bus.
 	NoList { why: Why, held_ms: u64 },
-	/// The list made a walk of this many units, more than [`MAX_UNITS`].
+	/// The walk would ask this many units — the list's and the three it cannot hold — more than
+	/// [`MAX_UNITS`].
 	TooMany(usize),
 }
 
@@ -175,11 +177,11 @@ impl fmt::Display for Line<'_> {
 				}
 				f.write_str(" skipped — each shares an id with a unit walked")
 			}
-			Line::PastBlock(bits) => write!(
+			Line::Unaddressable(ids) => write!(
 				f,
-				"the list set {bits} {} past {:03X} — not asked",
-				if bits == 1 { "bit" } else { "bits" },
-				gateway::VW_BLOCK_LAST
+				"the list names {ids} {} past {:03X}, which no unit can answer on — not asked",
+				if ids == 1 { "id" } else { "ids" },
+				address::VW_LAST_ADDRESSABLE
 			),
 			Line::Counted {
 				stored,
@@ -194,10 +196,7 @@ impl fmt::Display for Line<'_> {
 				took_ms % 1000 / 100
 			),
 			Line::NoList { why, held_ms } => write!(f, "the gateway gave no list ({}) — badge ?", Because { why, held_ms }),
-			Line::TooMany(units) => write!(
-				f,
-				"the list names {units} units to ask, more than {MAX_UNITS} — not a car's list, badge ?"
-			),
+			Line::TooMany(units) => write!(f, "the walk would ask {units} units, more than {MAX_UNITS} — not a car's list, badge ?"),
 		}
 	}
 }
@@ -326,8 +325,8 @@ impl Count {
 			// The list is in: what the walk left out of it, once.
 			if !self.walk_said {
 				self.walk_said = true;
-				if tally.outside_block > 0 {
-					say(&Line::PastBlock(tally.outside_block));
+				if tally.unaddressable > 0 {
+					say(&Line::Unaddressable(tally.unaddressable));
 				}
 				if tally.failed.iter().any(|f| f.why == Why::SharedId) {
 					say(&Line::Skipped(&tally.failed));

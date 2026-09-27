@@ -271,7 +271,7 @@ fn a_whole_count_through_the_planner_reads_what_vagcan_faults_counts_and_says_ea
 		bench.said,
 		[
 			"faults: counting the car's stored codes — the gateway's list first".to_string(),
-			"faults: the list set 1 bit past 7BF — not asked".to_string(),
+			"faults: the list names 1 id past 795, which no unit can answer on — not asked".to_string(),
 			"faults: 776, 777 skipped — each shares an id with a unit walked".to_string(),
 			"faults: 7E0 2 stored, 1 failing now".to_string(),
 			"faults: 7E1 not counted — no answer".to_string(),
@@ -444,7 +444,7 @@ fn a_list_longer_than_the_board_may_walk_is_a_question_mark_and_nothing_is_asked
 	assert_eq!(bench.count.found(), Some(Found::Failed));
 	assert_eq!(
 		bench.said.last().map(String::as_str),
-		Some("faults: the list names 65 units to ask, more than 64 — not a car's list, badge ?")
+		Some("faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?")
 	);
 }
 
@@ -538,7 +538,10 @@ fn what_the_board_says_word_for_word() {
 			},
 			"faults: 746 not counted — refused, NRC 22",
 		),
-		(Line::PastBlock(2), "faults: the list set 2 bits past 7BF — not asked"),
+		(
+			Line::Unaddressable(2),
+			"faults: the list names 2 ids past 795, which no unit can answer on — not asked",
+		),
 		(
 			Line::Counted {
 				stored: 9,
@@ -551,7 +554,7 @@ fn what_the_board_says_word_for_word() {
 		),
 		(
 			Line::TooMany(65),
-			"faults: the list names 65 units to ask, more than 64 — not a car's list, badge ?",
+			"faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?",
 		),
 	];
 	for (line, text) in lines {

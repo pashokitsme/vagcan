@@ -33,7 +33,8 @@
 //!
 //! * **Only VW's block is decoded** ([`gateway::VW_BLOCK_BYTES`]): an answer's length
 //!   never decides how much is allocated. Bits past it are counted in
-//!   [`Tally::outside_block`].
+//!   [`Tally::unaddressable`], with the block's ids past
+//!   [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE), which no unit can answer on.
 //! * **A walk of more than [`MAX_UNITS`] is refused** ([`Outcome::TooMany`]): past that it
 //!   is a sweep of the block, not a car.
 //! * **A listed id that shares an id with a unit already walked is skipped**
@@ -134,9 +135,11 @@ pub struct Tally {
 	pub read: Vec<UnitTally>,
 	/// The units left out, in the order they were met.
 	pub failed: Vec<Failed>,
-	/// Bits the list set past VW's block ([`gateway::VW_BLOCK_BYTES`]): counted, never
-	/// decoded, never asked.
-	pub outside_block: u32,
+	/// Ids the list named that no unit can be asked on: bits past VW's block
+	/// ([`gateway::VW_BLOCK_BYTES`]), never decoded, and ids of the block past
+	/// [`VW_LAST_ADDRESSABLE`](crate::address::VW_LAST_ADDRESSABLE) (`0x795`), whose answer id
+	/// would be past `0x7FF`. Every one of them is past `0x795`. Counted, never asked.
+	pub unaddressable: u32,
 }
 
 impl Tally {
@@ -232,7 +235,7 @@ impl FaultCount {
 		let state = core::mem::replace(&mut self.state, State::Gateway);
 		self.state = match state {
 			State::Gateway => match installation_list(&answer) {
-				Ok((listed, outside_block)) => Self::walk(&listed, outside_block),
+				Ok((listed, past_block)) => Self::walk(&listed, past_block),
 				Err(why) => State::Done(Outcome::NoList(why)),
 			},
 			State::Units { walk, at, mut tally } => {
@@ -256,17 +259,18 @@ impl FaultCount {
 	/// (`+8`, `+0x6A`), so a unit is met before the id it answers on: the first of a
 	/// clashing pair is the one kept. The laptop's `faults` asks every listed id as it
 	/// stands (`todo/dash/20`).
-	fn walk(listed: &[u16], outside_block: u32) -> State {
+	fn walk(listed: &[u16], past_block: u32) -> State {
 		let mut tally = Tally {
-			outside_block,
+			unaddressable: past_block,
 			..Tally::default()
 		};
 		let mut walk: Vec<Unit> = Vec::new();
 		for request in gateway::walk_order(listed) {
-			// Every id here is in a block — the three, and the bytes of VW's block — so the
-			// rule always answers; were it not to, the id is outside and counted so.
+			// Every id here is in a block — the three, and the bytes of VW's block — but the
+			// block's ids past 0x795 have no answer id an 11-bit frame carries, and the rule
+			// gives none: counted with the bits past the block, not asked.
 			let Some(unit) = address(request) else {
-				tally.outside_block = tally.outside_block.saturating_add(1);
+				tally.unaddressable = tally.unaddressable.saturating_add(1);
 				continue;
 			};
 			// Sent on an id a kept unit answers on, answering on one a kept unit is asked on,
@@ -636,8 +640,23 @@ mod tests {
 		let units: Vec<u16> = asked.iter().skip(1).map(|(u, _)| u.request).collect();
 		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x714], "each once, nothing past the block");
 		let tally = counted(outcome);
-		assert_eq!(tally.outside_block, 2);
+		assert_eq!(tally.unaddressable, 2);
 		assert_eq!(tally.failed.len(), 4, "the four silent units, and nothing else named");
+	}
+
+	#[test]
+	fn an_id_of_vws_block_no_unit_can_answer_on_is_counted_and_never_asked() {
+		// 0x7A0 is in VW's block, but its answer id would be 0x80A, past what an 11-bit frame
+		// carries: counted with the bits past the block, not asked.
+		let car = Car::listing(&[0x714, 0x7A0]);
+		let (outcome, asked) = run(&car);
+		let units: Vec<u16> = asked.iter().skip(1).map(|(u, _)| u.request).collect();
+		assert_eq!(units, vec![0x7E0, 0x7E1, 0x710, 0x714]);
+		let tally = counted(outcome);
+		assert_eq!(tally.unaddressable, 1);
+		assert!(tally.failed.iter().all(|f| f.request != 0x7A0), "not named as a unit left out");
+		assert!(UnitAddress::from_request(crate::address::VW_LAST_ADDRESSABLE).is_some());
+		assert!(UnitAddress::from_request(crate::address::VW_LAST_ADDRESSABLE + 1).is_none());
 	}
 
 	#[test]

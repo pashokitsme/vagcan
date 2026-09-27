@@ -49,6 +49,10 @@ pub(crate) const VW_LAST: u16 = 0x7BF;
 const VW_OFFSET: u16 = 0x6A;
 /// The highest id an ISO 11898 standard frame carries: eleven bits.
 const STANDARD_ID_LAST: u16 = 0x7FF;
+/// The last request id of VW's block a unit can be asked on: `0x795`, whose answer id
+/// (`+ 0x6A`) is `0x7FF`. Past it the block's ids have no answer id an 11-bit frame carries
+/// ([`UnitAddress::from_request`] gives none), and the board's fault count asks none of them.
+pub const VW_LAST_ADDRESSABLE: u16 = STANDARD_ID_LAST - VW_OFFSET;
 
 impl UnitAddress {
 	/// The address to use for a request id, by whichever rule covers it.
