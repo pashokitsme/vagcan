@@ -223,14 +223,18 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   `Miss::Busy`, one missed sample, never an absent unit (before, a stray then a late answer
   marked the unit absent and dropped its subscriptions, a stopwatch run's speed with them); a
   part check answered so is asked again; a host's exchange gets `Outcome::NoAnswer`, not a
-  `7F xx 78` that promised more. The first `Busy` since the unit last answered costs no wait
-  and tells only that exchange's readers; from the second in a row the unit is backed off as a
-  silent one is. Round 3: `Busy` reset its backoff, and a healthy unit beside one busy for ever
-  got 40 readings in 10 s where a silent neighbour left it 144. Round 4: backing off from the
-  first `Busy` let one busy speed read and a silent page unit push the gap between two speed
-  answers to 1.6–1.8 s, past `SILENCE_MS`. Now 1050 ms there, and beside a unit busy for ever
-  144 vs 144 in 10 s, 114 vs 118 in 60 s with `78` to the end — one first backoff more per
-  streak.
+  `7F xx 78` that promised more. The unit is backed off as a silent one is — except a unit a
+  run is timing (a `Class::Timing` reader): its first `Busy` since it last answered costs no
+  wait and tells only that exchange's readers, and the second in a row backs it off. Round 3:
+  `Busy` reset its backoff, and a healthy unit beside one busy for ever got 40 readings in 10 s
+  where a silent neighbour left it 144. Round 4: backing off from the first `Busy` let one busy
+  speed read and a silent page unit push the gap between two speed answers to 1.6–1.8 s, past
+  `SILENCE_MS`. Round 5: a free first `Busy` for every unit let one busy every other exchange
+  never wait (a neighbour 66 readings in 10 s vs 94) and a unit nobody reads, which the planner
+  forgets with its count between a host's requests, never wait at all (150 → 40). Now: the speed
+  gap 1050 ms; beside a unit busy every other time 94 vs 94, beside a host's raw loop 150 vs 150
+  with the backoff climbing 250 → 2000 ms, beside one busy for ever 144 vs 144 in 10 s and 118
+  vs 118 in 60 s — each the same as for silence.
 - **Late answers are dropped, on every exchange** (review round 1, `Waits::heard`): a PDU that
   answers another request — another service's, another identifier's (a `22` answer starts with
   an identifier asked — any of them, round 3: a unit may leave out the first, and the planner
@@ -347,19 +351,21 @@ each a BLE round trip.
   or an answer id, in either role; counting a 4095-byte answer allocates under 256 B, and so
   does reading a 4095-byte list (a counting allocator in the test binary); an answer after the
   end changes nothing; the tally so far while the walk goes on, and the outcome once it is over.
-- `schedule` (5): a busy raw exchange costs nothing once and backs the unit off from the second
-  in a row, its readers told `Busy`; a busy read is a missed sample (`Miss::Busy`) for its
-  readers and one-shots, backed off from the second in a row; a unit busy for ever costs a
-  healthy neighbour at most one first backoff's worth of readings more than a silent one (round
-  3, the safety probe's two scenarios); a response answers its own
+- `schedule` (7): a busy raw exchange backs the unit off, its readers told `Busy`, unless a run
+  is timing the unit and it is the first — then it costs nothing, and the second in a row backs
+  it off; a busy read is a missed sample (`Miss::Busy`) for its readers and one-shots, backed off
+  as silence is; a unit busy for ever, or every other time, costs a healthy neighbour what a
+  silent one does (rounds 3 and 5, the reviewers' probes); a host asking a busy unit nobody reads
+  again and again is backed off as for silence, 250 → 2000 ms (round 5); a response answers its own
   request and no other — service, any identifier asked, sub-function, and a refusal's NRC
   (`answers`, the laptop's asserts moved here); a batch whose first identifier the unit leaves
   out is read through the shell's rule, the rest at its rate (round 3).
 - `remote` (1): a busy unit is no answer to a host, its subscription reads no answer, and it is
-  asked at most once more than a silent one.
+  asked as often as a silent one.
 - `research/dash/host/tests/stopwatch_silence.rs` (1, round 4): one busy speed read beside a
   silent page unit read every 1050–1240 ms leaves the longest gap between two speed answers
-  under `SILENCE_MS` (1050 ms; 1600 ms when the first `Busy` backed off).
+  under `SILENCE_MS` (1050 ms; 1600 ms when the first `Busy` backed off). The speed is the
+  run's timing channel, so its unit gets the free first `Busy`.
 - `isotp` (3) and `isotp_over_slcan` (2): consecutive and flow-control frames before the first
   frame are ignored and the wait goes on; leftovers then nothing is a timeout, not a protocol
   error; a consecutive frame or an unknown PCI while a flow control is awaited is ignored too

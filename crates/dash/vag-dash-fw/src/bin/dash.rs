@@ -1553,11 +1553,15 @@ const RESPONSE_TIMEOUT: core::time::Duration = core::time::Duration::from_millis
 // A speed read that ends busy (`Answer::Busy`: a late answer to an earlier request on its id,
 // and its own answer later than `RESPONSE_TIMEOUT`) is one of those two timeouts: it holds the
 // bus as a silent read does, in the place of the exchange that was on the bus when the speed
-// came due. It adds no backoff — the planner waits only from a unit's second `Busy` in a row
-// (review round 4: the 250 ms it waited after the first pushed the gap to 1.6–1.8 s beside a
-// silent page unit; `research/dash/host/tests/stopwatch_silence.rs` holds it under the silence).
-// A busy speed read, an exchange already out and a silent unit of the floor in one gap are
-// three, a bus in trouble, as three silent units are: the run aborts.
+// came due. It adds no backoff — the planner waits for a unit a run is timing only from its
+// second `Busy` in a row (review round 4: the 250 ms it waited after the first pushed the gap
+// to 1.6–1.8 s beside a silent page unit; `research/dash/host/tests/stopwatch_silence.rs` holds
+// it under the silence). A busy speed read, an exchange already out and a silent unit of the
+// floor in one gap are three, a bus in trouble, as three silent units are: the run aborts. One
+// unit that has just gone silent can be two of the three: its first backoff (250 ms) is shorter
+// than a gap, so its first two reads can land in one — a page unit read at 100 ms and again at
+// 1100 ms around a busy speed read leaves a 1550 ms gap, and the run aborts, with or without
+// the free first `Busy` (review round 5).
 //
 // The fault count's exchanges hold the bus for up to `faults::DEADLINE_MS`, longer than the
 // silence, and still never fall between two speed answers of a run: none starts while the

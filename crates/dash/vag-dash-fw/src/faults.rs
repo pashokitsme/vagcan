@@ -20,8 +20,8 @@
 //!   the waits are [`crate::exchange`]'s): a unit that has not answered by then is not
 //!   counted. One that asked for time (`78`) is still there, and the planner is told so
 //!   (`Answer::Busy`): its readers miss one sample (`Miss::Busy`) and it is not declared
-//!   absent; from its second `Busy` in a row it is backed off as a non-answer is. The board's
-//!   other exchanges keep their
+//!   absent; it is backed off as a non-answer is (a unit a run is timing only from its second
+//!   `Busy` in a row). The board's other exchanges keep their
 //!   deadlines (`PENDING_DEADLINE`, 10 s, in the firmware).
 //! * **Not while a stopwatch runs** ([`Hold`]): the board's own is up (owner, 2026-09-27), or a
 //!   host holds the board's timing channel — a laptop's `vagcan measure` through the board

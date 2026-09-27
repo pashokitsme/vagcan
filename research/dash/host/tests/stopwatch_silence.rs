@@ -5,8 +5,10 @@
 //! Review round 4 (2026-09-27): a single `Busy` on a speed read — a late answer to an earlier
 //! request on its id, then its own answer too late — backed the unit off 250 ms, and with a
 //! silent page unit beside it the gap between two speed answers passed 1.3 s: 1600–1790 ms with
-//! the page unit read every 1050–1240 ms, and the run aborted. One `Busy` between answers costs
-//! no backoff; from the second in a row it does, as silence does.
+//! the page unit read every 1050–1240 ms, and the run aborted. A unit a run is timing — one with
+//! a `Class::Timing` reader, as the speed's here — gets one `Busy` between answers free of a
+//! backoff; from the second in a row it is backed off, as silence backs it off. Any other unit is
+//! backed off from its first (round 5).
 
 use vag_dash_render::stopwatch::SILENCE_MS;
 use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Next, Planner, Unit};

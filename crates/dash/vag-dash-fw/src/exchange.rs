@@ -26,8 +26,9 @@
 //!   the wait: nothing at all is [`Ended::Silent`], an absent unit; a `78`, or a late answer to
 //!   an earlier request, is [`Ended::Busy`] — the unit is there and busy. Its readers get
 //!   `Miss::Busy`, not the `Miss::NoAnswer` on which the panel declares a unit absent and drops
-//!   its cells (review rounds 1 and 2, 2026-09-27); the planner backs it off from its second
-//!   `Busy` in a row, as it does a silent unit (rounds 3 and 4). Every exchange, not only the
+//!   its cells (review rounds 1 and 2, 2026-09-27); the planner backs it off as it does a silent
+//!   unit, a unit a run is timing only from its second `Busy` in a row (rounds 3–5). Every
+//!   exchange, not only the
 //!   fault count's.
 
 use vag_uds_client::schedule::{answers, expects_no_answer};
