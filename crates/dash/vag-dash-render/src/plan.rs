@@ -262,6 +262,10 @@ pub struct Rate {
 	/// channels are never demoted. Otherwise only on pages not shown: read at
 	/// [`HIDDEN_PERIOD_MS`] at most, last.
 	pub foreground: bool,
+	/// Read as a stopwatch's clock — the scheduler's `Class::Timing` — ahead of a host's reads
+	/// and of the foreground past its floor, so a host's load cannot thin it. Only the
+	/// stopwatch's speed while a run is up ([`Timing::Timing`]), which is foreground as well.
+	pub timing: bool,
 	pub period_ms: u32,
 }
 
@@ -356,7 +360,11 @@ impl Plan {
 	///   stopwatch is up; the switch's is never subscribed — it is in the rocker's answer.
 	/// - The cruise status at [`CRUISE_PERIOD_MS`].
 	/// - The stopwatch's speed at its own rate while the mode is on; while it is armed or
-	///   running every other channel a page shows drops to the background.
+	///   running it is read as the stopwatch's clock ([`Rate::timing`]), and every other
+	///   channel a page shows drops to the background. As foreground a host's reads took its
+	///   slots once the lever had spent the panel's floor, and every run aborted (PR #12
+	///   review); the scheduler keeps the panel's floor ahead of a clock on the board, so the
+	///   lever and an alarm's channels keep theirs.
 	///
 	/// The rocker and the cruise status are foreground whatever the page: a press is a press
 	/// on any. An alarm's channels keep their rate through all of it.
@@ -368,6 +376,7 @@ impl Plan {
 				Some(Rate {
 					channel: index,
 					foreground: true,
+					timing: false,
 					period_ms,
 				})
 			};
@@ -390,12 +399,20 @@ impl Plan {
 			// Timing, what a page shows is not what matters: the run is.
 			let on_glass = shown.contains(&index) || self.explains(index, shown);
 			let timing = mode.stopwatch == Timing::Timing;
-			if speed || self.watched(index) || (on_glass && !timing) {
+			if speed && timing {
+				Some(Rate {
+					channel: index,
+					foreground: true,
+					timing: true,
+					period_ms: own,
+				})
+			} else if speed || self.watched(index) || (on_glass && !timing) {
 				foreground(own)
 			} else if listed.contains(&index) || self.explains(index, listed) || on_glass {
 				Some(Rate {
 					channel: index,
 					foreground: false,
+					timing: false,
 					period_ms: own.max(HIDDEN_PERIOD_MS),
 				})
 			} else {
@@ -1072,6 +1089,19 @@ mod tests {
 			)
 			.contains(&(0, true, 100))
 		);
+		// A run up, the speed is read as the stopwatch's clock, and nothing else is: a host's
+		// reads must not thin it (PR #12 review). Merely up, it waits for a standstill at the
+		// panel's own rank.
+		let clock = |stopwatch: Timing| -> std::vec::Vec<u16> {
+			let mode = Mode {
+				stopwatch,
+				..Mode::default()
+			};
+			plan.rates_in(&[0, 6], &[0, 1], mode).filter(|r| r.timing).map(|r| r.channel).collect()
+		};
+		assert_eq!(clock(Timing::Timing), [5]);
+		assert_eq!(clock(Timing::Up), [] as [u16; 0]);
+		assert_eq!(clock(Timing::Off), [] as [u16; 0]);
 	}
 
 	#[test]

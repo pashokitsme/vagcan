@@ -1828,7 +1828,9 @@ const CRUISE_FRESH: Duration = Duration::from_millis(3 * vag_dash_render::plan::
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct PanelSub {
 	id: SubId,
-	shown: bool,
+	/// `Timing` for a run's speed, `Foreground` for what the glass and the alarms need,
+	/// `Background` for the pages not shown.
+	class: Class,
 	period_ms: u32,
 }
 
@@ -1865,6 +1867,9 @@ struct PanelReads {
 	stalk: Stalk,
 	/// The lever's gate and the stopwatch as the subscriptions last followed them.
 	mode: ReadMode,
+	/// A host holds the board's timing channel ([`host_clock`]): a run's speed yields to it,
+	/// as the subscriptions last followed it.
+	host_clock: bool,
 }
 
 impl PanelReads {
@@ -1892,6 +1897,7 @@ impl PanelReads {
 			shared,
 			stalk: Stalk::new(states),
 			mode: ReadMode::default(),
+			host_clock: false,
 		}
 	}
 
@@ -1960,12 +1966,23 @@ impl PanelReads {
 			(shown, listed)
 		};
 		let mode = self.read_mode();
-		if shown == self.shown && listed == self.listed && mode == self.mode {
+		let (lost, host_clock) = bus.lock(|p| {
+			let planner = p.borrow();
+			(self.subs.iter().flatten().any(|sub| !planner.holds(sub.id)), host_clock(&planner, &self.subs))
+		});
+		if shown == self.shown && listed == self.listed && mode == self.mode && !lost && host_clock == self.host_clock {
 			return;
+		}
+		if host_clock != self.host_clock && PLAN.stopwatch.is_some() {
+			match host_clock {
+				true => note!("stopwatch: a host holds the board's timing channel — a run's speed yields to it"),
+				false => note!("stopwatch: the board's timing channel is free again"),
+			}
 		}
 		self.shown = shown;
 		self.listed = listed;
 		self.mode = mode;
+		self.host_clock = host_clock;
 		for u in 0..PLAN.units.len() {
 			if self.checks[u] == Check::Matched {
 				self.subscribe_unit(u, bus);
@@ -1974,13 +1991,25 @@ impl PanelReads {
 	}
 
 	/// Make one unit's subscriptions what the pages ask for: subscribe what is
-	/// missing, move what changed class or rate, drop what is on no page.
+	/// missing, move what changed class or rate, drop what is on no page. A subscription the
+	/// planner no longer holds — a cable host's stopwatch took the board's timing channel from
+	/// a run (`remote` module docs, S-F3) — is missing, and is subscribed again.
+	///
+	/// A run's speed is read as `Class::Timing` (PR #12 review: as foreground a host's reads
+	/// took its slots and every run aborted), unless a host already holds the board's one
+	/// timing channel: then it yields and is read in the foreground. On the same identifier
+	/// the two share one read, which goes at the host's timing rank anyway.
 	fn subscribe_unit(&mut self, u: usize, bus: &Bus) {
 		let unit = unit_of(u);
 		let request = PLAN.units[u].request;
-		let mut wanted: [Option<(bool, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
+		let mut wanted: [Option<(Class, u32)>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
 		for rate in PLAN.rates_in(&self.shown, &self.listed, self.mode) {
-			wanted[usize::from(rate.channel)] = Some((rate.foreground, rate.period_ms));
+			let class = match (rate.timing, rate.foreground) {
+				(true, _) if !self.host_clock => Class::Timing,
+				(_, true) => Class::Foreground,
+				(_, false) => Class::Background,
+			};
+			wanted[usize::from(rate.channel)] = Some((class, rate.period_ms));
 		}
 		let now = ms();
 		bus.lock(|p| {
@@ -1991,18 +2020,15 @@ impl PanelReads {
 				}
 				let current = self.subs[index];
 				match (current, wanted[index]) {
-					(Some(sub), Some((shown, period_ms))) if sub.shown == shown && sub.period_ms == period_ms => {}
+					(Some(sub), Some((class, period_ms))) if sub.class == class && sub.period_ms == period_ms && planner.holds(sub.id) => {}
 					(current, wanted) => {
 						if let Some(sub) = current {
 							planner.unsubscribe(sub.id);
 						}
-						self.subs[index] = wanted.map(|(shown, period_ms)| {
-							let class = if shown { Class::Foreground } else { Class::Background };
-							PanelSub {
-								id: planner.subscribe(now, class, unit, channel.did, period_ms, None),
-								shown,
-								period_ms,
-							}
+						self.subs[index] = wanted.map(|(class, period_ms)| PanelSub {
+							id: planner.subscribe(now, class, unit, channel.did, period_ms, None),
+							class,
+							period_ms,
 						});
 					}
 				}
@@ -2251,6 +2277,20 @@ impl PanelReads {
 			}
 		}
 	}
+}
+
+/// Whether a host holds the board's timing channel: a `Class::Timing` subscription in the
+/// planner that is not one of the panel's own. The board keeps one stopwatch at a time and the
+/// first to take it keeps it — a radio host asking while a run holds it is refused
+/// (`Refusal::TimingChannelHeld`), a cable host takes it (S-F3) — so while one does, a run's
+/// speed does not take a second.
+fn host_clock(planner: &Planner, subs: &[Option<PanelSub>]) -> bool {
+	let own = subs
+		.iter()
+		.flatten()
+		.filter(|sub| sub.class == Class::Timing && planner.holds(sub.id))
+		.count();
+	planner.timing_subscriptions() > own
 }
 
 fn unit_of(u: usize) -> Unit {
@@ -3105,10 +3145,16 @@ async fn usb_session_task(bus: &'static Bus) -> ! {
 					client.reset();
 					USB_LINKED.store(true, Ordering::Relaxed);
 				}
+				let subscribe = matches!(message, Message::Subscribe(_));
 				let out = take_message(&mut session, bus, message);
 				// A cable subscribe may have taken the board's timing channel from the radio
 				// (S-F3); wake the BLE session so it ends that subscription and tells its host.
 				TIMING_TAKEN.signal(());
+				// Or from the panel's run: its speed follows at once, in the foreground, rather
+				// than going unread until the next recheck of the pages.
+				if subscribe {
+					PAGES_CHANGED.signal(());
+				}
 				out
 			}
 			Either3::First(Either4::Second(delivery)) => bus.lock(|p| session.answered(&mut p.borrow_mut(), &delivery)),

@@ -832,6 +832,67 @@ fn a_slow_timing_unit_yields_to_the_panels_floor_only_where_the_budget_says() {
 	}
 }
 
+/// PR #12 review: the board's own stopwatch (`todo/dash/19`) reads its speed at 50 Hz while
+/// a run is up, beside the cruise lever — the rocker at 10 Hz and the cruise status at 5 Hz,
+/// both the panel's `Foreground` — while a host polls ten identifiers of its own at 10 Hz.
+///
+/// As `Class::Foreground` the speed shares the floor with the lever, and once the floor is
+/// spent the host's `Remote` reads rank ahead of it: the speed gets well under half its rate,
+/// with gaps past what the stopwatch survives (`vag_dash_render::stopwatch::SILENCE_MS`), and
+/// every run aborts — and the lever, sharing that floor, goes short too. As `Class::Timing` it
+/// keeps nine reads in ten and never misses two in a row, and the lever keeps its rate: on the
+/// board the floor still goes ahead of Timing (`Budget::timing_yields_to_floor`), so a run
+/// cannot starve the lever or an alarm's channel. The host gets what is left.
+#[test]
+fn the_boards_stopwatch_keeps_its_speed_under_a_host_only_as_timing() {
+	const RUN_MS: u64 = 10_000;
+	const LATENCY_MS: u64 = 4;
+	let (engine, gearbox, column) = (A, B, unit(0x0C));
+	let host: Vec<Unit> = (0x20..0x2A).map(unit).collect();
+	for class in [Class::Foreground, Class::Timing] {
+		let mut units = vec![
+			(engine, FakeUnit::with(&[(0x2001, &[0])])),
+			(gearbox, FakeUnit::with(&[(0x3001, &[0])])),
+			(column, FakeUnit::with(&[(0x1001, &[0])])),
+		];
+		units.extend(host.iter().map(|u| (*u, FakeUnit::with(&[(0x4001, &[0])]))));
+		let mut sim = Sim::new(Budget::board(), car(&units));
+		sim.latency = LATENCY_MS;
+		let speed = sim.p.subscribe(0, class, gearbox, 0x3001, 20, None);
+		let rocker = sim.p.subscribe(0, Class::Foreground, column, 0x1001, 100, None);
+		let cruise = sim.p.subscribe(0, Class::Foreground, engine, 0x2001, 200, None);
+		let host_subs: Vec<SubId> = host.iter().map(|u| sim.p.subscribe(0, Class::Remote, *u, 0x4001, 100, None)).collect();
+		sim.run_until(RUN_MS);
+
+		let at: Vec<u64> = sim.readings_of(speed).iter().map(|(_, at)| *at).collect();
+		let longest = at.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(RUN_MS);
+		let (rocker, cruise) = (sim.readings_of(rocker).len(), sim.readings_of(cruise).len());
+		let label = format!(
+			"speed as {class:?}: {} reads of {}, longest gap {longest} ms; rocker {rocker}, cruise {cruise}",
+			at.len(),
+			RUN_MS / 20
+		);
+		match class {
+			// The speed spends the floor the lever needs too, so both go short.
+			Class::Foreground => {
+				assert!(at.len() * 2 < (RUN_MS / 20) as usize, "{label}: the host's reads take its slots");
+				assert!(longest > 500, "{label}: gaps no run survives");
+			}
+			_ => {
+				// When the rocker and the cruise status fall due with it, both go first and the
+				// speed is a whole period late: that read is merged into the next (the planner
+				// keeps a read's phase only while it is less than a period late). Once in 200 ms.
+				assert!(at.len() * 10 >= (RUN_MS / 20) as usize * 9, "{label}: nine reads in ten");
+				assert!(longest <= 2 * 20, "{label}: never more than one read missing");
+				assert!(rocker + 1 >= (RUN_MS / 100) as usize, "{label}: the rocker keeps 10 Hz");
+				assert!(cruise + 1 >= (RUN_MS / 200) as usize, "{label}: the cruise status keeps 5 Hz");
+				let host_reads: usize = host_subs.iter().map(|sub| sim.readings_of(*sub).len()).sum();
+				assert!(host_reads > 0, "{label}: the host gets what is left");
+			}
+		}
+	}
+}
+
 #[test]
 fn nothing_is_dropped() {
 	let fg: Vec<Unit> = (0..4).map(unit).collect();
