@@ -234,17 +234,36 @@ priority, first highest. Two kinds.
 The cruise lever as buttons, while cruise control is off: one rocker state for the next page,
 one for the previous, one to turn the stopwatch on and off.
 
+**Every key but `read` and `cruise` is a text from your car's ODIS project, not an id.**
+
+- `rocker` and `switch` are **field names**. A field is part of one identifier's answer. It has a
+  name and its bits; in the project it usually has no text id.
+- `next`, `previous`, `measure`, `switch_off` and `cruise_off` are **state texts**. A state is a
+  band of raw values with a text, and has no id at all.
+- They are in the project's language: German for the steering column unit, English for the
+  engine on the reference car.
+- The build looks each text up in the project and takes the state's band of raw values from it.
+
+Find them with `watch` on the identifier, `70C:1105` on the reference car:
+
+```
+vagcan watch --did 70C:1105
+```
+
+It lists every field of that identifier by name, with its current state's text. Work the lever
+and note which state each position shows. A wrong text makes the build list the valid ones.
+
 | key | type | required | default | what it does |
 |---|---|---|---|---|
 | `read` | string: `<unit>:<DID>` | yes | — | The one identifier whose answer carries both the rocker and the switch. No text id. No `@` but `@0`. |
-| `rocker` | string: a field name | yes | — | The field of `read` that the lever moves. |
-| `switch` | string: a field name | yes | — | The field of `read` with the cruise main switch. Not the rocker. |
-| `next` | string: a state of `rocker` | yes | — | Next page. |
-| `previous` | string: a state of `rocker` | yes | — | Previous page. |
-| `measure` | string: a state of `rocker` | yes | — | Stopwatch on and off. |
-| `switch_off` | string: a state of `switch` | yes | — | The switch's off state. |
+| `rocker` | string: a field name from the project | yes | — | The field of `read` that the lever moves. |
+| `switch` | string: a field name from the project | yes | — | The field of `read` with the cruise main switch. Not the rocker. |
+| `next` | string: a state text of `rocker` | yes | — | Next page. |
+| `previous` | string: a state text of `rocker` | yes | — | Previous page. |
+| `measure` | string: a state text of `rocker` | yes | — | Stopwatch on and off. |
+| `switch_off` | string: a state text of `switch` | yes | — | The switch's off state. |
 | `cruise` | string: a channel | yes | — | The cruise control status, an enumerated field, on another identifier than `read`. Spelled as a channel. |
-| `cruise_off` | string: a state of `cruise` | yes | — | Its off state. |
+| `cruise_off` | string: a state text of `cruise` | yes | — | Its off state. |
 
 - **Names are the project's, exactly and in full**, parentheses included. Spaces at either end
   do not count, on your side or the project's.
