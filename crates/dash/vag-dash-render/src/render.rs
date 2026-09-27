@@ -250,9 +250,20 @@ where
 		// The host's screen: no link icons there, and no badge either.
 		Frame::Adapter(state) => return adapter(state, board.rates, target),
 	};
-	// Last, over whatever the page put in the corner.
-	draw_badge(board.faults, theme, target, &mut report);
+	// Last, over whatever the page put in the corner, in the colours of the column under it.
+	draw_badge(board.faults, right_column_ground(frame), theme, target, &mut report);
 	report
+}
+
+/// The ground of the panel's rightmost column, where the link icons and the fault badge stand:
+/// lit under an alarmed rightmost cell — on the frames it is drawn inverted, so it blinks with
+/// the cell — and dark on every other page, a chart's included. The icons and the badge take
+/// their colours from it (owner, 2026-09-27, for the badge).
+fn right_column_ground(frame: &Frame<'_>) -> BinaryColor {
+	match frame {
+		Frame::Values { cells } if cells.last().is_some_and(|c| c.alarm) => BinaryColor::On,
+		_ => BinaryColor::Off,
+	}
 }
 
 // --- the fault badge --------------------------------------------------------------------
@@ -343,9 +354,12 @@ fn envelope(a: Rectangle, b: Rectangle) -> Rectangle {
 }
 
 /// The badge over whatever the page drew: its ground, then the triangle and the count in
-/// the ink. A code failing now swaps the two — the whole badge inverted, as an alarm
-/// inverts its whole cell, and steady. A count that failed is never inverted.
-fn draw_badge<D>(faults: Option<Faults>, theme: &Theme, target: &mut D, report: &mut Report)
+/// the ink. The ground is the column's own (`column`), so on a dark page the badge is lit ink
+/// on dark and on an alarmed rightmost cell dark ink on its lit ground, as the link icons are
+/// (owner, 2026-09-27). A code failing now swaps the two — the whole badge inverted against
+/// the column, as an alarm inverts its whole cell, and steady. A count that failed is never
+/// inverted.
+fn draw_badge<D>(faults: Option<Faults>, column: BinaryColor, theme: &Theme, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
 {
@@ -355,9 +369,9 @@ where
 	};
 	let inverted = matches!(faults, Some(Faults::Counted { failing_now: true, .. }));
 	let (ground, ink) = if inverted {
-		(BinaryColor::On, BinaryColor::Off)
+		(column.invert(), column)
 	} else {
-		(BinaryColor::Off, BinaryColor::On)
+		(column, column.invert())
 	};
 	let _ = target.fill_solid(&badge.ground, ground);
 	let pixels = TRIANGLE.iter().enumerate().flat_map(|(dy, row)| {
@@ -854,11 +868,7 @@ where
 		draw_value(cell, centre, inner, height, theme, ink, &layout, target, &mut report);
 	}
 	// Last, over the rightmost column's ground: dark on an alarmed one, or they vanish.
-	let ink = if cells.last().is_some_and(|c| c.alarm) {
-		BinaryColor::Off
-	} else {
-		BinaryColor::On
-	};
+	let ink = right_column_ground(&Frame::Values { cells }).invert();
 	draw_icons(links, width, ink, target);
 	report
 }
@@ -2251,17 +2261,15 @@ mod tests {
 	}
 
 	#[test]
-	fn the_badge_is_the_same_picture_over_any_page() {
+	fn on_a_dark_ground_the_badge_is_the_same_picture_over_any_page() {
 		// Alone on a dark panel: no cells, no icons, nothing but the badge.
 		let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, NINE);
 		let area = the_badge(NINE);
 		assert!(same_outside(&alone, &tall(), area), "nothing drawn outside the box");
 
-		// Over an alarm page: its rightmost column is lit ground under the corner, so the
-		// badge is drawn over content — and the corner reads the same.
-		let alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(78.0), "°C", 0).alarmed()];
-		let (under, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, None);
-		assert!(lit_in(&under, area), "the page has ink where the badge goes");
+		// Over pages whose rightmost column is dark ground — an alarm in another column
+		// included — the corner reads the same.
+		let first_alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0).alarmed(), Cell::new("КОРОБКА", Some(78.0), "°C", 0)];
 		let samples = [2.5f32; 240];
 		let chart = pinned_chart(&samples);
 		let cells = temps("ОЖ");
@@ -2273,7 +2281,7 @@ mod tests {
 		let saved = [(60u16, 5.43f32), (100, 9.87), (150, 18.4)];
 		let (row, count) = crate::stopwatch::cells(&watch, Some(0.0), &saved, &words, &labels);
 		for (name, page) in [
-			("alarm", Frame::Values { cells: &alarmed }),
+			("alarm elsewhere", Frame::Values { cells: &first_alarmed }),
 			("values", Frame::Values { cells: &cells }),
 			("chart", chart),
 			("stopwatch", Frame::Values { cells: &row[..count] }),
@@ -2287,6 +2295,40 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn over_an_alarmed_rightmost_cell_the_badge_takes_the_cells_colours() {
+		// Owner, 2026-09-27: the badge follows the cell under it, as the link icons do. On the lit
+		// ground of an alarmed rightmost cell a count is dark glyphs on that ground, and a code
+		// failing now a dark box with lit glyphs — every pixel of the box the opposite of what
+		// it is on a dark page. It blinks with the cell: a frame the cell is not inverted draws
+		// it as on a dark page.
+		let alarmed = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0).alarmed()];
+		let steady = [Cell::new("ОЖ", Some(93.0), "°C", 0), Cell::new("КОРОБКА", Some(128.0), "°C", 0)];
+		let (page, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, None);
+		for faults in [NINE, NINE_FAILING, FAILED] {
+			let area = the_badge(faults);
+			assert!(lit_in(&page, area), "{faults:?}: the cell's ground is lit where the badge goes");
+			let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, faults);
+			let (display, report) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, faults);
+			assert!(!report.glyph_missing, "{faults:?}");
+			assert!(
+				area.points().all(|p| display.get_pixel(p) != alone.get_pixel(p)),
+				"{faults:?}: every pixel of the box inverted against the dark page's badge"
+			);
+			assert!(same_outside(&display, &page, area), "{faults:?}: nothing outside the box moved");
+			// The frame the cell blinks off: the dark page's badge.
+			let (off, _) = with_badge(&Frame::Values { cells: &steady }, Links::NONE, faults);
+			assert!(area.points().all(|p| off.get_pixel(p) == alone.get_pixel(p)), "{faults:?}");
+		}
+		// Not failing: no box — the ground is the cell's own lit ground.
+		let (display, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, NINE);
+		let area = the_badge(NINE);
+		assert!(lit(&display, area.top_left.x, area.top_left.y), "lit ground");
+		// Failing now: a dark box.
+		let (display, _) = with_badge(&Frame::Values { cells: &alarmed }, Links::NONE, NINE_FAILING);
+		assert!(!lit(&display, area.top_left.x, area.top_left.y), "dark box");
 	}
 
 	#[test]

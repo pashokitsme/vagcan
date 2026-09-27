@@ -854,6 +854,13 @@ mod preview {
 			&Frame::Values { cells: &alarmed },
 			faulted(BOTH, 3, false),
 		));
+		// Over the alarmed cell's lit ground the badge takes the cell's colours, as the icons do
+		// (owner, 2026-09-27): failing now is a dark box with lit glyphs.
+		shots.push(shot(
+			"values4-alarm-faults-3-failing-links-usb-ble",
+			&Frame::Values { cells: &alarmed },
+			faulted(BOTH, 3, true),
+		));
 		shots.push(shot("chart-boost-faults-99-links-usb-ble", &chart, faulted(BOTH, 99, false)));
 		shots.push(shot("chart-boost-faults-100-links-usb-ble", &chart, faulted(BOTH, 100, false)));
 		shots.push(shot("chart-boost-faults-3-failing-links-none", &chart, faulted(Links::NONE, 3, true)));
@@ -1069,9 +1076,9 @@ mod tests {
 	fn every_preview_is_named_as_one_and_names_are_unique() {
 		let shots = preview::render_all();
 		// Values ×4 links, two cells, a long label, a drifting page, the chart ×2, a drifting
-		// chart; the fault badge on values ×6 (one a `?`) and the chart ×3; the stopwatch ×3
-		// for two marks and ×4 for three (one a `?`); the adapter ×3.
-		assert_eq!(shots.len(), 29);
+		// chart; the fault badge on values ×7 (one a `?`, two over an alarm) and the chart ×3;
+		// the stopwatch ×3 for two marks and ×4 for three (one a `?`); the adapter ×3.
+		assert_eq!(shots.len(), 30);
 		let mut names: Vec<&str> = shots.iter().map(|s| s.name.as_str()).collect();
 		assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
 		names.sort_unstable();
