@@ -3,7 +3,11 @@
 **Subsystem:** dash · **Crates:** `vag-cli-core` (plan), `vag-dash-render` (lever, stopwatch,
 screen), `vag-dash-fw` · **Needs the car:** partly (the speed factor, a run)
 
-**State (2026-09-26):** approved by the owner. Phase 1 (the pure machines) and phase 2 (plan,
+**State (2026-09-27):** merged, PR #12 (`6fa2bc8`). In the owner's `dash.toml` since 2026-09-27:
+`vagcan setup` re-run, the plan builds, and the lever's bands hold the capture's readings
+(`todo/README.md`). Not flashed; nothing of it has run on the car or the bench — "On the car".
+
+**2026-09-26:** approved by the owner. Phase 1 (the pure machines) and phase 2 (plan,
 board, replay, docs) built on `feat/stalk-stopwatch`, in review for a PR, not merged. Review
 fixes the same day: a run is written to flash at a standstill, never at speed (owner's
 decision, below); a silent speed aborts a run; the stopwatch resets at each turn of the mode;

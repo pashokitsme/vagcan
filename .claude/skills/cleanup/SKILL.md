@@ -265,6 +265,24 @@ mixed in.
   against the branch list: three PRs merged on 2026-09-26 while `todo/README.md` still called
   them in flight.
 
+### Rules established on the 2026-09-27 pass
+
+- **Run the pass from a worktree of `origin/master`, and read this file from there.** `/cleanup`
+  loads the skill from whatever branch the main checkout sits on. On 2026-09-27 that was a
+  stale hand-off branch, and the text that loaded lacked the 2026-09-26 rules. Phase 1 starts
+  with `git fetch` and `git worktree add -b chore/cleanup-<date> .worktrees/cleanup origin/master`.
+  Then diff `.claude/skills/cleanup/SKILL.md` against the loaded text before acting on it.
+- **A reviewer's probe counts under the 2026-09-22 rule too.** The tool that found PR #12's
+  window-edge bug (board and laptop 65 ms apart on a sample exactly 400 ms after the first moving
+  one) was a review subagent's, and it lived in a copy of the tree under the scratchpad
+  (`pr12-probe-*/…/examples/swprobe.rs`), not in the session's own files. The fix's unit test pins
+  one case, and the sweep is what finds the next one. Look through `scratchpad/*probe*` before
+  the pass ends. It was committed as `research/dash/host/examples/stopwatch_parity.rs`, in the
+  bench crate, because `vag-cli-measure` may depend on `vag-cli-core` alone.
+- **While another writer shares the worktree, commit with `git commit -- <paths>`.** A plain
+  `git commit` takes everything staged, including files a subagent staged a moment ago. The
+  `--` form commits only the paths named.
+
 ## What a cleanup pass produces
 
 Five things, and no more:
