@@ -642,13 +642,19 @@ pub fn cells<'a>(
 	(row, 1 + marks.len())
 }
 
-/// Places after the point a time is drawn with: two under 10 s, one under 100, none past
-/// it — what a quarter of the panel holds in the large face (measured with the renderer,
-/// `the_page_fits_the_panel_in_both_languages_with_its_widest_numbers`).
+/// Places after the point a time is drawn with: two while it prints under 10 s, one while it
+/// prints under 100, none past it — four characters, what a quarter of the panel holds
+/// (measured with the renderer, `the_page_fits_the_panel_in_both_languages_with_its_widest_numbers`).
+///
+/// Decided on the value as it will be printed, not as it is: 9.996 s to two places is
+/// `10.00`, a character wider than the cell was laid out for, so from 9.995 s it takes one
+/// place and prints `10.0`; likewise from 99.95 s it prints `100`, not `100.0` (PR #12
+/// review). At the edge itself `f32` holds 9.995 and 99.95 a hair under, which prints the
+/// lower way to either count of places, and four characters both ways.
 fn decimals_for(seconds: f32) -> u8 {
 	match seconds {
-		s if s < 10.0 => 2,
-		s if s < 100.0 => 1,
+		s if s < 9.995 => 2,
+		s if s < 99.95 => 1,
 		_ => 0,
 	}
 }
@@ -1040,30 +1046,86 @@ mod tests {
 
 	#[test]
 	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
-		use crate::{Frame, PANEL, Theme, draw};
-		use embedded_graphics::pixelcolor::BinaryColor;
+		use crate::render::Report;
+		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use embedded_graphics::{geometry::Size, pixelcolor::BinaryColor};
 		use embedded_graphics_simulator::SimulatorDisplay;
-		static WIDEST: [u16; 3] = [100, 200, 300];
-		let labels = Labels::new(&WIDEST);
-		let watch = Stopwatch::new(&WIDEST, FACTOR);
-		for language in ["en", "ru"] {
-			let words = Words::of(language);
-			for word in [words.idle, words.armed, words.running, words.done] {
-				let saved = [(100, 9.99), (200, 88.88), (300, 188.8)];
-				let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
-				row[0].label = word;
-				let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
-				let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
-				assert!(
-					!report.label_overrun && !report.value_overrun && !report.glyph_missing,
-					"{language} {word}: {report:?}"
+		static THREE: [u16; 3] = [100, 200, 300];
+		static TWO: [u16; 2] = [100, 200];
+		// The glass the layout was drawn against, and the board's own: twice as tall, with the
+		// USB and BLE icons in its corner beside the last cell.
+		let panels = [(PANEL, Links::NONE), (Size::new(256, 64), Links { usb: true, ble: true })];
+		// The widest time each number of places shows; then times at a rounding edge, which print
+		// a digit wider (`10.00`, `100.0`) unless the places are chosen on the rounded value.
+		let widest = [9.99, 88.88, 188.8];
+		let edges = [9.995, 9.999, 99.95, 99.99];
+		let overran = |report: &Report| report.label_overrun || report.value_overrun || report.glyph_missing;
+		for marks in [&THREE[..], &TWO[..]] {
+			let labels = Labels::new(marks);
+			let watch = Stopwatch::new(marks, FACTOR);
+			for (size, links) in panels {
+				for language in ["en", "ru"] {
+					let words = Words::of(language);
+					for word in [words.idle, words.armed, words.running, words.done] {
+						let draw = |times: &[f32]| {
+							let saved: Vec<(u16, f32)> = marks.iter().copied().zip(times.iter().copied()).collect();
+							let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
+							row[0].label = word;
+							let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+							draw_with(
+								&Frame::Values { cells: &row[..count] },
+								&Board { links, rates: None },
+								&Theme::bold_mono(),
+								&mut panel,
+							)
+						};
+						let what = std::format!("{} marks, {size:?}, {language} {word}", marks.len());
+						let widest = draw(&widest);
+						assert!(!overran(&widest), "{what}: {widest:?}");
+						for edge in edges {
+							let report = draw(&[edge; 3]);
+							assert!(!overran(&report), "{what}, {edge} s: {report:?}");
+							// No smaller face than the widest time needs.
+							assert!(
+								!report.value_shrunk || widest.value_shrunk,
+								"{what}, {edge} s shrinks the row: {report:?}"
+							);
+						}
+					}
+				}
+				let words = Words::of("en");
+				let unmeasured = Stopwatch::new(marks, 0.0);
+				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
+				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+				let report = draw_with(
+					&Frame::Values { cells: &row[..count] },
+					&Board { links, rates: None },
+					&Theme::bold_mono(),
+					&mut panel,
 				);
+				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
+				let words = Words::of("ru");
+				let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
+				let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
+				let report = draw_with(
+					&Frame::Values { cells: &row[..count] },
+					&Board { links, rates: None },
+					&Theme::bold_mono(),
+					&mut panel,
+				);
+				assert!(!report.label_overrun && !report.glyph_missing, "{size:?}: {report:?}");
 			}
-			let unmeasured = Stopwatch::new(&WIDEST, 0.0);
-			let (row, count) = cells(&unmeasured, None, &[], &words, &labels);
-			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
-			let report = draw(&Frame::Values { cells: &row[..count] }, &Theme::bold_mono(), &mut panel);
-			assert!(!report.label_overrun && !report.glyph_missing, "{language}: {report:?}");
+		}
+	}
+
+	#[test]
+	fn a_time_takes_its_places_from_the_value_it_prints() {
+		// Every time from 0 to 1000 s by the millisecond, and around each edge by less: what is
+		// drawn is at most four characters, the width the page was laid out for.
+		let edges = (0..2_000).flat_map(|i| [9.99 + i as f32 * 1e-5, 99.9 + i as f32 * 1e-4]);
+		for seconds in (0..1_000_000).map(|ms| ms as f32 / 1000.0).chain(edges) {
+			let printed = std::format!("{:.*}", usize::from(decimals_for(seconds)), seconds);
+			assert!(printed.len() <= 4, "{seconds} s prints as {printed}");
 		}
 	}
 
