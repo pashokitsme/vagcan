@@ -10,10 +10,10 @@ mod faults;
 
 use std::collections::BTreeMap;
 
-use faults::{Count, DEADLINE_MS, Found, Line, Now, START_MS, bus_on};
+use faults::{Count, DEADLINE_MS, Found, Hold, Line, Now, START_MS, bus_on};
 use vag_dash_render::Faults;
 use vag_uds_client::faultcount::{Failed, MAX_UNITS, UnitTally, Why};
-use vag_uds_client::schedule::{Answer, Budget, Class, Next, Outgoing, Planner, Unit};
+use vag_uds_client::schedule::{Answer, Budget, Class, Delivery, Next, Outgoing, Planner, Unit};
 
 /// A car behind the planner: the gateway's answer to its list, and each unit's to `19 02 08`.
 /// A unit not listed here does not answer.
@@ -92,16 +92,32 @@ impl Bench {
 		}
 	}
 
+	/// The count's turn with the board's stopwatch up or not.
 	fn step(&mut self, bus_on: bool, stopwatch: bool) {
+		self.step_held(bus_on, stopwatch.then_some(Hold::Stopwatch));
+	}
+
+	/// The count's turn, with whatever holds it up.
+	fn step_held(&mut self, bus_on: bool, hold: Option<Hold>) {
 		let Bench {
 			planner, count, said, clock, ..
 		} = self;
-		let now = Now {
-			ms: *clock,
-			bus_on,
-			stopwatch,
-		};
+		let now = Now { ms: *clock, bus_on, hold };
 		count.step(now, planner, &mut |line: &Line<'_>| said.push(line.to_string()));
+	}
+
+	/// `panel_bus` giving up the exchange on the bus for adapter mode: the count hears of it
+	/// first, then the planner is answered `BusError` and its deliveries go round.
+	fn give_up(&mut self, out: &Outgoing) {
+		let flying = self.planner.flying_raw();
+		let Bench {
+			planner, count, said, clock, ..
+		} = self;
+		count.given_up(flying, &mut |line: &Line<'_>| said.push(line.to_string()));
+		for delivery in planner.answered(*clock, out.token, Answer::BusError) {
+			// Nobody's now: `remote` drops it.
+			assert!(count.take(delivery, &mut |line: &Line<'_>| said.push(line.to_string())).is_some());
+		}
 	}
 
 	/// The planner's next exchange, if one is due by now or by its next slot, answered by `car`
@@ -331,13 +347,16 @@ fn the_count_waits_while_the_stopwatch_is_up_and_goes_on_where_it_stopped() {
 		bench.said[1..],
 		[
 			"faults: waiting while the stopwatch is up".to_string(),
-			"faults: the stopwatch is closed — counting on".to_string(),
+			"faults: counting on where it stopped".to_string(),
 			"faults: 7E0 1 stored, 0 failing now".to_string(),
 		],
 		"said once each way"
 	);
 	bench.run(&car, 5);
 	assert_eq!(bench.count.found(), Some(Found::Counted { stored: 1, failing_now: 0 }));
+	// The count's time leaves the 4 s it waited out: it is what car check 2 reads.
+	let last = bench.said.last().unwrap();
+	assert!(last.ends_with(", not counting 4.0 s paused"), "{last}");
 }
 
 #[test]
@@ -458,24 +477,177 @@ fn a_list_longer_than_the_board_may_walk_is_a_question_mark_and_nothing_is_asked
 }
 
 #[test]
-fn an_exchange_given_up_for_adapter_mode_is_a_bus_error_for_that_unit() {
-	let car = Car::listing(&[]);
+fn an_exchange_given_up_for_adapter_mode_is_asked_again_when_the_panel_is_back() {
+	// Review, 2026-09-27: the give-up was fed to the count as the car's answer — for the
+	// gateway a `?` for the whole boot, for a unit its codes left out. It is the board's doing,
+	// not the car's: the same request goes out again once the panel is back.
+	let car = Car::listing(&[]).codes(0x7E0, &[([0, 1, 2], 0x08)]).codes(0x7E1, &[]).codes(0x710, &[]);
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.step(true, false);
+	let gateway = bench.due().expect("the gateway's list");
+	bench.give_up(&gateway);
+	assert_eq!(bench.count.found(), None, "no `?` for the board's own doing");
+	bench.clock += 30_000;
+	bench.step(true, false);
+	let again = bench.exchange(&car, 5).expect("asked again");
+	assert_eq!((again.unit.request, again.pdu.clone()), (0x710, vec![0x22, 0x2A, 0x26]));
+
+	bench.step(true, false);
+	let engine = bench.due().expect("the engine's request");
+	assert_eq!(engine.unit.request, 0x7E0);
+	bench.give_up(&engine);
+	bench.step(true, false);
+	let again = bench.exchange(&car, 5).expect("asked again");
+	assert_eq!(again.unit.request, 0x7E0, "the same unit, not the next");
+	bench.run(&car, 5);
+	assert_eq!(bench.count.found(), Some(Found::Counted { stored: 1, failing_now: 0 }));
+	assert_eq!(
+		bench
+			.said
+			.iter()
+			.filter(|l| *l == "faults: the board turned adapter — the same request again when the panel is back")
+			.count(),
+		2
+	);
+	assert!(!bench.said.iter().any(|l| l.contains("bus error")), "{:?}", bench.said);
+}
+
+#[test]
+fn nobody_answering_is_a_question_mark_not_no_faults() {
+	// Review, 2026-09-27: a list from the gateway and not one unit of the walk answering was
+	// counted as 0 stored — no badge, the picture of a car with no faults.
+	let car = Car::listing(&[0x70C]);
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.run(&car, 5);
+	assert_eq!(bench.count.found(), Some(Found::Failed));
+	assert_eq!(Found::Failed.badge(), Faults::Failed);
+	assert_eq!(bench.said.last().map(String::as_str), Some("faults: none of 4 units answered — badge ?"));
+}
+
+#[test]
+fn the_count_waits_while_a_host_holds_the_boards_timing_channel() {
+	// A laptop's `vagcan measure` through the board is a stopwatch too: a 2 s exchange of the
+	// count's would be a gap in its run (review, 2026-09-27; flagged to the owner).
+	let car = Car::listing(&[0x70C]).codes(0x7E0, &[([0, 1, 2], 0x08)]);
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.step_held(true, Some(Hold::HostTiming));
+	assert!(bench.exchange(&car, 5).is_none(), "no start while a host times a run");
+	assert!(bench.said.is_empty(), "{:?}", bench.said);
+	bench.step_held(true, None);
+	bench.exchange(&car, 5).expect("the gateway");
+	bench.step_held(true, None);
+	bench.step_held(true, Some(Hold::HostTiming));
+	assert!(bench.exchange(&car, 5).is_none(), "taken back");
+	// The host's run ends and the board's stopwatch opens: still waiting, and said why.
+	bench.step_held(true, Some(Hold::Stopwatch));
+	assert!(bench.exchange(&car, 5).is_none());
+	bench.step_held(true, None);
+	let next = bench.exchange(&car, 5).expect("going on");
+	assert_eq!(next.unit.request, 0x7E0);
+	assert_eq!(
+		bench.said[1..4],
+		[
+			"faults: waiting while a host times a run on the board's timing channel".to_string(),
+			"faults: waiting while the stopwatch is up".to_string(),
+			"faults: counting on where it stopped".to_string(),
+		]
+	);
+}
+
+#[test]
+fn a_hosts_answer_during_the_count_goes_to_the_host() {
+	// Mutation that survived review: without the `ReqId` check the count took any raw answer.
+	let car = Car::listing(&[]).codes(0x7E0, &[([0, 1, 2], 0x08)]);
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
+	bench.step(true, false);
+	let host = bench
+		.planner
+		.exchange(
+			bench.clock,
+			Class::Remote,
+			Unit {
+				request: 0x7E0,
+				response: 0x7E8,
+			},
+			vec![0x19, 0x02, 0xFF],
+		)
+		.expect("allowed");
+	// The host's `Remote` goes before the count's `Background`.
+	let out = bench.due().expect("the host's request");
+	assert_eq!(out.pdu, [0x19, 0x02, 0xFF]);
+	assert_eq!(bench.count.deadline_ms(bench.planner.flying_raw()), None);
+	let Bench {
+		planner, count, said, clock, ..
+	} = &mut bench;
+	for delivery in planner.answered(*clock + 5, out.token, Answer::Pdu(vec![0x59, 0x02, 0xFF, 0, 1, 2, 0x08])) {
+		let theirs = count.take(delivery, &mut |line: &Line<'_>| said.push(line.to_string()));
+		assert!(matches!(theirs, Some(Delivery::Raw { req, .. }) if req == host), "{theirs:?}");
+	}
+	assert_eq!(bench.said.len(), 1, "only the start: {:?}", bench.said);
+	let gateway = bench.exchange(&car, 5).expect("the count's own request is still there");
+	assert_eq!(gateway.unit.request, 0x710);
+}
+
+#[test]
+fn once_it_has_found_something_the_count_holds_no_heap() {
+	// Review, 2026-09-27: the tally — 12 B an answering unit, 4 B a walked one — was kept for
+	// the whole boot, about 1 KB at 64 units.
+	let car = Car::listing(&[0x70C, 0x714, 0x746]).codes(0x7E0, &[([0, 1, 2], 0x08)]);
 	let mut bench = Bench::new();
 	bench.clock = START_MS;
 	bench.step(true, false);
 	bench.exchange(&car, 5).expect("the gateway");
-	bench.step(true, false);
-	let out = bench.due().expect("the engine's request");
-	// `panel_bus` gives the exchange up and tells the planner so.
-	let Bench {
-		planner, count, said, clock, ..
-	} = &mut bench;
-	for delivery in planner.answered(*clock, out.token, Answer::BusError) {
-		assert!(count.take(delivery, &mut |line: &Line<'_>| said.push(line.to_string())).is_none());
-	}
-	assert_eq!(bench.said.last().map(String::as_str), Some("faults: 7E0 not counted — bus error"));
+	let walking = std::mem::take(&mut bench.count);
+	assert!(meter::freed_by(|| drop(walking)) > 0, "a count under way holds its walk");
+
+	let mut bench = Bench::new();
+	bench.clock = START_MS;
 	bench.run(&car, 5);
-	assert_eq!(bench.count.found(), Some(Found::Counted { stored: 0, failing_now: 0 }));
+	assert!(bench.count.found().is_some());
+	let done = std::mem::take(&mut bench.count);
+	assert_eq!(meter::freed_by(|| drop(done)), 0, "and one that has found something none");
+}
+
+/// The test binary's allocator: the system's, counting what each thread frees, so a test sees
+/// what one drop gives back while the others run beside it.
+mod meter {
+	use std::alloc::{GlobalAlloc, Layout, System};
+	use std::cell::Cell;
+
+	thread_local! {
+		static FREED: Cell<usize> = const { Cell::new(0) };
+	}
+
+	struct Meter;
+
+	// SAFETY: every call is passed to `System` unchanged; the counter is a const-initialised
+	// thread-local `Cell` with no destructor, which never allocates.
+	unsafe impl GlobalAlloc for Meter {
+		unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+			// SAFETY: the caller's contract, passed on.
+			unsafe { System.alloc(layout) }
+		}
+
+		unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+			let _ = FREED.try_with(|n| n.set(n.get() + layout.size()));
+			// SAFETY: the caller's contract, passed on.
+			unsafe { System.dealloc(ptr, layout) }
+		}
+	}
+
+	#[global_allocator]
+	static METER: Meter = Meter;
+
+	/// Bytes this thread freed while `f` ran.
+	pub fn freed_by(f: impl FnOnce()) -> usize {
+		let before = FREED.with(Cell::get);
+		f();
+		FREED.with(Cell::get) - before
+	}
 }
 
 #[test]
@@ -564,12 +736,35 @@ fn what_the_board_says_word_for_word() {
 				answered: 17,
 				asked: 18,
 				took_ms: 1_450,
+				paused_ms: 0,
 			},
 			"faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s",
 		),
 		(
 			Line::TooMany(65),
 			"faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?",
+		),
+		(Line::NoneAnswered(18), "faults: none of 18 units answered — badge ?"),
+		(
+			Line::Counted {
+				stored: 9,
+				failing_now: 1,
+				answered: 17,
+				asked: 18,
+				took_ms: 1_450,
+				paused_ms: 12_340,
+			},
+			"faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s, not counting 12.3 s paused",
+		),
+		(Line::Waiting(Hold::Stopwatch), "faults: waiting while the stopwatch is up"),
+		(
+			Line::Waiting(Hold::HostTiming),
+			"faults: waiting while a host times a run on the board's timing channel",
+		),
+		(Line::Resumed, "faults: counting on where it stopped"),
+		(
+			Line::GivenUp,
+			"faults: the board turned adapter — the same request again when the panel is back",
 		),
 	];
 	for (line, text) in lines {
@@ -593,18 +788,24 @@ fn what_the_board_says_word_for_word() {
 		Line::Skipped(&skipped).to_string(),
 		"faults: 776, 777 skipped — each shares an id with a unit walked"
 	);
+	assert_eq!(
+		Line::Skipped(&skipped[..2]).to_string(),
+		"faults: 776 skipped — shares an id with a unit walked",
+		"one skipped, said as one"
+	);
 }
 
 #[test]
 fn state_says_stored_and_failing_now_or_a_question_mark_and_fits_the_line() {
+	// `9/1` beside `page=0/3` read as nine of one (review, 2026-09-27).
 	let counted = Found::Counted { stored: 9, failing_now: 1 };
-	assert_eq!(format!(" faults={counted}"), " faults=9/1");
-	assert_eq!(format!(" faults={}", Found::Failed), " faults=?");
+	assert_eq!(format!(" {counted}"), " faults=9 failing=1");
+	assert_eq!(format!(" {}", Found::Failed), " faults=?");
 	let widest = Found::Counted {
 		stored: u32::MAX,
 		failing_now: u32::MAX,
 	};
-	assert_eq!(format!(" faults={widest}").len(), faults::STATE_LONGEST);
+	assert_eq!(format!(" {widest}").len(), faults::STATE_LONGEST);
 }
 
 #[test]

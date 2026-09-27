@@ -103,7 +103,7 @@ use trouble_host::prelude::*;
 use vag_dash_fw::can::TwaiBackend;
 use vag_dash_fw::config::{Config, PageKind};
 use vag_dash_fw::exchange::{Ended, Heard, Timeouts, Waits};
-use vag_dash_fw::faults::{self, Count, Found, Line as FaultLine, Now};
+use vag_dash_fw::faults::{self, Count, Found, Hold, Line as FaultLine, Now};
 use vag_dash_fw::input::{CommandQueue, Source};
 use vag_dash_fw::panel::Framebuffer;
 use vag_dash_fw::plan::{ALARM_COUNT, BUTTON_COUNT, CHANNEL_COUNT, CHART_COUNT, PLAN, UNIT_COUNT};
@@ -1445,7 +1445,7 @@ fn hello_reply() -> Message {
 
 /// The longest line [`state_line`] writes: every key at its widest — a `u8` page and count,
 /// a `u32` generation, the adapter's mode, the fault count's two `u32`s, a values page of
-/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 189 bytes.
+/// [`MAX_CELLS`](vag_dash_fw::config::MAX_CELLS) five-digit cells: 197 bytes.
 #[cfg(feature = "ble")]
 const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 run_pending=1 gen=4294967295".len()
 	+ " mode=adapter".len()
@@ -1454,7 +1454,9 @@ const STATE_LINE_LONGEST: usize = "state page=255/255 brightness=255 unsaved=1 r
 	+ vag_dash_fw::config::MAX_CELLS * "65535".len()
 	+ (vag_dash_fw::config::MAX_CELLS - 1) * ", ".len()
 	+ "]".len();
-// One line is one write to the characteristic: a longer one would lose its end.
+// `state_line` writes into a `heapless::String<UART_MTU>`, and what does not fit is dropped by
+// its `let _ = write!`: a longer line would lose its end. (The notifier cuts a line into
+// notifications of the negotiated size itself.)
 #[cfg(feature = "ble")]
 const _: () = assert!(STATE_LINE_LONGEST <= UART_MTU, "the state line must fit the UART characteristic");
 
@@ -1479,9 +1481,9 @@ async fn state_line(settings: &Shared) -> heapless::String<UART_MTU> {
 	// Which job the board is doing: `dashcfg` ignores keys it does not know, and over
 	// BLE this is how a person sees that the cable made the board an adapter.
 	let _ = write!(out, " mode={}", if adapter_mode() { "adapter" } else { "panel" });
-	// The fault count, once it has ended: stored and failing now, or `?` (`todo/dash/20`).
+	// The fault count, once it has ended: `faults=9 failing=1`, or `faults=?` (`todo/dash/20`).
 	if let Some(found) = FAULTS.lock(|faults| faults.get()) {
-		let _ = write!(out, " faults={found}");
+		let _ = write!(out, " {found}");
 	}
 	if let Some(page) = s.config.pages.get(usize::from(s.config.active_page)) {
 		let kind = match page.kind {
@@ -1919,6 +1921,10 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 						// the middle of one. The planner still has to hear of the exchange,
 						// or it would wait for this answer forever.
 						backend.quiesce().await;
+						// The count's exchange given up is the board's doing, not the car's answer:
+						// the count asks the same again when the panel is back.
+						let flying = bus.lock(|p| p.borrow().flying_raw());
+						panel.count.given_up(flying, &mut |line: &FaultLine<'_>| note!("{line}"));
 						let deliveries = bus.lock(|p| p.borrow_mut().answered(ms(), out.token, Answer::BusError));
 						deliver(deliveries, panel, bus).await;
 						return;
@@ -2175,13 +2181,28 @@ impl PanelReads {
 	/// stopwatch is up. Called with nothing on the bus.
 	fn count_step(&mut self, bus: &Bus) {
 		let answered = self.checks.iter().filter(|c| matches!(c, Check::Matched | Check::Mismatch)).count();
-		let now = Now {
-			ms: ms(),
-			bus_on: faults::bus_on(PLAN.units.len(), answered),
-			stopwatch: self.shared.screen.lock(|cell| cell.borrow().stopwatch()),
-		};
-		let count = &mut *self.count;
-		bus.lock(|p| count.step(now, &mut p.borrow_mut(), &mut |line: &FaultLine<'_>| note!("{line}")));
+		let stopwatch = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
+		let (count, subs) = (&mut *self.count, &self.subs);
+		bus.lock(|p| {
+			let mut planner = p.borrow_mut();
+			// A host's `measure` through the board times a run too: a 2 s exchange of the count's
+			// would be a gap in it (review, 2026-09-27).
+			let hold = if stopwatch {
+				Some(Hold::Stopwatch)
+			} else if host_clock(&planner, subs) {
+				Some(Hold::HostTiming)
+			} else {
+				None
+			};
+			let now = Now {
+				ms: ms(),
+				bus_on: faults::bus_on(PLAN.units.len(), answered),
+				hold,
+			};
+			count.step(now, &mut planner, &mut |line: &FaultLine<'_>| note!("{line}"));
+		});
+		// A step can end the count too (a request the planner refused).
+		publish_faults(self.count.found());
 	}
 
 	/// The lever's gate and the stopwatch, as the rates are to follow them now.
