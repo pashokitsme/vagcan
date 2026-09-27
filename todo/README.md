@@ -145,6 +145,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 | [`dash/17-bench-ble-usb.md`](dash/17-bench-ble-usb.md) | bench passed except §2 item 8; §4 on the car: BLE `info`, `faults`, `watch`, `units`, `measure` pass (2026-09-26), the cable and the guard open |
 | [`dash/18-setpoints-and-drift.md`](dash/18-setpoints-and-drift.md) | specified vs actual channels, and the drift alarm — merged (PR #4, 2026-09-15); the owner's `dash.toml` pairs boost; car pending |
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the cruise lever as buttons and the stopwatch page; approved 2026-09-26, built on `feat/stalk-stopwatch`, in review for a PR; needs the car |
+| [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
