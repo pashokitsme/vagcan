@@ -138,9 +138,12 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
    `CLAUDE.md` gives the sources.
 2. **The seven proven rows become signed.** VCDS and ODIS both say signed for `380A`, `380B`,
    `206E`, `38AC`, `38AD`, `38F6` and `38F9`; the proven rows said unsigned, and a drive cannot
-   tell the two apart on positive values. The fix is to the rows under `~/.vagcan` (data, not
-   code), with a backup beside each file — **not done yet**. `22D2` (9 bits in VCDS, read as 16
-   on the drive) was not part of the question and stays open.
+   tell the two apart on positive values. **Done 2026-09-28** in `~/.vagcan` (data, not code):
+   `0CW300041G.json`'s six rows are `Int { byte_offset 0, byte_length 2, signed, little-endian }`,
+   `8V0906264H.json`'s `206E` is `I16Be`; the files before sit beside them as
+   `*.json.before-sign-2026-09-28`. `cargo test --workspace` then passed 1,954 tests, 0 failed
+   (the proven-row tests run on this machine), and the owner's plan reads `206E` as `i BE`. `22D2`
+   (9 bits in VCDS, read as 16 on the drive) was not part of the question and stays open.
 3. **A Russian-only install falls back to English.** Its text and unit tables are shifted
    (README §6a), so its rows take their names and units from an English install on the same
    machine, by text id and unit id. Before relying on that, check that those ids agree between

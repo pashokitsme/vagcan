@@ -109,7 +109,8 @@ item 8, `dash/18` on a real pull.
    read `TTTEXT` exactly (fixes ~1,870 catalog names), then the `RM.rod` registry, so a VCDS-only
    owner gets scaling for any unshifted unit. Gated on the 18 proven rows and the 15 log pairs,
    0-based indexing failing them. The owner decided on 2026-09-28: ODIS wins over VCDS, a Russian
-   install falls back to English names, the seven proven rows become signed, `calibrate` waits.
+   install falls back to English names, the seven proven rows are signed now (done in `~/.vagcan`),
+   `calibrate` waits.
 
 **With the car**
 
