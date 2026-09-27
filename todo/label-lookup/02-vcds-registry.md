@@ -130,18 +130,25 @@ the unit's `.rod [DTC]` → a row of `RD.rod`), and reuses its pieces: file choi
 - **The usual checks:** `cargo test --workspace`, clippy with `-D warnings`, `cargo fmt`, and the
   dead-code check.
 
-## Decisions for the owner
+## The owner's decisions (asked and answered 2026-09-28)
 
-1. **ODIS and VCDS disagree.** In the research, 70 of 1,033 joined rows name a different DID.
-   In 46 of them the ODIS variant has VCDS's DID under another id; in 24 it lacks that DID.
-   Which wins when both are set up? The default is ODIS, as `CLAUDE.md` orders the sources.
-2. **The sign of seven proven rows.** VCDS and ODIS both say signed for `380A`, `380B`, `206E`,
-   `38AC`, `38AD`, `38F6` and `38F9`; the proven rows say unsigned. A drive cannot tell the two
-   apart on positive values. `22D2` is 9 bits in VCDS and was read as 16. Fix the rows under
-   `~/.vagcan` (data, not code), or leave them?
-3. **A Russian-only install** gives numbers without names or units, because its text tables are
-   shifted (README §6a). Show the IDE id in their place, or say the install cannot name them?
-4. **`calibrate`**, once this is merged. It is then needed only for:
+1. **ODIS wins.** In the research, 70 of 1,033 joined rows name a different DID: in 46 the ODIS
+   variant has VCDS's DID under another id, in 24 it lacks that DID. When both are set up, a
+   channel ODIS describes is read ODIS's way; VCDS fills only what ODIS lacks — the order
+   `CLAUDE.md` gives the sources.
+2. **The seven proven rows become signed.** VCDS and ODIS both say signed for `380A`, `380B`,
+   `206E`, `38AC`, `38AD`, `38F6` and `38F9`; the proven rows said unsigned, and a drive cannot
+   tell the two apart on positive values. The fix is to the rows under `~/.vagcan` (data, not
+   code), with a backup beside each file — **not done yet**. `22D2` (9 bits in VCDS, read as 16
+   on the drive) was not part of the question and stays open.
+3. **A Russian-only install falls back to English.** Its text and unit tables are shifted
+   (README §6a), so its rows take their names and units from an English install on the same
+   machine, by text id and unit id. Before relying on that, check that those ids agree between
+   installs: compare the `RM.rod` rows of one unit in RU and EN. With no English install there
+   is nothing to fall back to, and the row keeps its IDE/MAS id as its name — not asked, the
+   only thing left.
+4. **`calibrate` is deferred** — no decision until this task is merged. It is then needed only
+   for:
    - shifted units;
    - units with no VCDS file, like this car's BCM;
    - measurements no list has, like the cluster's clock `2238`–`223C`.

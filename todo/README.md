@@ -108,8 +108,8 @@ item 8, `dash/18` on a real pull.
    (filed 2026-09-28; the finding is [`research/vcds-registry`](../research/vcds-registry/README.md)):
    read `TTTEXT` exactly (fixes ~1,870 catalog names), then the `RM.rod` registry, so a VCDS-only
    owner gets scaling for any unshifted unit. Gated on the 18 proven rows and the 15 log pairs,
-   0-based indexing failing them. Four decisions for the owner are listed there; `calibrate`'s is
-   the last.
+   0-based indexing failing them. The owner decided on 2026-09-28: ODIS wins over VCDS, a Russian
+   install falls back to English names, the seven proven rows become signed, `calibrate` waits.
 
 **With the car**
 
@@ -153,7 +153,7 @@ item 8, `dash/18` on a real pull.
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
-| [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry; filed 2026-09-28, not started; four decisions for the owner |
+| [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry; filed 2026-09-28, not started; the owner's decisions recorded the same day |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
