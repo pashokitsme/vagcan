@@ -65,6 +65,11 @@ fn an_answer_for_another_identifier_or_sub_function_is_a_stray_too() {
 	waits.sent(0);
 	assert_eq!(waits.heard(&[0x62, 0x2A, 0x26, 0xFF, 0x13], 10), Heard::Stray, "the gateway's late list");
 	assert_eq!(waits.heard(&[0x62, 0xF1, 0x87, b'P'], 20), Heard::Answer);
+	// A batch whose first identifier the unit leaves out (ISO 14229-1): its answer is this
+	// request's, whichever identifier it starts with (review round 3).
+	let mut waits = Waits::new(&[0x22, 0x10, 0x00, 0x20, 0x00, 0x30, 0x00], BOARD, None);
+	waits.sent(0);
+	assert_eq!(waits.heard(&[0x62, 0x30, 0x00, 0x2A], 5), Heard::Answer, "the last one asked");
 	let mut waits = Waits::new(&[0x19, 0x04, 0x01, 0x02, 0x03, 0xFF], BOARD, None);
 	waits.sent(0);
 	assert_eq!(

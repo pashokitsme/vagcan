@@ -435,6 +435,31 @@ async fn identifiers_of_one_unit_go_out_together() {
 	assert_eq!(first, [0x22, 0x10, 0x00, 0x10, 0x01, 0x10, 0x02], "one `22 d1 d2 d3`");
 }
 
+/// ISO 14229-1 lets a unit leave out an identifier it does not support, the first of a batch
+/// included: the answer that starts with the second is this request's, and its reading comes
+/// (review round 3 — the first-identifier rule discarded it as late, and `2000` was never read).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_whose_first_identifier_the_unit_leaves_out_still_reads_the_rest() {
+	let (link, script, _) = car(&[(0x7E0, 0x2000, &[7])]);
+	let bus = Bus::start(link, Budget::default());
+	let mut subs: Vec<Subscription> = [0x1000u16, 0x2000]
+		.iter()
+		.map(|did| bus.subscribe(Class::Foreground, ENGINE, *did, Duration::from_millis(40), Some(1)))
+		.collect();
+	let value = loop {
+		let (_, s) = tokio::time::timeout(Duration::from_secs(2), next_of(&mut subs, &mut 0))
+			.await
+			.expect("a sample within 2 s")
+			.unwrap();
+		if s.did == 0x2000 {
+			break s.value;
+		}
+	};
+	assert_eq!(value, Ok(vec![7]));
+	let first = script.lock().unwrap().asked[0].1.clone();
+	assert_eq!(first, [0x22, 0x10, 0x00, 0x20, 0x00], "one `22 d1 d2`");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_one_shot_read_answers_once_or_says_why_not() {
 	let (link, _, _) = car(&[(0x7E0, 0xF190, b"VIN")]);

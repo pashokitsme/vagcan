@@ -68,11 +68,10 @@ pub enum Ended {
 
 /// One exchange's waits.
 #[derive(Debug, Clone)]
-pub struct Waits {
-	/// The request's first bytes — its service, and its sub-function or first identifier: what
-	/// [`answers`] and [`expects_no_answer`] read of it.
-	request: [u8; 3],
-	request_len: usize,
+pub struct Waits<'a> {
+	/// The request, whole: [`answers`] reads every identifier of a `22` in it (review round 3 —
+	/// a unit may answer a batch starting with any of them).
+	request: &'a [u8],
 	timeouts: Timeouts,
 	limit_ms: Option<u64>,
 	/// When the wait under way ends, uncut by the limit.
@@ -84,15 +83,11 @@ pub struct Waits {
 	stray_len: usize,
 }
 
-impl Waits {
+impl<'a> Waits<'a> {
 	/// The waits of `request`, with the exchange's own deadline if it has one.
-	pub fn new(request: &[u8], timeouts: Timeouts, limit_ms: Option<u64>) -> Self {
-		let mut head = [0u8; 3];
-		let request_len = request.len().min(3);
-		head[..request_len].copy_from_slice(&request[..request_len]);
+	pub fn new(request: &'a [u8], timeouts: Timeouts, limit_ms: Option<u64>) -> Self {
 		let mut waits = Waits {
-			request: head,
-			request_len,
+			request,
 			timeouts,
 			limit_ms,
 			wait_end_ms: 0,
@@ -115,7 +110,7 @@ impl Waits {
 		// A request that suppressed its positive response is answered only by a refusal, and a
 		// refusal comes within P2: waiting the full timeout for silence would hold the bus for
 		// nothing.
-		let first = if expects_no_answer(&self.request[..self.request_len]) {
+		let first = if expects_no_answer(self.request) {
 			self.timeouts.suppressed_ms
 		} else {
 			self.timeouts.answer_ms
@@ -131,7 +126,7 @@ impl Waits {
 
 	/// A PDU came at `now_ms`: what it is to this exchange.
 	pub fn heard(&mut self, pdu: &[u8], now_ms: u64) -> Heard {
-		if !answers(&self.request[..self.request_len], pdu) {
+		if !answers(self.request, pdu) {
 			if self.strays == 0 {
 				self.stray_len = pdu.len().min(self.stray_head.len());
 				self.stray_head[..self.stray_len].copy_from_slice(&pdu[..self.stray_len]);

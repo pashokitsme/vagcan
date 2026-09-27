@@ -233,6 +233,14 @@ fn a_response_answers_its_own_request_and_no_other() {
 	assert!(!answers(read, &[0x62, 0xF1, 0x90, b'V']), "another identifier's late answer");
 	// Review, 2026-09-27: the gateway's late list is not the part number asked of it next.
 	assert!(!answers(read, &[0x62, 0x2A, 0x26, 0xFF, 0x13]), "the gateway's late list");
+	// ISO 14229-1 lets a unit leave out an identifier it does not support, the first included:
+	// an answer that starts with any identifier asked is this request's (review round 3 — the
+	// first-identifier rule dropped `62 20 00 …` to `22 10 00 20 00`, and `2000` was never read).
+	let batch: &[u8] = &[0x22, 0x10, 0x00, 0x20, 0x00];
+	assert!(answers(batch, &[0x62, 0x20, 0x00, 0x2A]), "the first left out");
+	assert!(answers(batch, &[0x62, 0x10, 0x00, 0x01, 0x20, 0x00, 0x2A]));
+	assert!(!answers(batch, &[0x62, 0x30, 0x00, 0x2A]), "an identifier not asked");
+	assert!(!answers(batch, &[0x62, 0x20]), "half an identifier");
 	// A positive answer that carries no record at all can be no late answer to another
 	// identifier; the planner judges it (an empty positive teaches it single-only).
 	assert!(answers(read, &[0x62]));
@@ -258,6 +266,51 @@ fn a_response_answers_its_own_request_and_no_other() {
 	assert!(!answers(&[0x3E, 0x00], &[0x7E]));
 	assert!(answers(&[0x3E, 0x80], &[0x7F, 0x3E, 0x12]));
 	assert!(!answers(&[], &[0x40]), "no request, nothing answers it");
+}
+
+/// The board's shell against the unit that left out the batch's first identifier (review round 3,
+/// the safety probe `r3_a_batch_whose_first_did_the_unit_omits`): the answer the unit gives is
+/// taken, the identifier it left out is `Absent`, the one it answered read at its rate, and the
+/// bus held for its answers, not for 500 ms waits.
+#[test]
+fn a_batch_whose_first_identifier_the_unit_leaves_out_is_read_through_the_shells_rule() {
+	let mut p = Planner::new(Budget::board());
+	let unsupported = p.subscribe(0, Class::Foreground, A, 0x1000, 100, None);
+	let supported = p.subscribe(0, Class::Foreground, A, 0x2000, 100, None);
+	let (mut now, mut held, mut read, mut absent) = (0u64, 0u64, 0usize, 0usize);
+	while now < 5_000 {
+		match p.due(now) {
+			Next::Send(out) => {
+				// The unit answers what it supports, in the order asked.
+				let mut answer = vec![0x62];
+				for did in out.pdu[1..].chunks(2) {
+					if did == [0x20, 0x00] {
+						answer.extend_from_slice(&[0x20, 0x00, 0x2A]);
+					}
+				}
+				// The shell: an answer that is not this request's is dropped, and the exchange ends
+				// busy after the answer timeout.
+				let (answer, cost) = if answers(&out.pdu, &answer) {
+					(Answer::Pdu(answer), 5)
+				} else {
+					(Answer::Busy { asked_for_time: false }, 500)
+				};
+				now += cost;
+				held += cost;
+				for d in p.answered(now, out.token, answer) {
+					match d {
+						Delivery::Reading { sub, .. } if sub == supported => read += 1,
+						Delivery::Missed { sub, why: Miss::Absent, .. } if sub == unsupported => absent += 1,
+						_ => {}
+					}
+				}
+			}
+			Next::Idle { until_ms } => now = until_ms.unwrap_or(now + 10).max(now + 1),
+		}
+	}
+	assert!(read >= 45, "{read} readings of 2000 in 5 s at 10 Hz");
+	assert!(absent > 0, "the identifier left out is told so");
+	assert!(held < 1_000, "the bus held {held} ms of 5000");
 }
 
 #[test]

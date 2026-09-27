@@ -1670,10 +1670,10 @@ enum Stop {
 
 /// One exchange, done: its answer or why there is none, the stale frames swept before it, and
 /// its waits — the late answers to other requests it dropped among them.
-struct Exchanged {
+struct Exchanged<'a> {
 	result: Result<Vec<u8>, Stop>,
 	swept: usize,
-	waits: Waits,
+	waits: Waits<'a>,
 }
 
 /// One exchange: sweep, address, send, wait out `7F xx 78`, unwrap.
@@ -1690,7 +1690,7 @@ struct Exchanged {
 /// controller with its caller, which quiesces it before dropping it.
 ///
 /// `limit_ms` is the exchange's own deadline, if it has one ([`transact`]).
-async fn exchange(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &[u8], limit_ms: Option<u64>) -> Exchanged {
+async fn exchange<'a>(backend: &mut TwaiBackend<'static>, unit: Unit, pdu: &'a [u8], limit_ms: Option<u64>) -> Exchanged<'a> {
 	let swept = backend.drain().await;
 	let mut link = IsoTpCan::new(backend, CanId::Standard(unit.request), CanId::Standard(unit.response));
 	let mut waits = Waits::new(pdu, TIMEOUTS, limit_ms);
@@ -1708,7 +1708,7 @@ type Link<'a> = IsoTpCan<&'a mut TwaiBackend<'static>>;
 /// [`faults::DEADLINE_MS`] from the start, `78`s included (owner, 2026-09-27) — has every wait
 /// cut to it, the backstop too. Every other exchange keeps [`RESPONSE_TIMEOUT`] and
 /// [`PENDING_DEADLINE`] as they are.
-async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Waits) -> Result<Vec<u8>, Stop> {
+async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Waits<'_>) -> Result<Vec<u8>, Stop> {
 	let start = Instant::now();
 	let held = || start.elapsed().as_millis();
 	// An exchange with a deadline of its own gets no backstop past it.

@@ -273,7 +273,9 @@ const TESTER_PRESENT: u8 = 0x3E;
 ///
 /// - a negative response is `7F <the request's service> <NRC>` — the NRC is not optional;
 /// - a positive one's service id is the request's plus `0x40`, and
-///   - a `22` answer starts with the first identifier asked — or carries no record at all,
+///   - a `22` answer starts with an identifier the request asked — any of them: ISO 14229-1
+///     lets a unit leave out one it does not support, the first included, and the planner
+///     takes that as the identifier `Absent` (review round 3) — or carries no record at all,
 ///     which answers no other identifier and is the planner's to judge (an empty positive
 ///     answer teaches it a unit is single-only);
 ///   - `10`, `19` and `3E` echo their sub-function, without the suppress-positive-response bit.
@@ -288,7 +290,7 @@ pub fn answers(request: &[u8], response: &[u8]) -> bool {
 		[NEGATIVE_RESPONSE, echoed, _, ..] => *echoed == sid,
 		[NEGATIVE_RESPONSE, ..] => false,
 		[positive, rest @ ..] if *positive == sid.wrapping_add(POSITIVE_OFFSET) => match sid {
-			READ_DATA_BY_IDENTIFIER => rest.is_empty() || request.get(1..3).is_some_and(|did| rest.get(..2) == Some(did)),
+			READ_DATA_BY_IDENTIFIER => rest.is_empty() || rest.get(..2).is_some_and(|echo| request[1..].chunks_exact(2).any(|did| did == echo)),
 			SESSION_CONTROL | READ_DTC_INFORMATION | TESTER_PRESENT => request
 				.get(1)
 				.is_none_or(|sub| rest.first() == Some(&(sub & !SUPPRESS_POSITIVE_RESPONSE))),
