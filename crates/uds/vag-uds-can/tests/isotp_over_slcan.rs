@@ -75,3 +75,29 @@ async fn an_earlier_answers_tail_before_this_answer_is_ignored_over_slcan() {
 	assert_eq!(resp, [0x62, 0xF1, 0x87, b'P']);
 	ecu.await.unwrap();
 }
+
+/// The send side over slcan: a leftover consecutive frame of an earlier answer, arriving while
+/// the tester waits for the flow control of its own multi-frame request, is ignored.
+#[tokio::test]
+async fn an_earlier_answers_tail_before_the_flow_control_is_ignored_over_slcan() {
+	let (tester_side, ecu_side) = tokio::io::duplex(1024);
+	let mut iso = IsoTpCan::for_ecu(SlcanBackend::new(tester_side), 0);
+	let request: Vec<u8> = vec![0x22, 0x10, 0x00, 0x10, 0x01, 0x10, 0x02, 0x10, 0x03];
+	let expected = request.clone();
+	let ecu = tokio::spawn(async move {
+		use vag_uds_can::CanBackend;
+		let mut bus = SlcanBackend::new(ecu_side);
+		let t = Duration::from_secs(1);
+		let (_, ff) = bus.recv_frame(t).await.unwrap();
+		assert_eq!(&ff[..2], &[0x10, 0x09]);
+		bus.send_frame(0x7E8, &[0x23, 1, 2, 3, 4, 5, 6, 7]).await.unwrap();
+		bus.send_frame(0x7E8, &[0x30, 0x00, 0x00, 0, 0, 0, 0, 0]).await.unwrap();
+		let (_, cf) = bus.recv_frame(t).await.unwrap();
+		assert_eq!(cf[0], 0x21);
+		let mut got = ff[2..8].to_vec();
+		got.extend_from_slice(&cf[1..4]);
+		assert_eq!(got, expected);
+	});
+	iso.send(&request).await.unwrap();
+	ecu.await.unwrap();
+}

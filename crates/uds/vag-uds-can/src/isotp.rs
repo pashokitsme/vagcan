@@ -19,7 +19,12 @@ const MAX_FC_WAIT: usize = 8;
 /// Implements [`AsyncIsoTpTransport`], so the async UDS client rides it
 /// unchanged. Classic CAN only (<= 4095-byte PDUs), frames padded to 8 bytes.
 /// Frames from other CAN ids are skipped, not treated as errors — this is a
-/// shared bus.
+/// shared bus. Frames on the ECU's id that belong to nothing under way are
+/// ignored too, as ISO 15765-2 has it for an unexpected N_PDU: a consecutive
+/// frame, a flow control or an unknown PCI while no reception is under way,
+/// and a consecutive frame or an unknown PCI while a flow control is awaited —
+/// the tail of an answer an earlier exchange stopped waiting for. Each wait goes
+/// on within its own deadline.
 pub struct IsoTpCan<B: CanBackend> {
 	backend: B,
 	tx: u32,
@@ -74,8 +79,17 @@ impl<B: CanBackend> IsoTpCan<B> {
 	async fn wait_flow_control(&mut self) -> Result<(u8, u8), TransportError> {
 		for _ in 0..=MAX_FC_WAIT {
 			let deadline = Instant::now() + FC_TIMEOUT;
-			let data = self.recv_own(deadline).await?;
-			let pci = *data.first().ok_or_else(|| TransportError::Protocol("empty flow control frame".into()))?;
+			// ISO 15765-2, unexpected arrival of an N_PDU: a consecutive frame or an unknown PCI
+			// while a flow control is awaited is ignored — the tail of an answer an earlier
+			// exchange stopped waiting for — and the wait goes on within N_Bs.
+			let (data, pci) = loop {
+				let data = self.recv_own(deadline).await?;
+				let pci = *data.first().ok_or_else(|| TransportError::Protocol("empty flow control frame".into()))?;
+				match pci >> 4 {
+					0x2 | 0x4..=0xF => {}
+					_ => break (data, pci),
+				}
+			};
 			if pci >> 4 != 0x3 {
 				return Err(TransportError::Protocol("expected flow control frame".into()));
 			}
@@ -294,6 +308,27 @@ mod tests {
 			sent,
 			vec![(TX, vec![0x10, 0x0A, 0, 1, 2, 3, 4, 5]), (TX, vec![0x21, 6, 7, 8, 9, 0, 0, 0]),]
 		);
+	}
+
+	/// The send side of the same ISO 15765-2 rule (review round 3): a consecutive frame or an
+	/// unknown PCI while a flow control is awaited — the tail of an answer an earlier exchange
+	/// stopped waiting for, before a request of 9 bytes or more — is ignored, within the N_Bs
+	/// wait.
+	#[tokio::test]
+	async fn a_leftover_frame_while_a_flow_control_is_awaited_is_ignored() {
+		let payload: Vec<u8> = (0..10).collect();
+		let mut iso = channel(vec![
+			(RX, vec![0x23, 1, 2, 3, 4, 5, 6, 7]),
+			(RX, vec![0x45, 0, 0, 0, 0, 0, 0, 0]),
+			(RX, vec![0x30, 0x00, 0x00, 0, 0, 0, 0, 0]),
+		]);
+		iso.send(&payload).await.unwrap();
+		let sent = iso.into_backend().sent;
+		assert_eq!(sent.len(), 2, "the first frame and the one consecutive frame: {sent:02X?}");
+		// Leftovers, then nothing: the flow control never came — a timeout, not a protocol error.
+		let mut iso = channel(vec![(RX, vec![0x24, 1, 2, 3, 4, 5, 6, 7])]);
+		let err = iso.send(&payload).await.unwrap_err();
+		assert!(matches!(err, TransportError::Timeout), "got {err:?}");
 	}
 
 	#[tokio::test]
