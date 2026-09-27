@@ -116,7 +116,8 @@ Inputs the scripts read (not in the repo, per CLAUDE.md's data rule):
 Key scripts: `alphabet.py` (the `srand` codec, port of `glyphs.rs`), `decode_tttext.py`,
 `decode_registry.py`, `evaluate.py` (J1/J2/J3 + controls), `worked_example.py`,
 `check_gearbox.py` (this session's proof), `crack_driver.py` (drives `vagcan dev vcds rod`),
-`step0_census.py`/`plan.py` (variant↔file map, section regimes), `inc.py` (INC section reader).
+`step0_census.py`/`plan.py` (variant↔file map, section regimes), `inc.py` (INC section reader),
+`census_installs.py` (installs compared, §6a).
 
 ## 5. Reproduction
 
@@ -145,10 +146,16 @@ shifted section will search for hours (§6).
 - **Shifted-IV files: ~41% of the corpus (63/542 matched variants here).** The IV mask is a
   runtime global inside VCDS, not derivable offline (`.archive/research/labels/tttext2.md`
   §3.3a); opening one is hours of brute force per file. None of the reference car's 15 units is
-  shifted. Which families are affected, and that we do **not** need them, is in this session's
-  discussion — mostly newer blocks (`*Class`, `Gen3`, `5G`). Route for those: ODIS, or
-  `calibrate`.
-- **BCM (`EV_BCMMQB`) has no file in the English VCDS install** — a missing file, not encryption.
+  shifted. The 63 blocked variants of this project (`scratch/out/plan.json`, `reachable: false`)
+  are mostly newer blocks: the ESC `Brake1ESCMQB37CLASS` (6) and late MK100 `IPB`/`OMG`, the EPS
+  `SteerAssisBASGEN1MQB37` (7), the gateway `GatewMQB2020Class`, the clusters
+  `DashBoardJCIMQBAB` 011–015 and `DashBoardVDDMQBA0`, two engines (`ECM00TFS01104C907309AL`,
+  `ECM10TFS03005C906032Q`), Hella Gen3 headlights, the tailgate, seat memory, auxiliary heaters,
+  the trailer module, infotainment (`MUCNS`, `MUHig6`, `MUOI`), telematics (`OCU3Clas5G`,
+  `OCUClass2023`, `OCUGen3*`), the amplifier, cameras (`MFK*`), airbags TS6 22/23 and the ACC
+  radar `MRRCONTI`. The reference car needs none of them. Route for those: ODIS, or `calibrate`.
+- **BCM (`EV_BCMMQB`) has no file in any of the three installs of §6a** — a missing file, not
+  encryption. Whether `ReDir.rod` sends its variant to another file is unchecked.
 - **Undecoded:** `f2` types 1/5/6/12, fields `f11`/`f12`, ~620 RM rows with an empty DID; the
   first row of a TEA `MWB` (block 0 not repaired); 3 unresolved `INC` first rows; how VCDS
   assembles the `ECM00*`/`GV_` engine lists.
@@ -156,6 +163,36 @@ shifted section will search for hours (§6).
 - **`TTTEXT2.ROD` no longer matters for the DID** (it comes from RM); still unopened.
 - **Budget spent:** ~111 CPU-min, incl. ~1,191 CPU-s wasted before the driver learned to skip
   shifted files. `crack_driver.py` now passes `--no-crack` unless INC/MWB is classic.
+
+### 6a. Three installs compared (2026-09-28)
+
+`scripts/census_installs.py` over the English 25.12 and the Russian install unpacked from
+`vendor/*.zip`, and the English 26.3 in `~/vcds-en` — the first block of every section, seconds:
+
+| | EN 25.12 (`vendor/vcds-en`) | EN 26.3 (`~/vcds-en`) | RU (`vendor/vcds-ru`) |
+|---|---|---|---|
+| data set (`DSVer.txt`) | 374.0 | 375.1 | 356.3 (files of June 2024) |
+| `.rod` files | 16,576 | 20,088 | 15,465 |
+| any section shifted | 6,204 (37%) | 7,830 (39%) | 5,152 (33%) |
+| `RM.rod`, `RD.rod`, `STRUC`/`TTDOP`/`MUX`, `ReDir` | classic | classic | classic |
+| names | `TTTEXT.ROD`, classic | same | `TTText-RUS.rod`, **shifted** |
+| units | `UNIT.ROD`, classic | same | `Unit-RUS.rod`, **shifted** |
+| fault texts | `Codes.dat` (English) | not in this copy (`Labels/`, `Scaling/`, `UDS_EV/` only) | `Code-RUS.dat` (Russian, 2019) — `setup` already reads it |
+| `.lbl` label files | English | English | English too: no Cyrillic in any of 1,202 |
+
+- **The regime is a property of the file, not of the release.** Between installs, by file name:
+  `MWB` classic→shifted / shifted→classic in 1 / 3 of 5,021 files (EN 25.12 → EN 26.3) and 1 / 0
+  of 2,910 (RU → EN 26.3); `INC` in 4 / 4 of 6,740 and 15 / 5 of 5,627. So no install opens what
+  another keeps shifted — the 63 blocked variants of §6 are blocked in all three.
+- **Every release is re-encrypted.** No file is byte-identical between any two installs (11,240
+  to 15,113 common names each). A unit's `MWB` rows index **that install's** `RM.rod`: never mix
+  files across installs.
+- **RU is older.** 3,452 files are only in RU, 2,001 of them older versions of units the English
+  installs carry under the same base name; 4,599 are only in EN 26.3 (newer units).
+- **A Russian-only install gives numbers without words.** Its `RM.rod` reads (DID, layout,
+  scaling), but its names and units are in shifted files. Russian measurement names would need
+  the runtime mask (§6); Russian fault texts already work.
+- **The reference car's units** are present and in the same regime in all three.
 
 ## 7. Next — implementation (its own branch, reviewed)
 

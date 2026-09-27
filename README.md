@@ -95,6 +95,7 @@ Updated 2026-09-28.
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
+- [ ] Scalings and names from a VCDS install alone, without an ODIS project (for about 60 % of VCDS's unit files; the rest need VCDS's own runtime key)
 - [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; a test run needs the car)
 - [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
 

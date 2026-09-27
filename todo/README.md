@@ -104,37 +104,39 @@ item 8, `dash/18` on a real pull.
 2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
 3. **OLED and enclosure** — `dash/15`; waits for the panel.
-4. **VCDS registry reader (`RM.rod`)** — [`research/vcds-registry/README.md`](../research/vcds-registry/README.md)
-   §7: read `TTTEXT` with `glyphs::for_key` (fixes ~1,870 catalog names), then read `RM.rod` in
-   `vag-data-labels` so a VCDS-only owner gets scaling for any unshifted unit. Gate on the 18
-   proven rows and 15 log pairs; test the 1-based row convention. Then the `calibrate` decision.
+4. **Measurements from a VCDS install** — [`label-lookup/02`](label-lookup/02-vcds-registry.md)
+   (filed 2026-09-28; the finding is [`research/vcds-registry`](../research/vcds-registry/README.md)):
+   read `TTTEXT` exactly (fixes ~1,870 catalog names), then the `RM.rod` registry, so a VCDS-only
+   owner gets scaling for any unshifted unit. Gated on the 18 proven rows and the 15 log pairs,
+   0-based indexing failing them. Four decisions for the owner are listed there; `calibrate`'s is
+   the last.
 
 **With the car**
 
-4. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
+5. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
    of all: pressing and releasing + and − never opens the stopwatch or turns the page back (a
    release from 91 or 128 to 205 crosses the other bands; at 20 Hz two reads are 100 ms). Then
    paging with cruise off, cruise on closing the stopwatch, a 0–100 beside `vagcan measure --ble`
    started first (both time the gearbox's speed), and the run saved before `GO` surviving a
    power cycle. Pin buttons on the bench first.
-5. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
+6. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
    total against `vagcan faults`, the log's time, the units skipped, a BLE `info` during it.
-6. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
+7. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
    `watch --out` recording with `200A`–`200D` for the replay.
-7. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
+8. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
    moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels (DRIVE's
    acceleration: `+` should read as speeding up); §2 item 8.
-8. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
+9. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
-9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
+10. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it
    ran with the `.rod` fallback beside the project); then freeze-frame layouts
    (`MCD_DB_ENV_DATA_DESC`) for `faults --details`.
-10. **Questions only the car answers** — `dash/06`.
-11. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
+11. **Questions only the car answers** — `dash/06`.
+12. **Reverse-gear code** — `catalog.rs` says `0C`, ODIS says reverse is `7`. Select
     reverse, read `0x210F` on `7E0` and `0x3816` on `7E1`.
-12. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
+13. **Sweep witness constants** — `WITNESS_EVERY = 64`, `QUIET_RUN = 3` are reasoned, not
     measured. One parked whole-car run.
-13. **`watch` and `measure` across all fifteen units** — measured against the file, not
+14. **`watch` and `measure` across all fifteen units** — measured against the file, not
     the car.
 
 ## Task files
@@ -151,6 +153,7 @@ item 8, `dash/18` on a real pull.
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
+| [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry; filed 2026-09-28, not started; four decisions for the owner |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.
