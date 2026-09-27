@@ -630,7 +630,7 @@ const RUSSIAN: Words = Words {
 	armed: "ПУСК",
 	running: "ЗАМЕР",
 	done: "ГОТОВО",
-	aborted: "СБРОС",
+	aborted: "ПРЕРВАН",
 	// The units' face has no Cyrillic, and a plan's units are the catalog's SI spellings in
 	// either language: the labels are Russian, the units are not.
 	seconds: "s",
@@ -1303,6 +1303,9 @@ mod tests {
 	fn the_words_follow_the_plans_language() {
 		assert_eq!(Words::of("ru").idle, "СТОП");
 		assert_eq!(Words::of("en").idle, "STOP");
+		// `СБРОС` reads as "reset" or "cleared", not as a run cut short (PR #12 review). The fit
+		// test draws it on both panels with two and three marks.
+		assert_eq!(Words::of("ru").aborted, "ПРЕРВАН");
 		assert_eq!(Words::of("de"), Words::of("en"), "a language it has no words for is English");
 		for words in [Words::of("ru"), Words::of("en")] {
 			for word in [words.not_measured, words.idle, words.armed, words.running, words.done, words.aborted] {
