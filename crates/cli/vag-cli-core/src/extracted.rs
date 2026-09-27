@@ -267,6 +267,12 @@ impl Extracted {
 		self.described(odx_name, version).into_iter().map(|(def, _)| def).collect()
 	}
 
+	/// The row the project itself declares at `def`'s field on this unit — what a proven row
+	/// at that field stands in front of ([`tagged`]). `None` where the project declares none.
+	pub fn declared_at(&self, odx_name: Option<&str>, version: Option<&str>, def: &MeasurementDef) -> Option<MeasurementDef> {
+		self.described(odx_name, version).into_iter().map(|(d, _)| d).find(|d| same_field(d, def))
+	}
+
 	/// The same, with each row's **text id** still attached.
 	///
 	/// Split out rather than folded into [`Self::for_unit`] because the id is

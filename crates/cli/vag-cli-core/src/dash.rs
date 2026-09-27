@@ -1272,7 +1272,15 @@ pub fn build(
 	// as channels of their own, on no page, read only for the lever.
 	let stalk = match &input.stalk {
 		None => None,
-		Some(wanted) => Some(resolve_stalk(wanted, &mut channels, &offered, answered, units, extracted, &mut notes)?),
+		Some(wanted) => Some(resolve_stalk(
+			wanted,
+			&mut channels,
+			&offered,
+			answered,
+			units,
+			Sources { store, extracted },
+			&mut notes,
+		)?),
 	};
 	if stopwatch.is_some() && stalk.is_none() {
 		notes.push("stopwatch: there is no [stalk], and its `measure` is the only way onto the page".to_string());
@@ -1646,16 +1654,68 @@ fn same_name(project: &str, owner: &str) -> bool {
 	project.trim() == owner.trim()
 }
 
+/// The project a `[stalk]` is resolved against: the proven rows and what the project declares.
+#[derive(Clone, Copy)]
+struct Sources<'a> {
+	store: &'a CatalogStore,
+	extracted: &'a Extracted,
+}
+
+/// **A state is a band, and the lever needs the band.** A switch read as a voltage answers
+/// inside its band, rarely on its lower end, so a state kept as one value matches nearly
+/// nothing and the lever never presses. Two places can have lost the bands, and both are
+/// refused with what to do:
+///
+/// - the project's cache, written before each level kept its upper end — for the whole unit;
+/// - a proven row in `measurements/`, which wins at its field ([`crate::extracted::tagged`])
+///   and was written before state ranges: every state a single value where the project's
+///   own row for the field gives bands. A field the project itself gives as single values —
+///   a digital status — is one, proven or not.
+fn states_keep_their_bands(key: &str, found: &poll::Channel, identity: &UnitIdentity, sources: Sources<'_>) -> Result<(), Error> {
+	let (odx_name, version) = (identity.odx_name.as_deref(), identity.odx_version.as_deref());
+	if sources.extracted.levels_predate_bounds(odx_name, version) {
+		return Err(Error::Stalk(format!(
+			"unit {:03X}: the project's cache keeps only the lower end of each state — run `vagcan setup` again, so a reading anywhere in a state's band is that state",
+			identity.request
+		)));
+	}
+	let Some(def) = found.def.as_ref().filter(|_| found.proven) else {
+		return Ok(());
+	};
+	let declared = sources.extracted.declared_at(odx_name, version, def);
+	let enum_levels = |def: &vag_data_labels::catalog::MeasurementDef| match &def.scaling {
+		Scaling::Enum { levels } => Some(levels.clone()),
+		_ => None,
+	};
+	let single = |levels: &[Level]| levels.iter().all(|l| l.lower() == l.upper());
+	match (enum_levels(def), declared.as_ref().and_then(enum_levels)) {
+		(Some(proven), Some(declared)) if single(&proven) && !single(&declared) => {
+			let file = sources
+				.store
+				.file_for_unit(identity.part_number.as_deref(), odx_name)
+				.map_or_else(|| "the unit's proven catalog".to_string(), |path| path.display().to_string());
+			let name = def.name.trim();
+			Err(Error::Stalk(format!(
+				"{key}: the proven row for {name:?} in {file} holds each state as a single value — it predates state ranges, and \
+				 the project gives {name:?} bands, so a reading inside one would be no state; write its states as \
+				 [lower, upper, \"name\"] or remove the row"
+			)))
+		}
+		_ => Ok(()),
+	}
+}
+
 /// `[stalk]` against the project and the car: every name the owner wrote is the project's
 /// own, for the variant the car reported, and the states come with the intervals the
-/// project gives them. The three fields are appended to `channels`.
+/// project gives them ([`states_keep_their_bands`]). The three fields are appended to
+/// `channels`.
 fn resolve_stalk(
 	wanted: &StalkInput,
 	channels: &mut Vec<Channel>,
 	offered: &[poll::Channel],
 	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
-	extracted: &Extracted,
+	sources: Sources<'_>,
 	notes: &mut Vec<String>,
 ) -> Result<Stalk, Error> {
 	let read = Reference::Field {
@@ -1663,16 +1723,8 @@ fn resolve_stalk(
 		did: wanted.did,
 		bit_offset: 0,
 	};
-	for request in [wanted.request, wanted.cruise.request()] {
-		let identity = units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request))?;
-		// A cache from before each level kept its upper end has every state as its lower end
-		// alone: a switch read as a voltage answers inside its band and would match nothing.
-		if extracted.levels_predate_bounds(identity.odx_name.as_deref(), identity.odx_version.as_deref()) {
-			return Err(Error::Stalk(format!(
-				"unit {request:03X}: the project's cache keeps only the lower end of each state — run `vagcan setup` again, so a reading anywhere in a state's band is that state"
-			)));
-		}
-	}
+	let identity_of = |request: u16| units.iter().find(|u| u.request == request).ok_or(Error::UnknownUnit(request));
+	let (lever_unit, cruise_unit) = (identity_of(wanted.request)?, identity_of(wanted.cruise.request())?);
 	if answered.and_then(|a| a.saw(wanted.request, wanted.did)) == Some(false) {
 		return Err(Error::NotAnswered(read));
 	}
@@ -1701,6 +1753,7 @@ fn resolve_stalk(
 			many => return Err(Error::Stalk(format!("{key}: {read} has {} fields named {name:?}", many.len()))),
 		};
 		let levels = levels_of(found).ok_or_else(|| Error::Stalk(format!("{key}: {name:?} is a quantity, not a list of states")))?;
+		states_keep_their_bands(key, found, lever_unit, sources)?;
 		Ok((found, levels))
 	};
 	let (rocker, rocker_levels) = field("rocker", &wanted.rocker)?;
@@ -1750,6 +1803,7 @@ fn resolve_stalk(
 	{
 		return Err(Error::NotAnswered(wanted.cruise.clone()));
 	}
+	states_keep_their_bands("cruise", cruise, cruise_unit, sources)?;
 	let cruise_levels = levels_of(cruise).expect("picked on levels");
 	let cruise_name = cruise.label();
 	let cruise_off = state_index(cruise_levels, &wanted.cruise_off, "cruise_off", &cruise_name)?;
@@ -3997,6 +4051,100 @@ mod tests {
 		assert!(why.contains("is not <unit>:<DID>"), "{why}");
 		let why = build_with_lever("[[stalk]]\nread = \"75A:4C21\"\n").unwrap_err().to_string();
 		assert!(why.contains("one [stalk] table"), "{why}");
+	}
+
+	/// A proven row in `measurements/<key>.json`, enumerated, at one field: `raw_form` places
+	/// it, and `levels` are its states as the file holds them.
+	fn proven_states(did: u16, name: &str, raw_form: RawForm, levels: Vec<Level>) -> MeasurementDef {
+		MeasurementDef {
+			name: name.to_string().into(),
+			unit: "".into(),
+			address: ReadId::Uds(did),
+			raw_form,
+			scaling: Scaling::Enum { levels },
+		}
+	}
+
+	/// [`build_with_lever_in`] with `proven` written as the unit's catalog, `<key>.json`,
+	/// beside the cache.
+	fn build_with_proven(input: &str, extra: Extra<'_>, key: &str, proven: Vec<MeasurementDef>) -> Result<Built, Error> {
+		let here = tempfile::tempdir().unwrap();
+		build_with_lever_in(here.path(), input, extra, |cache| {
+			let dir = cache.parent().unwrap().join("proven");
+			std::fs::create_dir_all(&dir).unwrap();
+			std::fs::write(dir.join(format!("{key}.json")), MeasurementCatalog::new(proven).to_json().unwrap()).unwrap();
+		})
+	}
+
+	/// A proven row wins at its field, and one written before state ranges holds every state
+	/// as a single value: where the project gives the field bands, a reading inside one would
+	/// be no state at all, and the lever would never press. The same rule as a cache that
+	/// predates the bands, for the other place a state can come from.
+	#[test]
+	fn a_proven_row_whose_states_predate_their_bands_is_refused_naming_its_file() {
+		// The rocker's byte, as the declared row places it (bit 16, one byte).
+		let byte_2 = RawForm::Int {
+			byte_offset: 2,
+			byte_length: 1,
+			signed: false,
+			big_endian: true,
+		};
+		let points = vec![
+			Level::point(20, "rest"),
+			Level::point(76, "plus"),
+			Level::point(127, "minus"),
+			Level::point(178, "limit"),
+		];
+		let why = build_with_proven(LEVER, Extra::default(), "PART2", vec![proven_states(STALK_DID, "Rocker", byte_2, points)])
+			.unwrap_err()
+			.to_string();
+		assert!(
+			why.starts_with("[stalk] rocker: the proven row for \"Rocker\" in ") && why.contains("PART2.json") && why.contains("predates state ranges"),
+			"{why}"
+		);
+
+		// The cruise status, on a declared ladder, proven as points.
+		let ladder_status = Extra {
+			rows: vec![(ENGINE, state_reading(0x2006, "Cruise ladder", "IDE00023", 0, 8, ladder(&["off", "on"])))],
+			..Extra::default()
+		};
+		let why = build_with_proven(
+			&LEVER.replacen("01:2001", "01:IDE00023", 1),
+			ladder_status,
+			"PART1",
+			vec![proven_states(
+				0x2006,
+				"Cruise ladder",
+				RawForm::U8First,
+				vec![Level::point(10, "off"), Level::point(200, "on")],
+			)],
+		)
+		.unwrap_err()
+		.to_string();
+		assert!(
+			why.starts_with("[stalk] cruise: the proven row for \"Cruise ladder\" in ") && why.contains("PART1.json"),
+			"{why}"
+		);
+
+		// A status the project itself gives as single values is one: proven so, it builds.
+		let status = vec![Level::point(0, "off"), Level::point(1, "standby"), Level::point(2, "passive")];
+		let built = build_with_proven(
+			LEVER,
+			Extra::default(),
+			"PART1",
+			vec![proven_states(0x2001, "Cruise status", RawForm::U16Be, status)],
+		)
+		.expect("points where the project has points");
+		assert!(built.plan.channels[5].proven, "the proven row is the one used");
+		// And a proven rocker written with ranges is the proven row, used.
+		let ranges = vec![
+			Level::range(0, 60, "rest"),
+			Level::range(61, 101, "plus"),
+			Level::range(102, 152, "minus"),
+			Level::range(153, 203, "limit"),
+		];
+		let built = build_with_proven(LEVER, Extra::default(), "PART2", vec![proven_states(STALK_DID, "Rocker", byte_2, ranges)]).unwrap();
+		assert_eq!(built.plan.stalk.unwrap().rocker_states[0].upper, 60);
 	}
 
 	/// A cache written before the levels kept their upper ends has every state as its lower
