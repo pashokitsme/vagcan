@@ -185,7 +185,7 @@ marks = [60, 100]
 
 A finished run's times are kept in the board's settings. They are written to flash when the car
 next stands still for 1.5 s with the stopwatch on, or when you type `save` in `dashcfg`. Until
-then `get` says a run waits. Leave the stopwatch before the car stops and the run is lost at
+then `get` says a run is in RAM only. Leave the stopwatch before the car stops and the run is lost at
 power-off unless you `save`.
 
 A run that ends short of its highest mark shows `ABORT` and is not kept.
