@@ -79,7 +79,9 @@ impl Saving {
 	/// Flash was erased. What RAM holds stays on the glass and is no longer in flash — so it is
 	/// unsaved, and a run is added to the defaults, never written back with the erased pages and
 	/// brightness (PR #12 review: left saved, the next boot loaded them rather than the
-	/// defaults). A run already waiting still waits: it is in RAM, and flash holds nothing.
+	/// defaults). A run already waiting stays pending: it is in RAM, and flash holds nothing. It
+	/// goes into the defaults at the next standstill if it has not had its try; after its try it
+	/// waits for `save`, as before the erase.
 	pub fn erased(&mut self) {
 		self.unsaved = true;
 	}

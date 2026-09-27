@@ -193,11 +193,13 @@ two samples still start over.
   erased), to the defaults the next boot would run on — and those changes stay unsaved for the
   owner to keep or not. One try: a run that could not be written stays `run_pending` until
   `save`, and the stopwatch arms after the try either way. `load` and `defaults` drop a pending
-  run; `erase` keeps it pending, for the defaults. **The write happens only at a standstill the
-  stopwatch sees, and the stopwatch is fed only while its mode is on.** A driver who leaves the
-  stopwatch (LIMIT, a stopwatch button, or the lever's close) before stopping keeps the run in RAM
-  only: it is lost at ignition off unless `save` is sent, or the stopwatch is turned on again and
-  the car stands.
+  run; `erase` keeps it pending — into the defaults at the next standstill if it has not had its
+  try, for `save` if it has. A configuration flash could not be read at boot counts as unsaved,
+  so a run is added to it, never the defaults written over it. **The write happens only at a
+  standstill the stopwatch sees, and the stopwatch is fed only while its mode is on.** A driver
+  who leaves the stopwatch (LIMIT, a stopwatch button, or the lever's close) before stopping keeps
+  the run in RAM only: it is lost at ignition off unless `save` is sent, or the stopwatch is
+  turned on again and the car stands.
 - An aborted run is shown until the page is left, never stored; a finished run with no times
   (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
   pages no longer fit the plan.

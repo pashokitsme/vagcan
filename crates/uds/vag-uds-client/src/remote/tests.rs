@@ -1278,6 +1278,14 @@ fn a_radio_host_refused_while_the_boards_own_stopwatch_times_is_told_it_may_be_t
 	board.to_host.clear();
 	board.hear(timing(1, ENGINE, 0xF40D, 20));
 	assert!(board.to_host.is_empty(), "no refusal once the board's run let go");
+	assert_eq!(board.session.subscriptions().count(), 1, "the radio holds it now");
+	let before = board.sent.len();
+	board.run_until(board.now + 200);
+	let polled = board.sent[before..]
+		.iter()
+		.filter(|(_, o)| o.unit == ENGINE && dids_of(&o.pdu).contains(&0xF40D))
+		.count();
+	assert!(polled >= 9, "and it is polled: {polled} in 200 ms");
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.

@@ -801,10 +801,16 @@ fn open_settings() -> Settings {
 				}
 				Err(e) => {
 					warn!("config unreadable ({e:?}), running on defaults");
+					// `unsaved`: flash may hold the owner's configuration, and RAM runs on the
+					// defaults. Left saved, a run's write took the whole of RAM — the defaults —
+					// over it (PR #12 review); unsaved, the run is added to what flash holds.
 					Settings {
 						store: Some(store),
 						config: Config::default(),
-						saving,
+						saving: Saving {
+							unsaved: true,
+							..Saving::default()
+						},
 					}
 				}
 			}
