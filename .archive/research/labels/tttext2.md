@@ -1,5 +1,11 @@
 # `TTTEXT2.ROD` — it does not open, and the reason is a second IV regime
 
+> **UPDATE 2026-09-28 — no longer needed for the DID.** The measurement DID/scaling registry is
+> `RM.rod` (classic, opens in ~82 CPU-s), so the open question "does `TTTEXT2` hold the registry"
+> is moot. The shifted-IV analysis here still governs the ~41% of files that are shifted (their
+> `RM`/`IV` sections are blocked the same way). See
+> [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 `label-linkage.md` §5.5 named `TTTEXT2.ROD` and `MUX.rod` as the only two uncracked files
 that could still hold a global measurement registry — the `identifier → measurement` link
 this project has been missing since the first writeup. This is the attempt on `TTTEXT2.ROD`.

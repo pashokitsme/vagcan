@@ -1,5 +1,12 @@
 # `TTTEXT.ROD [TXT]` — the codec, and the names it gives up
 
+> **CORRECTED 2026-09-28 — §5 and §6 are wrong.** The per-record key **is** a function of the
+> record id: it is `srand(record id)` plus two shuffles, the exact generator
+> `fault-naming-hop.md` §11 reversed for `RD.rod` (`glyphs.rs::TableAlphabet::for_key`). It was
+> never tried here. With it the whole table decodes, digits included — the numeric class §6 calls
+> unbroken reads fine. The shipped catalog differs from the exact read in ~1,870 of 14,736
+> entries. See [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 The global text table of VW's ODX corpus. Its `[TXT]` section had already been decrypted and
 inflated (7,461,935 B) by the time this work started; what remained was that the payloads
 looked like word-shaped gibberish. **They are enciphered, per record, with a simple

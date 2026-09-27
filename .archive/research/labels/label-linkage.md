@@ -1,5 +1,12 @@
 # Label linkage — attacking the `.rod` corpus from the proven end
 
+> **CORRECTED 2026-09-28 — §3's premise is wrong.** A `MWB` row `<n>,<code>` has `n` as a
+> **1-based row number into the global registry `RM.rod`**, not a text-id. The per-ECU degree of
+> freedom §3 says is missing is exactly *which registry row the unit selects*; the DID, layout
+> and scaling live in that row. The counting argument is sound but aimed at the wrong field. The
+> field codec (§2) and the names work (§4) stand. See
+> [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 An attempt, using the first full offline VCDS installation plus the 16 measurement rows now
 **proven on the car** (`catalogs/*.json`), to recover from VW's own label files what the car
 cannot tell us: **names** for our measurements, and — if it exists — the stored **scaling**.

@@ -199,15 +199,23 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
   odis-dtc/            fault codes and their text in an ODIS project: the object
                        layouts the DTC loader reads, and the offline proof against
                        the reference car's stored faults (ODIS 15/15, VCDS 11/15)
+  vcds-registry/       VCDS keeps every measurement's DID, layout and scaling in the global
+                       registry `RM.rod` (2026-09-28); a unit's `MWB` lists 1-based row numbers
+                       into it. Overturns "scaling is live-only" (the archive labels/ files,
+                       corrected in place). Not yet in the crates. `README.md` + `scripts/`;
+                       `scratch/` is the Ross-Tech-derived data, gitignored
+  tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
+                       Simos18 calibration as graphs (read-only, never talks to a car)
   tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
                        Simos18 calibration as graphs (read-only, never talks to a car)
 .archive/        retired paths kept as evidence — see .archive/README.md for the map:
   research/            subjects whose findings are implemented and shipped:
     labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT
                          name codec, `Codes.dat`, the fault-naming chain. Key reads:
-                         `rod-labels.md` (the crack + the STRUC refutation, i.e. why
-                         scaling is live-only), `tttext-codec.md` (→ names.json),
-                         `fault-naming-hop.md` (number → words, end to end)
+                         `rod-labels.md` (the crack), `tttext-codec.md` (→ names.json),
+                         `fault-naming-hop.md` (number → words, end to end). NB the
+                         "scaling is live-only" refutation here is **overturned** —
+                         `research/vcds-registry/` found it in `RM.rod`
     car/                 what the reference car answers: identifier map, the units
                          outside the powertrain, the whole-car survey, gearbox state
     clb-crack/           RE scripts (usbpcap.py, link_cipher.py, framing_dis.py, decoders)

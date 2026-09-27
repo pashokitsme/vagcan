@@ -1,5 +1,9 @@
 # `MUX.rod` — opened, read, and it is not the registry
 
+> **UPDATE 2026-09-28 — the registry was found, and it is not this file.** `MUX.rod` is correctly
+> ruled out here; the measurement registry is `RM.rod` (a sibling never opened in this line of
+> work). See [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 One of the two files `.archive/research/labels/label-linkage.md` §5.5 named as the last places a **global
 measurement registry**, and with it the per-ECU read identifier, could still hide. It opens
 in under a minute, its record grammar falls out cleanly, and its seventeen fields all have

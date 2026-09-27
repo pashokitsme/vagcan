@@ -10,24 +10,21 @@ in [`CLAUDE.md`](CLAUDE.md).
 
 ## The one fact that shapes everything
 
-**Names come from VCDS's label files. Scaling cannot come from them at all.**
+**Names come from VCDS's label files. Scaling comes from ODIS today; VCDS holds it too, but
+vagcan cannot yet read it.**
 
 Ross-Tech's VCDS ships 300 MB of label and ODX files, and it holds a great
 deal: what every control unit is called, what its measuring blocks are called, which
-fault codes exist and how they read in words. What it does not hold — anywhere, in
-any encoding — is the join from a measurement to the identifier that carries it, or
-the factor and offset that turn its bytes into a number.
+fault codes exist and how they read in words. It **also** holds the join from a measurement to
+its identifier, layout and scaling — in a global registry, `RM.rod`, indexed by each unit's
+`MWB` row numbers (found 2026-09-28, [`research/vcds-registry/README.md`](research/vcds-registry/README.md)).
+This corrects a long-standing conclusion in the archive that the scaling was "live-only"; that
+was an off-by-one in reading `MWB` (its leading number is a registry **row number**, mistaken
+for a name pointer). **vagcan does not yet read `RM.rod`**, so as shipped the sources below are
+unchanged — until the registry reader lands (that research file's §7), scaling still comes from
+ODIS or a drive.
 
-That is not "we did not look hard enough". The read identifier is not stored in
-`STRUC` under any tested encoding, checked against ground truth from a live capture
-rather than assumed, and `MWB` carries no per-ECU identifier either. There is no
-route from "this unit's boost pressure" to "read `0x202A`, two bytes big-endian,
-×0.001 bar" through any file Ross-Tech ships. The reasoning is in
-[`.archive/research/labels/rod-labels.md`](.archive/research/labels/rod-labels.md) §4.0c and
-[`.archive/research/labels/label-linkage.md`](.archive/research/labels/label-linkage.md) §3. Do not go
-looking again.
-
-**VW's own ODIS-Service data can, and that is why it leads.** An extracted ODIS project
+**VW's own ODIS-Service data can too, and that is why it leads today.** An extracted ODIS project
 declares, per control-unit variant, every identifier that unit answers together with the
 byte offset, the length, the byte order and the compu formula — the whole chain the
 label files provably do not hold. It is a declaration by the manufacturer rather than a

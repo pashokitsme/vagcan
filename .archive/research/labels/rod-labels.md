@@ -1,5 +1,11 @@
 # `.rod` / `.clb` / `.lbl` labels + measurements — RE
 
+> **CORRECTED 2026-09-28 — §4.0c is refuted.** The `(DID → scaling)` join **is** in the corpus,
+> in the global registry `RM.rod`, which this pass never opened. A unit's `MWB` row's leading
+> number is a **1-based row number into `RM.rod`**, not a text-id; that row carries the DID,
+> layout and scaling. "Scaling is live-only" is wrong. The crack, the crypto and the field
+> codec here are all still correct. See [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 Canonical writeup of the VCDS label/measurement corpus: the `.rod` TEA-CBC crypto, the
 per-record `product`/IV blocker, `STRUC.rod`, `TTTEXT`, and what it takes to decode a UDS
 measurement into a human value. **Merges** `rod-measurement-feasibility.md`,

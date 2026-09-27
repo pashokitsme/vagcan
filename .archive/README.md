@@ -37,6 +37,15 @@ How Ross-Tech's compiled label/measurement corpus is decoded, and the fault-nami
 Everything here is implemented in [`../crates/data/vag-data-labels`](../crates/data/vag-data-labels)
 and cached by [`../crates/data/vag-data-db`](../crates/data/vag-data-db).
 
+> **CORRECTED 2026-09-28.** The "scaling is live-only" conclusion below (and in `rod-labels.md`
+> §4.0c, `scaling-audit.md`, `label-linkage.md` §3) is **wrong**. The `(DID → layout, scaling)`
+> join is in the global registry `RM.rod`, which none of these passes opened; a unit's `MWB` row
+> numbers index it. `TTTEXT`'s cipher key is `srand(record id)`, so the numeric class
+> `tttext-codec.md` §6 calls unbroken reads too. Not-the-registry verdicts for `MUX.rod` and
+> `TTTEXT2.ROD` stand — `RM.rod` is the registry. See
+> [`../research/vcds-registry/README.md`](../research/vcds-registry/README.md); each file below
+> carries the correction at its top.
+
 | File | Question it answered |
 |------|----------------------|
 | [`research/labels/rod-labels.md`](research/labels/rod-labels.md) | The `.rod`/`.clb`/`.lbl` crack (TEA-CBC + zlib), and why measurement **scaling is live-only** (the STRUC refutation). Start here. |
@@ -153,9 +162,12 @@ from the note cited, not a guess:
   channel is a static position-dependent XOR keystream; that is already reversed
   ([`research/vag-hex-framing.md`](research/vag-hex-framing.md)). Knowing it still does
   not get you past the sealed session key above.
-- **Do not look for a stored measurement `(DID → factor/offset/unit)` scaling in the
-  label corpus.** It is not there; scaling is live-only. `TTTEXT2.ROD` and `MUX.rod`
-  were the last candidates and both came up empty
+- **~~Do not look for a stored measurement `(DID → factor/offset/unit)` scaling in the
+  label corpus.~~ REVERSED 2026-09-28.** It **is** there — in the global registry `RM.rod`,
+  indexed by each unit's `MWB` row numbers ([`../research/vcds-registry/README.md`](../research/vcds-registry/README.md)).
+  `TTTEXT2.ROD` and `MUX.rod` were never the registry; `RM.rod` is, and it was never opened. The
+  original text (kept for the record): "It is not there; scaling is live-only. `TTTEXT2.ROD` and
+  `MUX.rod` were the last candidates and both came up empty"
   ([`research/labels/scaling-audit.md`](research/labels/scaling-audit.md),
   [`research/labels/tttext2.md`](research/labels/tttext2.md),
   [`research/labels/mux.md`](research/labels/mux.md)).

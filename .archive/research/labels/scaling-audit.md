@@ -1,5 +1,11 @@
 # Scaling in the corpus — the decode audited, the DID negative re-confirmed
 
+> **CORRECTED 2026-09-28 — the DID negative is overturned.** `(DID → factor/offset/unit)` **can**
+> be read from the corpus: it is in the global registry `RM.rod`, indexed by the unit's `MWB` row
+> numbers, which this audit (like everything before it) mistook for text-ids. The decode work
+> audited here is correct; the conclusion "scaling stays proven-on-car only" is not. See
+> [`research/vcds-registry/README.md`](../../../research/vcds-registry/README.md).
+
 The question this project keeps returning to: can `(read DID, raw form, factor, offset, unit)`
 be read out of VW's `.rod` label corpus, so that measurement scalings no longer have to be
 proven one at a time by driving the car (`vagcan recording calibrate`, `vagcan vcds analyse`,

@@ -104,6 +104,10 @@ item 8, `dash/18` on a real pull.
 2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
 3. **OLED and enclosure** — `dash/15`; waits for the panel.
+4. **VCDS registry reader (`RM.rod`)** — [`research/vcds-registry/README.md`](../research/vcds-registry/README.md)
+   §7: read `TTTEXT` with `glyphs::for_key` (fixes ~1,870 catalog names), then read `RM.rod` in
+   `vag-data-labels` so a VCDS-only owner gets scaling for any unshifted unit. Gate on the 18
+   proven rows and 15 log pairs; test the 1-based row convention. Then the `calibrate` decision.
 
 **With the car**
 
@@ -194,14 +198,14 @@ Every command the skills under `.claude/skills/` name was run against `--help` o
   `.archive/research/` (`vag-hex-framing.md`, `clone-crypto.md`, `vcds-rus-crack.md`) and
   stay authoritative as negative results. The clone capture decoder
   (`.archive/research/clb-crack/extract_uds.py`) stays useful as an offline crib source.
-- **Scaling from the *VCDS* label files** — refuted structurally, twice over
-  (`.archive/research/labels/rod-labels.md` §4.0c, `.archive/research/labels/label-linkage.md` §3/§5).
-  **Still true, and no longer the whole story (2026-08-08):** the refutation is about
-  what a `.rod`/`.clb` label file contains, not about files in general. A VW ODIS
-  project declares the entire chain — identifier, offset, length, byte order, compu
-  formula — per ECU variant, and three rows this project had proved *by driving* came
-  back identical from it with no drive. Read this entry as "VCDS cannot supply a
-  scaling", never as "a scaling can only come from a drive".
+- **Scaling from the *VCDS* label files** — ~~refuted structurally, twice over~~ **OVERTURNED
+  2026-09-28.** VCDS keeps every measurement's `(DID, layout, scaling)` in the global registry
+  `RM.rod`; a unit's `MWB` lists 1-based row numbers into it. The old refutation
+  (`.archive/research/labels/rod-labels.md` §4.0c, `label-linkage.md` §3, `scaling-audit.md`) read
+  those row numbers as text-ids and concluded the join was absent. Found by using an ODIS project
+  as a crib; verified on the car (gearbox 12/12). Not yet implemented — see
+  [`research/vcds-registry/README.md`](../research/vcds-registry/README.md) and "Next" below. ODIS
+  is still the shipped route, and remains the route for the ~41% of files in the shifted-IV regime.
 - **OBD-II Mode 01 as the product path** — dropped. The standard sensors survive as
   `vagcan sensors` and as calibration references, not as the measurement model.
 - **`MUX.rod` as the measurement registry** — opened 2026-08-04 and it is not one. It is
