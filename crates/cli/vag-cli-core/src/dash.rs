@@ -1598,8 +1598,9 @@ fn state_channel(found: &poll::Channel, label: String) -> Channel {
 }
 
 /// A state by the name the project gives it, as its place in the field's list. A name the
-/// field gives two states is refused: the board would press on one of them and never on
-/// the other.
+/// field gives two bands is refused: the board takes a state as one band, its place in the
+/// list, and would react to one of them and never to the other. The message names the bands,
+/// so the owner sees that it is the project's layout and not a typo.
 ///
 /// Names are compared trimmed on both sides ([`same_name`]), and listed trimmed, as the
 /// owner can type them.
@@ -1611,13 +1612,29 @@ fn state_index(levels: &[Level], name: &str, key: &str, field: &str) -> Result<u
 			names.join(", ")
 		))
 	})?;
-	let count = levels.iter().filter(|l| same_name(l.name(), name)).count();
-	if count > 1 {
+	let bands: Vec<String> = levels.iter().filter(|l| same_name(l.name(), name)).map(band_text).collect();
+	if bands.len() > 1 {
+		let what = if key.ends_with("_off") { "an off state" } else { "a button" };
 		return Err(Error::Stalk(format!(
-			"{key}: {field:?} has {count} states named {name:?} — which one is the button cannot be told"
+			"{key}: {:?} names {} bands of {field:?} ({}) — the board takes {what} as one band, so this state cannot be used yet",
+			name.trim(),
+			bands.len(),
+			bands.join(", ")
 		)));
 	}
 	Ok(at as u16)
+}
+
+/// A level's raw values as a person reads them: `51–101`, `7` for a point, and an unbounded
+/// end as the way it runs.
+fn band_text(level: &Level) -> String {
+	match (level.lower(), level.upper()) {
+		(lower, upper) if lower == upper => lower.to_string(),
+		(i32::MIN, i32::MAX) => "any value".to_string(),
+		(i32::MIN, upper) => format!("up to {upper}"),
+		(lower, i32::MAX) => format!("{lower} and up"),
+		(lower, upper) => format!("{lower}–{upper}"),
+	}
 }
 
 /// Whether a name in `dash.toml` is the project's name. Trimmed on both sides: `dash.toml` is
@@ -3523,7 +3540,41 @@ mod tests {
 	fn a_button_named_by_a_state_the_field_gives_twice_is_refused() {
 		let lever = LEVER.replacen("\"Rocker\"", "\"Messy\"", 1).replacen("\"plus\"", "\"twice\"", 1);
 		let why = build_with_lever(&lever).unwrap_err().to_string();
-		assert!(why.contains("has 2 states named \"twice\""), "{why}");
+		assert_eq!(
+			why,
+			"[stalk] next: \"twice\" names 2 bands of \"Messy\" (120–130, 140–150) — the board takes a button as one band, so \
+			 this state cannot be used yet"
+		);
+		// An off state is not a button, and the message does not call it one; a point is its
+		// value alone, an unbounded end says which way it runs.
+		let split = Extra {
+			rows: vec![(
+				STALK_UNIT,
+				state_reading(
+					STALK_DID,
+					"Split",
+					"",
+					40,
+					8,
+					vec![
+						Level::range(i32::MIN, -1, "off"),
+						Level::point(7, "off"),
+						Level::range(200, i32::MAX, "off"),
+						Level::point(8, "on"),
+					],
+				),
+			)],
+			..Extra::default()
+		};
+		let why = build_with_lever_and(&LEVER.replacen("\"Switch\"", "\"Split\"", 1), split)
+			.unwrap_err()
+			.to_string();
+		assert_eq!(
+			why,
+			"[stalk] switch_off: \"off\" names 3 bands of \"Split\" (up to -1, 7, 200 and up) — the board takes an off state \
+			 as one band, so this state cannot be used yet"
+		);
+		assert_eq!(band_text(&Level::range(i32::MIN, i32::MAX, "any")), "any value");
 	}
 
 	/// Rows whose ODIS names carry a space at one end, as nine enumerated fields of one real
@@ -3603,7 +3654,7 @@ mod tests {
 		let why = build_with_lever_and(&LEVER.replacen("\"Rocker\"", "\"Twin\"", 1), twin)
 			.unwrap_err()
 			.to_string();
-		assert!(why.contains("next: \"Twin\" has 2 states named \"plus\""), "{why}");
+		assert!(why.contains("next: \"plus\" names 2 bands of \"Twin\" (0–63, 64–127)"), "{why}");
 	}
 
 	/// A survey that asked `unit` for everything in `asked` and heard back only `heard`.
