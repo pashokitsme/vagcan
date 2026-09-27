@@ -72,7 +72,9 @@
 //!   token it sent is [`answered`](Planner::answered).
 //! - **`7F xx 78` (response pending) is the transport's business.** The shell waits it
 //!   out and hands over the final answer. A `78` that reaches the planner is taken as a
-//!   refusal.
+//!   refusal. The one exception: a unit heard from — a `78`, or late answers to earlier
+//!   requests — whose answer did not come within the exchange's deadline is handed over as
+//!   [`Answer::Busy`] (the board's shell, `todo/dash/20`).
 //! - **`now_ms` is monotonic**, and in `answered` it is the moment the answer arrived:
 //!   every [`Delivery`] is stamped with it, and `measure` times runs from it.
 //! - Rates come from the caller (the plan's `hz`); the planner derives none.

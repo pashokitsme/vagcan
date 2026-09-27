@@ -62,8 +62,9 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 - **Specified values**: a channel paired with `setpoint` shows the difference from what its control unit asked for on a line of its own, under the number. [`docs/dash/dash-toml.md`](docs/dash/dash-toml.md) is the whole file format.
 - **Fault count**: once per start, 10 s in, the board counts the stored fault codes of the engine, the gearbox, the gateway and every unit the gateway lists. A listed id that shares a CAN id with a unit already asked is skipped, so the total can be lower than `vagcan faults`'.
 - **Fault badge**: the number over a warning triangle, bottom-right on every page. Inverted while a code is failing now. Hidden at 0. In the colours of the cell under it, as the link icons.
-- **`?` on the badge**: no count — the gateway gave no list, it listed more than 64 units, or no unit answered. The board's USB log says which; `dashcfg` shows `?`.
-- **The count waits** while the stopwatch is up, and while a laptop runs `vagcan measure` through the board. It goes on where it stopped.
+- **`?` on the badge**: no count — the gateway gave no list, the walk would pass 64 units, or no unit could be counted. The board's USB log says which; `dashcfg` shows `?`.
+- **`dashcfg`** shows the count as stored, failing now and how many units it is of: `9 stored, 1 failing now — 17 of 18 units counted`.
+- **The fault count waits** while the stopwatch is up, and while a laptop runs `vagcan measure` through the board. It goes on where it stopped.
 - **No invented numbers.** A channel that does not answer shows dashes.
 - **Plan checks**: the board polls a unit only if the part number the unit reports matches the plan.
 - **BLE**: `dashcfg` sets brightness and the active page. Settings are stored on the board. BLE is always on: no button, no pairing.

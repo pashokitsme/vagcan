@@ -156,8 +156,9 @@ pub enum Faults {
 		/// alarmed cell the badge blinks with it.
 		failing_now: bool,
 	},
-	/// No count could be made: on the board, the gateway gave no list of its units, or a
-	/// list the board refused to walk. The triangle with `?` for the number, laid out as a
+	/// No count could be made: on the board, the gateway gave no list of its units, a list the
+	/// board refused to walk, or no unit of the walk could be counted. The triangle with `?` for
+	/// the number, laid out as a
 	/// one-digit count, never inverted — nothing says a code fails now (owner, 2026-09-27).
 	Failed,
 }

@@ -4,8 +4,8 @@
 `vag-dash-render` (the badge), `vag-dash-fw` (wiring) · **Needs the car:** for the checks at the end
 
 **State:** built 2026-09-27 — phase 1 (the count, the badge) and phase 2 (the firmware, with
-the owner's four answers), both reviewed, and the owner's decision on the badge's colours the
-same day. Nothing of it has run on the bench or the car — "Car checks".
+the owner's four answers), reviewed in three rounds, and the owner's decision on the badge's
+colours the same day. Nothing of it has run on the bench or the car — "Car checks".
 
 ## What the owner asked (2026-09-26)
 
@@ -35,7 +35,8 @@ mock-up of the states:
 2. **`MAX_UNITS` is 64**, the BLE guard's `guard::MAX_UNITS`: one number on the board for how
    many units it may touch. A list with every bit set is 150 addressable ids and still refused.
 3. **A count's exchange has its own deadline, 2 s, `78`s included**; past it the unit is not
-   counted (`no answer in 2 s`). The board's other exchanges keep `PENDING_DEADLINE` (10 s).
+   counted (the answer's wording: "no answer in 2 s"; the log's is below, "Phase 2"). The
+   board's other exchanges keep `PENDING_DEADLINE` (10 s).
    **While the stopwatch is up no count exchange starts**; the count resumes when it closes.
 4. **`?` when the count failed** — the gateway gave no list, or the walk is over `MAX_UNITS`:
    the triangle with `?` for the number. Before the count and at zero, nothing, as before.
@@ -83,7 +84,7 @@ this at every boot with nobody watching:
 - **Only VW's block is decoded:** the first 24 bytes of the bitmap (`gateway::VW_BLOCK_BYTES`,
   `0x700..=0x7BF`), whatever the answer's length. A whole 4095-byte answer decoded would be
   32,736 ids, over 130 KB of heap on a 72 KB board — a panic, and a reset loop since it reruns
-  every boot. Bits past the block are counted (`Tally::unaddressable`, logged), never
+  every boot. Bits past the block are counted (`Tally::past_block`, logged), never
   decoded. `vagcan units`, `faults` and `dev survey` decode the whole answer; the reference
   car's is 32 bytes with nothing past byte 24.
 - **A walk of more than 64 units is refused** (`faultcount::MAX_UNITS`, the BLE guard's
@@ -112,7 +113,7 @@ while let Step::Ask { unit, pdu } = count.next() {
 }
 let Step::Done(outcome) = count.next() else { unreachable!() };
 // Outcome::NoList(Why) | Outcome::TooMany { units } | Outcome::Counted(Tally)
-// Tally { read: Vec<UnitTally>, failed: Vec<Failed>, unaddressable: u32 }
+// Tally { read: Vec<UnitTally>, failed: Vec<Failed>, past_block: u32, unaddressable: u32 }
 // Tally::stored(), ::failing_now(), ::units_read(); Failed { request, why: Why }
 ```
 
@@ -203,31 +204,44 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   `22 2A26` and `19 02 08` go out, and no `10`.
 - **`MAX_UNITS` = 64** (answer 2): `faultcount::MAX_UNITS` is `guard::MAX_UNITS` itself — both
   in `vag-uds-client`, built together — with a test that says so.
-- **Own deadline** (answer 3): the count's exchange ends `DEADLINE_MS` (2 s) after it began,
-  `78`s included. `panel_bus` asks `Count::deadline_ms(planner.flying_raw())` for the exchange
+- **Own deadline** (answer 3): the count's exchange ends `DEADLINE_MS` (2 s) from its start,
+  the send and `78`s included. `panel_bus` asks `Count::deadline_ms(planner.flying_raw())` for the exchange
   on the bus; its `Waits` cut every wait — the send's, the first answer's (`RESPONSE_TIMEOUT`,
   500 ms), each after a `78` — to what is left, with no backstop past it. Every other exchange
   keeps 500 ms and `PENDING_DEADLINE` (10 s). A unit past it is not counted:
   - **silent from the start** (500 ms): `no answer`; the planner backs it off as any silent
     unit, and were it a plan unit its cells dash and its part number is read again;
   - **asked for time (`78`) and still searching at 2 s:** `asked for time (78), no answer in
-    2 s`, told to the planner as `Answer::StillPending` (review round 1): the unit is heard from,
-    not backed off, its readers miss nothing and its part is not checked again. Before, it was
-    `NoAnswer`: the plan unit's cells dashed, it was called silent, and its `F187` went out 250 ms
-    later into its late answer.
+    2 s`, told to the planner as `Answer::Busy` (review round 1, as `StillPending`; round 2
+    renamed it and gave it to every exchange, below): the unit is heard from, not backed off,
+    its part is not checked again. Before, it was `NoAnswer`: the plan unit's cells dashed, it
+    was called silent, and its `F187` went out 250 ms later into its late answer.
+- **A unit heard from is busy, not silent, on every exchange** (review round 2, `Waits::ended`):
+  what was heard on the unit's answer id decides, not what ended the wait. Nothing at all is
+  silence (`NoAnswer`, an absent unit). A `78`, or late answers to earlier requests only, then
+  no answer in time, is `Answer::Busy { asked_for_time }`: the unit is heard from; a read's
+  readers and one-shots get `Miss::Busy`, one missed sample, never an absent unit (before, a
+  stray then a late answer marked the unit absent and dropped its subscriptions, a stopwatch
+  run's speed with them); a part check answered so is asked again; a host's exchange gets
+  `Outcome::NoAnswer`, not a `7F xx 78` that promised more.
 - **Late answers are dropped, on every exchange** (review round 1, `Waits::heard`): a PDU that
-  answers another request — a positive response to another service, or a refusal naming another
-  (`schedule::answers`) — is dropped and the wait goes on within its time; the board says so
-  once. The drain before a send removes only what came before it. **Left over:** a host's own
-  `19 02` to the same unit within P2* of a cut can still receive the count's late answer — same
-  service, and nothing in the answer tells the two apart.
+  answers another request — another service's, another identifier's (`22` echoes its first
+  identifier), another sub-function's (`10`, `19`, `3E` echo theirs), or a refusal naming
+  another service — is dropped and the wait goes on within its time; the board says so once.
+  One rule on the board and the laptop since round 2, `schedule::answers` (the laptop's
+  stricter copy moved there; a `62` with no record at all still answers a `22`, the planner's
+  to judge). The drain before a send removes only what came before it; ISO-TP ignores the
+  consecutive frames of an answer nobody waits for (round 2, `IsoTpCan::recv`). **Left over:**
+  only an identical request — a host's own `19 02 08` to the same unit within P2* of a cut — can
+  still receive the count's late answer; nothing in the answer tells the two apart.
 - **A unit busy on `F187`** (`7F 22 21`) is asked its part number again after the backoff's cap
   (`PartCheck::RetryLater`), never a mismatch for the boot (review round 1: a unit searching its
   fault memory for the count may answer so).
 - **Held up while a stopwatch runs** (`faults::Hold`): the board's own is up (answer 3;
   `Screen::stopwatch()`, the mode, whatever holds the glass), or a host holds the board's
   timing channel — a laptop's `vagcan measure` through the board (review round 1, an extension
-  of answer 3 flagged to the owner; `host_clock`). No request of the count's is queued, one
+  of answer 3 flagged to the owner; `host_clock`). A hold that keeps the start back past 10 s is
+  said once (round 2). No request of the count's is queued, one
   waiting in the planner is taken back (`Planner::cancel`), and the walk goes on where it
   stopped. One already on the bus runs to its end, ≤ 2 s. **No run arms while it is out, by
   construction rather than by `Stopwatch::hold`:** the turn of the mode resets the stopwatch
@@ -240,10 +254,11 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   (`Count::given_up`) before answering the planner, the count does not feed it to `answered`,
   and the same request goes out again when the panel is back.
 - **`?` when there is no count** (`Found::Failed`): the gateway gave no list, the walk would
-  pass `MAX_UNITS`, or no unit of the walk answered (review round 1: that was `0 stored`, no
-  badge — what answer 4 is there to prevent).
-- **Published** in `FAULTS` (`Option<Found>`, 12 B: stored and failing now as counts, or
-  failed), written when the count ends — from `take` and from `count_step` — and read by the
+  pass `MAX_UNITS`, or no unit of the walk could be counted (review round 1: that was
+  `0 stored`, no badge — what answer 4 is there to prevent). Otherwise the count is of the units
+  counted (the owner's rule), and `state` says of how many (below).
+- **Published** in `FAULTS` (`Option<Found>`, 12 B: stored and failing now as counts and the
+  units counted of the units asked as bytes, or failed), written when the count ends — from `take` and from `count_step` — and read by the
   panel task into `Board::faults` every frame (`Found::badge`), on every page and the
   stopwatch's. A change signals `STATE_CHANGED`. The count's walk and tally are dropped then
   (about 1 KB of heap at 64 units, for the rest of the boot).
@@ -256,28 +271,34 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   - `faults: 7E0 2 stored, 1 failing now` (a unit with codes)
   - `faults: 7E1 not counted — no answer` / `— asked for time (78), no answer in 2 s` /
     `— bus error` / `— refused, NRC 22` / `— answer did not parse`
-  - `faults: waiting while the stopwatch is up` / `faults: waiting while a host times a run on
-    the board's timing channel` / `faults: counting on where it stopped`
+  - `faults: 7E1 not counted — still answering an earlier request, none to this one in time`
+  - `faults: waiting while the stopwatch is up` / `faults: waiting while a host holds the board's
+    timing channel (vagcan measure)` / `faults: counting on where it stopped`
   - `faults: the board turned adapter — the same request again when the panel is back`
-  - `faults: 9 stored, 1 failing now; 17 of 18 units answered in 1.4 s` — the count's own time;
+  - `faults: 9 stored, 1 failing now; 17 of 18 units counted in 1.4 s` — the count's own time;
     time held up is said apart: `…, not counting 12.3 s paused`
-  - `faults: none of 18 units answered — badge ?`
+  - `faults: none of 18 units could be counted — badge ?`
   - `faults: the gateway gave no list (no answer) — badge ?`
   - `faults: the walk would ask 65 units, more than 64 — not a car's list, badge ?`
-  - and `can: dropped 1 late answer(s) to an earlier request ([59, 02, FF] …) on 7E8 while it
-    answered [22, F1, 87] (said once)`, `can: 7E0 is busy (NRC 21) — will ask its part number
-    again`
-- **`state`:** ` faults=9 failing=1` once counted, ` faults=?` when there is no count, nothing
-  before, after `mode=` (not `9/1`, which beside `page=0/3` read as nine of one). `dashcfg`
-  shows it in a faults row — stored and failing now, `?`, or "not counted yet" — and its help
-  line says the board pushes its state when the count ends. The longest line is 197 B, checked
+  - and `can: dropped 1 late answer(s) to an earlier request ([59, 02, FF] …) on 7E8 while
+    waiting for its answer to [22, F1, 87] (said once)`, `can: 7E0 is busy (NRC 21) — will ask
+    its part number again`, `can: 7E0 is busy, no answer to F187 in time — will ask its part
+    number again`, and a reading missed as `busy, no answer in time`
+- **`state`** (`faults::State`), after `mode=`: ` faults=9 failing=1 units=17/18` once counted
+  (not `9/1`, which beside `page=0/3` read as nine of one), ` faults=?` when there is no count,
+  ` faults=-` until it ends — so that no key means an image without the count. `dashcfg` shows it
+  in a faults row — "9 stored, 1 failing now — 17 of 18 units counted", "? — no count: the
+  board's USB log says why", "not counted yet", or "this board's image does not count faults" —
+  and its help line says the board pushes its state when the count ends. The longest line is
+  211 B, checked
   at compile time (`STATE_LINE_LONGEST`) against `UART_MTU` (244), the size of the
   `heapless::String` `state_line` writes into.
 - **`dash/README.md`'s rule** (answer 1): amended — the board resolves no label data, and the
   one identifier it asks outside the plan is the gateway's installation list, once per boot.
-- **RAM** (`ram-budget.sh`, empty plan), from before phase 2 to now: static 139,320 → 139,532 B
-  with BLE (+212), 129,868 → 130,072 B without (+204); stack 156,644 → 156,436 B and 187,984 → 187,784 B. Of it `COUNT` 128 B and `FAULTS` 12 B; the rest the compiler's merged
-  globals and switch tables. The count's heap is phase 1's, and is freed when the count ends.
+- **RAM** (`ram-budget.sh`, empty plan), from before phase 2 to now: static 139,320 → 139,524 B
+  with BLE (+204), 129,868 → 130,072 B without (+204); stack 156,644 → 156,444 B and 187,984 →
+  187,784 B. Of it `COUNT` 128 B and `FAULTS` 12 B; the rest the compiler's merged globals and
+  switch tables. The count's heap is phase 1's, and is freed when the count ends.
 
 ## How long it takes
 
@@ -312,9 +333,15 @@ each a BLE round trip.
   or an answer id, in either role; counting a 4095-byte answer allocates under 256 B, and so
   does reading a 4095-byte list (a counting allocator in the test binary); an answer after the
   end changes nothing; the tally so far while the walk goes on, and the outcome once it is over.
-- `schedule` (3, review round 1): a raw exchange cut while its unit asked for time keeps the unit
-  and its readers; a read cut so is refused with `78`; a response answers its own request and no
-  other (`answers`).
+- `schedule` (3): a raw exchange a busy unit did not answer in time keeps the unit and its
+  readers; a read so is a missed sample (`Miss::Busy`) for every reader and one-shot, not backed
+  off; a response answers its own request and no other — service, identifier, sub-function, and
+  a refusal's NRC (`answers`, the laptop's asserts moved here).
+- `remote` (1, round 2): a busy unit is no answer to a host, its subscription reads no answer,
+  and it is not backed off.
+- `isotp` (2) and `isotp_over_slcan` (1, round 2): consecutive and flow-control frames before
+  the first frame are ignored and the wait goes on; leftovers then nothing is a timeout, not a
+  protocol error; the same over the laptop's slcan duplex.
 - `gateway` (2, moved from `survey`): the walk covers the three the list cannot hold; a unit
   listed twice is walked once.
 - `render` (11): the triangle pixel for pixel at the foot of the icon column, the count over it
@@ -326,17 +353,18 @@ each a BLE round trip.
   2026-09-27); the icons untouched and 25 rows above; the chart's trace untouched; a longer
   count grows left; 1–99 clear of the trace, 100–999 covering its last column and no more; the
   adapter screen draws none; `?` pixel for pixel over a count's triangle, in a one-digit box.
-- `plan` (1, review round 1): a unit busy on `F187` is asked again, not a mismatch.
+- `plan` (1): a unit busy on `F187` (`21`, or `Miss::Busy`) is asked again, not a mismatch.
 - `stopwatch` (1): after a turn of the mode it arms only on a standstill seen since — what "no
   run arms while a count exchange is out" rests on.
-- `research/dash/host/tests/exchange_waits.rs` (7): its own answer ends the wait; a late answer
-  to another request is dropped and the wait goes on within its time; a suppressed request waits
-  for its own refusal only; `78`s waited out as before with no deadline of its own; the count's
-  exchange ends 2 s after it began, `78`s included, as still pending; a unit silent from the
-  start of it is silent; a send that used the whole deadline leaves no wait.
-- `research/dash/host/tests/fault_count.rs` (21), through the board's planner: nothing before
+- `research/dash/host/tests/exchange_waits.rs` (8): its own answer ends the wait; a late answer
+  to another request is dropped and the wait goes on within its time, and then nothing is busy,
+  not silent; another identifier's or sub-function's answer is a stray too; a suppressed request
+  waits for its own refusal only; `78`s waited out as before with no deadline of its own, and
+  busy after them; the count's exchange ends 2 s after it began, `78`s included, as busy; a unit
+  silent from the start of it is silent; a send that used the whole deadline leaves no wait.
+- `research/dash/host/tests/fault_count.rs` (22), through the board's planner: nothing before
   10 s or before a plan unit answers, then the gateway; a plan with no units starts at 10 s; the
-  start waits for the stopwatch; a whole count reads `22 2A26` once and `19 02 08` a unit, each
+  start waits for the stopwatch, said once; a whole count reads `22 2A26` once and `19 02 08` a unit, each
   exchange with the 2 s deadline, finds 3 stored / 1 failing now, and says each line word for
   word, then asks nothing more; one request with the planner at a time; the stopwatch takes back
   a waiting request and the walk goes on at the same unit, said once each way, the time held
@@ -345,11 +373,13 @@ each a BLE round trip.
   gateway with no list (silence, still pending, bus error, NRC, another identifier) is `?`,
   said once, never asked again; 65 units is `?` with nothing asked; nobody answering is `?`;
   ids past the block and unaddressable ids said apart; an exchange given up for adapter mode is
-  asked again, the gateway's and a unit's; a host's answer during the count goes to the host
-  (it fails with the `ReqId` check removed); once it has found something the count holds no
-  heap; a count of zero draws nothing; the wake is never a moment gone by; `state`'s form and
-  its longest; `Option<Found>` is 12 B.
-- `dashcfg` (1): the faults row — stored and failing now, `?`, not counted yet.
+  asked again, the gateway's and a unit's; a host's exchange given up leaves the count's own
+  request alone (it fails with `given_up`'s check loosened); a host's answer during the count
+  goes to the host (it fails with the `ReqId` check removed); once it has found something the count holds no
+  heap; a count of zero draws nothing; the wake is never a moment gone by; `state`'s form (the
+  units, `-` before the end) and its longest; `Option<Found>` is 12 B.
+- `dashcfg` (1): the faults row — stored and failing now of how many units, `?`, not counted
+  yet, an image without the count.
 - `dashsim --preview` draws the `?` on a values page and on the three-mark stopwatch page, and a
   failing badge over an alarmed rightmost cell (30 previews).
 
@@ -360,8 +390,13 @@ each a BLE round trip.
    (the board skips those as shared ids; the laptop asks them). Any other mismatch means a
    unit honours mask `08` differently — then ask `FF` and filter, as the laptop does.
 2. The USB log's time for the count (its end line; time a stopwatch held it up is said apart);
-   the panel keeps changing through it, and no plan unit's cells dash for it.
+   the panel keeps changing through it, and no plan unit's cells dash for it. Watch for
+   `refused, NRC 21` (or `is busy (NRC 21)`) right after an `asked for time (78)` line.
 3. The units named as not counted or skipped, against `vagcan units`' list: `776` and `777`
    skipped as shared ids, and no id past `795`.
 4. A BLE `vagcan info` started during the count completes.
 5. The inverted badge only if the car has a code failing now — nothing is provoked to see it.
+6. Does a VAG unit answer `21` (or anything) to a second request while it is sending `78` for
+   a `19`? It decides whether the planner should back off on `21`: a unit refusing every read
+   with `21` draws about 49 requests a second today (the round-2 safety probe). Recorded, not
+   changed.

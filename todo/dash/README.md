@@ -17,14 +17,15 @@ in. At run time it sends `0x22`, takes the bits, scales, draws. Why:
 
 1. **It does not fit.** A project's `cache.sqlite` is ~88 MB; the C3 has 400 KB of RAM.
 2. **Nothing to search.** The board needs a few dozen rows, all known before flashing.
-3. **A plan cannot sweep.** The board asks no identifier the plan does not hold, but one:
-   the gateway's installation list, `22 2A26`, asked of the gateway alone, once per boot, by
-   the fault count ([`20`](20-fault-count.md), owner 2026-09-27).
+3. **A plan cannot sweep.** Besides each plan unit's `F187`, the board asks no identifier the
+   plan does not hold, but one: the gateway's installation list, `22 2A26`, asked of the
+   gateway alone, once per boot, by the fault count ([`20`](20-fault-count.md), owner
+   2026-09-27).
 
 The fault count's reads are protocol, not label data (owner, 2026-09-27): the installation
 list, then each unit it names asked for its stored codes (`19 02 08`, no identifier), once per
 boot. They are bounded by `MAX_UNITS` (64, the BLE guard's) and by VW's block
-(`0x700..=0x7BF`); a longer list is refused, not walked.
+(`0x700..=0x7BF`); a walk that would pass 64 units is refused, not walked.
 
 **Built for one car, and that is allowed** (owner, 2026-08-20). The plan and the image
 are generated under `~/.vagcan/` and `target/`, never committed. Because the image is for
