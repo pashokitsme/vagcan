@@ -53,3 +53,25 @@ async fn uds_vin_read_over_slcan_duplex() {
 	assert_eq!(&resp[3..], VIN);
 	ecu.await.unwrap();
 }
+
+/// The laptop's path, the same rule: the tail of an earlier answer — consecutive frames the
+/// tester stopped waiting for — comes before the ECU's answer to this request, and is ignored
+/// (ISO 15765-2) rather than failing the exchange.
+#[tokio::test]
+async fn an_earlier_answers_tail_before_this_answer_is_ignored_over_slcan() {
+	let (tester_side, ecu_side) = tokio::io::duplex(1024);
+	let mut iso = IsoTpCan::for_ecu(SlcanBackend::new(tester_side), 0);
+	let ecu = tokio::spawn(async move {
+		use vag_uds_can::CanBackend;
+		let mut bus = SlcanBackend::new(ecu_side);
+		let (id, _) = bus.recv_frame(Duration::from_secs(1)).await.unwrap();
+		assert_eq!(id, 0x7E0);
+		bus.send_frame(0x7E8, &[0x23, 1, 2, 3, 4, 5, 6, 7]).await.unwrap();
+		bus.send_frame(0x7E8, &[0x24, 8, 9, 10, 11, 12, 13, 14]).await.unwrap();
+		bus.send_frame(0x7E8, &[0x04, 0x62, 0xF1, 0x87, b'P', 0, 0, 0]).await.unwrap();
+	});
+	iso.send(&[0x22, 0xF1, 0x87]).await.unwrap();
+	let resp = iso.recv(Duration::from_secs(1)).await.unwrap();
+	assert_eq!(resp, [0x62, 0xF1, 0x87, b'P']);
+	ecu.await.unwrap();
+}
