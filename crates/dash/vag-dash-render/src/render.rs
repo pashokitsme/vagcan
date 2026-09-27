@@ -265,8 +265,9 @@ pub const TRIANGLE: [&str; 7] = ["...#...", "..###..", "..#.#..", ".##.##.", ".#
 /// Where the fault badge goes and what it clears: the triangle at the bottom of the link
 /// icons' column, [`ICON_TOP`] up from the bottom edge and [`ICON_RIGHT`] in, the count
 /// over it right-aligned to the column, [`ICON_GAP`] rows apart — with a [`BADGE_MARGIN`]
-/// of ground round both. `None` when there is nothing to show: no count, or a count of
-/// zero. Laid out for the board's 64-row panel, as the icons are.
+/// of ground round both. A count that failed ([`Faults::Failed`]) has `?` where the number
+/// goes, laid out as one digit. `None` when there is nothing to show: no count, or a count
+/// of zero. Laid out for the board's 64-row panel, as the icons are.
 ///
 /// Up to 99 the box stays inside the column and its clearance, clear of a chart's trace. A
 /// longer count grows left: three digits cover the trace's last column at most, and each
@@ -291,13 +292,20 @@ struct Badge {
 }
 
 fn badge_layout(faults: Option<Faults>, theme: &Theme, size: Size, report: &mut Report) -> Option<Badge> {
-	let faults = faults.filter(|f| f.stored > 0)?;
+	let mut count = Buf::new();
+	match faults? {
+		Faults::Counted { stored: 0, .. } => return None,
+		Faults::Counted { stored, .. } => {
+			let _ = write!(count, "{stored}");
+		}
+		// No number to give: the count failed.
+		Faults::Failed => {
+			let _ = count.write_str("?");
+		}
+	}
 	let left = icon_column(size.width);
 	let triangle = Point::new(left, size.height as i32 - ICON_TOP as i32 - TRIANGLE.len() as i32);
 	let triangle_box = Rectangle::new(triangle, Size::new(ICON.width, TRIANGLE.len() as u32));
-
-	let mut count = Buf::new();
-	let _ = write!(count, "{}", faults.stored);
 	// The count's ink ends at the column's right edge and ICON_GAP rows over the triangle;
 	// a longer count grows to the left.
 	let right = left + ICON.width as i32 - 1;
@@ -336,7 +344,7 @@ fn envelope(a: Rectangle, b: Rectangle) -> Rectangle {
 
 /// The badge over whatever the page drew: its ground, then the triangle and the count in
 /// the ink. A code failing now swaps the two — the whole badge inverted, as an alarm
-/// inverts its whole cell, and steady.
+/// inverts its whole cell, and steady. A count that failed is never inverted.
 fn draw_badge<D>(faults: Option<Faults>, theme: &Theme, target: &mut D, report: &mut Report)
 where
 	D: DrawTarget<Color = BinaryColor>,
@@ -345,7 +353,7 @@ where
 	let Some(badge) = badge_layout(faults, theme, size, report) else {
 		return;
 	};
-	let inverted = faults.is_some_and(|f| f.failing_now);
+	let inverted = matches!(faults, Some(Faults::Counted { failing_now: true, .. }));
 	let (ground, ink) = if inverted {
 		(BinaryColor::On, BinaryColor::Off)
 	} else {
@@ -2065,14 +2073,16 @@ mod tests {
 
 	// --- the fault badge -------------------------------------------------------------
 
-	const NINE: Option<Faults> = Some(Faults {
+	const NINE: Option<Faults> = Some(Faults::Counted {
 		stored: 9,
 		failing_now: false,
 	});
-	const NINE_FAILING: Option<Faults> = Some(Faults {
+	const NINE_FAILING: Option<Faults> = Some(Faults::Counted {
 		stored: 9,
 		failing_now: true,
 	});
+	/// The count failed: no list from the gateway, or one the board refused.
+	const FAILED: Option<Faults> = Some(Faults::Failed);
 
 	/// `frame` drawn on the board's panel with these links and this count.
 	fn with_badge(frame: &Frame<'_>, links: Links, faults: Option<Faults>) -> (SimulatorDisplay<BinaryColor>, Report) {
@@ -2161,8 +2171,11 @@ mod tests {
 		let page = Frame::Values { cells: &cells };
 		let (plain, page_report) = with_badge(&page, Links::NONE, None);
 		for faults in [
-			Some(Faults::default()),
-			Some(Faults {
+			Some(Faults::Counted {
+				stored: 0,
+				failing_now: false,
+			}),
+			Some(Faults::Counted {
 				stored: 0,
 				failing_now: true,
 			}),
@@ -2191,6 +2204,53 @@ mod tests {
 	}
 
 	#[test]
+	fn a_count_that_failed_is_a_question_mark_over_the_triangle_laid_out_as_one_digit() {
+		// Owner, 2026-09-27: the gateway gave no list, or the board refused it — the triangle
+		// with `?` for the number, in the box a one-digit count has.
+		let cells = temps("ОЖ");
+		let page = Frame::Values { cells: &cells };
+		let (failed, report) = with_badge(&page, Links::NONE, FAILED);
+		assert!(!report.glyph_missing, "{report:?}: the unit face has a `?`");
+		let area = the_badge(FAILED);
+		assert_eq!(area, the_badge(NINE), "the box of a one-digit count");
+
+		// The triangle is a count's, pixel for pixel.
+		let (nine, _) = with_badge(&page, Links::NONE, NINE);
+		let left = icon_column(TALL.width);
+		let top = TALL.height as i32 - ICON_TOP as i32 - TRIANGLE.len() as i32;
+		let triangle = Rectangle::new(Point::new(left, top), Size::new(ICON.width, TRIANGLE.len() as u32));
+		assert!(triangle.points().all(|p| failed.get_pixel(p) == nine.get_pixel(p)));
+
+		// Over it, the unit face's `?` where a digit stands, and nothing else.
+		let theme = Theme::bold_mono();
+		let badge = badge_layout(FAILED, &theme, TALL, &mut Report::default()).expect("a badge");
+		assert_eq!(badge.count.as_str(), "?");
+		let mut glyph = tall();
+		theme
+			.unit
+			.render(
+				"?",
+				badge.count_origin,
+				VerticalPosition::Top,
+				FontColor::Transparent(BinaryColor::On),
+				&mut glyph,
+			)
+			.expect("the face has a `?`");
+		let over = Rectangle::new(area.top_left, Size::new(area.size.width, (top - area.top_left.y) as u32));
+		assert!(lit_in(&failed, over), "the `?` is drawn");
+		assert!(
+			over.points().all(|p| failed.get_pixel(p) == glyph.get_pixel(p)),
+			"the `?` and dark ground over the triangle"
+		);
+		assert!(over.points().any(|p| failed.get_pixel(p) != nine.get_pixel(p)), "not a digit");
+
+		// Not inverted: nothing says a code fails now. And nothing outside its box moved.
+		assert!(!lit(&failed, area.top_left.x, area.top_left.y), "dark ground");
+		let (plain, _) = with_badge(&page, Links::NONE, None);
+		assert!(same_outside(&failed, &plain, area));
+	}
+
+	#[test]
 	fn the_badge_is_the_same_picture_over_any_page() {
 		// Alone on a dark panel: no cells, no icons, nothing but the badge.
 		let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, NINE);
@@ -2205,12 +2265,20 @@ mod tests {
 		let samples = [2.5f32; 240];
 		let chart = pinned_chart(&samples);
 		let cells = temps("ОЖ");
+		// The stopwatch page with three marks and the widest time on show (`todo/dash/19`).
+		let marks = [60u16, 100, 150];
+		let labels = crate::stopwatch::Labels::new(&marks);
+		let words = crate::stopwatch::Words::of("ru");
+		let watch = crate::stopwatch::Stopwatch::new(&marks, 0.01);
+		let saved = [(60u16, 5.43f32), (100, 9.87), (150, 18.4)];
+		let (row, count) = crate::stopwatch::cells(&watch, Some(0.0), &saved, &words, &labels);
 		for (name, page) in [
 			("alarm", Frame::Values { cells: &alarmed }),
 			("values", Frame::Values { cells: &cells }),
 			("chart", chart),
+			("stopwatch", Frame::Values { cells: &row[..count] }),
 		] {
-			for faults in [NINE, NINE_FAILING] {
+			for faults in [NINE, NINE_FAILING, FAILED] {
 				let (display, _) = with_badge(&page, Links::NONE, faults);
 				let (alone, _) = with_badge(&Frame::Values { cells: &[] }, Links::NONE, faults);
 				assert!(
@@ -2247,7 +2315,7 @@ mod tests {
 
 	#[test]
 	fn a_longer_count_grows_left_and_keeps_its_right_edge() {
-		let wide = Some(Faults {
+		let wide = Some(Faults::Counted {
 			stored: 1234,
 			failing_now: false,
 		});
@@ -2268,7 +2336,7 @@ mod tests {
 		// The trace's last column is the one before the clearance; the badge's ground is the
 		// ink and a pixel round it, and the count grows left.
 		let last_trace_column = icon_column(TALL.width) - ICON_CLEARANCE - 1;
-		let left = |stored: u32| the_badge(Some(Faults { stored, failing_now: false })).top_left.x;
+		let left = |stored: u32| the_badge(Some(Faults::Counted { stored, failing_now: false })).top_left.x;
 		for stored in 1..=99 {
 			assert!(left(stored) > last_trace_column, "{stored}: the badge reaches the trace");
 		}
@@ -2279,7 +2347,7 @@ mod tests {
 		let widest = (100..=999).map(left).min().unwrap();
 		assert_eq!(widest, last_trace_column, "three digits cover the trace's last column and no more");
 		let samples = [0.0f32; 240];
-		let hundred = Some(Faults {
+		let hundred = Some(Faults::Counted {
 			stored: 188,
 			failing_now: false,
 		});
@@ -2297,9 +2365,11 @@ mod tests {
 			tx: 2,
 			errors: 0,
 		};
-		let (with, _) = with_badge(&Frame::Adapter(state), Links::NONE, NINE_FAILING);
 		let (without, _) = with_badge(&Frame::Adapter(state), Links::NONE, None);
-		assert_eq!(with, without);
+		for faults in [NINE_FAILING, FAILED] {
+			let (with, _) = with_badge(&Frame::Adapter(state), Links::NONE, faults);
+			assert_eq!(with, without, "{faults:?}");
+		}
 	}
 
 	// --- the adapter screen -----------------------------------------------------------

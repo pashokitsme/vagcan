@@ -811,11 +811,16 @@ mod preview {
 		shots.push(shot("chart-boost-deviation-links-usb-ble", &chart_deviation, linked(BOTH)));
 
 		// The fault badge (`dash/20`) in the corner of every kind of page: counts of one, two
-		// and three digits, and inverted for a code failing now.
+		// and three digits, inverted for a code failing now, and `?` for a count that failed.
 		let faulted = |links, stored, failing_now| Board {
 			links,
 			rates: None,
-			faults: Some(Faults { stored, failing_now }),
+			faults: Some(Faults::Counted { stored, failing_now }),
+		};
+		let failed = |links| Board {
+			links,
+			rates: None,
+			faults: Some(Faults::Failed),
 		};
 		shots.push(shot(
 			"values4-faults-3-links-usb-ble",
@@ -837,6 +842,7 @@ mod preview {
 			&Frame::Values { cells: &two },
 			faulted(BOTH, 3, false),
 		));
+		shots.push(shot("values4-faults-failed-links-usb-ble", &Frame::Values { cells: &four }, failed(BOTH)));
 		let alarmed = [
 			Cell::new("ОЖ", Some(93.0), "°C", 0),
 			Cell::new("НАДДУВ", Some(1.82), "bar", 2),
@@ -879,6 +885,15 @@ mod preview {
 				faulted(BOTH, 12, true),
 			));
 		}
+		// A count that failed, beside the widest time the page shows.
+		let labels = Labels::new(&three_marks);
+		let idle = Stopwatch::new(&three_marks, 0.01);
+		let (row, count) = stopwatch::cells(&idle, Some(0.0), &saved, &words, &labels);
+		shots.push(shot(
+			"stopwatch-3marks-stop-faults-failed-links-none",
+			&Frame::Values { cells: &row[..count] },
+			failed(Links::NONE),
+		));
 
 		// The adapter screen.
 		let adapter = |kbit, listen_only, rx, tx, errors| Adapter {
@@ -1054,9 +1069,9 @@ mod tests {
 	fn every_preview_is_named_as_one_and_names_are_unique() {
 		let shots = preview::render_all();
 		// Values ×4 links, two cells, a long label, a drifting page, the chart ×2, a drifting
-		// chart; the fault badge on values ×5 and the chart ×3; the stopwatch ×3 for two marks
-		// and ×3 for three; the adapter ×3.
-		assert_eq!(shots.len(), 27);
+		// chart; the fault badge on values ×6 (one a `?`) and the chart ×3; the stopwatch ×3
+		// for two marks and ×4 for three (one a `?`); the adapter ×3.
+		assert_eq!(shots.len(), 29);
 		let mut names: Vec<&str> = shots.iter().map(|s| s.name.as_str()).collect();
 		assert!(names.iter().all(|n| n.starts_with("preview-")), "{names:?}");
 		names.sort_unstable();
