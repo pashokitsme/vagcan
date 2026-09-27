@@ -3459,7 +3459,11 @@ mod tests {
 	/// The generated source of a plan with a lever and a stopwatch, checked in and compiled by
 	/// `tests/generated_plan.rs` under `deny(warnings)`: CI builds the firmware on an empty
 	/// plan, so nothing else ever compiles the `[stalk]` / `[stopwatch]` half of `to_rust`.
-	/// Built from this module's protocol-shaped fixture. `BLESS=1` rewrites it.
+	/// Built from this module's made-up fixture.
+	///
+	/// `BLESS=1 cargo test -p vag-cli-core generated_source` rewrites it; review the diff, then
+	/// **run the tests again**: `tests/generated_plan.rs` is compiled in the same run as the
+	/// rewrite, before it, and still sees the old file.
 	#[test]
 	fn the_generated_source_of_a_lever_plan_is_the_one_checked_in() {
 		// The rocker on the ladder with unbounded states, so their literals are compiled too.
@@ -3470,18 +3474,40 @@ mod tests {
 		let body = rust.splitn(3, '\n').nth(2).expect("a header of two lines");
 		let text = format!("{GENERATED_HEADER}{body}");
 		let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lever_plan.rs");
-		if std::env::var_os("BLESS").is_some() {
+		if blesses(std::env::var_os("BLESS").as_deref()) {
 			std::fs::write(&path, &text).unwrap();
 		}
 		let checked_in = std::fs::read_to_string(&path).unwrap_or_default();
 		assert!(
 			checked_in == text,
-			"{} is not what `to_rust` writes now — run `BLESS=1 cargo test -p vag-cli-core generated_source` and review the diff",
+			"{} is not what `to_rust` writes now — run `BLESS=1 cargo test -p vag-cli-core generated_source`, review the diff, \
+			 and run the tests again: tests/generated_plan.rs compiled the old file",
 			path.display()
 		);
 	}
 
-	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`.\n";
+	/// Whether `BLESS` asks for the golden file to be rewritten: `1` and nothing else, so a
+	/// `BLESS=0` left in a shell never rewrites it.
+	fn blesses(value: Option<&std::ffi::OsStr>) -> bool {
+		value == Some(std::ffi::OsStr::new("1"))
+	}
+
+	#[test]
+	fn only_bless_1_rewrites_the_golden_file() {
+		use std::ffi::OsStr;
+		assert!(blesses(Some(OsStr::new("1"))));
+		for no in [
+			None,
+			Some(OsStr::new("0")),
+			Some(OsStr::new("")),
+			Some(OsStr::new("true")),
+			Some(OsStr::new("1 ")),
+		] {
+			assert!(!blesses(no), "BLESS={no:?} rewrote the golden file");
+		}
+	}
+
+	const GENERATED_HEADER: &str = "// `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's\n// data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with\n// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.\n";
 
 	#[test]
 	fn the_lever_and_the_stopwatch_reach_plan_json_and_the_rust_source() {

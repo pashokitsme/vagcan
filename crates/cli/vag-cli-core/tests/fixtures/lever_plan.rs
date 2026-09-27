@@ -1,6 +1,6 @@
 // `to_rust` on the test fixture of `src/dash.rs` (a lever and a stopwatch), not on any car's
 // data. Compiled by `tests/generated_plan.rs`. Do not edit by hand: rewrite it with
-// `BLESS=1 cargo test -p vag-cli-core generated_source`.
+// `BLESS=1 cargo test -p vag-cli-core generated_source`, then run the tests again.
 use vag_dash_render::plan::{Band, Channel, Page, Plan, StalkPlan, StopwatchPlan, Unit};
 use vag_dash_render::stalk::{StateIndex, States};
 use vag_dash_render::alarm::Alarm;
