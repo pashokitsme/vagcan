@@ -219,9 +219,10 @@ pub enum PartCheck {
 	Mismatch,
 	/// Not there (yet): ask again, as often as the scheduler's backoff allows.
 	Absent,
-	/// Something came back that did not parse, or the unit said it is busy (`21`). It was an
-	/// answer, so the scheduler does not back the unit off; ask again no sooner than the
-	/// backoff's cap.
+	/// Something came back that did not parse, the unit said it is busy (`21`), or it was heard
+	/// and did not answer in time ([`PartAnswer::Busy`]). An answer, or a unit heard from: the
+	/// scheduler does not back the unit off for it — for a `Busy`, not until the second in a row;
+	/// ask again no sooner than the backoff's cap.
 	RetryLater,
 }
 

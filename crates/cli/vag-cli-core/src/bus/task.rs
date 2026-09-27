@@ -251,8 +251,9 @@ impl State {
 /// Address `unit`, put `pdu` on the link, and take the final answer back.
 ///
 /// What the link already holds is thrown away first ([`UnitLink::discard_stale`]): a late
-/// answer to an identical request echoes this one's identifier, and [`answers`] cannot
-/// tell it from the real one.
+/// answer to a request that asked an identifier this one asks — an identical request, or a
+/// single read of one of a batch's identifiers — echoes it, and [`answers`] cannot tell it from
+/// the real one.
 ///
 /// Not cancel-safe: dropped mid-exchange, it leaves the slot empty. The task drops it
 /// only on its way out.

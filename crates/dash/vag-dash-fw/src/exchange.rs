@@ -17,14 +17,18 @@
 //!   earlier exchange its consumer stopped waiting for, arriving inside this one: dropped, and
 //!   the wait goes on within the time it had (review of `todo/dash/20`, 2026-09-27). Taken as
 //!   this exchange's answer, the fault count's late `59 02 …` became the next part-number read's
-//!   answer, a part number that did not parse. Only an identical request can still take one.
+//!   answer, a part number that did not parse. A late answer to a request that asked an
+//!   identifier this one asks — an identical request, or a single read of one of a batch's —
+//!   is still taken: nothing in it tells the two apart.
 //! * **An exchange with a deadline of its own** — the fault count's, 2 s from the exchange's
 //!   start, the send included, `78`s included — has every wait cut to it.
 //! * **How it ends without an answer** is what was heard on the unit's answer id, not what ended
 //!   the wait: nothing at all is [`Ended::Silent`], an absent unit; a `78`, or a late answer to
-//!   an earlier request, is [`Ended::Busy`] — the unit is there and busy, and the planner must
-//!   not take it for silence, which marks it absent and drops its readers (review rounds 1 and
-//!   2, 2026-09-27). Every exchange, not only the fault count's.
+//!   an earlier request, is [`Ended::Busy`] — the unit is there and busy. Its readers get
+//!   `Miss::Busy`, not the `Miss::NoAnswer` on which the panel declares a unit absent and drops
+//!   its cells (review rounds 1 and 2, 2026-09-27); the planner backs it off from its second
+//!   `Busy` in a row, as it does a silent unit (rounds 3 and 4). Every exchange, not only the
+//!   fault count's.
 
 use vag_uds_client::schedule::{answers, expects_no_answer};
 

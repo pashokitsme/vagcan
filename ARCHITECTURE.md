@@ -512,7 +512,7 @@ exchange waits is dropped and the wait goes on — one rule on the board and the
 it, and ISO-TP ignores the consecutive frames of an answer nobody waits for, receiving and
 sending. On the board, a unit heard from during an exchange — a `78`, or late answers only — that
 does not answer in time is busy, not silent: its readers miss one sample, its part is not checked
-again, and it is backed off as a silent unit is.
+again, and from its second busy exchange in a row it is backed off as a silent unit is.
 
 **Input is commands, from any mix of backends.** Buttons on GPIO 3, 4 and 5 (`[[button]]`),
 the cruise lever (`[stalk]`) and `dashsim` each turn a press into a `Command` — next, previous,

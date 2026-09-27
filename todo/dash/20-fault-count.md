@@ -223,9 +223,14 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   `Miss::Busy`, one missed sample, never an absent unit (before, a stray then a late answer
   marked the unit absent and dropped its subscriptions, a stopwatch run's speed with them); a
   part check answered so is asked again; a host's exchange gets `Outcome::NoAnswer`, not a
-  `7F xx 78` that promised more. The unit is backed off as a silent one is (round 3: `Busy`
-  reset its backoff, and a healthy unit beside one busy for ever got 40 readings in 10 s where
-  a silent neighbour left it 144; now the same).
+  `7F xx 78` that promised more. The first `Busy` since the unit last answered costs no wait
+  and tells only that exchange's readers; from the second in a row the unit is backed off as a
+  silent one is. Round 3: `Busy` reset its backoff, and a healthy unit beside one busy for ever
+  got 40 readings in 10 s where a silent neighbour left it 144. Round 4: backing off from the
+  first `Busy` let one busy speed read and a silent page unit push the gap between two speed
+  answers to 1.6–1.8 s, past `SILENCE_MS`. Now 1050 ms there, and beside a unit busy for ever
+  144 vs 144 in 10 s, 114 vs 118 in 60 s with `78` to the end — one first backoff more per
+  streak.
 - **Late answers are dropped, on every exchange** (review round 1, `Waits::heard`): a PDU that
   answers another request — another service's, another identifier's (a `22` answer starts with
   an identifier asked — any of them, round 3: a unit may leave out the first, and the planner
@@ -236,9 +241,11 @@ holds one `Count` (a `StaticCell` in `can_task`, in `.bss`, not the arena), give
   to judge). The drain before a send removes only what came before it; ISO-TP ignores the
   consecutive frames of an answer nobody waits for, before a first frame (round 2,
   `IsoTpCan::recv`) and while a flow control is awaited (round 3, `wait_flow_control`).
-  **Left over:**
-  only an identical request — a host's own `19 02 08` to the same unit within P2* of a cut — can
-  still receive the count's late answer; nothing in the answer tells the two apart.
+  **Left over:** a late answer to a request that asked an identifier this one asks is still
+  taken — nothing in the answer tells the two apart: an identical request (a host's own
+  `19 02 08` to the same unit within P2* of a cut receives the count's late answer), or any `22`
+  that asks the identifier (a batch `22 F4 0D F4 0C` takes the late `62 F4 0C …` of an earlier
+  single read of `F40C`, which then gets the stale record while `F40D` is `Absent` that round).
 - **A unit busy on `F187`** (`7F 22 21`) is asked its part number again after the backoff's cap
   (`PartCheck::RetryLater`), never a mismatch for the boot (review round 1: a unit searching its
   fault memory for the count may answer so).
@@ -340,15 +347,19 @@ each a BLE round trip.
   or an answer id, in either role; counting a 4095-byte answer allocates under 256 B, and so
   does reading a 4095-byte list (a counting allocator in the test binary); an answer after the
   end changes nothing; the tally so far while the walk goes on, and the outcome once it is over.
-- `schedule` (5): a raw exchange a busy unit did not answer in time is `Busy` for its readers
-  and backs the unit off; a read so is a missed sample (`Miss::Busy`) for every reader and
-  one-shot, backed off as silence is; a unit busy for ever costs a healthy neighbour no more
-  than a silent one (round 3, the safety probe's two scenarios); a response answers its own
+- `schedule` (5): a busy raw exchange costs nothing once and backs the unit off from the second
+  in a row, its readers told `Busy`; a busy read is a missed sample (`Miss::Busy`) for its
+  readers and one-shots, backed off from the second in a row; a unit busy for ever costs a
+  healthy neighbour at most one first backoff's worth of readings more than a silent one (round
+  3, the safety probe's two scenarios); a response answers its own
   request and no other — service, any identifier asked, sub-function, and a refusal's NRC
   (`answers`, the laptop's asserts moved here); a batch whose first identifier the unit leaves
   out is read through the shell's rule, the rest at its rate (round 3).
 - `remote` (1): a busy unit is no answer to a host, its subscription reads no answer, and it is
-  asked no more often than a silent one.
+  asked at most once more than a silent one.
+- `research/dash/host/tests/stopwatch_silence.rs` (1, round 4): one busy speed read beside a
+  silent page unit read every 1050–1240 ms leaves the longest gap between two speed answers
+  under `SILENCE_MS` (1050 ms; 1600 ms when the first `Busy` backed off).
 - `isotp` (3) and `isotp_over_slcan` (2): consecutive and flow-control frames before the first
   frame are ignored and the wait goes on; leftovers then nothing is a timeout, not a protocol
   error; a consecutive frame or an unknown PCI while a flow control is awaited is ignored too

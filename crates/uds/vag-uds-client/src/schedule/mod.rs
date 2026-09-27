@@ -289,8 +289,11 @@ const TESTER_PRESENT: u8 = 0x3E;
 ///     answer teaches it a unit is single-only);
 ///   - `10`, `19` and `3E` echo their sub-function, without the suppress-positive-response bit.
 ///
-/// Anything else is a late answer to an earlier request: the shell drops it and waits on. Only
-/// an identical request can still take one — nothing in the answer tells the two apart.
+/// Anything else is a late answer to an earlier request: the shell drops it and waits on. What it
+/// cannot drop is a late answer to a request its own request could have had: any `22` that asks
+/// the identifier takes one — a batch `22 F4 0D F4 0C` takes the late `62 F4 0C …` of an earlier
+/// single read of `F40C`, which then gets the stale record while `F40D` is `Absent` that round —
+/// and any identical request does. Nothing in the answer tells them apart.
 pub fn answers(request: &[u8], response: &[u8]) -> bool {
 	let Some(&sid) = request.first() else {
 		return false;
