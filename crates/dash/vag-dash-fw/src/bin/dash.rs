@@ -1913,6 +1913,16 @@ impl PanelReads {
 		ReadMode {
 			gate_open: self.stalk.gate_open(),
 			stopwatch,
+			// The cruise status is read only for a lever that can be (PR #12 review).
+			lever: lever_unit().is_some_and(|u| self.checks[u] == Check::Matched),
+		}
+	}
+
+	/// A unit's check moved: if it is the rocker's, the cruise status — on its own unit,
+	/// maybe — starts or stops being worth a read, and the subscriptions follow.
+	fn checked(&self, u: usize, before: Check) {
+		if lever_unit() == Some(u) && (before == Check::Matched) != (self.checks[u] == Check::Matched) {
+			PAGES_CHANGED.signal(());
 		}
 	}
 
@@ -2077,6 +2087,7 @@ impl PanelReads {
 						self.part_retry_at[u] = Some(Instant::now() + cap);
 					}
 				}
+				self.checked(u, previous);
 				self.say_dead_bus();
 				None
 			}
@@ -2126,6 +2137,7 @@ impl PanelReads {
 							note!("can: {:03X} went silent — will keep asking", channel.unit);
 							self.unsubscribe_unit(u, bus).await;
 							self.ask_part_number(u, bus);
+							self.checked(u, Check::Matched);
 							self.say_dead_bus();
 						}
 					}
@@ -2291,6 +2303,12 @@ fn host_clock(planner: &Planner, subs: &[Option<PanelSub>]) -> bool {
 		.filter(|sub| sub.class == Class::Timing && planner.holds(sub.id))
 		.count();
 	planner.timing_subscriptions() > own
+}
+
+/// The plan's unit the rocker is read from, if the plan has a lever.
+fn lever_unit() -> Option<usize> {
+	let rocker = PLAN.channels.get(usize::from(PLAN.stalk?.rocker))?;
+	PLAN.units.iter().position(|unit| unit.request == rocker.unit)
 }
 
 fn unit_of(u: usize) -> Unit {
