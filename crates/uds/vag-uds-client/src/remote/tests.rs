@@ -12,6 +12,9 @@ use crate::guard::{RATE_LIMIT, RATE_WINDOW_MS};
 use crate::schedule::{Answer as BusAnswer, Budget, Next, Outgoing};
 
 const ENGINE: Unit = SPEED_UNIT;
+
+/// What a radio host is told while the board's timing channel is held.
+const HELD: &str = "the board's timing channel is held by its own stopwatch or another client";
 const GATEWAY: Unit = Unit {
 	request: 0x710,
 	response: 0x77A,
@@ -891,7 +894,7 @@ fn the_boards_one_timing_channel_is_held_by_the_cable_until_it_lets_go() {
 	);
 	board.hear(timing(1, ENGINE, 0xF40D, 20));
 	let last = board.readings(1).pop().expect("the radio is refused while the cable holds it");
-	assert_eq!(refused(&last.1), "another client holds the board's timing channel");
+	assert_eq!(refused(&last.1), HELD);
 	assert_eq!(board.session.subscriptions().count(), 0);
 	board.hear(subscribe(2, ENGINE, 0xF40C, 100));
 	assert!(board.readings(2).is_empty(), "a normal subscription is not held to it");
@@ -1250,8 +1253,31 @@ fn a_cable_timing_subscription_takes_the_channel_from_the_radio_and_never_the_ot
 	board.hear(timing(1, ENGINE, 0xF40D, 20));
 	let readings = board.readings(1);
 	assert_eq!(readings.len(), 1, "{readings:?}");
-	assert_eq!(refused(&readings[0].1), "another client holds the board's timing channel");
+	assert_eq!(refused(&readings[0].1), HELD);
 	usb.close(board.now, &mut board.planner);
+}
+
+/// The board's own stopwatch holds the timing channel while a run is armed or running: the
+/// panel subscribes its speed as `Class::Timing` in the planner every session shares. A radio
+/// host asking then is refused, and the refusal must not send a person looking for another
+/// client when the board itself holds it (`todo/dash/19`, on the car, step 4). The planner does
+/// not say whose a subscription is, so the text names both.
+#[test]
+fn a_radio_host_refused_while_the_boards_own_stopwatch_times_is_told_it_may_be_the_board() {
+	let mut board = Board::new(Bus::Answering { kmh: 0 });
+	// The panel's run: its speed as the board's clock.
+	let run = board.planner.subscribe(0, Class::Timing, GATEWAY, 0x380B, 20, None);
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	let last = board.readings(1).pop().expect("the radio is refused while the board's run holds it");
+	let text = refused(&last.1);
+	assert!(text.contains("its own stopwatch"), "the board's, not another host's: {text}");
+	assert!(text.contains("another client"), "a cable host may hold it too: {text}");
+	assert_eq!(board.session.subscriptions().count(), 0);
+	// The run ends, the channel is free, and the radio gets it.
+	board.planner.unsubscribe(run);
+	board.to_host.clear();
+	board.hear(timing(1, ENGINE, 0xF40D, 20));
+	assert!(board.to_host.is_empty(), "no refusal once the board's run let go");
 }
 
 /// The cable's session holds the cable's guard, and keeps it across a close.
