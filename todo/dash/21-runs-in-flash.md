@@ -20,6 +20,11 @@ task."
 - **Leaving early loses the run.** Leave the stopwatch before the car stands still and the run
   is lost at power-off unless you send `save`. The no-BLE build has no `save`.
 - **Only the last run is kept.** The next one overwrites it.
+- **A close the driver did not choose.** Found in PR #12's third review (2026-09-27): finish a
+  run, then switch cruise on. The lever closes the stopwatch, the speed is no longer read, no
+  standstill writes the run, and it is lost at ignition off — unless `save` (BLE build only).
+  The close's log line does not mention the run. Whatever this task settles for "when LIMIT
+  writes" should cover this close too.
 
 ## Open questions
 

@@ -268,7 +268,9 @@ alarm silencing were gone until a power cycle. The owner chose both behaviours:
   lever at 10–20 Hz, so one cruise-status answer that is not off fills both reads of the pair
   and closes it (`stalk.rs`, `Closer`). Taken as intended: the capture's `203C` has no
   single-answer excursion (725 answers, shortest run 7). A run in progress aborts, as when the
-  page is left.
+  page is left. A run that **finished** before the close stays in RAM: the speed is no longer
+  read, so no standstill writes it, and it is lost at ignition off unless `save` — filed with
+  `todo/dash/21-runs-in-flash.md`.
 - **The gate closed for lack of data → the stopwatch stays** — stale, unanswered, NRC, a reading
   no state claims, the unit silent — a run included, until the gate has not been seen open for
   over 3 s (`stalk::STALE_CLOSE_MS`): then it closes. A read that shows the gate open starts the
