@@ -211,9 +211,17 @@ It replaced `Screen::press` and `Screen::lever`. The rules, first match wins:
 | 3. the stopwatch up | ignored (`StopwatchHeld`) | leaves it (`StopwatchOff`) |
 | 4. otherwise | turn the page, wrapping (`Paged`) | opens it (`StopwatchOn`); with no `[stopwatch]` in the plan, `NoStopwatch`, logged |
 
-Only `Stopwatch` enters or leaves the stopwatch, and only an input that has it can. **The
-behaviour change:** a page turn no longer ends the stopwatch. Before, BOOT's short press (and
-`dashsim`'s, which went through it) turned the page and so left the stopwatch.
+Only `Stopwatch` enters or leaves the stopwatch, and only an input that has it can; the
+adapter screen (`--slcan`) ends it too. **The behaviour change:** a page turn no longer ends the
+stopwatch. Before, BOOT's short press (and `dashsim`'s, which went through it) turned the page
+and so left the stopwatch.
+
+**Open, for the owner (review, 2026-09-27):** with the lever as the only `Stopwatch` input, a
+gate that closes while the stopwatch is up — cruise switched on, or its status gone silent —
+keeps the stopwatch on the glass until the gate opens again. Pin `next`/`previous` buttons do
+nothing meanwhile, `dashsim`'s page turn no longer ends it, and `dashcfg set page` never did.
+Adapter mode and a power cycle end it. Accepted as the rule says, or should `set page` (or a
+closed gate) end it?
 
 **The backends.** Each is a small machine that produces `Option<Command>`:
 

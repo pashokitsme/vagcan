@@ -56,7 +56,7 @@ impl Command {
 /// The pins a `[[button]]` may name. The ESP32-C3 SuperMini breaks out GPIO 0–10, 20 and 21;
 /// with this board's wiring (`todo/dash/15-enclosure.md` §3) the OLED holds 0, 7, 10, 20 and
 /// 21, the CAN transceiver 1 and 6, the LED 8, the BOOT button 9, and 2 is a strapping pin
-/// (8 and 9 are too). GPIO 3, 4 and 5 lost their jobs there (the rail divider, the RS wire,
+/// (8 and 9 are too). GPIO 3, 4 and 5 lost their jobs there (the RS wire, the rail divider,
 /// the wake button) and are free. A property of the board and its wiring, not of any car.
 pub const BUTTON_PINS: [u8; 3] = [3, 4, 5];
 

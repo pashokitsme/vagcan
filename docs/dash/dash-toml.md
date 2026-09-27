@@ -308,7 +308,8 @@ A button on one of the board's free pins. 0 to 3 of them, one per pin. Each does
   pull-up.
 - A press counts when the button is let go. Held 3 s, it counts then. Holding does not repeat.
 - Two buttons may have the same `action`.
-- A `stopwatch` button with no `[stopwatch]` builds; the output says a press of it does nothing.
+- A `stopwatch` button with no `[stopwatch]` builds; the output says a press of it only silences
+  an alarm.
 - The board's own BOOT and RESET buttons do nothing in the `dash` image. They are for flashing
   and resetting.
 - A pin no `[[button]]` names is left alone.
@@ -530,8 +531,8 @@ build prints it after `dash plan for VIN <VIN>:`.
   buttons do nothing.
 - With no `[stalk]` and no `[[button]]`, the board shows its active page. Only `dashsim` or
   `dashcfg`'s `set page` changes it.
-- With the stopwatch on, `next` and `previous` do nothing, from any of them. Only `stopwatch`
-  leaves it.
+- With the stopwatch on, `next` and `previous` do nothing, from any of them. `stopwatch` leaves
+  it; so does the board turning adapter (`vagcan --slcan`).
 
 **The lever**
 

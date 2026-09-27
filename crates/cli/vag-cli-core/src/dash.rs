@@ -1418,7 +1418,7 @@ pub fn build(
 		notes.push(format!("button: pin {} → {}", b.pin, b.action.name()));
 		if b.action == Command::Stopwatch && stopwatch.is_none() {
 			notes.push(format!(
-				"button: pin {} is a stopwatch button, and there is no [stopwatch] — a press of it does nothing",
+				"button: pin {} is a stopwatch button, and there is no [stopwatch] — a press of it only silences an alarm",
 				b.pin
 			));
 		}
@@ -4270,7 +4270,7 @@ mod tests {
 			built
 				.notes
 				.iter()
-				.any(|n| n == "button: pin 5 is a stopwatch button, and there is no [stopwatch] — a press of it does nothing"),
+				.any(|n| n == "button: pin 5 is a stopwatch button, and there is no [stopwatch] — a press of it only silences an alarm"),
 			"{:?}",
 			built.notes
 		);

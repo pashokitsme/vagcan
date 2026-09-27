@@ -250,7 +250,7 @@ the page it is on and nobody else.
   finished run's times in settings, written to flash at the next standstill, never at speed
   (owner, 2026-09-26; `12`, `19`).
 
-## 6a. Controls: the button stays, the stalks are an event source
+## 6a. Controls: the stalks are an event source
 
 The owner asked (2026-09-13) whether the bus can deliver a button press, so the device
 needs no button of its own. It can deliver the *state*, not the press:

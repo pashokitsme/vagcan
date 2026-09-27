@@ -185,16 +185,16 @@ accepts per request is still a bench measurement — see `06`.
 - **`vag-dash-fw/src/bin/dash.rs`** — every panel frame calls `Screen::frame` with the
   cursor and the value store (`None` when stale, the existing `STALE` rule), draws
   `glass.page`, and inverts the cell whose channel is `glass.inverted`; it publishes the
-  drawn page for the bus task's subscriptions. The button task routes a short press
-  through `Screen::press`. On USB: each takeover (per rule), `over`, `silenced`, and once
+  drawn page for the bus task's subscriptions. `control_task` routes every input's command
+  through `Screen::command` (`dash/19`, "Input backends"). On USB: each takeover (per rule), `over`, `silenced`, and once
   an alarm page the board does not hold — the cursor's page is drawn instead of freezing.
 
 ```rust
-let mut screen = Screen::<ALARM_COUNT>::new(PLAN.alarms);
+let mut screen = Screen::<ALARM_COUNT>::new(PLAN.alarms, PLAN.stopwatch.is_some());
 // Every frame: the page the driver chose, the clock, the store.
 let glass = screen.frame(config.active_page, pages, now_ms, |i| value_of(i));
-// The one button:
-if screen.press(&mut config.active_page, pages) == Press::NextPage { /* paged */ }
+// Any input's press, as a command:
+if screen.command(Command::Next, &mut config.active_page, pages) == Outcome::Silenced { /* hushed */ }
 ```
 
 Four decisions worth writing down:

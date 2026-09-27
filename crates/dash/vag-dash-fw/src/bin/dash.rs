@@ -514,9 +514,9 @@ enum Outgoing {
 /// reads it constantly and must never wait for a flash write.
 static VISIBILITY: AtomicU8 = AtomicU8::new(Visibility::Dark as u8);
 
-/// Presses arriving from the panel simulator over USB. They go through the
-/// **same** handling as the physical button rather than a parallel path — a
-/// test rig that exercises different code from the real thing tests the rig.
+/// Presses arriving from the panel simulator over USB, for `input_task`. What they ask for
+/// goes through the same queue and the same `control_task` as every input's, so the rig
+/// exercises the board's own path; a short press is `Command::Next`.
 static REMOTE_PRESS: Signal<CriticalSectionRawMutex, Press> = Signal::new();
 
 /// Every input's commands, to `control_task` ([`vag_dash_fw::input`]): four wait at most,
@@ -3219,7 +3219,7 @@ async fn take_console_input(input: ConsoleInput) {
 			USB_MESSAGES.send(message).await;
 		}
 		ConsoleInput::Malformed(why) => note!("usb: a malformed frame from the host was dropped: {why}"),
-		// The simulator's presses go through the same handling as the physical button.
+		// The simulator's presses become commands in `input_task`, like every input's.
 		ConsoleInput::Press(console::Button::Short) => REMOTE_PRESS.signal(Press::Short),
 		ConsoleInput::Press(console::Button::Long) => REMOTE_PRESS.signal(Press::Long),
 		ConsoleInput::EnterAdapter => {
