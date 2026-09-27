@@ -179,9 +179,9 @@ fn a_raw_exchange_cut_while_its_unit_asked_for_time_keeps_the_unit_and_its_reade
 	let count = p.exchange(10, Class::Background, A, vec![0x19, 0x02, 0x08]).unwrap();
 	let out = send(p.due(10));
 	assert_eq!(out.pdu, [0x19, 0x02, 0x08]);
-	let got = p.answered(2_010, out.token, Answer::StillPending);
+	let got = p.answered(2_010, out.token, Answer::Busy { asked_for_time: true });
 	assert_eq!(got.len(), 1, "{got:?}");
-	assert!(matches!(&got[0], Delivery::Raw { req, answer: Answer::StillPending, .. } if *req == count));
+	assert!(matches!(&got[0], Delivery::Raw { req, answer: Answer::Busy { asked_for_time: true }, .. } if *req == count));
 
 	let out = send(p.due(2_010));
 	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the reader's next read goes at once, not backed off");
@@ -189,18 +189,37 @@ fn a_raw_exchange_cut_while_its_unit_asked_for_time_keeps_the_unit_and_its_reade
 	assert!(matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub));
 }
 
-/// A read the shell cut the same way — none does — is what a `78` reaching the planner
-/// always was: a refusal with that NRC.
+/// A read a busy unit did not answer in time — it asked for time, or only finished an earlier
+/// answer (review round 2, 2026-09-27) — is a sample missed from a unit that is there: every
+/// reader and one-shot is told `Busy`, and the unit is not backed off. Taken for silence, the
+/// panel marked the unit absent and dropped its subscriptions, a run's speed with them.
 #[test]
-fn a_read_cut_while_its_unit_asked_for_time_is_refused_with_78() {
-	let mut p = Planner::new(Budget::default());
-	let sub = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
-	let out = send(p.due(0));
-	let got = p.answered(5, out.token, Answer::StillPending);
-	assert!(
-		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Refused(0x78), .. }] if *s == sub),
-		"{got:?}"
-	);
+fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that_is_there() {
+	for asked_for_time in [false, true] {
+		let mut p = Planner::new(Budget::default());
+		let speed = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
+		let other = p.subscribe(0, Class::Foreground, A, 0x1000, 100, None);
+		let once = p.read_once(0, Class::Foreground, A, 0x1001);
+		let out = send(p.due(0));
+		assert_eq!(out.pdu.len(), 7, "one request for the three: {:02X?}", out.pdu);
+		let got = p.answered(5, out.token, Answer::Busy { asked_for_time });
+		for sub in [speed, other] {
+			assert!(
+				got
+					.iter()
+					.any(|d| matches!(d, Delivery::Missed { sub: s, why: Miss::Busy, .. } if *s == sub)),
+				"{asked_for_time}: {got:?}"
+			);
+		}
+		assert!(!got.iter().any(|d| matches!(d, Delivery::Missed { why: Miss::NoAnswer, .. })));
+		assert!(
+			got
+				.iter()
+				.any(|d| matches!(d, Delivery::Once { req, result: Err(Miss::Busy), .. } if *req == once)),
+			"{asked_for_time}: {got:?}"
+		);
+		assert!(matches!(p.due(100), Next::Send(_)), "{asked_for_time}: on time, not backed off");
+	}
 }
 
 /// A late answer to an earlier request on the same ids is no answer to this one: the shell

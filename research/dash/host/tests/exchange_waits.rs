@@ -47,12 +47,14 @@ fn a_late_answer_to_an_earlier_request_is_dropped_and_the_wait_goes_on_within_it
 	assert_eq!(waits.strays(), 4);
 	assert_eq!(waits.first_stray(), Some(&[0x59, 0x02, 0xFF][..]), "its first bytes, for the log");
 	assert_eq!(waits.heard(&[0x62, 0xF1, 0x87, b'P'], 200), Heard::Answer);
-	// Nothing of its own by the end of the wait: silence, as before.
+	// Nothing of its own by the end of the wait: not silence — the unit was heard on its own id,
+	// finishing an earlier answer (review round 2, 2026-09-27: `Silent` marked it absent and
+	// dropped its subscriptions, a run's speed included).
 	let mut waits = Waits::new(READ, BOARD, None);
 	waits.sent(0);
 	assert_eq!(waits.heard(&[0x59, 0x02, 0xFF], 499), Heard::Stray);
 	assert_eq!(waits.next_wait(500), None);
-	assert_eq!(waits.ended(), Ended::Silent);
+	assert_eq!(waits.ended(), Ended::Busy { asked_for_time: false });
 }
 
 #[test]
@@ -65,7 +67,11 @@ fn an_answer_for_another_identifier_or_sub_function_is_a_stray_too() {
 	assert_eq!(waits.heard(&[0x62, 0xF1, 0x87, b'P'], 20), Heard::Answer);
 	let mut waits = Waits::new(&[0x19, 0x04, 0x01, 0x02, 0x03, 0xFF], BOARD, None);
 	waits.sent(0);
-	assert_eq!(waits.heard(&[0x59, 0x02, 0xFF, 0, 1, 2, 0x08], 10), Heard::Stray, "the count's late answer");
+	assert_eq!(
+		waits.heard(&[0x59, 0x02, 0xFF, 0, 1, 2, 0x08], 10),
+		Heard::Stray,
+		"the count's late answer"
+	);
 	assert_eq!(waits.heard(&[0x59, 0x04, 0x01, 0x02, 0x03, 0x08], 20), Heard::Answer);
 }
 
@@ -93,7 +99,11 @@ fn a_78_is_waited_out_as_before_without_a_deadline_of_its_own() {
 	assert_eq!(waits.heard(&[0x7F, 0x19, 0x78], 9_000), Heard::Pending);
 	assert_eq!(waits.next_wait(9_000), Some(1_100), "the 78s together end 10 s after the first");
 	assert_eq!(waits.next_wait(10_100), None);
-	assert_eq!(waits.ended(), Ended::Silent, "no answer, as it always was");
+	assert_eq!(
+		waits.ended(),
+		Ended::Busy { asked_for_time: true },
+		"a unit that said 78 is there, whoever's deadline ends the wait"
+	);
 	// A stray between two 78s does not start a new wait.
 	let mut waits = Waits::new(FAULTS, BOARD, None);
 	waits.sent(0);
@@ -113,7 +123,7 @@ fn the_counts_exchange_ends_two_seconds_after_it_began_78s_included() {
 	assert_eq!(waits.next_wait(1_999), Some(1));
 	assert_eq!(waits.next_wait(2_000), None);
 	// The unit said it is there and busy: not silence.
-	assert_eq!(waits.ended(), Ended::StillPending);
+	assert_eq!(waits.ended(), Ended::Busy { asked_for_time: true });
 }
 
 #[test]
@@ -123,13 +133,12 @@ fn a_unit_silent_from_the_start_of_the_counts_exchange_is_silent() {
 	assert_eq!(waits.next_wait(0), Some(500));
 	assert_eq!(waits.next_wait(500), None);
 	assert_eq!(waits.ended(), Ended::Silent);
-	// Nor is silence after a 78 that the limit did not cut: none, the limit being shorter than P2*,
-	// but the rule is what cut the wait, not whether a 78 came.
+	// What was heard decides, not what ended the wait: a 78, then P2* running out.
 	let mut waits = Waits::new(FAULTS, BOARD, Some(60_000));
 	waits.sent(0);
 	assert_eq!(waits.heard(&[0x7F, 0x19, 0x78], 100), Heard::Pending);
 	assert_eq!(waits.next_wait(5_100), None);
-	assert_eq!(waits.ended(), Ended::Silent);
+	assert_eq!(waits.ended(), Ended::Busy { asked_for_time: true });
 }
 
 #[test]

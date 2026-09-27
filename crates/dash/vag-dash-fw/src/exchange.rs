@@ -18,10 +18,13 @@
 //!   the wait goes on within the time it had (review of `todo/dash/20`, 2026-09-27). Taken as
 //!   this exchange's answer, the fault count's late `59 02 …` became the next part-number read's
 //!   answer, a part number that did not parse. Only an identical request can still take one.
-//! * **An exchange with a deadline of its own** — the fault count's, 2 s from the start, `78`s
-//!   included — has every wait cut to it. If the unit had asked for time and the deadline cut
-//!   the wait, it ends as [`Ended::StillPending`]: the unit is there and busy, which the planner
-//!   must not take for silence. Otherwise an exchange with no answer ends [`Ended::Silent`].
+//! * **An exchange with a deadline of its own** — the fault count's, 2 s from the exchange's
+//!   start, the send included, `78`s included — has every wait cut to it.
+//! * **How it ends without an answer** is what was heard on the unit's answer id, not what ended
+//!   the wait: nothing at all is [`Ended::Silent`], an absent unit; a `78`, or a late answer to
+//!   an earlier request, is [`Ended::Busy`] — the unit is there and busy, and the planner must
+//!   not take it for silence, which marks it absent and drops its readers (review rounds 1 and
+//!   2, 2026-09-27). Every exchange, not only the fault count's.
 
 use vag_uds_client::schedule::{answers, expects_no_answer};
 
@@ -56,10 +59,11 @@ pub enum Heard {
 /// How an exchange ended with no answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
-	/// Nothing within a wait: silence, as it always was taken.
+	/// Nothing was heard on the unit's answer id: silence, an absent unit.
 	Silent,
-	/// The unit asked for time (`78`) and the exchange's own deadline cut the wait for the rest.
-	StillPending,
+	/// The unit was heard — it asked for time (`78`), or only sent late answers to earlier
+	/// requests (`asked_for_time` false) — and did not answer this request in time.
+	Busy { asked_for_time: bool },
 }
 
 /// One exchange's waits.
@@ -145,11 +149,12 @@ impl Waits {
 		Heard::Pending
 	}
 
-	/// How the exchange ended, its last wait over with no answer.
+	/// How the exchange ended, its last wait over with no answer: busy if anything was heard on
+	/// the unit's answer id during it, silent otherwise.
 	pub fn ended(&self) -> Ended {
-		let cut = self.limit_ms.is_some_and(|limit| limit < self.wait_end_ms);
-		if cut && self.pending_since_ms.is_some() {
-			Ended::StillPending
+		let asked_for_time = self.pending_since_ms.is_some();
+		if asked_for_time || self.strays > 0 {
+			Ended::Busy { asked_for_time }
 		} else {
 			Ended::Silent
 		}

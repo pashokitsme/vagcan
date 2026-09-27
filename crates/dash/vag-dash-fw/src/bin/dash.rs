@@ -1664,9 +1664,9 @@ fn refilter(backend: TwaiBackend<'static>, filter: StandardFilter, said: &mut bo
 enum Stop {
 	/// The transport's own error, or silence ([`TransportError::Timeout`]).
 	Transport(TransportError),
-	/// The unit asked for time (`78`) and the exchange's own deadline cut the wait for the rest
-	/// ([`Ended::StillPending`]): [`Answer::StillPending`], a unit that is there.
-	StillPending,
+	/// The unit was heard — a `78`, or late answers to earlier requests — and did not answer in
+	/// time ([`Ended::Busy`]): [`Answer::Busy`], a unit that is there.
+	Busy { asked_for_time: bool },
 }
 
 /// One exchange, done: its answer or why there is none, the stale frames swept before it, and
@@ -1745,7 +1745,7 @@ async fn transact(link: &mut Link<'_>, pdu: &[u8], limited: bool, waits: &mut Wa
 fn stopped(ended: Ended) -> Stop {
 	match ended {
 		Ended::Silent => Stop::Transport(TransportError::Timeout),
-		Ended::StillPending => Stop::StillPending,
+		Ended::Busy { asked_for_time } => Stop::Busy { asked_for_time },
 	}
 }
 
@@ -1758,12 +1758,12 @@ async fn receive(link: &mut Link<'_>, timeout: core::time::Duration, past: Durat
 
 /// What the planner is told about an exchange of `request`. Silence after a request
 /// that asked for it is [`Answer::NotExpected`], not an absent unit: the panel keeps
-/// reading that unit and nothing is backed off. A unit that asked for time when the
-/// exchange's own deadline cut it is [`Answer::StillPending`], not an absent unit either.
+/// reading that unit and nothing is backed off. A unit heard from during the exchange that did
+/// not answer in time is [`Answer::Busy`], not an absent unit either.
 fn answer_of(request: &[u8], result: Result<Vec<u8>, Stop>) -> Answer {
 	match result {
 		Ok(pdu) => Answer::Pdu(pdu),
-		Err(Stop::StillPending) => Answer::StillPending,
+		Err(Stop::Busy { asked_for_time }) => Answer::Busy { asked_for_time },
 		Err(Stop::Transport(TransportError::Timeout)) if expects_no_answer(request) => Answer::NotExpected,
 		Err(Stop::Transport(TransportError::Timeout)) => Answer::NoAnswer,
 		Err(Stop::Transport(_)) => Answer::BusError,
@@ -2638,6 +2638,7 @@ fn miss_text(why: Miss) -> heapless::String<32> {
 		Miss::Refused(nrc) => write!(out, "refused, NRC {nrc:02X}"),
 		Miss::Absent => write!(out, "left out of the answer"),
 		Miss::Malformed => write!(out, "answer did not parse"),
+		Miss::Busy => write!(out, "busy, no answer in time"),
 	};
 	out
 }
@@ -2655,6 +2656,7 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 		Err(Miss::NoAnswer) => PartAnswer::NoAnswer,
 		Err(Miss::BusError) => PartAnswer::BusError,
 		Err(Miss::Malformed | Miss::Absent) => PartAnswer::Malformed,
+		Err(Miss::Busy) => PartAnswer::Busy,
 	};
 	let check = unit.check_part(part);
 	match (check, answer) {
@@ -2677,6 +2679,12 @@ fn judge(u: usize, answer: Result<&[u8], &Miss>, previous: Check) -> PartCheck {
 			unit.request,
 			miss_text(*why)
 		),
+		(PartCheck::RetryLater, Err(Miss::Busy)) if previous != Check::Absent => {
+			note!(
+				"can: {:03X} is busy, no answer to F187 in time — will ask its part number again",
+				unit.request
+			);
+		}
 		(PartCheck::RetryLater, Err(Miss::Refused(nrc))) if previous != Check::Absent => {
 			note!("can: {:03X} is busy (NRC {nrc:02X}) — will ask its part number again", unit.request);
 		}

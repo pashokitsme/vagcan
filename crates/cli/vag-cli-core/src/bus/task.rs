@@ -221,9 +221,8 @@ impl State {
 						// what was asked for: a success with nothing in it, as the remote
 						// bus reports it too.
 						Answer::NotExpected => Ok((Vec::new(), at)),
-						// Only the board's fault count cuts its own exchanges; never produced
-						// here. The unit said nothing past its `78`: no answer.
-						Answer::NoAnswer | Answer::StillPending => Err(ExchangeError::NoAnswer),
+						// Only the board's shell reports it; never produced here. No answer came.
+						Answer::NoAnswer | Answer::Busy { .. } => Err(ExchangeError::NoAnswer),
 						Answer::BusError => {
 							Err(ExchangeError::Link(error.take().unwrap_or_else(|| {
 								TransportError::Io(format!("the link failed talking to {:03X}", unit.request))

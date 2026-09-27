@@ -181,13 +181,13 @@ impl Bench {
 
 /// The reference car's shape: a list with the two ids that share one, a bit past VW's block,
 /// codes on two units, one silent unit, and one — at `70C` — that asks for time (`78`) and is
-/// still searching when the count's deadline cuts its exchange: the shell says `StillPending`.
+/// still searching when the count's deadline cuts its exchange: the shell says `Busy`.
 fn reference_like() -> Car {
 	let mut car = Car::listing(&[0x70C, 0x714, 0x776, 0x777])
 		.codes(0x7E0, &[([0x01, 0x02, 0x03], 0x09), ([0x04, 0x05, 0x06], 0x08)])
 		.codes(0x710, &[])
 		.codes(0x714, &[([0x07, 0x08, 0x09], 0x2C)]);
-	car.units.insert(0x70C, Answer::StillPending);
+	car.units.insert(0x70C, Answer::Busy { asked_for_time: true });
 	if let Answer::Pdu(list) = &mut car.gateway {
 		list[3 + (0x7C0 - 0x700) / 8] |= 1;
 	}
@@ -418,7 +418,11 @@ fn a_count_exchange_has_its_own_deadline_and_no_other_exchange_does() {
 fn a_gateway_with_no_list_is_a_question_mark_said_once_and_never_asked_again() {
 	for (answer, held, text) in [
 		(Answer::NoAnswer, 500, "no answer"),
-		(Answer::StillPending, DEADLINE_MS, "asked for time (78), no answer in 2 s"),
+		(
+			Answer::Busy { asked_for_time: true },
+			DEADLINE_MS,
+			"asked for time (78), no answer in 2 s",
+		),
 		(Answer::BusError, 0, "bus error"),
 		(Answer::Pdu(vec![0x7F, 0x22, 0x31]), 5, "refused, NRC 31"),
 		(Answer::Pdu(vec![0x62, 0x04, 0xA3, 0x01]), 5, "answer did not parse"),
@@ -706,7 +710,7 @@ fn what_the_board_says_word_for_word() {
 		(
 			Line::NotCounted {
 				request: 0x7E1,
-				why: Why::StillPending,
+				why: Why::Busy { asked_for_time: true },
 			},
 			"faults: 7E1 not counted — asked for time (78), no answer in 2 s",
 		),
@@ -716,6 +720,13 @@ fn what_the_board_says_word_for_word() {
 				why: Why::NoAnswer,
 			},
 			"faults: 7E1 not counted — no answer",
+		),
+		(
+			Line::NotCounted {
+				request: 0x7E1,
+				why: Why::Busy { asked_for_time: false },
+			},
+			"faults: 7E1 not counted — still answering an earlier request, none to this one in time",
 		),
 		(
 			Line::NotCounted {

@@ -203,6 +203,8 @@ pub enum PartAnswer<'a> {
 	BusError,
 	/// An answer that is not a response to what was asked.
 	Malformed,
+	/// The unit was heard from, busy, and did not answer in time.
+	Busy,
 }
 
 /// What a part-number answer makes of a unit.
@@ -524,6 +526,8 @@ impl Unit {
 			PartAnswer::Refused(_) => PartCheck::Mismatch,
 			PartAnswer::NoAnswer | PartAnswer::BusError => PartCheck::Absent,
 			PartAnswer::Malformed => PartCheck::RetryLater,
+			// Heard from, no answer in time: there, busy — ask again.
+			PartAnswer::Busy => PartCheck::RetryLater,
 		}
 	}
 }
@@ -778,6 +782,8 @@ mod tests {
 	#[test]
 	fn a_busy_unit_is_asked_its_part_number_again_not_declared_a_mismatch() {
 		assert_eq!(PARTED.check_part(PartAnswer::Refused(0x21)), PartCheck::RetryLater);
+		// Heard from, and no answer in time (`Miss::Busy`): the same.
+		assert_eq!(PARTED.check_part(PartAnswer::Busy), PartCheck::RetryLater);
 	}
 
 	/// Silence is a unit that is not there yet (ignition off): asked again, at the pace

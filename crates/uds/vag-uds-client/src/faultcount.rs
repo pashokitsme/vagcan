@@ -98,8 +98,8 @@ pub enum Why {
 	/// Nothing came back in the transport's deadline.
 	NoAnswer,
 	/// The unit asked for more time (`78`) and the exchange's own deadline ran out before
-	/// its answer ([`Answer::StillPending`]): there, and busy.
-	StillPending,
+	/// its answer ([`Answer::Busy`]): there, and busy.
+	Busy { asked_for_time: bool },
 	/// The request could not be put on the bus, or the bus failed under it.
 	BusError,
 	/// A negative response, by its NRC.
@@ -328,7 +328,9 @@ fn positive(sid: u8, answer: &Answer) -> Result<&[u8], Why> {
 		Answer::Refused(nrc) => Err(Why::Refused(*nrc)),
 		// A read always expects an answer; nothing coming back is silence.
 		Answer::NoAnswer | Answer::NotExpected => Err(Why::NoAnswer),
-		Answer::StillPending => Err(Why::StillPending),
+		Answer::Busy { asked_for_time } => Err(Why::Busy {
+			asked_for_time: *asked_for_time,
+		}),
 		Answer::BusError => Err(Why::BusError),
 	}
 }
@@ -606,17 +608,17 @@ mod tests {
 	#[test]
 	fn a_unit_still_asking_for_time_when_the_shell_cut_the_exchange_is_named_so() {
 		// The board's own deadline for a count's exchange ran out after a `78`: not silence.
-		let car = Car::listing(&[]).with(0x7E1, Reply::Answer(Answer::StillPending));
+		let car = Car::listing(&[]).with(0x7E1, Reply::Answer(Answer::Busy { asked_for_time: true }));
 		let tally = counted(run(&car).0);
 		assert!(tally.failed.contains(&Failed {
 			request: 0x7E1,
-			why: Why::StillPending
+			why: Why::Busy { asked_for_time: true }
 		}));
 		let car = Car {
-			gateway: Answer::StillPending,
+			gateway: Answer::Busy { asked_for_time: true },
 			units: BTreeMap::new(),
 		};
-		assert_eq!(run(&car).0, Outcome::NoList(Why::StillPending));
+		assert_eq!(run(&car).0, Outcome::NoList(Why::Busy { asked_for_time: true }));
 	}
 
 	#[test]

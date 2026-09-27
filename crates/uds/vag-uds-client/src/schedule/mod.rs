@@ -246,7 +246,7 @@ pub enum Answer {
 	/// (`todo/dash/20`). The unit is there and busy, so it is heard from — its backoff is
 	/// reset — and nobody else reading it is told of a miss. Only a raw exchange gets it; a
 	/// read given it is refused with `78`, as a `78` reaching the planner always was.
-	StillPending,
+	Busy { asked_for_time: bool },
 }
 
 /// ISO 14229-1: bit 7 of a sub-function asks the server to suppress its positive response.
@@ -319,6 +319,10 @@ pub enum Miss {
 	Absent,
 	/// An answer that is not a response to what was asked.
 	Malformed,
+	/// The unit was heard from — it asked for more time, or sent late answers to earlier
+	/// requests — and this request's answer did not come in time ([`Answer::Busy`]): a sample
+	/// missed from a unit that is there, never an absent one.
+	Busy,
 }
 
 /// What [`Planner::answered`] hands to consumers. `at_ms` is the `now_ms` given to

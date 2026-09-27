@@ -18,7 +18,7 @@
 //! * **Its own deadline**, [`DEADLINE_MS`] from the send, `78`s included (owner, 2026-09-27;
 //!   the waits are [`crate::exchange`]'s): a unit that has not answered by then is not
 //!   counted. One that asked for time (`78`) is still there, and the planner is told so
-//!   (`Answer::StillPending`): its readers miss nothing, and it is not backed off. The board's
+//!   (`Answer::Busy`): its readers miss nothing, and it is not backed off. The board's
 //!   other exchanges keep their deadlines (`PENDING_DEADLINE`, 10 s, in the firmware).
 //! * **Not while a stopwatch runs** ([`Hold`]): the board's own is up (owner, 2026-09-27), or a
 //!   host holds the board's timing channel — a laptop's `vagcan measure` through the board
@@ -167,7 +167,8 @@ impl fmt::Display for Because {
 		match self.0 {
 			Why::NoAnswer => f.write_str("no answer"),
 			// The count's own deadline cut the exchange after the unit's `78`.
-			Why::StillPending => write!(f, "asked for time (78), no answer in {} s", DEADLINE_MS / 1000),
+			Why::Busy { asked_for_time: true } => write!(f, "asked for time (78), no answer in {} s", DEADLINE_MS / 1000),
+			Why::Busy { asked_for_time: false } => f.write_str("still answering an earlier request, none to this one in time"),
 			Why::BusError => f.write_str("bus error"),
 			Why::Refused(nrc) => write!(f, "refused, NRC {nrc:02X}"),
 			Why::Malformed => f.write_str("answer did not parse"),
