@@ -2443,7 +2443,9 @@ static PANEL_READY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// whenever the mode turns on or off, however it did ([`Screen::stopwatch_turns`]), and a run
 /// whose speed goes quiet is aborted here, where a frame comes whether or not an answer does.
 /// A run that finishes is kept in the settings and written to flash at the next standstill
-/// the stopwatch sees — never at speed (owner, 2026-09-26) — or by a `save`.
+/// the stopwatch sees, held past its arming and confirmed by a fresh answer
+/// (`Stopwatch::still_for_a_write`) — never at speed (owner, 2026-09-26), never as the board
+/// turns adapter — or by a `save`.
 #[embassy_executor::task]
 async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stopwatch: &'static StopwatchCell) -> ! {
 	use vag_dash_render::history::History;
@@ -2480,19 +2482,30 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 	let mut kept = None;
 	let words = stopwatch::Words::of(PLAN.language);
 	let labels = stopwatch::Labels::new(PLAN.stopwatch.map_or(&[][..], |plan| plan.marks));
+	// How often the stopwatch's speed is read, for how old its last zero may be at a write.
+	let speed_period_ms = PLAN
+		.stopwatch
+		.and_then(|plan| PLAN.channel(plan.speed))
+		.map_or(0, |channel| u64::from(channel.period_ms()));
 
 	loop {
 		Timer::after(Duration::from_millis(FRAME_MS)).await;
 
 		let turns = screen.lock(|cell| cell.borrow().stopwatch_turns());
-		let (finished, silent, timing_changed, standing) = stopwatch.lock(|w| {
+		let now_ms = ms();
+		let (finished, silent, timing_changed, still) = stopwatch.lock(|w| {
 			let mut watch = w.borrow_mut();
 			let timing = |phase| matches!(phase, Phase::Armed | Phase::Running);
 			let before = watch.phase();
 			watch.follow(turns);
-			let silent = watch.silence(ms());
+			let silent = watch.silence(now_ms);
 			let after = watch.phase();
-			(watch.finished(), silent, timing(before) != timing(after), after == Phase::Armed)
+			(
+				watch.finished(),
+				silent,
+				timing(before) != timing(after),
+				watch.still_for_a_write(now_ms, speed_period_ms),
+			)
 		});
 		if silent == Some(Lap::Aborted) {
 			note!("stopwatch: the speed went quiet — the run is aborted");
@@ -2507,9 +2520,11 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 				keep_run(settings, run).await;
 			}
 		}
-		// Armed is a standstill held for a second: the car is not moving, so a flash write
-		// that stalls the executor costs a frame of the glass and nothing on the road.
-		if standing {
+		// A standstill held past the arming hold, its zero fresh (`still_for_a_write`): the car
+		// is not moving, so a flash write that stalls the executor costs a frame of the glass
+		// and nothing on the road. Not as the board turns adapter: the write would stall the
+		// adapter's first frames, and the host's.
+		if still && !adapter_wanted() {
 			store_run(settings).await;
 		}
 

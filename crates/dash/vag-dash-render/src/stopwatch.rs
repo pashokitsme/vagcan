@@ -73,6 +73,15 @@ pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 
 /// silent in earnest: the run is aborted, and nothing is interpolated across the gap.
 pub const SILENCE_MS: u64 = 1_300;
 
+/// How long past [`ARMING_HOLD_MS`] a standstill holds before the board writes a run to
+/// flash ([`Stopwatch::still_for_a_write`]).
+pub const WRITE_HOLD_MARGIN_MS: u64 = 500;
+
+/// The oldest a zero answer may be, at any rate the speed is read, and still say the car is
+/// standing for a flash write ([`Stopwatch::still_for_a_write`]): the panel looks once a
+/// frame, and a fast speed's two periods are shorter than the jitter of a frame.
+pub const WRITE_FRESH_FLOOR_MS: u64 = 100;
+
 /// The most marks one plan may carry: the page is one row of four cells, the phase and
 /// the speed in the first, a mark's time in each of the others.
 pub const MAX_MARKS: usize = 3;
@@ -319,6 +328,33 @@ impl<'a> Stopwatch<'a> {
 			}
 			Phase::NotMeasured | Phase::Idle | Phase::Done => None,
 		}
+	}
+
+	/// Whether the car stands still well enough at `now_ms` for the board to write a run to
+	/// flash, with the speed read every `period_ms`. A write erases a sector with the
+	/// executor stalled — the glass frozen, answers late-stamped, a launch fit's first
+	/// samples among them — so it is never done at speed (owner, 2026-09-26), and
+	/// [`Phase::Armed`] alone does not say the car is not moving *now*: its last zero answer
+	/// may be up to [`SILENCE_MS`] old (PR #12 review). So, all three:
+	///
+	/// - armed: a standstill held for [`ARMING_HOLD_MS`];
+	/// - the last answer is a zero no older than two periods of the speed, or
+	///   [`WRITE_FRESH_FLOOR_MS`] where that is less — a car that set off has had no time to
+	///   say so;
+	/// - the standstill has held [`WRITE_HOLD_MARGIN_MS`] past the arming hold, so a driver
+	///   who launches on `GO` is away before the write rather than during it.
+	///
+	/// What it cannot see: the speed channel's dead band. A car creeping slower than the
+	/// channel's smallest step reads as zero, and the write can happen while it rolls at
+	/// walking pace — and a launch in the tens of milliseconds the write takes is stamped
+	/// late by them.
+	pub fn still_for_a_write(&self, now_ms: u64, period_ms: u64) -> bool {
+		let fresh = (2 * period_ms).max(WRITE_FRESH_FLOOR_MS);
+		self.phase == Phase::Armed
+			&& self.previous.is_some_and(|(at_ms, kmh)| kmh == 0.0 && now_ms.saturating_sub(at_ms) <= fresh)
+			&& self
+				.standing_since
+				.is_some_and(|since| now_ms.saturating_sub(since) >= ARMING_HOLD_MS + WRITE_HOLD_MARGIN_MS)
 	}
 
 	/// Follows the mode's turn count (`Screen::stopwatch_turns`): a count this stopwatch
@@ -1243,6 +1279,36 @@ mod tests {
 		let crossed = run.crossed_at(0).expect("crossed between the two samples");
 		assert!(crossed < launch.t, "{crossed} before {}", launch.t);
 		assert_eq!(run.time(0), None);
+	}
+
+	#[test]
+	fn a_run_is_written_only_on_a_fresh_standstill_held_past_the_arming_hold() {
+		// Armed is a standstill held for a second, by answers that may be up to the silence
+		// old: not enough to erase a sector with the executor stalled as the car sets off
+		// (PR #12 review). At 50 Hz, standing from 0.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut watch, |_| 0.0, 0, ARMING_HOLD_MS, 20);
+		assert_eq!(watch.phase(), Phase::Armed);
+		assert!(!watch.still_for_a_write(ARMING_HOLD_MS, 20), "armed this moment: held no longer than the hold");
+		drive(&mut watch, |_| 0.0, ARMING_HOLD_MS + 20, 1_600, 20);
+		assert!(watch.still_for_a_write(1_600, 20), "held 1.6 s, the last answer this moment");
+		assert!(watch.still_for_a_write(1_600 + 100, 20), "an answer 100 ms old is fresh at any rate");
+		assert!(!watch.still_for_a_write(1_600 + 101, 20), "older, the car may be moving and not yet said so");
+		assert_eq!(watch.phase(), Phase::Armed, "though the stopwatch is still armed");
+		// Read slowly, an answer is fresh for two periods.
+		assert!(watch.still_for_a_write(1_600 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		assert!(!watch.still_for_a_write(1_601 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
+		// Moving, never.
+		watch.sample(Some(4.0), 1_620);
+		assert_eq!(watch.phase(), Phase::Running);
+		assert!(!watch.still_for_a_write(1_620, 20));
+		// Standing but not armed, never.
+		let mut idle = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut idle, |_| 0.0, 0, 900, 20);
+		assert!(!idle.still_for_a_write(900, 20));
+		// Nor with the factor not measured.
+		let unmeasured = Stopwatch::new(&MARKS, 0.0);
+		assert!(!unmeasured.still_for_a_write(0, 20));
 	}
 
 	#[test]
