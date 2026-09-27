@@ -1270,9 +1270,10 @@ async fn notifier<P: PacketPool>(server: &Server<'_>, conn: &GattConnection<'_, 
 	}
 }
 
-/// Pushes the state line: once on connecting, and again whenever the button
-/// changes something. A client that has to poll to notice a button press is a
-/// client that shows the wrong thing most of the time.
+/// Pushes the state line: once on connecting, and again whenever `STATE_CHANGED` says the
+/// board changed it on its own — an input turned the page, the board turned adapter or panel, a
+/// run was kept or written. A client that has to poll to notice a page turn is a client that
+/// shows the wrong thing most of the time.
 #[cfg(feature = "ble")]
 async fn state_pushes(settings: &Shared) {
 	loop {
