@@ -37,8 +37,8 @@ The owner was asked these on 2026-09-27 and set them aside for later.
 2. **When LIMIT writes.**
    - **At once.** It is an explicit act, like `save`. The sector erase may then happen while
      driving, and the panel stalls for tens of ms.
-   - **Mark it, write at the next standstill.** The speed channel (`380B`) is polled only while
-     the stopwatch is up, so it would have to stay polled in the background until the car
+   - **Mark it, write at the next standstill.** The stopwatch's speed is polled at its rate only
+     while the stopwatch is up, so it would have to stay polled in the background until the car
      stops. Power-off before that loses the run.
 3. **Reading.**
    - A `dashcfg` command (`runs`) over BLE.

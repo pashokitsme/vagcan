@@ -82,8 +82,8 @@ cruise = "01:203C"                                 # the engine's cruise status,
 cruise_off = "main switch off"                     # its state that means off
 
 [stopwatch]
-speed = "02:380B"            # gearbox output shaft speed, a [[channel]] (give it hz = 50)
-km_h_per_unit = 0.0          # measured on the car (below); 0 = not measured, the page says so
+speed = "02:IDE00075"        # the gearbox's vehicle speed in km/h, a [[channel]] (hz 7.5 or more)
+km_h_per_unit = 1.0          # km/h already (2026-09-27, below); 0 = not measured, the page says so
 marks = [60, 100]            # km/h, at most 3
 ```
 
@@ -227,10 +227,11 @@ two samples still start over.
 - Settings schema 2 adds the run. The board carries old v1 settings forward and writes v2 only
   on its next save.
 
-**The factor.** Measured, never written in (`dash/14` §6): on a steady stretch, `vagcan watch
---did "02:380B 01:F40D" --out steady.csv` (one `--did`; one group per unit, spaces between),
-then `vagcan dev recording calibrate` fits km/h against `380B`; the fit goes into `km_h_per_unit`. Check first that `calibrate` can take a
-recording with those two columns; if not, extend it (a separate commit).
+**The factor.** None on the reference car since 2026-09-27 (owner): the speed is the gearbox's
+vehicle speed, already km/h (`02:IDE00075`, `F40D` ×0.01), so `km_h_per_unit = 1`. Before that
+it was the output shaft speed `380B`, whose factor was to be fitted on a steady stretch
+(`dash/14` §6). A car whose `speed` does not read km/h still needs its factor:
+`docs/dash/dash-toml.md`, "Measure it".
 
 ## Input backends (2026-09-27)
 
@@ -462,9 +463,9 @@ plan the pin table adds ~300 B of statics.
    build.
 2. Paging: +, −, LIMIT with cruise off; nothing with cruise on or after CANCEL. With the
    stopwatch up, switch cruise on: it closes (`lever: cruise engaged — stopwatch closed`).
-3. The factor on a steady stretch.
+3. ~~The factor on a steady stretch.~~ Not needed since 2026-09-27: the speed reads km/h.
 4. **A 0–100 run, compared through the board.** The laptop measures the same run with
-   `vagcan measure --ble` on `380B` with the same factor. **Start `measure --ble` first, then
+   `vagcan measure --ble`, from the same gearbox speed. **Start `measure --ble` first, then
    press LIMIT:** once the board's stopwatch arms, its speed holds the board's one timing
    channel, and `measure` over BLE is refused (`the board's timing channel is held by its own
    stopwatch or another client`). **Never with a second adapter (CANable) on the port while the

@@ -58,7 +58,7 @@ decimals = 2
 hz = 10
 
 [[channel]]
-ref = "02:380B"                    # the stopwatch's speed: on no page, read fast
+ref = "02:IDE00075"                # vehicle speed in km/h, the stopwatch's: on no page, read fast
 hz = 50
 
 [[page]]
@@ -100,8 +100,8 @@ cruise = "01:203C"
 cruise_off = "main switch off"
 
 [stopwatch]
-speed = "02:380B"                  # the [[channel]] above, with its hz
-km_h_per_unit = 0.0                # 0 until measured: the page shows НЕТ КОЭФ (en: NO FACTOR)
+speed = "02:IDE00075"              # the [[channel]] above, with its hz
+km_h_per_unit = 1.0                # km/h already; 0 = not measured: the page shows НЕТ КОЭФ
 marks = [60, 100]
 
 [[button]]                         # a button from GPIO3 to GND
@@ -290,12 +290,12 @@ refused. What the stopwatch adds to a file that already has `vin` and a `[[page]
 
 ```toml
 [[channel]]
-ref = "02:380B"
+ref = "02:IDE00075"
 hz = 50
 
 [stopwatch]
-speed = "02:380B"
-km_h_per_unit = 0.0
+speed = "02:IDE00075"
+km_h_per_unit = 1.0
 marks = [60, 100]
 ```
 

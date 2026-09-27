@@ -17,8 +17,8 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
   - **Inputs:** `[[button]]`s on GPIO 3, 4 and 5, the cruise lever while cruise and its switch
     both read off, and `dashsim` — one command path (`control::Command`, `Screen::command`, one
     queue). BOOT and RESET are not inputs (owner).
-  - **The stopwatch on the board:** 0–60/0–100 from `380B` times a per-car factor (`0` until
-    measured: the page says so). LIMIT or a `stopwatch` button opens and closes it; the lever
+  - **The stopwatch on the board:** 0–60/0–100 from a speed channel times `km_h_per_unit` (`0`
+    until measured: the page says so). LIMIT or a `stopwatch` button opens and closes it; the lever
     closes it when two reads say cruise is engaged, or after 3 s without the gate seen open. A
     finished run is written at the next 1 s standstill, before `GO`; empty flash gets the
     defaults with it.
@@ -35,11 +35,17 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
   address for a VW-block request whose response is past `0x7FF`, one copy of that rule) and the
   2026-09-26 cleanup.
 - **The owner's configuration, 2026-09-27:** `vagcan setup` re-run on SK37X — the cache now keeps
-  each state's band. `dash.toml` gains `02:380B` at 50 Hz, `[stalk]` and `[stopwatch]`
-  (`km_h_per_unit = 0`); the file before is `dash.toml.before-stalk-2026-09-27`. The plan builds:
-  17 channels on 3 units, 4 pages, 4 alarms. The lever's bands hold the capture's readings:
+  each state's band. `dash.toml` gains `[stalk]` and `[stopwatch]` (the file before:
+  `dash.toml.before-stalk-2026-09-27`). The lever's bands hold the capture's readings:
   + 91 in 75–110, − 128 in 111–145, LIMIT 167 in 146–181, rest 205 in 182–221; switch OFF 167 in
   147–182; the engine's cruise status off at 0.
+  - **A DRIVE page** after MAIN: speed `02:IDE00075`, engine speed `01:IDE00405`, boost
+    `01:IDE00191`, and acceleration `713:IDE03660` — the ESC's own sensor, `+` taken as speeding
+    up, to check on the car. The file before: `dash.toml.before-drive-page-2026-09-27`.
+  - **The stopwatch reads the gearbox's vehicle speed** `02:IDE00075` (`F40D`, u16 LE ×0.01 km/h,
+    proven) at 20 Hz with `km_h_per_unit = 1`: nothing to measure. `02:380B` is gone from the
+    file. The file before: `dash.toml.before-gearbox-speed-2026-09-27`.
+  - The plan builds: 19 channels on 4 units, 5 pages, 4 alarms.
 - **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
   the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
 - **Fault count on the panel** ([`dash/20`](dash/20-fault-count.md)), built 2026-09-27 with the
@@ -67,7 +73,8 @@ item 8, `dash/18` on a real pull.
 | Two firmware modes; the host picks slcan with `vagcan --slcan` | `dash/14` §3 |
 | Power from OBD pin 1 (ignition); sleep, power budget, wake button dropped | `.archive/specs/dash/` |
 | The cruise lever pages the dash only with cruise OFF | `dash/14` §6a |
-| Stopwatch on gearbox output shaft speed `380B`, km/h factor measured per car | `dash/14` §6 |
+| Stopwatch on the gearbox's vehicle speed `IDE00075`, already km/h, factor 1 — not the output shaft speed `380B` with a factor measured per car, the 2026-09-13 decision (2026-09-27) | `dash/14` §6 |
+| Acceleration on the panel from the ESC's own sensor `IDE03660`, `+` taken as speeding up; nothing derived on the board (2026-09-27) | `dash/14` §6 |
 | UDS over BLE: slow single reads, board always visible and guarding itself | `dash/16` |
 | No `frame` mirror; no separate link crate | `dash/14` §7 |
 | Enclosure redesigned, `flat` layout, snap-in boards; CAD in `~/CAD/projects/vagcan/` | `dash/15` |
@@ -103,15 +110,16 @@ item 8, `dash/18` on a real pull.
 4. **`dash/19` on the car** — [`dash/19`](dash/19-stalk-and-stopwatch.md) "On the car", first
    of all: pressing and releasing + and − never opens the stopwatch or turns the page back (a
    release from 91 or 128 to 205 crosses the other bands; at 20 Hz two reads are 100 ms). Then
-   paging with cruise off, cruise on closing the stopwatch, the `380B` factor on a steady
-   stretch, a 0–100 beside `vagcan measure --ble` started first, and the run saved before `GO`
-   surviving a power cycle. Pin buttons on the bench first.
+   paging with cruise off, cruise on closing the stopwatch, a 0–100 beside `vagcan measure --ble`
+   started first (both time the gearbox's speed), and the run saved before `GO` surviving a
+   power cycle. Pin buttons on the bench first.
 5. **The fault count on the car** — [`dash/20`](dash/20-fault-count.md) "Car checks": the
    total against `vagcan faults`, the log's time, the units skipped, a BLE `info` during it.
 6. **Alarms on a drive** — `dash/04`: the retard at −6.0 and the blink, the misfire window; a
    `watch --out` recording with `200A`–`200D` for the replay.
 7. **The rest of `dash/17` §4** — through the board over the cable (USB before OBD power), the
-   moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels; §2 item 8.
+   moving-car guard (`bleuds`), the CANable on car traffic, the ESC's channels (DRIVE's
+   acceleration: `+` should read as speeding up); §2 item 8.
 8. **A specified value on a real pull** — `dash/18` §6: boost's difference through a pull,
    then the owner's `percent`, `hold_ms` and `min_setpoint`.
 9. **Faults without VCDS, live** — `vagcan faults` after an ODIS-only `setup` (on 2026-09-26 it

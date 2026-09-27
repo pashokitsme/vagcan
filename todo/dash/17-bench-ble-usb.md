@@ -147,5 +147,5 @@ answered, `200A`–`200D` among them):
 |---|---|
 | `vagcan watch --did 713:1822,1800,1801,1802,1803` parked | all five answer; wheel speeds 0; acceleration near 0 on level ground (a grade reads as an offset) |
 | the same, rolling slowly through a tight turn | which index is which wheel: the inner side reads slower, and on one side the front reads faster than the rear |
-| rows' spacing in that `watch` | how fast the ESC answers, and so what rate its channels can have beside `380B` |
+| rows' spacing in that `watch` | how fast the ESC answers, and so what rate its channels can have beside the stopwatch's gearbox speed |
 | `vagcan watch --did 713:1822,1800,1801,1802,1803 7E1:380B` through a launch | a rear wheel against `380B`: a gap at launch is wheelspin; `1822` steps at the launch instant |

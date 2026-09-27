@@ -206,6 +206,12 @@ the page it is on and nobody else.
 `vag-cli-measure` already is the stopwatch, on the laptop: roles (`speed`, `engine speed`,
 `gear`, `pedal`), the run detection, the report. The board's page is its small brother:
 
+- **Source, changed 2026-09-27 (owner):** the gearbox's **vehicle speed `IDE00075`** (`F40D`,
+  u16 little-endian ×0.01 km/h, proven in `0CW300041G.json`). It reads km/h, so
+  `km_h_per_unit = 1` and nothing is measured; 0.01 km/h a step. Not known: whether the gearbox
+  averages it, which `380B` does not — a launch logged with both (`vagcan watch --did
+  "02:380B,F40D" --out launch.csv`) shows any lag. The 2026-09-13 decision below is the record of
+  why `380B` came first.
 - **Source, decided 2026-09-13 (owner):** the gearbox **output shaft speed `380B`** — proven on
   the car (`~/.vagcan/data/<project>/measurements/0CW300041G.json`), 1 rpm a step and not
   averaged, so finer than either road speed below. It turns into km/h through a
@@ -354,7 +360,7 @@ lever pages with cruise OFF, and the engine ignores it.**
 | 3 | scheduler in `dash`: sources, rates, shared answers | bench | **done, merged in PR #2** (2026-09-14): `vag_uds_client::schedule::Planner`, `no_std`, clock-free. On the laptop `vag-cli-core/src/bus` owns the link, `watch` and `measure` subscribe, every other car command runs through it as a `UnitLink`. On the board `can_task` runs it under embassy in place of its old round-robin — the visible page at each channel's `hz` (`dash.toml`, default 2), hidden pages at 1 Hz, BLE requests and subscriptions through the same planner, the acceptance filter following the exchange. Bench: `research/dash/can-bring-up.md` §9.5 |
 | 4 | `pdu` message + `BoardTransport` on the host, `vagcan --slcan`; `watch` through the board | bench, then car | **implemented; bench passed** (2026-09-14, merged in PR #2; `research/dash/can-bring-up.md` §9.9–9.10): the USB cable carries the framed link to a second session (`Guard::cable`), Hello/HelloReply (`0x07`/`0x08`) tells the `dash` image apart, `Bus::start_remote(SerialPipe)` on the host; adapter mode (mode 2) inside `dash` on an slcan line, ended by `C` or the host's SOF stopping (`vag_uds_client::console`); `--slcan` on `vagcan` and `vagcan-measure`; survey and `units --identify` refused through the board, `dev sniff` needs `--slcan`. Bench plan: [`17-bench-ble-usb.md`](17-bench-ble-usb.md); unplugging USB in adapter mode is not run yet. **Known limitation:** a laptop that sleeps stops SOF, so adapter mode and the USB session end without a word; a `vagcan --slcan dev sniff` running across the sleep gets no frames after it (run it again) |
 | 5 | `slcan` binary as the exclusive mode | bench | **done**, merged (`87dc9f2`); bench passed 2026-09-13 (`research/dash/can-bring-up.md` §9.4) |
-| 6 | stopwatch page | car, one straight road | **built** on `380B` (§6) — [`19`](19-stalk-and-stopwatch.md); the factor and a run on the car open |
+| 6 | stopwatch page | car, one straight road | **built** (§6) — [`19`](19-stalk-and-stopwatch.md); on the gearbox's vehicle speed since 2026-09-27, a run on the car open |
 | 7 | `frame` mirror for `dev sniff` over the link | bench | **dropped** (owner): sniffing through the board is mode 2 over the cable, and BLE cannot carry a loaded bus (`11`) |
 | 8 | the same link over BLE NUS | bench | **became [`16-uds-over-ble.md`](../../.archive/tasks/done/dash/16-uds-over-ble.md)**: UDS over BLE as a slow transport, merged in PR #2 (2026-09-14) |
 | 9 | OLED on the carrier | bench | later — the panel has not arrived; the enclosure is [`15-enclosure.md`](15-enclosure.md) |
@@ -365,7 +371,8 @@ BLE, not by Bluetooth SPP the C3 does not have). `13-screens.md` is the menu §5
 
 ## 8. What is not decided here
 
-- ~~The speed channel for the stopwatch~~ — decided 2026-09-13: `380B` (§6).
+- ~~The speed channel for the stopwatch~~ — decided 2026-09-13: `380B`; changed 2026-09-27 to the
+  gearbox's vehicle speed `IDE00075` (§6).
 - ~~Whether `dev survey` (a sweep) may run through the board~~ — decided 2026-09-14: **no**.
   Through the board, `dev survey` and `units --identify <unit>` are refused before anything is
   opened; a sweep runs over the exclusive slcan mode, from a bench, with the guard the host has.

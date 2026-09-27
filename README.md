@@ -80,7 +80,7 @@ An ESP32-C3 board on the OBD port that shows live values on a 3.12″ 256×64 OL
 
 ## Roadmap
 
-Updated 2026-09-27.
+Updated 2026-09-28.
 
 **Done**
 - [x] Read the car: identity, units, faults, OBD-II sensors, live values, acceleration timing with html-report
@@ -95,7 +95,7 @@ Updated 2026-09-27.
 - [ ] OLED on the board, and an enclosure with snap-in boards (waiting for the display)
 - [ ] Page the dash panel with buttons on its pins, or with the cruise-control buttons while cruise is off; LIMIT or a pin button for the stopwatch (built, waiting for the car)
 - [ ] `vagcan faults` on the car with fault text from ODIS only
-- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; the speed factor and a test run need the car)
+- [ ] 0–60 and 0–100 km/h stopwatch on the dash (built; a test run needs the car)
 - [ ] Dash counts the car's stored fault codes once after start and shows the number with a warning triangle (built, waiting for the car)
 
 Details: [`todo/README.md`](todo/README.md).
