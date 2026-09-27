@@ -1007,6 +1007,24 @@ mod tests {
 	}
 
 	#[test]
+	fn after_a_turn_of_the_mode_it_arms_only_on_a_standstill_seen_since() {
+		// The board's fault count may hold the bus for up to 2 s with an exchange that was out as
+		// the stopwatch opened (`todo/dash/20`). The firmware's argument that no run is armed
+		// while one is out rests on this: the turn resets the stopwatch, and a standstill from
+		// before it counts for nothing, however long the gap after it.
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		watch.follow(1);
+		watch.sample(Some(0.0), 0);
+		assert_eq!(watch.sample(Some(0.0), 900), None, "almost held");
+		// Closed and opened again; then nothing for 2 s.
+		watch.follow(2);
+		watch.follow(3);
+		assert_eq!(watch.sample(Some(0.0), 2_900), None, "not armed on a standstill from before the turn");
+		assert_eq!(watch.sample(Some(0.0), 2_900 + ARMING_HOLD_MS - 1), None);
+		assert_eq!(watch.sample(Some(0.0), 2_900 + ARMING_HOLD_MS), Some(Event::Armed));
+	}
+
+	#[test]
 	fn reversing_while_armed_is_not_a_launch() {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		watch.sample(Some(0.0), 0);

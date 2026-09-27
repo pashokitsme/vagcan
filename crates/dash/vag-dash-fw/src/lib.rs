@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod can;
 pub mod config;
+pub mod faults;
 pub mod health;
 pub mod input;
 pub mod panel;
