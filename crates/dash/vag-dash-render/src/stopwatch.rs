@@ -50,11 +50,14 @@ pub const START_FIT_MS: u64 = 400;
 /// fast the speed has to be read for a run to be timed at all.
 pub const MIN_FIT_SAMPLES: usize = 3;
 
-/// The slowest the speed may be read and still time a run: the launch fit wants
-/// [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], so a period under
-/// `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`. The plan build refuses one at or above it; the
-/// board rounds a period to whole milliseconds, so it may read at this one exactly.
-pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 - 1);
+/// The slowest the speed may be read and still time a run with one answer late: the launch fit
+/// wants [`MIN_FIT_SAMPLES`] moving samples inside [`START_FIT_MS`], and an answer late or lost
+/// costs a period, so `MIN_FIT_SAMPLES` periods have to fit in the window — 133 ms, 7.5 Hz. The
+/// plan build refuses a speed the board reads less often (`vag-cli-core`'s `resolve_stopwatch`,
+/// on the board's whole-millisecond period), and the firmware's silence assert counts this one
+/// ([`SILENCE_MS`]). It was `START_FIT_MS / (MIN_FIT_SAMPLES − 1)`, 200 ms, the bound with no
+/// answer late, while the build refused anything over 133 (PR #12 review).
+pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / MIN_FIT_SAMPLES as u64;
 
 /// The longest silence of the speed a run or an armed standstill survives. The laptop
 /// cancels a run after `vag-cli-measure`'s `SILENT_CYCLES` unanswered cycles; the board
@@ -69,7 +72,7 @@ pub const SLOWEST_SPEED_PERIOD_MS: u64 = START_FIT_MS / (MIN_FIT_SAMPLES as u64 
 /// is backed off). So the threshold is past two timeouts — two silent units in one gap, of
 /// the plan's or one of them a host's — plus the slowest period the speed may be read at
 /// ([`SLOWEST_SPEED_PERIOD_MS`]), plus 100 ms for the speed's own answer and the send slot
-/// before it. At 500 ms one unanswered read of anything aborted a run whose speed never
+/// before it: 1233 ms, and 1.3 s is past it. At 500 ms one unanswered read of anything aborted a run whose speed never
 /// missed (PR #12 review). The firmware asserts the relation at compile time, so the two
 /// cannot drift apart.
 ///
@@ -630,7 +633,7 @@ const RUSSIAN: Words = Words {
 	armed: "ПУСК",
 	running: "ЗАМЕР",
 	done: "ГОТОВО",
-	aborted: "СБРОС",
+	aborted: "ПРЕРВАН",
 	// The units' face has no Cyrillic, and a plan's units are the catalog's SI spellings in
 	// either language: the labels are Russian, the units are not.
 	seconds: "s",
@@ -689,8 +692,9 @@ impl Labels {
 /// The stopwatch page as a values row: the phase's word over the speed, then each mark's
 /// time — the run on show, or where there is none, the last finished run `saved` holds as
 /// `(mark in km/h, seconds)`. A mark with no time draws a dash. A run that ended short of
-/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. With
-/// the factor not measured the row is that word and nothing else.
+/// its highest mark says [`Words::aborted`] where a finished one says [`Words::done`]. Armed,
+/// the phase's cell is inverted. With the factor not measured the row is that word and
+/// nothing else.
 pub fn cells<'a>(
 	watch: &Stopwatch<'_>,
 	speed_km_h: Option<f32>,
@@ -710,7 +714,10 @@ pub fn cells<'a>(
 		Phase::Done if watch.run().is_some_and(|run| run.aborted) => words.aborted,
 		Phase::Done => words.done,
 	};
-	row[0] = Cell::new(word, speed_km_h, words.km_h, 0);
+	let phase = Cell::new(word, speed_km_h, words.km_h, 0);
+	// Armed, the cell is drawn inverted: `STOP 0` and `GO 0` differ by a small word otherwise
+	// (PR #12 review). An alarm, the other inverted cell, takes the whole glass.
+	row[0] = if watch.phase() == Phase::Armed { phase.alarmed() } else { phase };
 	let run = watch.run();
 	let marks = &watch.marks()[..watch.marks().len().min(MAX_MARKS)];
 	for (i, mark) in marks.iter().enumerate() {
@@ -1148,6 +1155,66 @@ mod tests {
 		assert_eq!(row(&unmeasured, Some(50.0), &[(60, 1.0)]), [("NO FACTOR".into(), None, "".into(), 0)]);
 	}
 
+	/// At the start line `STOP 0` turned into `GO 0` and only a small word changed (PR #12
+	/// review): armed, the phase's cell is drawn inverted, as an alarm's is — an alarm takes the
+	/// whole glass, so the two never share it.
+	#[test]
+	fn the_phase_cell_is_drawn_inverted_while_armed_and_in_no_other_phase() {
+		use crate::{Board, Frame, Links, PANEL, Theme, draw_with};
+		use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+		use embedded_graphics_simulator::SimulatorDisplay;
+		let unmeasured = Stopwatch::new(&MARKS, 0.0);
+		let idle = Stopwatch::new(&MARKS, FACTOR);
+		let mut armed = Stopwatch::new(&MARKS, FACTOR);
+		armed.sample(Some(0.0), 0);
+		armed.sample(Some(0.0), ARMING_HOLD_MS);
+		let mut running = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut running, ramp(1.05, 20.0), 0, 4_500, 100);
+		let mut done = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut done, ramp(1.05, 20.0), 0, 7_000, 100);
+		let mut aborted = Stopwatch::new(&MARKS, FACTOR);
+		drive(&mut aborted, ramp(1.05, 20.0), 0, 4_500, 100);
+		aborted.sample(Some(0.0), 4_600);
+		// Armed again with the aborted run's times still up.
+		let mut again = aborted;
+		again.sample(Some(0.0), 5_600);
+		let watches = [
+			(unmeasured, Phase::NotMeasured, "NO FACTOR"),
+			(idle, Phase::Idle, "STOP"),
+			(armed, Phase::Armed, "GO"),
+			(running, Phase::Running, "RUN"),
+			(done, Phase::Done, "DONE"),
+			(aborted, Phase::Done, "ABORT"),
+			(again, Phase::Armed, "GO"),
+		];
+		let words = Words::of("en");
+		let labels = Labels::new(&MARKS);
+		for (watch, phase, word) in watches {
+			assert_eq!((watch.phase(), cells(&watch, Some(0.0), &[], &words, &labels).0[0].label), (phase, word));
+			let (row, count) = cells(&watch, Some(0.0), &[(60, 5.43), (100, 9.87)], &words, &labels);
+			let inverted: Vec<bool> = row[..count].iter().map(|cell| cell.alarm).collect();
+			let mut wanted = std::vec![false; count];
+			wanted[0] = phase == Phase::Armed;
+			assert_eq!(inverted, wanted, "{word}: the phase's cell alone, and only armed");
+			// On the glass: the phase column's ground is lit, the next one's is not.
+			let mut panel = SimulatorDisplay::<BinaryColor>::new(PANEL);
+			draw_with(
+				&Frame::Values { cells: &row[..count] },
+				&Board {
+					links: Links::NONE,
+					rates: None,
+				},
+				&Theme::bold_mono(),
+				&mut panel,
+			);
+			let lit = |x: i32| panel.get_pixel(Point::new(x, 0)) == BinaryColor::On;
+			assert_eq!(lit(0), phase == Phase::Armed, "{word}: the phase column's ground");
+			if count > 1 {
+				assert!(!lit(PANEL.width as i32 / count as i32), "{word}: the first mark's is not lit");
+			}
+		}
+	}
+
 	#[test]
 	fn the_page_fits_the_panel_in_both_languages_with_its_widest_numbers() {
 		use crate::render::Report;
@@ -1175,6 +1242,8 @@ mod tests {
 							let saved: Vec<(u16, f32)> = marks.iter().copied().zip(times.iter().copied()).collect();
 							let (mut row, count) = cells(&watch, Some(288.0), &saved, &words, &labels);
 							row[0].label = word;
+							// As the page draws it: armed, inverted.
+							row[0].alarm = word == words.armed;
 							let mut panel = SimulatorDisplay::<BinaryColor>::new(size);
 							draw_with(
 								&Frame::Values { cells: &row[..count] },
@@ -1237,6 +1306,9 @@ mod tests {
 	fn the_words_follow_the_plans_language() {
 		assert_eq!(Words::of("ru").idle, "СТОП");
 		assert_eq!(Words::of("en").idle, "STOP");
+		// `СБРОС` reads as "reset" or "cleared", not as a run cut short (PR #12 review). The fit
+		// test draws it on both panels with two and three marks.
+		assert_eq!(Words::of("ru").aborted, "ПРЕРВАН");
 		assert_eq!(Words::of("de"), Words::of("en"), "a language it has no words for is English");
 		for words in [Words::of("ru"), Words::of("en")] {
 			for word in [words.not_measured, words.idle, words.armed, words.running, words.done, words.aborted] {
@@ -1282,12 +1354,15 @@ mod tests {
 		// two answers of a speed read at the slowest rate the plan allows, and the speed's
 		// own answer, are a speed that never missed.
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
-		// The last answer at 2.4 s.
-		drive(&mut watch, ramp(1.0, 20.0), 0, 2_400, SLOWEST_SPEED_PERIOD_MS);
+		let period = SLOWEST_SPEED_PERIOD_MS;
+		// Standing past the arming hold, moving from 1.2 s; the last answer at 18 periods, 2.4 s.
+		let speed = ramp(1.2, 20.0);
+		let last = 18 * period;
+		drive(&mut watch, &speed, 0, last, period);
 		assert_eq!(watch.phase(), Phase::Running);
-		let late = 2_400 + SLOWEST_SPEED_PERIOD_MS + 2 * 500 + 30;
-		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - 2_400);
-		let kmh = ramp(1.0, 20.0)(late as f64 / 1000.0);
+		let late = last + period + 2 * 500 + 30;
+		assert_eq!(watch.silence(late), None, "no answer for {} ms is not a silence yet", late - last);
+		let kmh = speed(late as f64 / 1000.0);
 		assert!(kmh < 60.0, "no mark in the gap, so nothing is said");
 		assert_eq!(watch.sample(Some((kmh / f64::from(FACTOR)) as f32), late), None);
 		assert_eq!(watch.phase(), Phase::Running, "the run goes on");

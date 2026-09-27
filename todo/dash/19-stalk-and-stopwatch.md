@@ -8,8 +8,9 @@ board, replay, docs) built on `feat/stalk-stopwatch`, in review for a PR, not me
 fixes the same day: a run is written to flash at a standstill, never at speed (owner's
 decision, below); a silent speed aborts a run; the stopwatch resets at each turn of the mode;
 a mark crossed before the launch has no time; the lever's debounce starts over after adapter
-mode; new plan refusals (a speed read at 5 Hz or slower, a state name given twice, a factor
-too small for the board). RAM: see the PR. Nothing of it has run on the car or the bench
+mode; new plan refusals (a speed read too seldom for the launch fit — since `f685bac`, less often
+than every 133 ms, i.e. slower than 7.5 Hz — a state name given twice, a factor too small for the
+board). RAM: see the PR. Nothing of it has run on the car or the bench
 yet — see "On the car". The owner's `dash.toml` has no `[stalk]` or
 `[stopwatch]` yet, and the owner's project cache predates the ODIS bands: `vagcan setup` has
 to run again before a `[stalk]` builds (the build says so).
@@ -24,6 +25,11 @@ over 3 s (owner's decision on the review's open question). Built on `fix/pr12-ga
 write: it happens at the standstill **before** `GO` (the stopwatch does not arm while it waits);
 a board whose flash holds nothing writes the defaults and the run; `run_pending` stays set
 until the run is in flash; the no-BLE image's boot note no longer offers a `save` it has not.
+
+**2026-09-27, in PR #12, UX and docs review (round 2):** `GO` is drawn inverted; an aborted run
+reads `ПРЕРВАН` in Russian (`СБРОС` read as "reset"); the plan build notes a board nothing pages
+or silences, and a `[stalk]` with no `[stopwatch]`; `dashcfg` shows `run_pending`;
+`SLOWEST_SPEED_PERIOD_MS` is the build's 133 ms (it was 200). Built on `fix/pr12-polish`.
 
 ## What the owner asked (2026-09-26)
 
@@ -98,7 +104,7 @@ marks = [60, 100]            # km/h, at most 3
 | `speed` not a `[[channel]]` | `speed … is not in the [[channel]] list` |
 | `speed` with an offset in its scaling | `speed …: its scaling has an offset (…) — a standstill is the channel's zero` |
 | `speed` with a factor not above zero (0 or negative) | `speed …: its scaling's factor … is not above zero` |
-| `speed` read at 5 Hz or slower | `speed … is read at 2 Hz — the launch fit needs 3 samples in its first 400 ms, so faster than 5 Hz; give its [[channel]] an hz, 50 or more` |
+| `speed` read less often than every 133 ms (slower than 7.5 Hz), on the board's rounded period | `speed … is read every 500 ms (hz = 2) — the launch fit needs 3 samples in its first 400 ms even when one answer is late, so a reading every 133 ms or sooner: give its [[channel]] an hz of 7.5 or more; 50 is recommended` |
 | a mark of 0, a mark twice, more than 3, none | at parse: `mark 0 is not a whole speed in km/h above 0`, `mark 60 is listed twice`, `has 4 marks, and the page holds 1 to 3` |
 | `km_h_per_unit` below 0, not a number, or too large for an `f32` | at parse: `km_h_per_unit must be a number at or above 0` |
 | `km_h_per_unit` above 0 but too small for an `f32` | at parse: `km_h_per_unit … is too small for the board, which would hold it as 0 — not measured` |
@@ -135,50 +141,58 @@ owner's `hz`: they are what makes the lever a button and the gate safe, not a vi
 | channel | rate |
 |---|---|
 | the rocker (its identifier; the switch is read out of the same answer, never on its own) | 20 Hz gate open, 2 Hz closed; 10 Hz while the stopwatch is up with a factor (with `km_h_per_unit = 0` it stays at 20 / 2 Hz) |
-| the cruise status | 5 Hz |
-| the stopwatch's speed | its own `hz`, foreground, while the mode is on with a factor; with `km_h_per_unit = 0` not read for the stopwatch |
-| page cells, while the stopwatch page is on the glass | background (at most 1 Hz), in every phase — `STOP`, `GO`, `RUN`, `DONE`, `NO FACTOR` |
+| the cruise status | 5 Hz, while the rocker's unit answers as the plan's (its part number matched); not read otherwise |
+| the stopwatch's speed | its own `hz` while the mode is on with a factor: foreground while `STOP` / `DONE` / `ABORT` (`Timing::Up`), and `Class::Timing` — the board's timing channel, ahead of a host's reads — while armed or running (`Timing::Timing`), unless a host already holds that channel: then foreground. With `km_h_per_unit = 0` not read for the stopwatch |
+| page cells, while the stopwatch page is on the glass | background (at most 1 Hz), in every phase — `STOP`, `GO`, `RUN`, `DONE`, `ABORT`, `NO FACTOR`: the stopwatch shows no page's cells |
 | an alarm's page shown over the stopwatch | its cells foreground, except while the stopwatch is armed or running (`Timing::Timing`): then background |
 | the channels an alarm watches | their own `hz`, always |
 
 **Alarms first.** While an alarm holds the screen, any command — the lever, a `[[button]]`,
 `dashsim` — silences the episode and does nothing else: `Stopwatch` too, in a plan with no
 `[stopwatch]`. Alarms take the screen during the stopwatch too, and hand it
-back to the stopwatch, not to the page under it (`GLASS_PAGE` stays the stopwatch's).
+back to the stopwatch, not to the page under it. `GLASS_PAGE` follows the glass: the alarm's
+page while it holds it — so that page's cells are read, in the background while a run is armed
+or running — and `STOPWATCH_PAGE` again at the hand-back.
 
 **The stopwatch page.** A `Stopwatch` command (LIMIT, or a stopwatch `[[button]]`) enters it
-from any page and leaves it back to the page it came from — the cursor never moves while it is
-up. While it is up `Next` and `Previous` do nothing, whoever gives them, `dashsim` included:
-only `Stopwatch` leaves it (2026-09-27, "Input backends"). The adapter
-screen ends it too, and so do the lever's witnesses (below, "The lever closes the
-stopwatch"). Whenever the mode turns on or off, however, the machine is reset — at the
+from any page and leaves it back to the page it came from — no command moves the cursor while it
+is up (`dashcfg`'s `set page` still can, and the stopwatch then leaves to that page). While it is
+up `Next` and `Previous` do nothing, whoever gives them, `dashsim` included: only `Stopwatch`
+leaves it (2026-09-27, "Input backends"). The adapter screen ends it too, and so does the lever,
+with a `[stalk]` in the plan: cruise engaged on two reads in a row closes it at once, and the
+gate not seen open for over 3 s closes it (below, "The lever closes the stopwatch"). A run under
+way is dropped either way. Whenever the mode turns on or off, however, the machine is reset — at the
 turn, before the next sample, not on the next frame: `Screen::stopwatch_turns` counts the
 turns and `Stopwatch::follow` resets on a count it has not seen, so an off and an on between
 two samples still start over.
 
-- Speed 0 (the channel's zero) for 1 s arms it; the first sample above 0 starts the run;
-  back at 0 before the highest mark aborts it.
+- Speed 0 (the channel's zero) for 1 s arms it (`GO`); the first sample above 0 starts the run;
+  back at 0 before the highest mark aborts it. While a finished run waits for its write, the
+  standstill writes it first and arms after (below): never `GO` before the write.
 - **A silent speed ends it** (`SILENCE_MS` = 1300): no answer for over 1.3 s aborts a run in
   progress and disarms an armed standstill, which then has to be seen again for a whole second.
   Nothing is interpolated across the gap. Checked on every answer and on every panel frame, so
   a unit that stops answering altogether still ends the run. A hold not yet armed is left alone.
-  1.3 s outlasts two answer timeouts between two speed answers (the firmware asserts it), not a
+  1.3 s outlasts two answer timeouts and the slowest speed period the build allows
+  (`SLOWEST_SPEED_PERIOD_MS`, 133 ms) between two speed answers (the firmware asserts it), not a
   run of `7F xx 78` (response pending), which may hold the bus for up to 10 s
   (`PENDING_DEADLINE`). Accepted (PR #12 review): a unit that holds the bus that long during a
   run is a bus in trouble, and the run aborts.
 - The clock's origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`,
   ported): the midpoint of a constant-jerk fit through `√v` over the first 0.4 s of movement and
-  a line through the first two moving samples. It needs three moving samples in that 0.4 s: the
-  speed must be read faster than 5 Hz, and the plan build refuses a slower one (at 50 Hz it
-  has 20). Without a fit there is no time,
+  a line through the first two moving samples. It needs three moving samples in that 0.4 s, even
+  with one answer late: the speed must be read every 133 ms or sooner (7.5 Hz), and the plan
+  build refuses a slower one (at 50 Hz it has 20). Without a fit there is no time,
   only the crossings — a launch invented from two samples is not a measurement.
 - Each mark is stamped where the speed first rises past it, interpolated between the samples
   either side, at the answer's own time. **A mark crossed before the launch has no time**
   (`Run::time` is `None`): the first moving sample already past a low mark says it was crossed,
   not when. `vag-cli-measure` likewise looks for a crossing only after the launch.
-- The page is one values row: the phase (`STOP` / `GO` / `RUN` / `DONE`, Russian with a Russian
-  plan) over the speed in km/h, then each mark's time — two decimals under 10 s, one under 100.
-  With `km_h_per_unit = 0` it says `NO FACTOR` and nothing else, and the speed is not read.
+- The page is one values row: the phase — `STOP` / `GO` / `RUN` / `DONE` / `ABORT`, with a
+  Russian plan `СТОП` / `ПУСК` / `ЗАМЕР` / `ГОТОВО` / `ПРЕРВАН` — over the speed in km/h, then each
+  mark's time — two decimals under 10 s, one under 100. Armed (`GO`), the phase's cell is drawn
+  inverted, as an alarm's is (PR #12 review: `STOP 0` and `GO 0` differed by a small word). With
+  `km_h_per_unit = 0` it says `NO FACTOR` (`НЕТ КОЭФ`) and nothing else, and the speed is not read.
 - **Only a finished run is kept, and never written at speed** (owner's decision, 2026-09-26: no
   flash write at speed — a write erases a sector with the executor stalled, the glass frozen,
   answers and BLE events missed). The run finishes at its highest mark and is kept in RAM
@@ -199,8 +213,10 @@ two samples still start over.
   standstill the stopwatch sees, and the stopwatch is fed only while its mode is on.** A driver
   who leaves the stopwatch (LIMIT, a stopwatch button, or the lever's close) before stopping keeps
   the run in RAM only: it is lost at ignition off unless `save` is sent, or the stopwatch is
-  turned on again and the car stands.
-- An aborted run is shown until the page is left, never stored; a finished run with no times
+  turned on again and the car stands. `save` is BLE's: the no-BLE image has the standstill alone
+  ([`dash/21`](21-runs-in-flash.md)).
+- An aborted run (`ABORT`: back at 0 before the highest mark, or the speed silent) is shown until
+  the next run starts or the page is left, never stored; a finished run with no times
   (no launch fit) replaces no stored run. A stored run outlives a stored configuration whose
   pages no longer fit the plan.
 - Settings schema 2 adds the run. The board carries old v1 settings forward and writes v2 only
@@ -294,7 +310,13 @@ cruise off.
   press only logged since BLE became always on (2026-09-13/14); holding BOOT for download mode
   is the ROM's and never involved the firmware. No other image configures `GPIO9`.
 - **With no `[stalk]` and no `[[button]]`**, the board shows its active page and changes it
-  only from `dashsim` or `dashcfg set page`. An alarm cannot be silenced; it clears on its own.
+  only from `dashsim` or `dashcfg set page`. Only `dashsim` silences an alarm; otherwise it
+  clears when its channel answers in range again — **not on its own**: a channel gone silent
+  mid-episode holds it on the glass (`screen.rs`, `a_stale_channel_neither_trips_nor_releases`).
+  The plan build notes both (PR #12 review): more than one page and no `[stalk]` or `next` /
+  `previous` button; any alarm and no `[stalk]` or `[[button]]`. The owner's own `dash.toml` had
+  alarms and no `[stalk]` then, so this image as it stood would have taken his paging away.
+  A `[stalk]` with no `[stopwatch]` is noted too: `measure` then only silences an alarm.
 
 **Firmware.** Every producer offers `(Source, Command)` to one `embassy_sync` channel
 (`vag_dash_fw::input::CommandQueue`, 4 deep). Nothing waits: a command that finds it full is
@@ -375,7 +397,9 @@ plan the pin table adds ~300 B of statics.
 
 ## Tests (hardware-free)
 
-- Plan build: the texts resolve to intervals; each refusal above; `plan.json` round trip; the
+- Plan build: the texts resolve to intervals; each refusal above; the notes for a board nothing
+  pages or silences and for a `[stalk]` with no `[stopwatch]`; the speed rate it takes is
+  `SLOWEST_SPEED_PERIOD_MS`; `plan.json` round trip; the
   board's `state_of` agrees with the laptop's `level_for` value by value, on a ladder whose
   order of trying matters.
 - The generated source, compiled in CI: `vag-cli-core/tests/generated_plan.rs` `include!`s
@@ -407,7 +431,8 @@ plan the pin table adds ~300 B of statics.
   a poll too slow for a fit, and the launch against a transcription of `derive::start` at 20, 100
   and 250 Hz to a microsecond; a silence aborts a run (with and without an answer after it) and
   disarms a standstill; a mark crossed before the launch has no time; a turn of the mode resets
-  once; the page fits the panel in both languages.
+  once; the page fits the panel in both languages; the phase's cell is inverted armed, and in no
+  other phase, drawn.
 - Rates: the three lever rates, the cruise status, the speed while up, page cells while timing.
 - Settings: a schema-1 byte image loads with every field intact.
 - The run's write (`saving.rs`, host test `settings_saving.rs`): the whole configuration, or
@@ -436,6 +461,11 @@ plan the pin table adds ~300 B of statics.
 5. After the run, stop with the stopwatch up: once the car has stood 1 s the board notes
    `stopwatch: the run is saved`, then `stopwatch: armed` (`GO`) — never `GO` first — and the
    run's times survive a power cycle.
-6. **Pin buttons, on the bench first.** A button from GPIO3 (4, 5) to GND, `[[button]]` with
+6. **+ and − never open the stopwatch.** With cruise off, press and let go of + and of −, a
+   dozen times each, quickly and slowly: no `lever: the stopwatch`. At 20 Hz the rocker's ladder
+   passes LIMIT's band (146–181) on its way back to rest (205) from + (91) and from − (128), and
+   two reads 50 ms apart inside it would count as LIMIT. The same for +'s release crossing −'s
+   band (111–145): no page turned back.
+7. **Pin buttons, on the bench first.** A button from GPIO3 (4, 5) to GND, `[[button]]` with
    its `action`, build, flash: each press notes `GPIO3: page N of M`; a hold is one press; with
    the stopwatch up `next` notes that it does nothing; BOOT does nothing at all.

@@ -40,7 +40,7 @@ that into a queue of *requests* with three sources and a rate each:
 |---|---|---|---|
 | **panel** | the visible page's channels | as fast as the page wants (≈50 Hz for four cells) | normal |
 | **panel, background** | channels of pages not shown | slow (1 Hz) or none | low |
-| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
+| **stopwatch** | the speed channel while the page is up | its own `hz` in `dash.toml` (at most 100) | foreground; `Class::Timing` (the board's timing channel) while armed or running, unless a host holds it; with the stopwatch page on the glass no page cell is foreground, in any phase; an alarm's page over it drops to background while armed or running (`19`) |
 | **lever** | the rocker's identifier, the cruise status | fixed in code (`plan.rs`): 2 / 20 Hz by the gate, 10 Hz while the stopwatch is up with a factor; cruise status 5 Hz (`19`) | foreground |
 | **laptop** | whole UDS PDUs the host sends (§3) | as they arrive | normal, interleaved |
 
@@ -238,11 +238,13 @@ the page it is on and nobody else.
   origin is the launch as `vag-cli-measure` reconstructs it (`derive::start`): the midpoint of
   a constant-jerk fit through `√v` and a line through the first two moving samples. There is
   no "half-sample correction" in `vag-cli-measure`; this text said so before `19` checked.
-- **Rate**: the speed at its own `hz` in the foreground while the page is up (with a factor);
-  every page cell is background whenever the stopwatch page is on the glass, in every phase.
-  An alarm's page shown over it keeps its cells foreground except while armed or running. The
-  fit needs three moving samples in its first 0.4 s, so the speed must be read faster than
-  5 Hz; the plan build refuses a slower one (`19`).
+- **Rate**: the speed at its own `hz` while the page is up (with a factor): foreground, and as
+  the board's timing channel (`Class::Timing`, ahead of a host's reads) while armed or running,
+  unless a host already holds that channel. Every page cell is background whenever the
+  stopwatch page is on the glass, in every phase. An alarm's page shown over it keeps its cells
+  foreground except while armed or running. The fit needs three moving samples in its first
+  0.4 s even with one answer late, so the speed must be read every 133 ms or sooner (7.5 Hz); the
+  plan build refuses a slower one (`19`).
 - **Display** (as built, `19`): one values row — the phase over the speed, then a time per
   mark. **Not built:** a chart page of the run (speed on time, seconds since launch).
 - **Record**: the run's samples go up the link as `pdu` answers anyway, so a laptop that

@@ -24,13 +24,15 @@ struct DashState {
 	pages: Option<u8>,
 	brightness: Option<u8>,
 	unsaved: Option<bool>,
+	/// A finished run of the stopwatch is in RAM and not yet in flash.
+	run_pending: Option<bool>,
 	generation: Option<u32>,
 	kind: Option<String>,
 	cells: Option<String>,
 }
 
 impl DashState {
-	/// `state page=1/2 brightness=77 unsaved=0 gen=3 kind=chart cells=[0]`
+	/// `state page=1/2 brightness=77 unsaved=0 run_pending=0 gen=3 kind=chart cells=[0]`
 	///
 	/// Unknown keys are ignored rather than rejected: the firmware will grow
 	/// fields, and a client that refuses to parse a newer device is a client
@@ -63,6 +65,7 @@ impl DashState {
 				}
 				"brightness" => s.brightness = value.parse().ok(),
 				"unsaved" => s.unsaved = Some(value != "0"),
+				"run_pending" => s.run_pending = Some(value != "0"),
 				"gen" => s.generation = value.parse().ok(),
 				"kind" => s.kind = Some(value.to_string()),
 				"cells" => s.cells = Some(value.to_string()),
@@ -87,13 +90,22 @@ impl DashState {
 			let filled = usize::from(b) * 20 / 255;
 			println!("│ brightness  {b:>3}  [{}{}]", "█".repeat(filled), "·".repeat(20 - filled));
 		}
+		println!("│ storage     {}", self.storage());
+		println!("└{}", "─".repeat(WIDTH));
+	}
+
+	/// What flash holds against RAM, for the panel's storage line — and a run the stopwatch kept,
+	/// which RAM alone holds until the board writes it: `unsaved=0` alone read "saved" over it.
+	fn storage(&self) -> String {
 		let saved = match self.unsaved {
 			Some(true) => "UNSAVED — 'save' to keep it".to_string(),
 			Some(false) => format!("saved (generation {})", self.generation.unwrap_or(0)),
 			None => "?".to_string(),
 		};
-		println!("│ storage     {saved}");
-		println!("└{}", "─".repeat(WIDTH));
+		match self.run_pending {
+			Some(true) => format!("{saved}, and a run is in RAM only — written at a standstill with the stopwatch up, or by 'save'"),
+			_ => saved,
+		}
 	}
 }
 
@@ -151,14 +163,14 @@ async fn session(lines: &mut Lines, p: &Peripheral, rx: Characteristic, tx: Char
 	p.write(&rx, b"state", write_type).await?;
 	let mut text = LineBuffer::default();
 
-	println!("\ncommands: set brightness N | set page N | save | load | defaults | erase | q");
-	println!("the device pushes its state whenever its button is pressed.\n");
+	println!("\ncommands: state | get | set brightness N | set page N | save | load | defaults | erase | q");
+	println!("the device pushes its state when an input on it turns the page, when it turns adapter or panel, and when a run is kept or written.\n");
 
 	loop {
 		print!("dash> ");
 		flush();
 		tokio::select! {
-				// Bias towards notifications: a button press on the device should
+				// Bias towards notifications: a page turned on the device should
 				// appear the moment it happens, not after the next command.
 				biased;
 				Some(n) = notifications.next() => {
@@ -258,6 +270,25 @@ mod tests {
 		let mut buffer = LineBuffer::default();
 		assert_eq!(buffer.push(b"ok: page 1\nstate page=1/2"), ["ok: page 1"]);
 		assert_eq!(buffer.push(b" gen=5\n"), ["state page=1/2 gen=5"]);
+	}
+
+	/// A finished run the stopwatch kept is in RAM until the board writes it at a standstill, or
+	/// a `save` does: `unsaved=0` alone reads "saved" over a run a power-off loses.
+	#[test]
+	fn a_run_only_ram_holds_is_said_beside_what_flash_holds() {
+		let storage = |line: &str| super::DashState::parse(line).unwrap().storage();
+		let pending = "a run is in RAM only — written at a standstill with the stopwatch up, or by 'save'";
+		assert_eq!(
+			storage("state page=0/2 brightness=128 unsaved=0 run_pending=1 gen=5 mode=panel"),
+			format!("saved (generation 5), and {pending}")
+		);
+		assert_eq!(
+			storage("state page=0/2 brightness=128 unsaved=1 run_pending=1 gen=5"),
+			format!("UNSAVED — 'save' to keep it, and {pending}")
+		);
+		assert_eq!(storage("state page=0/2 unsaved=0 run_pending=0 gen=5"), "saved (generation 5)");
+		// A board from before the key says nothing of a run.
+		assert_eq!(storage("state page=0/2 unsaved=1 gen=5"), "UNSAVED — 'save' to keep it");
 	}
 
 	#[test]

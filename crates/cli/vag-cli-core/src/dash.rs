@@ -112,7 +112,7 @@ use toml_edit::{Document, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::control::{BUTTON_PINS, Command, MAX_BUTTONS, is_button_pin};
 use vag_dash_render::pages::MAX_PAGES;
-use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, START_FIT_MS};
+use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, SLOWEST_SPEED_PERIOD_MS, START_FIT_MS};
 use vag_data_labels::catalog::{CatalogStore, Level, ReadId, Scaling};
 use vag_data_labels::measure::RawForm;
 use vag_uds_client::address::{self, UnitAddress};
@@ -1545,6 +1545,22 @@ pub fn build(
 	if stopwatch.is_some() && !opens {
 		notes.push("stopwatch: nothing opens the page — give [stalk] a measure, or a [[button]] action = \"stopwatch\"".to_string());
 	}
+	if stalk.is_some() && stopwatch.is_none() {
+		notes.push("stalk: there is no [stopwatch] — a press of measure only silences an alarm".to_string());
+	}
+	// BOOT and RESET are no input (owner, 2026-09-27), so a board with none of its own turns its
+	// page from a bench tool alone, and an alarm stays until its channel ends it — a channel gone
+	// silent mid-episode holds it on the glass (`screen.rs`,
+	// `a_stale_channel_neither_trips_nor_releases`).
+	let paged = stalk.is_some() || input.buttons.iter().any(|b| b.action != Command::Stopwatch);
+	if input.pages.len() > 1 && !paged {
+		let why = "only dashsim or dashcfg's set page turns the page";
+		notes.push(format!("input: no [stalk] and no [[button]] with next or previous — {why}"));
+	}
+	if !input.alarms.is_empty() && stalk.is_none() && input.buttons.is_empty() {
+		let why = "an alarm stays up until its channel answers in range again; only dashsim silences it";
+		notes.push(format!("input: no [stalk] and no [[button]] — {why}"));
+	}
 
 	let mut plan_units: Vec<Unit> = Vec::new();
 	for c in &channels {
@@ -1788,7 +1804,8 @@ fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel]
 	// answer late or lost costs a period, so `MIN_FIT_SAMPLES` of them have to fit. Read slower,
 	// one late answer loses the launch, and the run has crossings and no time — which only the
 	// car would show. Checked on the period the board polls at, not on `1000 / hz`: it rounds.
-	let longest_ms = START_FIT_MS / MIN_FIT_SAMPLES as u64;
+	// The bound is the stopwatch's own, which the firmware's silence assert counts too.
+	let longest_ms = SLOWEST_SPEED_PERIOD_MS;
 	let period_ms = board_period_ms(channel.hz);
 	if u64::from(period_ms) > longest_ms {
 		// The slowest rate the board polls every `longest_ms` or sooner, in tenths of a hertz,
@@ -4608,6 +4625,42 @@ mod tests {
 		assert!(!says(""), "no stopwatch, nothing to open");
 	}
 
+	/// BOOT and RESET page nothing (owner, 2026-09-27): a board flashed with pages and alarms and
+	/// no input is one whose page only a bench tool turns, and whose alarm only its channel ends.
+	#[test]
+	fn a_board_with_nothing_to_turn_its_pages_or_silence_its_alarms_is_said() {
+		let turns = "input: no [stalk] and no [[button]] with next or previous — only dashsim or dashcfg's set page turns the page";
+		let silences = "input: no [stalk] and no [[button]] — an alarm stays up until its channel answers in range again; only dashsim silences it";
+		let said = |input: &str| {
+			let notes = build_with_lever(input).unwrap().notes;
+			(notes.iter().any(|n| n == turns), notes.iter().any(|n| n == silences))
+		};
+		let second = values_page_titled("U", &["01:IDE00001"]);
+		let rule = alarm(&["01:IDE00001"], "T", "above", 10.0, 5.0);
+		assert_eq!(said(""), (false, false), "one page and no alarm: nothing to turn or silence");
+		assert_eq!(said(&second), (true, false), "two pages");
+		assert_eq!(said(&rule), (false, true), "an alarm");
+		assert_eq!(said(&format!("{second}{rule}")), (true, true), "both");
+		assert_eq!(said(&format!("{second}{rule}{LEVER}")), (false, false), "the lever pages and silences");
+		for action in ["\"next\"", "\"previous\""] {
+			assert_eq!(said(&format!("{second}{rule}{}", button("3", action))), (false, false), "{action}");
+		}
+		assert_eq!(
+			said(&format!("{second}{rule}{WATCH}{}", button("3", "\"stopwatch\""))),
+			(true, false),
+			"a stopwatch button silences an alarm and turns no page"
+		);
+	}
+
+	#[test]
+	fn a_lever_with_no_stopwatch_to_open_is_said() {
+		let note = "stalk: there is no [stopwatch] — a press of measure only silences an alarm";
+		let says = |input: &str| build_with_lever(input).unwrap().notes.iter().any(|n| n == note);
+		assert!(says(LEVER));
+		assert!(!says(&format!("{LEVER}{WATCH}")), "measure opens the stopwatch");
+		assert!(!says(""), "no lever");
+	}
+
 	#[test]
 	fn every_text_the_project_does_not_have_is_refused_by_name() {
 		let refused = |from: &str, to: &str| -> String {
@@ -4715,6 +4768,28 @@ mod tests {
 		// The rate the message names is one the board polls fast enough.
 		for hz in ["7.5", "8", "50", "100"] {
 			at(hz).unwrap_or_else(|e| panic!("{hz} Hz: {e}"));
+		}
+	}
+
+	/// The firmware asserts that the stopwatch's silence outlasts two answer timeouts and the
+	/// slowest period the speed may be read at, `SLOWEST_SPEED_PERIOD_MS`: that period is the one
+	/// this build lets through, not a slower one it refuses (PR #12 review: it was 200 ms against
+	/// the build's 133).
+	#[test]
+	fn the_slowest_speed_the_build_takes_is_the_stopwatchs_slowest_period() {
+		use vag_dash_render::stopwatch::SLOWEST_SPEED_PERIOD_MS;
+		let builds = |hz: f64| {
+			let another = Extra {
+				rows: vec![(ENGINE, reading(0x3005, "Speed too", "IDE00014", 0, 16, false, true, 1.0, 0.0))],
+				..Extra::default()
+			};
+			let watch = WATCH.replacen("IDE00010", "IDE00014", 1);
+			build_with_lever_and(&format!("{watch}[[channel]]\nref = \"01:IDE00014\"\nhz = {hz:?}\n"), another).is_ok()
+		};
+		// Around the edge, and at the rates a period of 200 ms is.
+		for hz in [7.55, 7.5, 7.49, 7.45, 6.0, 5.01, 5.0, 4.99] {
+			let period = u64::from(board_period_ms(hz));
+			assert_eq!(builds(hz), period <= SLOWEST_SPEED_PERIOD_MS, "{hz} Hz, read every {period} ms");
 		}
 	}
 
