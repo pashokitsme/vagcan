@@ -351,7 +351,9 @@ impl<'a> Stopwatch<'a> {
 	pub fn still_for_a_write(&self, now_ms: u64, period_ms: u64) -> bool {
 		let fresh = (2 * period_ms).max(WRITE_FRESH_FLOOR_MS);
 		self.phase == Phase::Armed
-			&& self.previous.is_some_and(|(at_ms, kmh)| kmh == 0.0 && now_ms.saturating_sub(at_ms) <= fresh)
+			&& self
+				.previous
+				.is_some_and(|(at_ms, kmh)| kmh == 0.0 && now_ms.saturating_sub(at_ms) <= fresh)
 			&& self
 				.standing_since
 				.is_some_and(|since| now_ms.saturating_sub(since) >= ARMING_HOLD_MS + WRITE_HOLD_MARGIN_MS)
@@ -1289,11 +1291,17 @@ mod tests {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		drive(&mut watch, |_| 0.0, 0, ARMING_HOLD_MS, 20);
 		assert_eq!(watch.phase(), Phase::Armed);
-		assert!(!watch.still_for_a_write(ARMING_HOLD_MS, 20), "armed this moment: held no longer than the hold");
+		assert!(
+			!watch.still_for_a_write(ARMING_HOLD_MS, 20),
+			"armed this moment: held no longer than the hold"
+		);
 		drive(&mut watch, |_| 0.0, ARMING_HOLD_MS + 20, 1_600, 20);
 		assert!(watch.still_for_a_write(1_600, 20), "held 1.6 s, the last answer this moment");
 		assert!(watch.still_for_a_write(1_600 + 100, 20), "an answer 100 ms old is fresh at any rate");
-		assert!(!watch.still_for_a_write(1_600 + 101, 20), "older, the car may be moving and not yet said so");
+		assert!(
+			!watch.still_for_a_write(1_600 + 101, 20),
+			"older, the car may be moving and not yet said so"
+		);
 		assert_eq!(watch.phase(), Phase::Armed, "though the stopwatch is still armed");
 		// Read slowly, an answer is fresh for two periods.
 		assert!(watch.still_for_a_write(1_600 + 2 * SLOWEST_SPEED_PERIOD_MS, SLOWEST_SPEED_PERIOD_MS));
