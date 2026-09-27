@@ -43,8 +43,9 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
 - **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
   the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
 - **Fault count on the panel** (`dash/20`; its task file is on `feat/fault-count` only):
-  phase 1 reviewed; the branch's base (`e899abc`) predates PRs #7–#12. Phase 2 waits for the
-  owner's answers to four design questions (Next, item 2).
+  phase 1 reviewed; `origin/feat/fault-count` has `master` merged through PR #11 (`4ffed87`,
+  2026-09-26, with the E0063 fix), not PR #12. Phase 2 waits for the owner's answers to four
+  design questions (Next, item 2).
 - **[`dash/21`](dash/21-runs-in-flash.md) filed 2026-09-27:** runs kept in flash, saved on LIMIT,
   read over BLE; it also covers a finished run the lever's close leaves in RAM.
 - **USB on the car (2026-09-26):** the cable enumerates only when plugged in **before** OBD
@@ -97,8 +98,8 @@ item 8, `dash/18` on a real pull.
    list in the plan at build time; `MAX_UNITS = 40` comes from this car alone, the BLE guard
    allows 64; a unit answering `78` holds the one link up to 10 s, so the count needs its own
    short deadline and must wait while the stopwatch is up; a badge counted once shows no age,
-   and hidden-at-0 looks like not counted. Then merge `master` into the branch (its tests stop
-   compiling on `Board`'s new field, E0063), wire it, review, PR.
+   and hidden-at-0 looks like not counted. Then merge `master` (PR #12: the input path and the
+   stopwatch touch the same panel and bus code) into the branch, wire it, review, PR.
 3. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
 4. **OLED and enclosure** — `dash/15`; waits for the panel.
