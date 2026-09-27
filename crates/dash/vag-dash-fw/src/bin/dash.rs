@@ -2504,8 +2504,6 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 	// The adapter screen's kb/s, `(tx, rx)`: fresh on every entry into adapter mode, so its
 	// first window starts there and nothing from an earlier session is in it.
 	let mut meters: Option<(BitRate, BitRate)> = None;
-	// The finished run already kept.
-	let mut kept = None;
 	let words = stopwatch::Words::of(PLAN.language);
 	let labels = stopwatch::Labels::new(PLAN.stopwatch.map_or(&[][..], |plan| plan.marks));
 	// How often the stopwatch's speed is read, for how old its last zero may be at a write.
@@ -2527,7 +2525,7 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 			let silent = watch.silence(now_ms);
 			let after = watch.phase();
 			(
-				watch.finished(),
+				watch.take_finished(),
 				silent,
 				timing(before) != timing(after),
 				watch.still_for_a_write(now_ms, speed_period_ms),
@@ -2540,11 +2538,8 @@ async fn panel_task(settings: &'static Shared, screen: &'static ScreenCell, stop
 		if timing_changed {
 			PAGES_CHANGED.signal(());
 		}
-		if finished != kept {
-			kept = finished;
-			if let Some(run) = finished {
-				keep_run(settings, run).await;
-			}
+		if let Some(run) = finished {
+			keep_run(settings, run).await;
 		}
 		// A standstill held past the arming hold, its zero fresh (`still_for_a_write`): the car
 		// is not moving, so a flash write that stalls the executor costs a frame of the glass

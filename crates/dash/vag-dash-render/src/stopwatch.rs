@@ -14,7 +14,7 @@
 //!   arm in every gap. A sample the unit did not answer moves no state.
 //! - **The clock's origin is the launch, and the launch is reconstructed.** The
 //!   first moving sample starts the run but is not `t = 0`: the car was already
-//!   under way before its speed channel woke. [`Launch`] is
+//!   under way before its speed channel woke. The launch ([`Run::launch`]) is
 //!   `vag-cli-measure`'s `derive::start`, ported: a constant-jerk fit through
 //!   `√v` over the first [`START_FIT_MS`] of movement reaches back too far, a
 //!   straight line through the first two moving samples falls short, and the
@@ -102,25 +102,17 @@ pub enum Phase {
 	Done,
 }
 
-/// When the car set off, in seconds relative to the first moving sample — so
-/// never after `0.0`. `vag-cli-measure`'s `derive::Start`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Launch {
-	/// The estimate: the midpoint of the bracket.
-	pub t: f32,
-	/// The constant-jerk fit, which reaches back too far.
-	pub earliest: f32,
-	/// The two-point line, which falls short.
-	pub latest: f32,
-}
-
 /// One run: where each mark was crossed, and when the car set off.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Run {
 	/// Seconds after the first moving sample at which each mark was crossed, by
 	/// the mark's place in the plan.
 	crossed: [Option<f32>; MAX_MARKS],
-	pub launch: Option<Launch>,
+	/// When the car set off, in seconds relative to the first moving sample — so never
+	/// after `0.0`: the midpoint of `vag-cli-measure`'s `derive::Start` bracket. The board
+	/// keeps the estimate alone; the bracket's ends are the laptop's to report, and three
+	/// copies of a run are held here (`Fit::bracket` has them for the tests).
+	pub launch: Option<f32>,
 	/// The car came back to a standstill (or the page was left) before the highest mark.
 	pub aborted: bool,
 }
@@ -147,7 +139,7 @@ impl Run {
 	/// pair of samples that ends before the launch, interpolates the pair that straddles
 	/// it the same way, and reports the time as negative.
 	pub fn time(&self, index: usize) -> Option<f32> {
-		let time = self.crossed_at(index)? - self.launch?.t;
+		let time = self.crossed_at(index)? - self.launch?;
 		(time >= 0.0).then_some(time)
 	}
 }
@@ -189,6 +181,8 @@ pub struct Stopwatch<'a> {
 	last: Option<Run>,
 	/// The last run that finished — what an aborted one gives way to when the page is left.
 	finished: Option<Run>,
+	/// `finished` has not been handed out yet ([`Stopwatch::take_finished`]).
+	unkept: bool,
 	/// The mode's turn count this stopwatch last followed (`Screen::stopwatch_turns`).
 	turns: u16,
 }
@@ -215,6 +209,7 @@ impl<'a> Stopwatch<'a> {
 			current: Run::new(),
 			last: None,
 			finished: None,
+			unkept: false,
 			turns: 0,
 		}
 	}
@@ -231,6 +226,13 @@ impl<'a> Stopwatch<'a> {
 	/// The last run that reached its highest mark — the one the settings keep.
 	pub fn finished(&self) -> Option<Run> {
 		self.finished
+	}
+
+	/// The run that finished since the last call, once: whoever keeps runs takes it here and
+	/// holds no copy to compare against (the board's RAM, PR #12 review). A reset does not
+	/// withhold it — a run that finished as the page was left is still a run.
+	pub fn take_finished(&mut self) -> Option<Run> {
+		core::mem::take(&mut self.unkept).then_some(self.finished).flatten()
 	}
 
 	/// The run on show: the one in progress, else the last one that ended.
@@ -446,6 +448,7 @@ impl<'a> Stopwatch<'a> {
 		self.last = Some(self.current);
 		if !aborted {
 			self.finished = Some(self.current);
+			self.unkept = true;
 		}
 		self.phase = Phase::Done;
 	}
@@ -496,7 +499,13 @@ impl Fit {
 		}
 	}
 
-	/// `vag-cli-measure`'s `derive::start` over the window.
+	/// The launch: the midpoint of [`Fit::bracket`], `vag-cli-measure`'s `derive::Start::t`.
+	fn launch(&self) -> Option<f32> {
+		let (earliest, latest) = self.bracket()?;
+		Some((0.5 * (earliest + latest)) as f32)
+	}
+
+	/// `vag-cli-measure`'s `derive::start` over the window: `(earliest, latest)`.
 	///
 	/// `latest` is the line through the first two samples, clamped at the first:
 	/// a launch is convex, so the line runs under it and reaches zero late.
@@ -504,7 +513,7 @@ impl Fit {
 	/// line through `√v`, also clamped at the first sample: it reaches back too far.
 	/// The two are ordered, never collapsed. `None` without a second sample or
 	/// without a fit, as there.
-	fn launch(&self) -> Option<Launch> {
+	fn bracket(&self) -> Option<(f64, f64)> {
 		let ((t_first, v_first), (t_second, v_second)) = (self.first?, self.second?);
 		let (rise, step) = (v_second - v_first, t_second - t_first);
 		let line = match rise > 0.0 && step > 0.0 {
@@ -512,12 +521,7 @@ impl Fit {
 			false => t_first,
 		};
 		let quadratic = self.constant_jerk_launch()?.min(t_first);
-		let (earliest, latest) = (quadratic.min(line), quadratic.max(line));
-		Some(Launch {
-			t: (0.5 * (earliest + latest)) as f32,
-			earliest: earliest as f32,
-			latest: latest as f32,
-		})
+		Some((quadratic.min(line), quadratic.max(line)))
 	}
 
 	/// `derive::constant_jerk_launch`: least squares of `√v` on `t`, extrapolated to
@@ -821,10 +825,11 @@ mod tests {
 		let mut watch = Stopwatch::new(&MARKS, FACTOR);
 		drive(&mut watch, jerk(1.05, 20.0), 0, 2_000, 100);
 		let launch = watch.run().and_then(|run| run.launch).expect("five samples in the window");
+		let (earliest, latest) = watch.fit.bracket().expect("and its bracket");
 		// Seconds relative to the first moving sample, at 1.1 s.
-		close(launch.earliest, 1.05 - 1.1, "the constant-jerk root");
-		close(launch.latest, 1.0875 - 1.1, "the two-point line");
-		close(launch.t, (1.05 + 1.0875) / 2.0 - 1.1, "the midpoint");
+		close(earliest as f32, 1.05 - 1.1, "the constant-jerk root");
+		close(latest as f32, 1.0875 - 1.1, "the two-point line");
+		close(launch, (1.05 + 1.0875) / 2.0 - 1.1, "the midpoint");
 	}
 
 	#[test]
@@ -847,10 +852,11 @@ mod tests {
 		close(run.crossed_at(0).unwrap(), 5.97, "60 km/h");
 		close(run.crossed_at(1).unwrap(), 9.97, "100 km/h");
 		let launch = run.launch.unwrap();
-		close(launch.latest, -0.03, "on a ramp the line is exact");
-		assert!(launch.earliest < launch.latest);
-		close(run.time(0).unwrap(), 5.97 - f64::from(launch.t), "0-60 from the launch");
-		close(run.time(1).unwrap(), 9.97 - f64::from(launch.t), "0-100 from the launch");
+		let (earliest, latest) = watch.fit.bracket().unwrap();
+		close(latest as f32, -0.03, "on a ramp the line is exact");
+		assert!(earliest < latest);
+		close(run.time(0).unwrap(), 5.97 - f64::from(launch), "0-60 from the launch");
+		close(run.time(1).unwrap(), 9.97 - f64::from(launch), "0-100 from the launch");
 		assert!(!run.aborted);
 	}
 
@@ -1016,6 +1022,7 @@ mod tests {
 				let mut watch = Stopwatch::new(&MARKS, FACTOR);
 				drive(&mut watch, kmh, 0, 2_500, step_ms);
 				let got = watch.run().and_then(|run| run.launch).expect("a launch");
+				let (got_earliest, got_latest) = watch.fit.bracket().expect("its bracket");
 				let track: Vec<(f64, f64)> = (0..=2_500 / step_ms)
 					.map(|i| {
 						let t = (i * step_ms) as f64 / 1000.0;
@@ -1024,9 +1031,10 @@ mod tests {
 					.collect();
 				let (t, earliest, latest) = reference_start(&track).expect("the reference fits too");
 				let what = std::format!("{name} at {} Hz", 1000 / step_ms);
-				// To a microsecond: the board keeps its answer in `f32`, nothing more.
-				for (got, want) in [(got.t, t), (got.earliest, earliest), (got.latest, latest)] {
-					assert!((f64::from(got) - want).abs() < 1e-6, "{what}: {got} is not {want}");
+				// To a microsecond: the board keeps its answer in `f32`, nothing more; the bracket
+				// it fits the answer from, in `f64`.
+				for (got, want) in [(f64::from(got), t), (got_earliest, earliest), (got_latest, latest)] {
+					assert!((got - want).abs() < 1e-6, "{what}: {got} is not {want}");
 				}
 			}
 		}
@@ -1279,7 +1287,7 @@ mod tests {
 		let run = watch.run().unwrap();
 		let launch = run.launch.expect("three samples in the window");
 		let crossed = run.crossed_at(0).expect("crossed between the two samples");
-		assert!(crossed < launch.t, "{crossed} before {}", launch.t);
+		assert!(crossed < launch, "{crossed} before {launch}");
 		assert_eq!(run.time(0), None);
 	}
 
@@ -1317,6 +1325,23 @@ mod tests {
 		// Nor with the factor not measured.
 		let unmeasured = Stopwatch::new(&MARKS, 0.0);
 		assert!(!unmeasured.still_for_a_write(0, 20));
+	}
+
+	#[test]
+	fn a_finished_run_is_handed_out_once_and_an_aborted_one_never() {
+		let mut watch = Stopwatch::new(&MARKS, FACTOR);
+		assert_eq!(watch.take_finished(), None);
+		drive(&mut watch, ramp(1.0, 20.0), 0, 7_000, 100);
+		let finished = watch.finished().expect("a finished run");
+		// The page left in the same frame: still handed out.
+		watch.reset();
+		assert_eq!(watch.take_finished(), Some(finished));
+		assert_eq!(watch.take_finished(), None, "once");
+		// An aborted run is never kept.
+		drive(&mut watch, |t| if t < 10.0 { 0.0 } else { 20.0 * (t - 10.0) }, 8_000, 12_000, 100);
+		watch.sample(Some(0.0), 12_100);
+		assert!(watch.run().is_some_and(|run| run.aborted));
+		assert_eq!(watch.take_finished(), None);
 	}
 
 	#[test]
