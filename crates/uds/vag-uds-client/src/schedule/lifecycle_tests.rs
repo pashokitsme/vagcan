@@ -167,39 +167,56 @@ fn a_request_that_expects_no_answer_does_not_back_the_unit_off() {
 /// The board's fault count ends its own exchange 2 s from its start, and a unit that has asked
 /// for more time (`7F 19 78`) is often still searching then (`todo/dash/20`). That unit is there:
 /// it is never `NoAnswer`, which the panel takes for an absent unit and answers by dropping its
-/// cells and asking its part number again (review round 1). One such exchange between answers
-/// costs no wait and no reader a sample (round 4: a backoff there pushed a run's speed past the
-/// stopwatch's silence); from the second in a row the unit is backed off as silence backs it off,
-/// its readers told `Busy` (round 3: a unit busy for ever cost more than a silent one).
+/// cells and asking its part number again (review round 1). It is backed off as silence backs it
+/// off, its readers told `Busy` (round 3) — unless a run is timing it: then one such exchange
+/// between answers costs no wait and no reader a sample (round 4: a backoff there pushed the
+/// run's speed past the stopwatch's silence), and the second in a row backs it off (round 5).
 #[test]
-fn a_busy_raw_exchange_costs_nothing_once_and_backs_the_unit_off_from_the_second_in_a_row() {
+fn a_busy_raw_exchange_backs_the_unit_off_unless_a_run_is_timing_it_and_it_is_the_first() {
+	// No run times the unit: backed off from the first, its reader told.
 	let mut p = Planner::new(Budget::board());
 	let sub = p.subscribe(0, Class::Foreground, A, 0xF40D, 100, None);
 	let out = send(p.due(0));
 	p.answered(5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
-
-	let count = p.exchange(10, Class::Background, A, vec![0x19, 0x02, 0x08]).unwrap();
+	p.exchange(10, Class::Background, A, vec![0x19, 0x02, 0x08]).unwrap();
 	let out = send(p.due(10));
-	assert_eq!(out.pdu, [0x19, 0x02, 0x08]);
 	let got = p.answered(2_010, out.token, Answer::Busy { asked_for_time: true });
+	assert!(
+		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Busy, .. }, Delivery::Raw { .. }] if *s == sub),
+		"{got:?}"
+	);
+	let first = u64::from(Budget::board().backoff_first_ms);
+	assert!(matches!(p.due(2_010 + first - 1), Next::Idle { .. }), "backed off");
+
+	// A run is timing it: the first costs nothing; the second in a row backs it off.
+	let mut p = Planner::new(Budget::board());
+	let speed = p.subscribe(0, Class::Timing, A, 0xF40D, 50, None);
+	let out = send(p.due(0));
+	p.answered(5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+	let count = p.exchange(10, Class::Background, A, vec![0x19, 0x02, 0x08]).unwrap();
+	let out = send(p.due(50));
+	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the run's speed first");
+	p.answered(55, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+	let out = send(p.due(60));
+	assert_eq!(out.pdu, [0x19, 0x02, 0x08]);
+	let got = p.answered(2_060, out.token, Answer::Busy { asked_for_time: true });
 	assert!(
 		matches!(got.as_slice(), [Delivery::Raw { req, answer: Answer::Busy { asked_for_time: true }, .. }] if *req == count),
 		"{got:?}"
 	);
-	let out = send(p.due(2_010));
-	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the reader's next read goes at once");
-	let got = p.answered(2_015, out.token, Answer::Busy { asked_for_time: false });
+	let out = send(p.due(2_060));
+	assert_eq!(out.pdu, [0x22, 0xF4, 0x0D], "the speed's next read goes at once");
+	let got = p.answered(2_065, out.token, Answer::Busy { asked_for_time: false });
 	assert!(
-		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Busy, .. }] if *s == sub),
+		matches!(got.as_slice(), [Delivery::Missed { sub: s, why: Miss::Busy, .. }] if *s == speed),
 		"the second in a row: {got:?}"
 	);
 	// Backed off at the step two failures reach, as silence would be.
-	let wait = 2 * u64::from(Budget::board().backoff_first_ms);
-	assert!(matches!(p.due(2_015 + wait - 1), Next::Idle { .. }), "backed off");
-	let out = send(p.due(2_015 + wait));
-	let got = p.answered(2_015 + wait + 5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
+	assert!(matches!(p.due(2_065 + 2 * first - 1), Next::Idle { .. }), "backed off");
+	let out = send(p.due(2_065 + 2 * first));
+	let got = p.answered(2_065 + 2 * first + 5, out.token, Answer::Pdu(vec![0x62, 0xF4, 0x0D, 0x00]));
 	assert!(
-		matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == sub),
+		matches!(got.as_slice(), [Delivery::Reading { sub: s, .. }] if *s == speed),
 		"the reader kept"
 	);
 }
@@ -207,8 +224,10 @@ fn a_busy_raw_exchange_costs_nothing_once_and_backs_the_unit_off_from_the_second
 /// A read a busy unit did not answer in time — it asked for time, or only finished an earlier
 /// answer (review round 2, 2026-09-27) — is a sample missed from a unit that is there: every
 /// reader and one-shot is told `Busy`, never `NoAnswer` — taken for silence, the panel marked the
-/// unit absent and dropped its subscriptions, a run's speed with them. One costs no wait; from the
-/// second in a row the unit is backed off as silence is (review rounds 3 and 4).
+/// unit absent and dropped its subscriptions, a run's speed with them. No run times this unit, so
+/// it is backed off as silence is (review rounds 3 and 5; a timed unit's pass is
+/// `a_busy_raw_exchange_backs_the_unit_off_unless_a_run_is_timing_it_and_it_is_the_first` and
+/// `research/dash/host/tests/stopwatch_silence.rs`).
 #[test]
 fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that_is_there() {
 	for asked_for_time in [false, true] {
@@ -234,11 +253,8 @@ fn a_read_a_busy_unit_did_not_answer_in_time_is_a_missed_sample_from_a_unit_that
 				.any(|d| matches!(d, Delivery::Once { req, result: Err(Miss::Busy), .. } if *req == once)),
 			"{asked_for_time}: {got:?}"
 		);
-		// One costs no wait; the next in a row backs the unit off.
-		let out = send(p.due(100));
-		let got = p.answered(105, out.token, Answer::Busy { asked_for_time });
-		assert!(got.iter().all(|d| matches!(d, Delivery::Missed { why: Miss::Busy, .. })), "{got:?}");
-		assert!(matches!(p.due(200), Next::Idle { .. }), "{asked_for_time}: backed off from the second");
+		// No run times the unit: backed off from the first, as silence is.
+		assert!(matches!(p.due(100), Next::Idle { .. }), "{asked_for_time}: backed off");
 	}
 }
 
@@ -336,6 +352,21 @@ fn a_batch_whose_first_identifier_the_unit_leaves_out_is_read_through_the_shells
 /// Two cells at 10 Hz on each of two units; `A` answers every exchange as `a_answer` after
 /// `a_cost` ms, `B` in 5 ms. How many readings `B` gets in `until` ms.
 fn beside(a_answer: &Answer, a_cost: u64, until: u64) -> usize {
+	beside_with(&mut |_, _| (a_answer.clone(), a_cost), until)
+}
+
+/// A healthy unit's answer to `pdu`: every identifier asked, one byte each.
+fn every_record(pdu: &[u8]) -> Answer {
+	let mut answer = vec![0x62];
+	for did in pdu[1..].chunks(2) {
+		answer.extend_from_slice(did);
+		answer.push(0x2A);
+	}
+	Answer::Pdu(answer)
+}
+
+/// [`beside`], `A` answering its `n`-th exchange as `a(n, pdu)` says, and after that many ms.
+fn beside_with(a: &mut dyn FnMut(usize, &[u8]) -> (Answer, u64), until: u64) -> usize {
 	const B: Unit = Unit {
 		request: 0x714,
 		response: 0x77E,
@@ -345,19 +376,15 @@ fn beside(a_answer: &Answer, a_cost: u64, until: u64) -> usize {
 		p.subscribe(0, Class::Foreground, A, did, 100, None);
 		p.subscribe(0, Class::Foreground, B, did, 100, None);
 	}
-	let (mut now, mut read) = (0u64, 0usize);
+	let (mut now, mut read, mut a_asked) = (0u64, 0usize, 0usize);
 	while now < until {
 		match p.due(now) {
 			Next::Send(out) => {
 				let (answer, cost) = if out.unit == A {
-					(a_answer.clone(), a_cost)
+					a_asked += 1;
+					a(a_asked, &out.pdu)
 				} else {
-					let mut pdu = vec![0x62];
-					for did in out.pdu[1..].chunks(2) {
-						pdu.extend_from_slice(did);
-						pdu.push(0x2A);
-					}
-					(Answer::Pdu(pdu), 5)
+					(every_record(&out.pdu), 5)
 				};
 				now += cost;
 				read += p
@@ -373,28 +400,105 @@ fn beside(a_answer: &Answer, a_cost: u64, until: u64) -> usize {
 }
 
 /// A unit heard but never answering this board — another tester's traffic on its id, or `78`
-/// to the end — costs its neighbours about what a silent one does (review round 3, the safety
-/// probe `r3_busy_forever_vs_silent`): `Busy` backs it off as a non-answer does. It kept the
-/// unit's backoff reset, and a healthy unit beside it got 40 readings in 10 s where a silent
-/// neighbour left it 144 — with `78` to the 10 s limit, 12 in 60 s against 118. Since round 4
-/// the first `Busy` of a streak costs no wait, so the streak costs at most one first backoff more:
-/// the neighbour's readings in `backoff_first_ms` (2 cells at 10 Hz, 250 ms: 5). Measured: 144 vs
-/// 144 in 10 s, 114 vs 118 in 60 s.
+/// to the end — costs its neighbours what a silent one does (review round 3, the safety probe
+/// `r3_busy_forever_vs_silent`): `Busy` backs it off as a non-answer does. It kept the unit's
+/// backoff reset, and a healthy unit beside it got 40 readings in 10 s where a silent neighbour
+/// left it 144 — with `78` to the 10 s limit, 12 in 60 s against 118. No run times this unit, so
+/// no `Busy` of it passes free (round 5): 144 and 144, 118 and 118.
 #[test]
-fn a_unit_busy_forever_costs_its_neighbours_about_what_a_silent_one_does() {
-	let first_backoff = (u64::from(Budget::board().backoff_first_ms) * 20 / 1000) as usize;
+fn a_unit_busy_forever_costs_its_neighbours_what_a_silent_one_does() {
 	let silent = beside(&Answer::NoAnswer, 500, 10_000);
 	let busy = beside(&Answer::Busy { asked_for_time: false }, 500, 10_000);
 	assert!(silent >= 100, "{silent}");
 	assert!(
-		busy + first_backoff >= silent,
+		busy >= silent,
 		"B got {busy} readings in 10 s beside a busy unit, {silent} beside a silent one"
 	);
 	let silent = beside(&Answer::NoAnswer, 10_000, 60_000);
 	let busy = beside(&Answer::Busy { asked_for_time: true }, 10_000, 60_000);
 	assert!(
-		busy + first_backoff >= silent,
+		busy >= silent,
 		"B got {busy} readings in 60 s beside a unit saying 78 to the end, {silent} beside a silent one"
+	);
+}
+
+/// A unit whose every other exchange ends busy — a second tester's late answers landing in them —
+/// and that answers in between is backed off from each `Busy`, as one silent every other time
+/// is (review round 5, firmware: with the first `Busy` free, each answer made the next `Busy`
+/// free again, the unit never waited, and a healthy neighbour got 66 readings in 10 s against 94
+/// beside a silent/answer unit). No run is timing it, so nothing is owed a free pass.
+#[test]
+fn a_unit_busy_every_other_time_costs_its_neighbours_what_one_silent_every_other_time_does() {
+	let alternate = |miss: Answer| move |n: usize, pdu: &[u8]| if n % 2 == 1 { (miss.clone(), 500) } else { (every_record(pdu), 5) };
+	let silent = beside_with(&mut alternate(Answer::NoAnswer), 10_000);
+	let busy = beside_with(&mut alternate(Answer::Busy { asked_for_time: false }), 10_000);
+	assert!(
+		busy >= silent,
+		"B got {busy} readings in 10 s beside a busy/answer unit, {silent} beside a silent/answer one"
+	);
+}
+
+/// A unit with no reader that a host asks one raw request at a time, the next as soon as the last
+/// is answered: every `Busy` backs it off as silence does, and the backoff climbs 250 → 2000 ms
+/// (review round 5, safety: a first `Busy` set no wait, the planner forgot the unit with its
+/// count, every attempt was a first `Busy` again, and a healthy neighbour fell from 150 readings
+/// in 10 s to 40).
+#[test]
+fn a_host_asking_a_busy_unit_nobody_reads_again_and_again_is_backed_off_as_for_silence() {
+	const C: Unit = Unit {
+		request: 0x746,
+		response: 0x7B0,
+	};
+	const B: Unit = Unit {
+		request: 0x714,
+		response: 0x77E,
+	};
+	let run = |c_answer: Answer| {
+		let mut p = Planner::new(Budget::board());
+		for did in [0x1001u16, 0x1002] {
+			p.subscribe(0, Class::Foreground, B, did, 100, None);
+		}
+		p.exchange(0, Class::Remote, C, vec![0x19, 0x02, 0xFF]).unwrap();
+		let (mut now, mut read, mut waits, mut answered_at) = (0u64, 0usize, Vec::new(), None::<u64>);
+		while now < 10_000 {
+			match p.due(now) {
+				Next::Send(out) => {
+					let (answer, cost) = if out.unit == C {
+						if let Some(at) = answered_at {
+							waits.push(now - at);
+						}
+						(c_answer.clone(), 500)
+					} else {
+						(every_record(&out.pdu), 5)
+					};
+					now += cost;
+					for d in p.answered(now, out.token, answer) {
+						match d {
+							Delivery::Reading { unit, .. } if unit == B => read += 1,
+							// The host asks again at once.
+							Delivery::Raw { .. } => {
+								answered_at = Some(now);
+								p.exchange(now, Class::Remote, C, vec![0x19, 0x02, 0xFF]).unwrap();
+							}
+							_ => {}
+						}
+					}
+				}
+				Next::Idle { until_ms } => now = until_ms.unwrap_or(now + 10).max(now + 1),
+			}
+		}
+		(read, waits)
+	};
+	let (silent_read, silent_waits) = run(Answer::NoAnswer);
+	let (busy_read, busy_waits) = run(Answer::Busy { asked_for_time: false });
+	// The backoff's steps, each met (a send slot may add a few ms).
+	for (wait, step) in silent_waits.iter().zip([250, 500, 1_000, 2_000, 2_000]) {
+		assert!((step..step + 20).contains(wait), "silence waits {silent_waits:?}");
+	}
+	assert_eq!(busy_waits, silent_waits, "busy waits as silence does");
+	assert!(
+		busy_read >= silent_read,
+		"B got {busy_read} readings beside the busy unit, {silent_read} beside the silent one"
 	);
 }
 

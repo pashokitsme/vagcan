@@ -550,7 +550,7 @@ impl Planner {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
 					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
-					// Heard from, and no answer in time: backed off from the second in a row.
+					// Heard from, and no answer in time: backed off, but for a timed unit's first.
 					Answer::Busy { .. } => self.busy(now_ms, unit, &[], &mut out),
 					// The silence the request asked for says nothing about the unit either way.
 					Answer::NotExpected => {}
@@ -702,7 +702,8 @@ impl Planner {
 			Answer::Refused(nrc) => return Heard::Refused(nrc),
 			// A read always expects an answer; a shell that says otherwise is not answering it.
 			Answer::NotExpected => return Heard::Malformed,
-			// Heard from, no answer in time: its readers told `Busy`, backed off from the second.
+			// Heard from, no answer in time: its readers told `Busy`, backed off, but for a timed
+			// unit's first.
 			Answer::Busy { .. } => return Heard::Busy,
 			Answer::Pdu(pdu) => pdu,
 		};
@@ -739,19 +740,24 @@ impl Planner {
 	}
 
 	/// The unit was heard from and did not answer in time ([`Answer::Busy`]); `dids` the
-	/// identifiers this exchange read. The first such exchange since the unit last answered
-	/// costs no wait — one late answer on its id must not push a run's speed past the stopwatch's
-	/// silence (review round 4) — and tells only this exchange's readers `Busy`; it counts as a
-	/// failure all the same. From the second in a row, or after a non-answer, the unit is backed
-	/// off as silence backs it off, at the step the count of failures has reached, every reader
-	/// told `Busy`: a unit busy for ever costs its neighbours one first backoff's worth more than
-	/// a silent one, once (review rounds 3 and 4). `Busy` is never `NoAnswer`: nobody takes the
-	/// unit for absent.
+	/// identifiers this exchange read. It is backed off as silence backs it off, every reader told
+	/// `Busy` (review round 3: a unit busy for ever cost its neighbours more than a silent one) —
+	/// with one exception. A unit a run is timing, one with a [`Class::Timing`] reader, gets its
+	/// first `Busy` since it last answered free of a wait: one late answer on the speed's id must
+	/// not push the run past the stopwatch's silence (review round 4). Only this exchange's
+	/// readers are told, and it counts as a failure, so the second in a row backs the unit off
+	/// at the step silence would have reached. Keyed on the unit, not the read: a busy read of
+	/// another of its identifiers would back the unit off and delay the speed just the same.
+	/// Nobody else gets the pass (review round 5): a unit busy every other exchange never waited,
+	/// and a unit nobody reads was forgotten with its count between a host's requests. A free
+	/// pass leaves the unit read by its Timing reader, so it is never forgotten with the count.
+	/// `Busy` is never `NoAnswer`: nobody takes the unit for absent.
 	fn busy(&mut self, now: u64, unit: Unit, dids: &[u16], out: &mut Vec<Delivery>) {
 		let Some(state) = self.units.get_mut(&unit) else {
 			return;
 		};
-		if state.failures > 0 {
+		let timed = state.reads.values().flat_map(|read| &read.subs).any(|sub| sub.class == Class::Timing);
+		if state.failures > 0 || !timed {
 			self.back_off(now, unit, Miss::Busy, out);
 			return;
 		}

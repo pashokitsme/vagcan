@@ -593,8 +593,8 @@ fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() 
 
 /// A busy unit — heard from, no answer in time — is a host's no answer, as silence is: the
 /// host is not left waiting on a `7F xx 78` that promised more, and its subscription reads
-/// no answer. The unit is asked about as often as a silent one: once more at most, the first
-/// `Busy` of a streak costing no wait (review rounds 3 and 4).
+/// no answer. The unit is asked as often as a silent one: no run times it, so no `Busy` of it
+/// passes free (review rounds 3 and 5).
 #[test]
 fn a_busy_unit_is_no_answer_to_the_host_and_asked_no_more_than_a_silent_one() {
 	let run = |bus| {
@@ -612,7 +612,7 @@ fn a_busy_unit_is_no_answer_to_the_host_and_asked_no_more_than_a_silent_one() {
 		"{readings:?}"
 	);
 	let silent = run(Bus::Silent);
-	assert!(busy.sent.len() <= silent.sent.len() + 1, "{:?}", busy.pdus_sent());
+	assert_eq!(busy.sent.len(), silent.sent.len(), "{:?}", busy.pdus_sent());
 }
 
 /// PR #2 review round 1 regression (Sched-F1 + the board's floor). A radio request to a
