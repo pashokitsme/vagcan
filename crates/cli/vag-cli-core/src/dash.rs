@@ -81,6 +81,11 @@
 //!
 //! # Refusals
 //!
+//! The input is read strictly (`dash/strict.rs`): a key or a section it does not have, or a key
+//! of the other `kind` of page or rule, is refused with its line, and an optional key of the
+//! wrong type is refused rather than read as absent. `docs/dash/dash-toml.md` is the reference
+//! for every key.
+//!
 //! A channel the resolved variant does not declare fails the build and the
 //! message names it. So does one whose scaling is not linear — an enum or an
 //! unreversed anchor cannot be multiplied, and a plan that carried a guess
@@ -99,7 +104,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, Item};
+use toml_edit::{Document, Item};
 use vag_dash_render::alarm::MAX_ALARMS;
 use vag_dash_render::pages::MAX_PAGES;
 use vag_dash_render::stopwatch::{MAX_MARKS, MIN_FIT_SAMPLES, START_FIT_MS};
@@ -110,6 +115,15 @@ use vag_uds_client::address::{self, UnitAddress};
 use crate::config::Language;
 use crate::extracted::Extracted;
 use crate::plan::{self as poll, UnitIdentity};
+
+mod strict;
+use strict::Reader;
+
+/// Whether the board, which holds this number as an `f32`, holds it at all: finite here, and
+/// not an infinity once narrowed.
+fn fits_f32(v: f64) -> bool {
+	v.is_finite() && (v as f32).is_finite()
+}
 
 /// How a build input names one channel.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -298,8 +312,13 @@ pub struct Input {
 
 /// Parse a build input. Only the shape is checked here; whether the car has
 /// the channels is [`build`]'s question.
+///
+/// **Strictly** (`dash/strict.rs`): a key or a section this file does not have is refused by
+/// name, and an optional key of the wrong type is refused rather than read as absent.
 pub fn parse_input(text: &str) -> Result<Input, Error> {
-	let doc: DocumentMut = text.parse().map_err(|e| Error::Parse(format!("dash.toml: {e}")))?;
+	let doc = Document::parse(text).map_err(|e| Error::Parse(format!("dash.toml: {e}")))?;
+	let top = Reader::new(text, doc.as_table(), String::new());
+	top.takes(&strict::TOP)?;
 	let string = |item: Option<&Item>, what: &str| -> Result<String, Error> {
 		item
 			.and_then(Item::as_str)
@@ -308,24 +327,26 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			.ok_or_else(|| Error::Parse(format!("dash.toml: {what} is missing or not a string")))
 	};
 	let vin = string(doc.get("vin"), "vin")?;
-	let language = match doc.get("language").and_then(Item::as_str) {
+	let language = match top.string("language", "a string, \"en\" or \"ru\"")? {
 		Some(code) => {
 			Some(Language::parse(code).ok_or_else(|| Error::Parse(format!("dash.toml: language {code:?} is not one this build has words for")))?)
 		}
 		None => None,
 	};
-	let survey = doc.get("survey").and_then(Item::as_str).map(PathBuf::from);
+	let survey = top.string("survey", "a string, a file path")?.map(PathBuf::from);
 
 	let mut channels = Vec::new();
 	if let Some(tables) = doc.get("channel").and_then(Item::as_array_of_tables) {
 		for (i, table) in tables.iter().enumerate() {
+			let at = Reader::new(text, table, format!("[[channel]] {}", i + 1));
+			at.takes(&strict::CHANNEL)?;
 			let reference = Reference::parse(&string(table.get("ref"), &format!("channel #{}'s ref", i + 1))?)?;
-			let label = table
-				.get("label")
-				.and_then(Item::as_str)
-				.map(|s| s.trim().to_string())
-				.filter(|s| !s.is_empty());
-			let decimals = match table.get("decimals").and_then(Item::as_integer) {
+			let label = at
+				.string("label", "a string")?
+				.map(str::trim)
+				.filter(|s| !s.is_empty())
+				.map(str::to_string);
+			let decimals = match at.integer("decimals", "a whole number from 0 to 3")? {
 				Some(d) if (0..=3).contains(&d) => Some(d as u8),
 				Some(d) => return Err(Error::Parse(format!("dash.toml: {reference}: decimals {d} is not 0..=3"))),
 				None => None,
@@ -333,6 +354,13 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			let hz = match table.get("hz") {
 				None => None,
 				Some(item) => match item.as_float().or_else(|| item.as_integer().map(|n| n as f64)) {
+					// Above 0 as the board holds it too: an `f32` rounds a small enough rate to 0,
+					// which the board reads as "no rate" and polls at its fallback instead.
+					Some(hz) if hz > 0.0 && hz <= MAX_HZ && (hz as f32) == 0.0 => {
+						return Err(Error::Parse(format!(
+							"dash.toml: {reference}: hz {hz:e} is too small for the board, which would hold it as 0"
+						)));
+					}
 					Some(hz) if hz.is_finite() && hz > 0.0 && hz <= MAX_HZ => Some(hz),
 					_ => {
 						return Err(Error::Parse(format!(
@@ -369,10 +397,12 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 	if let Some(tables) = doc.get("page").and_then(Item::as_array_of_tables) {
 		for (i, table) in tables.iter().enumerate() {
 			let n = i + 1;
+			let at = Reader::new(text, table, format!("[[page]] {n}"));
 			let kind = string(table.get("kind"), &format!("page #{n}'s kind"))?;
 			match kind.as_str() {
 				"values" => {
-					let title = table.get("title").and_then(Item::as_str).unwrap_or("").trim().to_string();
+					at.takes(&strict::VALUES)?;
+					let title = at.string("title", "a string")?.unwrap_or("").trim().to_string();
 					let cells = table
 						.get("cells")
 						.and_then(Item::as_array)
@@ -387,9 +417,20 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 					pages.push(PageInput::Values { title, cells });
 				}
 				"chart" => {
+					at.takes(&strict::CHART)?;
 					let cell = Reference::parse(&string(table.get("cell"), &format!("page #{n}'s cell"))?)?;
-					let min = number(table.get("min")).ok_or_else(|| Error::Parse(format!("dash.toml: page #{n} needs min")))?;
-					let max = number(table.get("max")).ok_or_else(|| Error::Parse(format!("dash.toml: page #{n} needs max")))?;
+					// The board draws the chart in `f32`: an end past what one holds would reach the
+					// generated source as an `inf` the firmware's build cannot read.
+					let end = |key: &str| match (table.get(key), number(table.get(key))) {
+						(None, _) => Err(Error::Parse(format!("dash.toml: page #{n} needs {key}"))),
+						(Some(item), None) => Err(at.refuse(key, format!("{key} must be a number, not {}", strict::a(item.type_name())))),
+						(_, Some(v)) if fits_f32(v) => Ok(v),
+						(_, Some(_)) => Err(at.refuse(
+							key,
+							format!("{key} must be a finite number the board's 32-bit float holds, within ±{:e}", f32::MAX),
+						)),
+					};
+					let (min, max) = (end("min")?, end("max")?);
 					pages.push(PageInput::Chart { cell, min, max });
 				}
 				other => {
@@ -413,6 +454,19 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			.ok_or_else(|| Error::Parse("dash.toml: alarm must be written as [[alarm]] tables, one per rule".to_string()))?;
 		for (i, table) in tables.iter().enumerate() {
 			let n = i + 1;
+			let at = Reader::new(text, table, format!("[[alarm]] {n}"));
+			// No `kind` is the threshold rule, so every `dash.toml` written before drift
+			// existed still builds. The kind comes first: it decides which keys the rule takes.
+			let drift = match at.string("kind", "a string, \"threshold\" or \"drift\"")?.map(str::trim) {
+				None | Some("threshold") => false,
+				Some("drift") => true,
+				Some(other) => {
+					return Err(Error::Parse(format!(
+						"dash.toml: alarm #{n}: kind {other:?} is not \"threshold\" or \"drift\""
+					)));
+				}
+			};
+			at.takes(if drift { &strict::DRIFT } else { &strict::THRESHOLD })?;
 			let channels = table
 				.get("channels")
 				.and_then(Item::as_array)
@@ -428,68 +482,70 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 			// The board compares in `f32`, so a threshold past what one holds is refused
 			// rather than turned into an infinity nothing ever reaches.
 			let threshold = |what: &str| match number(table.get(what)) {
-				Some(v) if v.is_finite() && (v as f32).is_finite() => Ok(v),
+				Some(v) if fits_f32(v) => Ok(v),
 				_ => Err(Error::Parse(format!("dash.toml: alarm #{n} needs {what}, a finite number"))),
 			};
-			// No `kind` is the threshold rule, so every `dash.toml` written before drift
-			// existed still builds.
-			let rule = match table.get("kind").and_then(Item::as_str).map(str::trim).unwrap_or("threshold") {
-				"threshold" => {
-					let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
-						"below" => Direction::Below,
-						"above" => Direction::Above,
-						other => {
-							return Err(Error::Parse(format!(
-								"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
-							)));
-						}
-					};
-					AlarmRuleInput::Threshold {
-						direction,
-						trip: threshold("trip")?,
-						release: threshold("release")?,
+			let rule = if drift {
+				// Above zero as the board holds it too: a share an `f32` rounds to 0 is a
+				// `release_percent` nothing ever drops under, a rule that never clears.
+				let share = |what: &str| match threshold(what)? {
+					v if v > 0.0 && (v as f32) > 0.0 => Ok(v),
+					v if v > 0.0 => Err(Error::Parse(format!(
+						"dash.toml: alarm #{n}: {what} {v:e} is too small for the board, which would hold it as 0"
+					))),
+					v => Err(Error::Parse(format!("dash.toml: alarm #{n}: {what} {v} is not above zero"))),
+				};
+				let hold_ms = match table.get("hold_ms").and_then(Item::as_integer) {
+					Some(ms) if ms >= 0 => ms as u64,
+					_ => {
+						return Err(Error::Parse(format!(
+							"dash.toml: alarm #{n} needs hold_ms, whole milliseconds the drift has to hold"
+						)));
 					}
+				};
+				let min_setpoint = match threshold("min_setpoint")? {
+					v if v >= 0.0 => v,
+					v => return Err(Error::Parse(format!("dash.toml: alarm #{n}: min_setpoint {v} is below zero"))),
+				};
+				AlarmRuleInput::Drift {
+					percent: share("percent")?,
+					release_percent: share("release_percent")?,
+					hold_ms,
+					min_setpoint,
 				}
-				"drift" => {
-					let share = |what: &str| match threshold(what)? {
-						v if v > 0.0 => Ok(v),
-						v => Err(Error::Parse(format!("dash.toml: alarm #{n}: {what} {v} is not above zero"))),
-					};
-					let hold_ms = match table.get("hold_ms").and_then(Item::as_integer) {
-						Some(ms) if ms >= 0 => ms as u64,
-						_ => {
-							return Err(Error::Parse(format!(
-								"dash.toml: alarm #{n} needs hold_ms, whole milliseconds the drift has to hold"
-							)));
-						}
-					};
-					let min_setpoint = match threshold("min_setpoint")? {
-						v if v >= 0.0 => v,
-						v => return Err(Error::Parse(format!("dash.toml: alarm #{n}: min_setpoint {v} is below zero"))),
-					};
-					AlarmRuleInput::Drift {
-						percent: share("percent")?,
-						release_percent: share("release_percent")?,
-						hold_ms,
-						min_setpoint,
+			} else {
+				let direction = match string(table.get("direction"), &format!("alarm #{n}'s direction"))?.as_str() {
+					"below" => Direction::Below,
+					"above" => Direction::Above,
+					other => {
+						return Err(Error::Parse(format!(
+							"dash.toml: alarm #{n}: direction {other:?} is not \"below\" or \"above\""
+						)));
 					}
-				}
-				other => {
-					return Err(Error::Parse(format!(
-						"dash.toml: alarm #{n}: kind {other:?} is not \"threshold\" or \"drift\""
-					)));
+				};
+				AlarmRuleInput::Threshold {
+					direction,
+					trip: threshold("trip")?,
+					release: threshold("release")?,
 				}
 			};
 			alarms.push(AlarmInput { channels, page, rule });
 		}
 	}
+	// `[[button]]` is parsed by its own change, which owns its shape too; until it lands, a typo
+	// in a `[[button]]` table is still refused.
+	if let Some(tables) = doc.get("button").and_then(Item::as_array_of_tables) {
+		for (i, table) in tables.iter().enumerate() {
+			Reader::new(text, table, format!("[[button]] {}", i + 1)).takes(&strict::BUTTON)?;
+		}
+	}
 	let stalk = match doc.get("stalk") {
 		None => None,
-		Some(item) => Some(parse_stalk(item, &string)?),
+		Some(item) => Some(parse_stalk(item, text, &string)?),
 	};
 	let stopwatch = match doc.get("stopwatch") {
 		None => None,
-		Some(item) => Some(parse_stopwatch(item, &string, &number)?),
+		Some(item) => Some(parse_stopwatch(item, text, &string, &number)?),
 	};
 	Ok(Input {
 		vin,
@@ -504,10 +560,11 @@ pub fn parse_input(text: &str) -> Result<Input, Error> {
 }
 
 /// `[stalk]`, shape only: every key present, `read` one identifier.
-fn parse_stalk(item: &Item, string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>) -> Result<StalkInput, Error> {
+fn parse_stalk(item: &Item, source: &str, string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>) -> Result<StalkInput, Error> {
 	let table = item
 		.as_table()
 		.ok_or_else(|| Error::Parse("dash.toml: stalk must be one [stalk] table".to_string()))?;
+	Reader::new(source, table, "[stalk]".to_string()).takes(&strict::STALK)?;
 	let text = |key: &str| string(table.get(key), &format!("[stalk] {key}"));
 	let (request, did) = match Reference::parse(&text("read")?)? {
 		Reference::Field { request, did, bit_offset: 0 } => (request, did),
@@ -535,12 +592,14 @@ fn parse_stalk(item: &Item, string: &impl Fn(Option<&Item>, &str) -> Result<Stri
 /// zero, and marks that are each a speed, once.
 fn parse_stopwatch(
 	item: &Item,
+	source: &str,
 	string: &impl Fn(Option<&Item>, &str) -> Result<String, Error>,
 	number: &impl Fn(Option<&Item>) -> Option<f64>,
 ) -> Result<StopwatchInput, Error> {
 	let table = item
 		.as_table()
 		.ok_or_else(|| Error::Parse("dash.toml: stopwatch must be one [stopwatch] table".to_string()))?;
+	Reader::new(source, table, "[stopwatch]".to_string()).takes(&strict::STOPWATCH)?;
 	let speed = Reference::parse(&string(table.get("speed"), "[stopwatch] speed")?)?;
 	// Compared as the board holds it, in `f32`: a factor too small for one would reach the
 	// board as the zero that means "not measured", and one too large as an infinity.
@@ -670,7 +729,7 @@ impl fmt::Display for Error {
 				"{first} and {second} are the same row — one unit, identifier, bits and scaling written two ways; keep one [[channel]]"
 			),
 			Error::NotAnswered(r) => write!(f, "{r}: the survey asked the unit for this identifier and it did not answer"),
-			Error::NotFinite(r) => write!(f, "{r}: its scaling is not a finite number"),
+			Error::NotFinite(r) => write!(f, "{r}: its scaling is not a finite number the board's 32-bit float holds"),
 			Error::NoPartNumber(r) => write!(
 				f,
 				"unit {r:03X}: the survey has no part number (F187) for it, and the firmware checks the unit against the plan by that"
@@ -1079,7 +1138,10 @@ fn resolve_channel(
 			));
 		}
 	};
-	if !factor.is_finite() || !offset.is_finite() {
+	// Finite as the board holds it too: a factor past an `f32` reaches the generated source as
+	// an `inf` the firmware's build cannot read, and one an `f32` rounds to 0 makes a channel
+	// that only ever shows its offset — a speed that never reads as moving.
+	if !fits_f32(factor) || !fits_f32(offset) || (factor != 0.0 && factor as f32 == 0.0) {
 		return Err(Error::NotFinite(wanted.reference.clone()));
 	}
 	// What the catalog declares is one thing; what the car answers is the
@@ -1329,8 +1391,18 @@ pub fn build(
 				pages.push(Page::Values { title: title.clone(), cells });
 			}
 			PageInput::Chart { cell, min, max } => {
-				if min.partial_cmp(max) != Some(std::cmp::Ordering::Less) {
-					return Err(Error::Page(n, format!("min {min} is not below max {max}")));
+				// Compared as the board draws them, in `f32`: two ends a hair apart in the file can
+				// be one value there, and the board draws no trace for a scale with no height. A
+				// scale whose height overflows one draws every value on the floor.
+				let (low, high) = (*min as f32, *max as f32);
+				if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less) {
+					return Err(Error::Page(n, format!("min {low} is not below max {high}")));
+				}
+				if !(high - low).is_finite() {
+					return Err(Error::Page(
+						n,
+						format!("min {low:e} and max {high:e} are further apart than the board's 32-bit float holds"),
+					));
 				}
 				let channel = index(cell)?;
 				// The device finds a chart's range by its channel, so a second
@@ -3298,6 +3370,79 @@ mod tests {
 			format!("{} [[page]] tables, and the board holds at most 8", MAX_PAGES + 1)
 		);
 		assert_eq!(build_with_alarms(&extra(MAX_PAGES - 3)).unwrap().plan.pages.len(), MAX_PAGES);
+	}
+
+	/// The board draws a chart in `f32`: a scale apart in the file and one value there draws no
+	/// trace at all, and one whose span overflows draws every value on the floor.
+	#[test]
+	fn a_chart_scale_is_compared_as_the_board_holds_it() {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[("EV_Test_001", vec![reading(0x2029, "Boost", "IDE00191", 0, 16, false, true, 0.001, 0.0)])],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		let chart = |min: &str, max: &str| {
+			build(
+				&input(
+					&["01:IDE00191"],
+					&format!("[[page]]\nkind = \"chart\"\ncell = \"01:IDE00191\"\nmin = {min}\nmax = {max}\n"),
+				),
+				&store,
+				&extracted,
+				&[identity(ENGINE, "PART1", "EV_Test")],
+				None,
+				Language::En,
+			)
+		};
+		assert_eq!(
+			chart("100.000001", "100.000002").unwrap_err().to_string(),
+			"page #1: min 100 is not below max 100",
+			"apart in the file, one value in the board's f32"
+		);
+		assert_eq!(
+			chart("-3e38", "3e38").unwrap_err().to_string(),
+			"page #1: min -3e38 and max 3e38 are further apart than the board's 32-bit float holds"
+		);
+		assert_eq!(chart("2", "1").unwrap_err().to_string(), "page #1: min 2 is not below max 1");
+		chart("0.9", "2.1").unwrap();
+	}
+
+	/// A factor or offset past what an `f32` holds is an `inf` in the generated source, and the
+	/// firmware's build fails on it far from here.
+	#[test]
+	fn a_scaling_the_boards_f32_cannot_hold_is_refused() {
+		let here = tempfile::tempdir().unwrap();
+		let extracted = extracted_with(
+			here.path(),
+			&[(
+				"EV_Test_001",
+				vec![
+					reading(0x2029, "Huge", "IDE00191", 0, 16, false, true, 1e39, 0.0),
+					reading(0x202A, "Far", "IDE00192", 0, 16, false, true, 1.0, -1e39),
+					reading(0x202B, "Vanishing", "IDE00193", 0, 16, false, true, 1e-46, 0.0),
+				],
+			)],
+			&[],
+		);
+		let store = CatalogStore::open(here.path().join("proven"));
+		for id in ["01:IDE00191", "01:IDE00192", "01:IDE00193"] {
+			let err = build(
+				&input(&[id], &values_page(&[id])),
+				&store,
+				&extracted,
+				&[identity(ENGINE, "PART1", "EV_Test")],
+				None,
+				Language::En,
+			)
+			.unwrap_err();
+			assert_eq!(err, Error::NotFinite(Reference::parse(id).unwrap()), "{id}");
+			assert_eq!(
+				err.to_string(),
+				format!("{id}: its scaling is not a finite number the board's 32-bit float holds")
+			);
+		}
 	}
 
 	#[test]
