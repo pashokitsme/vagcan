@@ -127,7 +127,7 @@ impl Stalk {
 
 	/// Whether a read hands the lever to us: both witnesses answered, and both say off.
 	pub fn gate(&self, read: &Read) -> bool {
-		read.switch == Some(self.states.switch_off) && read.cruise == Some(self.states.cruise_off)
+		open(&self.states, read)
 	}
 
 	/// Reading stopped — the board was an adapter, and nothing of the lever was read
@@ -173,6 +173,116 @@ impl Stalk {
 			_ => None,
 		}
 	}
+}
+
+/// How long the gate may go unseen open before the lever closes the stopwatch
+/// ([`Close::Stale`]): the gate closed for lack of data, not because cruise was taken.
+///
+/// Why 3 s. Long enough that a hiccup in the lever's data leaves a run alone: the cruise
+/// status counts as stale 600 ms after its last answer (three of its periods), and each
+/// exchange a unit does not answer holds the bus for the board's answer timeout (500 ms), so
+/// two or three reads lost in a row come to a second or more. Short enough that a lever unit
+/// gone silent for good — the case this rule is for — gives the gauge pages back within
+/// seconds: with the lever the only input that has `Stopwatch`, nothing else can close it,
+/// and a silent unit never opens the gate again.
+pub const STALE_CLOSE_MS: u64 = 3_000;
+
+/// Why the lever's reads close the stopwatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Close {
+	/// Two consecutive reads said cruise is engaged: the switch in a state other than its
+	/// off, or the cruise status in one other than its off. Positive evidence, never a
+	/// missing read.
+	Engaged,
+	/// The gate has not been seen open for over [`STALE_CLOSE_MS`]: the lever's data is
+	/// missing — stale, unanswered, refused, a reading no state claims, its unit silent — or
+	/// never says the same thing twice in a row.
+	Stale,
+}
+
+/// When the lever's witnesses take the stopwatch away (owner, 2026-09-27). The stopwatch
+/// opens and closes on a `Stopwatch` command, and the lever gives one only through an open
+/// gate; so a stopwatch up when the gate closes could stay on the glass, holding the gauge
+/// pages, until the gate opened again — never, if the lever's unit went silent. Two rules,
+/// whatever opened the stopwatch, a lever or a button:
+///
+/// - **Cruise taken → it closes at once.** Two consecutive reads that say cruise is engaged
+///   ([`Close::Engaged`]) — the same two-read confirmation as a press, so one noisy read of
+///   the switch's ladder never ends a run. A read that says nothing breaks the pair. The
+///   cruise status in a read is the latest one answered, as for the gate, so one answer of it
+///   may stand in both reads: it is the engine's own enumerated state, not a ladder.
+/// - **The gate closed for lack of data → it stays**, a run in progress included, until the
+///   gate has not been seen open for over [`STALE_CLOSE_MS`] ([`Close::Stale`]). A read that
+///   shows the gate open starts the time over; an engaged read that finds no pair does not,
+///   so a unit answering every other time with cruise on still ends it.
+///
+/// Level, not edge: every read or tick for which a rule holds says so, and the caller closes
+/// the stopwatch if it is up (`Screen::close_stopwatch`). These rules only ever close the
+/// stopwatch: they never open it and never turn a page — whether a press pages is still
+/// [`Stalk`]'s gate alone. With no `[stalk]` in the plan ([`Closer::new`] with `None`) nothing
+/// ever closes. No clock is read here: `now_ms` is a parameter, as in the stopwatch.
+#[derive(Debug, Clone, Copy)]
+pub struct Closer {
+	/// The plan's states, `None` with no `[stalk]`.
+	states: Option<States>,
+	/// The last read said cruise is engaged: half of a pair.
+	engaged: bool,
+	/// When the gate was last seen open — or, where no read has shown it open yet, when the
+	/// closer first looked. `None` before that first look.
+	seen_open: Option<u64>,
+}
+
+impl Closer {
+	pub const fn new(states: Option<States>) -> Self {
+		Closer {
+			states,
+			engaged: false,
+			seen_open: None,
+		}
+	}
+
+	/// One read of the lever — the same read, at the same moment, [`Stalk::read`] gets: once per
+	/// answer of the rocker's identifier, and once for an answer that did not come.
+	pub fn read(&mut self, read: &Read, now_ms: u64) -> Option<Close> {
+		let states = self.states?;
+		let engaged = read.switch.is_some_and(|s| s != states.switch_off) || read.cruise.is_some_and(|c| c != states.cruise_off);
+		let pair = core::mem::replace(&mut self.engaged, engaged) && engaged;
+		if open(&states, read) {
+			self.seen_open = Some(now_ms);
+		}
+		if pair {
+			return Some(Close::Engaged);
+		}
+		self.tick(now_ms)
+	}
+
+	/// The clock alone, with no read: a unit gone silent answers nothing, and still has to end
+	/// the stopwatch. Call it between reads; [`Closer::due`] says when it next matters.
+	pub fn tick(&mut self, now_ms: u64) -> Option<Close> {
+		self.states?;
+		let since = *self.seen_open.get_or_insert(now_ms);
+		(now_ms.saturating_sub(since) > STALE_CLOSE_MS).then_some(Close::Stale)
+	}
+
+	/// The first moment a [`Closer::tick`] would say [`Close::Stale`], if nothing is read before
+	/// it — for the caller's sleep. `None` before the first look, and with no `[stalk]`.
+	pub fn due(&self) -> Option<u64> {
+		self.states?;
+		Some(self.seen_open? + STALE_CLOSE_MS + 1)
+	}
+
+	/// Reading stopped — the board was an adapter, which ended the stopwatch. The next read
+	/// pairs with nothing, and the gate's time starts over at the next look: the minutes as an
+	/// adapter are not the lever's data going missing.
+	pub fn lost(&mut self) {
+		self.engaged = false;
+		self.seen_open = None;
+	}
+}
+
+/// Whether a read hands the lever to us: both witnesses answered, and both say off.
+fn open(states: &States, read: &Read) -> bool {
+	read.switch == Some(states.switch_off) && read.cruise == Some(states.cruise_off)
 }
 
 #[cfg(test)]
@@ -418,5 +528,186 @@ mod tests {
 		// Minutes later, one read of NEXT is still one read.
 		assert_eq!(stalk.read(free(NEXT)), None);
 		assert_eq!(stalk.read(free(NEXT)), Some(Command::Next), "the second read pairs");
+	}
+
+	// The stopwatch closed by the lever's witnesses (owner, 2026-09-27).
+
+	/// The switch on: cruise taken, as plainly as the lever says it.
+	fn switched_on() -> Read {
+		Read {
+			switch: Some(ON),
+			..free(REST)
+		}
+	}
+
+	/// The engine's cruise status saying anything but off, the switch still reading off.
+	fn cruise_passive() -> Read {
+		Read {
+			cruise: Some(CRUISE_PASSIVE),
+			..free(REST)
+		}
+	}
+
+	/// No answer of the lever's identifier, the cruise status still fresh and off.
+	fn unanswered() -> Read {
+		Read {
+			rocker: None,
+			switch: None,
+			..free(REST)
+		}
+	}
+
+	/// Each read of `reads` fed `step_ms` apart from `from_ms`; what each said.
+	fn close_run(closer: &mut Closer, from_ms: u64, step_ms: u64, reads: &[Read]) -> std::vec::Vec<Option<Close>> {
+		reads
+			.iter()
+			.enumerate()
+			.map(|(i, read)| closer.read(read, from_ms + i as u64 * step_ms))
+			.collect()
+	}
+
+	#[test]
+	fn two_engaged_reads_in_a_row_close_on_the_second() {
+		for engaged in [switched_on(), cruise_passive()] {
+			let mut closer = Closer::new(Some(STATES));
+			assert_eq!(
+				close_run(&mut closer, 0, 100, &[free(REST), free(REST), engaged, engaged]),
+				[None, None, None, Some(Close::Engaged)],
+				"{engaged:?}"
+			);
+		}
+		// Either witness makes a read engaged: one of each is a pair too.
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(
+			close_run(&mut closer, 0, 100, &[free(REST), switched_on(), cruise_passive()]),
+			[None, None, Some(Close::Engaged)]
+		);
+		// CANCEL is not off: it is the switch in a state other than its off.
+		let cancel = Read {
+			switch: Some(CANCEL),
+			..free(REST)
+		};
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(close_run(&mut closer, 0, 100, &[cancel, cancel]), [None, Some(Close::Engaged)]);
+	}
+
+	#[test]
+	fn one_noisy_engaged_read_never_closes() {
+		let mut closer = Closer::new(Some(STATES));
+		let reads = [
+			free(REST),
+			free(REST),
+			switched_on(),
+			free(REST),
+			cruise_passive(),
+			free(REST),
+			free(REST),
+		];
+		assert_eq!(close_run(&mut closer, 0, 100, &reads), [None; 7]);
+	}
+
+	#[test]
+	fn a_read_that_says_nothing_breaks_an_engaged_pair() {
+		// Engaged, a read with neither witness (no answer, the cruise status stale), engaged:
+		// never two engaged reads in a row. Short of the stale close, nothing closes.
+		let nothing = Read {
+			rocker: None,
+			switch: None,
+			cruise: None,
+		};
+		let mut closer = Closer::new(Some(STATES));
+		let reads = [free(REST), switched_on(), nothing, switched_on(), unanswered(), cruise_passive()];
+		assert_eq!(close_run(&mut closer, 0, 100, &reads), [None; 6]);
+	}
+
+	#[test]
+	fn the_gate_closed_for_lack_of_data_for_2_9_s_then_seen_open_does_not_close() {
+		for missing in [
+			unanswered(),
+			Read { cruise: None, ..free(REST) },
+			Read {
+				switch: None,
+				cruise: None,
+				..free(REST)
+			},
+		] {
+			let mut closer = Closer::new(Some(STATES));
+			// Open at 0; the lack of data from 100 ms to 2.9 s; open again at 2.9 s.
+			assert_eq!(closer.read(&free(REST), 0), None);
+			for t in (100..2_900).step_by(100) {
+				assert_eq!(closer.read(&missing, t), None, "{missing:?} at {t} ms");
+			}
+			assert_eq!(closer.read(&free(REST), 2_900), None, "seen open again");
+			// The timer starts over there: another 2.9 s of it is still short.
+			for t in (3_000..5_800).step_by(100) {
+				assert_eq!(closer.read(&missing, t), None, "{missing:?} at {t} ms, after the gate opened at 2.9 s");
+			}
+			assert_eq!(closer.tick(5_800), None);
+		}
+	}
+
+	#[test]
+	fn the_gate_closed_for_lack_of_data_for_3_1_s_closes() {
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(closer.read(&free(REST), 0), None);
+		for t in (100..=STALE_CLOSE_MS).step_by(100) {
+			assert_eq!(closer.read(&unanswered(), t), None, "at {t} ms: not yet over 3 s");
+		}
+		assert_eq!(closer.read(&unanswered(), 3_100), Some(Close::Stale));
+	}
+
+	#[test]
+	fn a_rocker_unit_gone_silent_closes_after_3_s_on_ticks_alone() {
+		// The unit stops answering: the board drops its subscription and feeds one read with no
+		// answer; nothing of the lever is read after it, and only the clock moves.
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(closer.read(&free(REST), 1_000), None);
+		assert_eq!(closer.read(&unanswered(), 1_600), None);
+		assert_eq!(closer.due(), Some(1_000 + STALE_CLOSE_MS + 1), "when a tick would close");
+		assert_eq!(closer.tick(3_000), None);
+		assert_eq!(closer.tick(1_000 + STALE_CLOSE_MS), None, "3 s exactly is not over 3 s");
+		assert_eq!(closer.tick(1_000 + STALE_CLOSE_MS + 1), Some(Close::Stale));
+	}
+
+	#[test]
+	fn engaged_reads_that_never_pair_still_close_once_the_gate_is_unseen_for_3_s() {
+		// Cruise on, and the lever's unit answering every other time: no two engaged reads in a
+		// row, and the gate never open. The stale close is the way out.
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(closer.read(&free(REST), 0), None);
+		let mut out = std::vec::Vec::new();
+		for (i, t) in (100..=3_100).step_by(100).enumerate() {
+			let read = if i % 2 == 0 { switched_on() } else { unanswered() };
+			out.push(closer.read(&read, t));
+		}
+		assert_eq!(out.last(), Some(&Some(Close::Stale)), "{out:?}");
+		assert!(out[..out.len() - 1].iter().all(Option::is_none), "{out:?}");
+	}
+
+	#[test]
+	fn with_no_stalk_in_the_plan_nothing_ever_closes() {
+		let mut closer = Closer::new(None);
+		let reads = [switched_on(), switched_on(), cruise_passive(), cruise_passive(), unanswered()];
+		assert_eq!(close_run(&mut closer, 0, 100, &reads), [None; 5]);
+		assert_eq!(closer.tick(60_000), None);
+		assert_eq!(closer.due(), None);
+	}
+
+	#[test]
+	fn after_adapter_mode_the_closer_starts_over() {
+		let mut closer = Closer::new(Some(STATES));
+		assert_eq!(close_run(&mut closer, 0, 100, &[free(REST), switched_on()]), [None, None]);
+		closer.lost();
+		// Minutes later: one engaged read is one read, and the gate's clock starts again at the
+		// first look rather than at the last open read before the gap.
+		assert_eq!(closer.read(&switched_on(), 300_000), None, "one read, not the second of a pair");
+		assert_eq!(closer.tick(300_000 + STALE_CLOSE_MS), None);
+		assert_eq!(closer.tick(300_000 + STALE_CLOSE_MS + 1), Some(Close::Stale));
+		// Nothing read yet after the gap: the first tick is where the clock starts.
+		let mut closer = Closer::new(Some(STATES));
+		closer.lost();
+		assert_eq!(closer.due(), None, "nothing seen yet, nothing due");
+		assert_eq!(closer.tick(10_000), None);
+		assert_eq!(closer.due(), Some(10_000 + STALE_CLOSE_MS + 1));
 	}
 }

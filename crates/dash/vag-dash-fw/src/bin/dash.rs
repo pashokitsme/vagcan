@@ -35,6 +35,9 @@
 //!   ([`vag_dash_fw::input`]) to one task, `control_task`, which applies it to the screen
 //!   ([`Screen::command`]) and the settings. No input knows what a press does. The board's
 //!   own BOOT and RESET buttons are not inputs (owner, 2026-09-27): `GPIO9` is left alone.
+//!   The lever also closes the stopwatch — cruise taken, or its data missing over 3 s
+//!   ([`Closer`]) — and that is no command: the bus task ends the mode directly
+//!   ([`Screen::close_stopwatch`]).
 //!
 //! There is no Battery Service (0x180F). Phones show its level as the device's
 //! battery, and this board has no battery and no reading of the rail (the
@@ -107,7 +110,7 @@ use vag_dash_render::control::{self, Command, PinButton};
 use vag_dash_render::pages::Mismatch;
 use vag_dash_render::plan::{Mode as ReadMode, PartAnswer, PartCheck, Timing};
 use vag_dash_render::screen::{Change, Outcome, Screen};
-use vag_dash_render::stalk::{Stalk, States};
+use vag_dash_render::stalk::{Close, Closer, STALE_CLOSE_MS, Stalk, States};
 use vag_dash_render::stopwatch::{self, Event as Lap, Phase, Stopwatch};
 use vag_uds_can::{FilterFollower, IsoTpCan, StandardFilter};
 use vag_uds_client::console::{self, Console, Ignored, Input as ConsoleInput, Mode};
@@ -1730,6 +1733,7 @@ async fn can_task(twai0: TWAI0<'static>, rx_pin: GPIO1<'static>, tx_pin: GPIO6<'
 		panel_bus(open_panel_bus(twai, rx, tx), &mut panel, bus, settings).await;
 		// Nothing of the lever is read while the board is an adapter.
 		panel.stalk.lost();
+		panel.closer.lost();
 	}
 }
 
@@ -1776,6 +1780,8 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 			panel.follow_pages(bus, settings).await;
 		}
 		panel.ask_again_when_due(bus);
+		// A lever unit gone silent answers nothing, and its stopwatch still has to close.
+		panel.lever_tick();
 
 		let next = bus.lock(|p| p.borrow_mut().due(ms()));
 		match next {
@@ -1816,6 +1822,7 @@ async fn panel_bus(mut backend: TwaiBackend<'static>, panel: &mut PanelReads, bu
 			Next::Idle { until_ms } => {
 				let recheck = pages_seen + PAGE_RECHECK;
 				let recheck = panel.next_retry().map_or(recheck, |retry| retry.min(recheck));
+				let recheck = panel.next_close().map_or(recheck, |close| close.min(recheck));
 				let until = until_ms.map_or(recheck, |t| Instant::from_millis(t).min(recheck));
 				let woke = select4(Timer::at(until), BUS_WAKE.wait(), PAGES_CHANGED.wait(), adapter_requested()).await;
 				if let Either4::Third(()) = woke {
@@ -1985,6 +1992,8 @@ struct PanelReads {
 	shared: Panel,
 	/// The lever's gate and press detector, fed once per answer of the rocker's identifier.
 	stalk: Stalk,
+	/// When the lever's witnesses close the stopwatch: fed the same reads, and the clock.
+	closer: Closer,
 	/// The lever's gate and the stopwatch as the subscriptions last followed them.
 	mode: ReadMode,
 	/// A host holds the board's timing channel ([`host_clock`]): a run's speed yields to it,
@@ -2016,6 +2025,8 @@ impl PanelReads {
 			part_retry_at: [None; UNIT_COUNT],
 			shared,
 			stalk: Stalk::new(states),
+			// With no `[stalk]` it never closes anything.
+			closer: Closer::new(PLAN.stalk.map(|plan| plan.states)),
 			mode: ReadMode::default(),
 			host_clock: false,
 		}
@@ -2296,6 +2307,41 @@ impl PanelReads {
 		if let Some(command) = press {
 			send(Source::Lever, command);
 		}
+		let close = self.closer.read(&read, ms());
+		self.close_stopwatch(close);
+	}
+
+	/// The closer on the clock alone, between the lever's answers.
+	fn lever_tick(&mut self) {
+		let close = self.closer.tick(ms());
+		self.close_stopwatch(close);
+	}
+
+	/// When [`PanelReads::lever_tick`] next has something to do: while the stopwatch is up, the
+	/// moment the lever's data has been missing too long. `None` while it is down, so a lever long
+	/// silent does not wake the bus task for nothing.
+	fn next_close(&self) -> Option<Instant> {
+		let due = self.closer.due()?;
+		let up = self.shared.screen.lock(|cell| cell.borrow().stopwatch());
+		up.then(|| Instant::from_millis(due))
+	}
+
+	/// The lever's witnesses took the stopwatch away (`todo/dash/19`, owner 2026-09-27): cruise
+	/// switched on, or the lever's data missing too long. Applied here, on the screen, the way
+	/// the adapter screen ends it — not through the command queue: it is no driver's command,
+	/// so it must not silence an alarm, and it must not be dropped by a full queue or wait
+	/// behind a flash write holding the settings. Said only when the stopwatch was up.
+	fn close_stopwatch(&self, close: Option<Close>) {
+		let Some(close) = close else { return };
+		if !self.shared.screen.lock(|cell| cell.borrow_mut().close_stopwatch()) {
+			return;
+		}
+		match close {
+			Close::Engaged => note!("lever: cruise engaged — stopwatch closed"),
+			Close::Stale => note!("lever: cruise not seen off for {} s — stopwatch closed", STALE_CLOSE_MS / 1000),
+		}
+		// The speed's subscription goes, and the lever's rate follows the mode.
+		PAGES_CHANGED.signal(());
 	}
 
 	/// One answer of the stopwatch's speed while the page is up, at the time it came.

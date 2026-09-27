@@ -492,8 +492,11 @@ stopwatch — in a small machine of `vag-dash-render` (`control`, `stalk`), so e
 the host. Every command goes through one bounded queue to one task, which applies it through
 `Screen::command`: the screen does not know which input it was, so a press means one thing
 whatever was pressed. A full queue drops the newest and says so; no input waits on the settings,
-and the bus task only offers the lever's command. The board's BOOT and RESET buttons are not
-inputs; `GPIO9` is left to the ROM.
+and the bus task only offers the lever's command. The lever closing the stopwatch — cruise
+taken, or its data missing over 3 s (`stalk::Closer`) — is not a command: the bus task applies it
+through `Screen::close_stopwatch`, as the adapter screen ends the mode, so it never silences an
+alarm, is never dropped by a full queue and never waits for the settings. The board's BOOT and
+RESET buttons are not inputs; `GPIO9` is left to the ROM.
 
 **Rendering is shared with the laptop.** `vag-dash-render` turns a `Frame` (a values page
 of up to four cells, or a chart page) into pixels on any `embedded-graphics` target. On

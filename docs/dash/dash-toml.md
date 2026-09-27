@@ -547,7 +547,8 @@ build prints it after `dash plan for VIN <VIN>:`.
 - With no `[stalk]` and no `[[button]]`, the board shows its active page. Only `dashsim` or
   `dashcfg`'s `set page` changes it.
 - With the stopwatch on, `next` and `previous` do nothing, from any of them. `stopwatch` leaves
-  it; so does the board turning adapter (`vagcan --slcan`).
+  it; so does the board turning adapter (`vagcan --slcan`), and the lever (**The stopwatch**,
+  below).
 
 **The lever**
 
@@ -574,6 +575,11 @@ build prints it after `dash plan for VIN <VIN>:`.
   says a run is in RAM only.
 - Leave the stopwatch before the car stops and the run is lost at power-off, unless you `save`.
 - A run that ends short of its highest mark shows `ABORT` and is not kept.
+- With a `[stalk]`, cruise switched on closes the stopwatch: two readings in a row with `switch`
+  not at `switch_off` or `cruise` not at `cruise_off`. A run under way is dropped. However the
+  stopwatch was opened.
+- With a `[stalk]`, the lever unreadable for over 3 s closes it too: no answer, a stale cruise
+  status, a reading no state claims, its unit silent. A shorter gap leaves it and a run alone.
 
 **Alarms**
 
