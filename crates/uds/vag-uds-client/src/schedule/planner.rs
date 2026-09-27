@@ -158,10 +158,9 @@ enum Heard {
 	/// Positive and empty, to a multi-identifier request.
 	Empty,
 	Refused(u8),
+	/// No answer: silence, or a unit heard from that did not answer in time (`Miss::Busy`).
 	Silent(Miss),
 	Malformed,
-	/// The shell heard the unit but got no answer to this request in time ([`Answer::Busy`]).
-	Busy,
 }
 
 impl Read {
@@ -547,9 +546,11 @@ impl Planner {
 				match answer {
 					Answer::NoAnswer => self.back_off(now_ms, unit, Miss::NoAnswer, &mut out),
 					Answer::BusError => self.back_off(now_ms, unit, Miss::BusError, &mut out),
-					// A unit still asking for time when its consumer's deadline came answered: busy,
-					// not absent.
-					Answer::Pdu(_) | Answer::Refused(_) | Answer::Busy { .. } => self.heard_from(unit),
+					Answer::Pdu(_) | Answer::Refused(_) => self.heard_from(unit),
+					// Heard from, and no answer in time: backed off as a non-answer is, so a unit busy
+					// for ever costs its neighbours no more than a silent one (review round 3), and its
+					// readers are told `Busy` — a missed sample, not an absent unit.
+					Answer::Busy { .. } => self.back_off(now_ms, unit, Miss::Busy, &mut out),
 					// The silence the request asked for says nothing about the unit either way.
 					Answer::NotExpected => {}
 				}
@@ -671,20 +672,17 @@ impl Planner {
 				self.back_off(now, unit, why, out);
 				fail_onces(onces, unit, why, now, out);
 			}
-			// No answer, but a unit that is there: each reading is missed and nothing backs off
-			// (review round 2, 2026-09-27 — as silence it dropped the panel's subscriptions).
-			Heard::Malformed | Heard::Busy => {
-				let why = if matches!(heard, Heard::Busy) { Miss::Busy } else { Miss::Malformed };
+			Heard::Malformed => {
 				self.heard_from(unit);
 				let state = &self.units[&unit];
 				for did in &dids {
 					if let Some(read) = state.reads.get(did) {
 						for sub in &read.subs {
-							out.push(missed(sub, unit, *did, why, now));
+							out.push(missed(sub, unit, *did, Miss::Malformed, now));
 						}
 					}
 				}
-				fail_onces(onces, unit, why, now, out);
+				fail_onces(onces, unit, Miss::Malformed, now, out);
 			}
 		}
 		let state = self.units.get_mut(&unit).expect("a unit in flight is held");
@@ -699,8 +697,8 @@ impl Planner {
 			Answer::Refused(nrc) => return Heard::Refused(nrc),
 			// A read always expects an answer; a shell that says otherwise is not answering it.
 			Answer::NotExpected => return Heard::Malformed,
-			// Heard from, no answer in time: a sample missed from a unit that is there.
-			Answer::Busy { .. } => return Heard::Busy,
+			// Heard from, no answer in time: backed off as silence is, its readers told `Busy`.
+			Answer::Busy { .. } => return Heard::Silent(Miss::Busy),
 			Answer::Pdu(pdu) => pdu,
 		};
 		match pdu.as_slice() {

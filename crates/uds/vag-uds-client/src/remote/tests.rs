@@ -593,20 +593,25 @@ fn a_suppressed_positive_response_is_no_answer_and_the_unit_is_not_backed_off() 
 
 /// A busy unit — heard from, no answer in time — is a host's no answer, as silence is: the
 /// host is not left waiting on a `7F xx 78` that promised more, and its subscription reads
-/// no answer. The unit is not backed off: its next request goes at once.
+/// no answer. The unit is asked no more often than a silent one (review round 3).
 #[test]
-fn a_busy_unit_is_no_answer_to_the_host_and_is_not_backed_off() {
-	let mut board = Board::new(Bus::Busy);
-	board.hear(request(3, ENGINE, &[0x19, 0x02, 0xFF]));
-	board.hear(subscribe(4, ENGINE, 0x1000, 100));
-	board.run_until(300);
-	assert_eq!(board.answers(), [(3, Outcome::NoAnswer)]);
-	let readings = board.readings(4);
+fn a_busy_unit_is_no_answer_to_the_host_and_asked_no_more_than_a_silent_one() {
+	let run = |bus| {
+		let mut board = Board::new(bus);
+		board.hear(request(3, ENGINE, &[0x19, 0x02, 0xFF]));
+		board.hear(subscribe(4, ENGINE, 0x1000, 100));
+		board.run_until(3_000);
+		board
+	};
+	let busy = run(Bus::Busy);
+	assert_eq!(busy.answers(), [(3, Outcome::NoAnswer)]);
+	let readings = busy.readings(4);
 	assert!(
 		!readings.is_empty() && readings.iter().all(|(_, o)| *o == Outcome::NoAnswer),
 		"{readings:?}"
 	);
-	assert!(board.sent.len() >= 3, "asked again on time: {:?}", board.pdus_sent());
+	let silent = run(Bus::Silent);
+	assert_eq!(busy.sent.len(), silent.sent.len(), "{:?}", busy.pdus_sent());
 }
 
 /// PR #2 review round 1 regression (Sched-F1 + the board's floor). A radio request to a
