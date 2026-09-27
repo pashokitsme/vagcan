@@ -1059,19 +1059,46 @@ fn read_of(c: &Channel) -> (u16, u16, u32, u32) {
 	(c.unit, c.did, c.bit_offset, c.bit_length)
 }
 
+/// What a page cell, an alarm channel or the stopwatch's speed names, among the plan's channels.
+enum Named {
+	/// A `[[channel]]`, by plan index.
+	Channel(u16),
+	/// A setpoint with no `[[channel]]` of its own: read with its channel, never offered as a
+	/// cell (`todo/dash/18`, owner 2026-09-27).
+	Setpoint,
+	/// Nothing the input declares.
+	Unknown,
+}
+
+impl Named {
+	/// What a refusal says of a [`Named::Setpoint`].
+	fn setpoint_refusal(reference: &Reference) -> String {
+		format!("{reference} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+	}
+}
+
 /// The plan index of a channel the input names, by what the name resolves to: a page cell or an
-/// alarm channel may spell a row differently from its `[[channel]]` and still mean it. `None`
-/// when no `[[channel]]` resolves to that row.
+/// alarm channel may spell a row differently from its `[[channel]]` and still mean it.
+///
+/// Only the first `declared` channels are the input's `[[channel]]`s; after them come the
+/// setpoints the build added, and a name that lands on one of those is [`Named::Setpoint`], in
+/// either spelling.
 fn index_by_row(
 	reference: &Reference,
 	channels: &[Channel],
+	declared: usize,
 	index_of: &BTreeMap<Reference, u16>,
 	offered: &[poll::Channel],
 	answered: Option<&poll::Answered>,
 	units: &[UnitIdentity],
-) -> Option<u16> {
+) -> Named {
+	let named = |at: usize| match at {
+		at if at < declared => Named::Channel(at as u16),
+		at if channels[..declared].iter().any(|c| c.setpoint == Some(at as u16)) => Named::Setpoint,
+		_ => Named::Unknown,
+	};
 	if let Some(index) = index_of.get(reference) {
-		return Some(*index);
+		return named(usize::from(*index));
 	}
 	let probe = ChannelInput {
 		reference: reference.clone(),
@@ -1080,8 +1107,13 @@ fn index_by_row(
 		hz: None,
 		setpoint: None,
 	};
-	let resolved = resolve_channel(&probe, offered, answered, units, &mut Vec::new()).ok()?;
-	channels.iter().position(|c| read_of(c) == read_of(&resolved)).map(|at| at as u16)
+	let Ok(resolved) = resolve_channel(&probe, offered, answered, units, &mut Vec::new()) else {
+		return Named::Unknown;
+	};
+	match channels.iter().position(|c| read_of(c) == read_of(&resolved)) {
+		Some(at) => named(at),
+		None => Named::Unknown,
+	}
 }
 
 /// One `[[channel]]` against what the car reported and what the project knows: the same rules
@@ -1252,6 +1284,9 @@ pub fn build(
 		channels.push(resolved);
 		index_of.insert(wanted.reference.clone(), index);
 	}
+	// The owner's `[[channel]]`s, one plan channel each and in order; everything after them the
+	// build adds, and no page, alarm or stopwatch may name.
+	let declared = channels.len();
 
 	// Second pass, so a setpoint may name a channel the input declares later — and so a
 	// setpoint the input does not declare at all is appended once, after everything the
@@ -1342,7 +1377,10 @@ pub fn build(
 	// The stopwatch's speed is one of the owner's `[[channel]]`s, resolved above.
 	let stopwatch = match &input.stopwatch {
 		None => None,
-		Some(wanted) => Some(resolve_stopwatch(wanted, &channels, &index_of, &offered, answered, units, &mut notes)?),
+		Some(wanted) => {
+			let speed = index_by_row(&wanted.speed, &channels, declared, &index_of, &offered, answered, units);
+			Some(resolve_stopwatch(wanted, speed, &channels, &mut notes)?)
+		}
 	};
 	// The lever's fields are enumerations, which no `[[channel]]` can be: they join the plan
 	// as channels of their own, on no page, read only for the lever.
@@ -1390,11 +1428,13 @@ pub fn build(
 	let mut pages = Vec::new();
 	for (i, page) in input.pages.iter().enumerate() {
 		let n = i + 1;
-		let index = |r: &Reference| {
-			index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| Error::PageRefersToUnknown {
+		let index = |r: &Reference| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+			Named::Channel(index) => Ok(index),
+			Named::Setpoint => Err(Error::Page(n, Named::setpoint_refusal(r))),
+			Named::Unknown => Err(Error::PageRefersToUnknown {
 				page: n,
 				reference: r.clone(),
-			})
+			}),
 		};
 		match page {
 			PageInput::Values { title, cells } => {
@@ -1447,7 +1487,11 @@ pub fn build(
 		let watched = wanted
 			.channels
 			.iter()
-			.map(|r| index_by_row(r, &channels, &index_of, &offered, answered, units).ok_or_else(|| refuse(format!("{r} is not in the [[channel]] list"))))
+			.map(|r| match index_by_row(r, &channels, declared, &index_of, &offered, answered, units) {
+				Named::Channel(index) => Ok(index),
+				Named::Setpoint => Err(refuse(Named::setpoint_refusal(r))),
+				Named::Unknown => Err(refuse(format!("{r} is not in the [[channel]] list"))),
+			})
 			.collect::<Result<Vec<u16>, _>>()?;
 		// The page is named by title, and only a values page has one: a takeover shows
 		// cells, and a chart has one cell and no room to invert it.
@@ -1571,18 +1615,13 @@ pub fn build(
 /// `[stopwatch]` against the resolved channels: the speed is a `[[channel]]` whose scaling
 /// has no offset — the stopwatch takes the channel's zero for a standstill, and with an
 /// offset the zero is somewhere else — and whose factor is above zero, or moving forward
-/// would read as going nowhere.
-fn resolve_stopwatch(
-	wanted: &StopwatchInput,
-	channels: &[Channel],
-	index_of: &BTreeMap<Reference, u16>,
-	offered: &[poll::Channel],
-	answered: Option<&poll::Answered>,
-	units: &[UnitIdentity],
-	notes: &mut Vec<String>,
-) -> Result<Stopwatch, Error> {
-	let speed = index_by_row(&wanted.speed, channels, index_of, offered, answered, units)
-		.ok_or_else(|| Error::Stopwatch(format!("speed {} is not in the [[channel]] list", wanted.speed)))?;
+/// would read as going nowhere. `speed` is what [`index_by_row`] made of `wanted.speed`.
+fn resolve_stopwatch(wanted: &StopwatchInput, speed: Named, channels: &[Channel], notes: &mut Vec<String>) -> Result<Stopwatch, Error> {
+	let speed = match speed {
+		Named::Channel(index) => index,
+		Named::Setpoint => return Err(Error::Stopwatch(format!("speed {}", Named::setpoint_refusal(&wanted.speed)))),
+		Named::Unknown => return Err(Error::Stopwatch(format!("speed {} is not in the [[channel]] list", wanted.speed))),
+	};
 	let channel = &channels[usize::from(speed)];
 	if channel.offset != 0.0 {
 		return Err(Error::Stopwatch(format!(
@@ -3450,6 +3489,50 @@ mod tests {
 			"no `language`: the settings' language, for the labels and the board alike"
 		);
 		assert_eq!(extracted.language(), Language::Ru, "the caller's project is left as it was");
+	}
+
+	/// A setpoint with no `[[channel]]` of its own is read with its channel and never offered as
+	/// a cell (`todo/dash/18`, owner 2026-09-27): no page, alarm or stopwatch may name it, in
+	/// either spelling.
+	#[test]
+	fn a_setpoint_without_a_channel_of_its_own_is_never_a_cell() {
+		let paired = "[[channel]]\nref = \"01:IDE00191\"\nsetpoint = \"01:IDE00190\"\nhz = 50\n";
+		for spelled in ["01:IDE00190", "01:2029"] {
+			let why = build_with_setpoint(&format!("{paired}{}", values_page_titled("B", &[spelled])))
+				.unwrap_err()
+				.to_string();
+			assert_eq!(
+				why,
+				format!("page #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+			let why = build_with_setpoint(&format!(
+				"{paired}[[alarm]]\nchannels = [\"{spelled}\"]\npage = \"A\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n"
+			))
+			.unwrap_err()
+			.to_string();
+			assert_eq!(
+				why,
+				format!("alarm #1: {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+			let why = build_with_setpoint(&format!(
+				"{paired}[stopwatch]\nspeed = \"{spelled}\"\nkm_h_per_unit = 0.0\nmarks = [60]\n"
+			))
+			.unwrap_err()
+			.to_string();
+			assert_eq!(
+				why,
+				format!("[stopwatch] speed {spelled} is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it")
+			);
+		}
+		// Declared as a `[[channel]]` too, it is a channel like any other.
+		let declared = format!("{paired}[[channel]]\nref = \"01:IDE00190\"\nhz = 50\n");
+		let built = build_with_setpoint(&format!(
+			"{declared}{}[[alarm]]\nchannels = [\"01:IDE00190\"]\npage = \"B\"\ndirection = \"above\"\ntrip = 2.0\nrelease = 1.0\n[stopwatch]\nspeed = \"01:IDE00190\"\nkm_h_per_unit = 0.0\nmarks = [60]\n",
+			values_page_titled("B", &["01:IDE00190"])
+		))
+		.unwrap();
+		assert_eq!(built.plan.alarms[0].channels, vec![1]);
+		assert_eq!(built.plan.stopwatch.map(|s| s.speed), Some(1));
 	}
 
 	/// The board draws a chart in `f32`: a scale apart in the file and one value there draws no

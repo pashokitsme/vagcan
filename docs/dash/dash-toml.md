@@ -153,6 +153,8 @@ One per value the board reads.
 - Same unit as the channel: both are read in one request, so the two numbers are from the same
   moment.
 - It needs no `[[channel]]` of its own. The build adds it, read at the channel's `hz`.
+- Without a `[[channel]]` of its own it is never shown: no page, alarm or stopwatch may name it.
+  Declare it under `[[channel]]` to show it.
 - If it has a `[[channel]]` of its own, that one's `hz` must equal the channel's.
 - Same unit of measure as the channel.
 - It cannot be the channel itself, and cannot have a `setpoint` of its own.
@@ -412,6 +414,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `page #n: min A and max B are further apart than the board's 32-bit float holds` | Narrow the scale. |
 | `page #n: X already has a chart page; one range per channel` | Keep one chart of it. |
 | `page #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `page #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 
 **Alarms**
 
@@ -420,6 +423,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `N [[alarm]] rules, and the board holds at most 4` | Remove rules. |
 | `alarm #n has no channels list` / `watches no channels` | Add `channels`. |
 | `alarm #n: X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `alarm #n: X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`. |
 | `alarm #n: kind "x" is not "threshold" or "drift"` | Lowercase `threshold` or `drift`. |
 | `alarm #n: direction "x" is not "below" or "above"` | Lowercase `below` or `above`. |
 | `alarm #n needs <key>, a finite number` | Add it, a number that fits a 32-bit float. |
@@ -468,6 +472,7 @@ build prints it after `dash plan for VIN <VIN>:`.
 | `[stopwatch] mark N is listed twice` | Each once. |
 | `[stopwatch] has N marks, and the page holds 1 to 3` | 1 to 3 marks. |
 | `[stopwatch] speed X is not in the [[channel]] list` | Declare it under `[[channel]]`. |
+| `[stopwatch] speed X is a setpoint with no [[channel]] of its own — declare it as a [[channel]] to show it` | Declare it under `[[channel]]`, with its `hz`. |
 | `[stopwatch] speed X: its scaling has an offset` | Pick a speed row whose zero is a standstill. |
 | `[stopwatch] speed X: its scaling's factor F is not above zero` | Pick another speed row. |
 | `[stopwatch] speed X is read every P ms (hz = H)` | Give its `[[channel]]` `hz = 50`. |
