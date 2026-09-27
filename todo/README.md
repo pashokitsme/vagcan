@@ -29,7 +29,7 @@ status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-
   - **Review:** four lenses, three rounds, every finding closed or decided by the owner. RAM,
     empty plan: static 139,320 B with BLE, 129,868 B without — +456/+464 B against 0c69cd7.
   - **Board and laptop time a run alike:** `vag-cli-measure` now counts a sample exactly at a
-    window's end, as the board does; over 7,200 synthetic runs they agree to about 1.4 µs
+    window's end, as the board does; over 7,200 synthetic runs they agree to about 1.6 µs
     (`research/dash/host` example `stopwatch_parity`).
 - **PRs #10 and #11 merged 2026-09-26:** the fresh-eyes fixes (the replay's old-hex guards, no
   address for a VW-block request whose response is past `0x7FF`, one copy of that rule) and the
