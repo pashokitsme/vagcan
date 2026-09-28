@@ -1232,7 +1232,7 @@ mod tests {
 		// The cluster's list, also through [INC], carries three of its eight
 		// proven rows: the clock's five are in neither VCDS's list nor ODIS's
 		// variant. Of the three, `22D2` is nine bits in VCDS and was read as
-		// sixteen on the drive — the open question in label-lookup/02.
+		// sixteen on the drive — the open question in label-lookup/04 (item 11).
 		let (present, whole) = need_car!(check("EV_DashBoardVDDMQBAB", "009", "5E0920740D.json", 0));
 		assert_eq!(present, set(&[0x2203, 0x22B8, 0x22D2]));
 		// `22B8` is type 7 in VCDS, raw bytes, where the drive proved a metre

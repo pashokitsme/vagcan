@@ -220,6 +220,11 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
                        `scratch/` is the Ross-Tech-derived data, gitignored
   tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
                        Simos18 calibration as graphs (read-only, never talks to a car)
+  new-cars/            what blocks newer VAG cars: label data, code, transport (in progress)
+  measure/             `roles-sweep/`: `measure`'s roles over every engine and gearbox of an
+                       ODIS project, run by hand against a machine's own cache
+  tools/               one-shot tools that found bugs: `orphans.py` (pub items only tests
+                       use), `sigint.py` (does Ctrl-C end a long command)
 .archive/        retired paths kept as evidence — see .archive/README.md for the map:
   research/            subjects whose findings are implemented and shipped:
     labels/              VW's label files — the `.rod`/`.clb`/`.lbl` crack, the TTTEXT

@@ -3,7 +3,7 @@
 **Subsystem:** label-lookup · **Crates:** `vag-data-labels` (`tttext`, `mwb`, a new registry
 module, `dtc` for `INC`), `vag-data-db` (the `reading` rows), `vag-cli-diag` (`setup`,
 `dev vcds`), `vag-cli-core` (resolution) · **Needs the car:** no — the gates run on the private
-data under `~/.vagcan` · **Depends:** [`research/vcds-registry/README.md`](../../research/vcds-registry/README.md)
+data under `~/.vagcan` · **Depends:** [`research/vcds-registry/README.md`](../../../../research/vcds-registry/README.md)
 
 **State:** built 2026-09-28 on `feat/vcds-registry-p2` (phases 1–4 and the acceptance below);
 not merged, not driven. Phase 1 (`TTTEXT` read exactly) was done the same day on

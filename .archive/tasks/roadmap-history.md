@@ -1,17 +1,108 @@
-# vagcan roadmap — history, 2026-08-02 to 2026-09-26
+# vagcan roadmap — history, 2026-08-02 to 2026-09-28
 
 Moved here verbatim from `todo/README.md` on 2026-09-14, when the roadmap was cut down to
 what is live. Commands are spelled as they were on the day each section was written; the
 old → new table is in `todo/README.md`. Nothing here is current. The 2026-09-15 section came
-on 2026-09-22, the 2026-09-22 one on 2026-09-26, the 2026-09-26 one on 2026-09-27.
+on 2026-09-22, the 2026-09-22 one on 2026-09-26, the 2026-09-26 one on 2026-09-27, the
+2026-09-27 one and the first 2026-09-28 one on 2026-09-28, when PRs #15–#18 merged.
 
 ---
+
+## Where things stood on 2026-09-28, before the merges — the car's units without a survey
+
+`feat/units-without-survey`, [`label-lookup/03`](done/label-lookup/03-units-without-survey.md), in
+review (four reviewers on `09d50d9`: not ready; their findings fixed the same day, second
+round pending).
+
+- **`dev survey` removed.** The car's units are recorded by `watch`, `measure` and
+  `units --identify` under `cars/<VIN>/units.json` — the gateway among them — every run asking
+  every unit again and merging what it answered into its entry field by field, so one missed
+  deadline never costs a recorded identifier. `setup`'s step 5 and `dev dash build` read that
+  record.
+- **A VCDS installation's channels** for a car not yet read come with the first `watch`,
+  `measure` or `units --identify` with the car, and with `dev dash build` offline
+  (`registry::ensure`; the project's `registry.json` says which units were tried, and a project
+  set up before that file existed is read from the installation its `sources.json` names). The
+  firmware's build reads nothing: it refuses a car with units whose channels are unread and
+  names `dev dash build`.
+- `faults --from`, `watch --survey`, the blind sweep and `--diff` went with the survey;
+  `watch --replay --vin` takes a replay's tabs from the record.
+- **After this merges, the owner's own data needs one migration** (the controller's, not the
+  tool's): his `dash.toml` still carries `survey = …` and is refused until the line is deleted
+  (with a backup of the file), and his car has no `units.json` until one is written from the
+  parked survey's identities — or `vagcan units --identify` is run with the car.
+- The sweep-witness item (`WITNESS_EVERY`, `QUIET_RUN` measured on a parked whole-car run) went
+  with the sweep. The witness path of `scan::Guard` has no caller now — `units --identify <unit>`
+  runs it with `witness: None` — so `WITNESS_EVERY` guards nothing today; `QUIET_RUN` is still
+  what `anomaly::Monitor` counts before it stops that read. Whether the one sweep left should
+  read a witness is a new request, the owner's call.
+
+## Where things stood on 2026-09-27 — the panel takes input
+
+**Milestone: the panel takes input — the cruise lever and buttons on the board's pins page it,
+LIMIT opens a stopwatch on the board — merged, not yet flashed or driven.** The 2026-09-26
+status moved to [`.archive/tasks/roadmap-history.md`](roadmap-history.md) on
+2026-09-27. Car record: [`dash/17`](../../todo/dash/17-bench-ble-usb.md) §4, `research/captures/`.
+
+- **PR #12 merged 2026-09-27** (`6fa2bc8`), [`dash/19`](../../todo/dash/19-stalk-and-stopwatch.md):
+  - **Inputs:** `[[button]]`s on GPIO 3, 4 and 5, the cruise lever while cruise and its switch
+    both read off, and `dashsim` — one command path (`control::Command`, `Screen::command`, one
+    queue). BOOT and RESET are not inputs (owner).
+  - **The stopwatch on the board:** 0–60/0–100 from a speed channel times `km_h_per_unit` (`0`
+    until measured: the page says so). LIMIT or a `stopwatch` button opens and closes it; the lever
+    closes it when two reads say cruise is engaged, or after 3 s without the gate seen open. A
+    finished run is written at the next 1 s standstill, before `GO`; empty flash gets the
+    defaults with it.
+  - **`dash.toml`** is read strictly (an unknown or wrong-typed key stops the build, with its
+    line); `language` sets the labels too; a setpoint is never a cell;
+    [`docs/dash/dash-toml.md`](../../docs/dash/dash-toml.md) is a key-by-key reference, and says
+    that `[stalk]`'s values are the ODIS project's field names and state texts (the owner asked).
+  - **Review:** four lenses, three rounds, every finding closed or decided by the owner. RAM,
+    empty plan: static 139,320 B with BLE, 129,868 B without — +456/+464 B against 0c69cd7.
+  - **Board and laptop time a run alike:** `vag-cli-measure` now counts a sample exactly at a
+    window's end, as the board does; over 7,200 synthetic runs they agree to about 1.6 µs
+    (`research/dash/host` example `stopwatch_parity`).
+- **PRs #10 and #11 merged 2026-09-26:** the fresh-eyes fixes (the replay's old-hex guards, no
+  address for a VW-block request whose response is past `0x7FF`, one copy of that rule) and the
+  2026-09-26 cleanup.
+- **The owner's configuration, 2026-09-27:** `vagcan setup` re-run on SK37X — the cache now keeps
+  each state's band. `dash.toml` gains `[stalk]` and `[stopwatch]` (the file before:
+  `dash.toml.before-stalk-2026-09-27`). The lever's bands hold the capture's readings:
+  + 91 in 75–110, − 128 in 111–145, LIMIT 167 in 146–181, rest 205 in 182–221; switch OFF 167 in
+  147–182; the engine's cruise status off at 0.
+  - **A DRIVE page** after MAIN: speed `02:IDE00075`, engine speed `01:IDE00405`, boost
+    `01:IDE00191`, and acceleration `713:IDE03660` — the ESC's own sensor, `+` taken as speeding
+    up, to check on the car. The file before: `dash.toml.before-drive-page-2026-09-27`.
+  - **The stopwatch reads the gearbox's vehicle speed** `02:IDE00075` (`F40D`, u16 LE ×0.01 km/h,
+    proven) at 20 Hz with `km_h_per_unit = 1`: nothing to measure. `02:380B` is gone from the
+    file. The file before: `dash.toml.before-gearbox-speed-2026-09-27`.
+  - The plan builds: 19 channels on 4 units, 5 pages, 4 alarms.
+- **The board in the car** runs an image from before PR #7: nothing merged since 2026-09-26 —
+  the −6.0/−4.5 retard, the blink, the lever, the stopwatch — has been flashed.
+- **Fault count on the panel** ([`dash/20`](../../todo/dash/20-fault-count.md)), built 2026-09-27 with the
+  owner's four answers of that day: the unit list from the gateway at start (`dash/README.md`'s
+  rule amended), `MAX_UNITS` 64 as the BLE guard's, the count's own 2 s deadline and a pause
+  while a stopwatch runs, `?` when there is no count; the badge in the colours of the cell under
+  it. Every exchange on the board now drops a late answer to another request. Needs the car:
+  its "Car checks".
+- **[`dash/21`](../../todo/dash/21-runs-in-flash.md) filed 2026-09-27:** runs kept in flash, saved on LIMIT,
+  read over BLE; it also covers a finished run the lever's close leaves in RAM.
+- **USB on the car (2026-09-26):** the cable enumerates only when plugged in **before** OBD
+  power (`research/dash/can-bring-up.md` §9.16).
+- **Boards:** unchanged since 2026-09-22 — the old board on 5 V is the working one, the rev v0.4
+  board a spare without BLE. An agent's BLE tools start from Terminal.app (`dash/17`).
+
+**Not verified on hardware:** everything in PR #12 (the lever, the pin buttons, the stopwatch,
+the run's flash write), the retard alarm at −6.0 and the blink, over the cable through the board
+on the car, the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` §2
+item 8, `dash/18` on a real pull.
+
 
 ## Where things stood on 2026-09-26 — the car over BLE, the lever probed
 
 **Milestone: the board reads the car over BLE, parked, and the panel runs on it.** The
-2026-09-22 status moved to [`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md)
-on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/captures/`.
+2026-09-22 status moved to [`.archive/tasks/roadmap-history.md`](roadmap-history.md)
+on 2026-09-26. Car record: [`dash/17`](../../todo/dash/17-bench-ble-usb.md) §4, `research/captures/`.
 
 - **The car through the board over BLE, 2026-09-26** (old board, rev v1.1, the owner's plan; all
   13 channels answer at boot): `info`, `faults` (18 units, 9 stored codes, ~50 s), `watch --hz
@@ -31,7 +122,7 @@ on 2026-09-26. Car record: [`dash/17`](dash/17-bench-ble-usb.md) §4, `research/
 - **The cruise lever, probed 2026-09-26** (`dash/14` §6a): with cruise off the rocker moves
   `70C` `1105` byte 8 and the engine ignores it; OFF is latched, CANCEL springs back. The lever
   as buttons (+ next, − previous, LIMIT the stopwatch) and the stopwatch page: spec in
-  [`dash/19`](dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phases 1 and 2 built on
+  [`dash/19`](../../todo/dash/19-stalk-and-stopwatch.md), approved 2026-09-26; phases 1 and 2 built on
   `feat/stalk-stopwatch`, in review for a PR, not merged; needs the car. A finished run is
   written to flash at the next standstill, never at speed (owner, 2026-09-26). LIMIT is the
   "neutral ohne Limiterverbau" state despite its ODIS name: the owner pressed LIMIT in the
@@ -72,7 +163,7 @@ the moving-car guard, the CANable on car traffic, the ESC's channels, `dash/17` 
 
 **Milestone: the bench over USB and BLE passes on `master`, alarms are in the owner's
 `dash.toml`, and the board survives a hostile cable host.** The 2026-09-15 status moved to
-[`.archive/tasks/roadmap-history.md`](../.archive/tasks/roadmap-history.md) on 2026-09-22.
+[`.archive/tasks/roadmap-history.md`](roadmap-history.md) on 2026-09-22.
 Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
 
 - **Boards, 2026-09-22.** The old SuperMini (rev v1.1, broken pins, `3V3` pad dead, the
@@ -101,7 +192,7 @@ Bench record: `research/dash/can-bring-up.md` §9.13–§9.15.
 - **BLE discovery says "adapter"**, not "dash board" (owner, 2026-09-22); the board still
   advertises as `vagcan-dash`.
 
-**Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
+**Not verified on hardware:** the car — [`dash/17`](../../todo/dash/17-bench-ble-usb.md) §4 (faults,
 info, watch, measure through the board; the moving-car guard; alarms; the cable on car
 traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
 `dash/17` §2 item 8 (USB pulled in adapter mode) goes with the car too.
@@ -122,7 +213,7 @@ traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a
   (`dash/18`). Four review rounds, the last with no findings. Workspace tests: 1,655 at
   `38dfdef`. CI's bench host job failed on a stale preview count, fixed in `97487d3`; CI
   green on it 2026-09-15.
-  The file format is [`docs/dash/dash-toml.md`](../docs/dash/dash-toml.md).
+  The file format is [`docs/dash/dash-toml.md`](../../docs/dash/dash-toml.md).
 - **Stopwatch sources on the ESC, recorded 2026-09-15** (`dash/14` §6, `dash/13`, `dash/17`
   §4): wheel speeds `1800`–`1803` and longitudinal acceleration `1822` on `713`, declared by
   the ODIS project and never asked — the parked survey skipped `18xx`.
@@ -134,7 +225,7 @@ traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a
 - **The owner's `dash.toml`** pairs boost `202A` with its specified value `2029`
   (2026-09-15); the file before that is `dash.toml.before-setpoint` beside it.
 
-**Not verified on hardware:** the car — [`dash/17`](dash/17-bench-ble-usb.md) §4 (faults,
+**Not verified on hardware:** the car — [`dash/17`](../../todo/dash/17-bench-ble-usb.md) §4 (faults,
 info, watch, measure through the board; the moving-car guard; alarms; the cable on car
 traffic; the ESC's channels) and `dash/18` (the difference and a drift rule on a real pull).
 On the bench: unplugging USB in adapter mode, a USB flood of large requests (`dash/17` §2
@@ -175,7 +266,7 @@ the `slcan` image, and `measure` through the board at 50 Hz.
 - **Also 2026-09-14:** `setup` suggests the nearest existing path on a typo; `watch
   --hz` given explicitly wins over the saved rate.
 
-**Not verified on hardware:** the car — the list is [`dash/17`](dash/17-bench-ble-usb.md) §4
+**Not verified on hardware:** the car — the list is [`dash/17`](../../todo/dash/17-bench-ble-usb.md) §4
 (faults, info, watch, measure through the board; the moving-car guard; alarms; the cable on
 car traffic). On the bench: unplugging USB in adapter mode, a USB flood of large requests, the
 stored-config check at boot, whether opening the board's port twice resets it (§2, §3).

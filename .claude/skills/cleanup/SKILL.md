@@ -283,6 +283,33 @@ mixed in.
   `git commit` takes everything staged, including files a subagent staged a moment ago. The
   `--` form commits only the paths named.
 
+### Rules established on the 2026-09-28 pass
+
+- **Data a merge makes stale is migrated in the pass right after it.** PR #18 refused `dash.toml`'s
+  `survey =` key and moved the car's unit list into `~/.vagcan/cars/<VIN>/units.json`, so the
+  owner's own files would have stopped his next firmware build. The pass after the merge wrote his
+  `units.json` through the tool's own record code, removed the key with the file kept beside it
+  (`dash.toml.before-units-record-2026-09-28`), and built his plan with master's binary on a copy
+  of his data before calling it done. Never on the live files first, never without the backup.
+- **The build dirs in the session's scratchpad count, not only a worktree's `target/`.** On
+  2026-09-28 the implementers' and reviewers' own target dirs filled the disk to 93 % (about
+  40 GB) with nothing inside any worktree. Phase 1 lists them (`find <scratchpad> -maxdepth 4
+  -name 'target*' -type d`) and removes those of merged work.
+- **Phase 5 runs a binary built from the tree it checks, built for the purpose.** `cargo test -p
+  vag-cli` does not rebuild the `vagcan` bin; on 2026-09-28 an implementer's first "after" run was
+  a stale binary. `cargo build -p vag-cli` first. And zsh splits nothing: `set -- $var` fails the
+  same way as `vagcan $c`, and an extractor that lets `\s` cross a newline reads a skill's
+  frontmatter (`name: use-vagcan` / `description:`) as a command.
+- **A pub item the dead-code check cannot see is found with `research/tools/orphans.py`**: rustc
+  does not warn on a library crate's pub items, so after a removal a function whose last caller
+  went is silent. The script diffs two checkouts; each hit still goes through Phase 4's two-part
+  test. Kept, with `research/tools/sigint.py` and `research/measure/roles-sweep/`, under the
+  2026-09-22 and 2026-09-27 rules.
+- **Prose never goes through an unquoted heredoc.** A script header written with `<<EOF` ran every
+  backticked span as a command — one of them a whole `cargo check --workspace`, which also left a
+  `target/` in the worktree — and the header came out full of holes. Write text with the Write
+  tool or a quoted `<<'EOF'`, then grep the file for one of its spans before committing.
+
 ## What a cleanup pass produces
 
 Five things, and no more:

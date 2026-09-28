@@ -275,7 +275,7 @@ so it does not pretend to.
 ## 7. `faults --from` on the reference car, before and after
 
 > **2026-09-28:** `faults --from` and `dev survey` were removed with
-> `feat/units-without-survey` (`todo/label-lookup/03`). The two runs below cannot be repeated
+> `feat/units-without-survey` (`.archive/tasks/done/label-lookup/03`). The two runs below cannot be repeated
 > by that command; the recorded results stand as recorded, and `reference-survey.py` and
 > `reference-survey.jsonl` are kept as their record.
 

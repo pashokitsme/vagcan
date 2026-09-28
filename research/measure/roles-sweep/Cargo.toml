@@ -1,0 +1,13 @@
+[package]
+name = "roles-sweep"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Not a workspace member: a research probe run by hand against a machine's own ODIS cache.
+[workspace]
+
+[dependencies]
+vag-cli-measure = { path = "../../../crates/cli/vag-cli-measure" }
+vag-cli-core = { path = "../../../crates/cli/vag-cli-core", features = ["test-util"] }
+vag-data-labels = { path = "../../../crates/data/vag-data-labels" }
