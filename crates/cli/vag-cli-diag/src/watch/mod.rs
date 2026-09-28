@@ -2325,10 +2325,13 @@ fn coverage_report(
 		.copied()
 		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && c.proven))
 		.collect();
+	// The standard OBD-II rows are nobody's description of this car: the engine
+	// answers them whatever was read, and counting them here kept the
+	// no-scalings paragraph below from ever printing on a real car.
 	let named: Vec<u16> = units
 		.iter()
 		.copied()
-		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && !c.proven) && !proven.contains(r))
+		.filter(|r| any(*r, &|c: &Channel| c.def.is_some() && !c.proven && !c.is_standard()) && !proven.contains(r))
 		.collect();
 	let raw: Vec<u16> = units.iter().copied().filter(|r| any(*r, &|c: &Channel| c.def.is_none())).collect();
 	let silent = silent_units(identities, channels);
@@ -2440,15 +2443,24 @@ fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
 		silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" "),
 		if n == 1 { "is one" } else { "are ones" }
 	);
+	// The cheap answers first. A project describes a whole platform without the
+	// car being asked anything, and a VCDS installation describes the units of a
+	// surveyed car — a survey that asks each unit only what its data declares.
+	// Somebody who sweeps blind instead spends minutes of fuzzing to rediscover
+	// part of what those would have handed them.
 	if project.is_none() {
-		// The cheap answer first. A project describes a whole platform without
-		// the car being asked anything, and somebody who sweeps instead spends
-		// minutes of fuzzing to rediscover part of what a parse would have
-		// handed them.
 		out.push_str(
-			"\nNo project is set up here. A VCDS installation or an extracted ODIS project \n             may describe them outright — `vagcan setup /path/to/VCDS` — and that asks the \n             car nothing at all. It is worth trying before anything below.\n",
+			"\nNo project is set up here. An extracted ODIS project may describe them outright —\n\
+             `vagcan setup /path/to/ODIS-project` — and that asks the car nothing at all.\n",
 		);
 	}
+	out.push_str(
+		"\nA VCDS installation describes the units of a surveyed car. The survey identifies\n\
+         each unit and asks it only what its data declares; then setup reads their channels:\n    \
+         vagcan dev survey\n    \
+         vagcan setup <VCDS installation>\n\
+         Both are worth trying before the sweep below.\n",
+	);
 	out.push_str(&format!(
 		"\nThe other way is to ask those units identifiers nothing declares they answer:\n    \
          vagcan dev survey --only {spec} --blind {spec}\n\n\
@@ -3123,6 +3135,46 @@ mod tests {
 		assert!(text.contains("/x/data/measured"), "{text}");
 		assert!(text.contains(crate::missing::scalings_path()), "{text}");
 		assert!(!text.contains("calibrate"), "{text}");
+	}
+
+	#[test]
+	fn an_engine_with_only_the_standard_rows_is_a_car_with_no_scalings() {
+		// The engine always answers SAE J1979's parameters, and they are
+		// nobody's measurement of this car: counted as "named", they kept the
+		// no-scalings paragraph from ever printing on a real car, whose engine
+		// sits at 0x7E0.
+		let ident = |request| crate::plan::UnitIdentity {
+			request,
+			part_number: Some(format!("{request:03X}0000000")),
+			odx_name: None,
+			odx_version: None,
+			component: None,
+		};
+		let identities = vec![ident(crate::plan::ENGINE), ident(0x714)];
+		let empty = vag_data_labels::catalog::CatalogStore::open("/definitely/not/here");
+		let channels = crate::plan::available(&empty, &crate::extracted::Extracted::none(), &identities);
+		assert!(channels.iter().any(|c| c.is_standard()), "the engine has its standard rows");
+		let text = coverage_report(
+			&identities,
+			&channels,
+			"/x/data/measured",
+			&SurveySource::Missing { cache: None },
+			&crate::plan::Answered::default(),
+			Some("SK37X"),
+		);
+		assert!(text.contains("has no scalings on this machine"), "{text}");
+		assert!(!text.contains("named and scaled from this project"), "{text}");
+	}
+
+	#[test]
+	fn a_unit_nothing_describes_is_offered_the_survey_before_a_blind_sweep() {
+		// With a project set up and no survey yet, a VCDS installation's list is
+		// one survey away; the blind sweep, a fuzz test, is the last resort.
+		let text = sweep_offer(&[0x714, 0x713], Some("SK37X"), "714,713");
+		let survey = text.find("vagcan dev survey\n").expect(&text);
+		let setup = text.find("vagcan setup <VCDS installation>").expect(&text);
+		let blind = text.find("--blind").expect(&text);
+		assert!(survey < setup && setup < blind, "{text}");
 	}
 
 	#[test]

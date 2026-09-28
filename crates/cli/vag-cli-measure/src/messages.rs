@@ -72,7 +72,8 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		out,
 		"\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
-         from raw bytes. If this car's project has no channels for its units yet,\n\
+         from raw bytes. It finds a channel by the names above only: one under another\n\
+         name is not used. If this car's project has no channels for its units yet,\n\
          `vagcan setup` brings them:\n\
          {}",
 		vag_cli_core::missing::scalings_path()

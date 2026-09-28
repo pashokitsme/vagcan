@@ -66,6 +66,21 @@ pub struct Channel {
 pub type Key = (u16, u16, u32);
 
 impl Channel {
+	/// Whether this is the standard's OBD-II row: what [`available`] puts on
+	/// the engine for a parameter SAE J1979 defines, asked of the row itself.
+	/// Not inferred from a missing text id or from not being proven: a VCDS row
+	/// can have neither, and it is this car's control unit's, not the
+	/// standard's.
+	pub fn is_standard(&self) -> bool {
+		!self.proven
+			&& self.request == ENGINE
+			&& self.did >> 8 == 0xF4
+			&& self
+				.def
+				.as_ref()
+				.is_some_and(|def| vag_data_labels::obd::pid((self.did & 0xFF) as u8).is_some_and(|p| p.to_def() == *def))
+	}
+
 	/// This channel's identity: unit, identifier, and where in the response it
 	/// starts. A channel nothing describes reads from byte 0, which is also
 	/// where a lone field would be.

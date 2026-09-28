@@ -1319,14 +1319,11 @@ fn resolve_channel(
 	// says so in the log, because the standard mandates it and this car
 	// may still not carry it.
 	//
-	// The standard's row is asked of the row itself — the one `plan::available`
-	// puts on the engine for a parameter SAE J1979 defines — and not inferred
-	// from a missing text id: a VCDS row gives up an id ODIS gives another field,
-	// and one from an install whose text table is shut carries none.
-	let standard = !found.proven
-		&& request == crate::plan::ENGINE
-		&& did >> 8 == 0xF4
-		&& vag_data_labels::obd::pid((did & 0xFF) as u8).is_some_and(|p| p.to_def() == *def);
+	// The standard's row is asked of the row itself (`Channel::is_standard`),
+	// not inferred from a missing text id: a VCDS row gives up an id ODIS gives
+	// another field, and one from an install whose text table is shut carries
+	// none.
+	let standard = found.is_standard();
 	match answered.and_then(|a| a.saw(request, did)) {
 		Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
 		None if standard => notes.push(format!(

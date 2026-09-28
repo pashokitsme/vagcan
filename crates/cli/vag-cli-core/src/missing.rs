@@ -70,8 +70,9 @@ pub fn scalings_path() -> &'static str {
 /// wanted, and by what — and **which path was looked at**. Those are the two
 /// things this takes. Everything after them is fixed text, written below, once.
 ///
-/// It is *not* [`no_catalog`]: that shortage is fixed by a drive and naming
-/// `setup` at it sends a reader round a loop. See the module docs.
+/// It is *not* [`no_catalog`]: that shortage is a car whose units no source
+/// read so far describes, and with VCDS its fix needs a survey before `setup`,
+/// which this one does not. See the module docs.
 ///
 /// **It is an [`std::error::Error`], and that is load-bearing.** Every site
 /// below reports it by `bail!`-ing one of these, so the type survives into the
@@ -163,8 +164,9 @@ pub fn no_label_data(what: &str, needed_for: &str, path: &Path) -> NoLabelData {
 
 /// Fault codes read fine, but this machine has nothing to name them with.
 ///
-/// A named case of [`NoLabelData`] and not of [`no_catalog`]: a drive cannot
-/// invent a fault name, and only `vagcan setup` can put one here. What it adds
+/// A named case of [`NoLabelData`] and not of [`no_catalog`]: fault names come
+/// with the label files `vagcan setup` reads, and no survey is needed for them.
+/// What it adds
 /// over [`no_label_data`] is the first line — it deliberately says the codes are
 /// still shown, because a reader looking at bare numbers needs to know the
 /// numbers are real and only the names are missing.
@@ -244,13 +246,19 @@ fn shell_word(path: &str) -> String {
 
 /// Values are on screen, but as bytes, and the reader has no way to know why.
 ///
-/// Two lines, printed once per run. A screen read at an open driver's door
+/// Three lines, printed once per run. A screen read at an open driver's door
 /// cannot afford a paragraph, and repeating it per row would crowd out the
 /// values it is apologising for.
+///
+/// Said as a condition: raw channels are mostly identifiers no source declares
+/// — a blind sweep's, an old survey's, somebody else's survey file — and those
+/// stay raw whatever `setup` reads. Only what an ODIS project or a VCDS list
+/// names can be scaled.
 pub fn raw_channels_note(count: usize) -> String {
 	format!(
 		"{count} channel{} shown as raw bytes: nothing read into this project scales them.\n\
-         `vagcan setup` does, from an ODIS project or from VCDS after `vagcan dev survey`.",
+         `vagcan setup` scales those an ODIS project, or a VCDS installation read after\n\
+         `vagcan dev survey`, names; identifiers no source names stay raw.",
 		if count == 1 { " is" } else { "s are" }
 	)
 }
@@ -291,12 +299,16 @@ mod tests {
 	fn the_two_shortages_cannot_be_mistaken_for_one_another() {
 		// Both are fixed by `setup`, and the risk now is the order: a car short
 		// of scalings with only VCDS needs the survey first, and a project short
-		// of label data needs no survey at all. So only the second names it.
+		// of label data needs `setup` to have run at all. So only the scalings
+		// shortage gives the survey-then-setup path; the label one mentions the
+		// survey only as what VCDS's scalings need.
 		let label = no_label_data("The names", "this", Path::new("/n")).to_string();
 		let catalog = no_catalog("This car", Path::new("/d"));
 		assert!(label.contains("vagcan setup <path"));
+		assert!(!label.contains(scalings_path()), "{label}");
 		assert!(!label.contains("calibrate"), "{label}");
-		assert!(catalog.contains("vagcan dev survey"), "{catalog}");
+		assert!(catalog.contains(scalings_path()), "{catalog}");
+		assert!(!catalog.contains("vagcan setup <path to the ODIS project folder>"), "{catalog}");
 		assert!(!catalog.contains("calibrate"), "{catalog}");
 	}
 
@@ -324,8 +336,10 @@ mod tests {
 		assert!(raw_channels_note(7).contains("7 channels are"));
 		assert!(one.contains("vagcan setup"), "{one}");
 		assert!(one.contains("vagcan dev survey"), "{one}");
-		// It shares a screen with the values it is about. Two lines, no more.
-		assert_eq!(one.lines().count(), 2, "{one}");
+		// A condition, not a promise: what no source names stays raw.
+		assert!(one.contains("stay raw"), "{one}");
+		// It shares a screen with the values it is about. Three lines, no more.
+		assert_eq!(one.lines().count(), 3, "{one}");
 	}
 
 	#[test]
