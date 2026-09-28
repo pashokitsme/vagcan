@@ -258,12 +258,6 @@ impl Extracted {
 		self.names.clone()
 	}
 
-	/// Whether one kind of source ([`vag_data_db::ODIS`], [`vag_data_db::VCDS`])
-	/// brought this project any channels.
-	pub fn has_kind(&self, kind: &str) -> bool {
-		self.variants.iter().any(|(k, names)| *k == kind && !names.is_empty())
-	}
-
 	/// Whether this project knows any channels at all.
 	pub fn is_empty(&self) -> bool {
 		self.variants.iter().all(|(_, names)| names.is_empty())
