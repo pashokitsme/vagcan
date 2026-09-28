@@ -52,7 +52,9 @@ pub fn scalings_path() -> &'static str {
 	"    vagcan setup <ODIS project>          every unit the project describes\n  \
      or, with a VCDS installation:\n    \
      vagcan dev survey                    on the parked car, with a cable adapter\n    \
-     vagcan setup <VCDS installation>     the channels of the units it found"
+     vagcan setup <VCDS installation>     the channels of the units it found\n  \
+     If setup has read one since this car's survey, it had nothing for the units that\n  \
+     survey found, and its step 5 said why; a unit the survey missed needs it again."
 }
 
 /// The label shortage, in the one wording every command reports it in.

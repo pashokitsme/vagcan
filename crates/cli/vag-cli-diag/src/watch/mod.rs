@@ -2453,8 +2453,9 @@ fn sweep_offer(silent: &[u16], routes: bool, spec: &str) -> String {
              reads the units of a surveyed car:\n    \
              vagcan dev survey\n    \
              vagcan setup <VCDS installation>\n\
-             If setup has read one since this car's survey, it had nothing for these units, and\n\
-             its step 5 said why. An ODIS project that describes them:\n    \
+             If setup has read one since this car's survey, it had nothing for the units that\n\
+             survey found, and its step 5 said why; a unit the survey missed needs it again.\n\
+             An ODIS project that describes them:\n    \
              vagcan setup <ODIS project>\n",
 		);
 	}
@@ -3179,6 +3180,7 @@ mod tests {
 		// A condition, not a diagnosis: this screen cannot know why an
 		// installation had nothing for a unit, and said a wrong cause once.
 		assert!(text.contains("If setup has read one since this car's survey"), "{text}");
+		assert!(text.contains("a unit the survey missed needs it again"), "{text}");
 		assert!(!text.contains("no file, or a shifted one"), "{text}");
 
 		// The report already gave the routes: only the sweep's price is left.
