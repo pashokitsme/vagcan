@@ -201,7 +201,7 @@ shifted section will search for hours (§6).
 
 ## 7. Next — implementation (its own branch, reviewed)
 
-**Built 2026-09-28**: [`todo/label-lookup/02-vcds-registry.md`](../../todo/label-lookup/02-vcds-registry.md)
+**Built 2026-09-28**: [`.archive/tasks/done/label-lookup/02-vcds-registry.md`](../../.archive/tasks/done/label-lookup/02-vcds-registry.md)
 has what landed, the acceptance on the reference car and what is left.
 
 1. **Done 2026-09-28** (`label-lookup/02` phase 1): **read `TTTEXT` with

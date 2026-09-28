@@ -1,7 +1,7 @@
 # New cars — assumptions in the code (2026-09-28)
 
 > Later the same day, `survey.rs` was removed with `dev survey` (`feat/units-without-survey`,
-> `todo/label-lookup/03`); the `survey.rs:…` citations below are against `db40ed6` and no
+> `.archive/tasks/done/label-lookup/03`); the `survey.rs:…` citations below are against `db40ed6` and no
 > longer resolve. The units a car has are recorded by `watch`, `measure` and `units --identify`
 > (`vag-cli-core/src/units.rs`) instead.
 
