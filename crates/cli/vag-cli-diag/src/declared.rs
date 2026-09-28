@@ -86,9 +86,11 @@ impl Ask {
 /// **exactly as the control unit answered them** — the match rule normalises
 /// inside, and tidying here is how a caller ends up reimplementing half of it.
 ///
-/// The join is [`crate::extracted::for_unit`], the same one `watch` and
-/// `measure` resolve channels through, so a sweep can never ask for an
-/// identifier those two would not know how to read, nor skip one they would.
+/// The join is [`crate::extracted::declared_for_unit`]: the proven rows and the
+/// unit's ODIS variant, which `watch` and `measure` resolve channels through
+/// too, so a sweep never asks for an identifier those two would not know how to
+/// read. A VCDS install's list, which they also read, does not widen it — see
+/// that function for why.
 pub fn declared(
 	store: &CatalogStore,
 	extracted: &Extracted,
@@ -96,7 +98,7 @@ pub fn declared(
 	odx_name: Option<&str>,
 	version: Option<&str>,
 ) -> BTreeSet<u16> {
-	crate::extracted::for_unit(store, extracted, part_number, odx_name, version)
+	crate::extracted::declared_for_unit(store, extracted, part_number, odx_name, version)
 		.into_iter()
 		.map(|def| {
 			let ReadId::Uds(did) = def.address;
@@ -200,26 +202,47 @@ pub fn unit_list(flag: &str, spec: &str) -> anyhow::Result<Vec<u16>> {
 	)
 }
 
-/// What to say about a unit no source describes.
+/// What to say about a unit a sweep asks nothing, in a line, as it is done.
 ///
-/// **This is the case the default cannot sweep**, and on a real car it is a
-/// couple of units out of fifteen. The old behaviour — ask it the nine pages
-/// anyway — is exactly the fuzz test described above, performed on the
-/// units the tool understands *least*. So it is not swept, its identification
-/// block and its faults are still read and still filed, and the command says
-/// what it would take to go further.
+/// **This is the case the default cannot sweep.** The old behaviour — ask it
+/// the nine pages anyway — is exactly the fuzz test described above, performed
+/// on the units the tool understands *least*. So it is not swept; its
+/// identification block and its faults are still read and still filed, and
+/// [`unswept_notice`] says once, at the end, what it would take to go further.
 ///
-/// The invocation that would sweep it blind is built here rather than passed
-/// in. It was a parameter while `scan` and `survey` each needed their own
-/// spelling; `scan` is gone, one caller is left, and a parameter with one
-/// argument is a place for the two to disagree with nobody left to disagree
-/// with.
-pub fn no_source_notice(unit: &str) -> String {
-	format!(
-		"  {unit:<4}      nothing declares identifiers for this unit — identified, not swept\n\
-		 \x20              to sweep it blind (a fuzz test of its diagnostic server):\n\
-		 \x20                vagcan dev survey --only {unit} --blind {unit}"
-	)
+/// `vcds` is whether a VCDS installation's list names identifiers for it. A
+/// sweep does not ask those ([`crate::extracted::declared_for_unit`]), and
+/// "nothing declares identifiers" would then be false.
+pub fn no_source_notice(unit: &str, vcds: bool) -> String {
+	match vcds {
+		false => format!("  {unit:<4}      nothing declares identifiers for this unit — identified, not swept"),
+		true => format!("  {unit:<4}      only a VCDS list names this unit's identifiers, and a sweep does not ask it — identified, not swept"),
+	}
+}
+
+/// What to say once, after the units, about those identified and not swept.
+///
+/// On a car with a project behind it that is a couple of units out of fifteen;
+/// on one with only a VCDS installation, before `setup` has read its channels,
+/// it is every unit — and a fuzz test offered fifteen times drowns what the run
+/// did do: file each unit's identity, which is what `setup` reads a VCDS
+/// installation's channels for. The invocation that would sweep one blind is
+/// given once, with what it costs, and with a placeholder for the unit: the
+/// survey walks the engine first, and a real unit there is a fuzz test of the
+/// engine ready to paste.
+pub fn unswept_notice(units: &[String]) -> Option<String> {
+	if units.is_empty() {
+		return None;
+	}
+	Some(format!(
+		"{} unit{} identified and not swept: {}.\n\
+		 Their identities are in this survey, and `vagcan setup <VCDS installation>` reads their\n\
+		 channels from them. To sweep one blind — a fuzz test of its diagnostic server:\n    \
+		 vagcan dev survey --only <unit> --blind <unit>",
+		units.len(),
+		if units.len() == 1 { " was" } else { "s were" },
+		units.join(", ")
+	))
 }
 
 /// The sources this run has: rows proven on a car, and the extracted project
@@ -291,6 +314,36 @@ mod tests {
 	}
 
 	#[test]
+	fn a_sweep_asks_what_odis_declares_and_nothing_a_vcds_list_adds() {
+		// A VCDS install's measurement list comes from whichever of a family's
+		// platform files read first, not from this unit's own variant, and
+		// whether it may widen a sweep is the owner's decision, not yet made.
+		let here = tempfile::tempdir().unwrap();
+		let cache = here.path().join("cache.sqlite");
+		let row = |did| vag_data_labels::odis::Reading {
+			did,
+			name: "invented".into(),
+			unit: None,
+			bit_offset: 0,
+			bit_length: 16,
+			signed: false,
+			big_endian: true,
+			scaling: Scaling::Linear(LinearScale { factor: 1.0, offset: 0.0 }),
+			text_id: None,
+		};
+		vag_data_db::put_readings(&cache, "/nowhere/ODIS", "EV_Unit_001", &[row(0x1000)]).unwrap();
+		vag_data_db::put_all_vcds_readings(&cache, "/nowhere/vcds", [("EV_Unit_VW37", &[row(0x1000), row(0x2000)][..])]).unwrap();
+		let extracted = Extracted::synthetic(cache, Default::default());
+		let store = CatalogStore::open(here.path());
+
+		let declared = declared(&store, &extracted, None, Some("EV_Unit"), Some("001001"));
+		assert_eq!(declared.into_iter().collect::<Vec<_>>(), [0x1000]);
+		// While `watch` still reads both.
+		let readable = crate::extracted::for_unit(&store, &extracted, None, Some("EV_Unit"), Some("001001"));
+		assert_eq!(readable.len(), 2);
+	}
+
+	#[test]
 	fn a_unit_no_source_describes_is_not_swept_at_all() {
 		// Two of the reference car's fifteen units resolve to no variant. The
 		// old default swept them the hardest — nine pages of identifiers at the
@@ -304,11 +357,26 @@ mod tests {
 		assert_eq!(ask.source, Source::Unknown);
 		assert!(ask.is_empty(), "an unknown unit gets asked nothing: {:?}", ask.ranges);
 
-		// And it is told how to go further, in terms that say what it costs.
-		let notice = no_source_notice("44");
+		// Said in a line as the unit is done, and how to go further said once,
+		// at the end, in terms that say what it costs — a car with no ODIS
+		// project and no proven rows has every unit here, and fifteen offers of a
+		// fuzz test drown the one thing the run did do: file each unit for setup.
+		let notice = no_source_notice("44", false);
 		assert!(notice.contains("not swept"), "{notice}");
-		assert!(notice.contains("--blind 44"), "{notice}");
-		assert!(notice.contains("fuzz test"), "{notice}");
+		assert!(!notice.contains("--blind"), "{notice}");
+		assert!(
+			no_source_notice("44", true).contains("VCDS"),
+			"a VCDS list is named, and why it is not asked"
+		);
+		let close = unswept_notice(&["44".to_string(), "09".to_string()]).expect("two units were not swept");
+		assert_eq!(close.matches("--blind").count(), 1, "{close}");
+		assert!(
+			close.contains("--only <unit> --blind <unit>"),
+			"a placeholder, not a unit to paste: {close}"
+		);
+		assert!(close.contains("fuzz test"), "{close}");
+		assert!(close.contains("vagcan setup"), "what the filed identities are for: {close}");
+		assert_eq!(unswept_notice(&[]), None);
 	}
 
 	#[test]

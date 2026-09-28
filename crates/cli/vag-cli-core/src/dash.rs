@@ -1318,7 +1318,15 @@ fn resolve_channel(
 	// is claimed either way (`Answered::saw`), and a standard OBD-II row
 	// says so in the log, because the standard mandates it and this car
 	// may still not carry it.
-	let standard = !found.proven && found.text_id.is_none();
+	//
+	// The standard's row is asked of the row itself — the one `plan::available`
+	// puts on the engine for a parameter SAE J1979 defines — and not inferred
+	// from a missing text id: a VCDS row gives up an id ODIS gives another field,
+	// and one from an install whose text table is shut carries none.
+	let standard = !found.proven
+		&& request == crate::plan::ENGINE
+		&& did >> 8 == 0xF4
+		&& vag_data_labels::obd::pid((did & 0xFF) as u8).is_some_and(|p| p.to_def() == *def);
 	match answered.and_then(|a| a.saw(request, did)) {
 		Some(false) => return Err(Error::NotAnswered(wanted.reference.clone())),
 		None if standard => notes.push(format!(
@@ -3338,6 +3346,25 @@ mod tests {
 			"{:?}",
 			built.notes
 		);
+
+		// A row with no text id is not therefore the standard's: a VCDS row
+		// gives up an id ODIS gives another field, and one from an install whose
+		// text table is shut has none at all.
+		let extracted = extracted_with(
+			here.path(),
+			&[("EV_Test_001", vec![reading(0x2029, "Boost", "", 0, 16, false, true, 0.001, 0.0)])],
+			&[],
+		);
+		let built = build(
+			&input(&["01:2029"], &values_page(&["01:2029"])),
+			&store,
+			&extracted,
+			&units,
+			Some(&never_asked),
+			Language::En,
+		)
+		.unwrap();
+		assert!(!built.notes.iter().any(|n| n.contains("standard OBD-II")), "{:?}", built.notes);
 	}
 
 	#[test]

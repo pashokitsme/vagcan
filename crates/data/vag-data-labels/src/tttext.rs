@@ -1,596 +1,283 @@
-//! Breaking the per-record substitution of `TTTEXT.ROD`.
+//! Reading `TTTEXT.ROD`'s `[TXT]` section — VCDS's global text table — exactly.
 //!
-//! The label files' global text table holds the names of every measurement and
-//! fault, keyed by a six-digit id that is in plain sight. The payloads are not:
-//! each record is enciphered with a substitution **chosen afresh for that
-//! record**, acting on three disjoint alphabets — the 26 letters (case
-//! preserved, so `a`–`z` and `A`–`Z` share one permutation), a 14-glyph
-//! numeric class (`0`–`9`, `,`, `.`, `_`, `-`), and everything else, which
-//! passes through untouched. `.archive/research/labels/tttext-codec.md` establishes that from
-//! the frequency bands and from cribs.
+//! Every record is `NNNNNN,<payload>`. The id is plaintext; the payload is
+//! enciphered under the alphabet the C runtime's `srand(id)` generates, the same
+//! generator the fault registry's tables use ([`TableAlphabet::for_key`]).
+//! Letters (case kept) and the digit class `0-9 , . - _` go through it and
+//! everything else passes through, so a record reads by lookup: no dictionary,
+//! no search, nothing guessed, digits included.
 //!
-//! Ninety characters of ciphertext under an unknown 26-letter permutation is
-//! solvable from a dictionary, and the label files supply its own: names already
-//! recovered feed the vocabulary that recovers the next ones. This module is
-//! that solver.
+//! A record's plaintext is `<name>,` or `<name>,<kind>,<value>`. The tail says
+//! which ODX object the text is the name of: kind `2` is an `IDE#####`, kind `7`
+//! a `MAS#####` ([`Tail::odx_id`]). Other kinds occur — `0`, `1`, `6`, `8`–`11`,
+//! `A`–`E` — and are kept as read, not interpreted.
 //!
-//! It replaces a pile of throwaway scripts, and not only for tidiness. The
-//! attack is a search with a scoring function and a lot of pruning; it wants
-//! to run over 192,469 records repeatedly as the vocabulary grows, and each
-//! pass wants to be minutes rather than hours.
-//!
-//! **Nothing here decides that a name is right.** It proposes readings and
-//! scores them. What may be written into a catalog is settled by the gate in
-//! `.archive/research/labels/tttext-codec.md` §7 — two independent constraints agreeing — and
-//! this project has already retracted decodings that looked fluent and were
-//! wrong.
+//! Evidence, `research/vcds-registry/README.md` §0–§1: all 195,910 records of the
+//! 26.3 table are well-formed under `srand(id)`, against 6.6 % under
+//! `srand(id + 1)`; four names VCDS prints in its own logs as `ENG######` read
+//! back verbatim. This replaced a dictionary solver
+//! (`.archive/research/labels/tttext-codec.md`, wrong in its §5 and §6) that read
+//! about half the records and none of their digits.
 
-use std::collections::HashMap;
+use rayon::prelude::*;
 
-/// The letters, which the cipher permutes among themselves.
-const LETTERS: usize = 26;
+use crate::codes::CodePage;
+use crate::glyphs::TableAlphabet;
 
-/// One record: a plaintext id and an enciphered payload.
+/// One record of the text table, read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Record {
+pub struct Text {
+	/// The record's id — what `RM.rod`'s rows and VCDS's `ENG######` refer to,
+	/// and what a project's `names.json` is keyed by.
 	pub id: u32,
-	pub cipher: String,
+	pub name: String,
+	/// `<kind>,<value>`, when the record carries one.
+	pub tail: Option<Tail>,
 }
 
-/// A recovered substitution: cipher letter index → plain letter index.
-///
-/// `None` where the record gave no evidence — a letter it never used, or one
-/// the search could not pin. A partial key decodes what it knows and leaves
-/// the rest visible as `?`, which is the honest rendering: a name with an
-/// invented letter reads exactly like a name without one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Key {
-	map: [Option<u8>; LETTERS],
+/// A record's `<kind>,<value>` tail, as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tail {
+	pub kind: String,
+	pub value: String,
 }
 
-impl Default for Key {
-	fn default() -> Self {
-		Key { map: [None; LETTERS] }
-	}
-}
-
-impl Key {
-	/// How many letters are pinned.
-	pub fn len(&self) -> usize {
-		self.map.iter().filter(|m| m.is_some()).count()
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.len() == 0
-	}
-
-	/// Add `cipher → plain`, refusing anything that contradicts what is known
-	/// or would map two cipher letters to the same plain one.
+impl Tail {
+	/// The ODX id this text is the name of, for the two kinds that are
+	/// established: `2` → `IDE#####`, `7` → `MAS#####`.
 	///
-	/// Injectivity is the whole strength of the attack: it is what makes a
-	/// wrong candidate word collide with a right one a few tokens later.
-	pub fn insert(&mut self, cipher: u8, plain: u8) -> bool {
-		match self.map[cipher as usize] {
-			Some(existing) => existing == plain,
-			None => {
-				if self.map.contains(&Some(plain)) {
-					return false;
-				}
-				self.map[cipher as usize] = Some(plain);
-				true
-			}
-		}
-	}
-
-	/// Decipher a payload, marking letters this key does not pin.
-	///
-	/// Characters outside the letter class are passed through, including the
-	/// numeric glyphs: that class has its own permutation and is not broken
-	/// (`.archive/research/labels/tttext-codec.md` §6), so its symbols are shown as they came
-	/// rather than as digits nobody established.
-	pub fn decode(&self, cipher: &str) -> String {
-		cipher
-			.chars()
-			.map(|c| match letter_index(c) {
-				Some(index) => match self.map[index] {
-					Some(plain) => {
-						let letter = (b'a' + plain) as char;
-						match c.is_ascii_uppercase() {
-							true => letter.to_ascii_uppercase(),
-							false => letter,
-						}
-					}
-					None => '?',
-				},
-				None => c,
-			})
-			.collect()
-	}
-
-	/// Whether the key pins every letter the payload uses.
-	pub fn covers(&self, cipher: &str) -> bool {
-		cipher.chars().filter_map(letter_index).all(|i| self.map[i].is_some())
-	}
-}
-
-/// The letter's index, or `None` for anything the cipher leaves alone.
-fn letter_index(c: char) -> Option<usize> {
-	c.is_ascii_alphabetic().then(|| (c.to_ascii_lowercase() as u8 - b'a') as usize)
-}
-
-/// The repetition pattern of a word, which a substitution cannot change.
-///
-/// `Zeeman` and `bookie` share the pattern `0 1 1 2 3 4`, so a cipher token
-/// can only stand for a plaintext word of the same shape. This is the index
-/// the search looks candidates up in, and it is also what clusters records:
-/// two records with the same pattern hold the same words under different keys,
-/// so one solve serves both.
-pub fn pattern(word: &str) -> Vec<u8> {
-	let mut seen: HashMap<char, u8> = HashMap::new();
-	let mut next = 0u8;
-	word
-		.chars()
-		.map(|c| {
-			let c = c.to_ascii_lowercase();
-			*seen.entry(c).or_insert_with(|| {
-				let index = next;
-				next += 1;
-				index
-			})
-		})
-		.collect()
-}
-
-/// Split a payload into the runs of letters the search works on.
-///
-/// Anything outside the letter class ends a token: a numeric glyph is not
-/// evidence about letters, and treating it as part of a word would make every
-/// pattern unique.
-pub fn tokens(cipher: &str) -> Vec<&str> {
-	cipher.split(|c: char| !c.is_ascii_alphabetic()).filter(|t| t.len() >= 2).collect()
-}
-
-/// Words the solver may propose, indexed by their pattern.
-#[derive(Debug, Default, Clone)]
-pub struct Dictionary {
-	by_pattern: HashMap<Vec<u8>, Vec<(String, f32)>>,
-}
-
-impl Dictionary {
-	/// Add a word with a weight. Higher weights win ties, so in-domain
-	/// vocabulary should outweigh a general word list — the label files' own
-	/// language is the strongest prior available.
-	pub fn insert(&mut self, word: &str, weight: f32) {
-		if word.len() < 2 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
-			return;
-		}
-		let word = word.to_ascii_lowercase();
-		let entry = self.by_pattern.entry(pattern(&word)).or_default();
-		match entry.iter_mut().find(|(w, _)| *w == word) {
-			Some((_, existing)) => *existing = existing.max(weight),
-			None => entry.push((word, weight)),
-		}
-	}
-
-	/// Candidates for a cipher token, best first.
-	pub fn candidates(&self, token: &str) -> &[(String, f32)] {
-		self.by_pattern.get(&pattern(token)).map(Vec::as_slice).unwrap_or(&[])
-	}
-
-	pub fn len(&self) -> usize {
-		self.by_pattern.values().map(Vec::len).sum()
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.by_pattern.is_empty()
-	}
-
-	/// Sort every pattern's candidates by weight, so the search meets the
-	/// likeliest first and its first complete solution is usually the best.
-	pub fn finish(&mut self) {
-		for entry in self.by_pattern.values_mut() {
-			entry.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-		}
-	}
-}
-
-/// How hard the search may work, and what it must achieve to be believed.
-#[derive(Debug, Clone, Copy)]
-pub struct Limits {
-	/// Give up on a record after this many candidate placements.
-	pub steps: u32,
-	/// A solution must explain at least this fraction of the record's letters.
-	/// Below it the key is a coincidence dressed as a reading.
-	pub min_coverage: f32,
-	/// And at least this many tokens, so a single long word cannot carry a
-	/// record on its own.
-	pub min_tokens: usize,
-}
-
-impl Default for Limits {
-	fn default() -> Self {
-		// Measured on the reference label files: raising the step budget past
-		// ~200k changes the outcome for well under 1 % of records while
-		// costing time linearly, and 0.6 coverage is where fluent readings
-		// stop appearing among the rejects.
-		Limits {
-			steps: 200_000,
-			min_coverage: 0.6,
-			min_tokens: 2,
-		}
-	}
-}
-
-/// What a solve produced.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Solution {
-	pub key: Key,
-	/// Fraction of the record's letters the chosen words explain.
-	pub coverage: f32,
-	pub score: f32,
-	pub tokens_solved: usize,
-}
-
-/// Recover a record's key from the dictionary.
-///
-/// Branch and bound over the record's tokens, longest first: a long token
-/// constrains many letters at once, so meeting it early prunes hardest. The
-/// objective is `4·len + log₂ weight` summed over solved tokens, which makes
-/// coverage dominate and lets the weight break ties — a reading that explains
-/// more of the record beats a reading of commoner words.
-pub fn solve(cipher: &str, dict: &Dictionary, limits: Limits) -> Option<Solution> {
-	let mut tokens = tokens(cipher);
-	tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
-	if tokens.len() < limits.min_tokens {
-		return None;
-	}
-	let total_letters: usize = tokens.iter().map(|t| t.len()).sum();
-	if total_letters == 0 {
-		return None;
-	}
-
-	let mut best: Option<Solution> = None;
-	let mut steps = 0u32;
-	let mut key = Key::default();
-	search(&tokens, 0, &mut key, 0.0, 0, dict, limits, &mut steps, &mut best, total_letters);
-
-	let best = best?;
-	(best.coverage >= limits.min_coverage).then_some(best)
-}
-
-/// One level of the branch and bound.
-#[allow(clippy::too_many_arguments)]
-fn search(
-	tokens: &[&str],
-	at: usize,
-	key: &mut Key,
-	score: f32,
-	letters: usize,
-	dict: &Dictionary,
-	limits: Limits,
-	steps: &mut u32,
-	best: &mut Option<Solution>,
-	total_letters: usize,
-) {
-	if *steps > limits.steps {
-		return;
-	}
-	if at == tokens.len() {
-		let coverage = letters as f32 / total_letters as f32;
-		if best.as_ref().is_none_or(|b| score > b.score) {
-			*best = Some(Solution {
-				key: *key,
-				coverage,
-				score,
-				tokens_solved: 0,
-			});
-		}
-		return;
-	}
-
-	// The best still reachable: every remaining token solved perfectly. If
-	// that cannot beat what is already in hand, stop.
-	let remaining: usize = tokens[at..].iter().map(|t| t.len()).sum();
-	if let Some(best) = best.as_ref() {
-		if score + 4.0 * remaining as f32 + 20.0 <= best.score {
-			return;
-		}
-	}
-
-	let token = tokens[at];
-	for (word, weight) in dict.candidates(token) {
-		if *steps > limits.steps {
-			return;
-		}
-		*steps += 1;
-		let mut next = *key;
-		let fits = token.chars().zip(word.chars()).all(|(c, p)| match (letter_index(c), letter_index(p)) {
-			(Some(c), Some(p)) => next.insert(c as u8, p as u8),
-			_ => false,
-		});
-		if !fits {
-			continue;
-		}
-		let gain = 4.0 * token.len() as f32 + weight.max(1.0).log2();
-		search(
-			tokens,
-			at + 1,
-			&mut next,
-			score + gain,
-			letters + token.len(),
-			dict,
-			limits,
-			steps,
-			best,
-			total_letters,
-		);
-	}
-
-	// A token may also be left unexplained — a name, an abbreviation, or a
-	// word the vocabulary has not learned yet. Skipping it costs coverage,
-	// which the objective already penalises.
-	search(tokens, at + 1, key, score, letters, dict, limits, steps, best, total_letters);
-}
-
-/// Fill letters the search left unassigned, accepting only a clear winner.
-///
-/// The search stops at the reading with the best score, which routinely leaves
-/// a token unexplained and so leaves letters unpinned — and a record with one
-/// unpinned letter is thrown away, because a name with an invented letter reads
-/// exactly like a name without one. But by then the *rest* of the record has
-/// pinned most of the alphabet, and that is new evidence the search did not
-/// have when it looked at this token: re-filtering the token's pattern class
-/// against those letters usually leaves a single survivor.
-///
-/// A survivor is applied only if it is alone, or if it outweighs the runner-up
-/// by `margin`. That ratio is the whole safety of the step: a token with two
-/// plausible readings is left unpinned rather than guessed, which costs the
-/// record and keeps the catalog honest.
-pub fn complete(cipher: &str, key: &Key, dict: &Dictionary, margin: f32) -> Key {
-	let mut key = *key;
-	let tokens = tokens(cipher);
-	loop {
-		let mut progress = false;
-		for token in &tokens {
-			if key.covers(token) {
-				continue;
-			}
-			let mut winner: Option<(Key, f32)> = None;
-			let mut runner_up = 0.0f32;
-			for (word, weight) in dict.candidates(token) {
-				let mut next = key;
-				let fits = token.chars().zip(word.chars()).all(|(c, p)| match (letter_index(c), letter_index(p)) {
-					(Some(c), Some(p)) => next.insert(c as u8, p as u8),
-					_ => false,
-				});
-				if !fits {
-					continue;
-				}
-				match &winner {
-					// Candidates arrive best-first, so the first fit is the
-					// winner and the next is what it has to beat.
-					Some(_) => {
-						runner_up = runner_up.max(*weight);
-						break;
-					}
-					None => winner = Some((next, *weight)),
-				}
-			}
-			if let Some((next, weight)) = winner {
-				if runner_up == 0.0 || weight >= margin * runner_up {
-					key = next;
-					progress = true;
-				}
-			}
-		}
-		if !progress {
-			return key;
-		}
-	}
-}
-
-/// Carry a solved record's plaintext to another record with the same pattern.
-///
-/// Two records whose whole payloads share a repetition pattern hold the same
-/// words, so the second record's key is read off by lining its ciphertext up
-/// against the first's plaintext. It is free, and it is also a check: a pair
-/// that is not really the same text fails injectivity and is refused here
-/// rather than producing a fluent-looking wrong name.
-pub fn transfer(cipher: &str, plain: &str) -> Option<Key> {
-	if cipher.chars().count() != plain.chars().count() {
-		return None;
-	}
-	let mut key = Key::default();
-	for (c, p) in cipher.chars().zip(plain.chars()) {
-		match (letter_index(c), letter_index(p)) {
-			(Some(c), Some(p)) => {
-				if !key.insert(c as u8, p as u8) {
-					return None;
-				}
-			}
-			// Outside the letter class both sides must agree literally; if
-			// they do not, these are not the same text.
-			(None, None) => {
-				if c != p {
-					return None;
-				}
-			}
+	/// 2,279 of an ODIS project's 2,280 `IDE` ids and 2,749 of its 2,810 `MAS`
+	/// ids are found in the table this way (README §0). Any other kind, or a
+	/// value that is not five digits, is `None`: read, but not known to be an
+	/// ODX id.
+	pub fn odx_id(&self) -> Option<String> {
+		let prefix = match self.kind.as_str() {
+			"2" => "IDE",
+			"7" => "MAS",
 			_ => return None,
+		};
+		let five_digits = self.value.len() == 5 && self.value.bytes().all(|b| b.is_ascii_digit());
+		five_digits.then(|| format!("{prefix}{}", self.value))
+	}
+}
+
+/// What reading a section found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Table {
+	/// Every record that read into a name, in file order.
+	pub texts: Vec<Text>,
+	/// Records whose plaintext is neither `<name>,` nor `<name>,<kind>,<value>`:
+	/// the id and what it read as. Reported, not guessed at — the 26.3 table
+	/// has none, so one here says the section or the key is not what this
+	/// reader was built on.
+	pub malformed: Vec<(u32, String)>,
+	/// Lines with no `<id>,` in front: not records at all.
+	pub not_records: usize,
+}
+
+/// Read a decrypted, inflated `[TXT]` section.
+///
+/// `page` is the code page the section's high bytes are in. The cipher leaves
+/// them alone, so they are plaintext: in the English build `0x96` is an en dash,
+/// which ISO 8859-1 would turn into a C1 control.
+///
+/// Records are read on rayon's pool and come back in file order.
+pub fn read(section: &[u8], page: CodePage) -> Table {
+	let lines: Vec<&[u8]> = section
+		.split(|b| *b == b'\n')
+		.map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+		.filter(|line| !line.is_empty())
+		.collect();
+	let read: Vec<Option<Result<Text, (u32, String)>>> = lines.par_iter().map(|line| record(line, page)).collect();
+
+	let mut table = Table::default();
+	for outcome in read {
+		match outcome {
+			Some(Ok(text)) => table.texts.push(text),
+			Some(Err(malformed)) => table.malformed.push(malformed),
+			None => table.not_records += 1,
 		}
 	}
-	Some(key)
+	table
+}
+
+/// One line: `None` when it is not a record, else the record read or refused.
+fn record(line: &[u8], page: CodePage) -> Option<Result<Text, (u32, String)>> {
+	let comma = line.iter().position(|b| *b == b',')?;
+	let (digits, payload) = (&line[..comma], &line[comma + 1..]);
+	if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+		return None;
+	}
+	let id: u32 = std::str::from_utf8(digits).ok()?.parse().ok()?;
+	let plain = TableAlphabet::for_key(id).decipher(&page.decode(payload));
+	Some(parse(id, plain))
+}
+
+/// Split a record's plaintext into its name and its tail.
+///
+/// From the right, so a comma inside a name cannot move the tail.
+fn parse(id: u32, plain: String) -> Result<Text, (u32, String)> {
+	if let Some(name) = plain.strip_suffix(',') {
+		return Ok(Text {
+			id,
+			name: name.to_string(),
+			tail: None,
+		});
+	}
+	let mut fields = plain.rsplitn(3, ',');
+	let (Some(value), Some(kind), Some(name)) = (fields.next(), fields.next(), fields.next()) else {
+		return Err((id, plain));
+	};
+	let token = |field: &str| !field.is_empty() && field.bytes().all(|b| b.is_ascii_alphanumeric());
+	if !token(kind) || !token(value) {
+		return Err((id, plain));
+	}
+	Ok(Text {
+		id,
+		name: name.to_string(),
+		tail: Some(Tail {
+			kind: kind.to_string(),
+			value: value.to_string(),
+		}),
+	})
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	/// Encipher with a rotation, standing in for a record's own key.
-	fn encipher(plain: &str, shift: u8) -> String {
-		plain
-			.chars()
-			.map(|c| match letter_index(c) {
-				Some(i) => {
-					let rotated = (b'a' + ((i as u8 + shift) % 26)) as char;
-					match c.is_ascii_uppercase() {
-						true => rotated.to_ascii_uppercase(),
-						false => rotated,
-					}
-				}
-				None => c,
-			})
-			.collect()
+	/// A section line the way VCDS writes one: the id in plain sight, the
+	/// payload under the record's own key, CRLF at the end.
+	fn line(id: u32, plain: &str) -> String {
+		format!("{id:06},{}\r\n", TableAlphabet::for_key(id).encipher(plain))
 	}
 
-	fn dictionary(words: &[&str]) -> Dictionary {
-		let mut dict = Dictionary::default();
-		for word in words {
-			dict.insert(word, 200.0);
-		}
-		dict.finish();
-		dict
+	/// Invented records in the shapes of the research's four cribs: three names
+	/// with no tail, one with digits in it, and one whose tail is an `IDE`. The
+	/// cribs themselves are Ross-Tech's words; `vag-cli-diag`'s gated test reads
+	/// them from the installed table.
+	const RECORDS: [(u32, &str); 4] = [
+		(910_231, "Invented Shaft Speed Probe,"),
+		(905_517, "Synthetic Wheel Speed Probe,"),
+		(907_042, "X042 Invented Timer Manual,"),
+		(17, "Invented flap position,2,90001"),
+	];
+
+	#[test]
+	fn every_record_reads_under_its_own_id() {
+		let section: String = RECORDS.iter().map(|(id, plain)| line(*id, plain)).collect();
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		assert_eq!(table.malformed, Vec::new());
+		assert_eq!(table.not_records, 0);
+		let names: Vec<(u32, &str)> = table.texts.iter().map(|t| (t.id, t.name.as_str())).collect();
+		assert_eq!(
+			names,
+			vec![
+				(910_231, "Invented Shaft Speed Probe"),
+				(905_517, "Synthetic Wheel Speed Probe"),
+				(907_042, "X042 Invented Timer Manual"),
+				(17, "Invented flap position"),
+			],
+			"in file order, digits included"
+		);
 	}
 
 	#[test]
-	fn a_substitution_cannot_change_a_words_repetition_pattern() {
-		// The whole index rests on this: `Zeeman` and `bookie` are the same
-		// shape, and a cipher token can only stand for a word that is.
-		assert_eq!(pattern("zeeman"), pattern("bookie"));
-		assert_ne!(pattern("engine"), pattern("coolant"));
-		// Case is not keyed separately, so it cannot distinguish either.
-		assert_eq!(pattern("Engine"), pattern("engine"));
-	}
-
-	#[test]
-	fn tokens_break_at_anything_the_cipher_leaves_alone() {
-		// A numeric glyph is not evidence about letters, and gluing it into a
-		// word would make every pattern unique and the index useless.
-		assert_eq!(tokens("Bank #/# Sensor"), vec!["Bank", "Sensor"]);
-		assert_eq!(tokens("a b"), Vec::<&str>::new(), "one letter constrains nothing");
-	}
-
-	#[test]
-	fn a_key_refuses_to_map_two_letters_onto_one() {
-		// Injectivity is what makes a wrong candidate collide a few tokens
-		// later; without it the search would accept almost anything.
-		let mut key = Key::default();
-		assert!(key.insert(0, 5));
-		assert!(key.insert(0, 5), "the same fact twice is not a contradiction");
-		assert!(!key.insert(0, 6), "one cipher letter cannot be two plain ones");
-		assert!(!key.insert(1, 5), "two cipher letters cannot be one plain one");
-		assert_eq!(key.len(), 1);
-	}
-
-	#[test]
-	fn a_record_is_solved_from_the_words_it_is_made_of() {
-		let plain = "Engine coolant temperature sensor";
-		let cipher = encipher(plain, 7);
-		let dict = dictionary(&["engine", "coolant", "temperature", "sensor", "pressure"]);
-
-		let solved = solve(&cipher, &dict, Limits::default()).expect("solvable");
-		assert!(solved.coverage > 0.99, "{}", solved.coverage);
-		assert_eq!(solved.key.decode(&cipher), plain);
-	}
-
-	#[test]
-	fn a_letter_the_record_never_used_is_shown_as_unknown_not_guessed() {
-		// The rendering rule: a name with an invented letter reads exactly
-		// like a name without one, so it must not read like one.
-		let cipher = encipher("Oil temperature", 3);
-		let dict = dictionary(&["oil", "temperature"]);
-		let solved = solve(&cipher, &dict, Limits::default()).unwrap();
-		assert_eq!(solved.key.decode(&cipher), "Oil temperature");
-		// `z` never appeared, so it is unpinned and decodes as a question mark.
-		assert_eq!(solved.key.decode(&encipher("zoo", 3)), "?oo");
-		assert!(!solved.key.covers(&encipher("zoo", 3)));
-	}
-
-	#[test]
-	fn a_record_the_vocabulary_cannot_explain_is_refused() {
-		// Below the coverage bar a key is a coincidence dressed as a reading.
-		let cipher = encipher("Kraftstoffdruckregelventil Ansteuerung", 11);
-		let dict = dictionary(&["engine", "coolant", "temperature", "sensor"]);
-		assert!(solve(&cipher, &dict, Limits::default()).is_none());
-	}
-
-	#[test]
-	fn a_solution_may_leave_a_token_unexplained() {
-		// Abbreviations and part names are not in any dictionary, and a
-		// record must not be lost because one token is unknown.
-		let plain = "Coolant temperature G62";
-		let cipher = encipher(plain, 19);
-		let dict = dictionary(&["coolant", "temperature"]);
-		let solved = solve(&cipher, &dict, Limits::default()).expect("the rest carries it");
-		assert!(solved.key.decode(&cipher).starts_with("Coolant temperature"));
-	}
-
-	#[test]
-	fn completion_pins_a_letter_the_rest_of_the_record_already_decides() {
-		// `sensor` is the only word of its shape that the record's other
-		// letters allow, so the token the search skipped is settled by
-		// evidence rather than by preference.
-		let plain = "Coolant temperature sensor";
-		let cipher = encipher(plain, 9);
-		let dict = dictionary(&["coolant", "temperature", "sensor"]);
-		let mut partial = Key::default();
-		for (c, p) in encipher("coolant temperature", 9).chars().zip("coolant temperature".chars()) {
-			if let (Some(c), Some(p)) = (letter_index(c), letter_index(p)) {
-				partial.insert(c as u8, p as u8);
-			}
-		}
-		assert!(!partial.covers(&cipher), "the fixture really does leave letters open");
-		let filled = complete(&cipher, &partial, &dict, 20.0);
-		assert_eq!(filled.decode(&cipher), plain);
-	}
-
-	#[test]
-	fn completion_refuses_a_token_with_two_readings() {
-		// `fill` and `hill` are the same shape and equally weighted, and the
-		// rest of the record pins neither `f` nor `h`. Guessing here is
-		// exactly the failure the catalog gate exists to prevent.
-		let cipher = encipher("bytes fill", 5);
-		let dict = dictionary(&["bytes", "fill", "hill"]);
-		let mut partial = Key::default();
-		for (c, p) in encipher("bytes", 5).chars().zip("bytes".chars()) {
-			if let (Some(c), Some(p)) = (letter_index(c), letter_index(p)) {
-				partial.insert(c as u8, p as u8);
-			}
-		}
-		let filled = complete(&cipher, &partial, &dict, 20.0);
-		assert!(!filled.covers(&cipher), "an ambiguous token must stay unpinned");
-	}
-
-	#[test]
-	fn transfer_reads_a_second_records_key_off_a_solved_one() {
-		// Two records with the same text under different keys: the second is
-		// free once the first is solved.
-		let plain = "Intake air temperature";
-		let a = encipher(plain, 4);
-		let b = encipher(plain, 17);
-		let key = transfer(&b, plain).expect("same text, so the key lines up");
-		assert_eq!(key.decode(&b), plain);
-		assert_ne!(a, b, "the fixture really does use two different keys");
-	}
-
-	#[test]
-	fn transfer_refuses_a_pair_that_is_not_the_same_text() {
-		// The check that makes transfer safe: a mismatched pair fails
-		// injectivity instead of producing a fluent-looking wrong name.
-		assert!(transfer(&encipher("aab", 1), "xyz").is_none(), "shape disagrees");
-		assert!(transfer(&encipher("abc", 1), "ab").is_none(), "length disagrees");
-		assert!(transfer("ab#", "ab!").is_none(), "the untouched characters disagree");
-	}
-
-	#[test]
-	fn the_search_stops_rather_than_running_forever() {
-		// A record with many tokens and a large ambiguous vocabulary must not
-		// hang a pass over 192,469 records.
-		let cipher = encipher("aa bb cc dd ee ff gg hh ii jj kk ll", 5);
-		let dict = dictionary(&["an", "at", "as", "be", "by", "do", "go", "he", "if", "in"]);
-		let limits = Limits {
-			steps: 50,
-			..Limits::default()
+	fn a_tail_parses_into_its_kind_and_value_and_the_two_known_kinds_into_an_odx_id() {
+		let section = [
+			line(17, "Invented flap position,2,90001"),
+			line(3, "Low - high,7,01234"),
+			line(304, "Seat module,9,000B7"),
+			line(26, "Invented Shaft Speed Probe,"),
+		]
+		.concat();
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		let tails: Vec<(u32, Option<&Tail>, Option<String>)> = table
+			.texts
+			.iter()
+			.map(|t| (t.id, t.tail.as_ref(), t.tail.as_ref().and_then(Tail::odx_id)))
+			.collect();
+		let tail = |kind: &str, value: &str| Tail {
+			kind: kind.into(),
+			value: value.into(),
 		};
-		let _ = solve(&cipher, &dict, limits);
+		assert_eq!(tails[0], (17, Some(&tail("2", "90001")), Some("IDE90001".into())));
+		assert_eq!(tails[1], (3, Some(&tail("7", "01234")), Some("MAS01234".into())));
+		// Read, letters and all, but not an ODX id this reader knows.
+		assert_eq!(tails[2], (304, Some(&tail("9", "000B7")), None));
+		assert_eq!(tails[3], (26, None, None));
+	}
+
+	#[test]
+	fn only_a_five_digit_value_makes_an_odx_id() {
+		let odx = |kind: &str, value: &str| {
+			Tail {
+				kind: kind.into(),
+				value: value.into(),
+			}
+			.odx_id()
+		};
+		assert_eq!(odx("2", "00022"), Some("IDE00022".into()));
+		assert_eq!(odx("2", "0022"), None);
+		assert_eq!(odx("7", "0002A"), None);
+		assert_eq!(odx("10", "00497"), None, "kind 10 is read, not interpreted");
+	}
+
+	#[test]
+	fn a_comma_inside_a_name_does_not_move_the_tail() {
+		let section = [line(7, "Boost pressure, actual,2,00022"), line(8, "Boost pressure, actual,")].concat();
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		assert_eq!(table.texts[0].name, "Boost pressure, actual");
+		assert_eq!(table.texts[0].tail.as_ref().and_then(Tail::odx_id).as_deref(), Some("IDE00022"));
+		assert_eq!(table.texts[1].name, "Boost pressure, actual");
+		assert_eq!(table.texts[1].tail, None);
+	}
+
+	#[test]
+	fn a_high_byte_is_read_in_the_sections_code_page() {
+		// `0x96` is an en dash in Windows-1252; the cipher leaves it alone.
+		let mut section = format!("{:06},", 4242).into_bytes();
+		let alphabet = TableAlphabet::for_key(4242);
+		section.extend(alphabet.encipher("invented stage 1 ").bytes());
+		section.push(0x96);
+		section.extend(alphabet.encipher(" on,7,00077").bytes());
+		section.extend(b"\r\n");
+		let table = read(&section, CodePage::Windows1252);
+		assert_eq!(table.texts[0].name, "invented stage 1 \u{2013} on");
+	}
+
+	#[test]
+	fn a_record_of_neither_shape_is_reported_not_guessed() {
+		let section = [
+			line(5, "no separator at all"),
+			line(6, "a,,90001"),
+			line(9, "a,2,00 1"),
+			line(10, "fine,"),
+		]
+		.concat();
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		let ids: Vec<u32> = table.malformed.iter().map(|(id, _)| *id).collect();
+		assert_eq!(ids, vec![5, 6, 9]);
+		assert_eq!(table.malformed[0].1, "no separator at all", "what it read as is kept for the report");
+		assert_eq!(table.texts.len(), 1);
+	}
+
+	#[test]
+	fn a_line_without_an_id_is_not_a_record() {
+		let section = format!("not a record\r\n,no id\r\n12a,x,\r\n\r\n{}", line(11, "fine,"));
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		assert_eq!(table.not_records, 3, "the blank line is not counted");
+		assert_eq!(table.texts.len(), 1);
+		assert!(table.malformed.is_empty());
+	}
+
+	#[test]
+	fn the_neighbouring_key_does_not_read() {
+		// The control the research measured: under `srand(id + 1)` a record is
+		// noise. Enciphered for 18 and read as 17, the record must not come back.
+		let mut section = line(18, "Invented flap position,2,90001");
+		section.replace_range(..6, "000017");
+		let table = read(section.as_bytes(), CodePage::Windows1252);
+		assert!(table.texts.iter().all(|t| t.name != "Invented flap position"), "{table:?}");
 	}
 }

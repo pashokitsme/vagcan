@@ -126,13 +126,14 @@ impl std::fmt::Display for NoLabelData {
 			"\n\
              vagcan learns a car from an extracted ODIS-Service project, in one command:\n    \
              vagcan setup <path to the ODIS project folder>\n\n\
-             A VCDS installation works too — names and fault text, but no scalings:\n    \
+             A VCDS installation works too — names and fault text, and scalings for the\n\
+             units of a car surveyed with `vagcan dev survey`:\n    \
              vagcan setup <path to the VCDS installation>\n\
              Neither to hand? Leave the path off: it asks which, and can fetch VCDS.\n\n\
              It is offline — no adapter, no car. An ODIS project reads in seconds; a VCDS\n\
-             installation takes minutes, mostly recovering the measurement names. What it\n\
-             reads lands in a project under ~/.vagcan/data/, so the folder it read can be\n\
-             deleted afterwards.\n\n\
+             installation takes minutes, most of them searching for keys the first time.\n\
+             What it reads lands in a project under ~/.vagcan/data/, so the folder it read\n\
+             can be deleted afterwards — a VCDS installation once a surveyed car is read.\n\n\
              VCDS is Ross-Tech's, and free from them directly:\n    \
              {VCDS_DOWNLOAD}"
 		)

@@ -104,13 +104,12 @@ item 8, `dash/18` on a real pull.
 2. **Runs in flash** — [`dash/21`](dash/21-runs-in-flash.md): how many runs, and when LIMIT
    writes; the owner set both aside on 2026-09-27.
 3. **OLED and enclosure** — `dash/15`; waits for the panel.
-4. **Measurements from a VCDS install** — [`label-lookup/02`](label-lookup/02-vcds-registry.md)
-   (filed 2026-09-28; the finding is [`research/vcds-registry`](../research/vcds-registry/README.md)):
-   read `TTTEXT` exactly (fixes ~1,870 catalog names), then the `RM.rod` registry, so a VCDS-only
-   owner gets scaling for any unshifted unit. Gated on the 18 proven rows and the 15 log pairs,
-   0-based indexing failing them. The owner decided on 2026-09-28: ODIS wins over VCDS, a Russian
-   install falls back to English names, the seven proven rows are signed now (done in `~/.vagcan`),
-   `calibrate` waits.
+4. **Measurements from a VCDS install** — [`label-lookup/02`](label-lookup/02-vcds-registry.md):
+   **built 2026-09-28** on `feat/vcds-registry-p2`, reviewed the same day. The owner's `dash.toml`
+   builds from a VCDS install alone with the same 19 channels as from ODIS. What is left is listed
+   there: the platform file's choice, `measure`'s roles by ODX id, the Russian fallback, and one
+   decision for the owner — whether a VCDS list may widen what `dev survey` asks (until then it
+   does not). `calibrate` is removed entirely next, in its own change (owner, 2026-09-28).
 
 **With the car**
 
@@ -154,7 +153,7 @@ item 8, `dash/18` on a real pull.
 | [`dash/19-stalk-and-stopwatch.md`](dash/19-stalk-and-stopwatch.md) | the lever and `[[button]]` pins as input, the stopwatch page — merged (PR #12, 2026-09-27); in the owner's `dash.toml`; needs the car |
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
-| [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry; filed 2026-09-28, not started; the owner's decisions recorded the same day |
+| [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry — built 2026-09-28 on `feat/vcds-registry-p2`, in review; the owner's `dash.toml` builds from VCDS alone |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.

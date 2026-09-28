@@ -756,22 +756,29 @@ impl App {
 	/// faster" and not "twice as fast", and doubling walks straight off the top
 	/// of the useful range in three presses.
 	fn nudge_setting(&mut self, setting: Setting, up: bool) {
+		self.step_setting(setting, up);
 		let mut document = crate::config::load();
 		match setting {
-			Setting::Rate => {
-				let step = if up { RATE_STEP } else { -RATE_STEP };
-				self.hz = (self.hz + step).clamp(crate::config::MIN_HZ, crate::config::MAX_HZ);
-				crate::config::set_hz(&mut document, self.hz);
-			}
-			Setting::ShowKey => {
-				self.show_key = !self.show_key;
-				crate::config::set_show_key(&mut document, self.show_key);
-			}
+			Setting::Rate => crate::config::set_hz(&mut document, self.hz),
+			Setting::ShowKey => crate::config::set_show_key(&mut document, self.show_key),
 		}
 		self.note = match crate::config::save(&document) {
 			Ok(()) => String::new(),
 			Err(why) => format!("could not save the setting: {why}"),
 		};
+	}
+
+	/// Move one setting in the app, without writing it down: the half of
+	/// [`Self::nudge_setting`] a test can run, since the other half writes the
+	/// owner's own `~/.vagcan/config.toml`.
+	fn step_setting(&mut self, setting: Setting, up: bool) {
+		match setting {
+			Setting::Rate => {
+				let step = if up { RATE_STEP } else { -RATE_STEP };
+				self.hz = (self.hz + step).clamp(crate::config::MIN_HZ, crate::config::MAX_HZ);
+			}
+			Setting::ShowKey => self.show_key = !self.show_key,
+		}
 	}
 
 	/// What one setting currently reads as.
@@ -4461,14 +4468,15 @@ mod tests {
 		let mut a = App::new(vec![unselected(proven(0x7E0, 0x202A, "Boost pressure", "bar"))]);
 		a.screen = Screen::Settings;
 		a.hz = crate::config::MIN_HZ;
-		// No VIN and no writable settings needed: the value moves in the app,
-		// and saving is what `crate::config` is tested for.
-		a.nudge_setting(Setting::Rate, false);
+		// Stepped, not nudged: `nudge_setting` saves, and saving writes the
+		// owner's own `~/.vagcan/config.toml` — every run of this test used to
+		// leave `hz = 50.0` there. Saving is what `crate::config` is tested for.
+		a.step_setting(Setting::Rate, false);
 		assert_eq!(a.hz, crate::config::MIN_HZ, "it does not go below the floor");
-		a.nudge_setting(Setting::Rate, true);
+		a.step_setting(Setting::Rate, true);
 		assert!(a.hz > crate::config::MIN_HZ);
 		a.hz = crate::config::MAX_HZ;
-		a.nudge_setting(Setting::Rate, true);
+		a.step_setting(Setting::Rate, true);
 		assert_eq!(a.hz, crate::config::MAX_HZ, "nor above the ceiling");
 	}
 

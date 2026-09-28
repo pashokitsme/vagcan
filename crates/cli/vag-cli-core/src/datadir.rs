@@ -54,6 +54,7 @@ pub fn resolve(relative: &str) -> PathBuf {
 ///     SK37X/                          one directory per *platform* — `crate::project`
 ///       cache.sqlite                    the label and ODIS rows, queryable
 ///       names.json                      text id -> name
+///       odx-ids.json                    text id -> the IDE/MAS id that text names
 ///       rod-keys.json                   recovered .rod section keys
 ///       measurements/                   proven-on-car rows, one file per part number
 ///       sources.json                    where this project's data came from

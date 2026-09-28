@@ -348,7 +348,7 @@ impl CodesDb {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::tea::tea_decrypt_block;
+	use crate::tea::{tea_cbc_encrypt, tea_decrypt_block};
 
 	/// The IV recovered from the reference car's own fault text. Key
 	/// 9 529 586 is `B1168` failure type `0xF2` — the steering-angle-sensor
@@ -374,34 +374,6 @@ mod tests {
 		let c = block0_iv(9_529_587, 0);
 		assert_eq!(a[..7], c[..7]);
 		assert_ne!(a[7], c[7]);
-	}
-
-	fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
-		let mut out = Vec::with_capacity(plain.len());
-		let mut prev = iv;
-		for chunk in plain.chunks_exact(8) {
-			let mut block = [0u8; 8];
-			for i in 0..8 {
-				block[i] = chunk[i] ^ prev[i];
-			}
-			// TEA encrypt = the decrypt rounds run backwards; easier here to
-			// invert the known-good decrypt by search-free algebra: encrypt is
-			// written out directly.
-			let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
-			let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
-			let mut s = 0u32;
-			for _ in 0..32 {
-				s = s.wrapping_add(crate::tea::DELTA);
-				v0 = v0.wrapping_add((v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]));
-				v1 = v1.wrapping_add((v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]));
-			}
-			let mut cipher = [0u8; 8];
-			cipher[0..4].copy_from_slice(&v0.to_le_bytes());
-			cipher[4..8].copy_from_slice(&v1.to_le_bytes());
-			out.extend_from_slice(&cipher);
-			prev = cipher;
-		}
-		out
 	}
 
 	/// The encrypt helper above has to be the exact inverse of the shipped
@@ -446,14 +418,16 @@ mod tests {
 		out
 	}
 
+	// The texts in these fixtures are invented: `Codes.dat` is Ross-Tech's.
+
 	#[test]
 	fn container_round_trips_and_keeps_the_first_eight_characters() {
-		let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
-		file.extend(record(10_489_840, "Internal Fault: - "));
+		let mut file = record(9_529_586, "Invented Angle Probe: Zero Point Unlearned");
+		file.extend(record(10_489_840, "Synthetic Fault: - "));
 		let db = CodesDb::parse(&file);
 		assert_eq!(db.len(), 2);
-		assert_eq!(db.get(9_529_586), Some("Steering Angle Sensor: Not Initialized"));
-		assert_eq!(db.get(10_489_840), Some("Internal Fault: - "));
+		assert_eq!(db.get(9_529_586), Some("Invented Angle Probe: Zero Point Unlearned"));
+		assert_eq!(db.get(10_489_840), Some("Synthetic Fault: - "));
 	}
 
 	/// A record whose ciphertext happens to contain `\r\n` must not split the
@@ -461,20 +435,20 @@ mod tests {
 	/// reason, and the real file does contain such records.
 	#[test]
 	fn a_crlf_inside_the_ciphertext_does_not_end_a_record() {
-		let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+		let mut file = record(9_529_586, "Invented Angle Probe: Zero Point Unlearned");
 		// Splice a CRLF into the middle of the first record's ciphertext.
 		file[20] = b'\r';
 		file[21] = b'\n';
-		file.extend(record(10_489_840, "Internal Fault: - "));
+		file.extend(record(10_489_840, "Synthetic Fault: - "));
 		let db = CodesDb::parse(&file);
 		assert_eq!(db.len(), 2, "the second record must still be found");
-		assert_eq!(db.get(10_489_840), Some("Internal Fault: - "));
+		assert_eq!(db.get(10_489_840), Some("Synthetic Fault: - "));
 	}
 
 	/// `iso_dtc` must refuse the legacy band rather than answer from it.
-	/// Fault 297 is the case that made this rule: the file holds
-	/// "Gearbox Speed Sensor (G38)" under key 297, and a control unit
-	/// reporting DTC `00 01 29` does not mean that.
+	/// Fault 297 is the case that made this rule: the file holds a legacy
+	/// sensor fault under key 297, and a control unit reporting DTC
+	/// `00 01 29` does not mean that fault.
 	#[test]
 	fn a_key_spells_the_sae_code_vcds_prints() {
 		// Every one of these is a pair VCDS printed itself, on one of the two
@@ -492,8 +466,8 @@ mod tests {
 
 	#[test]
 	fn a_key_that_is_not_a_dtc_gets_no_code_rather_than_a_wrong_one() {
-		// 90 000..99 999 is a block of user-interface strings ("ADP. Run",
-		// "Term 15 On"), and below 65 536 are the legacy five-digit codes.
+		// 90 000..99 999 is a block of user-interface strings, not faults,
+		// and below 65 536 are the legacy five-digit codes.
 		// Neither is a DTC and neither may be spelled as one.
 		assert_eq!(sae_code(90_001), None);
 		assert_eq!(sae_code(297), None);
@@ -502,17 +476,17 @@ mod tests {
 
 	#[test]
 	fn iso_dtc_refuses_the_legacy_band() {
-		let file = record(297, "Gearbox Speed Sensor (G38)");
+		let file = record(297, "Invented Legacy Sensor (X99)");
 		let db = CodesDb::parse(&file);
-		assert_eq!(db.get(297), Some("Gearbox Speed Sensor (G38)"));
+		assert_eq!(db.get(297), Some("Invented Legacy Sensor (X99)"));
 		assert_eq!(db.iso_dtc([0x00, 0x01, 0x29]), None);
 	}
 
 	#[test]
 	fn iso_dtc_reads_three_bytes_big_endian() {
-		let file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+		let file = record(9_529_586, "Invented Angle Probe: Zero Point Unlearned");
 		let db = CodesDb::parse(&file);
-		assert_eq!(db.iso_dtc([0x91, 0x68, 0xf2]), Some("Steering Angle Sensor: Not Initialized"));
+		assert_eq!(db.iso_dtc([0x91, 0x68, 0xf2]), Some("Invented Angle Probe: Zero Point Unlearned"));
 	}
 
 	/// A translated file uses a different file-wide constant, and it is not in
@@ -522,12 +496,12 @@ mod tests {
 	fn the_file_wide_constant_is_recovered_from_the_text() {
 		const C: u8 = 208;
 		let lines = [
-			"Steering Angle Sensor: Not Initialized",
-			"Steering Angle Sensor: Rate of Change to High",
-			"Steering Angle Sensor: Synchronization Failed",
-			"Transmission Control Unit: Internal Fault Detected",
-			"Control Module for Airbag Deployment: No Communication",
-			"Sensor for Engine Coolant Temperature: Implausible Signal",
+			"Invented Angle Probe: Zero Point Unlearned",
+			"Invented Angle Probe: Rate of Change Too High",
+			"Invented Angle Probe: Synchronisation Lost",
+			"Synthetic Control Unit: Internal Fault Detected",
+			"Synthetic Module for Seat Heating: Silent on the Bus",
+			"Synthetic Sensor for Oil Level: Signal Out of Reach",
 		];
 		let mut file = Vec::new();
 		for (i, line) in lines.iter().enumerate() {
@@ -542,13 +516,13 @@ mod tests {
 	/// A truncated file gives back the records that did parse, and no panic.
 	#[test]
 	fn truncated_input_yields_what_parsed() {
-		let mut file = record(9_529_586, "Steering Angle Sensor: Not Initialized");
+		let mut file = record(9_529_586, "Invented Angle Probe: Zero Point Unlearned");
 		let whole = file.len();
-		file.extend(record(10_489_840, "Internal Fault: - "));
+		file.extend(record(10_489_840, "Synthetic Fault: - "));
 		file.truncate(whole + 14);
 		let db = CodesDb::parse(&file);
 		assert_eq!(db.len(), 1);
-		assert_eq!(db.get(9_529_586), Some("Steering Angle Sensor: Not Initialized"));
+		assert_eq!(db.get(9_529_586), Some("Invented Angle Probe: Zero Point Unlearned"));
 	}
 
 	/// The byte that made the point: 0x96 appears 191 times in the English

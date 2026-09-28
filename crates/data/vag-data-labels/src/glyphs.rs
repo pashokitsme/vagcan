@@ -116,21 +116,65 @@ impl TableAlphabet {
 	/// `None` if any character belongs to neither, since a partly-decoded
 	/// field is a wrong field.
 	pub fn decode(&self, field: &str) -> Option<String> {
-		let mut out = String::with_capacity(field.len());
-		for glyph in field.chars() {
-			let lower = glyph.to_ascii_lowercase() as u8;
-			if let Some(at) = self.digits.iter().position(|g| *g == lower) {
-				out.push(PLAIN_DIGITS[at] as char);
-			} else {
-				// Not a digit; it must be a letter, or the field is not ours —
-				// `?` returns `None` from `decode`, the partly-decoded field the
-				// doc comment refuses.
-				let at = self.letters.iter().position(|g| *g == lower)?;
-				let plain = PLAIN_LETTERS[at] as char;
-				out.push(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain });
-			}
-		}
+		// Not a digit and not a letter: the field is not ours, and `?` returns
+		// the `None` the doc comment promises for a partly-decoded field.
+		let out = field.chars().map(|glyph| self.plain(glyph)).collect::<Option<String>>()?;
 		(!out.is_empty()).then_some(out)
+	}
+
+	/// Read a whole enciphered text, passing through what the substitution
+	/// does not cover.
+	///
+	/// The global text table (`TTTEXT.ROD`) is written this way: letters and
+	/// the digit class go through the table's alphabets, and everything else —
+	/// space, `:`, `(`, `°`, an umlaut — is stored as it is. So unlike
+	/// [`Self::decode`], a character outside both alphabets is part of the text
+	/// here, not a sign of a wrong field.
+	pub fn decipher(&self, text: &str) -> String {
+		text.chars().map(|glyph| self.plain(glyph).unwrap_or(glyph)).collect()
+	}
+
+	/// The inverse of [`Self::decipher`]: what VCDS's writer does to a
+	/// plaintext.
+	///
+	/// The reader needs none of it. It is here so a test can build enciphered
+	/// records with the very generator the reader uses, and so needs no
+	/// Ross-Tech data to prove that reader right.
+	pub fn encipher(&self, text: &str) -> String {
+		text
+			.chars()
+			.map(|c| {
+				if let Some(at) = PLAIN_DIGITS.iter().position(|p| *p as char == c) {
+					return self.digits[at] as char;
+				}
+				match PLAIN_LETTERS.iter().position(|p| *p as char == c.to_ascii_lowercase()) {
+					Some(at) if c.is_ascii_alphabetic() => {
+						let glyph = self.letters[at] as char;
+						if c.is_ascii_uppercase() { glyph.to_ascii_uppercase() } else { glyph }
+					}
+					_ => c,
+				}
+			})
+			.collect()
+	}
+
+	/// The plaintext character one cipher glyph stands for, or `None` for a
+	/// glyph in neither alphabet.
+	///
+	/// ASCII only, checked first: `as u8` on a wider character truncates, and
+	/// `š` (U+0161) would come out as `a`.
+	fn plain(&self, glyph: char) -> Option<char> {
+		if !glyph.is_ascii() {
+			return None;
+		}
+		let byte = glyph as u8;
+		if let Some(at) = self.digits.iter().position(|g| *g == byte) {
+			return Some(PLAIN_DIGITS[at] as char);
+		}
+		let lower = byte.to_ascii_lowercase();
+		let at = self.letters.iter().position(|g| *g == lower)?;
+		let plain = PLAIN_LETTERS[at] as char;
+		Some(if glyph.is_ascii_uppercase() { plain.to_ascii_uppercase() } else { plain })
 	}
 
 	/// Read one enciphered field as a decimal number.
@@ -452,6 +496,42 @@ mod tests {
 		// A field of letters is not a number, and must not be read as one.
 		assert_eq!(alphabet.number("F0"), None);
 		assert_eq!(alphabet.hex_byte(".0374730"), None, "seven characters are not a byte");
+	}
+
+	#[test]
+	fn a_text_is_deciphered_whole_and_what_the_cipher_leaves_alone_is_kept() {
+		// The text table's shape: letters in both cases, digits, the field
+		// separator, and characters outside both alphabets — which a text keeps
+		// rather than refuses.
+		let plain = "Exhaust gas temp. (bank 1): 54°C – ok,2,90001";
+		let alphabet = TableAlphabet::for_key(29);
+		let cipher = alphabet.encipher(plain);
+		assert_ne!(cipher, plain, "the fixture really is enciphered");
+		for kept in [" ", "(", ")", ":", "°", "–"] {
+			assert!(cipher.contains(kept), "{kept:?} passes through: {cipher:?}");
+		}
+		assert_eq!(alphabet.decipher(&cipher), plain);
+		// A field reader refuses the same text, because a character outside both
+		// alphabets means a wrong field there.
+		assert_eq!(alphabet.decode(&cipher), None);
+	}
+
+	#[test]
+	fn another_key_reads_a_text_as_something_else() {
+		// The key is the record's own id; the neighbouring id is the control
+		// the research measured (6.6 % well-formed under `srand(id + 1)`).
+		let plain = "Invented Shaft Speed Probe,";
+		let cipher = TableAlphabet::for_key(910_231).encipher(plain);
+		assert_eq!(TableAlphabet::for_key(910_231).decipher(&cipher), plain);
+		assert_ne!(TableAlphabet::for_key(910_232).decipher(&cipher), plain);
+	}
+
+	#[test]
+	fn a_wide_character_is_not_truncated_onto_a_letter() {
+		// `š` is U+0161, and `as u8` would make it 0x61 — `a`.
+		let alphabet = TableAlphabet::for_key(531);
+		assert_eq!(alphabet.decipher("š"), "š");
+		assert_eq!(alphabet.decode("š"), None);
 	}
 
 	#[test]

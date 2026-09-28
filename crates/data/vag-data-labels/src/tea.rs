@@ -23,6 +23,46 @@ pub(crate) fn tea_decrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
 	out
 }
 
+/// Encrypt one 8-byte TEA block — the inverse of [`tea_decrypt_block`].
+///
+/// Test-only, and one copy of it: the tool never writes an encrypted file, but
+/// its tests have to, to build label files with no Ross-Tech data in them.
+#[cfg(test)]
+pub(crate) fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
+	let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
+	let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
+	let mut s = 0u32;
+	for _ in 0..32 {
+		s = s.wrapping_add(DELTA);
+		v0 = v0.wrapping_add((v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]));
+		v1 = v1.wrapping_add((v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]));
+	}
+	let mut out = [0u8; 8];
+	out[0..4].copy_from_slice(&v0.to_le_bytes());
+	out[4..8].copy_from_slice(&v1.to_le_bytes());
+	out
+}
+
+/// TEA-CBC encrypt, the inverse of [`tea_cbc_decrypt`]:
+/// `C_i = TEA_enc(P_i XOR C_{i-1})`, with `C_{-1} = iv`. `plain.len()` must be
+/// a multiple of 8. Test-only, like [`tea_encrypt_block`].
+#[cfg(test)]
+pub(crate) fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
+	assert_eq!(plain.len() % 8, 0, "TEA-CBC works on whole blocks");
+	let mut out = Vec::with_capacity(plain.len());
+	let mut prev = iv;
+	for block in plain.chunks_exact(8) {
+		let mut xored = [0u8; 8];
+		for i in 0..8 {
+			xored[i] = block[i] ^ prev[i];
+		}
+		let cipher = tea_encrypt_block(xored, key);
+		out.extend_from_slice(&cipher);
+		prev = cipher;
+	}
+	out
+}
+
 /// TEA-CBC decrypt: `cipher` is processed in 8-byte blocks (any trailing
 /// partial block, which should not occur for well-formed records, is
 /// ignored). `P_i = TEA_dec(C_i) XOR C_{i-1}`, with `C_{-1} = iv`.

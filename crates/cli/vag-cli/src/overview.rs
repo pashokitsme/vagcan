@@ -441,12 +441,12 @@ fn setup_advice(cars: &Cars) -> String {
 		// Also the answer when `~/.vagcan/data/` could not be read: `setup` is
 		// what creates it, and it reports its own failure better than a screen
 		// that only knows the directory would not open.
-		_ => "  vagcan setup     learn a car, once, offline. Without it a reading is a bare\n                   \
+		_ => "  vagcan setup     learn a car, offline. Without it a reading is a bare\n                   \
               identifier and a number: the names and the scalings come from somebody\n                   \
               else's data, which may not be shipped with this tool.\n\n  \
-              Point it at an extracted ODIS-Service project (names *and* scalings)\n  \
-              or a VCDS installation (names). With no path it asks which, and offers\n  \
-              to download a VCDS installation for you.\n"
+              Point it at an extracted ODIS-Service project (names and scalings) or a\n  \
+              VCDS installation (names, and scalings for a surveyed car). With no path\n  \
+              it asks which, and offers to download a VCDS installation for you.\n"
 			.to_string(),
 	}
 }

@@ -7,12 +7,10 @@
 //! interpret the content.
 //!
 //! ## Scope
-//! - `MWB` section rows are `<6-digit measurement id>,<code>` — a UDS/ODX
-//!   measurement INDEX, not a human-readable name. Human names live in
-//!   `TTTEXT.ROD` (same cipher family) and require joining on those IDs; that
-//!   TTText layer, plus the per-record `product` term needed for records
-//!   where it isn't zero (needs a runtime dump to recover), are a documented
-//!   FUTURE step and are NOT built here.
+//! - `MWB` section rows are `<row>,<code>`: a 1-based row number into the
+//!   global measurement registry `RM.rod`, where the row's DID, layout and
+//!   scaling are. [`crate::registry`] follows that join; this module only
+//!   opens the containers.
 //! - `.rod` is NOT ingested into [`crate::LabelDb`] / the SQLite label files: its
 //!   ID-indexed data model doesn't fit the block/field `.lbl`/`.clb` model.
 //!   [`decode_rod`] is a standalone decoder.
@@ -361,14 +359,42 @@ impl IvCache {
 	}
 
 	/// Load a cache from `path`, or an empty cache if it does not exist / is
-	/// unreadable.
+	/// unreadable — which [`Self::save`] then refuses to write back over it.
 	pub fn load(path: &std::path::Path) -> Self {
 		std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 	}
 
-	/// Persist the cache to `path`.
+	/// Persist the cache to `path`, whole or not at all.
+	///
+	/// Every key in it cost minutes of every core, and a file that does not read
+	/// loads as an empty cache: saving that over it would erase them all. So a
+	/// file that is there and cannot be read, or is not a key cache, is left
+	/// alone and the save refused. The new file is written beside the old one and
+	/// renamed over it, so an interrupted save leaves the old one whole.
 	pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-		std::fs::write(path, serde_json::to_vec_pretty(self).unwrap_or_default())
+		let unusable = match std::fs::read(path) {
+			Ok(bytes) => !bytes.is_empty() && serde_json::from_slice::<Self>(&bytes).is_err(),
+			Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+		};
+		if unusable {
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				format!("{} is there and does not read as a key cache, so it is left as it is", path.display()),
+			));
+		}
+		let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+		let staged = path.with_file_name(format!(".{name}.saving"));
+		std::fs::write(&staged, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)?;
+		std::fs::rename(&staged, path)
+	}
+
+	/// How many keys the cache holds.
+	pub fn len(&self) -> usize {
+		self.entries.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
 	}
 
 	pub fn get(&self, file: &str, tag: &str) -> Option<[u8; 5]> {
@@ -480,6 +506,65 @@ pub fn key_cost(data: &[u8], want_tag: &str) -> Option<KeyCost> {
 	None
 }
 
+/// Whether `iv3to8` opens a classic section.
+///
+/// Asked of a key before it is trusted: the cache is keyed by file name and tag,
+/// and every VCDS release re-encrypts its files under the same names, so a key
+/// cached from one build is wrong for the next — and a wrong key does not fail
+/// loudly, it just leaves the section shut.
+fn key_opens(tag: &[u8], sc: &SectionCipher<'_>, iv3to8: [u8; 5]) -> bool {
+	let section = decode_with_iv(&decode_latin1(tag), sc, rod_block0_iv_recovered(tag, iv3to8));
+	matches!(section.status, RodStatus::Zlib | RodStatus::Tea)
+}
+
+/// Recover the key of **one** classic section into `cache`, and nothing else.
+///
+/// [`decode_rod_recover`] with `run_crack` searches every blocked section of a
+/// file, and one file can hold a classic section beside a shifted one, whose
+/// search is hours to days ([`KeyCost::AnchorSweep`]) — a registry research run
+/// lost twenty minutes of every core that way. A caller that needs one section
+/// asks for that one: a classic section gets its one search, minutes; a shifted
+/// one is never searched here.
+///
+/// `true` when the section opens afterwards with no search: it was not blocked,
+/// its key was already cached, or it has just been recovered. `false` when the
+/// section is absent, shifted, or its search found nothing.
+pub fn recover_classic_key(data: &[u8], file: &str, want_tag: &str, cache: &mut IvCache) -> bool {
+	let mut pos = 0usize;
+	while let Some((tag, payload_start)) = find_next_tag(data, pos) {
+		let Some((payload_end, next_pos)) = find_close(data, payload_start, &tag) else {
+			return false;
+		};
+		pos = next_pos;
+		let tag_str = decode_latin1(&tag);
+		if tag_str != want_tag {
+			continue;
+		}
+		let payload = &data[payload_start..payload_end];
+		if decode_section(&tag, payload).status != RodStatus::Undecodable {
+			return true;
+		}
+		let Some(sc) = parse_section_cipher(payload) else { return false };
+		if !sc.compressed || !search_has_a_crib(&tag, sc.cipher) {
+			// Shifted: never searched here. A key for it can only have come from
+			// elsewhere, and is taken as it is.
+			return cache.get(file, &tag_str).is_some();
+		}
+		// A cached key is used only if it opens this file — see [`key_opens`].
+		if cache.get(file, &tag_str).is_some_and(|iv3to8| key_opens(&tag, &sc, iv3to8)) {
+			return true;
+		}
+		return match crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, None) {
+			Some(iv3to8) => {
+				cache.insert(file, &tag_str, iv3to8);
+				true
+			}
+			None => false,
+		};
+	}
+	false
+}
+
 pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crack: bool) -> Vec<RodSection> {
 	let mut sections = Vec::new();
 	let mut pos = 0usize;
@@ -497,7 +582,8 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 				if section.status == RodStatus::Undecodable && tag.len() >= 3 {
 					if let Some(sc) = parse_section_cipher(payload) {
 						if sc.compressed {
-							let recovered = cache.get(file, &tag_str).or_else(|| {
+							let cached = cache.get(file, &tag_str);
+							let recovered = cached.or_else(|| {
 								if run_crack {
 									let anchor = shift2.and_then(|d2| anchor_from_shift(&tag, sc.cipher, d2));
 									let iv = crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, anchor);
@@ -531,6 +617,15 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 								}
 								None => {}
 							}
+							// A cached key that did not open a classic section is
+							// another build's, under the same file name: search
+							// for this one's and keep it in its place.
+							if section.status == RodStatus::Undecodable && cached.is_some() && run_crack && search_has_a_crib(&tag, sc.cipher) {
+								if let Some(iv3to8) = crack::recover_iv3to8(&tag, sc.cipher, sc.plainlen, None) {
+									cache.insert(file, &tag_str, iv3to8);
+									section = decode_with_iv(&tag_str, &sc, rod_block0_iv_recovered(&tag, iv3to8));
+								}
+							}
 						}
 					}
 				}
@@ -550,9 +645,70 @@ pub fn decode_rod_recover(data: &[u8], file: &str, cache: &mut IvCache, run_crac
 	sections
 }
 
+/// Building `.rod` files for tests, with no Ross-Tech data in them.
+///
+/// The tool only ever reads these files; a test that needs one writes it. Each
+/// section is framed as the real ones are, its first block under the tag-derived
+/// IV (`product = 0`, so it opens with no key) or under a chosen nonzero product
+/// (so it opens only with that product's key — a blocked zlib section, or a TEA
+/// section whose first eight bytes read wrong).
+#[cfg(test)]
+pub(crate) mod testkit {
+	use super::{KEY_ROD, KS, MT, OFF_ROD, rod_block0_iv};
+	use crate::tea::tea_cbc_encrypt;
+
+	/// The full first-block IV for a chosen (nonzero) 5-byte product,
+	/// mirroring `rod_block0_iv` but with a nonzero seed tail — so the produced
+	/// `iv[3..8]` is guaranteed to lie in the reachable candidate space.
+	pub(crate) fn iv_for_product(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
+		let m = tag[1] as usize;
+		let mut seed = [0u8; 8];
+		seed[..3].copy_from_slice(&tag[..3]);
+		seed[3..8].copy_from_slice(&product5);
+		let mut iv = [0u8; 8];
+		for i in 0..8 {
+			let s = seed[i].wrapping_add(KS[(m * (i + 2)) & 0xff]);
+			iv[i] = s.wrapping_mul(MT[OFF_ROD[i]]);
+		}
+		iv
+	}
+
+	/// One section, framed: `[TAG]\r\n`, the two BE24 lengths, the cipher,
+	/// `\r\n[/TAG]\r\n`. `compressed` makes it a zlib section (header forced to
+	/// `78 da`, the `.rod` convention); otherwise it is plain TEA.
+	pub(crate) fn section(tag: &str, plain: &[u8], compressed: bool, product: Option<[u8; 5]>) -> Vec<u8> {
+		let iv = match product {
+			None => rod_block0_iv(tag.as_bytes()),
+			Some(product) => iv_for_product(tag.as_bytes(), product),
+		};
+		let mut body = match compressed {
+			true => {
+				let mut z = miniz_oxide::deflate::compress_to_vec_zlib(plain, 9);
+				z[0] = 0x78;
+				z[1] = 0xda;
+				z
+			}
+			false => plain.to_vec(),
+		};
+		while body.len() % 8 != 0 {
+			body.push(0);
+		}
+		let cipher = tea_cbc_encrypt(&body, &KEY_ROD, iv);
+		let read1 = cipher.len() as u32 | if compressed { 0 } else { 0x80_0000 };
+		let mut out = format!("[{tag}]\r\n").into_bytes();
+		out.extend_from_slice(&read1.to_be_bytes()[1..]);
+		out.extend_from_slice(&(plain.len() as u32).to_be_bytes()[1..]);
+		out.extend_from_slice(&cipher);
+		out.extend_from_slice(format!("\r\n[/{tag}]\r\n").as_bytes());
+		out
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::tea::tea_cbc_encrypt;
+	use testkit::iv_for_product;
 
 	/// Self-contained synthetic 94-byte `.rod` fixture: TEA-CBC-encrypted
 	/// (with `KEY_ROD` + the embedded `MT`/`KS` tables, `product = 0`) one
@@ -768,6 +924,32 @@ mod tests {
 	// --- Stage 1: recovered-IV cache round-trip ----------------------------
 
 	#[test]
+	fn a_cached_key_is_trusted_only_if_it_opens_the_section() {
+		// Every VCDS release re-encrypts its files under the same names, and the
+		// cache is keyed by name: a key from the last build must not be taken
+		// for this one's.
+		let product = [1, 2, 3, 4, 5];
+		let framed = testkit::section("MWB", b"000001,00\r\n", true, Some(product));
+		let (tag, payload_start) = find_next_tag(&framed, 0).unwrap();
+		let (payload_end, _) = find_close(&framed, payload_start, &tag).unwrap();
+		let sc = parse_section_cipher(&framed[payload_start..payload_end]).unwrap();
+		let right: [u8; 5] = iv_for_product(&tag, product)[3..8].try_into().unwrap();
+		let stale = [right[0] ^ 1, right[1], right[2], right[3], right[4]];
+		assert!(key_opens(&tag, &sc, right));
+		assert!(!key_opens(&tag, &sc, stale));
+
+		let mut cache = IvCache::default();
+		cache.insert("EV_X.rod", "MWB", right);
+		assert!(
+			recover_classic_key(&framed, "EV_X.rod", "MWB", &mut cache),
+			"the right key opens it, no search"
+		);
+		// And with the key right, the whole-file decode opens it too.
+		let opened = decode_rod_recover(&framed, "EV_X.rod", &mut cache, false);
+		assert_eq!(opened[0].status, RodStatus::Zlib);
+	}
+
+	#[test]
 	fn iv_cache_round_trips_through_json() {
 		let mut cache = IvCache::default();
 		cache.insert("STRUC.rod", "STRUC", [0x9d, 0x69, 0x92, 0x24, 0x29]);
@@ -777,54 +959,59 @@ mod tests {
 		assert_eq!(back.get("STRUC.rod", "MWB"), None);
 	}
 
+	#[test]
+	fn a_key_file_that_does_not_read_is_never_written_over() {
+		// It loads as an empty cache, and saving that back would erase every key
+		// it held — each one minutes of every core to find again.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("rod-keys.json");
+		std::fs::write(&path, b"{ torn").unwrap();
+		let mut cache = IvCache::load(&path);
+		assert_eq!(cache.get("X.rod", "MWB"), None, "it loads as empty");
+		cache.insert("X.rod", "MWB", [1, 2, 3, 4, 5]);
+		assert!(cache.save(&path).is_err());
+		assert_eq!(std::fs::read(&path).unwrap(), b"{ torn", "left as it was");
+
+		// A file that reads, or none at all, is replaced whole, with nothing left beside it.
+		std::fs::remove_file(&path).unwrap();
+		cache.save(&path).unwrap();
+		cache.insert("Y.rod", "INC", [6, 7, 8, 9, 10]);
+		cache.save(&path).unwrap();
+		let back = IvCache::load(&path);
+		assert_eq!(
+			(back.get("X.rod", "MWB"), back.get("Y.rod", "INC")),
+			(Some([1, 2, 3, 4, 5]), Some([6, 7, 8, 9, 10]))
+		);
+		assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_key_file_that_cannot_be_read_is_never_written_over() {
+		// It loads as an empty cache just as a torn one does, and renaming a new
+		// file over it would lose its keys the same way.
+		use std::os::unix::fs::PermissionsExt;
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("rod-keys.json");
+		let mut held = IvCache::default();
+		held.insert("X.rod", "MWB", [1, 2, 3, 4, 5]);
+		held.save(&path).unwrap();
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+		if std::fs::read(&path).is_ok() {
+			// Running as a user no permission stops: nothing to test here.
+			return;
+		}
+		let refused = IvCache::load(&path).save(&path);
+		std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+		assert!(refused.is_err());
+		assert_eq!(
+			IvCache::load(&path).get("X.rod", "MWB"),
+			Some([1, 2, 3, 4, 5]),
+			"the keys are still there"
+		);
+	}
+
 	// --- Stage 1: end-to-end offline crack on a synthetic blocked section ---
-
-	/// TEA encrypt one 8-byte block (inverse of [`crate::tea::tea_decrypt_block`]).
-	fn tea_encrypt_block(block: [u8; 8], key: &[u32; 4]) -> [u8; 8] {
-		let mut v0 = u32::from_le_bytes(block[0..4].try_into().unwrap());
-		let mut v1 = u32::from_le_bytes(block[4..8].try_into().unwrap());
-		let mut s = 0u32;
-		for _ in 0..32 {
-			s = s.wrapping_add(crate::tea::DELTA);
-			v0 = v0.wrapping_add((v1 << 4).wrapping_add(key[0]) ^ v1.wrapping_add(s) ^ (v1 >> 5).wrapping_add(key[1]));
-			v1 = v1.wrapping_add((v0 << 4).wrapping_add(key[2]) ^ v0.wrapping_add(s) ^ (v0 >> 5).wrapping_add(key[3]));
-		}
-		let mut out = [0u8; 8];
-		out[0..4].copy_from_slice(&v0.to_le_bytes());
-		out[4..8].copy_from_slice(&v1.to_le_bytes());
-		out
-	}
-
-	fn tea_cbc_encrypt(plain: &[u8], key: &[u32; 4], iv: [u8; 8]) -> Vec<u8> {
-		let mut out = Vec::with_capacity(plain.len());
-		let mut prev = iv;
-		for block in plain.chunks_exact(8) {
-			let mut x = [0u8; 8];
-			for i in 0..8 {
-				x[i] = block[i] ^ prev[i];
-			}
-			let c = tea_encrypt_block(x, key);
-			out.extend_from_slice(&c);
-			prev = c;
-		}
-		out
-	}
-
-	/// Build the full first-block IV for a chosen (nonzero) 5-byte product,
-	/// mirroring `rod_block0_iv` but with a nonzero seed tail — so the produced
-	/// `iv[3..8]` is guaranteed to lie in the reachable candidate space.
-	fn iv_for_product(tag: &[u8], product5: [u8; 5]) -> [u8; 8] {
-		let m = tag[1] as usize;
-		let mut seed = [0u8; 8];
-		seed[..3].copy_from_slice(&tag[..3]);
-		seed[3..8].copy_from_slice(&product5);
-		let mut iv = [0u8; 8];
-		for i in 0..8 {
-			let s = seed[i].wrapping_add(KS[(m * (i + 2)) & 0xff]);
-			iv[i] = s.wrapping_mul(MT[OFF_ROD[i]]);
-		}
-		iv
-	}
 
 	/// Build a synthetic `product != 0` zlib section, then prove the offline
 	/// cracker recovers the exact `iv[3..8]` and the section decodes.

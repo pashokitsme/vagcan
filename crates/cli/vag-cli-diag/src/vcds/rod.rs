@@ -13,9 +13,14 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use vag_data_labels::rod::{IvCache, RodStatus, decode_rod_recover};
+use vag_data_labels::rod::{IvCache, RodSection, RodStatus, decode_rod_recover};
 
-pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>) -> Result<()> {
+/// Open `path`'s sections with the cached keys — searching for one not cached
+/// yet when `run_crack` is set — save the keys, and write each decoded section
+/// to `dump` when given. Prints nothing but a spinner: [`run`] prints the
+/// listing, and `setup`, which opens files as one of its steps, says only what
+/// did not open.
+pub fn open(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>) -> Result<Vec<RodSection>> {
 	let data = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
 	let file_name = Path::new(path)
 		.file_name()
@@ -53,7 +58,21 @@ pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>)
 			}
 		}
 	}
+	Ok(sections)
+}
 
+/// Why a section did not open, in words — `None` for one that did.
+pub fn why_shut(section: &RodSection) -> Option<&'static str> {
+	match (&section.status, &section.text) {
+		(RodStatus::SearchDeclined, _) => Some("it is shifted, which only VCDS's runtime key opens"),
+		(RodStatus::Undecodable, _) | (_, None) => Some("the search for its key found nothing"),
+		_ => None,
+	}
+}
+
+/// `vagcan dev vcds rod`: open a file and list its sections.
+pub fn run(path: &str, run_crack: bool, cache: Option<&str>, dump: Option<&str>) -> Result<()> {
+	let sections = open(path, run_crack, cache, dump)?;
 	println!("{path}: {} section(s)", sections.len());
 	let mut ok = 0usize;
 	for s in &sections {

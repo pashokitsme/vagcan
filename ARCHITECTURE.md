@@ -10,8 +10,8 @@ in [`CLAUDE.md`](CLAUDE.md).
 
 ## The one fact that shapes everything
 
-**Names come from VCDS's label files. Scaling comes from ODIS today; VCDS holds it too, but
-vagcan cannot yet read it.**
+**Names come from VCDS's label files. Scaling comes from ODIS, from VCDS's own registry, or
+from a drive.**
 
 Ross-Tech's VCDS ships 300 MB of label and ODX files, and it holds a great
 deal: what every control unit is called, what its measuring blocks are called, which
@@ -20,30 +20,32 @@ its identifier, layout and scaling — in a global registry, `RM.rod`, indexed b
 `MWB` row numbers (found 2026-09-28, [`research/vcds-registry/README.md`](research/vcds-registry/README.md)).
 This corrects a long-standing conclusion in the archive that the scaling was "live-only"; that
 was an off-by-one in reading `MWB` (its leading number is a registry **row number**, mistaken
-for a name pointer). **vagcan does not yet read `RM.rod`**, so as shipped the sources below are
-unchanged — until the registry reader lands (that research file's §7), scaling still comes from
-ODIS or a drive.
+for a name pointer). `setup` reads it for the units of every surveyed car (step 5 below). About
+40 % of VCDS's files are *shifted* — encrypted under a key only a running VCDS holds — and stay
+closed; ODIS covers those.
 
 **VW's own ODIS-Service data can too, and that is why it leads today.** An extracted ODIS project
 declares, per control-unit variant, every identifier that unit answers together with the
-byte offset, the length, the byte order and the compu formula — the whole chain the
-label files provably do not hold. It is a declaration by the manufacturer rather than a
+byte offset, the length, the byte order and the compu formula — the whole chain, for
+every variant the project covers, where VCDS's registry has it only for the units a
+surveyed car answered and not in its shifted files. It is a declaration by the manufacturer rather than a
 measurement, so it ranks below a drive and above nothing; three rows this project had
 proved by driving came back identical out of the ODIS file, including a pair of
 engine-speed channels with opposite byte order that one wrong guess would have hidden.
 
-So there are three sources and they are not interchangeable:
+So there are four sources and they are not interchangeable:
 
 | | comes from | rebuildable? |
 |---|---|---|
 | which identifiers a variant answers, their shape and scaling; fault codes and their text | an ODIS project, via `vagcan setup` | yes, in minutes |
 | names, unit numbers, fault text where the project has none | a VCDS installation, via `vagcan setup` | yes, in minutes |
+| identifier, shape and scaling of a surveyed car's units, where ODIS has none | a VCDS installation's registry `RM.rod`, via `vagcan setup` | yes, in minutes |
 | `(identifier, raw form, factor, offset)` | measured on a vehicle | only by driving |
 
-The first two land in a **project** — `~/.vagcan/data/<project id>/`, holding
-`cache.sqlite`, `names.json`, `rod-keys.json` and `sources.json`, with the raw `.rod`
+The first three land in a **project** — `~/.vagcan/data/<project id>/`, holding
+`cache.sqlite`, `names.json`, `odx-ids.json`, `rod-keys.json` and `sources.json`, with the raw `.rod`
 files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
-VCDS *build* rather than of any car. The third lands in that project's `measurements/`.
+VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
 A tool short of one of them is in a completely different situation from a tool short of
 the other, and the messages it prints say which.
 
@@ -61,18 +63,19 @@ it, because a project declares its own coverage in `PRNR-INFO.xml`.
 `setup`'s first menu entry offers both at once, and it is not a convenience. An ODIS
 project names a channel the way a database does —
 `Brake_pedal_information_plausibility` — and carries a **text id** beside it
-(`MAS11563`, `IDE00030`). That id is the *same key* the names recovered from VCDS's
-`TTTEXT.ROD` are written under. So one source supplies which identifiers a variant
-answers, where the value sits in the reply and how to scale it, and the other supplies
-the human wording for the very same ids. Neither replaces the other, and a project
-holding only the ODIS half is valid and useful — the channels simply keep their machine
+(`MAS11563`, `IDE00030`). VCDS's `TTTEXT.ROD` names the same ids: a record's tail says
+which `IDE`/`MAS` it is the text of. `names.json` is keyed by the record's own id
+(`000080`), and `odx-ids.json` maps that id to the `IDE`/`MAS` it names. So one source
+supplies which identifiers a variant answers, where the value sits in the reply and how
+to scale it, and the other can supply the human wording for the very same ids. **That
+join is written, not yet read:** a channel's name is looked up in `names.json` by the
+row's `IDE`/`MAS` id, which never matches a record id, so with both sources a channel
+still shows its ODIS phrasing. Neither source replaces the other, and a project holding
+only the ODIS half is valid and useful — the channels simply keep their machine
 phrasing.
 
-The order the combined run reads them in is load-bearing. Recovering names from
-`TTTEXT.ROD` writes `names.json` wholesale, while the ODIS pass merges into whatever is
-already there; so VCDS is read **first** and ODIS fills in the text ids it alone knows.
-The other way round, the wholesale write would land on top and one combined run would
-come out worse than the two separate runs it is meant to be equivalent to.
+The two sources write their names to separate files — VCDS to `names.json`, wholesale,
+ODIS to `names-odis.json`, merged — so neither run overwrites the other's names.
 
 **Fault text comes from the project first, and the VCDS chain is the fallback.** An
 ODIS project carries, per ECU variant, a fault table (`DB_DOP_DTC`) mapping every
@@ -256,11 +259,14 @@ Fisher-Yates shuffles sharing one stream — read off the binary, not inferred. 
 95 alphabets, 219,490 of 219,490 name fields, zero wrong. See
 [`.archive/research/labels/fault-naming-hop.md`](.archive/research/labels/fault-naming-hop.md).
 
-**`TTTEXT.ROD` — the names.** Every record of its `[TXT]` section is enciphered under
-its **own** substitution, so there is no single key to find. The attack is
-dictionary-driven and bootstraps: records sharing the repetition pattern of their
-letter runs hold the same words under different keys, so one solve serves a whole
-cluster, and words read off solved records become vocabulary for the next pass. See
+**`TTTEXT.ROD` — the names.** Every record of its `[TXT]` section is `<id>,<payload>`,
+the payload enciphered under the alphabet `srand(id)` generates — the same generator as
+`RD.rod`'s tables, keyed by the record's own id. So every record reads by lookup, digits
+included: `<name>,` or `<name>,<kind>,<value>`, where kind 2 is an `IDE` and kind 7 a
+`MAS`. All 195,910 records of the 26.3 table read, and the names VCDS prints in its own
+logs as `ENG######` come back verbatim. See
+[`research/vcds-registry/README.md`](research/vcds-registry/README.md); the dictionary
+solver this replaced is in
 [`.archive/research/labels/tttext-codec.md`](.archive/research/labels/tttext-codec.md).
 
 ---
@@ -278,18 +284,21 @@ a real project away at the door.
 **The ODIS branch is two steps**: every variant's fault table and measurement chain
 walked into `cache.sqlite` — the `fault` and `reading` tables, with the language the
 project declares written on its `source` row — then every `(text id, name)` pair in
-every pool merged into `names.json`. A variant whose chain reaches a type this reader
+every pool merged into `names-odis.json`. A variant whose chain reaches a type this reader
 declines to open, or one it has no loader for, costs itself and nothing else — the count
 of what was skipped is reported rather than hidden, because a project describes hundreds
 of units and one bad one must not cost the rest.
 
-**The VCDS branch is the four steps below.** The first of them is what makes an
-installation disposable: fault naming reads `.rod` files off disk at run time, so those
-are copied out, flat, into the shared pool. The `.lbl`/`.clb` files are deliberately
-*not* copied — they are read once, here, into `cache.sqlite`, and that cache is what
-survives of them.
+**The VCDS branch is the five steps below**, numbered as `setup` prints them.
 
-**1. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
+**1. The raw files → the shared pool.** What makes the installation unnecessary to every
+car command: fault naming reads `.rod` files off disk at run time, so those are copied
+out, flat, into `~/.vagcan/rod/`. The `.lbl`/`.clb` files are deliberately *not* copied —
+they are read once, in step 2, into `cache.sqlite`, and that cache is what survives of
+them. Every car command runs without the installation; `setup` reads it in steps 1, 2 and
+5, so it is kept until the car it serves has been surveyed and `setup` has run again.
+
+**2. The label files → `cache.sqlite`.** Every `.lbl` parsed and every `.clb` decrypted
 into a SQLite database keyed by part number, so a later lookup is milliseconds rather
 than a re-parse of 300 MB. The cache records which directory it was built from — inside
 itself, so it is one file that can say what it holds — because the freshness rule is an
@@ -297,57 +306,48 @@ mtime comparison and an mtime cannot tell "older than the label files" from "bui
 *different* set of label files", which matters as soon as somebody has both the English
 and the Russian install.
 
-**2. `TTTEXT.ROD` → `names.json`.** The `[TXT]` section is decrypted and inflated,
-then the cipher above is attacked with the label files' own label files as the in-domain
-vocabulary (weight 8) and the system word list as the general one (weight 1). This is
-the slow step: minutes, mostly single-threaded search.
+**3. `TTTEXT.ROD` → `names.json` and `odx-ids.json`.** The `[TXT]` section is
+decrypted and inflated, then every record is read under its own key: seconds, and
+nothing is guessed or withheld. `names.json` maps each record's id to its name;
+`odx-ids.json` maps it to the `IDE`/`MAS` id its tail names — the key by which a VCDS
+text can join what ODIS and a `dash.toml` call the same measurement; nothing reads it
+yet. A record of neither shape would be reported, not guessed at; the 26.3 table has
+none.
 
-Then comes the **prior**, and it is the difference between four thousand names and
-seventeen. Weighing every in-domain word alike leaves the search breaking a tie
-between two same-shape words — `of`/`ob`, `oil`/`bil`, `voltage`/`boltage` — by
-alphabetical order, and a cluster leader that guesses wrong pins that letter for
-every record it feeds. The fix is the word's **frequency in the decoded label files
-itself**: `of` outnumbers `ob` thousands to one, so re-solving every cluster under
-that frequency settles the ties on evidence. It is measured from the decode at parse
-time, never a table baked into the binary. Two wrinkles the reference label files forced:
-the in-domain seed counts a word's label-file occurrences but **saturates** them,
-because a label file lists status literals (`OK`, `ON`, `LC`) thousands of times and
-uncapped they outrank `of` and make the search read `Status ok` for `Status of`; and
-the frequency drives the search and the gate's ambiguity margin, while *membership* —
-whether a word is a word at all — stays the pre-bootstrap seed, so a misreading fed
-back into the vocabulary cannot vouch for itself.
-
-Then the readings pass a **gate**, and the gate is the product rather than the
-decode. About 63 % of records decode; far fewer may be shipped, because a fluent
-wrong reading is indistinguishable from a right one at the point of use. A reading is
-kept only if:
-
-- no letter is unresolved;
-- the trailing field run is cleanly separable — a record is
-  `<name><sep><digit><sep><number>` and the tail survives the decode as noise, so it
-  is cut, but only where the run's first character recurs later in it. Otherwise the
-  name may itself have ended in a digit, and cutting silently turns `… of cylinder 4`
-  into `… of cylinder`;
-- it contains no digit at all (the glyph class carrying digits is unbroken, so a
-  digit in a name is a guess);
-- it has at least 12 letters;
-- every word of length ≥ 3 is one the **seed** vocabulary knows;
-- every word beats its best alternative reading by **20×**.
-
-The last two are the ones that matter. `Hill bytes to maintain backward
-compatibility` is fluent, dictionary-clean and stable across keys, and the word is
-`Fill`: a letter occurring once in a record is pinned by nothing but the dictionary.
-And the vocabulary has to be the *seed*, not the grown one — the bootstrap feeds
-words from solved records back in at high weight, so gating against the grown
-dictionary teaches the gate its own misreadings and then passes them.
-
-**3. `RD.rod` and `MUX.rod` → `rod-keys.json`.** The label files-wide sections whose keys
+**4. `RD.rod` and `MUX.rod` → `rod-keys.json`.** The label files-wide sections whose keys
 every car needs. Per-unit files are deliberately not swept: there are over sixteen
 thousand of them, a blocked section costs about a minute of every core, and which
 handful a given car needs is a question only that car can answer.
 
-Each step is skipped when what it would write is already newer than what it would
-read; `--refresh` forces the lot.
+**5. `RM.rod` → the car's channels in `cache.sqlite`.** For every unit of every car this
+machine has surveyed (`~/.vagcan/cars/<VIN>/survey.jsonl`), the unit's file is found by its
+`F19E`/`F1A2`, its `[MWB]` list — its own or the store its `[INC]` names — points at 1-based
+rows of `RM.rod`, and each row gives the DID, bit layout and scaling, named from `TTTEXT`, with
+units from `UNIT.ROD` and text tables from `TTDOP.rod`. Read from the installation being set
+up, not from the pool: a list and the registry it points into mean something only together,
+and the pool can hold two builds' files under one name. A classic section's key is searched
+for once (minutes); a shifted one never. With no car surveyed the step is *not yet*, not a
+gap: it says what to type. A table that does not open, a row that does not read, a list
+that lost its first row — each is said, never left as a smaller number — and a unit the
+installation has nothing for is not a gap when the ODIS project describes it. When the step
+writes nothing (no survey, no registry) it leaves no rows of an earlier installation behind.
+
+The rows sit beside ODIS's under the installation's own source, and the last installation
+read replaces the one before, as its label files do. **ODIS wins every field it describes
+and VCDS fills only what ODIS lacks** (owner, 2026-09-28), and a proven row outranks both.
+ODIS also keeps the ODX ids it gives: VCDS names a field by the record of the name it shows,
+several fields can show one name, and a VCDS row filling a field ODIS lacks gives up an id
+ODIS gives another field of the unit, so `unit:IDE…` picks out what it picked out with ODIS
+alone. What a sweep asks a unit is still only what a drive proved and its ODIS variant
+declares: a VCDS list comes from whichever of a family's platform files read first, and
+whether it may widen a sweep is the owner's decision, not yet made.
+
+Step 1 copies only what is newer than the pool's copy, and step 2 is skipped when its cache
+is newer than the label files; `--refresh` forces both. Step 4 searches only for keys not
+cached, or cached from another build. Steps 3 and 5 run every time: the names are read in seconds and written only
+when they come out different — a file time cannot tell the table read last time from
+another build's — and the registry step reads whichever units the surveys now name, which
+no file time can say.
 
 ---
 

@@ -18,7 +18,8 @@ holds no read identifier". Both rested on two mistakes, now corrected:
 
 Found by cross-checking a VW ODIS project (which declares the whole chain per variant) against
 the VCDS files as a large known-plaintext crib, 2026-09-27/28. **ODIS was the oracle only** —
-none of its data is needed at run time or shipped. Not yet implemented in vagcan; §Next.
+none of its data is needed at run time or shipped. In vagcan: the exact `TTTEXT` read
+(2026-09-28, `label-lookup/02` phase 1); the registry, as `setup`'s step 5 (2026-09-28, §7).
 
 Companion to `.archive/research/labels/` (read `label-linkage.md`, `tttext-codec.md`,
 `fault-naming-hop.md` first). This file is the forward-looking record; the archive keeps the
@@ -51,7 +52,10 @@ corpus is).
 1. A unit's `[MWB]` row is `<n>,<code>`. `n` is a **1-based** row number in `RM.rod [MWB]`
    (row `n` = registry index `n-1`). Same shape as `[DTC]` → `RD.rod`.
 2. Each `RM.rod` row is `<key>,<payload>`, the payload deciphered under `srand(key)` — 13
-   fields in 99.3% of rows (12 when `f6` is absent):
+   fields in 99.3% of rows. The other 2,098 have 12, and what they lack is `f11`, not `f6`:
+   their last field is the 4-character one in every row, where every 13-field row's `f11` has
+   6 characters (review, 2026-09-28; this line said `f6` until then). Fields `f0`–`f10` keep
+   their places either way:
    - **f0** — the DID, in decimal;
    - **f7·8 + f8** — bit offset; **f9** — bit length;
    - **f2** — type (`& 63`: 0 linear, 2 identity, 3 texttable, 4 OBD-II PID formula, 7 raw
@@ -196,9 +200,15 @@ shifted section will search for hours (§6).
 
 ## 7. Next — implementation (its own branch, reviewed)
 
-1. **Read `TTTEXT` with `TableAlphabet::for_key(record id)`** in `vag-data-labels`, replacing
-   the dictionary solver: seconds, no crack. Corrects ~1,870 of 14,736 catalog names (685 were
-   letter misreads) and yields every record's digits. See §8 for the catalog delta.
+**Built 2026-09-28**: [`todo/label-lookup/02-vcds-registry.md`](../../todo/label-lookup/02-vcds-registry.md)
+has what landed, the acceptance on the reference car and what is left.
+
+1. **Done 2026-09-28** (`label-lookup/02` phase 1): **read `TTTEXT` with
+   `TableAlphabet::for_key(record id)`** in `vag-data-labels`, replacing the dictionary solver:
+   seconds, no crack. Corrects ~1,870 of 14,736 catalog names (685 were letter misreads) and
+   yields every record's digits. See §8 for the catalog delta. `setup` writes every record to
+   `names.json` and the `IDE`/`MAS` ids to `odx-ids.json`; `vagcan dev vcds tttext` prints the
+   same read as `scripts/decode_tttext.py`.
 2. **A registry reader**: `RM.rod` once per install, then per unit INC → `IV_…_M` → rows;
    decode `f2` types 0/2/3/4/7/8 with the LE/signed bits; `UNIT.ROD` for units; `TTDOP` for
    enum levels. Feed the rows into the cache beside ODIS, so `setup` gives a VCDS-only owner

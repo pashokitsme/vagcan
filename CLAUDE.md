@@ -202,7 +202,8 @@ research/        RE writeups + tooling (NOT shipped) for work still in progress:
   vcds-registry/       VCDS keeps every measurement's DID, layout and scaling in the global
                        registry `RM.rod` (2026-09-28); a unit's `MWB` lists 1-based row numbers
                        into it. Overturns "scaling is live-only" (the archive labels/ files,
-                       corrected in place). Not yet in the crates. `README.md` + `scripts/`;
+                       corrected in place). Read by `vag-data-labels::registry` and `setup`'s
+                       step 5 since 2026-09-28. `README.md` + `scripts/`;
                        `scratch/` is the Ross-Tech-derived data, gitignored
   tuning/              the stage-1 FRF pipeline, not started; `frfscope/` opens a
                        Simos18 calibration as graphs (read-only, never talks to a car)
