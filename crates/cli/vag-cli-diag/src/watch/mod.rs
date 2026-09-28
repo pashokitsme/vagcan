@@ -2312,6 +2312,7 @@ fn coverage_report(
 	source: &SurveySource,
 	answered: &crate::plan::Answered,
 	project: Option<&str>,
+	vcds_read: bool,
 ) -> String {
 	let list = |units: &[u16]| units.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" ");
 	let units: Vec<u16> = identities.iter().map(|i| i.request).collect();
@@ -2357,11 +2358,12 @@ fn coverage_report(
 			list(&named)
 		));
 	}
-	if proven.is_empty() && named.is_empty() && !units.is_empty() {
-		// Not one unit of this car has a scaling from anywhere. That is the state
-		// of a project `setup` has not read a source into for this car, and it is
-		// worth a paragraph rather than a silence: everything on the screen will
-		// be hex, and the paragraph says what `setup` needs to change that.
+	// Nothing on this car is scaled but the standard OBD-II rows. That is the
+	// state of a project `setup` has not read a source into for this car, and it
+	// is worth a paragraph rather than a silence: the paragraph says what `setup`
+	// needs to change that.
+	let undescribed = proven.is_empty() && named.is_empty() && !units.is_empty();
+	if undescribed {
 		out.push_str(&crate::missing::no_catalog("This car", std::path::Path::new(catalogs)));
 	}
 	if !raw.is_empty() {
@@ -2416,26 +2418,46 @@ fn coverage_report(
 			out.push_str("  The survey in use does not cover them either.\n");
 		}
 		let spec = silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(",");
-		out.push_str(&sweep_offer(&silent, project, &spec));
+		let routes = match undescribed {
+			// The paragraph above gave them, in the one wording.
+			true => Routes::Said,
+			false => Routes::Offer {
+				project: project.is_some(),
+				surveyed: !matches!(source, SurveySource::Missing { .. }),
+				vcds_read,
+			},
+		};
+		out.push_str(&sweep_offer(&silent, routes, &spec));
 	}
 	out
 }
 
+/// Which cheaper routes to the units nothing describes are still open — or
+/// that the report has already given them.
+#[derive(Clone, Copy)]
+enum Routes {
+	/// The no-scalings paragraph above named them, in the one wording.
+	Said,
+	/// What this machine has: a project, a survey in use, VCDS registry rows.
+	Offer { project: bool, surveyed: bool, vcds_read: bool },
+}
+
 /// What sweeping the units nothing describes would be, said before it is asked.
 ///
-/// **This is the one place `watch` still talks about a survey, and it is the
-/// only place it is still true.** Everywhere else the channels come from what
-/// the project declares, resolved off what the car reports about itself, with
-/// no sweep in the picture at all. A unit no source describes is the exception:
-/// there is nothing to look the identifiers up in, so the only way to learn
-/// them is to ask for identifiers nothing declares — which is a fuzz test of
-/// that unit's diagnostic server.
+/// A unit no source describes has nothing to look its identifiers up in, so
+/// the only way to learn them on the car is to ask for identifiers nothing
+/// declares — a fuzz test of that unit's diagnostic server. So the paragraph
+/// prices it rather than recommending it, and names first a cheaper route that
+/// can still help:
+/// - no survey in use, or no VCDS registry read: a VCDS installation reads the
+///   units of a surveyed car, the survey first when there is none;
+/// - both done: the installation had nothing for these units — no file, or a
+///   shifted one — and an ODIS project is what can describe them;
+/// - no project at all: an ODIS project too.
 ///
-/// So the paragraph prices it rather than recommending it, and where a cheaper
-/// answer exists it is named first: a machine with no project at all may be one
-/// `vagcan setup` away from describing these units without asking the car
-/// anything.
-fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
+/// Repeating a route that cannot help would send somebody round a loop whose
+/// only exit on screen is the fuzz test.
+fn sweep_offer(silent: &[u16], routes: Routes, spec: &str) -> String {
 	let n = silent.len();
 	let mut out = format!(
 		"\n{n} control {} on this car — {} — {} nothing on this machine describes.\n",
@@ -2443,24 +2465,45 @@ fn sweep_offer(silent: &[u16], project: Option<&str>, spec: &str) -> String {
 		silent.iter().map(|r| format!("{r:03X}")).collect::<Vec<_>>().join(" "),
 		if n == 1 { "is one" } else { "are ones" }
 	);
-	// The cheap answers first. A project describes a whole platform without the
-	// car being asked anything, and a VCDS installation describes the units of a
-	// surveyed car — a survey that asks each unit only what its data declares.
-	// Somebody who sweeps blind instead spends minutes of fuzzing to rediscover
-	// part of what those would have handed them.
-	if project.is_none() {
-		out.push_str(
-			"\nNo project is set up here. An extracted ODIS project may describe them outright —\n\
-             `vagcan setup /path/to/ODIS-project` — and that asks the car nothing at all.\n",
-		);
+	// The cheap answers first: somebody who sweeps blind instead spends minutes
+	// of fuzzing to rediscover part of what these would have handed them.
+	if let Routes::Offer {
+		project,
+		surveyed,
+		vcds_read,
+	} = routes
+	{
+		let vcds_done = surveyed && vcds_read;
+		if !project || vcds_done {
+			out.push_str(match vcds_done {
+				true => {
+					"\nThe VCDS installation read has nothing for them — no file, or a shifted one. An ODIS\n\
+                         project that describes them brings their channels, and asks the car nothing:\n    \
+                         vagcan setup <ODIS project>\n"
+				}
+				false => {
+					"\nNo project is set up here. An extracted ODIS project may describe them outright,\n\
+                          and that asks the car nothing:\n    \
+                          vagcan setup <ODIS project>\n"
+				}
+			});
+		}
+		if !vcds_done {
+			out.push_str(match surveyed {
+				true => {
+					"\nA VCDS installation describes the units of the survey in use:\n    \
+                         vagcan setup <VCDS installation>\n"
+				}
+				false => {
+					"\nA VCDS installation describes the units of a surveyed car. The survey identifies\n\
+                          each unit and asks it only what its data declares; then setup reads their channels:\n    \
+                          vagcan dev survey\n    \
+                          vagcan setup <VCDS installation>\n"
+				}
+			});
+		}
+		out.push_str("Worth trying before the sweep below.\n");
 	}
-	out.push_str(
-		"\nA VCDS installation describes the units of a surveyed car. The survey identifies\n\
-         each unit and asks it only what its data declares; then setup reads their channels:\n    \
-         vagcan dev survey\n    \
-         vagcan setup <VCDS installation>\n\
-         Both are worth trying before the sweep below.\n",
-	);
 	out.push_str(&format!(
 		"\nThe other way is to ask those units identifiers nothing declares they answer:\n    \
          vagcan dev survey --only {spec} --blind {spec}\n\n\
@@ -2610,7 +2653,15 @@ pub async fn run(open: impl AsyncFnOnce() -> Result<Bus>, opts: Options<'_>) -> 
 	// that stream can be asked to skip. It is still the terminal either way.
 	eprint!(
 		"{}",
-		coverage_report(&identities, &channels, catalogs, &source, &answered, extracted.project())
+		coverage_report(
+			&identities,
+			&channels,
+			catalogs,
+			&source,
+			&answered,
+			extracted.project(),
+			extracted.has_kind(vag_data_db::VCDS),
+		)
 	);
 	// A cache from before each state kept its whole range still names a state
 	// read on the range's lower end, and shows the rest as bytes. Said once, for
@@ -2951,6 +3002,7 @@ mod tests {
 			&SurveySource::Missing { cache: None },
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		let first = text.lines().next().unwrap().to_string();
 		let (count, listed) = first.split_once(':').unwrap();
@@ -2974,6 +3026,7 @@ mod tests {
 			},
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		assert!(text.contains("vagcan dev survey"), "{text}");
 		assert!(text.contains("713"), "the unit with nothing to show is named: {text}");
@@ -3011,6 +3064,7 @@ mod tests {
 			&SurveySource::Cached(cache),
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		assert!(text.contains("survey.jsonl"), "{text}");
 		assert!(text.contains("713"), "{text}");
@@ -3048,6 +3102,7 @@ mod tests {
 			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		assert!(text.contains("nothing read into this project scales them"), "{text}");
 		// What does, since 2026-09-28: `setup`, and with VCDS the survey first.
@@ -3086,6 +3141,7 @@ mod tests {
 			&SurveySource::Cached(std::path::PathBuf::from("/somewhere/survey.jsonl")),
 			&answered,
 			None,
+			false,
 		);
 		assert!(text.contains(&format!("{quiet} declared")), "{text}");
 		assert!(text.contains("answered nothing"), "{text}");
@@ -3100,6 +3156,7 @@ mod tests {
 			&SurveySource::Missing { cache: None },
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		assert!(!text.contains("answered nothing"), "{text}");
 	}
@@ -3130,6 +3187,7 @@ mod tests {
 			&SurveySource::Missing { cache: None },
 			&crate::plan::Answered::default(),
 			None,
+			false,
 		);
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(text.contains("/x/data/measured"), "{text}");
@@ -3161,20 +3219,53 @@ mod tests {
 			&SurveySource::Missing { cache: None },
 			&crate::plan::Answered::default(),
 			Some("SK37X"),
+			false,
 		);
 		assert!(text.contains("has no scalings on this machine"), "{text}");
 		assert!(!text.contains("named and scaled from this project"), "{text}");
+		// 714 answers nothing described, and the sweep's offer does not give the
+		// same routes again in its own words.
+		assert_eq!(text.matches("<VCDS installation>").count(), 1, "{text}");
 	}
 
 	#[test]
 	fn a_unit_nothing_describes_is_offered_the_survey_before_a_blind_sweep() {
 		// With a project set up and no survey yet, a VCDS installation's list is
 		// one survey away; the blind sweep, a fuzz test, is the last resort.
-		let text = sweep_offer(&[0x714, 0x713], Some("SK37X"), "714,713");
+		let offer = |project, surveyed, vcds_read| {
+			sweep_offer(
+				&[0x714, 0x713],
+				Routes::Offer {
+					project,
+					surveyed,
+					vcds_read,
+				},
+				"714,713",
+			)
+		};
+		let text = offer(true, false, false);
 		let survey = text.find("vagcan dev survey\n").expect(&text);
 		let setup = text.find("vagcan setup <VCDS installation>").expect(&text);
 		let blind = text.find("--blind").expect(&text);
 		assert!(survey < setup && setup < blind, "{text}");
+
+		// Surveyed, and the VCDS installation read: it had nothing for them, and
+		// sending the reader to survey and set up again would be a loop. An ODIS
+		// project is what is left before the sweep.
+		let text = offer(true, true, true);
+		assert!(!text.contains("vagcan dev survey\n"), "{text}");
+		assert!(!text.contains("<VCDS installation>"), "{text}");
+		assert!(text.find("vagcan setup <ODIS project>").expect(&text) < text.find("--blind").expect(&text));
+
+		// Surveyed, VCDS not read yet: setup alone, no second survey.
+		let text = offer(true, true, false);
+		assert!(!text.contains("vagcan dev survey\n"), "{text}");
+		assert!(text.contains("vagcan setup <VCDS installation>"), "{text}");
+
+		// The report already gave the routes: only the sweep's price is left.
+		let text = sweep_offer(&[0x714], Routes::Said, "714");
+		assert!(!text.contains("vagcan setup"), "{text}");
+		assert!(text.contains("--blind"), "{text}");
 	}
 
 	#[test]

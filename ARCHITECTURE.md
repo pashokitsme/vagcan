@@ -47,7 +47,7 @@ The first three land in a **project** — `~/.vagcan/data/<project id>/`, holdin
 files and the fault text in a shared `~/.vagcan/rod/` because those are a property of a
 VCDS *build* rather than of any car. The last lands in that project's `measurements/`.
 `setup` fills the project, and with a VCDS installation alone the car's scalings need a
-survey first; the messages a short tool prints say which of the two it is short of.
+survey first; the messages a short tool prints say whether it lacks label data or scalings.
 
 **A project is keyed by platform, not by car**, and that is the whole reason it is not
 keyed by VIN: `SK37X` is VW's own identifier for a platform covering every Octavia III,

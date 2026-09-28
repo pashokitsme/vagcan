@@ -257,8 +257,8 @@ fn shell_word(path: &str) -> String {
 pub fn raw_channels_note(count: usize) -> String {
 	format!(
 		"{count} channel{} shown as raw bytes: nothing read into this project scales them.\n\
-         `vagcan setup` scales those an ODIS project, or a VCDS installation read after\n\
-         `vagcan dev survey`, names; identifiers no source names stay raw.",
+         `vagcan setup` scales an identifier that an ODIS project, or a VCDS installation\n\
+         read after `vagcan dev survey`, lists with a scaling; any other stays raw.",
 		if count == 1 { " is" } else { "s are" }
 	)
 }
@@ -337,7 +337,7 @@ mod tests {
 		assert!(one.contains("vagcan setup"), "{one}");
 		assert!(one.contains("vagcan dev survey"), "{one}");
 		// A condition, not a promise: what no source names stays raw.
-		assert!(one.contains("stay raw"), "{one}");
+		assert!(one.contains("any other stays raw"), "{one}");
 		// It shares a screen with the values it is about. Three lines, no more.
 		assert_eq!(one.lines().count(), 3, "{one}");
 	}
