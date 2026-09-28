@@ -15,7 +15,8 @@
 
 use std::fmt::Write as _;
 
-/// One channel the resolution could not find, and the names it looked under.
+/// One channel the resolution could not find, and what it looked under: the
+/// text ids, then the names, in the order they were tried.
 pub struct MissingChannel {
 	pub key: &'static str,
 	pub tried: Vec<String>,
@@ -31,11 +32,12 @@ pub struct ChannelFound {
 
 /// The channel check failed, at a standstill, before anything else happened.
 ///
-/// Naming the survey commands matters more than naming the missing channel: a
-/// person whose car is not in the catalogs cannot do anything with "speed is
-/// missing", but `survey --diff` is exactly the tool that finds it. The names
-/// the resolution looked under come between the two, because they are what
-/// somebody reading their own label files can check against without driving.
+/// Naming the way to the channels matters more than naming the missing channel:
+/// a person whose car's rows are not in the project cannot do anything with
+/// "speed is missing", but `vagcan setup` is what brings the rows, and the
+/// routes to it are quoted at the end. The ids and the names the resolution
+/// looked under come between the two, because they are what somebody reading
+/// their own label files can check against without driving.
 pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> String {
 	let mut out = String::new();
 	let names: Vec<&str> = missing.iter().map(|m| m.key).collect();
@@ -55,10 +57,10 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 			if f.ok { "ok" } else { "not in the catalog" }
 		);
 	}
-	// The words, because they are the half of this the reader can act on
-	// without a survey: a car whose label files call the channel something else is
-	// the ordinary reason for this refusal, and the only useful thing to tell
-	// its owner is which names their catalogs would have to use.
+	// The ids and the words, because they are the half of this the reader can
+	// act on without a survey: what a row of their own label files has to carry
+	// to be found — one of the text ids, or the words in its name with no id of
+	// its own — in the role's unit of measure.
 	for m in missing.iter().filter(|m| !m.tried.is_empty()) {
 		let names: Vec<String> = m.tried.iter().map(|n| format!("\"{n}\"")).collect();
 		let _ = writeln!(out, "\n    {} was looked for under {}", m.key, names.join(", "));
@@ -72,9 +74,13 @@ pub fn missing_channels(found: &[ChannelFound], missing: &[MissingChannel]) -> S
 		out,
 		"\n\
          There is no stopwatch without a speed channel, and measure will not guess one\n\
-         from raw bytes. It finds a channel by the names above only: one under another\n\
-         name is not used. If this car's project has no channels for its units yet,\n\
-         `vagcan setup` brings them:\n\
+         from raw bytes. It finds a channel by the text ids above; by the names above,\n\
+         for a row with no text id when none on the car carries one of the ids, or for\n\
+         a row a drive proved; and, on an engine for which the project declares no\n\
+         OBD-II rows, by the standard OBD-II identifiers. A row in another unit of\n\
+         measure is not used.\n\
+         If this car's project has no channels for its units yet, `vagcan setup`\n\
+         brings them:\n\
          {}",
 		vag_cli_core::missing::scalings_path()
 	);
@@ -396,19 +402,26 @@ mod tests {
 	}
 
 	#[test]
-	fn a_missing_channel_says_which_names_were_looked_under() {
+	fn a_missing_channel_says_which_ids_and_names_were_looked_under() {
 		// The resolution carried them all the way here and then dropped them.
-		// For a car this project has never seen, the words its label files would
-		// have to use are the only thing the owner can check by reading.
+		// For a car this project has never seen, the ids and the words its label
+		// files would have to use are the only thing the owner can check by
+		// reading — and the sentence after them has to say that both were tried,
+		// not that a name is the only way in.
 		let text = missing_channels(
 			&[],
 			&[MissingChannel {
 				key: "speed",
-				tried: vec!["vehicle speed".into(), "road speed".into()],
+				tried: vec!["IDE00075".into(), "vehicle speed".into(), "road speed".into()],
 			}],
 		);
+		assert!(text.contains("\"IDE00075\""), "{text}");
 		assert!(text.contains("\"vehicle speed\""), "{text}");
 		assert!(text.contains("\"road speed\""), "{text}");
+		// "text id" is what every other screen and document calls the key.
+		assert!(text.contains("by the text ids above"), "{text}");
+		assert!(!text.contains("ODX"), "{text}");
+		assert!(!text.contains("by the names above only"), "no longer true:\n{text}");
 	}
 
 	#[test]

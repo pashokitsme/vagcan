@@ -107,9 +107,12 @@ item 8, `dash/18` on a real pull.
 4. **Measurements from a VCDS install** — [`label-lookup/02`](label-lookup/02-vcds-registry.md):
    **built 2026-09-28** on `feat/vcds-registry-p2`, reviewed the same day. The owner's `dash.toml`
    builds from a VCDS install alone with the same 19 channels as from ODIS. What is left is listed
-   there: the platform file's choice, `measure`'s roles by ODX id, the Russian fallback, and one
-   decision for the owner — whether a VCDS list may widen what `dev survey` asks (until then it
-   does not). `calibrate` was removed entirely, in its own change (owner, 2026-09-28).
+   there: the platform file's choice, the Russian fallback, and one decision for the owner —
+   whether a VCDS list may widen what `dev survey` asks (until then it does not). `measure`'s
+   roles go by text id since 2026-09-28 (`feat/measure-roles-by-id`): the gearbox's speed leads
+   the reference car; an emulation over a scratch VCDS-only project the same day (not
+   reproduced by a test) gave that owner boost and the shaft speeds. `calibrate` was removed
+   entirely, in its own change (owner, 2026-09-28).
 
 **With the car**
 
@@ -154,6 +157,9 @@ item 8, `dash/18` on a real pull.
 | [`dash/20-fault-count.md`](dash/20-fault-count.md) | the car's stored codes counted once after boot, a triangle and the count in the corner, `?` when there is no count — built 2026-09-27; needs the car |
 | [`dash/21-runs-in-flash.md`](dash/21-runs-in-flash.md) | stopwatch runs in flash, read over BLE, saved on LIMIT; recorded 2026-09-27, open questions for the owner |
 | [`label-lookup/02-vcds-registry.md`](label-lookup/02-vcds-registry.md) | scalings, names and units from a VCDS install through its `RM.rod` registry — built 2026-09-28 on `feat/vcds-registry-p2`, in review; the owner's `dash.toml` builds from VCDS alone |
+| [`measure/01-pedal-at-rest.md`](measure/01-pedal-at-rest.md) | the engine's absolute pedal reads 15 % at rest and the coastdown waits for 1 % — found in review 2026-09-28; the owner's call |
+| [`measure/02-cross-check-tracks.md`](measure/02-cross-check-tracks.md) | every unit's cross-check speed lands in one track — found in review 2026-09-28; open |
+| [`measure/03-speed-series-unit.md`](measure/03-speed-series-unit.md) | the saved speed is in m/s, labelled and drawn as km/h: `measure view` shows it 3.6 times low and never draws a rolling mark — found in review 2026-09-28; open |
 
 Finished task files are in `.archive/tasks/done/` (`dash/16`, UDS over BLE, moved there on
 2026-09-15 — its car check is `dash/17` §4); superseded designs in `.archive/specs/`.

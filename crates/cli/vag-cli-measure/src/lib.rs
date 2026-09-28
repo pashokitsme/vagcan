@@ -485,13 +485,32 @@ impl Plan {
 /// `None` for a unit this does not know, which makes the channel absent rather
 /// than off by a factor of 3.6. The conversions are exact and are properties of
 /// the units themselves: ISO 80000-3 for km/h, and the international mile for
-/// mph.
-fn speed_to_ms(unit: &str, value: f64) -> Option<f64> {
+/// mph. It is also the one list of units [`channels`] admits a speed row in and
+/// ranks its step by: a row this cannot convert is not a speed channel.
+pub(crate) fn speed_to_ms(unit: &str, value: f64) -> Option<f64> {
 	match unit.trim() {
 		"km/h" | "kmh" | "kph" => Some(value / power::KMH_PER_MS),
 		"m/s" | "ms" => Some(value),
 		"mph" => Some(value * 0.447_04),
 		_ => None,
+	}
+}
+
+/// The unit every cross-check speed is recorded and shown in, whatever unit its
+/// row was written in: [`sample_set`] converts each value on the way into their
+/// one shared track, so the file, the table and the chart say km/h for it.
+const CROSS_CHECK_UNIT: &str = "km/h";
+
+/// The unit a channel is recorded under in the file, the table and the chart:
+/// the cross-check speeds' one track is in [`CROSS_CHECK_UNIT`], converted on
+/// the way in; every other channel carries its catalog's own spelling — the
+/// leading speed included, although its series is stored in m/s (`session.rs`,
+/// `run_json`). That mislabel predates this rule and is
+/// `todo/measure/03-speed-series-unit.md`.
+fn recorded_unit(channel: &Resolved) -> &str {
+	match channel.key {
+		"cross-check speed" => CROSS_CHECK_UNIT,
+		_ => &channel.def.unit,
 	}
 }
 
@@ -546,14 +565,24 @@ fn sample_set(plan: &Plan, records: &Records, at: Seconds) -> session::SampleSet
 					set.states.push((channel.key, at, label));
 				}
 			}
-			// Several units can answer to "speed"; they share one role key, so
-			// only the first is carried as a channel of its own. Merging two
-			// units' speeds into one track would invent a signal neither
-			// reported.
+			// Every cross-check speed lands in the one `cross-check speed` series.
+			// This arm means to keep one per batch, but the live loop hands over one
+			// arrival per call, so `cross_check_taken` never holds across arrivals
+			// and every unit's copy is interleaved in that track —
+			// `todo/measure/02-cross-check-tracks.md`.
 			"cross-check speed" if cross_check_taken => {}
+			// One track for every cross-check, in km/h ([`CROSS_CHECK_UNIT`]): a
+			// row in m/s is converted as the leading speed is, and a row in a unit
+			// nothing converts is no value at all — the alternative was 100 and
+			// 27.8 in one column.
+			"cross-check speed" => {
+				let Some(value) = channel.value(data) else { continue };
+				let Some(ms) = speed_to_ms(&channel.def.unit, value) else { continue };
+				cross_check_taken = true;
+				set.others.push((channel.key, at, ms * power::KMH_PER_MS));
+			}
 			key => {
 				if let Some(value) = channel.value(data) {
-					cross_check_taken |= key == "cross-check speed";
 					set.others.push((key, at, value));
 				}
 			}
@@ -611,7 +640,7 @@ fn channel_descriptors(plan: &Plan, full: bool, window: f64) -> Vec<Value> {
 		out.push(json!({
 				"key": file_key(channel.key),
 				"name": channel.def.name,
-				"unit": channel.def.unit,
+				"unit": recorded_unit(channel),
 				"origin": "read",
 				"request": format!("{request:03X}"),
 				"did": format!("{did:04X}"),
@@ -1132,9 +1161,9 @@ fn found_report(identities: &[crate::plan::UnitIdentity], missing: &[channels::M
 /// The same words the session file records, so the table and the file cannot
 /// disagree about what the car was asked. Nothing here knows which quantity is
 /// which: every channel hands over its catalog's spelling and the table prints
-/// it.
+/// it — except the cross-check speeds, recorded in [`CROSS_CHECK_UNIT`].
 fn channel_units(set: &channels::Set) -> BTreeMap<&'static str, String> {
-	set.all().map(|channel| (channel.key, channel.def.unit.to_string())).collect()
+	set.all().map(|channel| (channel.key, recorded_unit(channel).to_string())).collect()
 }
 
 /// One raw step of the pedal channel, which is what a kickdown threshold is
@@ -1868,11 +1897,14 @@ fn accumulate(
 fn chart_units(plan: &Plan) -> BTreeMap<String, String> {
 	let mut out: BTreeMap<String, String> = BTreeMap::new();
 	for channel in plan.by_address.values() {
-		out.entry(channel.key.to_string()).or_insert_with(|| channel.def.unit.trim().to_string());
+		out
+			.entry(channel.key.to_string())
+			.or_insert_with(|| recorded_unit(channel).trim().to_string());
 	}
-	// Speed is converted on the way into the buffer, so the buffer is in km/h
-	// whatever unit the catalog wrote the channel down in (ISO 80000-3); the
-	// other two are computed here and are in SI by §3.
+	// Speed is converted on the way into the buffer — the cross-checks too, see
+	// `recorded_unit` — so the buffer is in km/h whatever unit the catalog wrote
+	// the channel down in (ISO 80000-3); the other two are computed here and are
+	// in SI by §3.
 	out.insert(SPEED_CHART.into(), "km/h".into());
 	out.insert(ACCEL_CHART.into(), "m/s²".into());
 	out.insert(POWER_CHART.into(), "kW".into());
@@ -2110,6 +2142,62 @@ mod tests {
 		assert!((speed_to_ms("mph", 100.0).unwrap() - 44.704).abs() < 1e-9);
 		// An unknown unit makes the channel absent rather than off by 3.6.
 		assert_eq!(speed_to_ms("furlong/fortnight", 1.0), None);
+	}
+
+	#[test]
+	fn a_cross_check_speed_enters_its_track_in_kilometres_per_hour_whatever_its_row_says() {
+		// Every cross-check speed shares one track, and the track is in km/h. A
+		// radar's row in m/s used to be pushed as it came, so 100 km/h and 27.8
+		// sat in the same column; it is converted like the leading speed is, and a
+		// row in a unit the conversion does not know contributes nothing.
+		use std::borrow::Cow;
+		use vag_data_labels::catalog::{MeasurementDef, ReadId, Scaling};
+		use vag_data_labels::measure::{LinearScale, RawForm};
+		let row = |key: &'static str, request: u16, did: u16, unit: &str, factor: f64| Resolved {
+			key,
+			request,
+			did,
+			def: MeasurementDef {
+				name: Cow::Borrowed("Vehicle speed"),
+				unit: Cow::Owned(unit.to_string()),
+				address: ReadId::Uds(did),
+				raw_form: RawForm::U16Be,
+				scaling: Scaling::Linear(LinearScale { factor, offset: 0.0 }),
+			},
+		};
+		let leading = row("speed", 0x7E1, 0x1001, "km/h", 0.01);
+		let in_kmh = row("cross-check speed", 0x70E, 0x2B00, "km/h", 1.0);
+		let in_ms = row("cross-check speed", 0x757, 0x2600, "m/s", 1.0 / 256.0);
+		let in_knots = row("cross-check speed", 0x760, 0x2700, "kn", 1.0);
+		let set = channels::Set {
+			leading: leading.clone(),
+			leading_unit: vec![leading],
+			background: vec![in_kmh.clone(), in_ms.clone(), in_knots.clone()],
+			cross_check_speeds: vec![in_kmh, in_ms, in_knots],
+		};
+		let plan = Plan::build(&set, false);
+
+		// One arrival per call, as the poll loop hands them over.
+		let kmh = sample_set(&plan, &vec![(0x70E, 0x2B00, vec![0x00, 0x64])], 1.0);
+		assert_eq!(kmh.others, vec![("cross-check speed", 1.0, 100.0)]);
+		// 7111/256 m/s is 27.777 m/s, which is 100 km/h — and that is what the track gets.
+		let ms = sample_set(&plan, &vec![(0x757, 0x2600, vec![0x1B, 0xC7])], 2.0);
+		let [(key, at, value)] = ms.others.as_slice() else {
+			panic!("one converted value, not {:?}", ms.others);
+		};
+		assert_eq!((*key, *at), ("cross-check speed", 2.0));
+		assert!((value - 100.0).abs() < 0.01, "{value} is not 100 km/h");
+		let knots = sample_set(&plan, &vec![(0x760, 0x2700, vec![0x00, 0x36])], 3.0);
+		assert!(knots.others.is_empty(), "a unit nothing converts is not a value: {:?}", knots.others);
+
+		// And the file says so: every cross-check descriptor is in km/h, the m/s
+		// row's included, because that is what its values were converted to.
+		let descriptors = channel_descriptors(&plan, false, 1.0);
+		let cross_checks: Vec<&Value> = descriptors.iter().filter(|d| d["key"] == "cross_check_speed").collect();
+		assert_eq!(cross_checks.len(), 3, "{descriptors:?}");
+		assert!(cross_checks.iter().all(|d| d["unit"] == CROSS_CHECK_UNIT), "{cross_checks:?}");
+		let radar = descriptors.iter().find(|d| d["did"] == "2600").expect("the m/s row's descriptor");
+		assert_eq!(radar["unit"], "km/h");
 	}
 
 	#[test]
